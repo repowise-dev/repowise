@@ -112,7 +112,17 @@ def _is_candidate(rel_path: str) -> bool:
         "swagger.json",
         "swagger.yaml",
         "swagger.yml",
-    } or any(name.endswith(suffix) for suffix in (".openapi.json", ".openapi.yaml", ".openapi.yml"))
+    } or any(
+        name.endswith(suffix)
+        for suffix in (
+            ".openapi.json",
+            ".openapi.yaml",
+            ".openapi.yml",
+            ".swagger.json",
+            ".swagger.yaml",
+            ".swagger.yml",
+        )
+    )
 
 
 def _load_document(content: str, suffix: str, rel_path: str) -> Mapping[str, Any]:
@@ -404,6 +414,47 @@ def _validate_parameter_serialization(
         )
 
 
+def _parse_param_field(
+    document: Mapping[str, Any],
+    parameter: Mapping[str, Any],
+    parameter_pointer: str,
+    version_family: str,
+) -> SchemaField:
+    location = str(parameter["in"])
+    if location not in _PARAMETER_LOCATIONS:
+        raise _Refusal(
+            "openapi_parameter_location_unsupported",
+            "unsupported",
+            parameter_pointer,
+            location,
+        )
+    if "content" in parameter:
+        raise _Refusal(
+            "openapi_parameter_content_unsupported", "unsupported", parameter_pointer
+        )
+    if "schema" in parameter:
+        param_schema = parameter["schema"]
+        param_schema_pointer = _child_pointer(parameter_pointer, "schema")
+    elif "type" in parameter:
+        param_schema = {k: v for k, v in parameter.items() if k in {"type", "items", "enum"}}
+        param_schema_pointer = parameter_pointer
+    else:
+        raise _Refusal("openapi_parameter_schema_missing", "unresolved", parameter_pointer)
+    _validate_parameter_serialization(parameter, location, parameter_pointer)
+    required = bool(parameter.get("required", False))
+    if location == "path" and not required:
+        raise _Refusal("openapi_path_parameter_optional", "unresolved", parameter_pointer)
+    return _parse_schema_node(
+        document,
+        param_schema,
+        name=str(parameter["name"]),
+        required=required,
+        location=location,
+        pointer=param_schema_pointer,
+        version_family=version_family,
+    )
+
+
 def _build_request(
     document: Mapping[str, Any],
     path_item: Mapping[str, Any],
@@ -412,36 +463,34 @@ def _build_request(
     version_family: str,
 ) -> tuple[list[SchemaField], str | None]:
     fields: list[SchemaField] = []
+    body_entry: tuple[Mapping[str, Any], str] | None = None
     for parameter, parameter_pointer in _parameter_entries(document, path_item, operation, pointer):
         location = str(parameter["in"])
-        if location not in _PARAMETER_LOCATIONS:
-            raise _Refusal(
-                "openapi_parameter_location_unsupported",
-                "unsupported",
-                parameter_pointer,
-                location,
-            )
-        if "content" in parameter:
-            raise _Refusal(
-                "openapi_parameter_content_unsupported", "unsupported", parameter_pointer
-            )
-        if "schema" not in parameter:
-            raise _Refusal("openapi_parameter_schema_missing", "unresolved", parameter_pointer)
-        _validate_parameter_serialization(parameter, location, parameter_pointer)
-        required = bool(parameter.get("required", False))
-        if location == "path" and not required:
-            raise _Refusal("openapi_path_parameter_optional", "unresolved", parameter_pointer)
+        if location == "body":
+            if body_entry is not None:
+                raise _Refusal("openapi_body_parameter_ambiguous", "unsupported", parameter_pointer)
+            body_entry = (parameter, parameter_pointer)
+            continue
+        fields.append(
+            _parse_param_field(document, parameter, parameter_pointer, version_family)
+        )
+
+    if body_entry is not None:
+        body_param, body_ptr = body_entry
+        if "schema" not in body_param:
+            raise _Refusal("openapi_request_schema_missing", "unresolved", body_ptr)
         fields.append(
             _parse_schema_node(
                 document,
-                parameter["schema"],
-                name=str(parameter["name"]),
-                required=required,
-                location=location,
-                pointer=_child_pointer(parameter_pointer, "schema"),
+                body_param["schema"],
+                name="$body",
+                required=bool(body_param.get("required", False)),
+                location="body",
+                pointer=_child_pointer(body_ptr, "schema"),
                 version_family=version_family,
             )
         )
+        return fields, "application/json"
 
     if "requestBody" not in operation:
         return fields, None
@@ -496,28 +545,39 @@ def _build_response(
     response_pointer = _child_pointer(_child_pointer(pointer, "responses"), status_code)
     response, response_pointer, _, _ = _resolve_object(document, raw_response, response_pointer)
     content = response.get("content")
-    if not isinstance(content, Mapping) or not content:
-        raise _Refusal("openapi_response_content_missing", "unresolved", response_pointer)
-    if "application/json" not in content:
-        raise _Refusal("openapi_media_type_unsupported", "unsupported", response_pointer)
-    if len(content) != 1:
-        raise _Refusal("openapi_media_type_ambiguous", "unsupported", response_pointer)
-    media = content["application/json"]
-    if not isinstance(media, Mapping) or "schema" not in media:
-        raise _Refusal("openapi_response_schema_missing", "unresolved", response_pointer)
-    root = _parse_schema_node(
-        document,
-        media["schema"],
-        name="$response",
-        required=True,
-        location="body",
-        pointer=_child_pointer(
-            _child_pointer(_child_pointer(response_pointer, "content"), "application/json"),
-            "schema",
-        ),
-        version_family=version_family,
-    )
-    return [root], "application/json", status_code
+    if isinstance(content, Mapping) and content:
+        if "application/json" not in content:
+            raise _Refusal("openapi_media_type_unsupported", "unsupported", response_pointer)
+        if len(content) != 1:
+            raise _Refusal("openapi_media_type_ambiguous", "unsupported", response_pointer)
+        media = content["application/json"]
+        if not isinstance(media, Mapping) or "schema" not in media:
+            raise _Refusal("openapi_response_schema_missing", "unresolved", response_pointer)
+        root = _parse_schema_node(
+            document,
+            media["schema"],
+            name="$response",
+            required=True,
+            location="body",
+            pointer=_child_pointer(
+                _child_pointer(_child_pointer(response_pointer, "content"), "application/json"),
+                "schema",
+            ),
+            version_family=version_family,
+        )
+        return [root], "application/json", status_code
+    if "schema" in response:
+        root = _parse_schema_node(
+            document,
+            response["schema"],
+            name="$response",
+            required=True,
+            location="body",
+            pointer=_child_pointer(response_pointer, "schema"),
+            version_family=version_family,
+        )
+        return [root], "application/json", status_code
+    raise _Refusal("openapi_response_content_missing", "unresolved", response_pointer)
 
 
 def _capture_side(
@@ -542,7 +602,8 @@ def _operation_contract(
     version_family: str,
     rel_path: str,
     repo_alias: str,
-    path: str,
+    raw_path: str,
+    effective_path: str,
     method: str,
     path_item: Mapping[str, Any],
     operation: Mapping[str, Any],
@@ -550,7 +611,7 @@ def _operation_contract(
 ) -> Any:
     from repowise.core.workspace.contracts import Contract
 
-    operation_pointer = f"#/paths/{_pointer_token(path)}/{method}"
+    operation_pointer = f"#/paths/{_pointer_token(raw_path)}/{method}"
     request_result, request_state, request_issues = _capture_side(
         "request",
         lambda: _build_request(document, path_item, operation, operation_pointer, version_family),
@@ -566,14 +627,14 @@ def _operation_contract(
     response_fields = response_result[0]
     response_media_type = response_result[1] if len(response_result) > 1 else None
     response_status_code = response_result[2] if len(response_result) > 2 else None
-    normalized_path = normalize_http_path(path)
+    normalized_path = normalize_http_path(effective_path)
     return Contract(
         repo=repo_alias,
         contract_id=f"http::{method.upper()}::{normalized_path}",
         contract_type="http",
         role="provider",
         file_path=rel_path,
-        symbol_name=f"openapi:{method.upper()} {path}",
+        symbol_name=f"openapi:{method.upper()} {effective_path}",
         confidence=origin_confidence(ContractOrigin.IDL),
         origin=ContractOrigin.IDL,
         meta={
@@ -622,14 +683,32 @@ class OpenApiExtractor:
             try:
                 document = _load_document(content, suffix, rel_path)
                 version = document.get("openapi")
-                match = _VERSION_RE.fullmatch(version) if isinstance(version, str) else None
-                if match is None:
-                    raise _Refusal(
-                        "openapi_version_unsupported",
-                        "unsupported",
-                        f"{rel_path}#/openapi",
-                        str(version or "missing"),
-                    )
+                is_swagger_2 = False
+                if isinstance(version, str):
+                    match = _VERSION_RE.fullmatch(version)
+                    if match is None:
+                        raise _Refusal(
+                            "openapi_version_unsupported",
+                            "unsupported",
+                            f"{rel_path}#/openapi",
+                            str(version),
+                        )
+                    version_family = match.group(1)
+                else:
+                    raw_swagger = document.get("swagger")
+                    if raw_swagger is not None and str(raw_swagger) == "2.0":
+                        version = "2.0"
+                        version_family = "0"
+                        is_swagger_2 = True
+                    else:
+                        pointer_key = "swagger" if "swagger" in document else "openapi"
+                        val = raw_swagger if "swagger" in document else (version or "missing")
+                        raise _Refusal(
+                            "openapi_version_unsupported",
+                            "unsupported",
+                            f"{rel_path}#/{pointer_key}",
+                            str(val),
+                        )
                 paths = document.get("paths")
                 if not isinstance(paths, Mapping):
                     raise _Refusal("openapi_paths_missing", "unresolved", f"{rel_path}#/paths")
@@ -639,16 +718,23 @@ class OpenApiExtractor:
                 continue
 
             _increment(stats, "openapi_documents_parsed")
-            for path, raw_path_item in paths.items():
-                if not isinstance(path, str) or not path.startswith("/"):
+            base_path = ""
+            if is_swagger_2:
+                raw_base = document.get("basePath")
+                if isinstance(raw_base, str) and raw_base.strip("/"):
+                    base_path = "/" + raw_base.strip("/")
+
+            for raw_path, raw_path_item in paths.items():
+                if not isinstance(raw_path, str) or not raw_path.startswith("/"):
                     _record_reason(stats, "openapi_path_unsupported")
                     continue
-                path_pointer = f"#/paths/{_pointer_token(path)}"
+                path_pointer = f"#/paths/{_pointer_token(raw_path)}"
                 try:
                     path_item, _, _, _ = _resolve_object(document, raw_path_item, path_pointer)
                 except _Refusal as exc:
                     _record_reason(stats, exc.code)
                     continue
+                effective_path = f"{base_path}{raw_path}"
                 for method, raw_operation in path_item.items():
                     method_text = str(method).lower()
                     if method_text not in _HTTP_METHODS:
@@ -660,10 +746,11 @@ class OpenApiExtractor:
                         _operation_contract(
                             document,
                             version,
-                            match.group(1),
+                            version_family,
                             rel_path,
                             repo_alias,
-                            path,
+                            raw_path,
+                            effective_path,
                             method_text,
                             path_item,
                             raw_operation,
