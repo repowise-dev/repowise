@@ -161,6 +161,13 @@ def _avg(metrics: list[HealthFileMetric], attr: str) -> float | None:
     return round(value, 2) if value is not None else None
 
 
+def _split_kpis(metrics: list[HealthFileMetric]) -> dict[str, float | None]:
+    """The headline's code-shape and history halves, in deduction points."""
+    halves = headline_split(metrics)
+    keys = ("structure_average", "history_average")
+    return {k: round(v, 2) if v is not None else None for k, v in zip(keys, halves, strict=True)}
+
+
 def _compute_kpis(
     metrics: list[HealthFileMetric],
     *,
@@ -195,7 +202,6 @@ def _compute_kpis(
     avg = sum(m.score * max(m.nloc, 1) for m in metrics) / total_nloc
     share = analysed_share(len(metrics), unanalysed)
     production, tests = split_tests(metrics)
-    structure, history = headline_split(metrics)
     return {
         "file_count": len(metrics),
         "average_health": round(avg, 2),
@@ -226,9 +232,7 @@ def _compute_kpis(
         # ``None`` until the pillar is measured.
         "maintainability_average": _avg(metrics, "maintainability_score"),
         "performance_average": _avg(metrics, "performance_score"),
-        # The headline's code-shape and history halves, in deduction points.
-        "structure_average": round(structure, 2) if structure is not None else None,
-        "history_average": round(history, 2) if history is not None else None,
+        **_split_kpis(metrics),
         # Performance leads with the causes worth fixing now and coverage, not the diluted /10.
         **_perf_kpis(performance_causes, coverage),
     }
