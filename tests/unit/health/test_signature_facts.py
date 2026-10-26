@@ -162,6 +162,21 @@ def test_rust_trait_impl_is_fixed_and_inherent_impl_is_not():
     assert (fns["own"].typed_param_count, fns["own"].primitive_param_count) == (5, 4)
 
 
+def test_cpp_extern_c_linkage_fixes_the_signature():
+    params = "(int a, const char* b, size_t c, int d, uint64_t* e)"
+    fns = _fns(
+        "a.cc",
+        "cpp",
+        f'extern "C" {{\nvoid api{params} {{ g(); }}\n'
+        f'extern "C++" {{ void reentered{params} {{ g(); }} }}\n}}\n'
+        f'extern "C" int single{params} {{ return 0; }}\n'
+        f"void own{params} {{ g(); }}\n",
+    )
+    assert fns["api"].signature_fixed and fns["single"].signature_fixed
+    assert not fns["own"].signature_fixed and not fns["reentered"].signature_fixed
+    assert fns["own"].primitive_param_count == 5
+
+
 def test_untyped_parameters_are_in_neither_count():
     fns = _fns("a.py", "python", "def f(a, b, c, d, e: int):\n    pass\n")
     assert (fns["f"].typed_param_count, fns["f"].primitive_param_count) == (1, 1)

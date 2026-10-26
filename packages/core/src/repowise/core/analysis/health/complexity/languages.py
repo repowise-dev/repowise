@@ -330,6 +330,8 @@ class LanguageNodeMap:
     #     binders (``@RequestBody``) stay out: that parameter is the value object.
     #   * ``explicit_impl_kinds`` / ``trait_impl_kinds`` -- an explicit
     #     interface implementation on the member, an enclosing trait impl.
+    #   * ``fixed_abi_kinds`` -- an enclosing block whose linkage fixes the
+    #     parameter lists inside it (C++ ``extern "C"``).
     #   * ``public_api_modifiers`` / ``public_api_type_kinds`` -- a member
     #     carrying one of these, inside types that all carry one too, is
     #     published API. Only for a language with an assembly-internal level
@@ -343,6 +345,7 @@ class LanguageNodeMap:
     bound_param_markers: frozenset[str] = frozenset()
     explicit_impl_kinds: frozenset[str] = frozenset()
     trait_impl_kinds: frozenset[str] = frozenset()
+    fixed_abi_kinds: frozenset[str] = frozenset()
     public_api_modifiers: frozenset[str] = frozenset()
     public_api_type_kinds: frozenset[str] = frozenset()
     scalar_type_names: frozenset[str] = frozenset()
@@ -889,6 +892,7 @@ _DART = LanguageNodeMap(
 _CPP = LanguageNodeMap(
     misread_scope=misread_scope_keyword,
     fixed_signature_markers=frozenset({"override", "final"}),
+    fixed_abi_kinds=frozenset({"linkage_specification"}),
     scalar_type_names=_C_SCALARS
     | frozenset({"string", "wstring", "string_view", "wstring_view"}),
     function_kinds=frozenset({"function_definition"}),

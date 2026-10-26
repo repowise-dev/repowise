@@ -1556,6 +1556,25 @@ _CPP_CASES = [
         "the explicit acquire form of the same site",
     ),
     (
+        "void m() {\n    while (active_) {\n        std::unique_lock<std::mutex> lock(mu_);\n"
+        "        if (cv_.wait_for(lock, iv_, [this] { return !active_; })) {\n"
+        "            return;\n        }\n        tick();\n    }\n}\n",
+        [],
+        "a guard handed to a condition-variable wait is the wait idiom",
+    ),
+    (
+        "void m() {\n    for (;;) {\n        std::unique_lock<std::mutex> lk{mu};\n"
+        "        while (q.empty()) cv->wait(lk);\n        q.pop();\n    }\n}\n",
+        [],
+        "a wait loop nested under the guard's loop",
+    ),
+    (
+        "void m() {\n    while (active_) {\n        std::unique_lock<std::mutex> lock(mu_);\n"
+        "        cv_.wait(other);\n        tick();\n    }\n}\n",
+        [("lock_in_loop", "")],
+        "a wait on another lock leaves the guard per iteration",
+    ),
+    (
         "void m() {\n    for (auto x : load_all()) {\n        use(x);\n    }\n}\n",
         [],
         "the range-for header runs once",
