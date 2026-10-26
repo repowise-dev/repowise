@@ -438,14 +438,7 @@ class PythonPerfDialect(PythonBatchForms, PythonLoopSources, IterableSources):
             return "lock_in_loop"
         # ``lst.insert(0, x)`` shifts the whole list each pass: a literal ``0``, on a
         # list not re-created per iteration and not a ``deque`` (O(1) at the front).
-        if (
-            method == "insert"
-            and self.callee_is_attribute(node)
-            and self._first_arg_is_zero(node)
-            and not self._receiver_reset_in_loop(node, root)
-            and not self._receiver_bound_to_deque(node, root)
-            and not self._loop_ends_after(node)
-        ):
+        if method == "insert" and self._front_insert_repeats(node, root):
             return "list_insert_zero_in_loop"
         # ``pd.concat([acc, chunk])`` / ``pandas.concat(...)`` in a loop copies
         # the whole frame each pass -> O(n^2); collect a list and concat once.
@@ -489,6 +482,15 @@ class PythonPerfDialect(PythonBatchForms, PythonLoopSources, IterableSources):
                 continue  # imports do not nest further imports
             stack.extend(n.children)
         return False
+
+    def _front_insert_repeats(self, node: Node, root: str) -> bool:
+        if not (self.callee_is_attribute(node) and self._first_arg_is_zero(node)):
+            return False
+        return not (
+            self._receiver_reset_in_loop(node, root)
+            or self._receiver_bound_to_deque(node, root)
+            or self._loop_ends_after(node)
+        )
 
     def _loop_ends_after(self, node: Node) -> bool:
         """A ``return``/``raise`` (or, with one loop around *node*, a ``break``)
