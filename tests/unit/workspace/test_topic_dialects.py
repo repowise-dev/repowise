@@ -634,7 +634,7 @@ class TestDapr:
 
     def test_a_named_topic_name_argument_is_read(self, tmp_path: Path) -> None:
         src = (
-            self. _USING
+            self._USING
             + "private readonly DaprClient dapr;\n"
             + 'await dapr.PublishEventAsync("pubsub", topicName: "orders", evt);\n'
         )
