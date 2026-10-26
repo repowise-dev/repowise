@@ -12,13 +12,16 @@ reads the tree with it.
   than this declaration, so "group these parameters" is advice nobody can take
   here. Read from the declaration's modifier, annotation, attribute and
   decorator nodes only, never from its name or from string arguments, so a
-  function *named* ``override`` is not one.
+  function *named* ``override`` is not one. A Python method whose class's
+  base, defined in the same file, declares the same name is an override too.
 - **typed / scalar parameters**: how many parameters declare a type, and how
   many of those are a scalar or a string. An untyped parameter is in neither
   count.
 - **bound parameters**: parameters whose own annotation says a framework fills
   them (``@PathVariable``), read the same way as a declaration's markers. They
   stay in the declared count and leave the typed and scalar ones.
+- **keyword-only parameters**: Python parameters after ``*`` or ``*args``.
+  Every call site names them, so they carry no argument-order hazard.
 """
 
 from __future__ import annotations
@@ -163,7 +166,75 @@ def is_signature_fixed(fn_node: Node, lmap: LanguageNodeMap) -> bool:
         return True
     if any(c.type in lmap.explicit_impl_kinds for c in fn_node.children):
         return True
-    return _in_trait_impl(fn_node, lmap) or _is_public_api(fn_node, lmap)
+    return (
+        _in_trait_impl(fn_node, lmap)
+        or _is_public_api(fn_node, lmap)
+        or _overrides_local_base(fn_node, lmap)
+    )
+
+
+def _class_of_method(fn_node: Node, lmap: LanguageNodeMap) -> Node | None:
+    holder = fn_node
+    if holder.parent is not None and holder.parent.type in lmap.decorated_definition_kinds:
+        holder = holder.parent
+    body = holder.parent
+    if body is None or body.parent is None or body.parent.type not in lmap.class_kinds:
+        return None
+    return body.parent
+
+
+def _defines(cls: Node, name: str, lmap: LanguageNodeMap) -> bool:
+    body = cls.child_by_field_name("body")
+    for child in body.named_children if body is not None else ():
+        if child.type in lmap.decorated_definition_kinds:
+            child = child.child_by_field_name("definition") or child
+        if child.type in lmap.function_kinds and _field_text(child, "name") == name:
+            return True
+    return False
+
+
+def _field_text(node: Node, field: str) -> str | None:
+    child = node.child_by_field_name(field)
+    return _text(child) if child is not None else None
+
+
+def _module_classes(node: Node, lmap: LanguageNodeMap) -> dict[str | None, Node]:
+    root = node
+    while root.parent is not None:
+        root = root.parent
+    classes: dict[str | None, Node] = {}
+    for child in root.named_children:
+        if child.type in lmap.decorated_definition_kinds:
+            child = child.child_by_field_name("definition") or child
+        if child.type in lmap.class_kinds:
+            classes[_field_text(child, "name")] = child
+    return classes
+
+
+def _overrides_local_base(fn_node: Node, lmap: LanguageNodeMap) -> bool:
+    """A Python method whose name a base class in the same module declares.
+
+    Reads the grammar's ``superclasses`` field, which only Python has, and
+    module-level classes only; a base imported from elsewhere is not followed.
+    """
+    cls = _class_of_method(fn_node, lmap)
+    name = _field_text(fn_node, "name")
+    if cls is None or name is None or cls.child_by_field_name("superclasses") is None:
+        return False
+    module = _module_classes(cls, lmap)
+    seen: set[str] = set()
+    pending = [cls]
+    while pending:
+        bases = pending.pop().child_by_field_name("superclasses")
+        for base in bases.named_children if bases is not None else ():
+            base_name = _text(base)
+            if base.type != "identifier" or base_name in seen or base_name not in module:
+                continue
+            seen.add(base_name)
+            if _defines(module[base_name], name, lmap):
+                return True
+            pending.append(module[base_name])
+    return False
 
 
 def _param_type(param: Node) -> Node | None:
@@ -222,6 +293,26 @@ def _is_bound(param: Node, lmap: LanguageNodeMap) -> bool:
     if prev is not None and prev.type == "parameter_modifiers":
         words |= _leaf_words([prev])
     return bool(words & lmap.bound_param_markers)
+
+
+def keyword_only_param_count(params: Node | None) -> int:
+    """Python parameters after a bare ``*`` or ``*args``, ``**kwargs`` included."""
+    if params is None:
+        return 0
+    count = 0
+    seen_star = False
+    for param in _parameter_nodes(params):
+        if seen_star:
+            count += 1
+        elif param.type == "keyword_separator" or _is_args_splat(param):
+            seen_star = True
+    return count
+
+
+def _is_args_splat(param: Node) -> bool:
+    # ``*args: int`` wraps the splat in a ``typed_parameter``.
+    first = param.named_children[0] if param.type == "typed_parameter" else param
+    return first.type == "list_splat_pattern"
 
 
 def bound_param_count(params: Node | None, lmap: LanguageNodeMap) -> int:

@@ -383,7 +383,9 @@ _C_SCALARS = frozenset(
 
 _PY = LanguageNodeMap(
     ctor_names=frozenset({"__init__"}),
-    fixed_signature_markers=frozenset({"override"}),
+    # Click and Typer (``@cli.command()``, ``@click.option(...)``): the
+    # parameters mirror the command's CLI options.
+    fixed_signature_markers=frozenset({"override", "command", "group", "option", "argument"}),
     scalar_type_names=frozenset({"str", "int", "float", "bool", "bytes"}),
     function_kinds=frozenset({"function_definition", "async_function_definition"}),
     lambda_kinds=frozenset({"lambda"}),
