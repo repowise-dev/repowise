@@ -165,7 +165,6 @@ _BIOMARKER_WEIGHT_MULTIPLIER: dict[str, float] = {
     # --- floored: fired widely but weak / non-predictive at T0 ---
     "developer_congestion": 0.5,  # was 1.5 - the HEAD-leakage hero; weak under T0
     "low_cohesion": 0.5,
-    "repeated_nesting": 0.5,
     "primitive_obsession": 0.5,
     "dry_violation": 0.5,
     "knowledge_loss": 0.4,  # confirmed weak-negative since Phase 1
@@ -286,7 +285,6 @@ _BIOMARKER_DIMENSIONS: dict[str, set[str]] = {
     # maintainability problem whether or not it is also a defect predictor.
     "complex_method": {"defect", "maintainability"},
     "complex_conditional": {"defect", "maintainability"},
-    "repeated_nesting": {"defect", "maintainability"},
     # Performance-risk detectors contribute to ``performance`` ONLY. They are
     # NOT defect predictors and must never move the surfaced (defect) score -
     # that exclusion is what keeps the defect golden guarantee intact.
@@ -333,6 +331,9 @@ _BIOMARKER_DIMENSIONS: dict[str, set[str]] = {
     # Fires only beside complex_method and large_method on the same function, so
     # scoring it charged that function twice; dropping it moved no defect AUC.
     "brain_method": {ADVISORY_DIMENSION},
+    # A blind precision study judged 7 of 24 findings real: it fires on short
+    # functions with a few simple loops. Dropping it cost no measurable AUC.
+    "repeated_nesting": {ADVISORY_DIMENSION},
     # Its two inputs already deduct: complexity through complex_method, missing
     # coverage through coverage_gap and coverage_gradient. Uncalibrated; it ranks
     # which complex functions most need tests rather than moving the score.
@@ -361,7 +362,6 @@ _MAINTAINABILITY_WEIGHT_MULTIPLIER: dict[str, float] = {
     "nested_complexity": 1.0,
     "complex_method": 1.0,
     "complex_conditional": 1.0,
-    "repeated_nesting": 1.0,
     # SQL smells ship advisory (0.7) pending a precision spot-check on a
     # migrations-heavy corpus, mirroring how new perf markers land.
     "sql_high_complexity": 0.7,
@@ -377,7 +377,6 @@ _MAINTAINABILITY_CATEGORY: dict[str, str] = {
     "nested_complexity": "structural_complexity",
     "large_method": "structural_complexity",
     "complex_conditional": "structural_complexity",
-    "repeated_nesting": "structural_complexity",
     "complex_method": "size_and_complexity",
     "primitive_obsession": "size_and_complexity",
     "dry_violation": "duplication",
@@ -570,6 +569,7 @@ _ADVISORY_HOME: frozenset[str] = frozenset(
         "mock_saturated_test",
         "hidden_coupling",
         "brain_method",
+        "repeated_nesting",
         "untested_complexity",
         "apex_soql_injection",
         "apex_missing_sharing",

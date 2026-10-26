@@ -86,7 +86,7 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
     label: BIOMARKER_LABELS.repeated_nesting,
     category: "structural_complexity",
     description:
-      "A function with several separate nested blocks stitched together. No single block is bad, but the whole reads as a sequence of mini-functions.",
+      "A function with several separate nested blocks stitched together. No single block is bad, but the whole reads as a sequence of mini-functions. Advisory: it costs this file no points.",
   },
   complex_method: {
     label: BIOMARKER_LABELS.complex_method,
@@ -481,6 +481,7 @@ export const ADVISORY_HOME_BIOMARKERS: ReadonlySet<string> = new Set([
   "mock_saturated_test",
   "hidden_coupling",
   "brain_method",
+  "repeated_nesting",
   "untested_complexity",
   "apex_soql_injection",
   "apex_missing_sharing",
