@@ -16,7 +16,13 @@ def plugins_command(fmt: str) -> None:
     from rich.markup import escape
 
     from repowise.cli.helpers import console
-    from repowise.core.registry.plugins import ENTRY_POINT_GROUP, ENV_VAR, load_plugins, seams
+    from repowise.core.registry.plugins import (
+        ENTRY_POINT_GROUP,
+        ENV_VAR,
+        PLUGIN_API_VERSION,
+        load_plugins,
+        seams,
+    )
 
     records = load_plugins()
     seam_rows = {
@@ -24,9 +30,16 @@ def plugins_command(fmt: str) -> None:
         for name, registry in sorted(seams().items())
     }
     if fmt == "json":
-        emit_json({"plugins": [asdict(r) for r in records], "seams": seam_rows})
+        emit_json(
+            {
+                "api_version": PLUGIN_API_VERSION,
+                "plugins": [asdict(r) for r in records],
+                "seams": seam_rows,
+            }
+        )
         return
 
+    console.print(f"plugin API version {PLUGIN_API_VERSION}")
     if not records:
         console.print(
             f"No plugins loaded. Install one that declares a [bold]{ENTRY_POINT_GROUP}[/bold] "

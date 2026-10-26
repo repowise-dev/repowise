@@ -16,7 +16,14 @@ from click.testing import CliRunner
 
 from repowise.cli._instrumented_group import InstrumentedGroup
 from repowise.core import registry as registry_pkg
-from repowise.core.registry import CLIRegistry, plugins
+from repowise.core.providers.embedding import registry as embedders
+from repowise.core.providers.llm import registry as llm_providers
+from repowise.core.registry import (
+    CLIRegistry,
+    MCPToolRegistry,
+    PipelineHookRegistry,
+    plugins,
+)
 from repowise.core.registry.plugins import SeamRegistry, load_plugins
 
 
@@ -267,6 +274,7 @@ def test_plugins_command_json_and_table(monkeypatch, make_module):
     result = CliRunner().invoke(plugins_command, ["--format", "json"])
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
+    assert payload["api_version"] == plugins.PLUGIN_API_VERSION == registry_pkg.PLUGIN_API_VERSION
     assert [(p["name"], p["status"], p["seams"]) for p in payload["plugins"]] == [
         (f"{good}:register", "loaded", ["demo:acme"]),
         ("no_such_module_xyz", "failed", []),
@@ -277,6 +285,7 @@ def test_plugins_command_json_and_table(monkeypatch, make_module):
     assert table.exit_code == 0, table.output
     assert "loaded" in table.output and "failed" in table.output
     assert "seam demo: acme" in table.output
+    assert f"plugin API version {plugins.PLUGIN_API_VERSION}" in table.output
 
 
 def test_plugins_command_with_nothing_installed():
@@ -299,3 +308,83 @@ def test_dispatching_a_builtin_command_never_runs_discovery():
     )
     out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=True)
     assert out.stdout.strip().splitlines()[-1] == "True"
+
+
+def test_all_returns_every_implementation_after_loading_plugins(monkeypatch, make_module):
+    seam = SeamRegistry("demo")
+    seam.register("local", "LOCAL")
+    monkeypatch.setenv(plugins.ENV_VAR, f"{make_module(_REGISTER_ACME)}:register")
+
+    assert seam.all() == [("local", "LOCAL"), ("acme", "ACME")]
+    assert plugins._records is not None
+
+
+_REGISTER_EVERYTHING = """
+    from repowise.core import registry
+    from repowise.core.providers.embedding import registry as embedders
+    from repowise.core.providers.llm import registry as llm_providers
+    from repowise.core.registry.plugins import seams
+
+    async def acme_tool() -> dict:
+        return {}
+
+    def register():
+        seams()["demo"].register("acme", "ACME")
+        registry.cli_registry.register_lazy("acme-hello", "acme.cli:hello")
+        registry.mcp_tool_registry.register()(acme_tool)
+        registry.pipeline_hooks.register("parse", lambda phase: None, when="post")
+        llm_providers.register_provider("acme-llm", lambda **kw: "LLM")
+        embedders.register_embedder("acme-embed", lambda **kw: "EMBED")
+"""
+
+
+@pytest.fixture
+def isolated_registries(monkeypatch):
+    for attr, cls in (
+        ("cli_registry", CLIRegistry),
+        ("mcp_tool_registry", MCPToolRegistry),
+        ("pipeline_hooks", PipelineHookRegistry),
+    ):
+        monkeypatch.setattr(registry_pkg, attr, cls())
+    monkeypatch.setattr(llm_providers, "_custom_providers", {})
+    monkeypatch.setattr(embedders, "_custom_embedders", {})
+
+
+def test_every_registration_kind_is_recorded_while_a_plugin_loads(
+    monkeypatch, make_module, isolated_registries
+):
+    SeamRegistry("demo")
+    monkeypatch.setenv(plugins.ENV_VAR, f"{make_module(_REGISTER_EVERYTHING)}:register")
+
+    [record] = load_plugins()
+    assert record.status == "loaded", record.error
+    assert record.seams == [
+        "demo:acme",
+        "cli-command:acme-hello",
+        "mcp-tool:acme_tool",
+        "pipeline-hook:parse.post",
+        "llm-provider:acme-llm",
+        "embedder:acme-embed",
+    ]
+    registry_pkg.pipeline_hooks.register("graph", lambda phase: None)
+    assert record.seams[-1] == "embedder:acme-embed"  # outside a load, nothing is recorded
+
+
+def test_a_plugin_provider_resolves_by_name(monkeypatch, make_module, isolated_registries):
+    monkeypatch.setenv(plugins.ENV_VAR, f"{make_module(_REGISTER_EVERYTHING)}:register")
+    SeamRegistry("demo")
+
+    assert llm_providers.get_provider("acme-llm") == "LLM"
+    assert embedders.get_embedder("acme-embed") == "EMBED"
+    assert "acme-llm" in llm_providers.list_providers()
+    assert "acme-embed" in embedders.list_embedders()
+    with pytest.raises(ValueError, match="acme-llm"):
+        llm_providers.get_provider("no-such-llm")
+    with pytest.raises(ValueError, match="acme-embed"):
+        embedders.get_embedder("no-such-embedder")
+
+
+def test_a_builtin_provider_never_runs_discovery(isolated_registries):
+    llm_providers.get_provider("mock", with_rate_limiter=False)
+    embedders.get_embedder("mock")
+    assert plugins._records is None
