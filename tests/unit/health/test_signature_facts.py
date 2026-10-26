@@ -168,12 +168,14 @@ def test_cpp_extern_c_linkage_fixes_the_signature():
         "a.cc",
         "cpp",
         f'extern "C" {{\nvoid api{params} {{ g(); }}\n'
-        f'extern "C++" {{ void reentered{params} {{ g(); }} }}\n}}\n'
+        f'extern "C++" {{ void reentered{params} {{ g(); }} }}\n'
+        f"struct S {{ void member{params} {{ g(); }} }};\n}}\n"
         f'extern "C" int single{params} {{ return 0; }}\n'
         f"void own{params} {{ g(); }}\n",
     )
     assert fns["api"].signature_fixed and fns["single"].signature_fixed
     assert not fns["own"].signature_fixed and not fns["reentered"].signature_fixed
+    assert not fns["member"].signature_fixed
     assert fns["own"].primitive_param_count == 5
 
 

@@ -472,7 +472,9 @@ def _is_wait_on(node: Node, guard: bytes | None) -> bool:
     if node.type != "call_expression":
         return False
     fn, args = node.child_by_field_name("function"), node.child_by_field_name("arguments")
-    if fn is None or fn.type != "field_expression" or args is None or not args.named_children:
+    if fn is None or fn.type != "field_expression":
+        return False
+    if args is None or not args.named_children:
         return False
     field = fn.child_by_field_name("field")
     return field is not None and field.text in _CV_WAITS and args.named_children[0].text == guard

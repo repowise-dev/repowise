@@ -175,7 +175,9 @@ def _in_fixed_abi(fn_node: Node, lmap: LanguageNodeMap) -> bool:
     if not lmap.fixed_abi_kinds:
         return False
     node = fn_node.parent
-    while node is not None and node.type not in lmap.function_kinds:
+    # A member function keeps C++ linkage even inside an ``extern "C"`` block.
+    stops = lmap.function_kinds | lmap.class_kinds
+    while node is not None and node.type not in stops:
         if node.type in lmap.fixed_abi_kinds:
             # ``extern "C++" {`` re-enters C++ linkage inside an ``extern "C"`` header.
             value = node.child_by_field_name("value")
