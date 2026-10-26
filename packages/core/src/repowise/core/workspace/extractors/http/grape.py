@@ -7,6 +7,7 @@ nested ``resource`` / ``namespace`` / ``route_param`` scopes, and verb declarati
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from ..langs import RUBY
@@ -33,6 +34,14 @@ _VERB_RE = re.compile(
 _DO_BLOCK_RE = re.compile(r"\bdo(?:\s*\|[^|]*\|)?\s*$")
 
 
+@dataclass
+class _GrapeState:
+    prefix: str = ""
+    version: str = ""
+    stack: list[str] = field(default_factory=list)
+    out: list[Contract] = field(default_factory=list)
+
+
 def _strip_inline_end(raw: str) -> tuple[str, bool]:
     clean = raw
     has_inline_end = False
@@ -45,34 +54,36 @@ def _strip_inline_end(raw: str) -> tuple[str, bool]:
     return clean, has_inline_end
 
 
-def _handle_config(line: str, prefix: str, version: str) -> tuple[str, str, bool]:
+def _handle_config(line: str, state: _GrapeState) -> bool:
     m = _PREFIX_RE.search(line)
     if m:
         val = next(g for g in m.groups() if g is not None)
-        return "/" + val.strip("/"), version, True
+        state.prefix = "/" + val.strip("/")
+        return True
 
     m = _VERSION_RE.search(line)
     if m:
         val = next((g for g in m.groups() if g is not None), "")
-        new_version = ("/" + val.strip("/")) if val else version
-        return prefix, new_version, True
+        if val:
+            state.version = "/" + val.strip("/")
+        return True
 
-    return prefix, version, False
+    return False
 
 
-def _handle_scope(line: str, push_block: bool, stack: list[str]) -> bool:
+def _handle_scope(line: str, push_block: bool, state: _GrapeState) -> bool:
     m = _RESOURCE_RE.search(line)
     if m:
         res = next(g for g in m.groups() if g is not None).strip("/")
         if push_block:
-            stack.append(res)
+            state.stack.append(res)
         return True
 
     m = _ROUTE_PARAM_RE.search(line)
     if m:
         p_name = next(g for g in m.groups() if g is not None).strip("/")
         if push_block:
-            stack.append(":" + p_name)
+            state.stack.append(":" + p_name)
         return True
 
     return False
@@ -82,21 +93,18 @@ def _handle_verb(
     line: str,
     line_no: int,
     push_block: bool,
-    prefix: str,
-    version: str,
-    stack: list[str],
+    state: _GrapeState,
     ctx: ScanContext,
-) -> list[Contract] | None:
+) -> bool:
     m = _VERB_RE.search(line)
     if not m:
-        return None
+        return False
 
     verb = m.group(1).upper()
     sub = next((g for g in m.groups()[1:] if g is not None), "")
-    path_parts = [p for p in [prefix, version, *stack, sub] if p]
+    path_parts = [p for p in [state.prefix, state.version, *state.stack, sub] if p]
     full = "/" + "/".join(s.strip("/") for s in path_parts)
 
-    out: list[Contract] = []
     c = build_provider_contract(
         ctx,
         method=verb,
@@ -105,32 +113,26 @@ def _handle_verb(
         line=line_no,
     )
     if c is not None:
-        out.append(c)
+        state.out.append(c)
     if push_block:
-        stack.append("")
-    return out
+        state.stack.append("")
+    return True
 
 
 def _process_statement(
     line: str,
     line_no: int,
     push_block: bool,
-    prefix: str,
-    version: str,
-    stack: list[str],
+    state: _GrapeState,
     ctx: ScanContext,
-) -> tuple[str, str, list[Contract] | None]:
-    new_prefix, new_version, matched = _handle_config(line, prefix, version)
-    if matched:
-        return new_prefix, new_version, []
+) -> bool:
+    if _handle_config(line, state):
+        return True
 
-    if _handle_scope(line, push_block, stack):
-        return prefix, version, []
+    if _handle_scope(line, push_block, state):
+        return True
 
-    verb_contracts = _handle_verb(
-        line, line_no, push_block, prefix, version, stack, ctx
-    )
-    return prefix, version, verb_contracts
+    return _handle_verb(line, line_no, push_block, state, ctx)
 
 
 class GrapeDialect:
@@ -142,56 +144,42 @@ class GrapeDialect:
         self,
         raw: str,
         line_no: int,
-        prefix: str,
-        version: str,
-        stack: list[str],
-        out: list[Contract],
+        state: _GrapeState,
         ctx: ScanContext,
-    ) -> tuple[str, str]:
+    ) -> None:
         if raw == "end" or raw.startswith("end "):
-            if stack:
-                stack.pop()
-            return prefix, version
+            if state.stack:
+                state.stack.pop()
+            return
 
         line, has_inline_end = _strip_inline_end(raw)
         if not line:
-            if has_inline_end and stack:
-                stack.pop()
-            return prefix, version
+            if has_inline_end and state.stack:
+                state.stack.pop()
+            return
 
         had_do = bool(_DO_BLOCK_RE.search(line))
         push_block = had_do and not has_inline_end
         pop_enclosing = has_inline_end and not had_do
 
-        prefix, version, contracts = _process_statement(
-            line, line_no, push_block, prefix, version, stack, ctx
-        )
-        if contracts is not None:
-            out.extend(contracts)
-        elif push_block:
-            stack.append("")
+        handled = _process_statement(line, line_no, push_block, state, ctx)
+        if not handled and push_block:
+            state.stack.append("")
 
-        if pop_enclosing and stack:
-            stack.pop()
-
-        return prefix, version
+        if pop_enclosing and state.stack:
+            state.stack.pop()
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         mask = ctx._mask()
         code = mask if mask is not None else ctx.content
         lines = code.splitlines()
 
-        prefix = ""
-        version = ""
-        stack: list[str] = []
-        out: list[Contract] = []
+        state = _GrapeState()
 
         for line_no, mask_line in enumerate(lines, 1):
             raw = mask_line.strip()
             if not raw or ctx.comment_only_line(line_no):
                 continue
-            prefix, version = self._step_line(
-                raw, line_no, prefix, version, stack, out, ctx
-            )
+            self._step_line(raw, line_no, state, ctx)
 
-        return out
+        return state.out
