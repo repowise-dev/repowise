@@ -221,3 +221,36 @@ def test_a_call_that_only_looks_recursive_draws_no_self_edge(
     tmp_path: Path, language: str, rel: str, text: str
 ) -> None:
     assert not any(caller == callee for caller, callee in _edges(tmp_path, language, rel, text))
+
+
+def test_a_method_shadows_a_same_named_top_level_function(tmp_path: Path) -> None:
+    text = (
+        "int walk(int n) { return n; }\n"
+        "class S {\npublic:\n  int walk(int n) { return n ? walk(n - 1) : 0; }\n};\n"
+    )
+    assert _edges(tmp_path, "cpp", "m.cpp", text) == {("m.cpp::S::walk", "m.cpp::S::walk")}
+
+
+def test_an_anonymous_class_member_refuses_a_call_its_parameters_cannot_take(
+    tmp_path: Path,
+) -> None:
+    # f(a) inside f(a, b) of an anonymous body is no self edge, and no other edge either.
+    text = "class A {\n  Object o = new Object() {\n    int f(int a, int b) { return f(a); }\n  };\n}\n"
+    assert _edges(tmp_path, "java", "A.java", text) == set()
+
+
+def test_an_anonymous_class_member_recursion_is_a_self_edge(tmp_path: Path) -> None:
+    text = "class A {\n  Object o = new Object() {\n    int f(int a) { return f(a - 1); }\n  };\n}\n"
+    member = "A.java::A::o::Object::f"
+    assert _edges(tmp_path, "java", "A.java", text) == {(member, member)}
+
+
+def test_a_caller_id_two_definitions_share_draws_no_self_edge(tmp_path: Path) -> None:
+    # Which of the two the call means is unproven, so the shared id is not recursion.
+    text = "def fact(n):\n    return fact(n - 1)\n\ndef fact(n):\n    return fact(n - 1)\n"
+    assert _edges(tmp_path, "python", "m.py", text) == set()
+
+
+def test_a_caller_id_one_definition_holds_draws_a_self_edge(tmp_path: Path) -> None:
+    text = "def fact(n):\n    return fact(n - 1)\n"
+    assert _edges(tmp_path, "python", "m.py", text) == {("m.py::fact", "m.py::fact")}
