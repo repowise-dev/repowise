@@ -88,7 +88,7 @@ class TestJavaRecords:
         result = parser.parse_file(_file(), src)
         accessors = {s.name: s for s in result.symbols if s.kind == "method"}
         assert accessors["a"].visibility == "public"
-        assert accessors["a"].signature == "public int a()"
+        assert accessors["a"].signature == "a() -> int"
         assert accessors["toString"].visibility == "public"
 
 
