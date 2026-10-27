@@ -420,6 +420,9 @@ class CallResolver(
         # applied alongside ``_decl_to_def`` in ``_redirect_to_definition``
         # (#2791).
         self._alias_to_target: dict[str, str] = {}
+        # Module-level aliases of a name the file imports (``s = attrs`` after
+        # ``from ._make import attrs``), linked once barrel origins are known.
+        self._imported_aliases: list[tuple[str, str, str]] = []
 
         # Import graph: {file_path: set of imported file paths}
         self._import_targets = import_targets
@@ -461,6 +464,7 @@ class CallResolver(
 
         self._build_indices(parsed_files)
         self._follow_barrel_exports()
+        self._link_imported_aliases()
         # Only a call to one of these has its named arguments typed.
         self._overloaded_names = frozenset(self._symbols_by_id[m].name for m in self._overload_rep)
 
@@ -568,6 +572,8 @@ class CallResolver(
             # No self-redirect: ``s = s`` names nothing beyond itself.
             if target_id is not None and target_id != alias_id:
                 self._alias_to_target[alias_id] = target_id
+            elif target_id is None and parent_name is None:
+                self._imported_aliases.append((path, alias_id, alias_of_name))
 
         self._file_symbols[path] = file_syms
         self._file_top_level[path] = top_level
@@ -1532,18 +1538,38 @@ class CallResolver(
         binding: NamedBinding | None,
     ) -> ResolvedCall | None:
         """2a: the specific imported name, binding-aware."""
-        if not (binding and binding.source_file):
-            return None
-        source_file = binding.source_file
-        # Follow barrel re-export one hop
-        barrel = self._barrel_origins.get(source_file, {})
-        lookup_name = binding.exported_name or call.target_name
-        if lookup_name in barrel:
-            source_file = barrel[lookup_name]
-        published = self._published(source_file, lookup_name)
+        published = self._imported_symbol(binding, call.target_name)
         if published is None:
             return None
         return ResolvedCall(caller_id, published, 0.90, call.line, "import_scoped")
+
+    def _imported_symbol(self, binding: NamedBinding | None, name: str) -> str | None:
+        """The repo symbol an imported *name* binds, one barrel hop followed."""
+        if not (binding and binding.source_file):
+            return None
+        source_file = binding.source_file
+        barrel = self._barrel_origins.get(source_file, {})
+        lookup_name = binding.exported_name or name
+        if lookup_name in barrel:
+            source_file = barrel[lookup_name]
+        return self._published(source_file, lookup_name)
+
+    def _link_imported_aliases(self) -> None:
+        """Redirect a module-level alias of an imported name onto its definition.
+
+        ``s = attributes = attrs`` after ``from ._make import attrs`` stands
+        for ``_make.attrs``; the same-file pass in ``_index_file`` finds no
+        ``attrs`` to link. An ``import x`` binding names a module, so it is
+        skipped. Ceiling: ``from pkg import sub`` binds a submodule like a name
+        and resolves as the import tier does; calling a module is never valid.
+        """
+        for path, alias_id, name in self._imported_aliases:
+            binding = self._import_bindings.get(path, {}).get(name)
+            if binding is None or binding.is_module_alias:
+                continue
+            target_id = self._imported_symbol(binding, name)
+            if target_id is not None and target_id != alias_id:
+                self._alias_to_target[alias_id] = target_id
 
     def _named_import_call(
         self,

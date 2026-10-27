@@ -2436,6 +2436,84 @@ class TestPythonNameAliasAssignment:
         assert len(attributes_symbols) == 2
         assert len({symbol.id for symbol in attributes_symbols}) == 2
 
+    def _imported_alias_repo(self, tmp_path: Path, alias_line: str) -> dict[str, ParsedFile]:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "pkg/_make.py": ("python", "def attrs():\n    pass\n"),
+                "pkg/__init__.py": (
+                    "python",
+                    f"from pkg._make import attrs\n\n{alias_line}\n",
+                ),
+                "app.py": (
+                    "python",
+                    "import pkg\nfrom pkg import s\n\n"
+                    "def via_module():\n    pkg.s()\n\n"
+                    "def via_name():\n    s()\n",
+                ),
+            },
+        )
+        _link_imports(
+            parsed,
+            {
+                "app.py": {"pkg": "pkg/__init__.py"},
+                "pkg/__init__.py": {"pkg._make": "pkg/_make.py"},
+            },
+        )
+        return parsed
+
+    def _app_edges(self, parsed: dict[str, ParsedFile], tmp_path: Path) -> set[tuple[str, str]]:
+        return {
+            (caller, callee)
+            for caller, callee, _, _ in _edges(parsed, tmp_path)
+            if caller.startswith("app.py")
+        }
+
+    def test_an_alias_of_an_imported_name_resolves_to_its_definition(
+        self, tmp_path: Path
+    ) -> None:
+        """``s = attributes = attrs`` re-exports an imported def under new names."""
+        parsed = self._imported_alias_repo(tmp_path, "s = attributes = attrs")
+        assert self._app_edges(parsed, tmp_path) == {
+            ("app.py::via_module", "pkg/_make.py::attrs"),
+            ("app.py::via_name", "pkg/_make.py::attrs"),
+        }
+
+    def test_an_alias_of_a_renamed_import_resolves_to_its_definition(
+        self, tmp_path: Path
+    ) -> None:
+        parsed = self._imported_alias_repo(
+            tmp_path, "from pkg._make import attrs as _attrs\ns = _attrs"
+        )
+        assert ("app.py::via_name", "pkg/_make.py::attrs") in self._app_edges(parsed, tmp_path)
+
+    def test_a_value_built_from_an_imported_name_is_not_an_alias(
+        self, tmp_path: Path
+    ) -> None:
+        parsed = self._imported_alias_repo(tmp_path, "s = attrs()")
+        assert self._app_edges(parsed, tmp_path) == {
+            ("app.py::via_module", "pkg/__init__.py::s"),
+            ("app.py::via_name", "pkg/__init__.py::s"),
+        }
+
+    def test_an_alias_of_an_imported_module_is_left_alone(self, tmp_path: Path) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "pkg/helpers.py": ("python", "def helpers():\n    pass\n"),
+                "pkg/__init__.py": ("python", "import pkg.helpers as helpers\n\ns = helpers\n"),
+                "app.py": ("python", "import pkg\n\ndef run():\n    pkg.s()\n"),
+            },
+        )
+        _link_imports(
+            parsed,
+            {
+                "app.py": {"pkg": "pkg/__init__.py"},
+                "pkg/__init__.py": {"pkg.helpers": "pkg/helpers.py"},
+            },
+        )
+        assert ("app.py::run", "pkg/helpers.py::helpers") not in self._app_edges(parsed, tmp_path)
+
 
 _JS_TS = [("javascript", "js"), ("typescript", "ts")]
 
