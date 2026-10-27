@@ -357,7 +357,13 @@ async def find_duplicate_decision(
     if not query:
         return None
     try:
-        results = await store.search(query, limit=SEARCH_FETCH)
+        # kind="document": this is decision text compared against other
+        # decision text (near-duplicate matching), not a natural-language
+        # question against stored documents. Stored decision vectors always
+        # embed at the document prefix (see upsert_decision_vectors); an
+        # asymmetric-prefix embedder that got the default "query" here would
+        # search with the wrong framing and silently miss real duplicates.
+        results = await store.search(query, limit=SEARCH_FETCH, kind="document")
     except Exception:
         return None
 
@@ -397,7 +403,8 @@ async def find_related_decisions(
     if not query:
         return []
     try:
-        results = await store.search(query, limit=SEARCH_FETCH)
+        # kind="document" — same reasoning as find_duplicate_decision above.
+        results = await store.search(query, limit=SEARCH_FETCH, kind="document")
     except Exception:
         return []
     return _related_from_results(results, lo=lo, hi=hi, exclude_ids=exclude_ids, limit=limit)
@@ -452,7 +459,10 @@ async def find_related_decisions_many(
     try:
         # Empty query texts still occupy their slot (keeps results aligned)
         # but must not reach the embedder — some providers reject "".
-        all_results = await store.search_many([q or " " for q in queries], limit=SEARCH_FETCH)
+        # kind="document" — same reasoning as find_duplicate_decision above.
+        all_results = await store.search_many(
+            [q or " " for q in queries], limit=SEARCH_FETCH, kind="document"
+        )
     except Exception:
         return [[] for _ in items]
     if len(all_results) != len(items):

@@ -145,17 +145,17 @@ async def test_settings_report_the_agent_grant_and_can_change_it(
     repo = await create_test_repo(client)
 
     before = (await client.get(f"/api/repos/{repo['id']}/decisions/settings")).json()
-    assert before["agent_acceptance"] is False
+    assert before["agent_acceptance"] is True
 
     after = await client.put(
         f"/api/repos/{repo['id']}/decisions/settings",
-        json={"agent_acceptance": True, "etag": before["etag"]},
+        json={"agent_acceptance": False, "etag": before["etag"]},
     )
     assert after.status_code == 200, after.text
-    assert after.json()["agent_acceptance"] is True
+    assert after.json()["agent_acceptance"] is False
 
     reread = (await client.get(f"/api/repos/{repo['id']}/decisions/settings")).json()
-    assert reread["agent_acceptance"] is True
+    assert reread["agent_acceptance"] is False
 
 
 @pytest.mark.asyncio
@@ -165,18 +165,18 @@ async def test_a_capture_preset_does_not_revoke_the_agent_grant(
     """A preset names source membership. Authority is not membership."""
     repo = await create_test_repo(client)
     first = (await client.get(f"/api/repos/{repo['id']}/decisions/settings")).json()
-    on = await client.put(
+    off = await client.put(
         f"/api/repos/{repo['id']}/decisions/settings",
-        json={"agent_acceptance": True, "etag": first["etag"]},
+        json={"agent_acceptance": False, "etag": first["etag"]},
     )
 
     after = await client.put(
         f"/api/repos/{repo['id']}/decisions/settings",
-        json={"preset": "balanced", "etag": on.json()["etag"]},
+        json={"preset": "balanced", "etag": off.json()["etag"]},
     )
 
     assert after.status_code == 200, after.text
-    assert after.json()["agent_acceptance"] is True
+    assert after.json()["agent_acceptance"] is False
 
 
 @pytest.mark.asyncio

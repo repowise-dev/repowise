@@ -51,10 +51,12 @@ from .graph import (
     persist_incremental_edges,
     persist_incremental_symbols,
     persist_symbol_analysis,
+    prune_absent_graph_rows,
     stamp_edges_parser_fingerprint,
 )
 from .health import (
     _analyzed_commit,
+    _analyzed_repo_path,
     refresh_governance_findings,
     save_full_health_report,
     snapshot_health_from_store,

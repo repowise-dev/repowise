@@ -35,6 +35,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from .plugins import note_registration
+
 if TYPE_CHECKING:
     from .tool_selection import AvailabilityFacts
 
@@ -176,6 +178,7 @@ class MCPToolRegistry:
                 )
             )
             fn.__dict__["__repowise_trust_kind__"] = trust_kind
+            note_registration("mcp-tool", fn.__name__)
             return fn
 
         # Bare-decorator form: @mcp_tool_registry.register

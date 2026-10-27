@@ -117,9 +117,9 @@ export function MapFieldList({
                 aria-current={selected ? "true" : undefined}
                 className={cn(
                   "flex w-full flex-col gap-0.5 px-1.5 py-2 text-left transition-colors",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]",
                   selected
-                    ? "bg-[var(--color-bg-selected)] shadow-[inset_2px_0_0_var(--color-accent-primary)]"
+                    ? "bg-[var(--color-bg-selected)] shadow-[inset_2px_0_0_var(--color-tab-active)]"
                     : "hover:bg-[var(--color-bg-elevated)]",
                 )}
               >

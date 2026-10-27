@@ -20,10 +20,12 @@ from repowise.core.analysis.health_gate import (
     as_json,
     assemble,
     evaluate,
+    gate_summary,
     github_annotations,
     render_gitlab,
     render_markdown,
     render_sarif,
+    reproduce_command,
 )
 
 
@@ -218,6 +220,46 @@ def test_github_annotates_errors_and_warnings_only():
     lines = github_annotations(mixed())
     assert [line.split(" ", 1)[0] for line in lines] == ["::error", "::warning"]
     assert lines[0].startswith("::error file=app.py,line=5,")
+
+
+def test_a_failing_annotation_carries_the_first_sentence_of_its_fix():
+    error, warning = github_annotations(mixed())
+    assert error.endswith(
+        "::tangle has cyclomatic complexity 26 (introduced, high). Reduce cyclomatic complexity."
+    )
+    assert "Reduce cyclomatic complexity" not in warning
+
+
+def test_a_failing_run_ends_in_one_reproduce_notice():
+    result = mixed()
+    command = reproduce_command("origin/main...HEAD", result, ("error",))
+    assert command == (
+        "repowise health check origin/main...HEAD --fail-on introduced --fail-at high "
+        "--diff-risk error"
+    )
+    lines = github_annotations(result, reproduce=command)
+    assert lines[-1] == f"::notice::Reproduce locally: pip install repowise, then {command}"
+    assert sum(line.startswith("::notice") for line in lines) == 1
+    assert "Reproduce locally" in gate_summary(result, reproduce=command).headline
+    text = render_markdown(result, label="x", scope="s", reproduce=command)
+    assert f"Reproduce locally: `pip install repowise`, then `{command}`" in text
+
+
+def test_a_passing_run_carries_no_hint_or_reproduce_line():
+    result = evaluate(delta(finding(change_kind="worsened")))
+    assert result.passed
+    command = reproduce_command("main...HEAD", result)
+    lines = github_annotations(result, reproduce=command)
+    assert [line.split(" ", 1)[0] for line in lines] == ["::warning"]
+    assert lines[0].endswith("(worsened, high)")
+    assert "Reproduce" not in render_markdown(result, label="x", scope="s", reproduce=command)
+    assert "Reproduce" not in gate_summary(result, reproduce=command).headline
+
+
+def test_a_diff_risk_error_keeps_its_own_message():
+    risk = GateFinding("diff-risk", "added-suppression", ERROR, "a.py", 1, "Adds a noqa.", "f")
+    (line,) = github_annotations(assemble([risk], fail_on="introduced"))
+    assert line.endswith("::Adds a noqa.")
 
 
 def test_sarif_levels_follow_the_gate_with_line_free_fingerprints():

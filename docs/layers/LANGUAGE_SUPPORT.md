@@ -79,8 +79,9 @@ repository graph cannot observe. The one COBOL claim is a paragraph that
 nothing names and nothing falls through into, at low confidence and never
 deletion-ready.
 The COBOL and Apex grammars download on first use; offline, set
-`REPOWISE_GRAMMAR_DIR` to a pre-staged grammar cache. `repowise doctor` reports
-whether it is cached.
+`REPOWISE_GRAMMAR_DIR` to a pre-staged grammar cache. `repowise grammars fetch
+<dir>` stages that cache on a machine with network access; copy `<dir>` to the
+offline machine. `repowise doctor` reports whether each grammar is cached.
 COBOL is read in fixed reference format, with `EXEC SQL/CICS/DLI` blocks and
 `COPY` statements masked before parsing; a copybook parses as a data or
 procedure fragment. `COPY` and `EXEC SQL INCLUDE` members resolve to the
@@ -203,7 +204,7 @@ reported as unreachable.
 | Ruby | Rails (routes to controller actions, Zeitwerk), RSpec mirror edges |
 | Java / Kotlin | Spring, Jakarta / JPA, Quarkus, Micronaut, Android manifest |
 | C# | ASP.NET (attribute and minimal API), EF Core, gRPC-dotnet, host-builder extensions, CommunityToolkit MVVM |
-| Go | net/http, gin, echo, chi, gRPC server registration |
+| Go | net/http, gin, echo, chi, fiber, gorilla/mux, gRPC server registration |
 | Rust | Axum, Actix |
 | JS / TS / Svelte | Next.js App Router, Hono / Fastify / Koa / Elysia, Remix / SvelteKit / Astro, tRPC, Express / NestJS, Angular |
 | C++ | GoogleTest, Catch2, Boost.Test, doctest, Google Benchmark, libFuzzer |
@@ -269,7 +270,8 @@ This table is why a language is Full and not Good.
 | Java | ✅ | ✅ | ✅ | no | no | ✅ | ✅ |
 | Go | ✅ | n/a | ✅ | no | no | ✅ | ✅ |
 | Rust, C++, C# | ✅ | ✅ | ✅ | no | no | ✅ | ✅ |
-| Scala, Ruby | ✅ | ✅ | ✅ | no | no | no | ✅ |
+| Scala | ✅ | ✅ | ✅ | no | no | ✅ | ✅ |
+| Ruby | ✅ | ✅ | ✅ | no | no | no | ✅ |
 | Kotlin | ✅ | ✅ | ✅ | no | no | no | ✅ |
 | Dart | ✅ | ✅ | ✅ | no | no | no | ✅ |
 | Object Pascal | ✅ | n/a | ✅ | n/a | n/a | no | ✅ |
@@ -318,7 +320,7 @@ The full list per language, with the mechanics behind each gap, is in
 |----------|------|
 | Vue, Svelte | Template binding forms (`v-for`, `{#each}`) |
 | Kotlin | Extract Method, which needs a grammar that labels control flow |
-| Scala, Ruby | Extract Method (dataflow dialect) |
+| Ruby | Extract Method (dataflow dialect) |
 | GDScript | Health markers (complexity, performance, dataflow) |
 | Object Pascal | A dedicated `uses` resolver |
 | COBOL | Dialect coverage, health markers beyond complexity |

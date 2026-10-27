@@ -268,10 +268,20 @@ def _actions(delta: ChangeHealthDelta, tests: CoveringTestEvidence) -> tuple[Rev
 
 
 def _net_health(delta: ChangeHealthDelta) -> str:
-    """The changed code's base-nloc average score on both sides, or ``""`` without one."""
+    """The changed code's base-nloc average score on both sides, or ``""`` without one.
+
+    The score reads code structure only. When code moved between files, the
+    source is scored on what stayed behind and the destination has no base side,
+    so a pure move would read as a gain or a loss; name the move instead.
+    """
     change = score_change(delta.files)
     if change is None:
         return ""
+    if delta.moved_total:
+        return (
+            " Code moved between files, so the changed code's health"
+            " (structure only) is not compared."
+        )
     base, head = round(change.base, 2), round(change.head, 2)
     if base == head:
         return f" Health of the changed code holds at {head:.2f}."

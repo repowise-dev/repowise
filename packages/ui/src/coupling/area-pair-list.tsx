@@ -53,7 +53,7 @@ const AreaPairRow = memo(function AreaPairRow({ pair, copy, onOpen, onPrompt }: 
       <button
         type="button"
         onClick={() => onOpen({ source: pair.source, target: pair.target })}
-        className="flex min-w-0 flex-1 flex-col gap-3 rounded-md px-1 py-1 text-left hover:bg-[var(--color-bg-elevated)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-accent-primary)] sm:flex-row sm:items-center"
+        className="flex min-w-0 flex-1 flex-col gap-3 rounded-md px-1 py-1 text-left hover:bg-[var(--color-bg-elevated)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-focus-ring)] sm:flex-row sm:items-center"
       >
         <span className="flex min-w-0 flex-1 flex-col gap-1">
           <span className="break-all font-mono text-[15px] text-[var(--color-text-primary)] group-hover/row:text-[var(--color-accent-primary)]">

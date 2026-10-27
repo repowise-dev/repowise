@@ -334,6 +334,7 @@ def test_system_graph_json_shape_is_locked():
         "structural",
         "contract_refs",
         "strategy",
+        "family",
     }
     assert set(data["diagnostics"]) == {
         "total_providers",
@@ -344,17 +345,53 @@ def test_system_graph_json_shape_is_locked():
         "unmatched_consumers",
         "unmatched_by_reason",
         "orphan_providers",
+        "in_service_consumers",
         "providers_by_layer",
         "consumers_by_layer",
         "http_consumers_unresolved",
         "http_consumer_coverage",
+        "http_consumers_linked",
+        "http_link_coverage",
         "symbol_identity",
         "schema_coverage",
         "openapi",
         "code_api",
         "unrecognised_call_files",
         "unrecognised_call_file_count",
+        "topic_names_unresolved",
+        "unrecognised_message_files",
+        "unrecognised_message_file_count",
     }
+
+
+def test_every_edge_kind_has_one_family():
+    from repowise.core.workspace.system_graph import (
+        EDGE_FAMILIES,
+        EDGE_KIND_FAMILY,
+        EDGE_KINDS,
+        edge_family,
+    )
+
+    assert set(EDGE_KIND_FAMILY) == set(EDGE_KINDS)
+    assert set(EDGE_KIND_FAMILY.values()) == set(EDGE_FAMILIES)
+    assert [edge_family(k) for k in ("http", "db", "package", "co_change")] == [
+        "runtime",
+        "data",
+        "build",
+        "history",
+    ]
+    # An unmapped kind is non-structural in the builder, so it is history here.
+    assert edge_family("carrier_pigeon") == "history"
+
+
+def test_edges_serialize_their_family():
+    contracts = [
+        _provider("api", "http::GET::/users", file="api/h.py"),
+        _consumer("web", "http::GET::/users", file="web/c.py"),
+    ]
+    links = [_link("http::GET::/users", "api", "api/h.py", "web", "web/c.py")]
+    graph = build_system_graph(contracts, links, CrossRepoOverlay(), {})
+    assert [e.to_dict()["family"] for e in graph.edges] == ["runtime"]
 
 
 def test_round_trip_serialization():

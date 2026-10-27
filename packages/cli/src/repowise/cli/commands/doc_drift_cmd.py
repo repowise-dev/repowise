@@ -53,8 +53,7 @@ def _repo_path(path: str | None, repo_alias: str | None, no_workspace: bool, fmt
     target = resolve_command_target(
         path=path, no_workspace_flag=no_workspace, repo_alias=repo_alias
     )
-    target.notice(ci_notices(fmt), command="doc-drift")
-    return target.single_repo_path().resolve()
+    return target.narrow(ci_notices(fmt), command="doc-drift").resolve()
 
 
 async def _read(root: Path, *, min_confidence: float | None, kinds: tuple[str, ...]) -> Any:

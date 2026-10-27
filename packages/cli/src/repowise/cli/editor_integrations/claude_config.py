@@ -175,8 +175,8 @@ def enable_tool_search_in_claude_code() -> Path | None:
 # paid before repowise reads the payload, so no gate inside the handler can
 # avoid it — the only lever is the matcher. Shell commands were also paying it
 # twice, here and again for the ``repowise-rewrite`` PreToolUse hook.
-# SessionStart already carries the freshness line, so what is given up is a
-# mid-session commit going unflagged until the next session.
+# SessionStart already carries the freshness line. A commit still reaches the
+# handler through :data:`_CAPTURE_MATCHER`'s entry, which gates in the shell.
 #
 # Claude Code only. ``_handle_bash_post`` stays in the augment dispatcher:
 # Codex has no Read/Grep/Glob tools and no SessionStart block, so the shell is
@@ -217,15 +217,27 @@ _FAILURE_MATCHER = "Read|Edit|Write|Grep|Glob|NotebookEdit"
 
 #: The shell tools, as their own PostToolUse entry rather than widened into
 #: :data:`_AUGMENT_MATCHER`. The capture prompt is the only thing that needs
-#: them, it is off by default, and the narrowing of the shared matcher is a
-#: measured decision this must not quietly reverse: 51% of hook invocations
-#: for 0.7% of emissions. A separate entry means the cost is paid only where
-#: the prompt is switched on, and removing it is removing one entry.
+#: them, and the narrowing of the shared matcher is a measured decision this
+#: must not quietly reverse: 51% of hook invocations for 0.7% of emissions.
+#: That cost was a Python start on every shell call; :data:`_CAPTURE_HOOK_COMMAND`
+#: gates in the shell instead, so a call that is not a commit costs only the
+#: shell the host already spawns for the hook.
 #:
 #: **Never add this to :data:`_LEGACY_AUGMENT_MATCHERS`.** That list is what
 #: the self-heal rewrites to the narrow matcher, and this entry exists
 #: precisely to survive it.
 _CAPTURE_MATCHER = "Bash|PowerShell"
+
+#: Starts ``repowise-augment`` only when the payload mentions ``git commit``,
+#: the one command the capture prompt answers. ``$(cat)`` rather than a
+#: builtin read: bash's ``read`` takes a pipe one byte at a time, and
+#: ``/dev/stdin`` does not resolve for a Windows pipe under Git Bash. The
+#: plugin's ``hooks.json`` ships this exact string.
+_CAPTURE_HOOK_COMMAND = (
+    'input=$(cat); case "$input" in *"git commit"*) '
+    "if command -v repowise-augment >/dev/null 2>&1; then "
+    'printf "%s" "$input" | repowise-augment; fi;; esac'
+)
 
 
 def _capture_entry() -> dict:
@@ -234,7 +246,7 @@ def _capture_entry() -> dict:
         "hooks": [
             {
                 "type": "command",
-                "command": _AUGMENT_HOOK_COMMAND,
+                "command": _CAPTURE_HOOK_COMMAND,
                 "timeout": 10,
                 "statusMessage": "Checking for a decision to record...",
             }
@@ -246,22 +258,62 @@ def _is_capture_entry(entry: object) -> bool:
     if not isinstance(entry, dict) or entry.get("matcher") != _CAPTURE_MATCHER:
         return False
     entry_hooks = _hooks_of(entry)
-    return bool(entry_hooks) and all(_is_repowise_hook(h) for h in entry_hooks)
+    # The coverage and health-gate entries share the shell matcher; they are
+    # repo-local today, but a sync here must never take one for this.
+    return bool(entry_hooks) and all(
+        _is_repowise_hook(h) and not _is_coverage_hook(h) and not _is_health_gate_hook(h)
+        for h in entry_hooks
+    )
+
+
+def _repowise_plugin_paths() -> list[Path]:
+    """Install paths of every enabled repowise Claude Code plugin."""
+    try:
+        settings_path = _claude_code_settings_path()
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        index_path = settings_path.parent / "plugins" / "installed_plugins.json"
+        installed = json.loads(index_path.read_text(encoding="utf-8")).get("plugins") or {}
+        enabled = settings.get("enabledPlugins") or {}
+        keys = [k for k, on in enabled.items() if on and str(k).startswith("repowise@")]
+        return [Path(i["installPath"]) for k in keys for i in installed.get(k) or []]
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return []
+
+
+def _plugin_ships_capture_hook() -> bool:
+    """Whether an enabled repowise plugin already carries the shell entry.
+
+    Claude Code runs a plugin's hook and the same hook in settings.json
+    separately, so installing ours beside the plugin's would start the shell
+    twice on every shell call. Unreadable plugin state reads as "no": being
+    wrong that way costs one extra shell start, never a missing prompt.
+    """
+    for path in _repowise_plugin_paths():
+        try:
+            hooks = json.loads((path / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+            entries = hooks["hooks"]["PostToolUse"]
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        if isinstance(entries, list) and any(_is_capture_entry(e) for e in entries):
+            return True
+    return False
 
 
 def set_claude_code_capture_hook(enabled: bool) -> Path | None:
-    """Add or remove the shell PostToolUse entry the capture prompt needs.
+    """Add, refresh or remove the shell PostToolUse entry the capture prompt needs.
 
     The switch owns its own prerequisite: `decisions.capture_prompt` is a
     per-repository policy, but the hook it fires from is a per-install
     matcher, so turning the policy on without this writes a flag nothing
-    reads. Returns the settings file when it changed, else ``None``.
+    reads. Where the repowise plugin already ships the entry, ours is left
+    out (and removed), so the hook runs once. Returns the settings file when
+    it changed, else ``None``.
 
-    The entry is per *install*, so one repository opting in widens the surface
-    for every repository on this machine. They pay a process start on shell
-    calls and nothing else — the handler returns before any work when their
-    own policy is off — and turning it off here narrows it back for all of
-    them, which is why the caller says so.
+    The entry is per *install* and ships on with the prompt: ``init``, the
+    self-heal and the plugin all put it in place. Every repository on this
+    machine pays a shell start on shell calls and nothing else, since the
+    entry starts Python only for a commit, so a repository that turns the
+    prompt off keeps the entry and stays silent.
     """
     settings_path = _claude_code_settings_path()
     if not settings_path.exists():
@@ -271,32 +323,45 @@ def set_claude_code_capture_hook(enabled: bool) -> Path | None:
     except Exception:
         return None
 
-    hooks = existing.setdefault("hooks", {}) if enabled else existing.get("hooks")
+    want = enabled and not _plugin_ships_capture_hook()
+    hooks = existing.setdefault("hooks", {}) if want else existing.get("hooks")
     if not isinstance(hooks, dict):
         return None
     entries = hooks.get("PostToolUse")
     if not isinstance(entries, list):
-        if not enabled:
+        if not want:
             return None
         entries = []
         hooks["PostToolUse"] = entries
 
-    present = any(_is_capture_entry(e) for e in entries)
-    if enabled == present:
+    if not _sync_capture_entry(entries, want):
         return None
-    if enabled:
-        entries.append(_capture_entry())
-    else:
-        entries[:] = [e for e in entries if not _is_capture_entry(e)]
-        if not entries:
-            hooks.pop("PostToolUse", None)
-        if not hooks:
-            existing.pop("hooks", None)
+    if not entries:
+        hooks.pop("PostToolUse", None)
+    if not hooks:
+        existing.pop("hooks", None)
     return settings_path if _write_settings(settings_path, existing) else None
 
 
+def _sync_capture_entry(entries: list, want: bool) -> bool:
+    """Leave exactly the current capture entry in *entries* when *want*, else none.
+
+    An entry from an older release starts Python on every shell call, so it is
+    replaced rather than kept. Returns whether *entries* changed.
+    """
+    ours = [e for e in entries if _is_capture_entry(e)]
+    if ours == ([_capture_entry()] if want else []):
+        return False
+    entries[:] = [e for e in entries if not _is_capture_entry(e)]
+    if want:
+        entries.append(_capture_entry())
+    return True
+
+
 def claude_code_capture_hook_installed() -> bool:
-    """Whether the shell PostToolUse entry is present."""
+    """Whether the shell PostToolUse entry is present, ours or the plugin's."""
+    if _plugin_ships_capture_hook():
+        return True
     settings_path = _claude_code_settings_path()
     if not settings_path.exists():
         return False
@@ -528,7 +593,8 @@ def install_claude_code_hooks() -> Path | None:
     """Register the augment hooks in ~/.claude/settings.json.
 
     PostToolUse enriches Grep/Glob results and emits
-    Read-intelligence notices; SessionStart injects the live index-freshness
+    Read-intelligence notices, and a shell entry asks for a decision after a
+    commit; SessionStart injects the live index-freshness
     context block; PostToolUseFailure carries the wrong-path rescue. Existing
     user hooks are preserved.
     """
@@ -577,6 +643,9 @@ def install_claude_code_hooks() -> Path | None:
         # AttributeError the OSError handler below would not catch.
         _backfill_event(hooks, "SessionStart", _session_start_entry)
         _backfill_event(hooks, "PostToolUseFailure", _failure_entry)
+        # The capture prompt ships on, so its shell entry is part of the
+        # install, unless the plugin already runs the same one.
+        _sync_capture_entry(post_hooks, not _plugin_ships_capture_hook())
 
         settings_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
         return settings_path
@@ -1158,6 +1227,10 @@ def migrate_claude_code_hooks() -> bool:
         if _backfill_event(hooks, "SessionStart", _session_start_entry):
             changed = True
         if _backfill_event(hooks, "PostToolUseFailure", _failure_entry):
+            changed = True
+        # The capture prompt ships on: add its shell entry, or refresh one an
+        # older release wrote, unless the plugin already runs it.
+        if _sync_capture_entry(post, not _plugin_ships_capture_hook()):
             changed = True
 
     if not changed:

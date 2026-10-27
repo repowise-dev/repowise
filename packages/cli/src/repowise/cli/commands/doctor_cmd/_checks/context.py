@@ -35,6 +35,10 @@ class CheckContext:
 
     repo_path: Path
     repowise_dir: Path
+    # ``doctor --quick``: skip starting the MCP server and reconciling the
+    # stores, the two checks that take seconds. The web Setup page runs this
+    # on every load and the full set in the background.
+    quick: bool = False
     db_ok: bool = False
     page_count: int = 0
     state: dict = field(default_factory=dict)

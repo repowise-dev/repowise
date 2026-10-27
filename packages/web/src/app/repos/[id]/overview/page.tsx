@@ -13,6 +13,8 @@ import { QuickActionsWrapper } from "@/components/dashboard/quick-actions-wrappe
 import { AskAnythingRow } from "@/components/overview/ask-anything-row";
 import { NextActionsPanel } from "@/components/overview/next-actions-panel";
 import { PublishOverviewSection } from "@/components/hosted/publish";
+import { WelcomeMoment } from "@/components/welcome/welcome-moment";
+import { welcomeFigures } from "@/lib/welcome-moment";
 import {
   OverviewBody,
   OverviewSection,
@@ -153,7 +155,19 @@ export default async function OverviewPage({ params }: Props) {
       routes={routes}
       LinkComponent={Link}
       slots={{
-        header,
+        header: (
+          <>
+            {header}
+            {/* A dialog: renders in a portal, so its slot here is only a mount point. */}
+            <WelcomeMoment
+              repoId={id}
+              repoName={repo.name}
+              fileCount={stats.file_count}
+              figures={welcomeFigures(summary)}
+              hotspotPath={summary.top_hotspots[0]?.file_path ?? null}
+            />
+          </>
+        ),
         ask: <AskAnythingRow repoId={id} suggestions={overviewAskSuggestions(summary, tOverview)} />,
         beforeExplore: <PublishOverviewSection repoId={id} />,
         // A server that predates actions returns 404; the page then keeps the

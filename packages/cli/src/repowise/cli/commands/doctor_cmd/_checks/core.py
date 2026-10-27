@@ -33,7 +33,13 @@ async def _page_count(session: object, repo_id: str) -> int:
 def _repowise_dir_check(repowise_dir: _DoctorPath) -> DoctorCheck:
     """Exists and writable, probed with a real file: os.access lies on Windows."""
     if not repowise_dir.exists():
-        return _check(".repowise/ directory", False, f"{repowise_dir} (run 'repowise init')")
+        return _check(
+            ".repowise/ directory",
+            False,
+            f"{repowise_dir} (run 'repowise init')",
+            check_id="repowise-dir",
+            fix="repowise init",
+        )
     probe = repowise_dir / ".doctor-write-probe"
     try:
         probe.write_text("", encoding="utf-8")
@@ -43,29 +49,39 @@ def _repowise_dir_check(repowise_dir: _DoctorPath) -> DoctorCheck:
             ".repowise/ directory",
             False,
             f"{repowise_dir} is not writable ({exc.strerror or exc}); fix its permissions",
+            check_id="repowise-dir",
         )
-    return _check(".repowise/ directory", True, str(repowise_dir))
+    return _check(".repowise/ directory", True, str(repowise_dir), check_id="repowise-dir")
 
 
 def _autosync_hook_check(repo_path: _DoctorPath) -> DoctorCheck:
     """Report the post-commit hook through hooks.status, which asks git for the
-    real hooks directory, so worktrees and core.hooksPath read correctly."""
+    real hooks directory, so worktrees and core.hooksPath read correctly.
+
+    Never a fail: init installs it by default and ``--no-hook`` opts out, so
+    a missing hook is a warn naming the command that turns auto-sync on."""
+    name, check_id = "Post-commit hook", "post-commit-hook"
     try:
         from repowise.cli.hooks import status as _hook_status
 
         state = _hook_status(repo_path)
     except Exception as exc:
-        return _check("Post-commit hook", True, f"could not read hook state ({exc})")
+        detail = f"could not read hook state ({exc})"
+        return _check(name, True, detail, check_id=check_id, warn=True)
     if state.startswith("installed"):
-        return _check("Post-commit hook", True, state)
+        return _check(name, True, state, check_id=check_id)
     if state == "not installed":
         return _check(
-            "Post-commit hook",
+            name,
             True,
             "not installed; the index updates only when you run 'repowise update' "
             "('repowise hook install' turns auto-sync on)",
+            check_id=check_id,
+            warn=True,
+            fix="repowise hook install",
         )
-    return _check("Post-commit hook", True, state)
+    # "not a git repository" is already the git row's fail; "unreadable" is not.
+    return _check(name, True, state, check_id=check_id, warn=state == "unreadable")
 
 
 def _attribution_notes_check(repo_path: _DoctorPath) -> DoctorCheck | None:
@@ -75,7 +91,7 @@ def _attribution_notes_check(repo_path: _DoctorPath) -> DoctorCheck | None:
     refspec and an explicit push, and survive a rebase only via
     ``notes.rewriteRef``; without them coverage is silently low elsewhere.
     """
-    name = "Attribution notes"
+    name, check_id = "Attribution notes", "attribution-notes"
     try:
         from repowise.core.attribution import load_attribution_settings
 
@@ -85,22 +101,28 @@ def _attribution_notes_check(repo_path: _DoctorPath) -> DoctorCheck | None:
 
         status = refspec_status(_DoctorPath(repo_path))
     except OSError as exc:
-        return _check(name, True, f"could not read git config ({exc})")
+        detail = f"could not read git config ({exc})"
+        return _check(name, True, detail, check_id=check_id, warn=True)
     if not status["remote"]:
-        return _check(name, True, "no origin remote, so notes stay on this machine")
+        return _check(
+            name, True, "no origin remote, so notes stay on this machine", check_id=check_id
+        )
     push = (
         "push refspec set"
         if status["push"]
         else f"share them with 'git push origin {NOTES_REF}'"
     )
-    problems = []
+    commands = []
     if not status["fetch"]:
-        problems.append(f"run 'git config --add remote.origin.fetch \"{FETCH_REFSPEC}\"'")
+        commands.append(f'git config --add remote.origin.fetch "{FETCH_REFSPEC}"')
     if not status["rewrite_ref"]:
-        problems.append(f"run 'git config --add notes.rewriteRef {NOTES_REF}'")
-    if problems:
-        return _check(name, False, "; ".join([*problems, push]))
-    return _check(name, True, f"fetch refspec and notes.rewriteRef set; {push}")
+        commands.append(f"git config --add notes.rewriteRef {NOTES_REF}")
+    if commands:
+        problems = [f"run '{c}'" for c in commands]
+        # One command is the fix; two are listed in the detail instead.
+        fix = commands[0] if len(commands) == 1 else None
+        return _check(name, False, "; ".join([*problems, push]), check_id=check_id, fix=fix)
+    return _check(name, True, f"fetch refspec and notes.rewriteRef set; {push}", check_id=check_id)
 
 
 def _events_config_check(repo_path: _DoctorPath) -> DoctorCheck | None:
@@ -110,10 +132,14 @@ def _events_config_check(repo_path: _DoctorPath) -> DoctorCheck | None:
 
         errors = load_event_settings(repo_path).errors
     except Exception as exc:
-        return _check("Events config", True, f"could not read it ({exc})")
+        return _check(
+            "Events config", True, f"could not read it ({exc})", check_id="events-config", warn=True
+        )
     if not errors:
         return None
-    return _check("Events config", False, "; ".join(errors) + " (defaults used)")
+    return _check(
+        "Events config", False, "; ".join(errors) + " (defaults used)", check_id="events-config"
+    )
 
 
 def _env_repo_covers(repo_path: _DoctorPath) -> bool:
@@ -148,9 +174,9 @@ def _git_check(repo_path: _DoctorPath) -> DoctorCheck:
         except (InvalidGitRepositoryError, NoSuchPathError):
             if not _env_repo_covers(repo_path):
                 raise
-        return _check("Git repository", True, str(repo_path))
+        return _check("Git repository", True, str(repo_path), check_id="git-repository")
     except Exception:
-        return _check("Git repository", False, "Not a git repo")
+        return _check("Git repository", False, "Not a git repo", check_id="git-repository")
 
 
 def _hook_rows(repo_path: _DoctorPath) -> list[DoctorCheck]:
@@ -180,13 +206,15 @@ def _database_rows(ctx: CheckContext) -> list[DoctorCheck]:
     """Sets ``ctx.db_ok`` and ``ctx.page_count`` for the later groups."""
     probed = (ctx.repowise_dir / "wiki.db").exists() or db_configured()
     if not probed:
-        return [_check("Database", False, "wiki.db not found")]
+        return [
+            _check("Database", False, "wiki.db not found", check_id="database", fix="repowise init")
+        ]
     try:
         ctx.page_count = run_async(_count_pages(ctx.repo_path))
         ctx.db_ok = True
     except Exception as e:
-        return [_check("Database", False, str(e))]
-    return [_check("Database", True, f"{ctx.page_count} pages")]
+        return [_check("Database", False, str(e), check_id="database")]
+    return [_check("Database", True, f"{ctx.page_count} pages", check_id="database")]
 
 
 def _state_row(ctx: CheckContext) -> DoctorCheck:
@@ -198,6 +226,7 @@ def _state_row(ctx: CheckContext) -> DoctorCheck:
         f"last_sync: {(ctx.state.get('last_sync_commit') or '—')[:8]}"
         if ctx.state_ok
         else "Not found or empty",
+        check_id="state-json",
     )
 
 
@@ -205,21 +234,29 @@ def _store_format_row(repo_path: _DoctorPath) -> DoctorCheck:
     """Does this store predate a capability the current build offers?
 
     A REINDEX_RECOMMENDED migration never auto-runs, so doctor is where an
-    un-upgraded store learns a re-index is available. Reported OK, not FAIL:
+    un-upgraded store learns a re-index is available. Reported WARN, not FAIL:
     the store works degraded, it is not broken, and failing every pre-upgrade
     store's doctor run would cry wolf. The row carries the exact command so it
     is actionable even after the once-per-store update nag was suppressed.
     """
+    name, check_id = "Store format", "store-format"
     try:
         from repowise.cli.upgrade import assess_store
 
         verdict = assess_store(repo_path)
         if verdict.reindex_recommended and verdict.reindex_command:
             notice = verdict.user_notice or "A re-index adds new capabilities."
-            return _check("Store format", True, f"{notice} Run: {verdict.reindex_command}")
-        return _check("Store format", True, "Current")
+            return _check(
+                name,
+                True,
+                f"{notice} Run: {verdict.reindex_command}",
+                check_id=check_id,
+                warn=True,
+                fix=verdict.reindex_command,
+            )
+        return _check(name, True, "Current", check_id=check_id)
     except Exception as e:
-        return _check("Store format", True, f"Could not check: {e}")
+        return _check(name, True, f"Could not check: {e}", check_id=check_id, warn=True)
 
 
 def _runtime_grammar_rows(repo_path: _DoctorPath) -> list[DoctorCheck]:
@@ -257,21 +294,25 @@ def _runtime_grammar_rows(repo_path: _DoctorPath) -> list[DoctorCheck]:
     for tag, count in sorted(counts.items()):
         spec = REGISTRY.get(tag)
         name = f"{spec.display_name if spec else tag} grammar"
+        check_id = f"grammar-{tag.lower().replace('_', '-')}"
         try:
             cached, cache_dir = runtime_grammar_cache(tag)
         except Exception as exc:
-            rows.append(_check(name, False, f"could not read the grammar cache ({exc})"))
+            rows.append(
+                _check(name, False, f"could not read the grammar cache ({exc})", check_id=check_id)
+            )
             continue
         if cached:
-            rows.append(_check(name, True, f"cached in {cache_dir}"))
+            rows.append(_check(name, True, f"cached in {cache_dir}", check_id=check_id))
         else:
             rows.append(
                 _check(
                     name,
                     False,
                     f"not downloaded; {count:,} files would index without symbols. "
-                    "Re-run 'repowise init' with network access, or set "
-                    "REPOWISE_GRAMMAR_DIR to a pre-staged grammar cache first",
+                    "Re-run 'repowise init' with network access, or stage a cache with "
+                    "'repowise grammars fetch <dir>' and set REPOWISE_GRAMMAR_DIR to it",
+                    check_id=check_id,
                 )
             )
     return rows

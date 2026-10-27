@@ -224,6 +224,7 @@ class FileEvaluator:
     active_contributors: int | None = None
     file_scc_index: dict[str, tuple[str, ...]] | None = None
     methods_by_file: dict[str, tuple[str, ...]] | None = None
+    split_partial_types: dict[str, frozenset[str]] | None = None
     dataflow_cache: FileDataflowCache | None = None
     function_tests: FunctionTests | None = None
     #: Test files by file name (``coverage_actions.paired_test_index``).
@@ -281,6 +282,7 @@ class FileEvaluator:
             or pf.file_info.is_test
             or fcx.has_inline_tests,
             is_test=bool(pf.file_info.is_test),
+            code_origin=self._code_origin(pf),
             # Separate from has_test_file (import or name pairing) so each signal stays visible.
             reached_by_tests=file_path in analyzer.test_index.reached_files(),
             module=_module_for(file_path, self.package_roots),
@@ -303,6 +305,7 @@ class FileEvaluator:
             duplication_pct=dup_pct,
             clone_sources=clone_sources,
             graph_view=self.graph_view,
+            split_partial_types=(self.split_partial_types or {}).get(file_path, frozenset()),
             blame_index=blame_idx_obj if isinstance(blame_idx_obj, BlameIndex) else None,
             repo_function_mod_p80=self.function_mod_p80,
             repo_active_contributors_90d=self.active_contributors,
@@ -405,8 +408,12 @@ class FileEvaluator:
             duplication_pct=ctx.duplication_pct,
             **file_score_fields(analysed, scores, findings),
             is_test=bool(pf.file_info.is_test),
-            code_origin=self.analyzer._origins.get(ctx.file_path) or self.analyzer._origin(pf),
+            code_origin=ctx.code_origin,
         )
+
+    def _code_origin(self, pf: Any) -> str:
+        """The origin the walk recorded, else one read from the path alone."""
+        return self.analyzer._origins.get(pf.file_info.path) or self.analyzer._origin(pf)
 
     def _suggestions(
         self,

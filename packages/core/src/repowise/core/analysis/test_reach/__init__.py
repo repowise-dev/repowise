@@ -152,10 +152,10 @@ checkout) or over the stored graph (:mod:`.db`). :func:`reach_states` is the
 typed answer, the one that may say "no test reaches this".
 """
 
-
 from ..test_selection import is_runnable_test
 from .db import (
     always_run_test_files,
+    any_reached,
     any_tests_reaching,
     cached_files_reached_by_tests,
     cached_hub_files,
@@ -220,6 +220,7 @@ __all__ = [
     "ReachedVia",
     "WalkMaps",
     "always_run_test_files",
+    "any_reached",
     "any_tests_reaching",
     "build_walk_maps",
     "cached_files_reached_by_tests",

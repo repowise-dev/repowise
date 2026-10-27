@@ -18,6 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from repowise.core.agents.identity import CLAUDE_CODE, CODEX, OPENCODE, identity_for_provider
+from repowise.core.platform.telemetry import network_disabled
 from repowise.core.providers.llm.specs import PROVIDER_SPECS
 
 #: Agent-CLI providers, in picker order.
@@ -145,6 +146,10 @@ def agent_cli_auth(name: str) -> CliAuth | None:
     probe = _AUTH_PROBES.get(agent.slug)
     if probe is None:
         return None
+    if network_disabled():
+        # The probe runs a third-party CLI that may phone home. Installed stays
+        # pickable by hand, but is never recommended on an unchecked sign-in.
+        return CliAuth("sign-in not checked while network checks are off", offer=False)
     args, parse = probe
     try:
         # DEVNULL: an inherited Windows console stdin can block until the timeout.

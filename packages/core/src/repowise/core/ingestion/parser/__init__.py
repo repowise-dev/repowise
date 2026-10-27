@@ -219,7 +219,7 @@ class ASTParser:
         matches = _run_query(query, root) if query is not None else []
 
         symbols = _finalize_symbols(
-            _extract_symbols(matches, config, file_info, src), root, src, file_info
+            _extract_symbols(matches, config, file_info, src, original_source), root, src, file_info
         )
         _restore_kotlin_annotations(symbols, recovered_annotations)
         imports = _extract_imports(matches, config, file_info, src)
@@ -294,6 +294,7 @@ def _parse_without_grammar(
         docstring=None,
         parse_errors=[],
         content_hash=content_hash,
+        grammar_missing=config is not None and language is None,
     )
 
 

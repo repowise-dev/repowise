@@ -27,8 +27,30 @@ ENV = "env"
 
 
 @dataclass(frozen=True)
+class Route:
+    """A gateway's path rule: a request under ``prefix`` is forwarded with that prefix
+    replaced by ``upstream`` (``""`` strips it, ``prefix`` keeps it).
+
+    Both are lowercase literal paths without a trailing slash. ``upstream`` is
+    None when the route's forwarded path cannot be read (a filter or predicate
+    the source does not model): no call is rewritten through it, and it still
+    keeps a shorter prefix from claiming the paths under it. ``gateway`` names
+    the gateway service when the file configures an app that lives elsewhere (a
+    config server's ``gateway.yml``), as candidate names tried in order through
+    the host map and the repo aliases; empty means the repo holding the file.
+    """
+
+    prefix: str
+    upstream: str | None = ""
+    gateway: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class Claim:
     """One file's statement that *name* is served by some repo.
+
+    A claim with a ``base_path`` says instead that the module at ``at`` (or,
+    without ``at``, the service *name*) serves every route under that path.
 
     Where it points, tried in order: ``at`` (the directory the service is
     built from; the repo holding it serves *name*), ``aliases`` (repo aliases
@@ -37,14 +59,21 @@ class Claim:
     resolved through the finished host map), and ``own_repo`` (the repo holding
     the file, kept only when it is the only name the source places in that
     repo this way, so a deploy repo listing every service claims none).
+
+    A claim with a ``route`` says instead that a gateway forwards that path
+    prefix to *name*; *name* resolves like a ``ref``, through the finished host
+    map and then the repo aliases, or with ``kind`` :data:`ENV` through the
+    finished env keys (an nginx template's ``${CATALOGUE_HOST}``).
     """
 
     name: str
     kind: str = HOST
+    base_path: str | None = None
     at: Path | None = None
     aliases: tuple[str, ...] = ()
     ref: str | None = None
     own_repo: bool = False
+    route: Route | None = None
 
 
 @dataclass(frozen=True)
@@ -62,8 +91,8 @@ class ServiceNameSource:
     ``filenames`` are case-insensitive globs on the file's own name; ``under``,
     when set, requires an ancestor directory (inside the repo) with one of
     those names; ``marker`` must occur in the text before ``read`` parses it.
-    A gateway source would add a path rewrite to its claims for the matcher to
-    apply; nothing here assumes a claim is a plain host.
+    A gateway source states :class:`Route` claims, which the matcher applies as
+    path rewrites.
     """
 
     name: str
@@ -105,6 +134,73 @@ _ADDRESS_KEY_RE = re.compile(
 )
 
 
+_PATTERN_SEGMENT_RE = re.compile(r"[*{}?<>()\[\]$^]")
+_WHOLE_SEGMENT_RE = re.compile(r"^(?:\*{1,2}|\{[^{}]*\})$")
+
+#: :func:`literal_prefix` kinds: a whole wildcard or variable segment follows the
+#: prefix (a prefix route), the pattern is all literal, or a segment mixes text
+#: and a wildcard (``orders*``, ``v{n}``), so only the part before it is known.
+PREFIX = "prefix"
+EXACT = "exact"
+PARTIAL = "partial"
+
+
+def literal_prefix(pattern: str) -> tuple[str, str]:
+    """The literal leading path of a route pattern, and what follows it.
+
+    ``/api/vet/**`` is ``("/api/vet", PREFIX)``, ``/orders/{id}`` is
+    ``("/orders", PREFIX)``, ``/health`` is ``("/health", EXACT)`` and
+    ``/api/orders*`` is ``("/api", PARTIAL)``. Lowercase, no trailing slash;
+    ``""`` when the pattern starts with a wildcard.
+    """
+    literal: list[str] = []
+    for seg in (s for s in pattern.strip().split("/") if s):
+        if _PATTERN_SEGMENT_RE.search(seg):
+            kind = PREFIX if _WHOLE_SEGMENT_RE.match(seg) else PARTIAL
+            return ("/" + "/".join(literal) if literal else ""), kind
+        literal.append(seg.lower())
+    return ("/" + "/".join(literal) if literal else ""), EXACT
+
+
+def _variable(seg: str) -> str:
+    """A whole-segment variable by name: ``{**rest}``, ``{*rest}`` and ``{rest:int}`` are ``{rest}``."""
+    return "{" + seg[1:-1].lstrip("*").split(":")[0].split("=")[0].rstrip("?").lower() + "}"
+
+
+def template_upstream(pattern: str, forwarded: str) -> str | None:
+    """What a gateway forwarding path template *pattern* as *forwarded* puts in place of
+    *pattern*'s literal prefix, or None when that is not a prefix rewrite.
+
+    ``/api/c/{everything}`` forwarded as ``/{everything}`` is ``""`` (stripped);
+    ``/posts/{id}`` as ``/api/posts/{id}`` is ``/api/posts``. Both must end in the
+    same whole-segment variables, in order. A literal after a variable
+    (``/api/{version}/c/{all}``), a segment mixing text and a variable, or a fully
+    literal pattern (it serves one path, not a prefix) is None.
+    """
+    heads: list[str] = []
+    tails: list[list[str]] = []
+    for template in (pattern, forwarded):
+        head, kind = literal_prefix(template)
+        tail = [s for s in template.strip().split("/") if s][head.count("/") :]
+        if kind != PREFIX or not all(_WHOLE_SEGMENT_RE.match(s) for s in tail):
+            return None
+        heads.append(head)
+        tails.append([_variable(s) for s in tail])
+    return heads[1] if tails[0] == tails[1] else None
+
+
+_DEFAULT_RE = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:?-([^${}]*)\}")
+
+
+def with_defaults(value: str) -> str:
+    """*value* with each ``${VAR-default}`` / ``${VAR:-default}`` read as its default.
+
+    The value compose (and a shell) uses when nothing sets the variable. Any other
+    placeholder stays, so :func:`host_of` still refuses it.
+    """
+    return _DEFAULT_RE.sub(r"\1", value) if "${" in value else value
+
+
 def host_of(key: str, value: str) -> str | None:
     """The host config entry *key* = *value* names, or None when it is not an address.
 
@@ -120,4 +216,19 @@ def host_of(key: str, value: str) -> str | None:
     return m.group(1).lower() if m else None
 
 
-__all__ = ["ENV", "HOST", "Claim", "ServiceNameSource", "SourceFile", "host_of", "join_config_path"]
+__all__ = [
+    "ENV",
+    "EXACT",
+    "HOST",
+    "PARTIAL",
+    "PREFIX",
+    "Claim",
+    "Route",
+    "ServiceNameSource",
+    "SourceFile",
+    "host_of",
+    "join_config_path",
+    "literal_prefix",
+    "template_upstream",
+    "with_defaults",
+]

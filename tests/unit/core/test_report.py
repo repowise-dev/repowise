@@ -289,6 +289,29 @@ async def test_contracts_unavailable_outside_a_workspace_then_measured(ctx, monk
     items = await _section("contracts", ctx)
     assert items["contracts:api"]["data"]["provided"] == {"http::GET::/x": 2}
     assert items["contracts"]["data"]["provided"] == 1
+    assert "outside" not in items["contracts"]["reason"]
+
+
+async def test_contracts_count_providers_outside_every_component(ctx, monkeypatch):
+    from repowise.core.events import snapshot
+
+    store = {
+        "api/a.py": {"http::GET::/x": 2},
+        "web/W.java": {"http::GET::/x": 0},
+        "main.py": {"http::GET::/health": 0, "http::GET::/x": 0},
+    }
+    monkeypatch.setattr(snapshot, "provided_contracts", lambda *_a: store)
+    items = await _section("contracts", ctx)
+    assert items["contracts:(no component)"]["data"]["provided"] == {
+        "http::GET::/health": 0,
+        "http::GET::/x": 0,
+    }
+    head = items["contracts"]
+    # Distinct ids, as the store holds them: /x in three places is one contract.
+    assert head["data"]["provided"] == 2
+    assert head["reason"] == (
+        "2 provided contract(s) detected across 2 component(s), 2 outside every component"
+    )
 
 
 async def test_decisions_per_component_with_stale(ctx, monkeypatch):

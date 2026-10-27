@@ -11,9 +11,11 @@ from __future__ import annotations
 
 from collections.abc import Collection, Generator, Mapping
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 from typing import Any, Literal, NamedTuple, TypeVar
 
 from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES, FILE_DEPENDENCY_EDGE_TYPES
+from repowise.core.test_paths import is_test_related_path
 
 from .hubs import call_hub_files
 from .model import UNRELIABLE_CALL_ORIGINS
@@ -82,6 +84,36 @@ class ImportGraph:
             best.update(dict.fromkeys(fresh, depth))
             frontier = fresh
         return best
+
+    def with_package_inits(self) -> ImportGraph:
+        """This graph plus the edge every Python import adds: a module depends on each
+        production ``__init__.py`` above it.
+
+        Importing ``pkg.a.b`` runs ``pkg/__init__.py`` and ``pkg/a/__init__.py``
+        first, so whatever those import reaches every test importing anything
+        under ``pkg``. No import statement records that, so the graph holds no
+        such edge. Every ancestor counts, whether or not the directories between
+        are regular packages (a namespace subpackage still runs the regular
+        package above it): over-selection, never a missed test. A test
+        package's ``__init__.py`` is left out; selection already stands it for
+        every test under its directory.
+        """
+        files = set(self.importers) | {s for srcs in self.importers.values() for s in srcs}
+        inits = {
+            f for f in files
+            if PurePosixPath(f).name == "__init__.py" and not is_test_related_path(f)
+        }  # fmt: skip
+        if not inits:
+            return self
+        out = {t: list(s) for t, s in self.importers.items()}
+        for f in files:
+            if not f.endswith(".py"):
+                continue
+            for parent in PurePosixPath(f).parents:
+                init = (parent / "__init__.py").as_posix()
+                if init in inits and init != f:
+                    out.setdefault(init, []).append(f)
+        return ImportGraph({t: tuple(sorted(set(s))) for t, s in out.items()})
 
 
 @dataclass(frozen=True)

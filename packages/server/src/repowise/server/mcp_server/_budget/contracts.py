@@ -460,6 +460,7 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "violation_count",
             "cycle_count",
             "total_cycles",
+            "total_capped",
             "cycles_determined",
             "error",
         ),

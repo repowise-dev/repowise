@@ -150,6 +150,28 @@ async def test_seed_linked_decision_injected(tmp_path, monkeypatch):
     assert "Batch the embed calls" not in block
 
 
+async def test_dot_directory_seed_preserves_leading_dot_and_strips_dot_slash(
+    tmp_path, monkeypatch
+):
+    ci_decision = {
+        "id": "d-ci",
+        "title": "Pin CI actions by SHA",
+        "decision": "Every GitHub Actions workflow pins actions by full commit SHA",
+        "links": [(".github/workflows/ci.yml", "file")],
+    }
+    await _build_wiki_db(tmp_path, [ci_decision, _AUTH_DECISION])
+
+    _quiet_git(monkeypatch, dirty=[".github/workflows/ci.yml"])
+    block = decision_inject._session_decision_block(tmp_path, "sess-dot")
+    assert block is not None
+    assert "Pin CI actions by SHA" in block
+
+    _quiet_git(monkeypatch, dirty=["./src/core/auth.py"])
+    block_rel = decision_inject._session_decision_block(tmp_path, "sess-rel")
+    assert block_rel is not None
+    assert "Use JWT auth" in block_rel
+
+
 async def test_silence_when_nothing_relevant(tmp_path, monkeypatch):
     await _build_wiki_db(tmp_path, [_UNRELATED_DECISION])
     _quiet_git(monkeypatch, dirty=["src/core/auth.py"])
@@ -456,7 +478,7 @@ async def test_edit_notice_fires_once_per_decision(tmp_path):
     assert "governed by a standing decision" in notice
     assert "Use JWT auth" in notice
     assert "because session cookies broke the mobile clients" in notice
-    assert "confirmed across 2 sessions" in notice
+    assert "seen in 2 sessions" in notice
 
     # Same decision again this session: silence.
     assert decision_inject._edit_decision_notice(tmp_path, "src/core/auth.py", "s1", state) is None
@@ -1068,7 +1090,7 @@ async def test_the_candidate_lane_prefers_the_better_measured_tier(tmp_path, mon
     _quiet_git(monkeypatch, dirty=["src/core/auth.py"])
     block = decision_inject._session_decision_block(tmp_path, "sess-1")
     assert block is not None
-    lines = [ln for ln in block.splitlines() if "candidate" in ln.lower()]
+    lines = [ln for ln in block.splitlines() if "tier candidate" in ln]
     assert lines and "Better tier candidate" in lines[0]
 
 

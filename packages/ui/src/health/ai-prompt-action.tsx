@@ -18,7 +18,7 @@ const AiPromptModal = lazy(() =>
 );
 
 /** The label every actionable row's primary button carries. */
-export const AGENT_PROMPT_LABEL = "Copy prompt for your agent";
+export const AGENT_PROMPT_LABEL = "Copy prompt";
 
 /** The same verb for a group: "Copy prompt for these 4", or "this one" for one. */
 export function bulkAgentPromptLabel(count: number): string {

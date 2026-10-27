@@ -23,6 +23,7 @@ Two jobs that make ingested coverage *actually line up* with the repo:
 
 from __future__ import annotations
 
+import json
 import time
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
@@ -36,6 +37,7 @@ import pathspec
 
 from repowise.core.fs_walk import PRUNED_DIRS, WalkSnapshot, iter_glob
 
+from .alignment import Alignment, drop_misaligned
 from .contexts import COVERAGE_DATA_FILE_NOTE, is_coverage_data_file, read_report_text
 from .detector import parse as parse_coverage
 from .model import (
@@ -477,6 +479,14 @@ class ResolvedCoverage:
     withheld: bool = False
     # With ``mapping_partial``, the :func:`suggest_prefixes` answer (``None``: abstained).
     suggested_prefixes: tuple[str, str] | None = None
+    # When the reports actually read were written, as the oldest of their mtimes.
+    # A report found on disk is a measurement from the last time the suite ran,
+    # which can be long before the commit now at HEAD; the writers stamp the
+    # ingest against this rather than live HEAD so drift reads forward from the
+    # right commit (#3901). ``None`` when nothing was read from disk.
+    measured_at: datetime | None = None
+    # Files dropped because the report's lines no longer match the source, and why.
+    alignment: Alignment = field(default_factory=Alignment)
 
     @property
     def matched(self) -> int:
@@ -497,6 +507,7 @@ class ResolvedCoverage:
             unmatched_sample=tuple((self.unmatched + self.ambiguous)[:UNMATCHED_SAMPLE_CAP]),
             mapping_partial=self.mapping_partial,
             scope=self.scope,
+            measured_at=self.measured_at,
         )
 
     @property
@@ -529,6 +540,11 @@ class CoverageProvenance:
     mapping_partial: bool = False
     # ``None`` when the writer did not resolve the reports itself.
     scope: CoverageScope | None = None
+    # When the reports were written (the oldest of their mtimes), so the writer
+    # can stamp the ingest at the commit the measurement describes instead of
+    # the one that happens to be HEAD now (#3901). Transient: the stored columns
+    # keep their shapes, and ``ingested_at`` stays the ingest time.
+    measured_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -749,12 +765,22 @@ def _apex_names(norm_path: str) -> tuple[str, ...]:
     return tuple(name + ext for ext in _APEX_EXTS)
 
 
+def _match_apex_package(hits: Sequence[str], package_dirs: Sequence[str]) -> tuple[str | None, bool]:
+    """Select a unique Apex hit from the first package directory with matches."""
+    for package_dir in package_dirs:
+        in_package = [key for key in hits if key.startswith(package_dir.rstrip("/") + "/")]
+        if in_package:
+            return (in_package[0], False) if len(in_package) == 1 else (None, True)
+    return (hits[0], False) if len(hits) == 1 else (None, bool(hits))
+
+
 def _match_key(
     norm_path: str,
     repo_keys: set[str],
     suffix_index: dict[str, list[str]],
     *,
     prefer_dir: str | None = None,
+    apex_package_dirs: Sequence[str] = (),
 ) -> tuple[str | None, bool]:
     """Resolve a normalized report path to a canonical key.
 
@@ -774,10 +800,11 @@ def _match_key(
     if norm_path in repo_keys:
         return norm_path, False
 
-    # An Apex name is unique in an org, so two files of that name are copies: refuse.
+    # Apex basenames can be duplicated across Salesforce packages. The project
+    # manifest can disambiguate them by package directory priority.
     hits = [k for name in _apex_names(norm_path) for k in suffix_index.get(name, ())]
     if hits:
-        return (hits[0], False) if len(hits) == 1 else (None, True)
+        return _match_apex_package(hits, apex_package_dirs)
 
     base = norm_path.rsplit("/", 1)[-1]
     candidates = suffix_index.get(_index_name(base))
@@ -857,6 +884,7 @@ def _resolve_path(
     origin_dir: str | None = None,
     source_roots: Sequence[str] = (),
     go_modules: Sequence[tuple[str, str]] = (),
+    apex_package_dirs: Sequence[str] = (),
 ) -> tuple[str | None, bool, bool]:
     """``(key, ambiguous, exact)`` for one report path, aggregate or per-test.
 
@@ -884,13 +912,23 @@ def _resolve_path(
     norm = normalize_report_path(raw, strip_prefix=strip_prefix, path_prefix=path_prefix)
     origin = origin_dir
     relative = not _is_absolute(raw)
+
+    def match_path(path: str) -> tuple[str | None, bool]:
+        return _match_key(
+            path,
+            repo_keys,
+            suffix_index,
+            prefer_dir=origin,
+            apex_package_dirs=apex_package_dirs,
+        )
+
     if relative and source_roots:
         found: dict[str, bool] = {}  # key -> matched a path exactly
         for root in source_roots:
             joined = normalize_report_path(
                 f"{root.rstrip('/')}/{raw}", strip_prefix=strip_prefix, path_prefix=path_prefix
             )
-            key, _ = _match_key(joined, repo_keys, suffix_index, prefer_dir=origin)
+            key, _ = match_path(joined)
             if key is not None:
                 found[key] = found.get(key, False) or key in (joined, norm)
         if found:
@@ -899,7 +937,7 @@ def _resolve_path(
         key = _under_origin(norm, origin, repo_keys)
         if key is not None:
             return key, False, True
-    key, ambiguous = _match_key(norm, repo_keys, suffix_index, prefer_dir=origin)
+    key, ambiguous = match_path(norm)
     return key, ambiguous, key is not None and norm == key
 
 
@@ -981,11 +1019,19 @@ def _merge_into(dst: FileCoverage, src: FileCoverage) -> None:
     covered = set(dst.covered_lines) | set(src.covered_lines)
     coverable = set(dst.coverable_lines) | set(src.coverable_lines)
     total = max(dst.total_coverable_lines, src.total_coverable_lines, len(covered))
+    # A counts-only report (a deploy result) states how many lines were hit but
+    # not which, so its line set is empty. Keep the larger stated count rather
+    # than recounting from the sets alone. A count of None means the source
+    # stated only a percentage, so it adds nothing here.
+    hit = min(
+        max(len(covered), dst.covered_line_count or 0, src.covered_line_count or 0),
+        total,
+    )
     dst.covered_lines = sorted(covered)
     dst.coverable_lines = sorted(coverable)
     dst.total_coverable_lines = total
-    dst.covered_line_count = len(covered)
-    dst.line_coverage_pct = round(len(covered) / total * 100.0, 2) if total else 0.0
+    dst.covered_line_count = hit
+    dst.line_coverage_pct = round(hit / total * 100.0, 2) if total else 0.0
     if src.branch_coverage_pct is not None:
         dst.branch_coverage_pct = (
             src.branch_coverage_pct
@@ -1035,6 +1081,7 @@ def resolve_reports(
     path_prefix: str | None = None,
     ignore: Sequence[str] = (),
     go_modules: Sequence[tuple[str, str]] = (),
+    apex_package_dirs: Sequence[str] = (),
 ) -> ResolvedCoverage:
     """Resolve one or more parsed reports against the indexed tree.
 
@@ -1071,6 +1118,7 @@ def resolve_reports(
                 origin_dir=report.origin_dir,
                 source_roots=report.source_roots,
                 go_modules=modules,
+                apex_package_dirs=apex_package_dirs,
             )
             # An entry that resolves is ignored by its key; one that does not,
             # by the path the report wrote.
@@ -1300,6 +1348,7 @@ def build_coverage_map(
     report_prefixes: Mapping[Path, str | None] | None = None,
     ignore: Sequence[str] = (),
     allow_partial: bool = False,
+    check_alignment: bool = True,
 ) -> tuple[ResolvedCoverage, list[tuple[Path, str]]]:
     """Read + parse + resolve coverage reports end-to-end.
 
@@ -1315,9 +1364,14 @@ def build_coverage_map(
     A partial mapping (:func:`mostly_unmapped`) keeps no coverage unless
     *allow_partial*; it comes back ``withheld`` so nothing stores or scores a
     fragment as the repository's coverage.
+
+    With *check_alignment*, a file whose report lines no longer match its
+    source on disk is dropped (:func:`.alignment.drop_misaligned`) and listed in
+    ``alignment``; pass ``False`` when the reports describe another commit.
     """
     prefixes = report_prefixes or {}
     parsed: list[CoverageReport] = []
+    parsed_paths: list[Path] = []
     errors: list[tuple[Path, str]] = []
     for path in report_paths:
         if is_coverage_data_file(path):
@@ -1338,12 +1392,14 @@ def build_coverage_map(
         report.origin_dir = report_origin_dir(path, repo_root)
         report.path_prefix = prefixes.get(path)
         parsed.append(report)
+        parsed_paths.append(path)
     resolved = resolve_reports(
         parsed,
         repo_keys,
         strip_prefix=strip_prefix,
         path_prefix=path_prefix,
         ignore=ignore,
+        apex_package_dirs=_salesforce_package_dirs(repo_root),
         # The walk only when a coverprofile needs it.
         go_modules=(
             _go_modules(repo_root)
@@ -1353,7 +1409,57 @@ def build_coverage_map(
     )
     if resolved.mapping_partial and not allow_partial:
         resolved.coverage_map, resolved.files, resolved.withheld = {}, [], True
+    if check_alignment and resolved.files:
+        resolved.files, resolved.alignment = drop_misaligned(Path(repo_root), resolved.files)
+        for key in resolved.alignment.reasons:
+            del resolved.coverage_map[key]
+    # Only the reports that were actually read: one unreadable or empty
+    # artifact must not drag the whole measurement back to its own date. A
+    # withheld mapping contributed no rows at all, so it reports no time.
+    resolved.measured_at = None if resolved.withheld else oldest_report_time(parsed_paths)
     return resolved, errors
+
+
+def _salesforce_package_dirs(repo_root: Path) -> tuple[str, ...]:
+    """Package directory priority from ``sfdx-project.json``, if usable."""
+    try:
+        manifest = json.loads((repo_root / "sfdx-project.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return ()
+    directories = manifest.get("packageDirectories") if isinstance(manifest, dict) else None
+    if not isinstance(directories, list):
+        return ()
+    prepared: list[tuple[str, bool]] = []
+    for entry in directories:
+        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
+            continue
+        path = entry["path"].strip().strip("/")
+        if path:
+            prepared.append((path, entry.get("default") is True))
+    defaults = tuple(path for path, default in prepared if default)
+    default_paths = set(defaults)
+    remaining = tuple(
+        path for path, default in prepared if not default and path not in default_paths
+    )
+    return defaults + remaining
+
+
+def oldest_report_time(paths: Iterable[Path]) -> datetime | None:
+    """The oldest mtime among *paths*, as an aware UTC datetime.
+
+    A coverage report is written when the suite runs, not when repowise reads
+    it, so the oldest of several merged reports is the one whose lines have had
+    the most chance to move since. ``None`` when *paths* is empty or none of
+    them can be stat'ed: the caller then stamps with live HEAD, which is what a
+    report written just now is anyway.
+    """
+    times: list[float] = []
+    for path in paths:
+        try:
+            times.append(path.stat().st_mtime)
+        except OSError:
+            continue
+    return datetime.fromtimestamp(min(times), UTC) if times else None
 
 
 def report_origin_dir(path: Path, repo_root: Path) -> str | None:

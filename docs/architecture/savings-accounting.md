@@ -96,7 +96,7 @@ counterfactual estimation, dead-end handling, and the final writer.
 
 FastMCP exposes a request ID across stdio, SSE, and streamable HTTP. On normal
 stateful sessions it also exposes initialize-time `clientInfo`, which is
-client-declared rather than authenticated. Mapping version `mcp_client_info_v1`
+client-declared rather than authenticated. Mapping version `mcp_client_info_v2`
 lowercases the name and removes non-alphanumerics, then looks the result up in
 the agent registry (`repowise.core.agents.identity`), where every agent answers
 to its own slug and its own display name, plus any extra name its host is known

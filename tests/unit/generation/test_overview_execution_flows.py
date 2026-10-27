@@ -16,6 +16,7 @@ import networkx as nx
 import pytest
 from structlog.testing import capture_logs
 
+from repowise.core.analysis.communities import CommunityInfo
 from repowise.core.analysis.execution_flows import ExecutionFlow, ExecutionFlowReport
 from repowise.core.generation.context_assembler import ContextAssembler
 
@@ -77,6 +78,41 @@ def test_overview_context_carries_traced_flows(sample_config, sample_repo_struct
     assert first["entry_point_name"] == "main"
     assert first["score"] == 0.912
     assert first["trace_length"] == 3
+
+
+def test_overview_context_carries_communities(sample_config, sample_repo_structure):
+    """``community_info()`` is a dict keyed by community id, not a list."""
+
+    class _CommunityBuilder(_Builder):
+        def community_info(self):
+            return {
+                3: CommunityInfo(
+                    community_id=3,
+                    label="cli",
+                    members=["a.py"],
+                    size=1,
+                    cohesion=0.5,
+                    dominant_language="python",
+                ),
+                7: CommunityInfo(
+                    community_id=7,
+                    label="core",
+                    members=["b.py", "c.py"],
+                    size=2,
+                    cohesion=0.12345,
+                    dominant_language="python",
+                ),
+            }
+
+    assembler = ContextAssembler(sample_config)
+    ctx = assembler.assemble_repo_overview(
+        sample_repo_structure, {}, [], {}, graph_builder=_CommunityBuilder([])
+    )
+
+    assert ctx.communities == [
+        {"id": 7, "label": "core", "size": 2, "cohesion": 0.12},
+        {"id": 3, "label": "cli", "size": 1, "cohesion": 0.5},
+    ]
 
 
 def test_overview_context_ranks_flows_by_score(sample_config, sample_repo_structure):

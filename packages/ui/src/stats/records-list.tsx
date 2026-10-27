@@ -215,7 +215,7 @@ export function RecordsList({
                     {row.href ? (
                       <A
                         href={row.href}
-                        className="text-[var(--color-text-primary)] underline decoration-[var(--color-border-default)] underline-offset-4 hover:text-[var(--color-accent-primary)] hover:decoration-current focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-accent-primary)]"
+                        className="text-[var(--color-text-primary)] underline decoration-[var(--color-border-default)] underline-offset-4 hover:text-[var(--color-accent-primary)] hover:decoration-current focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-focus-ring)]"
                       >
                         {text}
                       </A>

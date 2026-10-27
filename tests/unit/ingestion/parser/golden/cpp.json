@@ -364,7 +364,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "cpp/classes.cpp": {
     "file_info": {
@@ -698,7 +699,8 @@
         "argument_names": null
       }
     ],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "cpp/nested.cpp": {
     "file_info": {
@@ -800,6 +802,7 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   }
 }

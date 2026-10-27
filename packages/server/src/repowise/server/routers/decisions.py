@@ -586,8 +586,8 @@ async def create_decision(
     be checked against the code or reach an agent editing a governed file, and
     a record stating no reason, which has not said why it binds. Discarding the
     fields the author did fill in would be worse than keeping the entry
-    unaccepted. The response's ``status`` says which of the two happened, and a
-    form can predict it from the same one field.
+    unaccepted. The response's ``currency`` says which of the two happened, and
+    a candidate's ``blockers`` name what is missing, such as decision text.
     """
     # ``upsert_decision`` dedups on the title and overwrites the scope, so a
     # scope-less re-post of an accepted decision would silently withdraw what
@@ -636,7 +636,10 @@ async def create_decision(
         # A refused acceptance (e.g. no rationale) keeps the record as a candidate.
         with contextlib.suppress(crud.AcceptanceRefusedError):
             await crud.accept_decision(session, rec, accepter="web", kind="person")
-    return await _one_with_signature(session, repo_id, rec)
+    item = await _one_with_signature(session, repo_id, rec)
+    if item.currency is None:
+        item.blockers = crud.record_blockers(rec)
+    return item
 
 
 async def _transition_status(
@@ -715,4 +718,28 @@ async def patch_decision(
             raise HTTPException(status_code=404, detail="Decision not found")
 
     assert rec is not None
+    return await _one_with_signature(session, repo_id, rec)
+
+
+@router.post(
+    "/api/repos/{repo_id}/decisions/{decision_id}/reaffirm",
+    response_model=DecisionRecordResponse,
+)
+async def reaffirm_decision(
+    repo_id: str,
+    decision_id: str,
+    session: AsyncSession = Depends(get_db_session),
+) -> DecisionRecordResponse:
+    """Re-accept a governing decision after review, as a person on the web.
+
+    What clears ``needs_review`` once someone has re-read the decision. Not a
+    status transition: the status stays ``active`` and the acceptance log gains
+    a ``reaffirmed`` row. 400 for a candidate or a withdrawn decision, which
+    need a fresh acceptance instead.
+    """
+    rec = await _decision_in_repo(session, repo_id, decision_id)
+    try:
+        await crud.reaffirm_decision(session, rec, accepter="web", kind="person")
+    except crud.AcceptanceRefusedError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return await _one_with_signature(session, repo_id, rec)

@@ -114,6 +114,10 @@ class ChangeDetector:
     def __init__(self, repo_path: Path) -> None:
         self.repo_path = repo_path
         self._repo: object = None  # lazy git.Repo
+        # Where repo_path sits inside the git working tree ("" when it is the
+        # root). Git reports root-relative paths; the index is keyed relative
+        # to repo_path, so every path is translated through this prefix.
+        self._prefix: str = ""
 
     # ------------------------------------------------------------------
     # Public API
@@ -136,12 +140,17 @@ class ChangeDetector:
         try:
             base_commit = repo.commit(base_ref)
             until_commit = repo.commit(until_ref)
-            diff_items = base_commit.diff(until_commit)
+            if self._prefix:
+                diff_items = base_commit.diff(until_commit, paths=self._prefix)
+            else:
+                diff_items = base_commit.diff(until_commit)
         except Exception as exc:
             log.warning("git diff failed", base=base_ref, until=until_ref, error=str(exc))
             return []
 
-        return [self._file_diff_from_item(item) for item in diff_items]
+        return [
+            self._file_diff_from_item(item) for item in diff_items if self._item_in_scope(item)
+        ]
 
     def get_working_tree_changes(self) -> list[FileDiff]:
         """Return FileDiffs for changes that are in the working tree, not in git.
@@ -174,12 +183,22 @@ class ChangeDetector:
             head_commit = repo.head.commit
             # ``None`` as the diff target means "the working tree", so this
             # covers staged and unstaged changes in one pass.
-            for item in head_commit.diff(None):
-                path = (item.b_path or item.a_path or "").replace("\\", "/")
-                if not _counts_as_change(path, self.repo_path, output_dirs, item):
+            items = (
+                head_commit.diff(None, paths=self._prefix)
+                if self._prefix
+                else head_commit.diff(None)
+            )
+            for item in items:
+                if not self._item_in_scope(item):
+                    continue
+                # Git returns root-relative paths for a nested index. Prefer
+                # the in-scope side (a rename may cross the module boundary),
+                # then apply the same source/output filter as root indexing.
+                path = self._within(item.b_path) or self._within(item.a_path) or ""
+                if not path or not _counts_as_change(path, self.repo_path, output_dirs, item):
                     continue
                 results.append(self._file_diff_from_item(item))
-            untracked = list(repo.untracked_files)
+            untracked = self._untracked_files(repo)
         except Exception as exc:
             log.warning("working tree diff failed", error=str(exc))
             return []
@@ -256,6 +275,32 @@ class ChangeDetector:
             symbol_diff=SymbolDiff(added=list(new_parsed.symbols)) if new_parsed else None,
         )
 
+    def _within(self, path: str | None) -> str | None:
+        """*path* (git-root-relative) relative to repo_path, or None if outside it."""
+        if path is None:
+            return None
+        path = path.replace("\\", "/")
+        if not self._prefix:
+            return path
+        if path.startswith(self._prefix + "/"):
+            return path[len(self._prefix) + 1 :]
+        return None
+
+    def _item_in_scope(self, item: object) -> bool:
+        return self._within(item.a_path) is not None or self._within(item.b_path) is not None
+
+    def _untracked_files(self, repo: object) -> list[str]:
+        """Untracked, non-ignored files inside repo_path, relative to it.
+
+        Scoped to the module when it is nested: ``repo.untracked_files`` walks
+        the whole working tree, which for a module of a large repository is
+        most of the cost of detecting one changed file.
+        """
+        if not self._prefix:
+            return list(repo.untracked_files)
+        listing = repo.git.ls_files("--others", "--exclude-standard", "-z", "--", self._prefix)
+        return [p for p in (self._within(raw) for raw in listing.split("\0") if raw) if p]
+
     def _file_diff_from_item(self, item: object) -> FileDiff:
         """Build a :class:`FileDiff` from one GitPython ``Diff``.
 
@@ -265,25 +310,10 @@ class ChangeDetector:
         makes the same code correct for a diff whose right-hand side *is* the
         working tree.
         """
-        status: Literal["added", "deleted", "modified", "renamed"]
-        old_path: str | None = None
-        new_path: str | None = None
-
-        change_type = item.change_type
-        if change_type == "A":
-            status = "added"
-            new_path = item.b_path
-        elif change_type == "D":
-            status = "deleted"
-            old_path = item.a_path
-        elif change_type == "R":
-            status = "renamed"
-            old_path = item.a_path
-            new_path = item.b_path
-        else:
-            status = "modified"
-            old_path = item.a_path
-            new_path = item.b_path
+        # Paths inside the module, however deep the module sits in the repo.
+        status, old_path, new_path = _classify_change(
+            item.change_type, self._within(item.a_path), self._within(item.b_path)
+        )
 
         path = new_path or old_path or ""
 
@@ -505,6 +535,7 @@ class ChangeDetector:
             from repowise.core.git_repo import Repo
 
             self._repo = Repo(self.repo_path, search_parent_directories=True)
+            self._prefix = _prefix_in_repo(self._repo, self.repo_path)
             return self._repo
         except Exception as exc:
             log.info(
@@ -583,6 +614,38 @@ class ChangeDetector:
         )
 
 
+_ChangeStatus = Literal["added", "deleted", "modified", "renamed"]
+
+
+def _classify_change(
+    change_type: str, a_path: str | None, b_path: str | None
+) -> tuple[_ChangeStatus, str | None, str | None]:
+    """``(status, old_path, new_path)`` for one git change, paths already in scope."""
+    if change_type == "A":
+        return "added", None, b_path
+    if change_type == "D":
+        return "deleted", a_path, None
+    if change_type != "R":
+        return "modified", a_path, b_path
+    if a_path and b_path:
+        return "renamed", a_path, b_path
+    if b_path:
+        # Moved into the module from outside it.
+        return "added", None, b_path
+    # Moved out of the module.
+    return "deleted", a_path, None
+
+
+def _prefix_in_repo(repo: object, repo_path: Path) -> str:
+    """Where *repo_path* sits inside *repo*'s working tree, POSIX, "" at the root."""
+    try:
+        root = Path(repo.working_tree_dir).resolve()
+        parts = Path(repo_path).resolve().relative_to(root).parts
+    except Exception:
+        return ""
+    return "/".join(parts)
+
+
 def has_working_tree_changes(repo_path: Path) -> bool:
     """Whether the working tree holds changes ``HEAD`` does not.
 
@@ -605,15 +668,24 @@ def has_working_tree_changes(repo_path: Path) -> bool:
     except Exception:
         return False
     try:
+        detector = ChangeDetector(repo_path)
+        detector._repo = repo
+        detector._prefix = _prefix_in_repo(repo, repo_path)
+        items = (
+            repo.head.commit.diff(None, paths=detector._prefix)
+            if detector._prefix
+            else repo.head.commit.diff(None)
+        )
         output_dirs: dict[Path, bool] = {}
+        for item in items:
+            if not detector._item_in_scope(item):
+                continue
+            path = detector._within(item.b_path) or detector._within(item.a_path)
+            if path and _counts_as_change(path, repo_path, output_dirs, item):
+                return True
         return any(
-            _counts_as_change(
-                (item.b_path or item.a_path or "").replace("\\", "/"), repo_path, output_dirs, item
-            )
-            for item in repo.head.commit.diff(None)
-        ) or any(
             _counts_as_change(p.replace("\\", "/"), repo_path, output_dirs)
-            for p in repo.untracked_files
+            for p in detector._untracked_files(repo)
         )
     except Exception as exc:
         log.warning("working tree check failed", path=str(repo_path), error=str(exc))

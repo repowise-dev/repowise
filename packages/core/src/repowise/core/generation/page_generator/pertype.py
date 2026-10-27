@@ -8,6 +8,7 @@ each module under the project's 400-line ceiling.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import uuid
 from collections.abc import Sequence
@@ -51,6 +52,7 @@ from ..overview_tables import (
 )
 from ..page_sources import lint_sources
 from ..structural_labels import structural_page_title
+from .reuse import files_digest, group_material, model_reuse_key
 
 log = structlog.get_logger(__name__)
 
@@ -159,8 +161,8 @@ def _with_capability_table(
 
 class PerTypeGenerationMixin:
     """Per-type ``generate_*`` methods. Requires the host to provide
-    ``_assembler``, ``_render``, ``_call_provider`` and
-    ``_build_generated_page`` (all supplied by :class:`PageGenerator`).
+    ``_assembler``, ``_render``, ``_call_provider`` and ``_build_generated_page``
+    (all supplied by :class:`PageGenerator`).
     """
 
     async def generate_file_page(
@@ -384,12 +386,28 @@ class PerTypeGenerationMixin:
             return page
 
         if self._config.deterministic:
+
             page = self._stub_module_page(ctx, page_target, title)
             return _stamp_concept(_with_digest(page))
         user_prompt = self._render("module_page.j2", ctx=ctx)
+        # The page's subject is its group: the membership ``structural_key``
+        # hashes, plus each member file's bytes, so an unchanged group reuses
+        # its prose across RAG drift while an edited member regenerates it
+        # (issue #1089). Folded with the renderer fingerprint, so a
+        # prompt/template/style upgrade still forces a one-time regen.
+        reuse_key = model_reuse_key(
+            self,
+            group_material(structural_key, members, source_map),
+            "module_page",
+            "module_page.j2",
+        )
         try:
             response = await self._call_provider(
-                "module_page", user_prompt, str(uuid.uuid4()), target_path=page_target
+                "module_page",
+                user_prompt,
+                str(uuid.uuid4()),
+                target_path=page_target,
+                reuse_content_hash=reuse_key,
             )
         except Exception as exc:
             stub = self._stub_module_page(ctx, page_target, title)
@@ -401,6 +419,7 @@ class PerTypeGenerationMixin:
             response,
             compute_source_hash(user_prompt),
             GENERATION_LEVELS["module_page"],
+            content_hash=reuse_key,
         )
         # Citations of a missing file, or one its section never names, go.
         # Diagrams are checked for every page of the run in ``sanitize_pages``.
@@ -510,9 +529,26 @@ class PerTypeGenerationMixin:
         user_prompt, evidence = self._append_source_evidence(
             user_prompt, "repo_overview", source_map or {}
         )
+        # The overview's subject is the repository: its name, the system map it
+        # names, and the source evidence it quotes. RAG drift alone reuses the
+        # prose; a changed map or evidence file regenerates it (issue #1089).
+        map_digest = hashlib.sha256(
+            (naming_payload(system_map) if system_map else "").encode()
+        ).hexdigest()
+        evidence_files = files_digest((item.path for item in evidence.included), source_map or {})
+        reuse_key = model_reuse_key(
+            self,
+            f"{repo_name}|{map_digest}|{evidence_files}",
+            "repo_overview",
+            "repo_overview.j2",
+        )
         try:
             response = await self._call_provider(
-                "repo_overview", user_prompt, str(uuid.uuid4()), target_path=repo_name
+                "repo_overview",
+                user_prompt,
+                str(uuid.uuid4()),
+                target_path=repo_name,
+                reuse_content_hash=reuse_key,
             )
         except Exception as exc:
             stub = self._stub_repo_overview(
@@ -581,9 +617,11 @@ class PerTypeGenerationMixin:
             response,
             compute_source_hash(user_prompt),
             GENERATION_LEVELS["repo_overview"],
+            content_hash=reuse_key,
         )
         page = _with_system_map(page, system_map, repo_name, names)
         return self._attach_source_evidence(page, "repo_overview", evidence)
+
 
     async def generate_api_contract(
         self,
@@ -659,9 +697,28 @@ class PerTypeGenerationMixin:
         # Fold the onboarding generation version into the reuse hash so a
         # builder/template upgrade forces a one-time regen of cached pages.
         salt = _onboarding.ONBOARDING_GENERATION_VERSION
+        # Subject: the slot's evidence files. Their raw bytes are the
+        # volatile input (they are what the page narrates), and they are
+        # stable across runs when unchanged — the one part of the prompt that
+        # must not silently age out (issue #1089). The slot's own name rides
+        # along so two slots sharing a file still get distinct keys.
+        evidence_files = files_digest(
+            (item.path for item in evidence.included), signals.source_map
+        )
+        reuse_key = model_reuse_key(
+            self,
+            spec.slot + "|" + evidence_files,
+            "onboarding",
+            template_name,
+        )
         try:
             response = await self._call_provider(
-                "onboarding", user_prompt, str(uuid.uuid4()), target_path=target, source_salt=salt
+                "onboarding",
+                user_prompt,
+                str(uuid.uuid4()),
+                target_path=target,
+                source_salt=salt,
+                reuse_content_hash=reuse_key,
             )
         except Exception as exc:
             # ``_stub_onboarding_page`` stamps the subkind metadata itself, so
@@ -694,6 +751,7 @@ class PerTypeGenerationMixin:
             response,
             compute_source_hash(user_prompt + salt),
             GENERATION_LEVELS["onboarding"],
+            content_hash=reuse_key,
         )
         # Subkind discriminator lives in metadata; page_type alone is shared
         # across all six generated onboarding slots.

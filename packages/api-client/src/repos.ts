@@ -68,12 +68,14 @@ export async function preflightIndex(
 
 /** Cost + page counts for a generate selection, cascade fallout included.
  *  Heavy (rehydrates the graph and re-parses), so fetch it lazily — never on
- *  every render. */
+ *  every render. `provider` prices a provider the repo does not use yet. */
 export async function generateEstimate(
   repoId: string,
   body: GenerateRequest,
+  options: { provider?: string } = {},
 ): Promise<GenerateEstimate> {
-  return apiPost<GenerateEstimate>(`/api/repos/${repoId}/generate/estimate`, body);
+  const qs = options.provider ? `?provider=${encodeURIComponent(options.provider)}` : "";
+  return apiPost<GenerateEstimate>(`/api/repos/${repoId}/generate/estimate${qs}`, body);
 }
 
 /** Launch a scoped generate job (writes the selected pages with a model).

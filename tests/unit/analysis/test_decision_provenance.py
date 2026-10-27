@@ -47,6 +47,21 @@ def test_session_outranks_adr():
     assert rank_for_source("session") > rank_for_source("adr")
 
 
+def test_agent_ranks_with_session():
+    """An agent's own proposal is first-hand reasoning, like a transcript."""
+    from repowise.core.analysis.decisions.provenance import LISTABLE_SOURCES
+
+    assert rank_for_source("agent") == rank_for_source("session") == 8
+    assert "agent" in LISTABLE_SOURCES
+
+
+def test_agent_proposal_is_not_self_authored():
+    """Only a typed ``cli`` record is its own evidence; an agent must cite some."""
+    from repowise.core.analysis.decisions.lifecycle import requirement
+
+    assert not requirement({"source": "agent"}, accepter="reviewer").self_authored
+
+
 def test_adr_and_pr_tie():
     """Both are write-ups rather than the decision being made; later one wins."""
     assert rank_for_source("adr") == rank_for_source("pr") == 7

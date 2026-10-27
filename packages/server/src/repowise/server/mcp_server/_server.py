@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import weakref
+from collections.abc import Iterable
 from contextlib import asynccontextmanager
 from typing import Any, NoReturn
 
@@ -48,24 +50,43 @@ class StoreUnavailableError(RuntimeError):
     one to respawn, so an unwritable .repowise became a crash loop. Click-free
     because the server does not depend on the CLI; the mcp command turns it
     into a clean non-zero exit.
+
+    ``reason`` is a fixed slug for anonymous telemetry, never message text:
+    ``store_open_failed``, ``db_url_unreachable`` or
+    ``workspace_default_failed``.
     """
+
+    def __init__(self, message: str, *, reason: str = "store_open_failed") -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+#: Store served for a directory with no ``.repowise/``: empty, so tools report
+#: "not indexed", and never written to disk.
+_NO_INDEX_DB_URL = "sqlite+aiosqlite:///:memory:"
 
 
 def _store_unavailable(
-    where: str | None, repo_path: str | None, exc: BaseException
+    where: str | None,
+    repo_path: str | None,
+    exc: BaseException,
+    *,
+    reason: str = "store_open_failed",
 ) -> StoreUnavailableError:
     """``where`` is the repo-local directory, or None when an env URL is in use;
     a configured database gets its own remedy, not the directory one."""
     if where is None:
         return StoreUnavailableError(
             f"repowise MCP: cannot open the configured database: {exc}. "
-            "Check REPOWISE_DB_URL and that the database server is reachable."
+            "Check REPOWISE_DB_URL and that the database server is reachable.",
+            reason="db_url_unreachable",
         )
     repo = repo_path or "the repository"
     return StoreUnavailableError(
         f"repowise MCP: cannot open the index store at {where}: {exc}. "
         f"Run 'repowise init' in {repo} to create it, or fix the permissions "
-        "on that directory."
+        "on that directory.",
+        reason=reason,
     )
 
 
@@ -197,6 +218,64 @@ def _query_embedder():
 #: itself is TTL-cached on disk for a day and shared with the CLI advisory, so
 #: this bounds only the in-process refresh, never the network.
 _RELEASE_RECHECK_S = 6 * 3600
+
+
+def _share_lifespan(server: Any) -> None:
+    """Keep process-scoped MCP resources alive while any session is active.
+
+    Streamable HTTP enters the low-level server lifespan once per session,
+    while the state it publishes is process-wide. Share one underlying
+    lifespan per event loop so one session cannot tear down another's state.
+    """
+    original = server.lifespan
+    managers: weakref.WeakKeyDictionary[Any, dict[str, Any]] = weakref.WeakKeyDictionary()
+
+    @asynccontextmanager
+    async def shared(app: Any):
+        loop = asyncio.get_running_loop()
+        manager = managers.get(loop)
+        if manager is None:
+            manager = {"lock": asyncio.Lock(), "active": 0, "context": None, "state": None}
+            managers[loop] = manager
+
+        async with manager["lock"]:
+            if manager["active"] == 0:
+                context = original(app)
+                try:
+                    state = await context.__aenter__()
+                except BaseException:
+                    manager["context"] = None
+                    manager["state"] = None
+                    raise
+                manager["context"] = context
+                manager["state"] = state
+            manager["active"] += 1
+            state = manager["state"]
+
+        error: BaseException | None = None
+        try:
+            yield state
+        except BaseException as exc:
+            error = exc
+            raise
+        finally:
+            async with manager["lock"]:
+                manager["active"] -= 1
+                if manager["active"] == 0:
+                    context = manager["context"]
+                    manager["context"] = None
+                    manager["state"] = None
+                    if context is not None:
+                        teardown_error = (
+                            None if isinstance(error, asyncio.CancelledError) else error
+                        )
+                        await context.__aexit__(
+                            type(teardown_error) if teardown_error is not None else None,
+                            teardown_error,
+                            teardown_error.__traceback__ if teardown_error is not None else None,
+                        )
+
+    server.lifespan = shared
 
 
 async def _poll_release_check() -> None:
@@ -466,7 +545,9 @@ async def _lifespan(server: FastMCP):
             default_ctx = await registry.get_default()
         except (OSError, OperationalError) as exc:
             await _abort_startup(_release_task, _warm_task)
-            raise _store_unavailable(str(ws_root), str(ws_root), exc) from exc
+            raise _store_unavailable(
+                str(ws_root), str(ws_root), exc, reason="workspace_default_failed"
+            ) from exc
         except BaseException:
             await _abort_startup(_release_task, _warm_task)
             raise
@@ -523,30 +604,32 @@ async def _lifespan(server: FastMCP):
 
     # When repo path is set and no env override, prefer repo-local DB.
     store_location: str | None = None
+    db_url: str | None = None
+    _state._serving_no_index = False
     try:
         if _state._repo_path and configured_db_url is None:
             db_path = get_repo_db_path(_state._repo_path)
             repowise_dir = db_path.parent
             store_location = str(repowise_dir)
-            if not repowise_dir.is_dir():
-                # Creating the store directory here made whatever directory an
-                # MCP host spawned the server from look initialised: it left a
-                # stray .repowise/ behind, silenced the CLI's "run 'repowise
-                # init'" warning for every later start, and seeded an empty
-                # wiki.db. Fail the way an unopenable store does instead (#3163).
-                await _abort_startup(_release_task, _warm_task)
-                raise _store_unavailable(
-                    store_location,
-                    _state._repo_path,
-                    FileNotFoundError(f"no {repowise_dir.name} directory"),
+            if not repowise_dir.exists():
+                # An unindexed directory, often just wherever a globally
+                # installed plugin was launched. Exiting here made the host
+                # respawn the server in a loop and the agent never saw why.
+                # Serve an empty in-memory store instead, so every tool returns
+                # the "no index, run repowise init" notice, without leaving a
+                # stray .repowise/ on disk (#3163).
+                _log.warning(
+                    "No %s in %s; run 'repowise init'", repowise_dir.name, repowise_dir.parent
                 )
-            if not db_path.exists():
+                db_url = _NO_INDEX_DB_URL
+                _state._serving_no_index = True
+            elif not db_path.exists():
                 _log.warning(
                     "No wiki.db in %s — run 'repowise init' to generate the wiki",
                     repowise_dir,
                 )
 
-        db_url = resolve_db_url(_state._repo_path)
+        db_url = db_url or resolve_db_url(_state._repo_path)
 
         _log.info("repowise MCP: initialising database…")
         engine = create_engine(db_url, short_lived=False)
@@ -607,6 +690,7 @@ async def _lifespan(server: FastMCP):
 # Create the MCP server
 # ---------------------------------------------------------------------------
 
+
 class _RepowiseMCP(FastMCP):
     """FastMCP plus the HTTP bearer gate and per-call principal scope.
 
@@ -661,37 +745,53 @@ class _RepowiseMCP(FastMCP):
             current_principal.reset(reset)
 
 
+# Hosts that defer tool schemas show the model only tool names and this
+# string, so it says when to call; tests pin the key lines and a length cap.
+_INSTRUCTIONS = (
+    "repowise indexes this repository's code graph, git history and "
+    "decisions. One call here often replaces several text searches and "
+    "file reads.\n"
+    "- Use search_codebase(query) to find an identifier or literal: it "
+    "returns `lines` (path, line, kind, text; definitions first) read from "
+    "live files, and `complete: true` means that is every match. Path-like "
+    "and concept queries rank files.\n"
+    '- Use get_context(targets=[symbol], include=["references"]) before a '
+    "rename or an update-all-callers change: it lists the definition, "
+    "imports and calls, and a `complete` list is the whole edit set.\n"
+    "- Use get_answer(question) for a how/where/why question: one cited "
+    "answer.\n"
+    "- Use get_risk before a non-trivial edit to a widely imported file, "
+    "get_change_risk before committing a multi-file change, and get_why "
+    "before changing an established pattern. Skip them for one-line fixes.\n"
+    "- Targets with uncommitted edits are flagged; the index is stale for "
+    "them until `repowise update --working-tree` runs.\n"
+    "If the tools report that the repo has no index, tell the user to run "
+    "'repowise init --yes --no-prose' in the repo root; it needs no API key "
+    "and makes no model calls. Suggest it, "
+    "do not run it yourself."
+)
+
+#: Opt-in workspace tools, named only once the selected surface has them.
+_WORKSPACE_TOOL_LINES = {
+    "get_architecture": "get_architecture for the workspace's coupling and architecture score",
+    "get_blast_radius": "get_blast_radius for the services a change reaches in other repos",
+}
+
+
+def _instructions(enabled: Iterable[str] = ()) -> str:
+    """The server instructions, naming a workspace tool only when it is served."""
+    lines = [line for name, line in _WORKSPACE_TOOL_LINES.items() if name in enabled]
+    if not lines:
+        return _INSTRUCTIONS
+    return f"{_INSTRUCTIONS}\nIn this workspace, use {' and '.join(lines)}."
+
+
 mcp = _RepowiseMCP(
     "repowise",
-    # Hosts that defer tool schemas show the model only tool names and this
-    # string, so it says when to call; tests pin the key lines and a length cap.
-    instructions=(
-        "repowise indexes this repository's code graph, git history and "
-        "decisions. One call here often replaces several text searches and "
-        "file reads.\n"
-        "- Use search_codebase(query) to find an identifier or literal: it "
-        "returns `lines` (path, line, kind, text; definitions first) read from "
-        "live files, and `complete: true` means that is every match. Path-like "
-        "and concept queries rank files.\n"
-        '- Use get_context(targets=[symbol], include=["references"]) before a '
-        "rename or an update-all-callers change: it lists the definition, "
-        "imports and calls, and a `complete` list is the whole edit set.\n"
-        "- Use get_answer(question) for a how/where/why question: one cited "
-        "answer.\n"
-        "- Use get_risk before a non-trivial edit to a widely imported file, "
-        "get_change_risk before committing a multi-file change, and get_why "
-        "before changing an established pattern. Skip them for one-line fixes.\n"
-        "- Targets with uncommitted edits are flagged; the index is stale for "
-        "them until `repowise update --working-tree` runs.\n"
-        "In workspace mode, get_architecture and get_blast_radius are also "
-        "available. If the tools "
-        "report that the repo has no index, tell the user to run "
-        "'repowise init --yes --no-prose' in the repo root; it needs no API key "
-        "and makes no model calls. Suggest it, "
-        "do not run it yourself."
-    ),
+    instructions=_instructions(),
     lifespan=_lifespan,
 )
+_share_lifespan(mcp._mcp_server)
 # FastMCP takes no version argument, and without one the handshake's
 # serverInfo.version reports the installed ``mcp`` SDK's version.
 mcp._mcp_server.version = __version__
@@ -721,7 +821,8 @@ def create_mcp_server(
     # surface before it can advertise (or trim) it.
     ensure_full_surface()
 
-    apply_tool_selection(mcp, repo_path=repo_path, override=tools)
+    enabled = apply_tool_selection(mcp, repo_path=repo_path, override=tools)
+    mcp._mcp_server.instructions = _instructions(enabled)
     return mcp
 
 
@@ -931,7 +1032,8 @@ def run_mcp(
         from repowise.server.mcp_server._tool_selection import apply_tool_selection
 
         ensure_full_surface()
-        apply_tool_selection(mcp, repo_path=repo_path, override=tools)
+        enabled = apply_tool_selection(mcp, repo_path=repo_path, override=tools)
+        mcp._mcp_server.instructions = _instructions(enabled)
     except BaseExceptionGroup as group:
         _raise_group_leaf(group, transport)
 

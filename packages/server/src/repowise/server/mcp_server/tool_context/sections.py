@@ -17,7 +17,7 @@ from typing import Any
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.decisions.lifecycle import is_governing
+from repowise.core.analysis.decisions.lifecycle import RETIRED_STATUSES, is_governing
 from repowise.core.analysis.decisions.scope import binds_to_paths
 from repowise.core.attribution import attribution_enabled, file_share
 from repowise.core.generation.page_selection import is_stale_status
@@ -450,7 +450,7 @@ async def _decisions_section(card: CardState) -> None:
     ``candidates`` never accepted, ``history`` accepted then withdrawn.
     Ordering is ``decision_priority_order``, shared with the Decisions page.
 
-    The dismissed filter is ``count_decisions_by_lane``'s: "dismissed" marks
+    The retired filter is ``count_decisions_by_lane``'s: a retired status marks
     both a tombstoned candidate and a withdrawn decision, and only the
     acceptance row tells them apart, so a bare status filter would lose the
     withdrawn ones from the history lane.
@@ -461,7 +461,7 @@ async def _decisions_section(card: CardState) -> None:
         select(DecisionRecord)
         .where(
             DecisionRecord.repository_id == card.repo_id,
-            or_(DecisionRecord.status != "dismissed", accepted_predicate()),
+            or_(DecisionRecord.status.notin_(sorted(RETIRED_STATUSES)), accepted_predicate()),
         )
         .order_by(*decision_priority_order())
     )

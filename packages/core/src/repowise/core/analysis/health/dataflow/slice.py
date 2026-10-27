@@ -182,6 +182,8 @@ class _Scan(NamedTuple):
     exit_macros: tuple[frozenset[str], frozenset[str]]
     awaits: tuple[frozenset[str], frozenset[str]]
     lambdas: frozenset[str] = frozenset()
+    #: ``LanguageNodeMap.lambda_exit_kinds``: a jump when found in a lambda.
+    lambda_exits: frozenset[str] = frozenset()
     receiver: Receiver | None = None
     # Built from the fields above by :func:`_scan_for`; derived when absent.
     kinds: FactKinds | None = None
@@ -526,6 +528,7 @@ def _scan_for(lmap: LanguageNodeMap, receiver: Receiver | None, fn_node: Node) -
         exit_macros=_exit_macros(lmap),
         awaits=_awaits(lmap),
         lambdas=lmap.lambda_kinds,
+        lambda_exits=lmap.lambda_exit_kinds,
         receiver=receiver,
         exits=lmap.return_kinds,
         yields=lmap.yield_kinds,
@@ -630,6 +633,7 @@ def _span_kinds(scan: _Scan) -> FactKinds:
         awaits=await_kinds,
         await_scopes=await_scope_kinds,
         lambdas=scan.lambdas,
+        lambda_exits=scan.lambda_exits,
         receiver=_receiver_kinds(scan.receiver) if scan.receiver is not None else frozenset(),
     )
 
@@ -665,8 +669,11 @@ def _push_children(
     node: Node, stack: list[tuple[Node, int]], scope: int, scan: _Scan
 ) -> None:
     """Queue *node*'s children: nested scopes are skipped, except a lambda
-    when the receiver is looked for (it shares the instance)."""
+    when the receiver is looked for (it shares the instance) or the language
+    has lambda exits (a ``return`` there leaves this function). A nested
+    function is never entered: its exits are its own."""
+    into_lambdas = scan.receiver is not None or bool(scan.lambda_exits)
     for child in node.children:
         t = child.type
-        if t not in scan.scopes or (scan.receiver is not None and t in scan.lambdas):
+        if t not in scan.scopes or (into_lambdas and t in scan.lambdas):
             stack.append((child, scope))

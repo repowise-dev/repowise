@@ -6,7 +6,7 @@ import re
 
 from .fragments import is_fragment, is_procedure_fragment, wrap_fragment
 from .grammar_gaps import rewrite_gaps
-from .reference_format import is_free_format, normalize_fixed_format
+from .reference_format import is_free_format, normalize_fixed_format, normalize_free_format
 from .statements import mask_statements
 
 # A lossless round trip for bytes that are not UTF-8 (EBCDIC-converted Latin-1).
@@ -18,8 +18,7 @@ _INLINE_COMMENT = re.compile(r"('[^'\n]*'|\"[^\"\n]*\")|\*>[^\r\n]*")
 def code_view(source: bytes) -> str:
     """*source* as program text only: comments, sequence area and columns 73+ blank."""
     text = source.decode(_ENCODING, _ERRORS)
-    # Free format keeps its text as written; only fixed format has columns.
-    code = text if is_free_format(text) else normalize_fixed_format(text)
+    code = normalize_free_format(text) if is_free_format(text) else normalize_fixed_format(text)
     return _INLINE_COMMENT.sub(lambda m: m.group(1) or " " * len(m.group(0)), code)
 
 

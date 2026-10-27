@@ -47,7 +47,7 @@ export function GraphPopulationControl({
         <button
           type="button"
           aria-label={`Files counted: ${summary}`}
-          className={`inline-flex h-7 items-center gap-1.5 rounded-md border border-[var(--color-border-default)] px-2 text-xs text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] ${className ?? ""}`}
+          className={`inline-flex h-7 items-center gap-1.5 rounded-md border border-[var(--color-border-default)] px-2 text-xs text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] ${className ?? ""}`}
         >
           <Filter className="h-3 w-3" />
           <span className="tabular-nums">{summary}</span>

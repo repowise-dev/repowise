@@ -212,6 +212,7 @@ def test_snapshot_shape_and_score_are_locked():
         "core_ratio",
         "core_members",
         "cycle_count",
+        "cycle_count_capped",
         "conformance_violations",
         "architecture_type",
         "score",

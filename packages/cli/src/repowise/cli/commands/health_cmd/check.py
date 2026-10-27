@@ -8,7 +8,7 @@ ones (:mod:`repowise.cli.ci`).
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 import click
@@ -123,7 +123,7 @@ def health_check(
     except Exception as exc:
         # A crash must never read as a failed gate.
         cannot_evaluate(fmt, "internal_error", f"health check failed unexpectedly: {exc!r}")
-    _EMITTERS.get(fmt, _print_table)(verdict)
+    _EMITTERS.get(fmt, _print_table)(replace(verdict, diff_risk=diff_risk))
     if not verdict.result.passed:
         raise click.exceptions.Exit(EXIT_GATE_FAILED)
 
@@ -135,6 +135,14 @@ class _Verdict:
     result: GateResult
     delta: ChangeHealthDelta
     label: str
+    #: ``--diff-risk`` as given, so the reproduce command matches the run.
+    diff_risk: tuple[str, ...] = ()
+
+    @property
+    def reproduce(self) -> str:
+        from repowise.core.analysis.health_gate import reproduce_command
+
+        return reproduce_command(self.label, self.result, self.diff_risk)
 
 
 def _diff_risk_levels(values: tuple[str, ...]) -> dict[str, str]:
@@ -215,7 +223,9 @@ def _not_evaluated(code: str, message: str) -> CannotEvaluateError:
 def _markdown(v: _Verdict) -> str:
     from repowise.core.analysis.health_gate import render_markdown, scope_line
 
-    return render_markdown(v.result, label=v.label, scope=scope_line(v.delta))
+    return render_markdown(
+        v.result, label=v.label, scope=scope_line(v.delta), reproduce=v.reproduce
+    )
 
 
 def _emit_json(v: _Verdict) -> None:
@@ -244,10 +254,10 @@ def _emit_markdown(v: _Verdict) -> None:
 def _emit_github(v: _Verdict) -> None:
     from repowise.core.analysis.health_gate import gate_summary, github_annotations
 
-    for line in github_annotations(v.result):
+    for line in github_annotations(v.result, reproduce=v.reproduce):
         click.echo(line)
     append_step_summary(_markdown(v))
-    write_gate_summary(gate_summary(v.result))
+    write_gate_summary(gate_summary(v.result, reproduce=v.reproduce))
 
 
 _COLOUR = {"error": "red", "warning": "yellow", "note": "dim"}

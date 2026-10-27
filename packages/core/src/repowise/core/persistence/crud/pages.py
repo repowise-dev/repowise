@@ -65,6 +65,7 @@ def _apply_page_upsert(
     digest: str,
     target_path: str,
     source_hash: str,
+    content_hash: str,
     model_name: str,
     provider_name: str,
     input_tokens: int,
@@ -151,6 +152,11 @@ def _apply_page_upsert(
             existing.display_order = display_order
             existing.section_number = section_number
             existing.structural_key = structural_key
+            # The reuse key describes the *subject*, so it can change while
+            # the bytes do not (the same file documented under a new style).
+            # Refresh it on the touch path so an unchanged page still picks
+            # up the current renderer fingerprint (issue #1089).
+            existing.content_hash = content_hash or existing.content_hash
             return existing
 
         # Archive the current state before overwriting
@@ -180,6 +186,7 @@ def _apply_page_upsert(
         existing.digest = digest
         existing.target_path = target_path
         existing.source_hash = source_hash
+        existing.content_hash = content_hash or existing.content_hash
         existing.model_name = model_name
         existing.provider_name = provider_name
         existing.input_tokens = input_tokens
@@ -207,6 +214,7 @@ def _apply_page_upsert(
         digest=digest,
         target_path=target_path,
         source_hash=source_hash,
+        content_hash=content_hash,
         model_name=model_name,
         provider_name=provider_name,
         input_tokens=input_tokens,
@@ -240,6 +248,7 @@ async def upsert_page(
     digest: str = "",
     target_path: str,
     source_hash: str,
+    content_hash: str = "",
     model_name: str,
     provider_name: str,
     input_tokens: int = 0,
@@ -261,6 +270,11 @@ async def upsert_page(
     First call  → inserts Page at version=1.
     Subsequent  → archives the current Page as a PageVersion, then updates the
                   Page in-place (version += 1, created_at preserved).
+
+    ``content_hash`` is the cross-run reuse key: a stable digest of the page's
+    subject folded with a renderer fingerprint, surviving RAG-context drift
+    that invalidates ``source_hash`` on every full run (issue #1089). Empty
+    when the caller has no subject digest (pre-key callers keep working).
     """
     now = _now_utc()
     meta_json = json.dumps(metadata or {})
@@ -281,6 +295,7 @@ async def upsert_page(
         digest=digest,
         target_path=target_path,
         source_hash=source_hash,
+        content_hash=content_hash,
         model_name=model_name,
         provider_name=provider_name,
         input_tokens=input_tokens,
@@ -309,9 +324,13 @@ async def load_prior_pages(
     """Return a ``page_id → PriorPage`` map for cross-run cache reuse.
 
     Loads every existing wiki page for the repository so the generator can
-    short-circuit the LLM call when the freshly rendered prompt produces a
-    matching ``source_hash`` under the same model. Returns an empty dict if
-    nothing has been generated yet.
+    short-circuit the LLM call when the page's subject still matches under
+    the same model — keyed on ``content_hash`` when one is stored, else on
+    the freshly rendered prompt's ``source_hash``. Returns an empty dict if
+    nothing has been generated yet. Rows a model never wrote (``template``
+    provider — keyless stubs, or stubs left by failed provider calls) carry
+    their ``provider_name`` so the reuse gate can refuse to copy them
+    (issue #1089).
     """
     # Import lazily — keeps persistence independent of generation models at
     # module-load time.
@@ -332,6 +351,7 @@ async def load_prior_pages(
             continue
         prior[row.id] = PriorPage(
             source_hash=row.source_hash,
+            content_hash=row.content_hash or "",
             model_name=row.model_name,
             content=row.content,
             digest=row.digest or "",
@@ -339,6 +359,7 @@ async def load_prior_pages(
             output_tokens=row.output_tokens,
             cached_tokens=row.cached_tokens,
             metadata=metadata,
+            provider_name=row.provider_name,
         )
     return prior
 
@@ -366,6 +387,7 @@ async def upsert_page_from_generated(
         digest=getattr(gp, "digest", "") or "",
         target_path=gp.target_path,  # type: ignore[attr-defined]
         source_hash=gp.source_hash,  # type: ignore[attr-defined]
+        content_hash=getattr(gp, "content_hash", "") or "",
         model_name=gp.model_name,  # type: ignore[attr-defined]
         provider_name=gp.provider_name,  # type: ignore[attr-defined]
         input_tokens=gp.input_tokens,  # type: ignore[attr-defined]
@@ -449,6 +471,7 @@ async def upsert_pages_from_generated(
                 digest=getattr(gp, "digest", "") or "",
                 target_path=gp.target_path,
                 source_hash=gp.source_hash,
+                content_hash=getattr(gp, "content_hash", "") or "",
                 model_name=gp.model_name,
                 provider_name=gp.provider_name,
                 input_tokens=gp.input_tokens,
@@ -598,6 +621,22 @@ async def backfill_related_pages(
 async def get_page(session: AsyncSession, page_id: str) -> Page | None:
     """Return a Page by its page_id, or None."""
     return await session.get(Page, page_id)
+
+
+async def set_page_pinned(session: AsyncSession, page_id: str, pinned: bool) -> Page | None:
+    """Set the user-requested pin on a page (issue #812).
+
+    A pinned page is regenerated on every reindex regardless of the normal
+    selection heuristic, so the doc a user asked for keeps following the
+    code instead of silently disappearing again. Returns None when no such
+    page exists.
+    """
+    page = await get_page(session, page_id)
+    if page is None:
+        return None
+    page.pinned = pinned
+    await session.flush()
+    return page
 
 
 async def list_pages(

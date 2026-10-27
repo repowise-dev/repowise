@@ -4,7 +4,8 @@ An MCP host restarts a stdio server that dies at startup. Two failures used
 to escape as bare tracebacks and loop that way: an index directory the
 process cannot create or open, and a tool module whose optional dependency
 is missing. The first now raises a message naming the path and the fix; the
-second is skipped so the rest of the surface still serves.
+second is skipped so the rest of the surface still serves. A directory that
+was never indexed is not a failure: the server starts and its tools say so.
 """
 
 from __future__ import annotations
@@ -43,6 +44,7 @@ async def test_lifespan_names_the_path_when_the_store_cannot_be_opened(
     message = str(raised.value)
     assert str(tmp_path / ".repowise") in message
     assert "repowise init" in message
+    assert raised.value.reason == "store_open_failed"
     # The failure path never reaches the teardown, so it has to leave the
     # warmup event cleared itself. A leaked event stays bound to this test's
     # loop and makes every later tool call raise inside the failure shield.
@@ -50,15 +52,18 @@ async def test_lifespan_names_the_path_when_the_store_cannot_be_opened(
 
 
 @pytest.mark.asyncio
-async def test_missing_store_directory_is_not_created(
+async def test_unindexed_directory_starts_and_reports_no_index(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An uninitialised repo fails startup instead of getting a stray .repowise/.
+    """A directory with no .repowise/ serves, rather than exiting, and stays clean.
 
-    Creating the directory made any directory an MCP host spawned the server
-    from look initialised, and the empty wiki.db it seeded masked the state the
-    CLI's own warning is meant to report (#3163).
+    Exiting made the host respawn the server in a loop and the agent never saw
+    the cause. Creating the directory instead left a stray .repowise/ and an
+    empty wiki.db that made the directory look initialised (#3163).
     """
+    from repowise.server.mcp_server import get_symbol
+    from repowise.server.mcp_server._failure_shield import shield
+
     for name in ("REPOWISE_DB_URL", "REPOWISE_DATABASE_URL"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(_state, "_repo_path", str(tmp_path))
@@ -69,12 +74,12 @@ async def test_missing_store_directory_is_not_created(
     monkeypatch.setattr(_server, "_warm_lancedb", _no_warm)
     monkeypatch.setattr(_server, "_detect_workspace", lambda _p: (None, None, None))
 
-    with pytest.raises(StoreUnavailableError) as raised:
-        async with _server._lifespan(_server.mcp):
-            pass
-    message = str(raised.value)
-    assert str(tmp_path / ".repowise") in message
-    assert "repowise init" in message
+    async with _server._lifespan(_server.mcp):
+        result = await shield(get_symbol)("pkg/mod.py::alpha")
+
+    assert "no repowise index" in result["error"].lower()
+    assert "repowise init" in result["remedy"]
+    assert _state._serving_no_index is True
     assert not (tmp_path / ".repowise").exists()
     assert _state._lancedb_ready is None
 
@@ -125,6 +130,7 @@ async def test_configured_database_failure_names_the_url_not_the_directory(
     message = str(raised.value)
     assert "REPOWISE_DB_URL" in message
     assert "repowise init" not in message
+    assert raised.value.reason == "db_url_unreachable"
 
 
 @pytest.mark.asyncio

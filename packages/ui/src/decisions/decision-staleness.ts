@@ -120,8 +120,8 @@ export function describeStaleness(
       fileCount,
       changedCount: 0,
       sentence: one
-        ? "The one file it names is still tracked and unchanged since it was recorded."
-        : `All ${fileCount} files it names are still tracked and unchanged since it was recorded.`,
+        ? "The one file it names is still tracked and unchanged since it was recorded or last accepted."
+        : `All ${fileCount} files it names are still tracked and unchanged since it was recorded or last accepted.`,
       short: `0 of ${fileCount}`,
     };
   }
@@ -143,8 +143,8 @@ export function describeStaleness(
     fileCount,
     changedCount,
     sentence: one
-      ? "The one file it names has changed since it was recorded, or is no longer tracked, so it may no longer describe the code."
-      : `${changedCount} of its ${fileCount} files ${verb} changed since it was recorded, or ${be} no longer tracked, so parts of it may no longer describe the code.`,
+      ? "The one file it names has changed since it was recorded or last accepted, or is no longer tracked, so it may no longer describe the code."
+      : `${changedCount} of its ${fileCount} files ${verb} changed since it was recorded or last accepted, or ${be} no longer tracked, so parts of it may no longer describe the code.`,
     short: `${changedCount} of ${fileCount}`,
   };
 }

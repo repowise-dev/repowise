@@ -1,4 +1,9 @@
-# Pluggable storage and capability seams
+# Plugins, seams and pluggable storage
+
+Writing a plugin? Start with the plugin author guide,
+[docs/reference/PLUGINS.md](../reference/PLUGINS.md), and the example in
+[examples/plugins/hello](../../examples/plugins/hello/). This page covers the
+storage contracts and how core contributors add a seam.
 
 repowise ships with sensible defaults — a local SQLite database, an
 in-process NetworkX graph, an in-memory or LanceDB vector store, a
@@ -222,6 +227,24 @@ reported by `repowise plugins` and never stops startup. Named seams use
 registers first and stays chosen unless the plugin passes `default=True` or
 `REPOWISE_SEAM_<NAME>` names another implementation. Both variables are read
 from the process environment only, never from a repo's `.repowise/.env`.
+
+---
+
+## Adding a new seam
+
+A seam is for a point that plugins should extend. Open an issue first that
+describes the contract, when it runs, whether one or every implementation is
+used, and what a failure does.
+
+1. Define the registry in the module that consumes it, with a typed protocol:
+   `event_sinks: SeamRegistry[EventSink] = SeamRegistry("event-sink")`.
+2. Register the local default right after it, with `default=True` for a
+   one-implementation seam.
+3. Resolve with `get()` (one) or `all()` (every). Both load plugins first, so
+   do not read `names` alone.
+4. Add a row to the catalog in
+   [PLUGINS.md](../reference/PLUGINS.md#extension-points-catalog): name, one
+   or every, when it runs, failure behaviour, file.
 
 ---
 

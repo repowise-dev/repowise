@@ -1,32 +1,36 @@
 "use client";
 
 /**
- * The System Map's detail drawer: one service or one relationship, with
- * everything needed to act on it. It is the shared `AdaptivePanel`, non-modal,
- * so the map stays interactive behind it and a click on another node swaps the
- * subject without closing and reopening.
+ * The System Map's detail rail: one service or one relationship, with
+ * everything needed to act on it. It renders in the canvas shell's rail slot,
+ * a grid peer of the canvas from `lg` and a bottom sheet below, so it never
+ * covers what it describes and a click on another card swaps the subject.
  *
- * Resolves the selection against the *drawn* graph. In repo view the ids the
- * map hands back are collapsed ones that only exist there.
+ * Resolves the selection against the whole graph, so a service or edge the
+ * current level folds into a group or band still has its details.
  *
- * Presentation only. The host fetches the focused repository's contracts and
- * owns every route; the drawer takes href builders, not a router.
+ * Presentation only. The host fetches the selected service's repository
+ * contracts and owns every route; the drawer takes href builders, not a
+ * router. A relationship's evidence comes from the host's links loader, one
+ * kind and one direction, resolved to services on the server.
  */
 
 import { useMemo, useState, type ElementType, type ReactNode } from "react";
 import type {
   DependencyCycle,
+  ExtractionDiagnostics,
   NodeArchitectureRole,
   SystemEdge,
   SystemGraph,
   SystemNode,
-  WorkspaceContractLinkEntry,
 } from "@repowise-dev/types/workspace";
-import { AdaptivePanel } from "../../shared/adaptive-panel";
+import { X } from "lucide-react";
 import { FilePath } from "../../shared/file-path";
 import { AiPromptButton } from "../../health/ai-prompt-button";
 import { AiPromptModal } from "../../health/ai-prompt-modal";
 import type { AiPromptFlavor } from "../../health/ai-prompt-builder";
+import { healthMark } from "../../health/tokens";
+import { linkStrategyCopy } from "../link-provenance";
 import { roleStyle } from "./architecture";
 import { edgeKindStyle, matchTypeLabel } from "./edge-kinds";
 import { nodeKindStyle } from "./node-kinds";
@@ -37,9 +41,7 @@ import {
   coChangePairs,
   cyclesThrough,
   cyclesWithEdge,
-  edgeLinks,
   edgeSentence,
-  healthMark,
   neighbourGroups,
   nodeLocation,
   plural,
@@ -57,7 +59,11 @@ import {
   buildEdgeAiPrompt,
   buildServiceAiPrompt,
 } from "./system-map-ai-prompt";
+import type { LoadLinksBetween } from "./routes-between";
+import { RouteRow } from "./system-map-route-row";
+import { routeKey } from "./routes-between";
 import type { RepoHealth, SystemMapSelection } from "./types";
+import { useEdgeRoutes, type EdgeRoutes } from "./use-routes-between";
 
 /** Contracts listed in the drawer before it hands off to the Contracts page. */
 export const DRAWER_CONTRACT_ROWS = 8;
@@ -83,34 +89,33 @@ export interface SystemMapDrawerData {
   coChangesHref?: string | undefined;
   LinkComponent?: ElementType | undefined;
   onShowBlastRadius?: ((nodeId: string) => void) | undefined;
+  /** Extraction diagnostics, when the graph came without them (the lean map view). */
+  diagnostics?: ExtractionDiagnostics | null | undefined;
 }
 
 export interface SystemMapDrawerProps extends SystemMapDrawerData {
   selection: SystemMapSelection;
-  /** The drawn graph (collapse + filters applied). */
   graph: SystemGraph;
-  /** The raw graph, for diagnostics and service boundaries. */
-  rawGraph: SystemGraph;
-  collapsed: boolean;
   healthByRepo?: ReadonlyMap<string, RepoHealth> | undefined;
   roleByNodeId?: ReadonlyMap<string, NodeArchitectureRole> | undefined;
   onClose: () => void;
   onSelect: (selection: SystemMapSelection) => void;
+  /** The host's links loader; a relationship lists its routes through it. */
+  loadLinksBetween?: LoadLinksBetween | undefined;
+  /** Map verbs: focus a service, start Between from one, or open Between for a pair. */
+  onFocus?: ((serviceId: string) => void) | undefined;
+  onRoutesFrom?: ((serviceId: string) => void) | undefined;
+  onBetween?: ((a: string, b: string) => void) | undefined;
 }
 
 /**
  * The repository whose contracts the drawer needs for a selection, so the host
- * can fetch before the drawer asks. Accepts raw and collapsed ids.
+ * can fetch before the drawer asks: a service's. A relationship reads its
+ * routes through the links loader, and groups and bands name no one repository.
  */
 export function selectionRepo(graph: SystemGraph | null, selection: SystemMapSelection): string | null {
-  if (!graph || !selection) return null;
-  const repoOfNode = (id: string) =>
-    graph.nodes.find((n) => n.id === id)?.repo ?? (graph.nodes.some((n) => n.repo === id) ? id : null);
-  if (selection.type === "node") return repoOfNode(selection.id);
-  const edge = graph.edges.find((e) => e.id === selection.id);
-  if (edge) return repoOfNode(edge.source);
-  const source = selection.id.split("->")[0];
-  return source ? repoOfNode(source) : null;
+  if (!graph || selection?.type !== "node") return null;
+  return graph.nodes.find((n) => n.id === selection.id)?.repo ?? null;
 }
 
 interface PromptState {
@@ -119,34 +124,68 @@ interface PromptState {
   build: (flavor: AiPromptFlavor) => string;
 }
 
+/** Whether the rail has anything to say about a selection; the map shows no rail otherwise. */
+export function drawerHasSubject(graph: SystemGraph, selection: SystemMapSelection): boolean {
+  if (selection?.type === "node") return graph.nodes.some((n) => n.id === selection.id);
+  if (selection?.type === "edge") return graph.edges.some((e) => e.id === selection.id);
+  return false;
+}
+
+/** Eyebrow, title and a close button over a scrolling body: the rail's one frame. */
+export function SystemMapRailFrame({
+  eyebrow,
+  title,
+  onClose,
+  children,
+}: {
+  eyebrow: string;
+  title: string;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col" role="region" aria-label={title}>
+      <div className="flex shrink-0 items-start justify-between gap-3 border-b border-[var(--color-border-default)] px-4 py-3">
+        <div className="min-w-0">
+          <div className={MICRO_LABEL}>{eyebrow}</div>
+          <h2 className="mt-0.5 text-[15px] font-semibold text-[var(--color-text-primary)] [overflow-wrap:anywhere]">
+            {title}
+          </h2>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close details"
+          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
+        >
+          <X size={14} aria-hidden />
+        </button>
+      </div>
+      <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-4 py-4">{children}</div>
+    </div>
+  );
+}
+
 export function SystemMapDrawer(props: SystemMapDrawerProps) {
-  const { selection, graph, rawGraph, collapsed, onClose } = props;
+  const { selection, graph, onClose } = props;
   const [prompt, setPrompt] = useState<PromptState | null>(null);
-  const resolve = useMemo(() => serviceResolver(rawGraph, collapsed), [rawGraph, collapsed]);
+  const resolve = useMemo(() => serviceResolver(graph), [graph]);
 
   const node = selection?.type === "node" ? graph.nodes.find((n) => n.id === selection.id) ?? null : null;
   const edge = selection?.type === "edge" ? graph.edges.find((e) => e.id === selection.id) ?? null : null;
-  const open = Boolean(node || edge);
   const name = (id: string) => graph.nodes.find((n) => n.id === id)?.name ?? id;
+  if (!node && !edge) return null;
 
   return (
     <>
-      <AdaptivePanel
-        open={open}
-        onOpenChange={(next) => {
-          if (!next) onClose();
-        }}
-        modal={false}
-        // The map, the rows below it and the drawer are one workspace: a click
-        // elsewhere selects something else or does nothing, never closes this.
-        onInteractOutside={(e) => e.preventDefault()}
+      <SystemMapRailFrame
         eyebrow={node ? nodeKindStyle(node.kind).label : "Relationship"}
         title={node ? node.name : edge ? `${name(edge.source)} → ${name(edge.target)}` : ""}
-        widthClassName="md:max-w-[480px]"
+        onClose={onClose}
       >
         {node && <NodeBody {...props} node={node} resolve={resolve} onPrompt={setPrompt} />}
         {edge && <EdgeBody {...props} edge={edge} resolve={resolve} onPrompt={setPrompt} />}
-      </AdaptivePanel>
+      </SystemMapRailFrame>
       <AiPromptModal
         open={prompt !== null}
         onOpenChange={(o) => !o && setPrompt(null)}
@@ -223,10 +262,37 @@ function SelectButton({ onClick, children, title }: { onClick: () => void; child
       type="button"
       onClick={onClick}
       title={title}
-      className="cursor-pointer text-left font-medium text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+      className="cursor-pointer text-left font-medium text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
     >
       {children}
     </button>
+  );
+}
+
+/** A rail verb: a quiet outlined button. */
+function VerbButton({ onClick, children, title }: { onClick: () => void; children: ReactNode; title?: string }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      className="rounded-md border border-[var(--color-border-hover)] px-2.5 py-1 text-xs font-medium text-[var(--color-text-primary)] hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
+    >
+      {children}
+    </button>
+  );
+}
+
+type ServiceVerb = ((serviceId: string) => void) | undefined;
+
+/** A service's map verbs, each offered when the host or the map supports it. */
+function NodeVerbs({ id, onFocus, onRoutesFrom, onShowBlastRadius }: { id: string; onFocus: ServiceVerb; onRoutesFrom: ServiceVerb; onShowBlastRadius: ServiceVerb }) {
+  return (
+    <>
+      {onFocus && <VerbButton onClick={() => onFocus(id)} title="Callers on the left, dependencies on the right">Focus</VerbButton>}
+      {onRoutesFrom && <VerbButton onClick={() => onRoutesFrom(id)}>Routes to…</VerbButton>}
+      {onShowBlastRadius && <VerbButton onClick={() => onShowBlastRadius(id)}>Show blast radius</VerbButton>}
+    </>
   );
 }
 
@@ -246,8 +312,6 @@ type BodyProps<T> = SystemMapDrawerProps & {
 function NodeBody({
   node,
   graph,
-  rawGraph,
-  collapsed,
   healthByRepo,
   roleByNodeId,
   repoContracts,
@@ -258,22 +322,25 @@ function NodeBody({
   repoHref,
   LinkComponent,
   onShowBlastRadius,
+  diagnostics,
   onSelect,
+  onFocus,
+  onRoutesFrom,
   resolve,
   onPrompt,
 }: BodyProps<{ node: SystemNode }>) {
   const health = healthByRepo?.get(node.repo);
-  const mark = health ? healthMark(health.score) : null;
-  // Roles are computed per service, so a merged repo node has none.
-  const role = collapsed ? undefined : roleByNodeId?.get(node.id);
+  // Repo health arrives 0-100; the mark reads 0-10.
+  const mark = health ? healthMark(health.score / 10) : null;
+  const role = roleByNodeId?.get(node.id);
   const style = role ? roleStyle(role.role) : null;
   const reaches = role ? Math.max(role.visibility_fan_out - 1, 0) : 0;
   const reachedBy = role ? Math.max(role.visibility_fan_in - 1, 0) : 0;
 
   const out = neighbourGroups(graph, node.id, "out");
   const incoming = neighbourGroups(graph, node.id, "in");
-  const myCycles = collapsed ? [] : cyclesThrough(cycles, node.id);
-  const diag = serviceDiagnostics(rawGraph.diagnostics, node.id, resolve);
+  const myCycles = cyclesThrough(cycles, node.id);
+  const diag = serviceDiagnostics(diagnostics ?? graph.diagnostics, node.id, resolve);
   const summary = useMemo(
     () => (repoContracts ? summarizeServiceContracts(repoContracts, node.id, resolve) : null),
     [repoContracts, node.id, resolve],
@@ -346,7 +413,7 @@ function NodeBody({
           },
           {
             label: "Architecture role",
-            value: style ? style.label : <span className="text-xs text-[var(--color-text-tertiary)]">{collapsed ? "Per service only" : "Not computed"}</span>,
+            value: style ? style.label : <span className="text-xs text-[var(--color-text-tertiary)]">Not computed</span>,
           },
           { label: "Outgoing to", value: <span className="tabular-nums">{plural(distinct(out, (e) => e.target), "service", "services")}</span> },
           { label: "Incoming from", value: <span className="tabular-nums">{plural(distinct(incoming, (e) => e.source), "service", "services")}</span> },
@@ -362,15 +429,7 @@ function NodeBody({
       )}
 
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-        {onShowBlastRadius && (
-          <button
-            type="button"
-            onClick={() => onShowBlastRadius(node.id)}
-            className="rounded-md border border-[var(--color-border-hover)] px-2.5 py-1 text-xs font-medium text-[var(--color-text-primary)] hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
-          >
-            Show blast radius
-          </button>
-        )}
+        <NodeVerbs id={node.id} onFocus={onFocus} onRoutesFrom={onRoutesFrom} onShowBlastRadius={onShowBlastRadius} />
         <AiPromptButton label="Map before a change" onClick={openServicePrompt} />
         {overview && (
           <Anchor href={overview} LinkComponent={LinkComponent} className="text-xs font-medium">
@@ -401,7 +460,7 @@ function NodeBody({
                 <AiPromptButton
                   variant="icon"
                   label="Break this cycle with AI"
-                  onClick={() => onPrompt(cyclePrompt(c, rawGraph))}
+                  onClick={() => onPrompt(cyclePrompt(c, graph))}
                 />
               </li>
             ))}
@@ -542,7 +601,7 @@ function NeighbourList({
                   <button
                     type="button"
                     onClick={() => onSelect({ type: "node", id: pick(e) })}
-                    className="flex w-full cursor-pointer items-baseline justify-between gap-3 rounded px-1.5 py-1 text-left text-[15px] text-[var(--color-text-primary)] hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                    className="flex w-full cursor-pointer items-baseline justify-between gap-3 rounded px-1.5 py-1 text-left text-[15px] text-[var(--color-text-primary)] hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
                   >
                     <span className="min-w-0 [overflow-wrap:anywhere]">{name(pick(e))}</span>
                     <span className="shrink-0 font-mono text-[10px] tabular-nums text-[var(--color-text-tertiary)]">
@@ -573,17 +632,14 @@ const MATCH_MEANING: Record<string, string> = {
 function EdgeBody({
   edge,
   graph,
-  rawGraph,
-  repoContracts,
-  repoContractsLoading,
   cycles = [],
-  collapsed,
   contractHref,
   contractsHref,
   coChangesHref,
   LinkComponent,
   onSelect,
-  resolve,
+  onBetween,
+  loadLinksBetween,
   onPrompt,
 }: BodyProps<{ edge: SystemEdge }>) {
   const style = edgeKindStyle(edge.kind);
@@ -594,14 +650,15 @@ function EdgeBody({
   const sourceName = source?.name ?? edge.source;
   const targetName = target?.name ?? edge.target;
   const sentence = edgeSentence(edge, sourceName, targetName);
+  const strategy = linkStrategyCopy(edge.strategy);
 
-  const links = useMemo<WorkspaceContractLinkEntry[] | null>(
-    () => (repoContracts && edge.structural ? edgeLinks(edge, repoContracts.links, resolve) : null),
-    [repoContracts, edge, resolve],
-  );
+  const routes = useEdgeRoutes(loadLinksBetween, edge.structural ? edge : null, DRAWER_EVIDENCE_ROWS);
+  const links = routes?.rows.flatMap((r) => (r.link ? [r.link] : [])) ?? null;
   const refs = uniqueRefs(edge);
   const pairs = edge.structural ? [] : coChangePairs(edge);
-  const myCycles = collapsed ? [] : cyclesWithEdge(cycles, edge.id);
+  // The lean map view sends a structural edge's count, not its refs.
+  const keptRefs = edge.contract_refs ? refs.length : (edge.ref_count ?? 0);
+  const myCycles = cyclesWithEdge(cycles, edge.id);
   const name = (id: string) => nodeOf(id)?.name ?? id;
 
   const openEdgePrompt = () =>
@@ -619,6 +676,7 @@ function EdgeBody({
           weightLabel: weightLabel(edge),
           evidence: links ?? [],
           refs,
+          refCount: keptRefs,
           pairs,
           cycles: myCycles.map((c) => c.nodes.map(name)),
           flavor,
@@ -653,7 +711,14 @@ function EdgeBody({
             value: (
               <span title={MATCH_MEANING[edge.match_type]}>
                 {matchTypeLabel(edge.match_type)}
-                <span className="block text-xs text-[var(--color-text-tertiary)]">{MATCH_MEANING[edge.match_type]}</span>
+                {/* How the strongest link was matched, when the edge says; the
+                    exact / candidate meaning otherwise. */}
+                {strategy ? (
+                  <span className="block text-xs text-[var(--color-text-secondary)]">{strategy.label}</span>
+                ) : null}
+                <span className="block text-xs text-[var(--color-text-tertiary)]">
+                  {strategy?.meaning ?? MATCH_MEANING[edge.match_type]}
+                </span>
               </span>
             ),
           },
@@ -666,7 +731,7 @@ function EdgeBody({
             label: "Evidence kept",
             value: (
               <span className="tabular-nums">
-                {plural(edge.structural ? refs.length : pairs.length, "reference", "references")}
+                {plural(edge.structural ? keptRefs : pairs.length, "reference", "references")}
               </span>
             ),
           },
@@ -678,6 +743,9 @@ function EdgeBody({
           label={edge.structural ? "Verify this dependency" : "Check this co-change"}
           onClick={openEdgePrompt}
         />
+        {onBetween && (
+          <VerbButton onClick={() => onBetween(edge.source, edge.target)}>All routes between them</VerbButton>
+        )}
       </div>
 
       {myCycles.length > 0 && (
@@ -686,7 +754,7 @@ function EdgeBody({
             <div key={c.edge_ids.join("|")} className="flex flex-wrap items-center gap-2 text-xs text-[var(--color-text-secondary)]">
               <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-[var(--color-warning)]" />
               This edge closes a cycle: {c.nodes.map(name).join(" → ")} → {name(c.nodes[0] ?? "")}.
-              <AiPromptButton label="Break the cycle" onClick={() => onPrompt(cyclePrompt(c, rawGraph))} />
+              <AiPromptButton label="Break the cycle" onClick={() => onPrompt(cyclePrompt(c, graph))} />
             </div>
           ))}
         </Section>
@@ -704,39 +772,8 @@ function EdgeBody({
             )
           }
         >
-          {repoContractsLoading && !links ? (
-            <p className="text-xs text-[var(--color-text-tertiary)]">Loading the links behind this edge…</p>
-          ) : links && links.length > 0 ? (
-            <>
-              <ul className="m-0 flex list-none flex-col divide-y divide-[var(--color-border-default)] p-0">
-                {links.slice(0, DRAWER_EVIDENCE_ROWS).map((l) => (
-                  <li key={`${l.contract_id}|${l.provider_file}|${l.consumer_file}`} className="flex flex-col gap-0.5 py-2">
-                    {contractHref ? (
-                      <Anchor
-                        href={contractHref({ contract_id: l.contract_id, repo: l.provider_repo, file_path: l.provider_file })}
-                        LinkComponent={LinkComponent}
-                        className="font-mono text-xs [overflow-wrap:anywhere]"
-                      >
-                        {l.contract_id}
-                      </Anchor>
-                    ) : (
-                      <span className="font-mono text-xs [overflow-wrap:anywhere]">{l.contract_id}</span>
-                    )}
-                    <span className="font-mono text-[10px] text-[var(--color-text-tertiary)]">
-                      provides{" "}
-                      <FilePath path={`${l.provider_repo}/${l.provider_file}`} mode="full" className="text-[10px]" />
-                    </span>
-                    <span className="font-mono text-[10px] text-[var(--color-text-tertiary)]">
-                      calls from{" "}
-                      <FilePath path={`${l.consumer_repo}/${l.consumer_file}`} mode="full" className="text-[10px]" />
-                    </span>
-                  </li>
-                ))}
-              </ul>
-              <p className="text-xs text-[var(--color-text-tertiary)]">
-                {`Showing ${Math.min(links.length, DRAWER_EVIDENCE_ROWS)} of ${plural(links.length, "matched link", "matched links")}.`}
-              </p>
-            </>
+          {routes && (routes.loading || routes.rows.length > 0) ? (
+            <EdgeRouteRows routes={routes} contractHref={contractHref} LinkComponent={LinkComponent} />
           ) : refs.length > 0 ? (
             <>
               <ul className="m-0 flex list-none flex-col gap-1 p-0">
@@ -760,6 +797,10 @@ function EdgeBody({
                 {`Showing ${Math.min(refs.length, DRAWER_EVIDENCE_ROWS)} of ${refs.length} contract ids the graph kept for this edge; it aggregates ${weightLabel(edge)}.`}
               </p>
             </>
+          ) : keptRefs > 0 ? (
+            <p className="text-xs text-[var(--color-text-tertiary)]">
+              {`The graph kept ${plural(keptRefs, "contract id", "contract ids")} for this edge; it aggregates ${weightLabel(edge)}.`}
+            </p>
           ) : (
             <p className="text-xs text-[var(--color-text-tertiary)]">The graph kept no evidence for this edge.</p>
           )}
@@ -803,6 +844,32 @@ function EdgeBody({
         </Section>
       )}
     </div>
+  );
+}
+
+/** The routes behind a structural edge, from the links loader; the "All routes" verb pages the rest. */
+function EdgeRouteRows({
+  routes,
+  contractHref,
+  LinkComponent,
+}: {
+  routes: EdgeRoutes;
+  contractHref?: ((ref: ContractRef) => string) | undefined;
+  LinkComponent?: ElementType | undefined;
+}) {
+  if (routes.loading) return <p className="text-xs text-[var(--color-text-tertiary)]">Loading the routes behind this edge…</p>;
+  return (
+    <>
+      <ul className="m-0 flex list-none flex-col divide-y divide-[var(--color-border-default)] p-0">
+        {routes.rows.map((r, i) => (
+          <RouteRow key={`${routeKey(r)}#${i}`} row={r} contractHref={contractHref} LinkComponent={LinkComponent} />
+        ))}
+      </ul>
+      <p className="text-xs text-[var(--color-text-tertiary)]">
+        {`Showing ${routes.rows.length.toLocaleString()} of ${plural(Math.max(routes.total, routes.rows.length), "route", "routes")}.`}
+        {routes.stale && " The map and the contracts were read at different commits, so some may be missing."}
+      </p>
+    </>
   );
 }
 

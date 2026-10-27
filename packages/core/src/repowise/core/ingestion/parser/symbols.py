@@ -23,6 +23,7 @@ from ..extractors.cobol import cobol_condition_parent
 from ..extractors.synthetic_symbols import extract_synthetic_symbols
 from ..extractors.synthetic_symbols.csharp_extension_blocks import drop_extension_block_symbols
 from ..extractors.visibility import py_module_all_names, ts_deferred_export_names
+from ..lang_helpers.source_prep import cpp_class_head_macros
 from ..language_configs import LanguageConfig
 from ..models import FileInfo, Symbol
 from ..parser_helpers import (
@@ -220,6 +221,7 @@ def _extract_symbols(
     config: LanguageConfig,
     file_info: FileInfo,
     src: str,
+    original_source: bytes = b"",
 ) -> list[Symbol]:
     language = file_info.language
     symbols: list[Symbol] = []
@@ -244,7 +246,9 @@ def _extract_symbols(
     if language == "python":
         py_all_names = py_module_all_names(src)
     cpp_exports = (
-        collect_cpp_export_types(matches, src) if language == "cpp" else CppExportTypes()
+        collect_cpp_export_types(matches, src, cpp_class_head_macros(original_source))
+        if language == "cpp"
+        else CppExportTypes()
     )
 
     file = _SymbolPass(config, file_info, src, cpp_exports, ts_deferred_exports, py_all_names)

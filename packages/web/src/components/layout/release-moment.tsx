@@ -63,13 +63,21 @@ function useReleaseMoment(firstRepoId: string | null) {
   const [preview, setPreview] = useState(false);
   const version = meta?.server_version ?? null;
 
+  // The query as the page loaded: the welcome drops `?tour=1` once it opens,
+  // which may be before the version arrives.
+  const loadSearch = useRef<string | null>(null);
+  useEffect(() => {
+    loadSearch.current ??= window.location.search;
+  }, []);
+
   // Once per version: StrictMode runs effects twice in development, and the
   // second run would read the version the first one stored.
   const decided = useRef<string | null>(null);
   useEffect(() => {
     if (!version || !meta || decided.current === version) return;
     decided.current = version;
-    const next = decideMoment(version, meta.highlights ?? [], window.location.search);
+    const search = loadSearch.current ?? window.location.search;
+    const next = decideMoment(version, meta.highlights ?? [], search);
     setPreview(next.preview);
     setMoment(next.moment);
     // `meta` refreshes hourly with the same version; the version is the key.

@@ -108,20 +108,26 @@ def print_completion_panel(
         console.print(line)
 
 
-def serve_step(target: str = "dashboard") -> tuple[str, str]:
+def serve_step(target: str = "dashboard", gloss: str | None = None) -> tuple[str, str]:
     """The ``repowise serve`` row every completion panel leads with.
 
     The port is the one serve tries first; serve moves to the next free port
-    when it is taken, so the row says so rather than promising an exact URL.
+    when it is taken, so the row says so instead of promising an exact URL.
+    *gloss* is a first line saying what serve is for, above the address.
     """
     from repowise.cli.commands.serve_cmd._ports import DEFAULT_UI_PORT
     from repowise.cli.commands.serve_cmd._web_assets import _NODE_MIN_MAJOR
 
+    where = f"http://localhost:{DEFAULT_UI_PORT} or the next free port"
+    where = f"{gloss}\n{where}" if gloss else f"{target} at {where}"
     return (
         "repowise serve",
-        f"{target} at http://localhost:{DEFAULT_UI_PORT} or the next free port\n"
-        f"(needs Node {_NODE_MIN_MAJOR}+; the first run downloads the UI)",
+        f"{where}\n(needs Node {_NODE_MIN_MAJOR}+; the first run downloads the UI)",
     )
+
+
+#: What ``repowise serve`` is for at the end of ``init``.
+TOUR_GLOSS = "a guided tour of all this in your browser"
 
 
 #: Rows after ``repowise serve``.
@@ -130,7 +136,6 @@ _MAX_FOLLOW_UPS = 2
 
 def build_contextual_next_steps(
     *,
-    index_only: bool,
     fast_mode: bool = False,
     dead_unreachable: int = 0,
     dead_unused: int = 0,
@@ -151,23 +156,19 @@ def build_contextual_next_steps(
 
     1. nothing wired an MCP client, so no agent can reach any of this yet
        (``--no-editor-setup``, the CI shape, has no Connected line to say so);
-    2. the index is deliberately partial (fast, or index-only);
+    2. the index is deliberately partial (fast);
     3. the largest concrete finding, or a search row when there is none.
     """
     candidates: list[tuple[str, str]] = []
     if setup is not None and getattr(setup, "editor_setup_disabled", False):
         candidates.append(("repowise mcp .", "connect an MCP client (Cursor, Codex, Claude Code)"))
-    from repowise.core.index_scope import FAST_TO_FULL_COMMAND, MODEL_COMMAND
+    from repowise.core.index_scope import FAST_TO_FULL_COMMAND
 
+    # Documentation built from the index gets the panel's "add a model" block
+    # instead of a step, so the model command is not named twice.
     if fast_mode:
         candidates.append(
             (FAST_TO_FULL_COMMAND, "build documentation from code and the full git history (no key)")
-        )
-    elif index_only:
-        # `generate` is the scoped, cost-gated upgrade: a coverage, a directory
-        # or one page at a time, each behind an estimate.
-        candidates.append(
-            (MODEL_COMMAND, "write the documentation with a model (needs a key)")
         )
     dead = dead_unreachable + dead_unused
     if dead > 0:
@@ -178,13 +179,14 @@ def build_contextual_next_steps(
             (f"repowise risk {escape(top_hotspot)}", "assess risk for the top hotspot")
         )
     elif decision_count > 0:
+        noun = "candidate" if decision_count == 1 else "candidates"
         candidates.append(
-            ("repowise decision list", f"browse {decision_count} architectural decisions")
+            ("repowise decision candidates", f"review {decision_count} decision {noun}")
         )
     elif not fast_mode:
         candidates.append(('repowise search "<query>"', "search the documentation"))
 
-    return [serve_step(), *candidates[:_MAX_FOLLOW_UPS]]
+    return [serve_step(gloss=TOUR_GLOSS), *candidates[:_MAX_FOLLOW_UPS]]
 
 
 def keyless_upgrade_note(semantic_available: bool, reindex_command: str | None = None) -> str:

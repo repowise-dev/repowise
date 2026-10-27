@@ -28,7 +28,7 @@ from repowise.cli.ui.plan_screen import (
     render_plan,
 )
 from repowise.cli.ui.repo_scanner import RepoScanInfo
-from repowise.cli.ui.subscription import SubscriptionContext
+from repowise.cli.ui.subscription import CliAuth, SubscriptionContext
 
 _SCAN = RepoScanInfo(total_files=50, language_counts={"Python": 30}, total_commits=400)
 _OUTSIDE = ("Global repowise MCP entry (Claude Code) now points at /old, will point here: /new",)
@@ -82,6 +82,15 @@ def test_a_logged_in_claude_code_is_offered_with_quota_and_time(monkeypatch: Any
     assert "uses your Claude Code login" in out
     assert "at a time" in out
     assert "$0.00" not in out
+
+
+def test_an_unconfirmed_agent_cli_is_never_the_offered_default() -> None:
+    unchecked = CliAuth("sign-in not checked", offer=False)
+    assert build_offer({"claude_cli": unchecked}, ("claude_cli",), RunShape(_SCAN)).price is None
+    offer = build_offer(
+        {"claude_cli": unchecked, "openai": "OPENAI_API_KEY"}, ("claude_cli",), RunShape(_SCAN)
+    )
+    assert offer.price is not None and offer.price.provider == "openai"
 
 
 def test_a_chosen_model_changes_the_plan_and_the_m_key() -> None:

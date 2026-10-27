@@ -223,6 +223,9 @@ async def _resolve_repo_context(repo: str | None = None) -> Any:
 
 def _unsupported_repo_all(tool_name: str) -> dict:
     """Return an error dict for tools that don't support ``repo='all'``."""
+    from repowise.server.mcp_server._savings.interaction import note_error_reason
+
+    note_error_reason("invalid_args")
     registry = _state._registry
     available = registry.get_all_aliases() if registry is not None else []
     return {
@@ -566,7 +569,9 @@ def _compute_alignment(
             "This file is ungoverned — it may be an outlier or simply undocumented."
             if currencies
             else "This index holds no accepted decisions, so no file is governed "
-            "yet; a person accepts a candidate with `repowise decision confirm`."
+            "yet; review `repowise decision candidates` and accept one with "
+            "`repowise decision confirm <id> --agent <your slug>`, adding "
+            "`--evidence <commit|file>` or `--reason` if it lacks them."
         )
         return {
             "score": "none",

@@ -15,7 +15,7 @@ import os
 import threading
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -182,6 +182,29 @@ class _FilePassInputs:
     trace_index: Any
 
 
+@dataclass
+class _IndexSetup:
+    """Result of :meth:`GitIndexer._prepare_full_index`.
+
+    ``outcome`` is ``"ready"`` or the reason ``index_repo`` returns early
+    (``"no_repo"``, ``"partial_clone"``, ``"no_tracked"``).
+    """
+
+    outcome: str
+    repo: Any | None = None
+    tracked_files: list[str] = field(default_factory=list)
+    indexable_files: list[str] = field(default_factory=list)
+    history_files: set[str] = field(default_factory=set)
+    commit_sink: list[dict] = field(default_factory=list)
+    prov_clf: Any = None
+    trace_index: Any = None
+    sample: Any = None
+    commit_index: Any = None
+    fallback_files: set[str] = field(default_factory=set)
+    fallback_note_agents: dict[str, Any] = field(default_factory=dict)
+    as_of_ts: Any = None
+
+
 class _ChangedScope(NamedTuple):
     """An update's file sets after the allowlist and the history tier."""
 
@@ -285,58 +308,43 @@ class GitIndexer:
         from repowise.core.pipeline.phase_timing import timed
 
         start = time.monotonic()
-        repo = self._get_repo()
-        if repo is None:
-            return GitIndexSummary(0, 0, 0, 0.0), []
 
-        if self._skip_partial_clone_history(repo, on_warning=on_warning):
+        # Everything up to the per-file pass is blocking git work (repo open,
+        # ``git ls-files``, the repo-wide commit walk, trace and note loads).
+        # Run it in a worker thread so it cannot stall the ingestion stage
+        # that shares this event loop via ``asyncio.gather``.
+        setup = await asyncio.to_thread(self._prepare_full_index, on_warning, timings)
+
+        if setup.outcome == "no_repo":
+            return GitIndexSummary(0, 0, 0, 0.0), []
+        if setup.outcome == "partial_clone":
             if on_start is not None:
                 on_start(0)
-            with contextlib.suppress(Exception):
-                repo.close()
             return GitIndexSummary(0, 0, 0, time.monotonic() - start), []
-
-        tracked_files = self._get_tracked_files(repo)
-        if not tracked_files:
+        if setup.outcome == "no_tracked":
             return GitIndexSummary(0, 0, 0, 0.0), []
 
-        # Two tiers. Code files get the full per-file pass (blame, churn
-        # signals, the per-file fallback walk). Every other tracked file that
-        # is not vendored, a lockfile or binary gets its history tier (counts,
-        # span, authors) from the shared repo-wide walk only.
-        indexable_files = [fp for fp in tracked_files if not _should_skip_index(fp)]
-        history_files = _history_tier_files(
-            self.repo_path, tracked_files, extra_exclude_patterns=self._exclude_patterns
-        )
+        repo = setup.repo
+        tracked_files = setup.tracked_files
+        indexable_files = setup.indexable_files
+        history_files = setup.history_files
+        commit_sink = setup.commit_sink
+        prov_clf = setup.prov_clf
+        trace_index = setup.trace_index
+        sample = setup.sample
+        commit_index, fallback_files = setup.commit_index, setup.fallback_files
+        fallback_note_agents = setup.fallback_note_agents
+        as_of_ts = setup.as_of_ts
+
+        # Fired from the event loop, as before the setup moved to a thread.
+        if on_start is not None:
+            on_start(len(indexable_files) + len(history_files))
 
         from concurrent.futures import ThreadPoolExecutor
 
         workers = git_worker_count(len(indexable_files), requested=self.max_workers)
         loop = asyncio.get_event_loop()
 
-        commit_sink: list[dict] = []
-        prov_clf = self._provenance_classifier()
-        # Agent-trace records, read once and shared with both commit-index walks
-        # and the line-share merge, so they load even when no walk runs.
-        trace_index = self._load_trace_index(repo)
-        sample = self._full_commit_index(
-            repo, indexable_files, history_files, commit_sink, prov_clf, trace_index, timings
-        )
-        commit_index, fallback_files = sample.commits, sample.fallback_files
-
-        # A non-code file the shared walks could not prove complete gets no row
-        # (its count stays unknown) rather than a per-file walk of its own.
-        history_files -= fallback_files
-        if on_start is not None:
-            on_start(len(indexable_files) + len(history_files))
-
-        fallback_note_agents: dict[str, Any] = {}
-        if fallback_files.intersection(indexable_files):
-            from ..git_commit_index import load_git_ai_note_agents
-
-            fallback_note_agents = load_git_ai_note_agents(repo, None)
-
-        as_of_ts = self._resolve_as_of_ts(repo)
         executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="git-idx")
         get_thread_repo, close_thread_repos = self._thread_repo_pool()
         inputs = _FilePassInputs(
@@ -419,7 +427,7 @@ class GitIndexer:
         # History-tier rows take none of the code signals.
         code_results = [meta for meta in results if meta["file_path"] not in history_files]
         merge_code_signals(code_results, walk, prior_defects, trace_index)
-        commit_rows, commit_file_rows = build_commit_tables(commit_sink)
+        commit_rows, commit_file_rows = build_commit_tables(commit_sink, self._scope_prefix(repo))
 
         duration = time.monotonic() - start
         hotspots = sum(1 for m in results if m.get("is_hotspot", False))
@@ -453,6 +461,76 @@ class GitIndexer:
             duration=f"{summary.duration_seconds:.1f}s",
         )
         return summary, results
+
+    def _prepare_full_index(
+        self,
+        on_warning: Callable[[str], None] | None,
+        timings: Any | None,
+    ) -> _IndexSetup:
+        """Blocking setup for :meth:`index_repo`, meant for a worker thread.
+
+        Opens the repo, lists tracked files, splits them into the two tiers,
+        runs the repo-wide commit walk and loads the trace index, git-ai notes
+        and as-of timestamp. Never calls ``on_start``: that stays on the loop.
+        """
+        repo = self._get_repo()
+        if repo is None:
+            return _IndexSetup(outcome="no_repo")
+
+        if self._skip_partial_clone_history(repo, on_warning=on_warning):
+            with contextlib.suppress(Exception):
+                repo.close()
+            return _IndexSetup(outcome="partial_clone")
+
+        tracked_files = self._get_tracked_files(repo)
+        if not tracked_files:
+            return _IndexSetup(outcome="no_tracked")
+
+        # Two tiers. Code files get the full per-file pass (blame, churn
+        # signals, the per-file fallback walk). Every other tracked file that
+        # is not vendored, a lockfile or binary gets its history tier (counts,
+        # span, authors) from the shared repo-wide walk only.
+        indexable_files = [fp for fp in tracked_files if not _should_skip_index(fp)]
+        history_files = _history_tier_files(
+            self.repo_path, tracked_files, extra_exclude_patterns=self._exclude_patterns
+        )
+
+        commit_sink: list[dict] = []
+        prov_clf = self._provenance_classifier()
+        # Agent-trace records, read once and shared with both commit-index walks
+        # and the line-share merge, so they load even when no walk runs.
+        trace_index = self._load_trace_index(repo)
+        sample = self._full_commit_index(
+            repo, indexable_files, history_files, commit_sink, prov_clf, trace_index, timings
+        )
+        commit_index, fallback_files = sample.commits, sample.fallback_files
+
+        # A non-code file the shared walks could not prove complete gets no row
+        # (its count stays unknown) rather than a per-file walk of its own.
+        history_files -= fallback_files
+
+        fallback_note_agents: dict[str, Any] = {}
+        if fallback_files.intersection(indexable_files):
+            from ..git_commit_index import load_git_ai_note_agents
+
+            fallback_note_agents = load_git_ai_note_agents(repo, None)
+
+        as_of_ts = self._resolve_as_of_ts(repo)
+        return _IndexSetup(
+            outcome="ready",
+            repo=repo,
+            tracked_files=tracked_files,
+            indexable_files=indexable_files,
+            history_files=history_files,
+            commit_sink=commit_sink,
+            prov_clf=prov_clf,
+            trace_index=trace_index,
+            sample=sample,
+            commit_index=commit_index,
+            fallback_files=fallback_files,
+            fallback_note_agents=fallback_note_agents,
+            as_of_ts=as_of_ts,
+        )
 
     def _full_commit_index(
         self,
@@ -745,6 +823,13 @@ class GitIndexer:
         drawn from the same tracked-file set (the parsed files miss .rst,
         LICENSE and the like), and the co-change walk reads that set too.
         """
+        # Callers hand over paths relative to the indexed directory; git and the
+        # rows this indexer writes are keyed relative to the repository root.
+        module_prefix = self._module_prefix(repo)
+        if module_prefix:
+            changed_file_paths = [f"{module_prefix}/{p}" for p in changed_file_paths]
+            if all_files:
+                all_files = {f"{module_prefix}/{p}" for p in all_files}
         tier_paths = (self._get_tracked_files(repo) or all_files) if all_files else None
         history_files = _history_tier_files(
             self.repo_path,
@@ -934,7 +1019,7 @@ class GitIndexer:
                 provenance_classifier=self._provenance_classifier(),
             )
             rows = build_commit_rows(sink)
-            files = build_commit_file_rows(sink)
+            files = build_commit_file_rows(sink, self._scope_prefix(repo))
             # Only after both succeed: the sink is the caller's list, and a
             # partial extend would outlive the failure that caused it.
             if file_rows_sink is not None:
@@ -1337,7 +1422,8 @@ class GitIndexer:
 
     def _get_tracked_files(self, repo: Any) -> list[str]:
         try:
-            output = repo.git.ls_files()
+            prefix = self._scope_prefix(repo)
+            output = repo.git.ls_files("--", prefix) if prefix else repo.git.ls_files()
             paths = [f for f in output.splitlines() if f.strip()]
             if self._exclude.patterns:
                 paths = [p for p in paths if not self._exclude.match_file(p)]
@@ -1345,6 +1431,30 @@ class GitIndexer:
         except Exception as exc:
             logger.warning("Failed to list tracked files", error=str(exc))
             return []
+
+    def _module_prefix(self, repo: Any) -> str:
+        """Where the indexed path sits inside the git working tree ("" at the root).
+
+        Git, and so every key this indexer writes, is relative to the root; the
+        index above it is relative to the indexed directory.
+        """
+        from ..change_detector import _prefix_in_repo
+
+        return _prefix_in_repo(repo, self.repo_path)
+
+    def _scope_prefix(self, repo: Any) -> str:
+        """Directory whose files get git rows, "" for the whole repository.
+
+        An index of a subdirectory records history for that subdirectory only.
+        Without this, indexing one module of a large repository wrote a row per
+        file of the whole repository, and spent most of the git pass on files
+        nothing could ever look up. ``REPOWISE_GIT_SCOPE=repo`` restores the
+        whole-repository behaviour, which keeps co-change partners that live
+        outside the module.
+        """
+        if os.environ.get("REPOWISE_GIT_SCOPE", "module").strip().lower() == "repo":
+            return ""
+        return self._module_prefix(repo)
 
     # ------------------------------------------------------------------
     # Backward-compatible instance shims

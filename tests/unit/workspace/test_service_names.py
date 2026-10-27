@@ -148,6 +148,95 @@ def test_a_name_claimed_for_two_repos_is_left_unmapped(tmp_path: Path) -> None:
     assert m.ambiguous[(HOST, "api")] == ("a", "b")
 
 
+def test_compose_defaults_and_an_empty_submodule_context_name_the_image(tmp_path: Path) -> None:
+    # ReportPortal's stack: each service builds from a submodule that is empty
+    # in the deploy checkout, and its image sits behind ${X_IMAGE-default}.
+    for r in ("reportportal/service-api", "service-api", "service-jobs", "other"):
+        (tmp_path / r).mkdir(parents=True)
+    (tmp_path / "other" / "Dockerfile").write_text("FROM scratch\n")
+    (tmp_path / "reportportal" / "docker-compose.yml").write_text(
+        "services:\n"
+        "  api:\n"
+        "    image: ${API_IMAGE-reportportal/service-api:5.15.5}\n"
+        "    build: ./service-api\n"
+        "    environment:\n"
+        "      RP_JOBS_BASEURL: ${JOBS_URL:-http://jobs:8686}\n"
+        "      RP_AMQP_HOST: ${AMQP_HOST}\n"
+        "  jobs: {image: '${JOBS_IMAGE:-reportportal/service-jobs}', build: ./service-jobs}\n"
+        "  analyzer: {image: reportportal/service-auto-analyzer, build: ./service-auto-analyzer}\n"
+        "  built: {image: org/service-jobs, build: ../other}\n"
+        "  split: {image: org/split, build: {context: ../other, dockerfile: deploy/Dockerfile}}\n"
+    )
+    m = build_service_name_map(
+        _repos(tmp_path, "reportportal", "service-api", "service-jobs", "other")
+    )
+    assert _mapped(m) == {
+        "api": ("service-api", "compose"),
+        "jobs": ("service-jobs", "compose"),
+        "built": ("other", "compose"),  # a context with files wins over the image
+        "split": ("other", "compose"),  # the context decides, not the Dockerfile's dir
+    }
+    assert _mapped(m, ENV) == {"rp_jobs_baseurl": ("service-jobs", "compose")}
+
+
+def test_env_files_feed_token_entries_and_keep_only_addresses(tmp_path: Path) -> None:
+    for r in ("web", "catalogue", "cart"):
+        (tmp_path / r).mkdir()
+    (tmp_path / "web" / ".env").write_text(
+        "# local stack\n"
+        "CATALOGUE_URL=http://catalogue:8080\n"
+        "export\tCART_HOST='cart'\t# the cart service\r\n"
+        "DB_PASSWORD=catalogue\n"
+        "API_TOKEN=cart:8080\n"
+        "STRIPE_URL=https://api.stripe.com\n"
+    )
+    (tmp_path / "web" / ".env.example").write_text("SEARCH_URL=http://localhost:9200\n")
+    (tmp_path / "web" / "orders.env").write_text("ORDERS_URL=${ORDERS:-http://cart:80}\n")
+    m = build_service_name_map(_repos(tmp_path, "web", "catalogue", "cart"))
+    assert _mapped(m, ENV) == {
+        "catalogue_url": ("catalogue", "env_file"),
+        "cart_host": ("cart", "env_file"),
+        "api_token": ("cart", "env_file"),  # host:port is an address under any key
+        "orders_url": ("cart", "env_file"),
+    }
+    assert not _mapped(m)
+
+
+@pytest.mark.parametrize(
+    "rel",
+    [
+        "docs/reference/docker/docker-compose.yml",
+        "e2e-tests/docker-compose.yml",
+        "integration-tests/docker-compose.yml",
+        "demo/docker-compose.yml",
+        "tutorial-1/docker-compose.yml",
+        "third_party/stack/docker-compose.yml",
+    ],
+)
+def test_only_deployed_config_claims_a_name(tmp_path: Path, rel: str) -> None:
+    # A docs, demo, test or vendored stack is not the deployed one: its sole
+    # claim on a name must not map it, nor a second claim make a real name ambiguous.
+    compose = "services:\n  api: {build: .}\n  es01: {build: ./es}\n"
+    (tmp_path / "svc" / "deploy").mkdir(parents=True)  # a deploy/ tree is production
+    (tmp_path / "svc" / "deploy" / "docker-compose.yml").write_text(
+        "services:\n  api: {build: ..}\n"
+    )
+    (tmp_path / "other" / rel).parent.mkdir(parents=True)
+    (tmp_path / "other" / rel).write_text(compose)
+    m = build_service_name_map(_repos(tmp_path, "svc", "other"))
+    assert _mapped(m) == {"api": ("svc", "compose")}
+    assert not m.ambiguous
+
+
+def test_a_docs_gateway_config_states_no_route(tmp_path: Path) -> None:
+    conf = "server {\n  location /api/ { proxy_pass http://api:8080/; }\n}\n"
+    for rel in ("nginx/default.conf", "docs/nginx/default.conf"):
+        (tmp_path / "web" / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / "web" / rel).write_text(conf)
+    m = build_service_name_map(_repos(tmp_path, "web"))
+    assert {r.file for r in m.routes} == {"web/nginx/default.conf"}
+
+
 def test_k8s_service_by_selector_label_and_never_a_sibling_by_location() -> None:
     m = build_service_name_map({"petclinic": FIXTURES / "petclinic"})
     # demo-db sits in the same repo beside another Service: not its own.

@@ -34,8 +34,20 @@ _OBJECT_FIELD_NAMES = ("object", "value", "argument", "operand", "expression")
 # Leaf node types that carry a declared name at the bottom of a C/C++
 # ``declarator`` chain.
 _DECLARATOR_NAME_KINDS = frozenset(
-    {"identifier", "field_identifier", "type_identifier", "qualified_identifier"}
+    {
+        "identifier",
+        "field_identifier",
+        "type_identifier",
+        "qualified_identifier",
+        "destructor_name",
+        "operator_name",
+        "operator_cast",
+    }
 )
+# Declarators whose inner declarator is a plain child, not a ``declarator`` field.
+_FIELDLESS_DECLARATORS = ("parenthesized_declarator", "reference_declarator")
+# C++ ``= default`` / ``= delete`` bodies: a declaration, not a function unit.
+_NO_BODY_CLAUSES = frozenset({"default_method_clause", "delete_method_clause"})
 
 # Longest callee path a callback's name carries. A longer chain keeps its
 # trailing segments, which name the call the callback is handed to.
@@ -167,8 +179,8 @@ def _find_name(node: Node) -> str:
     hops = 0
     while decl is not None and hops < 6:
         if decl.type in _DECLARATOR_NAME_KINDS and decl.text is not None:
-            return decl.text.decode("utf-8", errors="replace")
-        decl = decl.child_by_field_name("declarator") or decl.child_by_field_name("name")
+            return _declarator_name(decl)
+        decl = _inner_declarator(decl) or decl.child_by_field_name("name")
         hops += 1
     for child in node.children:
         if (
@@ -177,6 +189,66 @@ def _find_name(node: Node) -> str:
         ):
             return child.text.decode("utf-8", errors="replace")
     return "<anonymous>"
+
+
+def _inner_declarator(decl: Node) -> Node | None:
+    """The next declarator down a C/C++ declarator spine, or ``None``."""
+    inner = decl.child_by_field_name("declarator")
+    if inner is None and decl.type in _FIELDLESS_DECLARATORS:
+        inner = next((c for c in decl.named_children if not is_comment(c)), None)
+    return inner
+
+
+def _declarator_name(decl: Node) -> str:
+    """The name a C/C++ declarator leaf spells, without return type or signature."""
+    if decl.type == "qualified_identifier":
+        leaf = decl
+        while leaf.type == "qualified_identifier":
+            name = leaf.child_by_field_name("name")
+            if name is None:
+                return _node_text(decl)
+            leaf = name
+        # ``EXPORT T* f()`` nests the function declarator under the name.
+        while leaf.type not in _DECLARATOR_NAME_KINDS and (inner := _inner_declarator(leaf)):
+            leaf = inner
+        head = (decl.text or b"")[: leaf.start_byte - decl.start_byte]
+        prefix = head.decode("utf-8", errors="replace")
+        return prefix[_scope_start(prefix) :] + _declarator_name(leaf)
+    if decl.type == "operator_cast":
+        # ``operator bool() const`` is named ``operator bool``.
+        return " ".join(_node_text(decl).split("(", 1)[0].split())
+    return _node_text(decl)
+
+
+def _scope_start(prefix: str) -> int:
+    """Where the ``A::B<T>::`` run that ends *prefix* starts.
+
+    A macro before the return type (``EXPORT bool A::f``,
+    ``EXPORT std::string f``) makes the grammar read the return type as part
+    of the qualified name; only the ``::``-joined run before the name is scope.
+    """
+    start = len(prefix)
+    while prefix.endswith("::", 0, start):
+        end = start - 2
+        if end > 0 and prefix[end - 1] == ">":
+            end = _template_open(prefix, end - 1)
+        seg = end
+        while seg > 0 and (prefix[seg - 1].isalnum() or prefix[seg - 1] == "_"):
+            seg -= 1
+        start = seg
+        if seg == end:
+            break
+    return start
+
+
+def _template_open(text: str, close: int) -> int:
+    """Index of the ``<`` matching the ``>`` at *close*, or *close* + 1 if none."""
+    depth = 0
+    for i in range(close, -1, -1):
+        depth += {">": 1, "<": -1}.get(text[i], 0)
+        if depth == 0:
+            return i
+    return close + 1
 
 
 _SWIFT_PROPERTY_UNITS = frozenset({"computed_property", "willset_didset_block", "accessor_list"})
@@ -292,12 +364,37 @@ def _dart_signature_sibling(body: Node) -> Node | None:
     return sib
 
 
+_DART_ACCESSOR_PREFIX = {"getter_signature": "get", "setter_signature": "set"}
+
+
+def _dart_signature_name(sig: Node) -> str:
+    """``A`` / ``A.named`` for a constructor, ``get x`` / ``set x`` for an
+    accessor, ``operator ==`` for an operator, so no two members of one
+    class share a name."""
+    if sig.type in ("constructor_signature", "factory_constructor_signature"):
+        return ".".join(_node_text(c) for c in sig.children if c.type == "identifier")
+    if sig.type in _DART_ACCESSOR_PREFIX:
+        return f"{_DART_ACCESSOR_PREFIX[sig.type]} {_find_name(sig)}"
+    if sig.type == "operator_signature":
+        # The symbol sits between the ``operator`` keyword and the parameters.
+        kinds = [c.type for c in sig.children]
+        start = kinds.index("operator") + 1 if "operator" in kinds else len(kinds)
+        symbol = "".join(
+            _node_text(c) for c in sig.children[start:] if c.type != "formal_parameter_list"
+        )
+        params = next((c for c in sig.children if c.type == "formal_parameter_list"), None)
+        if symbol == "-" and params is not None and params.named_child_count == 0:
+            symbol = "unary-"  # Dart's own name, apart from binary ``-``
+        return f"operator {symbol}"
+    return _find_name(sig)
+
+
 def _find_function_entry_name(node: Node, lmap: LanguageNodeMap) -> str:
     if node.type not in lmap.lambda_kinds:
         if node.type == "function_body":
             sig = _dart_signature_sibling(node)
             if sig is not None:
-                return _find_name(sig)
+                return _dart_signature_name(sig)
         return _find_name(node)
     assigned = _find_assigned_lambda_name(node)
     if assigned:
@@ -313,8 +410,20 @@ def is_misread_scope(node: Node, lmap: LanguageNodeMap) -> bool:
 
 
 def is_function_node(node: Node, lmap: LanguageNodeMap) -> bool:
-    """True for a function definition, False for a scope the grammar misread as one."""
-    return node.type in lmap.function_kinds and not is_misread_scope(node, lmap)
+    """True for a function definition, False for a scope the grammar misread as
+    one or a declaration with no body (abstract, interface, extern)."""
+    return (
+        node.type in lmap.function_kinds
+        and not is_misread_scope(node, lmap)
+        and not (lmap.bodyless is not None and lmap.bodyless(node))
+    )
+
+
+def _is_function_unit(node: Node, lmap: LanguageNodeMap) -> bool:
+    """A function with code of its own: not a C++ ``= default`` / ``= delete`` member."""
+    return is_function_node(node, lmap) and not any(
+        c.type in _NO_BODY_CLAUSES for c in node.children
+    )
 
 
 def _collect_function_nodes(root: Node, lmap: LanguageNodeMap) -> list[Node]:
@@ -334,7 +443,7 @@ def _collect_function_nodes(root: Node, lmap: LanguageNodeMap) -> list[Node]:
         if node.type in lmap.lambda_kinds and _is_test_suite_callback(node, lmap):
             stack.extend(node.children)
             continue
-        if is_function_node(node, lmap) or node.type in lmap.lambda_kinds:
+        if _is_function_unit(node, lmap) or node.type in lmap.lambda_kinds:
             out.append(node)
             continue
         for child in node.children:
@@ -363,7 +472,7 @@ def _nested_function_nodes(
         node
         for node in candidates
         if node.id not in seen
-        and is_function_node(node, lmap)
+        and _is_function_unit(node, lmap)
         and not (local_value is not None and local_value(node))
     ]
 
@@ -418,10 +527,7 @@ def _declarator_parameter_list(fn_node: Node) -> Node | None:
     while node is not None:
         if node.type == "function_declarator":
             params = node.child_by_field_name("parameters")
-        inner = node.child_by_field_name("declarator")
-        if inner is None and node.type in ("parenthesized_declarator", "reference_declarator"):
-            inner = next((c for c in node.named_children if not is_comment(c)), None)
-        node = inner
+        node = _inner_declarator(node)
     return params
 
 

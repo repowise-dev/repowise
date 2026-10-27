@@ -666,7 +666,7 @@ async def test_get_why_asks_git_about_the_top_record_only(session, setup_mcp, mo
 
     calls: list[tuple] = []
 
-    def _fake(root, *, created_at, nodes, evidence_commits=()):
+    def _fake(root, *, created_at, nodes, evidence_commits=(), accepted_at=None):
         calls.append((root, tuple(nodes)))
         return "nothing in the 1 file it governs has changed since 2026-01-01"
 
@@ -851,6 +851,7 @@ async def test_get_why_targets_do_not_bind_a_record_whose_files_are_gone(session
             id=f"gone{flag}",
             repository_id=setup_mcp,
             title=f"Legacy rule {flag}",
+            decision="keep the legacy path",
             rationale="why",
             affected_files_json=json.dumps([path]),
             source="pr",

@@ -33,10 +33,16 @@ export interface ProviderInfo {
   accepts_base_url?: boolean;
   /** Can point at a local OpenAI-compatible server (LM Studio) with no key. */
   local_server?: boolean;
+  /** A model that runs on this machine (not an agent CLI). */
+  local_model?: boolean;
   /** Env vars a user sets to make the provider usable. */
   env_vars?: string[];
   /** One line on how to install or set it up. */
   setup_hint?: string;
+  /** What on this machine makes it usable: a signed-in agent CLI (only with
+   *  `detect`), a key in the env or the repo's `.repowise/.env`, or a key
+   *  stored on this server. */
+  detected?: "signed_in" | "installed" | "env" | "saved" | null;
 }
 
 export interface EmbedderInfo {

@@ -20,6 +20,16 @@ from .repo_checks import _run_repo_checks
 from .workspace_checks import _run_workspace_checks
 
 
+def _check_repair_flags(fmt: str, quick: bool) -> None:
+    """``--repair`` writes, and needs the store drift ``--quick`` skips."""
+    if fmt != "table":
+        raise click.UsageError(
+            "--repair is not supported with --format json (json mode is read-only)."
+        )
+    if quick:
+        raise click.UsageError("--repair needs the store checks that --quick skips.")
+
+
 @click.command("doctor")
 @click.argument("path", required=False, default=None)
 @click.option("--repair", is_flag=True, default=False, help="Attempt to fix detected mismatches.")
@@ -44,12 +54,20 @@ from .workspace_checks import _run_workspace_checks
     help="Output format. json is read-only (incompatible with --repair) and exits "
     "1 when any check fails.",
 )
+@click.option(
+    "--quick",
+    is_flag=True,
+    default=False,
+    help="Skip the slow checks: starting the MCP server and reconciling the "
+    "vector and full-text stores. Incompatible with --repair.",
+)
 def doctor_command(
     path: str | None,
     repair: bool,
     workspace: bool,
     no_workspace: bool,
     fmt: str,
+    quick: bool,
 ) -> None:
     """Run health checks on the wiki setup.
 
@@ -57,10 +75,8 @@ def doctor_command(
     workspace mode, runs the full check battery against each indexed repo
     and prints a per-repo table plus a workspace-level summary.
     """
-    if fmt != "table" and repair:
-        raise click.UsageError(
-            "--repair is not supported with --format json (json mode is read-only)."
-        )
+    if repair:
+        _check_repair_flags(fmt, quick)
 
     silencer = silence_logs_for_machine_output() if fmt != "table" else contextlib.nullcontext()
     with silencer:
@@ -79,7 +95,7 @@ def doctor_command(
 
         if not target.is_workspace:
             assert target.repo_path is not None
-            all_ok, checks = _run_repo_checks(target.repo_path, repair, fmt=fmt)
+            all_ok, checks = _run_repo_checks(target.repo_path, repair, fmt=fmt, quick=quick)
             if fmt != "table":
                 payload = {"ok": all_ok, "checks": [c._asdict() for c in checks]}
                 click.echo(json.dumps(payload, indent=2))
@@ -117,9 +133,10 @@ def doctor_command(
                         else ""
                     )
                 )
-            ok, checks = _run_repo_checks(abs_path, repair, fmt=fmt)
+            ok, checks = _run_repo_checks(abs_path, repair, fmt=fmt, quick=quick)
             overall_ok = overall_ok and ok
-            all_checks.extend(DoctorCheck(f"{entry.alias}: {c.name}", c.ok, c.detail) for c in checks)
+            # The alias goes on the display name only; ids stay the check's own.
+            all_checks.extend(c._replace(name=f"{entry.alias}: {c.name}") for c in checks)
 
         if fmt != "table":
             all_ok = overall_ok and not ws_issues and not not_indexed

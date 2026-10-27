@@ -57,7 +57,7 @@ export function RawObservations({
         type="button"
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
-        className="rounded text-sm font-medium text-[var(--color-text-secondary)] underline-offset-2 hover:text-[var(--color-text-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+        className="rounded text-sm font-medium text-[var(--color-text-secondary)] underline-offset-2 hover:text-[var(--color-text-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
       >
         {open ? "Hide" : "Read"} the raw observations
         <span className="tabular-nums"> ({reportedTotal.toLocaleString()})</span>

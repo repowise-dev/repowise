@@ -83,6 +83,19 @@ def test_the_headline_states_the_changed_codes_health_on_both_sides():
     assert review_directive(delta).headline.endswith("Health of the changed code holds at 9.50.")
 
 
+def test_a_move_names_the_structure_only_basis_instead_of_a_delta():
+    from repowise.core.analysis.change_health.file_scores import FileScoreDelta
+
+    delta = _delta([_finding(severity="critical")])
+    delta.files = [FileScoreDelta("app/a.py", 5.51, 5.70, 4.49, 4.30, 100, 60)]
+    delta.moved_total = 2
+    headline = review_directive(delta).headline
+    assert headline.endswith(
+        "Code moved between files, so the changed code's health (structure only) is not compared."
+    )
+    assert "5.51" not in headline
+
+
 def test_low_severity_only_recommends_review():
     directive = review_directive(_delta([_finding(severity="low")]))
     assert directive.status == "review_recommended"

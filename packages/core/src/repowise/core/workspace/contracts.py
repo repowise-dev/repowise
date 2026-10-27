@@ -72,7 +72,16 @@ CONTRACTS_FILENAME = "contracts.json"
 # service-name map (:mod:`.service_names`), and ``service_links`` holds the
 # service-level edges for calls whose host is known but whose route is not;
 # each repo also counts the files whose network calls produced no contract
-# (see :mod:`.network_probe`).
+# (see :mod:`.network_probe`). Gateway routes (Spring Cloud Gateway, Zuul)
+# rewrite the calls they forward and add gateway-to-service service links.
+# Go routes from chi, fiber, gorilla/mux and Go 1.22 method patterns are read.
+# Next.js route handlers exported from a brace list are read, and the probe
+# skips tooling and build files.
+# A data contract in a file that opens SQLite, or in a repo that names SQLite
+# and no server database, carries ``meta['embedded']`` and links only within
+# its repo, on either side.
+# An HTTP or gRPC consumer whose id two or more repos serve, with nothing
+# placing it in one, carries ``meta['ambiguous_provider']`` and links to none.
 CONTRACTS_VERSION = 15
 
 #: ``meta["kind"]`` of a topic contract: the destination a broker call names.
@@ -89,6 +98,9 @@ TOPIC_KIND_BINDING = "binding"
 #: Set on a publish or binding whose routing key the file does not settle; the
 #: topic matcher refuses to route through it rather than read it as match-all.
 TOPIC_ROUTING_KEY_UNRESOLVED = "routing_key_unresolved"
+#: ``extraction_stats`` key: broker calls located whose destination name the
+#: file does not settle (an env var, a constant in another file), so no contract.
+TOPIC_NAMES_UNRESOLVED_STAT = "topic_names_unresolved"
 #: ``meta`` key of a consumer subscribed by pattern (``orders.*``); its value
 #: names the pattern syntax.
 TOPIC_PATTERN = "pattern"
@@ -256,8 +268,11 @@ class ContractStore:
     #: run and must be re-extracted rather than trusted.
     repo_provenance: dict[str, dict[str, str]] = field(default_factory=dict)
     #: Service-level edges (:attr:`.origins.LinkStrategy.HOST_ONLY`): a consumer
-    #: whose host names a workspace repo while no route there serves its path.
-    #: Kept out of ``contract_links``, which only ever pairs two contracts.
+    #: whose host names a workspace repo while no route there serves its path;
+    #: and a gateway's edge to each service it routes to
+    #: (:attr:`.origins.LinkStrategy.GATEWAY_ROUTE`, no consumer contract). Kept
+    #: out of ``contract_links``, which pairs two contracts; a call linked
+    #: through a gateway on its forwarded path is a ``gateway_route`` link there.
     service_links: list[ContractLink] = field(default_factory=list)
     #: The service-name map matching used (:mod:`.service_names`): each name, its
     #: repo, and the source and file that placed it, plus the fingerprint that
@@ -587,6 +602,8 @@ async def run_contract_extraction(
     from .extractors.base import make_exclude_predicate
     from .extractors.masstransit import MessageTypeIndex
     from .matching import annotate_consumer_targets, run_matching
+    from .matching.base_paths import apply_base_paths
+    from .matching.third_party import mark_third_party_calls
     from .service_names import ServiceNameMap, build_service_name_map, service_names_fingerprint
 
     contract_config = ws_config.contracts
@@ -668,8 +685,10 @@ async def run_contract_extraction(
         names = ServiceNameMap.from_dict(prior.service_names)
     else:
         names = await asyncio.to_thread(build_service_name_map, repo_paths, workspace_root)
+    apply_base_paths(all_contracts, names.base_paths)
     annotate_consumer_targets(all_contracts, contract_config.service_bases, names)
-    matched = run_matching(all_contracts)
+    mark_third_party_calls(all_contracts)
+    matched = run_matching(all_contracts, names.routes)
     links = matched.links
 
     # Merge manual links
@@ -837,11 +856,11 @@ def _extractor_kwargs(
     extractor: Any, repo_index: RepoIndex | None, stats: dict[str, int], message_types: Any
 ) -> dict[str, Any]:
     """Extra keyword arguments an extractor's ``extract`` takes."""
-    from .extractors import HttpExtractor, MassTransitExtractor, OpenApiExtractor
+    from .extractors import HttpExtractor, MassTransitExtractor, OpenApiExtractor, TopicExtractor
 
     if isinstance(extractor, HttpExtractor):
         return {"repo_index": repo_index, "stats": stats}
-    if isinstance(extractor, OpenApiExtractor):
+    if isinstance(extractor, (OpenApiExtractor, TopicExtractor)):
         return {"stats": stats}
     if isinstance(extractor, MassTransitExtractor):
         return {"message_types": message_types, "stats": stats}
@@ -859,7 +878,6 @@ async def _extract_one_repo(
     from .extractors import assign_service, detect_service_boundaries, merge_openapi_providers
     from .extractors.base import iter_source_files
     from .extractors.from_index import EXTRACTION_LAYER_KEY, LAYER_REGEX
-    from .network_probe import UNRECOGNISED_CALL_FILES_STAT, count_unrecognised_call_files
 
     code_surface = extraction.code_surface
     contracts: list[Contract] = []
@@ -918,9 +936,10 @@ async def _extract_one_repo(
     stats.update(attach_signature_schemas(contracts, repo_index))
 
     # The calls no dialect read, the miss half of any coverage figure.
-    consumer_files = {c.file_path for c in contracts if c.role == "consumer"}
-    stats[UNRECOGNISED_CALL_FILES_STAT] = await asyncio.to_thread(
-        count_unrecognised_call_files, files, consumer_files
+    stats.update(
+        await asyncio.to_thread(
+            _probe_misses, files, contracts, extraction.contract_config.detect_topics
+        )
     )
 
     unresolved = stats.get("http_consumer_unresolved", 0)
@@ -932,6 +951,28 @@ async def _extract_one_repo(
             unresolved,
         )
     return contracts, stats
+
+
+def _probe_misses(
+    files: list[Any], contracts: list[Contract], detect_topics: bool
+) -> dict[str, int]:
+    """The network probe's counts: HTTP calls, then messaging SDK calls, no dialect read."""
+    from .network_probe import (
+        MESSAGE_PROBE_ROWS,
+        UNRECOGNISED_CALL_FILES_STAT,
+        UNRECOGNISED_MESSAGE_FILES_STAT,
+        count_unrecognised_call_files,
+    )
+
+    consumer_files = {c.file_path for c in contracts if c.role == "consumer"}
+    out = {UNRECOGNISED_CALL_FILES_STAT: count_unrecognised_call_files(files, consumer_files)}
+    if detect_topics:
+        # A publish is a provider, so any topic contract excuses a messaging file.
+        topic_files = {c.file_path for c in contracts if c.contract_type == "topic"}
+        out[UNRECOGNISED_MESSAGE_FILES_STAT] = count_unrecognised_call_files(
+            files, topic_files, MESSAGE_PROBE_ROWS
+        )
+    return out
 
 
 def _merge_repo_results(

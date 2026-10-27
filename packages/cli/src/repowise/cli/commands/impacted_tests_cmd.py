@@ -64,14 +64,7 @@ _TABLE_CANDIDATES = 10
 def _resolve_repo_path(path: str | None, fmt: str):
     """Resolve the repo path (workspace-aware), mirroring ``coverage``."""
     target = resolve_command_target(path=path)
-    target.notice(ci_notices(fmt), command="impacted-tests")
-    if target.is_workspace:
-        primary = target.primary_path()
-        if primary is None:
-            raise click.ClickException("Workspace has no primary repo configured.")
-        return primary
-    assert target.repo_path is not None
-    return target.repo_path
+    return target.narrow(ci_notices(fmt), command="impacted-tests", repo_option=False)
 
 
 @click.command("impacted-tests")

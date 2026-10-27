@@ -117,7 +117,7 @@ def parse_csd_file(file_info: FileInfo, source: bytes) -> ParsedFile:
         )
         for d, next_line in zip(
             definitions,
-            [d.line for d in definitions[1:]] + [len(lines) + 1],
+            [d.line for d in definitions[1:]] + ([len(lines) + 1] if definitions else []),
             strict=True,
         )
     ]

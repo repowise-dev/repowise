@@ -215,6 +215,109 @@ def test_coverage_add_stamps_live_head_not_stored_column(tmp_path, monkeypatch) 
     assert recorded["sha"] != _FakeRepoRow.head_commit
 
 
+def test_coverage_add_stamps_a_leftover_report_at_the_commit_it_measured(
+    tmp_path, monkeypatch
+) -> None:
+    """Regression for the P1 on #3935: the stamp follows the reports that gave
+    rows, not every file discovery turned up.
+
+    Two commits a week apart, a report from the first afternoon, and an empty
+    leftover from months ago sitting in the same directory. The aggregate is
+    measured at the first commit, so that is what gets stamped — live HEAD
+    would strand the drift check on a tree the report never saw. The leftover
+    is skipped by the parser, so its date must not enter the arithmetic: had it,
+    no commit would predate it and the writer would fall back to live HEAD.
+    """
+    import os
+    from datetime import UTC, datetime
+
+    import git as gitpython
+
+    from repowise.cli.commands import coverage_cmd
+
+    repo = gitpython.Repo.init(tmp_path)
+    with repo.config_writer() as cw:
+        cw.set_value("user", "name", "Alice")
+        cw.set_value("user", "email", "alice@example.com")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "foo.py").write_text("x = 1\n")
+    repo.index.add(["src/foo.py"])
+    july = int(datetime(2026, 7, 3, 12, 0, tzinfo=UTC).timestamp())
+    measured_at_commit = repo.index.commit(
+        "feat: add foo",
+        commit_date=datetime.fromtimestamp(july, UTC).strftime("%Y-%m-%d %H:%M:%S +0000"),
+        author_date=datetime.fromtimestamp(july, UTC).strftime("%Y-%m-%d %H:%M:%S +0000"),
+    ).hexsha
+
+    lcov = tmp_path / "coverage" / "lcov.info"
+    lcov.parent.mkdir()
+    lcov.write_text("TN:\nSF:src/foo.py\nDA:1,2\nLF:1\nLH:1\nend_of_record\n")
+    # Written by the suite an hour after that commit.
+    run = july + 3600
+    os.utime(lcov, (run, run))
+    # A leftover nobody deleted, months older and yielding nothing.
+    stale = tmp_path / "coverage" / "stale.info"
+    stale.write_text("")
+    old = int(datetime(2020, 1, 1, tzinfo=UTC).timestamp())
+    os.utime(stale, (old, old))
+
+    (tmp_path / "src" / "bar.py").write_text("y = 2\n")
+    repo.index.add(["src/bar.py"])
+    live_head = repo.index.commit("feat: add bar").hexsha
+    repo.close()
+
+    class _FakeRepoRow:
+        id = "repo-1"
+        head_commit = None
+
+    recorded: dict = {}
+
+    async def _fake_save_coverage_files(session, repository_id, files, **kwargs):
+        recorded["sha"] = kwargs.get("ingested_commit_sha")
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    async def _fake_get_repository_by_path(session, local_path):
+        return _FakeRepoRow()
+
+    monkeypatch.setattr(
+        "repowise.core.persistence.crud.get_repository_by_path",
+        _fake_get_repository_by_path,
+    )
+    monkeypatch.setattr(
+        "repowise.core.persistence.crud.save_coverage_files", _fake_save_coverage_files
+    )
+
+    async def _fake_repo_file_keys(session, repo_id):
+        return {"src/foo.py", "src/bar.py"}
+
+    monkeypatch.setattr(coverage_cmd, "_repo_file_keys", _fake_repo_file_keys)
+    monkeypatch.setattr(coverage_cmd, "get_db_url_for_repo", lambda path: "sqlite:///:memory:")
+
+    async def _no_reconcile(_url):
+        return None
+
+    monkeypatch.setattr(coverage_cmd, "reconcile_schema_best_effort", _no_reconcile)
+    monkeypatch.setattr("repowise.core.persistence.create_engine", lambda url: object())
+    monkeypatch.setattr(
+        "repowise.core.persistence.create_session_factory", lambda engine: object()
+    )
+    monkeypatch.setattr("repowise.core.persistence.get_session", lambda sf: _FakeSession())
+
+    result = CliRunner().invoke(
+        cli, ["coverage", "add", str(lcov), str(stale), "--path", str(tmp_path)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert recorded["sha"] == measured_at_commit
+    assert recorded["sha"] != live_head
+
+
 def _fake_ingest(monkeypatch: pytest.MonkeyPatch, tmp_path, keys: set[str]) -> list:
     """Run `coverage add` against *tmp_path* with *keys* indexed; returns the stored rows."""
 

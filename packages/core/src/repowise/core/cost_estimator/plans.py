@@ -94,6 +94,9 @@ def build_generation_plan(
                     page_type=page_type,
                     count=count,
                     level=GENERATION_LEVELS[page_type],
+                    folder_coverage=(
+                        selection.folder_coverage if page_type == "file_page" else []
+                    ),
                 )
             )
 

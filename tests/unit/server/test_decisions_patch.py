@@ -200,3 +200,38 @@ async def test_patch_decision_not_found(client: AsyncClient) -> None:
         json={"status": "deprecated"},
     )
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_reaffirm_appends_a_reaffirmed_row(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    decision_id = await _seed_decision(app.state.session_factory, repo["id"])
+
+    resp = await client.post(f"/api/repos/{repo['id']}/decisions/{decision_id}/reaffirm")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "active"
+    async with get_session(app.state.session_factory) as session:
+        latest = await crud.latest_acceptance(session, decision_id)
+    assert (latest.action, latest.accepter, latest.accepter_kind) == ("reaffirmed", "web", "person")
+
+
+@pytest.mark.asyncio
+async def test_reaffirm_refuses_a_candidate(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    async with get_session(app.state.session_factory) as session:
+        rec = await crud.upsert_decision(
+            session,
+            repository_id=repo["id"],
+            title="Never accepted",
+            status="proposed",
+            decision="Do the thing.",
+            affected_files=["src/app.py"],
+            source="cli",
+        )
+        candidate_id = rec.id
+
+    resp = await client.post(f"/api/repos/{repo['id']}/decisions/{candidate_id}/reaffirm")
+
+    assert resp.status_code == 400
+    assert "confirm" in resp.json()["detail"]

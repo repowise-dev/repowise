@@ -22,6 +22,7 @@ import structlog
 
 from repowise.cli._setup import configure_cli_logging
 from repowise.cli.commands._index_outcome import record_index_outcome, refresh_read_snapshots
+from repowise.cli.errors import reasoned_error
 from repowise.cli.helpers import (
     clear_update_queued,
     console,
@@ -121,7 +122,7 @@ def _fail_on_embed_failure(
     save_state(repo_path, state)
     if emitter is not None:
         emitter.error(message)
-    raise click.ClickException(message)
+    raise reasoned_error(message, reason="embed_failed")
 
 
 def _docs_provider_prompt_allowed(emitter: Any) -> bool:
@@ -697,9 +698,10 @@ def _update_workspace_target(opts: UpdateOptions, run: UpdateRun, target) -> Upd
         run.repo_path = (target.ws_root / entry.path).resolve()
         return _full_upgrade(opts, run)
     if opts.full:
-        raise click.ClickException(
+        raise reasoned_error(
             "--full upgrades one repo at a time. Run it inside that repo, or pass "
-            "--repo <alias>."
+            "--repo <alias>.",
+            reason="full_needs_one_repo",
         )
     with _errors_reported(run):
         _workspace_update(
@@ -763,7 +765,9 @@ def _prepare_repo(repo_path: Path) -> None:
                 f"[dim]\\[worktree][/dim] Unindexed linked worktree of {wt_base}; "
                 f"seeding its index."
             )
-            seed_index_from_base(root=repo_path, repo_paths=[repo_path], seed_base=wt_base)
+            seed_index_from_base(
+                root=repo_path, repo_paths=[repo_path], seed_base=wt_base, require_ancestor=False
+            )
 
     ensure_repowise_dir(repo_path)
 
@@ -784,6 +788,11 @@ def _load_sync_base(opts: UpdateOptions, run: UpdateRun) -> None:
 
     load_dotenv(repo_path)
     run.state = state = load_state(repo_path)
+    # One-time migration: drop informational notices saved into state["degraded"]
+    # by pre-v0.56.0 init runs (#4224, #3272).
+    from repowise.core.index_scope import clean_legacy_degraded_state
+
+    clean_legacy_degraded_state(state)
     run.index_only = _resolve_index_only_mode(
         index_only=opts.index_only, docs_flag=opts.docs_flag, state=state
     )
@@ -818,7 +827,9 @@ def _raise_no_sync_base(run: UpdateRun) -> None:
     )
     if run.emitter is not None:
         run.emitter.error(message)
-    raise click.ClickException(message)
+    # An empty state means the repo was never indexed; a state without a sync
+    # commit means it was, but no sync completed.
+    raise reasoned_error(message, reason="no_sync_base" if run.state else "no_index")
 
 
 def _widen_to_pending_repair(run: UpdateRun) -> None:
@@ -1077,6 +1088,10 @@ def _acquire_update_lock(run: UpdateRun) -> UpdateOutcome | None:
     existing_lock = try_acquire_update_lock(repo_path, head)
     if existing_lock is not None:
         _report_lock_held(run, existing_lock)
+        from repowise.cli.platform import telemetry
+
+        # Not a failure: another update holds the lock and this run defers to it.
+        telemetry.add_command_outcome(outcome="deferred")
         return _emit_done(run, UpdateOutcome.DEFERRED)
 
     import atexit

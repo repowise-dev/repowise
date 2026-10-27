@@ -10,14 +10,14 @@ scheme (``data::<normalized table>``) and the normalization rules stay in
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING
 
 from repowise.core.workspace.origins import ContractOrigin
 
 from ..base import line_at
 from ..dialect import build_contract
-from .names import normalize_table_name
+from .names import is_system_table, normalize_table_name
 
 if TYPE_CHECKING:
     from repowise.core.workspace.contracts import Contract
@@ -53,8 +53,106 @@ def build_table_provider(
         symbol_name=f"{framework}:{table_raw}",
         origin=origin,
         line=line,
-        meta={"table": table, "framework": framework, **({"schema": schema} if schema else {})},
+        meta={
+            "table": table,
+            "framework": framework,
+            **({"schema": schema} if schema else {}),
+            **_embedded_meta(ctx),
+        },
     )
+
+
+#: Driver and connection-string tokens that place a file's tables in an
+#: embedded database, one row per engine. An embedded database is a file the
+#: program opens itself, so its tables are never another repo's server tables.
+#: Deliberate ceiling: server engines (Postgres vs MySQL) are not told apart;
+#: upgrade path is a row per server engine and comparing both ends' engines.
+_EMBEDDED_ENGINES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "sqlite",
+        (
+            "sqlite3",
+            "SQLite3",
+            "aiosqlite",
+            "bun:sqlite",
+            "modernc.org/sqlite",
+            "jdbc:sqlite",
+            "sqlite://",
+            "PDO('sqlite:",
+            'PDO("sqlite:',
+            "Microsoft.Data.Sqlite",
+            "UseSqlite",
+        ),
+    ),
+)
+
+
+#: Tokens naming a server database: a driver, a dialect or a URL scheme, in
+#: lower case (matched against the lower-cased file). A repo that names one may
+#: run its tables on a shared server, so only the file that opens an embedded
+#: engine is read as embedded (see :func:`repo_embedded_engine`). A stray hit
+#: (a comment) only keeps that per-file reading.
+_SERVER_ENGINE_TOKENS: tuple[str, ...] = (
+    "postgres",
+    "pgsql",
+    "psycopg",
+    "asyncpg",
+    "npgsql",
+    "lib/pq",
+    "jackc/pgx",
+    "'pg'",
+    '"pg"',
+    "pg-promise",
+    "pg::",
+    "mysql",
+    "mariadb",
+    "sqlserver",
+    "sqlsrv",
+    "mssql",
+    "tedious",
+    "oracle",
+    "cockroach",
+    "redshift",
+    "snowflake",
+    "clickhouse",
+)
+
+
+def embedded_engine(ctx: ScanContext) -> str | None:
+    """The embedded engine *ctx*'s file opens (``sqlite``), or ``None``."""
+    for engine, tokens in _EMBEDDED_ENGINES:
+        if ctx.has_any(tokens):
+            return engine
+    return None
+
+
+def repo_embedded_engine(contents: Iterable[str]) -> str | None:
+    """The embedded engine a repo runs on, when it names one and no server database.
+
+    Apps open SQLite in one module (``db.py``, ``config.py``) and query it in
+    others, so the file-level tag misses most readers. A repo whose files name
+    an embedded engine and no server driver keeps all its tables in that file.
+    Deliberate ceiling: one engine per repo; a monorepo naming both a server
+    and an embedded engine keeps the per-file tag. Upgrade path: the same test
+    per package directory.
+    """
+    found = None
+    for content in contents:
+        lowered = content.lower()
+        if any(token in lowered for token in _SERVER_ENGINE_TOKENS):
+            return None
+        if found is None:
+            found = next(
+                (e for e, tokens in _EMBEDDED_ENGINES if any(t in content for t in tokens)),
+                None,
+            )
+    return found
+
+
+def _embedded_meta(ctx: ScanContext) -> dict[str, str]:
+    """``{"embedded": engine}`` when *ctx*'s file opens an embedded engine."""
+    engine = embedded_engine(ctx)
+    return {"embedded": engine} if engine else {}
 
 
 def build_table_consumer(
@@ -70,10 +168,11 @@ def build_table_consumer(
 
     ``verb`` is the SQL operation that touched the table (``select`` /
     ``insert`` / ``update`` / ``delete`` / ``join``), carried in ``meta`` so
-    downstream views can distinguish readers from writers.
+    downstream views can distinguish readers from writers. ``embedded``
+    names the embedded engine the file opens, when it opens one.
     """
     table = normalize_table_name(table_raw)
-    if table is None:
+    if table is None or is_system_table(table):
         return None
     return build_contract(
         ctx,
@@ -83,7 +182,12 @@ def build_table_consumer(
         symbol_name=f"{client}:{verb} {table}",
         origin=origin,
         line=line,
-        meta={"table": table, "verb": verb, "client": client},
+        meta={
+            "table": table,
+            "verb": verb,
+            "client": client,
+            **_embedded_meta(ctx),
+        },
     )
 
 

@@ -45,9 +45,9 @@ PY_UNBOUNDED_READ_BOUND_METHODS: frozenset[str] = frozenset(
     {"limit", "range", "single", "maybe_single", "first", "count", "head", "aggregate"}
 )
 
-# Matched on the method name alone: only ``pathlib.Path`` spells these, and the
-# receiver is usually a local (``src_path.read_text()``) that ``io_names`` cannot
-# classify. Metadata calls (``exists`` / ``stat`` / ``glob``) are cheap and left out.
+# Pathlib round trips. Streams and terminals spell them too (``IOStream.read_bytes``),
+# so a call counts only on a receiver shown to be a path (``python_paths.py``).
+# Metadata calls (``exists`` / ``stat`` / ``glob``) are cheap and left out.
 PY_FS_METHODS: frozenset[str] = frozenset(
     {"read_text", "read_bytes", "write_text", "write_bytes"}
 )

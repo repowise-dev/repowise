@@ -9,8 +9,8 @@
  * is reusable for SVG/Mermaid export later.
  */
 
-import ELK from "elkjs/lib/elk.bundled.js";
 import type { ElkNode, ElkExtendedEdge } from "elkjs";
+import { runElkLayout } from "./elk-runner";
 
 export interface C4LayoutNode {
   id: string;
@@ -39,8 +39,6 @@ export const C4_NODE_SIZES = {
   component: { width: 180, height: 90 },
 } as const;
 
-const elk = new ELK();
-
 const LAYOUT_OPTIONS: Record<string, string> = {
   "elk.algorithm": "layered",
   "elk.direction": "DOWN",
@@ -52,9 +50,18 @@ const LAYOUT_OPTIONS: Record<string, string> = {
   "elk.padding": "[top=30,left=30,bottom=30,right=30]",
 };
 
+export interface C4LayoutOptions {
+  /** Run ELK in a Web Worker when one can start (see `elk-runner.ts`). */
+  worker?: boolean;
+  /** ELK options merged over the C4 defaults. */
+  layoutOptions?: Record<string, string>;
+}
+
+/** Nodes go to ELK in input order, which it honours when `considerModelOrder` is set. */
 export async function computeC4Layout(
-  nodes: C4LayoutNode[],
-  edges: C4LayoutEdge[],
+  nodes: readonly C4LayoutNode[],
+  edges: readonly C4LayoutEdge[],
+  options: C4LayoutOptions = {},
 ): Promise<Map<string, C4LayoutPosition>> {
   if (nodes.length === 0) return new Map();
 
@@ -65,7 +72,7 @@ export async function computeC4Layout(
 
   const elkGraph: ElkNode = {
     id: "root",
-    layoutOptions: LAYOUT_OPTIONS,
+    layoutOptions: { ...LAYOUT_OPTIONS, ...options.layoutOptions },
     children: nodes.map<ElkNode>((n) => ({
       id: n.id,
       width: n.width,
@@ -78,7 +85,7 @@ export async function computeC4Layout(
     })),
   };
 
-  const laid = await elk.layout(elkGraph);
+  const laid = await runElkLayout(elkGraph, { worker: options.worker ?? false });
   const positions = new Map<string, C4LayoutPosition>();
   for (const child of laid.children ?? []) {
     positions.set(child.id, {

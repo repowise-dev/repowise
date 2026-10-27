@@ -166,8 +166,7 @@ def next_command(
     target = resolve_command_target(
         path=path, no_workspace_flag=no_workspace, repo_alias=repo_alias
     )
-    target.notice(notice_console(fmt), command="next")
-    root = target.single_repo_path().resolve()
+    root = target.narrow(notice_console(fmt), command="next").resolve()
     view = load_view(root)
 
     if fmt == "json":

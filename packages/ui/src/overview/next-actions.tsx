@@ -261,7 +261,7 @@ export function NextActions({
           <button
             type="button"
             onClick={() => setExpanded((e) => !e)}
-            className="rounded text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+            className="rounded text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
           >
             {expanded ? "Show fewer" : `Show all ${Math.min(rows.length, total).toLocaleString()}`}
           </button>

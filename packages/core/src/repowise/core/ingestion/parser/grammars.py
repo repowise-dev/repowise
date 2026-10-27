@@ -153,6 +153,27 @@ def runtime_grammar_cache(tag: str) -> tuple[bool, str]:
     return name in pack.downloaded_languages(), str(pack.cache_dir())
 
 
+def fetch_runtime_grammars(cache_dir: str) -> list[tuple[str, bool, str]]:
+    """Download every runtime grammar into *cache_dir*: ``(tag, cached, error)`` for each."""
+    import tree_sitter_language_pack as pack
+
+    # Not $REPOWISE_GRAMMAR_DIR: this stages a cache for another machine.
+    pack.configure(pack.PackConfig(cache_dir=cache_dir))
+    results: list[tuple[str, bool, str]] = []
+    for spec in _LANG_REGISTRY.all_specs():
+        if spec.grammar_package != _RUNTIME_DOWNLOAD_PACKAGE:
+            continue
+        name = spec.grammar_loader_args[0] if spec.grammar_loader_args else spec.tag
+        try:
+            getattr(pack, spec.grammar_loader)(name)
+        except Exception as exc:
+            # A cached file that will not load is still a failed fetch.
+            results.append((spec.tag, False, str(exc) or type(exc).__name__))
+            continue
+        results.append((spec.tag, name in pack.downloaded_languages(), ""))
+    return results
+
+
 # Loaded grammars, filled one language at a time by ``_get_language``.
 _LANGUAGE_REGISTRY: dict[str, Language] = {}
 # Failed tags and why; a failure is not retried per file.

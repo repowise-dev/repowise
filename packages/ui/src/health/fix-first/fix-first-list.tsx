@@ -98,7 +98,7 @@ export function FixFirstList({
   const excludedControl =
     excludedTotal > 0 ? (
       <Popover>
-        <PopoverTrigger className="rounded text-xs text-[var(--color-text-secondary)] underline-offset-2 hover:text-[var(--color-text-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]">
+        <PopoverTrigger className="rounded text-xs text-[var(--color-text-secondary)] underline-offset-2 hover:text-[var(--color-text-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]">
           <span className="tabular-nums">{formatNumber(excludedTotal)}</span> excluded
         </PopoverTrigger>
         <PopoverContent align="start">

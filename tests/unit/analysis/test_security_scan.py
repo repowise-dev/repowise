@@ -995,6 +995,32 @@ class TestScanSource:
         (hit,) = [f for f in scan_source("config.ts", source) if f["kind"] == "public_env_secret"]
         assert hit["snippet"] == source.strip()
 
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "VITE_API_TOKEN=\n",
+            'NEXT_PUBLIC_API_SECRET=""\n',
+            "VITE_AUTH_TOKEN=''\n",
+            "VITE_API_TOKEN= # set in .env.local\n",
+        ],
+    )
+    def test_empty_public_env_secret_is_dropped(self, source: str) -> None:
+        assert [f for f in scan_source(".env", source) if f["kind"] == "public_env_secret"] == []
+
+    def test_public_env_secret_with_value_still_fires(self) -> None:
+        hits = [f for f in scan_source(".env", "VITE_API_TOKEN=abc123\n") if f["kind"] == "public_env_secret"]
+        assert len(hits) == 1
+        assert hits[0]["snippet"] == "VITE_API_TOKEN=abc1****"
+
+    def test_public_env_secret_code_read_still_fires(self) -> None:
+        hits = [
+            f
+            for f in scan_source("app.ts", "const t = import.meta.env.VITE_API_TOKEN;\n")
+            if f["kind"] == "public_env_secret"
+        ]
+        assert len(hits) == 1
+        assert hits[0]["snippet"] == "const t = import.meta.env.VITE_API_TOKEN;"
+
     def test_secret_kinds_and_history_gate_are_unchanged(self) -> None:
         from repowise.core.analysis.history_scan import HistorySecurityScanner
         from repowise.core.analysis.security_scan import SECRET_KINDS
@@ -1697,3 +1723,61 @@ class TestNoAlarmOnCodeThatDoesNotShip:
         from repowise.core.analysis.security_scan import mask_comments_and_strings
 
         assert mask_comments_and_strings("a /* b /* c */ d */ e", **options) == masked
+
+    def test_csharp_interpolated_string_quotes_inside_hole_are_masked(self) -> None:
+        from repowise.core.analysis.security.masking import mask_comments_and_strings, mask_dialect
+
+        src = 'var u = $"{b}items/by?ids={string.Join("&ids=", ids)}";\nvar x = 1;\n'
+        masked = mask_comments_and_strings(
+            src, strings=True, hash_comments=False, **mask_dialect("a.cs")
+        )
+        assert masked == "var u = $  b               string.Join(       , ids)  ;\nvar x = 1;\n"
+        assert (
+            mask_comments_and_strings(
+                src, strings=False, hash_comments=False, **mask_dialect("a.cs")
+            )
+            == src
+        )
+
+    def test_csharp_interpolated_string_comment_inside_hole_does_not_mask_line(self) -> None:
+        from repowise.core.analysis.security.masking import mask_comments_and_strings, mask_dialect
+
+        src = 'var u = $"{b}items/by?ids={string.Join("//x", ids)}";\nvar x = 1;\n'
+        masked = mask_comments_and_strings(
+            src, strings=True, hash_comments=False, **mask_dialect("a.cs")
+        )
+        assert masked == "var u = $  b               string.Join(     , ids)  ;\nvar x = 1;\n"
+
+    def test_csharp_interpolated_string_verbatim_and_escaped_braces(self) -> None:
+        from repowise.core.analysis.security.masking import mask_comments_and_strings, mask_dialect
+
+        src = 'var u = $@"c:\\dir\\{sub}\""name""";\nvar x = 1;\n'
+        masked = mask_comments_and_strings(
+            src, strings=True, hash_comments=False, **mask_dialect("a.cs")
+        )
+        assert masked == "var u = $@         sub          ;\nvar x = 1;\n"
+
+        src_braces = 'var u = $"escaped {{literal}} and {hole}";\n'
+        masked_braces = mask_comments_and_strings(
+            src_braces, strings=True, hash_comments=False, **mask_dialect("a.cs")
+        )
+        assert masked_braces == "var u = $                          hole  ;\n"
+
+@pytest.mark.parametrize("prefix", ["$@", "@$"])
+@pytest.mark.parametrize("strings", [False, True])
+def test_verbatim_interpolation_trailing_backslash_preserves_following_code(prefix, strings):
+    from repowise.core.analysis.security.masking import mask_dialect
+    from repowise.core.analysis.security_scan import mask_comments_and_strings
+
+    literal = r'"c:\dir\"'
+    source = f"var p = {prefix}{literal}; DangerousCall(); // real comment\nNext();\n"
+    masked = mask_comments_and_strings(
+        source, strings=strings, hash_comments=False, **mask_dialect("a.cs")
+    )
+    expected_literal = " " * len(literal) if strings else literal
+    assert masked == (
+        f"var p = {prefix}{expected_literal}; DangerousCall(); "
+        + " " * len("// real comment")
+        + "\nNext();\n"
+    )
+    assert len(masked) == len(source)

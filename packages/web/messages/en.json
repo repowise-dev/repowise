@@ -150,6 +150,7 @@
     "conformance": "Conformance",
     "contracts": "Contracts",
     "coChanges": "Co-Changes",
+    "estateReport": "Estate report",
     "groupPeopleAndHistory": "People & History",
     "groupSettings": "Settings",
     "groupUnderstand": "Understand",
@@ -188,7 +189,8 @@
     "zoom": "Zoom Map",
     "files": "Files",
     "tests": "Tests",
-    "docDrift": "Doc drift"
+    "docDrift": "Doc drift",
+    "setup": "Setup"
   },
   "errors": {
     "workspaceErrorTitle": "Failed to load the workspace",
@@ -479,7 +481,7 @@
       "gotWorse": "Got worse",
       "gotWorseDescription": "Findings this change introduced or made more severe, worst first.",
       "gotWorseShown": "Showing the {shown} most severe of {total}.",
-      "promptAction": "Copy prompt for your agent",
+      "promptAction": "Copy prompt",
       "promptTitle": "Prompt for this change",
       "promptDescription": "Hands your agent what this change made worse, with files and lines, or what its checklist flagged when nothing got worse.",
       "checksPassed": "{count, plural, one {# check passed} other {# checks passed}}",
@@ -534,7 +536,7 @@
       "coChangeNoticeTitle": "Health scores changed in this release.",
       "coChangeNoticeMore": "What changed",
       "coChangeNoticeLess": "Hide",
-      "coChangeNoticeBody": "Large, well-structured code scores fairer. A file's code-shape deductions follow a saturating curve, and several findings on one function count as one group, so a single big function no longer sinks a whole file, while a critical function still costs more the further it passes its threshold. brain_method is advisory, so it no longer deducts on top of the complexity and size findings it summarises. Repeated change-history findings count the largest in full and the rest at a fraction. Parameter counts cover C, C++ and Kotlin, so primitive_obsession reaches those languages, and the bumpy-road marker is called repeated nesting. Most files score higher; functions far past their thresholds, and C, C++ and Kotlin files, can move either way.",
+      "coChangeNoticeBody": "Some files now count as a different kind of code. A tools/ folder below the repo root is product code, so it is scored; only a root-level or engineering tools/ folder stays tooling. Python _vendor/ folders and Salesforce static-resource libraries count as vendored code, and prefixed migration folders under db/ count as migrations, so they leave the score. A tests/ folder inside a JavaScript or TypeScript src tree is product code, so its files are scored. Apex and COBOL files are scored, Scala gets dataflow findings, and comments inside a switch block do not count against its function. Repos with these files can move either way; other repos keep their scores.",
       "tabs": {
         "performance": "Performance",
         "findings": "Findings",
@@ -677,7 +679,7 @@
       "openInOffboarding": "Open in off-boarding",
       "matrixLoadFailed": "The per-file author shares could not be loaded. Check that the API is reachable and try again.",
       "ui": {
-        "agentPrompt": "Copy prompt for your agent",
+        "agentPrompt": "Copy prompt",
         "promptForGroup": "{count, plural, one {Copy prompt for this one} other {Copy prompt for these #}}",
         "repositoryRoot": "(repository root)",
         "hotspot": "Hotspot",
@@ -856,11 +858,8 @@
     "repoSettings": {
       "title": "Settings",
       "description": "Indexing, model keys and health for {repo}. Server, webhook and editor configuration are shared across repositories.",
-      "generalTitle": "General",
       "generalDescription": "Where this repository lives and which branch is indexed.",
-      "syncTitle": "Sync and indexing",
       "syncDescription": "Pull recent commits into the existing index, or rebuild it from scratch.",
-      "providerTitle": "AI provider",
       "providerDescription": "A model key lets this repository's documentation be written with AI. Keys are stored with the repository and used by generation from the UI or the CLI.",
       "captureTitle": "Decision capture",
       "captureDescription": "What mines architectural decisions from this repository, and whether any of it may send prose to your configured model. Capture only ever produces candidates: nothing here can accept a decision on your behalf.",
@@ -869,13 +868,14 @@
       "healthTitle": "Index health",
       "healthDescription": "Per-population drift: wiki pages against page vectors, and decision records against decision vectors. A gap means search is answering from a stale set.",
       "deleteTitle": "Delete this repository",
-      "deleteDescription": "Removes the index and everything generated from it — pages, symbols, decisions and history. Your source files are untouched. This cannot be undone.",
-      "footer": "Server connection, webhooks, model defaults and MCP configuration are in <link>global settings</link>."
+      "deleteDescription": "Removes the index and everything generated from it: pages, symbols, decisions and history. Your source files are untouched. This cannot be undone.",
+      "dangerTitle": "Danger zone",
+      "publishTitle": "Publish on repowise.dev",
+      "publishDescription": "Put this repository on repowise.dev, indexed from its GitHub remote. Nothing on this machine is uploaded."
     },
     "globalSettings": {
       "title": "Settings",
-      "description": "How this dashboard reaches your server, which model it defaults to, and what the MCP server offers an agent. Changes save as you make them.",
-      "footer": "Sync schedule, exclude patterns and deletion are per repository, on <link>the repository page</link>."
+      "description": "How this dashboard reaches your server, which model it defaults to, and what the MCP server offers an agent. Changes save as you make them."
     },
     "workspace": {
       "emptyAction": "Read the quickstart",
@@ -992,7 +992,7 @@
     "tests": {
       "title": "Tests",
       "description": "Which code your tests reach: measured from a coverage report when one is ingested, inferred from the dependency graph otherwise.",
-      "promptAction": "Copy prompt for your agent",
+      "promptAction": "Copy prompt",
       "cleanTitle": "No untested hotspots across {files} measured files",
       "cleanBody": "Every file that changes often or that much of the code depends on has tests watching it.",
       "batchPromptAction": "Copy prompt for these {count}",
@@ -1108,13 +1108,14 @@
     "mcpTools": {
       "title": "Tool surface",
       "description": "Which tools the MCP server offers an agent. Saved to the repo's .repowise/config.yaml and applied the next time you start repowise mcp for it.",
-      "empty": "Index a repository and its tool surface shows up here.",
-      "repoLabel": "Repository",
-      "repoHint": "The surface is stored per repo.",
       "workspaceOnly": "workspace only",
       "summary": "{on} of {total} tools exposed. {mode}",
       "summaryWorkspace": "Workspace mode, so workspace-only tools are available.",
-      "summarySingleRepo": "Single-repo mode, so workspace-only tools are unavailable here."
+      "summarySingleRepo": "Single-repo mode, so workspace-only tools are unavailable here.",
+      "perRepoLabel": "Tools per repository",
+      "perRepoHint": "Which tools the MCP server offers is saved per repository, in its Agents settings.",
+      "chooseTools": "Choose tools",
+      "chooseToolsFor": "Choose tools for {repo}"
     },
     "provider": {
       "title": "Default model",
@@ -1123,6 +1124,51 @@
       "embedderHint": "What semantic search is built from. The mock embedder disables it.",
       "embedderOffNote": "Semantic search is off. Set <code>REPOWISE_EMBEDDER</code> on the server for real retrieval.",
       "embedderOnNote": "Set with <code>{env}</code> on the server."
+    },
+    "groups": {
+      "navLabel": "Settings sections",
+      "setup": {
+        "title": "Setup"
+      },
+      "agents": {
+        "title": "Agents & editors",
+        "description": "Connected agents read the index through MCP. Connecting writes the editor's own config file, named on each row."
+      },
+      "models": {
+        "title": "Models & documentation"
+      },
+      "sync": {
+        "title": "Sync & hooks"
+      },
+      "coverage": {
+        "title": "Coverage",
+        "description": "The test coverage report this repository reads, so health and tests use measured coverage."
+      },
+      "server": {
+        "title": "Server"
+      },
+      "privacy": {
+        "title": "Privacy"
+      },
+      "general": {
+        "title": "General"
+      },
+      "display": {
+        "title": "Display"
+      }
+    },
+    "advanced": "Advanced",
+    "advancedHints": {
+      "agents": "Which MCP tools agents get in this repository.",
+      "models": "Decision capture, refactoring code generation and the docs export.",
+      "sync": "Index health: whether search reads the same pages and decisions the database holds."
+    },
+    "scope": {
+      "allRepos": "Set for all repos in Settings",
+      "defaultModelLabel": "Default model",
+      "defaultModelHint": "Repositories without their own model use the server default.",
+      "webhooksLabel": "Webhooks",
+      "webhooksHint": "A push on GitHub or GitLab can start a sync. The addresses are the same for every repository."
     }
   },
   "repos": {
@@ -1152,7 +1198,8 @@
       "title": "This repo hasn't been indexed yet",
       "description": "One click builds the code index, health signals, and documentation. You can watch it happen live.",
       "starting": "Starting…",
-      "action": "Index this repo"
+      "action": "Index this repo",
+      "takeTour": "Take the tour"
     },
     "coordinator": {
       "status": "Status",
@@ -1171,20 +1218,24 @@
       "refresh": "Refresh"
     },
     "ops": {
-      "syncStarted": "Sync started — {name}",
+      "syncStarted": "Sync started for {name}",
       "syncFailed": "Sync failed",
-      "resyncStarted": "Full resync started — {name}",
+      "resyncStarted": "Full resync started for {name}",
       "resyncFailed": "Resync failed",
-      "title": "Operations",
       "export": "Export",
       "starting": "Starting…",
       "sync": "Sync",
       "resync": "Full Resync",
       "resyncConfirm": "This regenerates every page for <repo>{name}</repo> from scratch. All existing pages will be overwritten.",
-      "resyncConfirmAction": "Resync Everything"
+      "resyncConfirmAction": "Resync Everything",
+      "syncLabel": "Sync now",
+      "syncHint": "Pull recent commits into the existing index.",
+      "resyncLabel": "Full resync",
+      "resyncHint": "Rebuild the index and regenerate every page from scratch. Asks first.",
+      "exportLabel": "Export docs",
+      "exportHint": "Download the generated docs as a zip of Markdown files."
     },
     "settings": {
-      "toastSaved": "Repository settings saved",
       "saveFailed": "Failed to save settings",
       "regenQueued": "Wiki regeneration queued",
       "regenFailed": "Failed to queue regeneration",
@@ -1218,7 +1269,11 @@
       "agentAuthored": "Agent-authored",
       "renamedFrom": "Renamed from",
       "historyCapped": "History capped during indexing, so older commits are not counted above.",
-      "signals": "Signals"
+      "signals": "Signals",
+      "freshness": {
+        "stale": "May be out of date",
+        "outdated": "Out of date"
+      }
     },
     "explorer": {
       "emptyTitle": "No documentation yet",
@@ -1226,10 +1281,19 @@
       "hideTree": "Hide pages tree",
       "showTree": "Show pages tree",
       "askQuestion": "Explain \"{title}\" using the source code, and name the files it rests on.",
-      "askLabel": "Ask about {title}"
+      "askLabel": "Ask about {title}",
+      "more": "More",
+      "menu": {
+        "exportPage": "Export this page (Markdown)",
+        "exportAll": "Export all pages (Markdown)",
+        "exportZip": "Download ZIP archive",
+        "present": "Present",
+        "readerLevel": "Reader level"
+      }
     },
     "bulk": {
-      "button": "Write subsystem pages",
+      "button": "Write {count, plural, one {# page} other {# pages}} with AI",
+      "buttonShort": "Write with AI",
       "title": "Write the subsystem pages",
       "writing": "Writing the subsystem pages"
     },
@@ -1239,7 +1303,9 @@
       "writeWithAi": "Write with AI"
     },
     "pageGenerate": {
-      "failed": "Couldn't start generation"
+      "failed": "Couldn't start generation",
+      "write": "Write this page with AI",
+      "rewrite": "Rewrite with AI"
     }
   },
   "zoom": {
@@ -1309,7 +1375,157 @@
       "filesDescription": "Every file, grouped into the communities it depends on most, with a band for each strong link between communities. Hover or select a file to see exactly what it imports and what imports it."
     }
   },
+  "modelUpgrade": {
+    "eyebrow": "Add a model",
+    "title": "Write this documentation with a model",
+    "description": "Pages that explain how and why, chat in this dashboard, and written answers for your agent.",
+    "close": "Close",
+    "sourcesLabel": "Where the model comes from",
+    "cliSource": "{name} sign-in",
+    "keySource": "{name} key",
+    "localSource": "Local model ({name})",
+    "pasteSource": "Paste a key",
+    "hostedSource": "Hosted repowise",
+    "hostedNote": "model included, no key",
+    "hostedAction": "See plans",
+    "detected": {
+      "signedIn": "Found",
+      "env": "In env",
+      "saved": "Saved"
+    },
+    "pasteProvider": "Provider",
+    "pages": "{count, plural, one {# page to write} other {# pages to write}}",
+    "counting": "Counting pages",
+    "signedInNote": "Uses your {name} sign-in.",
+    "costNote": "About {cost} with this key, shown before anything runs.",
+    "pricing": "Pricing with this key",
+    "keyNote": "The price shows before anything runs.",
+    "localNote": "Runs on your machine. Start Ollama first.",
+    "pasteNote": "With a key, the price shows here first.",
+    "write": "Write the docs",
+    "sameAs": "Same as",
+    "startFailed": "Couldn't start writing the docs",
+    "badgeLabel": "Subsystem pages unwritten",
+    "badgeAction": "Write with a model",
+    "badgeTitle": "The subsystem pages are still generated from code structure. Write them with a model for the how and why."
+  },
+  "welcome": {
+    "eyebrow": "Welcome to repowise",
+    "stepsLabel": "Tour steps",
+    "stepDone": "(done)",
+    "stepOf": "Step {step} of {total}",
+    "steps": {
+      "repo": "Your repo",
+      "agent": "Your agent",
+      "yours": "Make it yours"
+    },
+    "skip": "Skip the tour",
+    "back": "Back",
+    "nextAgent": "Next: your agent",
+    "nextYours": "Next: make it yours",
+    "finish": "Finish in Setup",
+    "repo": {
+      "title": "We mapped <em>{name}</em>",
+      "lede": "{files, plural, one {# file} other {# files}} and {years, plural, one {# year} other {# years}} of history, read on this machine. Nothing left it.",
+      "ledeNoHistory": "{files, plural, one {# file} other {# files}}, read on this machine. Nothing left it.",
+      "standout": "What stood out",
+      "band": {
+        "excellent": "Excellent",
+        "good": "Good",
+        "fair": "Fair",
+        "needs_work": "Needs work",
+        "at_risk": "At risk"
+      },
+      "health": {
+        "label": "Health",
+        "caption": "<mono>{path}</mono> is lowest at {score}.",
+        "captionNone": "Scored across the code files.",
+        "open": "Open health"
+      },
+      "deadCode": {
+        "label": "Dead code",
+        "unit": "{count, plural, one {file} other {files}}",
+        "caption": "Nothing reaches them.",
+        "safe": "{count, plural, one {# finding is} other {# findings are}} safe to delete.",
+        "captionNone": "Every file is reached from somewhere.",
+        "open": "Open dead code"
+      },
+      "risk": {
+        "label": "Risk",
+        "unit": "{count, plural, one {file reached} other {files reached}}",
+        "caption": "by a change to <mono>{path}</mono>.",
+        "open": "Open risk"
+      },
+      "decisions": {
+        "label": "Decisions",
+        "unit": "to review",
+        "caption": "Candidates mined from PRs, commits and comments.",
+        "open": "Review"
+      },
+      "docs": {
+        "label": "Documentation",
+        "unit": "{count, plural, one {page} other {pages}}",
+        "caption": "Built from the index. A model can write fuller ones.",
+        "open": "Open docs"
+      },
+      "tests": {
+        "label": "Tests",
+        "measured": "measured",
+        "measuredCaption": "Line coverage from your latest report.",
+        "inferredUnit": "of {total} files, inferred",
+        "inferredCaption": "Reached from a test. Add a report to measure it.",
+        "open": "Open tests"
+      }
+    },
+    "agent": {
+      "title": "Your agent can read <em>this map</em>",
+      "lede": "It asks repowise first, so it reads less and guesses less.",
+      "none": "No agents found on this machine yet. Setup lists every one repowise supports.",
+      "connected": "Connected. Restart it to load the tools.",
+      "waiting": "Waiting for its first call",
+      "firstCall": "First call {when}",
+      "installed": "Installed on this machine. Writes <mono>{file}</mono>.",
+      "installedNoFile": "Installed on this machine.",
+      "connect": "Connect",
+      "connecting": "Connecting",
+      "connectFailed": "Couldn't connect {name}",
+      "copyPrompt": "Copy prompt",
+      "prompt": "Connect repowise to {name} for this repo. Run `{command}` in the repo root, then restart {name} so it loads the repowise tools. Run `repowise doctor` to check the connection.",
+      "listLabel": "Agents on this machine",
+      "moreAgents": "{count, plural, one {# more agent} other {# more agents}} found. Setup lists them all.",
+      "askLabel": "Ask it something",
+      "askRisk": "Which files are riskiest to change, and why?",
+      "askHotspot": "Why does {path} change so often?",
+      "askStart": "Where should I start reading this repo?",
+      "copy": "Copy",
+      "copied": "Copied",
+      "copyFailed": "Couldn't copy",
+      "copyQuestion": "Copy: {question}"
+    },
+    "yours": {
+      "title": "Make it <em>yours</em>",
+      "lede": "Every part is optional. Change any of it later in Settings.",
+      "modelTitle": "Add a model where it helps",
+      "gets": {
+        "docs": "Docs that explain how and why",
+        "chat": "Chat in this dashboard",
+        "answers": "Written answers for your agent",
+        "local": "Your key or sign-in stays here"
+      },
+      "detected": "Found on this machine: {names}.",
+      "syncTitle": "Keep the index in sync",
+      "syncBody": "Updates after each commit through a git hook.",
+      "syncFailed": "Couldn't change sync",
+      "syncOffTitle": "Turn off sync?",
+      "syncOffBody": "This removes the post-commit hook. It also turns off the pre-commit security check and the health gate, if they are on.",
+      "syncOffConfirm": "Turn off",
+      "teamTitle": "Running this for a team?",
+      "teamBody": "Hosted repowise indexes on every push, reviews pull requests and gives your team one dashboard.",
+      "teamLink": "See hosted"
+    }
+  },
   "chat": {
+    "addModel": "Add a model",
     "noProvider": "No chat provider is configured. Add an API key in <link>settings</link> to start asking questions.",
     "noProviderShort": "No chat provider is configured. Add an API key in <link>settings</link>.",
     "unverifiedFigure": "Not found in this turn's tool results",
@@ -1354,7 +1570,7 @@
       "fixPromptLabel": "Copy prompt to fix what this commit made worse",
       "fixPromptTitle": "Fix what this commit made worse",
       "fixPromptDescription": "A ready-to-paste prompt that has your AI agent fix the findings this commit introduced or made more severe, at their files and lines, without undoing the commit.",
-      "reviewPromptLabel": "Copy review prompt for your agent",
+      "reviewPromptLabel": "Copy review prompt",
       "reviewPromptTitle": "AI commit review",
       "reviewPromptDescription": "A ready-to-paste prompt that has your AI agent review this commit's change-risk, flag what to scrutinize, and suggest reviewers.",
       "openFile": "Open file"
@@ -1378,7 +1594,7 @@
       "lastTogether": "last {date}",
       "unexplained": "{count, plural, one {# file pair} other {# file pairs}} with no direct import ({pct}%)",
       "allExplained": "All explained",
-      "promptLabel": "Copy prompt for your agent",
+      "promptLabel": "Copy prompt",
       "bulkPromptLabel": "Copy prompt for these {count, number}",
       "promptTitle": "Decouple prompt",
       "promptDescription": "A ready-to-paste prompt asking your agent to find why these areas change together with no dependency between them, and to decouple what is accidental.",
@@ -1542,7 +1758,7 @@
     "promptDescription": "A ready-to-paste prompt that walks your AI agent through confirming and remediating this security finding.",
     "rescan": "Re-scan",
     "rescanning": "Re-scanning…",
-    "promptAction": "Copy prompt for your agent",
+    "promptAction": "Copy prompt",
     "deadCodeClean": {
       "title": "No dead code found",
       "titleScoped": "No dead code across {files} files",
@@ -1574,8 +1790,10 @@
     "violationsDescription": "Dependencies that exist in the graph but are forbidden by a rule you declared.",
     "violationBreaks": "Breaks",
     "cyclesTitle": "Dependency cycles ({count})",
+    "cyclesTitleAtLeast": "Dependency cycles (at least {count})",
     "cyclesDescription": "Groups of services that depend on each other in a loop, so none of them can be changed or deployed independently.",
     "cyclesDetectedNotListed": "{count, plural, one {# cycle detected, but not listed} other {# cycles detected, but not listed}}",
+    "cyclesDetectedNotListedAtLeast": "At least {count, plural, one {# cycle} other {# cycles}} detected, but not listed; counting stopped at the cap",
     "noCyclesTitle": "No circular dependencies",
     "cyclesUnlistedDescription": "The count is recomputed from the system graph, but the services in each cycle are recorded by the conformance check. Run it to see which services are involved.",
     "noCyclesDescription": "Every dependency in the graph runs one way. Nothing has to be changed in lockstep.",
@@ -1603,12 +1821,161 @@
       "coreSizeSubPct": "{pct}% of all services",
       "coreSizeSub": "mutually dependent centre",
       "cycles": "Cycles",
-      "cyclesSub": "circular service dependencies"
+      "cyclesSub": "circular service dependencies",
+      "cyclesAtLeast": "{count}+"
     },
     "aiPrompt": {
       "label": "Fix violations with AI",
       "title": "AI conformance fix",
       "description": "A ready-to-paste prompt that has your AI agent resolve these architecture rule violations by removing the disallowed dependencies."
+    }
+  },
+  "estate": {
+    "indexBehind": "index behind, run repowise update",
+    "indexUnreadable": "index could not be read",
+    "indexBehindLabel": "Index behind",
+    "indexBehindSentence": "{count, plural, one {# repo has an index written by an older repowise, so it was not read} other {# repos have an index written by an older repowise, so they were not read}}. Run repowise update in each to bring it up to date.",
+    "title": "Estate report",
+    "description": "One read across every repository in the workspace: the system map and the evidence behind it, contracts and the calls that reached no provider, health and churn per repo, the riskiest seams and where to start.",
+    "unavailableTitle": "Estate report unavailable",
+    "unavailableDescription": "The server could not build the report ({error}). A server older than this page does not serve it; upgrade repowise and restart repowise serve.",
+    "noGraphLabel": "No system graph",
+    "noGraphSentence": "No system graph is stored for this workspace yet, so the map, contracts, seams and service reach are not determined. Run repowise update --workspace once two or more member repos are indexed. Health, churn and the files to start with still read from each index.",
+    "evidencePartial": "Partial evidence",
+    "evidencePartialSentence": "The figures below are computed with part of the estate out of sight: {reason}.",
+    "evidenceInsufficient": "Not determined",
+    "evidenceInsufficientSentence": "The architecture score, cycle verdicts, seams and service reach are not determined: {reason}.",
+    "staleLabel": "Stale",
+    "staleSentence": "{count, plural, one {# repo has its contracts read at another commit than its index} other {# repos have their contracts read at another commit than their index}}. Run repowise update --workspace to read them again.",
+    "failedLabel": "Failed",
+    "failedSentence": "This section failed to build, so the report marks it inconclusive.",
+    "generated": "Built {when} by repowise {version} from the stored workspace artifacts and each member's index.",
+    "shownOf": "Showing {shown} of {total}. repowise report estate --format json lists every one.",
+    "notIndexed": "not indexed",
+    "notRead": "not read",
+    "noSnapshot": "no snapshot",
+    "notMeasured": "not measured",
+    "notMeasuredNote": "A dash means not measured: no health snapshot, too little indexed history, or the repo is not indexed. The sentences below name which.",
+    "none": "none",
+    "contractsBehind": "behind the index",
+    "snapshotBehind": "older than the index",
+    "dependsOn": "depends on",
+    "targetUnresolved": "target not resolved",
+    "undocumented": "undocumented",
+    "docWords": "{count, plural, one {# doc word} other {# doc words}}",
+    "behindContract": "behind a contract",
+    "coChangeOnly": "co-change only",
+    "coChangeUnexplained": "{value}, no contract",
+    "scoreFloor": "at least {score}",
+    "serviceLinksNote": "{count, plural, one {# service-level link names a workspace repo whose routes do not serve the path.} other {# service-level links name a workspace repo whose routes do not serve the path.}}",
+    "orphanNote": "{count, plural, one {# provider is reached by no consumer in the workspace; it may be called from outside it.} other {# providers are reached by no consumer in the workspace; they may be called from outside it.}}",
+    "externalNote": "{count, plural, one {# call to a public host outside the workspace is not counted.} other {# calls to public hosts outside the workspace are not counted.}}",
+    "ribbon": {
+      "repos": "Repositories",
+      "reposSub": "{indexed} of {total} indexed",
+      "services": "Services",
+      "servicesSub": "in the system graph",
+      "links": "Cross-repo links",
+      "linksSub": "contracts matched between repos",
+      "dangling": "Dangling calls",
+      "danglingSub": "matched no provider in another service",
+      "architecture": "Architecture score",
+      "architectureSub": "out of 10, a fixed formula",
+      "notDetermined": "not determined"
+    },
+    "section": {
+      "summary": {
+        "title": "Estate summary",
+        "description": "Repositories, services and how much evidence the system graph rests on."
+      },
+      "map": {
+        "title": "System map and architecture",
+        "description": "How the services depend on each other, and what that structure scores."
+      },
+      "contracts": {
+        "title": "Contracts and dangling calls",
+        "description": "Contracts read and linked across repos, and each call that reached no provider."
+      },
+      "health": {
+        "title": "Health, churn and bug magnets by repository",
+        "description": "Each repo reads on its own; repos are never averaged together. Lowest health first."
+      },
+      "seams": {
+        "title": "Riskiest seams",
+        "description": "Service pairs ranked by link confidence, reach and co-change no contract explains. A fixed heuristic, not a calibrated risk."
+      },
+      "start": {
+        "title": "Where to start",
+        "description": "The services most others depend on, then each repo's central, least documented files."
+      }
+    },
+    "check": {
+      "estate": "System graph",
+      "repositories": "Repositories",
+      "services": "Services",
+      "evidence": "Evidence",
+      "dependencies": "Dependencies",
+      "architecture": "Architecture",
+      "contracts": "Contracts",
+      "http-calls": "HTTP calls",
+      "topic-calls": "Topic calls",
+      "dangling-calls": "Dangling calls",
+      "health": "Health",
+      "churn-hotspots": "Churn hotspots",
+      "bug-magnets": "Bug magnets",
+      "seams": "Seams",
+      "start-services": "Services to read first",
+      "start-files": "Files to read first",
+      "system-map": "System map"
+    },
+    "basis": {
+      "measured": "Measured",
+      "inferred": "Inferred",
+      "declared": "Declared",
+      "unresolved": "Not determined",
+      "gated": "Held back"
+    },
+    "band": {
+      "healthy": "Healthy",
+      "warning": "Warning",
+      "alert": "Alert"
+    },
+    "danglingReason": {
+      "no_provider": "no provider in the workspace",
+      "unlinked": "a provider exists, no link formed"
+    },
+    "col": {
+      "repo": "Repository",
+      "indexedAt": "Index at",
+      "contractsAt": "Contracts read at",
+      "services": "Services",
+      "dependency": "Dependency",
+      "kind": "Kind",
+      "links": "Links",
+      "strategy": "How linked",
+      "confidence": "Confidence",
+      "type": "Type",
+      "providers": "Providers",
+      "consumers": "Consumers",
+      "consumer": "Consumer",
+      "file": "File",
+      "target": "Target",
+      "contract": "Contract",
+      "why": "Why",
+      "health": "Health",
+      "maintainability": "Maintainability",
+      "hotspotHealth": "Over hotspots",
+      "churnHotspots": "Churn hotspots",
+      "bugMagnets": "Bug magnets",
+      "snapshot": "Snapshot",
+      "pair": "Services",
+      "edge": "Edge",
+      "reach": "Reach",
+      "coChange": "Co-change",
+      "seamScore": "Seam score",
+      "service": "Service",
+      "reaches": "Services a change reaches",
+      "docs": "Documentation"
     }
   },
   "contracts": {
@@ -1656,15 +2023,18 @@
       "unmatched": "Unmatched consumers",
       "orphans": "Providers with no caller",
       "orphansSub": "in this workspace; not the same as unused",
-      "httpResolved": "HTTP calls resolved",
+      "httpRead": "HTTP calls read",
       "httpUnresolved": "{count} located but not resolvable",
-      "httpSub": "of the client calls extraction located"
+      "httpSub": "of the client calls extraction located",
+      "topicRead": "Topic calls read",
+      "topicSub": "{unresolved} names not resolvable, {files} files on a messaging SDK no extractor reads"
     },
     "reasons": {
       "no_provider": "no provider found",
       "unlinked": "unlinked",
       "internal_only": "internal to one service",
       "external_host": "external host",
+      "ambiguous_provider": "several repos serve it",
       "unknown": "no reason recorded",
       "everyMatched": "every consumer matched a provider"
     },
@@ -1721,11 +2091,26 @@
       "col": {
         "match": "Match"
       },
+      "strategy": {
+        "exact_id": "Matched by exact name",
+        "pattern_matched": "Matched by subscription pattern",
+        "binding_routed": "Routed through a queue binding",
+        "shared_table": "Shares a table",
+        "service_mapped": "Matched by service name",
+        "host_only": "Host only",
+        "gateway_route": "Routed through a gateway",
+        "unique_path": "Matched by path only",
+        "ambiguous_path": "Path served by several services",
+        "prefix_stripped": "Matched after stripping a prefix",
+        "manual": "Declared by hand",
+        "manifest": "Declared in a manifest"
+      },
       "reasonTitle": {
         "no_provider": "No provider found",
         "unlinked": "No link formed",
         "internal_only": "Not a cross-repo link",
         "external_host": "Outside this workspace",
+        "ambiguous_provider": "Several repos serve this route",
         "unknown": "No provider found"
       },
       "prose": {
@@ -1738,6 +2123,7 @@
         "unmatchedExternalHostGeneric": "This call goes to a third-party host, which is not a service in this workspace. Calls to a literal external host are left out of matching on purpose, so there is nothing to link. If that host is one of your own services, add its repository to the workspace.",
         "unmatchedInternalOnly": "The only declarations matching this call live in the same repository and the same service as the call itself, so it never crosses a boundary. Intra-service calls are left out of the link set on purpose: a link is a claim that two services depend on each other.",
         "unmatchedNoProvider": "Nothing in this workspace declares {contract}. Check for a typo in the path, an endpoint that was renamed or removed, a service outside these repositories, or a route declared in a form extraction does not recognise.",
+        "unmatchedAmbiguousProvider": "Two or more repositories serve this route, and neither the host nor the base of the call says which one it reaches, so no link is drawn to any of them. To place it, add a contracts.service_bases entry for its host or base, or a manual link.",
         "unmatchedUnlinked": "A declaration with this id exists in another service, but no link was formed between the two. That is rare, and it points at a gap in the matcher rather than at the code.",
         "unmatchedDefault": "This call matched no declaration, and no reason was recorded for it. Reasons come from the system graph, so a workspace that has not built one reports the count without the explanation."
       },
@@ -1821,27 +2207,29 @@
     }
   },
   "systemMap": {
+    "estate": "Estate",
     "title": "System map",
     "description": "Services and the typed relationships between them, rebuilt from code and git history on every workspace update.",
     "section": {
-      "title": "Services and relationships",
-      "description": "Each box is a service; each line is a contract, import or co-change between two of them. Pick a lens to ask the map one question at a time."
+      "title": "Services and relationships"
+    },
+    "evidence": {
+      "partial": "Partial evidence",
+      "insufficient": "Not determined"
     },
     "lede": {
-      "label": "Architecture score",
-      "labelHint": "A 1 to 10 roll-up of propagation cost, the size of the cyclic core, dependency cycles and rule violations, over structural edges only. Higher means less coupled.",
-      "unit": "out of 10",
-      "notDetermined": "Not determined: {reason}.",
-      "partialEvidence": "Partial evidence: {reason}.",
-      "counts": "{services, plural, one {# service} other {# services}} in {repos, plural, one {# repository} other {# repositories}}, joined by {relationships, plural, one {# relationship} other {# relationships}}: {structural} structural (a contract or import in code) and {behavioral} co-change (files that change in the same commits, not a call).",
-      "cycleMore": "{count, plural, one {# more cycle is} other {# more cycles are}} listed under Needs attention.",
-      "cycleOne": "It is listed under Needs attention with a prompt to break it.",
-      "noCycles": "No dependency cycles: every service can change without a loop back to itself.",
-      "reachAndScore": "On average a service reaches {pct}% of the others through dependencies, and {core}. Those two figures drive the score.",
-      "coreForms": "{count, plural, one {# service forms} other {# services form}} the cyclic core",
-      "noCore": "there is no cyclic core",
-      "cycleDepend": "{names} depend on each other",
-      "cycleTail": ", a dependency cycle: none of them can change a contract, build or deploy alone."
+      "estate": "{services, plural, one {# service} other {# services}} in {repos, plural, one {# repository} other {# repositories}}.",
+      "pair": "{estate} {rest}",
+      "familyCount": "{count} {family}",
+      "family": {
+        "runtime": "runtime",
+        "data": "data",
+        "build": "build",
+        "history": "history"
+      },
+      "drawn": "The edge filter shows {families} {total, plural, one {relationship} other {relationships}}.",
+      "drawnAndHidden": "The edge filter shows {drawn} {drawnTotal, plural, one {relationship} other {relationships}} and hides {hidden}.",
+      "allHidden": "The edge filter hides all {families} {total, plural, one {relationship} other {relationships}}."
     },
     "lens": {
       "none": {
@@ -1880,17 +2268,65 @@
       "services": "Services",
       "servicesSub": "in {count, plural, one {# repository} other {# repositories}}",
       "relationships": "Relationships",
-      "relationshipsSub": "{structural} structural, {behavioral} co-change",
-      "propagationCost": "Propagation cost",
-      "propagationCostSub": "of other services the average one reaches",
-      "propagationCostHint": "The share of other services the average service can reach through structural dependencies. 0% is fully decoupled, 100% is everything reaching everything.",
+      "score": "Architecture score",
+      "scoreUnit": "out of 10",
+      "scoreSub": "out of 10; the average service reaches {pct}% of the others",
+      "scoreHint": "A 1 to 10 roll-up of propagation cost, the size of the cyclic core, dependency cycles and rule violations, over structural edges only. Higher means less coupled. Propagation cost is the share of other services the average service reaches through structural dependencies.",
       "contractLinks": "Contract links",
       "contractLinksSub": "from {providers} providers, {consumers} consumers",
       "contractLinksHint": "Consumer calls matched to the provider that serves them, across services.",
       "unmatched": "Unmatched consumers",
       "unmatchedSub": "calls with no provider in the workspace",
-      "unmatchedHint": "Consumer contracts that matched no provider: missing, a third-party host, or inside the same service."
+      "unmatchedHint": "Consumer contracts that matched no provider: missing, or a third-party host. Calls a repository makes to its own service are served and not counted."
+    },
+    "nav": {
+      "searchLabel": "Search services, groups and routes",
+      "searchPlaceholder": "Search the map",
+      "searchServices": "Services",
+      "searchGroups": "Groups",
+      "searchRoutes": "Routes",
+      "searchNone": "Nothing matches",
+      "searchRoutesLoading": "Searching routes",
+      "routeCaller": "{consumer} calls it",
+      "routeCallers": "{consumer} and {others} more call it",
+      "routeProvider": "served by {provider}",
+      "displayLabel": "Display",
+      "displayMap": "Map",
+      "displayList": "List",
+      "helpOpen": "Keyboard shortcuts",
+      "helpTitle": "System map keyboard shortcuts",
+      "keySearch": "Search services, groups and routes",
+      "keyBack": "Close details, then go back a level",
+      "keyFocus": "Focus the selected service",
+      "keyBetween": "Compare two services, starting from the selected one",
+      "keyList": "Switch between the map and the list",
+      "keyHelp": "Show or hide this help",
+      "keySteps": "Step through search results",
+      "keyPick": "Go to the highlighted result",
+      "listCaption": "Services in the estate, one row each",
+      "colService": "Service",
+      "colGroup": "Group",
+      "colHealth": "Health",
+      "colIn": "Runtime in",
+      "colOut": "Runtime out",
+      "colContracts": "Contracts",
+      "noScore": "No score",
+      "contractsCell": "{provided} provided · {consumed} consumed",
+      "announceEstate": "Estate: {services, plural, one {# service} other {# services}}",
+      "announceEstateGrouped": "Estate: {groups, plural, one {# group} other {# groups}}, {services, plural, one {# service} other {# services}}",
+      "announceGroup": "{label} opened: {services, plural, one {# service} other {# services}}",
+      "announceFocus": "Focused on {name}: {callers, plural, one {# caller} other {# callers}}, {dependencies, plural, one {# dependency} other {# dependencies}}",
+      "announceBetween": "Showing the links between {a} and {b}",
+      "announceList": "List view: {services, plural, one {# service} other {# services}}",
+      "announcePick": "Pick a second service to compare with {name}"
     }
+  },
+  "linkCoverage": {
+    "label": "Linked to another service",
+    "sub": "{linked} of {seen} HTTP calls; {read} read",
+    "hint": "HTTP calls that matched a route another service serves, out of every call seen, counting one per file that calls out through code no dialect reads. Of the calls read, {readNotLinked} matched no other service in the workspace and {inService} are calls a repository makes to its own service, which need no link.",
+    "unmatchedHint": "Consumers that matched no provider in the workspace: missing, or a third-party host.",
+    "inServiceHint": "{count, plural, one {# call a repository makes to its own service is served and not counted here.} other {# calls a repository makes to its own service are served and not counted here.}}"
   },
   "loading": {
     "workspace": "Loading workspace",
@@ -1905,5 +2341,160 @@
     "commits": "Loading commits",
     "coverage": "Loading coverage",
     "knowledgeGraph": "Loading knowledge graph"
+  },
+  "setup": {
+    "title": "Setup",
+    "doneTitle": "You're set up",
+    "progress": "{done} of 3 essentials done. Each row also shows its terminal command.",
+    "doneLede": "{agent} made its first call {when}. The index updates after each commit.",
+    "yourAgent": "Your agent",
+    "loading": "Checking this repository's setup. The first check can take about 20 seconds.",
+    "loadFailedLabel": "Couldn't check",
+    "loadFailed": "The setup check didn't finish. Run repowise doctor in a terminal to see why, or try again.",
+    "retry": "Try again",
+    "writesOffLabel": "Read only",
+    "writesOff": "Changes from the browser are off on this server, because it uses an API key or isn't on this machine. Copy the command or the prompt and run it in a terminal.",
+    "writesOffShort": "Changes from the browser are off on this server. Run the command in a terminal.",
+    "writeFailed": "That didn't work",
+    "attention": "Needs attention",
+    "essentials": "Essentials",
+    "optional": "Optional",
+    "tour": "Take the tour",
+    "copyPrompt": "Copy prompt",
+    "promptDescription": "Hand this to your coding agent. It names the command and how to check the result.",
+    "copied": "Copied",
+    "copyFailed": "Couldn't copy",
+    "showFiles": "Show files",
+    "hideFiles": "Hide files",
+    "showDetails": "Show details",
+    "hideDetails": "Hide details",
+    "connect": "Connect {agent}",
+    "disconnect": "Disconnect",
+    "disconnectAgent": "Disconnect {agent}",
+    "useReport": "Use this report",
+    "addModel": "Add a model",
+    "changeModel": "Change model",
+    "syncOff": {
+      "title": "Turn off sync?",
+      "body": "This runs repowise hook uninstall, which also removes the pre-commit security check and the health gate. The index will update only when you run repowise update.",
+      "confirm": "Turn off",
+      "cancel": "Keep it on"
+    },
+    "hosted": {
+      "eyebrow": "Hosted repowise",
+      "title": "All of this, run for you and your team",
+      "lede": "Take a look whenever you need it.",
+      "items": {
+        "push": "Indexed on every push",
+        "reviews": "Pull request reviews",
+        "dashboard": "One dashboard for the team",
+        "webApps": "Use it from Claude.ai and ChatGPT"
+      },
+      "start": "Start free",
+      "see": "See what hosted adds",
+      "hide": "Hide on this machine"
+    },
+    "pill": {
+      "label": "Setup",
+      "progress": "{done} of {total}",
+      "aria": "Setup: {done} of {total} essentials done",
+      "hide": "Hide the setup reminder on this machine"
+    },
+    "settings": {
+      "openSetup": "Open Setup",
+      "openSetupFor": "Open Setup for {repo}",
+      "globalLead": "Setup is per repository: its index, its coding agent and keeping it in sync.",
+      "noRepos": "Add a repository to set it up.",
+      "telemetryTitle": "Anonymous usage telemetry",
+      "telemetryDescription": "repowise sends anonymous usage counts: command names and coarse environment, never code, paths or names. DO_NOT_TRACK=1 also turns it off.",
+      "telemetryCheckLabel": "Check whether it's on",
+      "telemetryOffLabel": "Turn it off",
+      "telemetryOffHint": "Run it in a terminal on this machine."
+    },
+    "row": {
+      "index": {
+        "title": "Index",
+        "statusUpToDate": "Up to date",
+        "statusIncomplete": "Not indexed",
+        "statusBehind": "Behind",
+        "statusSkipped": "{count, plural, one {# file skipped} other {# files skipped}}",
+        "detailUpToDate": "{files} files indexed at {commit}.",
+        "detailIncomplete": "There's no complete index for this repository yet.",
+        "detailBehind": "Indexed at {indexed}. HEAD has moved on to {live}.",
+        "detailSkipped": "{count, plural, one {# file could not be parsed, so its symbols are missing from the graph.} other {# files could not be parsed, so their symbols are missing from the graph.}}"
+      },
+      "agent": {
+        "title": "Coding agent",
+        "statusConnected": "Connected",
+        "statusWaiting": "Waiting",
+        "statusOff": "Not connected",
+        "statusNoCalls": "No calls yet",
+        "detailCalled": "{agent} made its first call {when}.",
+        "detailCalledAnon": "An agent made its first call {when}.",
+        "detailWaiting": "{count, plural, one {{agents} is registered.} other {{agents} are registered.}} This ticks on its first call.",
+        "detailWaitingOther": "{count, plural, one {{agents} is registered.} other {{agents} are registered.}} This ticks on its first call. {other} is installed, not connected.",
+        "detailInstalled": "{agent} is installed. Connecting writes its MCP config.",
+        "detailNone": "No coding agent found on this machine. Install one, then connect it here.",
+        "detailNoCalls": "{agent} is registered but hasn't reached this index. If it opened a different folder, open {repo} in it or run repowise init there."
+      },
+      "sync": {
+        "title": "Keep the index in sync",
+        "statusOn": "On",
+        "statusOff": "Off",
+        "statusUnknown": "Couldn't check",
+        "detailOn": "Updates after each commit.",
+        "detailOff": "The index updates only when you run repowise update.",
+        "detailUnknown": "The post-commit hook couldn't be read."
+      },
+      "model": {
+        "title": "A model for docs, chat and answers",
+        "statusLlm": "Written by a model",
+        "statusBuilt": "Built from index",
+        "detailActive": "Using {provider}.",
+        "detailReady": "{providers} ready on this machine.",
+        "detailNone": "Docs are built from the index. A model writes fuller docs and answers in chat."
+      },
+      "coverage": {
+        "title": "Test coverage",
+        "statusOn": "On",
+        "statusFound": "Found",
+        "statusOff": "Not found",
+        "detailOn": "Coverage stored {when}.",
+        "detailFound": "Found {path}, {age, plural, =0 {from today} one {# day old} other {# days old}}.",
+        "detailNone": "No coverage report found. Run your tests with coverage, then add the report."
+      },
+      "rewrite": {
+        "title": "Shorter command output",
+        "statusOn": "On",
+        "statusOff": "Off",
+        "statusNa": "Needs Claude Code",
+        "statusUnknown": "Couldn't check",
+        "detail": "Claude Code reads test, build and git output through distill.",
+        "detailNa": "This works with Claude Code, which isn't on this machine."
+      },
+      "check": {
+        "statusWarn": "Warning",
+        "statusFail": "Failed"
+      },
+      "agents": {
+        "statusConnected": "Connected",
+        "statusNotConnected": "Not connected",
+        "statusNotInstalled": "Not installed",
+        "statusHosted": "Hosted",
+        "detailLastCall": "Last call {when}. {path}",
+        "detailNoCall": "No calls yet. {path}",
+        "detailInstalledWrites": "Installed. Writes {path}.",
+        "detailInstalled": "Installed.",
+        "detailNotInstalled": "Connect after installing, or copy the editor config in global settings.",
+        "hostedTitle": "Claude.ai and ChatGPT",
+        "hostedDetail": "Use this repo from the web apps too, through hosted repowise's MCP address.",
+        "hostedLink": "See hosted"
+      },
+      "unreadable": {
+        "status": "Couldn't check",
+        "detail": "Couldn't read this here. Run {command} in a terminal to check."
+      }
+    },
+    "changeIn": "Change in {group}"
   }
 }

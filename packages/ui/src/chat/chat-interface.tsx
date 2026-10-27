@@ -446,7 +446,7 @@ export function ChatInterface({
                     <button
                       type="button"
                       onClick={() => void onRetry(lastMessage)}
-                      className="inline-flex h-8 items-center rounded-md px-2 text-xs font-medium hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                      className="inline-flex h-8 items-center rounded-md px-2 text-xs font-medium hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
                     >
                       Retry
                     </button>
@@ -463,7 +463,7 @@ export function ChatInterface({
             aria-pressed={isFollowingLive}
             aria-label="Jump to latest"
             title="Jump to latest"
-            className="absolute bottom-3 left-1/2 z-10 flex h-8 w-8 print:hidden -translate-x-1/2 items-center justify-center rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)] text-[var(--color-text-secondary)] shadow-[var(--shadow-sm)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+            className="absolute bottom-3 left-1/2 z-10 flex h-8 w-8 print:hidden -translate-x-1/2 items-center justify-center rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)] text-[var(--color-text-secondary)] shadow-[var(--shadow-sm)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
           >
             <ArrowDown className="h-4 w-4" />
           </button>

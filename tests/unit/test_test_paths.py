@@ -85,7 +85,8 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("src/contests/rules.py", None, ""),
     ("src/Latests/x.cs", None, ""),
     # gradle test fixtures and QA projects (elasticsearch)
-    ("build-tools/src/testFixtures/java/org/x/Fixture.java", None, "test"),
+    ("build-tools/src/testFixtures/java/org/x/Fixture.java", None, "support"),
+    ("build-tools/src/testFixtures/java/org/x/Builder.java", None, "test"),
     ("x-pack/plugin/sql/qa/server/src/main/java/org/x/JdbcBase.java", None, "test"),
     ("qa/logging-spi/src/main/java/org/x/Spi.java", None, "test"),
     ("src/qa/answer.py", None, ""),  # a question-answering module
@@ -124,6 +125,9 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("contest/x.py", None, ""),
     # e2e suites
     ("e2e/login.ts", None, "test"),
+    ("apps/console/e2e/helpers/hydration.ts", "typescript", "support"),
+    ("apps/console/e2e/fixtures.ts", "typescript", "support"),
+    ("apps/console/e2e/specs/login.spec.ts", "typescript", "test"),
     # ...and the `.e2e.` infix beside `.test.`/`.spec.`, suites and their helpers
     ("src/gateway/gateway.e2e.ts", None, "test"),
     ("src/gateway/test-helpers.e2e.ts", None, "test"),
@@ -162,6 +166,11 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     # still needs a test tree around it
     ("fixtures/data.yml", None, ""),
     ("app/fixtures/premier_league.py", None, ""),
+    ("src/fixtures.ts", None, ""),
+    ("src/fixtures.ts", "typescript", ""),
+    ("src/fixtures.py", None, ""),
+    ("src/fixtures.py", "python", ""),
+    ("lib/fixtures.go", None, ""),
     ("src/testdata_loader.py", None, ""),
     ("tests/testdata/golden.json", None, "support"),
     # compound directory names: a segment's words split on - _ . and its last
@@ -310,6 +319,12 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("src/media-understanding/runner.test-mocks.ts", None, "support"),
     ("extensions/comfy/test-helpers.ts", None, "support"),
     ("src/cron/isolated-agent.test-setup.ts", None, "support"),
+    # #3269: a module's own ``.test-*`` companion, beside it in src/.
+    ("src/foo.test-support.ts", None, "support"),
+    ("src/foo.test-helpers.ts", None, "support"),
+    ("src/foo.test-utils.ts", None, "support"),
+    ("src/foo.test-utils.js", None, "support"),
+    ("src/test-supporter.ts", None, ""),
     # ``test-utils`` is a published entry in React and Preact; ``setup`` alone
     # is a build script or an app's bootstrap.
     ("src/test-utils.ts", None, ""),

@@ -12,12 +12,14 @@ import time
 from itertools import pairwise
 from typing import Any
 
+from sqlalchemy import select
+
 from repowise.core.persistence.crud import (
     get_graph_node,
     get_top_entry_points,
 )
 from repowise.core.persistence.database import get_session
-from repowise.core.persistence.models import GraphNode
+from repowise.core.persistence.models import GraphNode, WikiSymbol
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server._graph_utils import (
     bfs_trace,
@@ -32,9 +34,48 @@ from repowise.server.mcp_server._helpers import (
     _resolve_repo_context,
     _unsupported_repo_all,
     filter_embedded_path_ids,
+    filter_rows_by_attr,
     is_excluded,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._symbol_lookup import resolve_symbol_rows, symbol_rank_key
+
+
+async def _entry_node(
+    session: Any, repo_id: str, entry_point: str, exclude_spec: Any
+) -> GraphNode | None:
+    """The graph node *entry_point* names, resolved the way get_symbol resolves ids.
+
+    An exact node id first, then get_symbol's lookup (separator variants,
+    partial paths, ``Class.method``), then a bare name, best candidate first.
+    A candidate in an excluded file gives way to the next one.
+    """
+    node = await get_graph_node(session, repo_id, entry_point)
+    if node is not None:
+        return node
+    rows = await resolve_symbol_rows(session, repo_id, entry_point)
+    if not rows and "::" not in entry_point:
+        res = await session.execute(
+            select(WikiSymbol).where(
+                WikiSymbol.repository_id == repo_id, WikiSymbol.name == entry_point
+            )
+        )
+        rows = sorted(
+            res.scalars().all(),
+            key=lambda r: symbol_rank_key(
+                entry_point,
+                name=r.name,
+                qualified_name=r.qualified_name,
+                kind=r.kind,
+                path=r.file_path,
+                language=r.language,
+            ),
+        )
+    for row in filter_rows_by_attr(rows, "file_path", exclude_spec):
+        node = await get_graph_node(session, repo_id, row.symbol_id)
+        if node is not None:
+            return node
+    return None
 
 
 @mcp.tool(
@@ -79,11 +120,15 @@ async def get_execution_flows(
 
         # Determine entry points
         entry_nodes: list[tuple[GraphNode, float]] = []
+        exclude_spec = _get_exclude_spec(ctx.path)
 
         if entry_point:
             # Trace from a specific symbol
-            node = await get_graph_node(session, repo_id, entry_point)
+            node = await _entry_node(session, repo_id, entry_point, exclude_spec)
             if node is None:
+                from repowise.server.mcp_server._savings.interaction import note_error_reason
+
+                note_error_reason("not_found")
                 return {
                     "entry_point": entry_point,
                     "error": f"Symbol not found: {entry_point!r}",
@@ -100,7 +145,6 @@ async def get_execution_flows(
             for n in top_nodes:
                 entry_nodes.append((n, _ep_score(n)))
 
-        exclude_spec = _get_exclude_spec(ctx.path)
         if exclude_spec:
             entry_nodes = [
                 (n, s)

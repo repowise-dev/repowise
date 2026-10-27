@@ -32,6 +32,7 @@ from repowise.core.persistence.crud import (
 from repowise.core.persistence.database import get_session, refresh_planner_stats
 from repowise.core.pipeline import persist_pipeline_result, run_pipeline
 from repowise.core.pipeline.modes import OrchestratorMode
+from repowise.core.update_lock import release_update_lock, try_acquire_update_lock
 from repowise.server.job_events import JobEventBuffer, create_event_buffer
 
 # The ``noqa: F401`` names live in the sibling job modules and are re-exported
@@ -57,7 +58,9 @@ from repowise.server.job_records import (
 from repowise.server.job_state import (
     _load_state,  # noqa: F401
     _persist_initial_index_state,
+    _read_head_sha,
     _stamp_last_sync_commit,
+    newer_health_analyzer,
 )
 from repowise.server.services.areas import warm_area_model
 from repowise.server.services.coupling import warm_coupling_model
@@ -65,70 +68,42 @@ from repowise.server.services.coupling import warm_coupling_model
 logger = structlog.get_logger(__name__)
 
 
-def _repo_exclude_patterns(repo: Any, repo_path: str) -> list[str]:
-    """Collect a server job's exclude patterns from both config sources.
+def _repo_file_settings(repo: Any, repo_path: str) -> dict[str, Any]:
+    """The repo's ``exclude_patterns`` and ``wiki_style`` as a job sees them.
 
-    ``Repository.settings_json`` (web UI) and ``.repowise/config.yaml`` (CLI),
-    merged in order, de-duplicated, settings first. A missing or malformed
-    source is ignored.
+    ``.repowise/config.yaml`` is their home; a legacy ``settings_json`` value
+    applies only while the file lacks the key (``resolve_file_settings``). A
+    malformed source is ignored.
     """
-    patterns: list[str] = []
+    from repowise.core.repo_config import FILE_SETTING_KEYS, resolve_file_settings
 
-    def _add(values: Any) -> None:
-        if not isinstance(values, list):
-            return
-        for value in values:
-            if isinstance(value, str) and value not in patterns:
-                patterns.append(value)
-
-    # Source 1: DB-stored repo settings (web UI).
     try:
-        settings = json.loads(getattr(repo, "settings_json", "") or "{}")
-        if isinstance(settings, dict):
-            _add(settings.get("exclude_patterns"))
+        stored = json.loads(getattr(repo, "settings_json", "") or "{}")
     except (TypeError, ValueError):
         logger.debug("repo_settings_json_unparsable", repo_path=repo_path)
-
-    # Source 2: repo-local .repowise/config.yaml (CLI/init), via the shared loader.
+        stored = {}
+    if not isinstance(stored, dict):
+        stored = {}
     try:
-        from repowise.core.repo_config import load_repo_config
-
-        cfg = load_repo_config(Path(repo_path))
-        if isinstance(cfg, dict):
-            _add(cfg.get("exclude_patterns"))
+        return resolve_file_settings(Path(repo_path), stored)
     except Exception:
         logger.debug("repo_config_yaml_unreadable", repo_path=repo_path)
+        return {key: stored[key] for key in FILE_SETTING_KEYS if key in stored}
 
-    return patterns
+
+def _repo_exclude_patterns(repo: Any, repo_path: str) -> list[str]:
+    """A server job's exclude patterns, de-duplicated, non-strings dropped."""
+    values = _repo_file_settings(repo, repo_path).get("exclude_patterns")
+    if not isinstance(values, list):
+        return []
+    return list(dict.fromkeys(v for v in values if isinstance(v, str)))
 
 
 def _repo_wiki_style(repo: Any, repo_path: str) -> str:
-    """Resolve a server job's effective wiki style from both config sources.
-
-    ``Repository.settings_json`` wins (the web UI is the more deliberate
-    signal), then ``.repowise/config.yaml``, then the default. Unknown values
-    resolve to the default rather than failing the job.
-    """
+    """A server job's wiki style; an unknown value resolves to the default."""
     from repowise.core.generation.styles import resolve_style
 
-    style: str | None = None
-    try:
-        settings = json.loads(getattr(repo, "settings_json", "") or "{}")
-        if isinstance(settings, dict):
-            style = settings.get("wiki_style")
-    except (TypeError, ValueError):
-        logger.debug("repo_settings_json_unparsable", repo_path=repo_path)
-
-    if not style:
-        try:
-            from repowise.core.repo_config import load_repo_config
-
-            cfg = load_repo_config(Path(repo_path))
-            if isinstance(cfg, dict):
-                style = cfg.get("wiki_style")
-        except Exception:
-            logger.debug("repo_config_yaml_unreadable", repo_path=repo_path)
-
+    style = _repo_file_settings(repo, repo_path).get("wiki_style")
     return resolve_style(style, repo_path=repo_path).name
 
 
@@ -555,12 +530,54 @@ async def _run_scoped_generation(run: _JobRun) -> None:
     )
 
 
+def _refuse_older_analyzer(repo_path: Path) -> None:
+    """Fail the job before it writes health rows older than the stored ones."""
+    from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+
+    stored = newer_health_analyzer(repo_path)
+    if stored is not None:
+        raise RuntimeError(
+            f"The index holds health scores from analyzer version {stored}, newer "
+            f"than this server's {HEALTH_ANALYZER_VERSION}. Restart `repowise serve` "
+            "to load the upgraded package."
+        )
+
+
 async def _run_index_job(run: _JobRun, app_state: Any) -> None:
+    """Index under the CLI's update lock, so the two never write one index at once."""
+    repo_path = Path(run.spec.repo_path)
+    head = await asyncio.to_thread(_read_head_sha, repo_path)
+    # Acquired and released without an await, so a cancel cannot leak the lock.
+    owner = try_acquire_update_lock(repo_path, head)
+    if owner is not None:
+        # The holder's run advances the baseline; nothing failed here.
+        await _finalize_job_status(
+            app_state,
+            run.session_factory,
+            run.progress,
+            run.spec.job_id,
+            status="cancelled",
+            error_message=(
+                f"Another repowise update or sync (pid {owner.get('pid')}) is "
+                "running on this repository, so this job did not run."
+            ),
+        )
+        return
+    try:
+        await asyncio.to_thread(_refuse_older_analyzer, repo_path)
+        await _run_locked_index_job(run, app_state)
+    finally:
+        release_update_lock(repo_path)
+
+
+async def _run_locked_index_job(run: _JobRun, app_state: Any) -> None:
     """Index the repository, persist everything, and record the outcome."""
     spec = run.spec
     docs = _DocsPlan.for_job(spec, run.llm_client)
     result = await _run_index_pipeline(run, docs)
     incremental_pages = await _sync_incremental_pages(run, result)
+    # A CLI init does not take the update lock; check again right before writing.
+    await asyncio.to_thread(_refuse_older_analyzer, Path(spec.repo_path))
     swept_page_ids = await _persist_index_result(run, result, incremental_pages)
 
     all_pages = (result.generated_pages or []) + incremental_pages
@@ -572,7 +589,12 @@ async def _run_index_job(run: _JobRun, app_state: Any) -> None:
 
     elapsed = time.monotonic() - run.start
     pages_generated = await _record_index_completion(run, result, all_pages, elapsed)
-    await _write_index_state(run, docs, total_pages=len(all_pages))
+    await _write_index_state(
+        run,
+        docs,
+        total_pages=len(all_pages),
+        health_rescored=getattr(result, "health_report", None) is not None,
+    )
     await _reload_cross_repo_enricher(app_state, spec.job_id)
     # The area rollup and the coupling fold are read on the first dashboard
     # load after an index; fold them here, in the job's own task, instead.
@@ -739,11 +761,14 @@ async def _record_index_completion(
     return pages_generated
 
 
-async def _write_index_state(run: _JobRun, docs: _DocsPlan, *, total_pages: int) -> None:
+async def _write_index_state(
+    run: _JobRun, docs: _DocsPlan, *, total_pages: int, health_rescored: bool = False
+) -> None:
     """Update state.json so CLI incremental updates know the new baseline.
 
     An initial index also persists the full baseline (docs flags, run
-    mode, config) that `repowise init` would have written.
+    mode, config) that `repowise init` would have written. A run that
+    rescored health stamps the analyzer version its rows came from.
     """
     spec = run.spec
     try:
@@ -757,9 +782,12 @@ async def _write_index_state(run: _JobRun, docs: _DocsPlan, *, total_pages: int)
                 total_pages=total_pages,
                 wiki_style=spec.wiki_style,
                 exclude_patterns=spec.exclude_patterns,
+                health_rescored=health_rescored,
             )
         else:
-            await asyncio.to_thread(_stamp_last_sync_commit, Path(spec.repo_path))
+            await asyncio.to_thread(
+                _stamp_last_sync_commit, Path(spec.repo_path), health_rescored=health_rescored
+            )
     except Exception:
         logger.debug("state_json_update_failed", job_id=spec.job_id, exc_info=True)
 

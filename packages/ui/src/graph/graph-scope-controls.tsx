@@ -16,7 +16,7 @@ import type { CommunitySummaryItem } from "@repowise-dev/types/graph";
  * the scope, and it follows the `MapLensSwitcher` precedent on Code Health:
  * labelled, in the section header, not floating over the diagram.
  */
-export type GraphScope = "communities" | "files";
+export type GraphScope = "communities" | "files" | "tree";
 
 const SCOPES: { id: GraphScope; label: string; hint: string }[] = [
   {
@@ -30,6 +30,14 @@ const SCOPES: { id: GraphScope; label: string; hint: string }[] = [
     // caption under the tabs says exactly how big that slice is.
     label: "Files",
     hint: "Individual files and how they depend on each other",
+  },
+  {
+    id: "tree",
+    // The same file graph, read as an outline rather than as a canvas. It is
+    // the same axis as the two above — how the file graph is presented — so it
+    // lives in the same control, not in a tab of its own.
+    label: "Tree",
+    hint: "The same files as an outline, with what each one imports",
   },
 ];
 
@@ -73,7 +81,7 @@ export function GraphScopeSwitcher({
             tabIndex={active ? 0 : -1}
             title={s.hint}
             onClick={() => onScopeChange(s.id)}
-            className={`rounded px-2.5 py-1 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] ${
+            className={`rounded px-2.5 py-1 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] ${
               active
                 ? "bg-[var(--color-bg-elevated)] font-semibold text-[var(--color-text-primary)]"
                 : "font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
@@ -122,7 +130,7 @@ export function ModuleFilterSelect({
       <select
         value={activeModule ?? ""}
         onChange={(e) => onModuleChange(e.target.value || null)}
-        className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-1 text-xs text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+        className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-1 text-xs text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
       >
         <option value="">All modules</option>
         {prominent.map((g) => (
@@ -224,7 +232,7 @@ export function GraphNarrowingSelect({
           else if (v.startsWith("m:")) onChange({ module: v.slice(2), community: null });
           else onChange({ module: null, community: null });
         }}
-        className="max-w-[15rem] rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-1 text-xs text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+        className="max-w-[15rem] rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-1 text-xs text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
       >
         <option value="">All files</option>
         {staleModule && <option value={`m:${staleModule}`}>{staleModule} · 0</option>}

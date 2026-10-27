@@ -100,6 +100,26 @@ def band_for(score: float) -> HealthBand:
     return "at_risk"
 
 
+# The canonical three-band reading beside a health mark, for a figure and a word
+# printed together. Mirror of ``HEALTHY_MIN`` and ``healthMark`` in the TS packages.
+HEALTHY_MIN = 8.0
+
+HealthMark = Literal["healthy", "warning", "alert"]
+
+MARK_LABEL: dict[HealthMark, str] = {
+    "healthy": "Healthy",
+    "warning": "Warning",
+    "alert": "Alert",
+}
+
+
+def mark_for(score: float) -> HealthMark:
+    """Healthy from 8, Warning from 4, Alert below."""
+    if score >= HEALTHY_MIN:
+        return "healthy"
+    return "warning" if score >= NEEDS_WORK_MIN else "alert"
+
+
 # Below this share of code files scored, the repo average describes a sample,
 # not the repo, so no band is put on it. Presentation only, like the cutoffs.
 HEADLINE_MIN_ANALYSED_SHARE = 0.5

@@ -125,6 +125,32 @@ class TestFastApiFromDecorators:
         )
         assert ids == {"http::GET::/snapshots/{param}/chat/history"}
 
+    def test_a_comment_inside_a_multi_line_decorator_keeps_the_route(self) -> None:
+        decorator = [
+            "@router.get(",
+            '    "/conversations",',
+            "    # Tight on purpose (one call per load).",
+            "",
+            "    dependencies=[Depends(limit())],",
+            ")",
+        ]
+        ids = _ids(_extract(self.PRELUDE, ("chat", decorator)))
+        assert ids == {"http::GET::/snapshots/{param}/chat/conversations"}
+
+    def test_a_comment_between_stacked_decorators_keeps_the_route(self) -> None:
+        stack = ['@router.post("/fork")', "# Per-IP as well.", '@limiter.limit("10/hour")']
+        ids = _ids(_extract(self.PRELUDE, ("chat", stack)))
+        assert ids == {"http::POST::/snapshots/{param}/chat/fork"}
+
+    def test_a_comment_in_the_arguments_is_not_read_as_one(self) -> None:
+        decorator = ['@router.route("/items",', '    # methods=["POST"]', ")"]
+        ids = _ids(_extract(self.PRELUDE, ("items", decorator)))
+        assert ids == {"http::GET::/snapshots/{param}/chat/items"}
+
+    def test_a_commented_out_decorator_in_a_stack_is_not_a_route(self) -> None:
+        stack =['# @router.delete("/old")', '@limiter.limit("10/hour")']
+        assert _extract(self.PRELUDE, ("chat", stack)) == []
+
     def test_non_route_decorators_are_ignored(self) -> None:
         assert (
             _extract(
@@ -233,8 +259,8 @@ EXAMPLE = "@router.delete('/fabricated')"'''
         assert ids == {"http::GET::/api/real"}
 
     def test_a_commented_out_decorator_is_not_a_route(self) -> None:
-        # The comment stop is what keeps the walk out of the previous symbol's
-        # body, and it makes a commented-out decorator inert on the way.
+        # A comment never joins the decorator text, so a commented-out
+        # decorator is inert; the first code line above ends the walk.
         ids = _ids(_extract(self.PRELUDE, ("plain", ['# @router.get("/commented")'])))
         assert ids == set()
 

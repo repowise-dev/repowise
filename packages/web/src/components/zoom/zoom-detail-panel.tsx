@@ -233,7 +233,7 @@ export function ZoomDetailPanel({
             <button
               type="button"
               onClick={() => onZoom(node.id)}
-              className="flex w-full items-center justify-center gap-1.5 rounded-md bg-[var(--color-accent-primary)] px-3 py-2 text-[13px] font-medium text-[var(--color-text-on-accent)] hover:opacity-90"
+              className="flex w-full items-center justify-center gap-1.5 rounded-md bg-[var(--color-action-primary)] px-3 py-2 text-[13px] font-medium text-[var(--color-text-on-action)] hover:bg-[var(--color-action-primary-hover)]"
             >
               <ScanSearch className="h-3.5 w-3.5" />
               {t("detail.zoomIn")}

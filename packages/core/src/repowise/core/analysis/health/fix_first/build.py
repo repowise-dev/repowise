@@ -170,6 +170,7 @@ def _prepare(
         dead_spans(dead_code),
         function_changes,
         blame_skipped,
+        {p: shape + hist for p, (shape, hist) in split.items()},
     )
     return split, files
 

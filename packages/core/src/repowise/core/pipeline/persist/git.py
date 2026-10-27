@@ -9,11 +9,17 @@ import structlog
 logger = structlog.get_logger("repowise.core.pipeline.persist")
 
 
-async def persist_git(result: Any, session: Any, repo_id: str) -> None:
+async def persist_git(
+    result: Any, session: Any, repo_id: str, *, timings: Any | None = None
+) -> None:
     """Persist git-phase outputs: per-file metadata and per-commit rows.
 
     Both writes are idempotent UPSERTs keyed by ``(repo_id, file_path)`` /
     ``(repo_id, sha)`` — safe to call incrementally and on resume.
+
+    ``timings`` is an optional :class:`PhaseTimings` table; when given, the
+    change-record rebuild (a first-parent history walk) is timed into it as
+    ``persist.changes``.
     """
     from repowise.core.persistence.crud import (
         clear_attribution_if_disabled,
@@ -24,6 +30,7 @@ async def persist_git(result: Any, session: Any, repo_id: str) -> None:
         upsert_git_commits_bulk,
         upsert_git_metadata_bulk,
     )
+    from repowise.core.pipeline.phase_timing import timed
 
     if result.git_metadata_list:
         await upsert_git_metadata_bulk(session, repo_id, result.git_metadata_list)
@@ -40,7 +47,8 @@ async def persist_git(result: Any, session: Any, repo_id: str) -> None:
         await upsert_git_commit_files_bulk(session, repo_id, commit_file_rows)
     await clear_attribution_if_disabled(session, repo_id)
     if summary is not None:
-        await _rebuild_changes(session, repo_id)
+        with timed(timings, "persist.changes"):
+            await _rebuild_changes(session, repo_id)
 
     # Per fix-commit x file rows (with their SZZ candidates). The prune keeps a
     # re-index of an already-indexed repo from leaving behind events that have

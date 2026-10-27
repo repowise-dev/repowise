@@ -9,7 +9,6 @@ import { usePages } from "@/lib/hooks/use-pages";
 import { DocsTree } from "@repowise-dev/ui/docs/docs-tree";
 import { DocsCommandPalette } from "@repowise-dev/ui/docs/command-palette";
 import {
-  PresentButton,
   PresentOverlay,
   buildPresentModel,
   canPresent,
@@ -25,14 +24,14 @@ import { DocsHeader } from "./docs-header";
 import { DocsViewer } from "./docs-viewer";
 import { AskAboutThis } from "@repowise-dev/ui/chat";
 import {
-  DocsPageActions,
-  ExportMenu,
+  ReaderLevelControl,
   SidebarToggle,
-} from "./docs-page-actions";
-import { PageGenerateButton } from "./page-generate-button";
-import { BulkGenerateButton } from "./bulk-generate-button";
+} from "@repowise-dev/ui/docs/docs-page-actions";
+import { BulkGenerateDialogs, BulkWriteButton } from "./bulk-generate-dialogs";
+import { buildDocsMenuGroups } from "./docs-menu";
+import { useBulkGenerate } from "@/lib/hooks/use-bulk-generate";
 import { HostedNudgeSlot } from "@/components/hosted/hosted-nudge-slot";
-import { isModelWrittenType, isStubPage } from "@repowise-dev/ui/lib/page-types";
+import { isStubPage } from "@repowise-dev/ui/lib/page-types";
 import { search as searchPages } from "@/lib/api/search";
 import { getPageById, listAllPages } from "@/lib/api/pages";
 import { downloadTextFile } from "@/lib/utils/download";
@@ -105,12 +104,14 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
     [selectedPage],
   );
 
-  // The docs header offers one bulk "write the subsystem pages" action, shown
-  // only while concept pages are still stubs. A structural page is never a stub.
-  const hasStubs = useMemo(
-    () => pages.some((p) => isStubPage(p)),
+  // The bar's one bulk model action, shown only while concept pages are still
+  // stubs, with how many. A structural page is never a stub.
+  const stubCount = useMemo(
+    () => pages.filter((p) => isStubPage(p)).length,
     [pages],
   );
+  const hasStubs = stubCount > 0;
+  const bulk = useBulkGenerate(repoId);
 
   // Keep the selected page in sync with the ?page= URL param. This fires on
   // mount and whenever the param changes — including when an in-content wiki
@@ -234,6 +235,25 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
       setIsExporting(false);
     }
   }, [repoId]);
+
+  const handleExportPage = useCallback(() => {
+    if (!selectedPage) return;
+    const filename =
+      (selectedPage.target_path || selectedPage.title).replace(/\//g, "_") + ".md";
+    const header = `# ${selectedPage.title}\n\n> Path: ${selectedPage.target_path}\n\n`;
+    downloadTextFile(header + selectedPage.content, filename);
+  }, [selectedPage]);
+
+  const menuGroups = buildDocsMenuGroups({
+    t,
+    hasPage: !!selectedPage,
+    onExportPage: handleExportPage,
+    onExportAll: handleExportAll,
+    exporting: isExporting,
+    zipHref: `/api/repos/${repoId}/export`,
+    onPresent: presentable ? () => setPresent(true) : null,
+    reader: personaHasEffect ? { persona, setPersona } : null,
+  });
 
   // The tree panel, rendered at every state so it keeps the full height of the
   // window rather than starting below a chrome bar. Its skeleton lives here
@@ -363,13 +383,15 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
       </button>
 
       <div className="flex flex-1 min-w-0 flex-col">
-        <DocsHeader>
-          {selectedPage && (
-            <DocsPageActions
-              page={selectedPage}
+        {/* Reading, searching and the one bulk model action stay in the bar;
+            the rest is in More. The page's own model action and its freshness
+            live in the reader's metadata row, under the title they act on. */}
+        <DocsHeader menuGroups={menuGroups} menuBusy={isExporting}>
+          {personaHasEffect && (
+            <ReaderLevelControl
               persona={persona}
               setPersona={setPersona}
-              personaHasEffect={personaHasEffect}
+              className="hidden sm:inline-flex"
             />
           )}
           {selectedPage && (
@@ -385,17 +407,15 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
               className="shrink-0"
             />
           )}
-          {selectedPage && isModelWrittenType(selectedPage.page_type) && (
-            <PageGenerateButton
-              page={selectedPage}
-              repoId={repoId}
-              onGenerated={handleGenerated}
-            />
-          )}
-          {hasStubs && <BulkGenerateButton repoId={repoId} onGenerated={handleGenerated} />}
+          <BulkWriteButton
+            count={stubCount}
+            running={bulk.jobId != null}
+            onClick={bulk.open}
+          />
           <button
             onClick={() => setSearchOpen(true)}
-            className="flex items-center gap-2 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2.5 py-1.5 text-xs text-[var(--color-text-tertiary)] transition-colors hover:text-[var(--color-text-secondary)]"
+            aria-label={tc("search")}
+            className="flex h-7 shrink-0 items-center gap-2 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 text-xs text-[var(--color-text-tertiary)] transition-colors hover:text-[var(--color-text-secondary)] sm:px-2.5"
           >
             <Search className="h-3.5 w-3.5" />
             <span className="hidden sm:inline">{tc("search")}</span>
@@ -403,14 +423,6 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
               ⌘K
             </kbd>
           </button>
-          <ExportMenu
-            isExporting={isExporting}
-            onExportAll={handleExportAll}
-            zipHref={`/api/repos/${repoId}/export`}
-            page={selectedPage}
-            repoId={repoId}
-          />
-          {presentable && <PresentButton onClick={() => setPresent(true)} />}
           {selectedPage && (
             <SidebarToggle
               open={sidebarOpen}
@@ -418,6 +430,8 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
             />
           )}
         </DocsHeader>
+
+        <BulkGenerateDialogs flow={bulk} repoId={repoId} onGenerated={handleGenerated} />
 
         {/* Only while pages are still rendered from structure. */}
         <HostedNudgeSlot

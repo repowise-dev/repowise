@@ -1634,3 +1634,154 @@ def clauses_in_span(
     first = bisect_left(clauses, start_line, key=lambda c: c.line)
     last = bisect_right(clauses, end_line, key=lambda c: c.line)
     return clauses[first:last]
+
+
+# Dart's one-element ``Iterable`` callbacks. ``items.forEach((p) => p.m())``
+# binds ``p`` to an element of ``items``, though no type is spelled. ``fold``
+# leads with its accumulator and ``reduce`` and ``sort`` take two parameters,
+# so none of those is read: only a callback of exactly one element is.
+DART_CALLBACK_METHODS = (
+    "forEach",
+    "map",
+    "where",
+    "any",
+    "every",
+    "firstWhere",
+    "lastWhere",
+    "singleWhere",
+    "expand",
+)
+
+# ``head[.member[()]].method((name) => ..)``, or ``((name) { .. })``: the
+# function literal is the call's first argument and its list is one bare name.
+# A written type (``(Repo p) => ..``) is ``_DART_TYPED``'s and never matches
+# here. ``head`` follows no ``.``, so ``a.b.c.forEach`` is refused as the
+# for-in clause refuses ``a.b.c``.
+_DART_CALLBACK = re.compile(
+    rf"(?<![\w.$])(?P<head>{_DART_NAME})"
+    rf"(?:\??\.(?P<member>[A-Za-z_]\w*)(?P<call>\(\))?)?"
+    rf"\??\.(?P<method>{'|'.join(DART_CALLBACK_METHODS)})\s*\(\s*"
+    rf"\(\s*(?P<name>{_DART_NAME})\s*\)\s*(?:async\s*)?(?P<arrow>=>|\{{)"
+)
+
+
+class DartCallback(NamedTuple):
+    """One function literal handed to an ``Iterable`` method, and where it lives.
+
+    ``name`` is the literal's one parameter. ``start`` and ``end`` are the
+    lines the literal covers, and ``begin`` and ``finish`` its offsets, which
+    tell a literal nested in another from one beside it on the same line.
+    ``head``, ``member`` and ``call`` read the receiver as a for-in clause does.
+    """
+
+    start: int
+    end: int
+    begin: int
+    finish: int
+    name: str
+    head: str
+    member: str
+    call: bool
+    method: str
+
+
+def _skip_dart_string(text: str, at: int) -> int:
+    """The offset just past the string literal opening at *at*, or -1 if unterminated.
+
+    Interpolation is skipped with the string. Ceiling: a quote of the string's
+    own kind inside an interpolation (``'${m['k']}'``) ends it early.
+    """
+    quote = text[at]
+    closer = quote * 3 if text.startswith(quote * 3, at) else quote
+    raw = at > 0 and text[at - 1] == "r"
+    index = at + len(closer)
+    while index < len(text):
+        if text[index] == "\\" and not raw:
+            index += 2
+        elif text.startswith(closer, index):
+            return index + len(closer)
+        elif len(closer) == 1 and text[index] == "\n":
+            return -1
+        else:
+            index += 1
+    return -1
+
+
+def _callback_end(cleaned: str, at: int, block: bool) -> int | None:
+    """The offset just past the function literal whose body starts at *at*.
+
+    A block body ends at the brace matching the one before *at*. An expression
+    body ends at the comma or unmatched parenthesis that closes the argument.
+    None where the brackets never balance, so the literal is dropped, not
+    guessed at.
+    """
+    depth = 1 if block else 0
+    index = at
+    while index < len(cleaned):
+        char = cleaned[index]
+        if char in "'\"":
+            index = _skip_dart_string(cleaned, index)
+            if index < 0:
+                return None
+            continue
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+            if block and depth == 0:
+                return index + 1
+            if not block and depth < 0:
+                return index
+        elif not block and depth == 0 and char in ",;":
+            return index
+        index += 1
+    return None
+
+
+def scan_dart_callbacks(text: str) -> tuple[DartCallback, ...]:
+    """Every one-element ``Iterable`` callback *text* passes, in source order."""
+    cleaned = _without_comments(text, "dart")
+    starts = [0, *(newline.end() for newline in _NEWLINE.finditer(cleaned))]
+    found: list[DartCallback] = []
+    for match in _DART_CALLBACK.finditer(cleaned):
+        finish = _callback_end(cleaned, match.end(), match.group("arrow") == "{")
+        if finish is None:
+            continue
+        found.append(
+            DartCallback(
+                bisect_right(starts, match.start("name")),
+                bisect_right(starts, max(finish - 1, match.start("name"))),
+                match.start("name"),
+                finish,
+                match.group("name"),
+                match.group("head"),
+                match.group("member") or "",
+                bool(match.group("call")),
+                match.group("method"),
+            )
+        )
+    return tuple(found)
+
+
+def callbacks_in_span(
+    callbacks: tuple[DartCallback, ...], start_line: int, end_line: int
+) -> tuple[DartCallback, ...]:
+    """The callbacks whose parameter sits inside one function body, in source order."""
+    return tuple(c for c in callbacks if start_line <= c.start <= end_line)
+
+
+def callbacks_binding(
+    callbacks: Iterable[DartCallback], name: str, line: int
+) -> tuple[DartCallback, ...]:
+    """The innermost callbacks that bind *name* on *line*.
+
+    A literal nested in another covers the same lines, so the outer one is
+    dropped. Two literals side by side on one line cannot be told apart by
+    line alone, so both stay and the caller must agree between them.
+    """
+    covering = [c for c in callbacks if c.name == name and c.start <= line <= c.end]
+    return tuple(
+        c
+        for c in covering
+        if not any(o is not c and c.begin < o.begin and o.finish <= c.finish for o in covering)
+    )

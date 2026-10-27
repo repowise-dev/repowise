@@ -227,11 +227,15 @@ def validate_provider_config(
         List of warning messages for missing or invalid configuration.
         Empty list means all required config is present.
     """
+    from repowise.core.providers.llm.registry import repo_env_lookup
+
     warnings = []
+    # The key init saves to .repowise/.env counts, as it does for resolution.
+    getenv = repo_env_lookup(repo_path)
 
     def _is_env_var_set(var_name: str) -> bool:
         """Check if environment variable is set and non-empty."""
-        value = os.environ.get(var_name)
+        value = getenv(var_name)
         return value is not None and value.strip() != ""
 
     def _is_env_var_exists(var_name: str) -> bool:
@@ -264,8 +268,10 @@ def validate_provider_config(
             return warnings
 
         # Validate specific provider
-        if provider_name not in provider_env_vars:
+        if provider_name not in PROVIDER_SPECS:
             warnings.append(f"Unknown provider '{provider_name}' - cannot validate configuration")
+            return warnings
+        if provider_name not in provider_env_vars:
             return warnings
 
         # Any one of a provider's env vars satisfies it (GEMINI_API_KEY or

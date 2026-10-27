@@ -1,7 +1,6 @@
 "use client";
 
 import useSWR from "swr";
-import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { CHAT_SHORTCUT_HINT, ChatDock, getArtifactSourceTarget } from "@repowise-dev/ui/chat";
@@ -14,6 +13,8 @@ import { useRepositoryChat } from "./repository-chat-provider";
 import { useChatDockHidden } from "./use-chat-dock-hidden";
 import { config, setChatDockHidden } from "@/lib/config";
 import { useTranslations } from "next-intl";
+import { NoProviderReason } from "./no-provider-reason";
+import { useModelUpgrade } from "@/components/model-upgrade/model-upgrade";
 
 // Sigma's worst-case bottom-right stack is ~197px tall (layout status plus
 // five controls and spacing). Keep a small measured clearance above it.
@@ -21,12 +22,17 @@ export const REPOSITORY_GRAPH_DOCK_INSET = "12.5rem";
 
 /** Architecture `?view=` values that render a table, not the Sigma canvas.
  *  `deps` is the legacy spelling of `packages`. Absent or unrecognised means
- *  the Map tab, which is the default landing view. */
+ *  the Map tab, which is the default landing view.
+ *
+ *  `tree` renders no canvas either: it is the same file graph as an outline.
+ *  Nothing is anchored in the bottom-right corner there, so lifting the pill
+ *  would open the same 200px of dead space this set exists to close. */
 const ARCHITECTURE_VIEWS_WITHOUT_CANVAS = new Set([
   "coupling",
   "packages",
   "symbols",
   "deps",
+  "tree",
 ]);
 
 /**
@@ -75,6 +81,8 @@ function ConnectedRepositoryChatDock({ chat }: { chat: RepositoryChatValue }) {
     () => getProviders(chat.repoId),
     { revalidateOnFocus: false },
   );
+  // Outside the composer's reason, which unmounts once a provider is set.
+  const upgrade = useModelUpgrade(chat.repoId);
   const anyConfigured =
     providers === undefined || providers.providers.some((provider) => provider.configured);
   const collisionInset = getRepositoryDockCollisionInset(
@@ -83,6 +91,7 @@ function ConnectedRepositoryChatDock({ chat }: { chat: RepositoryChatValue }) {
   );
 
   return (
+    <>
     <ChatDock
       storageKey={`repowise:chat-dock:${chat.repoId}:${chat.conversationId ?? "new"}`}
       repoId={chat.repoId}
@@ -122,20 +131,7 @@ function ConnectedRepositoryChatDock({ chat }: { chat: RepositoryChatValue }) {
       onDismiss={() => setChatDockHidden(true)}
       unverifiedFigureCopy={{ flag: t("unverifiedFigure"), note: t("unverifiedFiguresNote") }}
       sendDisabled={!anyConfigured}
-      sendDisabledReason={
-        <span>
-          {t.rich("noProviderShort", {
-            link: (chunks) => (
-              <Link
-                href="/settings"
-                className="text-[var(--color-accent-primary)] hover:underline"
-              >
-                {chunks}
-              </Link>
-            ),
-          })}
-        </span>
-      }
+      sendDisabledReason={<NoProviderReason message="noProviderShort" onAddModel={upgrade.openSheet} />}
       modelSelectorSlot={<ModelSelector repoId={chat.repoId} activeProvider={chat.selectedProvider} activeModel={chat.selectedModel} onSelect={chat.selectModel} />}
       historySlot={
         <ConversationHistory
@@ -146,5 +142,7 @@ function ConnectedRepositoryChatDock({ chat }: { chat: RepositoryChatValue }) {
         />
       }
     />
+    {upgrade.sheet}
+    </>
   );
 }

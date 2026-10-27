@@ -17,7 +17,8 @@ def integration_checks(ctx: CheckContext) -> list[DoctorCheck]:
     checks.append(registration_check)
     # 12b. Does that registration actually start? Separate row: a wired-up
     # server that dies on every invocation has a different fix than none.
-    checks.append(_mcp_responds_check())
+    if not ctx.quick:
+        checks.append(_mcp_responds_check())
     # 13. Per-agent health, reported by each agent's own descriptor.
     agent_checks, ctx.agents_need_refresh = _agent_target_checks(ctx.repo_path)
     checks.extend(agent_checks)
@@ -60,18 +61,26 @@ def _agent_target_checks(
     try:
         targets = all_targets()
     except Exception as exc:  # pragma: no cover - a broken registry is a crash elsewhere
-        return [_check("Agent integrations", True, f"Could not check: {exc}")], False
+        row = _check(
+            "Agent integrations",
+            True,
+            f"Could not check: {exc}",
+            check_id="agent-integrations",
+            warn=True,
+        )
+        return [row], False
 
     for target in targets:
-        name = f"Agent: {target.id}"
+        name, check_id = f"Agent: {target.id}", f"agent-{target.id}"
         try:
             report = target.doctor(repo_path=repo_path)
         except Exception as exc:
-            checks.append(_check(name, True, f"Could not check: {exc}"))
+            detail = f"Could not check: {exc}"
+            checks.append(_check(name, True, detail, check_id=check_id, warn=True))
             continue
         if report.status.value in ("ok", "not-installed"):
             detail = report.issues[0] if report.issues else "wired up"
-            checks.append(_check(name, True, detail))
+            checks.append(_check(name, True, detail, check_id=check_id))
             continue
         # Only conditions the repair pass can actually resolve drive it. A
         # plugin the CLI cannot rewrite, or a fix that is a different command,
@@ -81,7 +90,17 @@ def _agent_target_checks(
         detail = "; ".join(report.issues)
         if report.fix_command:
             detail += f" (run: {report.fix_command})"
-        checks.append(_check(name, report.status.value != "broken", detail))
+        # Stale is a warn and broken a fail; only broken changes the exit code.
+        checks.append(
+            _check(
+                name,
+                report.status.value != "broken",
+                detail,
+                check_id=check_id,
+                warn=True,
+                fix=report.fix_command or None,
+            )
+        )
     return checks, needs_refresh
 
 
@@ -102,8 +121,8 @@ def _registered_mcp_entry() -> dict | None:
     return _stored_repowise_entry(_claude_code_settings_path())
 
 
-def _unregistered_detail() -> str:
-    """Why there is no entry: absent, or present but unreadable.
+def _unregistered_detail() -> tuple[str, bool]:
+    """``(detail, unreadable)``: why there is no entry, absent or present but unreadable.
 
     Those have different fixes, and collapsing them tells a user with a
     hand-broken settings.json to run ``init``, which will fail on the same
@@ -119,8 +138,8 @@ def _unregistered_detail() -> str:
         try:
             load_existing_config(settings_path)
         except Exception:
-            return f"could not parse {settings_path}"
-    return "not registered (repowise init registers it)"
+            return f"could not parse {settings_path}", True
+    return "not registered (repowise init registers it)", False
 
 
 @_functools.cache
@@ -138,19 +157,26 @@ def _mcp_responds_check() -> DoctorCheck:
     checks once per entry. Without the cache a ten-repo workspace would launch
     the same server ten times and pay the startup cost for each.
     """
-    from ..mcp_smoke import CHECK_NAME, mcp_smoke_check
+    from ..mcp_smoke import CHECK_ID, CHECK_NAME, mcp_smoke_check
 
     try:
         entry = _registered_mcp_entry()
         if entry is None:
-            return _check(CHECK_NAME, True, "not registered - nothing to launch")
+            return _check(
+                CHECK_NAME, True, "not registered - nothing to launch", check_id=CHECK_ID
+            )
         command = entry.get("command")
         args = entry.get("args")
         if not isinstance(command, str) or not isinstance(args, list):
-            return _check(CHECK_NAME, True, "registration is hand-shaped - not launching it")
+            return _check(
+                CHECK_NAME,
+                True,
+                "registration is hand-shaped - not launching it",
+                check_id=CHECK_ID,
+            )
         return mcp_smoke_check(command, [str(a) for a in args], entry.get("env"))
     except Exception as exc:  # a doctor check must never be the crash
-        return _check(CHECK_NAME, True, f"Could not check: {exc}")
+        return _check(CHECK_NAME, True, f"Could not check: {exc}", check_id=CHECK_ID, warn=True)
 
 
 def _claude_registration_check(
@@ -173,11 +199,14 @@ def _claude_registration_check(
     This is a *static* check. Whether the server actually starts is
     ``_mcp_responds_check``.
     """
-    name = "Claude Code MCP entry"
+    name, check_id = "Claude Code MCP entry", "claude-code-mcp-entry"
     try:
         entry = _registered_mcp_entry()
         if entry is None:
-            return _check(name, True, _unregistered_detail()), False
+            # An unparseable settings file is worth a look; no entry at all is
+            # a choice (another agent, or none).
+            detail, unreadable = _unregistered_detail()
+            return _check(name, True, detail, check_id=check_id, warn=unreadable), False
 
         problems: list[str] = []
         command = entry.get("command")
@@ -193,16 +222,18 @@ def _claude_registration_check(
         if target is not None and not _DoctorPath(target).is_dir():
             problems.append(f"registered path missing: {target}")
         if problems:
-            return _check(name, False, "; ".join(problems) + " (rerun with --repair)"), True
+            detail = "; ".join(problems) + " (rerun with --repair)"
+            row = _check(name, False, detail, check_id=check_id, fix="repowise doctor --repair")
+            return row, True
         if target is not None and repo_path is not None and not _registers_repo(target, repo_path):
+            add = "repowise agents add --target=claude-code --scope=project"
             detail = (
-                f"serves {target}; this repo is not registered (run `repowise agents add "
-                "--target=claude-code --scope=project` for a project entry)"
+                f"serves {target}; this repo is not registered (run `{add}` for a project entry)"
             )
-            return _check(name, True, detail), False
-        return _check(name, True, target or "registered"), False
+            return _check(name, True, detail, check_id=check_id, warn=True, fix=add), False
+        return _check(name, True, target or "registered", check_id=check_id), False
     except Exception as exc:
-        return _check(name, True, f"Could not check: {exc}"), False
+        return _check(name, True, f"Could not check: {exc}", check_id=check_id, warn=True), False
 
 
 def _registers_repo(target: str, repo_path: _DoctorPath) -> bool:
@@ -299,11 +330,15 @@ def _distill_config_row(repo_path: _DoctorPath) -> tuple[DoctorCheck, object]:
 
         problems = validate_distill_config(distill_cfg)
         if problems:
-            return _check("Distill config", False, "; ".join(problems)), distill_cfg
+            row = _check("Distill config", False, "; ".join(problems), check_id="distill-config")
+            return row, distill_cfg
         detail = "valid" if distill_cfg else "defaults (no block)"
-        return _check("Distill config", True, detail), distill_cfg
+        return _check("Distill config", True, detail, check_id="distill-config"), distill_cfg
     except Exception as exc:
-        return _check("Distill config", True, f"Could not check: {exc}"), distill_cfg
+        row = _check(
+            "Distill config", True, f"Could not check: {exc}", check_id="distill-config", warn=True
+        )
+        return row, distill_cfg
 
 
 def _omission_store_row(repo_path: _DoctorPath, distill_cfg: object) -> DoctorCheck:
@@ -315,7 +350,7 @@ def _omission_store_row(repo_path: _DoctorPath, distill_cfg: object) -> DoctorCh
         _ttl_days, max_mb = omission_store_settings(distill_cfg)
         db_path = repo_path / ".repowise" / "omissions" / "omissions.db"
         if not db_path.is_file():
-            return _check("Omission store", True, "not created yet")
+            return _check("Omission store", True, "not created yet", check_id="omission-store")
         size_bytes = db_path.stat().st_size
         wal = db_path.with_name(db_path.name + "-wal")
         if wal.is_file():
@@ -325,9 +360,11 @@ def _omission_store_row(repo_path: _DoctorPath, distill_cfg: object) -> DoctorCh
         detail = f"{size_mb:.1f} MB (cap {max_mb:g} MB)"
         if not ok:
             detail += " — over cap; pruning happens on the next distill write"
-        return _check("Omission store", ok, detail)
+        return _check("Omission store", ok, detail, check_id="omission-store")
     except Exception as exc:
-        return _check("Omission store", True, f"Could not check: {exc}")
+        return _check(
+            "Omission store", True, f"Could not check: {exc}", check_id="omission-store", warn=True
+        )
 
 
 def _rewrite_hook_surfaces() -> list[tuple[str, object]]:
@@ -346,11 +383,13 @@ def _rewrite_hook_surfaces() -> list[tuple[str, object]]:
     return surfaces
 
 
-def _installed_rewrite_hooks(surfaces: list[tuple[str, object]]) -> list[str]:
+def _installed_rewrite_hooks(surfaces: list[tuple[str, object]]) -> tuple[list[str], bool]:
+    """``(names, any_unmatched)`` for the surfaces with the hook installed."""
     # Registered and live are different questions: an entry whose matcher
     # predates a tool rename is registered and fires on some or none of the
     # agent's shell tools. Say which, rather than calling all three "installed".
     installed_names = []
+    any_unmatched = False
     for name, adapter in surfaces:
         status = adapter.rewrite_hook_status()  # type: ignore[attr-defined]
         if not status.installed:
@@ -358,26 +397,32 @@ def _installed_rewrite_hooks(surfaces: list[tuple[str, object]]) -> list[str]:
         if not status.unmatched:
             installed_names.append(name)
         else:
+            any_unmatched = True
             misses = ", ".join(status.unmatched)
             installed_names.append(f"{name} (matcher misses {misses})")
-    return installed_names
+    return installed_names, any_unmatched
 
 
 def _rewrite_hook_row(distill_cfg: object) -> DoctorCheck:
-    """Advisory: the rewrite hook is strictly opt-in."""
+    """Advisory: the rewrite hook is strictly opt-in. A matcher that misses a
+    shell tool is a warn: installed but not firing there."""
+    name, check_id = "Distill rewrite hook", "distill-rewrite-hook"
     try:
-        installed_names = _installed_rewrite_hooks(_rewrite_hook_surfaces())
+        installed_names, any_unmatched = _installed_rewrite_hooks(_rewrite_hook_surfaces())
         if installed_names:
             commands_cfg = distill_cfg.get("commands") if isinstance(distill_cfg, dict) else None
             opted_out = isinstance(commands_cfg, dict) and commands_cfg.get("enabled") is False
             detail = ", ".join(installed_names)
             detail += " (this repo opted out)" if opted_out else ""
             detail = f"installed: {detail}"
+            if any_unmatched:
+                fix = "repowise hook rewrite install"
+                return _check(name, True, detail, check_id=check_id, warn=True, fix=fix)
         else:
             detail = "not installed (opt-in: repowise hook rewrite install)"
-        return _check("Distill rewrite hook", True, detail)
+        return _check(name, True, detail, check_id=check_id)
     except Exception as exc:
-        return _check("Distill rewrite hook", True, f"Could not check: {exc}")
+        return _check(name, True, f"Could not check: {exc}", check_id=check_id, warn=True)
 
 
 def _distill_checks(repo_path: _DoctorPath) -> list[DoctorCheck]:

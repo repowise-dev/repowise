@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import React from "react";
-import { render, waitFor } from "@testing-library/react";
+import { fireEvent, render, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatInterface } from "./chat-interface";
 
@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   compare: null as string | null,
   activeConversation: null as string | null,
   shellProps: null as Record<string, unknown> | null,
+  openSheet: vi.fn(),
 }));
 
 vi.mock("next/navigation", () => ({
@@ -31,6 +32,9 @@ vi.mock("next/navigation", () => ({
 vi.mock("swr", () => ({ default: () => ({ data: undefined }) }));
 vi.mock("next/link", () => ({ default: ({ children }: { children: React.ReactNode }) => <>{children}</> }));
 vi.mock("@repowise-dev/ui/chat/chat-interface", () => ({ ChatInterface: (props: Record<string, unknown>) => { mocks.shellProps = props; return <div />; } }));
+vi.mock("@/components/model-upgrade/model-upgrade", () => ({
+  useModelUpgrade: () => ({ openSheet: mocks.openSheet, sheet: <div data-testid="model-sheet" /> }),
+}));
 vi.mock("./model-selector", () => ({ ModelSelector: () => <div /> }));
 vi.mock("./conversation-history", () => ({ ConversationHistory: () => <div /> }));
 vi.mock("./repository-chat-provider", () => ({
@@ -131,5 +135,14 @@ describe("chat route conversation lifecycle", () => {
       text: "Chart code health by package as a treemap",
       source: "static",
     });
+  });
+
+  it("offers a model from the no-provider state, with the sheet mounted beside the composer", async () => {
+    const { container } = render(<ChatInterface repoId="r1" />);
+    await waitFor(() => expect(mocks.shellProps).not.toBeNull());
+    expect(container.querySelector('[data-testid="model-sheet"]')).not.toBeNull();
+    const reason = render(mocks.shellProps?.sendDisabledReason as React.ReactElement);
+    fireEvent.click(reason.getByRole("button", { name: "Add a model" }));
+    expect(mocks.openSheet).toHaveBeenCalledOnce();
   });
 });

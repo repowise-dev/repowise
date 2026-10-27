@@ -337,6 +337,10 @@ async def list_decisions(
     if accepted is not None:
         predicate = accepted_predicate()
         q = q.where(predicate if accepted else ~predicate)
+    if accepted is False and status is None and not include_dismissed:
+        # Same candidate set ``count_decisions_by_lane`` counts: a retired
+        # candidate is history, not something to review.
+        q = q.where(DecisionRecord.status.notin_(sorted(RETIRED_STATUSES)))
     order = decision_priority_order(sort)
     if accepted is False and sort != "recent":
         # A candidates page is a review queue, so it leads with the rows the
@@ -506,7 +510,9 @@ async def update_decision_status(
             await record_acceptance(
                 session,
                 rec,
-                action="superseded" if status == "superseded" else "dismissed",
+                # ``deprecated`` and ``dismissed`` share a currency; the action
+                # keeps which one happened.
+                action=status,
                 currency="superseded" if status == "superseded" else "dismissed",
                 accepter=accepter or "unrecorded",
                 kind=kind,

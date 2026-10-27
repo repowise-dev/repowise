@@ -8,7 +8,8 @@ access specifier siblings, ``static`` storage class at file scope and
 defaults, which differ by enclosing declaration; TS/JS export position;
 Python's module-level ``__all__``, which can export a name the identifier
 alone would call private; Rust's trait items, which may not write a modifier
-of their own. Each has a ``refine_*_visibility`` the parser calls after the
+of their own; Ruby's ``private`` / ``protected``, which are calls in the class
+body, not modifiers. Each has a ``refine_*_visibility`` the parser calls after the
 generic ``visibility_fn``.
 """
 
@@ -16,8 +17,8 @@ from __future__ import annotations
 
 import ast
 import re
-from collections.abc import Callable
-from typing import TYPE_CHECKING
+from collections.abc import Callable, Iterable
+from typing import TYPE_CHECKING, Any
 
 from repowise.core.pyparse import parse_python
 
@@ -596,6 +597,120 @@ _JAVA_ACCESS_KEYWORDS = ("private", "protected", "public")
 
 # Members of these bodies are implicitly public (JLS 9.4, 9.5, 9.6).
 _JAVA_PUBLIC_BODIES = frozenset({"interface_body", "annotation_type_body"})
+
+
+_RUBY_ACCESS = frozenset({"private", "protected", "public"})
+_RUBY_CLASS_ACCESS = {"private_class_method": "private", "public_class_method": "public"}
+_RUBY_BODIES = frozenset({"body_statement", "class", "module", "singleton_class"})
+# A body's index: the bare access in force at each def (by start byte), and the
+# ``(position, access)`` of every call naming a method, for instance and class methods.
+_RubyBody = tuple[
+    dict[int, str], dict[str, list[tuple[int, str]]], dict[str, list[tuple[int, str]]]
+]
+
+
+def _ruby_call_access(call: Node, src: str, names: Iterable[str]) -> tuple[str, list[str]] | None:
+    """``(keyword, [method names])`` of a ``private :a, :b`` style call, else None.
+
+    A call with no symbol or string arguments (``private def x``,
+    ``private attr_reader :y``) lists no names.
+    """
+    method = call.child_by_field_name("method")
+    keyword = node_text(method, src)
+    if call.type != "call" or call.child_by_field_name("receiver") is not None:
+        return None
+    if keyword not in names:
+        return None
+    args = call.child_by_field_name("arguments")
+    listed: list[str] = []
+    for arg in args.named_children if args is not None else ():
+        if arg.type == "simple_symbol":
+            listed.append(node_text(arg, src).lstrip(":"))
+        elif arg.type == "string":
+            parts = (node_text(c, src) for c in arg.named_children if c.type == "string_content")
+            listed.append("".join(parts))
+    return keyword, listed
+
+
+# The file whose class bodies are indexed, and the index: parsing visits every def of a
+# class, so each body is read once. The source is held by reference, which keeps its
+# identity from being recycled by another file while it is cached.
+_ruby_bodies: dict[str, Any] = {"src": None, "index": {}}
+
+_RUBY_ACCESS_CALLS = _RUBY_ACCESS | frozenset(_RUBY_CLASS_ACCESS)
+
+
+def _ruby_body_access(body: Node, src: str) -> _RubyBody:
+    """What a class or module body says about the access of the methods it defines."""
+    if _ruby_bodies["src"] is not src:
+        _ruby_bodies["src"], _ruby_bodies["index"] = src, {}
+    index: dict[tuple[int, int], _RubyBody] = _ruby_bodies["index"]
+    key = (body.start_byte, body.end_byte)
+    found = index.get(key)
+    if found is not None:
+        return found
+    defaults: dict[int, str] = {}
+    named: dict[str, list[tuple[int, str]]] = {}
+    class_named: dict[str, list[tuple[int, str]]] = {}
+    bare: str | None = None
+    for child in body.children:
+        if child.type == "identifier":
+            word = node_text(child, src)
+            if word in _RUBY_ACCESS:
+                bare = word
+        elif child.type == "method":
+            if bare is not None:
+                defaults[child.start_byte] = bare
+        elif child.type == "call":
+            hit = _ruby_call_access(child, src, _RUBY_ACCESS_CALLS)
+            if hit is None:
+                continue
+            keyword, names = hit
+            table, access = (
+                (class_named, _RUBY_CLASS_ACCESS[keyword])
+                if keyword in _RUBY_CLASS_ACCESS
+                else (named, keyword)
+            )
+            for name in names:
+                table.setdefault(name, []).append((child.start_byte, access))
+    found = index[key] = (defaults, named, class_named)
+    return found
+
+
+def refine_ruby_visibility(def_node: Node, current_visibility: str, src: str) -> str:
+    """Give a Ruby method the access its class body gives it.
+
+    ``private`` and ``protected`` are method calls, not modifiers: a bare one
+    sets the access of every ``def`` after it in the same body (``class << self``
+    bodies included), and ``private :a, :b`` or ``private def a`` names what it
+    covers. A later call naming the method wins over the bare default, and
+    ``def self.x`` ignores a bare ``private`` (``private_class_method`` is its
+    own). A ``def`` outside a class or module body keeps *current_visibility*.
+    """
+    if def_node.type not in ("method", "singleton_method"):
+        return current_visibility
+    parent = def_node.parent
+    if parent is None:
+        return current_visibility
+    # ``private def x`` wraps the definition in the call that names the access.
+    if parent.type == "argument_list" and parent.parent is not None:
+        wrapped = _ruby_call_access(parent.parent, src, _RUBY_ACCESS)
+        if wrapped is not None and def_node.type == "method":
+            return wrapped[0]
+        return current_visibility
+    if parent.type not in _RUBY_BODIES:
+        return current_visibility
+    defaults, named, class_named = _ruby_body_access(parent, src)
+    if def_node.type == "method":
+        visibility = defaults.get(def_node.start_byte, current_visibility)
+        later = named
+    else:
+        visibility, later = current_visibility, class_named
+    name = node_text(def_node.child_by_field_name("name"), src)
+    for position, access in later.get(name, ()):
+        if position > def_node.start_byte:
+            visibility = access
+    return visibility
 
 
 def refine_java_visibility(def_node: Node) -> str:

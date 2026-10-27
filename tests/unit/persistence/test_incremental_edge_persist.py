@@ -20,7 +20,7 @@ from sqlalchemy import select
 from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 from repowise.core.ingestion.parse_cache import parser_fingerprint
 from repowise.core.persistence import batch_upsert_graph_edges
-from repowise.core.persistence.models import GraphEdge, Repository
+from repowise.core.persistence.models import GraphEdge, GraphNode, Repository
 from repowise.core.pipeline.persist import (
     persist_graph_nodes,
     persist_incremental_edges,
@@ -301,13 +301,12 @@ async def test_index_into_a_fresh_store_stamps_the_parser(async_session, tmp_pat
     assert await _stored_fingerprint(async_session, repo.id) == parser_fingerprint()
 
 
-async def test_full_reindex_does_not_suppress_the_widen(async_session, tmp_path):
-    """A re-index must not mark a store parser-current — it cannot clear surplus edges.
+async def test_full_reindex_prunes_surplus_edges_and_stamps(async_session, tmp_path):
+    """A full re-index leaves exactly the fresh graph behind, so it can stamp.
 
-    ``persist_ingestion`` upserts edges and prunes only vanished files' nodes,
-    so re-indexing an old store adds the new build's edges while leaving the old
-    build's wrong ones behind. If it stamped the fingerprint, the widen — the
-    only path that deletes those — would never run again for that store.
+    ``persist_ingestion`` used to upsert only, so re-indexing an old store kept
+    the old build's wrong edges. It now prunes them in the same transaction, and
+    because nothing surplus remains the store is parser-current.
     """
     repo = await insert_repo(async_session)
     (tmp_path / "a.py").write_text("x = 1\n")
@@ -333,7 +332,6 @@ async def test_full_reindex_does_not_suppress_the_widen(async_session, tmp_path)
     await async_session.commit()
     assert ("c.py", "a.py", "imports") in await _db_edge_set(async_session, repo.id)
 
-    # A full re-index on the new build: every edge rewritten, none deleted.
     await persist_ingestion(
         SimpleNamespace(
             parsed_files=parsed,
@@ -346,14 +344,73 @@ async def test_full_reindex_does_not_suppress_the_widen(async_session, tmp_path)
         repo.id,
     )
     await async_session.commit()
-    # The surplus edge survived the re-index, and the store is still unstamped.
-    assert ("c.py", "a.py", "imports") in await _db_edge_set(async_session, repo.id)
-    assert await _stored_fingerprint(async_session, repo.id) == "older-parser-build"
 
-    # So the next update still widens, and that is what clears it.
-    await persist_incremental_edges(async_session, repo.id, gb, parsed, ["b.py"])
-    await async_session.commit()
     assert ("c.py", "a.py", "imports") not in await _db_edge_set(async_session, repo.id)
+    assert await _db_edge_set(async_session, repo.id) == {
+        (u, v, d.get("edge_type", "imports")) for u, v, d in gb.graph().edges(data=True)
+    }
+    assert await _stored_fingerprint(async_session, repo.id) == parser_fingerprint()
+
+
+async def test_full_reindex_deletes_removed_edge_and_node(async_session, tmp_path):
+    """Issue #4406: re-persisting a graph minus one edge and one node drops both rows."""
+    repo = await insert_repo(async_session)
+    (tmp_path / "a.py").write_text("x = 1\n")
+    (tmp_path / "b.py").write_text("from a import x\n")
+    (tmp_path / "c.py").write_text("from a import x\n")
+
+    def _view(gb, parsed):
+        return SimpleNamespace(
+            parsed_files=parsed,
+            graph_builder=gb,
+            external_systems=[],
+            execution_flow_report=None,
+            source_map={},
+        )
+
+    gb1, parsed1 = _build_graph(tmp_path)
+    await persist_ingestion(_view(gb1, parsed1), async_session, repo.id)
+    await async_session.commit()
+    assert ("b.py", "a.py", "imports") in await _db_edge_set(async_session, repo.id)
+    assert ("c.py", "a.py", "imports") in await _db_edge_set(async_session, repo.id)
+
+    # b.py drops its import; c.py disappears from the graph entirely.
+    (tmp_path / "b.py").write_text("y = 2\n")
+    (tmp_path / "c.py").unlink()
+    gb2, parsed2 = _build_graph(tmp_path)
+    await persist_ingestion(_view(gb2, parsed2), async_session, repo.id)
+    await async_session.commit()
+
+    edges = await _db_edge_set(async_session, repo.id)
+    assert ("b.py", "a.py", "imports") not in edges
+    assert ("c.py", "a.py", "imports") not in edges
+    node_ids = set(
+        (
+            await async_session.execute(
+                select(GraphNode.node_id).where(GraphNode.repository_id == repo.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert "c.py" not in node_ids
+    assert node_ids == set(gb2.graph().nodes)
+
+
+async def test_full_reindex_with_empty_graph_prunes_nothing(async_session, tmp_path):
+    """An empty graph means a broken run; it must not wipe the stored graph."""
+    repo = await insert_repo(async_session)
+    (tmp_path / "a.py").write_text("x = 1\n")
+    (tmp_path / "b.py").write_text("from a import x\n")
+    gb, _parsed = _build_graph(tmp_path)
+    await _seed_full(async_session, repo.id, gb)
+    await async_session.commit()
+    before = await _db_edge_set(async_session, repo.id)
+
+    from repowise.core.pipeline.persist import prune_absent_graph_rows
+
+    assert await prune_absent_graph_rows(async_session, repo.id, set(), []) == (0, 0)
+    assert await _db_edge_set(async_session, repo.id) == before
 
 
 async def test_a_registration_edge_follows_the_decorated_file(async_session, tmp_path):
@@ -369,11 +426,13 @@ async def test_a_registration_edge_follows_the_decorated_file(async_session, tmp
     edge = ("reg.py::rule", "b.py::_check", "references")
     assert edge not in await _db_edge_set(async_session, repo.id)
 
-    for text, expected in ((plain.replace("def _check", "@rule\ndef _check"), True), (plain, False)):
+    for text, expected in (
+        (plain.replace("def _check", "@rule\ndef _check"), True),
+        (plain, False),
+    ):
         (tmp_path / "b.py").write_text(text)
         gb, parsed = _build_graph(tmp_path)
         await persist_graph_nodes(async_session, repo.id, gb)
         await persist_incremental_edges(async_session, repo.id, gb, parsed, ["b.py"])
         await async_session.commit()
         assert (edge in await _db_edge_set(async_session, repo.id)) is expected
-

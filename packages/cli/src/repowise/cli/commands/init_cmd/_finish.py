@@ -89,6 +89,10 @@ def save_run_config(run: InitRun) -> None:
     if run.max_file_pages is not None and run.max_file_pages != run.config.get("max_file_pages"):
         save_config_partial(repo_path, max_file_pages=run.max_file_pages)
 
+    # Folder floors (#633): an override is recorded, the default stays unwritten.
+    if opts.folder_coverage_rules:
+        save_config_partial(repo_path, folder_coverage=list(opts.folder_coverage_rules))
+
     # Written before the config fingerprint. A template wiki has no style or
     # language, and recording one would make `restyle` skip it.
     if opts.wiki_style != DEFAULT_STYLE and not run.effective_index_only:
@@ -442,7 +446,7 @@ def complete_setup(run: InitRun) -> None:
         first_index=run.first_index,
         no_editor_setup=not opts.editor_setup,
     )
-    run.next_steps = show_completion(
+    completion = show_completion(
         repo_path=repo_path,
         result=run.result,
         start=run.start,
@@ -454,6 +458,9 @@ def complete_setup(run: InitRun) -> None:
         verbose=opts.verbose,
         owl=_finish_owl(run),
     )
+    run.next_steps = completion.steps
+    run.stood_out = completion.stood_out
+    run.model_upgrade = completion.model_upgrade
 
 
 def _gaps(run: InitRun) -> list[str]:

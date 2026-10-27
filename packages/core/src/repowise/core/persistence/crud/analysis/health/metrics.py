@@ -20,6 +20,7 @@ from .....analysis.health.ranking import sort_metrics_worst_first
 from .....analysis.health.scope import scores_language
 from .....analysis.health.scoring import SCORE_FIELDS
 from .....test_paths import is_test_related_path
+from ....batches import chunked
 from ....models import GraphNode, HealthFileMetric, HealthFinding, _new_uuid
 from ..._shared import _BATCH_SIZE, _batch_delete_in
 from .exclude import _filter_excluded_paths, health_exclude_spec
@@ -122,13 +123,15 @@ async def upsert_health_metrics(
     if not metrics:
         return
     paths = [m.file_path if hasattr(m, "file_path") else m["file_path"] for m in metrics]
-    existing = await session.execute(
-        select(HealthFileMetric).where(
-            HealthFileMetric.repository_id == repository_id,
-            HealthFileMetric.file_path.in_(paths),
+    by_path: dict[str, HealthFileMetric] = {}
+    for chunk in chunked(paths):
+        existing = await session.execute(
+            select(HealthFileMetric).where(
+                HealthFileMetric.repository_id == repository_id,
+                HealthFileMetric.file_path.in_(chunk),
+            )
         )
-    )
-    by_path = {row.file_path: row for row in existing.scalars().all()}
+        by_path.update((row.file_path, row) for row in existing.scalars().all())
 
     for m in metrics:
         data = _health_metric_row_data(m) if hasattr(m, "file_path") else dict(m)

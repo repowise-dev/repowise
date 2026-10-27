@@ -7,9 +7,9 @@ changing behaviour, and infers that helper's signature (IN parameters,
 OUT return). This detector turns the best such span into one structured
 ``RefactoringSuggestion`` per flagged function.
 
-``impact_delta`` is the share of the finding the extraction itself removes,
-not the whole finding: the share of what the finding measures that moves into
-the helper, applied to the finding's ``health_impact``. That is
+``impact_delta`` prices the share of the finding the extraction itself
+removes, not the whole finding: the file rescored with that share of the
+finding's deduction taken out (``health.gain``). The share is
 ``ccn_removed / ccn`` for ``complex_method`` and ``brain_method``, and the
 smaller of ``slice_nloc / nloc`` and that for ``large_method``
 (:func:`recovered_share`). Both line counts follow the walker's NLOC rule, so
@@ -81,8 +81,9 @@ Plan shape (open dict, no migration):
   carries its own. A staged split that cannot be anchored falls back to the
   function's best single span; when that cannot be either, the function is
   refused (``span_unanchored``).
-- ``evidence`` = ``{"slice_nloc": int, "ccn_removed": int}`` -- the size and
-  complexity (code lines, decision points) the residual method sheds.
+- ``evidence`` = ``{"slice_nloc": int, "ccn_removed": int, "recovered_share":
+  float}`` -- the size and complexity (code lines, decision points) the
+  residual method sheds, and the share of the finding that removes.
 - ``plan.stages`` -- only on a staged plan (``dataflow.stages``): a function
   no single helper brings under the bar (CCN over twice a stage's cap, Python
   and TS / JS) is split into helpers called in order. Each stage carries the
@@ -117,13 +118,14 @@ from ..complexity.nloc import is_string_stmt
 from ..dataflow import Extraction, find_extractions, get_defuse_dialect
 from ..dataflow.stages import STAGE_MAX_CCN, StagePlan, find_stages
 from ..effort import effort_bucket
+from ..gain import removal_gain
 from ..perf.dialects import PERF_DIALECTS
 from ..scoring import severity_deduction
 from . import render
 from .anchors import Scope, anchor_plan, file_source, function_scope
 from .declarative import declarative_flat
 from .helper_naming import ScopeNames, placeholder_names
-from .models import RefactoringContext, RefactoringSuggestion
+from .models import RECOVERED_SHARE, RefactoringContext, RefactoringSuggestion
 from .narrowing import narrowed, narrowings, property_narrowings, span_guards
 from .registry import RefactoringDetector, register
 
@@ -277,7 +279,7 @@ class ExtractMethodDetector(RefactoringDetector):
         fields: dict[str, Any],
     ) -> RefactoringSuggestion:
         """The plan lifting *best*, its rendered *fields* after the span."""
-        impact, share, source = self._impact_for(analysis, best, matched)
+        impact, share, source = self._impact_for(ctx, analysis, best, matched)
         return RefactoringSuggestion(
             refactoring_type=self.name,
             file_path=ctx.file_path,
@@ -293,8 +295,9 @@ class ExtractMethodDetector(RefactoringDetector):
             evidence={
                 "slice_nloc": best.slice_nloc,
                 "ccn_removed": best.ccn_removed,
+                RECOVERED_SHARE: round(share, 3),
             },
-            impact_delta=round(float(impact), 3),
+            impact_delta=impact,
             effort_bucket=effort_bucket(best.slice_nloc),
             blast_radius={"scope": "local"},
             confidence=self._confidence(best, share),
@@ -319,7 +322,7 @@ class ExtractMethodDetector(RefactoringDetector):
             slice_nloc=staged.slice_nloc,
             ccn_removed=staged.ccn_removed,
         )
-        impact, _share, source = self._impact_for(analysis, total, matched)
+        impact, share, source = self._impact_for(ctx, analysis, total, matched)
         return RefactoringSuggestion(
             refactoring_type=self.name,
             file_path=ctx.file_path,
@@ -327,8 +330,12 @@ class ExtractMethodDetector(RefactoringDetector):
             line_start=analysis.start_line,
             line_end=analysis.end_line,
             plan=_staged_fields(analysis, staged, ctx.language, names, receiver),
-            evidence={"slice_nloc": total.slice_nloc, "ccn_removed": total.ccn_removed},
-            impact_delta=round(float(impact), 3),
+            evidence={
+                "slice_nloc": total.slice_nloc,
+                "ccn_removed": total.ccn_removed,
+                RECOVERED_SHARE: round(share, 3),
+            },
+            impact_delta=impact,
             effort_bucket=effort_bucket(total.slice_nloc),
             blast_radius={"scope": "local"},
             # Several edits to one function: a reviewer reads the plan first.
@@ -355,18 +362,20 @@ class ExtractMethodDetector(RefactoringDetector):
 
     @staticmethod
     def _impact_for(
-        analysis: FunctionAnalysis, extraction: Extraction, findings: list[Any]
+        ctx: RefactoringContext,
+        analysis: FunctionAnalysis,
+        extraction: Extraction,
+        findings: list[Any],
     ) -> tuple[float, float, str]:
-        """Impact *extraction* recovers, its share of the finding, and the source
+        """Gain *extraction* recovers, its share of the finding, and the source
         biomarker. One finding is credited, the one recovering the most: the
         composer counts a finding once across steps."""
-        best: tuple[float, float, float, str] = (-1.0, 0.0, -1.0, "")
+        best: tuple[float, float, str] = (-1.0, 0.0, "")
         for f in findings:
             biomarker = getattr(f, "biomarker_type", "")
-            full = float(getattr(f, "health_impact", 0.0) or 0.0)
             share = recovered_share(biomarker, analysis, extraction)
-            best = max(best, (full * share, share, full, biomarker))
-        return best[0], best[1], best[3]
+            best = max(best, (removal_gain(ctx.findings, [(f, share)]), share, biomarker))
+        return best
 
     @staticmethod
     def _confidence(extraction: Extraction, share: float) -> str:

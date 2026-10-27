@@ -828,6 +828,82 @@ def test_plugin_detection_degrades_to_absent_on_a_broken_manifest(
     assert target_mod._plugin_installs() == []
 
 
+def test_claude_code_plugin_plus_desktop_is_not_a_duplicate(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A plugin install and a Claude Desktop config entry are not a duplicate.
+
+    Claude Code never reads Claude Desktop's config file; the two apps are
+    independent. Counting the Desktop entry as a second registration produces
+    a false warning and a fix command that touches neither file.
+    """
+    from repowise.cli import __version__
+    from repowise.cli.agent_targets.targets import claude_code as target_mod
+
+    manifest = tmp_path / "installed_plugins.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "plugins": {
+                    target_mod.PLUGIN_KEY: [
+                        {"scope": "user", "version": __version__, "installPath": "/cache/repowise"}
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    desktop = tmp_path / "claude_desktop_config.json"
+    desktop.write_text(json.dumps({"mcpServers": {"repowise": {"command": "repowise"}}}))
+
+    monkeypatch.setattr(target_mod, "plugin_manifest_path", lambda: manifest)
+    monkeypatch.setattr(target_mod, "settings_path", lambda: tmp_path / "no_settings.json")
+    monkeypatch.setattr(target_mod, "desktop_config_path", lambda: desktop)
+
+    report = target_mod.TARGET.doctor()
+    assert report.status is DoctorStatus.OK
+
+
+def test_claude_code_plugin_plus_settings_json_is_still_a_duplicate(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A plugin install and a settings.json direct entry is a real duplicate.
+
+    Claude Code loads both, so MCP tools and hooks run twice. The doctor must
+    still surface this even after the desktop-entry exclusion is added.
+    """
+    from repowise.cli import __version__
+    from repowise.cli.agent_targets.targets import claude_code as target_mod
+
+    manifest = tmp_path / "installed_plugins.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "plugins": {
+                    target_mod.PLUGIN_KEY: [
+                        {"scope": "user", "version": __version__, "installPath": "/cache/repowise"}
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({"mcpServers": {"repowise": {"command": "repowise"}}}))
+
+    monkeypatch.setattr(target_mod, "plugin_manifest_path", lambda: manifest)
+    monkeypatch.setattr(target_mod, "settings_path", lambda: settings)
+    monkeypatch.setattr(target_mod, "desktop_config_path", lambda: None)
+
+    report = target_mod.TARGET.doctor()
+    assert report.status is not DoctorStatus.OK
+    assert any("registered twice" in issue for issue in report.issues)
+    assert not any("—" in issue for issue in report.issues)
+    assert report.fix_command == "repowise agents remove --target=claude-code"
+
+
 # ---------------------------------------------------------------------------
 # OpenCode
 # ---------------------------------------------------------------------------

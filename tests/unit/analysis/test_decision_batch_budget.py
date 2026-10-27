@@ -13,14 +13,17 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from structlog.testing import capture_logs
 
 from repowise.core.analysis.decisions.extractor import (
     _BATCH_MAX_TOKENS,
     DecisionExtractor,
     DecisionSourceError,
     EmptyModelResponseError,
+    TruncatedModelResponseError,
     _collect_batches,
     parse_decisions_json,
+    parse_decisions_reply,
 )
 
 _SHA = "9a0b27a7"
@@ -50,17 +53,22 @@ def _meta_map() -> dict[str, dict]:
 class _Provider:
     """Returns whatever content it is given, and records the budget asked for."""
 
-    def __init__(self, content: str) -> None:
+    def __init__(self, content: str, stop_reason: str = "end_turn") -> None:
         self._content = content
+        self._stop_reason = stop_reason
         self.max_tokens: list[int] = []
 
     async def generate(self, system, prompt, **kwargs):
         self.max_tokens.append(kwargs.get("max_tokens"))
-        return SimpleNamespace(content=self._content)
+        return SimpleNamespace(
+            content=self._content,
+            stop_reason=self._stop_reason,
+            output_tokens=kwargs.get("max_tokens"),
+        )
 
 
-def _extractor(tmp_path, content: str) -> DecisionExtractor:
-    provider = _Provider(content)
+def _extractor(tmp_path, content: str, stop_reason: str = "end_turn") -> DecisionExtractor:
+    provider = _Provider(content, stop_reason)
     ex = DecisionExtractor(
         repo_path=tmp_path, provider=provider, git_meta_map=_meta_map()
     )
@@ -100,6 +108,28 @@ def test_unparseable_content_still_reads_as_nothing_found():
     assert parse_decisions_json("I could not find any decisions.") == []
 
 
+# A reply cut off inside its second object: not valid JSON, and the last
+# ``]`` closes a nested array, so it used to parse as ``[]``.
+_CUT_OFF = (
+    '[{"title": "Resolve CLI command modules lazily", "decision": "lazy",'
+    ' "tags": ["perf"], "commit_sha": "9a0b27a7"},'
+    ' {"title": "Second", "alternatives": ["eager"], "rationale": "becau'
+)
+
+
+def test_a_reply_cut_off_at_max_tokens_raises_rather_than_reading_as_no_decisions():
+    assert parse_decisions_json(_CUT_OFF) == []
+    with pytest.raises(TruncatedModelResponseError, match="max_tokens"):
+        parse_decisions_reply(
+            SimpleNamespace(content=_CUT_OFF, stop_reason="max_tokens", output_tokens=8000)
+        )
+
+
+def test_a_complete_reply_parses_as_before():
+    reply = SimpleNamespace(content='[{"title": "T"}]', stop_reason="end_turn")
+    assert [d.title for d in parse_decisions_reply(reply)] == ["T"]
+
+
 # --- what the miners do with it -------------------------------------------
 
 
@@ -113,6 +143,38 @@ async def test_a_lost_batch_fails_the_archaeology_source_too(tmp_path):
     ex = _extractor(tmp_path, "")
     with pytest.raises(DecisionSourceError):
         await ex.mine_git_archaeology()
+
+
+@pytest.mark.parametrize("miner", ["mine_pr_bodies", "mine_git_archaeology"])
+async def test_a_cut_off_batch_fails_the_source_instead_of_returning_zero(tmp_path, miner):
+    ex = _extractor(tmp_path, _CUT_OFF, stop_reason="max_tokens")
+    with pytest.raises(DecisionSourceError, match="max_tokens"):
+        await getattr(ex, miner)()
+
+
+async def test_a_cut_off_marker_reply_falls_back_to_the_raw_markers(tmp_path):
+    (tmp_path / "app.py").write_text(
+        "def fn():\n    # DECISION: use lazy imports because startup is slow\n    return 1\n",
+        encoding="utf-8",
+    )
+    ex = _extractor(tmp_path, _CUT_OFF, stop_reason="max_tokens")
+
+    decisions = await ex.scan_inline_markers()
+
+    assert [d.evidence_line for d in decisions] == [2]
+    assert decisions[0].confidence == 0.7  # the raw-marker fallback, not []
+
+
+async def test_a_cut_off_adr_reply_is_logged_as_a_failure(tmp_path):
+    ex = _extractor(tmp_path, _CUT_OFF, stop_reason="max_tokens")
+
+    with capture_logs() as logs:
+        decisions = await ex._mine_unstructured_adr(
+            ex.test_provider, "docs/adr/0001-notes.md", "We chose lazy imports."
+        )
+
+    assert decisions == []
+    assert any(e["event"] == "decision_extractor.adr_llm_failed" for e in logs)
 
 
 async def test_the_failure_reaches_the_report_as_a_failure(tmp_path):

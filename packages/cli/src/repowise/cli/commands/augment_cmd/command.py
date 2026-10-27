@@ -177,6 +177,11 @@ def augment_command(
 ) -> None:
     """Enrich AI agent tool calls with codebase graph context (hook mode)."""
     configure_cli_logging(verbose=verbose)
+    if client:
+        from repowise.cli.platform import telemetry
+
+        # The hook names its host; that beats reading the environment.
+        telemetry.add_command_outcome(client=client)
     # stdout carries the hook response; logs go to stderr.
     with contextlib.suppress(ImportError):
         import structlog

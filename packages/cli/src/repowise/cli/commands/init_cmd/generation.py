@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import structlog
+from rich.markup import escape
 
 # The cost-gate helpers moved to ``repowise.cli.cost_gate`` so ``init`` and
 # ``generate`` share one gate. Re-exported here for the callers that still
@@ -158,6 +159,24 @@ def page_type_label(page_type: str) -> str:
     return _ROW_LABELS.get(page_type) or page_type.replace("_", " ").capitalize()
 
 
+def folder_coverage_override(rules: tuple[str, ...]) -> dict[str, Any]:
+    """``--folder-coverage`` as a GenerationConfig override; absent, config.yaml decides."""
+    if not rules:
+        return {}
+    from repowise.core.generation.folder_coverage import parse_folder_coverage
+
+    return {"folder_coverage": parse_folder_coverage(rules)}
+
+
+def folder_coverage_lines(plans: list[Any]) -> list[str]:
+    """One ``src/core: 12 of 12 files get a page`` line per folder floor (#633)."""
+    return [
+        f"{glob}: {documented:,} of {eligible:,} files get a page"
+        for plan in plans
+        for glob, documented, eligible in getattr(plan, "folder_coverage", None) or []
+    ]
+
+
 def structural_page_summary(plans: list[Any]) -> str:
     """Return e.g. ``"3622 pages rendered from structure, free: 2947 file, ..."``.
 
@@ -260,6 +279,24 @@ def _enrich_knowledge_graph(
             )
 
 
+def _checkpoint_failed_page_ids(repo_path: Path | str, result: Any) -> list[str]:
+    """Failed page ids read back from the jobs directory, for a run that did not report."""
+    jobs_dir = Path(repo_path) / ".repowise" / "jobs"
+    if not jobs_dir.exists():
+        return []
+    with contextlib.suppress(Exception):
+        from repowise.core.generation import JobSystem
+
+        js = JobSystem(jobs_dir)
+        job_id = getattr(result, "job_id", None)
+        if job_id:
+            return js.get_checkpoint(job_id).failed_page_ids
+        jobs = js.list_jobs()
+        if jobs:
+            return jobs[0].failed_page_ids
+    return []
+
+
 def run_repo_generation(
     *,
     repo_path: Any,
@@ -280,6 +317,10 @@ def run_repo_generation(
     Builds the embedder + vector store + cost tracker, runs the resume-friendly
     generation wrapper, enriches the KG, and flushes buffered cost rows in one
     transaction (kept out of the contended generation window, issue #326).
+
+    ``gen_config.reuse_prior_pages=False`` (``repowise init --force``) disables the
+    cross-run reuse gate so every page is regenerated, as the flag's help
+    text has always promised (issue #1089).
 
     Mutates ``result`` in place with ``generated_pages``, ``preserved_page_ids``
     (the pages a resumed run skipped, which persistence must not sweep) and
@@ -346,6 +387,13 @@ def run_repo_generation(
     generation_scope: dict[str, int | None] = {}
     result.generation_scope = generation_scope
     generation_stats: dict[str, int] = {}
+    failed_page_ids: list[str] = []
+    generation_reported = False
+
+    def _record_generation_failures(page_ids: list[str]) -> None:
+        nonlocal generation_reported
+        generation_reported = True
+        failed_page_ids[:] = page_ids
 
     # No cost column on a deterministic run: it would sit at $0.000 for the
     # whole run, which reads as an unanswered question rather than an answer.
@@ -377,6 +425,7 @@ def run_repo_generation(
                 progress=gen_callback,
                 resume=resume,
                 preserved_page_ids=preserved_page_ids,
+                reuse_prior_pages=getattr(gen_config, "reuse_prior_pages", True),
                 cost_tracker=cost_tracker,
                 generation_config=gen_config,
                 # In-memory curated modules: on a fresh init the
@@ -396,25 +445,18 @@ def run_repo_generation(
                 test_run=test_run,
                 selection_out=generation_scope,
                 stats_out=generation_stats,
+                on_generation_complete=_record_generation_failures,
             )
         )
         if warnings is not None:
             warnings.extend(gen_callback.warnings)
 
-    jobs_dir = Path(repo_path) / ".repowise" / "jobs"
-    failed_page_ids: list[str] = []
-    if jobs_dir.exists():
-        with contextlib.suppress(Exception):
-            from repowise.core.generation import JobSystem
-
-            js = JobSystem(jobs_dir)
-            job_id = getattr(result, "job_id", None)
-            if job_id:
-                failed_page_ids = js.get_checkpoint(job_id).failed_page_ids
-            else:
-                jobs = js.list_jobs()
-                if jobs:
-                    failed_page_ids = jobs[0].failed_page_ids
+    # Tests and integrations can replace the async generation boundary, so the
+    # completion callback is not guaranteed to run. Preserve the checkpoint
+    # lookup as a fallback, but never let stale job data override a callback
+    # that explicitly reported zero failures for the current run.
+    if not generation_reported:
+        failed_page_ids[:] = _checkpoint_failed_page_ids(repo_path, result)
 
     result.generated_pages = generated_pages
     result.failed_page_ids = failed_page_ids
@@ -436,7 +478,7 @@ def run_repo_generation(
         )
         console.print(f"  [bold][{WARN}]Failed pages by type:[/][/bold]")
         for page_type, count in sorted(type_counts.items(), key=lambda x: -x[1]):
-            console.print(f"    {glyph('bullet')} {page_type}: {count}")
+            console.print(f"    {glyph('bullet')} {escape(page_type)}: {count}")
         # Saying only "missing" sends the user looking for absent pages and
         # finding present ones, which reads as the report being wrong. Most
         # failures leave a placeholder behind; --resume replaces those too,

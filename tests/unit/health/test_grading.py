@@ -25,6 +25,7 @@ from repowise.core.analysis.health.grading import (
     format_score,
     headline_band,
     headline_scope,
+    mark_for,
 )
 
 
@@ -195,3 +196,11 @@ def test_headline_scope_only_when_a_minority_was_analysed() -> None:
     assert headline_scope(60, 40) is None
     assert headline_scope(115, 0) is None
     assert headline_scope(0, 0) is None
+
+
+def test_mark_reads_the_canonical_three_bands() -> None:
+    # Mirror of ``healthMark`` in packages/ui: Healthy from 8, Warning from 4.
+    assert mark_for(8.0) == "healthy"
+    assert mark_for(7.99) == "warning"
+    assert mark_for(NEEDS_WORK_MIN) == "warning"
+    assert mark_for(3.99) == "alert"

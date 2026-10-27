@@ -38,8 +38,13 @@ from repowise.core.analysis.health.counts import (
 from repowise.core.analysis.health.models import split_by_origin
 from repowise.core.analysis.health.ranking import deduction_by_path
 from repowise.core.analysis.health.rows import detail_map, split_unscored
-from repowise.core.analysis.health.scope import DEFAULT_SCOPE, SCOPES, parse_scope
-from repowise.core.analysis.health.scoring import compute_kpis
+from repowise.core.analysis.health.scope import (
+    DEFAULT_SCOPE,
+    SCOPES,
+    parse_scope,
+    rows_in_scope,
+)
+from repowise.core.analysis.health.scoring import ADVISORY_DIMENSION, compute_kpis
 from repowise.core.analysis.health.signals import HISTORY_MIN_COMMITS
 from repowise.core.persistence.crud.analysis.health import open_finding_count
 
@@ -178,8 +183,9 @@ class _HealthGroup(click.Group):
     default=DEFAULT_SCOPE,
     type=click.Choice(list(SCOPES)),
     help=(
-        "Which files to report on. Tests score higher than production code, "
-        "so 'production' lowers every figure without a defect being found."
+        "Which files to report on. 'production' leaves out tests, tooling, "
+        "vendored and generated files, which tend to score higher, so it "
+        "lowers every figure without a defect being found."
     ),
 )
 @click.option(
@@ -386,19 +392,7 @@ def _resolve_repo_path(
     target = resolve_command_target(
         path=path, no_workspace_flag=no_workspace, repo_alias=repo_alias
     )
-    target.notice(status, command="health")
-    if not target.is_workspace:
-        assert target.repo_path is not None
-        return target.repo_path
-    if target.repo_filter is not None:
-        picked = target.resolve_repo_alias(target.repo_filter)
-        if picked is None:
-            raise click.ClickException(f"Unknown repo alias: {target.repo_filter}")
-        return picked
-    primary = target.primary_path()
-    if primary is None:
-        raise click.ClickException("Workspace has no primary repo configured.")
-    return primary
+    return target.narrow(status, command="health")
 
 
 def _render_stored_view(repo_path: Path, status: Any, opts: _Options) -> bool:
@@ -467,7 +461,7 @@ def _scope_report(
     metrics = [m for m in report.metrics if opts.keeps(m.file_path)]
     narrowed = parse_scope(opts.scope) == "production"
     if narrowed:
-        metrics = [m for m in metrics if not m.is_test]
+        metrics = rows_in_scope(opts.scope, metrics)
     # Taken before the projection, so a row the projection cannot read still
     # keeps its findings rather than reading as a file that left the repo.
     scoped_paths = {m.file_path for m in metrics}
@@ -642,10 +636,11 @@ def _render_headline(kpis: dict[str, Any], code_shape: bool, unanalysed: int) ->
     avg = kpis.get("average_health")
     avg_band = headline_band(avg, share)
     parts = [banded("Code health", avg, avg_band) + (f" {scope}" if scope else "")]
-    # Production code beside the all-files figure, while tests are in it.
+    # Production code beside the all-files figure, while tests, tooling or
+    # other non-shipping code are in it.
     production = kpis.get("production_average")
-    has_tests = (kpis.get("production_file_count") or 0) < (kpis.get("file_count") or 0)
-    if production is not None and has_tests:
+    narrowed = (kpis.get("production_file_count") or 0) < (kpis.get("file_count") or 0)
+    if production is not None and narrowed:
         parts.append(banded("Production code", production, headline_band(production, share)))
     # A repo with no recent churn has no hotspots, so no hotspot figure.
     hotspot = kpis.get("hotspot_health")
@@ -700,27 +695,38 @@ def _render_files_table(metrics_sorted: list[Any], short_history: set[str]) -> N
         )
 
 
+def _is_advisory(finding: Any) -> bool:
+    return getattr(finding, "dimension", None) == ADVISORY_DIMENSION
+
+
 def _render_findings_table(findings: list[Any]) -> None:
     if not findings:
         return
-    # The total get_overview prints; advisory rows are listed, not counted.
-    console.print(f"\n[bold]{open_finding_count(findings)}[/bold] open findings:")
+    # The total get_overview prints. Advisory rows deduct nothing, so they are
+    # listed after the counted ones and marked, never counted.
+    counted = open_finding_count(findings)
+    advisory = len(findings) - counted
+    header = f"\n[bold]{counted}[/bold] open findings"
+    if advisory:
+        header += f" [dim](+{advisory} advisory, not scored)[/dim]"
+    console.print(header + ":")
+    listed = sorted(findings, key=_is_advisory)[:30]
     f_table = Table()
     f_table.add_column("Severity", style="magenta")
     f_table.add_column("Marker", style="cyan")
     f_table.add_column("File")
     f_table.add_column("Function")
     f_table.add_column("Impact", justify="right")
-    for f in findings[:30]:
+    for f in listed:
         f_table.add_row(
             str(f.severity),
             f.biomarker_type,
             f.file_path,
             f.function_name or "-",
-            f"-{f.health_impact:.2f}",
+            "[dim]advisory[/dim]" if _is_advisory(f) else f"-{f.health_impact:.2f}",
         )
     console.print(f_table)
-    for line in preview_lines("health", findings[:30], kind="biomarker_type"):
+    for line in preview_lines("health", listed, kind="biomarker_type"):
         console.print(f"[dim]{line}[/dim]")
 
 

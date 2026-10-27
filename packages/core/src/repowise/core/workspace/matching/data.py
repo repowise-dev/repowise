@@ -30,6 +30,18 @@ def _rank(c: Contract) -> tuple[int, str, int]:
     return (_SCHEMA_RANK.get(c.meta.get("schema", ""), _MODEL_RANK), c.file_path, c.line or 0)
 
 
+def accepts(provider: Contract, consumer: Contract) -> bool:
+    """Whether *consumer* can read *provider*'s table.
+
+    A table on an embedded database (SQLite) lives in a file its own repo
+    opens, so no other repo reads it or declares it: when either side is
+    embedded, two repos sharing a table name have two databases. Within one
+    repo the name still links.
+    """
+    embedded = consumer.meta.get("embedded") or provider.meta.get("embedded")
+    return not embedded or provider.repo == consumer.repo
+
+
 def shared_table_pass(state: MatchState) -> None:
     """Link each service that only models a table to the one defining its schema.
 
@@ -54,5 +66,5 @@ def shared_table_pass(state: MatchState) -> None:
             continue
         owner = owners[0]
         for other in best:
-            if other is not owner and not internal(owner, other):
+            if other is not owner and not internal(owner, other) and accepts(owner, other):
                 state.add(other, owner, LinkStrategy.SHARED_TABLE)

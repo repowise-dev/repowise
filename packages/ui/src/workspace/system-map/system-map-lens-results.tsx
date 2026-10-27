@@ -249,7 +249,7 @@ function ConformanceResults({ conformance, graph, onSelect, onPrompt, conformanc
     conformance.cycles_determined === false && conformance.cycle_count === 0
       ? `Dependency cycles not determined: ${conformance.evidence?.summary ?? "too little evidence"}.`
       : total > conformance.cycle_count
-      ? `${conformance.cycle_count} of ${plural(total, "dependency cycle", "dependency cycles")} listed.`
+      ? `${conformance.cycle_count} of ${conformance.total_capped ? "at least " : ""}${plural(total, "dependency cycle", "dependency cycles")} listed.`
       : `${plural(conformance.cycle_count, "dependency cycle", "dependency cycles")}.`;
 
   return (
@@ -317,7 +317,7 @@ export function NodeLink({
     <button
       type="button"
       onClick={() => onSelect({ type: "node", id })}
-      className="cursor-pointer font-medium text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+      className="cursor-pointer font-medium text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
     >
       {label}
     </button>
@@ -361,7 +361,7 @@ export function CycleRow({
                 key={eid}
                 type="button"
                 onClick={() => onSelect({ type: "edge", id: eid })}
-                className="cursor-pointer font-mono text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                className="cursor-pointer font-mono text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
               >
                 {e ? `${name(e.source)} → ${name(e.target)} ${edgeKindStyle(e.kind).label}` : eid}
               </button>

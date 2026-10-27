@@ -36,14 +36,38 @@ uv run pytest tests/providers/ tests/unit/
 
 ## Getting oriented
 
-This is a ~3,000 file codebase, and reading it front to back is not the plan. Repowise
-exists to make that unnecessary, so use it on itself.
+This repository has about 7,000 files, and reading it front to back is not the plan.
+Repowise exists to make that unnecessary, so use it on itself.
 
-### Without installing anything
+### Connect your agent to the hosted index (nothing to install)
 
-We keep a public, always-fresh index of this repository at
+We keep a public index of this repository at
 **[repowise.dev/repo/repowise-dev/repowise](https://repowise.dev/repo/repowise-dev/repowise)**.
-It re-indexes on every push. Pick the tab that matches your question:
+It re-indexes on every push and serves an MCP server that any contributor can connect
+a coding agent to for free:
+
+```bash
+claude mcp add --transport http repowise \
+  https://api.repowise.dev/mcp/repowise-dev/repowise \
+  --header "Authorization: Bearer <your API key>"
+```
+
+To get a key, sign in on the repo page and open the
+[Use repowise-dev/repowise in your agent](https://repowise.dev/repo/repowise-dev/repowise#agent)
+panel. It mints the key and gives a copyable snippet for Cursor, Codex, VS Code and
+other editors. Claude's connector can sign in on its own, with no key to paste.
+
+Then ask your agent things like:
+
+```
+get_answer("how is the update pipeline put together?")
+get_why("why is doc generation split from ingestion?")
+get_context(targets=["packages/core/src/repowise/core/pipeline/orchestrator.py"])
+```
+
+### Or browse the same index
+
+Pick the tab that matches your question:
 
 | Your question | Where to look |
 |---|---|
@@ -54,24 +78,19 @@ It re-indexes on every push. Pick the tab that matches your question:
 | Why is it built this way? | [Decisions](https://repowise.dev/repo/repowise-dev/repowise/decisions) |
 | What changed recently, and how risky was it? | [Commits](https://repowise.dev/repo/repowise-dev/repowise/commits) |
 
-### Locally, with your agent
+### Or index it locally
 
-Better still, index this repo with the tool you are contributing to. It is free, needs
-no API key, and takes a couple of minutes:
+The hosted index sees what is pushed to `main`. To ask about your unpushed changes, or
+to work offline, index your checkout. It is free, needs no API key and runs in a few
+minutes:
 
 ```bash
 uv run repowise init --no-prose -y   # graph, git history, health, decisions. No LLM, no spend.
 uv run repowise serve                # dashboard + MCP server on localhost
 ```
 
-Then point your coding agent at the MCP server (see the
-[Start in minutes](../README.md#quickstart) for Claude Code, Codex
-and others) and ask it questions directly:
-
-```
-get_context for packages/core/src/repowise/core/pipeline/orchestrator.py
-get_why "why is doc generation split from ingestion?"
-```
+`init` connects the coding agents it detects to this local index. For other agents, see
+[Set it up in one line](../README.md#set-it-up-in-one-line).
 
 If something about this experience is bad, that is a bug worth reporting. Contributors
 are the only people who use repowise on repowise with fresh eyes.
@@ -132,11 +151,13 @@ Questions about scope before you claim are welcome. Asking is not claiming.
 Some issues describe several separable pieces of work. Say which piece you are taking,
 and it can be split into its own issue so more than one person can work in parallel.
 
-Before you start, check the file you are about to edit:
+### Before you edit a file
+
+Check the file you are about to edit:
 
 ```bash
 uv run repowise health --file <path> --recompute   # score, markers, findings
-uv run repowise risk HEAD              # or ask get_risk from your agent
+uv run repowise risk --target <path>               # fix history; needs the local index, or ask get_risk
 ```
 
 Some files in this repo are bug magnets: high churn, a long run of prior fixes, often a
@@ -152,24 +173,28 @@ current ones. Changes there are welcome, but expect closer review and bring test
    git checkout -b feat/your-feature
    ```
 3. **Make your changes**: keep commits focused and well-described
-4. **Run tests** before pushing:
+4. **Run the CI checks** before pushing:
    ```bash
    uv run pytest tests/providers/ tests/unit/   # both, CI runs both
    npm run lint
    npm run type-check
+   uv run ruff check .
+   uv run repowise doc-drift --check --baseline .github/doc-drift-baseline.json
    ```
    `tests/providers/` is easy to forget and CI does not forget it, so a run that
    skips it is the most common way a green local suite turns red on the PR.
 5. **Check your own change** with the tool you are contributing to:
    ```bash
-   uv run repowise risk main..HEAD        # 0-10 defect score, plus may_break,
-                                          # missing_cochanges and missing_tests
-   uv run repowise impacted-tests --staged  # the tests your diff actually exercises
+   uv run repowise health check origin/main...HEAD    # the health gate CI runs
+   uv run repowise risk main..HEAD                    # how big and spread out the change is
+   uv run repowise impacted-tests --staged            # the tests your diff exercises
    uv run repowise health --file <path> --recompute   # did the file you touched get worse?
    ```
-   None of this is a gate, and none of it calls an LLM. It is the same signal the
-   reviewer will be looking at, and running it yourself catches the boring problems
-   (a forgotten companion file, an untested hotspot) before anyone else has to.
+   `health check` is the same gate as the "Repowise gates" CI job: it fails on a
+   high-severity health finding your change introduces (complexity, nesting, size,
+   duplication, error handling). The rest is not a gate. None of it calls an LLM, and
+   running it yourself catches the boring problems (a forgotten companion file, an
+   untested hotspot) before a reviewer has to.
 6. **Push** to your fork and open a **Pull Request** against `main`
 
 ## Branch Naming
@@ -180,7 +205,8 @@ Use descriptive prefixes:
 |--------|---------|
 | `feat/` | New features |
 | `fix/` | Bug fixes |
-| `chore/` | Maintenance, CI, docs |
+| `docs/` | Documentation |
+| `chore/` | Maintenance, CI |
 | `refactor/` | Code restructuring |
 
 ## Commit Messages
@@ -203,6 +229,8 @@ repowise/
     ui/          # Shared React UI components
     web/         # Next.js frontend
     vscode/      # VS Code extension (has its own CI job)
+    claude-mod/  # Repowise Lens, the Claude Code mod
+  plugins/       # Agent plugins (Claude Code and others)
   tests/         # providers/, unit/ and integration/
   docs/          # Documentation
 ```
@@ -235,17 +263,34 @@ repowise/
 An agent CLI used as a backend (`claude_cli`, `codex_cli`, `opencode`) follows the
 agent platform recipe instead.
 
+Providers that most users need ship in core this way. A provider can also live in
+its own package: call `register_provider(name, factory)` from a plugin's
+`register()`; see the [plugin author guide](../docs/reference/PLUGINS.md).
+
 Adding a new language has a dedicated recipe, see
 [docs/architecture/language-support.md](../docs/architecture/language-support.md).
 Adding an agent integration or an agent CLI indexing backend has its own recipe, see
 [docs/architecture/agent-platform.md](../docs/architecture/agent-platform.md).
 
+### Extending Repowise with a plugin
+
+Write a plugin when your change serves one team or one system (an internal auth
+service, a chat app sink, a company report section) and an existing registry or
+seam already covers it. Open a core PR when the change helps most users or fixes
+behaviour. A new seam starts as an issue that describes its contract, when it
+runs and what a failure does. Start from the
+[plugin author guide](../docs/reference/PLUGINS.md) and the
+[hello example](../examples/plugins/hello/).
+
 ## Testing
 
 - Add tests for new features and bug fixes
-- Place tests in `tests/unit/` or `tests/integration/`
-- Run the full suite with `uv run pytest`
-- A test asserting on a `caplog` record needs `caplog.set_level(logging.INFO, logger="<the module's full logger name>")` (or the level you're asserting on) — setting the root logger's level is not enough when an ancestor logger (e.g. `repowise.core`, `repowise.server`) has its own level raised, since Python resolves the *effective* level from the nearest ancestor that has one set, not from root.
+- Place tests in `tests/unit/`, `tests/providers/` or `tests/integration/`
+- Run `uv run pytest tests/providers/ tests/unit/` before you push; that is what CI
+  runs on every pull request. `tests/integration/` runs after merge to `main`.
+- A test asserting on a `caplog` record sets the level on the module's own logger:
+  `caplog.set_level(logging.INFO, logger="<full logger name>")`. Setting the root
+  level is not enough, because ancestors such as `repowise.core` set their own.
 
 ### Retrieval guard
 
@@ -288,6 +333,9 @@ coverage gain that costs precision is a trade-off to justify, not a win.
 - Reference any related issues
 - Ensure CI passes before requesting review
 - All PRs require at least one code owner approval
+- Commits do not list a coding agent as author or co-author (for example a
+  `Co-authored-by: Copilot` or `Co-Authored-By: Claude` trailer); maintainers ask
+  for those to be removed before merge.
 
 ## Reporting Issues
 

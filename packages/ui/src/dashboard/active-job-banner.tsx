@@ -159,7 +159,7 @@ function DismissButton({ label, onDismiss }: { label: string; onDismiss: () => v
       type="button"
       onClick={onDismiss}
       aria-label={label}
-      className="ml-auto rounded p-0.5 text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-accent-primary)]"
+      className="ml-auto rounded p-0.5 text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-focus-ring)]"
     >
       <X className="h-3 w-3" />
     </button>

@@ -20,7 +20,8 @@ from typing import Any
 from sqlalchemy import delete, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ...models import TestCoverageEntry, _new_uuid, _now_utc
+from ...models import TestCoverageEntry, _new_uuid
+from .._shared import _BATCH_SIZE, _now_utc
 
 # Upper bound on rows persisted per repo, so a pathological O(tests x files)
 # report can't balloon the table unbounded. Generous headroom: a 2000-test
@@ -207,8 +208,9 @@ async def tests_covering_files(
 ) -> dict[str, list[dict[str, Any]]]:
     """Bulk reverse index for recommendation validation.
 
-    Unlike :func:`tests_covering`, this performs one indexed query for the
-    complete target set.  Callers may then apply plan-specific line ranges in
+    Unlike :func:`tests_covering`, this performs indexed queries over the
+    complete target set, one per bounded piece of it.  Callers may then apply
+    plan-specific line ranges in
     memory without turning recommendation hydration into one query per plan.
     Rows and buckets are ordered deterministically; ``covered_lines`` remains
     complete so a caller can distinguish a measured line hit from a file-only
@@ -216,20 +218,28 @@ async def tests_covering_files(
     """
     if not source_files:
         return {}
-    result = await session.execute(
-        select(TestCoverageEntry)
-        .where(
-            TestCoverageEntry.repository_id == repository_id,
-            TestCoverageEntry.source_file.in_(sorted(source_files)),
-        )
-        .order_by(
-            TestCoverageEntry.source_file.asc(),
-            TestCoverageEntry.test_id.asc(),
-            TestCoverageEntry.test_file.asc(),
-        )
-    )
     out: dict[str, list[dict[str, Any]]] = {}
-    for row in result.scalars().all():
+    # A full re-score asks for every file in the repository, and SQLite caps the
+    # bound parameters per statement, so the set goes out in fixed-size pieces
+    # (the same reason every other ``IN`` list here does). A file appears in
+    # exactly one piece, so each file's rows keep their order.
+    ordered = sorted(source_files)
+    rows: list[TestCoverageEntry] = []
+    for start in range(0, len(ordered), _BATCH_SIZE):
+        result = await session.execute(
+            select(TestCoverageEntry)
+            .where(
+                TestCoverageEntry.repository_id == repository_id,
+                TestCoverageEntry.source_file.in_(ordered[start : start + _BATCH_SIZE]),
+            )
+            .order_by(
+                TestCoverageEntry.source_file.asc(),
+                TestCoverageEntry.test_id.asc(),
+                TestCoverageEntry.test_file.asc(),
+            )
+        )
+        rows.extend(result.scalars().all())
+    for row in rows:
         out.setdefault(row.source_file, []).append(
             {
                 "test_id": row.test_id,

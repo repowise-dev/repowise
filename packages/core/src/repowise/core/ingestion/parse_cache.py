@@ -185,6 +185,8 @@ class ParseCache:
 
     def put(self, parsed: ParsedFile, content_hash: str) -> None:
         """Snapshot *parsed* (call before any graph build mutates it)."""
+        if parsed.grammar_missing:
+            return  # re-parse next run, when the grammar may have loaded
         try:
             blob = pickle.dumps(parsed, protocol=pickle.HIGHEST_PROTOCOL)
         except Exception as exc:

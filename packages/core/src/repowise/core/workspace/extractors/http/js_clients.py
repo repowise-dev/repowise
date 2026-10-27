@@ -1,7 +1,8 @@
 """JavaScript / TypeScript HTTP consumer dialect.
 
 Covers direct ``fetch`` calls, the client libraries of :mod:`.node_clients`
-(axios, ky, got, ofetch and their instances), plus wrapper calls whose first
+(axios, ky, got, ofetch, request, superagent, needle, AngularJS ``$http``
+and their instances), plus wrapper calls whose first
 argument is a concrete URL literal, e.g. ``fetchJSON(`${BASE}/path`, { method:
 "POST" })``. Wrapper detection is signal-gated (the callee name looks HTTP-ish,
 or the call carries a ``method:`` option) so ordinary `/`-prefixed string
@@ -21,6 +22,7 @@ from ..langs import JS_TS
 from ..strings import JS_SYNTAX, literal_span, string_constants
 from .angular import environment_mounts
 from .client_calls import ClientCallMatch, consumer_contracts, matches_in
+from .commonjs import exports_mounts
 from .node_clients import client_calls, client_mounts
 
 if TYPE_CHECKING:
@@ -32,10 +34,11 @@ if TYPE_CHECKING:
 _FETCH_RE = re.compile(
     r"""fetch\s*\(\s*['"`]([^'"`]+)['"`]""",
 )
-_FETCH_METHOD_RE = re.compile(
-    r"""fetch\s*\(\s*['"`]([^'"`]+)['"`]\s*,\s*\{[^}]*method\s*:\s*['"](\w+)['"]""",
-    re.DOTALL,
-)
+_OPTIONS_METHOD = r"""\s*,\s*\{[^}]*method\s*:\s*['"](\w+)['"]"""
+_FETCH_METHOD_RE = re.compile(r"""fetch\s*\(\s*['"`]([^'"`]+)['"`]""" + _OPTIONS_METHOD, re.DOTALL)
+# The options after a URL literal the capture above stopped short of: a nested
+# template in a hole (`` fetch(`/a${q ? `?${q}` : ""}`, { method }) ``).
+_OPTIONS_METHOD_RE = re.compile(_OPTIONS_METHOD, re.DOTALL)
 
 # Wrapper call: IDENT("<url>" | `<url>`, ...) where the URL literal is concrete,
 # i.e. starts with `/`, a `${...}` base placeholder, or a scheme. The scan is
@@ -66,8 +69,16 @@ def fetch_calls(content: str) -> Iterator[ClientCallMatch]:
     for m in _FETCH_RE.finditer(content):
         if m.group(1) in method_urls:
             continue
+        url = literal_span(content, m, 1)
+        opt = None
+        if len(url) - 2 > len(m.group(1)):
+            opt = _OPTIONS_METHOD_RE.match(content, m.start(1) + len(url) - 1)
         yield ClientCallMatch(
-            client="fetch", url=literal_span(content, m, 1), offset=m.start(), callee="fetch"
+            client="fetch",
+            url=url,
+            offset=m.start(),
+            callee="fetch",
+            method=opt.group(1).upper() if opt else None,
         )
 
 
@@ -100,8 +111,10 @@ def wrapper_calls(content: str, clients: frozenset[str]) -> Iterator[ClientCallM
             continue
         if clients and _receiver(content, head.start(1)) in clients:
             continue  # `http.post(url, { method })`, a client's own verb
-        nl = content.find("\n", m.end())
-        window = content[m.end() :] if nl == -1 else content[m.end() : nl]
+        url = literal_span(content, m, 1)
+        after = m.start(1) + len(url) - 1  # past the literal, nested templates included
+        nl = content.find("\n", after)
+        window = content[after:] if nl == -1 else content[after:nl]
         method_opt = _METHOD_OPT_RE.search(window)
         # Require an HTTP signal: an HTTP-ish callee name or a method option.
         if not (_HTTP_NAME_RE.search(callee) or method_opt):
@@ -110,7 +123,7 @@ def wrapper_calls(content: str, clients: frozenset[str]) -> Iterator[ClientCallM
         # is, and `apiPost`/`apiDelete` carry it.
         yield ClientCallMatch(
             client="wrapper",
-            url=literal_span(content, m, 1),
+            url=url,
             offset=head.start(),
             callee=callee,
             method=method_opt.group(1).upper() if method_opt else None,
@@ -128,7 +141,7 @@ class JsClientsDialect:
     requires = ("fetch", "'/", '"/', "`/", "${", "http", "axios", "import", "require", "export")
 
     def collect_mounts(self, ctx: ScanContext) -> dict[str, str]:
-        return client_mounts(ctx) | environment_mounts(ctx)
+        return client_mounts(ctx) | environment_mounts(ctx) | exports_mounts(ctx)
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content
