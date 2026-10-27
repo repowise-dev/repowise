@@ -84,6 +84,9 @@ class TestCppSourcePrep:
             b"  struct TM tm{0};",
             b"  int NO_THREAD_SAFETY_ANALYSIS_X;",
             b"#define F(x) RELEASE(x)",
+            # A ``)`` with no ``(`` in reach is not a declarator.
+            b"  x) GUARDED_BY(mu_);",
+            b"  void F(" + b"a," * 2100 + b"b) REQUIRES(mu);",
         ],
     )
     def test_leaves_real_code_alone(self, source: bytes) -> None:
