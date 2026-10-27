@@ -54,6 +54,23 @@ _INFERRED_FROM_NEW = re.compile(
     r"(?<![\w.])var\s+(?P<name>[a-z_]\w*)\s*=\s*new\s+(?P<type>[A-Z]\w*(?:\.\w+)*)"
 )
 
+# A C# property (``Foo Name { get; }``, ``Foo Name => _foo;``) or PascalCase
+# field (``Foo Name;``), which ``_TYPED_DECLARATION``'s lowercase name never
+# reads. Anchored to the start of a line, past attributes and modifiers, so
+# title-case words in a string or a switch arm (``Circle C => ..``) are no
+# member. The ``{`` closer must open accessors, or ``Foo Bar {`` could be a
+# type. Ceiling: a builtin-typed one (``string Name { get; }``) and a second
+# declarator (``Foo A, B;``) are not read.
+_CS_MODIFIERS = (
+    r"public|private|protected|internal|static|readonly|virtual|override|abstract|"
+    r"sealed|new|required|volatile|event|unsafe|extern|partial"
+)
+_CS_MEMBER = re.compile(
+    rf"(?m)^[ \t]*(?:\[[^\]\n]*\][ \t]*)*(?:(?:{_CS_MODIFIERS})[ \t]+)*"
+    rf"(?P<type>{_TYPE})\??[ \t]+(?P<name>[A-Z]\w*)[ \t]*(?=(?P<closer>[;=](?!=)|"
+    r"\{(?=\s*(?:(?:private|protected|internal)\s+)*(?:get|set|init)\b)))"
+)
+
 # Truncating at ``//`` also cuts a URL in a string: it can only lose a
 # declaration, never invent one.
 _LINE_COMMENT = re.compile(r"//.*")
@@ -350,7 +367,7 @@ _LANGUAGE_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
     # Apex declares Java's way (``Foo foo``) and has no ``var``.
     "apex": (_TYPED_DECLARATION,),
     "cpp": (_CPP_DECLARATION,),
-    "csharp": _C_FAMILY,
+    "csharp": (*_C_FAMILY, _CS_MEMBER),
     "dart": _DART_FAMILY,
     "go": _GO_FAMILY,
     "java": (
@@ -937,8 +954,9 @@ _FIELD_CLOSERS = frozenset({";", "="})
 # semicolon-free TypeScript ``x: T`` are fields too. Kotlin and Swift keep a
 # closer only on a `val`/`var`/`let` match, so no parameter reaches here: a
 # Kotlin constructor property (`class R @Inject constructor(private val api:
-# Api)`) closes on `,` or `)`, a Swift computed property on `{`.
+# Api)`) closes on `,` or `)`, a Swift computed property on `{`, as a C# one does.
 _LANGUAGE_FIELD_CLOSERS: dict[str, frozenset[str]] = {
+    "csharp": frozenset({";", "=", "{"}),
     "kotlin": frozenset({"=", "\n", ",", ")"}),
     "python": frozenset({"=", "\n"}),
     "swift": frozenset({"=", "\n", "{"}),

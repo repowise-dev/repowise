@@ -455,6 +455,100 @@ class TestFieldTypedReceiver:
         )
         assert not [e for e in _edges(parsed, tmp_path) if e[3].startswith("receiver_field_")]
 
+    @pytest.mark.parametrize(
+        "member",
+        [
+            "public Box Rules { get; } = new Box();",
+            "public Box Rules => _box;",
+            "private readonly Box Rules;",
+        ],
+    )
+    def test_a_csharp_pascal_case_member_types_its_receiver(
+        self, tmp_path: Path, member: str
+    ) -> None:
+        """``Rules.Add(1)``: no type is named ``Rules``, so the property is the receiver."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "V.cs": (
+                    "csharp",
+                    f"class V\n{{\n    {member}\n    void Run() {{ Rules.Add(1); }}\n}}\n",
+                ),
+                "Box.cs": ("csharp", "public class Box\n{\n    public void Add(int x) { }\n}\n"),
+            },
+        )
+        assert ("V.cs::V::Run", "Box.cs::Box::Add", 0.75, "receiver_field_global") in _edges(
+            parsed, tmp_path
+        )
+
+    def test_a_csharp_type_of_the_receiver_s_name_still_wins(self, tmp_path: Path) -> None:
+        """A static ``Rules.Add`` the repo declares is read before the property."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "V.cs": (
+                    "csharp",
+                    "class V\n{\n    public Box Rules { get; }\n"
+                    "    void Run() { Rules.Add(1); }\n}\n",
+                ),
+                "Box.cs": ("csharp", "public class Box\n{\n    public void Add(int x) { }\n}\n"),
+                "Rules.cs": (
+                    "csharp",
+                    "public static class Rules\n{\n    public static void Add(int x) { }\n}\n",
+                ),
+            },
+        )
+        callees = {e[1] for e in _edges(parsed, tmp_path) if e[0] == "V.cs::V::Run"}
+        assert callees == {"Rules.cs::Rules::Add"}
+
+    def test_a_csharp_property_an_ancestor_declares(self, tmp_path: Path) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "V.cs": ("csharp", "class V : Base\n{\n    void Run() { Rules.Add(1); }\n}\n"),
+                "Base.cs": (
+                    "csharp",
+                    "abstract class Base\n{\n    protected Box Rules { get; set; }\n}\n",
+                ),
+                "Box.cs": ("csharp", "public class Box\n{\n    public void Add(int x) { }\n}\n"),
+            },
+        )
+        resolver = CallResolver(
+            parsed,
+            {p: set() for p in parsed},
+            repo_path=str(tmp_path),
+            heritage_parents={"V.cs::V": {"Base.cs::Base"}},
+        )
+        edges = [
+            (rc.callee_id, rc.origin) for rc in resolver.resolve_file("V.cs", parsed["V.cs"].calls)
+        ]
+        assert edges == [("Box.cs::Box::Add", "receiver_field_global")]
+
+    def test_a_capitalised_receiver_no_member_names_gets_no_edge(self, tmp_path: Path) -> None:
+        """``Console.WriteLine`` is the BCL's, whatever repo class has a ``WriteLine``."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "V.cs": ("csharp", "class V\n{\n    void Run() { Console.WriteLine(1); }\n}\n"),
+                "Box.cs": ("csharp", "public class Box\n{\n    public void WriteLine(int x) { }\n}\n"),
+            },
+        )
+        assert not [e for e in _edges(parsed, tmp_path) if e[0] == "V.cs::V::Run"]
+
+    def test_a_capitalised_parameter_shadows_the_property(self, tmp_path: Path) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "V.cs": (
+                    "csharp",
+                    "class V\n{\n    public Box Rules { get; }\n"
+                    "    void Run(Other Rules) { Rules.Add(1); }\n}\n",
+                ),
+                "Box.cs": ("csharp", "public class Box\n{\n    public void Add(int x) { }\n}\n"),
+            },
+        )
+        assert not [e for e in _edges(parsed, tmp_path) if e[1] == "Box.cs::Box::Add"]
+
     def test_a_kotlin_constructor_property_types_its_receiver(self, tmp_path: Path) -> None:
         """Hilt's `@Inject constructor(private val api: Api)`, read bare and through `this`."""
         parsed = _parse_all(

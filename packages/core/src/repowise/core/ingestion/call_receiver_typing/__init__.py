@@ -325,15 +325,17 @@ class ReceiverTypingMixin(
         declaration shapes, and a method name no class in the repo declares.
         """
         receiver_name = call.receiver_name or ""
-        # A capitalised receiver already names a type and every tier above has
-        # tried it. An underscore one cannot be anything but a name.
-        head = receiver_name[:1]
-        if not (head.islower() or head == "_") or receiver_name in ("self", "this"):
+        if receiver_name in ("self", "this"):
             return None
-
         parsed = self._parsed_files.get(file_path)
         language = parsed.file_info.language if parsed else ""
         if language not in RECEIVER_TYPE_LANGUAGES:
+            return None
+        # A capitalised receiver already names a type and every tier above has
+        # tried it, so only a C# one is read further: C# spells its properties
+        # and many fields that way. An underscore one cannot be anything but a name.
+        head = receiver_name[:1]
+        if not (head.islower() or head == "_" or language == "csharp"):
             return None
 
         # Refuse before reading the file: nothing resolves unless some class
@@ -585,7 +587,7 @@ class ReceiverTypingMixin(
 
         A name the body binds with no readable type is a local and refuses both.
         """
-        if not builtin_local and name in self._bound_names_in(file_path, caller_id, language):
+        if not builtin_local and self._body_binds(file_path, caller_id, language, name):
             return None
         class_file, class_id = self._field_owner(file_path, caller_id, language)
         fields = self._field_types_in(class_file, language).get(class_id, {})
@@ -644,18 +646,28 @@ class ReceiverTypingMixin(
             for d in self._declarations_for(class_file, language)
         )
 
+    def _body_binds(self, file_path: str, caller_id: str, language: str, name: str) -> bool:
+        """Does the calling body bind *name*, with or without a readable type?
+
+        The binding scan reads lowercase names, so a capitalised one (a C#
+        ``Foo Rules`` parameter) is asked of the caller's declarations too.
+        """
+        if name in self._bound_names_in(file_path, caller_id, language):
+            return True
+        return name[:1].isupper() and self._declares_name(file_path, caller_id, name)
+
     def _inherited_field(
         self, file_path: str, caller_id: str, class_id: str, name: str, language: str
     ) -> tuple[str, str | None] | None:
         """``(declaring file, type)`` of the field *name* the nearest superclass declares.
 
-        Only where a typed receiver may reach an ancestor (Java). The
+        Only where a language reads ancestors' fields (Java, Apex, C#). The
         declaration scan skips a type it cannot read (``b.Reader x``,
         ``int[] x``), so the caller, its class and each superclass passed are
         also asked whether they declare the name at all: one that does hides
         the rest, and refuses.
         """
-        if not self._strategies_for(file_path).inherited_typed_receiver:
+        if not self._strategies_for(file_path).inherited_fields:
             return None
         if self._declares_name(file_path, caller_id, name) or self._declares_name(
             file_path, class_id, name

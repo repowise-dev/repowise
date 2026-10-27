@@ -52,7 +52,8 @@ class _LanguageCallStrategies:
     call chained on another call (``a.b().c()``) alone, which is resolved by
     its inner call's return type or not at all. ``inherited_typed_receiver`` lets a typed
     receiver whose type lacks the method answer with the one ancestor that
-    declares it.
+    declares it; ``inherited_fields`` lets a receiver be typed from a field an
+    ancestor declares.
     """
 
     free: tuple[str, ...] = ()
@@ -63,6 +64,7 @@ class _LanguageCallStrategies:
     member_bare_fallback: bool = True
     chain_bare_fallback: bool = True
     inherited_typed_receiver: bool = False
+    inherited_fields: bool = False
 
 
 _NO_LANGUAGE_STRATEGIES = _LanguageCallStrategies()
@@ -144,6 +146,7 @@ _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
         member_fallback=_TYPED_RECEIVER,
         member_bare_fallback=False,
         inherited_typed_receiver=True,
+        inherited_fields=True,
     ),
     # A chained call keeps no bare-name fallback: ``.send()`` on a result the
     # return type does not type is not the repo's ``send``.
@@ -151,7 +154,9 @@ _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
         _JVM_STRATEGIES, member_fallback=_TYPED_RECEIVER, chain_bare_fallback=False
     ),
     "csharp": _LanguageCallStrategies(
-        free_fallback=("_resolve_csharp_constructed_type",), member_fallback=_TYPED_RECEIVER
+        free_fallback=("_resolve_csharp_constructed_type",),
+        member_fallback=_TYPED_RECEIVER,
+        inherited_fields=True,
     ),
     "python": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
     # Swift and Dart register the fallback: neither has a package tier of its
@@ -180,6 +185,7 @@ _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
         member_fallback=_TYPED_RECEIVER,
         member_bare_fallback=False,
         inherited_typed_receiver=True,
+        inherited_fields=True,
     ),
 }
 
