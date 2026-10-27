@@ -14,6 +14,7 @@ older row yields a shorter recipe rather than an error.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping
 from typing import Any, Literal, get_args
 
@@ -130,7 +131,7 @@ def _extract_method(d: Mapping[str, Any], plan: Mapping[str, Any]) -> list[Step]
     stages = [_dict(stage) for stage in _list(plan.get("stages"))]
     if stages:
         return _staged_steps(d, plan, stages)
-    return [_extract_step(d, plan)]
+    return [_extract_step(d, plan, note=_rename_note(plan, 1))]
 
 
 def _staged_steps(
@@ -157,13 +158,38 @@ def _staged_steps(
         }
         steps.append(_step("add_helper", d.get("file_path"), None, text, new_symbol=symbol))
     for n, stage in enumerate(stages, 1):
-        step = _extract_step(d, stage)
+        note = _rename_note(stage, len(stages)) if n == 1 else None
+        step = _extract_step(d, stage, note=note)
         step["text"] = f"Stage {n} of {len(stages)}: {step['text']}"
         steps.append(step)
     return steps
 
 
-def _extract_step(d: Mapping[str, Any], plan: Mapping[str, Any]) -> Step:
+#: Said once per Extract Method plan whose helper names are placeholders.
+RENAME_NOTE = (
+    "The helper's name is a placeholder: rename it for what it returns or does, "
+    "in its header and its call."
+)
+_RENAME_EACH = RENAME_NOTE.replace("The helper's name", "Each stage's helper name").replace(
+    "rename it", "rename each one"
+)
+#: The placeholder ``helper_naming.placeholder_names`` writes, in any casing.
+_PLACEHOLDER = re.compile(r"_?extracted_?[hH]elper_?\d*")
+
+
+def _rename_note(plan: Mapping[str, Any], helpers: int) -> str | None:
+    """The rename note for a plan of *helpers* helpers, None when the stored
+    name is a real one (a plan written before names were placeholders)."""
+    name = plan.get("suggested_name")
+    if name and not _PLACEHOLDER.fullmatch(str(name)):
+        return None
+    return RENAME_NOTE if helpers == 1 else _RENAME_EACH
+
+
+def _extract_step(
+    d: Mapping[str, Any], plan: Mapping[str, Any], *, note: str | None = None
+) -> Step:
+    """One extract step, ending with *note* when given (:func:`_rename_note`)."""
     span = _dict(plan.get("span"))
     where = _span(span.get("start"), span.get("end"))
     host = _short(d.get("target_symbol"))
@@ -173,11 +199,6 @@ def _extract_step(d: Mapping[str, Any], plan: Mapping[str, Any]) -> Step:
         return _step("extract", d.get("file_path"), None, text)
     symbol = _dict(plan.get("new_symbol"))
     is_async = bool(symbol.get("async", plan.get("needs_async")))
-    named = (
-        " (a starting name; rename it if it collides)"
-        if plan.get("suggested_name")
-        else " (name it for what the lines do)"
-    )
     anchors = plan_anchors(plan.get("anchors"))
     lines = (
         f"the span of `{host}` that starts and ends with the lines shown "
@@ -186,9 +207,11 @@ def _extract_step(d: Mapping[str, Any], plan: Mapping[str, Any]) -> Step:
         else f"lines {where['start']}-{where['end']} of `{host}`"
     )
     text = (
-        f"Move {lines} into a new helper `{name}`{named} in the same scope, and replace "
+        f"Move {lines} into a new helper `{name}` in the same scope, and replace "
         f"{'it' if anchors else 'them'} with one call to it."
     )
+    if note:
+        text += " " + note
     return _step(
         "extract",
         d.get("file_path"),
@@ -686,6 +709,7 @@ __all__ = [
     "LINE_RULE",
     "PRECONDITION_KINDS",
     "RECIPE_ACTIONS",
+    "RENAME_NOTE",
     "SCRIPT_RULE",
     "TYPE_LABEL",
     "RecipeAction",

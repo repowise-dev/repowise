@@ -10,7 +10,9 @@ while still importing something the graph resolves:
 * a **self-running** test starts the project's own command or module in a
   child process (a console script, ``sys.executable -m <own module>``, code
   passed to ``-c`` that imports the project, the package's ``bin``), so the
-  code it exercises is reached through a process, not an import.
+  code it exercises is reached through a process, not an import;
+* a **whole-application** test (Java or Kotlin ``@SpringBootTest``) loads the
+  Spring application context and reaches handlers by URL and bean wiring.
 
 :func:`always_run_reason` names which, or returns ``None``. It reads only
 the text it is given, so the indexer runs it once per test file while the
@@ -29,8 +31,9 @@ directory never counts. The file read must sit in the walk's own function or
 block, or in a block naming the walk's function or variable. Ceiling: the
 check is textual and per file, so a walk done by a shared helper the test
 calls (``list_tracked_files()``) is not seen; detecting walks in helpers and
-marking their importers is the upgrade path. Python, JavaScript and
-TypeScript only.
+marking their importers is the upgrade path. Walks and self-runs are judged
+in Python, JavaScript and TypeScript only; Java and Kotlin tests only for
+``@SpringBootTest`` (a slice such as ``@WebMvcTest`` is reached by its imports).
 """
 
 from __future__ import annotations
@@ -44,6 +47,11 @@ from typing import Any
 
 _PY = ".py"
 _JS = (".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts")
+_JVM = (".java", ".kt")
+# Simple or fully qualified; the word boundary keeps ``@SpringBootTestSupport`` out.
+_SPRING_BOOT_TEST = re.compile(
+    r"@(?:org\.springframework\.boot\.test\.context\.)?SpringBootTest\b"
+)
 
 
 @dataclass(frozen=True)
@@ -224,7 +232,7 @@ def is_judged_test(path: str) -> bool:
     """A runnable test in a language :func:`always_run_reason` reads."""
     from ..analysis.test_selection import is_runnable_test
 
-    return path.endswith((_PY, *_JS)) and is_runnable_test(path)
+    return path.endswith((_PY, *_JS, *_JVM)) and is_runnable_test(path)
 
 
 def _beside_code(path: str) -> bool:
@@ -236,6 +244,8 @@ def _beside_code(path: str) -> bool:
 
 def always_run_reason(path: str, text: str, own: OwnCode) -> str | None:
     """Why the test at *path* must run with every subset, or ``None``."""
+    if path.endswith(_JVM):
+        return _loads_spring_context(path, text)
     if path.endswith(_PY):
         lang = _PY_LANG
     elif path.endswith(_JS):
@@ -246,6 +256,19 @@ def always_run_reason(path: str, text: str, own: OwnCode) -> str | None:
         return "it lists and reads files under a source directory"
     if command := _runs_own_code(text, lang, own, python=path.endswith(_PY)):
         return f"it runs {command} in a child process"
+    return None
+
+
+def _loads_spring_context(path: str, text: str) -> str | None:
+    # Ceiling: per file, so ``@SpringBootTest`` inherited from a base class or
+    # carried by a custom meta-annotation is not seen; resolving annotations
+    # through the class graph is the upgrade path.
+    if "SpringBootTest" not in text:
+        return None
+    from ..analysis.security_scan import mask_comments_and_strings, mask_dialect
+
+    if _SPRING_BOOT_TEST.search(mask_comments_and_strings(text, **mask_dialect(path))):
+        return "it loads the whole Spring application context (@SpringBootTest)"
     return None
 
 

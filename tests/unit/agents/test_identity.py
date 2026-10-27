@@ -291,6 +291,8 @@ def test_login_runs_the_declared_check_and_reads_the_exit_code(monkeypatch) -> N
     import shutil
     import subprocess
 
+    for name in ("REPOWISE_OFFLINE", "DO_NOT_TRACK", "REPOWISE_TELEMETRY_DISABLED"):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(shutil, "which", lambda name: name)
     calls: list[list[str]] = []
 
@@ -303,8 +305,35 @@ def test_login_runs_the_declared_check_and_reads_the_exit_code(monkeypatch) -> N
     assert not identity.CODEX.is_logged_in()
     assert not identity.CLAUDE_CODE.is_logged_in()
     assert calls == [["codex", "login", "status"], ["claude", "auth", "status"]]
-    # No cheap login query: installed is the most this can say.
-    assert identity.OPENCODE.is_logged_in()
+    # No cheap login query: installed is the most this can say, so unknown.
+    assert identity.OPENCODE.is_logged_in() is None
+    assert identity.COPILOT.is_logged_in() is None
+
+
+def test_an_agent_not_on_path_is_not_logged_in(monkeypatch) -> None:
+    import shutil
+
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    assert identity.CLAUDE_CODE.is_logged_in() is False
+    assert identity.OPENCODE.is_logged_in() is False
+
+
+@pytest.mark.parametrize(
+    "switch", ["REPOWISE_OFFLINE", "DO_NOT_TRACK", "REPOWISE_TELEMETRY_DISABLED"]
+)
+def test_login_check_is_not_spawned_when_the_network_is_off(monkeypatch, switch) -> None:
+    import shutil
+    import subprocess
+
+    monkeypatch.setenv(switch, "1")
+    monkeypatch.setattr(shutil, "which", lambda name: name)
+
+    def fail(*args: object, **kwargs: object) -> None:
+        raise AssertionError("a login check was spawned with the network off")
+
+    monkeypatch.setattr(subprocess, "run", fail)
+    assert identity.CLAUDE_CODE.is_logged_in() is None
+    assert identity.CODEX.is_logged_in() is None
 
 
 def test_identity_for_provider_follows_the_indexing_link() -> None:

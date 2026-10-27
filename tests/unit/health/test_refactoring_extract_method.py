@@ -12,6 +12,7 @@ import pytest
 
 from repowise.core.analysis.health.complexity.languages import get_language_map
 from repowise.core.analysis.health.dataflow import analyze_file, find_extractions
+from repowise.core.analysis.health.gain import removal_gain
 from repowise.core.analysis.health.refactoring import detect_refactorings
 from repowise.core.analysis.health.refactoring.extract_method import (
     ExtractMethodDetector,
@@ -655,6 +656,99 @@ def _detect_in(language: str, ext: str, src: str):
     return plans[0]
 
 
+_URI_PARTS_JAVA = """
+class UriParts {
+  static Map<String, Object> parts(URI uri, Writer log) throws IOException {
+    var out = new HashMap<String, Object>();
+    String host = uri.getHost();
+    String path = uri.getPath();
+    String query = uri.getQuery();
+    int port = uri.getPort();
+    if (host == null) {
+      throw new IllegalArgumentException("no host");
+    }
+    out.put("host", host);
+    if (path != null) {
+      out.put("path", path);
+      int dot = path.lastIndexOf('.');
+      if (dot >= 0) {
+        out.put("extension", path.substring(dot + 1));
+        log.write("extension\\n");
+      }
+    }
+    if (port != -1) {
+      out.put("port", port);
+      log.write("port\\n");
+    }
+    if (query != null) {
+      out.put("query", query);
+      log.write("query\\n");
+    }
+    return out;
+  }
+}
+"""
+
+
+def test_issue_3823_uri_parts_plan_has_known_type_and_checked_exception():
+    plan = _detect_in("java", "java", _URI_PARTS_JAVA)
+
+    assert plan.plan["new_symbol"]["signature_text"] == (
+        "private static void extractedHelper(Writer log, HashMap<String, Object> out, "
+        "String path, int port, String query) throws IOException {"
+    )
+
+
+def test_java_extraction_inside_caught_io_exceptions_does_not_add_throws():
+    import re
+
+    src = _URI_PARTS_JAVA.replace(" throws IOException", "")
+    src = re.sub(
+        r'(?m)^(\s*)log\.write\((.*)\);$',
+        r'\1try { log.write(\2); } catch (IOException e) { out.put("logError", e); }',
+        src,
+    )
+
+    plan = _detect_in("java", "java", src)
+
+    assert "throws IOException" not in plan.plan["new_symbol"]["signature_text"]
+    assert "HashMap<String, Object> out" in plan.plan["new_symbol"]["signature_text"]
+    span = plan.plan["span"]
+    lifted = src.splitlines()[span["start"] - 1 : span["end"]]
+    assert sum("catch (IOException e)" in line for line in lifted) == 3
+
+
+def test_issue_3823_try_resource_type_flows_through_detector():
+    src = _URI_PARTS_JAVA.replace(
+        "static Map<String, Object> parts(URI uri, Writer log) throws IOException {",
+        "static Map<String, Object> parts(URI uri) {\n    try (Writer log = open()) {",
+    ).replace(
+        "var out = new HashMap<String, Object>();",
+        "Map<String, Object> out = new HashMap<>();",
+    ).replace(
+        "    return out;\n  }\n}",
+        "    return out;\n    }\n  }\n}",
+    )
+    plan = _detect_in("java", "java", src)
+
+    assert "Writer log" in plan.plan["new_symbol"]["signature_text"]
+    assert "<type>" not in plan.plan["new_symbol"]["signature_text"]
+
+
+def test_issue_3823_var_call_type_stays_judgment_at_detector_boundary():
+    from repowise.core.analysis.health.refactoring.preconditions import classify_step
+
+    src = _URI_PARTS_JAVA.replace(
+        "var out = new HashMap<String, Object>();", "var out = createMap();"
+    )
+    plan = _detect_in("java", "java", src)
+    applicability = classify_step(plan)
+
+    assert "<type> out" in plan.plan["new_symbol"]["signature_text"]
+    assert applicability.classification == "judgment"
+    assert "type_unresolved" in applicability.reasons
+
+
 def test_detector_emits_suggestion_for_flagged_function():
     findings = [_Finding("complex_method", "process", line_start=2, health_impact=1.5)]
     suggestions = ExtractMethodDetector().detect(_ctx(_PROCESS, findings))
@@ -667,7 +761,8 @@ def test_detector_emits_suggestion_for_flagged_function():
     fn = _first(_PROCESS)
     share = s.evidence["ccn_removed"] / fn.ccn
     assert 0 < share < 1
-    assert s.impact_delta == round(1.5 * share, 3)
+    assert s.evidence["recovered_share"] == round(share, 3)
+    assert s.impact_delta == removal_gain(findings, [(findings[0], share)]) > 0
     # Plan shape is the locked schema.
     assert set(s.plan) == {
         "span",
@@ -694,7 +789,7 @@ def test_detector_emits_suggestion_for_flagged_function():
     }
     assert s.plan["call_site"]["replace_span"] == s.plan["span"]
     assert set(s.plan["span"]) == {"start", "end"}
-    assert set(s.evidence) == {"slice_nloc", "ccn_removed"}
+    assert set(s.evidence) == {"slice_nloc", "ccn_removed", "recovered_share"}
     # A categorical claim, not a count: extraction is local, so there is nothing
     # to measure. The old ``{"callers_count": 0}`` was a hardcoded literal that
     # no consumer could tell apart from a measured zero.
@@ -703,105 +798,26 @@ def test_detector_emits_suggestion_for_flagged_function():
     assert s.confidence in ("medium", "high")
 
 
-def test_plan_carries_a_computed_name_not_a_hardcoded_none():
-    """``suggested_name`` was ``None`` on every extract_method plan ever stored
-    (854 of 854 on this repo's index) while Extract Helper computed one, so the
-    field's meaning depended on which detector wrote it and every surface fell
-    through to a generic "helper". It is now always a real identifier."""
+def test_plan_names_the_helper_with_a_placeholder():
+    """The plan does not assert a name: the agent applying it names the helper
+    for what it returns or does. The placeholder is valid code until then."""
     findings = [_Finding("complex_method", "process", line_start=2, health_impact=1.5)]
     s = ExtractMethodDetector().detect(_ctx(_PROCESS, findings))[0]
-    # The slice's single OUT value is ``average``, so the span is by
-    # construction the code that computes it.
     assert s.plan["returns"] == ["average"]
     # In Python's private form.
-    assert s.plan["suggested_name"] == "_compute_average"
-
-
-class _Extraction:
-    def __init__(self, returns):
-        self.returns = list(returns)
-
-
-class _Analysis:
-    def __init__(self, name):
-        self.name = name
-
-
-def test_suggested_name_unit():
-    name = ExtractMethodDetector._suggested_name
-    # Exactly one OUT -> name the helper for what it produces, in the language's
-    # own convention.
-    assert name(_Analysis("process"), _Extraction(["average"]), "python") == "compute_average"
-    # Non-identifier characters normalised through the shared slug.
-    assert name(_Analysis("p"), _Extraction(["total-count"]), "python") == "compute_total_count"
-    # A call with no language keeps the snake_case default (the pre-existing
-    # behaviour), so an unset ``ctx.language`` degrades rather than changes shape.
-    assert name(_Analysis("process"), _Extraction(["average"])) == "compute_average"
-
-
-def test_suggested_name_none_cases_are_unchanged_by_the_language():
-    """Control: the no-anchor rules this change must not touch. Each of these
-    was ``None`` before it and must stay ``None`` after, in every language."""
-    name = ExtractMethodDetector._suggested_name
-    # No single OUT -> no anchor, so no name. The enclosing function's name
-    # described the span's context, never the span, and collided with every
-    # sibling plan in the file.
-    assert name(_Analysis("run_pipeline"), _Extraction([])) is None
-    assert name(_Analysis("run_pipeline"), _Extraction(["a", "b"])) is None
-    # A return name that slugs to nothing must not yield "compute_".
-    assert name(_Analysis("process"), _Extraction(["___"])) is None
-    # An OUT named for its role, not the product: "compute_result" names
-    # nothing the reader did not already know.
-    assert name(_Analysis("process"), _Extraction(["result"])) is None
-    # Nothing usable at all -> no name at all.
-    assert name(_Analysis("___"), _Extraction([])) is None
-    # And none of the above becomes a name just because the language is camelCase.
-    for lang in ("java", "go", "typescript", "cpp", "python"):
-        assert name(_Analysis("process"), _Extraction([]), lang) is None
-        assert name(_Analysis("process"), _Extraction(["result"]), lang) is None
-        assert name(_Analysis("process"), _Extraction(["___"]), lang) is None
-
-
-def test_suggested_name_follows_the_language_convention():
-    name = ExtractMethodDetector._suggested_name
-    # camelCase languages.
-    for lang in ("java", "go", "typescript", "tsx", "javascript", "jsx", "svelte", "vue"):
-        assert name(_Analysis("process"), _Extraction(["average"]), lang) == "computeAverage", lang
-    # snake_case languages, and C++ which has no single convention.
-    for lang in ("python", "rust", "cpp"):
-        assert name(_Analysis("process"), _Extraction(["average"]), lang) == "compute_average", lang
-    # An unknown language falls back rather than raising.
-    assert name(_Analysis("process"), _Extraction(["average"]), "cobol") == "compute_average"
-    # A language whose file has several words keeps all of them.
-    assert (
-        name(_Analysis("process"), _Extraction(["total_count"]), "java") == "computeTotalCount"
-    )
-
-
-def test_suggested_name_keeps_the_out_values_own_casing():
-    name = ExtractMethodDetector._suggested_name
-    # ``meanValue`` must survive as word boundaries. Lowercasing the whole label
-    # first (the old slug) gave ``compute_meanvalue``, neither camelCase nor
-    # snake_case.
-    assert name(_Analysis("process"), _Extraction(["meanValue"]), "java") == "computeMeanValue"
-    assert name(_Analysis("process"), _Extraction(["mean_value"]), "java") == "computeMeanValue"
-    assert name(_Analysis("process"), _Extraction(["MeanValue"]), "java") == "computeMeanValue"
-    assert name(_Analysis("process"), _Extraction(["meanValue"]), "python") == "compute_mean_value"
-    # A run of capitals stays one word: splitting it needs a dictionary.
-    assert name(_Analysis("process"), _Extraction(["HTTPStatus"]), "java") == "computeHttpstatus"
-    # The role-word guard still sees a multi-word out value's joined slug.
-    assert name(_Analysis("process"), _Extraction(["item_value"]), "java") == "computeItemValue"
+    assert s.plan["suggested_name"] == "_extracted_helper"
+    assert s.plan["new_symbol"]["signature_text"].startswith("def _extracted_helper(")
 
 
 @pytest.mark.parametrize(
     ("language", "expected"),
     [
-        ("python", "_compute_average"),
-        ("rust", "compute_average"),
-        ("cpp", "compute_average"),
-        ("java", "computeAverage"),
-        ("typescript", "computeAverage"),
-        ("go", "computeAverage"),
+        ("python", "_extracted_helper"),
+        ("rust", "extracted_helper"),
+        ("cpp", "extracted_helper"),
+        ("java", "extractedHelper"),
+        ("typescript", "extractedHelper"),
+        ("go", "extractedHelper"),
     ],
 )
 def test_detector_names_the_helper_in_the_files_language(language: str, expected: str):
@@ -1049,16 +1065,17 @@ def test_a_best_span_below_the_floor_yields_to_the_next_one(monkeypatch):
                   "fn_node": None}
     )()
     assert not _worth_extracting(fn, trivial, {"complex_method"})
+    findings = [_Finding("complex_method", "f", 1, 1.2)]
     ctx = RefactoringContext(
         file_path="m.py",
         language="python",
         nloc=100,
-        findings=[_Finding("complex_method", "f", 1, 1.2)],
+        findings=findings,
         function_analyses=[analysis],
     )
     (s,) = ExtractMethodDetector().detect(ctx)
     assert s.plan["span"] == {"start": 20, "end": 27}
-    assert s.impact_delta == round(1.2 * 3 / 12, 3)
+    assert s.impact_delta == removal_gain(findings, [(findings[0], 3 / 12)])
 
 
 # A plan that names the extracted loop's own counter as a parameter cannot
@@ -1329,6 +1346,383 @@ def test_a_span_holding_an_import_read_after_it_is_refused():
     assert (3, 5) not in found
     assert (4, 6) not in found
     assert found[(3, 6)] == (("a", "c"), ("t",))
+
+
+# A helper whose only output is a constant says nothing: the call site reads
+# ``boolean allEscape = extractedHelper(...)`` for what was ``= false``. The
+# span one statement shorter (same decision points, a void helper) is the plan.
+_LOOP_CONSTANT_TAIL = """
+class Loop {
+  void visitLoop(Node cond, Node body, Writer w, Scope scope, Label start, Label end) {
+    if (cond != null && !cond.isConstant()) {
+      w.mark(start);
+    }
+    if (cond != null && cond.isContinuous() == false) {
+      w.visit(cond, scope);
+      w.jumpIfZero(end);
+    }
+    Variable loop = scope.lookup("loop");
+    if (loop != null) {
+      w.writeCounter(loop.slot());
+    }
+    if (scope.isDebug() || scope.isTracing()) {
+      w.trace("loop");
+    }
+    %s
+    if (body != null) {
+      allEscape = body.allEscape();
+      if (allEscape && scope.isDebug()) {
+        return;
+      }
+      w.visit(body, scope);
+    }
+    if (!allEscape) {
+      w.jump(start);
+    }
+    w.mark(end);
+  }
+}
+"""
+
+
+def _java_constant_tail_ctx(src: str):
+    res = analyze_file("Loop.java", "java", textwrap.dedent(src).encode(), flagged_only=False)
+    if res.stats.functions_seen == 0:
+        pytest.skip("tree-sitter language pack missing for java")
+    fn = next(f for f in res.functions if f.name == "visitLoop")
+    ctx = RefactoringContext(
+        file_path="Loop.java",
+        language="java",
+        nloc=500,
+        findings=[_Finding("complex_method", fn.name, fn.start_line, 1.5)],
+        function_analyses=res.functions,
+    )
+    return res, fn, ctx
+
+
+def test_a_trailing_constant_declaration_is_left_in_the_host():
+    src = _LOOP_CONSTANT_TAIL % "boolean allEscape = false;"
+    _res, _fn, ctx = _java_constant_tail_ctx(src)
+    (s,) = [x for x in ExtractMethodDetector().detect(ctx) if x.refactoring_type == "extract_method"]
+    assert s.plan["returns"] == []
+    decl = next(i for i, line in enumerate(textwrap.dedent(src).splitlines(), 1) if "allEscape = false" in line)
+    assert s.plan["span"]["end"] == decl - 1
+    assert "void" in s.plan["new_symbol"]["signature_text"]
+    assert s.plan["new_symbol"].get("return_text") is None
+
+
+def test_no_candidate_returns_a_trailing_constant():
+    src = _LOOP_CONSTANT_TAIL % "boolean allEscape = false;"
+    res, _fn, _ctx = _java_constant_tail_ctx(src)
+    decl = next(i for i, line in enumerate(textwrap.dedent(src).splitlines(), 1) if "allEscape = false" in line)
+    lmap = get_language_map("java")
+    for fn in res.functions:
+        for c in find_extractions(fn, lmap):
+            assert not (c.returns == ("allEscape",) and c.end_line == decl)
+
+
+def test_a_computed_rhs_still_returns_the_output():
+    # ``cond`` is already an input, so the declaration adds no parameter: the
+    # span ending on it is offered, returning what the span computes.
+    src = _LOOP_CONSTANT_TAIL % "boolean allEscape = cond == null;"
+    _res, _fn, ctx = _java_constant_tail_ctx(src)
+    (s,) = [x for x in ExtractMethodDetector().detect(ctx) if x.refactoring_type == "extract_method"]
+    assert s.plan["returns"] == ["allEscape"]
+    decl = next(i for i, line in enumerate(textwrap.dedent(src).splitlines(), 1) if "allEscape = cond" in line)
+    assert s.plan["span"]["end"] == decl
+
+
+def test_a_literal_followed_by_reassignment_still_returns():
+    # The constant is not the span's only definition of the name: the
+    # conditional rewrite inside the span is what the read after observes.
+    src = """
+    class Loop {
+      void visitLoop(Node cond, Writer w, Scope scope, Label start, Label end) {
+        if (cond != null && !cond.isConstant()) {
+          w.mark(start);
+        }
+        if (cond != null && cond.isContinuous() == false) {
+          w.visit(cond, scope);
+          w.jumpIfZero(end);
+        }
+        Variable loop = scope.lookup("loop");
+        if (loop != null) {
+          w.writeCounter(loop.slot());
+        }
+        if (scope.isDebug() || scope.isTracing()) {
+          w.trace("loop");
+        }
+        boolean allEscape = false;
+        if (cond != null) {
+          allEscape = true;
+        }
+        if (!allEscape) {
+          w.jump(start);
+        }
+        w.mark(end);
+      }
+    }
+    """
+    res = analyze_file("Loop.java", "java", textwrap.dedent(src).encode(), flagged_only=False)
+    if res.stats.functions_seen == 0:
+        pytest.skip("tree-sitter language pack missing for java")
+    fn = next(f for f in res.functions if f.name == "visitLoop")
+    found = [c for c in find_extractions(fn, get_language_map("java")) if c.returns == ("allEscape",)]
+    assert found, "a literal rewritten inside the span is still returned"
+
+
+def test_a_trailing_constant_is_dropped_in_python_and_go():
+    py = textwrap.dedent(
+        """
+        def visit_loop(cond, body, w, scope, start, end):
+            if cond is not None and not cond.is_constant():
+                w.mark(start)
+            if cond is not None and cond.is_continuous() == False:
+                w.visit(cond, scope)
+                w.jump_if_zero(end)
+            loop = scope.lookup("loop")
+            if loop is not None:
+                w.write_counter(loop.slot())
+            if scope.is_debug() or scope.is_tracing():
+                w.trace("loop")
+            allEscape = False
+            if body is not None:
+                allEscape = body.all_escape()
+                w.visit(body, scope)
+            if not allEscape:
+                w.jump(start)
+            w.mark(end)
+            return allEscape
+        """
+    )
+    res = analyze_file("m.py", "python", py.encode(), flagged_only=False)
+    fn = res.functions[0]
+    decl = next(i for i, line in enumerate(py.splitlines(), 1) if "allEscape = False" in line)
+    assert not [
+        c
+        for c in find_extractions(fn, get_language_map("python"))
+        if c.returns == ("allEscape",) and c.end_line == decl
+    ]
+    go = textwrap.dedent(
+        """
+        package main
+        func visitLoop(cond Node, body Node, w Writer, scope Scope, start Label, end Label) bool {
+            if cond != nil {
+                w.Mark(start)
+            }
+            if cond != nil {
+                w.Visit(cond, scope)
+                w.JumpIfZero(end)
+            }
+            loop := scope.Lookup("loop")
+            if loop != nil {
+                w.WriteCounter(loop.Slot())
+            }
+            if scope.IsDebug() {
+                w.Trace("loop")
+            }
+            allEscape := false
+            if body != nil {
+                allEscape = body.AllEscape()
+                w.Visit(body, scope)
+            }
+            if !allEscape {
+                w.Jump(start)
+            }
+            w.Mark(end)
+            return allEscape
+        }
+        """
+    )
+    res = analyze_file("m.go", "go", go.encode(), flagged_only=False)
+    if res.stats.functions_seen == 0:
+        pytest.skip("go parse unavailable")
+    fn = res.functions[0]
+    decl = next(i for i, line in enumerate(go.splitlines(), 1) if "allEscape := false" in line)
+    assert not [
+        c
+        for c in find_extractions(fn, get_language_map("go"))
+        if c.returns == ("allEscape",) and c.end_line == decl
+    ]
+
+
+# Dialects whose grammars spell scalars outside the original four-language
+# kind set (and C#, whose initializer sits one declarator below the writer).
+# Scala / Kotlin have no def/use dialect yet, so they are covered by the
+# literal-kind probe below rather than find_extractions.
+_LOOP_CONSTANT_TAIL_DIALECTS = (
+    (
+        "csharp",
+        "cs",
+        "allEscape = false",
+        "allEscape",
+        """
+        class Loop {
+          void VisitLoop(Node cond, Node body, Writer w, Scope scope, Label start, Label end) {
+            if (cond != null && !cond.IsConstant()) {
+              w.Mark(start);
+            }
+            if (cond != null && cond.IsContinuous() == false) {
+              w.Visit(cond, scope);
+              w.JumpIfZero(end);
+            }
+            Variable loop = scope.Lookup("loop");
+            if (loop != null) {
+              w.WriteCounter(loop.Slot());
+            }
+            if (scope.IsDebug() || scope.IsTracing()) {
+              w.Trace("loop");
+            }
+            bool allEscape = false;
+            if (body != null) {
+              allEscape = body.AllEscape();
+              if (allEscape && scope.IsDebug()) {
+                return;
+              }
+              w.Visit(body, scope);
+            }
+            if (!allEscape) {
+              w.Jump(start);
+            }
+            w.Mark(end);
+          }
+        }
+        """,
+    ),
+    (
+        "rust",
+        "rs",
+        "all_escape = false",
+        "all_escape",
+        """
+        fn visit_loop(cond: Cond, body: Body, w: W, scope: Scope, start: L, end: L) {
+            if cond.is_some() {
+                w.mark(start);
+            }
+            if cond.is_continuous() == false {
+                w.visit(&cond, &scope);
+                w.jump_if_zero(end);
+            }
+            let loop_var = scope.lookup("loop");
+            if loop_var.is_some() {
+                w.write_counter(loop_var.slot());
+            }
+            if scope.is_debug() || scope.is_tracing() {
+                w.trace("loop");
+            }
+            let mut all_escape = false;
+            if body.is_some() {
+                all_escape = body.all_escape();
+                w.visit(&body, &scope);
+            }
+            if !all_escape {
+                w.jump(start);
+            }
+            w.mark(end);
+        }
+        """,
+    ),
+    (
+        "cpp",
+        "cpp",
+        "allEscape = 0",
+        "allEscape",
+        """
+        void visitLoop(Node* cond, Node* body, Writer* w, Scope* scope, Label start, Label end) {
+            if (cond != nullptr && !cond->isConstant()) {
+              w->mark(start);
+            }
+            if (cond != nullptr && cond->isContinuous() == false) {
+              w->visit(cond, scope);
+              w->jumpIfZero(end);
+            }
+            Variable* loop = scope->lookup("loop");
+            if (loop != nullptr) {
+              w->writeCounter(loop->slot());
+            }
+            if (scope->isDebug() || scope->isTracing()) {
+              w->trace("loop");
+            }
+            int allEscape = 0;
+            if (body != nullptr) {
+              allEscape = body->allEscape();
+              w->visit(body, scope);
+            }
+            if (!allEscape) {
+              w->jump(start);
+            }
+            w->mark(end);
+        }
+        """,
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("language", "ext", "needle", "var", "src"),
+    _LOOP_CONSTANT_TAIL_DIALECTS,
+    ids=[row[0] for row in _LOOP_CONSTANT_TAIL_DIALECTS],
+)
+def test_no_candidate_returns_a_trailing_constant_across_dialects(language, ext, needle, var, src):
+    if _get_language(language) is None:
+        pytest.skip(f"tree-sitter language pack missing for {language}")
+    body = textwrap.dedent(src)
+    res = analyze_file(f"Loop.{ext}", language, body.encode(), flagged_only=False)
+    if res.stats.functions_seen == 0 or not res.functions:
+        pytest.skip(f"parse unavailable for {language}")
+    fn = res.functions[0]
+    decl = next(i for i, line in enumerate(body.splitlines(), 1) if needle in line)
+    lmap = get_language_map(language)
+    assert not [
+        c for c in find_extractions(fn, lmap) if c.returns == (var,) and c.end_line == decl
+    ]
+
+
+@pytest.mark.parametrize(
+    ("language", "ext", "src", "literal", "kind"),
+    [
+        ("csharp", "cs", "class C { void M() { bool x = false; } }", "false", "boolean_literal"),
+        ("rust", "rs", "fn m() { let x = false; }", "false", "boolean_literal"),
+        ("scala", "scala", "object O { def m(): Unit = { val x = false } }", "false", "boolean_literal"),
+        ("cpp", "cpp", "void m() { int x = 0; }", "0", "number_literal"),
+        ("kotlin", "kt", "fun m() { val x = false }", "false", "identifier"),
+    ],
+    ids=["csharp", "rust", "scala", "cpp", "kotlin"],
+)
+def test_trailing_constant_literal_kinds_match_vendored_grammars(language, ext, src, literal, kind):
+    # Kind / text gate the constant-tail drop uses: CI must see the spellings
+    # find_extractions cannot exercise for dialects without a def/use map.
+    from repowise.core.analysis.health.dataflow.parsing import parse_source
+    from repowise.core.analysis.health.dataflow.slice_writes import _is_literal_value
+
+    if _get_language(language) is None:
+        pytest.skip(f"tree-sitter language pack missing for {language}")
+    parsed = parse_source(f"m.{ext}", language, src.encode())
+    if parsed is None:
+        pytest.skip(f"parse unavailable for {language}")
+    root, _lmap = parsed
+    needle = literal.encode()
+    stack = [root]
+    lit = None
+    while stack:
+        node = stack.pop()
+        if node.is_named and node.type == kind and (node.text or b"") == needle:
+            lit = node
+            break
+        stack.extend(node.named_children)
+    assert lit is not None, f"{language}: expected {kind} spelling of {literal!r}"
+    assert _is_literal_value(lit)
+    if kind == "identifier":
+        # Accepting every identifier would drop helpers that return a name.
+        stack = [root]
+        name = None
+        while stack:
+            node = stack.pop()
+            if node.is_named and node.type == "identifier" and (node.text or b"") == b"x":
+                name = node
+                break
+            stack.extend(node.named_children)
+        assert name is not None and not _is_literal_value(name)
 
 
 @pytest.mark.parametrize(

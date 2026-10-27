@@ -18,7 +18,6 @@ from typing import Any, Literal
 
 from repowise.core.analysis.function_test_map import MappedTest
 from repowise.core.analysis.health.grading import TARGET_SCORE
-from repowise.core.analysis.health.perf.ranking import _percentile_threshold
 from repowise.core.analysis.health.queue_rules import FilterRule
 from repowise.core.analysis.health.refactoring_summary import STRUCTURAL_TYPES
 from repowise.core.analysis.health.rows import field as row_field
@@ -30,18 +29,19 @@ from repowise.core.analysis.health.worth import (
     worst_after,
 )
 from repowise.core.analysis.pr_blast import rank_tests_by_reach
+from repowise.core.analysis.test_reach.hubs import hub_files
 from repowise.core.analysis.test_reachability import (
     DEFAULT_CALL_DEPTH,
     MAX_TESTS_PER_TARGET,
     ReachDistance,
     ReachedBy,
-    rank_tests,
+    rank_reaching,
 )
 from repowise.core.code_origin import ship_rank
 from repowise.core.test_paths import is_test_support_path, names_test_for, paired_test_names
 
 from .annotations import PlanAnnotations, partner_rows
-from .commands import JsPackages, commands_for_tests, plan_packages
+from .commands import TestRuns, commands_for_tests, keeps_runs, plan_runs
 from .models import RefactoringSuggestion
 from .render import list_plan
 
@@ -309,9 +309,9 @@ class ValidationPlan:
     # differs from the plan's, else ``None``; empty when none differs. Kept out
     # of :meth:`as_dict`, which every list serves; plan detail reads it.
     step_verify: list[dict[str, Any] | None] = field(default_factory=list)
-    # The package each shown JS/TS test runs from (``commands.JsPackages``),
+    # How each shown JS/TS, Go, Rust, JVM, Ruby or C# test runs (``commands.TestRuns``),
     # so a later read builds the same commands without a checkout.
-    js_packages: dict[str, str | None] = field(default_factory=dict)
+    test_runs: dict[str, list[str | None]] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -326,7 +326,7 @@ class ValidationPlan:
             "targets": [target.as_dict() for target in self.targets],
             "reasons": self.reasons,
             "prerequisite": self.prerequisite,
-            **({"js_packages": self.js_packages} if self.js_packages else {}),
+            **({"test_runs": self.test_runs} if keeps_runs(self.tests, self.test_runs) else {}),
         }
 
 
@@ -344,7 +344,8 @@ class ValidationEvidence:
     (``function_facts.tests_json``); an absent id was never mapped.
     ``hubs`` are the files no reach walk passes through (:func:`hub_files`), and
     ``siblings`` each directory's files, which decide whose test a name is.
-    ``js_packages`` is the package each JS/TS test runs from; absent, from the root.
+    ``test_runs`` is how each JS/TS, Go, Rust, JVM, Ruby or C# test runs; absent,
+    it gets no command.
     """
 
     symbols: Mapping[str, Sequence[SymbolSpan]] = field(default_factory=dict)
@@ -353,7 +354,7 @@ class ValidationEvidence:
     function_tests: Mapping[str, tuple[MappedTest, ...]] = field(default_factory=dict)
     hubs: frozenset[str] = frozenset()
     siblings: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
-    js_packages: JsPackages | None = None
+    test_runs: TestRuns | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -368,30 +369,6 @@ class ValidationInputs:
     inferred: Mapping[str, ReachedBy]
     test_files: set[str]
     evidence: ValidationEvidence = field(default_factory=ValidationEvidence)
-
-
-# A hub is a module most of the code imports: fan-in above the absolute bar, or
-# in the top 1% of the repository's files and at least the floor. Far stricter
-# than ``PerfRanker``'s top-quintile "central": that marks a function worth a
-# performance claim, while a hub's reach is dropped from validation, so it must
-# be a module most tests would pass through. Fan-in counts every importer,
-# tests included, as ``graph_metrics.in_degree`` stores it.
-HUB_MIN_FAN_IN = 50
-HUB_TOP_PERCENTILE = 0.99
-HUB_FAN_IN_FLOOR = 10
-
-
-def hub_files(in_degree: Mapping[str, float], test_files: Collection[str]) -> frozenset[str]:
-    """The repository's own non-test files that are hubs by stored fan-in."""
-    own = {
-        path: int(fan_in or 0)
-        for path, fan_in in in_degree.items()
-        if not path.startswith("external:") and path not in test_files
-    }
-    bar = max(HUB_FAN_IN_FLOOR, _percentile_threshold(list(own.values()), HUB_TOP_PERCENTILE))
-    return frozenset(
-        path for path, fan_in in own.items() if fan_in > HUB_MIN_FAN_IN or fan_in >= bar
-    )
 
 
 def _siblings(paths: Collection[str]) -> dict[str, tuple[str, ...]]:
@@ -677,12 +654,33 @@ def _runs_reason(test: MappedTest, symbol: str) -> str:
     return f"calls {label}" if test.hops == 1 else f"reaches {label} in {test.hops} calls"
 
 
-def _characterization_step(suggestion: RefactoringSuggestion) -> str:
-    """The step before an edit no test reaches: pin today's behaviour first."""
-    symbol = suggestion.target_symbol
+def _characterization_step(suggestion: RefactoringSuggestion, file_tests: int = 0) -> str:
+    """The step before an edit no test reaches: pin today's behaviour first.
+
+    *file_tests* counts the listed tests that reach the file but not the
+    changed function, so the step and the list state the same fact.
+    """
+    symbol = (suggestion.target_symbol or "").rsplit("::", 1)[-1]
     if not symbol or not symbol.replace(".", "_").isidentifier():
         symbol = suggestion.file_path.rsplit("/", 1)[-1]
-    return f"No test reaches this; add a characterization test for `{symbol}` before the edit."
+    if file_tests:
+        files = "its files" if len(affected_files(suggestion)) > 1 else "its file"
+        reach = f"{file_tests} reach {files}" if file_tests > 1 else f"1 reaches {files}"
+        return f"No test reaches `{symbol}` ({reach}); add a characterization test first."
+    return f"No test reaches `{symbol}`; add a characterization test before the edit."
+
+
+def _prerequisite(
+    suggestion: RefactoringSuggestion,
+    basis: ValidationBasis,
+    nearest: list[tuple[MappedTest, str]] | None,
+    file_tests: int,
+) -> str | None:
+    """The characterization step when no test reaches the change, also when
+    tests reach the file (*file_tests* of them) but none a function it changes."""
+    if nearest == []:
+        return _characterization_step(suggestion, file_tests)
+    return _characterization_step(suggestion) if basis == "unknown" else None
 
 
 def _line_ranges(suggestion: RefactoringSuggestion) -> dict[str, set[int] | None]:
@@ -913,12 +911,15 @@ def build_validation_plan(
         # Each quoted test's file, whole: shorter than naming every function,
         # and it runs at least the tests the plan quotes.
         commands = commands_for_tests(
-            sorted({test.split("::", 1)[0] for test in shown}), packages=facts.js_packages
+            sorted({test.split("::", 1)[0] for test in shown}),
+            runs=facts.test_runs,
         )
     else:
         shown = ordered_tests[:cap]
         reasons = {test: best[test][1] for test in shown}
-        commands = commands_for_tests(shown, total=aggregate_total, packages=facts.js_packages)
+        commands = commands_for_tests(
+            shown, total=aggregate_total, runs=facts.test_runs
+        )
     files = affected_files(suggestion)
     return ValidationPlan(
         basis=aggregate_basis,
@@ -931,12 +932,13 @@ def build_validation_plan(
         commands=commands,
         targets=target_rows,
         reasons=reasons if order_tests else {},
-        js_packages=plan_packages(shown, facts.js_packages),
-        # Also when tests reach the file but none reaches a function it changes.
-        prerequisite=(
-            _characterization_step(suggestion)
-            if aggregate_basis == "unknown" or nearest == []
-            else None
+        test_runs=plan_runs(shown, facts.test_runs),
+        prerequisite=_prerequisite(
+            suggestion,
+            aggregate_basis,
+            nearest,
+            # Summed per file, a test reaching two files counts twice: no count then.
+            aggregate_total if identities_complete or len(target_rows) == 1 else 0,
         ),
     )
 
@@ -1439,7 +1441,7 @@ def _expand_scopes(path: str, reached: ReachedBy, expanded: list[str]) -> Reache
     found = reached.all_tests or tuple(reached.tests)
     if tuple(expanded) == tuple(found):
         return reached
-    ranked = rank_tests(path, expanded)
+    ranked = rank_reaching(path, expanded, reach=reached.reach)
     return dataclasses.replace(
         reached,
         tests=ranked[:MAX_TESTS_PER_TARGET],

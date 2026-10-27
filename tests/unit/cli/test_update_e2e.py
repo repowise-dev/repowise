@@ -279,3 +279,39 @@ def test_update_degrades_visibly_when_a_step_fails(tmp_path: Path, monkeypatch) 
     assert result.exit_code == 0, result.output
     assert "degraded step(s)" in result.output
     assert "Graph nodes persist" in result.output
+
+
+def test_a_pull_during_the_update_leaves_both_stamps_on_one_commit(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """state.json and the repository row name the head the update started from,
+    even when HEAD moves while it runs (a pull or commit mid-update)."""
+    repo = _make_git_repo(tmp_path)
+    _index_full(repo)
+    from repowise.cli.helpers import save_state
+
+    save_state(repo, {"last_sync_commit": _git(repo, "rev-parse", "HEAD"), "docs_enabled": False})
+    (repo / "c.py").write_text("def gamma():\n    return 3\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "add c.py")
+    started_at = _git(repo, "rev-parse", "HEAD")
+
+    import repowise.core.pipeline.incremental as incremental_mod
+
+    persist = incremental_mod.persist_incremental_index
+
+    async def _pull_then_persist(*args, **kwargs):
+        (repo / "d.py").write_text("def delta():\n    return 4\n")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", "landed mid-update")
+        return await persist(*args, **kwargs)
+
+    monkeypatch.setattr(incremental_mod, "persist_incremental_index", _pull_then_persist)
+
+    result = CliRunner().invoke(cli, ["update", str(repo), "--no-workspace"])
+    assert result.exit_code == 0, result.output
+    assert _git(repo, "rev-parse", "HEAD") != started_at
+
+    state = json.loads((repo / ".repowise" / "state.json").read_text(encoding="utf-8"))
+    assert state["last_sync_commit"] == started_at
+    assert asyncio.run(_db_snapshot(repo))["head_commit"] == started_at

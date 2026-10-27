@@ -12,6 +12,7 @@ import { FilesTable, lineCoverage, type SortKey } from "./files-table";
 // to emphasise a figure identically, and two identical local copies is how that
 // stops being true without anyone noticing.
 import { Fig } from "./file-section";
+import { FIELD_CLASS } from "../ui/input";
 
 interface FilesIndexProps {
   files: FileRow[];
@@ -71,7 +72,7 @@ function Segmented<T extends string>({
           className={cn(
             "rounded px-2 py-1 text-xs font-medium transition-colors",
             value === o.value
-              ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
+              ? "bg-[var(--color-selection-wash)] text-[var(--color-text-primary)]"
               : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]",
           )}
         >
@@ -269,7 +270,7 @@ export function FilesIndex({ files, languages, fileHref }: FilesIndexProps) {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Filter files by path…"
-              className="h-9 w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] pl-8 pr-3 text-sm text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)] focus:border-[var(--color-accent-primary)]"
+              className={cn(FIELD_CLASS, "h-9 w-full pl-8 pr-3 text-sm")}
             />
           </div>
           <Segmented<TestFilter>
@@ -285,7 +286,7 @@ export function FilesIndex({ files, languages, fileHref }: FilesIndexProps) {
             <select
               value={langFilter}
               onChange={(e) => setLangFilter(e.target.value)}
-              className="h-9 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2 text-sm text-[var(--color-text-secondary)] outline-none focus:border-[var(--color-accent-primary)]"
+              className="h-9 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2 text-sm text-[var(--color-text-secondary)] outline-none focus:border-[var(--color-focus-ring)]"
             >
               <option value="">All languages</option>
               {languages.map((l) => (

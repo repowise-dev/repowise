@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from repowise.core.persistence.database import get_session
-from repowise.server.job_records import _complete_job_row
+from repowise.server.job_records import _complete_job_row, _provider_issue
 from repowise.server.job_state import _load_state, _persist_generate_job_state
 
 if TYPE_CHECKING:
@@ -260,6 +260,7 @@ async def _run_generate_job(
                 "pages_marked_stale": marked_stale,
                 # On the job record so the UI can report an id that resolved to nothing.
                 "unknown_page_ids": list(plan.unknown_page_ids),
+                "provider_issue": _provider_issue(generated_pages),
             },
             completed_pages=pages_generated - stub_fallbacks,
             failed_pages=stub_fallbacks,

@@ -21,10 +21,13 @@ from ..cohesion import (
     UNIT_FANOUT_LANGUAGES,
     withdraw_declaration_hint,
 )
+from ..languages.apex_namespace import spell_apex_names
 from ..languages.python_modules import dotted_module_for
-from ..models import Import, ParsedFile, combine_load_kinds
+from ..models import Import, ParsedFile, Symbol, combine_load_kinds
 from ..resolvers import ResolverContext, resolve_import
 from ..resolvers.go import read_go_module_path, read_go_modules
+from ..resolvers.go_workspace import cached_go_index, go_package_files
+from ..resolvers.typescript import detect_platform_files
 from ..symbol_identity import has_overload_identity
 from ..type_ref_resolution import resolve_type_refs
 from ._edges import EdgesMixin
@@ -35,6 +38,23 @@ from ._serialize import SerializeMixin
 from ._stem import build_stem_map
 
 log = structlog.get_logger(__name__)
+
+_CALLABLE_KINDS = frozenset({"function", "method"})
+
+
+def _first_definition_keeps_node(existing: dict[str, Any] | None, sym: Symbol) -> bool:
+    """Does the definition already holding *sym*'s id keep its node?
+
+    Where overloads get their own ids, two definitions still sharing one erase
+    to one signature: the first declared keeps the node, so its span does not
+    depend on how many follow it. A function sharing its id with a Kotlin
+    property takes the node: calls name it.
+    """
+    if existing is None or existing.get("is_declaration") is not False:
+        return False
+    if not has_overload_identity(sym.language):
+        return False
+    return not (sym.kind in _CALLABLE_KINDS and existing.get("kind") not in _CALLABLE_KINDS)
 
 
 def _merge_load_kind(data: dict[str, Any], imp: Import) -> None:
@@ -259,7 +279,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
             path,
             node_type="file",
             language=parsed.file_info.language,
-            symbol_count=len(parsed.symbols),
+            symbol_count=parsed.symbol_count,
             has_error=bool(parsed.parse_errors),
             is_test=parsed.file_info.is_test,
             is_entry_point=parsed.file_info.is_entry_point,
@@ -289,14 +309,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
                 if existing is not None and existing.get("is_declaration") is False:
                     self._graph.add_edge(path, sym.id, edge_type="defines")
                     continue
-            # Where overloads get their own ids, two definitions still sharing
-            # one are overloads of one arity: the first declared keeps the node,
-            # so its span does not depend on how many follow it.
-            elif (
-                existing is not None
-                and existing.get("is_declaration") is False
-                and has_overload_identity(sym.language)
-            ):
+            elif _first_definition_keeps_node(existing, sym):
                 self._graph.add_edge(path, sym.id, edge_type="defines")
                 continue
 
@@ -388,6 +401,8 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         """
         self._invalidate_metric_caches()
         self._qualify_python_symbols()
+        # Apex names are case-insensitive; every resolver keys on the declared spelling.
+        spell_apex_names(self._parsed_files.values())
 
         # Clear import/call edges but keep structural edges (defines, has_method)
         edges_to_remove = [
@@ -415,6 +430,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
             ),
             go_modules=go_modules,
             has_sfc_files=any(p.endswith((".vue", ".svelte", ".astro")) for p in path_set),
+            has_platform_files=detect_platform_files(path_set),
             parsed_files=self._parsed_files,
             source_map=self._source_map,
         )
@@ -496,6 +512,13 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
                     from ..resolvers.python import resolve_python_import_all
 
                     targets = resolve_python_import_all(imp, path, ctx)
+                elif _lang in ("typescript", "javascript"):
+                    # React Native: ``./Button`` also means ``Button.ios.tsx`` /
+                    # ``Button.android.tsx`` (Metro platform extensions). A repo
+                    # with no such files resolves exactly as before (#3603).
+                    from ..resolvers.typescript import resolve_ts_js_import_all
+
+                    targets = resolve_ts_js_import_all(imp.module_path, path, ctx)
                 else:
                     single = resolve_import(imp.module_path, path, _lang, ctx)
                     targets = (single,) if single else ()
@@ -586,13 +609,21 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         # --- Phase 3: Resolve symbol-level calls ---
         self._resolve_calls(import_targets, progress=progress)
 
+        # --- Salesforce objects and fields named by Apex and lookup fields ---
+        self._resolve_salesforce_schema()
+
         # --- Phase 4: Base method → the implementations that answer for it ---
         # Post-pass: needs heritage resolved and reads only the graph.
         self._resolve_override_dispatch(progress=progress)
 
         # Which symbols a package exports, read off the imports just resolved.
         try:
-            stamp_public_api(self._graph, self._parsed_files)
+            go_index = cached_go_index(ctx)
+            stamp_public_api(
+                self._graph,
+                self._parsed_files,
+                go_package_files(go_index) if go_index is not None else None,
+            )
         except Exception as exc:  # a reader bug must not fail the index
             log.warning("public_api_stamp_failed", error=str(exc))
 
@@ -701,6 +732,13 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
             if _phase_done is not None:
                 _phase_done("graph.type_refs")
         del type_use_counts  # used only for logging inside resolve_type_refs
+
+    def _resolve_salesforce_schema(self) -> None:
+        """SOQL/DML/trigger objects and lookup fields, bound to schema symbols."""
+        from ..salesforce_schema import add_schema_edges
+
+        added = add_schema_edges(self._graph, self._parsed_files, self._repo_path)
+        log.info("Salesforce schema edges resolved", total=added)
 
     def graph(self) -> nx.DiGraph:
         """Return the graph (building it first if necessary)."""

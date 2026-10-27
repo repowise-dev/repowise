@@ -81,7 +81,9 @@ def test_no_hardcoded_eight_second_embed_budget() -> None:
     """Pins the fix: the embed budget is resolved live, not baked in at import."""
     from pathlib import Path
 
-    text = Path(pipeline.__file__).read_text(encoding="utf-8")
+    text = "".join(
+        p.read_text(encoding="utf-8") for p in sorted(Path(pipeline.__file__).parent.glob("*.py"))
+    )
     assert "_EMBED_TIMEOUT_S = 8.0" not in text
     assert "_EMBED_TIMEOUT_S =" not in text  # no hardcoded module-level constant at all
 

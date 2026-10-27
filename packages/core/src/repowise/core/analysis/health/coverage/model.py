@@ -90,12 +90,18 @@ def parse_xml(text: str) -> ET.Element | None:
 
 
 def coverage_map_entry(fc: FileCoverage, source_format: str | None) -> dict:
-    """The per-file dict ``HealthAnalyzer`` reads from its ``coverage_map``."""
+    """The per-file dict ``HealthAnalyzer`` reads from its ``coverage_map``.
+
+    A file with no coverable lines (lcov ``LF:0``) and no stated percentage
+    has nothing measured, so its percentage is ``None``, never 0%.
+    """
+    measured = fc.total_coverable_lines > 0 or fc.line_coverage_pct > 0
     return {
-        "line_coverage_pct": fc.line_coverage_pct,
+        "line_coverage_pct": fc.line_coverage_pct if measured else None,
         "branch_coverage_pct": fc.branch_coverage_pct,
         "covered_lines": list(fc.covered_lines),
         "total_coverable_lines": fc.total_coverable_lines,
+        "coverable_lines": list(fc.coverable_lines),
         "source_format": source_format,
     }
 
@@ -140,7 +146,9 @@ class TestCoverage:
     raw source path from the report until :func:`resolve_test_reports`
     rewrites it to a canonical repo key. ``test_file`` is the canonical key
     of the test's *own* source file, filled in best-effort by the resolver
-    (``None`` when the test id is not path-shaped or does not resolve).
+    (``None`` when the test id is not path-shaped or does not resolve). A
+    parser that knows the test's file by name (Apex: ``FooTest.cls``) sets
+    it raw, for the resolver to map like ``file_path``.
     """
 
     # Tell pytest this ``Test``-prefixed class is not a test to collect.
@@ -158,7 +166,7 @@ class ContextCoverageReport:
     """Per-test records parsed from one context-carrying report.
 
     ``has_contexts`` is the loud-degradation signal: a report run *without*
-    contexts (a plain lcov, or ``coverage run`` with no ``--contexts``)
+    contexts (a plain lcov, or a ``.coverage`` without contexts)
     parses to ``records=[]`` and ``has_contexts=False`` so callers can say
     "aggregate only, per-test features unavailable" instead of silently
     emitting nothing.
@@ -167,3 +175,5 @@ class ContextCoverageReport:
     source_format: str
     records: list[TestCoverage] = field(default_factory=list)
     has_contexts: bool = False
+    # Repo-relative directory of the report file, as on ``CoverageReport``.
+    origin_dir: str | None = None

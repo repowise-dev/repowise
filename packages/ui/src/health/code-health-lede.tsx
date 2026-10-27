@@ -10,8 +10,8 @@
  * place in the ribbon, beside the other cuts of the same scoring.
  *
  * Every figure carries an explainer. A number a reader cannot define is a
- * number they cannot act on, and "Performance risk 942" beside "Hotspot health
- * 4.5" reads as two scores when one is a count that only goes up.
+ * number they cannot act on, and "Performance, fix now 4" beside "Hotspot health
+ * 4.5" reads as two scores when one is a count.
  *
  * The prose is not decoration. "329 risks" reads as alarming on its own;
  * "329 static performance risks, scored separately and never blended into the
@@ -27,6 +27,7 @@ import {
   type DefectAccuracy,
   type HealthDistribution,
   type HealthOverviewSummary,
+  type PerformanceCauses,
 } from "@repowise-dev/types/health";
 import { PageLede } from "../shared/page-lede";
 import { StatRibbon, type RibbonStat } from "../stats/stat-ribbon";
@@ -38,7 +39,7 @@ import { Info } from "lucide-react";
 
 /** The lede's two quiet toggles: "Breakdown" under the figure, "How it is scored" under the prose. */
 const DISCLOSURE =
-  "inline-flex cursor-pointer list-none items-center gap-1 rounded text-[11px] font-medium text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] [&::-webkit-details-marker]:hidden";
+  "inline-flex cursor-pointer list-none items-center gap-1 rounded text-[11px] font-medium text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] [&::-webkit-details-marker]:hidden";
 
 const HEALTH_HINT =
   "Fitted against real bug history to predict where defects appear. Built from " +
@@ -62,9 +63,24 @@ const MAINTAINABILITY_HINT =
   "how hard the code is to work with rather than for bug risk. It counts no " +
   "tests and no change history, so it is the figure a refactor moves.";
 
-const PERFORMANCE_HINT =
-  "A count of open performance risks, not a score — it counts up as the analyzer " +
-  "finds more and falls only when they are fixed. Each one is a database, " +
+/** The performance stat's explainer, with the counts that give "now" its context. */
+function performanceHint(causes: PerformanceCauses | null | undefined): string {
+  const context = causes
+    ? ` Of ${formatNumber(causes.production)} open in production code, ` +
+      `${formatNumber(causes.all)} overall.`
+    : "";
+  return (
+    "Performance causes worth fixing now, a count rather than a score: the " +
+    "Performance view's default queue, where a database, network, filesystem or " +
+    "subprocess call inside a loop has a cost we can show." +
+    context +
+    " Never blended into the health score."
+  );
+}
+
+/** For a summary that predates `performance_causes` and carries only the raw count. */
+const OPEN_PERFORMANCE_HINT =
+  "A count of open performance risks, not a score. Each one is a database, " +
   "network, filesystem or subprocess call inside a loop, traced across function " +
   "boundaries. Never blended into the health score.";
 
@@ -144,7 +160,10 @@ export function CodeHealthLede({
   if (health == null) return <UnanalysedLede action={action} />;
   const maint = summary.maintainability_average;
   const perf = summary.performance_average;
-  const perfFindings = summary.performance_findings ?? 0;
+  const perfCauses = summary.performance_causes;
+  // An older summary carries only the raw open count; show it under its own
+  // label rather than a "fix now" zero.
+  const perfOpen = perfCauses == null ? (summary.performance_findings ?? null) : null;
   const hotspot = summary.hotspot_health;
   const worstTestPath = summary.worst_test_path;
   const worstTestScore = summary.worst_test_score;
@@ -168,7 +187,16 @@ export function CodeHealthLede({
   // they are not a verdict this projection has earned: clamp(10 - structure)
   // reads systematically higher, and almost every repo would print "Excellent"
   // under it. The figure and the spread still say where the repo sits.
-  const healthChip = codeShape ? undefined : healthBand(health);
+  // A `null` band means the server withheld it: too few code files were
+  // analysed for the average to speak for the repo. Absent on an older server.
+  const healthChip = codeShape || summary.band === null ? undefined : healthBand(health);
+  const unanalysed = summary.unanalysed_file_count ?? 0;
+  // The share is stated whenever files were left out, so a figure over a few
+  // files never reads as the whole repo.
+  const filesLabel =
+    unanalysed > 0
+      ? `${formatNumber(summary.file_count)} of ${formatNumber(summary.file_count + unanalysed)} code files`
+      : `${formatNumber(summary.file_count)} files`;
 
   const stats: RibbonStat[] = [
     { label: "Files", value: formatNumber(summary.file_count), hint: FILES_HINT },
@@ -182,11 +210,17 @@ export function CodeHealthLede({
       // the page was describing something else.
       highlighted: pillar === "maintainability",
     },
-    {
-      label: "Performance risk",
-      value: perf == null ? "" : formatNumber(perfFindings),
-      hint: PERFORMANCE_HINT,
-    },
+    perfOpen != null
+      ? {
+          label: "Performance risk",
+          value: perf == null ? "" : formatNumber(perfOpen),
+          hint: OPEN_PERFORMANCE_HINT,
+        }
+      : {
+          label: "Performance, fix now",
+          value: perf == null ? "" : formatNumber(perfCauses?.now ?? 0),
+          hint: performanceHint(perfCauses),
+        },
     {
       label: "Hotspot health",
       value: hotspot == null ? "" : formatScore(hotspot),
@@ -261,7 +295,7 @@ export function CodeHealthLede({
         <p>
           Across{" "}
           <strong className="font-semibold text-[var(--color-text-primary)]">
-            {formatNumber(summary.file_count)} files
+            {filesLabel}
           </strong>
           , weighted by lines of code.
           {hotspot != null && (
@@ -309,7 +343,7 @@ export function CodeHealthLede({
             <p>
               Built from complexity, duplication, coverage
               {codeShape ? "" : ", churn and ownership"}.
-              <UnanalysedNote count={summary.unanalysed_file_count ?? 0} />
+              <UnanalysedNote count={unanalysed} />
             </p>
             {perf != null && (
               // Not "performance risk": this is a score on the same ladder as
@@ -350,7 +384,7 @@ export function CodeHealthLede({
 
   return (
     <details className="group/lede">
-      <summary className="flex cursor-pointer list-none flex-wrap items-baseline gap-x-2.5 gap-y-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] [&::-webkit-details-marker]:hidden">
+      <summary className="flex cursor-pointer list-none flex-wrap items-baseline gap-x-2.5 gap-y-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] [&::-webkit-details-marker]:hidden">
         <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
           Code health
         </span>
@@ -361,7 +395,7 @@ export function CodeHealthLede({
           {formatScore(health)}
         </span>
         <span className="text-xs text-[var(--color-text-tertiary)]">
-          out of 10 across {formatNumber(summary.file_count)} files
+          out of 10 across {filesLabel}
         </span>
         {healthChip ? (
           <span className="inline-flex items-center gap-1.5 text-xs text-[var(--color-text-secondary)]">

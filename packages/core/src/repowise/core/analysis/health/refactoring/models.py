@@ -50,10 +50,10 @@ For Extract Method:
 
 - ``plan`` = ``{"span": {"start": int, "end": int}, "params": [str, ...],
   "returns": [str, ...], "suggested_name": str | None, "needs_async": bool}``
-  — the lines to lift, the inferred signature, a deterministic starting name
-  (a stage label, a banner comment, or the single OUT value of an effect-free
-  span; never one already taken in the helper's scope; else absent), and
-  whether the span awaits, so the helper is async and its call awaited. An
+  — the lines to lift, the inferred signature, a placeholder name the agent
+  applying the plan renames (``extracted_helper``, numbered when taken in the
+  helper's scope), and whether the span awaits, so the helper is async and its
+  call awaited. An
   awaiting plan adds ``"async_host": bool``, False when the enclosing function
   is not async. ``new_symbol`` and ``call_site`` carry the helper's typed
   parameters, its header and its call, written out (``extract_method``).
@@ -123,6 +123,10 @@ from typing import Any
 # at all. So the level stays, and it means "no floor" rather than "a weak
 # plan". Read a detector's confidence as medium-or-high.
 CONFIDENCE_LEVELS = ("low", "medium", "high")
+
+#: The evidence key for the share of its source finding a plan removes (1.0:
+#: the whole finding), so a set of plans is priced by one rescore.
+RECOVERED_SHARE = "recovered_share"
 
 
 @dataclass
@@ -225,9 +229,10 @@ class RefactoringSuggestion:
     plan: dict[str, Any]
     # The signals that justify the suggestion (LCOM4, WMC, clone ranges, ...).
     evidence: dict[str, Any]
-    # Health score the refactoring would recover if applied: the part of the
-    # source finding's deduction that applying it removes, plus any history
-    # deduction that releases. >= 0.
+    # Health score the refactoring would recover if applied: the file rescored
+    # with the part of the source finding it removes taken out
+    # (``health.gain.removal_gain``), so caps, history release and the floor
+    # all count. >= 0.
     impact_delta: float
     # Effort estimate — "S" | "M" | "L" | "XL" (from the target's size).
     effort_bucket: str

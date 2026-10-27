@@ -65,9 +65,13 @@ from .slice import (
     _block_prefix,
     _closure_state,
     _closure_state_crosses,
+    _count_in,
     _declaration_escapes,
     _declaration_lines,
     _declared_before_read,
+    _disposes_early,
+    _free_names,
+    _free_write_lines,
     _function_lines,
     _hoisted_bindings,
     _identifiers,
@@ -77,10 +81,13 @@ from .slice import (
     _reads_observing,
     _receiver_facts,
     _scan_for,
+    _scoped_resource_indexes,
     _stmt_assigns,
     _unwrap_container,
+    _valueless_lines,
     _var_lines,
 )
+from .slice_writes import _trailing_constant_output
 from .span import exiting_guard, is_comment, section_heads
 
 if TYPE_CHECKING:
@@ -320,6 +327,7 @@ class _FunctionFacts:
         def_use = analysis.def_use
         self.def_lines, self.use_lines = _var_lines(def_use)
         self.declared_first = _declared_before_read(def_use)
+        self.valueless = _valueless_lines(def_use)
         self.hoisted = _hoisted_bindings(self.def_lines, self.use_lines)
         self.decl_lines = _declaration_lines(def_use)
         self.shared = _closure_state(def_use, self.def_lines, self.use_lines)
@@ -354,6 +362,7 @@ class _Cutter:
         self.max_returns = max_returns
         self.def_lines, self.use_lines = facts.def_lines, facts.use_lines
         self.declared_first = facts.declared_first
+        self.valueless = facts.valueless
         self.hoisted = facts.hoisted
         self.decl_lines = facts.decl_lines
         self.shared = facts.shared
@@ -371,10 +380,17 @@ class _Cutter:
         self.assigned = facts.assigned
         self.inner_bindings = facts.inner_bindings
         self.rereads, self.import_lines = facts.rereads, facts.import_lines
+        self.free_writes = (
+            _free_write_lines(facts.analysis.def_use) if receiver and receiver.implicit else []
+        )
+        self.free_names = (
+            _free_names(facts.analysis.def_use) if receiver and receiver.implicit else frozenset()
+        )
         # In a loop body: a break / continue leaving a stage would leave the
         # helper instead, and a value carried to the next iteration must come
         # back out of the stage that writes it.
         self.escapes = [escapes(st, lmap) for st in code] if loops else [False] * len(code)
+        self.resources = _scoped_resource_indexes(code, lmap)
         self.carried = carried(facts.analysis, loops, facts.def_lines) if loops else frozenset()
 
     def _sum(self, series: list[int], i: int, j: int) -> int:
@@ -432,12 +448,21 @@ class _Cutter:
         if any(s <= ln <= e for v in self.rereads for ln in self.def_lines.get(v, ())):
             return None
         params, returns = _infer_in_out(
-            self.def_lines, self.use_lines, s, e, self.declared_first, reads=self.reads
+            self.def_lines,
+            self.use_lines,
+            s,
+            e,
+            self.declared_first,
+            reads=self.reads,
+            valueless=self.valueless,
+            exclude=self.free_names,
         )
         returns = self._own_bindings_dropped(span, s, e, returns)
         if self.carried:
             written = {v for v in self.carried if any(s <= ln <= e for ln in self.def_lines[v])}
             returns = tuple(sorted(set(returns) | written))
+        if _trailing_constant_output(span, s, e, returns, self.def_lines, self.lmap):
+            return None
         params = self._with_inouts(i, j, s, params, returns)
         if params is None or len(returns) > self.max_returns:
             return None
@@ -449,7 +474,8 @@ class _Cutter:
         ):
             return None
         pre = self.pre
-        uses, assigns = _receiver_facts(self.receiver, pre, i, j, 0)
+        free_writes = _count_in(self.free_writes, s, e)
+        uses, assigns = _receiver_facts(self.receiver, pre, i, j, free_writes)
         return Extraction(
             start_line=s,
             end_line=e,
@@ -474,6 +500,8 @@ class _Cutter:
         if self._sum(pre.exits, i, j) or self._sum(pre.nested, i, j):
             return False
         if any(self.escapes[i : j + 1]):
+            return False
+        if _disposes_early(self.resources, i, j, pre.code):
             return False
         return not any((i <= a <= j) != (i <= b <= j) for a, b in self.timer_pairs)
 

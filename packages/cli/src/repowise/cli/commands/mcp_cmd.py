@@ -7,6 +7,7 @@ from pathlib import Path
 
 import click
 
+from repowise.cli.errors import reasoned_error
 from repowise.cli.helpers import console, find_repowise_repo_root, resolve_repo_path, warn
 from repowise.cli.ui import load_dotenv
 
@@ -209,8 +210,14 @@ def mcp_command(
         )
     except StoreUnavailableError as exc:
         # One line on stderr and exit 1, not a traceback the host respawns on.
-        raise click.ClickException(str(exc)) from exc
+        # The reason slug becomes the event's failure_reason.
+        raise reasoned_error(str(exc), reason=exc.reason) from exc
     finally:
         from repowise.cli.platform import telemetry
+        from repowise.server.mcp_server import _state
 
-        telemetry.add_command_outcome(transport=transport, transport_outcome=outcome)
+        telemetry.add_command_outcome(
+            transport=transport,
+            transport_outcome=outcome,
+            served_no_index=bool(_state._serving_no_index),
+        )

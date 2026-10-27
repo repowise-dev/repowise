@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
+# Python decorators that make a function an attribute read, not a call.
+PROPERTY_DECORATORS = frozenset({"property", "cached_property"})
+_PROPERTY_ACCESSOR_SUFFIXES = (".setter", ".getter", ".deleter")
+
 
 def decorator_base(raw: str) -> str:
     """``@app.route("/x")`` -> ``app.route``; ``"Deprecated\n public"`` -> ``Deprecated``.
@@ -17,3 +23,15 @@ def decorator_base(raw: str) -> str:
         return base[:paren].strip()
     parts = base.split()
     return parts[0] if parts else base
+
+
+def is_property_getter(decorators: Iterable[str]) -> bool:
+    """A ``@property`` or ``@cached_property`` getter, qualified or not."""
+    return any(decorator_base(d).rpartition(".")[2] in PROPERTY_DECORATORS for d in decorators)
+
+
+def is_property_accessor(decorators: Iterable[str]) -> bool:
+    """A property getter, or a ``@name.setter`` / ``.getter`` / ``.deleter`` beside it."""
+    return is_property_getter(decorators) or any(
+        decorator_base(d).endswith(_PROPERTY_ACCESSOR_SUFFIXES) for d in decorators
+    )

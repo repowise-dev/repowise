@@ -54,6 +54,9 @@ class Interaction:
     baseline_input_tokens: int | None = None
     #: Raw tool output, before any budget shed anything.
     pre_budget_input_tokens: int | None = None
+    #: Why an in-band ``{"error": ...}`` reply failed, as a fixed slug for
+    #: telemetry. Set where the error payload is built; see :data:`ERROR_REASONS`.
+    error_reason: str | None = None
 
     def observe_pre_budget(self, tokens: int | None) -> None:
         """Record the raw size, first positive writer only.
@@ -85,6 +88,23 @@ _SESSIONS: WeakKeyDictionary[Any, tuple[str, dict[str, str], str]] = WeakKeyDict
 def current() -> Interaction | None:
     """The invocation in flight, or ``None`` outside one."""
     return _CURRENT.get()
+
+
+#: Every ``error_reason`` a tool call can report. Fixed slugs, never message text.
+ERROR_REASONS = frozenset(
+    {"not_found", "invalid_args", "no_index", "index_behind", "server_stale", "internal"}
+)
+
+
+def note_error_reason(reason: str) -> None:
+    """Record why the call in flight is answering with an error. Never raises.
+
+    The first note wins: the site that built the payload knows best, and an
+    outer layer that sees the same failure must not overwrite it.
+    """
+    live = _CURRENT.get()
+    if live is not None and live.error_reason is None and reason in ERROR_REASONS:
+        live.error_reason = reason
 
 
 @contextmanager

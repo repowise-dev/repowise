@@ -12,6 +12,8 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from repowise.server.mcp_server._meta import served_root
+
 _STATE_FILE = os.path.join(".repowise", "state.json")
 
 
@@ -19,7 +21,7 @@ def index_state_key(repository: Any) -> str:
     """Head commit, row write time and the end-of-run state file's mtime."""
     head = getattr(repository, "head_commit", None) or ""
     updated = getattr(repository, "updated_at", None) or ""
-    local_path = getattr(repository, "local_path", None)
+    local_path = served_root(repository)
     saved = ""
     if local_path:
         try:

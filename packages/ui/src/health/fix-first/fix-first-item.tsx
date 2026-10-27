@@ -21,6 +21,8 @@ import { HighlightedCodeBlock } from "../../shared/code-block";
 import { CommandLine } from "../../shared/command-line";
 import { PlaceholderHint } from "../../refactoring/placeholder-hint";
 import { AiPromptButton } from "../ai-prompt-button";
+import { MICRO } from "../tokens";
+import { AGENT_PROMPT_LABEL } from "../ai-prompt-action";
 import { CONFIDENCE_LABEL, EFFORT_LABEL, STATUS_LABEL } from "../labels";
 import { TIER_LABEL, fixLocation, fixPlanLabel, tierReason } from "./scope";
 
@@ -38,14 +40,13 @@ const TIER_DOT: Record<FixTier, string> = {
   later: "border border-[var(--color-text-tertiary)]",
 };
 
-const MICRO = "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
 
 const LINK =
-  "rounded text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]";
+  "rounded text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]";
 
 /** File paths are reference text: muted at rest, readable on hover, never accent. */
 const PATH_LINK =
-  "rounded text-[var(--color-text-secondary)] underline-offset-2 hover:text-[var(--color-text-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]";
+  "rounded text-[var(--color-text-secondary)] underline-offset-2 hover:text-[var(--color-text-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]";
 
 export interface FixFirstItemProps {
   item: FixItem;
@@ -99,7 +100,7 @@ export function FixFirstItem({
             onClick={onToggle}
             aria-expanded={expanded}
             aria-controls={panelId}
-            className="group/row flex w-full min-w-0 items-start justify-between gap-3 rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+            className="group/row flex w-full min-w-0 items-start justify-between gap-3 rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
           >
             <span className="min-w-0 text-[13px] font-medium leading-5 text-[var(--color-text-primary)] [overflow-wrap:anywhere]">
               {item.title}
@@ -249,8 +250,9 @@ function Steps({
   );
 }
 
-/** What a step writes (a helper's header, the call that replaces the span)
- * and the command that checks it when it differs from the item's. */
+/** What a step writes (a helper's header, the call that replaces the span),
+ * the plan's notes on what that code cannot say, and the command that checks
+ * it when it differs from the item's. */
 function StepCode({ step }: { step: FixStep }) {
   const language = getLanguageFromPath(step.file_path);
   return (
@@ -274,6 +276,15 @@ function StepCode({ step }: { step: FixStep }) {
         />
       ) : null}
       <PlaceholderHint texts={[step.signature ?? "", step.call ?? ""]} />
+      {step.notes?.length ? (
+        <ul className="mt-1.5 flex list-disc flex-col gap-0.5 pl-4 text-xs text-[var(--color-text-secondary)]">
+          {step.notes.map((note, i) => (
+            <li key={`${i}:${note}`} className="[overflow-wrap:anywhere]">
+              {note}
+            </li>
+          ))}
+        </ul>
+      ) : null}
       {step.command ? <CommandLine command={step.command} /> : null}
     </>
   );
@@ -355,7 +366,7 @@ function Actions({
           </Link>
         ) : null}
         {onAiPrompt ? (
-          <AiPromptButton label="Copy prompt for an agent" onClick={() => onAiPrompt(item)} />
+          <AiPromptButton label={AGENT_PROMPT_LABEL} onClick={() => onAiPrompt(item)} />
         ) : null}
       </div>
       {onTriage && findings > 0 ? (
@@ -369,7 +380,7 @@ function Actions({
               type="button"
               disabled={pending || saved === status}
               onClick={() => void triage(status)}
-              className="rounded-md border border-[var(--color-border-default)] px-2 py-1 font-medium text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] disabled:opacity-50"
+              className="rounded-md border border-[var(--color-border-default)] px-2 py-1 font-medium text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] disabled:opacity-50"
             >
               {STATUS_LABEL[status]}
             </button>

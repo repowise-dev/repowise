@@ -760,3 +760,72 @@ class TestOverlayPersistence:
         path = save_overlay(overlay, tmp_path)
         assert path.is_file()
         assert (tmp_path / ".repowise-workspace").is_dir()
+
+
+# ---------------------------------------------------------------------------
+# run_cross_repo_analysis with no repo changed
+# ---------------------------------------------------------------------------
+
+
+def _indexed_workspace(tmp_path: Path, aliases: list[str]):
+    from repowise.core.workspace.config import RepoEntry, WorkspaceConfig
+
+    for alias in aliases:
+        (tmp_path / alias / ".repowise").mkdir(parents=True)
+    return WorkspaceConfig(repos=[RepoEntry(path=a, alias=a) for a in aliases])
+
+
+def test_no_changed_repo_reuses_the_stored_overlay(tmp_path: Path) -> None:
+    """A settings edit moves no git history, so nothing is walked again."""
+    import asyncio
+
+    from repowise.core.workspace.cross_repo import run_cross_repo_analysis, save_overlay
+
+    ws_config = _indexed_workspace(tmp_path, ["api", "web"])
+    stored = CrossRepoOverlay(repo_summaries={"api": {}, "web": {}}, total_co_changes=7)
+    save_overlay(stored, tmp_path)
+
+    with patch("repowise.core.workspace.cross_repo.detect_cross_repo_co_changes") as walk:
+        overlay = asyncio.run(run_cross_repo_analysis(ws_config, tmp_path, []))
+
+    walk.assert_not_called()
+    assert overlay.total_co_changes == 7
+
+
+def test_stored_overlay_for_other_repos_is_recomputed(tmp_path: Path) -> None:
+    import asyncio
+
+    from repowise.core.workspace.cross_repo import run_cross_repo_analysis, save_overlay
+
+    ws_config = _indexed_workspace(tmp_path, ["api", "web"])
+    save_overlay(CrossRepoOverlay(repo_summaries={"api": {}, "gone": {}}), tmp_path)
+
+    with patch(
+        "repowise.core.workspace.cross_repo.detect_cross_repo_co_changes", return_value=([], 0)
+    ) as walk:
+        overlay = asyncio.run(run_cross_repo_analysis(ws_config, tmp_path, []))
+
+    walk.assert_called_once()
+    assert set(overlay.repo_summaries) == {"api", "web"}
+
+
+def test_repo_re_indexed_after_the_overlay_is_recomputed(tmp_path: Path) -> None:
+    """A repo updated on its own since the overlay was written has new history."""
+    import asyncio
+    import os
+
+    from repowise.core.workspace.cross_repo import run_cross_repo_analysis, save_overlay
+
+    ws_config = _indexed_workspace(tmp_path, ["api", "web"])
+    out = save_overlay(CrossRepoOverlay(repo_summaries={"api": {}, "web": {}}), tmp_path)
+    state = tmp_path / "web" / ".repowise" / "state.json"
+    state.write_text("{}", encoding="utf-8")
+    later = out.stat().st_mtime + 10
+    os.utime(state, (later, later))
+
+    with patch(
+        "repowise.core.workspace.cross_repo.detect_cross_repo_co_changes", return_value=([], 0)
+    ) as walk:
+        asyncio.run(run_cross_repo_analysis(ws_config, tmp_path, []))
+
+    walk.assert_called_once()

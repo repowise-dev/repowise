@@ -32,7 +32,7 @@ export function InfoTip({ content, label = "More info", className, side }: InfoT
             aria-label={label}
             onClick={(e) => e.stopPropagation()}
             className={cn(
-              "inline-flex shrink-0 items-center text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] rounded-sm",
+              "inline-flex shrink-0 items-center text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] rounded-sm",
               className,
             )}
           >

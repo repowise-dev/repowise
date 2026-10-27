@@ -31,6 +31,9 @@ from pathlib import Path
 
 from repowise.core.agents import identity
 
+# Defined in core: change risk tells this recommendation from a user's edit.
+from repowise.core.owned_paths import EXTENSION_ID
+
 from ..formats.server_entry import RemoteServerEntryError
 from ..types import (
     Capability,
@@ -49,7 +52,6 @@ ID = IDENTITY.cli_target_id
 DISPLAY_NAME = IDENTITY.display_name
 DOCS_URL = "https://code.visualstudio.com/docs/copilot/chat/mcp-servers"
 
-EXTENSION_ID = "repowise-dev.repowise"
 
 #: Config key gating this agent's managed project files.
 PROJECT_FILE_ID = "vscode_mcp"
@@ -331,6 +333,7 @@ class VSCodeTarget:
     docs_url = DOCS_URL
     hook_adapter = IDENTITY.hook_adapter
     session_adapter = IDENTITY.session_adapter
+    capture_adapter = IDENTITY.capture_adapter
     methods = METHODS
     project_file_id = PROJECT_FILE_ID
 
@@ -476,17 +479,24 @@ class VSCodeTarget:
             str(instructions_path(repo)),
         ]
 
-    def doctor(self) -> DoctorReport:
-        """Health is repo-scoped, so a bare call can only report the honest answer.
+    def doctor(self, repo_path: Path | None = None) -> DoctorReport:
+        """Health is repo-scoped, so only a call with *repo_path* can say OK.
 
         Without a repo path there is nothing user-level to inspect. Reporting
         ``OK`` would be a claim we have not checked, so this reports
         not-installed with the command that would wire it.
         """
+        if repo_path is not None and detect(repo_path):
+            return DoctorReport(target_id=ID, status=DoctorStatus.OK)
+        issue = (
+            "VS Code is not wired in this repo."
+            if repo_path is not None
+            else "VS Code wiring is workspace-local; run this from a repo to check it."
+        )
         return DoctorReport(
             target_id=ID,
             status=DoctorStatus.NOT_INSTALLED,
-            issues=("VS Code wiring is workspace-local; run this from a repo to check it.",),
+            issues=(issue,),
             fix_command="repowise init",
         )
 

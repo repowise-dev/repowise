@@ -29,7 +29,9 @@ is chosen when any of these hold:
    missing from the checkout.
 
 Otherwise the subset is the covering tests, the tests the graph shows reaching
-the changed files (a changed test, the call graph, the import graph) and
+the changed files (a changed test, the call graph, the import graph, and a
+test importing any module under a package whose ``__init__.py`` reaches them,
+which Python runs first: ``package-init``) and
 ``tests.always_run``, plus every test the graph cannot see into: one not
 indexed or with no resolved edge, and one the indexer found listing and reading
 files under a source directory or running the project's own command or module
@@ -37,12 +39,18 @@ in a child process (it imports one module, but exercises far more). The tests
 reaching files whose imports moved between the indexed commit and the base
 (:func:`plan_gap`) run too. A test package's ``__init__.py`` or a
 ``conftest.py`` (changed, deleted, or on a route to a changed file) stands for
-every test under its directory. A helper module tests import stands for the
-tests that import it, directly or through other helpers (basis
+every test under its directory, unless :mod:`.conftest_routes` narrows a
+conftest the change reaches only through its imports to the tests it can
+break. The tests only a scope file on a route stands for are the selection's
+``broadcast``: they run, and are counted apart from the tests the change
+reaches. So are the tests it reaches only through imports, more than
+:data:`IMPORT_CLOSURE_HOPS` files away (``import_closure``). A helper module
+tests import stands for the tests that import it, directly or through other helpers (basis
 ``helper-importers``), which are the files that run it: Python runs the
 package file for each module in it, and pytest loads a conftest for each test
 at or below it. Only documentation (``docs/`` and the root README, CHANGELOG,
-LICENSE and the like, never code) that no code names is skipped without a test.
+LICENSE and the like, never code), and Markdown, reST or AsciiDoc no package
+holds and no code sits beside, that no code names is skipped without a test.
 
 A file whose reach is known runs a scope (:mod:`.selection_scopes`) in place of
 everything: a manifest or lockfile its ecosystem's tests, a production
@@ -67,9 +75,15 @@ from typing import TYPE_CHECKING, Any
 
 import pathspec
 
+from ..phpunit_roots import PhpunitRoots
 from ..pytest_roots import PYTEST_CONFIG_NAMES, PytestRoots
 from ..support_paths import DOC_EXTENSIONS
-from ..test_paths import is_test_path, is_test_related_path, is_test_support_path
+from ..test_paths import (
+    is_test_path,
+    is_test_related_path,
+    is_test_support_path,
+    paired_test_names,
+)
 
 if TYPE_CHECKING:
     from .selection_scopes import Scope
@@ -80,12 +94,13 @@ RUN_ALL = ":all"
 RUNNERS = ("auto", "pytest", "go", "jest", "files")
 
 SHARED_TEST_DATA_REASON = "shared test data can change any test"
+DEPENDENCIES_REASON = "dependencies can change any test"
 
 # (why it forces a full run, gitwildmatch patterns). The config extends these,
 # never replaces them. Ceiling: no opt-out until someone needs one.
 _FULL_RUN_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
-        "dependencies can change any test",
+        DEPENDENCIES_REASON,
         (
             "package-lock.json",
             "yarn.lock",
@@ -204,7 +219,7 @@ _DOC_SUFFIXES = DOC_EXTENSIONS | {"", ".markdown"}
 _TEST_CODE_SUFFIXES = frozenset(
     {".py", ".go", ".java", ".kt", ".kts", ".scala", ".groovy", ".rb", ".cs", ".fs"}
     | {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"}
-    | {".rs", ".php", ".swift", ".ex", ".exs", ".dart", ".c", ".cc", ".cpp"}
+    | {".rs", ".php", ".swift", ".ex", ".exs", ".dart", ".c", ".cc", ".cpp", ".cls"}
 )
 
 PYTHON_SUFFIXES = (".py",)
@@ -266,14 +281,24 @@ class Selection:
     names, per changed or deleted file, what decided it: ``full-run``,
     ``no-tests-needed``, ``deleted-test``, ``test-tree``, ``test-package``,
     ``conftest``, ``helper-importers``, ``coverage``,
-    ``changed-test``, ``call-graph``, ``import-graph``, ``conftest-fixture``
+    ``changed-test``, ``call-graph``, ``import-graph``, ``package-init`` (a test
+    importing a module under a package whose ``__init__.py`` reaches the change),
+    ``conftest-fixture``
     (a test using a conftest fixture that reaches the change),
     ``conftest-import-check`` (one test that loads a conftest the change reaches
-    only through its imports), ``filename-pattern``, ``unknown``, ``none`` when
+    only through its imports), ``conftest-broadcast`` (a test only a conftest
+    keeping every test under it reaches), ``filename-pattern``, ``unknown``, ``none`` when
     nothing was asked (no index), or a scope's ``ecosystem``,
-    ``package-importers``, ``named-by`` or ``owner-package``. ``why`` says, per
-    selected test file, what put it in: the changed file and evidence that
-    reached it, or the reason it runs with every subset.
+    ``package-importers``, ``named-by``, ``fixture-readers`` or ``owner-package``.
+    ``why`` says, per selected test file, what put it in: the changed file and evidence that
+    reached it, or the reason it runs with every subset. ``known_tests`` are
+    the checkout's runnable test files (empty when not read), so a selection
+    can say how much of the suite it is. ``broadcast`` maps each selected test
+    file that runs only because a ``conftest.py`` or test-package
+    ``__init__.py`` on a route to a changed file stands for every test under
+    it to that file: they run, but a count of what the change reaches leaves
+    them out. ``import_closure`` does the same for each test the change reaches
+    only through imports, mapped to its hops (:data:`IMPORT_CLOSURE_HOPS`).
     """
 
     run_all: bool
@@ -285,6 +310,18 @@ class Selection:
     skipped_files: tuple[str, ...] = ()
     basis: Mapping[str, str] = field(default_factory=dict)
     why: Mapping[str, str] = field(default_factory=dict)
+    known_tests: tuple[str, ...] = ()
+    broadcast: Mapping[str, str] = field(default_factory=dict)
+    import_closure: Mapping[str, int] = field(default_factory=dict)
+
+    def reached_tests(self) -> list[str]:
+        """:attr:`tests` without those counted apart, in order."""
+        return [t for t in self.tests if not self.counted_apart(t)]
+
+    def counted_apart(self, test: str) -> bool:
+        """Whether *test* (a file or node id) is in :attr:`broadcast` or :attr:`import_closure`."""
+        path = test.split("::", 1)[0]
+        return path in self.broadcast or path in self.import_closure
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -297,6 +334,8 @@ class Selection:
             "skipped_files": list(self.skipped_files),
             "basis": dict(self.basis),
             "why": dict(self.why),
+            "broadcast": dict(self.broadcast),
+            "import_closure": dict(self.import_closure),
         }
 
 
@@ -378,12 +417,20 @@ def _named_in(
     """The files of *by_name* that *path*'s *text* names (see :func:`file_namers`).
 
     The text is scanned once per name held, whatever the number of files of
-    that name.
+    that name. A mention in a comment or docstring names nothing: a widely
+    imported module citing a doc there would read as its reader and select
+    every test reaching it. Ceiling: a path read only through a docstring
+    (a doctest) is missed.
     """
+    from .fixture_readers import code_text
     from .namer_paths import any_may_mean, mentions
 
-    out: list[str] = []
     folded = text.lower()
+    if not any(name.lower() in folded for name in by_name):
+        return []  # most sources hold no name: skip the comment strip
+    text = code_text(path, text)
+    folded = text.lower()
+    out: list[str] = []
     for name, same in by_name.items():
         if name.lower() not in folded:
             continue
@@ -410,6 +457,7 @@ def plugin_loader(sources: Iterable[tuple[str, str]]) -> str | None:
     return None
 
 
+NO_TESTS_NEEDED = "no-tests-needed"
 PACKAGE_INIT_REASON = "every import of the package runs it, and those are not all tracked"
 
 
@@ -449,13 +497,28 @@ def is_test_helper(path: str) -> bool:
     )
 
 
-def is_runnable_test(path: str, roots: PytestRoots | None = None) -> bool:
+def is_runnable_test(
+    path: str,
+    roots: PytestRoots | None = None,
+    phpunit_roots: PhpunitRoots | None = None,
+    *,
+    is_test: bool | None = None,
+) -> bool:
     """A test-shaped file name with an extension a runner collects tests from.
 
     With *roots*, a Python file pytest's config leaves out of collection
     (``core/test_paths.py``) is not one: the same rule that stamps ``is_test``.
+    With *phpunit_roots*, a PHP file PHPUnit leaves out of collection is not runnable.
+    *is_test* is the stored flag when the caller has it: a file ingestion did
+    not classify as a test is not runnable whatever its name. Test support
+    (``conftest.py``, fixtures, helpers) never is.
     """
-    return _runnable_name(path) and (roots is None or is_test_path(path, roots=roots))
+    return (
+        is_test is not False
+        and _runnable_name(path)
+        and (roots is None or is_test_path(path, roots=roots))
+        and (phpunit_roots is None or is_test_path(path, phpunit_roots=phpunit_roots))
+    )
 
 
 @functools.lru_cache(maxsize=_PATH_MEMO)
@@ -505,8 +568,9 @@ class SelectionInput:
     (:func:`doc_readers`); *plugin_loader* is a file loading pytest plugins by
     name (:func:`plugin_loader`); *unplaced_tests* are tests the graph cannot
     see into (not indexed, or with no resolved edge), and *always_run_tests*
-    maps each test the indexer found walking the source tree or running the
-    project in a child process to why; every subset runs both.
+    maps each test the indexer found reaching code outside its imports (a tree
+    walk, a child process, a Spring application context) to why; every subset
+    runs both.
     """
 
     changed: Collection[str]
@@ -548,8 +612,11 @@ def select_tests(inp: SelectionInput) -> Selection:
     """Decide what a change must run (see the module docstring for the rules)."""
     deleted = set(inp.deleted)
     paths = sorted(set(inp.changed) | deleted)
-    scoped = [p for p in paths if p in inp.scopes]
+    unneeded = [p for p in paths if p in inp.scopes and inp.scopes[p].needs_no_tests]
+    scoped = [p for p in paths if p in inp.scopes and p not in unneeded]
     triage = _triage([p for p in paths if p not in inp.scopes], inp.config, inp.doc_readers)
+    triage.skipped = sorted([*triage.skipped, *unneeded])
+    triage.basis.update(dict.fromkeys(unneeded, NO_TESTS_NEEDED))
     run_all = [*_empty_change_reasons(paths, inp.label), *triage.run_all]
     walks = bool(triage.code) or any(inp.scopes[p].routes for p in scoped)
     run_all += _index_reasons(inp, has_code=walks)
@@ -580,6 +647,20 @@ def select_tests(inp: SelectionInput) -> Selection:
         ]
     )
     notes = _notes(inp, triage.skipped, always, traced)
+    besides = {f for _, f in in_scope} | set(always)
+    broadcast = _broadcast(evidence, test_files, besides)
+    # A route through a file changed since the index was built may be shorter
+    # than the index shows, so those tests stay in the headline.
+    apart = besides | set(broadcast) | {f for _, f in gap_tests}
+    closure = _import_closure(evidence, inp.tiers.get("test_hops") or {}, test_files, apart, paths)
+    why = {**scope_why, **gap_why, **_why(triage.code, per_file, evidence), **always}
+    why.update(
+        (t, f"{path} changed ({scope} is on its route and stands for every test under it)")
+        for t, (path, scope) in broadcast.items()
+    )
+    for t, hops in closure.items():
+        if t in why:
+            why[t] += f"; {IMPORT_CLOSURE_VIA}: {hops} hops away, no call path to it"
     return Selection(
         run_all=bool(run_all),
         reasons=tuple(run_all + evidence.notes + scope_notes + notes),
@@ -589,8 +670,63 @@ def select_tests(inp: SelectionInput) -> Selection:
         always_run=inp.config.always_run,
         skipped_files=tuple(triage.skipped),
         basis=basis,
-        why={**scope_why, **gap_why, **_why(triage.code, per_file, evidence), **always},
+        why=why,
+        known_tests=tuple(inp.known_tests),
+        broadcast={t: scope for t, (_, scope) in broadcast.items()},
+        import_closure=closure,
     )
+
+
+def _import_closure(
+    ev: _Evidence,
+    hops: Mapping[str, int],
+    selected: Collection[str],
+    also: Collection[str],
+    changed: Collection[str],
+) -> dict[str, int]:
+    """``{test file: hops}`` for each selected test the change reaches only by a long
+    import chain: no coverage, call path, changed test or name pairing, and more
+    than :data:`IMPORT_CLOSURE_HOPS` file-dependency hops from a changed file.
+
+    *hops* are the collection's fewest hops per test (call or import); a test
+    it did not measure stays in the headline. *also* are tests already counted
+    apart or selected by a rule.
+    """
+    vias: dict[str, set[str]] = {}
+    for rows in ev.inferred.values():
+        for test, via in rows:
+            vias.setdefault(test, set()).add(via)
+    covered = {f for refs in ev.covered.values() for _, f in refs}
+    # A test importing a deleted file breaks on that import, however far the
+    # graph puts it from the files still present.
+    covered |= {t for p in ev.deleted for t, _ in ev.inferred.get(p, ())}
+    paired = {name for p in changed for name in paired_test_names(p)}
+    return {
+        t: hops[t]
+        for t in selected
+        if hops.get(t, 0) > IMPORT_CLOSURE_HOPS
+        and vias.get(t, {"none"}) <= _IMPORT_ONLY
+        and t not in covered
+        and t not in also
+        and t not in changed
+        and PurePosixPath(t).name not in paired
+    }
+
+
+def _broadcast(
+    ev: _Evidence, selected: Collection[str], also: Collection[str]
+) -> dict[str, tuple[str, str]]:
+    """Selected test files only a scope file on a route put in, nothing else.
+
+    *also* are the test files selected outside the per-file evidence (a
+    scope's own tests, the tests every subset runs).
+    """
+    selected = set(selected)
+    return {
+        t: v
+        for t, v in ev.broadcast.items()
+        if t in selected and t not in ev.reached and t not in also
+    }
 
 
 _UNPLACED_REASON = "the graph has no edge from it into the repository's code"
@@ -630,14 +766,42 @@ def _why(
     return out
 
 
-# The two vias a narrowed conftest route adds (``conftest_routes``), spelled out.
+#: The via of a test that runs only because a conftest on the route keeps every
+#: test under it (``conftest_routes``): selected, not reached by the change.
+BROADCAST_VIA = "conftest-broadcast"
+#: The via of a test that imports a module under a package whose ``__init__.py``
+#: reaches the change: Python runs that file first (``ImportGraph.with_package_inits``).
+PACKAGE_INIT_VIA = "package-init"
+
+# Past this many hops, a test the change reaches only through imports is counted
+# apart from the headline; it still runs (an import error breaks it, though
+# nothing it calls runs the change). 1 keeps direct importers in the headline.
+# Measured on this repository (headline without the conftest broadcast, at
+# N=1 / 2 / 3 / off): a hub module 308 / 500 / 1586 / 1600; four leaf changes
+# 53-63 / 59-74 / 123-191 / 130-1574. Most of the suite sits 3 hops from a
+# hub, so 3 barely narrows it. Ceiling: a call path deeper than the call walk reads as
+# imports only; a per-test coverage map is the upgrade.
+IMPORT_CLOSURE_HOPS = 1
+#: How :attr:`Selection.why` names a test counted apart by :data:`IMPORT_CLOSURE_HOPS`.
+IMPORT_CLOSURE_VIA = "import-closure"
+# The vias that put a test in by imports alone (a conftest broadcast included).
+_IMPORT_ONLY = frozenset({"import-graph", PACKAGE_INIT_VIA, BROADCAST_VIA})
+
+# The vias a conftest route adds (``conftest_routes``), spelled out.
 _VIA_WHY = {
+    BROADCAST_VIA: (
+        f"{BROADCAST_VIA}: a conftest above it is on the route and keeps every test under it"
+    ),
     "conftest-fixture": (
         "conftest-fixture: it asks for a conftest fixture whose code runs into the change"
     ),
     "conftest-import-check": (
         "conftest-import-check: the change reaches a conftest above it only through the "
         "conftest's imports, and this test is that conftest's import check"
+    ),
+    PACKAGE_INIT_VIA: (
+        f"{PACKAGE_INIT_VIA}: it imports a module under a package whose __init__.py, "
+        "which Python runs first, reaches the change"
     ),
 }
 
@@ -680,7 +844,7 @@ def _triage(
             out.basis[path] = "full-run"
         elif is_documentation(path):
             out.skipped.append(path)
-            out.basis[path] = "no-tests-needed"
+            out.basis[path] = NO_TESTS_NEEDED
         elif is_test_related_path(path) and not is_code_file(path):
             out.run_all.append(
                 f"{path} is in a test tree but is not code (data, a snapshot or a "
@@ -796,8 +960,8 @@ def _notes(
             )
         if detected:
             out.append(
-                f"{len(detected)} test file(s) that list source files or run the project in "
-                f"a child process run with every selection (e.g. {detected[0]}: "
+                f"{len(detected)} test file(s) that reach code outside their imports run "
+                f"with every selection (e.g. {detected[0]}: "
                 f"{inp.always_run_tests[detected[0]]})."
             )
     if not inp.map_current and inp.tiers.get("covered"):
@@ -992,6 +1156,10 @@ class _Evidence:
     notes: list[str] = field(default_factory=list)
     # Known tests under each directory set (:func:`_known_under`), per selection.
     under_memo: dict[frozenset[str], list[str]] = field(default_factory=dict, compare=False)
+    # Test files evidence or a changed scope file reached, and ``{test file:
+    # (changed file, scope on its route)}`` for those a route's scope expanded to.
+    reached: set[str] = field(default_factory=set, compare=False)
+    broadcast: dict[str, tuple[str, str]] = field(default_factory=dict, compare=False)
 
     @classmethod
     def of(cls, inp: SelectionInput, deleted: set[str]) -> _Evidence:
@@ -1063,7 +1231,7 @@ def _file_tests(
     tests = ev.present([*ev.covered.get(path, ()), *found])
     basis = _basis(path, ev.covered, ev.inferred, ev.unknown)
     scopes, basis = _scope_files(path, found, basis)
-    tests = _expand_scopes(tests, scopes, ev)
+    tests = _expand_scopes(path, tests, scopes, ev)
     helpers = sorted(
         {f for _, f in found if not is_runnable_test(f)} - ev.deleted - scopes - {path}
     )
@@ -1094,10 +1262,36 @@ def _scope_files(path: str, found: list[_TestRef], basis: str) -> tuple[set[str]
     return scopes, basis
 
 
-def _expand_scopes(tests: list[_TestRef], scopes: set[str], ev: _Evidence) -> list[_TestRef]:
+def _expand_scopes(
+    path: str, tests: list[_TestRef], scopes: set[str], ev: _Evidence
+) -> list[_TestRef]:
+    """*tests* with each scope file replaced by the tests under its directory.
+
+    Records what reached *path* (:attr:`_Evidence.reached`), and each test only
+    a scope on its route, not *path* itself, put in (:attr:`_Evidence.broadcast`).
+    """
     kept = [(t, f) for t, f in tests if f not in scopes]
     dirs = {str(PurePosixPath(i).parent) for i in scopes}
-    return kept + [(t, t) for t in _known_under(ev, dirs) if t not in ev.deleted]
+    under = [t for t in _known_under(ev, dirs) if t not in ev.deleted]
+    own = set(_known_under(ev, {str(PurePosixPath(path).parent)})) if path in scopes else set()
+    spread = {t for t, via in ev.inferred.get(path, ()) if via == BROADCAST_VIA}
+    ev.reached.update({f for _, f in kept if f and f not in spread} | own)
+    route_scopes = sorted(scopes - {path}, key=lambda s: -len(s))
+    for t in spread:
+        ev.broadcast.setdefault(t, (path, _scope_over(t, route_scopes)))
+    for scope in route_scopes:
+        for t in _known_under(ev, {str(PurePosixPath(scope).parent)}):
+            ev.broadcast.setdefault(t, (path, scope))
+    return kept + [(t, t) for t in under]
+
+
+def _scope_over(test: str, scopes: list[str]) -> str:
+    """The first of *scopes* whose directory holds *test*, else the first (a test
+    reached through an importer elsewhere), else ``""``."""
+    return next(
+        (s for s in scopes if _under({str(PurePosixPath(s).parent)}, [test])),
+        scopes[0] if scopes else "",
+    )
 
 
 def _known_under(ev: _Evidence, dirs: Collection[str]) -> list[str]:
@@ -1217,8 +1411,10 @@ _VIAS = (
     "changed-test",
     "call-graph",
     "import-graph",
+    PACKAGE_INIT_VIA,
     "conftest-fixture",
     "conftest-import-check",
+    BROADCAST_VIA,
     "filename-pattern",
 )
 

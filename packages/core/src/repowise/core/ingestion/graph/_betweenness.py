@@ -87,6 +87,9 @@ _WORKER_GRAPH: nx.DiGraph | None = None
 def _init_worker(n: int, edges: list[tuple[int, int]], directed: bool) -> None:
     """Pool initializer: build the (attribute-free) int-labeled graph once."""
     global _WORKER_GRAPH
+    from repowise.core.worker_logging import quiet_worker_logs
+
+    quiet_worker_logs()
     g: nx.DiGraph = nx.DiGraph() if directed else nx.Graph()
     g.add_nodes_from(range(n))
     g.add_edges_from(edges)

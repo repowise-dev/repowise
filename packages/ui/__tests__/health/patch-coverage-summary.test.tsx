@@ -28,6 +28,7 @@ function coverage(fileCount: number): PatchCoverageResponse {
       not_in_report: 0,
       no_line_data: 0,
       no_coverable_changes: 0,
+      stale_file: 0,
       out_of_scope: 0,
     },
     files: Array.from({ length: fileCount }, (_, i) => ({
@@ -284,6 +285,20 @@ describe("PatchCoverageSummary", () => {
               risk: null,
               hints: null,
             },
+            {
+              file_path: "src/old.ts",
+              status: "stale_file",
+              changed_line_count: 2,
+              coverable_line_count: 0,
+              covered_line_count: 0,
+              patch_coverage_pct: null,
+              uncovered_ranges: [],
+              branch_taken: 0,
+              branch_total: 0,
+              partial_ranges: [],
+              risk: null,
+              hints: null,
+            },
           ],
           scope: { ...base.scope, freshness: "stale" },
         }}
@@ -293,6 +308,7 @@ describe("PatchCoverageSummary", () => {
     expect(screen.getByText(/not at this change's head/)).toBeTruthy();
     expect(screen.getByText("lines 3, 7-9")).toBeTruthy();
     expect(screen.getByText("not in report")).toBeTruthy();
+    expect(screen.getByText("changed since measured")).toBeTruthy();
   });
 
   it("counts changed files coverage.ignore left out", () => {

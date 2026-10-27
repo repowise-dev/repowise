@@ -1,7 +1,7 @@
 """Scopes: what a changed file runs when every test is more than it can reach.
 
 :func:`~.test_selection.select_tests` runs everything for a file whose tests
-are unknown. For three kinds the reach is known, and :func:`trigger_scopes`
+are unknown. For four kinds the reach is known, and :func:`trigger_scopes`
 names it as a :class:`Scope`:
 
 - A manifest, lockfile or runner config runs its ecosystem's tests. A JS
@@ -15,9 +15,15 @@ names it as a :class:`Scope`:
   directory: importing one runs it, whatever the diff.
 - An asset runs the tests reaching the code that names it. A doc, template,
   stylesheet or image nothing names runs the tests of the package holding it;
-  a query or data file nothing names keeps its full run (a test may glob it).
+  prose that nothing names, no package holds and no code shares a top-level
+  directory with needs no tests, as a doc does; a query or data file nothing
+  names keeps its full run (a test may glob it).
   Other non-code files, dotfiles and root-level data configure tools, not
   code, and keep their full run too.
+- A data file under ``fixtures/`` or ``testdata/`` runs the test code reading
+  it: the code naming the file, or for a file in a fixture tree the code
+  naming the tree (:mod:`~.fixture_readers`). It keeps its full run when no
+  reader is found or code outside the test trees names it.
 
 A scope also runs the tests reaching each file that names the changed one, so
 a test reading ``package.json`` as data is kept. An ecosystem scope already
@@ -40,9 +46,11 @@ from pathlib import PurePosixPath
 
 import pathspec
 
+from ..support_paths import DOC_EXTENSIONS, TEMPLATE_EXTENSIONS
 from ..test_paths import is_test_related_path
 from .test_selection import (
     JS_SUFFIXES,
+    NO_TESTS_NEEDED,
     PACKAGE_INIT_REASON,
     PYTHON_SUFFIXES,
     SHARED_TEST_DATA_REASON,
@@ -60,6 +68,9 @@ from .test_selection import (
 # full run is the answer; bounding the walk by a time budget instead of a count
 # is the upgrade.
 MAX_NAMERS = 200
+
+#: The basis of a fixture data file that runs the test code reading it.
+FIXTURE_READERS = "fixture-readers"
 
 _JVM = (".java", ".kt", ".kts", ".scala", ".groovy")
 # (ecosystem, test suffixes, scoped to the file's directory, gitwildmatch
@@ -109,10 +120,14 @@ _ECOSYSTEM_SPECS = tuple(
 # it may be a pinned dependency list.
 _OWNED = frozenset(
     {".md", ".mdx", ".rst", ".adoc", ".markdown", ".html", ".htm"}
-    | {".j2", ".jinja", ".jinja2", ".tmpl", ".tpl", ".hbs", ".mustache", ".ejs", ".njk"}
+    | TEMPLATE_EXTENSIONS
     | {".css", ".scss", ".sass", ".less"}
     | {".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico"}
 )
+# Prose that needs no tests when nothing names it and no package holds it, as
+# under ``docs/``. Not ``.txt``: outside docs it is mostly data read by
+# convention or a glob (a Spring ``banner.txt``, a dependency baseline).
+_PROSE = (DOC_EXTENSIONS - {".txt", ".mdx"}) | {".markdown"}
 # Assets only a naming file stands for: a test may glob a query or data file.
 # Data only below the root: a root-level ``*.yaml`` or ``*.json`` configures a tool.
 _NAMED_ONLY = frozenset({".scm", ".graphql", ".gql", ".sql"})
@@ -144,12 +159,32 @@ class Scope:
         """The files whose reaching tests the selection needs from the graph."""
         return () if self.run_all else (*self.reach, *self.namers)
 
+    @property
+    def needs_no_tests(self) -> bool:
+        """Whether the file is skipped like documentation."""
+        return self.basis == NO_TESTS_NEEDED
+
 
 def needs_namers(path: str, config: TestSelectionConfig) -> bool:
     """Whether :func:`trigger_scopes` needs to know who names *path*."""
+    if is_fixture_data(path, config):
+        return True
     if is_test_related_path(path) or _configured(path, config):
         return False
     return _ecosystem(path) is not None or (full_run_reason(path) is None and _is_asset(path))
+
+
+def is_fixture_data(path: str, config: TestSelectionConfig) -> bool:
+    """Whether *path* is a data file in a fixtures directory, which the tests reading it can name.
+
+    Fixture code stays a full run: a test may import it by module name, which
+    no file name search sees.
+    """
+    return (
+        full_run_reason(path) == SHARED_TEST_DATA_REASON
+        and not is_code_file(path)
+        and not _configured(path, config)
+    )
 
 
 def is_manifest(path: str) -> bool:
@@ -159,7 +194,7 @@ def is_manifest(path: str) -> bool:
 
 def keeps_full_run(path: str, config: TestSelectionConfig) -> bool:
     """Whether *path* runs everything whatever names it, so no namer search can help."""
-    if full_run_reason(path, config.full_run_on) is None:
+    if full_run_reason(path, config.full_run_on) is None or is_fixture_data(path, config):
         return False
     if is_test_related_path(path) or _configured(path, config):
         return True
@@ -215,6 +250,17 @@ class _Tree:
             )
         return self._under[key]
 
+    def beside_code(self, path: str) -> bool:
+        """Whether code shares *path*'s top-level directory (at the root: sits directly in it).
+
+        Prose there may be loaded by a directory walk (``src/pkg/prompts/*.md``
+        read by ``src/pkg/loader.py``), so it is not skipped.
+        """
+        parts = PurePosixPath(path).parts
+        if len(parts) == 1:
+            return any("/" not in p for p in self.code)
+        return bool(self.code_under(parts[0], ()))
+
     def owner(self, path: str) -> str | None:
         """The deepest package root holding *path*, never the repository root."""
         from ..ingestion.package_roots import module_for
@@ -226,10 +272,12 @@ class _Tree:
 def _trigger_scope(
     path: str, tree: _Tree, namers: tuple[str, ...], config: TestSelectionConfig
 ) -> Scope | None:
-    if is_test_related_path(path) or full_run_reason(path) == SHARED_TEST_DATA_REASON:
-        return None  # read by tests anywhere: the test-tree rule decides
     if _configured(path, config):
         return None  # the config asked for a full run
+    if is_fixture_data(path, config):
+        return _readers_scope(namers)
+    if is_test_related_path(path) or full_run_reason(path) == SHARED_TEST_DATA_REASON:
+        return None  # read by tests anywhere: the test-tree rule decides
     if eco := _ecosystem(path):
         return _ecosystem_scope(path, eco, tree, namers)
     why = full_run_reason(path)
@@ -238,6 +286,17 @@ def _trigger_scope(
     if why is not None or not _is_asset(path):
         return None
     return _named_scope(path, tree, namers)
+
+
+def _readers_scope(readers: tuple[str, ...]) -> Scope | None:
+    """The test code reading a fixture data file, or ``None`` to keep its full run.
+
+    *readers* come from :func:`~.fixture_readers.with_data_file_readers`, which
+    leaves out a file no test code reads or code outside the test trees names.
+    """
+    if not readers or _too_many(readers):
+        return None
+    return Scope(f"it is read by {_some(readers)}", FIXTURE_READERS, namers=readers)
 
 
 def _configured(path: str, config: TestSelectionConfig) -> bool:
@@ -335,6 +394,9 @@ def _named_scope(path: str, tree: _Tree, namers: tuple[str, ...]) -> Scope | Non
     if too_many := _too_many(namers):
         return Scope(f"it is named by {_some(namers)}", "named-by", run_all=too_many)
     owner = tree.owner(path)
+    if not namers and owner is None and _suffix(path) in _PROSE and not tree.beside_code(path):
+        # Ceiling: a test globbing prose away from code is not seen, as under docs/.
+        return Scope("prose no code names and no package holds", NO_TESTS_NEEDED)
     if namers and (owner is None or any(_is_under(n, owner) for n in namers)):
         return Scope(f"it is named by {_some(namers)}", "named-by", namers=namers)
     if owner is None or not (namers or _suffix(path) in _OWNED):

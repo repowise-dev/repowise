@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
+
+from repowise.core.update_lock import read_update_lock
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -28,7 +31,6 @@ def _inspect_repository(repo_path: str) -> tuple[str | None, str] | None:
     """
     import json
     import subprocess
-    from pathlib import Path
 
     state_path = Path(repo_path) / ".repowise" / "state.json"
     stored_commit = None
@@ -75,6 +77,7 @@ def setup_scheduler(
         """Find stale pages and log them for regeneration."""
         from sqlalchemy import func, select
 
+        from repowise.core.generation.page_selection import STALE_STATUSES
         from repowise.core.persistence.database import get_session
         from repowise.core.persistence.models import Page, Repository
 
@@ -89,7 +92,7 @@ def setup_scheduler(
                         .select_from(Page)
                         .where(
                             Page.repository_id == repo.id,
-                            Page.freshness_status.in_(["stale", "expired"]),
+                            Page.freshness_status.in_(sorted(STALE_STATUSES)),
                         )
                     )
                     stale_count = stale_result.scalar()
@@ -135,6 +138,10 @@ def setup_scheduler(
                     stored_commit, current_head = inspection
 
                     if stored_commit and current_head == stored_commit:
+                        continue
+
+                    # A running `repowise update` will advance the baseline itself.
+                    if await asyncio.to_thread(read_update_lock, Path(repo.local_path)):
                         continue
 
                     # Check no active job already

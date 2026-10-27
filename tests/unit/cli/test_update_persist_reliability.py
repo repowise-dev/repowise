@@ -12,6 +12,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
@@ -279,34 +280,85 @@ def test_reingest_with_nothing_to_read_keeps_stored_coverage(tmp_path: Path, mon
 
 
 def test_reingest_carries_the_ingest_provenance(tmp_path: Path, monkeypatch) -> None:
-    # A fragment re-ingested on update must be stored as a fragment, with its counts.
+    # A re-ingest stores its report's counts beside the rows.
     from repowise.cli.commands.update_cmd import persistence
-    from repowise.core.analysis.health.coverage import FileCoverage, ResolvedCoverage
 
     monkeypatch.setattr(
         "repowise.core.repo_config.load_repo_config",
         lambda _path: {"coverage": {"reingest_on_update": True, "paths": ["c.lcov"]}},
     )
-    (tmp_path / "c.lcov").write_text("SF:a.py\nDA:1,1\nend_of_record\n", encoding="utf-8")
-    resolved = ResolvedCoverage(
-        coverage_map={"a.py": {}},
-        files=[FileCoverage("a.py", 100.0, None, [1], 1, [1])],
-        source_format="lcov",
-        source_formats=["lcov"],
-        matched_exact=1,
-        unmatched=["x/b.py", "x/c.py"],
-        mapping_partial=True,
-    )
-    monkeypatch.setattr(
-        "repowise.core.analysis.health.coverage.build_coverage_map",
-        lambda *_a, **_k: (resolved, []),
-    )
+    _write_lcov(tmp_path / "c.lcov", "a.py", "b.py", "x/c.py")
+    parsed = [SimpleNamespace(file_info=SimpleNamespace(path=k)) for k in ("a.py", "b.py")]
 
-    coverage = asyncio.run(persistence._coverage_for_rescore(object(), "repo", tmp_path, []))
+    coverage = asyncio.run(persistence._coverage_for_rescore(object(), "repo", tmp_path, parsed))
     assert coverage.authoritative is True
-    assert coverage.provenance.mapping_partial is True
+    assert coverage.provenance.mapping_partial is False
     assert coverage.provenance.report_path_count == 3
-    assert coverage.provenance.unmatched_sample == ("x/b.py", "x/c.py")
+    assert coverage.provenance.unmatched_sample == ("x/c.py",)
+
+
+def test_reingest_keeps_nothing_from_a_partial_mapping(tmp_path: Path, monkeypatch) -> None:
+    # Re-reading a fragment on update clears the coverage, as a fresh index would.
+    from repowise.cli.commands.update_cmd import persistence
+
+    monkeypatch.setattr(
+        "repowise.core.repo_config.load_repo_config",
+        lambda _path: {"coverage": {"reingest_on_update": True, "paths": ["c.lcov"]}},
+    )
+    _write_lcov(tmp_path / "c.lcov", "a.py", "x/b.py", "x/c.py")
+    parsed = [SimpleNamespace(file_info=SimpleNamespace(path="a.py"))]
+
+    coverage = asyncio.run(persistence._coverage_for_rescore(object(), "repo", tmp_path, parsed))
+    assert coverage.authoritative is True
+    assert coverage.files == []
+    assert coverage.coverage_map == {}
+
+
+def _write_lcov(path: Path, *sources: str) -> None:
+    path.write_text("".join(f"SF:{s}\nDA:1,1\nend_of_record\n" for s in sources), encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("setting", "report_age", "reread"),
+    [
+        (None, +60, True),  # written after the last ingest
+        (None, -60, False),  # already ingested
+        (False, +60, False),  # opted out
+    ],
+)
+def test_update_rereads_a_report_newer_than_the_last_ingest(
+    tmp_path: Path, monkeypatch, setting, report_age: int, reread: bool
+) -> None:
+    import os
+
+    from repowise.cli.commands.update_cmd import persistence
+
+    block: dict = {"paths": ["c.lcov"]}
+    if setting is not None:
+        block["reingest_on_update"] = setting
+    monkeypatch.setattr(
+        "repowise.core.repo_config.load_repo_config", lambda _path: {"coverage": block}
+    )
+    last = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
+
+    async def _newest(_session, _repo_id):
+        return SimpleNamespace(ingested_at=last.replace(tzinfo=None))
+
+    async def _stored(_session, _repo_id):
+        return {"a.py": {"source_format": "stored"}}
+
+    monkeypatch.setattr("repowise.core.persistence.crud.analysis.load_newest_ingest", _newest)
+    monkeypatch.setattr("repowise.core.persistence.crud.load_coverage_map", _stored)
+    report = tmp_path / "c.lcov"
+    _write_lcov(report, "a.py")
+    stamp = last.timestamp() + report_age
+    os.utime(report, (stamp, stamp))
+    parsed = [SimpleNamespace(file_info=SimpleNamespace(path="a.py"))]
+
+    coverage = asyncio.run(persistence._coverage_for_rescore(object(), "repo", tmp_path, parsed))
+
+    assert coverage.authoritative is reread
+    assert coverage.source_format == ("lcov" if reread else "stored")
 
 
 # ---------------------------------------------------------------------------

@@ -173,3 +173,40 @@ async def test_perf_text_has_no_n_plus_one_without_db(setup_mcp, failing_types_d
     for f in perf:
         if f["details"].get("boundary_kind") != "db":
             assert "N+1" not in f["reason"]
+
+
+@pytest.mark.asyncio
+async def test_overview_and_health_name_one_worst_file(setup_mcp, session, failing_types_data):
+    """A script and a generated schema scoring lowest are out of Fix first's
+    scope, so get_overview, the REST summary and get_health all name the same
+    production file as the worst."""
+    from repowise.core.persistence.crud import get_health_summary
+    from repowise.server.mcp_server import get_health, get_overview
+
+    for path, origin in (("scripts/migrate.py", "tooling"), ("src/proto/schema_pb2.py", "generated")):
+        session.add(
+            HealthFileMetric(
+                repository_id=failing_types_data,
+                file_path=path,
+                score=1.0,
+                max_ccn=40,
+                max_nesting=6,
+                nloc=900,
+                has_test_file=False,
+                module=path.split("/")[0],
+                is_test=False,
+                code_origin=origin,
+            )
+        )
+    await session.commit()
+
+    summary = await get_health_summary(session, failing_types_data)
+    overview = (await get_overview())["code_health"]
+    kpis = (await get_health(only=["kpis", "worst_files"]))["kpis"]
+    assert (
+        summary["worst_performer_path"]
+        == overview["worst_performer_path"]
+        == kpis["worst_performer_path"]
+        == "src/auth/service.py"
+    )
+    assert summary["worst_test_path"] == kpis["worst_test_path"] == "tests/test_service.py"

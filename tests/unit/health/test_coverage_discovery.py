@@ -7,6 +7,8 @@ repowise's canonical repo-relative POSIX key, so we must reconcile absolute
 
 from __future__ import annotations
 
+import os
+from datetime import UTC, datetime
 from pathlib import Path
 
 from repowise.core.analysis.health.coverage import (
@@ -17,7 +19,10 @@ from repowise.core.analysis.health.coverage import (
     discover_artifacts,
     expand_report_patterns,
     normalize_report_path,
+    oldest_report_time,
+    prefix_hint,
     resolve_reports,
+    suggest_prefixes,
 )
 from repowise.core.analysis.health.coverage.model import CoverageReport, FileCoverage
 
@@ -315,6 +320,41 @@ def test_build_coverage_map_flags_partial(tmp_path: Path) -> None:
     resolved, errors = build_coverage_map(tmp_path, [report_path], keys)
     assert not errors
     assert resolved.mapping_partial is True
+    # A fragment is withheld: nothing to store or score, diagnostics kept.
+    assert resolved.withheld is True
+    assert resolved.files == [] and resolved.coverage_map == {}
+    assert len(resolved.unmatched) == 2
+
+    kept, _ = build_coverage_map(tmp_path, [report_path], keys, allow_partial=True)
+    assert kept.mapping_partial is True and kept.withheld is False
+    assert [f.file_path for f in kept.files] == ["src/a.ts"]
+
+
+def test_partial_mapping_suggests_the_package_the_mapped_files_live_in() -> None:
+    # A package's report names its files from the package root; two names tie
+    # between packages and the third resolves, which settles the prefix.
+    keys = {"web/src/a.py", "api/src/a.py", "web/src/b.py", "api/src/b.py", "web/src/c.py"}
+    report = _report([_fc("src/a.py"), _fc("src/b.py"), _fc("src/c.py")])
+    res = resolve_reports([report], keys)
+    assert res.mapping_partial is True
+    assert res.suggested_prefixes == ("", "web")
+    assert prefix_hint(res.suggested_prefixes) == (
+        "set coverage.path_prefix: web in .repowise/config.yaml"
+    )
+
+
+def test_suggest_prefixes_finds_a_build_prefix_to_strip() -> None:
+    keys = {"a.py", "b.py", "docs/a.py"}
+    assert suggest_prefixes(["/ci/build/a.py", "/ci/build/b.py"], keys) == ("ci/build", "")
+
+
+def test_suggest_prefixes_abstains_without_a_clear_winner() -> None:
+    keys = {"web/a.py", "api/a.py", "x/b.py"}
+    # Two rewrites explain the one path equally, and nothing mapped breaks the tie.
+    assert suggest_prefixes(["a.py"], keys) is None
+    # One rewrite explains only one of three paths.
+    assert suggest_prefixes(["lib/b.py", "lib/q.py", "lib/r.py"], keys) is None
+    assert prefix_hint(None).startswith("fix coverage.strip_prefix or coverage.path_prefix")
 
 
 # ---------------------------------------------------------------------------
@@ -343,6 +383,44 @@ def test_coverage_config_parses_block() -> None:
     assert cfg.paths == ("coverage/lcov.info",)
     assert cfg.strip_prefix == "build"
     assert cfg.reingest_on_update is True
+
+
+def test_reingest_rereads_a_report_written_after_the_last_ingest() -> None:
+    from datetime import UTC, datetime
+
+    last = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
+    before, after = last.timestamp() - 60, last.timestamp() + 60
+    auto = CoverageConfig.from_repo_config({"coverage": {}})
+    assert auto.reingest_on_update is None
+    assert auto.reingest(after, last) is True
+    assert auto.reingest(before, last) is False
+    # A naive stored time is UTC.
+    assert auto.reingest(after, last.replace(tzinfo=None)) is True
+    # Nothing stored yet: any report is read; no report: nothing to read.
+    assert auto.reingest(before, None) is True
+    assert auto.reingest(None, last) is False
+    # A report dated in the future is not newer, or every update would re-read it.
+    assert auto.reingest(after, last, now=last.timestamp() + 30) is False
+    # The setting forces either way.
+    off = CoverageConfig.from_repo_config({"coverage": {"reingest_on_update": False}})
+    on = CoverageConfig.from_repo_config({"coverage": {"reingest_on_update": True}})
+    assert off.reingest(after, last) is False
+    assert on.reingest(before, last) is True
+
+
+def test_watched_reports_stat_fixed_locations_without_a_walk(tmp_path: Path) -> None:
+    (tmp_path / "coverage").mkdir()
+    (tmp_path / "coverage" / "lcov.info").write_text("SF:a.py\nend_of_record\n")
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "cobertura.xml").write_text("<coverage/>")
+    cfg = CoverageConfig.from_repo_config(None)
+    # The nested report needs the ``**/cobertura.xml`` walk, so only discovery finds it.
+    assert cfg.watched_reports(tmp_path) == [tmp_path / "coverage" / "lcov.info"]
+    assert len(cfg.reports(tmp_path)) == 2
+    named = CoverageConfig.from_repo_config({"coverage": {"paths": ["pkg/cobertura.xml"]}})
+    assert named.watched_reports(tmp_path) == [tmp_path / "pkg" / "cobertura.xml"]
+    off = CoverageConfig.from_repo_config({"coverage": {"auto_discover": False}})
+    assert off.watched_reports(tmp_path) == []
 
 
 def test_coverage_config_paths_take_globs_and_per_report_prefixes(tmp_path: Path) -> None:
@@ -724,3 +802,99 @@ def test_source_roots_win_over_the_report_directory() -> None:
     )
     res = resolve_reports([report], keys)
     assert list(res.coverage_map) == ["packages/api/src/x.py"]
+
+
+# ---------------------------------------------------------------------------
+# measured_at — when the reports on disk were written (issue #3901)
+# ---------------------------------------------------------------------------
+
+_LCOV_AB = "SF:src/a.py\nDA:1,1\nend_of_record\n"
+_LCOV_CD = "SF:src/c.py\nDA:1,1\nend_of_record\n"
+# Two suite runs a week apart, so "oldest" and "newest" are unambiguous.
+_JULY = datetime(2026, 7, 3, 12, 0, tzinfo=UTC)
+_JULY_10 = datetime(2026, 7, 10, 12, 0, tzinfo=UTC)
+
+
+def _aged(path: Path, text: str, *, when: datetime) -> Path:
+    """Write *text* to *path* and set its mtime to *when*.
+
+    A report's mtime is the only record of when the suite ran, so the fixture
+    has to age it deliberately rather than inherit "now" from the checkout.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    stamp = when.timestamp()
+    os.utime(path, (stamp, stamp))
+    return path
+
+
+def test_oldest_report_time_is_the_oldest_of_several(tmp_path: Path) -> None:
+    late = _aged(tmp_path / "coverage" / "lcov.info", _LCOV_AB, when=_JULY_10)
+    early = _aged(tmp_path / "coverage" / "other.info", _LCOV_CD, when=_JULY)
+
+    assert oldest_report_time([late, early]) == _JULY
+    assert oldest_report_time([early, late]) == _JULY
+    assert oldest_report_time([late]) == _JULY_10
+
+
+def test_oldest_report_time_is_none_when_nothing_can_be_read(tmp_path: Path) -> None:
+    """No report, no time: the writer keeps stamping HEAD instead of guessing.
+
+    A missing path here is a report deleted between discovery and the stamp,
+    which must not read as a measurement from some unknowable date.
+    """
+    assert oldest_report_time([]) is None
+    assert oldest_report_time([tmp_path / "gone.info"]) is None
+
+
+def test_build_coverage_map_carries_the_oldest_report_date(tmp_path: Path) -> None:
+    first = _aged(tmp_path / "coverage" / "lcov.info", _LCOV_AB, when=_JULY)
+    second = _aged(tmp_path / "coverage" / "later.info", _LCOV_CD, when=_JULY_10)
+
+    resolved, errors = build_coverage_map(tmp_path, [first, second], {"src/a.py", "src/c.py"})
+    assert not errors
+    assert resolved.measured_at == _JULY
+    # The provenance is what the writers read, so the date has to survive it.
+    assert resolved.provenance.measured_at == _JULY
+
+
+def test_a_contribution_less_report_does_not_date_the_measurement(tmp_path: Path) -> None:
+    """An artifact that yields no entries is not part of the measurement.
+
+    A stale leftover — an unparseable or empty report someone forgot to
+    delete — must not drag the whole ingest back to its own date, which would
+    strand every line check on a commit it never described.
+    """
+    stale = _aged(tmp_path / "coverage" / "stale.info", "", when=datetime(2020, 1, 1, tzinfo=UTC))
+    current = _aged(tmp_path / "coverage" / "lcov.info", _LCOV_AB, when=_JULY_10)
+
+    resolved, errors = build_coverage_map(tmp_path, [stale, current], {"src/a.py"})
+    assert [p for p, _ in errors] == [stale]
+    assert resolved.measured_at == _JULY_10
+
+
+def test_build_coverage_map_without_a_readable_report_has_no_date(tmp_path: Path) -> None:
+    resolved, errors = build_coverage_map(tmp_path, [], {"src/a.py"})
+    assert not errors
+    assert resolved.measured_at is None
+    assert resolved.provenance.measured_at is None
+
+
+def test_a_withheld_report_has_no_measurement_to_stamp(tmp_path: Path) -> None:
+    """Nothing was parsed into rows, so there is no commit to date them by.
+
+    A withheld mapping writes no aggregate rows, and the one writer that could
+    still read *measured_at* would find a date for a measurement that was
+    refused. ``--allow-partial`` keeps the rows, so it keeps the date too.
+    """
+    lcov = "SF:/ci/build/src/a.py\nDA:1,1\nend_of_record\nSF:/ci/other/b.py\nDA:1,1\nend_of_record\nSF:/ci/other/c.py\nDA:1,1\nend_of_record\n"
+    refused = _aged(tmp_path / "coverage" / "lcov.info", lcov, when=_JULY)
+
+    withheld, _ = build_coverage_map(tmp_path, [refused], {"src/a.py"})
+    assert withheld.withheld is True
+    assert withheld.measured_at is None
+    assert withheld.provenance.measured_at is None
+
+    kept, _ = build_coverage_map(tmp_path, [refused], {"src/a.py"}, allow_partial=True)
+    assert kept.withheld is False and kept.files
+    assert kept.measured_at == _JULY

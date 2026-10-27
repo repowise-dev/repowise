@@ -9,7 +9,10 @@
 
 import {
   bandForScore,
+  formatScore,
   HEALTH_BAND_LABEL,
+  HEALTHY_MIN,
+  NEEDS_WORK_MIN,
   type HealthBand,
 } from "@repowise-dev/types/health";
 
@@ -45,24 +48,15 @@ export const SEVERITY_CHIP: Record<Severity, string> = {
   low: "bg-[var(--color-text-tertiary)]/15 text-[var(--color-text-tertiary)] border border-[var(--color-text-tertiary)]/30",
 };
 
+/** The quiet mono label: a field name, a state word, a small tag. */
+export const MICRO = "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
+
 /** Segment fills for a severity split (ProportionBar `color`). */
 export const SEVERITY_SEGMENT: Record<Severity, string> = {
   critical: "var(--color-error)",
   high: "var(--color-warning)",
   medium: "var(--color-caution)",
   low: "var(--color-text-tertiary)",
-};
-
-/**
- * Effort tint. A ramp, not a judgement: green is the cheap end, red the
- * expensive one. The badge prints the bucket letter beside it, so it belongs
- * on the semantic ramp. Here rather than in the card so it has one home.
- */
-export const EFFORT_TINT: Record<"S" | "M" | "L" | "XL", string> = {
-  S: "bg-[var(--color-success)]/15 text-[var(--color-success)]",
-  M: "bg-[var(--color-caution)]/15 text-[var(--color-caution)]",
-  L: "bg-[var(--color-warning)]/15 text-[var(--color-warning)]",
-  XL: "bg-[var(--color-error)]/15 text-[var(--color-error)]",
 };
 
 /**
@@ -156,6 +150,55 @@ export function healthNodeFill(score: number): string {
   return HEALTH_BAND_NODE_FILL[bandForScore(score)];
 }
 
+/**
+ * The map's fills: the five canonical bands, softened.
+ *
+ * The same bands every score pill on the page uses, so a dot and the pill
+ * beside it never disagree. Each band's node token is pulled a little toward
+ * the neutral, so a field of thousands reads as pigment rather than as light.
+ * Five fills also keep the canvas at five draw batches.
+ */
+function softened(token: string): string {
+  return `color-mix(in srgb, var(${token}) 82%, var(--color-node-neutral))`;
+}
+
+const NODE_BAND_FILL: Record<HealthBand, string> = {
+  excellent: softened("--color-node-excellent"),
+  good: softened("--color-node-good"),
+  fair: softened("--color-node-fair"),
+  needs_work: softened("--color-node-needs-work"),
+  at_risk: softened("--color-node-at-risk"),
+};
+
+/** The fill for a file that needs nothing under a banded lens. */
+export const NODE_HEALTHY_FILL = NODE_BAND_FILL.good;
+
+/** Three problem stops, for banded lenses (coverage, churn, performance). */
+export const NODE_RAMP_STOP = {
+  warning: NODE_BAND_FILL.fair,
+  serious: NODE_BAND_FILL.needs_work,
+  alert: NODE_BAND_FILL.at_risk,
+} as const;
+
+/** The map fill for a 1-10 score, on the canonical band. */
+export function healthRampFill(score: number): string {
+  return NODE_BAND_FILL[bandForScore(score)];
+}
+
+/** The map fill for a band, for keys. */
+export function healthBandMapFill(band: HealthBand): string {
+  return NODE_BAND_FILL[band];
+}
+
+/**
+ * Whether a map fill marks a file that needs attention, which is what earns a
+ * glow and a place in the "needs attention" count: the Needs work and At risk
+ * fills. Green, gold and the neutral stay quiet.
+ */
+export function isLoudFill(fill: string): boolean {
+  return fill === NODE_BAND_FILL.needs_work || fill === NODE_BAND_FILL.at_risk;
+}
+
 export function healthBandColor(band: HealthBand): string {
   return HEALTH_BAND_VAR[band];
 }
@@ -205,6 +248,40 @@ export function healthBand100(score100: number): HealthBand {
 export function healthBand(score: number): { color: string; label: string } {
   const band = bandForScore(score);
   return { color: HEALTH_BAND_VAR[band], label: HEALTH_BAND_LABEL[band] };
+}
+
+/**
+ * The canonical three bands a label takes beside a health mark: Healthy at
+ * `HEALTHY_MIN` or above, Warning from `NEEDS_WORK_MIN`, Alert below. The five
+ * bands above are for a standalone lede; a dot, a figure and a word drawn
+ * together read on these three, so every mark agrees with every other.
+ */
+export type HealthMarkBand = "healthy" | "warning" | "alert";
+
+/** Top to bottom, with the lower edge of each band, for keys and grounds. */
+export const HEALTH_MARK_BANDS: readonly {
+  band: HealthMarkBand;
+  label: string;
+  color: string;
+  min: number;
+}[] = [
+  { band: "healthy", label: "Healthy", color: "var(--color-success)", min: HEALTHY_MIN },
+  { band: "warning", label: "Warning", color: "var(--color-warning)", min: NEEDS_WORK_MIN },
+  { band: "alert", label: "Alert", color: "var(--color-error)", min: 0 },
+];
+
+export interface HealthMark {
+  /** The score at one decimal, floored so it never crosses a band edge. */
+  value: string;
+  band: HealthMarkBand;
+  label: string;
+  color: string;
+}
+
+/** A 1-10 score as a health mark: figure, word and colour on the three bands. */
+export function healthMark(score: number): HealthMark {
+  const b = HEALTH_MARK_BANDS.find((x) => score >= x.min) ?? HEALTH_MARK_BANDS[HEALTH_MARK_BANDS.length - 1]!;
+  return { value: formatScore(score), band: b.band, label: b.label, color: b.color };
 }
 
 export function riskInk(risk01: number): string {

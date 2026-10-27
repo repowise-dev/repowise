@@ -6,13 +6,16 @@ import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 import { useProviders } from "@/lib/hooks/use-providers";
 import { useTranslations } from "next-intl";
+import { useProviderFormLabels } from "./use-provider-form-labels";
 
 /**
  * Web data wrapper around the shared `ProviderSettings` shell. Owns the fetch,
- * the repo-scoped key mutations (so D6 mirrors the key into `.repowise/.env`),
- * validation, and the toasts. The shell stays presentational and hosted-portable.
+ * the key mutations, validation, and the toasts. With `repoId` the choice is
+ * that repo's (its `.repowise/config.yaml`, and keys mirror into its
+ * `.repowise/.env`); without it, the server-wide default. The shell stays
+ * presentational and hosted-portable.
  */
-export function ProviderSettingsPanel({ repoId }: { repoId: string }) {
+export function ProviderSettingsPanel({ repoId }: { repoId?: string }) {
   const {
     providers,
     active,
@@ -21,10 +24,13 @@ export function ProviderSettingsPanel({ repoId }: { repoId: string }) {
     saveKey,
     removeKey,
     activate,
+    loadModels,
     validate,
   } = useProviders(repoId);
 
   const t = useTranslations("settings");
+  const f = useTranslations("settings.providerForm");
+  const labels = useProviderFormLabels(Boolean(repoId));
 
   if (isLoading) {
     return (
@@ -35,6 +41,7 @@ export function ProviderSettingsPanel({ repoId }: { repoId: string }) {
       </div>
     );
   }
+
 
   async function handleAddKey(providerId: string, key: string) {
     try {
@@ -60,13 +67,20 @@ export function ProviderSettingsPanel({ repoId }: { repoId: string }) {
     }
   }
 
-  async function handleSetActive(providerId: string, model?: string) {
+  async function handleSetActive(
+    providerId: string,
+    model?: string,
+    options?: { baseUrl?: string },
+  ) {
     try {
-      await activate(providerId, model);
+      await activate(providerId, model, options);
+      if (repoId) toast.success(f("saved"), { description: f("savedDescription") });
+      else toast.success(f("savedGlobal"));
     } catch (e) {
       toast.error(t("providerPanel.activateFailed"), {
         description: toFriendlyMessage(e),
       });
+      throw e;
     }
   }
 
@@ -77,8 +91,10 @@ export function ProviderSettingsPanel({ repoId }: { repoId: string }) {
       onAddKey={handleAddKey}
       onRemoveKey={handleRemoveKey}
       onSetActive={handleSetActive}
+      onLoadModels={loadModels}
       onValidate={validate}
       validation={validation}
+      labels={labels}
     />
   );
 }

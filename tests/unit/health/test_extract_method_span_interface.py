@@ -15,6 +15,7 @@ import pytest
 
 from repowise.core.analysis.health.complexity.languages import get_language_map
 from repowise.core.analysis.health.dataflow import find_extractions
+from repowise.core.analysis.health.dataflow.stages import find_stages
 from repowise.core.analysis.health.refactoring.extract_method import (
     STAGE_REFUSED_DETAIL,
     ExtractMethodDetector,
@@ -275,9 +276,16 @@ def test_a_global_refusal_is_counted_under_its_reason():
     assert _refused(src)["resolve"] == ["outer_write"]
 
 
-def test_a_switch_arm_refusal_is_counted_and_a_dead_arm_name_is_not_refused():
-    hazard = _ts_loop("switch (mode) { case 1: last = item; break; }")
-    assert _refused(hazard, "typescript", "ts")["run"] == ["switch_arm_write"]
+def test_a_switch_arm_write_is_taken_and_returned_and_a_dead_arm_name_is_not_refused():
+    # The arm may not run, so ``last`` after it is the arm's value or the one
+    # from before (a may-def, #3451): the stage that holds the arm and the
+    # read takes ``last`` and hands it back, and nothing is refused.
+    carried = _ts_loop("switch (mode) { case 1: last = item; break; }")
+    assert _refused(carried, "typescript", "ts")["run"] == []
+    served = _plans(carried, "typescript", "ts")["run"].plan["stages"]
+    read = next(i for i, ln in enumerate(carried.splitlines(), 1) if "note(last)" in ln)
+    holding = next(s for s in served if s["span"]["start"] <= read <= s["span"]["end"])
+    assert "last" in holding["params"] and holding["returns"] == ["last"]
     # An arm writing a name nothing reads past the edge decides nothing.
     quiet = _ts_loop("switch (mode) { case 1: tally = item; break; }").replace(
         "mode, last,", "mode, last, tally,"
@@ -286,6 +294,43 @@ def test_a_switch_arm_refusal_is_counted_and_a_dead_arm_name_is_not_refused():
     stages = _plans(quiet, "typescript", "ts")["run"].plan["stages"]
     arm = next(i for i, ln in enumerate(quiet.splitlines(), 1) if "switch (mode)" in ln)
     assert any(s["span"]["start"] <= arm <= s["span"]["end"] for s in stages)
+
+
+_ARMS_ONLY = """
+function pick(client, options, raw) {
+  const model = options.model;
+  let input, format;
+  switch (model) {
+    case 'small':
+      input = raw.a || options.a;
+      format = raw.fa || options.fa;
+      break;
+    case 'large':
+      input = raw.b || options.b;
+      format = raw.fb || options.fb;
+      break;
+    case 'old':
+      input = raw.c || options.c;
+      break;
+  }
+
+  const made = client.create({
+    model: model,
+    input: input,
+    format: format,
+    ...(raw.d && { d: Number(raw.d) }),
+  });
+  return made.data[0];
+}
+"""
+
+
+def test_a_stage_reading_what_only_the_arms_wrote_is_not_served():
+    # ``input`` is declared without a value and written only in the arms, so the
+    # read at the call may still see the declaration. No stage that reads it
+    # without being given it may be served.
+    fn = _functions(_ARMS_ONLY, "typescript", "ts")[0]
+    assert find_stages(fn, get_language_map("typescript")).stages == ()
 
 
 # -- closures and outer scopes ----------------------------------------------------
@@ -397,6 +442,194 @@ def test_typescript_catch_binds_its_parameter_pattern():
     assert spans and all("message" in x.params for x in spans)
 
 
+_JAVA_CATCH = """class A {
+  void f(java.util.List<Object> items, boolean flag) {
+    for (Object it : items) {
+      try {
+        run(it);
+      } catch (IOException | RuntimeException e) {
+        if (flag && it.big) {
+          log(e);
+          if (it.small || flag) {
+            warn(e, it);
+          }
+        }
+        report(e);
+      }
+    }
+  }
+}
+"""
+
+_CSHARP_CATCH = """class A {
+  void f(List<Item> items, bool flag) {
+    foreach (var it in items) {
+      try {
+        run(it);
+      } catch (Exception e) {
+        if (flag && it.big) {
+          log(e);
+          if (it.small || flag) {
+            warn(e, it);
+          }
+        }
+        report(e);
+      }
+    }
+  }
+}
+"""
+
+_CPP_CATCH = """void f(std::vector<Item>& items, bool flag) {
+  for (auto& it : items) {
+    try {
+      run(it);
+    } catch (const std::exception& e) {
+      if (flag && it.big) {
+        log(e);
+        if (it.small || flag) {
+          warn(e, it);
+        }
+      }
+      report(e);
+    }
+  }
+}
+"""
+
+
+@pytest.mark.parametrize(
+    ("src", "language", "ext", "catch_line"),
+    [
+        (_JAVA_CATCH, "java", "java", 6),
+        (_CSHARP_CATCH, "csharp", "cs", 6),
+        (_CPP_CATCH, "cpp", "cpp", 5),
+    ],
+    ids=["java", "csharp", "cpp"],
+)
+def test_a_catch_clause_binds_its_exception_variable(src, language, ext, catch_line):
+    # The issue-3396 fixture: ``e`` is defined by the clause head and read twice
+    # inside the handler. Without a ``handler_def_use`` override the read was
+    # unmatched, so a span holding both reads never took ``e`` in as an input.
+    fn = _functions(src, language, ext)[0]
+    assert [(d.var, d.line, d.declares) for d in fn.def_use.definitions if d.var == "e"] == [
+        ("e", catch_line, True)
+    ]
+    spans = _spans(src, "f", language, ext)
+    assert spans and all("e" in x.params for x in spans)
+
+
+@pytest.mark.parametrize(
+    ("src", "language", "ext"),
+    [
+        ("class A { void f() { try { run(); } catch (Exception e) { log(e); } } }", "java", "java"),
+        ("class A { void f() { try { run(); } catch (Exception e) { log(e); } } }", "csharp", "cs"),
+        ("void f() { try { run(); } catch (const E& e) { log(e); } }", "cpp", "cpp"),
+    ],
+    ids=["java", "csharp", "cpp"],
+)
+def test_a_catch_variable_is_not_defined_outside_its_handler_head(src, language, ext):
+    fn = _functions(src, language, ext)[0]
+    assert len([d for d in fn.def_use.definitions if d.var == "e"]) == 1
+
+
+@pytest.mark.parametrize(
+    ("src", "language", "ext"),
+    [
+        ("void f() { try { run(); } catch (...) { x(); } }", "cpp", "cpp"),
+        ("void f() { try { run(); } catch (int) { x(); } }", "cpp", "cpp"),
+        ("void f() { try { run(); } catch (const std::exception&) { x(); } }", "cpp", "cpp"),
+        ("class A { void f() { try { run(); } catch (IOException) { x(); } } }", "csharp", "cs"),
+        ("class A { void f() { try { run(); } catch { x(); } } }", "csharp", "cs"),
+    ],
+    ids=["cpp-ellipsis", "cpp-type-only", "cpp-ref-type-only", "cs-type-only", "cs-bare"],
+)
+def test_an_unnamed_catch_binds_nothing(src, language, ext):
+    fn = _functions(src, language, ext)[0]
+    assert [
+        d for d in fn.def_use.definitions if d.var in ("e", "IOException", "std", "exception")
+    ] == []
+
+
+def test_a_csharp_catch_filter_reads_into_the_handler_head():
+    fn = _functions(
+        """class A {
+  void f(int limit) {
+    try { run(); } catch (Exception e) when (e.Code > limit) { }
+  }
+}
+""",
+        "csharp",
+        "cs",
+    )[0]
+    handler = next(
+        b for b in fn.cfg.blocks if b.statements and b.statements[0].kind == "catch_clause"
+    )
+    head = fn.def_use.block(handler.id)
+    assert [d.var for d in head.defs] == ["e"]
+    assert {u.name for u in head.uses} == {"e", "limit"}
+
+
+@pytest.mark.parametrize(
+    ("src", "language", "ext"),
+    [
+        (
+            """class A {
+  void f(Runnable r) {
+    try { r.run(); } catch (Exception err) { log(err); }
+    Runnable g = () -> {
+      try {
+        r.run();
+      } catch (Exception err) {
+        log(err);
+      }
+    };
+  }
+}
+""",
+            "java",
+            "java",
+        ),
+        (
+            """class A {
+  void f(Action r) {
+    try { r(); } catch (Exception err) { log(err); }
+    Action g = () => {
+      try {
+        r();
+      } catch (Exception err) {
+        log(err);
+      }
+    };
+  }
+}
+""",
+            "csharp",
+            "cs",
+        ),
+        (
+            """void f(std::function<void()> r) {
+  try { r(); } catch (const std::exception& err) { log(err); }
+  auto g = [&]() {
+    try {
+      r();
+    } catch (const std::exception& err) {
+      log(err);
+    }
+  };
+}
+""",
+            "cpp",
+            "cpp",
+        ),
+    ],
+    ids=["java", "csharp", "cpp"],
+)
+def test_a_lambda_catch_variable_is_its_own(src, language, ext):
+    captured = _functions(src, language, ext)[0].def_use.captured
+    assert "err" not in {o.name for o in (*captured.reads, *captured.shared, *captured.writes)}
+
+
 def test_a_closure_catch_parameter_is_its_own():
     fn = _functions(
         """function f(xs) {
@@ -444,18 +677,35 @@ def test_except_star_and_nested_handlers_get_heads():
 @pytest.mark.parametrize(
     ("language", "ext", "src"),
     [
-        ("java", "java", "class A { int f(int x) { try { g(x); } catch (Exception e) { h(e); } return x; } }"),
-        ("csharp", "cs", "class A { int F(int x) { try { G(x); } catch (Exception e) { H(e); } return x; } }"),
+        (
+            "java",
+            "java",
+            "class A { int f(int x) { try { g(x); } catch (Exception e) { h(e); } return x; } }",
+        ),
+        (
+            "csharp",
+            "cs",
+            "class A { int F(int x) { try { G(x); } catch (Exception e) { H(e); } return x; } }",
+        ),
+        (
+            "cpp",
+            "cpp",
+            "int f(int x) { try { g(x); } catch (const std::exception& e) { h(e); } return x; }",
+        ),
     ],
 )
-def test_other_languages_read_nothing_new_at_a_handler_head(language, ext, src):
+def test_other_languages_bind_the_name_at_a_handler_head_but_read_no_type(language, ext, src):
+    # The head defines ``e``; the exception *type* is not a variable, so it is
+    # never a read (Python reads its ``except E`` type because there it is an
+    # expression; these grammars keep it under a type node).
     fn = _functions(src, language, ext)[0]
     handler = next(b for b in fn.cfg.blocks if b.kind == "handler")
     head = handler.statements[0]
     assert head.is_head
     bdu = fn.def_use.block(handler.id)
-    assert [d for d in bdu.defs if d.line == head.start_line] == []
-    assert [u for u in bdu.uses if u.line == head.start_line and u.name == "Exception"] == []
+    assert [d.var for d in bdu.defs if d.line == head.start_line] == ["e"]
+    type_names = {"Exception", "exception", "std"}
+    assert [u for u in bdu.uses if u.line == head.start_line and u.name in type_names] == []
 
 
 def test_a_handler_rebinding_a_name_in_a_loop_carries_nothing():

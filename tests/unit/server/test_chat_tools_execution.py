@@ -43,18 +43,6 @@ def test_an_entry_without_a_fastmcp_contract_is_left_out(monkeypatch, caplog) ->
     assert "orphan" in caplog.text
 
 
-def test_artifact_metadata_comes_from_the_entry(one_tool) -> None:
-    assert chat_tools.get_artifact_type("probe", None) == "risk"
-    assert chat_tools.get_artifact_presentation("probe", None) == "table"
-    assert chat_tools.get_artifact_evidence_basis("probe", None) == "measured"
-
-
-def test_a_tool_outside_the_catalog_gets_the_generic_metadata(one_tool) -> None:
-    assert chat_tools.get_artifact_type("missing", None) == "generic"
-    assert chat_tools.get_artifact_presentation("missing", None) == "generic"
-    assert chat_tools.get_artifact_evidence_basis("missing", None) == "unknown"
-
-
 @pytest.mark.asyncio
 async def test_a_tool_outside_the_catalog_is_refused(one_tool) -> None:
     result = await chat_tools.execute_tool("missing", {})

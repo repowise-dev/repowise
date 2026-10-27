@@ -1,98 +1,83 @@
 # Repowise in CI
 
-Four gates judge a pull request, each on what the change adds rather than on
-the whole repository's past:
+Repowise gates judge a pull request on what the change adds, not on the
+repository's past.
 
-| Gate | Question | Needs | History |
-|------|----------|-------|---------|
-| `repowise coverage check` | Did the tests run the lines this change touched? | git and a coverage report | the merge-base with the target branch |
-| `repowise coverage check --fail-under-branches P` | Did the tests take the branches of the lines this change touched? | git and a report with per-line branch data | the merge-base with the target branch |
-| `repowise coverage check --max-drop P` | Did this change lower project coverage by more than P points? | git, a coverage report, and one measured at the change's base | the merge-base with the target branch |
-| `repowise doc-drift --check` | Does the documentation still describe files, links and commands that exist? | git | none (full history only improves rename suggestions) |
-| `repowise security check` | Did this change add a secret or a risky call? | git | every commit of the change |
-| `repowise risk --fail-above-percentile P` | Is this change bigger and more spread out than P% of this repository's recent commits? | git | recent commits to rank against (at least 8) |
+| Gate | Fails when | History needed |
+|------|------------|----------------|
+| `repowise coverage check` | tests did not run the changed lines (needs a coverage report) | merge-base with the target branch |
+| `repowise coverage check --fail-under-branches P` | tests did not take the changed lines' branches (needs per-line branch data) | merge-base |
+| `repowise coverage check --max-drop P` | project coverage fell more than P points (needs a report measured at the change's base) | merge-base |
+| `repowise doc-drift --check` | docs name missing files, links or commands | none (full history only improves rename suggestions) |
+| `repowise security check` | the change adds a secret or risky call | every commit of the change |
+| `repowise health check` | the change adds complex, deeply nested, oversized or duplicated code | merge-base |
+| `repowise risk --fail-above-percentile P` | the change is bigger and more spread out than P% of recent commits | recent commits to rank against (at least 8) |
 
-None of them needs an index, a database, a model or an API key, and none
-stores anything. They share one set of exit codes, output formats and base
-resolution, described once below. Each layer's own page has the detail:
-[test intelligence](../layers/TEST_INTELLIGENCE.md#patch-coverage-in-ci),
-[documentation drift](../layers/DOC_DRIFT.md#in-ci),
-[security](../layers/SECURITY.md#in-ci-repowise-security-check),
-[change risk](../layers/CHANGE_RISK.md#in-ci).
-
-Doc drift's `--check` needs no index. `--kind symbol` adds symbol references
-(names of functions and classes a document mentions) and needs an index, so it
-exits `2` without one. It also reads `git blame`: in a shallow clone every line
-blames to the boundary commit, so give that job `fetch-depth: 0`.
-
-Not a gate, but in the same pipeline:
-[selecting the tests a change needs](#selecting-the-tests-a-change-needs).
+- Gates need only git (no index, database, model or API key) and store nothing.
+- Detail per layer: [test intelligence](../layers/TEST_INTELLIGENCE.md#patch-coverage-in-ci),
+  [documentation drift](../layers/DOC_DRIFT.md#in-ci),
+  [security](../layers/SECURITY.md#in-ci-repowise-security-check),
+  [code health](../layers/CODE_HEALTH.md#in-ci-repowise-health-check),
+  [change risk](../layers/CHANGE_RISK.md#in-ci).
+- Not a gate, same pipeline: [selecting the tests a change needs](#selecting-the-tests-a-change-needs).
 
 ## What every gate does the same way
 
-**Exit codes.** `0` passed, or had nothing to judge. `1` the change failed the
-gate. `2` the gate could not evaluate: not a git repository, an unknown
-revision, no merge-base in a shallow clone, an unreadable report or baseline,
-too few recent commits to rank a change against. A setup problem never reads
-as a pass.
+**Exit codes**
 
-**Formats.** `--format table` (the default) for a terminal, `json` for a
-script, `markdown` for a comment or a job artifact, and `github` for GitHub
-Actions: up to ten annotations on the changed lines, a notice counting the
-rest, and the markdown report appended to the job summary. Doc drift and
-security also write `sarif` for code scanning and `gitlab`, a GitLab Code
-Quality report (a JSON issue list; findings a baseline accepted are left out).
-When a gate cannot evaluate, `gitlab` still prints a valid list, `[]`, and the
-GitLab template writes `[]` whenever the output does not parse, so the report
-artifact is never an invalid file.
+- `0`: passed, or nothing to judge.
+- `1`: the change failed the gate.
+- `2`: could not evaluate (not a git repository, unknown revision, no
+  merge-base in a shallow clone, unreadable report or baseline, too few recent
+  commits to rank against). A setup problem never reads as a pass; fixes are in
+  [When a gate exits 2](#when-a-gate-exits-2).
 
-**The change being judged.** Coverage, security and risk take a revision range:
-`origin/main...HEAD` (three dots: what the branch did since it forked, the
-pull request's view), `base..head`, or one commit. Without one they read the
-target branch from the CI's own variables (`GITHUB_BASE_REF`,
-`CI_MERGE_REQUEST_TARGET_BRANCH_NAME`, `CHANGE_TARGET`,
-`BITBUCKET_PR_DESTINATION_BRANCH`), else the remote's default branch. `risk`
-does so with `--fail-above-percentile` or `--format markdown` / `github`;
-otherwise an omitted range still means your uncommitted work, else `HEAD`. Doc
-drift has no range: it checks the whole working tree, and a baseline limits it
-to new findings. The variables each CI is detected by and read from, Azure
-Pipelines included, are in [GIT_HOSTS.md](GIT_HOSTS.md#ci-systems).
+**Formats** (`--format`)
 
-**History.** CI checkouts are usually shallow, which leaves no merge-base.
-Fetch full history (`fetch-depth: 0` on GitHub Actions, `GIT_DEPTH: 0` on
-GitLab) and make sure the target branch exists as `origin/<branch>`. The
-gates exit `2` rather than guess.
+- `table` (default) for a terminal, `json` for scripts, `markdown` for a
+  comment or artifact.
+- `github`: up to ten annotations on changed lines, a notice counting the
+  rest, and the markdown report in the job summary.
+- Doc drift, security and health only: `sarif` for code scanning, and `gitlab`,
+  a Code Quality JSON issue list without baseline-accepted findings. A gate
+  that cannot evaluate still prints `[]`, and the GitLab template writes `[]`
+  when output does not parse.
+
+**The change being judged**
+
+- Coverage, security, health and risk take a range: `origin/main...HEAD`
+  (three dots: what the branch did since it forked, the pull request's view),
+  `base..head`, or one commit.
+- Without one they read the target branch from `GITHUB_BASE_REF`,
+  `CI_MERGE_REQUEST_TARGET_BRANCH_NAME`, `CHANGE_TARGET` or
+  `BITBUCKET_PR_DESTINATION_BRANCH`, else the remote's default branch.
+- `risk` does that only with `--fail-above-percentile` or `--format markdown` /
+  `github`; otherwise no range means your uncommitted work, else `HEAD`.
+- Doc drift takes no range: it checks the whole working tree.
+- Per-CI variables, Azure Pipelines included: [GIT_HOSTS.md](GIT_HOSTS.md#ci-systems).
+
+**History.** A shallow checkout has no merge-base, so gates exit `2` rather
+than guess: fetch full history (`fetch-depth: 0` on GitHub, `GIT_DEPTH: 0` on GitLab) and the
+target branch as `origin/<branch>`.
 
 ## Adopting the gates on an existing repository
 
-Coverage and security judge only what a change adds, so an old untested file
-or an old finding never fails a new pull request. Doc drift checks the whole
-tree, so on a repository whose documentation has already drifted it fails from
-the first run. Record what is there once and fail only on new drift:
+Coverage, security and health judge only what a change adds, so old untested
+files and old findings never fail a new pull request. Doc drift checks the
+whole tree, so a repository with drift needs a [baseline](#gate-on-documentation-drift) first.
 
-```bash
-repowise doc-drift --check --write-baseline .doc-drift-baseline.json
-git add .doc-drift-baseline.json
-```
-
-Then pass `--baseline .doc-drift-baseline.json` (or the action's
-`doc-drift-baseline` input). Entries are keyed on the document, the reference
-and its target, so an edit above a finding does not turn it back into a new
-one. Alternatively, `repowise doc-drift --check --since auto` judges only what
-the change is answerable for (documents it edits, and documents naming files it
-deletes or renames), which needs no baseline but does need `fetch-depth: 0`.
-
-Security has a baseline too, for accepting a finding a change adds on purpose
-(a documented test key, say): `repowise security check --write-baseline
-.security-baseline.json` on that change records it, and `--baseline` accepts it
-from then on. A `repowise-security-ignore` comment silences one false positive
-([details](../layers/SECURITY.md#silencing-one-finding-repowise-security-ignore)).
+- `--fail-on-baseline-growth` (input `fail-on-baseline-growth`) keeps a
+  baseline shrink-only: doc drift or security fails when the baseline lists a
+  finding the same file at the change's base does not, so re-saving it cannot
+  hide new findings. A baseline new in the change passes.
+- The health gate reads `.repowise/health-rules.json` as the change's base has
+  it, so a rule a change adds or loosens applies from the next change on.
 
 ## GitHub Actions
 
-The repository is itself an action. It installs Repowise, runs the gates you
-pick, keeps going when one fails so the job reports all of them, and fails the
-step at the end:
+The repository is an action: it installs Repowise, runs every chosen gate, then
+fails the step with `1` if any failed, else `2` if any could not evaluate.
+Snippets below are `with:` lines for this workflow:
 
 ```yaml
 on: pull_request
@@ -108,75 +93,54 @@ jobs:
       - run: pytest --cov=src --cov-report=lcov:coverage/lcov.info
       - uses: repowise-dev/repowise@main   # pin a release tag in production
         with:
-          checks: coverage,doc-drift,security,risk
+          checks: coverage,doc-drift,security,health,risk
           coverage-report: coverage/lcov.info
           coverage-fail-under: 80
           risk-fail-above-percentile: 95
 ```
 
-Pin a release tag rather than `main`, and set `version:` to pin the Repowise
-release the action installs.
+- Pin a release tag, not `main`; `version:` pins the Repowise release.
+- With a shallow checkout, the action fetches the history and target branch
+  that coverage, security, health and risk need; `fetch-depth: 0` skips that.
 
-| Input | Default | Meaning |
-|-------|---------|---------|
-| `checks` | `doc-drift,security` | Gates to run. Coverage needs a report and risk is a policy choice, so both are opt-in. |
-| `version` | latest | Repowise version to install. |
-| `python-version` | `3.12` | Python to run it with (3.11 or newer). |
+| Input | Default | What it does |
+|-------|---------|--------------|
+| `checks` | `doc-drift,security` | Gates to run, separated by commas, spaces or newlines. Coverage needs a report, and health and risk are policy choices, so all three are opt-in. An unknown name exits `2`. |
+| `version` | latest | Repowise version from PyPI. |
+| `python-version` | `3.12` | Python to run it (3.11 or newer). |
 | `working-directory` | `.` | Where to run from. |
-| `base` | from the pull request | Revision range for coverage, security and risk. |
-| `coverage-report` | config, else discovery | Reports, one per line: a path or a glob (`artifacts/**/lcov.info`), optionally `path=prefix`. |
-| `coverage-fail-under` | `coverage.fail_under` | Minimum patch coverage percent. |
-| `coverage-min-coverable-lines` | `coverage.min_coverable_lines` | Small-change tolerance: a change with fewer changed executable lines than this never fails. |
-| `coverage-fail-under-risky` | `coverage.fail_under_risky` | Minimum patch coverage percent over risky files only: hotspots or bug magnets from the index; on git alone, the top quartile of files with bug-fix history. |
-| `coverage-fail-under-branches` | `coverage.fail_under_branches` | Minimum percent of branches taken on changed lines. |
-| `coverage-base-report` | none | Reports measured at the change's base commit, one per line. See [Project coverage](#project-coverage-and-coverage-outside-the-change). |
-| `coverage-max-drop` | `coverage.max_drop` | Most project coverage may fall from the base, in percentage points. |
-| `doc-drift-baseline` | none | Committed baseline file. |
-| `security-fail-on` | `high` | Lowest severity that fails: `high`, `med`, `low`. |
-| `security-baseline` | none | Committed baseline file. |
-| `risk-fail-above-percentile` | none | With `risk` in `checks`, fail when the change ranks above this percentile of recent commits. Empty reports the rank without gating. |
-| `upload-sarif` | `false` | Upload doc drift and security findings to code scanning. |
-| `impacted-tests` | `false` | Select the tests the change needs (needs a cached `.repowise` index); see [below](#selecting-the-tests-a-change-needs). |
-| `impacted-tests-runner` | `auto` | `auto`, `pytest`, `go`, `jest` or `files`. |
+| `base` | from the pull request | Range for coverage, security, health, risk and test selection; empty reads the target branch, else the default branch. |
+| `upload-sarif` | `false` | Upload findings to [code scanning](#code-scanning-sarif). |
+| `comment` | `false` | Post one pull-request comment summarizing every gate, updated in place on each run. |
+| `github-token` | `github.token` | Token the summary comment is posted with; a later run edits only the comment this token's own account posted. |
 
-Outputs: `coverage`, `doc-drift`, `security` and `risk` hold each gate's exit
-code (empty when not run), and `sarif-dir` the SARIF directory.
-`impacted-tests` holds the runner arguments (or `:all`), and `run-all-tests` is
-`false` only when that subset is safe to run alone.
+Gate inputs are in each gate's section.
 
-The risk gate ranks the change against the repository's own recent commits,
-so at a percentile P roughly (100 - P)% of changes fail it by construction.
-A failure asks for a split or a second reviewer, not a code fix, and there is
-no baseline to accept it with.
+| Output | Holds |
+|--------|-------|
+| `coverage`, `doc-drift`, `security`, `health`, `risk` | each gate's exit code; empty when not run |
+| `verdict` | `fail` when any gate failed or could not evaluate, `warn` when any passed with warnings, else `pass`; a gate that exits 0 without leaving a result (an older Repowise) counts as `warn` |
+| `sarif-dir` | the SARIF directory, when `upload-sarif` is on and a gate wrote findings |
+| `impacted-tests` | runner arguments for the selected tests, or `:all` |
+| `run-all-tests` | `false` only when that subset is safe alone; `true` otherwise, also when selection could not run |
 
-A shallow checkout still works when coverage, security or risk runs: the action
-fetches the missing history and the target branch first. Checking out with
-`fetch-depth: 0` skips that step.
+**Summary comment.** The job summary ends with a table of every gate and its
+result. With `comment: true` the same table, plus each gate's findings, goes
+into one pull-request comment that later runs edit rather than repeat; the job
+needs `pull-requests: write`. Each working directory keeps its own comment.
+Each finding carries a hidden
+`repowise-fingerprint:v1` marker with its line-free id, so the comment counts
+what a push resolved.
 
-**Code scanning.** With `upload-sarif: true` the findings appear in the
-repository's Security tab and on the pull request's diff. The job then needs
-`security-events: write` (and `actions: read` in a private repository). A pull
-request from a fork runs with a read-only token, so the upload is skipped
-there with a warning; the gates still run and still decide the check.
-
-**Without the action,** each gate is one step:
-
-```yaml
-- run: pip install repowise
-- run: repowise coverage check --report coverage/lcov.info --fail-under 80 --format github
-- run: repowise doc-drift --check --format github
-- run: repowise security check --format github
-- run: repowise risk --fail-above-percentile 95 --format github
-```
-
-On a pull request the gates read the target branch from `GITHUB_BASE_REF`
-themselves. On a `push` event there is none; pass the range explicitly, for
-example `"$BEFORE..$GITHUB_SHA"` with `BEFORE: ${{ github.event.before }}` set
-under `env:`.
+**Without the action**, run each gate as a step after `pip install repowise`,
+with `--format github` (commands as in [Other CI systems](#other-ci-systems)).
+On a pull request the gates read `GITHUB_BASE_REF` themselves; a `push`
+event has none: pass the range, e.g.
+`"$BEFORE..$GITHUB_SHA"` with `BEFORE: ${{ github.event.before }}` under `env:`.
 
 ## GitLab
 
-Include the template and set variables for what you use:
+Include the template and set variables for the gates you use:
 
 ```yaml
 include:
@@ -190,32 +154,34 @@ repowise-coverage:
   needs: [test]   # the job that writes the report as an artifact
 ```
 
-It adds one job per gate on merge request pipelines: `repowise-coverage` (only
-when `REPOWISE_COVERAGE_REPORT` is set), `repowise-doc-drift`,
-`repowise-security` and `repowise-risk` (only when
-`REPOWISE_RISK_FAIL_ABOVE_PERCENTILE` is set). Each prints its markdown report
-to the log and keeps it as an artifact. The doc drift and security jobs also
-write a Code Quality report (`gl-code-quality-doc-drift.json`,
-`gl-code-quality-security.json`), so their findings show in the merge
-request's Code Quality widget, even when the gate fails the job. One more job,
-`repowise-code-quality`, runs on the default branch and never fails the
-pipeline: it publishes the report the widget compares a merge request against,
-so only issues the merge request introduces show as new. It publishes doc
-drift only: security judges only what a change adds, and the default branch
-has no change to judge.
-`REPOWISE_COVERAGE_REPORT` is space separated and may hold globs and
-`path=prefix` entries; Repowise expands the globs, not the shell. Other
-variables: `REPOWISE_VERSION`, `REPOWISE_COVERAGE_MIN_COVERABLE_LINES`,
-`REPOWISE_COVERAGE_FAIL_UNDER_RISKY`, `REPOWISE_COVERAGE_BASE_REPORT` (space
-separated, like the report list), `REPOWISE_COVERAGE_MAX_DROP`,
-`REPOWISE_DOC_DRIFT_BASELINE`,
-`REPOWISE_SECURITY_BASELINE`, `REPOWISE_SECURITY_FAIL_ON`. Override any job's
-`image`, `rules` or `needs` in your own file as usual.
+Each job logs its markdown report and keeps it as an artifact; override
+`image`, `rules` or `needs` in your own file.
 
-GitLab can also draw line coverage in the merge request diff. That comes from
-your own test job, not from Repowise: have your test runner write a Cobertura
-report (for example with pytest-cov) and declare it there. The same
-`coverage.xml` can be your `REPOWISE_COVERAGE_REPORT`.
+| Job | Runs on | Code Quality report |
+|-----|---------|---------------------|
+| `repowise-coverage` | merge requests, when `REPOWISE_COVERAGE_REPORT` is set | none |
+| `repowise-doc-drift` | every merge request | `gl-code-quality-doc-drift.json` |
+| `repowise-security` | every merge request | `gl-code-quality-security.json` |
+| `repowise-health` | merge requests, when `REPOWISE_HEALTH: "true"` | `gl-code-quality-health.json` |
+| `repowise-risk` | merge requests, when `REPOWISE_RISK_FAIL_ABOVE_PERCENTILE` is set | none |
+| `repowise-impacted-tests` | merge requests, when `REPOWISE_IMPACTED_TESTS: "true"` | none |
+| `repowise-code-quality` | the default branch; never fails the pipeline | `gl-code-quality-doc-drift.json` |
+
+- `REPOWISE_VERSION` pins the release; gate variables are in each gate's table.
+- Report lists (`REPOWISE_COVERAGE_REPORT`, `REPOWISE_COVERAGE_BASE_REPORT`)
+  are space separated and may hold globs and `path=prefix`; Repowise expands
+  the globs, not the shell.
+- Findings show in the merge request's Code Quality widget, even when the gate
+  fails the job.
+- `repowise-code-quality` publishes the report the widget compares against, so
+  only new issues show as new. It covers doc drift only: security judges only
+  what a change adds, and the default branch has no change.
+
+<details><summary>Line coverage in the merge request diff</summary>
+
+That comes from your test job, not Repowise: write a Cobertura report (e.g.
+with pytest-cov) and declare it. The same `coverage.xml` can be your
+`REPOWISE_COVERAGE_REPORT`.
 
 ```yaml
 test:
@@ -228,10 +194,12 @@ test:
         path: coverage.xml
 ```
 
+</details>
+
 ## Other CI systems
 
-The gates are plain commands. Fetch the target branch, run them, and let the
-exit code fail the build. Jenkins multibranch:
+Fetch the target branch, run the commands, and let the exit code fail the
+build. Jenkins multibranch:
 
 ```bash
 git fetch --no-tags origin "+refs/heads/$CHANGE_TARGET:refs/remotes/origin/$CHANGE_TARGET"
@@ -239,172 +207,95 @@ pip install repowise
 repowise coverage check "origin/$CHANGE_TARGET...HEAD" --report coverage/lcov.info --fail-under 80
 repowise doc-drift --check
 repowise security check "origin/$CHANGE_TARGET...HEAD"
+repowise health check "origin/$CHANGE_TARGET...HEAD"
+repowise risk "origin/$CHANGE_TARGET...HEAD" --fail-above-percentile 95
 ```
 
-Bitbucket Pipelines and others work the same way with their own branch
-variable; `--format markdown` or `json` gives you something to post.
+Bitbucket Pipelines and others use their own branch variable; `--format
+markdown` or `json` gives something to post.
 
-## Selecting the tests a change needs
+## Gate on coverage
 
-`repowise impacted-tests --format args` prints one line of arguments for a test
-runner, or `:all` whenever any part of the answer is not known, with the
-reasons on stderr. It needs an index (cached from the default branch, below);
-a per-test coverage map (`repowise coverage add`) makes it more precise.
+The [shared workflow](#github-actions) shows the inputs in use.
 
-- It exits `0` for a subset or for everything, and `2` only when it cannot read the change or the `tests.*` config.
-- Branch on the run-all flag, never on `:all`: jest and vitest read it as a pattern and run nothing.
-- It runs everything for: an empty change; a Cargo, Make, CMake, Docker or CI file; tool and runtime config (dotfiles, `.tool-versions`, root-level `*.toml`, `*.yaml` and `*.json`, shell scripts); `.repowise/config.yaml`.
-- A lockfile, manifest or test runner config runs its own ecosystem's tests: for a nested `package.json`, lockfile or `go.mod`, the tests under its directory and those reaching code there; at the root, and for Python, Ruby, PHP and Gradle or Maven files (pip requirements included), `tsconfig` and jest or vitest configs, the whole ecosystem. Tests whose code names the file from outside that scope run too (a Python test reading `package.json`); a mention written with a directory names only the files its path can mean (`packages/web/package.json` does not name `packages/ui/package.json`), a bare name, `../package.json` or a path built from parts names every file of that name. A file under a fixture tree (`tests/fixtures/<name>/`) stands for the test code that names that tree or the fixtures directory; when none does, or code outside the test trees names the tree's path, everything runs. If more than 200 non-test files outside the scope name it, everything runs.
-- A production package's `__init__.py` selects the tests reaching any module under it.
-- A doc, template, query, stylesheet, image or nested data file selects the tests reaching the code that names it. When no code names it, a doc, template, stylesheet or image selects its package's tests, and a query or data file runs everything. Ceiling: a test that globs docs or templates in another package is not seen.
-- It also runs everything for: non-code files in a test tree; a changed file with no known test or only a filename guess; a route through a test helper no test imports, unless every known test is selected anyway (the reasons then say so); any Python test helper while a conftest or pytest config loads plugins by name.
-- It also runs everything for: a missing or unreadable index; a per-test map at its row cap; a deleted file no known test used.
-- An index built at an older commit than the change's base is used as is. Files changed in between whose imports or module-name strings moved (any change beyond whitespace, outside Python and JavaScript/TypeScript) add the tests reaching them. It runs everything instead when that commit is not in the clone, or more than 1,000 files changed in between, or one of them is a lockfile, manifest, build or test config or `.repowise/config.yaml`. CI config and test data changed in between no longer force a full run: neither is imported.
-- Only `docs/` and root README-like files (README, CHANGELOG, LICENSE, CONTRIBUTING) are skipped, and only when no code names them (a test that reads `README.md` names it, and then runs); an empty line means only those changed.
-- Tests the graph cannot see into run with every subset, and the reasons say how many and why: a test not indexed or importing nothing it resolves; a Python, JavaScript or TypeScript test that lists and reads files under a source directory (the working directory, a module's location, or its own location climbed out of the test directory; never its fixtures, sibling data or a temporary directory); one that runs the project's own command, `python -m` module, code importing the project, or package `bin` in a child process. The indexer finds them once from each test's source and stores the reason, so selection reads it without opening test files. An index built before this check runs everything until `repowise update` checks its tests. A Python module named like a test but outside every test directory is not a test when the nearest pytest config's `testpaths` or `python_files` leaves it out, as a bare `pytest` does: it is selected through like any other code. The rule follows a bare `pytest` run, so a test that CI only names explicitly on the command line outside `testpaths` is not seen as one: list it in `tests.always_run`.
-- A changed `conftest.py`, test package `__init__.py` or imported test helper selects the tests under or importing it, not everything.
-- A change that reaches a `conftest.py` only through its imports selects the tests that ask for a fixture using that change (directly, through other fixtures, `usefixtures` or `getfixturevalue`), plus one test under the conftest as an import check.
-  - Every test under the conftest still runs when an autouse fixture, a `pytest_*` hook or module-level code uses the change, or when the conftest imports it only for side effects.
-  - It also runs everything there when a fixture request cannot be read from the code (a computed name, a mark kept in a variable, a config `usefixtures`), when the conftest loads plugins or cannot be read, and on an index built before this was recorded. The reasons name the cause.
-  - Ceiling: a change that only alters what the changed module does at import time, seen by a test that does not import it, is caught by the import check alone.
-- Wiring no import states counts as a use: a JS/TS setup file named under `setupFiles`, `setupFilesAfterEnv`, `globalSetup` or `globalTeardown` in a `vitest.*`, `jest.*`, `vite.*` or `playwright.*` config or a `package.json` stands for the tests in that config's package, and a helper a test names by a path relative to itself (`Path(__file__).parent / "server.py"`, `path.join(__dirname, "server.ts")`) stands for that test. A `conftest.py` links only the files pytest collects (its `python_files`), so a helper beside the tests is not on every route the conftest reaches.
-- Without a range, in CI it reads the pull request's change; locally, the staged changes.
-- `tests.full_run_on` (gitignore patterns) adds run-everything paths, and a path it matches is never scoped; `tests.always_run` is appended to every selection as written, for the runner whose language each entry is in.
-- With `--runner pytest`, `go` or `jest`, the arguments hold only that runner's tests, `tests.always_run` included. A repository with tests in several languages needs one job per runner: the tests a job leaves out are counted on stderr, and listed per runner under `left_out` with `--format json`. `--runner files` gets every test.
-- Selected tests come likeliest to fail first ([run order](../reference/CLI_REFERENCE.md#repowise-impacted-tests-revspec)).
-  `--prioritize` prints the whole suite with the selection first, so a job can run the
-  head with `-x` and the rest after; it skips nothing.
-- `--explain <test>` says why one test file was or was not selected: the first changed file that reached it, the evidence (coverage, call graph, import graph) and the import route from the test to that file when there is one, or the rule that runs it. With `--format json` the same answer is added as `explain`, and `selected.why` holds it for every selected test.
-- Ceiling: on the JVM and .NET, a same-package test linked only by an unresolved call is missed. So is a test that reaches the change through a plugin or registry loaded by a string name, a tree walk or child process done inside a shared helper it calls, or one in another language: list such tests in `tests.always_run`, and run the full suite on the default branch.
+| Input | GitLab variable | Flag / config key | What it does |
+|-------|-----------------|-------------------|--------------|
+| `coverage-report` | `REPOWISE_COVERAGE_REPORT` | `--report` / `coverage.paths` | Reports: path or glob, optionally `path=prefix`; one per line in the action. Unset: config, else discovery. |
+| `coverage-fail-under` | `REPOWISE_COVERAGE_FAIL_UNDER` | `--fail-under` / `coverage.fail_under` | Minimum patch coverage percent; unset reports without gating. |
+| `coverage-min-coverable-lines` | `REPOWISE_COVERAGE_MIN_COVERABLE_LINES` | `--min-coverable-lines` / `coverage.min_coverable_lines` | [Small-change tolerance](#small-change-tolerance). |
+| `coverage-fail-under-risky` | `REPOWISE_COVERAGE_FAIL_UNDER_RISKY` | `--fail-under-risky` / `coverage.fail_under_risky` | Minimum over [risky files](#risk-weighted-patch-coverage). |
+| `coverage-fail-under-branches` | `REPOWISE_COVERAGE_FAIL_UNDER_BRANCHES` | `--fail-under-branches` / `coverage.fail_under_branches` | Minimum [branches taken](#branches-on-changed-lines) on changed lines. |
+| `coverage-base-report` | `REPOWISE_COVERAGE_BASE_REPORT` | `--base-report` | Reports measured at the change's base ([project coverage](#project-coverage-and-coverage-outside-the-change)). |
+| `coverage-max-drop` | `REPOWISE_COVERAGE_MAX_DROP` | `--max-drop` / `coverage.max_drop` | Most project coverage may fall, in points; needs a base report or an index that stored coverage at the base. |
 
-**What to expect.** The subset is only as small as the code is loosely coupled.
-On tightly coupled code the graph alone picks most tests (over 80% of test
-files on this repository), because most tests import something that imports
-the changed file. Real savings need a per-test map measured at the change's
-base. `--format json` shows what drove each file's selection in
-`selected.basis`.
+An empty input or unset variable falls back to the config key in
+`.repowise/config.yaml` ([keys](../reference/CONFIG.md#the-coverage-block)).
 
-On GitHub Actions, keep the index cached from the default branch and branch
-on the outputs in the pull request job:
+### Small-change tolerance
 
-```yaml
-# .github/workflows/repowise-index.yml
-on: {push: {branches: [main]}}
-jobs:
-  index:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with: {fetch-depth: 0}
-      - uses: actions/cache/restore@v4
-        with: {path: .repowise, key: "repowise-${{ github.sha }}", restore-keys: "repowise-"}
-      - run: pip install repowise
-      - run: if [ -f .repowise/state.json ]; then repowise update --index-only; else repowise init --yes --index-only; fi
-      - uses: actions/cache/save@v4
-        with: {path: .repowise, key: "repowise-${{ github.sha }}"}
-```
+Below `min_coverable_lines` changed executable lines, a miss reads "not
+applied" (a GitHub notice) and exits `0`: one uncovered line in a two-line fix
+should not block a merge. It counts only lines the report measures.
 
-```yaml
-# in the pull request workflow
-- uses: actions/checkout@v4
-  with: {fetch-depth: 0}
-- uses: actions/cache/restore@v4
-  with: {path: .repowise, key: "repowise-${{ github.event.pull_request.base.sha }}", restore-keys: "repowise-"}
-- id: select
-  uses: repowise-dev/repowise@main
-  with: {checks: "", impacted-tests: true, impacted-tests-runner: pytest}
-- if: steps.select.outputs.run-all-tests != 'false'
-  run: pytest
-- if: steps.select.outputs.run-all-tests == 'false' && steps.select.outputs.impacted-tests != ''
-  env: {TESTS: "${{ steps.select.outputs.impacted-tests }}"}
-  run: eval "pytest $TESTS"
-```
+### Coverage reports per language
 
-A skipped or failed step leaves `run-all-tests` empty, so `!= 'false'` runs
-everything.
-
-On GitLab, set `REPOWISE_IMPACTED_TESTS: "true"` (and optionally
-`REPOWISE_IMPACTED_TESTS_RUNNER`). The `repowise-impacted-tests` job writes the
-arguments to `impacted-tests.txt` and `RUN_ALL_TESTS` to a dotenv report:
-
-```yaml
-repowise-index:
-  image: python:3.12
-  variables: {GIT_DEPTH: "0"}
-  script:
-    - pip install repowise
-    - if [ -f .repowise/state.json ]; then repowise update --index-only; else repowise init --yes --index-only; fi
-  cache: {key: repowise-index, paths: [.repowise/], policy: pull-push}
-  rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-
-repowise-impacted-tests:
-  cache: {key: repowise-index, paths: [.repowise/], policy: pull}
-
-test:
-  needs: [{job: repowise-impacted-tests, optional: true}]
-  script:
-    - |
-      if [ "${RUN_ALL_TESTS:-}" != "false" ]; then pytest
-      elif [ -n "$(cat impacted-tests.txt 2>/dev/null)" ]; then eval "pytest $(cat impacted-tests.txt)"
-      fi
-```
-
-## Coverage reports per language
-
-The coverage gate needs the lines each file could have run, not only the lines
-it did, and a new file no test loads must still appear in the report or it is
-listed as "not in report" and left out of the figure. These commands do both:
+Reports must list every runnable line, including new files no test loads
+(otherwise "not in report" and left out):
 
 | Stack | Produce the report | Pass |
 |-------|--------------------|------|
-| Python (pytest) | `pytest --cov=src --cov-report=lcov:coverage/lcov.info` (lcov paths are relative to the working directory) | `coverage/lcov.info` |
+| Python (pytest) | `pytest --cov=src --cov-report=lcov:coverage/lcov.info` (paths relative to the working directory) | `coverage/lcov.info` |
 | Python (coverage.py) | `coverage lcov` or `coverage xml` after the run | `coverage.lcov`, `coverage.xml` |
 | Go | `go test -coverprofile=coverage.out -coverpkg=./... ./...` (`-coverpkg` includes packages with no tests) | `coverage.out` |
 | Java or Kotlin (Gradle) | `gradle test jacocoTestReport` with the XML report on | `build/reports/jacoco/test/jacocoTestReport.xml` |
-| Java (Maven) | `mvn test jacoco:report` (`report-aggregate` for a multi-module build) | `target/site/jacoco/jacoco.xml` |
-| JavaScript or TypeScript | `c8 --all --reporter=lcov`, or a test runner's `lcov` reporter with every source file included | `coverage/lcov.info` |
+| Java (Maven) | `mvn test jacoco:report` (`report-aggregate` for multi-module) | `target/site/jacoco/jacoco.xml` |
+| JavaScript or TypeScript | `c8 --all --reporter=lcov`, or a runner's `lcov` reporter including every source file | `coverage/lcov.info` |
 | Rust | `cargo llvm-cov --lcov --output-path coverage/lcov.info` | `coverage/lcov.info` |
+| Salesforce Apex | `sf apex run test --code-coverage --result-format json --output-dir coverage` (lists only the classes and triggers the run touched) | `coverage/test-result-<run id>.json` (with the per-test map) |
 
-Several reports merge: a line any of them ran counts as run. A coverage.py
-`.coverage` database is not a text report; export it first. When report paths
-do not line up with the repository (a build directory, a container path), set
-`coverage.strip_prefix` or `coverage.path_prefix` in `.repowise/config.yaml`.
-The gate reports how many report paths matched the repository, and exits `2`
-when none did, so a wrong prefix never passes as zero.
-
-The threshold can live in config instead of the workflow:
-
-```yaml
-# .repowise/config.yaml
-coverage:
-  paths: [coverage/lcov.info]
-  fail_under: 80
-  min_coverable_lines: 5   # small-change tolerance
-  fail_under_risky: 90     # optional, see Risk-weighted patch coverage
-  fail_under_branches: 70  # optional, see Branches on changed lines
-```
-
-With `min_coverable_lines` set, a change touching fewer changed executable
-lines than that is still reported against the threshold, but a miss reads
-"not applied" (a notice on GitHub) and exits `0`: one uncovered line in a
-two-line fix should not block a merge. Like the percentage, the count is of
-lines the report measures; a file the report does not name adds nothing to it.
+- Several reports merge: a line any of them ran counts as run.
+- Export a coverage.py `.coverage` database first; it is not a text report.
+- Paths that do not line up (a build directory, a container path): set
+  `coverage.strip_prefix` or `coverage.path_prefix`.
+- The gate reports how many report paths matched. None: exit `2`. More than
+  half unmatched: it suggests a prefix, and `repowise coverage add` stores
+  nothing without `--allow-partial`.
 
 ### Monorepos and matrix jobs
 
-A matrix of test jobs leaves one report per shard. `--report` (and each line
-of `coverage-report`) takes a glob, relative to the working directory, so
-`artifacts/**/lcov.info` reads them all; they merge hit-wins. `**` walks the
-tree the way discovery does, skipping dependency, cache and build directories
-(`node_modules`, `.venv`, `dist`, ...) and nested repositories. A job whose
-reports never arrived exits `2`: a literal path that does not exist, or a
-glob that matches nothing, cannot be evaluated. A glob still matches when one
-shard of several is missing, so to catch that, list each shard's report on
-its own line. `coverage.paths` entries that match nothing are skipped.
+`--report` and each `coverage-report` line take a glob relative to the working
+directory (`artifacts/**/lcov.info`); matches merge hit-wins.
 
-On GitHub Actions, each shard uploads its report and the gate job downloads
-them all:
+- `**` skips dependency, cache and build directories (`node_modules`, `.venv`,
+  `dist`, ...) and nested repositories, as discovery does.
+- A missing literal path, or a glob matching nothing, exits `2`. A glob still
+  matches with one shard missing: list each shard on its own line to catch it.
+- `coverage.paths` entries matching nothing are skipped.
+- Per-report prefix: `--report web/coverage/lcov.info=web`. The whole argument
+  is tried as a path first (`artifacts/shard=1/*.info` stays one), then split
+  on the last `=`.
+- In config, `paths` entries may be globs relative to the repo root, or
+  mappings:
+
+```yaml
+coverage:
+  paths:
+    - {path: "web/coverage/lcov.info", path_prefix: web}
+    - "services/*/coverage.xml"
+  ignore: ["**/*_pb2.py", "gen/"]   # gitignore syntax
+```
+
+- `coverage.ignore` drops matching changed files before measuring (counted as
+  ignored, here and in editor and agent views) and matching report entries
+  from `repowise coverage add` and indexing. Ignoring every entry exits `2`.
+- Go coverprofiles name import paths. A module in a subdirectory
+  (`backend/go.mod` declaring `module example.com/m`) maps `example.com/m/` to
+  `backend/` from the checkout's `go.mod` files; a per-report prefix or
+  `coverage.path_prefix` turns that off.
+
+<details><summary>Matrix examples (GitHub Actions and GitLab)</summary>
+
+Each shard uploads its report; the gate job downloads them all:
 
 ```yaml
 jobs:
@@ -431,8 +322,7 @@ jobs:
           coverage-report: artifacts/**/lcov.info
 ```
 
-On GitLab, give each parallel shard its own path and let the gate job need
-them:
+On GitLab, give each parallel shard its own path:
 
 ```yaml
 test:
@@ -448,46 +338,17 @@ repowise-coverage:
   needs: [test]
 ```
 
-When one package's report names paths relative to that package, give it a
-per-report prefix: `--report web/coverage/lcov.info=web`. The whole argument
-is tried as a path or glob first, so `artifacts/shard=1/*.info` stays one;
-only when it matches nothing is it split on the last `=`. In config the same
-is a mapping entry, and `paths` entries may be globs, relative to the
-repository root:
-
-```yaml
-coverage:
-  paths:
-    - {path: "web/coverage/lcov.info", path_prefix: web}
-    - "services/*/coverage.xml"
-  ignore: ["**/*_pb2.py", "gen/"]   # gitignore syntax
-```
-
-`coverage.ignore` leaves generated or vendored files out on both sides:
-changed files it matches are dropped before measuring (the summary counts them
-as ignored, here and in the editor and agent views), and report entries it
-matches are not stored by `repowise coverage add` or indexing. When it leaves
-out every entry of the reports, the gate exits `2` and says so.
-
-Go coverprofiles name files by import path. When a module lives in a
-subdirectory (`backend/go.mod` declaring `module example.com/m`), paths under
-`example.com/m/` are mapped to `backend/` using the `go.mod` files in the
-checkout, so files in the module's top-level package match with no prefix.
-A per-report prefix or `coverage.path_prefix` turns the mapping off.
+</details>
 
 ### Path-scoped gates
 
-One threshold over the whole change lets a well-tested package carry an
-untested one. `coverage.gates` adds a gate per part of the repository: each is
-judged on the changed files its globs match, with the same rules as the
-whole-change gate. Globs use gitignore syntax, like `coverage.ignore`, and are
-relative to the repository root; a leading `/` anchors one there (`/api/` is
-the top-level `api` directory, `api/` any directory of that name).
+`coverage.gates` judges parts of the repository separately, so a well-tested
+package cannot carry an untested one. Each gate covers the changed files its
+globs match, with the whole-change rules.
 
 ```yaml
-# .repowise/config.yaml
 coverage:
-  fail_under: 70                # the whole change, as before
+  fail_under: 70                # the whole change
   gates:
     - name: api
       paths: ["/services/api/"]
@@ -501,117 +362,95 @@ coverage:
       informational: true       # reported, never fails
 ```
 
-A gate without `fail_under` is reported but judges nothing. A file can match
-several gates; each counts it. The change fails when the whole-change gate
-fails or when any gate that is not `informational` fails. The headline then
-leads with the failing gate and its counts (`Fails: path-scoped gate api 60.0%
-(6 of 10 changed executable lines), below its 85.0% gate.`) before the
-whole-change verdict, the summary adds a table of gates (failing ones first),
-and on GitHub each failing gate is its own `::error::`; an informational gate
-below its threshold is a `::notice::`. The small-change tolerance is the whole
-change's: when the change has fewer changed executable lines than
-`min_coverable_lines`, every gate reads `too_small`, but a small slice of a
-big change is judged. An entry the config cannot use (no name, a repeated
-name, no paths or only `!` exclusions, a `fail_under` outside 0-100, an
-unknown key) makes the check exit `2` naming it.
+| Key | What it does |
+|-----|--------------|
+| `name` | Required, unique. |
+| `paths` | Gitignore globs from the repo root; a leading `/` anchors (`/api/` top-level only, `api/` anywhere); `!` excludes. |
+| `fail_under` | Percent 0-100; without it the gate is reported but judges nothing. |
+| `informational` | Reported, never fails. |
 
-Like the whole-change figure, a gate counts only changed lines the report
-measures. A changed file it matches that the report does not measure (a new
-file no test loads, a report without line data) is counted apart, as
-`unmeasured_file_count`, and left out of the percentage: a gate over only such
-files reads "no measured changed lines (2 changed files not measured)" and
-fails nothing.
+- A file matching several gates counts in each.
+- The change fails if the whole-change gate or any non-informational gate
+  fails. The headline leads with it (`Fails: path-scoped gate api 60.0% (6 of
+  10 changed executable lines), below its 85.0% gate.`), the summary lists
+  gates failing first, and GitHub gets an `::error::` per failing gate and a
+  `::notice::` per informational one below threshold.
+- The small-change tolerance is the whole change's: a small change reads
+  `too_small` in every gate; a small slice of a big change is judged.
+- An unusable entry (no or repeated name, no paths or only `!` ones,
+  `fail_under` outside 0-100, an unknown key) exits `2` naming it.
+- Changed files the report does not measure (new and unloaded, or no line data)
+  count apart as `unmeasured_file_count`; a gate with only those reads "no
+  measured changed lines (2 changed files not measured)" and fails nothing.
+- Run `coverage check` once over combined reports, not per job, or each job
+  judges a fragment ([matrix jobs](#monorepos-and-matrix-jobs)).
+- Gates live in committed config, so the Action and GitLab template take no
+  input for them.
+- Editor, REST and agent views match when stored coverage was measured at the
+  change's head and the config is valid; otherwise gates read `no_data` (invalid
+  entries listed in `scope.config_errors`).
 
-With one report per job, each job would judge the gates on a fragment of the
-change: run `coverage check` once over the combined reports instead, as in
-[Monorepos and matrix jobs](#monorepos-and-matrix-jobs).
-
-The gates live in the committed config, so the Action and the GitLab template
-take no input for them: every job reads the same gates. The editor, REST and
-agent views report the same verdicts when the stored coverage was measured at
-the change's head and the config is valid; on stale coverage, or beside an
-invalid entry (which they list in `scope.config_errors`), their gates read
-`no_data`. To start, let Repowise propose some:
-
-```bash
-repowise coverage suggest-gates                # YAML to paste below coverage:
-repowise coverage suggest-gates --format json
-```
-
-It reads CODEOWNERS (one gate per owner), the top-level packages git tracks,
-and, when the repository is indexed, the graph's communities, labelling each
-source in a comment. The block is indented to paste directly below your
-`coverage:` line. It writes nothing and sets no `fail_under`: keep the gates
-you want and choose their thresholds.
+`repowise coverage suggest-gates` (or `--format json`) proposes gates from
+CODEOWNERS (one per owner), top-level tracked packages and, when indexed, graph
+communities, labelling each source. It prints YAML indented to paste below
+`coverage:`, writes nothing and sets no `fail_under`.
 
 ### Risk-weighted patch coverage
 
-An uncovered line in a file that keeps breaking matters more than one in a
-file nothing depends on. Every changed file in the coverage report carries its
-risk, and the table, the annotations and the summary list the riskiest files
-first, with a "Risk" column in plain words ("hotspot, bug-fix weight 3.2, 14
-dependents", "none known", or "unknown" when it could not be read). A file is
-risky when the index flags it a hotspot or a bug magnet; without an index, or
-for a file the change adds, when its recency-weighted bug-fix weight from git
-is in the top quartile of the files with bug-fix history. The report says
-which basis each row used when not every file had index data. When an index is
-present, each annotation also names the test file to extend when one is found
-("Extend tests/test_auth.py (inferred: calls reach `login`)").
+The table, annotations and summary list the riskiest changed files first, with
+a "Risk" column ("hotspot, bug-fix weight 3.2, 14 dependents", "none known",
+or "unknown").
 
-`--fail-under-risky` (the action's `coverage-fail-under-risky`) adds one more
-gate, stricter, over the risky files' changed lines alone, and the check fails
-when any gate fails. It follows the same rules as the others, the whole
-change's small-change tolerance included. A change that touches no risky file
-leaves it not applied (`no_data`, exit `0`). With the gate set, a shallow
-clone, or a measured file whose risk could not be read (no git history and no
-index row), exits `2`, unless the whole-change, a path-scoped or the branch
-gate already failed: that failure is reported.
+- Risky: an index hotspot or bug magnet; without an index, or for a new file,
+  top quartile of recency-weighted bug-fix weight among files with bug-fix
+  history. The report names the basis when rows differ.
+- With an index, annotations name a test to extend ("Extend tests/test_auth.py
+  (inferred: calls reach `login`)").
+- `--fail-under-risky` gates the risky files' changed lines alone, with the
+  same rules and small-change tolerance. No risky file: `no_data`, exit `0`.
+- With it set, a shallow clone, or a measured file whose risk could not be read
+  (no git history, no index row), exits `2` unless another gate already failed.
 
 ### Branches on changed lines
 
-When the report has per-line branch data (lcov `BRDA`, Cobertura
-`condition-coverage`, JaCoCo branch counters, Clover `cond`), the check also
-reports "Branches on changed lines 70.0% (7 of 10 taken; 2 lines partly
-taken)". A partly taken line ran with a branch never taken: it gets a "Partly
-taken" column and, on GitHub, a "Partly taken branch" warning.
-`--fail-under-branches P` (`coverage-fail-under-branches`,
-`coverage.fail_under_branches`) gates the share.
+With per-line branch data (lcov `BRDA`, Cobertura `condition-coverage`, JaCoCo
+branch counters, Clover `cond`) the check adds "Branches on changed lines 70.0%
+(7 of 10 taken; 2 lines partly taken)".
 
+- A partly taken line (a branch never taken) gets a "Partly taken" column and a
+  GitHub "Partly taken branch" warning.
 - Line and branch coverage are reported side by side, never blended.
-- The small-change tolerance applies, and counts changed lines, not branches.
-- No changed line with branches: "not measured", never 0%, and the gate is not
-  applied (exit `0`).
-- Coverage with no per-line branch data (a Go coverprofile, coverage.py without
-  `--branch`, stored coverage ingested before branches were kept) exits `2`
-  under the flag, unless another gate already failed, and is a note with exit
-  `0` from the config key alone.
-- Several reports merge per line by the most branches taken and seen, so the
-  share is a lower bound.
+- The small-change tolerance counts changed lines, not branches.
+- No changed line with branches: "not measured", never 0%, exit `0`.
+- No branch data (Go coverprofile, coverage.py without `--branch`, coverage
+  stored before branches were kept): exit `2` under the flag or input unless
+  another gate failed; only a note from the config key.
+- Reports merge per line by most branches taken and seen, so the share is a
+  lower bound.
 
 ### Project coverage and coverage outside the change
 
-Patch coverage cannot see a change that deletes a test or a code path other
-files relied on. Given a report measured at the change's base commit, the check
-adds project coverage at the base and the head, and lists files whose coverage
-changed outside the change with the changed test or dependent that explains it.
+Patch coverage misses deleted tests or code paths others used. With a base
+report, the check adds project coverage at base and head, and lists files whose
+coverage changed outside the change, with the test or dependent that explains it.
 
 ```bash
 repowise coverage check origin/main...HEAD --report coverage/lcov.info \
   --base-report base/lcov.info --max-drop 0.5
 ```
 
-- `--max-drop P` fails when project coverage falls more than `P` points. The
-  small-change tolerance does not apply.
-- The base report must be measured at the merge-base (`A` for `A..B`). Files
-  whose lines do not line up are left out, and a note says how many.
-- Both sides must be measured the same way: the same reports of each format,
-  the same `coverage.ignore`, neither mapping fewer than half its files.
-- A base the check cannot use exits `2` under the `--max-drop` or
-  `--base-report` flag (the action's inputs), and is a note with exit `0` when
-  the gate comes from `coverage.max_drop` alone.
+- The small-change tolerance does not apply to `--max-drop`.
+- Measure the base report at the merge-base (`A` for `A..B`); files whose lines
+  do not line up are left out, with a count.
+- Measure both sides the same way: same reports of each format, same
+  `coverage.ignore`, neither mapping under half its files.
+- An unusable base exits `2` under `--max-drop` or `--base-report`; from
+  `coverage.max_drop` alone it is a note.
 
-On GitHub Actions, in a job that runs on pushes to the default branch and on
-pull requests, checked out with `fetch-depth: 0`:
+<details><summary>Base reports on GitHub Actions and GitLab</summary>
+
+GitHub Actions, one job on default-branch pushes and pull requests,
+`fetch-depth: 0`:
 
 ```yaml
 - run: pytest --cov=src --cov-report=lcov:coverage/lcov.info
@@ -637,9 +476,9 @@ pull requests, checked out with `fetch-depth: 0`:
     coverage-max-drop: ${{ steps.base.outputs.cache-hit == 'true' && '0.5' || '' }}
 ```
 
-On GitLab, the merge request job uses the target branch's latest `test`
-artifact only when it was measured at the merge-base (a rebased merge request,
-or merged-results pipelines); otherwise the check runs without a base:
+GitLab uses the target branch's latest `test` artifact only when it was
+measured at the merge-base (a rebased merge request, or merged-results
+pipelines); otherwise the check runs without a base:
 
 ```yaml
 test:
@@ -663,24 +502,382 @@ repowise-coverage:
       fi
 ```
 
+</details>
+
+## Gate on documentation drift
+
+```yaml
+checks: doc-drift
+doc-drift-baseline: .doc-drift-baseline.json
+```
+
+| Input | GitLab variable | Flag | What it does |
+|-------|-----------------|------|--------------|
+| `doc-drift-baseline` | `REPOWISE_DOC_DRIFT_BASELINE` | `--baseline` | Committed baseline; only findings it lacks fail. |
+| `fail-on-baseline-growth` | none | `--fail-on-baseline-growth` | [Shrink-only baseline](#adopting-the-gates-on-an-existing-repository), for doc drift and security; default `false`. |
+
+Record existing drift once, then pass `--baseline`:
+
+```bash
+repowise doc-drift --check --write-baseline .doc-drift-baseline.json
+git add .doc-drift-baseline.json
+```
+
+- Entries key on document, reference and target, so an edit above a finding
+  does not make it new.
+- No baseline: `--since auto` judges only documents the change edits and
+  documents naming files it deletes or renames (needs `fetch-depth: 0`).
+- `--kind symbol` adds function and class names a document mentions; it needs
+  an index and exits `2` without one.
+- Doc drift reads `git blame`, which a shallow clone blames to the boundary
+  commit: use `fetch-depth: 0`.
+
+## Gate on security
+
+```yaml
+checks: security
+security-fail-on: med
+```
+
+| Input | GitLab variable | Flag | What it does |
+|-------|-----------------|------|--------------|
+| `security-fail-on` | `REPOWISE_SECURITY_FAIL_ON` | `--fail-on` | Lowest failing severity: `high` (default), `med`, `low`. |
+| `security-baseline` | `REPOWISE_SECURITY_BASELINE` | `--baseline` | Committed baseline; only findings it lacks fail. |
+
+- Accept a deliberate finding (a documented test key): run
+  `repowise security check --write-baseline .security-baseline.json` on that
+  change, then pass `--baseline`.
+- Silence one false positive with a `repowise-security-ignore` comment
+  ([details](../layers/SECURITY.md#silencing-one-finding-repowise-security-ignore)).
+
+## Gate on code health
+
+```yaml
+checks: health
+health-fail-at: medium
+```
+
+| Input | GitLab variable | Flag | What it does |
+|-------|-----------------|------|--------------|
+| `health-fail-on` | `REPOWISE_HEALTH_FAIL_ON` | `--fail-on` | `introduced` (default; findings the change wrote) or `worsened` (also findings it made worse). |
+| `health-fail-at` | `REPOWISE_HEALTH_FAIL_AT` | `--fail-at` | Lowest failing severity: `medium`, `high` (default), `critical`. |
+
+Findings that do not fail warn. On GitLab, set `REPOWISE_HEALTH: "true"`.
+With `--format github`, each failing finding's annotation ends in a one-line
+fix hint, and a failing run names the `repowise health check` command that
+reproduces it locally, in the job log and the summary.
+
+### Before an agent commits or pushes
+
+`repowise hook health-gate install` runs the same check when Claude Code runs
+`git commit` (on the staged change) or `git push` (on `@{u}...HEAD`, else the
+default branch's merge-base) in this repo, and blocks the command when the gate
+fails. It is off by default, and `init` and `upgrade` never turn it on.
+Anything that stops the check from running within 20 s lets the command
+through; `repowise hook health-gate uninstall` turns it off.
+
+## Gate on change risk
+
+The [shared workflow](#github-actions) shows the input in use.
+
+| Input | GitLab variable | Flag | What it does |
+|-------|-----------------|------|--------------|
+| `risk-fail-above-percentile` | `REPOWISE_RISK_FAIL_ABOVE_PERCENTILE` | `--fail-above-percentile` | Fail above this percentile of recent commits; empty reports the rank only. The GitLab job runs only when set. |
+
+- A size-and-spread gate, not a bug predictor: at percentile P roughly
+  (100 - P)% of changes fail by construction.
+- A failure asks for a split or a second reviewer, not a code fix; no baseline
+  accepts it.
+
+## Code scanning (SARIF)
+
+```yaml
+permissions:
+  contents: read
+  security-events: write
+  actions: read          # private repositories only
+# ...
+        with:
+          checks: doc-drift,security,health
+          upload-sarif: true
+```
+
+- Doc drift, security and health findings appear in the Security tab and on the
+  pull request diff.
+- A fork's pull request has a read-only token: the upload is skipped with a
+  warning, and the gates still decide the check.
+- A gate that could not evaluate writes no SARIF file.
+
+## Selecting the tests a change needs
+
+`repowise impacted-tests --format args` prints one line of runner arguments,
+or `:all` when any part of the answer is unknown, with reasons on stderr.
+
+- It needs an index cached from the default branch; a per-test coverage map
+  (`repowise coverage add`) makes it more precise.
+- Exit `0` for a subset or everything; `2` only when it cannot read the change
+  or the `tests.*` config.
+- **Branch on the run-all flag, never on `:all`:** jest and vitest read `:all`
+  as a pattern and run nothing.
+
+| Input | GitLab variable | Flag | What it does |
+|-------|-----------------|------|--------------|
+| `impacted-tests` | `REPOWISE_IMPACTED_TESTS` | none | Default `false`. Select tests and set the `impacted-tests` and `run-all-tests` outputs. |
+| `impacted-tests-runner` | `REPOWISE_IMPACTED_TESTS_RUNNER` | `--runner` | `auto` (default), `pytest`, `go`, `jest` or `files`. |
+
+The action and GitLab job first run `repowise update --index-only` on a
+restored index. If that fails, or selection cannot run, the answer is run
+everything with the reason, and the step still passes.
+
+<details><summary>Workflows: cache the index and branch on the outputs</summary>
+
+GitHub Actions. With `checks: ""` the action runs no gate.
+
+```yaml
+# .github/workflows/repowise-index.yml
+on: {push: {branches: [main]}}
+jobs:
+  index:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/cache/restore@v4
+        with: {path: .repowise, key: "repowise-${{ github.sha }}", restore-keys: "repowise-"}
+      - run: pip install repowise
+      - run: if [ -f .repowise/state.json ]; then repowise update --index-only; else repowise init --yes --no-prose; fi
+      - uses: actions/cache/save@v4
+        with: {path: .repowise, key: "repowise-${{ github.sha }}"}
+```
+
+```yaml
+# in the pull request workflow
+- uses: actions/checkout@v4
+  with: {fetch-depth: 0}
+- uses: actions/cache/restore@v4
+  with: {path: .repowise, key: "repowise-${{ github.event.pull_request.base.sha }}", restore-keys: "repowise-"}
+- id: select
+  uses: repowise-dev/repowise@main
+  with: {checks: "", impacted-tests: true, impacted-tests-runner: pytest}
+- if: steps.select.outputs.run-all-tests != 'false'
+  run: pytest
+- if: steps.select.outputs.run-all-tests == 'false' && steps.select.outputs.impacted-tests != ''
+  env: {TESTS: "${{ steps.select.outputs.impacted-tests }}"}
+  run: eval "pytest $TESTS"
+```
+
+A skipped or failed step leaves `run-all-tests` empty, so `!= 'false'` runs
+everything.
+
+GitLab: `repowise-impacted-tests` writes the arguments to
+`impacted-tests.txt` and `RUN_ALL_TESTS` to a dotenv report.
+
+```yaml
+repowise-index:
+  image: python:3.12
+  variables: {GIT_DEPTH: "0"}
+  script:
+    - pip install repowise
+    - if [ -f .repowise/state.json ]; then repowise update --index-only; else repowise init --yes --no-prose; fi
+  cache: {key: repowise-index, paths: [.repowise/], policy: pull-push}
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+repowise-impacted-tests:
+  cache: {key: repowise-index, paths: [.repowise/], policy: pull}
+
+test:
+  needs: [{job: repowise-impacted-tests, optional: true}]
+  script:
+    - |
+      if [ "${RUN_ALL_TESTS:-}" != "false" ]; then pytest
+      elif [ -n "$(cat impacted-tests.txt 2>/dev/null)" ]; then eval "pytest $(cat impacted-tests.txt)"
+      fi
+```
+
+</details>
+
+### Options
+
+Full flag reference: [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-impacted-tests-revspec).
+
+| Option | What it does |
+|--------|--------------|
+| no range | CI: the pull request's change; locally: staged changes. |
+| `--runner pytest`, `go`, `jest` | Only that runner's tests, `tests.always_run` included. Several languages need one job per runner; left-out tests are counted on stderr and listed per runner under `left_out` in JSON. |
+| `--runner files` | Every test. |
+| `--prioritize` | The whole suite, selection first, so a job runs the head with `-x` and the rest after; skips nothing. Selected tests always come likeliest-to-fail first. |
+| `--explain <test>` | Why one test was or was not selected: first changed file reaching it, evidence (coverage, call graph, import graph), the import route, or the rule. JSON adds it as `explain`. |
+| `tests.full_run_on` | Gitignore patterns that run everything; a matching path is never scoped. |
+| `tests.always_run` | Appended to every selection as written, for the runner of each entry's language. |
+
+### What runs everything
+
+- An empty change.
+- A Cargo, Make, CMake, Docker or CI file.
+- Tool and runtime config: dotfiles, `.tool-versions`, root-level `*.toml`,
+  `*.yaml`, `*.json`, shell scripts.
+- `.repowise/config.yaml`, or a path `tests.full_run_on` matches.
+- A non-code file in a test tree.
+- A file with no known test, or only a filename guess.
+- A route through a test helper no test imports, unless every known test is
+  selected anyway (the reasons say so).
+- Any Python test helper while a conftest or pytest config loads plugins by
+  name.
+- A missing or unreadable index, or a per-test map at its row cap.
+- A deleted file no known test used.
+- A query or data file no code names.
+- A manifest named by over 200 non-test files outside its scope.
+- The index and conftest cases below.
+
+### What a changed file selects
+
+| Changed file | Selects |
+|--------------|---------|
+| nested `package.json`, lockfile or `go.mod` | tests under its directory and those reaching code there |
+| root lockfile, manifest or runner config; Python, Ruby, PHP, Gradle or Maven dependency files (pip requirements included); `tsconfig`; jest or vitest config | its whole ecosystem |
+| production package `__init__.py` | tests reaching any module under it |
+| doc, template, query, stylesheet, image or nested data file | tests reaching code that names it (outside comments and docstrings) |
+| doc, template, stylesheet or image no code names | its package's tests; Markdown, reST or AsciiDoc in no package and a top-level directory without code needs none |
+| `conftest.py`, test package `__init__.py`, imported test helper | tests under or importing it |
+| `docs/` or root README, CHANGELOG, LICENSE, CONTRIBUTING no code names | nothing (an empty line when only these changed); a test reading `README.md` names it |
+
+- Tests naming a manifest from outside its scope run too (a Python test reading
+  `package.json`). A path with a directory names only the files it can mean
+  (`packages/web/package.json` is not `packages/ui/package.json`); a bare name,
+  `../package.json` or a built path names every file of that name.
+- A namer under a fixture tree (`tests/fixtures/<name>/`) stands for test code
+  naming that tree or the fixtures directory; when none does, or code outside
+  the test trees names the tree's path, everything runs.
+- Wiring counts as a use: a JS/TS file under `setupFiles`,
+  `setupFilesAfterEnv`, `globalSetup` or `globalTeardown` in a `vitest.*`,
+  `jest.*`, `vite.*`, `playwright.*` config or `package.json` stands for that
+  package's tests; a helper a test names by relative path
+  (`Path(__file__).parent / "server.py"`, `path.join(__dirname, "server.ts")`)
+  stands for that test.
+- A `conftest.py` links only files pytest collects (`python_files`), so a
+  helper beside the tests is not on every conftest route.
+
+### Tests that always run
+
+Tests the graph cannot see into join every subset, with a count and reason
+(recorded once per test at index time,
+so selection opens no test file):
+
+- not indexed, or importing nothing resolvable;
+- Python, JavaScript or TypeScript tests listing and reading files under a
+  source directory (working directory, a module's location, or their own
+  location climbed out of the test directory; never fixtures, sibling data or
+  temp directories);
+- tests running the project's command, `python -m` module, project-importing
+  code or package `bin` in a child process;
+- Java or Kotlin `@SpringBootTest` (whole context); slices like `@WebMvcTest`
+  go through imports.
+
+<details><summary>Edge cases</summary>
+
+- `@SpringBootTest` inherited from a base class or carried by a custom
+  meta-annotation is not detected; such tests are selected through imports.
+- An index built before this check runs everything until `repowise update`
+  checks its tests.
+- A Python module named like a test outside every test directory is not a test
+  when the nearest pytest config's `testpaths` or `python_files` excludes it,
+  as a bare `pytest` does. A test CI only names explicitly outside `testpaths`
+  is therefore not seen: list it in `tests.always_run`.
+- In a JavaScript or TypeScript `src` tree, `tests/` is not a test directory
+  (it often holds a feature): a file there is a test only when named `.test.`
+  or `.spec.`, or held by a test directory such as `__tests__/`.
+
+</details>
+
+### Counted apart
+
+These run, but the summary counts them apart and JSON lists them:
+
+| Field | Holds |
+|-------|-------|
+| `selected.import_closure` | tests reached only through imports, over one file away, with no call path, coverage or paired name: an import error breaks them, though nothing they call runs the change |
+| `selected.broadcast` | tests a conftest adds that nothing else reaches |
+| `selected.basis` | what drove each selection |
+| `selected.why` | the `--explain` answer per selected test |
+
+- Importing `pkg.a.b` counts as importing `pkg/__init__.py` and
+  `pkg/a/__init__.py`, since Python runs them first (basis `package-init`).
+
+### Conftest changes
+
+A change reaching a `conftest.py` only through imports selects tests asking for
+a fixture that uses it (directly, via other fixtures, `usefixtures` or
+`getfixturevalue`), plus one test under the conftest as an import check.
+
+- Every test under it runs when an autouse fixture, a `pytest_*` hook or
+  module-level code uses the change, or the conftest imports it only for side
+  effects (`selected.broadcast`).
+- Everything runs when a fixture request is unreadable (computed name, mark in
+  a variable, a request name in a string, `exec`/`eval`/`compile`, config
+  `usefixtures`), the conftest loads plugins or is
+  unreadable, or the index predates this; the reasons name the cause.
+
+<details><summary>Edge cases and ceilings</summary>
+
+- `monkeypatch.setattr(mod.Cls, "name", ...)` on an imported module or its
+  class in an autouse fixture is left to the import check.
+- So is a bare cache reset there (`clear_*cache*()`, `reset_*cache*()`,
+  `invalidate_*cache*()`, no arguments, result unused). Ceiling: the name is
+  trusted, so a "reset" that also reconfigures shared state reaches tests
+  without their own import of it only through the import check.
+- `request.getfixturevalue(name)` is read when `name` is a test parameter that
+  one `parametrize` supplies from a literal list of names, or from a module
+  constant bound once to one.
+- Reading an imported module's literal constant, or calling its function that
+  uses nothing it imports beyond standard modules that cannot load code by name
+  (emptying a `functools` cache or standard container counts), reaches only a
+  change in that module. A re-export (`from .console import NAMES as NAMES`)
+  passes this to the defining module.
+- Ceiling: such a function reading or running repo files by path (`open`,
+  `Path.read_text`, `os.system`) is judged by its imports only.
+- Ceiling: a change altering only import-time behaviour, seen by a test not
+  importing it, is caught by the import check alone.
+
+</details>
+
+### An index older than the change's base
+
+It is used as is. Files changed in between whose imports or module-name
+strings moved (outside Python and JavaScript/TypeScript, any non-whitespace
+change) add the tests reaching them; CI config and test data do not, since
+neither is imported. Everything runs when that commit is not in the clone,
+over 1,000 files changed in between, or one is a lockfile, manifest, build or
+test config, or `.repowise/config.yaml`.
+
+### Ceilings and expectations
+
+- Not seen: a test globbing docs or templates in another package; on the JVM
+  and .NET, a same-package test linked only by an unresolved call; a test
+  reaching the change through a string-loaded plugin or registry, a tree walk
+  or child process in a shared helper, or another language. List those in
+  `tests.always_run` and run the full suite on the default branch.
+- The subset is only as small as the code is loosely coupled: on this
+  repository the graph alone picks over 80% of test files, since most tests
+  import something importing the change. Real savings need a per-test map
+  measured at the change's base; `selected.basis` shows what drove each pick.
+
 ## When a gate exits 2
 
-| Message | Fix |
-|---------|-----|
-| "Could not diff ...: ... A shallow CI clone needs the base branch and enough history for a merge-base" | fetch full history |
-| "Could not tell which branch this change targets. Pass REVSPEC, e.g. origin/main...HEAD." | fetch the target branch, or pass the range |
-| "No coverage report found. Pass one with --report ..." | pass `--report`, or set `coverage.paths` |
-| "--report ...: no coverage report matches ..." | fix the path or glob, or upload the report from the test job |
-| "coverage.gates[N] ...: ..." | fix that entry of `coverage.gates` |
-| "All N report entries match coverage.ignore, so nothing is left to measure." | narrow `coverage.ignore` |
-| "No report path matched a file in this repository." | set `coverage.strip_prefix` or `coverage.path_prefix` |
-| "cannot read baseline ..." or "baseline ... is not valid JSON" | commit the file, or drop `--baseline` |
-| "Only N recent commits could be sampled; ranking a change needs at least 8." (risk) | fetch full history |
-| "The change-risk gate ranks the change against recent commits, and --baseline 0 turns that off." | drop `--baseline 0` |
-| "The risky-file gate reads bug-fix history, and this clone is shallow." | fetch full history |
-| "Could not read the risk of N changed files, so the risky-file gate cannot run." | fetch full history, or index the repository |
-| "The coverage report has no per-line branch data, so --fail-under-branches cannot be judged." | turn on branch coverage in the test run, or drop the flag |
-| "The stored coverage predates per-line branch data ..." | re-run `repowise coverage add` with the report |
-| "The max-drop gate needs coverage measured at the change's base ..." | pass `--base-report`, or ingest a report at the base commit |
-| "Project coverage cannot be compared ..." | measure the base and the head the same way (same full reports, same `coverage.ignore`) |
-| "Base report: No report path matched a file in this repository." | the base report must name files the base commit tracked; check its prefix |
+- "Could not diff ...: ... A shallow CI clone needs the base branch and enough history for a merge-base": fetch full history.
+- "Could not tell which branch this change targets. Pass REVSPEC, e.g. origin/main...HEAD.": fetch the target branch, or pass the range.
+- "No coverage report found. Pass one with --report ...": pass `--report`, or set `coverage.paths`.
+- "--report ...: no coverage report matches ...": fix the path or glob, or upload the report from the test job.
+- "coverage.gates[N] ...: ...": fix that entry of `coverage.gates`.
+- "All N report entries match coverage.ignore, so nothing is left to measure.": narrow `coverage.ignore`.
+- "No report path matched a file in this repository.": set `coverage.strip_prefix` or `coverage.path_prefix`.
+- "cannot read baseline ..." or "baseline ... is not valid JSON": commit the file, or drop `--baseline`.
+- "Only N recent commits could be sampled; ranking a change needs at least 8." (risk): fetch full history.
+- "The change-risk gate ranks the change against recent commits, and --baseline 0 turns that off.": drop `--baseline 0`.
+- "The risky-file gate reads bug-fix history, and this clone is shallow.": fetch full history.
+- "Could not read the risk of N changed files, so the risky-file gate cannot run.": fetch full history, or index the repository.
+- "The coverage report has no per-line branch data, so --fail-under-branches cannot be judged.": turn on branch coverage, or drop the flag.
+- "The stored coverage predates per-line branch data ...": re-run `repowise coverage add` with the report.
+- "The max-drop gate needs coverage measured at the change's base ...": pass `--base-report`, or ingest a report at the base commit.
+- "Project coverage cannot be compared ...": measure base and head the same way (same full reports, same `coverage.ignore`).
+- "Base report: No report path matched a file in this repository.": the base report must name files the base commit tracked; check its prefix.

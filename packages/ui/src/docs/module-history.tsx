@@ -83,10 +83,12 @@ export function ModuleHistory({ metadata }: { metadata: Record<string, unknown> 
           <Row label="Single maintainer" value={`${s.bus_factor_one}${of} files`} />
         ) : null}
         {s.bug_fixes ? (
+          // Summed over the files' own 6-month fix counts, so a fix touching two
+          // files counts twice: name the window and say it is per file.
           <Row
-            label="Bug fixes"
+            label="Bug fixes · 6 mo"
             value={s.most_fixed_file ? `${s.bug_fixes} · most in ${basename(s.most_fixed_file)}` : `${s.bug_fixes}`}
-            title={s.most_fixed_file ? `${s.bug_fixes} bug-fix commits, most in ${s.most_fixed_file}` : undefined}
+            title={`${s.bug_fixes} bug fixes in the last 6 months, counted per file${s.most_fixed_file ? `, most in ${s.most_fixed_file}` : ""}`}
           />
         ) : null}
         {s.most_active_file && (

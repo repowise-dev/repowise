@@ -44,6 +44,8 @@ import subprocess
 import threading
 from dataclasses import dataclass, field
 
+from repowise.core.platform.telemetry import network_disabled
+
 #: The attribution used when evidence is absent or unrecognised. Reserved: no
 #: identity may claim it, because "we could not tell" and "this agent" have to
 #: stay distinguishable.
@@ -51,7 +53,7 @@ UNKNOWN_AGENT = "unknown"
 
 #: Version of the announced-name mapping, recorded on events that used it so a
 #: later change to the alias rules is legible in stored data.
-CLIENT_IDENTITY_MAPPING_VERSION = "mcp_client_info_v1"
+CLIENT_IDENTITY_MAPPING_VERSION = "mcp_client_info_v2"
 
 #: Storage rule for an agent slug. Syntactic on purpose — see the module
 #: docstring. Bounded so a column value cannot be a payload.
@@ -103,6 +105,10 @@ class AgentIdentity:
     #: ``derive_tier`` reads them.
     hook_adapter: str | None = None
     session_adapter: str | None = None
+    #: Entry in ``core.edit_capture.edits``: hook payload to edit event, for
+    #: opt-in edit-time attribution. Declared for the same reason as the two
+    #: above; it does not move the tier.
+    capture_adapter: str | None = None
     #: The agent's command on PATH, when it ships one.
     executable: str | None = None
     #: Arguments to ``executable`` that exit 0 only when signed in. Empty when
@@ -150,13 +156,20 @@ class AgentIdentity:
     def is_installed(self) -> bool:
         return self.which() is not None
 
-    def is_logged_in(self) -> bool:
-        """Installed and, where the CLI can say so cheaply, signed in."""
+    def is_logged_in(self) -> bool | None:
+        """Whether the agent's CLI is signed in: ``True``, ``False`` or ``None``.
+
+        ``False``: not installed, or its login query says no (or broke).
+        ``None``: installed, but unknown. The CLI has no cheap login query, or
+        ``network_disabled()`` forbids running one (``REPOWISE_OFFLINE``,
+        ``DO_NOT_TRACK``), so nothing is spawned. Callers that need a yes
+        must treat ``None`` as not signed in.
+        """
         command = self.which()
         if command is None:
             return False
-        if not self.login_check:
-            return True
+        if not self.login_check or network_disabled():
+            return None
         try:
             # DEVNULL: an inherited Windows console stdin can block until the timeout.
             result = subprocess.run(
@@ -178,6 +191,7 @@ CLAUDE_CODE = AgentIdentity(
     announced_as=frozenset({"claude"}),
     hook_adapter="claude-code",
     session_adapter="claude_code",
+    capture_adapter="claude_code",
     executable="claude",
     #: Documented to exit 0 when signed in and 1 when not.
     login_check=("auth", "status"),
@@ -188,19 +202,29 @@ CLAUDE_CODE = AgentIdentity(
 CODEX = AgentIdentity(
     slug="codex",
     display_name="Codex CLI",
+    #: Codex announces its MCP client (`codex-mcp-client`), not the product.
+    announced_as=frozenset({"codexmcpclient"}),
     hook_adapter="codex",
     session_adapter="codex",
+    capture_adapter="codex",
     executable="codex",
     login_check=("login", "status"),
     install_hint="npm install -g @openai/codex",
     login_hint="codex login",
     indexing_provider="codex_cli",
 )
-VSCODE = AgentIdentity(slug="vscode", display_name="VS Code", executable="code")
+VSCODE = AgentIdentity(
+    slug="vscode",
+    display_name="VS Code",
+    announced_as=frozenset({"visualstudiocode", "visualstudiocodeinsiders"}),
+    executable="code",
+)
 CURSOR = AgentIdentity(
     slug="cursor",
     display_name="Cursor",
+    announced_as=frozenset({"cursorvscode"}),
     hook_adapter="cursor",
+    capture_adapter="cursor",
     executable="cursor",
 )
 OPENCODE = AgentIdentity(
@@ -218,6 +242,7 @@ COPILOT = AgentIdentity(
     executable="copilot",
     install_hint="npm install -g @github/copilot",
     login_hint="copilot login",
+    indexing_provider="copilot_cli",
 )
 KIRO = AgentIdentity(
     slug="kiro", display_name="Kiro", executable="kiro-cli", login_hint="kiro-cli login"

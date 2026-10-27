@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..complexity.ast_utils import _find_function_entry_name
 from ..complexity.nloc import is_string_stmt
-from ..dataflow.effects import binding_target, bound_names, imported_names
+from ..dataflow.bindings import binding_target, bound_names, imported_names
 from ..dataflow.span import is_comment
 from .helper_naming import defined_names
 

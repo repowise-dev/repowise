@@ -343,7 +343,7 @@ export const ZoomCanvas = forwardRef<ZoomCanvasHandle, ZoomCanvasProps>(function
         tabIndex={0}
         role="application"
         aria-label="Zoomable system map. Drag to pan, scroll to zoom, double-click a card to dive into it, arrow keys to pan, plus and minus to zoom, Enter to open the centre node."
-        className="h-full w-full touch-none outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+        className="h-full w-full touch-none outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
         style={{ cursor: "grab" }}
       />
       {hover && (

@@ -244,4 +244,7 @@ export interface StatsHighlights {
   rhythm: StatsRhythm;
   people: StatsPeople;
   records: StatsRecords;
+  /** On-disk size of the local `.repowise/` index. Absent where the index is
+   *  not stored on this machine. */
+  index_storage_bytes?: number;
 }

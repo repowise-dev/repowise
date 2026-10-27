@@ -19,6 +19,8 @@ export function useFileBreakdown(
   return useSWR<HealthFileBreakdownResponse>(
     filePath ? `code-health-breakdown:${repoId}:${filePath}${suffix}` : null,
     () => getHealthFileBreakdown(repoId, filePath!, counts),
-    { revalidateOnFocus: false },
+    // The previous file stays on screen (dimmed by the drawer) while the next
+    // one loads, so moving between files never flashes an empty panel.
+    { revalidateOnFocus: false, keepPreviousData: true },
   );
 }

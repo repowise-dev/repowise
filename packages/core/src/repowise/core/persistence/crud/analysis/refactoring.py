@@ -12,11 +12,12 @@ what makes them agree.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import (
     Select,
+    and_,
     bindparam,
     case,
     func,
@@ -29,9 +30,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import set_committed_value
 
 from ....analysis.finding_registry import excluded_types
+from ...batches import chunked
 from ...models import RefactoringSuggestion, _new_uuid, _now_utc
 from ...sql import rule_predicate
 from .._shared import _BATCH_SIZE, _finding_file_path
+from .shown import gated_counts, ungated
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -125,7 +128,7 @@ def _refactoring_row_kwargs(
 def _scope_predicates(
     repository_id: str,
     *,
-    file_paths: list[str] | None,
+    file_paths: Sequence[str] | None,
     refactoring_type: str | None,
 ) -> list[Any]:
     predicates: list[Any] = [RefactoringSuggestion.repository_id == repository_id]
@@ -298,21 +301,23 @@ async def finalize_refactoring_suggestions(
     )
     public_ids = assign_public_ids(scoped)
 
-    stored_rows = list(
-        (
-            await session.execute(
-                select(RefactoringSuggestion).where(
-                    *_scope_predicates(
-                        repository_id,
-                        file_paths=file_paths,
-                        refactoring_type=refactoring_type,
+    stored_rows: list[RefactoringSuggestion] = []
+    for chunk in [None] if allowed is None else chunked(sorted(allowed)):
+        stored_rows.extend(
+            (
+                await session.execute(
+                    select(RefactoringSuggestion).where(
+                        *_scope_predicates(
+                            repository_id,
+                            file_paths=chunk,
+                            refactoring_type=refactoring_type,
+                        )
                     )
                 )
             )
+            .scalars()
+            .all()
         )
-        .scalars()
-        .all()
-    )
     reusable = await _reusable_rows(
         session, repository_id, stored_rows, public_ids, REFACTORING_MODEL_VERSION
     )
@@ -465,15 +470,51 @@ async def get_refactoring_suggestion(
     return result.scalar_one_or_none()
 
 
-def shown_plan_predicate() -> Any:
-    """Plans whose source biomarker the finding registry does not withhold.
-
-    Plans are persisted whatever the registry says; every surface that lists
-    them filters here. A plan with no source biomarker (structural) is shown.
-    """
+def _registry_shown_plan() -> Any:
     return or_(
         RefactoringSuggestion.source_biomarker.is_(None),
         RefactoringSuggestion.source_biomarker.not_in(excluded_types()),
+    )
+
+
+def shown_plan_predicate(*, include_unverified: bool = False, file_holds: bool = True) -> Any:
+    """Plans whose source biomarker the finding registry does not withhold, on
+    files of a language no gate holds refactoring back on.
+
+    Plans are persisted whatever the registry says; every surface that lists
+    them filters here. A plan with no source biomarker (structural) is shown.
+    ``include_unverified`` opts into the gated languages and the plans on test
+    files; ``file_holds=False`` keeps the test-file plans without that opt-in.
+    """
+    return and_(
+        _registry_shown_plan(),
+        ungated(
+            "refactoring",
+            RefactoringSuggestion.file_path,
+            RefactoringSuggestion.refactoring_type,
+            include_unverified=include_unverified,
+            file_holds=file_holds,
+        ),
+    )
+
+
+async def gated_plan_counts(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    status: str = "open",
+    include_unverified: bool = False,
+) -> dict[str, dict]:
+    """The plans a language gate holds back, by language (see ``shown.gated_counts``)."""
+    return await gated_counts(
+        session,
+        "refactoring",
+        RefactoringSuggestion,
+        RefactoringSuggestion.repository_id == repository_id,
+        RefactoringSuggestion.status == status,
+        _registry_shown_plan(),
+        kind_col=RefactoringSuggestion.refactoring_type,
+        include_unverified=include_unverified,
     )
 
 
@@ -484,11 +525,12 @@ def _suggestion_filters(
     file_paths: list[str] | None,
     min_confidence: str | None,
     status: str,
+    include_unverified: bool = False,
 ) -> list[Any]:
     predicates: list[Any] = [
         RefactoringSuggestion.repository_id == repository_id,
         RefactoringSuggestion.status == status,
-        shown_plan_predicate(),
+        shown_plan_predicate(include_unverified=include_unverified),
     ]
     if refactoring_type is not None:
         predicates.append(RefactoringSuggestion.refactoring_type == refactoring_type)
@@ -512,10 +554,11 @@ async def get_refactoring_suggestions(
     status: str = "open",
     limit: int | None = None,
     offset: int | None = None,
+    include_unverified: bool = False,
 ) -> list[RefactoringSuggestion]:
     """Return refactoring suggestions, highest recovered impact first.
 
-    Plans from a registry-withheld biomarker are left out
+    Plans from a registry-withheld biomarker or a gated language are left out
     (:func:`shown_plan_predicate`). *limit* / *offset* page in SQL. Both default to ``None``, which returns the
     whole filtered set exactly as before, because the callers that still rank
     and page in memory have not been rewired yet (R4).
@@ -527,6 +570,7 @@ async def get_refactoring_suggestions(
             file_paths=file_paths,
             min_confidence=min_confidence,
             status=status,
+            include_unverified=include_unverified,
         )
     )
     # Secondary keys (file_path, target_symbol) make the read order stable for
@@ -553,6 +597,7 @@ async def count_refactoring_suggestions(
     file_paths: list[str] | None = None,
     min_confidence: str | None = None,
     status: str = "open",
+    include_unverified: bool = False,
 ) -> int:
     """The total behind a page, counted in SQL rather than by materializing it."""
     q = (
@@ -565,6 +610,7 @@ async def count_refactoring_suggestions(
                 file_paths=file_paths,
                 min_confidence=min_confidence,
                 status=status,
+                include_unverified=include_unverified,
             )
         )
     )
@@ -672,6 +718,7 @@ async def ranked_refactoring_suggestions(
     min_confidence: str | None = None,
     filters: Mapping[str, Any] | None = None,
     view: str = "canonical",
+    include_unverified: bool = False,
 ) -> list[RefactoringSuggestion] | None:
     """The open plans in persisted rank order.
 
@@ -689,6 +736,7 @@ async def ranked_refactoring_suggestions(
         file_paths=None,
         min_confidence=min_confidence,
         status="open",
+        include_unverified=include_unverified,
     )
     unranked = await session.execute(
         select(RefactoringSuggestion.id)
@@ -707,7 +755,11 @@ async def ranked_refactoring_suggestions(
 
 
 async def summarize_open_plans(
-    session: AsyncSession, repository_id: str, *, min_confidence: str | None = None
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    min_confidence: str | None = None,
+    include_unverified: bool = False,
 ) -> dict[str, Any]:
     """The plan board's chip counts over the open plans, from narrow columns.
 
@@ -733,6 +785,7 @@ async def summarize_open_plans(
                 file_paths=None,
                 min_confidence=min_confidence,
                 status="open",
+                include_unverified=include_unverified,
             )
         )
     )

@@ -10,10 +10,12 @@ import pytest
 from repowise.core.git_refs import (
     BranchRef,
     ahead_behind,
+    branch_with_path,
     changed_files,
     commit_file_sets,
     current_branch,
     default_base,
+    default_branch,
     find_path_removal,
     list_branches,
     remote_name,
@@ -122,6 +124,49 @@ class TestDefaultBase:
     def test_a_non_repository_is_head(self, tmp_path: Path) -> None:
         assert default_base(str(tmp_path / "nowhere_at_all")) == "HEAD"
 
+    def test_a_local_branch_named_like_the_remote_one_does_not_change_the_answer(self, repo: Path) -> None:
+        _run(repo, "update-ref", "refs/remotes/origin/trunk", "main")
+        _run(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk")
+        _run(repo, "branch", "origin/trunk", "main")
+        assert default_base(str(repo)) == "origin/trunk"
+
+    def test_a_tag_named_like_a_trunk_is_not_a_base(self, tmp_path: Path) -> None:
+        root = tmp_path / "tagged"
+        root.mkdir()
+        _run(root, "init", "-b", "topic")
+        _commit(root, "a.txt", "a\n", "a")
+        _run(root, "tag", "main")
+        assert default_base(str(root)) == "HEAD"
+
+    def test_falls_back_to_a_remote_trunk_when_there_is_no_local_one(self, repo: Path) -> None:
+        _run(repo, "symbolic-ref", "-d", "refs/remotes/origin/HEAD")
+        _run(repo, "checkout", "-q", "feat")
+        _run(repo, "branch", "-D", "main")
+        assert default_base(str(repo)) == "origin/main"
+
+
+class TestDefaultBranch:
+    def test_is_the_origin_head_target_without_the_remote(self, repo: Path) -> None:
+        _run(repo, "branch", "master", "main")
+        _run(repo, "update-ref", "refs/remotes/origin/master", "master")
+        _run(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/master")
+        assert default_branch(str(repo)) == "master"
+
+    def test_falls_back_to_a_local_trunk(self, tmp_path: Path) -> None:
+        root = tmp_path / "legacy"
+        root.mkdir()
+        _run(root, "init", "-b", "master")
+        _commit(root, "a.txt", "a\n", "a")
+        assert default_branch(str(root)) == "master"
+
+    def test_is_none_when_git_cannot_name_one(self, tmp_path: Path) -> None:
+        root = tmp_path / "trunkless"
+        root.mkdir()
+        _run(root, "init", "-b", "topic")
+        _commit(root, "a.txt", "a\n", "a")
+        assert default_branch(str(root)) is None
+        assert default_branch(str(tmp_path / "nowhere_at_all")) is None
+
 
 class TestChangedFiles:
     def test_three_dot_semantics_exclude_the_base_side(self, repo: Path) -> None:
@@ -195,6 +240,24 @@ class TestCommitFileSets:
 
     def test_a_non_repository_yields_nothing(self, tmp_path: Path) -> None:
         assert commit_file_sets(str(tmp_path / "nowhere_at_all"), "main..feat") == []
+
+
+class TestBranchWithPath:
+    def test_names_the_other_branch_that_has_the_path(self, repo: Path) -> None:
+        assert branch_with_path(str(repo), "feat_two.txt") == "feat"
+
+    def test_skips_the_checked_out_branch(self, repo: Path) -> None:
+        # Only main, the checked-out branch whose tree the caller read, has it.
+        _commit(repo, "late.txt", "late\n", "main only")
+        assert branch_with_path(str(repo), "late.txt") is None
+        assert branch_with_path(str(repo), "typo.txt") is None
+
+    def test_finds_a_file_committed_in_a_linked_worktree(self, repo: Path, tmp_path: Path) -> None:
+        wt = tmp_path / "wt"
+        _run(repo, "worktree", "add", "-b", "wt-branch", str(wt), "main")
+        _commit(wt, "only_in_wt.txt", "x\n", "worktree work")
+
+        assert branch_with_path(str(repo), "only_in_wt.txt") == "wt-branch"
 
 
 class TestFindPathRemoval:

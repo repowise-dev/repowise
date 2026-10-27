@@ -113,6 +113,19 @@ async def call_resolution_basis(
     return _entry(language or "", grouping.get(language or "", {}))
 
 
+def same_file_basis(users: int) -> dict[str, Any]:
+    """Basis for an empty ``used_by`` whose only users share the symbol's file.
+
+    The resolver-coverage figures answer "could a user have been missed"; here
+    users were found, so the zero says only where they are. A use that is not
+    a call (a subclass, a reference) is served under ``relations``.
+    """
+    uses = "1 use" if users == 1 else f"{users} uses"
+    return {
+        "note": f'{uses}, all in this file; include=["callers"] lists them in callers or relations.'
+    }
+
+
 async def call_resolution_bases(
     session: AsyncSession, repo_id: str, *, cache_key: str
 ) -> list[dict[str, Any]]:

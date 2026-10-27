@@ -111,6 +111,27 @@ def test_args_prints_the_subset_on_one_line(repo) -> None:
     assert "documentation: no tests needed" in _err(result)
 
 
+def test_the_args_header_counts_the_broadcast_and_import_closure_apart() -> None:
+    from repowise.cli.commands.impacted_tests_cmd import _args_header
+    from repowise.core.analysis.test_selection import Selection
+
+    tests = ("tests/test_a.py", "tests/test_b.py", "tests/test_c.py")
+    selection = Selection(
+        run_all=False,
+        reasons=(),
+        tests=tests,
+        test_files=tests,
+        broadcast={"tests/test_b.py": "tests/conftest.py"},
+        import_closure={"tests/test_c.py": 3},
+    )
+    assert _args_header(selection, list(tests), "pytest", False) == (
+        "3 argument(s) for pytest; selected test files that must still run but are counted "
+        "apart: 1 only because a conftest on a route keeps every test under it; 1 only "
+        "through imports, with no call path to the change."
+    )
+    assert selection.to_dict()["import_closure"] == {"tests/test_c.py": 3}
+
+
 def test_json_adds_the_selection_to_the_report(repo) -> None:
     result = _run(repo, "main...feat", "--format", "json", "--runner", "files")
     assert result.exit_code == 0, result.output
@@ -236,9 +257,26 @@ def test_list_prints_one_test_per_line(repo) -> None:
     assert result.stdout == "tests/test_a.py\n"
 
 
-def test_an_index_that_disagrees_about_its_commit_runs_everything(repo) -> None:
+def test_stamps_one_commit_apart_select_from_the_older(repo) -> None:
+    # The database row says main; state.json says feat, one commit later.
     (repo / ".repowise" / "state.json").write_text(
         json.dumps({"last_sync_commit": _git(repo, "rev-parse", "feat")}), encoding="utf-8"
+    )
+    result = _run(repo, "main...feat", "--format", "args")
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "tests/test_a.py\n"
+
+
+def test_an_index_whose_stamps_diverge_runs_everything(repo) -> None:
+    _git(repo, "switch", "-q", "--orphan", "other")
+    _write(repo, {"src/b.py": "B = 2\n"})
+    _git(repo, "add", "src/b.py")
+    _git(repo, "commit", "-qm", "other")
+    other = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "switch", "-qf", "feat")
+    # The row says main, and other shares no history with it: the index is in doubt.
+    (repo / ".repowise" / "state.json").write_text(
+        json.dumps({"last_sync_commit": other}), encoding="utf-8"
     )
     result = _run(repo, "main...feat", "--format", "args")
     assert result.stdout == ":all\n"
@@ -409,9 +447,9 @@ def test_a_test_the_indexer_found_walking_the_tree_runs_with_every_subset(repo) 
     # src/a.py changed: tests/test_b.py stays out, the tree walker comes in.
     assert result.stdout == "tests/test_a.py tests/test_lint.py\n"
     assert (
-        "1 test file(s) that list source files or run the project in a child process run with "
-        "every selection (e.g. tests/test_lint.py: it lists and reads files under a source "
-        "directory)." in _err(result)
+        "1 test file(s) that reach code outside their imports run with every selection "
+        "(e.g. tests/test_lint.py: it lists and reads files under a source directory)."
+        in _err(result)
     )
 
 
@@ -420,8 +458,8 @@ def test_an_index_that_never_checked_its_tests_runs_everything(repo) -> None:
     result = _run(repo, "main...feat", "--format", "args")
     assert result.stdout == ":all\n"
     assert (
-        "The index has not checked 1 test file(s) for walking the source tree or running "
-        "the project (e.g. tests/test_b.py); run `repowise update`." in _err(result)
+        "The index has not checked 1 test file(s) for reaching code outside their imports "
+        "(e.g. tests/test_b.py); run `repowise update`." in _err(result)
     )
 
 
@@ -433,7 +471,7 @@ def test_explain_names_the_changed_file_and_the_route(repo) -> None:
         "Selected: src/a.py changed (import-graph).",
         "Route: tests/test_a.py -> src/a.py",
         # tests/test_a.py imports src/a.py: one hop, a direct edge.
-        "Order: 1 of 1 (its calls, a fixture or a direct import reach a changed file; "
+        "Order: 1 of 1 (its calls or a direct import reach a changed file; "
         "1 hop(s)).",
     ]
     missed = _run(repo, "main...feat", "--explain", "./tests/test_b.py")
@@ -449,7 +487,7 @@ def test_explain_joins_the_json_report(repo) -> None:
         "lines": [
             "Selected: src/a.py changed (import-graph).",
             "Route: tests/test_a.py -> src/a.py",
-            "Order: 1 of 1 (its calls, a fixture or a direct import reach a changed file; "
+            "Order: 1 of 1 (its calls or a direct import reach a changed file; "
             "1 hop(s)).",
         ],
         "route": ["tests/test_a.py", "src/a.py"],
@@ -461,7 +499,7 @@ def test_explain_joins_the_json_report(repo) -> None:
             "hops": 1,
             "co_change": 0,
             "failed_last_run": False,
-            "reason": "its calls, a fixture or a direct import reach a changed file; 1 hop(s)",
+            "reason": "its calls or a direct import reach a changed file; 1 hop(s)",
         },
     }
     assert data["selected"]["why"] == {"tests/test_a.py": "src/a.py changed (import-graph)"}
@@ -545,7 +583,7 @@ def test_selected_tests_run_in_order_and_a_last_failure_breaks_a_tie(repo) -> No
     assert result.stdout == "tests/test_z.py tests/test_a.py\n"
     explained = _run(repo, "main...feat", "--explain", "tests/test_z.py")
     assert explained.stdout.splitlines()[-1] == (
-        "Order: 1 of 2 (its calls, a fixture or a direct import reach a changed file; "
+        "Order: 1 of 2 (its calls or a direct import reach a changed file; "
         "1 hop(s); failed in the last run)."
     )
 
@@ -554,3 +592,49 @@ def test_prioritize_needs_a_machine_format(repo) -> None:
     result = _run(repo, "main...feat", "--prioritize")
     assert result.exit_code != 0
     assert "--prioritize needs --format args, list or json" in result.output + result.stderr
+
+
+@pytest.fixture
+def nested_repo(tmp_path):
+    """The ``repo`` layout indexed in ``svc/``, below the git top level, beside ``lib/``."""
+    top = tmp_path / "mono"
+    svc = top / "svc"
+    svc.mkdir(parents=True)
+    _git(top, "init", "-q", "-b", "main")
+    _git(top, "config", "user.email", "t@t.co")
+    _git(top, "config", "user.name", "t")
+    _write(
+        svc,
+        {
+            "src/a.py": "A = 1\n",
+            "src/b.py": "B = 1\n",
+            "tests/test_a.py": "from src.a import A\n\ndef test_a():\n    assert A\n",
+            "README.md": "docs\n",
+            ".gitignore": ".repowise/\n",
+        },
+    )
+    _write(top, {"lib/x.py": "X = 1\n"})
+    _git(top, "add", "-A")
+    _git(top, "commit", "-qm", "init")
+    asyncio.run(_index(svc, _git(top, "rev-parse", "HEAD")))
+    _git(top, "switch", "-qc", "feat")
+    _write(svc, {"src/a.py": "A = 2\n", "README.md": "more docs\n"})
+    _git(top, "commit", "-qam", "feat")
+    return svc
+
+
+def test_a_checkout_below_the_git_top_level_selects_as_the_top_level_does(nested_repo) -> None:
+    result = _run(nested_repo, "main...feat", "--format", "args")
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "tests/test_a.py\n"
+    assert "documentation: no tests needed" in _err(result)
+
+
+def test_a_change_outside_the_checkout_runs_every_test(nested_repo) -> None:
+    # A path the index cannot place pushes toward more tests, never fewer.
+    _write(nested_repo.parent, {"lib/x.py": "X = 2\n"})
+    _git(nested_repo.parent, "commit", "-qam", "lib")
+    result = _run(nested_repo, "feat~1...feat", "--format", "json", "--runner", "files")
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.stdout)
+    assert data["run_all"] is True and data["args"] == [":all"], data

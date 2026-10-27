@@ -49,7 +49,7 @@ export function FileDocTab({ wikiPage, docSlot, referencesPanel }: FileDocTabPro
       )}
 
       {wikiPage.human_notes && (
-        <div className="border-l-2 border-[var(--color-accent-primary)] pl-4">
+        <div className="border-l-2 border-[var(--color-text-tertiary)] pl-4">
           <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
             Team notes
           </p>

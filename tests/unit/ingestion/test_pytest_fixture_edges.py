@@ -625,12 +625,112 @@ class TestUnrecordedRequests:
             "def test_x(request):\n    gfv = request.getfixturevalue\n    gfv('db')\n",
             "import pytest\n\npytestmark = pytest.mark.usefixtures(*names())\n\n\n"
             "def test_x():\n    pass\n",
+            # A parametrized name the text cannot pin to its literal values.
+            "import pytest\n\n\n@pytest.mark.parametrize('f', ['db'])\n"
+            "def test_x(f, request):\n    f = 'other'\n    request.getfixturevalue(f)\n",
+            # Rebinding forms that are not a plain assignment.
+            *(
+                "import pytest\n\n\n@pytest.mark.parametrize('f', ['db'])\n"
+                f"def test_x(f, request):\n{rebind}    request.getfixturevalue(f)\n"
+                for rebind in (
+                    "    try:\n        pass\n    except Exception as f:\n        pass\n",
+                    "    import f\n",
+                    "    from os import path as f\n",
+                    "    def f():\n        pass\n",
+                    "    class f:\n        pass\n",
+                )
+            ),
+            "import pytest\n\nNAMES = ['db']\nNAMES.append('other')\n\n\n"
+            "@pytest.mark.parametrize('f', NAMES)\n"
+            "def test_x(f, request):\n    request.getfixturevalue(f)\n",
+            "import pytest\n\n\n@pytest.mark.parametrize('f', names())\n"
+            "def test_x(f, request):\n    request.getfixturevalue(f)\n",
+            "import pytest\n\n\n@pytest.mark.parametrize('f', ['db'])\n"
+            "@pytest.mark.parametrize('f', ['other'])\n"
+            "def test_x(f, request):\n    request.getfixturevalue(f)\n",
+            "import pytest\n\n\n@pytest.mark.parametrize('f, g', [('db', 1)])\n"
+            "def test_x(f, g, request):\n    request.getfixturevalue(f)\n",
+            # Forms that hide in a string: an indirect passed by **kwargs, a mark
+            # read by name, a call quoted in code, and code run from a string.
+            "def pytest_generate_tests(metafunc):\n    kw = {'indirect': True}\n"
+            "    metafunc.parametrize('db', [1], **kw)\n\n\ndef test_x(db):\n    pass\n",
+            "import pytest\n\n\n@getattr(pytest.mark, 'usefixtures')('db')\n"
+            "def test_x():\n    pass\n",
+            "def test_x(request):\n    src = 'request.getfixturevalue(NAME)'\n    assert src\n",
+            "def test_x(request):\n    exec('x = 1')\n",
+            "def test_x(request):\n    run = eval\n    assert run\n",
         ],
     )
     def test_a_hidden_request_marks_its_own_edge(self, tmp_path: Path, body: str) -> None:
         hints = self._hints(self._repo(tmp_path, body))
         assert hints["tests/test_odd.py"] == "pytest_conftest_unrecorded"
         assert hints["tests/test_plain.py"] == "pytest_conftest"
+
+    @pytest.mark.parametrize(
+        "values, prelude",
+        [("['db', 'cache']", ""), ("NAMES", "NAMES = ('db', 'cache')\n\n\n")],
+    )
+    def test_a_parametrized_fixture_name_is_recorded(
+        self, tmp_path: Path, values: str, prelude: str
+    ) -> None:
+        body = (
+            f"import pytest\n\n{prelude}"
+            f"@pytest.mark.parametrize('name', {values})\nclass TestEach:\n"
+            "    def test_x(self, name, request):\n"
+            "        assert request.getfixturevalue(name)\n"
+        )
+        tests = tmp_path / "tests"
+        tests.mkdir()
+        (tests / "conftest.py").write_text(
+            "import pytest\n\n\n@pytest.fixture\ndef db():\n    return 1\n\n\n"
+            "@pytest.fixture\ndef cache():\n    return 2\n"
+        )
+        (tests / "test_odd.py").write_text(body)
+        graph = _build(tmp_path)
+
+        assert self._hints(graph)["tests/test_odd.py"] == "pytest_conftest"
+        bound = _bound(graph)
+        assert ("tests/test_odd.py::TestEach::test_x", "tests/conftest.py::db") in bound
+        assert ("tests/test_odd.py::TestEach::test_x", "tests/conftest.py::cache") in bound
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "assert db  # request.getfixturevalue(other)",
+            '"""Reads request.getfixturevalue(NAME) names."""',
+            "pattern = re.compile('x')",
+            "model.eval()",
+        ],
+    )
+    def test_a_call_in_a_comment_docstring_or_attribute_is_no_request(
+        self, tmp_path: Path, line: str
+    ) -> None:
+        body = f"import re\n\n\ndef test_x(db, model=None):\n    {line}\n"
+        assert self._hints(self._repo(tmp_path, body))["tests/test_odd.py"] == "pytest_conftest"
+
+    def test_an_f_string_is_code_when_it_is_one_token(self, monkeypatch) -> None:
+        """Before Python 3.12 an f-string is one STRING token; its call still counts."""
+        import io
+        import tokenize
+
+        from repowise.core.ingestion.framework_edges import pytest_edges
+
+        text = 'x = f"{request.getfixturevalue(n)}"\n'
+        whole = tokenize.TokenInfo(tokenize.STRING, text[4:-1], (1, 4), (1, len(text) - 1), text)
+        real = tokenize.generate_tokens
+
+        def as_311(readline):
+            for t in real(io.StringIO(text).readline):
+                if t.start[1] < 4 or t.type in (tokenize.NEWLINE, tokenize.ENDMARKER):
+                    yield t
+                elif t.start == (1, 4):
+                    yield whole
+
+        monkeypatch.setattr(tokenize, "generate_tokens", as_311)
+        lexed = pytest_edges._lex(text)
+        assert lexed is not None
+        assert text.index("getfixturevalue") in lexed.calls
+        assert lexed.uses["getfixturevalue"] == 1
 
     def test_a_helper_asking_for_a_fixture_marks_every_edge(self, tmp_path: Path) -> None:
         graph = self._repo(

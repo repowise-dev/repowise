@@ -5,19 +5,20 @@
 
 export const BIOMARKER_LABELS = {
   brain_method: "Brain method",
-  nested_complexity: "Nested complexity",
-  bumpy_road: "Bumpy road",
+  nested_complexity: "Deep nesting",
+  repeated_nesting: "Repeated nesting",
   complex_method: "Complex method",
-  large_method: "Large method",
+  large_method: "Long function",
   primitive_obsession: "Long parameter list",
   dry_violation: "DRY violation",
   untested_hotspot: "Untested hotspot",
   coverage_gap: "Coverage gap",
+  untested_complexity: "Untested complexity",
   coverage_gradient: "Coverage gradient",
-  developer_congestion: "Developer congestion",
-  knowledge_loss: "Knowledge loss",
+  developer_congestion: "Many authors",
+  knowledge_loss: "Fading ownership",
   hidden_coupling: "Hidden coupling",
-  complex_conditional: "Complex conditional",
+  complex_conditional: "Compound condition",
   function_hotspot: "Function hotspot",
   code_age_volatility: "Code age volatility",
   low_cohesion: "Low cohesion",
@@ -50,8 +51,28 @@ export const BIOMARKER_LABELS = {
   hot_path_sync_io: "Blocking I/O on a hot path",
   blocking_io_under_lock: "Blocking I/O under a lock",
   nested_loop_quadratic: "Quadratic nested loop",
+  list_insert_zero_in_loop: "Insert at list front in loop",
+  pd_concat_in_loop: "Pandas concat in loop",
+  pandas_iterrows_in_loop: "Row-by-row DataFrame loop",
+  json_parse_in_loop: "JSON deep clone in loop",
+  array_spread_in_reduce: "Accumulator spread in reduce",
+  goroutine_in_unbounded_loop: "Unbounded goroutines in loop",
   sql_high_complexity: "Complex SQL routine",
   sql_select_star: "SELECT * in a view",
   sql_update_delete_without_where: "UPDATE/DELETE without WHERE",
   sql_cartesian_join: "Cartesian join",
+  apex_soql_injection: "SOQL injection",
+  apex_missing_sharing: "Apex class without sharing",
+  apex_hardcoded_id: "Hardcoded record Id",
+  apex_see_all_data: "Test sees all org data",
+  cobol_unstructured_flow: "GO TO or ALTER out of range",
 } as const;
+
+/** Renamed ids (old -> current), so rows stored under an old id get the current label. */
+export const LEGACY_BIOMARKER_NAMES: Readonly<Record<string, string>> = {
+  bumpy_road: "repeated_nesting",
+};
+
+export function canonicalBiomarker(name: string): string {
+  return LEGACY_BIOMARKER_NAMES[name] ?? name;
+}

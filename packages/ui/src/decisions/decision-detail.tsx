@@ -61,6 +61,7 @@ const SOURCE_LABEL: Record<string, string> = {
   adr: "ADR",
   changelog: "Changelog",
   session: "Session",
+  agent: "Agent",
   conventions: "Convention",
 };
 
@@ -484,10 +485,10 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
               <button
                 onClick={() => handleStatusChange("active")}
                 disabled={loading}
-                // Accent, not a filled green: green/amber/red are reserved for
+                // Ink, not a filled green: green/amber/red are reserved for
                 // health readouts where they carry a band. This is the page's
-                // one primary action, which is what the accent is for.
-                className="rounded-md bg-[var(--color-accent-primary)] px-3 py-1.5 text-sm font-medium text-[var(--color-text-on-accent)] hover:opacity-90 disabled:opacity-50"
+                // one primary action, and primary actions are ink.
+                className="rounded-md bg-[var(--color-action-primary)] px-3 py-1.5 text-sm font-medium text-[var(--color-text-on-action)] hover:bg-[var(--color-action-primary-hover)] disabled:opacity-50"
               >
                 Confirm
               </button>

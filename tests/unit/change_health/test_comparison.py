@@ -100,7 +100,7 @@ def test_a_rename_carries_the_finding_across(make_repo):
     assert delta.unchanged_total >= 1
 
 
-def test_deleting_a_file_surfaces_nothing_and_is_recorded_as_skipped(make_repo):
+def test_deleting_a_file_compares_its_base_side_and_surfaces_nothing(make_repo):
     repo = make_repo()
     repo.commit("seed", {"app.py": python_complex("tangle", 14), "keep.py": "x = 1\n"})
     repo.remove("app.py")
@@ -109,7 +109,19 @@ def test_deleting_a_file_surfaces_nothing_and_is_recorded_as_skipped(make_repo):
     delta = compare(repo)
 
     assert delta.introduced_total == 0
-    assert delta.skipped.get("app.py") == "deleted"
+    assert "app.py" not in delta.skipped
+    assert delta.resolved_total == 0
+    assert delta.status == "available"
+    assert delta.explanation == "No supported new findings surfaced in the analyzed scope."
+
+
+def test_a_deleted_file_with_no_health_dialect_is_still_recorded_as_skipped(make_repo):
+    repo = make_repo()
+    repo.commit("seed", {"page.html": "<p>hi</p>\n", "app.py": python_complex("tangle", 14)})
+    repo.remove("page.html")
+    repo.commit("delete", {"app.py": python_complex("tangle", 14) + "\n"})
+
+    assert compare(repo).skipped.get("page.html") == "deleted"
 
 
 # -- multiplicity -----------------------------------------------------------
@@ -137,6 +149,65 @@ def test_replacing_one_marker_hit_with_another_is_not_a_regression(make_repo):
 
     assert delta.introduced_total == 0
     assert delta.resolved_total == 0
+
+
+# -- symbol identity --------------------------------------------------------
+
+
+@pytest.mark.parametrize("language", sorted(LANGUAGES))
+def test_renaming_a_function_carries_its_finding_across(make_repo, language):
+    path, build = LANGUAGES[language]
+    repo = make_repo()
+    repo.commit("seed", {path: build("tangle", 14)})
+    repo.commit("rename", {path: build("knot", 14)})
+
+    delta = compare(repo)
+
+    assert delta.introduced_total == 0
+    assert delta.resolved_total == 0
+    assert delta.unchanged_total >= 1
+
+
+def test_a_rename_that_also_grows_the_body_is_still_introduced(make_repo):
+    repo = make_repo()
+    repo.commit("seed", {"app.py": python_complex("tangle", 14)})
+    repo.commit("rename", {"app.py": python_complex("knot", 15)})
+
+    delta = compare(repo)
+
+    assert any(f.symbol == "knot" and f.change_kind == "introduced" for f in delta.findings)
+    assert delta.resolved_total >= 1
+
+
+def test_a_copy_beside_the_unchanged_original_is_introduced(make_repo):
+    """Same shape as an existing finding, but the original is still there."""
+    repo = make_repo()
+    repo.commit("seed", {"app.py": python_complex("tangle", 14)})
+    repo.commit("copy", {"app.py": python_complex("tangle", 14) + python_complex("knot", 14)})
+
+    delta = compare(repo)
+
+    assert any(f.symbol == "knot" and f.change_kind == "introduced" for f in delta.findings)
+    assert not any(f.symbol == "tangle" for f in delta.findings)
+    assert delta.resolved_total == 0
+
+
+def test_new_importers_of_a_changed_file_do_not_introduce_its_old_findings(make_repo):
+    """Only the changed files are parsed, so a file's dependents are a slice.
+
+    Adding importers inside the change lifts that slice over a centrality gate
+    (Brain Method) on head only; the function itself did not change.
+    """
+    repo = make_repo()
+    core = python_complex("tangle", 40)
+    repo.commit("seed", {"core.py": core})
+    importers = {f"use_{i}.py": "from core import tangle\n\nprint(tangle(1))\n" for i in range(4)}
+    repo.commit("use", {"core.py": core + "\n# touched\n", **importers})
+
+    delta = compare(repo)
+
+    assert not any(f.symbol == "tangle" for f in delta.findings)
+    assert delta.unchanged_total >= 1
 
 
 # -- attribution ------------------------------------------------------------
@@ -496,6 +567,22 @@ def test_include_paths_keep_only_the_named_paths(make_repo):
     assert included.scope.changed == 1
 
 
+def test_include_paths_match_deleted_and_renamed_files_by_their_path(make_repo):
+    repo = make_repo()
+    repo.commit(
+        "seed",
+        {"app.py": "x = 1\n", "vendor/old.py": "y = 1\n", "lib/moved.py": "z = 1\n"},
+    )
+    repo.remove("vendor/old.py")
+    repo.move("lib/moved.py", "vendor/moved.py")
+    repo.commit("change", {"app.py": "x = 2\n", "vendor/new.py": "w = 1\n"})
+
+    included = compare(repo, "HEAD", include_paths=("vendor/",))
+
+    # A deletion has no head path; it is kept by its base path, a rename by its new path.
+    assert included.scope.changed == 3
+
+
 def test_change_finding_ids_are_deterministic_across_runs(make_repo):
     repo = make_repo()
     repo.commit("seed", {"app.py": "x = 1\n"})
@@ -523,3 +610,63 @@ def test_the_analyzer_fingerprint_is_reported_on_both_sides(make_repo):
     assert delta.fingerprint.analyzer_version > 0
     assert delta.fingerprint.performance_model_version > 0
     assert delta.comparison_basis == "both_sides_analyzed"
+
+
+def test_a_query_file_change_is_data_not_a_gap(make_repo):
+    repo = make_repo()
+    repo.commit("seed", {"queries/java.scm": "(identifier) @name\n"})
+    repo.commit("edit", {"queries/java.scm": "(type_identifier) @name\n"})
+
+    delta = compare(repo)
+
+    assert delta.status == "unavailable"
+    assert delta.skipped == {"queries/java.scm": "not_analyzable_data"}
+    assert delta.code_skipped == {}
+    assert "query" in delta.explanation
+    assert not delta.is_clean
+
+
+def test_a_query_file_beside_code_does_not_make_the_run_partial(make_repo):
+    repo = make_repo()
+    repo.commit("seed", {"app.py": "x = 1\n", "queries/java.scm": "(identifier) @a\n"})
+    repo.commit("edit", {"app.py": "x = 2\n", "queries/java.scm": "(identifier) @b\n"})
+
+    delta = compare(repo)
+
+    assert delta.status == "available"
+    assert delta.code_skipped == {}
+
+
+def test_a_scheme_file_outside_queries_is_still_a_gap(make_repo):
+    repo = make_repo()
+    repo.commit("seed", {"src/main.scm": "(define (f x) x)\n"})
+    repo.commit("edit", {"src/main.scm": "(define (f x) (+ x 1))\n"})
+
+    delta = compare(repo)
+
+    assert delta.skipped == {"src/main.scm": "unsupported_language"}
+    assert delta.code_skipped == {"src/main.scm": "unsupported_language"}
+
+
+@pytest.mark.parametrize("path", ["templates/page.j2", "views/card.hbs", "tpl/email.tmpl"])
+def test_a_template_change_is_data_not_a_gap(make_repo, path):
+    repo = make_repo()
+    repo.commit("seed", {path: "Hello {{ name }}\n"})
+    repo.commit("edit", {path: "Hi {{ name }}\n"})
+
+    delta = compare(repo)
+
+    assert delta.skipped == {path: "not_analyzable_data"}
+    assert delta.code_skipped == {}
+    assert "template" in delta.explanation
+
+
+def test_a_template_beside_code_does_not_make_the_run_partial(make_repo):
+    repo = make_repo()
+    repo.commit("seed", {"app.py": "x = 1\n", "templates/page.j2": "{{ a }}\n"})
+    repo.commit("edit", {"app.py": "x = 2\n", "templates/page.j2": "{{ b }}\n"})
+
+    delta = compare(repo)
+
+    assert delta.status == "available"
+    assert delta.code_skipped == {}

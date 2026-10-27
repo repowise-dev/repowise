@@ -165,7 +165,8 @@ def test_list_filters(seeded: Path) -> None:
         return {d["id"][:8] for d in _json("list", str(seeded), *flags)["decisions"]}
 
     assert ids("--proposed") == {"bbbbbbbb", "dddddddd"}
-    assert ids("--stale-only") == {"aaaaaaaa"}
+    # Nothing is accepted yet, and a candidate's score is not a stale decision.
+    assert ids("--stale-only") == set()
     assert ids("--source", "git_archaeology") == {"bbbbbbbb"}
     assert ids("--status", "deprecated") == {"cccccccc"}
 
@@ -186,6 +187,14 @@ def accepted(seeded: Path) -> Path:
     """Health counts a decision as active only once it has been accepted."""
     assert _run("confirm", "aaaaaaaa", str(seeded)).exit_code == 0
     return seeded
+
+
+def test_stale_only_lists_what_health_counts_as_stale(accepted: Path) -> None:
+    listed = _json("list", str(accepted), "--stale-only")
+    health = _json("health", str(accepted))
+    assert [d["id"] for d in listed["decisions"]] == ["aaaaaaaa11111111"]
+    assert [d["id"] for d in health["stale_decisions"]] == ["aaaaaaaa11111111"]
+    assert listed["total"] == health["summary"]["stale"] == 1
 
 
 def test_health_json_carries_whole_lists(accepted: Path) -> None:
@@ -262,7 +271,7 @@ def test_batch_table_counts_and_names_each_outcome(seeded: Path) -> None:
     out = result.output
     assert "Accepted 1 of 3" in out
     assert "Decision not found: 9999" in out
-    assert "Supply the missing parts with --reason, --scope or --evidence." in out
+    assert "Supply the missing parts with --decision, --reason, --scope or --evidence." in out
 
 
 def test_batch_json_summarises_the_run(seeded: Path) -> None:
@@ -292,10 +301,17 @@ def test_dismiss_can_be_cancelled_at_the_prompt(seeded: Path) -> None:
 def test_deprecate_refuses_an_unknown_successor(seeded: Path) -> None:
     result = _run("deprecate", "aaaaaaaa", str(seeded), "--superseded-by", "9999", "--format", "json")
     assert result.exit_code == 1
-    assert json.loads(result.stdout)["error"] == "decision_not_found"
+    (only,) = json.loads(result.stdout)["results"]
+    assert only["error"] == "decision_not_found"
+    assert "9999" in only["message"]
     assert _json("show", "aaaaaaaa", str(seeded))["decision"]["status"] == "active"
 
 
 def test_deprecate_json_reports_the_transition(seeded: Path) -> None:
     payload = _json("deprecate", "bbbbbbbb", str(seeded))
-    assert payload == {"id": "bbbbbbbb22222222", "status": "deprecated", "action": "deprecated"}
+    (only,) = payload["results"]
+    assert (only["id"], only["status"], only["action"]) == (
+        "bbbbbbbb22222222",
+        "deprecated",
+        "deprecated",
+    )

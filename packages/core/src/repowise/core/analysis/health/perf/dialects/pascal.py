@@ -42,16 +42,29 @@ a ``+=`` compound assignment (``{$COPERATORS ON}`` is off by default), which
 the generic ``is_string_concat`` predicate cannot express without risking
 false positives on ordinary reassignment -- ``string_concat_in_loop`` is
 therefore also left out rather than guessed.
+
+What a loop walks comes from the shared reader in ``iterables.py``. Two shapes
+are Pascal's own. A counted loop has no ``i < n`` condition: its inclusive
+bound is the ``end`` value (``High(xs)``, ``xs.Count - 1``), or the start
+value under ``downto``. A data set is opened in place rather than bound to a
+query's result, so ``while not Q.Eof`` walks what the ``Q.Open`` before the
+loop read, and the statement text assigned to ``Q.SQL`` before it is what
+tells one row from all of them. Identifiers are case-insensitive, so names and
+method vocabularies are compared lower-cased.
 """
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
-from .base import BasePerfDialect
+from .iterables import IterableSources, text_of
 
 if TYPE_CHECKING:
     from tree_sitter import Node
+
+    from ..loop_facts import SinkProbe
+    from .iterables import Source
 
 # Filesystem round-trips. Bare RTL functions (SysUtils / System.IOUtils /
 # WinAPI) with no receiver, so they fire regardless of ``is_attribute``.
@@ -125,8 +138,28 @@ _DB_METHODS: frozenset[str] = frozenset({"Open", "ExecSQL", "Post"})
 # ``uses``-clause network evidence for the same reason.
 _NETWORK_METHODS: frozenset[str] = frozenset({"Get", "Post", "Put", "Patch", "Delete", "Head"})
 
+# Keys a data set's ``Open`` and its statement text are filed under in the
+# scope's bindings. No identifier holds a NUL, so they never meet a real name.
+_OPEN_KEY = b"\x00open"
+_SQL_KEY = b"\x00sql"
+# ``Inc(n)`` / ``SetLength(xs, n)``: procedures that step or resize their first argument.
+_STEPPERS: frozenset[str] = frozenset({"inc", "dec", "setlength", "include", "exclude"})
+# ``TColor``: a type, by the convention every Delphi and FPC unit follows.
+_TYPE_NAME = re.compile(r"T[A-Z]\w*\Z")
 
-class PascalPerfDialect(BasePerfDialect):
+
+def _lower(node: Node | None) -> bytes:
+    return (node.text or b"").lower() if node is not None else b""
+
+
+class _Names(set[bytes]):
+    """Names matched without case."""
+
+    def __contains__(self, name: object) -> bool:
+        return isinstance(name, bytes) and super().__contains__(name.lower())
+
+
+class PascalPerfDialect(IterableSources):
     language = "pascal"
     markers = frozenset({"io_in_loop", "hot_path_sync_io"})
 
@@ -222,6 +255,211 @@ class PascalPerfDialect(BasePerfDialect):
         if is_attribute and method in _NETWORK_METHODS and "network" in io_names.values():
             return "network"
         return None
+
+    # -- what a loop walks (perf/dialects/iterables.py) ---------------------------
+
+    function_kinds = frozenset({"defProc"})
+    change_kinds = frozenset({"assignment"})
+    grow_methods = frozenset(
+        {"add", "addobject", "addrange", "addstrings", "insert", "append", "push", "enqueue"}
+    )
+    conditional_kinds = frozenset(
+        {
+            "if", "ifElse", "case", "caseCase", "for", "foreach", "while", "repeat",
+            "try", "exceptionHandler",
+        }
+    )  # fmt: skip
+
+    literal_kinds = frozenset({"exprBrackets"})
+    int_kinds = frozenset({"literalNumber"})
+    wrapper_kinds = frozenset({"exprParens"})
+    member_kinds = frozenset({"exprDot"})
+    pass_through = frozenset({"keys", "values", "toarray"})
+    size_names = frozenset({"count", "length", "high"})
+    listings = frozenset({"getfiles", "getdirectories", "getfilesystementries"})
+    recursive_marks = (b"soAllDirectories",)
+
+    def loop_header(self, loop: Node) -> tuple[str, Node | None]:
+        if loop.type == "foreach":
+            return "each", loop.child_by_field_name("iterable")
+        if loop.type == "for":
+            if any(child.type == "kDownto" for child in loop.children):
+                start = loop.child_by_field_name("start")
+                return "counted", start.child_by_field_name("rhs") if start is not None else None
+            return "counted", loop.child_by_field_name("end")
+        dataset = self._eof_dataset(loop)
+        if dataset is None:
+            return "each", None
+        # Unopened here, the data set is whatever its receiver is (a parameter).
+        return "each", self.reaching_value(loop, _lower(dataset) + _OPEN_KEY) or dataset
+
+    def _eof_dataset(self, loop: Node) -> Node | None:
+        """``Q`` of ``while not Q.Eof`` / ``repeat ... until Q.Eof``."""
+        cond = loop.child_by_field_name("condition")
+        if cond is None:
+            return None
+        cond = self._unwrap(cond)
+        if loop.type == "while":
+            operator = cond.child_by_field_name("operator")
+            operand = cond.child_by_field_name("operand")
+            if cond.type != "exprUnary" or operator is None or operator.type != "kNot":
+                return None
+            if operand is None:
+                return None
+            cond = self._unwrap(operand)
+        if cond.type == "exprDot" and _lower(cond.child_by_field_name("rhs")) == b"eof":
+            return cond.child_by_field_name("lhs")
+        return None
+
+    def call_parts(self, node: Node) -> tuple[str, Node | None, list[Node]] | None:
+        if node.type == "exprCall":
+            args = node.child_by_field_name("args")
+            arg_nodes = (
+                [a for a in args.named_children if a.type != "comment"] if args is not None else []
+            )
+        elif (
+            node.parent is not None
+            and node.parent.type == "statement"
+            and self.bare_statement_call(node.parent) == node
+        ):
+            arg_nodes = []
+        else:
+            return None
+        entity = self._entity_of(node)
+        if entity is None:
+            return None
+        if entity.type == "exprDot":
+            receiver = entity.child_by_field_name("lhs")
+            name = entity.child_by_field_name("rhs")
+            return (
+                (_lower(name).decode("utf-8", "replace"), receiver, arg_nodes)
+                if name is not None
+                else None
+            )
+        if entity.type != "identifier":
+            return None
+        return _lower(entity).decode("utf-8", "replace"), None, arg_nodes
+
+    def member_parts(self, node: Node) -> tuple[str, Node] | None:
+        if node.type != "exprDot":
+            return None
+        obj, name = node.child_by_field_name("lhs"), node.child_by_field_name("rhs")
+        if obj is None or name is None:
+            return None
+        return _lower(name).decode("utf-8", "replace"), obj
+
+    @staticmethod
+    def _sql_owner(target: Node | None) -> Node | None:
+        """``Q`` of ``Q.SQL.Text`` / ``Q.CommandText``: the data set a statement text is for."""
+        if target is None or target.type != "exprDot":
+            return None
+        owner, name = target.child_by_field_name("lhs"), _lower(target.child_by_field_name("rhs"))
+        if name == b"commandtext":
+            return owner
+        if name != b"text" or owner is None or owner.type != "exprDot":
+            return None
+        if _lower(owner.child_by_field_name("rhs")) != b"sql":
+            return None
+        return owner.child_by_field_name("lhs")
+
+    def bindings_of(self, node: Node) -> list[tuple[bytes, Node]]:
+        if node.type == "assignment":
+            lhs, rhs = node.child_by_field_name("lhs"), node.child_by_field_name("rhs")
+            if lhs is None or rhs is None:
+                return []
+            if lhs.type == "identifier":
+                return [(_lower(lhs), rhs)]
+            dataset = self._sql_owner(lhs)
+            return [(_lower(dataset) + _SQL_KEY, rhs)] if dataset is not None else []
+        parts = self.call_parts(node)
+        if parts is None:
+            return []
+        method, receiver, args = parts
+        if receiver is None:
+            return []
+        if method == "open":
+            return [(_lower(receiver) + _OPEN_KEY, node)]
+        # ``Q.SQL.Add('...')``: one line of the text; several leave it unread.
+        if method != "add" or len(args) != 1 or receiver.type != "exprDot":
+            return []
+        if _lower(receiver.child_by_field_name("rhs")) != b"sql":
+            return []
+        return [(_lower(receiver.child_by_field_name("lhs")) + _SQL_KEY, args[0])]
+
+    def mutated_name(self, node: Node) -> bytes | None:
+        if node.type in self.change_kinds:
+            return _lower(node.child_by_field_name("lhs")).split(b"[", 1)[0] or None
+        parts = self.call_parts(node)
+        if parts is None:
+            return None
+        method, receiver, args = parts
+        if receiver is not None:
+            return _lower(receiver) if method in self.grow_methods else None
+        return _lower(args[0]) if method in _STEPPERS and args else None
+
+    def bindings_before(self, anchor: Node, name: bytes) -> list[tuple[Node, Node]]:
+        return super().bindings_before(anchor, name.lower())
+
+    def _changed_before(self, value: Node, loop: Node, name: bytes) -> bool:
+        return super()._changed_before(value, loop, name.lower())
+
+    def param_names(self, loop: Node) -> set[bytes]:
+        scope = self._scope(loop)
+        header = scope.child_by_field_name("header") if scope is not None else None
+        args = header.child_by_field_name("args") if header is not None else None
+        names = _Names()
+        for arg in args.named_children if args is not None else ():
+            if arg.type == "declArg":
+                names.update(
+                    _lower(n) for n in arg.children_by_field_name("name") if n.type == "identifier"
+                )
+        return names
+
+    def special_call(
+        self,
+        call: Node,
+        parts: tuple[str, Node | None, list[Node]],
+        loop: Node,
+        probe: SinkProbe,
+    ) -> Source | None:
+        method, receiver, args = parts
+        if method != "open" or receiver is None or probe(call) != "db":
+            return None
+        sql = args[0] if args else self.reaching_value(loop, _lower(receiver) + _SQL_KEY)
+        if sql is not None and sql.type == "identifier":
+            sql = self.reaching_value(loop, _lower(sql))
+        # A text set in a form file or built up line by line is not in view,
+        # and a read whose text is unseen may be one row as easily as all of them.
+        if sql is None or not any(n.type == "literalString" for n in self._walk(sql)):
+            return "query", None
+        return self._query(sql, loop)
+
+    def _name(self, name: Node, loop: Node, probe: SinkProbe, *, hop: bool) -> Source:
+        found = super()._name(name, loop, probe, hop=hop)
+        # ``for E in TColor`` / ``High(TColor)``: an ordinal type has a fixed set of values.
+        if found == ("unknown", None) and _TYPE_NAME.match(text_of(name)):
+            return "constant", "bounded"
+        return found
+
+    def _counted(self, stop: Node, loop: Node, probe: SinkProbe, *, hop: bool = True) -> Source:
+        return super()._counted(self._size_of_last_index(stop), loop, probe, hop=hop)
+
+    def _size_of_last_index(self, node: Node) -> Node:
+        """``Length(xs)`` of ``Length(xs) - 1`` / ``Pred(Length(xs))``: an inclusive
+        bound is written one short of the size it walks."""
+        node = self._unwrap(node)
+        if node.type == "exprBinary":
+            operator = node.child_by_field_name("operator")
+            lhs, rhs = node.child_by_field_name("lhs"), node.child_by_field_name("rhs")
+            if operator is None or operator.type != "kSub" or lhs is None or rhs is None:
+                return node
+            if self._unwrap(rhs).type in self.int_kinds:
+                return self._size_of_last_index(lhs)
+            return node
+        parts = self.call_parts(node)
+        if parts is not None and parts[0] == "pred" and parts[1] is None and len(parts[2]) == 1:
+            return self._size_of_last_index(parts[2][0])
+        return node
 
 
 DIALECT = PascalPerfDialect()

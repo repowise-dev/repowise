@@ -144,6 +144,38 @@ def test_null_domain_penalty_is_absent_not_null():
     assert penalised[0]["domain_penalty"] == "ui question; cross-domain"
 
 
+def test_best_guesses_keep_one_row_per_file():
+    # A symbol page resolves to its file, so command.go would take two of the
+    # three slots and completions.go would never be offered (#3594).
+    hits = [
+        {"page_type": "file_page", "target_path": "command.go", "score": 5.774},
+        {"page_type": "file_page", "target_path": "args.go", "score": 4.042},
+        {"page_type": "symbol_spotlight", "target_path": "command.go::Find", "score": 3.0},
+        {"page_type": "file_page", "target_path": "completions.go", "score": 2.9},
+    ]
+    guesses = _build_best_guesses(hits)
+    assert [g["file"] for g in guesses] == ["command.go", "args.go", "completions.go"]
+    assert guesses[0]["score"] == 5.774
+
+
+def test_best_guesses_unchanged_for_distinct_files():
+    hits = [
+        {"page_type": "file_page", "target_path": "a.py", "score": 3.0},
+        {"page_type": "file_page", "target_path": "b.py", "score": 2.0},
+        {"page_type": "file_page", "target_path": "c.py", "score": 1.0},
+        {"page_type": "file_page", "target_path": "d.py", "score": 0.5},
+    ]
+    assert [g["file"] for g in _build_best_guesses(hits)] == ["a.py", "b.py", "c.py"]
+
+
+def test_best_guesses_still_skip_hits_without_a_file():
+    hits = [
+        {"page_type": "module_page", "target_path": "pkg", "score": 3.0},
+        {"page_type": "file_page", "target_path": "a.py", "score": 2.0},
+    ]
+    assert [g["file"] for g in _build_best_guesses(hits)] == ["a.py"]
+
+
 # ---------------------------------------------------------------------------
 # get_answer.candidates — 20 rows measured at up to 39.9% of the payload
 # ---------------------------------------------------------------------------

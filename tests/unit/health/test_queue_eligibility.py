@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import pytest
+
 from repowise.core.analysis.health.queue.eligibility import (
     ELIGIBLE,
     Tally,
     Verdict,
     finding_verdict,
     path_verdict,
+    perf_confident_verdict,
     perf_fix_verdict,
     refactor_verdict,
     unit_verdict,
@@ -35,7 +38,11 @@ def _cause(**over):
         "plan_state": "available",
         "fix_strategy": "batch_or_prefetch_io",
         "biomarker_type": "io_in_loop",
-        "facets": {"loop_magnitude": "grows_with_data"},
+        "facets": {
+            "loop_magnitude": "grows_with_data",
+            "growth_source": "loop",
+            "execution_role": "request",
+        },
     }
     return {**row, **over}
 
@@ -91,12 +98,55 @@ def test_a_cause_group_asks_about_dead_code_only_once_it_is_worth_an_item() -> N
         asked.append(True)
         return True
 
-    bounded = _cause(biomarker_type="string_concat_in_loop", facets={"loop_magnitude": "bounded"})
+    bounded = _cause(
+        biomarker_type="string_concat_in_loop",
+        facets={"loop_magnitude": "bounded", "execution_role": "request"},
+    )
     contexts = frozenset({"production"})
-    assert perf_fix_verdict([bounded], contexts, unreachable)[0].reason == "below_min_worth"
+    assert perf_fix_verdict([bounded], contexts, unreachable)[0].reason == "unconfirmed_cost"
     assert not asked
     assert perf_fix_verdict([_cause()], contexts, unreachable)[0].reason == "unreachable"
     assert asked == [True]
+
+
+@pytest.mark.parametrize(
+    ("facets", "reason"),
+    [
+        # A registry loop's growth rests on its name.
+        ({"growth_source": "registry"}, "unconfirmed_cost"),
+        # Growth seen only in a migration loop is paid once per deploy.
+        ({"growth_source": "cold_path"}, "unconfirmed_cost"),
+        # Stored before the fact existed: nothing confirms it.
+        ({"growth_source": None}, "unconfirmed_cost"),
+        # No known role and no entry point reaching it.
+        ({"execution_role": "unknown", "exposure": "unknown"}, "unconfirmed_cost"),
+        ({"execution_role": "unknown", "exposure": "entry_reachable"}, None),
+        # Still the queue's own reasons first.
+        ({"loop_magnitude": "unknown"}, "unmeasured_cost"),
+        ({"execution_role": "cli"}, "cold_role"),
+        ({}, None),
+    ],
+)
+def test_a_confident_cause_is_a_queued_one_whose_growth_a_warm_loop_shows(facets, reason) -> None:
+    row = _cause()
+    row["facets"] = {k: v for k, v in {**row["facets"], **facets}.items() if v is not None}
+    assert perf_confident_verdict(row).reason == reason
+
+
+def test_an_advisory_cause_is_queued_but_never_confident() -> None:
+    from repowise.core.analysis.health.queue.eligibility import perf_queue_verdict
+
+    advisory = _cause(actionability_state="advisory")
+    assert perf_queue_verdict(advisory).eligible
+    assert perf_confident_verdict(advisory).reason == "unconfirmed_cost"
+
+
+def test_a_per_call_cause_is_confident_only_once_an_entry_point_reaches_it() -> None:
+    hot = {"loop_magnitude": "n/a", "growth_source": "n/a", "execution_role": "request"}
+    reached = _cause(biomarker_type="hot_path_sync_io", facets={**hot, "exposure": "entry_reachable"})
+    assert perf_confident_verdict(reached).eligible
+    unreached = _cause(biomarker_type="hot_path_sync_io", facets={**hot, "exposure": "unknown"})
+    assert perf_confident_verdict(unreached).reason == "unconfirmed_cost"
 
 
 class _Shaped(_Facts):
@@ -137,6 +187,28 @@ def test_a_stored_origin_overrules_a_test_shaped_name() -> None:
     assert path_verdict("tests/x.py", False, origin="production").reason == "test"
     assert path_verdict("src/__mocks__/api.ts", False, origin="production").reason == "test"
     assert path_verdict("src/app.py", False, origin="test").reason == "test"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/main/java/com/example/demo/OrderService.java",
+        "app/src/main/java/com/example/myapp/MainActivity.kt",
+        "pkg/demo/handler.go",
+        "src/main/java/org/springframework/samples/petclinic/owner/PetController.java",
+    ],
+)
+def test_a_production_origin_outranks_an_example_segment_below_the_root(path) -> None:
+    assert path_verdict(path, False, origin="production").reason is None
+    # With no stored origin the shared classifier reads the path the same way.
+    assert path_verdict(path, None).reason is None
+
+
+def test_real_examples_and_docs_stay_out() -> None:
+    assert path_verdict("examples/foo/main.go", False, origin="docs_example").reason == (
+        "docs_example"
+    )
+    assert path_verdict("docs/x.py", None).reason == "docs_example"
 
 
 def test_unit_verdict_ladder_order() -> None:
