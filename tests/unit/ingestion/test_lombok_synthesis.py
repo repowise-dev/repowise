@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+
 from repowise.core.ingestion.models import FileInfo
 from repowise.core.ingestion.parser import parse_file
 
@@ -68,6 +70,23 @@ class TestLombok:
             "@Slf4j public class Svc {}\n",
         )
         assert "log" in names, names
+
+    @pytest.mark.parametrize(
+        ("ann", "logger_type"),
+        [("Slf4j", "Logger"), ("XSlf4j", "XLogger"), ("Log4j2", "Logger"),
+         ("Log", "Logger"), ("JBossLog", "Logger"), ("CommonsLog", "Log"),
+         ("Flogger", "FluentLogger")],
+    )
+    def test_logger_only_class_keeps_its_log_field(
+        self, tmp_path: Path, ann: str, logger_type: str
+    ) -> None:
+        pf = _parse_full(
+            tmp_path, "Svc.java", f"import lombok.extern.*;\n@{ann}\npublic class Svc {{}}\n"
+        )
+        logs = [s for s in pf.symbols if s.name == "log" and s.parent_name == "Svc"]
+        assert len(logs) == 1, [s.id for s in pf.symbols]
+        assert logs[0].signature == f"private static final {logger_type} log"
+        assert logs[0].start_line == 2
 
     def test_data_emits_getters_setters_toString_equals(self, tmp_path: Path) -> None:
         names = _parse(
