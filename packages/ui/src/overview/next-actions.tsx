@@ -1,17 +1,22 @@
 "use client";
 
-import { Fragment, useMemo, useState, type ElementType, type ReactNode } from "react";
+import { Fragment, useCallback, useMemo, useState, type ElementType, type ReactNode } from "react";
 import { BellOff, Check, PanelRight, X } from "lucide-react";
 import { toast } from "sonner";
-import type {
-  ActionHorizonKey,
-  ActionsResponse,
-  ActionStateValue,
-  ActionTier,
-  NextAction,
+import {
+  ACTION_TIER_LABELS,
+  ACTION_TIER_ORDER,
+  type ActionHorizonKey,
+  type ActionsResponse,
+  type ActionStateValue,
+  type ActionTier,
+  type NextAction,
 } from "@repowise-dev/types/actions";
 
+import { useAiPromptAction } from "../health/ai-prompt-action";
+import type { AiPromptFlavor } from "../health/ai-prompt-builder";
 import { EFFORT_LABEL } from "../health/labels";
+import { RowPromptAction } from "../health/row-prompt-action";
 import { SeverityMark } from "../health/severity-mark";
 import { CLICKABLE_ROW_CLS, clickableRowProps } from "../shared/responsive-table";
 import { RowOverflow } from "../shared/row-overflow";
@@ -22,19 +27,16 @@ import { OverviewSection } from "./section";
 /** Rows shown before "Show all"; the response carries up to 20 per horizon. */
 const PREVIEW = 5;
 
-const TIER_HEADING: Record<ActionTier, string> = {
-  act_now: "Now",
-  plan: "Worth planning",
-  improve_signal: "Improve what Repowise can see",
-};
-
 export interface NextActionsProps {
   /** `null` when the server predates actions; the section then renders nothing. */
   data: ActionsResponse | null;
   hrefFor: (action: NextAction) => string | null;
   /** A file's own page, for the files an opened action names. */
   fileHref?: ((path: string) => string | null) | undefined;
-  /** Persist a dismissal, snooze, done, or (null) an undo. Omit to hide those verbs. */
+  /**
+   * Persist a dismissal, snooze, done, or (null) an undo. Omit to hide those verbs.
+   * The sentence over the list is the server's, so pass fresh `data` after a write.
+   */
   onSetState?: (action: NextAction, state: ActionStateValue | null) => Promise<void>;
   /** An action's agent prompt as core renders it. Omit to hide the prompt. */
   loadPrompt?: ActionDrawerProps["loadPrompt"];
@@ -45,7 +47,35 @@ export interface NextActionsProps {
   unavailableHint?: ReactNode | null;
   /** Show each command's CLI line in the drawer. Set false for a host with no CLI. */
   showCliCommands?: boolean;
+  /**
+   * Set false to start folded behind its heading, for a page where the list
+   * would push everything else below the fold. Defaults to open.
+   */
+  defaultOpen?: boolean;
   LinkComponent?: ElementType | undefined;
+}
+
+type ActionPromptLoader = (action: NextAction, flavor: AiPromptFlavor) => Promise<string>;
+
+/**
+ * The row-level "Copy prompt for your agent": opens the shared prompt modal on
+ * one action's prompt. Render `promptModal` once beside the rows.
+ */
+export function useActionPrompt(): {
+  openActionPrompt: (action: NextAction, load: ActionPromptLoader) => void;
+  promptModal: ReactNode;
+} {
+  const { openPrompt, promptModal } = useAiPromptAction();
+  const openActionPrompt = useCallback(
+    (action: NextAction, load: ActionPromptLoader) =>
+      openPrompt({
+        title: action.title.replace(/`/g, ""),
+        filePath: action.target.path || null,
+        promptSource: (flavor) => load(action, flavor),
+      }),
+    [openPrompt],
+  );
+  return { openActionPrompt, promptModal };
 }
 
 /** Split a title on backticks so paths and symbols set in mono. */
@@ -61,51 +91,47 @@ export function renderActionTitle(title: string): ReactNode {
   );
 }
 
+// en-US grouping, as the server writes `{n:,}`, so a local sentence reads the same.
 function plural(n: number, noun: string): string {
-  return `${n.toLocaleString()} ${noun}${n === 1 ? "" : "s"}`;
+  return `${n.toLocaleString("en-US")} ${noun}${n === 1 ? "" : "s"}`;
 }
 
-function formatDay(iso: string | null): string | null {
-  if (!iso) return null;
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime())
-    ? null
-    : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** "Sep 28" from the anchor's own calendar day, never shifted into the viewer's timezone. */
+function anchorDay(iso: string | null): string | null {
+  const m = iso ? /^\d{4}-(\d{2})-(\d{2})/.exec(iso) : null;
+  const month = m ? MONTHS[Number(m[1]) - 1] : undefined;
+  return m && month ? `${month} ${Number(m[2])}` : null;
 }
+
+const workIn = (h: ActionsResponse["horizons"][ActionHorizonKey]) =>
+  (h.by_tier.act_now ?? 0) + (h.by_tier.plan ?? 0);
 
 /**
- * The one sentence that says where things stand. Counts the list as the reader
- * sees it, and names the window, because "this week" means the repository's
- * last week of commits, which is not always the calendar's.
+ * The sentence for a view that carries no `summary` (a server that predates
+ * it). Same as the server's wording, from the same counts, so the line never
+ * goes blank. A view with `summary` always wins.
  */
-export function actionsStatus(
-  data: ActionsResponse,
-  horizon: ActionHorizonKey,
-  answered: ReadonlySet<string> = new Set(),
-): string {
-  const h = data.horizons[horizon];
-  const gone = (tier: ActionTier) =>
-    h.actions.filter((a) => a.tier === tier && answered.has(a.id)).length;
-  const now = (h.by_tier.act_now ?? 0) - gone("act_now");
-  const work = now + (h.by_tier.plan ?? 0) - gone("plan");
-  const until = formatDay(data.anchor);
+function fallbackSummary(data: ActionsResponse, horizon: ActionHorizonKey): string {
+  const until = anchorDay(data.anchor);
   const window =
     horizon === "week"
       ? until
         ? `in the week to ${until}, the last indexed commit`
         : "this week"
       : "this quarter";
+  const work = workIn(data.horizons[horizon]);
   if (work === 0) {
-    const other = horizon === "week" ? data.horizons.quarter : data.horizons.week;
-    const otherWork = (other.by_tier.act_now ?? 0) + (other.by_tier.plan ?? 0);
-    return otherWork > 0
-      ? `Nothing needs you ${window}. ${plural(otherWork, "thing")} ${
-          horizon === "week"
-            ? `${otherWork === 1 ? "is" : "are"} worth planning this quarter`
-            : "came up this week"
-        }.`
-      : `Nothing stands out ${window}.`;
+    const other = workIn(data.horizons[horizon === "week" ? "quarter" : "week"]);
+    if (other === 0) return `Nothing stands out ${window}.`;
+    const tail =
+      horizon === "week"
+        ? `${other === 1 ? "is" : "are"} worth planning this quarter`
+        : "came up this week";
+    return `Nothing needs you ${window}. ${plural(other, "thing")} ${tail}.`;
   }
+  const now = data.horizons[horizon].by_tier.act_now ?? 0;
   return `${plural(work, "thing")} worth doing ${window}${now ? `, ${now} of them now` : ""}.`;
 }
 
@@ -117,24 +143,23 @@ export function NextActions({
   loadPrompt,
   unavailableHint,
   showCliCommands,
+  defaultOpen = true,
   LinkComponent,
 }: NextActionsProps) {
   // Open on the week unless it holds no work and the quarter does: a lone
   // "add a coverage report" is not a reason to show an empty week first.
-  const work = (key: ActionHorizonKey, less: ReadonlySet<string> = new Set()) =>
-    data
-      ? (data.horizons[key].by_tier.act_now ?? 0) +
-        (data.horizons[key].by_tier.plan ?? 0) -
-        data.horizons[key].actions.filter((a) => a.tier !== "improve_signal" && less.has(a.id))
-          .length
-      : 0;
+  // Counts come from `data` alone, like the sentence, so the two agree; both
+  // move when the host passes the re-read view after an answer.
+  const work = (key: ActionHorizonKey) => (data ? workIn(data.horizons[key]) : 0);
   const initial: ActionHorizonKey = work("week") === 0 && work("quarter") > 0 ? "quarter" : "week";
   const [horizon, setHorizon] = useState<ActionHorizonKey>(initial);
   const [expanded, setExpanded] = useState(false);
   // Optimistic: a row the person answered leaves at once and comes back if the
-  // write fails.
-  const [answered, setAnswered] = useState<ReadonlySet<string>>(new Set());
+  // write fails. Kept by id with the action, so "answered everything" still
+  // knows its time frame once a re-read drops the row.
+  const [answered, setAnswered] = useState<ReadonlyMap<string, NextAction>>(new Map());
   const [opened, setOpened] = useState<NextAction | null>(null);
+  const { openActionPrompt, promptModal } = useActionPrompt();
 
   const rows = useMemo(
     () => (data ? data.horizons[horizon].actions.filter((a) => !answered.has(a.id)) : []),
@@ -149,10 +174,10 @@ export function NextActions({
 
   const answer = (action: NextAction, state: ActionStateValue, message: string) => {
     if (!onSetState) return;
-    setAnswered((s) => new Set(s).add(action.id));
+    setAnswered((s) => new Map(s).set(action.id, action));
     const restore = () =>
       setAnswered((s) => {
-        const next = new Set(s);
+        const next = new Map(s);
         next.delete(action.id);
         return next;
       });
@@ -174,27 +199,34 @@ export function NextActions({
     );
   };
 
+  const timeFrame = (
+    <Segmented
+      label="Time frame"
+      value={horizon}
+      options={[
+        { value: "week", label: "This week", count: String(work("week")), hint: "What the last 7 days of commits changed" },
+        { value: "quarter", label: "This quarter", count: String(work("quarter")), hint: "What the last 90 days say is worth planning" },
+      ]}
+      onChange={(v) => {
+        setHorizon(v);
+        setExpanded(false);
+      }}
+    />
+  );
 
   return (
     <OverviewSection
-      title="Do next"
-      description={actionsStatus(data, horizon, answered)}
-      action={
-        <Segmented
-          label="Time frame"
-          value={horizon}
-          options={[
-            { value: "week", label: "This week", count: String(work("week", answered)), hint: "What the last 7 days of commits changed" },
-            { value: "quarter", label: "This quarter", count: String(work("quarter", answered)), hint: "What the last 90 days say is worth planning" },
-          ]}
-          onChange={(v) => {
-            setHorizon(v);
-            setExpanded(false);
-          }}
-        />
-      }
+      title={defaultOpen ? "Do next" : `Do next · ${work(horizon).toLocaleString("en-US")}`}
+      description={data.summary?.[horizon] ?? fallbackSummary(data, horizon)}
+      // A folded section has no header action slot, so the time frame sits
+      // under the summary, above the list it filters, and the toggle carries
+      // the count.
+      action={defaultOpen ? timeFrame : undefined}
+      collapsible={!defaultOpen}
+      defaultOpen={defaultOpen}
     >
-      {shown.length === 0 && answered.size > 0 && h.actions.length > 0 ? (
+      {!defaultOpen && timeFrame}
+      {shown.length === 0 && [...answered.values()].some((a) => a.horizons.includes(horizon)) ? (
         <p className="py-2 text-sm text-[var(--color-text-secondary)]">
           You have answered everything listed here. Answers are kept until the facts change.
         </p>
@@ -205,7 +237,7 @@ export function NextActions({
           {groupByTier(shown).map(([tier, items]) => (
             <div key={tier} className="flex flex-col">
               <h3 className="pb-1 pt-3 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)] first:pt-0">
-                {TIER_HEADING[tier]}
+                {ACTION_TIER_LABELS[tier] ?? tier}
               </h3>
               <ul className="flex flex-col divide-y divide-[var(--color-border-default)]">
                 {items.map((action) => (
@@ -214,6 +246,7 @@ export function NextActions({
                     action={action}
                     selected={opened?.id === action.id}
                     onOpen={() => setOpened(action)}
+                    onPrompt={loadPrompt ? () => openActionPrompt(action, loadPrompt) : undefined}
                     onAnswer={onSetState ? (state, message) => answer(action, state, message) : undefined}
                   />
                 ))}
@@ -228,7 +261,7 @@ export function NextActions({
           <button
             type="button"
             onClick={() => setExpanded((e) => !e)}
-            className="rounded text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+            className="rounded text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
           >
             {expanded ? "Show fewer" : `Show all ${Math.min(rows.length, total).toLocaleString()}`}
           </button>
@@ -275,6 +308,7 @@ export function NextActions({
         LinkComponent={LinkComponent}
         renderTitle={renderActionTitle}
       />
+      {promptModal}
     </OverviewSection>
   );
 }
@@ -293,26 +327,32 @@ export function actionLocation(action: NextAction): string | null {
   return line ? `${path}:${line}` : path;
 }
 
-function groupByTier(actions: NextAction[]): [ActionTier, NextAction[]][] {
-  const out: [ActionTier, NextAction[]][] = [];
+/** One heading per tier in core's order, rank order kept inside each, as the
+ *  CLI groups them. A tier this build does not know trails under its raw name
+ *  rather than dropping its rows. */
+export function groupByTier(actions: NextAction[]): [ActionTier, NextAction[]][] {
+  const groups = new Map<ActionTier, NextAction[]>(ACTION_TIER_ORDER.map((t) => [t, []]));
   for (const a of actions) {
-    const last = out[out.length - 1];
-    if (last && last[0] === a.tier) last[1].push(a);
-    else out.push([a.tier, [a]]);
+    const group = groups.get(a.tier);
+    if (group) group.push(a);
+    else groups.set(a.tier, [a]);
   }
-  return out;
+  return [...groups].filter(([, items]) => items.length > 0);
 }
 
 export function ActionRow({
   action,
   onOpen,
   selected = false,
+  onPrompt,
   onAnswer,
 }: {
   action: NextAction;
   /** Open the action's drawer; the whole row is the trigger. */
   onOpen: () => void;
   selected?: boolean | undefined;
+  /** Open the agent prompt for this action. Omit to hide the row's prompt verb. */
+  onPrompt?: (() => void) | undefined;
   onAnswer?: ((state: ActionStateValue, message: string) => void) | undefined;
 }) {
   const plainTitle = action.title.replace(/`/g, "");
@@ -343,7 +383,8 @@ export function ActionRow({
     <li
       aria-label={`Open ${plainTitle}`}
       aria-current={selected ? "true" : undefined}
-      className={`${CLICKABLE_ROW_CLS} group flex items-start gap-3 px-1 py-3.5 sm:gap-4 ${
+      data-selected={selected ? "true" : undefined}
+      className={`${CLICKABLE_ROW_CLS} group group/row flex items-start gap-3 px-1 py-3.5 sm:gap-4 ${
         selected ? "bg-[var(--color-bg-elevated)]" : "hover:bg-[var(--color-bg-elevated)]"
       }`}
       {...clickableRowProps(onOpen)}
@@ -395,6 +436,7 @@ export function ActionRow({
             </>
           )}
         </span>
+        {onPrompt && <RowPromptAction subject={plainTitle} onClick={onPrompt} />}
         <RowOverflow label={`More for ${plainTitle}`} items={items} />
       </div>
     </li>

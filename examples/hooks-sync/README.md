@@ -12,7 +12,7 @@ Keep the wiki index fresh with `repowise hook` (post-commit) and
 
 ```bash
 cd /path/to/your-repo
-repowise init --index-only --yes
+repowise init --yes --no-prose
 ```
 
 ## 1. Post-commit hook

@@ -2,8 +2,8 @@
 
 Split out of the former monolithic ``crud.py`` and later from the single
 ``analysis.py`` module into per-entity submodules. ``crud/__init__.py``
-re-exports every public name via ``from .analysis import *``, so existing
-imports are unaffected.
+re-exports every name in ``__all__`` on first use, so existing imports are
+unaffected.
 """
 
 from __future__ import annotations
@@ -13,9 +13,11 @@ from . import (  # noqa: F401
     coverage_map,
     dead_code,
     doc_drift,
+    function_facts,
     health,
     performance,
     refactoring,
+    refactoring_payoff,
 )
 from .coverage import (
     coverage_by_module,
@@ -64,6 +66,7 @@ from .doc_drift import (
     serialize_doc_drift_row,
     summarize_confidence_rows,
 )
+from .function_facts import get_function_facts, tests_for_functions, write_function_facts
 from .health import (
     FILE_TREND_SNAPSHOT_WINDOW,
     HEALTH_SNAPSHOT_RETENTION,
@@ -72,14 +75,16 @@ from .health import (
     backfill_is_test,
     backfill_module_attribution,
     clear_unanalysed_scores,
-    get_average_health,
+    gated_health_counts,
     get_deduction_by_path,
     get_file_language_map,
+    get_headline_health,
     get_health_findings,
     get_health_metrics,
     get_health_snapshot_file_counts,
     get_health_snapshot_headline,
     get_health_summary,
+    get_latest_snapshot_analyzer_version,
     get_perf_coverage,
     get_scored_file_paths,
     health_finding_priorities,
@@ -96,6 +101,7 @@ from .health import (
 )
 from .performance import (
     finalize_performance_opportunities,
+    gated_performance_counts,
     get_health_finding_by_public_id,
     get_performance_opportunity,
     get_performance_plan_rows,
@@ -104,15 +110,20 @@ from .performance import (
     list_opportunity_evidence,
     list_performance_opportunities,
     opportunity_details,
+    performance_area_counts,
     performance_facet_counts,
     performance_file_rollups,
+    performance_headline,
 )
 from .refactoring import (
     count_refactoring_suggestions,
     finalize_refactoring_suggestions,
     get_refactoring_suggestion,
     get_refactoring_suggestions,
+    ranked_refactoring_suggestions,
     save_refactoring_suggestions,
+    store_plan_ranks,
+    summarize_open_plans,
     update_refactoring_suggestion_status,
     upsert_refactoring_suggestions,
 )
@@ -124,12 +135,14 @@ from .refactoring_opportunities import (
     refactoring_facet_counts,
     update_refactoring_opportunity_status,
 )
+from .refactoring_payoff import PayoffContext, plan_payoff
 
 __all__ = [
     "FILE_TREND_SNAPSHOT_WINDOW",
     "HEALTH_SNAPSHOT_RETENTION",
     "HealthSnapshotHeadline",
     "HealthSnapshotScalars",
+    "PayoffContext",
     "backfill_is_test",
     "backfill_module_attribution",
     "clear_unanalysed_scores",
@@ -148,7 +161,8 @@ __all__ = [
     "finalize_refactoring_opportunities",
     "finalize_refactoring_suggestions",
     "finding_data_from_row",
-    "get_average_health",
+    "gated_health_counts",
+    "gated_performance_counts",
     "get_coverage_summary",
     "get_dead_code_findings",
     "get_dead_code_summary",
@@ -156,12 +170,15 @@ __all__ = [
     "get_doc_drift_findings",
     "get_doc_drift_references",
     "get_file_language_map",
+    "get_function_facts",
+    "get_headline_health",
     "get_health_finding_by_public_id",
     "get_health_findings",
     "get_health_metrics",
     "get_health_snapshot_file_counts",
     "get_health_snapshot_headline",
     "get_health_summary",
+    "get_latest_snapshot_analyzer_version",
     "get_perf_coverage",
     "get_performance_opportunity",
     "get_performance_plan_rows",
@@ -188,9 +205,13 @@ __all__ = [
     "load_ingest_at_commit",
     "load_newest_ingest",
     "opportunity_details",
+    "performance_area_counts",
     "performance_facet_counts",
     "performance_file_rollups",
+    "performance_headline",
+    "plan_payoff",
     "prune_unscored_health_rows",
+    "ranked_refactoring_suggestions",
     "refactoring_facet_counts",
     "replace_dead_code_findings",
     "replace_doc_drift_findings",
@@ -207,9 +228,12 @@ __all__ = [
     "serialize_doc_drift_reference_row",
     "serialize_doc_drift_row",
     "sort_metrics_worst_first",
+    "store_plan_ranks",
     "summarize_confidence_rows",
+    "summarize_open_plans",
     "tests_covering",
     "tests_covering_files",
+    "tests_for_functions",
     "update_dead_code_status",
     "update_health_finding_status",
     "update_refactoring_opportunity_status",
@@ -217,4 +241,5 @@ __all__ = [
     "upsert_health_findings",
     "upsert_health_metrics",
     "upsert_refactoring_suggestions",
+    "write_function_facts",
 ]

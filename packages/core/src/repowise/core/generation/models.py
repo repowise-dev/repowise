@@ -595,6 +595,10 @@ MODEL_WRITTEN_PAGE_TYPES: frozenset[str] = frozenset(
 # failed while still handing back a row.
 STUB_FALLBACK_ERROR = "stub_fallback_error"
 
+# Metadata key holding the user-facing hint (``{"kind", "message"}``) for a
+# stub whose error was a recognised provider failure, such as a rejected key.
+STUB_FALLBACK_HINT = "stub_fallback_hint"
+
 
 def is_stub_fallback(page: Any) -> bool:
     """True when *page* is a stub standing in for a failed provider call."""
@@ -611,6 +615,23 @@ def count_stub_fallbacks(pages: Iterable[Any]) -> int:
     back into counting a failure as a success, which is the bug itself.
     """
     return sum(1 for page in pages if is_stub_fallback(page))
+
+
+def dominant_stub_fallback_hint(pages: Iterable[Any]) -> dict | None:
+    """The provider hint most of *pages*' failed stubs share, or ``None``.
+
+    One rejected key fails every page the same way, so the most common hint
+    is the one worth showing for the whole run.
+    """
+    counts: dict[tuple[tuple[str, str], ...], int] = {}
+    for page in pages:
+        hint = (getattr(page, "metadata", None) or {}).get(STUB_FALLBACK_HINT)
+        if isinstance(hint, dict) and hint.get("message"):
+            key = tuple(sorted((str(k), str(v)) for k, v in hint.items()))
+            counts[key] = counts.get(key, 0) + 1
+    if not counts:
+        return None
+    return dict(max(counts, key=counts.__getitem__))
 
 
 def member_structural_key(members: Iterable[str], *, prefix: str) -> str:

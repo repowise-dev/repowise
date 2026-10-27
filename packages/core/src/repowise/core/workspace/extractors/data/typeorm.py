@@ -12,11 +12,13 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from repowise.core.workspace.origins import ContractOrigin
+
 from ..base import ScanContext, line_at
 from ..calls import Call, call_sites, decorated_member
 from ..langs import JS_TS
-from ..strings import Arg, on_comment_line
-from .dialect import CONVENTION_CONFIDENCE, EXPLICIT_CONFIDENCE, dedup_emit
+from ..strings import Arg
+from .dialect import dedup_emit
 from .names import snake_case
 
 if TYPE_CHECKING:
@@ -37,15 +39,14 @@ def _default_table(cls: str) -> str:
 class TypeOrmDialect:
     name = "typeorm"
     extensions = JS_TS
+    requires = ("@Entity",)
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content
-        if "@Entity" not in content:
-            return []
         found: list[tuple[str, float, int]] = []
         for _shape, args, m, strings in call_sites(ctx, (_ENTITY,), empty=True):
             member = decorated_member(content, m.start())
-            if member is None or member.group("cls") is None or on_comment_line(content, m.start()):
+            if member is None or member.group("cls") is None:
                 continue
             # `@Entity('users', { schema })` or `@Entity({ name, schema })`.
             options = args[:1] if args[:1] and args[0].startswith("{") else args[1:2]
@@ -56,6 +57,6 @@ class TypeOrmDialect:
             table = names[0] if names else _default_table(member.group("name"))
             if schemas:
                 table = f"{schemas[0]}.{table}"
-            confidence = EXPLICIT_CONFIDENCE if names else CONVENTION_CONFIDENCE
-            found.append((table, confidence, line_at(content, m.start())))
+            origin = ContractOrigin.EXPLICIT_TABLE if names else ContractOrigin.NAME_CONVENTION
+            found.append((table, origin, line_at(content, m.start())))
         return dedup_emit(ctx, self.name, found)

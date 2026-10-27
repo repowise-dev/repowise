@@ -66,7 +66,7 @@ async def test_fresh_and_cached_answers_share_one_external_contract(setup_mcp, m
     provider = _Provider("Authentication is implemented in src/auth/service.py.")
     monkeypatch.setattr(answer_mod, "_resolve_provider_for_answer", lambda _path: provider)
 
-    def freshness(_repository, targets=None):
+    def freshness(_repository, targets=None, root=None):
         result = {"index_behind": True}
         if "src/auth/middleware.py" in (targets or []):
             result["stale_warning"] = "dropped evidence changed"
@@ -270,6 +270,43 @@ def test_expanded_degraded_answer_names_only_retained_blocks():
     assert "candidates" not in expanded["answer"]
 
 
+@pytest.mark.parametrize("confidence", ["high", "medium", "low"])
+def test_retrieval_quality_is_served_only_under_diagnostics(confidence):
+    """One trust signal by default; the retrieval rating is an opt-in diagnostic."""
+    default = project_answer_payload(_raw(confidence), question="how does auth work")
+    diagnostics = project_answer_payload(
+        _raw(confidence), question="how does auth work", include=["diagnostics"]
+    )
+
+    assert "retrieval_quality" not in default
+    assert diagnostics["retrieval_quality"] == _raw(confidence)["retrieval_quality"]
+    assert "ignored_arguments" not in diagnostics.get("_meta", {})
+
+
+def test_a_rationale_matching_one_question_word_does_not_lead():
+    raw = {
+        "answer": "generic fallback",
+        "citations": ["cobra.go"],
+        "confidence": "medium",
+        "degraded": "no-llm-provider",
+        "code_rationale": [
+            {
+                "path": "cobra.go",
+                "lines": [4, 5],
+                "comment": "FIXME Gt is unused by cobra and should be removed.",
+                "matched_terms": ["cobra"],
+            }
+        ],
+        "best_guesses": [{"file": "cobra.go", "why_relevant": "ranked first"}],
+        "_meta": {"contract_version": 1},
+    }
+
+    result = project_answer_payload(raw, question="how does cobra choose a subcommand")
+
+    assert "FIXME" not in result["answer"]
+    assert "points first to cobra.go" in result["answer"]
+
+
 def test_rationale_only_degraded_answer_leads_with_the_local_conclusion():
     raw = {
         "answer": "generic fallback",
@@ -281,6 +318,7 @@ def test_rationale_only_degraded_answer_leads_with_the_local_conclusion():
                 "path": "src/cache.py",
                 "lines": [4, 5],
                 "comment": "The TTL matches the upstream feed's five-minute refresh.",
+                "matched_terms": ["ttl", "five", "minutes"],
             }
         ],
         "_meta": {"contract_version": 1},
@@ -318,7 +356,8 @@ async def test_no_llm_and_failed_legs_remain_compact_and_actionable(
     )
 
     result = await tool_middleware(get_answer)(
-        f"how does auth work in {expected_degraded} {legs['vector']} mode"
+        "how does auth middleware work",
+        include=["diagnostics"],
     )
 
     assert result["degraded"] == expected_degraded
@@ -733,3 +772,60 @@ def test_evidence_projection_only_gains_candidate_files():
 
     assert after.pop("candidate_files") == _POOL[:5]
     assert after == before
+
+
+def test_degraded_low_confidence_retains_trimmed_fallback_targets():
+    paths = [f"pkg/f{i}.py" for i in range(1, 6)]
+    raw = {
+        "answer": "...",
+        "citations": ["pkg/f1.py"],
+        "confidence": "low",
+        "retrieval_quality": "high",
+        "degraded": "synthesis-failed",
+        "fallback_targets": paths,
+        "retrieval": [{"path": p, "excerpt": "x" + p} for p in paths],
+        "code_rationale": [
+            {"path": "pkg/f1.py", "lines": [4, 5], "comment": "TCC rationale text"}
+        ],
+        "note": "model used its entire budget",
+        "_meta": {"degraded": "synthesis-failed"},
+    }
+    out = project_answer_payload(raw, question="where is LCOM4 computed")
+
+    assert [r["path"] for r in out["retrieval"]] == ["pkg/f1.py", "pkg/f2.py", "pkg/f3.py"]
+    assert out["fallback_targets"] == ["pkg/f4.py", "pkg/f5.py"]
+    assert out["fallback_targets_total"] == 5
+    assert out["fallback_targets_emitted"] == 2
+    assert out["retrieval_total"] == 5
+    assert out["retrieval_emitted"] == 3
+
+
+def test_high_confidence_drops_fallback_targets_with_overflow():
+    paths = [f"pkg/f{i}.py" for i in range(1, 6)]
+    raw = {
+        "answer": "Computed in pkg/f1.py.",
+        "citations": ["pkg/f1.py"],
+        "confidence": "high",
+        "retrieval_quality": "high",
+        "fallback_targets": paths,
+        "retrieval": [{"path": p, "excerpt": "x" + p} for p in paths],
+    }
+    out = project_answer_payload(raw, question="where is LCOM4 computed")
+    assert "fallback_targets" not in out
+    assert "retrieval" not in out
+
+
+def test_degraded_empty_retrieval_retains_full_fallback_targets():
+    paths = [f"pkg/f{i}.py" for i in range(1, 6)]
+    raw = {
+        "answer": "",
+        "citations": [],
+        "confidence": "low",
+        "degraded": "synthesis-failed",
+        "fallback_targets": paths,
+        "retrieval": [],
+        "note": "no local evidence matched",
+    }
+    out = project_answer_payload(raw, question="where is LCOM4 computed")
+    assert out["fallback_targets"] == paths
+    assert "retrieval" not in out

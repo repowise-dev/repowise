@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import functools
 import os
-import re
 import socket
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -16,8 +16,10 @@ from rich.prompt import Prompt
 from rich.table import Table
 
 from repowise.cli.errors import reasoned_error
+from repowise.cli.ui import subscription as subscription_module
 from repowise.cli.ui.brand import BRAND, BRAND_STYLE, OK, VALUE, WARN
 from repowise.cli.ui.env_persistence import _save_key_to_dotenv
+from repowise.cli.ui.model_tier import is_flagship_model
 from repowise.cli.ui.openai_compatible import (
     discover_models as _discover_openai_compatible_models,
 )
@@ -27,73 +29,38 @@ from repowise.cli.ui.openai_compatible import (
 from repowise.cli.ui.openai_compatible import (
     prompt_setup as _prompt_openai_compatible_setup_values,
 )
+from repowise.cli.ui.subscription import (
+    CliAuth,
+    SubscriptionContext,
+    logged_in_agent_providers,
+    subscription_estimate,
+)
+from repowise.core.agents.identity import get_identity, identity_for_provider
 from repowise.core.providers.llm.base import ProviderModelOption
+from repowise.core.providers.llm.specs import PROVIDER_SPECS, ProviderSpec
 from repowise.core.reasoning import ReasoningMode, normalize_reasoning
 
 # ---------------------------------------------------------------------------
-# Provider metadata  —  order matters (gemini first = default)
+# Provider metadata, read from the provider specs. Flag-only providers (mock)
+# are not offered; rows follow ``picker_rank`` (gemini first = default).
 # ---------------------------------------------------------------------------
 
+_PICKER_SPECS: dict[str, ProviderSpec] = {
+    spec.name: spec
+    for spec in sorted(PROVIDER_SPECS.values(), key=lambda s: s.picker_rank or 0)
+    if spec.picker_rank is not None
+}
 _PROVIDER_DEFAULTS: dict[str, str] = {
-    "gemini": "gemini-3.5-flash-lite",
-    "openai": "gpt-5.6-luna",
-    "anthropic": "claude-haiku-4-5",
-    "deepseek": "deepseek-v4-flash",
-    "kimi": "kimi-for-coding",
-    "edenai": "mistral/mistral-small-latest",
-    "codex_cli": "codex_cli/default",
-    "claude_cli": "claude_cli/claude-haiku-4-5",
-    "opencode": "opencode/default",
-    "ollama": "qwen3.5:4b",
-    "openrouter": "google/gemini-3.5-flash-lite",
-    "litellm": "groq/llama-3.1-70b-versatile",
+    name: spec.default_model for name, spec in _PICKER_SPECS.items()
 }
-
+# The env var a key prompt writes. Agent CLIs have none; the picker never
+# prompts for them.
 _PROVIDER_ENV: dict[str, str] = {
-    "gemini": "GEMINI_API_KEY",
-    "openai": "OPENAI_API_KEY",
-    "anthropic": "ANTHROPIC_API_KEY",
-    "deepseek": "DEEPSEEK_API_KEY",
-    "kimi": "KIMI_API_KEY",
-    "edenai": "EDENAI_API_KEY",
-    "codex_cli": "__CODEX_CLI__",
-    "claude_cli": "__CLAUDE_CLI__",
-    "opencode": "__OPENCODE_CLI__",
-    "ollama": "OLLAMA_BASE_URL",
-    "openrouter": "OPENROUTER_API_KEY",
-    # The picker iterates this map, so a provider missing here never renders a
-    # row no matter what `_PROVIDER_DEFAULTS` says. litellm was in the defaults
-    # only, which made it unreachable from init.
-    "litellm": "LITELLM_API_KEY",
+    name: spec.required_envs[0] for name, spec in _PICKER_SPECS.items() if spec.required_envs
 }
 
-_PROVIDER_SIGNUP: dict[str, str] = {
-    "gemini": "https://aistudio.google.com/apikey",
-    "openai": "https://platform.openai.com/api-keys",
-    "anthropic": "https://console.anthropic.com/settings/keys",
-    "deepseek": "https://platform.deepseek.com/api_keys",
-    "kimi": "https://www.kimi.com/code/console",
-    "edenai": "https://app.edenai.run/user/register",
-    "codex_cli": "https://developers.openai.com/codex/cli",
-    "claude_cli": "https://claude.com/claude-code",
-    "opencode": "https://opencode.ai",
-    "ollama": "https://ollama.com/download",
-    "openrouter": "https://openrouter.ai/keys",
-    "litellm": "https://docs.litellm.ai/docs/providers",
-}
-
-
-# Short dim suffix on the provider name, saying what this provider is or how it
-# authenticates. The Status column answers "can I pick this right now"; anything
-# provider-specific belongs here so one column keeps one meaning.
-_PROVIDER_NOTES: dict[str, str] = {
-    "gemini": "recommended",
-    "codex_cli": "uses your Codex CLI login",
-    "claude_cli": "uses your Claude Code login",
-    "opencode": "uses your opencode CLI setup",
-    "ollama": "runs on your machine, no key",
-    "litellm": "proxy in front of another provider",
-}
+# No repo preference and no estimate: the picker as other commands show it.
+_NO_SUBSCRIPTION = SubscriptionContext()
 
 _OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434"
 # The OpenAI adapter is also the generic adapter for local gateways. Keep the
@@ -103,7 +70,7 @@ _OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1"
 _OPENAI_COMPATIBLE_CHOICE = "openai_compatible"
 _PROVIDER_CHOICES = tuple(
     choice
-    for provider in _PROVIDER_ENV
+    for provider in _PICKER_SPECS
     for choice in ((provider, _OPENAI_COMPATIBLE_CHOICE) if provider == "openai" else (provider,))
 )
 # Enough for a loopback connect; the table renders before any prompt, so a slow
@@ -120,32 +87,29 @@ class ProviderSelection:
     reasoning: ReasoningMode = "auto"
 
 
-def _detect_codex_cli_status() -> tuple[bool, bool]:
-    """Return ``(installed, logged_in)`` for the local Codex CLI."""
-    from repowise.cli.mcp_config import is_codex_cli_installed, is_codex_logged_in
+def agent_providers_set_up(repo_path: Path | None) -> tuple[str, ...]:
+    """Agent-CLI providers whose agent is set up as a target here, in picker order.
 
-    installed = is_codex_cli_installed()
-    return installed, is_codex_logged_in() if installed else False
-
-
-def _detect_claude_cli_status() -> bool:
-    """Return ``True`` if the Claude Code CLI is installed on PATH.
-
-    Login state is not probed: ``claude`` keeps its credentials in a keychain or
-    an OAuth token store with no cheap, side-effect-free "am I logged in" query,
-    so the readiness signal stops at "installed" and an unauthenticated CLI
-    surfaces as a provider error on first use.
+    The picker defaults to the first of these whose CLI is ready. Empty when
+    config.yaml already names a provider, so a re-init keeps today's default.
     """
-    import shutil
+    from repowise.cli.agent_targets.registry import get_target
+    from repowise.cli.helpers import load_config
 
-    return shutil.which("claude") is not None
-
-
-def _detect_opencode_status() -> bool:
-    """Return ``True`` if the opencode CLI is installed on PATH."""
-    import shutil
-
-    return shutil.which("opencode") is not None
+    if repo_path is not None and load_config(repo_path).get("provider"):
+        return ()
+    names: list[str] = []
+    for name, spec in _PICKER_SPECS.items():
+        agent = get_identity(spec.agent) if spec.agent else None
+        target = get_target(agent.cli_target_id) if agent else None
+        if target is None:
+            continue
+        try:
+            if target.is_present(repo_path) or target.detect(repo_path):
+                names.append(name)
+        except Exception:
+            continue
+    return tuple(names)
 
 
 def ollama_base_url() -> str:
@@ -199,93 +163,67 @@ def _detect_ollama_status() -> bool:
         return False
 
 
-def _detect_provider_status() -> dict[str, str]:
+def _detect_provider_status(repo_path: Path | None = None) -> dict[str, str | CliAuth]:
     """Return {provider: what makes it ready} for providers that can be used now.
 
-    The value is the env var carrying the key for the hosted providers, and a
-    short description of the out-of-band credential for the local ones. Only
-    truthiness is load-bearing; the value is for debugging.
+    Ordered like auto-detection, so the first entry is what ``--yes`` would
+    run: keyed providers first, read from the same process env, repo
+    ``.repowise/.env`` and stored keys, then keys for providers auto-detection
+    skips, then logged-in agent CLIs, then a reachable Ollama. An agent CLI's
+    value is its :class:`CliAuth`, how it is billed; the rest are for debugging.
     """
-    status: dict[str, str] = {}
-    openai_base_url = (os.environ.get("OPENAI_BASE_URL") or "").rstrip("/")
-    openai_has_key = bool((os.environ.get("OPENAI_API_KEY") or "").strip())
-    for prov, env_var in _PROVIDER_ENV.items():
-        if prov == "gemini":
-            if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
-                status[prov] = env_var
-        elif prov == "codex_cli":
-            installed, logged_in = _detect_codex_cli_status()
-            if installed and logged_in:
-                status[prov] = "codex CLI"
-        elif prov == "claude_cli":
-            if _detect_claude_cli_status():
-                status[prov] = "claude CLI"
-        elif prov == "opencode":
-            if _detect_opencode_status():
-                status[prov] = "opencode CLI"
-        elif prov == "ollama":
-            if _detect_ollama_status():
-                status[prov] = ollama_base_url()
-        elif prov == "openai":
-            if openai_has_key and openai_base_url in ("", _OPENAI_DEFAULT_BASE_URL):
-                status[prov] = env_var
-            elif openai_has_key and openai_base_url:
-                status[_OPENAI_COMPATIBLE_CHOICE] = env_var
-        elif os.environ.get(env_var):
-            status[prov] = env_var
+    from repowise.core.providers.llm.resolve import (
+        credentialed_providers,
+        repo_getenv,
+        resolve_api_key,
+    )
+
+    status: dict[str, str | CliAuth] = {}
+    ollama_up = _detect_ollama_status()
+    base_url = (repo_getenv(repo_path)("OPENAI_BASE_URL") or "").rstrip("/")
+    keyed = credentialed_providers(repo_path)
+    for prov in keyed:
+        # An Ollama named by OLLAMA_BASE_URL but not answering is shown as not
+        # ready, the honest state, even though --yes would still try it.
+        if prov not in _PICKER_SPECS or (prov == "ollama" and not ollama_up):
+            continue
+        if prov == "openai" and base_url not in ("", _OPENAI_DEFAULT_BASE_URL):
+            status[_OPENAI_COMPATIBLE_CHOICE] = _PROVIDER_ENV[prov]
+        else:
+            status[prov] = _PROVIDER_ENV.get(prov) or ollama_base_url()
+    for prov, spec in _PICKER_SPECS.items():
+        if prov not in keyed and not spec.agent and resolve_api_key(prov, repo_path)[0]:
+            status[prov] = _PROVIDER_ENV[prov]
+    status.update(logged_in_agent_providers())
+    if ollama_up:
+        status.setdefault("ollama", ollama_base_url())
     return status
 
 
-def _codex_cli_setup_lines() -> list[str]:
-    installed, _ = _detect_codex_cli_status()
+def _agent_cli_setup_lines(name: str) -> list[str]:
+    agent = identity_for_provider(name)
+    assert agent is not None, name
+    # Through the module, so one patch of the probe reaches detection and this.
+    installed, _ = subscription_module.agent_cli_status(name)
     problem = (
-        "Codex CLI is not on PATH." if not installed else "Codex CLI is on PATH but not logged in."
+        f"{agent.display_name} CLI is on PATH but not logged in."
+        if installed
+        else f"{agent.display_name} CLI not found on PATH."
     )
-    return [
-        "  [bold]codex_cli[/bold] uses the Codex CLI's own session. No API key here.",
-        f"  Install: [{BRAND}]npm install -g @openai/codex[/]",
-        f"  Log in:  [{BRAND}]codex login[/]",
-        "",
-        f"  [{WARN}]{problem}[/] Set it up and retry, or select another provider.",
-    ]
-
-
-def _claude_cli_setup_lines() -> list[str]:
-    installed = _detect_claude_cli_status()
     lines = [
-        "  [bold]claude_cli[/bold] uses the Claude Code CLI's own login, so a "
-        "Claude subscription works here. No API key here.",
-        f"  Install: [{BRAND}]https://claude.com/claude-code[/]",
-        f"  Set up:  [{BRAND}]claude login[/]",
-        "",
-        f"  To pick a specific model: [{BRAND}]repowise init --provider claude_cli "
-        "--model claude_cli/claude-sonnet-4-6[/]",
+        # The spec note, so an agent with no login (opencode) is not said to use one.
+        f"  [bold]{name}[/bold] {PROVIDER_SPECS[name].note}. No API key here.",
+        f"  Install: [{BRAND}]{agent.install_hint}[/]",
+        f"  Set up:  [{BRAND}]{agent.login_hint}[/]",
     ]
-    if not installed:
-        lines.extend(
-            [
-                "",
-                f"  [{WARN}]claude CLI not found on PATH.[/] Install it and retry, "
-                "or select another provider.",
-            ]
-        )
-    return lines
-
-
-def _opencode_setup_lines() -> list[str]:
-    return [
-        "  [bold]opencode[/bold] is a local AI coding CLI that manages its own "
-        "models and authentication. No API key here.",
-        f"  Install: [{BRAND}]curl -fsSL https://opencode.ai/install | bash[/]",
-        f"  Set up:  [{BRAND}]opencode[/]  (first run configures your provider)",
-        f"  Models:  [{BRAND}]opencode models[/]",
-        "",
-        f"  To pick a specific model: [{BRAND}]repowise init --provider opencode "
-        "--model opencode/deepseek/deepseek-v4-pro[/]",
-        "",
-        f"  [{WARN}]opencode CLI not found on PATH.[/] Install it and retry, "
-        "or select another provider.",
-    ]
+    models = PROVIDER_SPECS[name].models
+    if len(models) > 1:
+        lines += [
+            "",
+            f"  To pick a specific model: [{BRAND}]repowise init --provider {name} "
+            f"--model {models[1]}[/]",
+        ]
+    return [*lines, "", f"  [{WARN}]{problem}[/] Set it up and retry, or select another provider."]
 
 
 def _ollama_setup_lines() -> list[str]:
@@ -311,13 +249,14 @@ def _ollama_setup_lines() -> list[str]:
 
 # Providers with no API key to paste: they authenticate out of band or run
 # locally, so readiness is a probe and the remedy is a command, never a prompt.
-# ``registry.KEYLESS_PROVIDERS`` is the resolution-side version of this idea; it
-# also holds litellm and mock, which do take a key here and are not offered
-# interactively, so the picker keeps its own narrower list.
+# Narrower than ``KEYLESS_PROVIDERS``: litellm takes a key here and mock is not
+# offered interactively.
 _LOCAL_PROVIDER_SETUP: dict[str, Callable[[], list[str]]] = {
-    "codex_cli": _codex_cli_setup_lines,
-    "claude_cli": _claude_cli_setup_lines,
-    "opencode": _opencode_setup_lines,
+    **{
+        name: functools.partial(_agent_cli_setup_lines, name)
+        for name, spec in _PICKER_SPECS.items()
+        if spec.agent
+    },
     "ollama": _ollama_setup_lines,
 }
 
@@ -328,13 +267,19 @@ def _interactive_provider_name(
     *,
     repo_path: Path | None = None,
     save_key: bool = True,
-) -> str:
+    subscription: SubscriptionContext = _NO_SUBSCRIPTION,
+) -> str | None:
     """Show provider table, handle selection + inline key entry + save.
 
-    Returns the chosen provider name.
+    The first ready provider in *prefer* (see :func:`agent_providers_set_up`)
+    becomes the default, else the one auto-detection would pick. With
+    *model_calls*, a ready agent CLI is shown with its quota and time
+    estimate. Returns the chosen provider name, or ``None`` when
+    ``subscription.allow_skip`` is set and the user chose to go on without a
+    model.
     """
     providers = list(_PROVIDER_CHOICES)  # gemini first
-    detected = _detect_provider_status()
+    detected = _detect_provider_status(repo_path)
 
     # --- provider table ---
     table = Table(
@@ -360,13 +305,25 @@ def _interactive_provider_name(
             label = "OpenAI-compatible [dim](Custom / local gateway)[/dim]"
             default_model = "discover from /models"
         else:
-            note = _PROVIDER_NOTES.get(prov, "")
+            note = _PICKER_SPECS[prov].note
             label = f"{prov} [dim]({note})[/dim]" if note else prov
             default_model = _PROVIDER_DEFAULTS.get(runtime_provider, "")
         table.add_row(f"[{idx}]", label, status_text, default_model)
 
     console.print()
     console.print(table)
+    # A subscription run costs quota and time, not dollars: say how it is
+    # billed and how much.
+    for prov, how in detected.items():
+        if not isinstance(how, CliAuth):
+            continue
+        text = how.billing
+        if subscription.model_calls:
+            text = subscription_estimate(
+                prov, subscription.model_calls, subscription.concurrency, how.billing
+            )
+        caveat = "" if how.offer else ", not recommended"
+        console.print(f"  [dim]{prov}: {text}{caveat}.[/dim]")
     console.print(
         "  [dim]mock is flag-only (writes placeholder pages): repowise init --provider mock[/dim]"
     )
@@ -374,12 +331,21 @@ def _interactive_provider_name(
 
     # --- selection ---
     valid_choices = [str(i) for i in range(1, len(providers) + 1)]
-    # Default: first detected provider, or gemini (index 1)
-    default_idx = "1"
-    for idx, prov in enumerate(providers, 1):
-        if prov in detected:
-            default_idx = str(idx)
-            break
+    # Detection order is auto-detection's, so the default is what --yes runs.
+    # A CLI that reports no plan or credentials is never the default.
+    offered = [p for p, how in detected.items() if not isinstance(how, CliAuth) or how.offer]
+    default_idx = str(providers.index(offered[0]) + 1) if offered else "1"
+    # The CLI of the agent set up here outranks a key: it is the user's own login.
+    recommended = next((name for name in subscription.prefer if name in offered), None)
+    if recommended is not None:
+        default_idx = str(providers.index(recommended) + 1)
+        agent = identity_for_provider(recommended)
+        assert agent is not None, recommended
+        console.print(
+            f"  [dim]Default: {recommended}. {agent.display_name} is set up here, "
+            f"so indexing {_PICKER_SPECS[recommended].note}.[/dim]"
+        )
+        console.print()
 
     chosen_idx = Prompt.ask(
         "  Select provider",
@@ -401,46 +367,61 @@ def _interactive_provider_name(
     has_official_openai_key = chosen == "openai" and bool(
         (os.environ.get("OPENAI_API_KEY") or "").strip()
     )
-    if chosen not in detected and not has_official_openai_key:
-        setup_lines = _LOCAL_PROVIDER_SETUP.get(chosen)
-        if setup_lines is not None:
-            # Nothing to paste: these authenticate out of band or run locally,
-            # so the fix is a command, not a key prompt.
-            console.print()
-            for line in setup_lines():
-                console.print(line)
-            return _interactive_provider_name(
-                console,
-                model_flag,
-                repo_path=repo_path,
-                save_key=save_key,
-            )
-        env_var = _PROVIDER_ENV[chosen]
-        signup_url = _PROVIDER_SIGNUP.get(chosen, "")
-        console.print()
-        console.print(f"  [bold]{chosen}[/bold] requires [{VALUE}]{env_var}[/].")
-        if signup_url:
-            console.print(f"  Get your API key here: [{BRAND}]{signup_url}[/]")
-        console.print()
-        key = _prompt_api_key(
+    if (
+        chosen not in detected
+        and not has_official_openai_key
+        and not _set_up_inline(console, chosen, repo_path, save_key)
+    ):
+        if _go_without_model(console, subscription.allow_skip, keyed=chosen in _PROVIDER_ENV):
+            return None
+        return _interactive_provider_name(
             console,
-            chosen,
-            env_var,
+            model_flag,
             repo_path=repo_path,
             save_key=save_key,
+            subscription=subscription,
         )
-        if not key:
-            console.print(f"  [{WARN}]Skipped. Please select another provider.[/]")
-            return _interactive_provider_name(
-                console,
-                model_flag,
-                repo_path=repo_path,
-                save_key=save_key,
-            )
 
     if chosen == "openai" and repo_path is not None:
         _save_key_to_dotenv(repo_path, "OPENAI_BASE_URL", _OPENAI_DEFAULT_BASE_URL)
     return chosen
+
+
+def _set_up_inline(console: Console, chosen: str, repo_path: Path | None, save_key: bool) -> bool:
+    """Set up a provider that is not ready. True when a key was entered.
+
+    Local and agent-CLI providers have nothing to paste: they authenticate out
+    of band or run locally, so the remedy is a command and this is False.
+    """
+    setup_lines = _LOCAL_PROVIDER_SETUP.get(chosen)
+    console.print()
+    if setup_lines is not None:
+        for line in setup_lines():
+            console.print(line)
+        return False
+    env_var = _PROVIDER_ENV[chosen]
+    signup_url = _PICKER_SPECS[chosen].signup_url
+    console.print(f"  [bold]{chosen}[/bold] requires [{VALUE}]{env_var}[/].")
+    if signup_url:
+        console.print(f"  Get your API key here: [{BRAND}]{signup_url}[/]")
+    console.print()
+    key = _prompt_api_key(console, chosen, env_var, repo_path=repo_path, save_key=save_key)
+    return bool(key)
+
+
+def _go_without_model(console: Console, allow_skip: bool, *, keyed: bool) -> bool:
+    """After a provider that is still not set up: True to go on without a model."""
+    if not allow_skip:
+        if keyed:
+            console.print(f"  [{WARN}]Skipped. Please select another provider.[/]")
+        return False
+    if keyed:
+        console.print(f"  [{WARN}]No key entered.[/]")
+    console.print(
+        f"  [{BRAND}][1][/] Continue without a model [dim](documentation built from code)[/dim]"
+    )
+    console.print(f"  [{BRAND}][2][/] Pick another provider")
+    return Prompt.ask("  Choose", choices=["1", "2"], default="1", console=console) == "1"
 
 
 def _fallback_model_option(provider_name: str) -> ProviderModelOption:
@@ -685,25 +666,38 @@ def interactive_provider_config_select(
     *,
     repo_path: Path | None = None,
     save_key: bool = True,
-) -> ProviderSelection:
+    subscription: SubscriptionContext = _NO_SUBSCRIPTION,
+) -> ProviderSelection | None:
     """Show provider/model/reasoning selection for interactive init.
 
     Returns a :class:`ProviderSelection` carrying the chosen provider name,
-    model, and reasoning mode.
+    model, and reasoning mode. With ``subscription.allow_skip``, a provider
+    that is not set up offers to go on without a model, and that answer
+    returns ``None``.
     """
     chosen = _interactive_provider_name(
         console,
         model_flag,
         repo_path=repo_path,
         save_key=save_key,
+        subscription=subscription,
     )
+    if chosen is None:
+        return None
     if chosen == _OPENAI_COMPATIBLE_CHOICE:
-        return _interactive_openai_compatible_select(
+        gateway = _interactive_openai_compatible_select(
+            console, model_flag, reasoning_flag, repo_path=repo_path, save_key=save_key
+        )
+        if gateway is not None:
+            return gateway
+        # The user asked to go back to provider selection.
+        return interactive_provider_config_select(
             console,
             model_flag,
             reasoning_flag,
             repo_path=repo_path,
             save_key=save_key,
+            subscription=subscription,
         )
     default_model = _PROVIDER_DEFAULTS.get(chosen, "")
 
@@ -733,7 +727,7 @@ def interactive_provider_config_select(
             repo_path=repo_path,
         )
 
-    if not model_flag and _is_flagship_model(selected.model):
+    if not model_flag and is_flagship_model(selected.model):
         console.print(
             f"  [{WARN}]Note:[/] [dim]'{selected.model}' works, but flash-lite / haiku / "
             "nano produce equivalent docs at ~10x lower cost on most repos.[/]"
@@ -759,57 +753,8 @@ def interactive_provider_select(
         reasoning_flag="auto",
         repo_path=repo_path,
     )
+    assert selection is not None  # allow_skip is off, so a provider was chosen
     return selection.provider_name, selection.model
-
-
-# Checked before the flagship tokens: a cheap-tier marker wins even when the
-# family name is a flagship one, so `gpt-5.4-nano` is not mistaken for `gpt-5`.
-_BUDGET_MODEL_TOKENS = (
-    "nano",
-    # OpenAI's 5.6 budget tier carries no cheap-tier word in its name, and
-    # `gpt-5` matches it as flagship. Without this, accepting the default
-    # printed a note advising the user to switch to a cheaper model than the
-    # one they were already on.
-    "luna",
-    "mini",
-    "lite",
-    "haiku",
-    "small",
-    "tiny",
-    "flash",
-    r"\d+b",  # 8b, 3b, 270m-style parameter-count tags
-)
-
-_FLAGSHIP_MODEL_TOKENS = (
-    "opus",
-    "gpt-4o",
-    "gpt-5",
-    "pro",
-    "sonnet",
-    "ultra",
-    "o1",
-    "o3",
-    "o4",
-)
-
-
-def _matches_token(model: str, tokens: tuple[str, ...]) -> bool:
-    """True if any token appears in ``model`` as a whole dash/dot-delimited word.
-
-    Substring matching is wrong here: ``gemini`` contains ``mini`` and
-    ``gpt-5.4-nano`` contains ``gpt-5``.
-    """
-    return any(re.search(rf"(?<![a-z0-9]){tok}(?![a-z])", model) for tok in tokens)
-
-
-def _is_flagship_model(model: str) -> bool:
-    """Heuristic: True if the model name suggests a flagship-tier model."""
-    if not model:
-        return False
-    m = model.lower().rsplit("/", 1)[-1]
-    if _matches_token(m, _BUDGET_MODEL_TOKENS):
-        return False
-    return _matches_token(m, _FLAGSHIP_MODEL_TOKENS)
 
 
 def _prompt_api_key(
@@ -926,8 +871,11 @@ def _interactive_openai_compatible_select(
     *,
     repo_path: Path | None,
     save_key: bool,
-) -> ProviderSelection:
-    """Configure, verify, and select a model from a custom OpenAI gateway."""
+) -> ProviderSelection | None:
+    """Configure, verify, and select a model from a custom OpenAI gateway.
+
+    ``None`` means the user asked to go back to provider selection.
+    """
     console.print()
     console.print("  [bold]OpenAI-compatible custom gateway[/bold]")
     console.print("  [dim]Works with 9router, vLLM, SGLang, and compatible /v1 APIs.[/dim]")
@@ -964,13 +912,7 @@ def _interactive_openai_compatible_select(
             if action == "1":
                 continue
             if action == "3":
-                return interactive_provider_config_select(
-                    console,
-                    model_flag,
-                    reasoning_flag,
-                    repo_path=repo_path,
-                    save_key=save_key,
-                )
+                return None
             selected = _prompt_exact_model(console)
             break
 

@@ -417,3 +417,164 @@ public class A {
 }
 """
     assert _rows("typescript", typescript, "ts")["pick"] == _rows("java", java, "java")["pick"] == 4
+
+
+# --------------------------------------------------------------------------- #
+# PHP
+# --------------------------------------------------------------------------- #
+
+_PHP_CASES: list[tuple[str, str, dict[str, int]]] = [
+    (
+        "functions and methods are walked with CCN entry 1",
+        """<?php
+function standalone($x) {
+    return $x;
+}
+class Service {
+    public function handle($x) {
+        return $x;
+    }
+}
+""",
+        {"standalone": 1, "handle": 1},
+    ),
+    (
+        "if, elseif, else if and ternaries add branch points",
+        """<?php
+function branches($a, $b) {
+    if ($a > 0) {
+        return 1;
+    } elseif ($a < 0) {
+        return 2;
+    } else if ($b > 0) {
+        return 3;
+    }
+    return $b ? 4 : 5;
+}
+""",
+        {"branches": 5},
+    ),
+    (
+        "boolean operators &&, ||, and, or add to CCN",
+        """<?php
+function booleans($a, $b, $c, $d) {
+    if ($a && $b) {
+        return 1;
+    }
+    if ($c || $d) {
+        return 2;
+    }
+    return ($a and $b) or ($c and $d);
+}
+""",
+        {"booleans": 8},
+    ),
+    (
+        "xor does not short-circuit, so it adds no path; and / or still do",
+        """<?php
+function wordy($a, $b, $c) {
+    if ($a xor $b) {
+        return 1;
+    }
+    return $a and $b or $c;
+}
+""",
+        {"wordy": 4},
+    ),
+    (
+        "loops and try-catch add complexity",
+        """<?php
+function control_flow($items) {
+    try {
+        foreach ($items as $item) {
+            while ($item > 0) {
+                $item--;
+            }
+        }
+    } catch (Exception $e) {
+        echo $e->getMessage();
+    }
+}
+""",
+        {"control_flow": 4},
+    ),
+    (
+        "match and switch expressions count dispatch",
+        """<?php
+function dispatch($x) {
+    switch ($x) {
+        case 1:
+            return 10;
+        case 2:
+            return 20;
+        default:
+            return 0;
+    }
+}
+function matching($x) {
+    return match ($x) {
+        1 => 10,
+        2, 3 => 20,
+        default => 0,
+    };
+}
+""",
+        {"dispatch": 2, "matching": 2},
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [(src, exp) for _, src, exp in _PHP_CASES],
+    ids=[label for label, _, _ in _PHP_CASES],
+)
+def test_php_complexity(source: str, expected: dict[str, int]) -> None:
+    _require_language("php")
+    assert _rows("php", source, "php") == expected
+
+
+def test_php_name_nodes_count_only_in_php_calls() -> None:
+    """The ``name`` identifier match is gated to PHP's call kinds.
+
+    No other mapped grammar has a ``name`` node or PHP's call node kinds, so
+    their assertion counting cannot change through that gate.
+    """
+    from repowise.core.analysis.health.complexity.assertions import _PHP_CALL_KINDS
+    from repowise.core.analysis.health.complexity.languages import LANGUAGE_MAPS
+    from repowise.core.ingestion.parser import _get_language, grammar_tag_for
+
+    php_only = _PHP_CALL_KINDS | {"name"}
+    for language in LANGUAGE_MAPS:
+        if language == "php":
+            continue
+        try:
+            grammar = _get_language(grammar_tag_for(language, "x"))
+        except Exception:
+            continue
+        if grammar is None:
+            continue
+        kinds = {
+            grammar.node_kind_for_id(i)
+            for i in range(grammar.node_kind_count)
+            if grammar.node_kind_is_named(i)
+        }
+        assert not kinds & php_only, language
+
+
+def test_php_argument_named_assert_is_not_an_assertion() -> None:
+    _require_language("php")
+    source = b"""<?php
+class FooTest {
+    public function testIt() {
+        $this->assertSame(1, $x);
+        $this->assertSame(2, $y);
+        $this->assertSame(3, $z);
+        helper($assertion);
+        helper($assertion);
+    }
+}
+"""
+    fc = walk_file("FooTest.php", "php", source)
+    (fn,) = fc.functions
+    assert fn.assertion_count == 3

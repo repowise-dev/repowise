@@ -165,6 +165,16 @@ _JAVA_CASES = [
         [],
         "a shared repository verb on a non-repository receiver is not db",
     ),
+    (
+        "class A{void m(java.util.List<X> xs){for(X x:xs){ synchronized(x){ } x.lock.lock(); }}}",
+        [],
+        "the loop element's own lock is a different lock each pass, nothing to hoist",
+    ),
+    (
+        "class A{void m(java.util.List<X> xs){for(X x:xs){ synchronized(this){ } }}}",
+        [("lock_in_loop", "")],
+        "a shared lock taken per element still fires",
+    ),
 ]
 
 
@@ -216,6 +226,28 @@ _GO_CASES = [
         "func f(urls []string){ for _, u := range urls { http.Get(u) } }",
         [("io_in_loop", "network")],
         "net/http Get in a range loop",
+    ),
+    (
+        "package p\nfunc f(us []*U) {\n\tfor _, u := range us {\n\t\tu.mu.RLock()\n\t\tu.mu.RUnlock()\n\t}\n}\n",
+        [],
+        "the range element's own mutex is a different lock each pass",
+    ),
+    (
+        "package p\nfunc f(us []*U) {\n\tfor _, u := range us {\n\t\tmu.Lock()\n\t\tmu.Unlock()\n\t}\n}\n",
+        [("lock_in_loop", "")],
+        "a shared mutex locked per element still fires",
+    ),
+    (
+        "package p\nfunc f(s *S) {\n\tfor {\n\t\tselect {\n\t\tcase <-s.t.C:\n"
+        "\t\t\tmu.Lock()\n\t\t\tmu.Unlock()\n\t\t}\n\t}\n}\n",
+        [],
+        "a lock per event in a for-select event loop has nothing to hoist",
+    ),
+    (
+        "package p\nfunc f(xs []int) {\n\tfor _, x := range xs {\n\t\tselect {\n"
+        "\t\tcase ch <- x:\n\t\t\tmu.Lock()\n\t\t}\n\t}\n}\n",
+        [("lock_in_loop", "")],
+        "a select inside a range loop still locks per element",
     ),
 ]
 
@@ -289,6 +321,16 @@ _CSHARP_CASES = [
         " System.Threading.Tasks.Task SaveChangesAsync() => null; }",
         [],
         "a bare SaveChangesAsync is the class's own method, not a DbContext call",
+    ),
+    (
+        "class A{void M(List<X> xs){foreach(var item in xs){ lock(item){ } }}}",
+        [],
+        "locking the foreach element is a different lock each pass",
+    ),
+    (
+        "class A{void M(List<X> xs){foreach(var item in xs){ lock(gate){ } }}}",
+        [("lock_in_loop", "")],
+        "a shared gate locked per element still fires",
     ),
 ]
 
@@ -401,6 +443,16 @@ def test_rust_fs_in_async_blocks():
     # tokio::fs::read is always awaited -> never read as a blocking sync call.
     awaited = "async fn f(p: String){ let _ = tokio::fs::read(&p).await; }"
     assert not any(k == "blocking_sync_in_async" for k, _ in _hits("rust", awaited))
+
+
+def test_rust_console_io_in_async_is_not_fs():
+    """``std::io::stdin().read(..)`` roots at ``std`` but is console IO, not ``fs::read``."""
+    stdin = "async fn f(){ let _ = std::io::stdin().read(&mut []); }"
+    stderr = 'async fn f(){ let _ = std::io::stderr().write(b"x"); }'
+    assert not any(k == "blocking_sync_in_async" for k, _ in _hits("rust", stdin))
+    assert not any(k == "blocking_sync_in_async" for k, _ in _hits("rust", stderr))
+    sleep = "async fn f(d: Duration){ std::thread::sleep(d); }"
+    assert ("blocking_sync_in_async", "thread::sleep") in _hits("rust", sleep)
 
 
 # ---------------------------------------------------------------------------
@@ -580,65 +632,20 @@ def test_python_string_concat_reset_per_iteration_not_flagged():
     assert ("string_concat_in_loop", "") in _hits("python", accum)
 
 
-def _ts_concat_lines(src: str) -> list[int]:
-    fc = walk_file("t.ts", "typescript", src.encode())
-    return [h.line for h in fc.perf_hits if h.kind == "string_concat_in_loop"]
-
-
-@pytest.mark.parametrize(
-    "src",
-    [
-        # Declared fresh each pass: bounded per iteration.
-        "function f(fs){ for (const f of fs){ let js = read(f);\n js += '\\n//map'; write(f, js) } }",
-        # Declared in the same branch that appends: fresh whenever the append runs.
-        "function f(fs){ for (const f of fs){ if (ok(f)) { let js = read(f); js += '//map'; write(js) } } }",
-        # Reset by a plain assignment inside the loop.
-        "function f(rs){ let v; for (const r of rs){ v = r.style; v += ';'; use(v) } }",
-        # Appended once, right before leaving the loop or the function.
-        "function f(s){ let m=''; for (const c of s){ if (c.stop) { m += ' [cut]'; break } } return m }",
-        "function f(xs){ let m=''; for (const x of xs){ if (x.bad) { m += 'bad'; return m } } }",
-        "function f(xs){ let m='e:'; for (const x of xs){ if (x.bad) { m += 'bad'; throw new Error(m) } } }",
-        # The break leaves the inner loop and the outer loop re-binds the name.
-        "function f(ys){ for (const y of ys){ let s=''; while (more()){ s += 'a'; break } use(s) } }",
-    ],
-)
-def test_ts_string_concat_bounded_per_iteration_not_flagged(src):
-    assert _ts_concat_lines(src) == []
-
-
+@pytest.mark.parametrize("lang", ["typescript", "javascript"])
 @pytest.mark.parametrize(
     "src",
     [
         "function f(xs){ let s=''; for (const x of xs){ s += `${x}\\n` } return s }",
-        # A re-bind that only some passes run is no reset.
-        "function f(xs){ let s=''; for (const x of xs){ if (x.first) { s = 'head' } s += `${x}` } return s }",
-        "function f(xs){ let s=''; for (const x of xs){ for (const y of x){ s = y } s += 'a' } return s }",
-        # ``s = s + ...`` keeps the old value, so it is no reset.
-        "function f(xs){ let s=''; for (const x of xs){ s = s + 'a'; s += 'b' } return s }",
-        # A break that only leaves a switch, or only the inner of two loops.
-        "function f(xs){ let s=''; for (const x of xs){ switch (x.k) { case 1: s += 'a'; break } } return s }",
-        "function f(ys){ let s=''; for (const y of ys){ for (const x of y){ s += 'a'; break } } return s }",
-        # Declared in the outer loop, grown across the inner one.
-        "function f(ys){ for (const y of ys){ let s=''; for (const x of y){ s += 'a' } use(s) } }",
-        # A path to ``continue`` before the exit keeps the loop going.
-        "function f(xs){ let s=''; for (const x of xs){ s += 'a'; if (x) continue; break } return s }",
-        # A subscript target is never re-bound by a declaration.
-        "function f(xs, buf){ for (const x of xs){ buf[0] += ` ${x}` } }",
+        # hono ``toStringToBuffer``: appends into the string a buffer array holds.
+        "function f(props, buffer){ for (const [k, v] of props){\n"
+        " buffer[0] += ` ${k}=\"`\n escape(v, buffer)\n buffer[0] += '\"' } }",
     ],
 )
-def test_ts_string_concat_across_iterations_still_flagged(src):
-    assert len(_ts_concat_lines(src)) == 1
-
-
-def test_ts_string_concat_loop_local_and_accumulator_in_one_loop():
-    src = (
-        "function f(xs){ let out='';\n"
-        " for (const x of xs){ let v = x.name;\n"
-        " v += ';';\n"
-        " out += `${v}`; }\n"
-        " return out }"
-    )
-    assert _ts_concat_lines(src) == [4]
+def test_js_string_concat_is_never_a_marker(lang, src):
+    """JS engines concatenate through ropes, so ``+=`` in a loop is linear."""
+    fc = walk_file("t.ts", lang, src.encode())
+    assert not any(h.kind == "string_concat_in_loop" for h in fc.perf_hits)
 
 
 def test_ts_nested_io_requires_collection_outer_loop():
@@ -762,6 +769,39 @@ def test_python_list_insert_zero_vs_variable_index():
     assert not any(k == "list_insert_zero_in_loop" for k, _ in _hits("python", reset))
 
 
+_INSERT_ZERO = "def f(xs, out, ok):\n    for x in xs:\n{body}"
+
+
+@pytest.mark.parametrize(
+    "body,fires",
+    [
+        ("        out.insert(0, x)\n        return\n", False),
+        ("        if ok:\n            out.insert(0, x)\n            return\n", False),
+        ("        out.insert(0, x)\n        log(x)\n        break\n", False),
+        ("        out.insert(0, x)\n        raise ValueError(x)\n", False),
+        # A conditional exit, or a ``continue`` that can skip the exit, still repeats.
+        ("        out.insert(0, x)\n        if ok:\n            break\n", True),
+        ("        out.insert(0, x)\n        if ok:\n            continue\n        break\n", True),
+        # The exit comes before the insert, not after it.
+        ("        if ok:\n            break\n        out.insert(0, x)\n", True),
+        # ``break`` leaves only the inner loop of a nest.
+        ("        for y in x:\n            out.insert(0, y)\n            break\n", True),
+        ("        for y in x:\n            out.insert(0, y)\n            return\n", False),
+        # A ``raise`` an ``except`` in the same iteration can catch.
+        (
+            "        try:\n            out.insert(0, x)\n            raise ValueError\n"
+            "        except ValueError:\n            pass\n",
+            True,
+        ),
+        # A flag-driven exit is not followed (click's ``stop = True``).
+        ("        out.insert(0, x)\n        stop = True\n        if stop:\n            break\n", True),
+    ],
+)
+def test_python_list_insert_zero_before_loop_exit(body, fires):
+    kinds = [k for k, _ in _hits("python", _INSERT_ZERO.format(body=body))]
+    assert ("list_insert_zero_in_loop" in kinds) is fires
+
+
 def test_ts_json_parse_only_deep_clone_idiom():
     """Bare ``JSON.parse(x.payload)`` of a distinct per-iteration payload is
     necessary work (Phase-7d: bare parse/stringify was 0% precision)."""
@@ -801,16 +841,59 @@ def test_python_pathlib_round_trips_are_filesystem_sinks():
     Python's filesystem lexicon recognised only the bare ``open(...)`` builtin,
     so the idiom the whole ecosystem actually uses was invisible: a loop full of
     ``Path.read_text()`` scored a perfect 10/10 on the performance dimension.
-    Matched on the method name alone because only a ``pathlib.Path`` spells
-    these — the receiver is usually a plain local (``src_path.read_text()``),
-    so there is no import to classify.
     """
     for method in ("read_text", "read_bytes", "write_text", "write_bytes"):
-        src = f"def f(ps):\n    for p in ps:\n        p.{method}()\n"
+        src = f"def f(d):\n    for p in d.glob('*'):\n        p.{method}()\n"
         assert ("io_in_loop", "filesystem") in _hits("python", src), method
     # The constructor-receiver form resolves the same way.
     ctor = "from pathlib import Path\ndef f(ps):\n    for p in ps:\n        Path(p).read_text()\n"
     assert ("io_in_loop", "filesystem") in _hits("python", ctor)
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        "def f(d, names):\n    for n in names:\n        (d / n).read_text()\n",
+        "def f(d, names):\n    for n in names:\n        t = d / n\n        t.write_text('x')\n",
+        "def f(xs):\n    for x in xs:\n        x.config_file.read_bytes()\n",
+        "from pathlib import Path\ndef f(xs: list[Path]):\n    for x in xs:\n        x.read_text()\n",
+        "def f(d):\n    srcs = [d / 'a.py', d / 'b.py']\n    for s in srcs:\n        s.write_text('x')\n",
+        "def f(d, ns):\n    for s in sorted(d / n for n in ns):\n        s.read_bytes()\n",
+        "def f(d):\n    for p in (q for q in d.glob('*') if q.is_file()):\n        p.read_text()\n",
+        "import pathlib\ndef f(ns):\n    for n in ns:\n        pathlib.Path(n).read_text()\n",
+        "def f(xs):\n    for x in xs:\n        x.srcPath.read_text()\n",
+    ],
+)
+def test_python_path_receivers_stay_filesystem_sinks(src):
+    assert ("io_in_loop", "filesystem") in _hits("python", src)
+
+
+def test_python_awaited_path_read_is_a_serial_filesystem_await():
+    src = (
+        "import anyio\nasync def f(ns):\n    for n in ns:\n"
+        "        await anyio.Path(n).read_text()\n"
+    )
+    assert ("serial_await_in_loop", "filesystem") in _hits("python", src)
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        # tornado ``IOStream.read_bytes``: a socket read, not a file.
+        "class C:\n    async def f(self, n):\n        while n:\n"
+        "            await self.stream.read_bytes(n)\n",
+        # rich's terminal writer.
+        "def f(term, parts):\n    for t in parts:\n        term.write_text(t)\n",
+        # An unknown receiver is no sink: streams and terminals spell these names too.
+        "def f(ps):\n    for p in ps:\n        p.read_text()\n",
+        # A name that only ends in the letters ``file``.
+        "def f(profile, ns):\n    for n in ns:\n        profile.read_bytes(n)\n",
+        # A binding that never settles on a path.
+        "def f(ns):\n    a = a\n    for n in ns:\n        a.read_text()\n",
+    ],
+)
+def test_python_non_path_receivers_are_not_filesystem_sinks(src):
+    assert not any(detail == "filesystem" for _, detail in _hits("python", src))
 
 
 def test_python_metadata_syscalls_are_not_filesystem_sinks():
@@ -934,7 +1017,7 @@ def test_python_point_reads_do_not_become_hot_path_candidates():
     assert [f.bare_sink_kind for f in fc.perf_fn_facts] == ["filesystem"]
     # Still a per-iteration finding when it IS in a loop.
     assert ("io_in_loop", "filesystem") in _hits(
-        "python", "def f(ps):\n    for p in ps:\n        p.write_text('x')\n"
+        "python", "def f(paths):\n    for p in paths:\n        p.write_text('x')\n"
     )
 
 
@@ -1440,6 +1523,22 @@ _KOTLIN_CASES = [
         "a dynamic pattern may legitimately vary - not hoistable",
     ),
     (
+        'fun m(xs: List<String>) {\n    for (x in xs) {\n        val r = "^a".toRegex()\n    }\n}\n',
+        [("regex_compile_in_loop", "")],
+        "literal.toRegex() recompiled per iteration",
+    ),
+    (
+        "fun m(xs: List<P>) {\n"
+        '    for (x in xs) {\n        val r = "${x.id}.*".toRegex()\n    }\n}\n',
+        [],
+        "an interpolated toRegex() receiver varies per iteration - not hoistable",
+    ),
+    (
+        'fun m(xs: List<String>) {\n    for (x in xs) {\n        val r = "$x.*".toRegex()\n    }\n}\n',
+        [],
+        "a bare $name template receiver is not hoistable either",
+    ),
+    (
         "fun m(xs: List<String>) {\n    for (x in xs) {\n        lock.lock()\n    }\n}\n",
         [("lock_in_loop", "")],
         "a lock taken every iteration is a contention site",
@@ -1454,6 +1553,26 @@ _KOTLIN_CASES = [
         "class A {\n    fun lock(ks: List<Any>) {\n        for (k in ks) {\n            locks[k].lock()\n        }\n    }\n}\n",
         [("lock_in_loop", "")],
         "an iterating lock() is not a retry loop",
+    ),
+    (
+        "fun f(items: List<S>) {\n    items.forEach { it.withLock { } }\n}\n",
+        [],
+        "the forEach element's own lock via implicit it",
+    ),
+    (
+        "fun f(ss: List<S>) {\n    for (s in ss) s.withLock { }\n    ss.forEach { x -> x.lock.lock() }\n}\n",
+        [],
+        "the for element and a named lambda parameter own their locks",
+    ),
+    (
+        "fun f(m: Map<K, S>) {\n    for ((k, s) in m) synchronized(s) { }\n}\n",
+        [],
+        "a destructured element passed to synchronized",
+    ),
+    (
+        "fun f(ss: List<S>) {\n    ss.forEach { lock.withLock { } }\n    for (s in ss) synchronized(this) { }\n}\n",
+        [("lock_in_loop", ""), ("lock_in_loop", "")],
+        "a shared lock taken per element still fires",
     ),
 ]
 
@@ -1599,6 +1718,25 @@ _CPP_CASES = [
         "void m(std::vector<int> v) {\n    for (auto x : v) {\n        mu.lock();\n    }\n}\n",
         [("lock_in_loop", "")],
         "the explicit acquire form of the same site",
+    ),
+    (
+        "void m() {\n    while (active_) {\n        std::unique_lock<std::mutex> lock(mu_);\n"
+        "        if (cv_.wait_for(lock, iv_, [this] { return !active_; })) {\n"
+        "            return;\n        }\n        tick();\n    }\n}\n",
+        [],
+        "a guard handed to a condition-variable wait is the wait idiom",
+    ),
+    (
+        "void m() {\n    for (;;) {\n        std::unique_lock<std::mutex> lk{mu};\n"
+        "        while (q.empty()) cv->wait(lk);\n        q.pop();\n    }\n}\n",
+        [],
+        "a wait loop nested under the guard's loop",
+    ),
+    (
+        "void m() {\n    while (active_) {\n        std::unique_lock<std::mutex> lock(mu_);\n"
+        "        cv_.wait(other);\n        tick();\n    }\n}\n",
+        [("lock_in_loop", "")],
+        "a wait on another lock leaves the guard per iteration",
     ),
     (
         "void m() {\n    for (auto x : load_all()) {\n        use(x);\n    }\n}\n",
@@ -1838,3 +1976,145 @@ def test_python_acquire_spin_vs_per_item():
     assert _hits("python", spin) == []
     each = "def acquire(self, items):\n    for i in items:\n        self.locks[i].acquire()\n"
     assert _hits("python", each) == [("lock_in_loop", "")]
+
+
+# ---------------------------------------------------------------------------
+# Apex
+# ---------------------------------------------------------------------------
+
+
+def test_apex_fixture_hits():
+    fc = _walk("apex/perf_io_in_loop.cls", "apex")
+    hits = sorted((h.function, h.kind, h.detail) for h in fc.perf_hits)
+    # Every shape under "stay quiet" in the fixture is absent: the bulk idioms,
+    # the query in a loop header, run-once shapes and the ``while`` ceiling.
+    assert hits == sorted(
+        [
+            ("soqlPerRecord", "io_in_loop", "db"),
+            ("dmlPerRecord", "io_in_loop", "db"),
+            ("databaseAndCallout", "io_in_loop", "db"),
+            ("databaseAndCallout", "io_in_loop", "network"),
+            ("asyncPerRecord", "io_in_loop", "db"),
+            ("asyncPerRecord", "io_in_loop", "db"),
+            ("nested", "io_in_loop", "db"),
+            ("nested", "nested_loop_with_io", "db"),
+        ]
+    )
+    sinks = {h.sink_call for h in fc.perf_hits}
+    assert {"SOQL", "update", "Database.delete", "http.send", "System.enqueueJob", "notifyLater"} <= sinks
+
+
+def _apex_loop(body: str, params: str = "List<Id> ids") -> str:
+    return f"public class A {{\n  public void m({params}) {{\n    for (Id i : ids) {{\n{body}\n    }}\n  }}\n}}\n"
+
+
+_APEX_CASES = [
+    (_apex_loop("      Messaging.sendEmail(msgs);"), [("io_in_loop", "network")], "sendEmail"),
+    (_apex_loop("      EventBus.publish(evt);"), [("io_in_loop", "db")], "platform event"),
+    (_apex_loop("      List<List<SObject>> r = [FIND 'x' IN ALL FIELDS RETURNING Account];"),
+     [("io_in_loop", "db")], "inline SOSL"),
+    (_apex_loop("      database.countQuery(q);"), [("io_in_loop", "db")], "case-insensitive receiver"),
+    (_apex_loop("      new Http().send(req);"), [("io_in_loop", "network")], "new Http().send"),
+    (_apex_loop("      mailer.send(req);", "List<Id> ids, Mailer mailer"), [], "send on a non-Http receiver"),
+    (_apex_loop("      helper(i);"), [], "a plain same-class call is no sink"),
+    (_apex_loop("      Database.merge(master, i);"), [], "merge takes at most three records"),
+    (_apex_loop("      Database.query('SELECT Id FROM Thing__mdt');"), [], "custom metadata query"),
+    (_apex_loop("      insert rec;\n      return;"), [], "return after the sink"),
+    (
+        "public class A {\n  public void m(List<Id> ids) {\n    for (Id a : ids) {\n"
+        "      for (Id b : ids) { insert rec; break; }\n    }\n  }\n}\n",
+        [("io_in_loop", "db"), ("nested_loop_with_io", "db")],
+        "an inner break still runs once per outer pass",
+    ),
+    (
+        "public class A {\n  public void m(List<Id> ids) {\n    for (Id i : ids) {\n"
+        "      if (buf.size() > 0) { insert buf; }\n    }\n  }\n}\n",
+        [("io_in_loop", "db")],
+        "an emptiness test is no flush threshold",
+    ),
+    (
+        "public class A {\n  Map<Id, Account> cache;\n  Account get(Id i) {\n"
+        "    if (cache != null) { return cache; }\n    cache = new Map<Id, Account>([SELECT Id FROM Account]);\n"
+        "    return null;\n  }\n  void m(List<Id> ids) {\n    for (Id i : ids) { Account a = [SELECT Id FROM Account]; }\n  }\n}\n",
+        [("io_in_loop", "db")],
+        "a memoized getter's query is no sink; a plain one in a loop is",
+    ),
+    (
+        "public class A {\n  static Map<String, List<Id>> byType = new Map<String, List<Id>>();\n"
+        "  void m(List<String> types) {\n    for (String t : types) {\n"
+        "      if (byType.get(t) == null) { byType.put(t, Database.query('SELECT Id FROM Account')); }\n"
+        "    }\n  }\n}\n",
+        [],
+        "a map-keyed cache filled under its own null test",
+    ),
+    (
+        "public class A {\n  void m(List<List<Account>> chunks) {\n"
+        "    for (Integer i = 0; i < chunks.size(); i++) { update chunks[i]; }\n  }\n}\n",
+        [],
+        "a counted walk over a list of lists handles a chunk per pass",
+    ),
+    (
+        "public class A {\n  void m(List<Account> rows) {\n    try { insert rows; } catch (Exception e) {\n"
+        "      for (Account a : rows) { Database.insert(a, false); }\n    }\n  }\n}\n",
+        [],
+        "a per-record retry after a failed bulk call",
+    ),
+    (_apex_loop("      Database.executeBatch(new Job(i));"), [], "batch submission is left out"),
+    (
+        _apex_loop("      update rec;\n      if (rec.Name == 'z') { break; }"),
+        [("io_in_loop", "db")],
+        "a guard exit on another condition keeps the hit",
+    ),
+    (
+        _apex_loop(
+            "      ok = true;\n      try { Database.convertLead(c); } catch (Exception e) { ok = false; }\n"
+            "      if (ok) { break; }"
+        ),
+        [],
+        "retry until one attempt succeeds",
+    ),
+    (
+        _apex_loop("      buf.add(i);\n      if (buf.size() > 100 || done) { update buf; }"),
+        [("io_in_loop", "db")],
+        "a size test mixed with another condition is no flush",
+    ),
+]
+
+
+@pytest.mark.parametrize("src,expected,note", _APEX_CASES, ids=[c[2] for c in _APEX_CASES])
+def test_apex_cases(src, expected, note):
+    # The cases' bare classes declare no sharing; that marker has its own tests.
+    hits = [h for h in _hits("apex", src) if h[0] != "apex_missing_sharing"]
+    assert hits == sorted(expected), note
+
+
+def test_apex_parameter_switched_sink_is_no_bare_sink():
+    # ``if (doInsert) insert rows;`` outside a loop: the caller's argument
+    # decides, so the function is no cross-function sink target.
+    src = (
+        "public class F {\n  public static List<Account> make(Integer n, Boolean doInsert) {\n"
+        "    List<Account> rows = new List<Account>();\n    if (doInsert) { insert rows; }\n"
+        "    return rows;\n  }\n  public static void save(List<Account> rows) { insert rows; }\n}\n"
+    )
+    fc = walk_file("F.cls", "apex", src.encode())
+    sinks = {f.function: f.bare_sink_kind for f in fc.perf_fn_facts}
+    assert sinks.get("make") is None
+    assert sinks["save"] == "db"
+
+
+def test_apex_field_filled_when_unset_is_no_bare_sink():
+    src = (
+        "public class U {\n  static void config(Settings__c s) {\n    if (s.Mode__c == null) {\n"
+        "      s.Mode__c = 'x';\n      List<RecordType> r = [SELECT Id FROM RecordType];\n    }\n  }\n}\n"
+    )
+    assert walk_file("U.cls", "apex", src.encode()).perf_fn_facts == []
+
+
+def test_apex_helper_call_followed_by_return_is_no_loop_target():
+    src = (
+        "public class F {\n  void m(List<Id> ids) {\n    for (Id i : ids) {\n"
+        "      if (i == null) { notifyAll(); return; }\n      track(i);\n    }\n  }\n}\n"
+    )
+    fc = walk_file("F.cls", "apex", src.encode())
+    targets = {name for f in fc.perf_fn_facts for name, _line in f.loop_call_targets}
+    assert targets == {"track"}

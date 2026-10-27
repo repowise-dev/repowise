@@ -25,7 +25,7 @@ repowise dead-code --kind unused_export --format json
  unreachable_file  src/legacy/parser.ts           100%    ✗      212  File has no importers (in_degree=0)
  unreachable_file  config/feature_flags.py         40%    ✗       31  File has no importers (in_degree=0)
 
-Cleanup-candidate lines: 14 (high 2, medium 1 confidence)
+Cleanup-candidate lines: 14 · findings by confidence: high 2, medium 1
 ```
 
 From an agent, `get_dead_code()` or `get_dead_code(tier="high", safe_only=True)`.
@@ -42,9 +42,8 @@ In the dashboard, open the **Dead code** view of a repository.
 
 Methods, fields, properties and enum members are never reported as unused
 exports: they are reached through their container. `unused_internal` is
-withheld from the dashboard and default MCP responses because its measured
-precision was very low ([Accuracy and limits](#accuracy-and-limits)); ask for
-it with `--include-internals` or `include_internals=True`.
+withheld from the dashboard and default MCP responses because its precision is
+very low ([Accuracy and limits](#accuracy-and-limits)); ask for it with `--include-internals` or `include_internals=True`.
 
 ## Reading the results
 
@@ -53,19 +52,21 @@ it with `--include-internals` or `include_internals=True`.
 Confidence runs from `0.0` to `1.0` and measures how strong the evidence for
 deadness is. It starts from a base value per kind and can only be lowered:
 
-- **Unreachable files** are scored from git activity. A file untouched for a
-  year or more starts at `1.00`; one still being committed to starts at `0.40`;
-  a file under 30 days old starts at `0.55`, because it is often unfinished.
+- **Unreachable files** are scored from git activity. A file with a commit in
+  the last 90 days starts at `0.40`. Otherwise its last commit sets the start:
+  `1.00` at 365 days or more, `0.90` at 180, `0.80` at 90. A file under 30 days
+  old starts at `0.55`, because it is often unfinished; any other file starts
+  at `0.70`, and one with no recorded git history at `0.50`.
 - **Unused exports** start at `1.00` when the file has importers and none of
   them takes this symbol. When that check is impossible (no importer names
   individual symbols, or the language reaches symbols through a preprocessor)
-  the start is `0.60`. Deprecated symbols start at `0.30`.
+  the start is `0.60`. Deprecated exports start at `0.30`.
 - **Unused internals** start at `0.65`. **Zombie packages** start at `0.50`.
 
 Several caps then pull a finding down to `0.40`, the review tier: a runtime
 loader in the same directory, a path that looks like config or bootstrap code,
 an unused export's name written somewhere else in the repository, or a name that
-appears in a file repowise could not index. Each cap adds a line to the
+appears in a file Repowise could not index. Each cap adds a line to the
 finding's evidence saying why.
 
 ### Tiers
@@ -76,9 +77,11 @@ finding's evidence saying why.
 | Medium | `0.4` to `0.7` | Likely unused, but something indirect may reach it. Review first. |
 | Low | `< 0.4` | Plausibly used at runtime (dynamic loading, reflection, published API). Investigate first. |
 
-The CLI, the dashboard and `get_dead_code` use the same tier floors, so a
-finding lands in the same tier on every surface. The default `min_confidence`
-is `0.4` everywhere, which hides the low tier unless you ask for it.
+The dead-code lists and summaries of the CLI, the dashboard and
+`get_dead_code` use the same tier floors and the same
+[cross-repo cut](#workspaces), so a finding lands in the same tier on each.
+The default `min_confidence` is `0.4` everywhere, which hides the low tier
+unless you ask for it.
 
 ### `safe_to_delete`
 
@@ -125,9 +128,10 @@ the floor. An index whose dead-code pass failed also reads as empty; pass
   [CONFIG.md](../reference/CONFIG.md)). An excluded file's own imports leave
   the graph too, so a file only it imported can then surface as unreachable.
 - **In source.** A Java or Kotlin symbol annotated `@SuppressWarnings("unused")`
-  is treated as deliberately unused and is not reported. A symbol marked
-  deprecated (by annotation, or by a `_DEPRECATED`, `_LEGACY` or `_COMPAT`
-  name suffix) drops to `0.30`, below the default floor.
+  is treated as deliberately unused and is not reported. An unused export
+  marked deprecated (by annotation, or by a `_DEPRECATED`, `_LEGACY` or
+  `_COMPAT` name suffix) starts at `0.30`, below the default floor. An unused
+  internal keeps `0.65`, since a private symbol has no outside consumer.
 - **Turning the MCP tool off.** `mcp: {tools: ["-get_dead_code"]}` in
   `.repowise/config.yaml`.
 
@@ -135,7 +139,7 @@ There is no allowlist file for dead-code findings; use the dashboard status.
 
 ## False positives and dynamic code
 
-When a file contains a runtime loader, repowise assumes its neighbours in the
+When a file contains a runtime loader, Repowise assumes its neighbours in the
 same directory may be reached through it and caps their confidence at `0.40`.
 Markers are recognised in Python, JavaScript and TypeScript, Java, Kotlin,
 Ruby, PHP, Go, Swift, Scala, Rust, C# and C/C++. Examples: `importlib.import_module`,
@@ -167,29 +171,36 @@ deleting anything.
 ## Workspaces
 
 In a workspace, a file dead inside its own repo may be the surface another repo
-depends on. `get_dead_code` checks each finding against the cross-repo data
-before returning it:
+depends on. The CLI, the dashboard and `get_dead_code` check each finding
+against the cross-repo data before the confidence floor and the tiers:
 
-- If the file changes together with files in other repos (git co-change),
-  confidence is halved and the finding gains a `cross_repo_note` naming those
-  repos.
-- Otherwise, if the finding is an unused export and another repo depends on
-  this one as a package, confidence is cut to 30% of its value with a note to
-  verify consumers.
+- If another repo's contract link (an HTTP route, a generated client) points
+  at the file, confidence is cut to 30% of its value and the `cross_repo_note`
+  names the consumer.
+- Otherwise, if the file changes together with files in other repos (git
+  co-change), or the finding is an unused export and another repo depends on
+  this one as a package, the finding keeps its confidence and gains a note.
+  The note names a package dependent only when its link covers the file's
+  package (or records no manifest). These links say a consumer may exist, not
+  that one does.
 
-The adjustment runs after tiering, so it lowers the displayed confidence
-without moving a finding between tiers. `repo="all"` merges every workspace
-repo and tags each finding with its alias. The CLI has no cross-repo pass:
-`--repo <alias>` analyzes one repo in isolation (the primary repo by default).
-See [WORKSPACES.md](../scale/WORKSPACES.md) for how cross-repo data is built.
+A finding with a note is never safe to delete, and a lowered one sits in the
+tier its new confidence names, so one cut below `0.4` is hidden by the default
+floor. The dashboard adds the note to the finding's evidence. `repo="all"` merges every
+workspace repo and tags each finding with its alias. The CLI analyzes one repo
+per run (the primary repo unless `--repo <alias>`), and `--no-workspace` skips
+the cut. The file page, Overview's attention list, Do next (web, `repowise next`,
+`get_overview`), related work, the code graph, the chat dataset, `repowise export
+--full` and the assessment report read the same cut. Fix first and plan annotations
+are built per repo before the workspace pass, so they read stored values. See
+[WORKSPACES.md](../scale/WORKSPACES.md) for how cross-repo data is built.
 
 ## Accuracy and limits
 
-- `unused_internal` was measured at under 1% precision on 1,511 hand-labelled
-  findings from one TypeScript/Python monorepo, which is why it is withheld by
-  default. Private symbols used within their own file are often invisible to
-  the graph.
-- Whole unreachable files were measured well below the deletion-ready bar
+- `unused_internal` precision is under 1% on 1,511 hand-labelled findings from
+  one TypeScript/Python monorepo, so it is withheld by default. Private symbols
+  used within their own file are often invisible to the graph.
+- Precision on whole unreachable files is well below the deletion-ready bar
   (build scripts, manifests and runtime loaders read files by path), so they
   are never marked `safe_to_delete`.
 - Unused-export confidence is only as good as the graph's call and import

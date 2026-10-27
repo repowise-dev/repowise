@@ -2,22 +2,25 @@
 
 /**
  * Fix first: the ranked list of what to fix in this repository, as core built
- * it. The header states the scope exactly (shown of eligible, and what each
- * rule excluded); the list is the payload's order. Shared by every host: the
- * host fetches, routes and writes, this renders.
+ * it. The header states the scope exactly (shown of eligible); what each rule
+ * excluded is one click away in a popover; the list is the payload's order.
+ * Shared by every host: the host fetches, routes and writes, this renders.
  */
 
 import { useCallback, useState, type ElementType } from "react";
 import type { FixFirstQueue, FixItem, FixScope } from "@repowise-dev/types/fix-first";
 
 import { Skeleton, SkeletonRegion } from "../../ui/skeleton";
+import { Popover, PopoverContent, PopoverTrigger } from "../../ui/popover";
 import { ApiError } from "../../shared/api-error";
+import { EmptyState } from "../../shared/empty-state";
 import { toFriendlyMessage } from "../../lib/errors";
 import { OverviewSection } from "../../overview/section";
+import { formatNumber } from "../../lib/format";
 import { AiPromptModal, fileChatContext } from "../ai-prompt-modal";
 import type { AiPromptFlavor } from "../ai-prompt-builder";
 import { FixFirstItem, type FixTriageStatus } from "./fix-first-item";
-import { fixFirstScopeSentence, fixLocation } from "./scope";
+import { exclusionEntries, exclusionPhrase, fixFirstScopeSentence, fixLocation } from "./scope";
 
 export interface FixFirstListProps {
   queue: FixFirstQueue | undefined;
@@ -35,11 +38,11 @@ export interface FixFirstListProps {
   LinkComponent?: ElementType | undefined;
   /** Drop the section's top hairline when it opens the page. */
   flush?: boolean | undefined;
-  /**
-   * Closed by default: the score leads Code Health, and Fix first sits under
-   * it as one line with its count until the reader opens it.
-   */
+  /** Closed by default, under the score: the headline keeps the first screen
+   *  and the toggle's count says how much is behind it. */
   defaultOpen?: boolean | undefined;
+  /** Section heading. Callers with i18n pass their translated string. */
+  title?: string | undefined;
 }
 
 export function FixFirstList({
@@ -56,6 +59,7 @@ export function FixFirstList({
   LinkComponent,
   flush = false,
   defaultOpen = false,
+  title = "Highest-interest technical debt",
 }: FixFirstListProps) {
   // Every row starts as its one or two scan lines; the detail opens per row.
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
@@ -89,19 +93,42 @@ export function FixFirstList({
     : undefined;
 
   const count = queue ? queue.items.length : null;
+  const exclusions = queue ? exclusionEntries(queue.totals.excluded) : [];
+  const excludedTotal = exclusions.reduce((n, entry) => n + entry.count, 0);
+  const excludedControl =
+    excludedTotal > 0 ? (
+      <Popover>
+        <PopoverTrigger className="rounded text-xs text-[var(--color-text-secondary)] underline-offset-2 hover:text-[var(--color-text-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]">
+          <span className="tabular-nums">{formatNumber(excludedTotal)}</span> excluded
+        </PopoverTrigger>
+        <PopoverContent align="start">
+          <p className="mb-1.5 text-[var(--color-text-tertiary)]">Left out of Fix first, by rule:</p>
+          <ul className="space-y-0.5 tabular-nums text-[var(--color-text-secondary)]">
+            {exclusions.map((entry) => (
+              <li key={entry.reason}>{entry.text}</li>
+            ))}
+          </ul>
+        </PopoverContent>
+      </Popover>
+    ) : null;
 
   return (
     <OverviewSection
-      title="Fix first"
+      title={title}
       flush={flush}
       collapsible
       defaultOpen={defaultOpen}
       {...(count !== null ? { hint: `${count} ${count === 1 ? "item" : "items"}` } : {})}
       {...(description ? { description } : {})}
     >
-      {/* A collapsible section has no header action slot, so the toggle
-          leads the body. */}
-      {toggleTests ? <div>{toggleTests}</div> : null}
+      {/* A collapsible section has no header action slot, so the controls
+          lead the body. */}
+      {toggleTests || excludedControl ? (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+          {toggleTests}
+          {excludedControl}
+        </div>
+      ) : null}
       {error ? (
         <ApiError
           title="Couldn't load Fix first"
@@ -115,10 +142,7 @@ export function FixFirstList({
           <Skeleton className="h-20 w-full" />
         </SkeletonRegion>
       ) : queue && queue.items.length === 0 ? (
-        <p className="text-sm text-[var(--color-text-secondary)]">
-          Nothing eligible to fix first. Every candidate was excluded by a rule listed above, or the
-          index has no health analysis yet.
-        </p>
+        <FixFirstEmpty queue={queue} />
       ) : queue ? (
         <ol className="flex flex-col divide-y divide-[var(--color-border-default)]">
           {queue.items.map((item) => (
@@ -150,5 +174,35 @@ export function FixFirstList({
         description="The change, why it ranks first, the steps in order, and how to verify it."
       />
     </OverviewSection>
+  );
+}
+
+/** Nothing queued: all clear, left out by a rule, or never analyzed. Each says something different. */
+function FixFirstEmpty({ queue }: { queue: FixFirstQueue }) {
+  const excluded = exclusionPhrase(queue.totals.excluded);
+  if (excluded) {
+    return (
+      <EmptyState
+        size="compact"
+        title="Everything was left out by a rule"
+        description={`Nothing is queued because the rules above set aside ${excluded}.`}
+      />
+    );
+  }
+  if (!queue.basis.health_analyzed_at) {
+    return (
+      <EmptyState
+        size="compact"
+        title="Health has not been analyzed yet"
+        description="Run an index update and the ranked list appears here."
+      />
+    );
+  }
+  return (
+    <EmptyState
+      tone="positive"
+      title="Nothing to fix first"
+      description="Health was analyzed and no function or finding is worth fixing ahead of the rest."
+    />
   );
 }

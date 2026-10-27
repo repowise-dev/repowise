@@ -18,14 +18,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   }
 }
 
-/**
- * Thin shell. The page used to render its own header — repo name, local path,
- * branch and SHA — directly under the repo breadcrumb and directly above the
- * chat's own control row, so three hairlines ran before the first word of
- * content and the repo name appeared twice. The breadcrumb already names the
- * repo; branch and SHA are orientation, so they ride the empty state's status
- * line next to the file and doc counts, where the other figures already are.
- */
+/** Thin shell: the breadcrumb already names the repo, so the chat owns the page. */
 export default async function RepoChatPage({ params, searchParams }: Props) {
   const { id } = await params;
   const { q } = await searchParams;
@@ -42,8 +35,6 @@ export default async function RepoChatPage({ params, searchParams }: Props) {
       <ChatInterface
         repoId={id}
         repoName={repo.name}
-        defaultBranch={repo.default_branch}
-        {...(repo.head_commit ? { headCommit: repo.head_commit } : {})}
         {...(q ? { initialQuestion: q } : {})}
       />
     </div>

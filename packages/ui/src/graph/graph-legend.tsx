@@ -425,7 +425,7 @@ export const GraphLegend = memo(function GraphLegend({
                 aria-label={
                   overview.showExternal ? "Hide third-party modules" : "Show third-party modules"
                 }
-                className="rounded px-1 py-0.5 font-medium text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                className="rounded px-1 py-0.5 font-medium text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
               >
                 {overview.showExternal ? "Hide" : "Show"}
               </button>
@@ -505,7 +505,7 @@ export const GraphLegend = memo(function GraphLegend({
                             <button
                               type="button"
                               onClick={() => onCommunityClick(cid)}
-                              className="max-w-[12rem] truncate rounded hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                              className="max-w-[12rem] truncate rounded hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
                             >
                               {label}
                             </button>

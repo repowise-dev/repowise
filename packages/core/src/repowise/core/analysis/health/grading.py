@@ -83,6 +83,8 @@ BAND_BADGE_COLOR: dict[HealthBand, str] = {
     "needs_work": "orange",
     "at_risk": "red",
 }
+# A badge with no band: no score, or too little analysed to grade.
+BADGE_UNKNOWN_COLOR = "lightgrey"
 
 
 def band_for(score: float) -> HealthBand:
@@ -96,6 +98,70 @@ def band_for(score: float) -> HealthBand:
     if score >= NEEDS_WORK_MIN:
         return "needs_work"
     return "at_risk"
+
+
+# The canonical three-band reading beside a health mark, for a figure and a word
+# printed together. Mirror of ``HEALTHY_MIN`` and ``healthMark`` in the TS packages.
+HEALTHY_MIN = 8.0
+
+HealthMark = Literal["healthy", "warning", "alert"]
+
+MARK_LABEL: dict[HealthMark, str] = {
+    "healthy": "Healthy",
+    "warning": "Warning",
+    "alert": "Alert",
+}
+
+
+def mark_for(score: float) -> HealthMark:
+    """Healthy from 8, Warning from 4, Alert below."""
+    if score >= HEALTHY_MIN:
+        return "healthy"
+    return "warning" if score >= NEEDS_WORK_MIN else "alert"
+
+
+# Below this share of code files scored, the repo average describes a sample,
+# not the repo, so no band is put on it. Presentation only, like the cutoffs.
+HEADLINE_MIN_ANALYSED_SHARE = 0.5
+
+
+def analysed_share(analysed: int, unanalysed: int) -> float | None:
+    """Share of code files health scored, or ``None`` with no code files.
+
+    Shortcut: file counts, not NLOC, because an unanalysed file has no NLOC.
+    A few large scored files beside many small unscored ones read low here;
+    counting unscored NLOC at ingest would weight it properly.
+    """
+    total = analysed + unanalysed
+    return round(analysed / total, 4) if total else None
+
+
+def headline_band(score: float | None, share: float | None) -> HealthBand | None:
+    """The band for a repo headline, withheld when too little was analysed.
+
+    A per-file score keeps :func:`band_for`; this is for repo averages only.
+    A ``share`` of ``None`` (not known) keeps the band.
+    """
+    if score is None:
+        return None
+    if share is not None and share < HEADLINE_MIN_ANALYSED_SHARE:
+        return None
+    return band_for(score)
+
+
+def analysed_note(analysed: int, unanalysed: int) -> str | None:
+    """``"analysed N of M code files"`` when some were left out, else ``None``."""
+    if unanalysed <= 0:
+        return None
+    return f"analysed {analysed} of {analysed + unanalysed} code files"
+
+
+def headline_scope(analysed: int, unanalysed: int) -> str | None:
+    """``"across N of M code files"`` when a minority was analysed, else ``None``."""
+    share = analysed_share(analysed, unanalysed)
+    if share is None or share >= HEADLINE_MIN_ANALYSED_SHARE:
+        return None
+    return f"across {analysed} of {analysed + unanalysed} code files"
 
 
 def format_score(score: float) -> str:

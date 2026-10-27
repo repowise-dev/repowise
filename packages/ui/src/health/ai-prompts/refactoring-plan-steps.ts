@@ -11,6 +11,7 @@ import {
   extractClassGroups,
   extractHelperOccurrences,
   extractMethodPlan,
+  HELPER_NAME_PLACEHOLDER,
   helperSite,
   moveTarget,
   splitGroups,
@@ -61,19 +62,102 @@ function extractHelperSteps(plan: RefactoringPlan): string {
   ].join("\n");
 }
 
+/** How an Extract Method edit is made. Core's recipe says the same words
+ *  (`recipe.SCRIPT_RULE`, `LINE_RULE`, `ELSEWHERE_NOTE`, `RENAME_NOTE`; a parity
+ *  test holds them). */
+export const SCRIPT_RULE_TEXT =
+  "Do not generate a script that rewrites the file. Make each edit directly in the file, one at a time, re-reading the span after each.";
+export const LINE_RULE_TEXT =
+  "Do not find a span by its line numbers. They are where it was when planned and move with every edit; match its first and last lines.";
+const ELSEWHERE_NOTE = "Text repeats in the file: edit only inside this function.";
+export const RENAME_NOTE_TEXT =
+  "The helper's name is a placeholder: rename it for what it returns or does, in its header and its call.";
+/** The placeholder core writes (`helper_naming.placeholder_names`), in any casing. */
+const HELPER_PLACEHOLDER = /^_?extracted_?[hH]elper_?\d*$/;
+
+interface SpanAnchors {
+  first: string;
+  last: string;
+  /** "function": the text also occurs elsewhere in the file. */
+  unique_in: "file" | "function";
+}
+
+/** The span's first and last lines as core serves them (`plan.anchors`), or
+ *  null on a plan stored before them. Never computed here. */
+function spanAnchors(plan: RefactoringPlan): SpanAnchors | null {
+  const raw = ((plan.plan ?? {}) as Record<string, unknown>).anchors as
+    | Record<string, unknown>
+    | null
+    | undefined;
+  if (!raw || typeof raw.first !== "string" || typeof raw.last !== "string") return null;
+  return {
+    first: raw.first,
+    last: raw.last,
+    unique_in: raw.unique_in === "function" ? "function" : "file",
+  };
+}
+
+/** *text* fenced at column 0, so its indentation reads exactly as the file has it. */
+function fenced(text: string): string[] {
+  const ticks = Math.max(0, ...(text.match(/`+/g) ?? []).map((run) => run.length));
+  const fence = "`".repeat(Math.max(3, ticks + 1));
+  return [fence, text, fence];
+}
+
+/** The anchored span, the helper's shape and the call site, as bullets. */
+function extractMethodBullets(
+  em: ReturnType<typeof extractMethodPlan>,
+  anchors: ReturnType<typeof spanAnchors>,
+  lines: string,
+): string[] {
+  return [
+    ...(anchors
+      ? [
+          "- **The span starts with:**",
+          ...fenced(anchors.first),
+          "- **The span ends with:**",
+          ...fenced(anchors.last),
+          ...(anchors.unique_in === "function" ? [`- ${ELSEWHERE_NOTE}`] : []),
+        ]
+      : []),
+    ...(em.signature_text ? [`- **New helper:** \`${em.signature_text}\``] : []),
+    ...(em.return_text ? [`- **End the helper with:** \`${em.return_text}\``] : []),
+    ...(em.call_site
+      ? [`- **Replace ${anchors ? "the span" : `lines ${lines}`} with:** \`${em.call_site.new_text}\``]
+      : []),
+    ...em.notes.map((note) => `- **Note:** ${note}`),
+  ];
+}
+
 function extractMethodSteps(plan: RefactoringPlan): string {
   const em = extractMethodPlan(plan);
   if (!em.span) return "Extract the indicated slice into a helper method.";
   const params = em.params.length ? em.params.join(", ") : "(none)";
   const returns = em.returns.length ? em.returns.join(", ") : "(nothing)";
-  const name = em.suggested_name ?? "a clearly named helper";
+  const name = em.suggested_name ?? HELPER_NAME_PLACEHOLDER;
+  const anchors = spanAnchors(plan);
+  const lines = `${em.span.start}–${em.span.end}`;
+  const rendered = extractMethodBullets(em, anchors, lines);
+  const what = anchors
+    ? `the span of \`${plan.target_symbol}\` that starts and ends with the lines shown (lines ${lines} when planned)`
+    : `lines ${lines} of \`${plan.target_symbol}\``;
   return [
-    `Extract lines ${em.span.start}–${em.span.end} of \`${plan.target_symbol}\` into ${name}:`,
+    `Extract ${what} into \`${name}\`:`,
     "",
+    ...rendered,
     `- **Parameters (in):** ${params}`,
     `- **Returns (out):** ${returns}`,
+    ...(em.needs_async ? ["- **Async:** the span awaits, so declare the helper async and await its call"] : []),
+    ...(em.kind === "method"
+      ? [
+          `- **Method:** the span ${em.uses_receiver ? "uses" : "may use"} its object, so make the helper a method of the same object`,
+        ]
+      : []),
     "",
     "Move exactly those lines into the new helper in the same scope, pass the parameters above, return the value(s) above, and replace the original lines with a single call to it. Preserve behavior exactly: change nothing outside the span and that one call site.",
+    // A plan stored before names were placeholders keeps its real name unflagged.
+    ...(!em.suggested_name || HELPER_PLACEHOLDER.test(em.suggested_name) ? [RENAME_NOTE_TEXT] : []),
+    anchors ? `${SCRIPT_RULE_TEXT} ${LINE_RULE_TEXT}` : SCRIPT_RULE_TEXT,
   ].join("\n");
 }
 

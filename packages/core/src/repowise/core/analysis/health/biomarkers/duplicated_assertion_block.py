@@ -28,7 +28,6 @@ co-change): this one is scoped to test assertions and lands in the milder
 from __future__ import annotations
 
 from ..asserts.lexicon import is_flag_check
-from ..coverage import is_test_file
 from ..models import Severity
 from .base import BiomarkerResult, FileContext
 
@@ -79,7 +78,7 @@ class DuplicatedAssertionBlockDetector:
     category = "test_quality"
 
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
-        if not is_test_file(ctx.file_path) or not ctx.clones:
+        if not ctx.is_test_material or not ctx.clones:
             return []
         own_lines = ctx.clone_sources.get(ctx.file_path) or []
         blocks = [

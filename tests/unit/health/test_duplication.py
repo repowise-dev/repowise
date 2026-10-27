@@ -176,6 +176,79 @@ def test_detect_clones_attaches_co_change_count(tmp_path: Path):
     assert report.pairs[0].co_change_count == 7
 
 
+_HANDLER = '''class _{cls}Handler:
+    """Adds the edges one framework implies."""
+
+    def detect(self, ctx: Context) -> bool:
+        return True
+
+    def add_edges(
+        self,
+        graph: Graph,
+        parsed_files: dict[str, Any],
+        ctx: Context,
+        path_set: set[str],
+    ) -> int:
+        return _add_{name}_edges(graph, parsed_files, ctx, path_set)
+
+
+HANDLERS: list[Handler] = [_{cls}Handler()]
+'''
+
+
+def _handler_pair(tmp_path: Path, path_a: str, path_b: str, extra: str = "") -> list:
+    parsed = []
+    for path, name in ((path_a, "alpha"), (path_b, "beta")):
+        src = _HANDLER.format(cls=name.title(), name=name).replace("return True", extra or "return True")
+        target = tmp_path / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(src)
+        parsed.append(_pf(path, str(target)))
+    return parsed
+
+
+def test_sibling_skeleton_in_one_directory_is_not_a_clone(tmp_path: Path):
+    # Two handlers of one registry share signatures and a registration line,
+    # with no branch or callback: the contract, not copied logic.
+    parsed = _handler_pair(tmp_path, "edges/alpha.py", "edges/beta.py")
+    assert detect_clones(parsed, window_tokens=20, min_lines=4).pairs == []
+
+
+def test_the_same_skeleton_across_directories_stays_a_clone(tmp_path: Path):
+    parsed = _handler_pair(tmp_path, "one/alpha.py", "two/beta.py")
+    assert detect_clones(parsed, window_tokens=20, min_lines=4).pairs
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "return bool(ctx) if ctx.ready else False",
+        "return any(map(lambda tok: tok in ctx.stack, ctx.names))",
+    ],
+)
+def test_a_sibling_clone_with_a_branch_or_lambda_stays_a_clone(tmp_path: Path, extra: str):
+    parsed = _handler_pair(tmp_path, "edges/alpha.py", "edges/beta.py", extra)
+    assert detect_clones(parsed, window_tokens=20, min_lines=4).pairs
+
+
+def test_sibling_test_files_keep_their_skeleton_clones(tmp_path: Path):
+    # Duplicated assertion blocks read test clones; they stay.
+    parsed = _handler_pair(tmp_path, "tests/test_alpha.py", "tests/test_beta.py")
+    assert detect_clones(parsed, window_tokens=20, min_lines=4).pairs
+    # Ingestion's stored flag decides where the path alone would not.
+    parsed = _handler_pair(tmp_path, "helpers/alpha.py", "helpers/beta.py")
+    parsed[0].file_info.is_test = True
+    assert detect_clones(parsed, window_tokens=20, min_lines=4).pairs
+
+
+def test_decision_lines_marks_branches_and_lambdas_only():
+    from repowise.core.analysis.health.duplication.tokenizer import decision_lines
+
+    source = b"def f(x: int) -> int:\n    y = x\n    if y:\n        g = lambda: y\n    return y\n"
+    assert decision_lines("python", source, "f.py") == {3, 4}
+    assert decision_lines("not-a-language", source) is None
+
+
 def test_detect_clones_skips_files_without_duplicates(tmp_path: Path):
     a = _write(tmp_path, "a.py", "def f():\n    return 1\n")
     b = _write(tmp_path, "b.py", "def g():\n    return 2\n")
@@ -505,3 +578,34 @@ def test_detect_clones_needs_shared_identifier_names(tmp_path: Path):
     report = detect_clones(parsed, window_tokens=20, min_lines=4)
     # Same shape with every name changed is not a copy; a real copy still is.
     assert {(p.file_a, p.file_b) for p in report.pairs} == {("a.py", "c.py")}
+
+
+def _issue_3271_body() -> str:
+    return "".join(
+        f"result{i} = compute(alpha{i}, beta{i})\nname{i} = lookup(result{i}, gamma)\n"
+        f"if name{i} == other:\n    done = finish(name{i}, result{i})\n"
+        for i in range(6)
+    )
+
+
+def test_detect_clones_does_not_pair_across_languages(tmp_path: Path):
+    """Issue #3271: identical token shapes in Python and TypeScript must not cross-pair."""
+    body = _issue_3271_body()
+    a = _write(tmp_path, "a.py", body)
+    b = _write(tmp_path, "b.ts", body)
+    parsed = [
+        _pf("a.py", str(a), "python"),
+        _pf("b.ts", str(b), "typescript"),
+    ]
+    report = detect_clones(parsed, {}, window_tokens=DEFAULT_WINDOW_TOKENS, min_lines=3)
+    cross = {(p.file_a, p.file_b) for p in report.pairs if p.file_a != p.file_b}
+    assert cross == set()
+
+
+def test_detect_clones_still_pairs_same_language_duplicates(tmp_path: Path):
+    body = _issue_3271_body()
+    a = _write(tmp_path, "a.py", body)
+    b = _write(tmp_path, "b.py", body)
+    parsed = [_pf("a.py", str(a)), _pf("b.py", str(b))]
+    report = detect_clones(parsed, {}, window_tokens=DEFAULT_WINDOW_TOKENS, min_lines=3)
+    assert any({p.file_a, p.file_b} == {"a.py", "b.py"} for p in report.pairs)

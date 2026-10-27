@@ -12,7 +12,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
 
-from repowise.core.persistence.models import GenerationJob, Repository
+from repowise.core.persistence.models import GenerationJob, Repository, WebhookEvent
 
 
 @pytest.mark.asyncio
@@ -122,6 +122,25 @@ async def test_gitlab_webhook_no_token_non_local_rejected(client: AsyncClient) -
             "/api/webhooks/gitlab",
             {"X-Gitlab-Event": "Push Hook"},
             {"project": {"web_url": "https://example.com/test-repo"}},
+        ),
+        (
+            "/api/webhooks/gitea",
+            {
+                "X-Gitea-Event": "push",
+                "X-Gitea-Delivery": "test-delivery-sync",
+            },
+            {"repository": {"clone_url": "https://example.com/test-repo"}},
+        ),
+        (
+            "/api/webhooks/gitea",
+            # Forgejo sends both header families; the Gitea names are what a
+            # pre-Forgejo integration would have matched on.
+            {
+                "X-Forgejo-Event": "push",
+                "X-Gitea-Event": "push",
+                "X-Forgejo-Delivery": "test-delivery-sync",
+            },
+            {"repository": {"clone_url": "https://example.com/test-repo"}},
         ),
     ],
 )
@@ -258,6 +277,156 @@ async def test_gitlab_webhook_token_read_per_request(client: AsyncClient) -> Non
             },
         )
     assert resp.status_code == 200
+
+
+def _gitea_payload() -> str:
+    return json.dumps(
+        {
+            "ref": "refs/heads/main",
+            "repository": {"clone_url": "https://gitea.example.com/example/test-repo.git"},
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_gitea_webhook_no_secret_local_accepted(client: AsyncClient) -> None:
+    """Without a secret, local callers (loopback) are accepted — dev convenience."""
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("REPOWISE_GITEA_WEBHOOK_SECRET", None)
+        resp = await client.post(
+            "/api/webhooks/gitea",
+            content=_gitea_payload(),
+            headers={
+                "X-Gitea-Event": "push",
+                "X-Gitea-Delivery": "test-delivery-gitea",
+                "Content-Type": "application/json",
+            },
+        )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "accepted"
+
+
+@pytest.mark.asyncio
+async def test_gitea_webhook_no_secret_non_local_rejected(client: AsyncClient) -> None:
+    """Without a secret, non-local callers are rejected with 403 (fail-closed)."""
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("REPOWISE_GITEA_WEBHOOK_SECRET", None)
+        with patch("repowise.server.routers.webhooks.auth_is_open", return_value=False):
+            resp = await client.post(
+                "/api/webhooks/gitea",
+                content=_gitea_payload(),
+                headers={
+                    "X-Gitea-Event": "push",
+                    "Content-Type": "application/json",
+                },
+            )
+    assert resp.status_code == 403
+    assert "REPOWISE_GITEA_WEBHOOK_SECRET" in resp.json()["detail"]
+
+
+@pytest.mark.parametrize("header", ["X-Gitea-Signature", "X-Forgejo-Signature"])
+@pytest.mark.asyncio
+async def test_gitea_webhook_valid_signature(client: AsyncClient, header: str) -> None:
+    """A bare lowercase hex HMAC-SHA256 digest passes, under either header name."""
+    secret = "test-webhook-secret"
+    body = _gitea_payload()
+    digest = hmac.new(secret.encode(), body.encode(), hashlib.sha256).hexdigest()
+
+    with patch.dict(os.environ, {"REPOWISE_GITEA_WEBHOOK_SECRET": secret}):
+        resp = await client.post(
+            "/api/webhooks/gitea",
+            content=body,
+            headers={
+                "X-Gitea-Event": "push",
+                header: digest,
+                "Content-Type": "application/json",
+            },
+        )
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_gitea_webhook_invalid_signature(client: AsyncClient) -> None:
+    """A digest computed with the wrong secret is rejected."""
+    with patch.dict(os.environ, {"REPOWISE_GITEA_WEBHOOK_SECRET": "real-secret"}):
+        body = _gitea_payload()
+        wrong = hmac.new(b"wrong-secret", body.encode(), hashlib.sha256).hexdigest()
+        resp = await client.post(
+            "/api/webhooks/gitea",
+            content=body,
+            headers={
+                "X-Gitea-Event": "push",
+                "X-Gitea-Signature": wrong,
+                "Content-Type": "application/json",
+            },
+        )
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_gitea_webhook_rejects_github_prefixed_signature(client: AsyncClient) -> None:
+    """The GitHub ``sha256=`` form is not Gitea's: this route takes bare hex only.
+
+    Gitea sends the prefixed digest too, as ``X-Hub-Signature-256``, and the
+    GitHub route reads that one. Accepting the prefix here would make the
+    endpoint take two grammars for the same secret.
+    """
+    secret = "test-webhook-secret"
+    body = _gitea_payload()
+    digest = hmac.new(secret.encode(), body.encode(), hashlib.sha256).hexdigest()
+
+    with patch.dict(os.environ, {"REPOWISE_GITEA_WEBHOOK_SECRET": secret}):
+        resp = await client.post(
+            "/api/webhooks/gitea",
+            content=body,
+            headers={
+                "X-Gitea-Event": "push",
+                "X-Gitea-Signature": f"sha256={digest}",
+                "Content-Type": "application/json",
+            },
+        )
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_gitea_webhook_missing_signature_rejected(client: AsyncClient) -> None:
+    """With a secret set, a delivery carrying no signature is rejected."""
+    with patch.dict(os.environ, {"REPOWISE_GITEA_WEBHOOK_SECRET": "real-secret"}):
+        resp = await client.post(
+            "/api/webhooks/gitea",
+            content=_gitea_payload(),
+            headers={"X-Gitea-Event": "push", "Content-Type": "application/json"},
+        )
+    assert resp.status_code == 401
+
+
+@pytest.mark.parametrize(
+    ("headers", "expected_provider"),
+    [
+        ({"X-Gitea-Event": "push"}, "gitea"),
+        ({"X-Gitea-Event": "push", "X-Forgejo-Event": "push"}, "forgejo"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_gitea_webhook_records_sending_forge(
+    client: AsyncClient,
+    session_factory,
+    headers: dict[str, str],
+    expected_provider: str,
+) -> None:
+    """Forgejo identifies itself, so the event is not recorded as Gitea."""
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("REPOWISE_GITEA_WEBHOOK_SECRET", None)
+        resp = await client.post(
+            "/api/webhooks/gitea",
+            content=_gitea_payload(),
+            headers={**headers, "Content-Type": "application/json"},
+        )
+    assert resp.status_code == 200
+
+    async with session_factory() as session:
+        event = (await session.execute(select(WebhookEvent))).scalar_one()
+    assert event.provider == expected_provider
 
 
 @pytest.mark.asyncio
@@ -401,3 +570,23 @@ def test_normalize_scm_url_variants() -> None:
         _normalize_scm_url("https://github.com/org/repowise.git")
     )
     assert _normalize_scm_url("") == ""
+    assert _normalize_scm_url("/srv/git/repo.git") == ""
+
+
+def test_normalize_scm_url_folds_azure_shapes_to_one_key() -> None:
+    """An Azure push names the repo by one URL shape, the stored repo may use another."""
+    from repowise.server.routers.webhooks import _normalize_scm_url
+
+    key = "dev.azure.com/org/my%20project/_git/repo"
+    for url in (
+        "https://org@dev.azure.com/org/My%20Project/_git/repo",
+        "git@ssh.dev.azure.com:v3/org/My%20Project/repo",
+        "https://org.visualstudio.com/DefaultCollection/My Project/_git/repo",
+    ):
+        assert _normalize_scm_url(url) == key
+
+
+def test_normalize_scm_url_drops_gitlab_web_routes() -> None:
+    from repowise.server.routers.webhooks import _normalize_scm_url
+
+    assert _normalize_scm_url("https://gitlab.com/G/Sub/P/-/tree/main") == "gitlab.com/g/sub/p"

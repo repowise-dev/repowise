@@ -22,6 +22,10 @@ parent does, and the last segment is a top-level name that module defines, the
 string uses both. Each match drops the finding: a string that resolves to the
 module is how the module is loaded.
 
+A lazy loader may instead pair two string literals as ``("module", "attr")``.
+Only exact two-element tuples in a Python file defining ``__getattr__`` or
+calling ``import_module`` count, and only for attributes that module defines.
+
 Only strings that run count: a comment or a Python docstring that mentions a
 dotted name loads nothing. A test file counts only whole module paths (a
 fixture app it loads by name), never a member path (a ``mock.patch`` target).
@@ -30,13 +34,15 @@ fixture app it loads by name), never a member path (a ``mock.patch`` target).
 from __future__ import annotations
 
 import io
+import keyword
 import re
 import tokenize
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
-from ...ingestion.languages.registry import REGISTRY
+from ...ingestion.languages.python_modules import module_parts
+from ...ingestion.languages.python_strings import defines_top_level, is_python, live_text
 from ...test_paths import is_test_related_path
 from .models import DeadCodeFindingData, DeadCodeKind
 
@@ -46,10 +52,75 @@ _MODULE_STRING_RE = re.compile(
 )
 
 
-def _module_parts(path: str) -> tuple[str, ...]:
-    """The dotted-path segments of a Python file (a package for ``__init__``)."""
-    parts = PurePosixPath(path).with_suffix("").parts
-    return parts[:-1] if parts and parts[-1] == "__init__" else parts
+def _has_module_getattr(tokens: list[tokenize.TokenInfo]) -> bool:
+    """A module hook may be conditional, but never inside a class/function."""
+    scopes: list[bool] = []
+    start: list[str] = []
+    header_scope = False
+    for i, token in enumerate(tokens):
+        if token.type == tokenize.ENCODING:
+            continue
+        if token.type == tokenize.INDENT:
+            scopes.append(header_scope)
+        elif token.type == tokenize.DEDENT:
+            scopes.pop()
+        elif token.type == tokenize.NEWLINE:
+            header_scope = start[:1] in (["def"], ["class"]) or start == ["async", "def"]
+            start = []
+        else:
+            if len(start) < 2:
+                start.append(token.string)
+            if (token.type == tokenize.NAME and token.string == "__getattr__"
+                    and tokens[i - 1].string == "def" and not any(scopes)):
+                return True
+    return False
+
+
+def _loader_tokens(blob: bytes) -> list[tokenize.TokenInfo]:
+    """Tokens of a Python loader, without comments or continuation newlines."""
+    try:
+        tokens = [t for t in tokenize.tokenize(io.BytesIO(blob).readline)
+                  if t.type not in (tokenize.NL, tokenize.COMMENT)]
+    except (tokenize.TokenError, SyntaxError, ValueError):
+        return []
+    if _has_module_getattr(tokens):
+        return tokens
+    for i, token in enumerate(tokens[:-1]):
+        if token.type != tokenize.NAME:
+            continue
+        if (token.string == "import_module" and tokens[i + 1].string == "("
+                and tokens[i - 1].string not in ("def", "class")):
+            return tokens
+    return []
+
+
+def _is_tuple_start(tokens: list[tokenize.TokenInfo], i: int) -> bool:
+    previous = tokens[i - 1]
+    call = previous.string in (")", "]", "}") or (
+        previous.type == tokenize.NAME and not keyword.iskeyword(previous.string)
+    )
+    return (
+        tokens[i].string == "(" and not call and tokens[i + 2].string == ","
+        and tokens[i + 1].type == tokenize.STRING
+        and tokens[i + 3].type == tokenize.STRING
+    )
+
+
+def _module_pairs(tokens: list[tokenize.TokenInfo]) -> Iterator[tuple[str, str]]:
+    """Exact two-string tuples, not calls, lists or concatenated literals."""
+    for i in range(len(tokens) - 5):
+        if not _is_tuple_start(tokens, i):
+            continue
+        end = i + 5 if tokens[i + 4].string == "," else i + 4
+        if tokens[end].string != ")":
+            continue
+        matches = [_MODULE_STRING_RE.fullmatch(tokens[j].string.encode("utf-8"))
+                   for j in (i + 1, i + 3)]
+        if any(m is None or m.group(2) for m in matches):
+            continue
+        module, attr = (m.group(1).decode("ascii") for m in matches)
+        if "." not in attr:
+            yield module, attr
 
 
 class _ModuleIndex:
@@ -59,7 +130,7 @@ class _ModuleIndex:
         self.by_tail: dict[str, set[str]] = {}
         self.by_name: dict[str, set[str]] = {}
         for path in paths:
-            parts = _module_parts(path)
+            parts = module_parts(path)
             if not parts:
                 continue
             for start in range(len(parts) - 1):
@@ -78,10 +149,6 @@ class _ModuleIndex:
 def _directory(path: str) -> str:
     parent = PurePosixPath(path).parent.as_posix()
     return "" if parent == "." else parent
-
-
-def _is_python(path: str) -> bool:
-    return REGISTRY.from_extension(PurePosixPath(path).suffix) == "python"
 
 
 def drop_named_modules(
@@ -104,7 +171,7 @@ def drop_named_modules(
 
 def _is_candidate(finding: DeadCodeFindingData) -> bool:
     kinds = (DeadCodeKind.UNREACHABLE_FILE, DeadCodeKind.UNUSED_EXPORT)
-    return finding.kind in kinds and _is_python(finding.file_path)
+    return finding.kind in kinds and is_python(finding.file_path)
 
 
 def _is_named(
@@ -129,10 +196,13 @@ def _named_by_strings(
         # uses it; a member path in a test is a ``mock.patch`` target, not a load.
         members = None if is_test_related_path(path) else source_map
         reader = _Reader(path, index, loaders.get(path), members)
+        for target, attr in reader.tuple_uses(blob):
+            named.add(target)
+            attrs.add((target, attr))
         # Tokenize only a file whose raw text names a candidate at all.
         if next(reader.uses(blob), None) is None:
             continue
-        for target, attr in reader.uses(_live_text(path, blob)):
+        for target, attr in reader.uses(live_text(path, blob)):
             named.add(target)
             if attr:
                 attrs.add((target, attr))
@@ -165,60 +235,24 @@ class _Reader:
     def _resolve(self, module: str) -> set[str]:
         return self.index.resolve(module, self.loader_dir) - {self.path}
 
+    def tuple_uses(self, blob: bytes) -> Iterator[tuple[str, str]]:
+        """Read exact ``(module, attr)`` string pairs in Python lazy loaders.
+
+        Tokens keep tuple boundaries without treating comments, docstrings or
+        concatenated literals as entries. Test files never use member names.
+        """
+        if self.members is None or not is_python(self.path):
+            return
+        if b"__getattr__" not in blob and b"import_module" not in blob:
+            return
+        for module, attr in _module_pairs(_loader_tokens(blob)):
+            targets = self.index.resolve(module, _directory(self.path)) - {self.path}
+            for target in targets:
+                if defines_top_level(self.members.get(target, b""), attr):
+                    yield target, attr
+
     def _member_owners(self, module: str, members: dict[str, bytes]) -> tuple[set[str], str]:
         """For ``"pkg.module.Name"``: the modules ``pkg.module`` names that define ``Name``."""
         parent, _, name = module.rpartition(".")
         owners = self._resolve(parent) if parent else set()
-        return {t for t in owners if _defines_top_level(members.get(t, b""), name)}, name
-
-
-def _defines_top_level(blob: bytes, name: str) -> bool:
-    """Whether a Python module defines *name* at top level (def, class, assignment).
-
-    A re-export (``from x import Name``) or a tuple target is not seen, so such
-    a member stays reported.
-    """
-    word = re.escape(name.encode("ascii"))
-    pattern = (
-        rb"^(?:(?:async[ \t]+)?def|class)[ \t]+" + word + rb"\b"
-        rb"|^" + word + rb"[ \t]*(?::[^=\n]*)?=(?!=)"
-    )
-    return re.search(pattern, blob, re.MULTILINE) is not None
-
-
-#: Tokens after which a string starts an expression statement (a docstring).
-_STATEMENT_START = frozenset(
-    {tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT, tokenize.ENCODING}
-)
-_TRIVIA = frozenset({tokenize.NL, tokenize.COMMENT})
-_COMMENT_LINE_RE = re.compile(rb"^[ \t]*#.*$", re.MULTILINE)
-
-
-def _live_text(path: str, blob: bytes) -> bytes:
-    """*blob* without comments and, for Python, without docstrings.
-
-    Python keeps only its string literals that are not a statement on their
-    own; other files drop only ``#`` comment lines. Python that does not tokenize
-    is kept whole, as before this filter.
-    """
-    if not _is_python(path):
-        return _COMMENT_LINE_RE.sub(b"", blob)
-    try:
-        tokens = [
-            t for t in tokenize.tokenize(io.BytesIO(blob).readline) if t.type not in _TRIVIA
-        ]
-    except (tokenize.TokenError, SyntaxError, ValueError):
-        return blob
-    return b"\n".join(
-        tok.string.encode("utf-8")
-        for i, tok in enumerate(tokens)
-        if tok.type == tokenize.STRING and not _is_statement(tokens, i)
-    )
-
-
-def _is_statement(tokens: list[tokenize.TokenInfo], i: int) -> bool:
-    """Whether ``tokens[i]`` is a statement on its own (a docstring)."""
-    # ENDMARKER always closes the stream, so ``i + 1`` exists.
-    if tokens[i - 1].type not in _STATEMENT_START:
-        return False
-    return tokens[i + 1].type in (tokenize.NEWLINE, tokenize.ENDMARKER)
+        return {t for t in owners if defines_top_level(members.get(t, b""), name)}, name

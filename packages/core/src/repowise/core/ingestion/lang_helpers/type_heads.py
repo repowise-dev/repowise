@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from functools import cache
 
 from tree_sitter import Node
 
@@ -428,6 +429,28 @@ def _java_head_step(node: Node, src: str) -> str | Node | None:
 
 
 # ---------------------------------------------------------------------------
+# Apex type-reference head extraction
+# ---------------------------------------------------------------------------
+
+
+@cache
+def _apex_builtin_types_folded() -> frozenset[str]:
+    return frozenset(name.lower() for name in get_builtin_types("apex"))
+
+
+def _apex_head_type_identifier(type_node: Node, src: str) -> str | None:
+    """The head of an Apex type, read with Java's walker.
+
+    Apex type names are case-insensitive (``string``, ``LIST<Account>``), so
+    the builtin filter compares them folded. The name keeps its written case.
+    """
+    head = _walk_to_head(type_node, src, _java_head_step, 8)
+    if head is None or head.lower() in _apex_builtin_types_folded():
+        return None
+    return _resolvable(head, "apex")
+
+
+# ---------------------------------------------------------------------------
 # Kotlin type-reference head extraction
 # ---------------------------------------------------------------------------
 
@@ -684,6 +707,7 @@ TYPE_HEAD_EXTRACTORS: dict[str, Callable[[Node, str], str | None]] = {
     "typescript": _ts_head_type_identifier,
     "javascript": _ts_head_type_identifier,
     "java": _java_head_type_identifier,
+    "apex": _apex_head_type_identifier,
     "kotlin": _kotlin_head_type_identifier,
     "rust": _rust_head_type_identifier,
     "pascal": _pascal_head_type_identifier,

@@ -39,7 +39,10 @@ def render_verify_lines(item: Mapping[str, Any]) -> str:
     verify = item["verify"]
     tests = verify["tests"]
     if not tests:
-        return "No guarding tests found. Write a test that pins the current behaviour before you change anything."
+        # The fallback covers items stored before Verify named its prerequisite.
+        return verify.get("prerequisite") or (
+            "No guarding tests found. Write a test that pins the current behaviour before you change anything."
+        )
     listed = "\n".join(
         f"- `{t['path']}`" + (f": {t['reason']}" if t.get("reason") else "") for t in tests
     )
@@ -57,7 +60,23 @@ def _step(s: Mapping[str, Any]) -> str:
     line = s.get("line")
     loc = f"{s['file_path']}{f':{line}' if line else ''}"
     tag = " [mechanical]" if s.get("mechanical") else " [judgment]"
-    return f"{s['order']}. {s['text']} (`{loc}`){tag}"
+    extra = [
+        _code_line(label, s[key])
+        for key, label in (("signature", "Helper"), ("call", "Call"), ("command", "Check"))
+        if s.get(key)
+    ]
+    notes = [f"   Note: {' '.join(n.split())}" for n in s.get("notes") or ()]
+    return "\n".join([f"{s['order']}. {s['text']} (`{loc}`){tag}", *extra, *notes])
+
+
+def _code_line(label: str, code: str) -> str:
+    """One labelled piece of a step's code: inline, or fenced when it spans
+    lines (a parameter object's declaration above its helper)."""
+    if "\n" not in code:
+        return f"   {label}: `{code}`"
+    body = "\n".join(f"   {line}" if line else "" for line in code.splitlines())
+    fence = "````" if "```" in code else "```"
+    return f"   {label}:\n   {fence}\n{body}\n   {fence}"
 
 
 def render_fix_item(item: Mapping[str, Any], flavor: str = "generic", repo_name: str | None = None) -> str:

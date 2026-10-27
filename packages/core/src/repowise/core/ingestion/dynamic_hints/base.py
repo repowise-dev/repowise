@@ -38,6 +38,12 @@ class DynamicHintExtractor(ABC):
     # None -> extractors that need it build their own, as before.
     _dotnet_index = None
 
+    # Ingestion's ``{repo-relative path: raw bytes}`` for the parsed files,
+    # attached by HintRegistry.extract_all when the caller holds one, so an
+    # extractor reading every file of a language reuses the parse pass's
+    # bytes. None (or a missing path) -> read from disk.
+    _source_map = None
+
     @abstractmethod
     def extract(self, repo_root: Path) -> list[DynamicEdge]: ...
 

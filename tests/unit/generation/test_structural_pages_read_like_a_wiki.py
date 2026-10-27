@@ -108,7 +108,9 @@ class TestHistory:
         assert "27 commits in its history, 9 in the last 90 days." in page
         assert "Ada Lovelace" in page
         assert "62%" in page
-        assert "12 of those commits fixed a bug." in page
+        assert "12 bug-fix commits in the last 6 months." in page
+        # The fix count spans 6 months, not the 90 days the sentence before it ends on.
+        assert "of those commits" not in page
         assert "change hotspots" in page
 
     def test_a_blame_owner_is_credited_with_lines_not_commits(self, generator):
@@ -147,7 +149,15 @@ class TestHistory:
         )
 
         assert "## History" in page
-        assert "fixed a bug" not in page
+        assert "bug-fix" not in page
+
+    def test_one_fix_is_not_described_in_the_plural(self, generator):
+        page = render(
+            generator,
+            _context(git_metadata={"commit_count_total": 3, "prior_defect_count": 1}),
+        )
+
+        assert "1 bug-fix commit in the last 6 months." in page
 
     def test_one_commit_is_not_described_in_the_plural(self, generator):
         page = render(generator, _context(git_metadata={"commit_count_total": 1}))
@@ -477,6 +487,49 @@ class TestOpening:
         assert "defines `run`" not in page
         assert "- `_Impl`\n  - `def run(self)`" in page
 
+    @pytest.mark.parametrize(
+        ("language", "symbols", "member", "scope"),
+        [
+            (
+                "java",
+                [
+                    ("A", "class", "public class A", None),
+                    ("over", "method", "public void over(int n)", "A"),
+                    ("run", "method", "public void run()", "A::over#1(int)::Runnable"),
+                ],
+                "public void run()",
+                "A::over",
+            ),
+            (
+                "kotlin",
+                [
+                    ("untilReady", "function", "fun untilReady()", None),
+                    ("apply", "method", "override fun apply(): Boolean", "untilReady::Condition"),
+                ],
+                "override fun apply(): Boolean",
+                "untilReady::Condition",
+            ),
+        ],
+    )
+    def test_an_anonymous_class_member_lists_no_pseudo_type(
+        self, generator, language, symbols, member, scope
+    ):
+        ctx = _context(
+            docstring=None,
+            language=language,
+            symbols=[
+                {**_symbol(n, k, signature=sig, parent_name=p), "language": language}
+                for n, k, sig, p in symbols
+            ],
+        )
+        page = render(generator, ctx)
+
+        # Not an API entry of its own nor a member of the type around it, yet
+        # still spelled on the page.
+        assert scope not in page
+        assert f"- `{member}`" not in page
+        assert member in page
+
     def test_a_barrel_keeps_the_graph_summary(self, generator):
         page = render(
             generator,
@@ -564,7 +617,7 @@ Also defined: `log = structlog.get_logger(__name__)`.
 
 27 commits in its history, 9 in the last 90 days. The last landed on 2026-08-17. \
 **Ada Lovelace** is its primary maintainer, at 62% of commits. \
-12 of those commits fixed a bug. It is one of the repository's change hotspots.
+12 bug-fix commits in the last 6 months. It is one of the repository's change hotspots.
 
 ## Changes together with
 

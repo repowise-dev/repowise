@@ -94,6 +94,20 @@ class SavingsRepository:
             [*params, limit],
         ).fetchall()
 
+    def index_call_window(self, repository_id: str) -> list[tuple[Any, ...]]:
+        """``(agent, first, last)`` per agent for calls that read the index, latest first.
+
+        MCP tool calls and VS Code language-model tool calls; distill and hook
+        rows are output an agent ran, not questions it asked. Bounded like
+        every other grouping here.
+        """
+        return self._conn.execute(
+            "SELECT agent, MIN(occurred_at), MAX(occurred_at) FROM savings_events "
+            "WHERE repository_id = ? AND surface IN ('mcp', 'vscode_lm') "
+            "GROUP BY agent ORDER BY 3 DESC LIMIT 100",
+            [repository_id],
+        ).fetchall()
+
     def recorded_omission_refs(self, refs: Sequence[str]) -> set[str]:
         """Which of *refs* an event already claims, via ``idx_..._omissions_ref``.
 

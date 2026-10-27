@@ -138,6 +138,115 @@ def test_a_high_signal_clone_is_a_step_not_evidence() -> None:
     assert opportunity.evidence == ()
 
 
+def cycle(**kwargs) -> RefactoringSuggestion:
+    return plan(
+        "break_cycle",
+        "cycle[2]: svc/api.py->svc/orders.py",
+        plan={"cut_edges": [{"from": "svc/api.py", "to": "svc/orders.py"}]},
+        evidence={"cycle_size": 2},
+        impact_delta=0.0,
+        source_biomarker="",
+        **kwargs,
+    )
+
+
+def test_a_cycle_is_evidence_never_a_step_or_the_lead() -> None:
+    """Break Cycle is advisory: it rides on the file's work, never leads it,
+    so Fix first and the default scope, which read steps, never see it."""
+    opportunity = compose_opportunities([cycle(), plan("extract_method")])[0]
+    assert [step.refactoring_type for step in opportunity.steps] == ["extract_method"]
+    assert opportunity.lead_refactoring_type == "extract_method"
+    assert [item.refactoring_type for item in opportunity.evidence] == ["break_cycle"]
+
+
+def test_a_file_with_only_a_cycle_publishes_nothing() -> None:
+    assert compose_opportunities([cycle()]) == []
+
+
+def unnamed_split() -> RefactoringSuggestion:
+    """ours ``augment_cmd/_shared.py -> 4 files``: a group with no name."""
+    row = split()
+    groups = [dict(group) for group in row.plan["groups"]]
+    groups[1].update(name=None, suggested_file=None)
+    return plan(
+        "split_file",
+        row.target_symbol,
+        plan={**row.plan, "groups": groups},
+        evidence=row.evidence,
+        impact_delta=0.0,
+        blast_radius=row.blast_radius,
+        source_biomarker="",
+    )
+
+
+def test_a_split_with_an_unnamed_group_is_evidence_not_a_step() -> None:
+    opportunity = compose_opportunities([unnamed_split(), plan("extract_method")])[0]
+    assert [step.refactoring_type for step in opportunity.steps] == ["extract_method"]
+    assert [item.refactoring_type for item in opportunity.evidence] == ["split_file"]
+    assert compose_opportunities([unnamed_split()]) == []
+
+
+def test_an_extract_class_with_unnamed_groups_is_evidence_not_a_step() -> None:
+    groups = [{"name": None, "methods": ["a", "b"], "fields": ["x", "y"]}] * 2
+    unnamed = plan("extract_class", "Orders", plan={"groups": groups})
+    assert compose_opportunities([unnamed]) == []
+
+
+def test_a_split_whose_groups_are_all_named_stays_a_step() -> None:
+    """ours ``refactoring_targets.py -> 3 files`` (``groups_named`` true)."""
+    opportunity = compose_opportunities([split()])[0]
+    assert [step.refactoring_type for step in opportunity.steps] == ["split_file"]
+    assert "needs_design" not in opportunity.steps[0].applicability.reasons
+
+
+@pytest.mark.usefixtures("dry_violation_shown")
+def test_plan_inventory_is_steps_plus_evidence_plus_unattached() -> None:
+    """The rollup's plan counts reconcile with the opportunities they fold into."""
+    from repowise.core.analysis.health.refactoring.identity import assign_public_ids
+    from repowise.core.analysis.health.refactoring.opportunity import claimed_plan_ids
+    from repowise.core.analysis.health.refactoring_summary import needs_design, summarize_plans
+    from repowise.core.persistence.crud.analysis.refactoring_opportunities import (
+        _summary_payload,
+    )
+
+    groups = [{"name": None, "methods": ["a", "b"], "fields": ["x", "y"]}] * 2
+    rows = [
+        plan("extract_method"),
+        cycle(),
+        clone(intra=True, co_change=0),
+        cycle(file_path="svc/only_cycle.py"),
+        unnamed_split(),
+        plan("extract_class", "Billing", file_path="svc/billing.py", plan={"groups": groups}),
+        split(file_path="svc/named.py"),
+    ]
+    opportunities = compose_opportunities(rows)
+    ids = assign_public_ids(rows)
+    plan_ids = set(ids)
+    design_ids = {pid for pid, row in zip(ids, rows, strict=True) if needs_design(row)}
+    summary = _summary_payload(opportunities, {}, None, plan_ids, design_ids)
+    steps = sum(item.step_count for item in opportunities)
+    # orders.py: the cycle, the clone and the unnamed split
+    assert summary["evidence_total"] == 3
+    # the cycle-only file and the unnamed class
+    assert summary["unattached_plans_total"] == 2
+    assert summary["plans_total"] == 7
+    assert summary["plans_total"] == (
+        steps + summary["evidence_total"] + summary["unattached_plans_total"]
+    )
+    assert len(plan_ids - claimed_plan_ids(opportunities)) == 2
+    # Every held-out grouping plan is in the evidence or unattached share, and the
+    # structural chip less the held-out ones is the structural steps.
+    assert summary["design_total"] == 2
+    chips = summarize_plans(rows)
+    structural_steps = sum(
+        step.refactoring_type in ("split_file", "extract_class", "move_method")
+        for item in opportunities
+        for step in item.steps
+    )
+    assert chips["design_total"] == summary["design_total"]
+    assert chips["structural_total"] - chips["design_total"] == structural_steps == 1
+
+
 # --------------------------------------------------------------------------
 # ordering
 # --------------------------------------------------------------------------

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -84,6 +84,8 @@ class _CommitRec:
     # the record so per-file rollups don't re-run the regex per touched file).
     agent: str | None = None
     agent_tier: int | None = None
+    # ``agent`` / ``human_attested`` / ``unknown``; None when attribution is off.
+    attribution: str | None = "unknown"
     # The commit only moved this file (a rename row with 0/0 lines). It counts
     # as one of the file's commits but credits nobody with ownership.
     pure_move: bool = False
@@ -630,7 +632,12 @@ def _should_skip_index(file_path: str) -> bool:
     return Path(file_path).suffix.lower() not in _CODE_EXTENSIONS
 
 
-def _history_tier_files(repo_path: Path, paths: Iterable[str]) -> set[str]:
+def _history_tier_files(
+    repo_path: Path,
+    paths: Iterable[str],
+    extra_exclude_patterns: Sequence[str] | None = None,
+    extra_ignore_filename: str = ".repowiseIgnore",
+) -> set[str]:
     """The non-code files among *paths* that still get their commit history recorded.
 
     The history tier (counts, first and last commit, authors) covers every
@@ -638,19 +645,27 @@ def _history_tier_files(repo_path: Path, paths: Iterable[str]) -> set[str]:
     binaries: the traverser's own blocklists, plus a sniff for NUL bytes.
     """
     from ..traverser import (
-        _BLOCKED_DIRS,
         _BLOCKED_EXTENSIONS,
         _BLOCKED_FILENAME_SPEC,
         _is_binary,
+        in_blocked_dir,
     )
 
+    output_dirs: dict[Path, bool] = {}  # one listing per output-named dir
+
     def _keep(file_path: str) -> bool:
-        parts = file_path.split("/")
-        if any(part in _BLOCKED_DIRS for part in parts[:-1]):
+        name = file_path.rsplit("/", 1)[-1]
+        if Path(name).suffix.lower() in _BLOCKED_EXTENSIONS:
             return False
-        if Path(file_path).suffix.lower() in _BLOCKED_EXTENSIONS:
+        if _BLOCKED_FILENAME_SPEC.match_file(name):
             return False
-        if _BLOCKED_FILENAME_SPEC.match_file(parts[-1]):
+        if in_blocked_dir(
+            file_path,
+            repo_path,
+            output_dirs,
+            extra_exclude_patterns=extra_exclude_patterns,
+            extra_ignore_filename=extra_ignore_filename,
+        ):
             return False
         return not _is_binary(repo_path / file_path)
 

@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from ....ingestion.git_indexer.function_blame import BlameIndex
+from ....test_paths import is_test_related_path
 from ...graph_view import HasEdge
 from ..complexity import ClassComplexity, ErrorHandlingHit, FunctionComplexity, PerfHit
 from ..duplication import ClonePair
@@ -26,6 +27,12 @@ class FileContext:
     nloc: int
     has_test_file: bool
     module: str | None
+    # The ``is_test`` flag ingestion stamped (path, language and pytest config).
+    # ``None`` for a context built without it, which falls back to the path
+    # rules; read it through :attr:`is_test_material`.
+    is_test: bool | None = None
+    # ``code_origin.code_origin`` for the file; ``None`` when not computed.
+    code_origin: str | None = None
     # Every walked function in this file, in document order. Not keyed by
     # name: a name key drops all but one of a file's anonymous ``it``
     # callbacks, and every same-named method on a second class beside it.
@@ -65,6 +72,14 @@ class FileContext:
     branch_coverage_pct: float | None = None
     covered_lines: set[int] = field(default_factory=set)
     total_coverable_lines: int = 0
+    # The lines the report calls executable, hit or not. Empty when the report
+    # did not say, which leaves per-function coverage unmeasured.
+    coverable_lines: set[int] = field(default_factory=set)
+    # Only a docstring, imports and export lists: no code for coverage to measure.
+    reexport_only: bool = False
+    # Declares only types (``test_reach.is_type_only``): nothing for a test to run.
+    # Read only for a hotspot, the one file a missing test is claimed for.
+    type_only: bool = False
     # Duplication signals (populated when the engine ran the
     # duplication detector for this analyze() call). ``clones`` is the
     # list of clone pairs this file participates in; ``duplication_pct``
@@ -77,6 +92,8 @@ class FileContext:
     # Thin graph view exposing only ``has_edge``. ``None`` on test fixtures
     # that never construct a graph.
     graph_view: HasEdge | None = None
+    # Names of this file's ``partial`` types that have parts in other files.
+    split_partial_types: frozenset[str] = frozenset()
     # Per-line blame index produced by the FULL git tier (see
     # ``ingestion.git_indexer.function_blame``). ``None`` on ESSENTIAL
     # tier until the FULL-tier backfill (``backfill_full_tier()``) runs;
@@ -122,6 +139,27 @@ class FileContext:
     # a file's same-named functions, which is the collision #2408 removed.
     # Empty without a call graph, which leaves the marker as it was.
     cross_file_oracle_lines: frozenset[int] = frozenset()
+    # Start line of each function a test reaches on the call graph, to the call
+    # hops of the nearest such test (1: a test calls it). Empty without a graph.
+    function_test_hops: dict[int, int] = field(default_factory=dict)
+    # The same functions' nearest test file, and the file's own: the nearest
+    # test any of its functions has, else a test file named for it. ``None``
+    # when nothing names one.
+    function_test_files: dict[int, str] = field(default_factory=dict)
+    file_test: str | None = None
+
+    @property
+    def is_test_material(self) -> bool:
+        """The stored ``is_test`` flag, or the path rules when none was given."""
+        if self.is_test is not None:
+            return self.is_test
+        return is_test_related_path(self.file_path, self.language)
+
+    @property
+    def outside_coverage_scope(self) -> bool:
+        """Test material, or code that does not ship (tooling, build, vendored,
+        generated, docs examples): no test is owed for its coverage."""
+        return self.is_test_material or self.code_origin not in (None, "production")
 
 
 # A repo whose trailing-90-day window has at most this many active human
@@ -151,6 +189,15 @@ class BiomarkerResult:
     # carried for display/filtering. Stays fully per-finding attributable, so
     # the linear ``health_impact`` contract holds.
     deduction: float | None = None
+
+
+def shape_details(fn: FunctionComplexity) -> dict[str, Any]:
+    """The shape facts every function-size marker stores beside its numbers:
+    the dispatch share always, the terminal share only when there is one."""
+    out: dict[str, Any] = {"dispatch_share": fn.dispatch_share}
+    if fn.terminal_share:
+        out["terminal_share"] = fn.terminal_share
+    return out
 
 
 class Biomarker(Protocol):

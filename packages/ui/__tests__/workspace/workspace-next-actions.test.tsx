@@ -18,6 +18,8 @@ function action(id: string, title: string, tier: NextAction["tier"] = "plan"): N
     surface: "file",
     effort: "M",
     confidence: "high",
+    value: 3,
+    priority: 1.5,
     done_when: "Coverage reaches 80%.",
     command: null,
     marker: null,
@@ -109,6 +111,23 @@ describe("WorkspaceNextActions", () => {
     fireEvent.click(screen.getByRole("listitem", { name: /Open Clean up/ }));
     const dialog = await screen.findByRole("dialog");
     expect(await within(dialog).findByText("Prompt from core")).toBeInTheDocument();
+    expect(loadPrompt).toHaveBeenCalledWith("f1", expect.objectContaining({ id: "y" }), expect.any(String));
+  });
+
+  it("gives each repository's rows the agent prompt, loaded from that repository", async () => {
+    const loadPrompt = vi.fn().mockResolvedValue("Row prompt");
+    render(
+      <WorkspaceNextActions
+        data={data}
+        hrefFor={() => null}
+        repoHref={(id) => `/repos/${id}/overview`}
+        contractsHref="/workspace/contracts"
+        loadPrompt={loadPrompt}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Copy prompt: Clean up/ }));
+    const dialog = await screen.findByRole("dialog");
+    expect(await within(dialog).findByText("Row prompt")).toBeInTheDocument();
     expect(loadPrompt).toHaveBeenCalledWith("f1", expect.objectContaining({ id: "y" }), expect.any(String));
   });
 });

@@ -61,11 +61,14 @@ HEALTH_FINDINGS = [
 
 COMMIT_HEALTH = [
     {**_BY_SHA[sha], "sha": sha, "change_kind": "introduced", "biomarker_type": biomarker,
-     "severity": "high", "file_path": path, "symbol": symbol, "attribution_basis": basis}
-    for sha, biomarker, path, symbol, basis in [
-        ("recent", "complex_method", "src/new.py", "build", "added_lines"),
-        ("recent", "long_method", "src/touched.py", "x", "file_change"),
-        ("recent", "change_entropy", "src/hist.py", None, "added_lines"),
+     "severity": severity, "file_path": path, "symbol": symbol, "attribution_basis": basis,
+     "dimension": dimension}
+    for sha, biomarker, path, symbol, basis, severity, dimension in [
+        ("recent", "complex_method", "src/new.py", "build", "added_lines", "high", "defect"),
+        ("recent", "long_method", "src/touched.py", "x", "file_change", "high", "defect"),
+        ("recent", "change_entropy", "src/hist.py", None, "added_lines", "high", "defect"),
+        ("recent", "n_plus_one", "src/repo.py", "load", "added_lines", "medium", "performance"),
+        ("recent", "n_plus_one", "src/other.py", "f", "added_lines", "medium", "performance"),
     ]
 ]
 
@@ -75,8 +78,9 @@ PERFORMANCE = [
      "fix_strategy": "batch_or_prefetch_io", "boundary_kind": "db",
      "biomarker_type": "n_plus_one", "rank_position": 0,
      "file_path": "src/repo.py", "intervention_symbol": "src/repo.py::Repo.load",
-     "affected_call_sites_total": 4, "affected_files_total": 2,
+     "affected_call_sites_total": 4, "affected_files_total": 2, "queue_eligible": True,
      "details": {"facets": {"exposure": "entry_reachable", "loop_magnitude": "grows_with_data",
+                            "growth_source": "loop",
                             "actionability_confidence": "medium"},
                  "plan": {"effort_bucket": "S"}}},
     {"opportunity_id": "perf2", "execution_context": "production",
@@ -124,11 +128,14 @@ def _rows(dead_ids: list[str], **overrides):
         "known_paths": ["src/old.py"],
         "dead_code": [
             {"id": i, "kind": "unused_export", "file_path": "src/dead.py",
-             "symbol_name": f"f{n}", "lines": 10, "safe_to_delete": True}
+             "symbol_name": f"f{n}", "lines": 10, "confidence": 0.9,
+             "safe_to_delete": True}
             for n, i in enumerate(dead_ids)
         ],
         "decisions": {"stale_decisions": [], "summary": {}},
         "coverage": {"files_measured": 0},
+        "test_map": {},
+        "history_commits": 5,
     }
     return {**rows, **overrides}
 
@@ -186,7 +193,9 @@ async def test_builder_on_rows_matches_the_sql_loader(async_session) -> None:
     assert built == loaded
     # The seed exercises every store, so equality is not over empty facts.
     assert built.files["src/core.py"].lead.biomarker == "complex_method"
-    assert [f.file_path for f in built.recent_findings] == ["src/new.py"]
+    assert sorted((f.file_path, f.kind) for f in built.recent_findings) == [
+        ("src/new.py", "shape"), ("src/repo.py", "performance")
+    ]
     assert [s.file_path for s in built.secrets] == ["src/settings.py"]
     assert [i.target.file_path for i in built.fix_first] == ["src/repo.py", "src/core.py", "src/new.py"]
     assert (built.fix_commits_90d, built.active_authors_90d, len(built.dead)) == (4, 3, 3)
@@ -214,7 +223,12 @@ def test_a_store_that_fails_to_build_costs_only_itself() -> None:
     assert facts.secrets
 
 
-def test_only_a_recent_authored_code_shape_regression_is_a_candidate() -> None:
+def test_only_a_recent_authored_code_shape_regression_is_a_candidate(monkeypatch) -> None:
+    # No shipped row is gated: run on the audit's gated table.
+    from repowise.core.analysis import finding_registry
+    from tests.unit.server.mcp.test_language_gates import AUDIT_GATED
+
+    monkeypatch.setattr(finding_registry, "LANGUAGE_GATES", AUDIT_GATED)
     """Each condition alone keeps a commit-health row out of the recent findings."""
     from types import SimpleNamespace
 
@@ -234,14 +248,65 @@ def test_only_a_recent_authored_code_shape_regression_is_a_candidate() -> None:
         "a test file": {"file_path": "tests/test_a.py"},
         "a history marker": {"biomarker_type": "change_entropy"},
         "a hidden marker": {"biomarker_type": "dry_violation"},
+        "a gated language": {"file_path": "src/A.java"},
     }
     files = {"tests/test_a.py": SimpleNamespace(is_test=True)}
 
     rows = [kept, *({**kept, **change} for change in dropped.values())]
     out = _recent_candidates(rows, week=week, files=files)
 
-    assert [row for row, _at in out] == [kept]
+    assert [row for row, _at, _kind in out] == [kept]
     assert _recent_candidates(rows, week=None, files=files) == []
     # The week's own instant is inside it.
     edge = {**kept, "committed_at": week.isoformat()}
     assert len(_recent_candidates([edge], week=week, files=files)) == 1
+
+def test_a_recent_finding_reads_as_the_open_finding_does_today() -> None:
+    """The commit names who wrote it; the open finding decides whether it still
+    counts and what severity, line and reason the action quotes."""
+    from repowise.core.analysis.actions.build import build_recent
+
+    week = _T - timedelta(days=7)
+    wrote = {"sha": "s1", "subject": "feat: x", "committed_at": _iso(timedelta(days=2)),
+             "change_kind": "introduced", "severity": "high", "attribution_basis": "added_lines",
+             "biomarker_type": "primitive_obsession", "line_start": 622,
+             "reason": "takes 9 parameters"}
+    rows = [
+        {**wrote, "file_path": "src/a.py", "symbol": "eased"},
+        {**wrote, "file_path": "src/a.py", "symbol": "kept"},
+        {**wrote, "file_path": "src/a.py", "symbol": "gone"},
+    ]
+    today = {"file_path": "src/a.py", "biomarker_type": "primitive_obsession"}
+    open_findings = [
+        {**today, "function_name": "eased", "severity": "low", "line_start": 620,
+         "reason": "takes 5 parameters"},
+        {**today, "function_name": "kept", "severity": "high", "line_start": 700,
+         "reason": "takes 10 parameters"},
+        {**today, "function_name": "kept", "severity": "critical", "line_start": 701,
+         "reason": "takes 12 parameters"},
+    ]
+
+    (found,) = build_recent(rows, week=week, open_findings=open_findings, files={})[
+        "recent_findings"
+    ]
+    assert (found.symbol, found.sha, found.change_kind) == ("kept", "s1", "introduced")
+    assert (found.severity, found.line, found.reason) == ("critical", 701, "takes 12 parameters")
+
+
+def test_equally_serious_open_matches_pick_the_same_one_in_any_order() -> None:
+    from repowise.core.analysis.actions.build import build_recent
+
+    week = _T - timedelta(days=7)
+    row = {"sha": "s1", "committed_at": _iso(timedelta(days=2)), "change_kind": "worsened",
+           "severity": "high", "attribution_basis": "added_lines", "file_path": "src/a.py",
+           "biomarker_type": "complex_method", "symbol": "f"}
+    today = {"file_path": "src/a.py", "biomarker_type": "complex_method", "function_name": "f",
+             "severity": "high", "health_impact": 1.0}
+    a = {**today, "line_start": 40, "reason": "CCN 18"}
+    b = {**today, "line_start": 10, "reason": "CCN 16"}
+
+    for open_findings in ([a, b], [b, a]):
+        (found,) = build_recent([row], week=week, open_findings=open_findings, files={})[
+            "recent_findings"
+        ]
+        assert (found.line, found.reason) == (10, "CCN 16")

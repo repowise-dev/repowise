@@ -297,10 +297,21 @@ def ensure_full_surface() -> Any:
                 exc,
             )
 
+    # The mcp SDK lives above packages/core, so the registry stores plain
+    # hint dicts and this surface materialises them into ToolAnnotations.
+    from mcp.types import ToolAnnotations
+
     from repowise.core.registry import mcp_tool_registry
+    from repowise.core.registry.mcp_tool_registry import SAFETY_TO_ANNOTATION_HINTS
+    from repowise.core.registry.plugins import load_plugins
     from repowise.server.mcp_server._tool_selection import snapshot_full_surface
 
-    mcp_tool_registry.apply(_mcp, middleware=registered_tool)
+    load_plugins()  # plugin tools register before the surface is attached
+    mcp_tool_registry.apply(
+        _mcp,
+        middleware=registered_tool,
+        annotations_for=lambda safety: ToolAnnotations(**SAFETY_TO_ANNOTATION_HINTS[safety]),
+    )
 
     # Snapshot the full registered surface so per-server tool selection
     # (single-repo vs workspace, config/CLI overrides) can rebuild from it.
@@ -330,6 +341,7 @@ _STATE_NAMES = frozenset(
         "_decision_store",
         "_fts",
         "_repo_path",
+        "_served_repo_id",
         "_vector_store_ready",
         "_lancedb_ready",
         "_registry",
@@ -338,6 +350,7 @@ _STATE_NAMES = frozenset(
         "_embedder_status",
         "_release_check",
         "_release_announced",
+        "_keyless_note_announced",
     }
 )
 

@@ -9,7 +9,7 @@ function summary(partial: Partial<HealthOverviewSummary> = {}): HealthOverviewSu
     maintainability_average: 8.0,
     hotspot_health: 4.5,
     performance_average: 9.7,
-    performance_findings: 942,
+    performance_causes: { now: 4, production: 415, all: 926, per_10k_loc: 9.03 },
     file_count: 3787,
     open_findings: 14755,
     structure_average: 1.59,
@@ -55,9 +55,21 @@ describe("CodeHealthLede — how many scores the first screen carries", () => {
 
   it("gives every figure an explainer a reader can open", () => {
     render(<CodeHealthLede summary={summary()} />);
-    for (const label of ["Code health", "Files", "Maintainability", "Performance risk", "Hotspot health"]) {
+    for (const label of ["Code health", "Files", "Maintainability", "Performance, fix now", "Hotspot health"]) {
       expect(screen.getByLabelText(`What ${label} means`)).toBeTruthy();
     }
+  });
+
+  it("leads performance with the causes worth fixing now", () => {
+    const { container } = render(<CodeHealthLede summary={summary()} />);
+    expect(container.textContent).toContain("Performance, fix now4");
+  });
+
+  it("shows an older summary's open count instead of a fix-now zero", () => {
+    const { performance_causes: _causes, ...older } = summary({ performance_findings: 942 });
+    const { container } = render(<CodeHealthLede summary={older} />);
+    expect(container.textContent).toContain("Performance risk942");
+    expect(container.textContent).not.toContain("Performance, fix now");
   });
 
   it("says nothing when the split was never recorded", () => {
@@ -140,7 +152,7 @@ describe("CodeHealthLede: what the first screen shows", () => {
     const toggle = screen.getByText("Breakdown");
     const details = toggle.closest("details")!;
     expect(details.open).toBe(false);
-    expect(details.textContent).toContain("50% at risk");
+    expect(details.textContent).toContain("At risk50%");
     expect(details.textContent).toContain("comes from change history");
   });
 

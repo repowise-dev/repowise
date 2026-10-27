@@ -203,6 +203,19 @@ describe("a candidate is a review request, not an instruction", () => {
     expect(screen.getByRole("button", { name: "Dismiss" })).toBeEnabled();
   });
 
+  it("disables Accept when the server filled a blank decision with the title", () => {
+    renderLanes("candidates", {
+      decisions: [record({ decision: "Use JWTs", decision_text_missing: true })],
+      onAccept: vi.fn(),
+      onDismiss: vi.fn(),
+    });
+
+    // The row reads the title fallback, but acceptance reads the stored text.
+    expect(screen.getByRole("button", { name: "Accept" })).toBeDisabled();
+    expect(screen.getByText(/no decision text: state what was chosen/))
+      .toBeInTheDocument();
+  });
+
   it("leaves Accept enabled on a candidate that carries what the contract needs", () => {
     renderLanes("candidates", {
       decisions: [

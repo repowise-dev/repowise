@@ -11,6 +11,21 @@ import type { GraphExport } from "./graph.js";
 import type { Hotspot } from "./git.js";
 import type { DeadCodeFinding } from "./dead-code.js";
 import type { DecisionRecord } from "./decisions.js";
+import type { CardRef, EvidenceCard } from "./cards.js";
+import type { ViewPart } from "./views.js";
+import type { ChatFigure } from "./generated/http.js";
+
+/** Headless chat session wire types, generated from the server schema. */
+export type {
+  ChatFigure,
+  ChatSessionMessageRequest,
+  ChatSessionOpenRequest,
+  ChatSessionPolicyRequest,
+  ChatSessionResponse,
+  ChatToolTraceEntry,
+  ChatTurnResultResponse,
+  ChatTurnUsage,
+} from "./generated/http.js";
 
 // ---------------------------------------------------------------------------
 // Product context surrounding a chat composer
@@ -124,6 +139,20 @@ export interface ChatMessage {
     truncated?: boolean;
     /** Next steps derived from the artifacts this turn produced. */
     follow_ups?: ChatSuggestion[];
+    /** Evidence cards for this turn, unvalidated until parsed. */
+    cards?: unknown[];
+    /** View parts `show_view` built this turn, unvalidated until parsed. */
+    views?: unknown[];
+    /** Each number the answer states, looked up in the turn's tool results. */
+    figures?: ChatFigure[];
+    diagnostics?: {
+      figures_checked?: number;
+      figures_unverified?: number;
+      /** Verified figures worked out from others (a ratio or a sum) rather than read. */
+      figures_derived?: number;
+      /** Figures left unchecked because the evidence was past the read cap. */
+      figures_not_checked?: number;
+    };
   };
   created_at: string;
 }
@@ -157,6 +186,19 @@ export interface ChatUIMessage {
   truncated?: boolean;
   /** Next steps this turn earned. Absent on a turn that called no tool. */
   followUps?: ChatSuggestion[];
+  /** Validated evidence cards for this turn. */
+  cards?: EvidenceCard[];
+  /** Validated view parts for this turn, in the order they were built. */
+  views?: ViewPart[];
+  /** Figures in `text` no tool result of the turn holds; flagged, not removed. */
+  unverifiedFigures?: ChatFigureSpan[];
+}
+
+/** A figure's place in the text a message shows, in UTF-16 offsets. */
+export interface ChatFigureSpan {
+  text: string;
+  start: number;
+  end: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -172,6 +214,10 @@ export interface ChatCitation {
   symbol_name?: string;
   start_line?: number;
   end_line?: number;
+  /** The tool result that cited this file. */
+  artifact_id?: string;
+  /** The file or symbol as an entity ref, resolved like a card's. */
+  ref?: CardRef;
 }
 
 export interface ArtifactEvidence {
@@ -288,7 +334,11 @@ export interface RiskReportArtifactData {
   };
   impacted_tests?: {
     tests_to_run?: string[];
+    /** `selected`, `run_all`, or why nothing was selected (`no_index`, `timeout`, ...). */
     status?: string;
+    /** No subset can be vouched for: every test must run (`reasons` says why). */
+    run_all?: boolean;
+    reasons?: string[];
     summary?: string;
     /** `measured` from stored coverage, `inferred` from the dependency graph. */
     basis?: "measured" | "inferred" | "none";
@@ -399,11 +449,14 @@ export interface ChangeRiskArtifact extends ArtifactEnvelopeIdentity {
 export interface SearchResultsArtifactData {
   query: string;
   results: Array<{
-    title: string;
+    /** Omitted when it only restates `path`/`symbol_id` (a structural title). */
+    title?: string;
     page_type: string;
     page_id?: string;
     /** Openable repo-relative file; absent when the hit names no file. */
     path?: string;
+    /** `path::Symbol` on a symbol page. */
+    symbol_id?: string;
     /** Kept only where it differs from `path` or `path` is absent. */
     target_path?: string;
     snippet?: string;
@@ -680,10 +733,23 @@ export type ChatSSEEvent =
       artifact: ChatArtifact;
       citations?: ChatCitation[];
     }
-  /** Every turn ended in a tool call; `done` still follows. */
-  | { type: "truncated"; loops: number }
+  /** A table or chart the server built from a tool result of this turn,
+   *  sent right after the `show_view` call's `tool_result`. */
+  | { type: "view"; tool_id: string; view: ViewPart }
+  /** A limit stopped the turn before a final answer; `done` still follows.
+   *  `reason` is `loop_cap` (every call ended in a tool call) or `token_budget`. */
+  | { type: "truncated"; loops: number; reason?: "loop_cap" | "token_budget" }
+  /** The post-turn numeric check, sent before `suggestions` when the answer
+   *  states a figure. Spans are offsets into the streamed text. */
+  | {
+      type: "diagnostics";
+      figures_checked: number;
+      figures_unverified: number;
+      figures_not_checked?: number;
+      unverified_figures: ChatFigureSpan[];
+    }
   /** Next steps for the turn that just finished, sent just before `done`.
    *  A turn that failed or called no tool sends none. */
   | { type: "suggestions"; suggestions: ChatSuggestion[] }
-  | { type: "done"; conversation_id: string; message_id: string; user_message_id?: string; provider?: string; model?: string }
+  | { type: "done"; conversation_id: string; message_id: string; user_message_id?: string; provider?: string; model?: string; replayed?: boolean }
   | { type: "error"; message: string };

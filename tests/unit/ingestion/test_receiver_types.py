@@ -30,7 +30,7 @@ def fields(source: str, language: str, methods: list[tuple[int, int]]) -> dict[s
     """One class spanning the whole text, with *methods* as its bodies."""
     lines = source.count("\n") + 1
     return types_by_class(
-        scan_declarations(source, language), {"f.cs::C": (1, lines)}, methods
+        scan_declarations(source, language), {"f.cs::C": (1, lines)}, methods, language
     ).get("f.cs::C", {})
 
 
@@ -289,11 +289,11 @@ class TestKotlinShapes:
 
 
 class TestKotlinRefusals:
-    def test_a_builtin_generic_is_refused(self) -> None:
-        """``List<Header>`` bares to ``List``, which the language spec refuses
-        — and must, because the value is a List and not a Header."""
+    def test_a_builtin_generic_is_marked_external(self) -> None:
+        """``List<Header>`` bares to ``List``, marked a builtin: the value is a
+        List and not a Header, so only a repo extension on ``List`` answers."""
         body = "fun run() {\n    val items: List<Header> = call.headers\n}"
-        assert "items" not in declared_types(body, "kotlin")
+        assert external_type_name(declared_types(body, "kotlin")["items"]) == "List"
 
     def test_a_named_argument_is_not_a_declaration(self) -> None:
         """Kotlin spells a named argument with ``=``, which is why the
@@ -314,8 +314,12 @@ class TestKotlinRefusals:
         body = 'class C {\n    @get:JvmName("x")\n    fun f() { }\n}'
         assert declared_types(body, "kotlin") == {}
 
-    def test_a_builtin_type_is_refused(self) -> None:
-        assert declared_types("fun run(name: String, n: Int) { }", "kotlin") == {}
+    def test_a_builtin_type_is_marked_external(self) -> None:
+        types = declared_types("fun run(name: String, n: Int) { }", "kotlin")
+        assert {name: external_type_name(t) for name, t in types.items()} == {
+            "name": "String",
+            "n": "Int",
+        }
 
     def test_a_declaration_in_a_line_comment_is_ignored(self) -> None:
         body = "fun run() { // a val node: Node once lived here\n }"
@@ -406,6 +410,27 @@ class TestKotlinFieldScope:
         whatever punctuation follows."""
         source = "class C {\n    fun run(timeout: Duration = d) { }\n}"
         assert fields(source, "kotlin", []) == {}
+
+    def test_an_injected_constructor_property_is_a_field(self) -> None:
+        """The Hilt shape: each property closes on `,` or `)`, not `=`."""
+        source = (
+            "class Repo @Inject constructor(\n    private val api: Api,\n"
+            "    val dao: Dao\n) {\n    fun f() { api.get() }\n}"
+        )
+        found = fields(source, "kotlin", [(5, 5)])
+        assert (found["api"], found["dao"]) == ("Api", "Dao")
+
+    def test_a_one_line_constructor_property_is_a_field(self) -> None:
+        source = "class Repo(private val api: Api) {\n    fun f() { api.get() }\n}"
+        assert fields(source, "kotlin", [(2, 2)])["api"] == "Api"
+
+    def test_a_plain_constructor_parameter_is_not_a_field(self) -> None:
+        source = "class Repo(api: Api, other: Dao) {\n    fun f() { }\n}"
+        assert fields(source, "kotlin", [(2, 2)]) == {}
+
+    def test_an_uninitialised_property_is_a_field(self) -> None:
+        source = "abstract class Repo {\n    abstract val api: Api\n}"
+        assert fields(source, "kotlin", [])["api"] == "Api"
 
 
 
@@ -505,6 +530,79 @@ class TestSwiftRefusals:
             "    func run() {\n        logger.debug()\n    }\n}"
         )
         assert fields(source, "swift", [(3, 5)])["logger"] == "Logger"
+
+    def test_an_init_assigned_stored_property_is_a_field(self) -> None:
+        """`let api: Api` has no initialiser; `init` assigns it, so it ends its line."""
+        source = (
+            "final class Repo {\n    private let api: Api\n"
+            "    init(api: Api) { self.api = api }\n    func run() { api.get() }\n}"
+        )
+        assert fields(source, "swift", [(4, 4)]) == {"api": "Api"}
+
+    def test_a_computed_property_is_a_field(self) -> None:
+        source = "class C {\n    var store: Store { Store.shared }\n}"
+        assert fields(source, "swift", [])["store"] == "Store"
+
+
+class TestDartShapes:
+    def test_a_typed_local(self) -> None:
+        assert declared_types("void f() {\n  Cache cache = make();\n}", "dart")["cache"] == "Cache"
+
+    def test_a_parameter_and_a_named_parameter(self) -> None:
+        types = declared_types("void f(Api api, {required Dao dao}) { }", "dart")
+        assert (types["api"], types["dao"]) == ("Api", "Dao")
+
+    def test_a_nullable_type_keeps_its_type(self) -> None:
+        assert declared_types("void f() {\n  Api? api;\n}", "dart")["api"] == "Api"
+
+    @pytest.mark.parametrize(
+        "line",
+        ["final store = Store();", "var store = new Store();", "const store = Store<A>();"],
+    )
+    def test_a_construction(self, line: str) -> None:
+        assert declared_types(f"void f() {{\n  {line}\n}}", "dart")["store"] == "Store"
+
+    def test_a_cascade_is_still_the_constructed_type(self) -> None:
+        body = "void f() {\n  final paint = Paint()..color = c;\n}"
+        assert declared_types(body, "dart")["paint"] == "Paint"
+
+    @pytest.mark.parametrize(
+        "line", ["final x = Builder().build();", "final x = Store.instance();"]
+    )
+    def test_a_chain_or_static_call_types_nothing(self, line: str) -> None:
+        assert declared_types(f"void f() {{\n  {line}\n}}", "dart") == {}
+
+    def test_a_doc_comment_is_not_a_declaration(self) -> None:
+        body = "/// Returns Foo instance;\n/* Bar other; */\nvoid f() { }"
+        assert declared_types(body, "dart") == {}
+
+    def test_dart_reaches_class_scope(self) -> None:
+        assert "dart" in IMPLICIT_FIELD_LANGUAGES
+
+
+class TestDartFieldScope:
+    def test_fields_and_initialising_formals(self) -> None:
+        """`this.api` spells no type; the field it assigns types `api`."""
+        source = (
+            "class Repo {\n  final Api api;\n  Dao? _dao;\n  final _store = Store();\n"
+            "  Repo(this.api, Dao dao, {Other other}) : _dao = dao;\n"
+            "  void load() { api.fetch(); }\n}"
+        )
+        assert fields(source, "dart", [(6, 6)]) == {"api": "Api", "_dao": "Dao", "_store": "Store"}
+
+    def test_a_method_local_is_not_a_field(self) -> None:
+        source = "class C {\n  void f() {\n    final s = Store();\n  }\n}"
+        assert fields(source, "dart", [(2, 4)]) == {}
+
+    def test_a_defaulted_constructor_parameter_is_not_a_field(self) -> None:
+        """A constructor is no symbol, so `{Dao d = const Dao()}` closes on `=`
+        at class scope exactly as a field does. Being inside parentheses is
+        what refuses it."""
+        source = (
+            "class Repo {\n  final Api api;\n  Repo(this.api, {Dao d = const Dao()});\n"
+            "  void a() { d.read(); }\n}"
+        )
+        assert fields(source, "dart", [(4, 4)]) == {"api": "Api"}
 
 
 class TestGoShapes:
@@ -646,6 +744,35 @@ class TestGoFields:
         assert declared_types(body, "go") == {}
 
 
+class TestKotlinTrailingLambda:
+    """A trailing lambda is the call's last argument, not more expression (#3761)."""
+
+    def test_a_call_with_a_trailing_lambda_is_a_call_assignment(self) -> None:
+        body = 'fun f() {\n    val n = build(1) { x -> println(")}") }\n    n.go()\n}'
+        assert scan_call_assignments(body, "kotlin") == (CallAssignment(2, "n", None, "build"),)
+
+    def test_a_lambda_across_lines_still_ends_the_statement(self) -> None:
+        body = 'fun f() {\n    val n = build("a") {\n        println("x")\n    }\n    n.go()\n}'
+        assert [a.name for a in scan_call_assignments(body, "kotlin")] == ["n"]
+
+    def test_a_chain_after_the_lambda_is_not_the_call(self) -> None:
+        for rest in ("{ }.bar()", "{ } ?: y", "{ }\n        .bar()"):
+            body = f"fun f() {{\n    val n = build(1) {rest}\n}}"
+            assert scan_call_assignments(body, "kotlin") == (), rest
+
+    def test_a_constructor_with_only_a_trailing_lambda(self) -> None:
+        body = 'fun f() {\n    val c = Client {\n        println("}")\n    }\n    c.get()\n}'
+        assert declared_types(body, "kotlin")["c"] == "Client"
+
+    def test_a_constructor_lambda_followed_by_a_chain_is_not_a_construction(self) -> None:
+        body = "fun f() {\n    val c = Client { }.build()\n}"
+        assert "c" not in declared_types(body, "kotlin")
+
+    def test_a_lowercase_lambda_only_call_is_not_a_construction(self) -> None:
+        body = "fun f() {\n    val x = remember { Foo() }\n}"
+        assert "x" not in declared_types(body, "kotlin")
+
+
 class TestGoCallAssignments:
     """``x := f(..)``: the call the resolver reads a return type from."""
 
@@ -679,6 +806,106 @@ class TestGoCallAssignments:
 
     def test_other_languages_scan_nothing(self) -> None:
         assert scan_call_assignments("x := f()\n", "java") == ()
+
+
+class TestPythonCallAssignments:
+    """``x = f(..)``: a whole-statement call, awaited or not."""
+
+    def test_a_dotted_call_and_an_awaited_one(self) -> None:
+        body = "def f():\n    r = self.client.get(\n        ')'\n    )\n    s = await g()\n"
+        assert scan_call_assignments(body, "python") == (
+            CallAssignment(2, "r", "self.client", "get"),
+            CallAssignment(5, "s", None, "g", awaited=True),
+        )
+
+    def test_a_comparison_a_chain_and_a_target_list_are_refused(self) -> None:
+        body = "def f():\n    x == g()\n    y = g().h()\n    a, b = g()\n    c = g() or d\n"
+        assert scan_call_assignments(body, "python") == ()
+
+    def test_a_statement_after_a_semicolon_is_refused(self) -> None:
+        """``u = f(); u = 3`` rebinds where no binding scan looks."""
+        assert scan_call_assignments("def f():\n    u = g(); u = 3\n", "python") == ()
+
+
+class TestKotlinSwiftDartCallAssignments:
+    """``val x = f(..)``, ``let x = try f(..)``, ``final x = await f(..);``."""
+
+    @pytest.mark.parametrize(
+        ("language", "statement", "expected"),
+        [
+            ("kotlin", "val r = repo.make(1)", CallAssignment(2, "r", "repo", "make")),
+            ("swift", "let r = try await make()", CallAssignment(2, "r", None, "make")),
+            ("swift", "var r = try? A.make()", CallAssignment(2, "r", "A", "make")),
+            (
+                "dart",
+                "final r = await make(\n    ')');",
+                CallAssignment(2, "r", None, "make", awaited=True),
+            ),
+            ("dart", "var r = Repo.create();", CallAssignment(2, "r", "Repo", "create")),
+        ],
+    )
+    def test_a_whole_statement_call(
+        self, language: str, statement: str, expected: CallAssignment
+    ) -> None:
+        body = f"f() {{\n  {statement}\n}}"
+        assert scan_call_assignments(body, language) == (expected,)
+
+    @pytest.mark.parametrize(
+        ("language", "statement"),
+        [
+            ("kotlin", "val r = make()\n    .other()"),
+            ("kotlin", "val r = make()\n    ?.other()"),
+            ("kotlin", "val r = make()\n    ?: Other()"),
+            ("kotlin", "val r = make()\n    as Other"),
+            ("kotlin", "val r = make()\n    && ok"),
+            ("kotlin", "val r: Repo = make()"),  # its declaration types it
+            ("swift", "let r = make()\n    .other()"),
+            ("swift", "let r = make()\n    as! Other"),
+            ("dart", "final r = make()\n    .other();"),
+            ("dart", "final r = make()\n    ..other();"),
+        ],
+    )
+    def test_a_call_continued_on_the_next_line_is_refused(
+        self, language: str, statement: str
+    ) -> None:
+        assert scan_call_assignments(f"f() {{\n  {statement}\n}}", language) == ()
+
+    def test_a_new_statement_on_the_next_line_keeps_the_call(self) -> None:
+        body = "f() {\n  val r = make()\n  r.load()\n}"
+        assert scan_call_assignments(body, "kotlin") == (CallAssignment(2, "r", None, "make"),)
+
+    @pytest.mark.parametrize(
+        ("statement", "expected"),
+        [
+            ("if let r = findRepo() {", CallAssignment(2, "r", None, "findRepo")),
+            ("if var r = findRepo() {", CallAssignment(2, "r", None, "findRepo")),
+            ("guard let r = findRepo() else { return }", CallAssignment(2, "r", None, "findRepo")),
+            ("while let r = findRepo() {", CallAssignment(2, "r", None, "findRepo")),
+        ],
+    )
+    def test_swift_optional_binding(
+        self, statement: str, expected: CallAssignment
+    ) -> None:
+        body = f"f() {{\n  {statement}\n}}"
+        assert scan_call_assignments(body, "swift") == (expected,)
+
+    def test_swift_optional_binding_multiple_clauses(self) -> None:
+        body = "f() {\n  if let o = makeRepo(), let r = findRepo() {\n  }\n}"
+        assert scan_call_assignments(body, "swift") == (
+            CallAssignment(2, "o", None, "makeRepo"),
+            CallAssignment(2, "r", None, "findRepo"),
+        )
+
+    @pytest.mark.parametrize(
+        "statement",
+        [
+            "let r = makeRepo() { Other() }",
+            "if case let .some(r) = findRepo() {",
+        ],
+    )
+    def test_swift_call_without_a_binding_is_refused(self, statement: str) -> None:
+        body = f"f() {{\n  {statement}\n}}"
+        assert scan_call_assignments(body, "swift") == ()
 
 
 class TestClassScope:
@@ -736,8 +963,10 @@ class TestClassScope:
 def test_the_language_set_is_what_the_patterns_declare() -> None:
     """Excluding a language means removing its shapes, not gating a caller."""
     assert set(RECEIVER_TYPE_LANGUAGES) == {
+        "apex",
         "cpp",
         "csharp",
+        "dart",
         "go",
         "java",
         "kotlin",

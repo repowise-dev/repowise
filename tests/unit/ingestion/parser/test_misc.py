@@ -177,3 +177,29 @@ def test_declared_modifiers(
     result = parser.parse_file(_make_file_info(path, language), source)
     got = {s.name: s.modifiers for s in result.symbols if s.name in expected}
     assert got == expected
+
+
+_COMMENT_ATTRIBUTE_CASES = (
+    (
+        "csharp",
+        "OrderController.cs",
+        b'[Authorize] // admins only\n[Route("orders")]\npublic class OrderController : Controller { }\n',
+        {"OrderController": ["Authorize", 'Route("orders")']},
+    ),
+    (
+        "cpp",
+        "a.cpp",
+        b"[[a]] /* c */ [[b]]\nvoid f() {}\n",
+        {"f": ["a", "b"]},
+    ),
+)
+
+
+@pytest.mark.parametrize(("language", "path", "source", "expected"), _COMMENT_ATTRIBUTE_CASES)
+def test_attributes_after_a_comment_are_still_leading(
+    parser: ASTParser, language: str, path: str, source: bytes, expected: dict
+) -> None:
+    """A comment between attribute lists does not end the leading attribute run."""
+    result = parser.parse_file(_make_file_info(path, language), source)
+    got = {s.name: s.decorators for s in result.symbols if s.name in expected}
+    assert got == expected

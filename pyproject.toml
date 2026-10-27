@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "repowise"
-version = "0.55.0"
+version = "0.59.0"
 description = "The codebase intelligence layer for your AI coding agent — dependency graph, git history, dead code, decisions, and code health, exposed over MCP"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -46,7 +46,7 @@ dependencies = [
     "tree-sitter-kotlin>=1,<2",
     "tree-sitter-ruby>=0.23,<1",
     "tree-sitter-c-sharp>=0.23,<1",
-    "tree-sitter-swift>=0.0.1",
+    "tree-sitter-swift>=0.7.4,<0.8",
     "tree-sitter-scala>=0.23,<1",
     "tree-sitter-php>=0.23,<1",
     "tree-sitter-pascal>=0.11,<1",
@@ -87,7 +87,7 @@ dependencies = [
     # Retry logic
     "tenacity>=9,<10",
     # Git operations
-    "gitpython>=3.1,<4",
+    "gitpython>=3.2.1,<4",
     # YAML parsing
     "pyyaml>=6.0,<7",
     # Vector search (LanceDB — pure Python wheel)
@@ -99,7 +99,7 @@ dependencies = [
     # Server
     "fastapi>=0.115,<1",
     "uvicorn[standard]>=0.32,<1",
-    "mcp>=1.0,<2",
+    "mcp>=1.30.0,<2",
     "apscheduler>=3.10,<4",
     "cryptography>=50.0.0,<51",
     # LLM providers (bundled — no extras needed)
@@ -121,6 +121,7 @@ dev = [
     "pytest>=8,<9",
     "pytest-asyncio>=0.23,<1",
     "pytest-snapshot>=0.9,<1",
+    "pytest-xdist>=3.5,<4",
     "respx>=0.21,<1",
     "time-machine>=2.14,<3",
     "ruff>=0.6,<1",
@@ -160,7 +161,7 @@ namespaces = true
 # and the web what's-new view work offline from the installed wheel. Lives in
 # core (the neutral home shared by cli + server). Kept in sync with the
 # canonical docs/CHANGELOG.md by a drift-guard test (see tests/unit/upgrade).
-"repowise.core.upgrade" = ["_data/CHANGELOG.md"]
+"repowise.core.upgrade" = ["_data/CHANGELOG.md", "_data/release_stats.json"]
 # Codex slash commands. A Codex plugin manifest has no slot for commands, so
 # ~/.codex/prompts is the only surface that yields one and the CLI is the only
 # thing that can write it, which means the content has to be in the wheel.
@@ -183,6 +184,7 @@ dev = [
     "pytest>=8,<9",
     "pytest-asyncio>=0.23,<1",
     "pytest-snapshot>=0.9,<1",
+    "pytest-xdist>=3.5,<4",
     "respx>=0.21,<1",
     "time-machine>=2.14,<3",
     "ruff>=0.6,<1",

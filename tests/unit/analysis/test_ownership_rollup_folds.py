@@ -114,8 +114,61 @@ def test_reviewer_fold_is_the_same_over_stored_and_decoded_rows() -> None:
         rows = [shape(r) for r in _ROWS]
         assert cochange_paths(rows[:1]) == {"lib/util.py"}
         out = suggest_reviewers(rows[:1], rows[1:], limit=5)
-        assert [s["name"] for s in out] == ["Bob", "Alice"]
-        assert out[0]["co_change_paths"] == ["lib/util.py"]
+        # Alice leads on raw ownership share. Pre-#2862, Bob led instead: the
+        # old recency formula spiked on lib/util.py's commits_90d=1 (a
+        # file-level artifact, `recent/max(commits_90d, 1)` == 1.0 for any
+        # single-commit file), not a genuine per-author recency signal — this
+        # fixture's rows carry no ``recent_commit_count`` (pre-reindex data),
+        # so the fixed formula gives neither author a recency bonus here.
+        assert [s["name"] for s in out] == ["Alice", "Bob"]
+        assert out[0]["co_change_paths"] == []
+
+
+def test_reviewer_recency_ranks_the_recently_active_author_first() -> None:
+    """Equal share, different recent activity: the recent author outranks (#2862)."""
+    row = {
+        "file_path": "src/hot.py",
+        "top_authors_json": json.dumps(
+            [
+                {
+                    "name": "Newbie",
+                    "email": "newbie@example.com",
+                    "commit_count": 5,
+                    "recent_commit_count": 5,
+                },
+                {
+                    "name": "OldTimer",
+                    "email": "oldtimer@example.com",
+                    "commit_count": 5,
+                    "recent_commit_count": 0,
+                },
+            ]
+        ),
+        "co_change_partners_json": "[]",
+        "commit_count_90d": 5,
+    }
+    out = suggest_reviewers([row], [])
+    assert [s["name"] for s in out] == ["Newbie", "OldTimer"]
+    assert out[0]["recent_commits"] == 5
+    assert out[1]["recent_commits"] == 0
+
+
+def test_reviewer_recency_is_zero_for_a_row_indexed_before_the_fix() -> None:
+    """No ``recent_commit_count`` key: no recency bonus, not an invented estimate (#2862)."""
+    row = {
+        "file_path": "src/legacy.py",
+        "top_authors_json": json.dumps(
+            [
+                {"name": "Alice", "email": "alice@example.com", "commit_count": 3},
+                {"name": "Bob", "email": "bob@example.com", "commit_count": 1},
+            ]
+        ),
+        "co_change_partners_json": "[]",
+        "commit_count_90d": 4,
+    }
+    out = suggest_reviewers([row], [])
+    assert [s["recent_commits"] for s in out] == [0, 0]
+    assert out[0]["name"] == "Alice"
 
 
 def test_a_sole_owner_is_a_silo_in_both_rollups() -> None:

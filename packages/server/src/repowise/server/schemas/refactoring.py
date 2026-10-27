@@ -11,7 +11,11 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+
+from repowise.core.analysis.health.queue.counts import QueueCounts
+
+from .preview import PreviewLabelled
 
 
 class RefactoringHiddenCounts(BaseModel):
@@ -41,6 +45,10 @@ class RefactoringOpportunitiesResponse(BaseModel):
     scope: Literal["fix_first", "all"] = "all"
     #: Under ``fix_first``, the rest of the filtered set, by reason.
     hidden: RefactoringHiddenCounts | None = None
+    #: The plans' count vocabulary over the open inventory (``queue.counts``).
+    counts: QueueCounts | None = None
+    #: Open opportunities a language gate held back, by language.
+    gated: dict[str, dict[str, Any]] | None = None
 
 
 class RefactoringRollupResponse(BaseModel):
@@ -70,7 +78,7 @@ class RefactoringPlanStatusResponse(BaseModel):
     status_changed_at: str | None = None
 
 
-class RefactoringOpportunityDetailResponse(BaseModel):
+class RefactoringOpportunityDetailResponse(PreviewLabelled, BaseModel):
     """One opportunity: its ordered steps, evidence, validation and plans.
 
     ``extra="allow"``: the base row is composed in core and this response
@@ -96,3 +104,182 @@ class RefactoringOpportunityDetailResponse(BaseModel):
     plans: list[dict[str, Any]] | None = None
     #: Present when a step names a symbol an earlier step moves.
     ordering_note: str | None = None
+    #: The measurement note on a language refactoring is served as a preview on.
+    preview: str | None = None
+
+
+# Plan-level shapes: the plan lists, one plan, triage bodies and code generation.
+
+
+class RefactoringPlanResponse(PreviewLabelled, BaseModel):
+    """One ranked refactoring plan, with its open ``plan`` / ``evidence`` /
+    ``blast_radius`` dicts re-hydrated from the persisted ``*_json`` columns."""
+
+    id: str
+    refactoring_type: str
+    file_path: str
+    target_symbol: str
+    line_start: int | None = None
+    line_end: int | None = None
+    plan: dict[str, Any] = Field(default_factory=dict)
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    impact_delta: float = 0.0
+    effort_bucket: str = ""
+    blast_radius: dict[str, Any] = Field(default_factory=dict)
+    confidence: str = "medium"
+    source_biomarker: str = ""
+    benefit: float = 0.0
+    leverage: float = 0.0
+    cost: float = 0.0
+    risk: float = 0.0
+    # The unified-rank score (higher = surface sooner). Carried so the tab can
+    # plot/sort without recomputing the blend client-side.
+    rank_score: float = 0.0
+    # Two plot-ready figures, served rather than derived client-side.
+    #
+    # `dependents` is the file's in-degree — the same centrality the rank reads,
+    # so every type reports it the same way. The blast-radius dict was the only
+    # other source and it carries the count under `file_count`, `dependents_count`
+    # or `callers` depending on which detector wrote it, which is how one file
+    # ended up reporting two different dependent counts from two of its plans.
+    #
+    # Both default to 0 rather than being optional: a repo with no graph metrics
+    # or no health pass yet is a real state, and 0 reads as "not measured" in the
+    # same place a missing field would have.
+    dependents: int = 0
+    file_nloc: int = 0
+    file_weighted_deficit: int = 0
+    validation: dict[str, Any] = Field(default_factory=dict)
+    #: The measurement note on a language refactoring is served as a preview on.
+    preview: str | None = None
+
+
+class PlanRiskResponse(BaseModel):
+    kind: str
+    text: str
+    ref: str | None = None
+
+
+class PlanMeasuresResponse(BaseModel):
+    """A function's stored size measures; an absent one was not measured."""
+
+    ccn: int | None = None
+    nloc: int | None = None
+    params: int | None = None
+
+
+class PlanPayoffResponse(BaseModel):
+    """What happened to a plan the index resolved as no longer detected.
+
+    ``applied`` means the measures are consistent with the plan being applied:
+    the target shed at least half the predicted decision points and a function
+    fitting the extracted slice appeared beside it.
+    """
+
+    #: ``refactoring.payoff.PAYOFF_OUTCOMES``.
+    outcome: str
+    resolved_commit: str | None = None
+    resolved_at: str | None = None
+    before: PlanMeasuresResponse | None = None
+    after: PlanMeasuresResponse | None = None
+    #: Measured drop, beside the plan's predicted ``evidence``.
+    realised: dict[str, int] | None = None
+    #: The function that appeared beside the target, sized like the plan's
+    #: slice or carrying its suggested name.
+    new_symbol: str | None = None
+
+
+class RefactoringPlanDetailResponse(RefactoringPlanResponse):
+    """One plan read alone: what other layers say about its target. Lists stay
+    on :class:`RefactoringPlanResponse` and never carry these; both are absent
+    on a plan that was never checked."""
+
+    governed_by: list[str] | None = None
+    risks: list[PlanRiskResponse] | None = None
+    # Only with ``include=recipe``: the plan as preconditions, steps and
+    # postconditions an agent applies (``refactoring.recipe``).
+    recipe: dict[str, Any] | None = None
+    # Only on a plan the index resolved as no longer detected: applied, file
+    # deleted or target changed, with the target's measures before and after
+    # (``crud.plan_payoff``).
+    payoff: PlanPayoffResponse | None = None
+
+
+class RefactoringTypeCount(BaseModel):
+    type: str
+    count: int
+
+
+class RefactoringSummary(BaseModel):
+    total: int
+    by_type: list[RefactoringTypeCount]
+    files_total: int | None = None
+    structural_total: int | None = None
+    design_total: int | None = None
+    performance_total: int | None = None
+    small_effort_total: int | None = None
+    health_recovery_total: int | None = None
+    negligible_health_total: int | None = None
+    best_health_gain: float | None = None
+
+
+class RefactoringTargetsResponse(BaseModel):
+    summary: RefactoringSummary
+    plans: list[RefactoringPlanResponse]
+    #: Open plans a language gate held back, by language.
+    gated: dict[str, dict[str, Any]] = {}
+
+
+class RefactoringSettings(BaseModel):
+    """The code-generation switch plus the model it will use.
+
+    ``provider`` / ``model`` are read-only: they come from the same resolver
+    chat uses, so the user configures a model once. Never carries a key.
+    """
+
+    enabled: bool = False
+    provider: str | None = None
+    model: str | None = None
+
+
+class RefactoringSettingsUpdate(BaseModel):
+    """The one writable field, ``refactoring.llm.enabled``."""
+
+    enabled: bool
+
+
+class RefactoringOpportunityStatusUpdate(BaseModel):
+    """The finding-triage vocabulary, applied to a whole opportunity."""
+
+    status: str = Field(..., description="open | acknowledged | resolved | false_positive")
+
+
+class RefactoringStatusUpdate(BaseModel):
+    """Same shape and vocabulary as health finding triage — one triage system."""
+
+    status: str = Field(..., description="open | acknowledged | resolved | false_positive")
+
+
+class GenerateCodeRequest(BaseModel):
+    """Optional per-call provider/model overrides, as chat accepts."""
+
+    provider: str | None = None
+    model: str | None = None
+
+
+class GenerateCodeResponse(BaseModel):
+    """Generated refactored code + diff for one plan, with the self-check."""
+
+    suggestion_id: str | None = None
+    refactoring_type: str
+    file_path: str
+    target_symbol: str
+    content: str
+    diff: str
+    provider: str
+    model: str
+    cached: bool
+    input_tokens: int
+    output_tokens: int
+    validation: dict[str, Any] = Field(default_factory=dict)
+    spans: list[dict[str, Any]] = Field(default_factory=list)

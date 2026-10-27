@@ -156,4 +156,15 @@ describe("ConversationHistory shell", () => {
     expect(screen.getByRole("complementary", { name: "Conversation history" })).toHaveAttribute("data-collapsed", "false");
     expect(window.localStorage.getItem(preferenceKey)).toBe("expanded");
   });
+
+  it("lets clicks through the hidden row toolbar from sm up", () => {
+    render(<ConversationHistory conversations={CONVERSATIONS} onSelect={vi.fn()} onDelete={vi.fn()} onNew={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: /history/i }));
+    const toolbar = screen.getAllByRole("button", { name: /delete conversation/i })[0]!.parentElement;
+    expect(toolbar).toHaveClass(
+      "sm:pointer-events-none",
+      "sm:group-hover:pointer-events-auto",
+      "sm:group-focus-within:pointer-events-auto",
+    );
+  });
 });

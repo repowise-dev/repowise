@@ -1,0 +1,37 @@
+{
+  "results": [
+    {
+      "type": "symbol",
+      "symbol_id": "src/auth/service.py::AuthService",
+      "name": "AuthService",
+      "kind": "class",
+      "start_line": 10,
+      "end_line": 100,
+      "signature": "class AuthService",
+      "qualified_name": "auth.service.AuthService",
+      "language": "python",
+      "score": 160.0,
+      "next": "get_symbol",
+      "path": "src/auth/service.py"
+    }
+  ],
+  "mode": "symbol",
+  "_meta": {
+    "index_age_days": 7
+  },
+  "candidates": [
+    {
+      "path": "src/auth/service.py"
+    }
+  ],
+  "exact_match": true,
+  "lines": [
+    {
+      "path": "src/auth/service.py",
+      "line": 10,
+      "kind": "definition",
+      "text": "class AuthService:"
+    }
+  ],
+  "complete": true
+}

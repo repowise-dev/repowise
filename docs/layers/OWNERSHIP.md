@@ -78,6 +78,16 @@ the most files in it. A module is a **silo** when one person owns more than 80%
 of its files. Per file, the dashboard and REST API mark a silo when the primary
 owner holds more than 80% of the file's commits.
 
+### Repository summary and knowledge matrix
+
+`/api/repos/<id>/owners/summary` returns the truck factor, single-owner files,
+silo modules, the share of owned files held by the top three people, active
+contributors, and quiet owners (no commit in 90 days, still owning files that
+changed in that window). `/api/repos/<id>/owners/knowledge-matrix` returns every
+code file's top five people with their share of its commits, for off-boarding
+what-ifs. Both count people only: bots and coding agents own nothing and hold no
+share, and each contributor carries a `kind` (`human`, `bot`, `agent`).
+
 ### Detectors
 
 Three code-health detectors turn these fields into findings. They run with the
@@ -85,8 +95,8 @@ rest of [code health](CODE_HEALTH.md) and appear in its findings list.
 
 | Detector | Fires when | Severity |
 |---|---|---|
-| `knowledge_loss` | The file is still changing (a commit in 90 days, or a hotspot; never a file marked stable), its bus factor is 1, and the primary owner is no longer the recent owner or the recent owner makes under 20% of recent commits | High on a hotspot; medium when both conditions hold; otherwise low |
-| `ownership_risk` | The file has 5 or more commits and either 3 or more minor contributors (each under 5% of commits) or no author above 40% | Critical at 6+ minor contributors on a hotspot; high at 5+, or 3+ on a hotspot; medium at 3+; otherwise low |
+| `knowledge_loss` | The file is still changing (a commit in 90 days, or a hotspot; never a file marked stable), its bus factor is 1, and the primary owner is not the recent owner or the recent owner makes under 20% of recent commits | High on a hotspot; medium when both conditions hold; otherwise low |
+| `ownership_risk` | The file has 5 or more commits and either 3 or more minor contributors (each under 5% of commits) or no author above 40% | Critical at 6+ minor contributors on a hotspot; high at 5+, or 3+ on a hotspot; medium at 3+; otherwise low. Low on a file under 40 code lines |
 | `developer_congestion` | 5 or more contributors, the file is in the top quarter of churn for this repository, and nobody holds half the commits | High at 10+ contributors and 20+ commits in 90 days; medium at 7+ contributors or 12+ commits; otherwise low |
 
 A stable file whose author left never fires `knowledge_loss`: code nobody edits
@@ -105,7 +115,6 @@ add "informational: small team" to the reason.
 | Truck factor | Stats page | Fewest primary owners who together own more than half the owned files. Bot authors are left out |
 | Single-owner files | Stats page | Files with bus factor 1 |
 | Silo count | Stats page | Modules where one person owns more than 80% of files |
-| `git_health.avg_bus_factor`, `git_health.files_with_bus_factor_1` | `get_overview` | Average bus factor and count of bus-factor-1 files |
 | `knowledge_map.top_owners` | `get_overview(include=["ownership"])` | The three people owning the most files, by display name only |
 
 ### Contributor profiles
@@ -125,7 +134,7 @@ differently:
   file's 90-day activity. Authors of each touched file's five strongest
   co-change partners score at half weight. Each suggestion lists the files it
   owns and the co-change files behind it.
-- **`get_risk(changed_files=...)`**: `pr_blast_radius.recommended_reviewers` lists
+- **`get_risk(changed_files=...)`**: `directive.recommended_reviewers` lists
   up to five primary owners of the affected files, ranked by how many of those
   files they own, then by average ownership share.
 
@@ -148,7 +157,7 @@ The detectors use the code-health rules file, `.repowise/health-rules.json`:
 - `severity_overrides` sets a detector's label; an explicit entry wins over the
   profile.
 - History depth: `repowise init --commit-limit N` sets how many commits per file
-  are read (default 500, maximum 10000). `--follow-renames` follows a file
+  are read (default 5000, maximum 10000). `--follow-renames` follows a file
   across renames, so ownership survives a move. Both are saved to config.
 - `--mode fast` skips blame. Owners then come from commit counts alone and
   `owner_line_pct` stays empty.
@@ -165,12 +174,12 @@ Full schema: [CONFIG.md](../reference/CONFIG.md#the-health-rulesjson-file).
 - Identity merging is conservative: beyond `.mailmap` and GitHub `noreply`
   folding, two addresses are only merged on guarded evidence, so some people may
   still appear twice. A false merge is treated as worse than a split.
-- In the health score's defect calibration, `ownership_risk` showed positive
-  lift and carries a higher weight than the default. `developer_congestion` and
-  `knowledge_loss` showed weak signal and deduct less than the default; they are
-  kept as findings a team can act on. All three share the change-history
+- In the health score's defect calibration, `ownership_risk` has positive lift
+  and carries a higher weight than the default. `developer_congestion` and
+  `knowledge_loss` carry weak signal and deduct less than the default; they
+  stay as findings a team can act on. All three share the change-history
   category cap. Method: [BENCHMARKS.md](../BENCHMARKS.md).
-- A contributor profile's 90-day commit count is measured back from the newest
+- A contributor profile's 90-day commit count counts back from the newest
   commit, and stays empty when the stored commits do not reach back that far.
 - Truncated history (shallow clone, low `--commit-limit`) can make an early
   author vanish, which can both hide and invent a `knowledge_loss` finding.
@@ -192,7 +201,7 @@ Full schema: [CONFIG.md](../reference/CONFIG.md#the-health-rulesjson-file).
 | `repowise risk` | `--target PATH` | Score a file's history, including owners and bus factor |
 | `repowise risk` | `--changed-file PATH` | With `--target`: PR mode; `--format json` includes `recommended_reviewers` |
 | `repowise health` | `--file PATH` | One file's findings, including the ownership detectors |
-| `repowise init` | `--commit-limit N` | Commits read per file (default 500, max 10000) |
+| `repowise init` | `--commit-limit N` | Commits read per file (default 5000, max 10000) |
 | `repowise init` | `--follow-renames` | Track files across renames |
 | `repowise init` | `--mode fast` | Skip blame; commit-count ownership only |
 

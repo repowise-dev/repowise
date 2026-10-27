@@ -30,6 +30,8 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from repowise.core.workspace.origins import ContractOrigin
+
 from ..base import line_at
 from ..calls import FileStrings
 from ..langs import PYTHON
@@ -271,7 +273,7 @@ def extract_consumers(
         # sink-reaching wrapper and the URL is a whole literal argument, not a
         # string that happened to sit next to a parenthesis.
         contract = build_consumer_contract(
-            ctx, method=method, url=url, client=callee, line=line, confidence=0.85
+            ctx, method=method, url=url, client=callee, line=line, origin=ContractOrigin.TYPED_CLIENT
         )
         if contract is not None:
             contract.meta[EXTRACTION_LAYER_KEY] = LAYER_INDEX

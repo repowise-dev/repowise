@@ -18,7 +18,7 @@ async def _git_archaeology_fallback(
     file_path: str,
     git_meta: Any | None,
     all_git_meta: list,
-    repository: Any,
+    repo_root: str | None,
 ) -> dict:
     """When no decisions govern a file, mine git history for intent signals."""
     result: dict[str, Any] = {"triggered": True}
@@ -34,9 +34,8 @@ async def _git_archaeology_fallback(
 
     # --- Layer 3: Live git log (when local repo exists) ---
     git_log_results = []
-    local_path = getattr(repository, "local_path", None)
-    if local_path and (Path(local_path) / ".git").exists():
-        git_log_results = await _run_git_log(local_path, file_path, stem)
+    if repo_root and (Path(repo_root) / ".git").exists():
+        git_log_results = await _run_git_log(repo_root, file_path, stem)
     result["git_log"] = git_log_results
 
     # --- Summary ---

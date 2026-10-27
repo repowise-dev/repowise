@@ -28,7 +28,7 @@ export interface Nudge {
  *  repos says "free for 10 days, card required", never just "free". */
 export const NUDGES = {
   mcp: {
-    text: "Use this repo inside Claude.ai or ChatGPT. Local MCP only works in desktop tools.",
+    text: "Use this repo from Claude.ai or ChatGPT too.",
     surface: "mcp",
     moment: "mcp",
   },

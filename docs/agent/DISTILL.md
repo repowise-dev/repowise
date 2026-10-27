@@ -106,6 +106,12 @@ itself and to `repowise expand` markers instead of re-running commands. This
 works on every Codex version. `uninstall` removes the section and restores your
 `AGENTS.md` byte-for-byte.
 
+**Cursor.** When `~/.cursor` exists, `install` also adds a `preToolUse` entry
+(matcher `Shell`) to `~/.cursor/hooks.json`, beside any hooks you already have.
+Cursor's `preToolUse` honours `allow` and `deny` only, so as under Codex, rewrites
+fire only for families resolving to `permission: allow`. `repowise agents add
+--target=cursor --scope=user` writes the same entry.
+
 The hook is conservative. It never rewrites:
 
 - redirections and compound commands (`>`, `&&`, `;`, backticks, `$()`), and

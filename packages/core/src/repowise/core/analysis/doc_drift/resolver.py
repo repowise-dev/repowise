@@ -48,8 +48,6 @@ _HTML_ANCHOR_RE = re.compile(
     re.I,
 )
 
-_PARENT_SEGMENT_RE = re.compile(r"[^/]+/\.\./")
-
 
 @dataclass
 class Resolution:
@@ -173,13 +171,19 @@ class RepoIndex:
         from .extractor import prose_lines
 
         found: set[str] = set()
+        # GitHub suffixes repeated headings: the second ``## Usage`` is
+        # ``#usage-1``, the third ``#usage-2``. Same bookkeeping as
+        # github-slugger, so a suffixed slug that collides with a literal
+        # heading (``## Usage 1`` already took ``usage-1``) skips to the next
+        # free number rather than registering a slug GitHub never renders.
+        occurrences: dict[str, int] = {}
         previous = ""
         for _lineno, line in prose_lines(self._doc_text.get(rel, "")):
             m = _HEADING_RE.match(line)
             if m:
-                found.add(github_slug(m.group(1)))
+                found.add(_unique_slug(github_slug(m.group(1)), occurrences))
             elif previous.strip() and _SETEXT_UNDERLINE_RE.match(line):
-                found.add(github_slug(previous))
+                found.add(_unique_slug(github_slug(previous), occurrences))
             for groups in _HTML_ANCHOR_RE.findall(line):
                 value = next((g for g in groups if g), "")
                 found.add(value.strip().lower())
@@ -189,6 +193,21 @@ class RepoIndex:
         frozen = frozenset(found)
         self._doc_anchors[rel] = frozen
         return frozen
+
+
+def _unique_slug(slug: str, occurrences: dict[str, int]) -> str:
+    """The anchor GitHub gives a heading slugged *slug*, given the earlier ones.
+
+    *occurrences* holds every slug already handed out in the document and is
+    updated in place. Mirrors github-slugger: on a clash, bump the base slug's
+    counter and try ``f"{slug}-{n}"`` until one is free.
+    """
+    result = slug
+    while result in occurrences:
+        occurrences[slug] += 1
+        result = f"{slug}-{occurrences[slug]}"
+    occurrences[result] = 0
+    return result
 
 
 def _suffix(path: str) -> str:
@@ -225,18 +244,30 @@ def _scan_manifests(manifest_text: dict[str, str]) -> tuple[frozenset[str], froz
 
 
 def join_relative(doc: str, target: str) -> str:
-    """Resolve *target* as written relative to the document that names it."""
+    """Resolve *target* as written relative to the document that names it.
+
+    Segments are normalized, not character-stripped: ``lstrip("./")`` removed
+    the leading dot of ``.github/workflows/ci.yml`` (a real repository path)
+    and rewrote ``../../other-repo/README.md`` into an internal path. A
+    ``..`` that survives normalization escapes the repository root and is kept
+    as written, so the caller reads the target as external rather than as a
+    file this repository must hold.
+    """
     doc_dir = doc.rsplit("/", 1)[0] if "/" in doc else ""
     if not doc_dir:
         return target
-    joined = f"{doc_dir}/{target}"
-    # Collapse "a/b/../c" without touching the filesystem.
-    while True:
-        collapsed = _PARENT_SEGMENT_RE.sub("", joined, count=1)
-        if collapsed == joined:
-            break
-        joined = collapsed
-    return joined.lstrip("./")
+    parts: list[str] = []
+    for segment in f"{doc_dir}/{target}".split("/"):
+        if segment == ".":
+            continue
+        if segment == "..":
+            if parts and parts[-1] != "..":
+                parts.pop()
+            else:
+                parts.append("..")
+            continue
+        parts.append(segment)
+    return "/".join(parts)
 
 
 def _exists(idx: RepoIndex, target: str) -> bool:

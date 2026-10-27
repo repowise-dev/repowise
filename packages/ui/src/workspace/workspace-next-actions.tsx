@@ -10,7 +10,7 @@ import type {
 
 import type { AiPromptFlavor } from "../health/ai-prompt-builder";
 import { ActionDrawer } from "../overview/action-drawer";
-import { ActionRow, renderActionTitle } from "../overview/next-actions";
+import { ActionRow, renderActionTitle, useActionPrompt } from "../overview/next-actions";
 import { OverviewSection } from "../overview/section";
 import { Segmented } from "../shared/segmented";
 
@@ -61,6 +61,7 @@ export function WorkspaceNextActions({
     null,
   );
   const Link = LinkComponent ?? "a";
+  const { openActionPrompt, promptModal } = useActionPrompt();
   const openedRepoId = opened?.repoId;
   const loadActionPrompt = useCallback(
     (action: NextAction, flavor: AiPromptFlavor) => loadPrompt!(openedRepoId!, action, flavor),
@@ -117,7 +118,7 @@ export function WorkspaceNextActions({
                   <p className="text-[15px] font-semibold leading-snug text-[var(--color-text-primary)]">
                     <Link
                       href={contractsHref}
-                      className="rounded hover:text-[var(--color-accent-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                      className="rounded hover:text-[var(--color-accent-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
                     >
                       {renderActionTitle(c.title)}
                     </Link>
@@ -142,7 +143,7 @@ export function WorkspaceNextActions({
                 </h3>
                 <Link
                   href={repoHref(repoId)}
-                  className="rounded text-xs text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                  className="rounded text-xs text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
                 >
                   {`All ${work(repo, horizon).toLocaleString()} in ${repo.alias}`}
                 </Link>
@@ -154,6 +155,11 @@ export function WorkspaceNextActions({
                     action={action}
                     selected={opened?.action.id === action.id && opened.repoId === repoId}
                     onOpen={() => setOpened({ action, repoId })}
+                    onPrompt={
+                      loadPrompt
+                        ? () => openActionPrompt(action, (a, flavor) => loadPrompt(repoId, a, flavor))
+                        : undefined
+                    }
                   />
                 ))}
               </ul>
@@ -183,6 +189,7 @@ export function WorkspaceNextActions({
         LinkComponent={LinkComponent}
         renderTitle={renderActionTitle}
       />
+      {promptModal}
     </OverviewSection>
   );
 }

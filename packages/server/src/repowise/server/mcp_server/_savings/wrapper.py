@@ -102,6 +102,48 @@ def _results_count_bucket(result: Any) -> str | None:
     return "10+"
 
 
+def _client_label() -> str:
+    """The host making this call, as one fixed label.
+
+    The MCP ``clientInfo`` name, resolved through the agent registry, is the
+    best evidence. Without it, the server's own environment is the fallback,
+    and a stdio server is never a plain terminal, so that answer becomes
+    ``unknown``.
+    """
+    from repowise.core.agents.identity import UNKNOWN_AGENT
+    from repowise.core.platform.telemetry import detect_client
+
+    live = interaction.current()
+    if live is not None and live.agent != UNKNOWN_AGENT:
+        return live.agent
+    label = detect_client()
+    return UNKNOWN_AGENT if label == "terminal" else label
+
+
+def _error_reason() -> str:
+    """Why the call in flight failed, from the note its error payload left.
+
+    ``other`` for an in-band error whose site does not note a reason yet.
+    """
+    live = interaction.current()
+    return (live.error_reason if live is not None else None) or "other"
+
+
+def _result_flags(result: dict[str, Any]) -> dict[str, Any]:
+    """The coarse enums a reply carries at the top level and booleans in its ``_meta``."""
+    flags: dict[str, Any] = {}
+    for key in _RESULT_ENUMS:
+        value = result.get(key)
+        if isinstance(value, str) and value:
+            flags[key] = value
+    meta = result.get("_meta")
+    if isinstance(meta, dict):
+        for key in _META_FLAGS:
+            if isinstance(meta.get(key), bool):
+                flags[key] = meta[key]
+    return flags
+
+
 def _telemetry_properties(tool: str, result: Any, duration_ms: int) -> dict[str, Any]:
     """Build the anonymous ``mcp_tool_call`` properties for *result*.
 
@@ -112,17 +154,12 @@ def _telemetry_properties(tool: str, result: Any, duration_ms: int) -> dict[str,
         "tool": tool,
         "status": "error" if is_error else "ok",
         "duration_ms": duration_ms,
+        "client": _client_label(),
     }
+    if is_error:
+        props["error_reason"] = _error_reason()
     if isinstance(result, dict):
-        for key in _RESULT_ENUMS:
-            value = result.get(key)
-            if isinstance(value, str) and value:
-                props[key] = value
-        meta = result.get("_meta")
-        if isinstance(meta, dict):
-            for key in _META_FLAGS:
-                if isinstance(meta.get(key), bool):
-                    props[key] = meta[key]
+        props.update(_result_flags(result))
         bucket = _results_count_bucket(result)
         if bucket is not None:
             props["results_bucket"] = bucket

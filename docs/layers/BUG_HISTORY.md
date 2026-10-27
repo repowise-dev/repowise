@@ -44,7 +44,7 @@ In the dashboard, look at the health drawer's **Bug history** section and the
 | Field | Meaning |
 |---|---|
 | `fix_count` | Counted bug-fix commits that touched the file in the last 180 days |
-| `last_fix_days_ago` / `last_fix_at` | Age of the most recent counted fix |
+| `last_fix_days_ago` / `last_fix_at` | Age of the most recent counted fix, measured to the indexed commit |
 | `bug_magnet` | The decayed fix mass is 3.0 or more. Present only when true |
 | `top_symbols` | Up to three functions or classes that absorbed the most fixes. Approximate |
 
@@ -108,7 +108,9 @@ here", not as an exact ledger. Every surface that shows symbol counts says so.
 how many past fixes it carries and how many of the change's lines fall inside a
 past fix's replaced ranges. Fix counts are exact (one commit fixing three files
 is one fix). Line overlap is marked `approximate`. Files are ranked by overlap
-then count, and a `truncated` flag marks a cut list. See
+then count, and a `truncated` flag marks a cut list. Only fixes from before the
+change count, at the same point the score reads its fix history: a commit's
+parent, a range's merge-base, or `HEAD` for uncommitted work. See
 [CHANGE_RISK.md](CHANGE_RISK.md).
 
 ## Tuning and suppressing
@@ -123,33 +125,30 @@ never more. To turn hooks off, see [HOOKS.md](../agent/HOOKS.md).
 
 ## Accuracy and limits
 
-- **Fix-shape classifier**: agrees with hand labels on 98.3% of 240 fix commits
-  across repowise, flask, django and zod (60/60 on the first three, 56/60 on
-  zod). The four misses are all "a code-extension file changed but no product
-  code did".
-- **Noise removed varies by repo**: 58.7% of keyword-matched fix commits on
-  flask are not code fixes; 7.0% on repowise.
-- **Per-symbol attribution** lands inside the indexed symbol range for 97.4% of
-  django's 2,179 events, 96.3% of flask's 125, 96.8% of repowise's 1,145 and
-  81.8% of zod's 337. Old fixes drift (symbol spans are current); zod's misses
-  are test files with few named symbols.
-- **No inducing commit is named.** File-level SZZ reached 74.5% top-candidate
-  precision on 53 hand-judged rows, below the 80% bar for putting a commit and
-  an author on screen. Counts and recency ship; blame does not.
+| Check | Result |
+|---|---|
+| Fix-shape classifier against hand labels | 98.3% of 240 fix commits across repowise, flask, django and zod |
+| Keyword-matched fix commits that are not code fixes | 58.7% on flask, 7.0% on repowise |
+| Per-symbol attribution inside the indexed symbol range | 96.3% to 97.4% of events on django, flask and repowise; 81.8% on zod |
+
+- **No inducing commit is named.** Counts and recency ship; blame for the
+  commit that caused a bug does not, because its precision is below the bar
+  for naming a commit and an author on screen.
 - **Recall is keyword bound.** A fix whose subject does not say so is
   invisible. The shape filter improves precision only.
 - **The window is fixed.** A file fixed heavily two years ago and quiet since
   reads as clean.
-- **The health score does not change with filtering**: re-running the defect
-  calibration with filtered counts moved pooled AUC by +0.0002.
+- **Per-symbol counts drift on old fixes**, because symbol spans come from the
+  current tree.
 - **In a workspace**, the hook's lookup does not filter by repository; where
   member repos lack their own `.repowise`, it falls silent.
-- **Whether the hook notice changes agent behaviour has not been measured.**
+- **The hook notice's effect on agent behaviour is unmeasured.**
 
 Benchmark method for the health model that reads these counts:
 [docs/BENCHMARKS.md](../BENCHMARKS.md#code-health-predicts-defects). The
-measured SZZ attempt is written up in
-[architecture/bug-history.md](../architecture/bug-history.md).
+classifier misses, the inducing-commit measurement and the effect of filtering
+on the health score are in
+[architecture/bug-history.md](../architecture/bug-history.md#measurements).
 
 ## Where it shows up
 

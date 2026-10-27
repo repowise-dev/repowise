@@ -32,7 +32,16 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .base import BaseDefUseDialect, Occurrence, StatementDefUse, echoes
+from .base import (
+    NO_RECEIVER,
+    BaseDefUseDialect,
+    DeclaredTypes,
+    Occurrence,
+    Receiver,
+    StatementDefUse,
+    echoes,
+    node_text,
+)
 
 if TYPE_CHECKING:
     from tree_sitter import Node
@@ -93,6 +102,8 @@ _SCOPE_BOUNDARIES = frozenset({"closure_expression", "function_item", "async_blo
 class RustDefUseDialect(BaseDefUseDialect):
     language = "rust"
     member_access_kinds = frozenset({"field_expression"})
+    receiver_write_kinds = _ASSIGN_KINDS | _AUG_KINDS
+    declared_types = DeclaredTypes(frozenset({"parameter", "let_declaration"}))
     keyword_kinds = frozenset()  # struct-literal field names are not reads.
     # ``self`` is its own node type in tree-sitter-rust, not an ``identifier``;
     # without it here every ``self.field`` read would drop its receiver (Go and
@@ -142,6 +153,21 @@ class RustDefUseDialect(BaseDefUseDialect):
             self._targets(child.child_by_field_name("pattern"), out, sink)
         return tuple(out)
 
+    def receiver_decl(self, fn_node: Node) -> str | None:
+        """The ``self_parameter`` as written (``&self``, ``&mut self``, ``self``)."""
+        params = fn_node.child_by_field_name("parameters")
+        found = next(
+            (c for c in params.named_children if c.type == "self_parameter"), None
+        ) if params is not None else None
+        return node_text(found) if found is not None else None
+
+    def _own_receiver(self, fn_node: Node, lmap: LanguageNodeMap) -> Receiver | None:
+        """``self`` when the signature takes it (``self_parameter``)."""
+        params = fn_node.child_by_field_name("parameters")
+        if params is None or not any(c.type == "self_parameter" for c in params.named_children):
+            return NO_RECEIVER
+        return self._receiver(lmap.self_identifiers)
+
     # -- head (loop clause / if condition) ------------------------------------
 
     def _head(
@@ -151,7 +177,9 @@ class RustDefUseDialect(BaseDefUseDialect):
         if t in lmap.loop_kinds:
             pattern = node.child_by_field_name("pattern")
             if pattern is not None:  # ``for PAT in expr`` -- binds every entry
+                start = len(defs)
                 self._targets(pattern, defs, uses)
+                self._loop_scoped(defs, start)
                 self._process(node.child_by_field_name("value"), defs, uses)
             else:  # ``while cond`` / ``while let`` / bare ``loop`` (no head)
                 self._condition(node.child_by_field_name("condition"), defs, uses)
@@ -180,6 +208,8 @@ class RustDefUseDialect(BaseDefUseDialect):
         if node is None:
             return
         t = node.type
+        if t == "use_declaration":
+            return
         if t in _ASSIGN_KINDS:
             self._targets(node.child_by_field_name("left"), defs, uses)
             self._process(node.child_by_field_name("right"), defs, uses)
@@ -191,8 +221,14 @@ class RustDefUseDialect(BaseDefUseDialect):
             self._process(node.child_by_field_name("right"), defs, uses)
             return
         if t == _LET_DECL:
+            start = len(defs)
             self._targets(node.child_by_field_name("pattern"), defs, uses)
-            self._process(node.child_by_field_name("value"), defs, uses)
+            # ``let`` binds a new name (shadowing included) from the end of
+            # the statement, so its own initializer reads the outer one.
+            value = node.child_by_field_name("value")
+            # ``let x;`` is assigned later: the borrow checker proves it.
+            self._declare(defs, start, node, valueless=value is None)
+            self._process(value, defs, uses)
             # ``let ... else { diverge }``: the arm runs only on mismatch, so
             # anything it writes is a may-def.
             alternative = node.child_by_field_name("alternative")

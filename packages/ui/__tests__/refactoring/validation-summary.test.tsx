@@ -24,4 +24,14 @@ describe("ValidationSummary", () => {
     const rows = getAllByRole("listitem").map((row) => row.textContent);
     expect(rows).toEqual(["tests/test_walker.pycalls walk_file", "tests/test_other.py"]);
   });
+
+  it("says what to do first when no test reaches the change", () => {
+    const step = "No test reaches this; add a characterization test for `walk` before the edit.";
+    const { getByText } = render(
+      <ValidationSummary
+        validation={{ ...validation, basis: "unknown", via: null, total: 0, tests: [], prerequisite: step }}
+      />,
+    );
+    expect(getByText(step)).toBeTruthy();
+  });
 });

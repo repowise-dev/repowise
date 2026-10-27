@@ -43,14 +43,15 @@ or rate limit can fail individual pages while the run completes.
 `repowise init --resume` writes only the pages that are absent and makes no
 model call for the ones you have, even if you switched provider.
 
-**Doctor reports zero pages.** Even a keyless run writes pages, so an empty
-wiki means the run did not finish. Run `repowise init --resume`.
+**Doctor reports zero pages.** A keyless run writes pages too. Zero pages
+means the run did not finish (run `repowise init --resume`) or the repo is
+Index only (run `repowise update --full`).
 
 **Memory or time on a very large repository.** Options, roughly in order of
 effect:
 
 ```bash
-repowise init --yes --no-prose --mode fast   # graph and essential git only; backfill later
+repowise init --yes --no-prose --mode fast   # Index only; `repowise update --full` adds the rest later
 REPOWISE_PARSE_WORKERS=2 repowise init       # fewer parse processes, less memory
 repowise init -x vendor/ -x 'generated/**'   # exclude what you never edit
 repowise init --max-file-pages 2000          # cap file pages, highest importance first
@@ -58,6 +59,21 @@ repowise init --max-file-pages 2000          # cap file pages, highest importanc
 
 The parse pool defaults to at most eight worker processes; each one holds its
 own parser, so lowering the count is the most direct memory lever.
+
+**Indexing one directory of a large repository.** When the path you index is a
+subdirectory of a larger git repository, git rows (per-file history, per-commit
+file detail) are recorded for that directory only, so the database stays
+proportional to the directory rather than to the whole repository. Co-change
+partners outside the directory are not recorded. Set `REPOWISE_GIT_SCOPE=repo`
+to record the whole repository instead. An index created before this change
+keeps its old rows until `repowise init --force` rebuilds it.
+
+**An update spends minutes after the files are already indexed.** After an
+update commits, repowise scans recent commits for what each did to code health.
+A commit that touches more than 300 files is skipped, so a bulk import cannot
+stall it; change the limit with `REPOWISE_COMMIT_HEALTH_MAX_FILES` (`0` removes
+it), or turn the scan off with `REPOWISE_COMMIT_HEALTH_COMMITS=0`. An update on
+a `--mode fast` index does not run the scan.
 
 **Indexing cost more than expected.** `repowise init --dry-run` shows the
 estimate without writing a wiki, `--test-run` generates for the top 10 files

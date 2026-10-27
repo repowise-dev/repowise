@@ -2,57 +2,48 @@
 
 <div align="center">
 
-<a href="https://www.repowise.dev"><img src=".github/assets/banner-v2.png" alt="repowise: evidence-backed codebase intelligence" width="100%" /></a>
+<a href="https://www.repowise.dev/?src=oss_readme_hero"><img src=".github/assets/banner.webp" alt="repowise: codebase intelligence for you and your coding agent" width="100%" /></a>
 
-<h1 align="center">Understand your codebase without paying your agent to rediscover it.</h1>
+<h1 align="center">Stop paying your agent to re-read your codebase.</h1>
 
-<p align="center">Repowise indexes your code, call graph, git history, tests, docs and design<br />
-decisions once, on your machine. Then you and your coding agent ask it things:<br />
-what calls this, what breaks if I change it, what is dead, what to fix first, and why it was built this way.</p>
+<p align="center">Repowise indexes your code, git history, tests and decisions once, on your machine.<br />
+Your coding agent asks the index instead of grepping and opening files, so it does about half the work.<br />
+You get the same answers in a dashboard: what calls this, what breaks, what to fix first, and why.</p>
 
 <p align="center">
-  <a href="#quickstart"><img src="https://img.shields.io/badge/SET_UP_WITH_YOUR_AGENT-one_line-F59520?style=for-the-badge&labelColor=0A0A0A" alt="Set up Repowise with your coding agent" /></a>
-  <a href="https://www.repowise.dev"><img src="https://img.shields.io/badge/LIVE_DEMO-repowise.dev-0A0A0A?style=for-the-badge&labelColor=F59520" alt="Open the live Repowise demo" /></a>
+  <a href="#quickstart"><img src="https://img.shields.io/badge/SET_UP-in_one_line-0A0A0A?style=for-the-badge&labelColor=F59520" alt="Set up in one line" /></a>
+  <a href="https://www.repowise.dev/?src=oss_readme_hero"><img src="https://img.shields.io/badge/LIVE_DEMO-repowise.dev-0A0A0A?style=for-the-badge&labelColor=B9A3E3" alt="Open the live Repowise demo" /></a>
 </p>
 
 <table align="center">
 <tr>
-<td align="center" width="250"><h2>−31.6%</h2></td>
-<td align="center" width="250"><h2>2.3×</h2></td>
-<td align="center" width="250"><h2>58,924</h2></td>
-</tr>
-<tr>
-<td align="center" valign="top"><sub><strong>less agent output</strong><br />3.8 vs 7.2 tool calls<br /><em>43 questions · p&lt;0.0001</em></sub></td>
-<td align="center" valign="top"><sub><strong>more defects surfaced than CodeScene</strong><br />same 20% review budget<br /><em>2,770 files · p=0.003</em></sub></td>
-<td align="center" valign="top"><sub><strong>files indexed in one run</strong><br />dotnet/runtime, one laptop<br /><em>120 min · 11.7 GiB peak</em></sub></td>
+<td align="center" width="260"><a href="docs/BENCHMARKS.md#2-what-changes-in-a-real-agent-loop"><b>Half the tool calls</b></a><br /><sub>your agent opens 3 files where it opened 7 · <em>31.6% less output</em></sub></td>
+<td align="center" width="260"><a href="docs/BENCHMARKS.md#4-command-output-compression"><b>Up to 99% less noise</b></a><br /><sub>from test runs, installs and git output · <em>every error line kept</em></sub></td>
+<td align="center" width="260"><a href="docs/BENCHMARKS.md#1-finding-the-right-files"><b>88% of the right files</b></a><br /><sub>found in one call · <em>next best tool: 61%</em></sub></td>
 </tr>
 </table>
 
-<p align="center"><sub><strong>Call graph checked against the compiler:</strong> 0.976 to 0.995 precision on Go and TypeScript,<br />
-and no tool that finds as much of the graph gets more of it right, in 7 of 7 comparisons.<br />
-<em>5 tools · 37,853 compiler edges · every losing row published</em></sub></p>
+<a href="https://www.repowise.dev/?src=oss_readme_hero"><img src=".github/assets/hero.webp" alt="Know the code, know what breaks, fix what matters. The local dashboard maps a repository's architecture, shows every file that imports the one you are about to change, ranks what to fix first on a code health map, connects services across repositories, and answers questions with charts." width="100%" /></a>
 
 <p align="center"><sub>
-Graph, risk, health, tests and dead code make <strong>zero LLM calls</strong> · no API key needed ·
-free and self-hosted · AGPL-3.0 or commercial
+Graph, risk, health, tests and dead code make <strong>zero LLM calls</strong> · no API key to index ·
+28 languages · Claude Code, Codex, Cursor and any MCP host · free and open source
 </sub></p>
 
 <p align="center">
-  <a href="https://repowise.dev/repo/repowise-dev/repowise"><img src="https://api.repowise.dev/badge/wiki/repowise-dev/repowise.svg?style=flat-square" alt="Explore Repowise's own code" /></a>
-  <a href="https://repowise.dev/repo/repowise-dev/repowise/code-health"><img src="https://api.repowise.dev/badge/health/repowise-dev/repowise.svg?style=flat-square" alt="Repowise code health" /></a>
+  <a href="https://repowise.dev/repo/repowise-dev/repowise"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fapi.repowise.dev%2Fbadge%2Fwiki%2Frepowise-dev%2Frepowise.json&style=flat-square" alt="Explore Repowise's own code" /></a>
+  <a href="https://repowise.dev/repo/repowise-dev/repowise/code-health"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fapi.repowise.dev%2Fbadge%2Fhealth%2Frepowise-dev%2Frepowise.json&style=flat-square" alt="Repowise code health" /></a>
   <a href="https://pypi.org/project/repowise/"><img src="https://img.shields.io/pypi/v/repowise?style=flat-square&logo=pypi" alt="PyPI version" /></a>
   <a href="https://www.gnu.org/licenses/agpl-3.0"><img src="https://img.shields.io/badge/license-AGPL--3.0-059669?style=flat-square" alt="License: AGPL 3.0" /></a>
 </p>
 
 <p align="center">
-  <a href="#what-it-does"><strong>What it does</strong></a> ·
   <a href="#quickstart"><strong>Quickstart</strong></a> ·
-  <a href="#your-agent-stops-guessing"><strong>Agents</strong></a> ·
-  <a href="#know-whats-dangerous-before-you-merge"><strong>Changes</strong></a> ·
-  <a href="#code-health"><strong>Code health</strong></a> ·
-  <a href="#past-one-repo"><strong>Workspaces</strong></a> ·
-  <a href="#measured-against-the-field"><strong>Evidence</strong></a> ·
-  <a href="#for-teams-and-enterprises"><strong>Enterprise</strong></a> ·
+  <a href="#your-agent-stops-guessing"><strong>For your agent</strong></a> ·
+  <a href="#what-it-does"><strong>What it does</strong></a> ·
+  <a href="#hosted"><strong>Hosted</strong></a> ·
+  <a href="#measured-against-the-field"><strong>Benchmarks</strong></a> ·
+  <a href="#for-teams-and-enterprises"><strong>Teams</strong></a> ·
   <a href="https://docs.repowise.dev"><strong>Docs</strong></a>
 </p>
 
@@ -60,15 +51,8 @@ free and self-hosted · AGPL-3.0 or commercial
 
 ---
 
-Repowise is an ambitious project. We want every engineer, and every agent working
-beside them, to understand a codebase the way the person who has maintained it for
-five years does: what calls what, what tends to break, what nobody uses anymore, and
-why it was built this way. Cutting tokens was never the goal. It happens anyway,
-because an agent that can ask the index stops searching, opening and re-reading
-files to find out. Measured against the other context tools on the same agent
-tasks, it is also the largest saving.
-
 <a id="quickstart"></a>
+<a id="set-it-up-in-one-line"></a>
 
 ## Set it up in one line
 
@@ -78,20 +62,49 @@ Open Claude Code, Codex, Cursor or any MCP-capable agent in your repository and 
 Read https://docs.repowise.dev/setup.md and set up Repowise in this repository.
 ```
 
-The agent installs Repowise, indexes the repo with no API key, wires itself to the
-index, and asks you before anything costs money. Prefer to do it yourself:
+The agent installs Repowise, indexes the repo with no API key, connects itself to
+the index, and asks you before anything costs money. To do it by hand:
 
 ```bash
 uv tool install repowise          # or: pipx install repowise / pip install repowise
 cd /path/to/your/repo
 repowise init --yes --no-prose    # graph, git, health, dead code, docs. No key, no spend.
-repowise serve                    # local dashboard + MCP server
+                                  # (add model-written docs any time with: repowise generate)
+repowise serve                    # dashboard + MCP server (needs Node 20+; first run downloads the UI)
 ```
 
-`init` wires Claude Code automatically. Then ask your agent *"Use Repowise
-`get_overview` to summarize this repository"* or *"What breaks if I change
-`src/auth.py`?"*
-[Full setup, every agent, optional model-written docs →](docs/start/QUICKSTART.md)
+Restart Claude Code or run `/mcp`, then ask *"What breaks if I change
+`src/auth.py`?"* or *"Use Repowise `get_overview` to summarize this repository."*
+`init` wires Claude Code for this repo and points the global repowise MCP entry
+here. [Full setup for every agent →](docs/start/QUICKSTART.md)
+
+---
+
+<a id="your-agent-stops-guessing"></a>
+
+## Your agent stops guessing
+
+Without an index, an agent rediscovers your codebase on every task: grep, open a
+file, open three more, grep again. Repowise answers those questions ahead of time,
+so the agent asks once and gets on with the work.
+
+In a measured run on `django/django`, an agent with Repowise made **3.8 tool calls
+instead of 7.2**, opened **3.0 files instead of 7.2** and wrote **31.6% less**, with
+answers just as good. That is the largest saving of the five context tools we
+tested. On a small local model the output cut reaches **47.9%**.
+[How it was measured →](docs/BENCHMARKS.md#2-what-changes-in-a-real-agent-loop)
+
+- Your agent gets **ten task-shaped MCP tools**. Ask about several files at once
+  and get callers, risk, tests, owners and the reasons behind the code in one answer.
+  [The tool list ↓](#the-ten-mcp-tools)
+- **Up to 99% less command noise.** `repowise distill` trims test, install and git
+  output before the agent reads it and keeps every error line.
+  [Distill →](docs/agent/DISTILL.md)
+- **Context before the agent asks.** Optional [hooks](docs/agent/HOOKS.md) warn it
+  off fragile files and stale paths, and Repowise keeps your `CLAUDE.md` and
+  `AGENTS.md` current from the index.
+- **See your own savings.** `repowise saved` and the dashboard's Usage and savings
+  page count the tokens your agent no longer has to read.
 
 ---
 
@@ -100,24 +113,73 @@ repowise serve                    # local dashboard + MCP server
 
 ## What it does
 
-One index, three ways to use it. Find the question you came with; each one links to
-the page that answers it.
+One index of your code, its history and its decisions, used three ways: to
+understand the code, to change it safely, and to keep improving it.
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/product-map-dark.svg" />
-  <img src=".github/assets/product-map.svg" alt="Repowise reads your code, git history, tests and coverage, docs and decisions, and the contracts between repositories into one local index. From it you and your coding agent get answers to understand the code, change it safely and improve it, in coding agents, the editor, CI and pull requests, a local dashboard and multi-repo workspaces." width="100%" />
-</picture>
+<table>
+<tr>
+<td width="50%" valign="top">
+<img src=".github/assets/readme/graph.webp" alt="Architecture map: every file grouped into communities, with a band for each strong link between them" width="100%" />
+<h3>See how it fits together</h3>
+A call graph across 28 languages, an architecture map you can explore, C4 views,
+and a generated wiki for every module and file.<br />
+<a href="docs/layers/GRAPH.md">The graph</a> · <a href="docs/layers/WIKI.md">Docs</a>
+</td>
+<td width="50%" valign="top">
+<img src=".github/assets/readme/what-breaks.webp" alt="A file selected on the architecture map with every file that imports it highlighted, and an inspector with its rank and neighbours" width="100%" />
+<h3>Know what breaks</h3>
+Every caller of what you changed, the files that usually change with it but are
+missing from your diff, and the tests that reach it.<br />
+<a href="docs/layers/CHANGE_RISK.md">Change risk</a> · <a href="docs/layers/TEST_INTELLIGENCE.md">Tests</a>
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+<img src=".github/assets/readme/health.webp" alt="Code health map: every folder as a disc coloured by health, with the lowest-scoring files and what needs attention in a side rail" width="100%" />
+<h3>Fix what matters</h3>
+A 1 to 10 health score for every file, validated against real bug history, a
+ranked fix-first queue, refactoring plans and dead code.<br />
+<a href="docs/layers/CODE_HEALTH.md">Code health</a> · <a href="docs/layers/REFACTORING.md">Refactoring</a>
+</td>
+<td width="50%" valign="top">
+<img src=".github/assets/readme/system-map.webp" alt="Workspace system map: services across three repositories with their health and the HTTP and data contracts between them" width="100%" />
+<h3>Follow it across repos</h3>
+Services and the HTTP, gRPC and event contracts between them, with a guard for
+breaking changes and the consumer files they affect.<br />
+<a href="docs/scale/WORKSPACES.md">Workspaces</a>
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+<img src=".github/assets/readme/ask.webp" alt="Chat answer listing the riskiest files in the repository and why each is risky" width="100%" />
+<h3>Ask it anything</h3>
+Cited answers and charts from the dashboard, or the same answers through MCP for
+your agent.<br />
+<a href="docs/start/DASHBOARD.md">Dashboard</a> · <a href="docs/agent/MCP_TOOLS.md">MCP tools</a>
+</td>
+<td width="50%" valign="top">
+<img src=".github/assets/readme/docs.webp" alt="Generated wiki page for the repository with a summary, system map and page outline" width="100%" />
+<h3>Remember why</h3>
+Decisions mined from ADRs, comments, commits, PRs and agent sessions, each tied to
+the code it governs, plus docs checked against the code.<br />
+<a href="docs/layers/DECISIONS.md">Decisions</a> · <a href="docs/layers/DOC_DRIFT.md">Doc drift</a>
+</td>
+</tr>
+</table>
+
+<details>
+<summary><strong>Every question it answers</strong></summary>
 
 ### Understand the code
 
 | You ask | Repowise gives you |
 |---|---|
 | *How does checkout work in this repo?* | A cited answer built from the call graph and the generated docs, in one call. [Search and answers](docs/layers/WIKI.md) |
-| *What calls this function, and what does it call?* | A call graph across 26 parsed languages, every edge stamped with how it was resolved and how far to trust it, plus traced execution flows from each entry point. [The graph](docs/layers/GRAPH.md) |
+| *What calls this function, and what does it call?* | A call graph across 28 parsed languages, every edge stamped with how it was resolved and how far to trust it, plus traced execution flows from each entry point. [The graph](docs/layers/GRAPH.md) |
 | *Can I get docs for this codebase?* | A wiki for every module and file, rendered from the code's structure with no key, or written by a model when you choose. It updates incrementally after each commit. [Docs](docs/layers/WIKI.md) |
 | *Which of our docs are wrong?* | Markdown checked against the tree: every reference to a file or symbol the code no longer has, with the line to edit. [Doc drift](docs/layers/DOC_DRIFT.md) |
 | *Why is it built this way?* | Decisions mined from ADRs, `# WHY:` comments, commit and PR history and your agent sessions, each tied to the code it governs and flagged when it goes stale. [Decisions](docs/layers/DECISIONS.md) |
-| *Who knows this code?* | Owners, bus factor, knowledge-loss risk when the main author goes quiet, and suggested reviewers. [Ownership](docs/layers/OWNERSHIP.md) |
+| *Who knows this code?* | Owners, bus factor, fading ownership when the main author goes quiet, and suggested reviewers. [Ownership](docs/layers/OWNERSHIP.md) |
 | *Can I see the architecture?* | An explorable dependency map, C4 views, and a Structurizr export, no model involved. [Dashboard](docs/start/DASHBOARD.md) |
 
 ### Change it safely
@@ -138,11 +200,13 @@ the page that answers it.
 |---|---|
 | *What should we fix first?* | A ranked queue weighing impact against effort, using churn, fan-in, coverage and bug history. [Fix first](docs/layers/CODE_HEALTH.md#fix-first) |
 | *Where is the debt?* | A 1 to 10 score for every file from 53 deterministic detectors, split into defect risk, maintainability and performance, validated against real bug history. [Code health](docs/layers/CODE_HEALTH.md) |
-| *Why is this slow?* | N+1 queries, I/O in loops, blocking calls inside async code and quadratic loops, traced across function and file boundaries. [Performance](docs/layers/CODE_HEALTH.md#performance-findings) |
+| *Why is this slow?* | N+1 queries, I/O in loops, blocking calls inside async code and quadratic loops, traced across function and file boundaries. [Performance](docs/layers/PERFORMANCE.md) |
 | *How do I break this up safely?* | Concrete refactoring plans: Extract Method, Extract Class, Move Method, Split File, Break Cycle, with the exact symbols that move and what moves with them. Ready to hand to an agent. [Refactoring](docs/layers/REFACTORING.md) |
 | *What can we delete?* | Unreachable files, unused exports and unused packages, each with a confidence tier and the evidence behind it. [Dead code](docs/layers/DEAD_CODE.md) |
 | *Where do bugs keep landing?* | Bug-fix commits traced to files and symbols, and a warning when your agent edits a bug magnet. [Bug history](docs/layers/BUG_HISTORY.md) |
-| *Are our tests testing anything?* | Tests with no assertions, tests that only check their own mocks, and untested hotspots. [Test-quality smells](docs/layers/CODE_HEALTH.md#test-quality-smells) |
+| *Are our tests testing anything?* | Tests with no assertions, tests that only check their own mocks, and untested hotspots. [Test-quality smells](docs/layers/CODE_HEALTH.md#findings) |
+
+</details>
 
 <details>
 <summary><strong>Things people do not expect it to do</strong></summary>
@@ -169,166 +233,61 @@ the page that answers it.
 
 </details>
 
-<div align="center">
-<img src=".github/assets/demo.gif" alt="A real Claude Code session asks Repowise what breaks before editing a file, then the dashboard shows the ranked Fix first queue, a refactoring plan ready to hand to an agent, dead code with confidence tiers, a commit ranked against the repo's own history, and the HTTP contract between a frontend and backend on the workspace system map" width="100%" />
-<p><sub>Recorded on this repository and its workspace: an agent asking the index, then the
-dashboard and CLI on the same local index. No API key and nothing uploaded.</sub></p>
-</div>
+---
 
-### Pick your front door
+<a id="hosted"></a>
+<a id="foresight"></a>
 
-| If you care about... | Start here |
-|---|---|
-| **A coding agent that knows the repository** | Task-shaped context in fewer calls, with decisions and risk delivered before the agent asks. [For agents ↓](#your-agent-stops-guessing) |
-| **Safer pull requests and faster CI** | Change risk, symbol-level callers, missing co-changes and the tests a diff needs. [Change intelligence ↓](#know-whats-dangerous-before-you-merge) |
-| **Paying down the code most likely to hurt you** | A defect-validated health score, then the concrete fix. [Code health ↓](#code-health) |
-| **An estate of many repositories** | Contracts matched across repos, breaking-change guards, architecture rules in CI, one MCP endpoint for everything. [Workspaces ↓](#past-one-repo) |
-| **Rolling it out across a company** | Self-hosted with nothing leaving your network, per-language accuracy, sizing, compliance status and licensing in one place. [Teams and enterprise ↓](#for-teams-and-enterprises) |
+## Hosted, and Foresight
+
+Everything above runs free on your own machine. [repowise.dev](https://www.repowise.dev/?src=oss_readme_section)
+runs it for you, private repos included, and is where **Foresight** arrives first:
+models trained on years of real commits and fixes that rank the files a fix will
+touch, name what a change forgot, and explain every answer, with no LLM.
+[What Foresight does →](docs/business/FORESIGHT.md)
+
+<a href="https://www.repowise.dev/?src=oss_readme_section"><img src=".github/assets/hosted-foresight.webp" alt="Hosted at repowise.dev: everything in this README with nothing to run, private repos included, one MCP endpoint for Claude, ChatGPT and Cursor, the PR bot with free deterministic review and AI review for cents a pull request, Jira and Confluence, and team workspaces. Coming to repowise.dev: Foresight, models trained on how real codebases change that rank the files a fix will touch, flag what a change forgot, and explain every answer." width="100%" /></a>
+
+<p align="center">
+  <a href="https://www.repowise.dev/login?mode=signup&src=oss_readme_section"><img src="https://img.shields.io/badge/START_FREE-hosted-0A0A0A?style=for-the-badge&labelColor=F59520" alt="Start free on hosted repowise.dev" /></a>
+  <a href="https://www.repowise.dev/foresight?src=oss_readme_section"><img src="https://img.shields.io/badge/FORESIGHT-join_the_waitlist-0A0A0A?style=for-the-badge&labelColor=B9A3E3" alt="Join the Foresight waitlist" /></a>
+</p>
+
+Already indexed locally? `repowise publish` puts the repo on repowise.dev in one
+command. It indexes your GitHub remote, so nothing is uploaded from your machine.
+Public repos are free.
 
 ---
 
-## Your agent stops guessing
+<a id="know-whats-dangerous-before-you-merge"></a>
 
-Every question your agent asks about a repository has an answer that could have been
-computed ahead of time. *Who calls this function? What breaks if I change it? Why is
-it written this way? Which files are actually dangerous?* Without an index, the agent
-rediscovers that answer on every task: grep, read, re-read, forget.
+## Know what breaks before you merge
 
-Repowise gives Claude Code, Codex, Cursor, VS Code and any other MCP host
-**ten task-shaped MCP tools** backed by one index of graph, git, docs and decisions.
-Most code tools are built around data entities, one file or one symbol at a time,
-which pushes agents into long chains of sequential calls. These are built around
-tasks: pass several targets in one call and get the whole picture back.
-[The tool list ↓](#the-ten-mcp-tools)
+All of this comes from the graph and git history, with no LLM, so the same diff
+always gets the same answer.
 
-**About tokens.** Every tool in this category promises to cut your token bill, and
-there are a lot of tools in this category. We think tokens are a symptom. An agent
-burns them because it does not know the codebase, so it searches, opens files, opens
-more files, and searches again. Give it an index that already knows, and the savings
-show up on their own. They also happen to be the best we have measured: in a paired
-agent loop over 43 questions on `django/django`, Repowise cut the agent's own output
-by **31.6%** (p&lt;0.0001) and got there in **3.8 tool calls instead of 7.2**, ahead
-of every other context tool in the same run. On 42 sealed retrieval tasks it found
-**0.876** of the files a fix needed, against **0.610** for the next tool.
-[Method and every row we lose →](docs/BENCHMARKS.md)
-
-**Context arrives before the agent asks.** Optional [hooks](docs/agent/HOOKS.md) push
-it into the session when it matters: the governing decision when your agent edits a
-file that decision covers, a warning when it touches a file with a run of recent bug
-fixes, a short briefing at session start, and a correction when it reaches for a path
-that does not exist.
-
-**It learns from how you work.** Switch on transcript capture
-(`repowise decision source set session --on`) and Repowise reads your own agent
-transcripts for the corrections you keep making, turning the durable ones into
-tracked decisions it delivers back later. Transcripts never leave your machine; one
-batched model call per update turns the candidates that clear the deterministic
-gates into records, and `--no-llm` keeps the gates and drops that call.
-
-<details>
-<summary><strong>What the index builds</strong></summary>
-
-Five layers, one index:
-
-| Layer | What it contributes |
-|---|---|
-| **1. Graph** | File and symbol dependencies across 26 AST-parsed languages, confidence-stamped call resolution, communities, centrality, cycles and execution flows |
-| **2. Git history** | Hotspots, ownership, co-change, bus factor and bug-fix history: behavioural signals static analysis cannot see |
-| **3. Docs** | A wiki for every module and file, hybrid search, and your own markdown checked against the tree for claims the code no longer supports |
-| **4. Decisions** | Architectural rationale from ADRs, inline markers, commits, PRs and agent sessions, each claim traced to evidence |
-| **5. Health and change** | 53 deterministic detectors across defect risk, maintainability and performance, change risk, test impact, dead code and concrete refactoring plans |
-
-The structural wiki needs no model. Model-written prose is an optional upgrade, one
-page or directory at a time.
-
-[How the layers fit together →](docs/layers/INTELLIGENCE_LAYERS.md) ·
-[How the graph earns trust →](docs/layers/GRAPH.md)
-
-</details>
-
-### Also: stop paying for output nobody reads
-
-Most of what an agent reads back from a shell command is noise: 300 lines of passing
-tests wrapped around 4 failures, full commit bodies when it asked what changed
-recently. `repowise distill <cmd>` compresses command output **before the agent reads
-it**, errors first, exit code preserved.
-
-```bash
-repowise distill pytest          # 61% fewer tokens, all 11 failure lines kept
-repowise distill git log -50     # 89% fewer tokens
-repowise saved                   # what distillation saved you, in tokens and dollars
-```
-
-Every omission leaves an inline `[repowise#<ref>]` marker that `repowise expand <ref>`
-reverses in full, so the agent can pull the detail back without re-running the
-command. Small outputs pass through untouched. An opt-in hook rewrites noisy commands
-for the agent automatically.
-
-<div align="center">
-<img src=".github/assets/savings.png" alt="repowise Costs dashboard: tokens and dollars saved across distill and the MCP tools" width="100%" />
-<p align="center"><sub>The <strong>Costs</strong> dashboard tallies both savings surfaces. Every event is priced from the model that produced it, and where the evidence is ambiguous it declines to claim a saving. Example from a week of heavy local use.</sub></p>
-</div>
-
-Full guide: **[docs/agent/DISTILL.md →](docs/agent/DISTILL.md)**
-
----
-
-## Know what's dangerous before you merge
-
-Four deterministic signals, all computed from the graph and git history, no LLM:
-
-- **Change risk.** Score any commit or `base..HEAD` range **0-10** from the shape of
-  the diff, ranked against your repository's own recent commits. PR mode returns
-  directives an agent can act on: `may_break`, `missing_cochanges`, `missing_tests`,
-  `tests_to_run`. One command: `repowise risk main..HEAD`.
-  ([reference →](docs/layers/CHANGE_RISK.md))
-- **Bug history.** Which files and symbols actually get bug-fixed, and how recently.
-  Doc, test and config commits are filtered out so the count means what it says, and a
-  file with a run of recent fixes is flagged as a bug magnet while you edit it.
-  ([reference →](docs/layers/BUG_HISTORY.md))
-- **Test intelligence.** Which tests reach a file and which ones a diff exercises, from
-  a coverage report or from the call graph. ([reference →](docs/layers/TEST_INTELLIGENCE.md))
-- **Change coordination.** Which other open branches edit the files you are editing,
-  every row saying why it is listed, and whether the diff in front of you is one
-  change or several unrelated ones. `repowise overlap` and `repowise risk`.
-  ([reference →](docs/layers/CHANGE_RISK.md#branch-overlap))
-
-### Which tests cover this file, without a coverage report
-
-Ingest LCOV, Cobertura, Clover, JaCoCo or a Go coverprofile and you get the measured
-answer. Most repositories never produce one, so the graph answers instead: a test file
-that imports a source file *reaches* it, which is a recorded edge, where most tools
-fall back to matching file names.
-
-```bash
-repowise impacted-tests main..HEAD   # only the tests this diff exercises
-repowise health                      # untested hotspots, graph-aware
-```
-
-<sub>Checked against a real <code>coverage run --contexts=test</code> on this repository:
-<strong>95.7% precision</strong> on what reaches a file and <strong>97.5% on the run
-list</strong>. Every row is stamped <code>basis: "measured"</code> or
-<code>"inferred"</code>, measured wins where both can answer, and an empty answer means
-unknown, never "no tests".
-<a href="docs/layers/TEST_INTELLIGENCE.md"><strong>Test intelligence →</strong></a></sub>
-
-### In CI, and on every pull request
-
-Patch coverage, doc drift, security and change risk run as gates in your own
-pipeline through the [GitHub Action](docs/start/CI.md#github-actions), a
-[GitLab template](docs/start/CI.md#gitlab) or plain CLI commands anywhere else, with
-annotations, SARIF and GitLab Code Quality output. The gates need no API key.
-[Repowise in CI →](docs/start/CI.md)
+- **Change risk.** Score any commit or branch 0 to 10 against your repository's own
+  recent commits, with what it may break, the companion files it forgot, the
+  tests it is missing and the tests to run. `repowise risk main..HEAD`
+  ([reference](docs/layers/CHANGE_RISK.md))
+- **Tests without a coverage run.** Which tests reach a file and which ones a diff
+  exercises, from a coverage report when you have one and from the call graph
+  when you do not: **97.5% correct** on which tests to run.
+  `repowise impacted-tests main..HEAD` ([reference](docs/layers/TEST_INTELLIGENCE.md))
+- **Bug magnets.** Which files keep getting bug fixes, with a warning when your agent
+  edits one. ([reference](docs/layers/BUG_HISTORY.md))
+- **Branch overlap.** Other open branches editing the same files. `repowise overlap`
+  ([reference](docs/layers/CHANGE_RISK.md#branch-overlap))
+- **In CI.** Patch coverage, doc drift, security and change risk as gates through the
+  [GitHub Action](docs/start/CI.md#github-actions), a [GitLab template](docs/start/CI.md#gitlab)
+  or plain CLI, with SARIF output. No API key. [Repowise in CI →](docs/start/CI.md)
 
 <a id="the-pr-bot"></a>
 
-On GitHub you can also install the free **[Repowise PR Bot](https://github.com/apps/repowise-bot)**,
-a hosted GitHub App that puts the same analysis on every pull request. One comment,
-edited in place on every push, and **a green PR gets no comment at all**. It shows
-symbol-level blast radius (the contracts the PR changed and every caller outside the
-PR), the tests and co-change partners missing from the change, change risk against
-the repository's own history, and a public analysis page per PR. Zero LLM calls, so
-the same diff always gets the same review.
+**On every pull request.** The free **[Repowise PR Bot](https://github.com/apps/repowise-bot)**
+posts one comment, edited in place on every push, with the callers outside the PR,
+the tests and companion files it is missing, and its change risk. A green PR gets no
+comment at all.
 
 <img src=".github/assets/pr-bot/pr-page-blast-map-dark.png" alt="The dark Repowise per-PR analysis page showing change risk, repository health, changed contracts, outside callers, newly added findings, and a blast-radius treemap of the repository" width="100%" />
 
@@ -336,102 +295,61 @@ the same diff always gets the same review.
 [its analysis page →](https://repowise.dev/pr/repowise-dev/repowise/1204) ·
 [install the PR bot →](https://github.com/apps/repowise-bot)</sub>
 
+<a id="change-evidence"></a>
+
+### Every change, with its evidence
+
+Each merged PR or commit becomes a **Change Record**: what it touched, who owns it,
+the tests that reach it, the contracts and decisions it crosses, and what happened
+after it landed. No forge API is called.
+
+| You ask | Repowise gives you |
+|---|---|
+| *What landed in this PR, and what backs it up?* | The change's evidence checklist, each item `ok`, `attention` or `unknown`, with an in-toto export. [Change Records](docs/layers/CHANGES.md) |
+| *Can CI hold changes to our payment code to a higher bar?* | Rules in `.repowise/policies.yaml`, matched to components by name, tag or criticality and evaluated by `repowise check`, with SARIF or JUnit output. [Change policy](docs/layers/POLICY.md) |
+| *Something broke. Which change do we read first?* | Recent changes ranked against an error, a stack trace or an issue. On 43 real regressions, the change a later revert or fix named was in the top 5 for 67% of them, against 28% for ranking by shared files. [Suspects](docs/layers/CHANGES.md#suspects) |
+| *Who owns this, and are they still working on it?* | Backstage-shaped components with owners from your catalog and CODEOWNERS, compared with the last 90 days of commits. [Components](docs/layers/COMPONENTS.md) |
+| *Can we show an auditor or an acquirer where we stand?* | Evidence packs: a repository assessment, a change report for a period and a component inventory, as JSON, Markdown, HTML or CSV. [Reports](docs/layers/REPORTS.md) |
+
 ---
 
 <a id="code-health"></a>
 
-## ★ Know exactly what to fix
+## Know exactly what to fix
 
-A score that says *"this file is risky"* is where most tools stop. Repowise scores
-every file, finds where the risk concentrates, and names the specific fix.
+Every file gets a 1 to 10 score from **53 deterministic detectors**, read three ways:
+defect risk, maintainability and performance. Performance findings such as N+1
+queries and I/O in loops are traced across functions and files.
 
-<div align="center">
-<img src=".github/assets/health-loop.svg" alt="repowise code-health loop: deterministic markers fan into three signals, the graph and git history locate where risk concentrates, and refactoring intelligence emits concrete plans your agent executes" width="100%" />
-</div>
+The score is checked against real bugs. On 21 open-source projects, ranking by
+Repowise found **2.3x as many later-buggy files as CodeScene** in the same review
+budget. It also checks itself on your repository after every index: *"16 of the 20
+lowest-health files had a bug fix in the last 6 months, 3.3x the 24% baseline."*
 
-Every file is scored 1-10 by **53 deterministic detectors** (McCabe complexity, brain
-methods, LCOM4 cohesion, god classes, clone detection, untested hotspots, change
-entropy, prior-defect history and more), read through three lenses: **defect risk**,
-**maintainability** and **performance**. Performance findings such as N+1 queries and
-I/O in loops are traced *across* functions and files through the call graph, which is
-where file-local linters lose them. Only 25 of the 53 detectors move the defect score,
-because that is the number carrying published accuracy claims.
-
-> **Zero LLM calls, zero cloud.** Detector weights are **calibrated against a real
-> defect corpus, not hand-tuned**: every file scored at a commit before the bug
-> window so nothing leaks backward, with file size as an explicit control, so a
-> detector only earns weight for defect lift beyond a file being big.
-
-**It checks itself on your repository.** After every index, Repowise compares its own
-flags with your git history and tells you what it found: *"16 of the 20 lowest-health
-files had a bug fix in the last 6 months, 3.3x the 24% baseline."* If that number is
-bad on your codebase, you will see it.
-
-**Then it names the fix.** **Extract Class**, **Extract Helper**, **Move Method**,
-**Break Cycle**, **Split File** or **Extract Method**, with the exact methods, edges
-and symbols that move, the callers and co-changing files that move with them, and a
-ranking that puts a fix on a central hub above the same fix on a leaf. Extract Method
-runs a dataflow pass over the function to lift the exact span and infer a
-behaviour-preserving signature.
+Then it names the fix: **Extract Method**, **Extract Class**, **Move Method**,
+**Split File** or **Break Cycle**, with the exact symbols that move, ranked so a fix
+on a central file comes before the same fix on a leaf. Each plan has a copy-to-agent
+button.
 
 ```bash
 repowise next                          # what to fix first, ranked by impact and effort
-repowise health                        # KPIs and lowest-scoring files
-repowise health --refactoring-targets  # ranked, concrete plans
-repowise health --trend                # snapshots plus declining-health alerts
+repowise health --refactoring-targets  # concrete plans
 repowise dead-code                     # what can go, by confidence tier
 ```
 
-The dashboard renders each plan as a card with a copy-to-agent button. An optional
-model step, never in the indexing path, expands a plan into generated code and a
-unified diff.
-
-<sub>Validated on <strong>21 open-source repositories across 9 languages</strong>
-(2,826 files scored at a fixed point and checked against the following 6 months of bug
-fixes): <strong>ROC AUC 0.737</strong> [0.683, 0.787]. Against <strong>CodeScene</strong>
-on the 2,770 files both tools scored, ranking by Repowise surfaces <strong>2.3x the
-defects under a fixed review budget</strong> (paired, p = 0.003). CodeScene keeps a
-shorter, slightly more precise list.
-<a href="docs/BENCHMARKS.md#5-code-health-predicts-defects">Full head-to-head and its limits →</a></sub>
-
-Guides: **[code health](docs/layers/CODE_HEALTH.md)** ·
-**[refactoring](docs/layers/REFACTORING.md)** ·
-**[dead code](docs/layers/DEAD_CODE.md)**
-
----
-
-## See all of it
-
-`repowise serve` starts the full web dashboard next to the MCP server. No separate
-setup, all local.
-
-<table>
-<tr>
-<td width="50%"><img src=".github/assets/dashboard/architecture-page.png" alt="Architecture view: the dependency graph laid out and explorable, with a context drawer per node" width="100%" /><br/><sub><b>Architecture</b> · the dependency graph, laid out and explorable, with per-node context and change coupling</sub></td>
-<td width="50%"><img src=".github/assets/dashboard/code-health-map.png" alt="Code health map: every file as a bubble, hover to inspect score, coverage and tests" width="100%" /><br/><sub><b>Code Health</b> · every file as a bubble, hover any one to inspect its score, size, coverage and findings</sub></td>
-</tr>
-<tr>
-<td width="50%"><img src=".github/assets/dashboard/chat-page.png" alt="Chat view: ask questions against the indexed repo, with answers that cite the files and pages they came from" width="100%" /><br/><sub><b>Chat</b> · ask the codebase a question, answers cite the files and pages they came from</sub></td>
-<td width="50%"><img src=".github/assets/dashboard/docs-page.png" alt="Docs view: auto-generated wiki pages with a tree, mermaid diagrams, and freshness badges" width="100%" /><br/><sub><b>Docs</b> · generated wiki pages for the whole codebase, with confidence and freshness badges</sub></td>
-</tr>
-</table>
-
-Also in there: **Architecture** and **C4** views, the **Knowledge Graph** and a
-zoomable map, **Risk**, **Hotspots**, **Coupling** and **Blast radius**,
-**Contributors** and **Ownership**, **Decisions** with an evidence drawer and
-timeline, **Symbols**, **Security**, **Dead code**, **Costs** and **Workspace**.
-Every view and what it answers: **[docs/start/DASHBOARD.md →](docs/start/DASHBOARD.md)**
+[Code health](docs/layers/CODE_HEALTH.md) · [Refactoring](docs/layers/REFACTORING.md) ·
+[Dead code](docs/layers/DEAD_CODE.md) · [How it was validated →](docs/BENCHMARKS.md#5-code-health-predicts-defects)
 
 ---
 
 <a id="past-one-repo"></a>
 
-## One intelligence layer across your software estate
+## Across your repositories
 
-Real systems are not one repository, and the expensive failures live in the gaps
-between them. Change a backend contract and Repowise can name the frontend calls that
-consume it, the services downstream, the companion files missing from the change, and
-the architecture rule the new dependency violates, before it ships.
+Real systems are more than one repository, and the expensive failures live between
+them. Change a backend contract and Repowise names the frontend calls that consume
+it, the services downstream, and the architecture rule the new dependency breaks,
+before it ships.
 
 | Workspace intelligence | What it answers |
 |---|---|
@@ -443,204 +361,40 @@ the architecture rule the new dependency violates, before it ships.
 | **Architecture health** | How coupled is the estate? Propagation cost, the cyclic core, service roles and a deterministic 1-10 architecture score. |
 | **Federated context** | One dashboard and one MCP server answer across every repository while keeping repo-level evidence. |
 
-The system map models **services**, not just repository boxes, and never conflates a
-real contract with "these files often changed together". HTTP field-level comparison
-covers a bounded OpenAPI 3.x subset; matched consumers prove endpoint exposure, not
-field use or runtime failure.
-**[Workspace guide and exact support matrix →](docs/scale/WORKSPACES.md)**
-
-Worktrees and updates stay light: a linked worktree seeds its index from the base
-checkout, and post-commit hooks, file watching, webhooks or polling keep each
-repository and the cross-repo graph current.
+[Workspace guide and support matrix →](docs/scale/WORKSPACES.md) ·
 [Keeping the index fresh →](docs/scale/AUTO_SYNC.md)
 
 ---
 
-## Supported languages
-
-**26 languages parsed to an AST, 40 on a five-rung ladder, framework-aware where an
-ecosystem handler exists.** Every language ships in the open-source distribution.
-
-<p>
-  <strong>Full &nbsp;</strong>
-  <img src="https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python" />
-  <img src="https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript" />
-  <img src="https://img.shields.io/badge/JavaScript-F7DF1E?style=flat-square&logo=javascript&logoColor=black" alt="JavaScript" />
-  <img src="https://img.shields.io/badge/Svelte-FF3E00?style=flat-square&logo=svelte&logoColor=white" alt="Svelte" />
-  <img src="https://img.shields.io/badge/Vue-42B883?style=flat-square&logo=vuedotjs&logoColor=white" alt="Vue" />
-  <img src="https://img.shields.io/badge/Java-ED8B00?style=flat-square&logo=openjdk&logoColor=white" alt="Java" />
-  <img src="https://img.shields.io/badge/Kotlin-7F52FF?style=flat-square&logo=kotlin&logoColor=white" alt="Kotlin" />
-  <img src="https://img.shields.io/badge/Go-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go" />
-  <img src="https://img.shields.io/badge/Rust-000000?style=flat-square&logo=rust&logoColor=white" alt="Rust" />
-  <img src="https://img.shields.io/badge/C++-00599C?style=flat-square&logo=cplusplus&logoColor=white" alt="C++" />
-  <img src="https://img.shields.io/badge/C%23-512BD4?style=flat-square&logo=csharp&logoColor=white" alt="C#" />
-  <img src="https://img.shields.io/badge/Scala-DC322F?style=flat-square&logo=scala&logoColor=white" alt="Scala" />
-  <img src="https://img.shields.io/badge/Ruby-CC342D?style=flat-square&logo=ruby&logoColor=white" alt="Ruby" />
-</p>
-<p>
-  <strong>Good &nbsp;</strong>
-  <img src="https://img.shields.io/badge/C-A8B9CC?style=flat-square&logo=c&logoColor=black" alt="C" />
-  <img src="https://img.shields.io/badge/Swift-F05138?style=flat-square&logo=swift&logoColor=white" alt="Swift" />
-  <img src="https://img.shields.io/badge/PHP-777BB4?style=flat-square&logo=php&logoColor=white" alt="PHP" />
-  <img src="https://img.shields.io/badge/Dart-0175C2?style=flat-square&logo=dart&logoColor=white" alt="Dart" />
-  <img src="https://img.shields.io/badge/Delphi-EE1F35?style=flat-square&logo=delphi&logoColor=white" alt="Object Pascal / Delphi" />
-  <img src="https://img.shields.io/badge/COBOL-005CA5?style=flat-square" alt="COBOL" />
-  <img src="https://img.shields.io/badge/GDScript-478CBF?style=flat-square&logo=godotengine&logoColor=white" alt="GDScript / Godot" />
-  <img src="https://img.shields.io/badge/VB.NET-945DB7?style=flat-square&logo=dotnet&logoColor=white" alt="VB.NET" />
-  <img src="https://img.shields.io/badge/Elixir-6E4A7E?style=flat-square&logo=elixir&logoColor=white" alt="Elixir" />
-  <img src="https://img.shields.io/badge/F%23-378BBA?style=flat-square&logo=fsharp&logoColor=white" alt="F#" />
-  <img src="https://img.shields.io/badge/Objective--C-438EFF?style=flat-square&logo=apple&logoColor=white" alt="Objective-C" />
-  &nbsp;<strong>· Partial &nbsp;</strong>
-  <img src="https://img.shields.io/badge/Luau-00A2FF?style=flat-square&logo=lua&logoColor=white" alt="Luau" />
-  <img src="https://img.shields.io/badge/Razor-512BD4?style=flat-square&logo=blazor&logoColor=white" alt="Razor / Blazor" />
-</p>
-
-<details>
-<summary><strong>The full ladder, and what each rung gives you</strong></summary>
-
-| Rung | Languages | What you get |
-|---|---|---|
-| **Full** (13) | Python · TypeScript · JavaScript · Svelte · Vue · Java · Kotlin · Go · Rust · C++ · C# · Scala · Ruby | The whole pipeline: AST symbols, import resolution, a resolved call graph, heritage, docstrings, framework edges and code-health markers |
-| **Good** (11) | C · Swift · PHP · Dart · Object Pascal · COBOL · GDScript · VB.NET · Elixir · F# · Objective-C | All of the above except the full health suite, within the language-specific ceilings in the full matrix |
-| **Partial** (2) | Luau / Roblox · Razor / Blazor | Luau: AST symbols and `require()` resolution, Rojo and `.luaurc` aware. Razor: component symbols, `@code` and component-tag call edges, C# health markers; no import resolution yet |
-| **Lightweight** (6) | Clojure · Haskell · Lean 4 · Erlang · HTML · QML | A real file-to-file import graph, and no symbol-level claims |
-| **Structural** (8) | R · Zig · Julia · Elm · OCaml · Crystal · Nim · D | Git history: blame, hotspots, co-change, ownership, bug history |
-
-SQL and dbt projects get `ref()` / `source()` lineage, shell scripts get function-level
-symbols, HTML pages contribute their `<script src>` and `<link href>` dependencies, and
-OpenAPI, Protobuf, GraphQL, Dockerfile, Terraform and similar formats get dedicated
-handlers. Anything else is still tracked through git history.
-
-Every call edge is stamped with **how it was resolved and how much to trust it**, from
-`same_file` at 0.95 down to a repo-wide name match at 0.50, labelled as the guess it
-is. Accuracy per language, graded against each language's own compiler:
-[docs/BENCHMARKS.md#accuracy-by-language](docs/BENCHMARKS.md#accuracy-by-language).
-
-Full matrix: **[docs/layers/LANGUAGE_SUPPORT.md →](docs/layers/LANGUAGE_SUPPORT.md)** ·
-adding a language takes five small steps and no changes to the parser core:
-**[docs/architecture/language-support.md →](docs/architecture/language-support.md)** ·
-languages moving up the ladder: **[roadmap →](ROADMAP.md#languages)**
-
-</details>
-
----
-
-## Supported agents and editors
-
-**Six agents wired end to end · two at the Full tier · every other MCP host one
-paste away.**
-
-<p>
-  <strong>Full tier &nbsp;</strong>
-  <img src="https://img.shields.io/badge/Claude_Code-D97757?style=flat-square&logo=claude&logoColor=white" alt="Claude Code" />
-  <img src="https://img.shields.io/badge/Codex_CLI-000000?style=flat-square&logo=openai&logoColor=white" alt="Codex CLI" />
-</p>
-<p>
-  <strong>Good tier &nbsp;</strong>
-  <img src="https://img.shields.io/badge/VS_Code-007ACC?style=flat-square&logo=visualstudiocode&logoColor=white" alt="VS Code" />
-  <img src="https://img.shields.io/badge/Cursor-000000?style=flat-square&logo=cursor&logoColor=white" alt="Cursor" />
-  <img src="https://img.shields.io/badge/OpenCode-000000?style=flat-square&logo=opencode&logoColor=white" alt="OpenCode" />
-  <img src="https://img.shields.io/badge/Hermes-000000?style=flat-square&logoColor=white" alt="Hermes" />
-</p>
-
-**Full** is every surface Repowise has: MCP tools, skills, slash commands, a managed
-instructions file, hook-level interception of tool calls, and transcript mining after
-the session. **Good** is MCP tools and the config to reach them, without hooks or
-transcript mining. Anything else that speaks MCP is one snippet away:
-`repowise agents print-config claude-code` prints a server entry for Cline, Windsurf,
-Zed, Gemini CLI or any host that reads `mcpServers`.
-[Integration matrix →](docs/agent/INTEGRATIONS.md)
-
-**In VS Code**, the Repowise extension shows what your change breaks before you push
-(riskiest files, what is downstream, forgotten companion files, missing tests,
-suggested reviewers), health in the gutter and status bar, callers and ownership on
-hover, and refactoring plans as CodeLens. One install also registers the MCP server,
-so the same index serves you and your agent. Install from the Marketplace or Open VSX
-and run **Repowise: Set Up This Repository**. [VS Code guide →](docs/agent/VSCODE.md)
-
-<img src=".github/assets/lens.gif" alt="Lens in Claude Code on Django: Claude edits query.py, which turns amber on the map while the 12 files that import it light up in plum; a second edit to django/conf/__init__.py lights its 248 importers, and Flow lists what to check before accepting" width="100%" />
-
-**In Claude Code**, Lens ships inside the Repowise plugin and shows you what the index
-knows while Claude works: the file it is on and how many files depend on it, a change
-review after a turn that edits files (code health, tests to run, other branches on the
-same files), and `/lens`, a pane with Flow (what to check before accepting each turn),
-a map of the repo lit by what Claude searched, opened and edited and what its edits
-reach, Ask, and a session recap. Nothing reaches Claude unless you press a button, and
-Lens makes no model calls of its own. It needs Claude Code 2.1.287 or later, and the
-map needs `repowise serve --no-ui` running. [Lens guide →](docs/agent/LENS.md)
-
----
-
-## The ten MCP tools
-
-Every response carries a `_meta` envelope with the indexed commit, the index age and a
-stale warning when the index has fallen behind your checkout, so your agent always
-knows how much to trust what it just read.
-
-<details>
-<summary><strong>See the MCP tool surface</strong></summary>
-
-| Tool | What only this tool answers |
-|---|---|
-| `get_overview()` | Architecture summary, module map, entry points, git health. The first call on an unfamiliar codebase. |
-| `get_answer(question)` | Hybrid retrieval (full-text plus vector), graph expansion and one cited answer with a calibrated `retrieval_quality`. Search, read and reason in a single round-trip. |
-| `get_context(targets, include?)` | Triage card for files, modules or symbols: summary, signatures, hotspot flag, governing decisions, symbol ids. `include` opens callers, callees, ownership and metrics. Batch many targets in one call. |
-| `get_symbol("file.py::Name")` | One indexed symbol's source with exact line bounds. |
-| `search_codebase(query)` | Hybrid search over code and docs, by symbol, path or concept. |
-| `get_risk(targets?, changed_files?)` | Hotspots, dependents, co-change partners, ownership, test gaps, bug history. Pass `changed_files` for PR mode and get a `directive` back. |
-| `get_change_risk(revspec)` | What a commit, range or uncommitted change made worse across defect risk, maintainability and performance, the tests that touch it, and how the diff ranks against recent commits. |
-| `get_why(query?, targets?)` | Architectural decisions with their verbatim evidence. Falls back to git archaeology when no decision exists. |
-| `get_dead_code(...)` | Unreachable code by confidence tier, with cross-repo consumers in workspace mode. |
-| `get_health(targets?, include?)` | Health scores and findings across all three lenses, Fix first, coverage, trends, doc drift and refactoring plans. |
-
-Ten is a deliberate ceiling: a small, task-shaped surface is easier for an agent to
-choose from than a large one. Seven more tools (dependency paths, execution flows,
-refactoring code generation, finding triage, and three workspace architecture tools)
-are opt-in. Parameters, examples and when to use which:
-**[docs/agent/MCP_TOOLS.md →](docs/agent/MCP_TOOLS.md)**
-
-</details>
-
----
+<a id="measured-against-the-field"></a>
 
 ## Measured against the field
 
-Open-source agent-context tools, the same repositories, the same pinned commits, the
-same questions, each tool given its full advertised surface. The full page carries the
-rows we lose beside the rows we win.
+The same repositories, commits and questions for every tool, each given its full
+advertised surface, against answer keys we did not write.
 
 <div align="center">
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/bench/file-coverage-dark.svg" />
-  <img src=".github/assets/bench/file-coverage.svg" alt="File coverage on 42 sealed ContextBench instances: repowise get_answer 0.876, repowise search_codebase 0.742, CodeGraph 0.610, Graphify 0.546, code-review-graph 0.445, cocoindex 0.361" width="100%" />
-</picture>
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset=".github/assets/bench/agent-output-tokens-dark.svg" />
   <img src=".github/assets/bench/agent-output-tokens.svg" alt="Output tokens an agent writes to reach an answer across 43 django questions on Codex: repowise 1,250, CodeGraph 1,383, Serena 1,550, Graphify 1,658, code-review-graph 1,710, bare agent 1,828" width="100%" />
 </picture>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/bench/file-coverage-dark.svg" />
+  <img src=".github/assets/bench/file-coverage.svg" alt="File coverage on 42 sealed ContextBench instances: repowise get_answer 0.876, repowise search_codebase 0.742, CodeGraph 0.610, Graphify 0.546, code-review-graph 0.445, cocoindex 0.361" width="100%" />
+</picture>
 </div>
 
-- **Finds the right files.** 0.876 file coverage against CodeGraph's 0.610 on a
-  **sealed** 42-instance split held out from every improvement round. 19 wins, 1 loss.
-  Deterministic grading, no LLM judge. *n=42, sign test p=0.00004.*
-- **Less work in a real agent loop.** -31.6% output tokens against a bare agent, leaner
-  on 37 of 44 questions. *n=43, p&lt;0.0001.* CodeGraph is a genuine second at -24.4%.
-- **Fewer steps.** 3.8 tool calls where the bare agent needed 7.2, and 3.0 files opened
-  instead of 7.2: the mechanism behind the saving, visible directly.
-- **A call graph the compiler agrees with.** Against the Go team's own call graph and
-  the TypeScript checker's own resolution, Repowise main reads 0.976 to 0.995
-  precision, with recall up in all 7 cells since August. In all seven, no tool that
-  recovers as much of the graph gets more of it right. The tool with the highest
-  recall in most Go cells is still not us, and the page says so.
-- **Accuracy by language.** Graded against each language's own toolchain: C 0.95 to
-  0.98, Python 0.96 to 0.98 on three of four repositories, Rust 0.85 to 0.90, C# 0.73
-  to 0.92, C++ 0.75, Java 0.73 to 0.78, each with its recall and its weak spots.
-- **Scale.** dotnet/runtime, 58,924 files, indexed in 120 minutes at 11.7 GiB peak
-  memory on one laptop. Building just the call graph uses 75 MB at the median, the
-  lowest of five tools on 35 of 35 repositories.
+| | Result |
+|---|---|
+| **Work saved in an agent loop** | 3.8 tool calls instead of 7.2, 3.0 files opened instead of 7.2, **31.6% less output**. The best of five context tools. *n=43, p<0.0001* |
+| **Finding the right files** | **0.876** of the files a fix needed, against 0.610 for the next tool, on a sealed set. *n=42, p=0.00004* |
+| **Command output** | Up to **99.5%** smaller (`npm ci`), 89% for `git log`, 86% for `git diff`, no error line lost |
+| **Call graph the compiler agrees with** | **95% to 99.6%** precision on Go, TypeScript, Dart, C and Python, graded by each language's own toolchain. Against four other tools, none that finds as much of the graph gets more of it right, in 7 of 7 cells |
+| **Health that predicts bugs** | **2.3x** CodeScene's recall of later-buggy files at the same review budget. *2,770 files, p=0.003* |
+| **Scale** | **15 million lines** (dotnet/runtime) on one laptop. Building the call graph takes **75 MB**, 10x less than the next tool |
 
-**[The full results, the methodology, and the rows we lose →](docs/BENCHMARKS.md)** ·
-**[The research it is built on →](docs/LINEAGE.md)**
+**[Every result, in plain English, with the method →](docs/BENCHMARKS.md)** ·
+[The research it is built on →](docs/LINEAGE.md)
 
 <details>
 <summary><strong>How it compares on capability</strong></summary>
@@ -740,108 +494,200 @@ comparisons: **[repowise.dev/compare →](https://www.repowise.dev/compare)**
 
 ---
 
+## Supported languages
+
+**28 languages parsed to an AST, 42 on a five-rung ladder, framework-aware where an
+ecosystem handler exists.** Every language ships in the open-source distribution.
+
+<p>
+  <strong>Full &nbsp;</strong>
+  <img src="https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python" />
+  <img src="https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript" />
+  <img src="https://img.shields.io/badge/JavaScript-F7DF1E?style=flat-square&logo=javascript&logoColor=black" alt="JavaScript" />
+  <img src="https://img.shields.io/badge/Svelte-FF3E00?style=flat-square&logo=svelte&logoColor=white" alt="Svelte" />
+  <img src="https://img.shields.io/badge/Vue-42B883?style=flat-square&logo=vuedotjs&logoColor=white" alt="Vue" />
+  <img src="https://img.shields.io/badge/Astro-BC52EE?style=flat-square&logo=astro&logoColor=white" alt="Astro" />
+  <img src="https://img.shields.io/badge/Java-ED8B00?style=flat-square&logo=openjdk&logoColor=white" alt="Java" />
+  <img src="https://img.shields.io/badge/Kotlin-7F52FF?style=flat-square&logo=kotlin&logoColor=white" alt="Kotlin" />
+  <img src="https://img.shields.io/badge/Go-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go" />
+  <img src="https://img.shields.io/badge/Rust-000000?style=flat-square&logo=rust&logoColor=white" alt="Rust" />
+  <img src="https://img.shields.io/badge/C++-00599C?style=flat-square&logo=cplusplus&logoColor=white" alt="C++" />
+  <img src="https://img.shields.io/badge/C%23-512BD4?style=flat-square&logo=csharp&logoColor=white" alt="C#" />
+  <img src="https://img.shields.io/badge/Scala-DC322F?style=flat-square&logo=scala&logoColor=white" alt="Scala" />
+  <img src="https://img.shields.io/badge/Ruby-CC342D?style=flat-square&logo=ruby&logoColor=white" alt="Ruby" />
+  <img src="https://img.shields.io/badge/Apex-00A1E0?style=flat-square&logo=salesforce&logoColor=white" alt="Apex (Salesforce)" />
+</p>
+<p>
+  <strong>Good &nbsp;</strong>
+  <img src="https://img.shields.io/badge/C-A8B9CC?style=flat-square&logo=c&logoColor=black" alt="C" />
+  <img src="https://img.shields.io/badge/Swift-F05138?style=flat-square&logo=swift&logoColor=white" alt="Swift" />
+  <img src="https://img.shields.io/badge/PHP-777BB4?style=flat-square&logo=php&logoColor=white" alt="PHP" />
+  <img src="https://img.shields.io/badge/Dart-0175C2?style=flat-square&logo=dart&logoColor=white" alt="Dart" />
+  <img src="https://img.shields.io/badge/Delphi-EE1F35?style=flat-square&logo=delphi&logoColor=white" alt="Object Pascal / Delphi" />
+  <img src="https://img.shields.io/badge/COBOL-005CA5?style=flat-square" alt="COBOL" />
+  <img src="https://img.shields.io/badge/GDScript-478CBF?style=flat-square&logo=godotengine&logoColor=white" alt="GDScript / Godot" />
+  <img src="https://img.shields.io/badge/VB.NET-945DB7?style=flat-square&logo=dotnet&logoColor=white" alt="VB.NET" />
+  <img src="https://img.shields.io/badge/Elixir-6E4A7E?style=flat-square&logo=elixir&logoColor=white" alt="Elixir" />
+  <img src="https://img.shields.io/badge/F%23-378BBA?style=flat-square&logo=fsharp&logoColor=white" alt="F#" />
+  <img src="https://img.shields.io/badge/Objective--C-438EFF?style=flat-square&logo=apple&logoColor=white" alt="Objective-C" />
+  &nbsp;<strong>· Partial &nbsp;</strong>
+  <img src="https://img.shields.io/badge/Luau-00A2FF?style=flat-square&logo=lua&logoColor=white" alt="Luau" />
+  <img src="https://img.shields.io/badge/Razor-512BD4?style=flat-square&logo=blazor&logoColor=white" alt="Razor / Blazor" />
+</p>
+
+<details>
+<summary><strong>The full ladder, and what each rung gives you</strong></summary>
+
+| Rung | Languages | What you get |
+|---|---|---|
+| **Full** (15) | Python · TypeScript · JavaScript · Svelte · Vue · Astro · Java · Kotlin · Go · Rust · C++ · C# · Scala · Ruby · Apex (Salesforce) | The whole pipeline: AST symbols, import resolution, a resolved call graph, heritage, docstrings, framework edges and code-health markers |
+| **Good** (11) | C · Swift · PHP · Dart · Object Pascal · COBOL · GDScript · VB.NET · Elixir · F# · Objective-C | All of the above except the full health suite, within the language-specific ceilings in the full matrix |
+| **Partial** (2) | Luau / Roblox · Razor / Blazor | Luau: AST symbols and `require()` resolution, Rojo and `.luaurc` aware. Razor: component symbols, `@code` and component-tag call edges, C# health markers; no import resolution yet |
+| **Lightweight** (6) | Clojure · Haskell · Lean 4 · Erlang · HTML · QML | A real file-to-file import graph, and no symbol-level claims |
+| **Structural** (8) | R · Zig · Julia · Elm · OCaml · Crystal · Nim · D | Git history: blame, hotspots, co-change, ownership, bug history |
+
+SQL and dbt projects get `ref()` / `source()` lineage, shell scripts get function-level
+symbols, HTML pages contribute their `<script src>` and `<link href>` dependencies, and
+OpenAPI, Protobuf, GraphQL, Dockerfile, Terraform and similar formats get dedicated
+handlers. Anything else is still tracked through git history.
+
+Every call edge is stamped with **how it was resolved and how much to trust it**, from
+`same_file` at 0.95 down to a repo-wide name match at 0.50, labelled as the guess it
+is. Accuracy per language, graded against each language's own compiler:
+[docs/BENCHMARKS.md#accuracy-by-language](docs/BENCHMARKS.md#accuracy-by-language).
+
+Full matrix: **[docs/layers/LANGUAGE_SUPPORT.md →](docs/layers/LANGUAGE_SUPPORT.md)** ·
+adding a language takes five small steps and no changes to the parser core:
+**[docs/architecture/language-support.md →](docs/architecture/language-support.md)** ·
+languages moving up the ladder: **[roadmap →](ROADMAP.md#languages)**
+
+</details>
+
+---
+
+## Supported agents and editors
+
+**Eight agents wired end to end · two at the Full tier · every other MCP host one
+paste away.**
+
+<p>
+  <strong>Full tier &nbsp;</strong>
+  <img src="https://img.shields.io/badge/Claude_Code-D97757?style=flat-square&logo=claude&logoColor=white" alt="Claude Code" />
+  <img src="https://img.shields.io/badge/Codex_CLI-000000?style=flat-square&logo=openai&logoColor=white" alt="Codex CLI" />
+</p>
+<p>
+  <strong>Good tier &nbsp;</strong>
+  <img src="https://img.shields.io/badge/VS_Code-007ACC?style=flat-square&logo=visualstudiocode&logoColor=white" alt="VS Code" />
+  <img src="https://img.shields.io/badge/Cursor-000000?style=flat-square&logo=cursor&logoColor=white" alt="Cursor" />
+  <img src="https://img.shields.io/badge/OpenCode-000000?style=flat-square&logo=opencode&logoColor=white" alt="OpenCode" />
+  <img src="https://img.shields.io/badge/Hermes-000000?style=flat-square&logoColor=white" alt="Hermes" />
+  <img src="https://img.shields.io/badge/GitHub_Copilot_CLI-000000?style=flat-square&logo=githubcopilot&logoColor=white" alt="GitHub Copilot CLI" />
+  <img src="https://img.shields.io/badge/Kiro-790ECB?style=flat-square&logoColor=white" alt="Kiro" />
+</p>
+
+**Full** is every surface Repowise has: MCP tools, skills, slash commands, a managed
+instructions file, hook-level interception of tool calls, and transcript mining after
+the session. **Good** is MCP tools plus an instructions file or skills, without transcript mining
+(hooks only where the matrix says). **Basic** is the MCP config alone. Anything else that speaks MCP is one snippet away:
+`repowise agents print-config claude-code` prints a server entry for Cline, Windsurf,
+Zed, Gemini CLI or any host that reads `mcpServers`.
+[Integration matrix →](docs/agent/INTEGRATIONS.md)
+
+**In VS Code**, the Repowise extension shows what your change breaks before you push
+(riskiest files, what is downstream, forgotten companion files, missing tests,
+suggested reviewers), health in the gutter and status bar, callers and ownership on
+hover, and refactoring plans as CodeLens. One install also registers the MCP server,
+so the same index serves you and your agent. Install from the Marketplace or Open VSX
+and run **Repowise: Set Up This Repository**. [VS Code guide →](docs/agent/VSCODE.md)
+
+<img src=".github/assets/lens.gif" alt="Lens in Claude Code on Django: Claude edits query.py, which turns amber on the map while the 12 files that import it light up in plum; a second edit to django/conf/__init__.py lights its 248 importers, and Flow lists what to check before accepting" width="100%" />
+
+**In Claude Code**, Lens ships inside the Repowise plugin and shows you what the index
+knows while Claude works: the file it is on and how many files depend on it, a change
+review after a turn that edits files (code health, tests to run, other branches on the
+same files), and `/lens`, a pane with Flow (what to check before accepting each turn),
+a map of the repo lit by what Claude searched, opened and edited and what its edits
+reach, Ask, and a session recap. Nothing reaches Claude unless you press a button, and
+Lens makes no model calls of its own. It needs Claude Code 2.1.287 or later, and the
+map needs `repowise serve --no-ui` running. [Lens guide →](docs/agent/LENS.md)
+
+---
+
+## The ten MCP tools
+
+Every response carries a `_meta` envelope with the indexed commit, the index age and a
+stale warning when the index has fallen behind your checkout, so your agent always
+knows how much to trust what it just read.
+
+<details>
+<summary><strong>See the MCP tool surface</strong></summary>
+
+| Tool | What only this tool answers |
+|---|---|
+| `get_overview()` | Architecture summary, module map, entry points, git health. The first call on an unfamiliar codebase. |
+| `get_answer(question)` | Hybrid retrieval (full-text plus vector), graph expansion and one cited answer with a single calibrated `confidence`. Search, read and reason in a single round-trip. |
+| `get_context(targets, include?)` | Triage card for files, modules or symbols: summary, signatures, hotspot flag, governing decisions, symbol ids. `include` opens callers, callees, ownership and metrics. Batch many targets in one call. |
+| `get_symbol("file.py::Name")` | One indexed symbol's source with exact line bounds. |
+| `search_codebase(query)` | Hybrid search over code and docs, by symbol, path or concept. |
+| `get_risk(targets?, changed_files?)` | Hotspots, dependents, co-change partners, ownership, test gaps, bug history. Pass `changed_files` for PR mode and get a `directive` back. |
+| `get_change_risk(revspec)` | What a commit, range or uncommitted change made worse across defect risk, maintainability and performance, the tests that touch it, and how the diff ranks against recent commits. |
+| `get_why(query?, targets?)` | Architectural decisions with their verbatim evidence. Falls back to git archaeology when no decision exists. |
+| `get_dead_code(...)` | Unreachable code by confidence tier, with cross-repo consumers in workspace mode. |
+| `get_health(targets?, include?)` | Health scores and findings across all three lenses, Fix first, coverage, trends, doc drift and refactoring plans. |
+
+Ten is a deliberate ceiling: a small, task-shaped surface is easier for an agent to
+choose from than a large one. Seven more tools (dependency paths, execution flows,
+refactoring code generation, finding triage, and three workspace architecture tools)
+are opt-in. Parameters, examples and when to use which:
+**[docs/agent/MCP_TOOLS.md →](docs/agent/MCP_TOOLS.md)**
+
+</details>
+
+---
+
 <a id="for-teams-and-enterprises"></a>
 
 ## For teams and enterprises
 
-AI makes producing a change cheaper. It does not make understanding its consequences
-cheaper. In a large estate that answer crosses repositories, ownership boundaries,
-service contracts, test suites and years of architectural history. Repowise gives
-developers, agents, reviewers and platform teams the same evidence about what exists,
-what depends on it, what is risky and what will break, from one index, in place of a
-separate health tool, dead-code tool, code-search layer for agents, docs generator and
-test-impact service.
+AI makes producing a change cheaper. It does not make understanding its
+consequences cheaper. Repowise gives developers, agents, reviewers and platform
+teams the same evidence about what exists, what depends on it, what is risky and
+what will break, from one index, in place of a separate health tool, dead-code
+tool, code-search layer for agents, docs generator and test-impact service.
 
-### Where it runs, and what leaves your network
+| Deployment | Where your code is read | What leaves your network |
+|---|---|---|
+| **Self-hosted, open source** (`pip install repowise`) | your machine | anonymous CLI telemetry you can switch off, and your own LLM provider only if you turn prose on |
+| **Self-hosted, commercial** | your VPC or an air-gapped network | nothing at all in air-gapped mode |
+| **Hosted** ([repowise.dev](https://www.repowise.dev)) | our managed indexer | your code goes to the platform |
 
-| Deployment | Where source is read | Where the index lives | What leaves your network |
-|---|---|---|---|
-| **Self-hosted, open source** (`pip install repowise`) | your machine | `.repowise/` next to the repo | anonymous CLI telemetry you can switch off, and your own LLM provider only if you turn prose on |
-| **Self-hosted, commercial** | your VPC or an air-gapped network | Postgres plus LanceDB or pgvector, inside your network | the same, plus integrations you configure. Nothing at all in air-gapped mode |
-| **Hosted** ([repowise.dev](https://www.repowise.dev)) | the hosted indexer | infrastructure we operate | your code goes to the platform |
+Graph, git, health, change risk, tests, dead code and PR review make **zero LLM
+calls**, and raw source is never stored. Prose is optional and runs on your own
+provider or fully offline through Ollama.
 
-Graph, git, health, change risk, tests, dead code and PR review make **zero LLM calls**.
-Raw source is parsed in memory and never persisted. Prose is optional and runs on your
-own provider contract or fully offline through Ollama, chosen per repository. The
-threat model and data flows are in the
-[security review pack](docs/business/SECURITY_COMPLIANCE.md). The published research each layer is built on, and how we
-checked it, is in [LINEAGE.md](docs/LINEAGE.md).
+**Evidence you can hand to someone else.**
 
-### How accurate, and how big
-
-Call-graph accuracy is graded against each language's own compiler toolchain, and we
-publish precision and recall per language, with the misses, in the
-[accuracy table](docs/BENCHMARKS.md#accuracy-by-language). On current main, precision
-runs 0.95 to 0.99 for Go, TypeScript, C and most Python, 0.85 to 0.90 for Rust, and
-0.73 to 0.92 for Java and C#, where overloaded methods are the main gap.
-
-The largest repository indexed so far is dotnet/runtime: 58,924 files in 120 minutes
-at 11.7 GiB peak memory, on one 31 GB laptop with no API key. Time and memory by
-repository size: [scale](docs/BENCHMARKS.md#scale).
-
-### Source control and CI
-
-Any git host works, because indexing reads a local checkout. On top of that:
-
-- **GitHub**: the [PR bot](#the-pr-bot) (GitHub App), a GitHub Action for the CI
-  gates, and webhook auto-sync.
-- **GitLab**: a CI template for the same gates and webhook auto-sync.
-- **Bitbucket Pipelines and others**: the gates run as plain CLI commands with the
-  pipeline's own branch variables. ([Repowise in CI](docs/start/CI.md))
-- **Managed integrations** for GitHub Enterprise, Azure DevOps, GitLab self-managed
-  and Bitbucket are rolling out.
-- **Not on git?** Point `repowise init` at a plain directory, an export, or a Perforce
-  or SVN workspace. The graph, docs, decisions and health layers build normally; the
-  history layer needs a commit log, and Perforce and SVN adapters are
-  [on the roadmap](ROADMAP.md#source-control-beyond-git).
-
-### What is shipping, and what is not yet
-
-| Status | Capability |
+| Who is asking | What Repowise produces |
 |---|---|
-| **Shipping in open source** | Every deterministic layer, ten MCP tools, multi-repo workspaces, contract extraction and cross-repo blast radius, test intelligence, [architecture conformance](docs/scale/WORKSPACES.md#architecture-conformance), local dashboard, auto-sync, full-history secret scanning. |
-| **GA commercially** | Hosted graph-aware security, CVE prioritization, CycloneDX SBOM and VEX, PCI-DSS and SOC 2 control-coverage reports, audit export and webhook stream, Jira and Confluence, reference HA topology on your infrastructure, custom language extensions, SLA support, IP indemnification. |
-| **Rolling out** | Managed GitHub Enterprise, Azure DevOps, GitLab and Bitbucket integrations. SAML/OIDC SSO and SCIM. Engineering-leader dashboards. |
-| **Planned** | RBAC and multi-tenancy, a packaged air-gap install bundle, the Helm chart. |
+| An auditor reviewing change management (SOC 2 CC8.1, ISO 27001 A.8.32, PCI DSS 6.5) | Every change in the period with its review record, reaching tests, policy verdict and later outcome: `repowise report changes` |
+| A software inventory review (PCI DSS 6.3.2) | Components with owner teams, languages, entry points and the packages they import: `repowise report inventory` |
+| A security team asking which of your code uses a package | Import sites with component, owner team and reachability, plus a CycloneDX 1.6 usage export: `repowise packages where` |
+| An acquirer, a board or a migration committee | Component posture, hotspots, bus factor, dead code, test reach and contracts: `repowise report assessment` |
+| An incident review | The recent changes to read first, with the signals behind each: `repowise suspects` |
 
-Repowise holds no SOC 2, ISO 27001 or other audited certification today. The SOC 2 and
-PCI-DSS reports above are control-coverage signals from your own findings, and every
-export says so. Every item is tracked with its status in the
-[capability matrix](docs/business/COMMERCIAL.md#4-commercial-capabilities-at-a-glance).
+**Any git host works**, because indexing reads a local checkout: GitHub (PR bot,
+Action, webhooks), GitLab (CI template, webhooks), Bitbucket and others through the
+CLI, and plain directories or Perforce and SVN exports for every layer except
+history.
 
-### Pricing, licence and support
+Commercial licences come per seat, per indexed repository or enterprise-wide, with a
+named contact, an SLA and a quarterly architecture review. Using Repowise inside
+your company under the AGPL creates no obligation to publish your own code.
 
-Commercial licences are priced **per indexed repository**, with unlimited seats inside
-the licensed set. More and more of the code in a repository is written and read by
-agents and CI, so seat counts stop tracking the value.
-[Details →](docs/business/COMMERCIAL.md#7-licensing--pricing)
-
-**Do we have to open-source our code because of the AGPL?** No. Using Repowise inside
-your company, including on internal servers, creates no obligation to publish your
-code. The obligations apply if you modify Repowise and offer it to others over a
-network, or ship it inside your own product. A commercial licence removes them.
-
-Commercial support comes with a named contact, a response-time SLA and a quarterly
-architecture review. Security fixes land on the latest minor release; reports go to
-[security@repowise.dev](mailto:security@repowise.dev) under the
-[disclosure policy](.github/SECURITY.md).
-
-**[Commercial detail](docs/business/COMMERCIAL.md)** ·
+**[Commercial detail and capability status](docs/business/COMMERCIAL.md)** ·
 **[Security review pack](docs/business/SECURITY_COMPLIANCE.md)** ·
-**[Roadmap](ROADMAP.md)** ·
+**[Evaluating it for your company](docs/business/EVALUATION.md)** ·
 [hello@repowise.dev](mailto:hello@repowise.dev)
-
-[repowise.dev](https://www.repowise.dev) runs the same engine fully managed. We run it
-on our own codebase in the open:
-[live snapshot](https://www.repowise.dev/s/5a6b93fa9a69) ·
-[explore public repos](https://www.repowise.dev/explore).
-
-Already indexed locally? `repowise publish` puts the same repo on repowise.dev in one
-command: it asks repowise.dev to index the repo's GitHub remote, so nothing is uploaded
-from your machine and only what you have pushed is published. A hosted index usually
-takes about 10 minutes. Public repos publish on a free account (up to 2 repos, no card);
-private repos and more repos need Pro, free for 10 days with a card.
-[What hosted adds →](https://repowise.dev/hosted?src=oss_readme)
 
 ---
 
@@ -865,8 +711,11 @@ Doing a security review? **[docs/business/SECURITY_COMPLIANCE.md →](docs/busin
 
 ## CLI
 
+<details>
+<summary><strong>Every command at a glance</strong></summary>
+
 ```bash
-repowise init [PATH]      # index a codebase (asks; --yes --no-prose needs no key)
+repowise init [PATH]      # index a codebase (plan screen; --yes --no-prose needs no key)
 repowise generate [PATH]  # write wiki pages with a model, on demand
 repowise serve [PATH]     # MCP server + local dashboard
 repowise update [PATH]    # incremental update (--workspace for every repo)
@@ -881,6 +730,12 @@ repowise health           # code-health KPIs and lowest-scoring files
 repowise risk main..HEAD  # score a branch or PR range
 repowise overlap          # other branches editing the same files
 repowise impacted-tests   # only the tests a diff exercises
+repowise changes show ID  # one merged change and its evidence checklist
+repowise check            # evaluate .repowise/policies.yaml against a change
+repowise suspects         # recent changes ranked against a symptom
+repowise components       # declared and derived components, owners vs activity
+repowise packages where   # where a third-party package is imported
+repowise report           # assessment, change evidence and inventory packs
 repowise dead-code        # unreachable code by confidence tier
 repowise doc-drift        # documentation the code no longer supports
 repowise security         # secrets and risky patterns, tree or full history
@@ -898,6 +753,8 @@ Every command and flag: **[docs/reference/CLI_REFERENCE.md](docs/reference/CLI_R
 config: **[docs/reference/CONFIG.md](docs/reference/CONFIG.md)** ·
 something not working: **[docs/start/TROUBLESHOOTING.md](docs/start/TROUBLESHOOTING.md)** ·
 all docs: **[docs/README.md](docs/README.md)**
+
+</details>
 
 ---
 

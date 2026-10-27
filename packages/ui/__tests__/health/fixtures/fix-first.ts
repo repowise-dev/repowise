@@ -11,6 +11,7 @@ export const FIX_FIRST_QUEUE: FixFirstQueue = {
     {
       "id": "fix1_2b0e5c0acbb469f46aa9",
       "rank": 3,
+      "value": 4,
       "tier": "now",
       "kind": "refactor",
       "improves": "defect",
@@ -163,6 +164,7 @@ export const FIX_FIRST_QUEUE: FixFirstQueue = {
     {
       "id": "fix1_8ac4c08f700f837e9087",
       "rank": 0,
+      "value": 4,
       "tier": "next",
       "kind": "finding",
       "improves": "defect",
@@ -296,6 +298,7 @@ export const FIX_FIRST_QUEUE: FixFirstQueue = {
     {
       "id": "fix1_26c2da3b4c98f8fdef56",
       "rank": 14,
+      "value": 4,
       "tier": "next",
       "kind": "perf_fix",
       "improves": "performance",
@@ -450,6 +453,7 @@ export const FIX_FIRST_QUEUE: FixFirstQueue = {
   "lead": {
     "id": "fix1_2b0e5c0acbb469f46aa9",
     "rank": 3,
+    "value": 4,
     "tier": "now",
     "kind": "refactor",
     "improves": "defect",
@@ -616,11 +620,22 @@ export const FIX_FIRST_QUEUE: FixFirstQueue = {
       "vendored": 0,
       "docs_example": 0,
       "deprecated": 0,
+      "gated_off": 0,
+      "cold_path": 0,
+      "unreachable": 0,
       "inherent_dispatch": 0,
       "small_function": 0,
       "no_concrete_step": 0,
-      "low_value_kind": 0
-    }
+      "low_value_kind": 0,
+      "kind_unaudited": 0,
+      "terminal_flow": 0,
+      "moderate_quiet": 0,
+      "unmeasured_cost": 0,
+      "cold_role": 0,
+      "background_unproven": 0,
+      "unconfirmed_cost": 0
+    },
+    "dormant": 0
   },
   "by_improves": {
     "defect": 266,

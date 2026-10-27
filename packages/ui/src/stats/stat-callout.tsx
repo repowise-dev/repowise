@@ -8,7 +8,7 @@ export type CalloutTone = "default" | "accent" | "success" | "warning" | "info";
 export const NLOC_HINT =
   "Lines of code in the repo today: non-blank, non-comment lines, excluding lockfiles, generated and vendored files. Not a historical total: deleted code doesn't count.";
 export const AGENT_PCT_HINT =
-  "Share of commits with a verifiable agent signature: known bot identities, agent commit footers, or Co-authored-by agent trailers. Squash merges that drop trailers and agents committing under a human git identity can't be detected, so the true share may be higher.";
+  "Agent share of the commits whose source is known: known bot identities, agent commit footers or trailers, git-ai notes and Agent Trace records. Commits without any of these are unknown, never counted as human, so the share is shown beside its coverage and withheld when coverage is below 30%.";
 
 const TONE_VALUE: Record<CalloutTone, string> = {
   default: "text-[var(--color-text-primary)]",

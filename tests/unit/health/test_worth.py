@@ -2,12 +2,28 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from typing import get_args
 
 import pytest
 
 from repowise.core.analysis.health.fix_first import build_fix_first
 from repowise.core.analysis.health.worth import LOW_PRIORITY_LABEL, LowPriority, low_priority
+
+
+@pytest.mark.parametrize(
+    "module",
+    [
+        "repowise.core.analysis.health.worth",
+        "repowise.core.analysis.health.perf.opportunities",
+        "repowise.core.analysis.health.perf.actionability",
+        "repowise.core.analysis.health.perf.opportunity_rank",
+    ],
+)
+def test_health_module_imports_cleanly_in_fresh_interpreter(module: str) -> None:
+    """Importing worth must not pull complexity before worth is initialized."""
+    subprocess.run([sys.executable, "-c", f"import {module}"], check=True)
 
 
 @pytest.mark.parametrize(
@@ -135,7 +151,7 @@ def test_history_orders_within_a_tier_but_never_lifts_a_small_function() -> None
     ranked = {f.factor: f.value for f in tidy.why_ranked}
     assert "value" not in ranked and "value within later" in ranked
     assert ranked["problem size"] == "0"
-    assert ("severity", "high by the detector; lower priority by shape") in [
+    assert ("severity", "high; lower priority by shape") in [
         (f.label, f.value) for f in tidy.facts
     ]
 
@@ -168,6 +184,29 @@ def test_findings_are_tiered_per_function_and_history_waits() -> None:
     assert finding_priorities(rows) == ["history", "near_bar", None, None]
 
 
+def test_stored_rows_tier_as_the_findings_they_were_read_from() -> None:
+    """A server reads narrow tuples with the details still JSON text; the tier
+    must match the in-memory findings, each function measured over all its rows."""
+    import json
+    from collections import namedtuple
+
+    from repowise.core.analysis.health.worth import finding_priorities
+
+    big = _finding("src/a.py", "big", {"ccn": 47, "nloc": 191, "max_nesting": 5}, 0.4)
+    deep = _finding("src/a.py", "big", {"max_nesting": 5}, 0.9, marker="nested_complexity")
+    small = _finding("src/b.py", "small", {"ccn": 12, "nloc": 40}, 1.5)
+    loose = {**_finding("src/b.py", "", {"ccn": 90}, 0.2), "function_name": None}
+    in_memory = [small, deep, big, loose, small]
+    Row = namedtuple(
+        "Row", "file_path biomarker_type severity function_name line_start line_end details_json"
+    )
+    stored = [
+        Row(*(f[k] for k in Row._fields[:-1]), json.dumps(f["details"])) for f in in_memory
+    ]
+    assert finding_priorities(stored) == finding_priorities(in_memory)
+    assert finding_priorities(stored) == ["near_bar", None, None, None, "near_bar"]
+
+
 @pytest.mark.parametrize(
     ("context", "facets", "expected"),
     [
@@ -180,7 +219,7 @@ def test_findings_are_tiered_per_function_and_history_waits() -> None:
     ],
 )
 def test_a_perf_cause_leads_only_on_a_loop_that_grows(context, facets, expected) -> None:
-    from repowise.core.analysis.health.worth import perf_low_priority
+    from repowise.core.analysis.health.queue.eligibility import perf_low_priority
 
     row = {"execution_context": context, "biomarker_type": "io_in_loop",
            "details": {"facets": facets}}
@@ -195,11 +234,79 @@ def test_a_perf_cause_leads_only_on_a_loop_that_grows(context, facets, expected)
         ("blocking_sync_in_async", {}, "unreached_call"),
         ("goroutine_in_unbounded_loop", {}, None),
         ("sql_cartesian_join", {"loop_magnitude": "unknown"}, None),
+        ("unbounded_read_reduced_in_memory", {"exposure": "entry_reachable"}, None),
+        ("unbounded_read_reduced_in_memory", {"loop_magnitude": "n/a"}, "unreached_call"),
+        # A marker with no loop is judged per call, never as an unmeasured loop.
+        ("some_new_marker", {"loop_magnitude": "n/a", "exposure": "entry_reachable"}, None),
+        ("some_new_marker", {"loop_magnitude": "n/a"}, "unreached_call"),
     ],
 )
 def test_a_perf_cause_is_judged_by_its_kind(marker, facets, expected) -> None:
-    from repowise.core.analysis.health.worth import perf_low_priority
+    from repowise.core.analysis.health.queue.eligibility import perf_low_priority
 
     row = {"execution_context": "production", "biomarker_type": marker,
            "details": {"facets": facets}}
     assert perf_low_priority(row) == expected
+
+
+@pytest.mark.parametrize(
+    ("marker", "facets", "proof"),
+    [
+        ("io_in_loop", {"loop_magnitude": "unknown"}, "unproven"),
+        ("io_in_loop", {}, "unproven"),
+        ("io_in_loop", {"loop_magnitude": "bounded"}, "proven"),
+        ("io_in_loop", {"loop_magnitude": "grows_with_data"}, "proven"),
+        ("hot_path_sync_io", {"exposure": "not_entry_reachable"}, "proven"),
+        ("sql_cartesian_join", {}, "proven"),
+        ("unbounded_read_reduced_in_memory", {"loop_magnitude": "n/a"}, "proven"),
+        ("some_new_marker", {"loop_magnitude": "n/a"}, "proven"),
+    ],
+)
+def test_only_an_unmeasured_loop_is_unproven(marker, facets, proof) -> None:
+    from repowise.core.analysis.health.queue.eligibility import perf_queue_verdict
+    from repowise.core.analysis.health.worth import cost_proof
+
+    row = {"execution_context": "production", "actionability_state": "advisory",
+           "biomarker_type": marker, "details": {"facets": facets}}
+    assert cost_proof(row) == proof
+    # The default queue leaves an unproven cause out under the shared reason.
+    assert perf_queue_verdict(row).reason == ("unmeasured_cost" if proof == "unproven" else None)
+
+
+def test_an_unknown_loop_ranks_no_higher_than_a_bounded_one() -> None:
+    from repowise.core.analysis.health.perf.opportunity_rank import MAGNITUDE_POINTS
+
+    assert MAGNITUDE_POINTS["unknown"] <= MAGNITUDE_POINTS["bounded"]
+    assert MAGNITUDE_POINTS["unknown"] < MAGNITUDE_POINTS["grows_with_data"]
+
+
+def test_the_default_queue_counts_an_unproven_cause_and_still_adds_up() -> None:
+    from repowise.core.analysis.health.queue.eligibility import perf_queue_counts
+
+    def row(context: str, magnitude: str) -> dict:
+        return {"execution_context": context, "actionability_state": "advisory",
+                "biomarker_type": "io_in_loop",
+                "details": {"facets": {"loop_magnitude": magnitude}}}
+
+    rows = [row("production", "grows_with_data"), row("production", "unknown"),
+            row("test", "unknown")]
+    counts = perf_queue_counts(rows)
+    assert counts["total"] == 1
+    assert counts["excluded"]["unmeasured_cost"] == 1 and counts["excluded"]["test"] == 1
+    assert counts["total"] + sum(counts["excluded"].values()) == len(rows)
+
+
+def test_a_critical_code_shape_marker_ranks_as_high() -> None:
+    """A detector-critical long method is not a reason to lift its value band;
+    a brain method still is a size claim, and coverage keeps its severity."""
+    from repowise.core.analysis.health.scoring import ranked_severity
+    from repowise.core.analysis.health.worth import measure
+
+    assert ranked_severity("complex_method", "critical") == "high"
+    assert ranked_severity("large_method", "high") == "high"
+    assert ranked_severity("coverage_gap", "critical") == "critical"
+    assert ranked_severity("change_entropy", "critical") == "critical"
+    assert ranked_severity("io_in_loop", "critical") == "critical"
+    row = {"biomarker_type": "complex_method", "severity": "critical", "details": {"ccn": 12}}
+    assert "severe" not in measure([row])
+    assert measure([row, {**row, "biomarker_type": "brain_method"}])["severe"] == 1

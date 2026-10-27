@@ -12,15 +12,13 @@ import json
 import posixpath
 import re
 from collections import defaultdict
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 
 from ...ingestion.languages.registry import REGISTRY
+from ...ownership.codeowners import parse_codeowners
 from ...test_paths import is_test_related_path
-
-#: Where GitHub and GitLab look for CODEOWNERS; the first found is read.
-CODEOWNERS_PATHS = (".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS", ".gitlab/CODEOWNERS")
 
 #: Directories whose children are a monorepo's packages.
 MONOREPO_ROOTS = ("packages", "apps", "services", "libs")
@@ -36,12 +34,6 @@ _CATCH_ALL = frozenset({"*", "**", "/**", "/*"})
 
 _SOURCE_SUFFIXES = REGISTRY.non_infra_code_extensions()
 
-# A ``#`` at the start of a line or after whitespace (space or tab) opens a comment.
-_COMMENT = re.compile(r"(?:^|\s)#.*$")
-# Fields split on whitespace a backslash does not escape (``docs/my\ file.md``).
-_FIELDS = re.compile(r"(?<!\\)\s+")
-# A GitLab section header, ``[Name]`` or ``^[Name][2]``, with optional default owners.
-_SECTION = re.compile(r"^\^?\[[^\]]+\](?:\[\d+\])?(?:\s+(.*))?$")
 _GLOB_CHARS = re.compile(r"[*?\[]")
 
 
@@ -83,7 +75,8 @@ def codeowners_gates(text: str) -> list[SuggestedGate]:
     ``[Section] @owners`` header, owner-less lines take the section's owners.
     """
     paths: dict[str, list[str]] = {}
-    for pattern, owners in _codeowners_rules(text):
+    for rule in parse_codeowners(text):
+        pattern, owners = rule.pattern, rule.owners
         if pattern in _CATCH_ALL:
             paths.clear()
             continue
@@ -97,20 +90,6 @@ def codeowners_gates(text: str) -> list[SuggestedGate]:
         for owner, owned in paths.items()
         if _any_live(owned)
     ]
-
-
-def _codeowners_rules(text: str) -> Iterator[tuple[str, list[str]]]:
-    """``(pattern, owners)`` per rule line; owner-less lines take a GitLab section's owners."""
-    defaults: list[str] = []
-    for raw in text.splitlines():
-        line = _COMMENT.sub("", raw).strip()
-        if not line:
-            continue
-        if section := _SECTION.match(line):
-            defaults = _FIELDS.split(section.group(1)) if section.group(1) else []
-            continue
-        pattern, *owners = _FIELDS.split(line)
-        yield pattern, owners or defaults
 
 
 def layout_gates(tracked: Iterable[str]) -> list[SuggestedGate]:

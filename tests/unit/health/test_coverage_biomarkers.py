@@ -69,6 +69,12 @@ def test_untested_hotspot_fires_when_low_coverage_and_hotspot() -> None:
     assert results[0].severity == "critical"
 
 
+def test_untested_hotspot_silent_on_a_file_of_only_types() -> None:
+    ctx = _ctx(git_meta={"is_hotspot": True}, dependents=20)
+    ctx.type_only = True
+    assert UntestedHotspotDetector().detect(ctx) == []
+
+
 def test_untested_hotspot_silent_when_not_hotspot() -> None:
     ctx = _ctx(git_meta={"is_hotspot": False}, dependents=20, line_cov=5.0, total_lines=100)
     assert UntestedHotspotDetector().detect(ctx) == []
@@ -164,6 +170,13 @@ def test_coverage_gap_skips_test_files() -> None:
         total_lines=200,
     )
     assert CoverageGapDetector().detect(ctx) == []
+
+
+def test_coverage_gap_reads_the_stored_flag_over_the_path() -> None:
+    """A test-named production module (pytest does not collect it) is still scored."""
+    ctx = _ctx(path="src/pkg/test_selection.py", line_cov=10.0, total_lines=200)
+    ctx.is_test = False
+    assert CoverageGapDetector().detect(ctx)
 
 
 def test_coverage_gap_skips_when_no_coverage_data() -> None:

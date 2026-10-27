@@ -4,10 +4,12 @@ Mirrors the LLM provider registry pattern: lazy imports, built-in embedders,
 and runtime registration for community embedders.
 
 Built-in embedders:
-    openai  → OpenAIEmbedder  (text-embedding-3-small default)
-    gemini  → GeminiEmbedder  (gemini-embedding-001 default)
-    edenai  → EdenAIEmbedder  (openai/text-embedding-3-small via Eden AI's EU gateway)
-    mock    → MockEmbedder    (testing only, zero dependencies)
+    openai      -> OpenAIEmbedder      (text-embedding-3-small default)
+    gemini      -> GeminiEmbedder      (gemini-embedding-001 default)
+    ollama      -> OllamaEmbedder      (embeddinggemma default, local, no key)
+    openrouter  -> OpenRouterEmbedder  (google/gemini-embedding-001 default)
+    edenai      -> EdenAIEmbedder      (openai/text-embedding-3-small via Eden AI's EU gateway)
+    mock        -> KeylessEmbedder     (keyless runs and tests; no semantic signal)
 
 Custom embedder registration:
     from repowise.core.providers.embedding import register_embedder
@@ -33,6 +35,14 @@ _BUILTIN_EMBEDDERS: dict[str, tuple[str, str]] = {
     "mock": ("repowise.core.providers.embedding.base", "KeylessEmbedder"),
 }
 
+#: What ``REPOWISE_EMBEDDER`` means when unset.
+DEFAULT_EMBEDDER = "mock"
+
+#: Built-ins whose vectors carry no signal (see ``KeylessEmbedder``).
+KEYLESS_EMBEDDERS = frozenset(
+    name for name, (_module, cls) in _BUILTIN_EMBEDDERS.items() if cls == "KeylessEmbedder"
+)
+
 _custom_embedders: dict[str, Callable[..., Embedder]] = {}
 
 
@@ -50,6 +60,9 @@ def register_embedder(name: str, factory: Callable[..., Embedder]) -> None:
     if name in _BUILTIN_EMBEDDERS:
         raise ValueError(f"Cannot register {name!r}: conflicts with a built-in embedder.")
     _custom_embedders[name] = factory
+    from repowise.core.registry.plugins import note_registration
+
+    note_registration("embedder", name)
 
 
 def get_embedder(name: str, **kwargs: Any) -> Embedder:
@@ -70,6 +83,11 @@ def get_embedder(name: str, **kwargs: Any) -> Embedder:
         embedder = get_embedder("openai", api_key="sk-...", model="text-embedding-3-large")
         vectors = await embedder.embed(["Hello world"])
     """
+    if name not in _custom_embedders and name not in _BUILTIN_EMBEDDERS:
+        # Deferred: a built-in name never pays plugin discovery.
+        from repowise.core.registry.plugins import load_plugins
+
+        load_plugins()  # a plugin package may register it
     if name in _custom_embedders:
         return _custom_embedders[name](**kwargs)
 
@@ -99,5 +117,8 @@ def get_embedder(name: str, **kwargs: Any) -> Embedder:
 
 
 def list_embedders() -> list[str]:
-    """Return a sorted list of all available embedder names."""
+    """Return a sorted list of all available embedder names, plugins' included."""
+    from repowise.core.registry.plugins import load_plugins
+
+    load_plugins()
     return sorted(set(_BUILTIN_EMBEDDERS) | set(_custom_embedders))

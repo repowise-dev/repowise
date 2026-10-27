@@ -4,7 +4,8 @@ Public API:
     extract_external_systems(repo_root, manifest_paths=None) -> list[ExternalSystemRecord]
 
 Each ecosystem-specific parser lives in its own submodule
-(:mod:`.npm`, :mod:`.pypi`, :mod:`.cargo`, :mod:`.go`, :mod:`.nuget`) and
+(:mod:`.npm`, :mod:`.pypi`, :mod:`.cargo`, :mod:`.go`, :mod:`.nuget`,
+:mod:`.maven`, :mod:`.gradle`, ...) and
 exposes ``filenames``, ``ecosystem``, and ``parse(manifest_path, repo_root)``.
 
 The extractor walks the repo (or accepts a pre-computed list of manifest
@@ -21,7 +22,7 @@ from pathlib import Path
 from types import ModuleType
 
 from ..workspace_members import first_party_package_names
-from . import bazel, cargo, cmake, go, maven, npm, nuget, pypi
+from . import bazel, cargo, cmake, go, gradle, maven, npm, nuget, pypi
 from .base import ExternalSystemRecord, ManifestParser
 
 __all__ = [
@@ -29,9 +30,10 @@ __all__ = [
     "ManifestParser",
     "extract_external_systems",
     "is_manifest_path",
+    "manifest_ecosystem",
 ]
 
-_PARSERS: tuple[ModuleType, ...] = (npm, pypi, cargo, go, nuget, maven, cmake, bazel)
+_PARSERS: tuple[ModuleType, ...] = (npm, pypi, cargo, go, nuget, maven, gradle, cmake, bazel)
 
 # Map exact filename → parser module
 _FILENAME_PARSERS: dict[str, ModuleType] = {
@@ -39,13 +41,16 @@ _FILENAME_PARSERS: dict[str, ModuleType] = {
 }
 
 
-# Filename patterns that match by predicate (pypi requirements*.txt, nuget *.csproj)
+# Filename patterns that match by predicate (pypi requirements*.txt, nuget
+# *.csproj, Gradle scripts such as ``dependencies.gradle`` a build applies)
 def _matches_pattern(filename: str) -> ModuleType | None:
     lower = filename.lower()
     if lower.startswith("requirements") and lower.endswith(".txt"):
         return pypi
     if lower.endswith(".csproj"):
         return nuget
+    if gradle.is_script(Path(filename)):
+        return gradle
     return None
 
 
@@ -66,6 +71,12 @@ def is_manifest_path(path: Path | str) -> bool:
     return _parser_for(Path(path)) is not None
 
 
+def manifest_ecosystem(path: Path | str) -> str | None:
+    """The ``ecosystem`` of the parser that reads ``path``, or ``None``."""
+    parser = _parser_for(Path(path))
+    return parser.ecosystem if parser is not None else None
+
+
 def extract_external_systems(
     repo_root: Path,
     manifest_paths: Iterable[Path] | None = None,
@@ -80,21 +91,24 @@ def extract_external_systems(
     candidates = list(manifest_paths) if manifest_paths is not None else _discover(repo_root)
 
     records: list[ExternalSystemRecord] = []
-    maven_paths: list[Path] = []
+    # Maven and Gradle read all their manifests in one pass: a version can be
+    # set in another file (a parent POM, a catalog, a convention script).
+    batched: dict[ModuleType, list[Path]] = {maven: [], gradle: []}
     for path in candidates:
         parser = _parser_for(path)
         if parser is None:
             continue
-        if parser is maven:
-            maven_paths.append(path)
+        if parser in batched:
+            batched[parser].append(path)
             continue
         try:
             records.extend(parser.parse(path, repo_root))
         except Exception:  # parser bugs must not break ingestion
             continue
-    if maven_paths:
-        with suppress(Exception):  # parser bugs must not break ingestion
-            records.extend(maven.parse_many(maven_paths, repo_root))
+    for parser, paths in batched.items():
+        if paths:
+            with suppress(Exception):  # parser bugs must not break ingestion
+                records.extend(parser.parse_many(paths, repo_root))
     return _deduplicate(_drop_first_party(records, repo_root))
 
 
@@ -116,9 +130,13 @@ def _drop_first_party(
 def _discover(repo_root: Path) -> list[Path]:
     """Walk the repo (depth ≤ 4) collecting recognised manifest files."""
     from repowise.core.fs_walk import PRUNED_DIRS, walk_repo
+    from repowise.core.ingestion.traverser import load_gitignore_spec
 
     seen: list[Path] = []
     root = Path(repo_root)
+    # walk_repo reads no ignore files: without this, a manifest in a local
+    # worktree or scratch dir that git status cannot see declared packages.
+    ignore = load_gitignore_spec(root)
     # The historical depth cap was a *post-hoc* filter on an unbounded
     # ``rglob("*")`` — the walk itself still descended into everything.
     # walk_repo prunes junk dirs and nested git repos at traversal time;
@@ -127,13 +145,20 @@ def _discover(repo_root: Path) -> list[Path]:
     # Historical skip list included target/dist/build — preserve it on top
     # of the shared never-source set.
     prune = PRUNED_DIRS | {"target", "dist", "build"}
-    for dirpath, dirnames, filenames in walk_repo(root, prune_dirs=prune):
+    # Ignored directories match with a trailing slash, as git matches them.
+    for dirpath, dirnames, filenames in walk_repo(
+        root,
+        prune_dirs=prune,
+        prune=lambda d: ignore.match_file(f"{d.relative_to(root).as_posix()}/"),
+    ):
         if len(dirpath.relative_to(root).parts) >= 3:
             dirnames[:] = []
-        for fname in filenames:
-            path = dirpath / fname
-            if _parser_for(path) is not None:
-                seen.append(path)
+        seen.extend(
+            dirpath / fname
+            for fname in filenames
+            if _parser_for(dirpath / fname) is not None
+            and not ignore.match_file((dirpath / fname).relative_to(root).as_posix())
+        )
     return seen
 
 

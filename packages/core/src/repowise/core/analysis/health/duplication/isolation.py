@@ -36,6 +36,7 @@ class _FileInfo:
     path: str
     abs_path: str
     language: str
+    is_test: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,7 +46,7 @@ class _ParsedFile:
 
 def _worker(
     sender: Any,
-    files: list[tuple[str, str, str]],
+    files: list[tuple[str, str, str, bool | None]],
     git_meta_map: dict[str, dict[str, Any]],
     window_tokens: int,
     min_lines: int,
@@ -55,6 +56,9 @@ def _worker(
 ) -> None:
     """Run in a fresh interpreter and return only the compact report."""
     try:
+        from repowise.core.worker_logging import quiet_worker_logs
+
+        quiet_worker_logs()
         parsed_files = [_ParsedFile(_FileInfo(*file_info)) for file_info in files]
         report = detect_clones(
             parsed_files,
@@ -86,7 +90,7 @@ def detect_clones_with_isolation(
 ) -> DuplicationReport:
     """Detect clones, isolating repository-scale transient allocations.
 
-    Only the three file-info strings used by the detector cross the process
+    Only the file-info fields the detector reads cross the process
     boundary. The full parsed AST/model graph remains in the parent, and the
     child returns the comparatively small final report.
 
@@ -116,7 +120,12 @@ def detect_clones_with_isolation(
         )
 
     files = [
-        (pf.file_info.path, str(pf.file_info.abs_path), pf.file_info.language)
+        (
+            pf.file_info.path,
+            str(pf.file_info.abs_path),
+            pf.file_info.language,
+            getattr(pf.file_info, "is_test", None),
+        )
         for pf in parsed_files
     ]
     # Clone weighting only reads this field. Avoid serializing the much larger

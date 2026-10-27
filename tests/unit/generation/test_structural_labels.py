@@ -44,6 +44,27 @@ def test_german_labels_are_used_where_they_exist() -> None:
     assert resolve_structural_labels("de")["overview"] == "Überblick"
 
 
+@pytest.mark.parametrize(
+    ("code", "count", "expected"),
+    [
+        (None, 12, "12 bug-fix commits in the last 6 months."),
+        (None, 1, "1 bug-fix commit in the last 6 months."),
+        ("de", 12, "12 Bugfix-Commits in den letzten 6 Monaten."),
+        ("de", 1, "1 Bugfix-Commit in den letzten 6 Monaten."),
+    ],
+)
+def test_the_fix_sentence_names_its_own_window(code: str | None, count: int, expected: str) -> None:
+    # The fix count spans the prior-defect window, so the sentence names it
+    # rather than reading as a share of the 90-day commit count before it.
+    labels = resolve_structural_labels(code)
+    sentence = labels["history_fixes"].format(
+        count=count,
+        fix_word=labels["fix_commit_plural" if count != 1 else "fix_commit_singular"],
+        window=labels["fix_window"],
+    )
+    assert sentence == expected
+
+
 @pytest.mark.parametrize("code", [None, "", "xx", "klingon", "  ", "de-DE"])
 def test_an_absent_or_unsupported_code_renders_the_full_english_catalog(code: str | None) -> None:
     # Never a partial mix and never a missing key: a template reading any label

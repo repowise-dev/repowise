@@ -31,6 +31,7 @@ import { ChatComposer } from "./chat-composer";
 import { ChatContextIndicator } from "./chat-context-indicator";
 import { getChatContextPresentation, type ChatContext } from "./chat-context";
 import { ChatInterface } from "./chat-interface";
+import type { UnverifiedFigureCopy } from "./chat-message";
 import { buildHandoffDraft } from "./chat-handoff";
 import { ChatSuggestions } from "./chat-suggestions";
 import { CHAT_SHORTCUT_HINT } from "./use-chat-shortcut";
@@ -176,6 +177,7 @@ export interface ChatDockProps {
   assistantAvatarSrc?: string;
   buildCitationHref?: (source: SourceReference) => string;
   linkPrefix?: string;
+  unverifiedFigureCopy?: UnverifiedFigureCopy;
   onOpenFullChat?: () => void;
   owlDarkSrc?: string;
   owlLightSrc?: string;
@@ -215,6 +217,7 @@ export function ChatDock({
   assistantAvatarSrc,
   buildCitationHref,
   linkPrefix,
+  unverifiedFigureCopy,
   onOpenFullChat,
   owlDarkSrc = "/repowise-logo.png",
   owlLightSrc = "/repowise-logo-light.png",
@@ -394,7 +397,7 @@ export function ChatDock({
                 ? `Open repository chat, ${error ? "chat needs attention" : "answer ready"}`
                 : "Open repository chat"
           }
-          className="group flex min-h-11 items-center gap-2 rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)] py-1.5 pl-1.5 pr-3 shadow-[var(--shadow-md)] outline-none transition-[border-color,box-shadow,transform] hover:border-[var(--color-border-hover)] hover:shadow-[var(--shadow-lg)] focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] motion-safe:hover:-translate-y-px motion-reduce:transition-none"
+          className="group flex min-h-11 items-center gap-2 rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)] py-1.5 pl-1.5 pr-3 shadow-[var(--shadow-md)] outline-none transition-[border-color,box-shadow,transform] hover:border-[var(--color-border-hover)] hover:shadow-[var(--shadow-lg)] focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] motion-safe:hover:-translate-y-px motion-reduce:transition-none"
         >
           <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--color-bg-elevated)]">
             <BrandMark
@@ -404,11 +407,11 @@ export function ChatDock({
               alt=""
             />
           </span>
-          <span className="text-[13px] font-medium text-[var(--color-text-primary)]">
+          <span className="text-xs font-medium text-[var(--color-text-primary)]">
             {statusText ?? "Ask Repowise"}
           </span>
           {hintVisible && !statusText && (
-            <span className="hidden border-l border-[var(--color-border-default)] pl-2 text-[13px] text-[var(--color-text-tertiary)] sm:inline">
+            <span className="hidden border-l border-[var(--color-border-default)] pl-2 text-xs text-[var(--color-text-tertiary)] sm:inline">
               {firstVisitHint}
             </span>
           )}
@@ -423,17 +426,15 @@ export function ChatDock({
           )}
         </button>
         {onDismiss && (
-          /* Quiet until wanted: the dismiss is the kind of control you look
-             for only once you are already annoyed, and a permanent second
-             button on the pill would make the thing louder to solve the
-             complaint that it is too loud. Focusable while transparent, so
-             the keyboard path is not gated on hover. */
+          /* Quiet until wanted on a mouse: revealed on hover or focus. Always
+             shown on touch screens, where there is no hover, with a hit area
+             padded out to 36px around the small visible disc. */
           <button
             type="button"
             onClick={onDismiss}
             aria-label="Hide Ask Repowise"
             title="Hide Ask Repowise. Bring it back in Settings."
-            className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] text-[var(--color-text-tertiary)] opacity-0 shadow-[var(--shadow-md)] transition-opacity hover:text-[var(--color-text-primary)] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] group-hover/dock:opacity-100 motion-reduce:transition-none"
+            className="absolute -right-1.5 -top-1.5 flex h-6 w-6 items-center justify-center rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] text-[var(--color-text-tertiary)] shadow-[var(--shadow-md)] transition-opacity before:absolute before:-inset-1.5 before:content-[''] hover:text-[var(--color-text-primary)] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] pointer-fine:opacity-0 pointer-fine:group-hover/dock:opacity-100 motion-reduce:transition-none"
           >
             <X className="h-3 w-3" />
           </button>
@@ -509,6 +510,7 @@ export function ChatDock({
           isStreaming={isStreaming}
           placeholder={presentation.placeholder}
           disabled={sendDisabled}
+          {...(sendDisabledReason ? { disabledReason: sendDisabledReason } : {})}
           compact
           appearance="bare"
           autoFocus
@@ -524,11 +526,6 @@ export function ChatDock({
             }
             className="mt-2"
           />
-        )}
-        {sendDisabled && sendDisabledReason && (
-          <div className="mt-2 text-xs text-[var(--color-text-secondary)]">
-            {sendDisabledReason}
-          </div>
         )}
       </aside>
     );
@@ -576,7 +573,7 @@ export function ChatDock({
               <button
                 type="button"
                 onClick={onOpenFullChat}
-                className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
               >
                 <MessageCircle className="h-3.5 w-3.5" />
                 Full chat
@@ -625,6 +622,7 @@ export function ChatDock({
               {...(assistantAvatarSrc ? { assistantAvatarSrc } : {})}
               {...(buildCitationHref ? { buildCitationHref } : {})}
               {...(linkPrefix ? { linkPrefix } : {})}
+              {...(unverifiedFigureCopy ? { unverifiedFigureCopy } : {})}
               {...(onArtifactPin ? { onArtifactPin } : {})}
               {...(onOpenArtifactSource ? { onOpenArtifactSource } : {})}
               {...(artifactOverrides ? { artifactOverrides } : {})}

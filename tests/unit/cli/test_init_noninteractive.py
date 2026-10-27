@@ -229,6 +229,36 @@ class TestProseFlag:
         result = runner.invoke(cli, ["init", str(tmp_path), "--no-prose", "--yes"])
         assert result.exit_code == 0, result.output
 
+    @pytest.mark.parametrize(
+        "flags",
+        [
+            ["--no-prose"],
+            ["--no-prose", "--provider", "openai"],
+            ["--index-only"],
+            ["--docs", "deterministic"],
+        ],
+    )
+    def test_no_prose_never_builds_a_provider_with_keys_set(
+        self, runner, tmp_path, keyless_env, monkeypatch, flags
+    ):
+        """`--no-prose` means zero model calls, whatever keys or flags are present."""
+        from unittest.mock import Mock
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-dummy-openai")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
+        factory = Mock(side_effect=AssertionError("a --no-prose run built an LLM provider"))
+        for module in (
+            "repowise.core.providers",
+            "repowise.core.providers.llm",
+            "repowise.core.providers.llm.registry",
+        ):
+            monkeypatch.setattr(f"{module}.get_provider", factory)
+        result = runner.invoke(cli, ["init", str(tmp_path), *flags, "--yes"])
+        assert result.exit_code == 0, result.output
+        factory.assert_not_called()
+        assert "No LLM provider is configured" not in result.output
+        assert "this run builds from code" in result.output
+
     def test_index_only_prints_deprecation(self, runner, tmp_path, keyless_env):
         """The deprecated alias still works and says so."""
         result = runner.invoke(cli, ["init", str(tmp_path), "--index-only", "--yes"])
@@ -269,8 +299,9 @@ class TestNonInteractiveKeyPersistence:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-from-the-environment")
         save_config(tmp_path, "openai", "gpt-5.4-nano", "openai")
 
-        ignored = (tmp_path / ".gitignore").read_text(encoding="utf-8")
-        assert ".repowise/.env" in {line.strip() for line in ignored.splitlines()}
+        ignored = (tmp_path / ".repowise" / ".gitignore").read_text(encoding="utf-8")
+        assert "/.env" in {line.strip() for line in ignored.splitlines()}
+        assert not (tmp_path / ".gitignore").exists()
 
     def test_no_save_key_leaves_nothing_behind(self, tmp_path, monkeypatch):
         """The opt-out is for keys injected per-process that must not hit disk."""
@@ -320,13 +351,10 @@ class TestNonInteractiveKeyPersistence:
     def test_unwritable_gitignore_warns_but_does_not_lose_the_index(
         self, tmp_path, monkeypatch, capsys
     ):
-        """This runs after the index is paid for, so it must never abort the run.
-
-        It is also the first thing on the scripted path to write outside
-        `.repowise/`, so it is the first that can fail on a read-only checkout.
-        """
+        """This runs after the index is paid for, so it must never abort the run."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-key")
-        (tmp_path / ".gitignore").mkdir()  # a directory where a file must go
+        # A directory where the ignore file must go.
+        (tmp_path / ".repowise" / ".gitignore").mkdir(parents=True)
 
         save_config(tmp_path, "openai", "gpt-5.4-nano", "openai")
 
@@ -341,3 +369,72 @@ class TestNonInteractiveKeyPersistence:
 
         written = (tmp_path / ".repowise" / ".env").read_text(encoding="utf-8")
         assert "OPENAI_API_KEY=sk-newline\n" in written
+
+
+class TestAdvancedExcludeMergesWithFlag:
+    """Customize answers must add to `-x` patterns, not replace them (issue #4034)."""
+
+    @staticmethod
+    def _exclude_patterns(tmp_path, args, typed):
+        import subprocess
+        from unittest import mock
+
+        from repowise.cli.commands.init_cmd import _plan, _prepare
+        from repowise.cli.ui.plan_screen import ModelOffer
+
+        repo = tmp_path / "repo"
+        (repo / "vendor").mkdir(parents=True)
+        (repo / "vendor" / "lib.py").write_text("x = 1\n")
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+
+        answers = {
+            "commit_limit": 5000,
+            "follow_renames": False,
+            "skip_tests": False,
+            "skip_infra": False,
+            "exclude": typed,
+            "run_mode": "standard",
+            "max_file_pages": None,
+            "generate_docs": False,
+        }
+        seen: list[list[str]] = []
+
+        def _stop_after_settings(run):
+            seen.append(list(run.exclude_patterns))
+            return False
+
+        with (
+            mock.patch.object(_prepare, "_interactive_gate", lambda **_: True),
+            # e (edit plan), then Enter.
+            mock.patch.object(_plan, "read_plan_key", mock.Mock(side_effect=["edit", "start"])),
+            mock.patch.object(_plan, "build_offer", lambda *a, **k: ModelOffer()),
+            mock.patch.object(_plan, "agent_providers_set_up", lambda _r: ()),
+            mock.patch(
+                "repowise.cli.ui.provider_selection._detect_provider_status", lambda _r: {}
+            ),
+            mock.patch.object(
+                _plan, "interactive_advanced_config", lambda *a, **k: dict(answers)
+            ),
+            mock.patch.object(_prepare, "_confirm_wiki_overwrite", _stop_after_settings),
+        ):
+            result = CliRunner().invoke(cli, ["init", str(repo), *args])
+
+        assert result.exit_code == 0, result.output
+        assert seen, result.output
+        return seen[0]
+
+    def test_typed_pattern_is_added_after_flag(self, tmp_path):
+        got = self._exclude_patterns(tmp_path, ["-x", "vendor/"], ("build/",))
+        assert got == ["vendor/", "build/"]
+
+    def test_enter_keeps_flag_patterns(self, tmp_path):
+        got = self._exclude_patterns(tmp_path, ["-x", "vendor/"], ())
+        assert got == ["vendor/"]
+
+    def test_repeated_pattern_is_not_duplicated(self, tmp_path):
+        got = self._exclude_patterns(tmp_path, ["-x", "vendor/"], ("vendor/",))
+        assert got == ["vendor/"]
+
+    def test_no_flag_uses_typed_patterns(self, tmp_path):
+        got = self._exclude_patterns(tmp_path, [], ("build/",))
+        assert got == ["build/"]

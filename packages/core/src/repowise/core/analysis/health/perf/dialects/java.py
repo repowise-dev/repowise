@@ -26,10 +26,13 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
-from .base import BasePerfDialect
+from .iterables import IterableSources, text_of, upper_bound
 
 if TYPE_CHECKING:
     from tree_sitter import Node
+
+    from ..loop_facts import SinkProbe
+    from .iterables import Source
 
 # Spring-Data derived query methods: ``findByName`` / ``getAllByStatus`` /
 # ``countByOwner`` … The name alone is not enough (``Settings.getByPrefix``,
@@ -218,7 +221,32 @@ def _receiver_root(receiver: str) -> str:
     return parts[1] if parts[0] == "this" and len(parts) > 1 else parts[0]
 
 
-class JavaPerfDialect(BasePerfDialect):
+_JAVA_FN_KINDS: frozenset[str] = frozenset(
+    {"method_declaration", "constructor_declaration", "lambda_expression"}
+)
+# ``List.of(a, b)`` / ``Arrays.asList(a, b)``: as many entries as the call spells out.
+_JAVA_FACTORIES: frozenset[str] = frozenset(
+    {"List", "Set", "Map", "Arrays", "Stream", "EnumSet", "ImmutableList", "ImmutableSet"}
+)
+_JAVA_SCALARS: frozenset[str] = frozenset(
+    {"string_literal", "decimal_integer_literal", "character_literal", "true", "false"}
+)
+# A type name (``Role``), not a constant (``ROLES``) or a local (``roles``).
+_JAVA_TYPE_NAME = re.compile(r"^[A-Z][A-Za-z0-9]*[a-z][A-Za-z0-9]*$")
+
+
+def _java_bindings(node: Node) -> list[tuple[bytes, Node]]:
+    """What *node* binds: ``T x = v`` or ``x = v``."""
+    if node.type == "variable_declarator":
+        target, value = node.child_by_field_name("name"), node.child_by_field_name("value")
+    elif node.type == "assignment_expression":
+        target, value = node.child_by_field_name("left"), node.child_by_field_name("right")
+    else:
+        return []
+    ok = target is not None and target.type == "identifier" and target.text and value is not None
+    return [(target.text, value)] if ok else []
+
+class JavaPerfDialect(IterableSources):
     language = "java"
     lock_acquire_functions = JAVA_LOCK_ACQUIRE_FUNCTIONS
     spin_loop_header = JAVA_SPIN_LOOP_HEADER
@@ -259,6 +287,15 @@ class JavaPerfDialect(BasePerfDialect):
         if name is not None and name.text:
             return name.text.decode("utf-8", "replace")
         return None
+
+    def callee_text(self, call_node: Node) -> str:
+        # ``method_invocation`` splits the callee into ``object`` and ``name``.
+        name = call_node.child_by_field_name("name")
+        if call_node.type != "method_invocation" or name is None or not name.text:
+            return ""
+        obj = call_node.child_by_field_name("object")
+        method = name.text.decode("utf-8", "replace")
+        return f"{obj.text.decode('utf-8', 'replace')}.{method}" if obj and obj.text else method
 
     def callee_root_name(self, call_node: Node) -> str | None:
         if call_node.type == "object_creation_expression":
@@ -354,6 +391,93 @@ class JavaPerfDialect(BasePerfDialect):
         if node.type == "synchronized_statement":
             return "lock_in_loop"
         return None
+
+    # -- what a loop walks (perf/dialects/iterables.py) ---------------------------
+
+    function_kinds = _JAVA_FN_KINDS
+    change_kinds = frozenset({"assignment_expression", "update_expression"})
+    grow_methods = frozenset({"add", "addAll", "put", "putAll", "push", "offer", "addFirst", "addLast"})
+    conditional_kinds = frozenset(
+        {
+            "if_statement", "switch_expression", "switch_block_statement_group", "switch_rule",
+            "for_statement", "enhanced_for_statement", "while_statement", "do_statement",
+            "try_statement", "catch_clause", "ternary_expression",
+        }
+    )
+
+    literal_kinds = frozenset({"array_initializer"})
+    int_kinds = frozenset({"decimal_integer_literal", "hex_integer_literal"})
+    wrapper_kinds = frozenset({"parenthesized_expression"})
+    pass_through = frozenset(
+        {
+            "stream", "parallelStream", "filter", "map", "flatMap", "sorted", "distinct",
+            "peek", "boxed", "collect", "toList", "entrySet", "keySet", "values", "iterator",
+            "listIterator",
+        }
+    )
+    caps = frozenset({"limit"})
+    size_names = frozenset({"size", "length"})
+    # ``while (rs.next())`` (JDBC), ``while (it.hasNext())``.
+    cursor_advances = frozenset({"next", "hasNext", "hasMoreElements"})
+    listings = frozenset({"listFiles"})
+    recursive_listings = frozenset({"walk", "find"})
+    streams = frozenset({"lines", "readAllLines"})
+    query_caps = frozenset({"setMaxResults"})
+
+    def loop_header(self, loop: Node) -> tuple[str, Node | None]:
+        if loop.type == "enhanced_for_statement":
+            return "each", loop.child_by_field_name("value")
+        cond = loop.child_by_field_name("condition")
+        if loop.type == "for_statement":
+            return "counted", upper_bound(cond)
+        if loop.type in ("while_statement", "do_statement") and cond is not None:
+            return "cursor", cond
+        return "each", None
+
+    def call_parts(self, node: Node) -> tuple[str, Node | None, list[Node]] | None:
+        if node.type != "method_invocation":
+            return None
+        args = node.child_by_field_name("arguments")
+        arg_nodes = [c for c in args.named_children if "comment" not in c.type] if args else []
+        return (
+            text_of(node.child_by_field_name("name")),
+            node.child_by_field_name("object"),
+            arg_nodes,
+        )
+
+    def member_parts(self, node: Node) -> tuple[str, Node] | None:
+        obj = node.child_by_field_name("object") if node.type == "field_access" else None
+        return (text_of(node.child_by_field_name("field")), obj) if obj is not None else None
+
+    def special_call(
+        self,
+        call: Node,
+        parts: tuple[str, Node | None, list[Node]],
+        loop: Node,
+        probe: SinkProbe,
+    ) -> Source | None:
+        method, receiver, args = parts
+        owner = text_of(receiver)
+        if method in ("of", "asList") and owner in _JAVA_FACTORIES:
+            if len(args) != 1:
+                return "constant", "bounded"
+            # ``Arrays.asList(ids)`` walks ``ids``; ``List.of("a")`` is one entry.
+            if args[0].type in _JAVA_SCALARS:
+                return "constant", "bounded"
+            return self._iterable(args[0], loop, probe, hop=True)
+        if method == "values" and not args and _JAVA_TYPE_NAME.match(owner):
+            return "constant", "bounded"  # ``Role.values()``: an enum's constants
+        if owner == "Files" and method in ("list", "walk", "find", "newDirectoryStream"):
+            recursive = method in ("walk", "find")
+            grows = recursive and self._walks_repo(call, "walk", loop)
+            return "listing", "grows_with_data" if grows else None
+        return None
+
+    def bindings_of(self, node: Node) -> list[tuple[bytes, Node]]:
+        return _java_bindings(node)
+
+    def param_names(self, loop: Node) -> set[bytes]:
+        return self.enclosing_params(loop, frozenset({"formal_parameter"}))
 
     def is_chunked_loop(self, node: Node) -> bool:
         """``for (int i = 0; i < n; i += step)``, or ``for (var c : Lists.partition(xs, n))``."""

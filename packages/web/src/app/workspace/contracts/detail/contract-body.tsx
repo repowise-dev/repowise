@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
+import { getTranslations } from "next-intl/server";
 import type {
   WorkspaceContractDetail,
   WorkspaceContractEntry,
@@ -11,6 +12,7 @@ import type {
   WorkspaceTestImpactResponse,
 } from "@repowise-dev/types/workspace";
 import { contractTypeLabel } from "@repowise-dev/ui/workspace/contract-type-label";
+import { linkStrategyCopy } from "@repowise-dev/ui/workspace/link-provenance";
 import { ContractTestsSection } from "@repowise-dev/ui/workspace/contract-tests-section";
 import {
   asContractSchema,
@@ -18,12 +20,9 @@ import {
   contractLede,
   contractMetaEntries,
   contractMetaLabel,
+  contractMetaString,
   flattenSchemaFields,
-  providerLinkedProse,
   schemaFieldConstraints,
-  unlinkedProviderProse,
-  unmatchedConsumerProse,
-  unmatchedReasonCopy,
 } from "@repowise-dev/ui/workspace/contract-facts";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import { ContractPromptButton } from "@repowise-dev/ui/workspace/contract-prompt-button";
@@ -52,7 +51,8 @@ interface Props {
   testImpactError?: string | null;
 }
 
-export function ContractBody({ detail, repoIds, testImpact, testImpactError }: Props) {
+export async function ContractBody({ detail, repoIds, testImpact, testImpactError }: Props) {
+  const t = await getTranslations("contracts");
   const { contract, links, unmatched_reason: unmatchedReason } = detail;
   const isProvider = contract.role === "provider";
   const schema = asContractSchema(detail.contract_schema);
@@ -63,14 +63,14 @@ export function ContractBody({ detail, repoIds, testImpact, testImpactError }: P
         href="/workspace/contracts"
         className="text-xs font-medium text-[var(--color-accent-primary)] hover:underline"
       >
-        <span aria-hidden>&larr;</span> Contracts
+        <span aria-hidden>&larr;</span> {t("detail.back")}
       </Link>
 
       <header className="mt-6 flex flex-col gap-3">
         <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-          {contractTypeLabel(contract.contract_type)} contract
+          {contractTypeLabel(contract.contract_type)} {t("detail.typeContract")}
           <span className="mx-2 text-[var(--color-border-hover)]">/</span>
-          {isProvider ? "Provider" : "Consumer"}
+          {isProvider ? t("detail.roleProvider") : t("detail.roleConsumer")}
         </p>
         <h1 className="text-[2rem] font-semibold leading-tight tracking-tight text-[var(--color-text-primary)] [overflow-wrap:anywhere]">
           {contractHeading(contract)}
@@ -88,16 +88,16 @@ export function ContractBody({ detail, repoIds, testImpact, testImpactError }: P
       </header>
 
       <Section
-        title={isProvider ? "Declared here" : "Called here"}
+        title={isProvider ? t("detail.declaredHere") : t("detail.calledHere")}
         description={
           isProvider
-            ? "Where this contract is declared, and how confident extraction is that this is the declaration."
-            : "The call site, and how confident extraction is that it names this contract."
+            ? t("detail.declaredHereDescription")
+            : t("detail.calledHereDescription")
         }
       >
         <Facts>
-          <Fact label="Repository">{contract.repo}</Fact>
-          <Fact label="File">
+          <Fact label={t("detail.fact.repository")}>{contract.repo}</Fact>
+          <Fact label={t("detail.fact.file")}>
             <FileRef
               repo={contract.repo}
               path={contract.file_path}
@@ -105,19 +105,21 @@ export function ContractBody({ detail, repoIds, testImpact, testImpactError }: P
               repoIds={repoIds}
             />
           </Fact>
-          {contract.service && <Fact label="Service">{contract.service}</Fact>}
-          <Fact label="Symbol">
+          {contract.service && (
+            <Fact label={t("detail.fact.service")}>{contract.service}</Fact>
+          )}
+          <Fact label={t("detail.fact.symbol")}>
             {/* The extractor's own string, dialect prefix included: it is what
                 names the framework that matched, and shortening it would hide
                 the difference between a route declaration and a client call. */}
             <span className="font-mono text-xs [overflow-wrap:anywhere]">
-              {contract.symbol_name || "None recorded"}
+              {contract.symbol_name || t("detail.symbolNone")}
             </span>
           </Fact>
-          <Fact label="Confidence">
+          <Fact label={t("detail.fact.confidence")}>
             <span className="tabular-nums">{Math.round(contract.confidence * 100)}%</span>
           </Fact>
-          <Fact label="Contract id">
+          <Fact label={t("detail.fact.contractId")}>
             <span className="font-mono text-xs [overflow-wrap:anywhere]">
               {contract.contract_id}
             </span>
@@ -141,8 +143,8 @@ export function ContractBody({ detail, repoIds, testImpact, testImpactError }: P
       <SchemaSection contract={contract} schema={schema} />
 
       <Section
-        title="How it was found"
-        description="What the extractor recorded about this contract. The layer is the part worth reading: an index contract came from the parsed symbol table, a regex one from a text dialect, which is where recall is least certain."
+        title={t("detail.howFound")}
+        description={t("detail.howFoundDescription")}
       >
         <Facts>
           {contractMetaEntries(contract.meta).map(([key, value]) => (
@@ -151,9 +153,9 @@ export function ContractBody({ detail, repoIds, testImpact, testImpactError }: P
             </Fact>
           ))}
           {contractMetaEntries(contract.meta).length === 0 && (
-            <Fact label="Detail">
+            <Fact label={t("detail.fact.detail")}>
               <span className="text-[var(--color-text-tertiary)]">
-                The extractor recorded none.
+                {t("detail.extractorNone")}
               </span>
             </Fact>
           )}
@@ -167,7 +169,88 @@ export function ContractBody({ detail, repoIds, testImpact, testImpactError }: P
 // The link section, and the states a contract can be in
 // ---------------------------------------------------------------------------
 
-function LinkSection({
+/** The minimal translator shape the prose helpers below need; next-intl's `t` fits. */
+type Translator = (key: string, values?: Record<string, string | number>) => string;
+
+/**
+ * The unmatched-reason titles.
+ *
+ * The prose helpers in `@repowise-dev/ui` carry this copy for the browser and
+ * stay language-agnostic, so the label is named on this side instead of read
+ * out of the shared package.
+ */
+const REASON_TITLE_KEYS: Record<string, string> = {
+  no_provider: "detail.reasonTitle.no_provider",
+  unlinked: "detail.reasonTitle.unlinked",
+  internal_only: "detail.reasonTitle.internal_only",
+  external_host: "detail.reasonTitle.external_host",
+  ambiguous_provider: "detail.reasonTitle.ambiguous_provider",
+};
+
+/**
+ * A provider nothing calls, which is the ordinary state of exported code.
+ *
+ * The sentence is composed here rather than in `packages/ui` so it follows the
+ * page's locale; the excluded set is what the matcher leaves out by design.
+ */
+function unmatchedProviderDescription(
+  t: Translator,
+  contract: WorkspaceContractEntry,
+): string {
+  return contract.service
+    ? t("detail.prose.unlinkedProviderWithService", {
+        repo: contract.repo,
+        service: contract.service,
+      })
+    : t("detail.prose.unlinkedProvider", { repo: contract.repo });
+}
+
+/** One consumer's unmatched state as a paragraph, with the concrete next step. */
+function unmatchedConsumerDescription(
+  t: Translator,
+  reason: string | null,
+  contract: WorkspaceContractEntry,
+): string {
+  const host = contractMetaString(contract.meta, "host");
+  switch (reason) {
+    case "external_host":
+      return host
+        ? t("detail.prose.unmatchedExternalHost", { host })
+        : t("detail.prose.unmatchedExternalHostGeneric");
+    case "internal_only":
+      return t("detail.prose.unmatchedInternalOnly");
+    case "no_provider":
+      return t("detail.prose.unmatchedNoProvider", {
+        contract: contractHeading(contract),
+      });
+    case "unlinked":
+      return t("detail.prose.unmatchedUnlinked");
+    case "ambiguous_provider":
+      return t("detail.prose.unmatchedAmbiguousProvider");
+    default:
+      return t("detail.prose.unmatchedDefault");
+  }
+}
+
+/** How many call sites resolve to a provider, and from where. */
+function linkedProviderDescription(
+  t: Translator,
+  links: { consumer_repo: string }[],
+  repo: string,
+): string {
+  const repos = new Set(links.map((l) => l.consumer_repo));
+  if (repos.size === 1 && repos.has(repo)) {
+    return links.length === 1
+      ? t("detail.prose.linkedFromOne", { calls: links.length, repo })
+      : t("detail.prose.linkedAllFromOne", { calls: links.length, repo });
+  }
+  return t("detail.prose.linkedAcross", {
+    calls: links.length,
+    repos: repos.size,
+  });
+}
+
+async function LinkSection({
   contract,
   links,
   unmatchedReason,
@@ -178,16 +261,21 @@ function LinkSection({
   unmatchedReason: string | null;
   repoIds: Record<string, string>;
 }) {
+  const t = await getTranslations("contracts");
   const isProvider = contract.role === "provider";
 
   if (links.length === 0) {
     return (
       <Section
-        title={isProvider ? "No caller found" : unmatchedReasonCopy(unmatchedReason).title}
+        title={
+          isProvider
+            ? t("detail.noCallerFound")
+            : t(REASON_TITLE_KEYS[unmatchedReason ?? ""] ?? "detail.reasonTitle.unknown")
+        }
         description={
           isProvider
-            ? unlinkedProviderProse(contract)
-            : unmatchedConsumerProse(unmatchedReason, contract)
+            ? unmatchedProviderDescription(t, contract)
+            : unmatchedConsumerDescription(t, unmatchedReason, contract)
         }
       />
     );
@@ -195,11 +283,11 @@ function LinkSection({
 
   return (
     <Section
-      title={isProvider ? "Callers" : "Served by"}
+      title={isProvider ? t("detail.callers") : t("detail.servedBy")}
       description={
         isProvider
-          ? providerLinkedProse(links, contract.repo)
-          : "This call resolves to the code that serves it. A match joins a call site to a declaration; it does not mean the two were written against a shared schema."
+          ? linkedProviderDescription(t, links, contract.repo)
+          : t("detail.servedByDescription")
       }
     >
       <LinkTable links={links} side={isProvider ? "consumer" : "provider"} repoIds={repoIds} />
@@ -207,7 +295,7 @@ function LinkSection({
   );
 }
 
-function LinkTable({
+async function LinkTable({
   links,
   side,
   repoIds,
@@ -216,6 +304,13 @@ function LinkTable({
   side: "provider" | "consumer";
   repoIds: Record<string, string>;
 }) {
+  const t = await getTranslations("contracts");
+  // A strategy this build predates reads as its humanised token; a link stored
+  // before strategies reads as its match type.
+  const strategyLabel = (link: WorkspaceContractLinkEntry) =>
+    link.strategy && t.has(`detail.strategy.${link.strategy}`)
+      ? t(`detail.strategy.${link.strategy}`)
+      : (linkStrategyCopy(link.strategy)?.label ?? link.match_type);
   // A local table rather than `ContractLinksTable`: that one leads with the
   // contract id and its type, and on this page both of those are the heading.
   // What is left to say is the other side of each link.
@@ -223,19 +318,21 @@ function LinkTable({
     <TableScroll>
       <table className="w-full border-collapse text-left">
         <caption className="sr-only">
-          {side === "provider" ? "Providers serving this call" : "Call sites resolving here"}
+          {side === "provider"
+            ? t("detail.caption.providersServing")
+            : t("detail.caption.callSites")}
         </caption>
         <thead>
           <tr className="text-xs uppercase tracking-wider text-[var(--color-text-tertiary)]">
-            <Th>Repository</Th>
-            <Th>File</Th>
+            <Th>{t("detail.fact.repository")}</Th>
+            <Th>{t("detail.fact.file")}</Th>
             {/* Column priority, as the shared tables run it: below md only
                 the repository and the path survive, because three wrapping
                 mono columns in 358px break a path mid-token to make room for
                 a symbol nobody came here to read. */}
-            <Th className="max-md:hidden">Symbol</Th>
-            <Th className="max-lg:hidden">Match</Th>
-            <Th className="max-md:hidden">Confidence</Th>
+            <Th className="max-md:hidden">{t("detail.fact.symbol")}</Th>
+            <Th className="max-lg:hidden">{t("detail.col.match")}</Th>
+            <Th className="max-md:hidden">{t("detail.fact.confidence")}</Th>
           </tr>
         </thead>
         <tbody>
@@ -269,7 +366,7 @@ function LinkTable({
                 </Td>
                 <Td className="max-lg:hidden">
                   <span className="text-xs text-[var(--color-text-secondary)]">
-                    {link.match_type}
+                    {strategyLabel(link)}
                   </span>
                 </Td>
                 <Td className="max-lg:hidden">
@@ -298,52 +395,58 @@ function LinkTable({
  * stops, so a response table would be an empty box under every contract that
  * has one. Naming what would fill it is the whole content of the absent case.
  */
-function SchemaSection({
+async function SchemaSection({
   contract,
   schema,
 }: {
   contract: WorkspaceContractEntry;
   schema: ContractSchema | null;
 }) {
+  const t = await getTranslations("contracts");
   if (!schema) {
-    return <Section title="Shape" description={noSchemaProse(contract.contract_type)} />;
+    return <Section title={t("detail.shape")} description={noSchemaProse(t, contract.contract_type)} />;
   }
 
   const hasRequest = schema.request_fields.length > 0;
   const hasResponse = schema.response_fields.length > 0;
 
   return (
-    <Section title="Shape" description={schemaProse(schema.source, hasResponse)}>
-      {hasRequest && <FieldTable caption="Request" fields={schema.request_fields} />}
-      {hasResponse && <FieldTable caption="Response" fields={schema.response_fields} />}
+    <Section title={t("detail.shape")} description={schemaProse(t, schema.source, hasResponse)}>
+      {hasRequest && (
+        <FieldTable caption={t("detail.field.request")} fields={schema.request_fields} />
+      )}
+      {hasResponse && (
+        <FieldTable caption={t("detail.field.response")} fields={schema.response_fields} />
+      )}
       {!hasRequest && !hasResponse && (
         <p className="text-sm text-[var(--color-text-tertiary)]">
-          The reader produced a shape with no fields in it.
+          {t("detail.shapeEmptyFields")}
         </p>
       )}
     </Section>
   );
 }
 
-function schemaProse(source: string, hasResponse: boolean): string {
-  const head = `Recovered by the ${source} reader.`;
+function schemaProse(t: Translator, source: string, hasResponse: boolean): string {
+  const head = t("detail.schema.recovered", { source });
   if (hasResponse) {
-    return `${head} Fields are what the declaration names, not what any one caller passes.`;
+    return t("detail.schema.withResponse", { head });
   }
   if (source === "signature") {
-    return `${head} It reads a declaration's parameters and stops there, so there is no return shape below; a response would have to come from an OpenAPI or proto declaration.`;
+    return t("detail.schema.signature", { head });
   }
-  return `${head} It recovered no return shape for this contract.`;
+  return t("detail.schema.noReturn", { head });
 }
 
-function noSchemaProse(type: string): string {
+function noSchemaProse(t: Translator, type: string): string {
   if (type === "data") {
-    return "A table contract carries no field shape. It is matched on the table name, and nothing on that path reads a column list, so this section is empty for every table contract rather than for this one in particular.";
+    return t("detail.schema.dataTable");
   }
-  return "No reader recovered a shape for this contract. A shape comes off a typed declaration, so an untyped signature, a route declared through a decorator alone, or a file the index never parsed all arrive here without one.";
+  return t("detail.schema.noReader");
 }
 
-function FieldTable({ caption, fields }: { caption: string; fields: SchemaField[] }) {
+async function FieldTable({ caption, fields }: { caption: string; fields: SchemaField[] }) {
+  const t = await getTranslations("contracts");
   const rows = flattenSchemaFields(fields);
   return (
     <TableScroll>
@@ -353,9 +456,9 @@ function FieldTable({ caption, fields }: { caption: string; fields: SchemaField[
         </caption>
         <thead>
           <tr className="text-xs uppercase tracking-wider text-[var(--color-text-tertiary)]">
-            <Th>Field</Th>
-            <Th>Type</Th>
-            <Th>Required</Th>
+            <Th>{t("detail.field.field")}</Th>
+            <Th>{t("detail.field.type")}</Th>
+            <Th>{t("detail.field.required")}</Th>
           </tr>
         </thead>
         <tbody>
@@ -466,7 +569,7 @@ function Td({ children, className }: { children: ReactNode; className?: string }
  * href because the file page takes no line parameter, and a link that lands
  * nowhere near the number it names is worse than the number on its own.
  */
-function FileRef({
+async function FileRef({
   repo,
   path,
   line,
@@ -477,6 +580,7 @@ function FileRef({
   line: number | null;
   repoIds: Record<string, string>;
 }) {
+  const t = await getTranslations("contracts");
   const repoId = repoIds[repo];
   const text = <span className="font-mono text-xs [overflow-wrap:anywhere]">{path}</span>;
   return (
@@ -493,7 +597,7 @@ function FileRef({
       )}
       {line != null && (
         <span className="ml-2 text-xs tabular-nums text-[var(--color-text-tertiary)]">
-          line {line}
+          {t("detail.line", { line })}
         </span>
       )}
     </span>

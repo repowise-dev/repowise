@@ -36,7 +36,8 @@ class RepoContext:
     fts: Any  # FullTextSearch
     vector_store: Any  # LanceDB or InMemoryVectorStore
     decision_store: Any  # LanceDB or InMemoryVectorStore
-    vector_store_ready: asyncio.Event = field(default_factory=asyncio.Event)
+    # None: readiness is not tracked, so searches do not wait for it.
+    vector_store_ready: asyncio.Event | None = field(default_factory=asyncio.Event)
     _engine: Any = field(default=None, repr=False)  # AsyncEngine, for dispose
 
 
@@ -91,6 +92,8 @@ class RepoRegistry:
         self._contexts: dict[str, RepoContext] = {}
         self._access_order: dict[str, float] = {}
         self._vs_tasks: dict[str, asyncio.Task[None]] = {}
+        # Serialises loads so concurrent callers can't overshoot the cap.
+        self._load_lock = asyncio.Lock()
         self._validate_public_identities()
 
     def _identity_key(self, value: str | Path) -> str:
@@ -194,18 +197,22 @@ class RepoRegistry:
             self._access_order[alias] = time.monotonic()
             return self._contexts[alias]
 
-        # Evict if at capacity.  The default repo is protected from eviction, so
-        # only count non-default contexts against the cap — this prevents the
-        # cap from being silently bypassed when the default is always loaded.
-        default_alias = self.get_default_alias()
-        evictable = [a for a in self._contexts if a != default_alias]
-        if len(evictable) >= self.MAX_LOADED:
-            await self._evict_lru()
+        async with self._load_lock:
+            if alias in self._contexts:
+                self._access_order[alias] = time.monotonic()
+                return self._contexts[alias]
+            # Evict if at capacity.  The default repo is protected from eviction, so
+            # only count non-default contexts against the cap — this prevents the
+            # cap from being silently bypassed when the default is always loaded.
+            default_alias = self.get_default_alias()
+            evictable = [a for a in self._contexts if a != default_alias]
+            if len(evictable) >= self.MAX_LOADED:
+                await self._evict_lru()
 
-        ctx = await self._load_context(alias)
-        self._contexts[alias] = ctx
-        self._access_order[alias] = time.monotonic()
-        return ctx
+            ctx = await self._load_context(alias)
+            self._contexts[alias] = ctx
+            self._access_order[alias] = time.monotonic()
+            return ctx
 
     async def get_default(self) -> RepoContext:
         """Shortcut for ``get(default_alias)``."""
@@ -238,7 +245,12 @@ class RepoRegistry:
         engine, session_factory = await open_repo_db(repo_path)
 
         fts = FullTextSearch(engine)
-        await fts.ensure_index()
+        try:
+            await fts.ensure_index()
+        except BaseException:
+            # A timeout cancels here; don't leak the engine.
+            await engine.dispose()
+            raise
 
         # Seed placeholder vector stores.
         # decision_store is repointed to the shared page store — decisions are

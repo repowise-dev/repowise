@@ -41,6 +41,7 @@ ModelOptionSource = Literal["api", "local", "fallback"]
 _FIXED_TEMPERATURE_PREFIXES = (
     # OpenAI reasoning era
     "gpt-5",
+    "gpt-6",
     "o1",
     "o3",
     "o4",
@@ -49,6 +50,7 @@ _FIXED_TEMPERATURE_PREFIXES = (
     "claude-opus-4-8",
     "claude-opus-5",
     "claude-sonnet-5",
+    "claude-haiku-5",
     "claude-fable-5",
     "claude-mythos-5",
 )
@@ -637,17 +639,24 @@ class ChatStreamEvent:
     - ``text_delta``: incremental text token(s) in ``text``
     - ``tool_start``: a completed tool call block in ``tool_call``
     - ``tool_result``: tool execution result (from internal loops) in ``tool_call`` + ``tool_result_data``
-    - ``usage``: token counts in ``input_tokens`` / ``output_tokens``
+    - ``usage``: the call's token counts in ``input_tokens`` / ``output_tokens``.
+      At most one per ``stream_chat`` call, after ``stop``, and only when the
+      SDK reported usage; no ``usage`` event means the counts are unknown.
     - ``stop``: end of generation (may follow tool_start if stop_reason is tool_use)
+    - ``assistant_content``: the turn's provider-native blocks in ``content_blocks``,
+      after ``stop``. The caller stores them on the assistant message as
+      ``provider_content`` so the same provider can replay the turn verbatim
+      (Anthropic thinking blocks must accompany their tool results).
     """
 
-    type: str  # text_delta | tool_start | tool_result | usage | stop
+    type: str  # text_delta | tool_start | tool_result | usage | stop | assistant_content
     text: str | None = None
     tool_call: ChatToolCall | None = None
     tool_result_data: dict[str, Any] | None = None  # populated for tool_result events
     stop_reason: str | None = None  # end_turn | tool_use | max_tokens
     input_tokens: int = 0
     output_tokens: int = 0
+    content_blocks: list[dict[str, Any]] | None = None  # populated for assistant_content
 
 
 ToolExecutor = (

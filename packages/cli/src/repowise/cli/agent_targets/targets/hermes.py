@@ -806,6 +806,7 @@ class HermesTarget:
     docs_url = DOCS_URL
     hook_adapter = IDENTITY.hook_adapter
     session_adapter = IDENTITY.session_adapter
+    capture_adapter = IDENTITY.capture_adapter
     methods = METHODS
     project_file_id = PROJECT_FILE_ID
 
@@ -827,9 +828,7 @@ class HermesTarget:
         convention two other agents also write, so reading it as evidence the
         user has Hermes would pre-tick this agent for anyone using Codex.
         """
-        import shutil
-
-        if shutil.which("hermes") is not None:
+        if IDENTITY.is_installed():
             return True
         return hermes_home().is_dir()
 
@@ -991,11 +990,13 @@ class HermesTarget:
             return [str(config_path())]
         return [str(instructions_path(repo_path or Path.cwd()))]
 
-    def doctor(self) -> DoctorReport:
-        """User-scope health, which is the only half a bare call can see.
+    def doctor(self, repo_path: Path | None = None) -> DoctorReport:
+        """User-scope health. The repo's ``AGENTS.md`` block only counts with it.
 
-        ``doctor()`` takes no repo path, so the repo's ``AGENTS.md`` is out of
-        reach and reporting on its behalf would be a claim nothing checked.
+        The MCP entry is what makes repowise reachable at all (see ``detect``),
+        so with *repo_path* an unwired user scope is the whole answer. A wired
+        one stays OK without the block, since the server still resolves the
+        repo it is launched in; the missing instructions are noted instead.
 
         An unreadable config **is** reported as ``BROKEN`` here, which is where
         this differs from OpenCode. That target declines to call an unparseable
@@ -1007,7 +1008,18 @@ class HermesTarget:
         """
         path = config_path()
         if _reads_repowise():
-            return DoctorReport(target_id=ID, status=DoctorStatus.OK)
+            if repo_path is None or any(r.scope is Scope.PROJECT for r in detect(repo_path)):
+                return DoctorReport(target_id=ID, status=DoctorStatus.OK)
+            return DoctorReport(
+                target_id=ID,
+                status=DoctorStatus.OK,
+                # An OK row prints only its issue, so the remedy lives in it.
+                issues=(
+                    f"{instructions_path(repo_path)} has no repowise block, so Hermes "
+                    "is not told to use repowise in this repo (run: repowise agents "
+                    "add --target=hermes --scope=project).",
+                ),
+            )
 
         if path.exists() and not _parses(path):
             return DoctorReport(
@@ -1028,7 +1040,9 @@ class HermesTarget:
             target_id=ID,
             status=DoctorStatus.NOT_INSTALLED,
             issues=(
-                "Hermes is not wired at user scope; the managed AGENTS.md block is "
+                "Hermes is not wired at user scope."
+                if repo_path is not None
+                else "Hermes is not wired at user scope; the managed AGENTS.md block is "
                 "repo-local, so run this from a repo to check that half.",
             ),
             fix_command="repowise agents add --target=hermes",

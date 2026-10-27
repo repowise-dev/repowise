@@ -1271,7 +1271,7 @@ export function GraphFlow(props: GraphFlowProps) {
         onClick={handleToggleShortcutHelp}
         title="Keyboard shortcuts (?)"
         aria-label="Keyboard shortcuts"
-        className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-wash-hover)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+        className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-wash-hover)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
       >
         <HelpCircle className="h-3.5 w-3.5" />
       </button>

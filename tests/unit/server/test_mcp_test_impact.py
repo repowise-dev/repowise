@@ -100,6 +100,7 @@ class _FakeEnricher:
     def __init__(self, links: list[ContractLink]) -> None:
         # One dict per link, built once: the helper deduplicates by identity.
         self._by_provider: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        self.contract_links = [link.to_dict() for link in links]
         for link in links:
             key = (link.provider_repo, link.provider_file)
             self._by_provider.setdefault(key, []).append(link.to_dict())
@@ -347,6 +348,14 @@ async def test_no_link_for_the_changed_file_is_named_not_silent(workspace: Path)
     assert result is not None
     assert result.summary["reason"] == "no_matching_links"
     assert result.recommendations == []
+
+
+async def test_an_empty_link_map_says_it_cannot_tell(workspace: Path) -> None:
+    """No link anywhere is "could not determine", not "nothing consumes this file"."""
+    with _in_workspace(workspace, _FakeEnricher([])):
+        result = await cross_repo_tests("backend", [PROVIDER_FILE])
+    assert result is not None
+    assert result.summary["reason"] == "no_contract_links"
 
 
 async def test_a_failed_join_names_itself_on_every_row(

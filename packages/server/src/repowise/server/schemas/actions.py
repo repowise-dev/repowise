@@ -45,6 +45,12 @@ class NextAction(BaseModel):
     surface: str
     effort: Literal["S", "M", "L"]
     confidence: Literal["high", "medium"]
+    value: int = Field(
+        default=0, description="0-4: the Fix first value band, or what the severity says."
+    )
+    priority: float = Field(
+        default=0.0, description="Value x confidence / effort: the order inside a tier."
+    )
     done_when: str
     command: str | None = None
     marker: str | None = None
@@ -77,6 +83,10 @@ class ActionContext(BaseModel):
     fix_commits_90d: int
     busy_threshold: int
     coverage: Literal["measured", "stale", "unknown"]
+    history_too_short: bool = Field(
+        False,
+        description="The index holds too few commits for history-driven rules to rank by.",
+    )
 
 
 class ActionsResponse(BaseModel):
@@ -85,6 +95,9 @@ class ActionsResponse(BaseModel):
     week_start: str | None
     context: ActionContext
     horizons: dict[Literal["week", "quarter"], ActionHorizon]
+    summary: dict[Literal["week", "quarter"], str] = Field(
+        description="Where things stand in each horizon, in one sentence."
+    )
     rules: list[ActionRuleStatus]
     unavailable: dict[str, str]
 

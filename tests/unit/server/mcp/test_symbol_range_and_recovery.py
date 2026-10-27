@@ -205,7 +205,36 @@ async def test_neither_id_nor_symbol_id_returns_shaped_error(setup_mcp, repo_on_
     from repowise.server.mcp_server import get_symbol
 
     result = await get_symbol()
-    assert "required" in (result.get("error") or "").lower()
+    assert "`symbol_id`" in (result.get("error") or "")
+
+
+@pytest.mark.asyncio
+async def test_query_alone_is_read_as_symbol_id(setup_mcp, repo_on_disk):
+    # A host that defers tool schemas lets the model guess `query` for the id.
+    from repowise.server.mcp_server import get_symbol
+
+    by_query = await get_symbol(query="pkg/mod.py:5-6")
+    by_id = await get_symbol("pkg/mod.py:5-6")
+
+    assert by_query.get("error") is None
+    assert by_query["source"] == by_id["source"]
+
+
+@pytest.mark.asyncio
+async def test_symbol_id_wins_over_query(setup_mcp, repo_on_disk):
+    from repowise.server.mcp_server import get_symbol
+
+    result = await get_symbol("pkg/mod.py:5-6", query="pkg/ghost.py:1-2")
+    assert result.get("error") is None
+    assert result["start_line"] == 5
+
+
+@pytest.mark.asyncio
+async def test_blank_query_still_names_symbol_id(setup_mcp, repo_on_disk):
+    from repowise.server.mcp_server import get_symbol
+
+    result = await get_symbol(query="  ")
+    assert "`symbol_id`" in result["error"]
 
 
 @pytest.mark.asyncio

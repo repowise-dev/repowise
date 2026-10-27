@@ -14,13 +14,18 @@ _INCLUDE_BLOCKS = (
     "last_change",
     "callers",
     "callees",
+    "references",
     "metrics",
     "community",
     "decisions",
     "health",
     "skeleton",
+    "skeleton+",
     "doc_drift",
     "symbols",
+    "changes",
+    "provenance",
+    "suspects",
 )
 
 #: Card keys the projection replaces or drops. Everything else passes through.
@@ -146,7 +151,9 @@ def project(payload: dict, targets: tuple[str, ...]) -> dict:
     }
     if payload.get("truncated"):
         out["truncated"] = True
-    for key in ("dropped_targets", "recovery", "dropped_symbols", "dropped_blocks", "omission_marker"):
+    for key in (
+        "dropped_targets", "recovery", "dropped_symbols", "dropped_blocks", "omission_marker", "suspects"
+    ):
         # omission_marker is the only handle on what truncation banked, so a
         # `truncated: true` without it says content went missing and offers no
         # way to get it back.
@@ -179,11 +186,17 @@ def project(payload: dict, targets: tuple[str, ...]) -> dict:
     default=False,
     help="Add structure, imports and docstrings to each card.",
 )
+@click.option(
+    "--symptom",
+    default=None,
+    help="Issue text, an error or a stack trace for --include suspects to rank against.",
+)
 @_ta.target_options
 def context_command(
     targets: tuple[str, ...],
     include: tuple[str, ...],
     no_compact: bool,
+    symptom: str | None,
     path: str | None,
     repo_alias: str | None,
     no_workspace: bool,
@@ -213,6 +226,7 @@ def context_command(
             targets=list(targets),
             include=list(include) or None,
             compact=not no_compact,
+            symptom=symptom,
         )
 
     payload = _ta.run(repo_path, _factory, "get_context")
@@ -229,6 +243,18 @@ def context_command(
     _ta.print_index_note(payload, fmt)
 
 
+def _fix_signal(fix: dict) -> str:
+    """The card's fix-history signal with its window, or "" when it has none."""
+    if not fix.get("fix_count"):
+        return ""
+    magnet = " (bug magnet)" if fix.get("bug_magnet") else ""
+    window = f" in {fix['window']}" if fix.get("window") else ""
+    return (
+        f"{fix['fix_count']} bug fixes{window}, "
+        f"last {fix.get('last_fix_days_ago', '?')}d ago{magnet}"
+    )
+
+
 def _render(projected: dict) -> None:
     from rich.markup import escape
     from rich.table import Table
@@ -238,6 +264,11 @@ def _render(projected: dict) -> None:
     cards = projected.get("targets") or {}
     if not cards:
         console.print("[yellow]No context for those targets.[/yellow]")
+    for row in (projected.get("suspects") or {}).get("suspects", []):
+        console.print(
+            f"suspect {row['rank']}: {escape(row.get('ref') or row['id'])} {escape(row['title'][:70])}"
+            f" [dim]({', '.join(row['signals'])})[/dim]"
+        )
 
     for card in cards.values():
         if card.get("error"):
@@ -267,12 +298,9 @@ def _render(projected: dict) -> None:
         signals = []
         if card.get("hotspot"):
             signals.append("hotspot")
-        fix = card.get("fix_history") or {}
-        if fix.get("fix_count"):
-            magnet = " (bug magnet)" if fix.get("bug_magnet") else ""
-            signals.append(
-                f"{fix['fix_count']} bug fixes, last {fix.get('last_fix_days_ago', '?')}d ago{magnet}"
-            )
+        fix_signal = _fix_signal(card.get("fix_history") or {})
+        if fix_signal:
+            signals.append(fix_signal)
         if card.get("stale"):
             signals.append("docs stale")
         if card.get("episodes"):

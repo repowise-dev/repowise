@@ -591,6 +591,7 @@ class OpenCodeTarget:
     docs_url = DOCS_URL
     hook_adapter = IDENTITY.hook_adapter
     session_adapter = IDENTITY.session_adapter
+    capture_adapter = IDENTITY.capture_adapter
     methods = METHODS
     project_file_id = PROJECT_FILE_ID
 
@@ -607,9 +608,7 @@ class OpenCodeTarget:
         as evidence the user has OpenCode would make our own output the reason
         the agent keeps being offered.
         """
-        import shutil
-
-        if shutil.which("opencode") is not None:
+        if IDENTITY.is_installed():
             return True
         return user_config_dir().is_dir()
 
@@ -758,14 +757,14 @@ class OpenCodeTarget:
             str(instructions_path(scope, repo)),
         ]
 
-    def doctor(self) -> DoctorReport:
-        """User-scope health, which is the only half a bare call can see.
+    def doctor(self, repo_path: Path | None = None) -> DoctorReport:
+        """User-scope health, plus the project config when *repo_path* is given.
 
-        ``doctor()`` takes no repo path, so the project config is out of reach
-        and reporting ``OK`` on its behalf would be a claim nothing checked.
-        Unlike Cursor and VS Code there *is* something user-level to look at, so
-        a wired user config is reported as wired and the repo-scoped half is
-        named as the part still unchecked.
+        Without a repo path the project config is out of reach and reporting
+        ``OK`` on its behalf would be a claim nothing checked. Unlike Cursor and
+        VS Code there *is* something user-level to look at, so a wired user
+        config is reported as wired and the repo-scoped half is named as the
+        part still unchecked.
 
         **An unparseable config is never reported as BROKEN here**, which is
         where this differs from every other target. ``BROKEN`` fails the whole
@@ -783,7 +782,7 @@ class OpenCodeTarget:
         # in the listing and not-installed here, and the fix command printed
         # here then wrote a second entry into the other file.
         candidates = config_paths(Scope.USER)
-        if any(path.exists() and _reads_repowise(path) for path in candidates):
+        if detect(repo_path):
             return DoctorReport(target_id=ID, status=DoctorStatus.OK)
 
         unreadable = [
@@ -812,7 +811,9 @@ class OpenCodeTarget:
             target_id=ID,
             status=DoctorStatus.NOT_INSTALLED,
             issues=(
-                "OpenCode is not wired at user scope; workspace wiring is repo-local, "
+                "OpenCode is not wired at user scope or in this repo."
+                if repo_path is not None
+                else "OpenCode is not wired at user scope; workspace wiring is repo-local, "
                 "so run this from a repo to check that half.",
             ),
             fix_command="repowise agents add --target=opencode",

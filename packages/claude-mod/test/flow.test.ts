@@ -58,13 +58,12 @@ describe("reply summaries over recorded replies", () => {
     expect(s.error).toBeNull();
   });
 
-  it("get_risk: dependents, co-change partners, contributors; capped and tokens left out", () => {
+  it("get_risk: dependents, co-change partners; capped and tokens left out", () => {
     const s = summarizeReply("get_risk", reply("get_risk"));
     expect(s.inside).toEqual([
       { what: "targets", n: 1 },
       { what: "dependents", n: 12 },
       { what: "coChange", n: 25 },
-      { what: "contributors", n: 172 },
       { what: "hotspots", n: 1 },
     ]);
     expect(s.behind).toMatchObject({ complete: false, omittedTokens: 1849 });

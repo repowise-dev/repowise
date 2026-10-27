@@ -486,7 +486,7 @@ def render_generation_checks(report: GenerationReport, console: object) -> None:
     questions_text = report.question_block_summary()
     if report.questions_missing:
         questions_text = f"[yellow]{questions_text}[/yellow]"
-    table.add_row("Question-shaped text", questions_text)
+    table.add_row("Pages with question text", questions_text)
 
     frames = report.opening_frames
     frames_text = frames.summary_line()

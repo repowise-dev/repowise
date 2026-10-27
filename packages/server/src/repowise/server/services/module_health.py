@@ -9,8 +9,6 @@ views ``module_path`` is the path prefix the caller passed in.
 from __future__ import annotations
 
 import json
-import sqlite3
-from pathlib import Path
 
 from sqlalchemy import func as sa_func
 from sqlalchemy import select
@@ -26,6 +24,7 @@ from repowise.core.analysis.module_health import (
     summarize,
 )
 from repowise.core.persistence.crud import code_file_rows
+from repowise.core.persistence.crud.analysis.shown import ungated
 from repowise.core.persistence.models import (
     DeadCodeFinding,
     DecisionRecord,
@@ -37,12 +36,6 @@ from repowise.core.persistence.models import (
 #: The one definition behind every ownership rollup; not a package boundary
 #: (see :mod:`repowise.core.analysis.module_health`).
 top_level_module = module_label
-
-
-def _under_module(file_path: str, module_path: str) -> bool:
-    if module_path in ("", "root"):
-        return "/" not in file_path
-    return file_path == module_path or file_path.startswith(module_path + "/")
 
 
 async def aggregate_modules(session: AsyncSession, repo_id: str) -> dict[str, ModuleAccumulator]:
@@ -65,6 +58,7 @@ async def aggregate_modules(session: AsyncSession, repo_id: str) -> dict[str, Mo
             select(DeadCodeFinding.file_path, DeadCodeFinding.lines).where(
                 DeadCodeFinding.repository_id == repo_id,
                 DeadCodeFinding.kind.not_in(excluded_types()),
+                ungated("dead_code", DeadCodeFinding.file_path, DeadCodeFinding.kind),
             )
         )
     ).all()
@@ -76,37 +70,6 @@ async def aggregate_modules(session: AsyncSession, repo_id: str) -> dict[str, Mo
         )
     ).all()
     return _fold.aggregate_modules(files, sym_rows, dead_rows, decisions)
-
-
-def read_repo_health_score(db_path: Path) -> float | None:
-    """Return the canonical repo health score from a repo-local wiki.db."""
-    if not db_path.exists():
-        return None
-    # Aggregate in SQL rather than reading every row. A workspace calls this once
-    # per repo, and the fetchall() this replaces read ~6,000 rows per repo to
-    # produce one number: 61.6ms against 33.2ms across six large repos, and the
-    # row count grows with the repo. MAX(CAST(..), 1) reproduces the previous
-    # `max(int(nloc or 0), 1)` weight, truncation included; verified identical on
-    # 109 real databases.
-    try:
-        with sqlite3.connect(str(db_path)) as conn:
-            row = conn.execute(
-                "SELECT SUM(score * w), SUM(w) FROM ("
-                "  SELECT score, MAX(CAST(COALESCE(nloc, 0) AS INTEGER), 1) AS w"
-                "  FROM health_file_metrics WHERE score IS NOT NULL"
-                ")"
-            ).fetchone()
-    except sqlite3.OperationalError:
-        return None
-    except Exception:
-        return None
-
-    if not row or not row[1]:
-        return None
-
-    weighted_sum, total_weight = row
-    average = float(weighted_sum) / float(total_weight)
-    return max(0.0, min(100.0, round(average * 10.0, 1)))
 
 
 async def build_single_file_health(
@@ -150,6 +113,7 @@ async def build_single_file_health(
                 DeadCodeFinding.repository_id == repo_id,
                 DeadCodeFinding.file_path == file_path,
                 DeadCodeFinding.kind.not_in(excluded_types()),
+                ungated("dead_code", DeadCodeFinding.file_path, DeadCodeFinding.kind),
             )
         )
     ).one()
@@ -254,7 +218,6 @@ __all__ = [
     "aggregate_modules",
     "build_single_file_health",
     "detail_extras",
-    "read_repo_health_score",
     "summarize",
     "top_level_module",
 ]

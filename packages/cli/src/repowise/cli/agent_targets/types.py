@@ -108,6 +108,7 @@ class Tier(StrEnum):
 
     FULL = "full"
     GOOD = "good"
+    BASIC = "basic"
     PASTE_CONFIG = "paste-config"
 
 
@@ -292,6 +293,12 @@ class AgentTarget(Protocol):
     #: out of the Full tier.
     hook_adapter: str | None
     session_adapter: str | None
+    #: Named entry in ``core.edit_capture.edits``: turns this agent's edit hook
+    #: payload into an edit event for opt-in AI attribution. ``None`` means its
+    #: edits are attributed only through the markers it leaves in git (git-ai
+    #: notes, Agent Trace files, trailers). Not a tier input: capture is off
+    #: unless the user turns it on, so it adds no depth the agent always gets.
+    capture_adapter: str | None
 
     #: Routes this target can be wired through, in preference order.
     methods: tuple[InstallMethod, ...]
@@ -378,8 +385,11 @@ class AgentTarget(Protocol):
         """
         ...
 
-    def doctor(self) -> DoctorReport:
-        """This target's health, with one command that would fix it."""
+    def doctor(self, repo_path: Path | None = None) -> DoctorReport:
+        """This target's health, with one command that would fix it.
+
+        *repo_path* lets a target with repo-local wiring check that half too.
+        """
         ...
 
 
@@ -459,8 +469,10 @@ def derive_tier(target: AgentTarget) -> Tier:
       faked by writing a config file. Requiring both is what makes it
       structurally impossible for the docs to claim Full while the session
       adapter is missing.
-    * Everything else is **Good**: a real integration, MCP and instructions and
-      possibly skills, but no hook-level interception.
+    * A target that wires MCP plus managed instructions or skills is **Good**:
+      the agent is told repowise exists, but nothing intercepts its tool calls.
+    * Everything else is **Basic**: repowise writes the MCP config and nothing
+      that tells the agent when to use it.
 
     Deliberately strict about Full. Breadth that overclaims depth is worse than
     narrower breadth, and the tier is the thing the README badges repeat.
@@ -469,4 +481,7 @@ def derive_tier(target: AgentTarget) -> Tier:
         return Tier.PASTE_CONFIG
     if target.hook_adapter and target.session_adapter:
         return Tier.FULL
-    return Tier.GOOD
+    caps = capabilities_of(target)
+    if Capability.MCP in caps and caps & {Capability.INSTRUCTIONS, Capability.SKILLS}:
+        return Tier.GOOD
+    return Tier.BASIC

@@ -296,6 +296,7 @@ async def test_narrow_projection_leads_with_one_shared_causal_opportunity(
                         "cross_function": True,
                         "path": [f"{caller}::run", "src/shared.py::load", "src/db.py::fetch"],
                         "resolution_basis": "call-site",
+                        "loop_magnitude": "grows_with_data",
                     }
                 ),
                 health_impact=0.0,

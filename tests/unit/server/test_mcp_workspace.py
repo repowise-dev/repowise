@@ -787,6 +787,16 @@ def test_enricher_get_repos_depending_on(enricher_data):
     assert "frontend" in depending
 
 
+def test_enricher_get_repos_depending_on_lists_each_repo_once(enricher_data):
+    from repowise.server.mcp_server._enrichment import CrossRepoEnricher
+
+    data = json.loads(enricher_data.read_text())
+    data["package_deps"].append({**data["package_deps"][0], "source_manifest": "apps/web/package.json"})
+    enricher_data.write_text(json.dumps(data))
+    enricher = CrossRepoEnricher(enricher_data)
+    assert enricher.get_repos_depending_on("backend") == ["frontend"]
+
+
 def test_enricher_has_cross_repo_consumers(enricher_data):
     from repowise.server.mcp_server._enrichment import CrossRepoEnricher
 
@@ -902,14 +912,13 @@ async def workspace_mcp_with_enricher(workspace_mcp, enricher_data):
 
 
 @pytest.mark.asyncio
-async def test_overview_footer_includes_cross_repo(workspace_mcp_with_enricher):
+async def test_overview_footer_points_at_the_cross_repo_view(workspace_mcp_with_enricher):
     from repowise.server.mcp_server import get_overview
 
     result = await get_overview()
-    assert "workspace" in result
     ws = result["workspace"]
-    assert "cross_repo" in ws
-    assert ws["cross_repo"]["co_change_count"] == 1
+    assert "cross_repo" not in ws
+    assert "repo='all'" in ws["hint"]
 
 
 @pytest.mark.asyncio
@@ -1064,3 +1073,26 @@ async def test_list_repos_single_repo_mode():
             "is_default": True,
         }
     ]
+
+
+def test_list_repos_reads_the_commit_a_repo_updated_on_its_own_recorded(tmp_path):
+    from repowise.core.workspace import WorkspaceConfig
+    from repowise.core.workspace.config import RepoEntry
+    from repowise.server.mcp_server.tool_repos import _workspace_repos
+
+    (tmp_path / "api" / ".repowise").mkdir(parents=True)
+    (tmp_path / "api" / ".repowise" / "state.json").write_text(
+        json.dumps({"last_sync_commit": "b" * 40})
+    )
+    config = WorkspaceConfig(
+        repos=[RepoEntry(path="api", alias="api", last_commit_at_index="a" * 40)]
+    )
+    config.save(tmp_path)
+    registry = SimpleNamespace(
+        workspace_root=tmp_path, ws_config=config, get_default_alias=lambda: "api"
+    )
+
+    [row] = _workspace_repos(registry)
+    assert row["last_commit_at_index"] == "b" * 40
+    # Read, not written: the config on disk is the CLI's to update.
+    assert WorkspaceConfig.load(tmp_path).repos[0].last_commit_at_index == "a" * 40

@@ -15,11 +15,11 @@ from repowise.core.analysis.change_health.service import (
     DeltaRequest,
     _suggestion,
 )
-from repowise.core.analysis.change_health.sources import GitRevisionSource
+from repowise.core.analysis.change_health.sources import GitRevisionSource, read_blobs
 from repowise.core.analysis.health import HealthFindingData, Severity
 from repowise.core.analysis.health.scoring import score_file
 
-from .conftest import python_complex
+from .conftest import git, python_complex
 
 
 def finding(marker="long_method", *, line, severity=Severity.MEDIUM, symbol=None, impact=1.0):
@@ -80,6 +80,24 @@ def test_an_unrelated_new_finding_does_not_absorb_a_moved_one():
     assert by_line[50].base is None
 
 
+def test_lines_inserted_above_a_symbol_do_not_cross_pair_its_findings():
+    """Raw proximity paired the moved high finding with its medium neighbour."""
+    base = [
+        finding(line=388, severity=Severity.HIGH, symbol="walk"),
+        finding(line=407, severity=Severity.MEDIUM, symbol="walk"),
+    ]
+    head = [
+        finding(line=422, severity=Severity.HIGH, symbol="walk"),
+        finding(line=441, severity=Severity.MEDIUM, symbol="walk"),
+    ]
+    inserted_34_lines_at_100 = [(100, 0, 101, 34)]
+
+    result = FindingMatcher(hunks={"app.py": inserted_34_lines_at_100}).match(base, head)
+
+    assert [m.kind for m in result.matched] == ["unchanged", "unchanged"]
+    assert [m.base.line_start for m in result.matched] == [388, 407]
+
+
 def test_a_base_finding_left_over_inside_a_matched_group_is_resolved():
     base = [finding(line=10), finding(line=200)]
     head = [finding(line=12)]
@@ -108,6 +126,25 @@ def test_a_path_with_a_space_missing_at_a_revision_does_not_derail_the_batch(mak
     assert "after.py" not in blobs
     # The reader stayed in sync and still found the file that does exist.
     assert blobs["keep.py"] == b"x = 1\n"
+
+
+def test_a_submodule_entry_does_not_derail_the_batch(make_repo):
+    """A gitlink reads as no file, and the specs after it still read.
+
+    Git answers ``<sha> submodule`` with no body when the submodule's commit is
+    not in this repository, and the commit object itself when it is.
+    """
+    repo = make_repo()
+    head = repo.commit("seed", {"after.py": "z = 3\n"})
+    absent = "1234567890" * 4
+    for path, sha in (("vendor/lib", absent), ("vendor/own", head)):
+        git(repo.path, "update-index", "--add", "--cacheinfo", f"160000,{sha},{path}")
+    git(repo.path, "commit", "-q", "-m", "add submodules")
+
+    specs = [("HEAD", "vendor/lib"), ("HEAD", "vendor/own"), ("HEAD", "after.py")]
+    blobs = read_blobs(str(repo.path), specs)
+
+    assert blobs == {("HEAD", "after.py"): b"z = 3\n"}
 
 
 def test_a_change_touching_a_path_with_a_space_still_compares(make_repo):
@@ -174,6 +211,8 @@ def _scored(specs: list[tuple[str, str, int]]) -> list[HealthFindingData]:
             self.biomarker_type = marker
             self.severity = Severity.MEDIUM
             self.deduction = None
+            self.function_name = None
+            self.details: dict = {}
 
     _score, impacts = score_file([_R(m) for m, _sym, _line in specs])
     return [
@@ -235,7 +274,7 @@ def test_a_continuous_marker_still_worsens_when_its_own_deduction_grows():
     assert [m.kind for m in worse] == ["worsened"]
 
     better = FindingMatcher().match([gradient(0.6)], [gradient(0.2)]).matched
-    assert [m.kind for m in better] == ["unchanged"]
+    assert [m.kind for m in better] == ["improved"]
 
 
 def test_an_expected_cause_says_there_is_nothing_to_change():
@@ -245,3 +284,72 @@ def test_an_expected_cause_says_there_is_nothing_to_change():
         intervention_symbol=None,
     )
     assert "inherent_to_boundary" not in _suggestion(SimpleNamespace(), perf)
+
+
+def test_a_gated_cause_says_a_constant_flag_switches_it_off():
+    perf = SimpleNamespace(
+        actionability_state="expected", actionability_reason="gated_off", intervention_symbol=None
+    )
+    text = _suggestion(SimpleNamespace(), perf)
+    assert "constant-False flag" in text and "inherent" not in text
+
+
+def test_an_unlisted_expected_reason_keeps_the_inherent_sentence():
+    perf = SimpleNamespace(
+        actionability_state="expected",
+        actionability_reason="something_new",
+        intervention_symbol=None,
+    )
+    assert "inherent" in _suggestion(SimpleNamespace(), perf)
+
+
+# -- .repowise/health-rules.json applies when rescoring a commit --------------
+
+
+def test_repo_health_rules_silence_disabled_and_per_file_biomarkers(make_repo):
+    import json
+
+    from repowise.core.analysis.change_review import ChangeReviewRequest, ChangeReviewService
+    from repowise.core.repo_config import health_rules_fingerprint
+
+    repo = make_repo()
+    repo.commit("seed", {"src/legacy/mod.py": "x = 1\n", "src/active/app.py": "y = 1\n"})
+    per_path_rules = {
+        "rules": [
+            {"path": "src/legacy/**", "disabled_biomarkers": ["complex_method"]},
+        ],
+    }
+    repo.commit(
+        "add complex functions and per-path rule",
+        {
+            ".repowise/health-rules.json": json.dumps(per_path_rules),
+            "src/legacy/mod.py": python_complex("legacy_tangle", 18),
+            "src/active/app.py": python_complex("active_tangle", 18),
+        },
+    )
+
+    service = ChangeHealthDeltaService(repo_path=str(repo.path))
+    delta = service.compare(DeltaRequest(str(repo.path), "HEAD"))
+
+    assert delta.status == "available"
+    assert not any(
+        f.path == "src/legacy/mod.py" and f.biomarker_type == "complex_method"
+        for f in delta.findings
+    )
+    assert any(
+        f.path == "src/active/app.py" and f.biomarker_type == "complex_method"
+        for f in delta.findings
+    )
+
+    # Repo-wide disabled_biomarkers silences the marker everywhere.
+    repo.write(
+        ".repowise/health-rules.json",
+        json.dumps({"disabled_biomarkers": ["complex_method"]}),
+    )
+    review = ChangeReviewService(
+        GitRevisionSource(str(repo.path)), repo_path=str(repo.path)
+    ).review(ChangeReviewRequest(revspec="HEAD", baseline=0))
+    assert review.health is not None
+    assert review.health.fingerprint is not None
+    assert review.health.fingerprint.rules_fingerprint == health_rules_fingerprint(repo.path)
+    assert not any(f.biomarker_type == "complex_method" for f in review.health.findings)

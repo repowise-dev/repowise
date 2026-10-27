@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from repowise.core.analysis.health.counts import DEFAULT_COUNTS
-from repowise.core.analysis.health.scope import DEFAULT_SCOPE
+from repowise.core.analysis.health.counts import COUNTS, DEFAULT_COUNTS
+from repowise.core.analysis.health.scope import DEFAULT_SCOPE, SCOPES
 from repowise.server.mcp_server.tool_health.paging import _stamp_collection
 from repowise.server.mcp_server.tool_health.request import HealthRequest
 
@@ -28,18 +28,39 @@ _ALWAYS_KEPT = frozenset(
         "unknown_include_keys_emitted",
         # A rejected filter value is a caller-error report too.
         "ignored_arguments",
+        "ignored_arguments_hint",
         "recovery",
     }
 )
 
+# The miss seen in practice is a dimension or pillar name passed as a key.
+_UNKNOWN_ONLY_HINT = (
+    "`only` names response keys, such as fix_first, top_findings, "
+    "performance_opportunities or refactoring_plans; a dimension such as "
+    "performance is an `include` value. See docs/agent/MCP_TOOLS.md."
+)
+
+#: Keys built only when ``include`` asks (blocks.py, pillars.py): a missing
+#: include, not a misspelling, is why such a key is absent.
+_INCLUDE_OF_KEY = {
+    **dict.fromkeys(("performance_opportunities", "performance_summary"), "performance"),
+    **dict.fromkeys(
+        (
+            "refactoring_opportunities",
+            "refactoring_summary",
+            "refactoring_plans",
+            "suggestion_legend",
+        ),
+        "refactoring",
+    ),
+    **{k: k for k in ("trend", "coverage", "doc_drift", "untested_complexity", "what_if")},
+}
+
+#: Which control accepts each value, to name the right one for a swapped value.
+_CONTROL_OF_VALUE = {**dict.fromkeys(COUNTS, "counts"), **dict.fromkeys(SCOPES, "scope")}
+
 _PLAN_COMPANIONS = frozenset(
-    {
-        "refactoring_plans_status",
-        "validation_profiles",
-        "validation_profiles_total",
-        "validation_profiles_emitted",
-        "validation_profiles_reduced_reason",
-    }
+    {"refactoring_plans_status", "refactoring_plans_opportunities_total"}
 )
 
 
@@ -59,6 +80,13 @@ def _name_rejected_controls(
     }
     if rejected:
         result["ignored_arguments"] = {**result.get("ignored_arguments", {}), **rejected}
+    swapped = [
+        f'{name}="{raw}" is a {other} value: did you mean {other}="{raw}"?'
+        for name, raw in rejected.items()
+        if (other := _CONTROL_OF_VALUE.get(raw)) and other != name
+    ]
+    if swapped:
+        result["ignored_arguments_hint"] = " ".join(swapped)
 
 
 def _name_uncounted_blocks(result: dict[str, Any], reported_counts: str) -> None:
@@ -100,6 +128,7 @@ def _project(
                 f"{k}_reduced_reason",
                 f"{k}_scope",
                 f"{k}_hidden",
+                f"{k}_counts",
             )
         }
     )
@@ -119,4 +148,17 @@ def _project(
     if unknown:
         result["unknown_only_keys"] = unknown
         _stamp_collection(result, "unknown_only_keys", total=len(unknown))
+        result["unknown_only_keys_hint"] = _unknown_only_hint(req, unknown)
     return result
+
+
+def _unknown_only_hint(req: HealthRequest, unknown: list[str]) -> str:
+    """The generic hint, led by the include each include-gated miss needs."""
+    needs = [
+        f'only=["{raw}"] needs include=["{include}"].'
+        for raw, resolved in zip(req.only, req.only_list, strict=True)
+        if raw in unknown
+        and (include := _INCLUDE_OF_KEY.get(resolved))
+        and include not in req.include_set
+    ]
+    return " ".join(dict.fromkeys([*needs, _UNKNOWN_ONLY_HINT]))

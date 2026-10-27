@@ -3,6 +3,7 @@
 import * as React from "react";
 import { TrendingUp, TrendingDown, Minus } from "lucide-react";
 import { cn } from "../lib/cn";
+import { FilePath } from "../shared/file-path";
 
 export interface TrendStripHotspot {
   file_path: string;
@@ -82,12 +83,7 @@ export function HotspotTrendStrip({
               )}
             >
               <TrendBadge trend={trend} />
-              <span
-                className="flex-1 truncate font-mono text-xs text-[var(--color-text-primary)]"
-                title={h.file_path}
-              >
-                {h.file_path}
-              </span>
+              <FilePath path={h.file_path} fold className="flex-1 text-[var(--color-text-primary)]" />
               <span className="shrink-0 tabular-nums text-[var(--color-text-tertiary)]">
                 {Math.round(h.churn_percentile)}th %ile
               </span>

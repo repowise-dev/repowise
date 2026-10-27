@@ -119,3 +119,69 @@ def test_as_commit_id_accepts_only_hex_commit_ids() -> None:
     assert as_commit_id("DeadBee") == "DeadBee"
     for bad in ("--output=x", "-abcdef0", "abc123", "a" * 41, "HEAD", "", None, 7):
         assert as_commit_id(bad) is None
+
+
+def _base_moved_past_worktree(base_repo: Path, tmp_path: Path) -> tuple[Path, str]:
+    """A worktree forked at the first commit, and the base synced one commit later."""
+    import json
+    import sqlite3
+
+    wt = tmp_path / "wt"
+    _git(["worktree", "add", "-b", "behind", str(wt)], base_repo)
+    (base_repo / "b.py").write_text("y = 2\n", encoding="utf-8")
+    _git(["add", "-A"], base_repo)
+    _git(["commit", "-m", "base moves on"], base_repo)
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=base_repo, text=True).strip()
+    dot = base_repo / ".repowise"
+    dot.mkdir()
+    (dot / "state.json").write_text(json.dumps({"last_sync_commit": head}), encoding="utf-8")
+    conn = sqlite3.connect(dot / "wiki.db")
+    conn.execute("CREATE TABLE repositories (id TEXT, name TEXT, local_path TEXT)")
+    conn.close()
+    (dot / ".update.lock").write_text("{}", encoding="utf-8")
+    (dot / ".update.queued").write_text("{}", encoding="utf-8")
+    return wt, head
+
+
+def test_seed_commit_refusal(base_repo: Path, tmp_path: Path) -> None:
+    from repowise.cli.worktree import _seed_commit_refusal
+
+    wt, head = _base_moved_past_worktree(base_repo, tmp_path)
+    assert _seed_commit_refusal(wt, head, require_ancestor=True) == (
+        "is not an ancestor of worktree HEAD"
+    )
+    assert _seed_commit_refusal(wt, head, require_ancestor=False) is None
+    assert _seed_commit_refusal(wt, "f" * 40, require_ancestor=False) == (
+        "is not in this repository"
+    )
+    assert _seed_commit_refusal(wt, "--bad", require_ancestor=False) == "is not a commit id"
+
+
+def test_seed_accepts_a_base_past_the_fork_point(base_repo: Path, tmp_path: Path) -> None:
+    from repowise.cli.worktree import seed_index_from_base
+
+    wt, _ = _base_moved_past_worktree(base_repo, tmp_path)
+    assert not seed_index_from_base(root=wt, repo_paths=[wt], seed_base=base_repo)
+    assert seed_index_from_base(
+        root=wt, repo_paths=[wt], seed_base=base_repo, require_ancestor=False
+    )
+    seeded = wt / ".repowise"
+    assert (seeded / "state.json").exists()
+    assert not (seeded / ".update.lock").exists()
+    assert not (seeded / ".update.queued").exists()
+
+
+def test_update_seeds_without_the_ancestor_check(tmp_path: Path, monkeypatch) -> None:
+    import repowise.cli.worktree as worktree
+    from repowise.cli.commands.update_cmd.command import _prepare_repo
+
+    calls: list[dict] = []
+    monkeypatch.setattr(worktree, "detect_worktree_base", lambda _p: tmp_path / "base")
+    monkeypatch.setattr(worktree, "base_is_seedable", lambda _p: True)
+    monkeypatch.setattr(worktree, "seed_index_from_base", lambda **kw: calls.append(kw))
+    repo = tmp_path / "wt"
+    repo.mkdir()
+
+    _prepare_repo(repo)
+
+    assert calls and calls[0]["require_ancestor"] is False

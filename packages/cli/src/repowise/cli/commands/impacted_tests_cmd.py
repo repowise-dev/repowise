@@ -25,11 +25,12 @@ Examples:
     repowise impacted-tests abc123          # a single commit
     repowise impacted-tests main..HEAD --format list | xargs pytest
     repowise impacted-tests main...HEAD --format args --runner pytest
+    repowise impacted-tests main...HEAD --explain tests/unit/test_api.py
+    repowise impacted-tests main...HEAD --format args --prioritize
 """
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import click
@@ -52,12 +53,9 @@ from repowise.cli.helpers import (
     silence_logs_for_machine_output_until_close,
 )
 from repowise.cli.output import emit_json
+from repowise.core.analysis.health.coverage.contexts import PER_TEST_COVERAGE_COMMAND
+from repowise.core.analysis.test_collection import plan_scopes, read_checkout, select
 from repowise.core.analysis.test_selection import RUNNERS
-
-# The whole reverse-import closure: a test importing a module that imports the
-# changed file runs it too. No depth limit: the walk ends when no node gains a
-# new seed, so a cut-off can never drop a test.
-_IMPORT_CLOSURE_DEPTH = sys.maxsize
 
 # Candidates the table prints per changed file; json and list carry them all.
 _TABLE_CANDIDATES = 10
@@ -66,14 +64,7 @@ _TABLE_CANDIDATES = 10
 def _resolve_repo_path(path: str | None, fmt: str):
     """Resolve the repo path (workspace-aware), mirroring ``coverage``."""
     target = resolve_command_target(path=path)
-    target.notice(ci_notices(fmt), command="impacted-tests")
-    if target.is_workspace:
-        primary = target.primary_path()
-        if primary is None:
-            raise click.ClickException("Workspace has no primary repo configured.")
-        return primary
-    assert target.repo_path is not None
-    return target.repo_path
+    return target.narrow(ci_notices(fmt), command="impacted-tests", repo_option=False)
 
 
 @click.command("impacted-tests")
@@ -102,12 +93,36 @@ def _resolve_repo_path(path: str | None, fmt: str):
     help="Who --format args is for: pytest (node ids and files), go (package dirs), "
     "jest (files), files, or auto (from the selected test files; mixed means files).",
 )
+@click.option(
+    "--explain",
+    "explain",
+    default=None,
+    metavar="TEST",
+    help="Say why one test file (or node id) was or was not selected: the changed file and "
+    "the route that reached it, or the rule that runs it. With --format json it is added "
+    "to the report as 'explain'.",
+)
+@click.option(
+    "--prioritize",
+    is_flag=True,
+    help="With --format args, list or json: list the whole suite, the selected tests first in "
+    "the order likeliest to fail, then every other test. Nothing is skipped, and a full run "
+    "is ordered too, so CI can run the head with -x and then the rest.",
+)
 def impacted_tests_command(
-    revspec: str | None, repo: str | None, staged: bool, fmt: str, runner: str
+    revspec: str | None,
+    repo: str | None,
+    staged: bool,
+    fmt: str,
+    runner: str,
+    explain: str | None,
+    prioritize: bool,
 ) -> None:
     """Print the tests whose coverage intersects a change's changed lines."""
     if revspec and staged:
         raise click.ClickException("Give a revision range or --staged, not both.")
+    if prioritize and fmt == "table":
+        raise click.ClickException("--prioritize needs --format args, list or json.")
 
     # json/list/args go to downstream tools; keep stdout clean of log noise.
     if fmt != "table":
@@ -115,22 +130,26 @@ def impacted_tests_command(
 
     repo_path = _resolve_repo_path(repo, fmt)
     try:
-        change, config = _read_change(repo_path, revspec, staged, fmt)
+        change, config = _read_change(repo_path, revspec, staged, fmt, bool(explain) or prioritize)
     except CannotEvaluateError as exc:
         cannot_evaluate(fmt, exc.code, str(exc))
 
-    result = run_async(_collect(repo_path, change))
+    explain = explain.replace("\\", "/").removeprefix("./") if explain else None
+    checkout = read_checkout(repo_path, change.head)
+    plan = plan_scopes(change, config, checkout) if config is not None else None
+    result = run_async(_collect(repo_path, change, checkout, config, explain, plan, prioritize))
     result["diff"] = change.label
-    if config is not None:
-        result["selection"] = _select(repo_path, change, result, config)
-    _render(result, fmt, runner)
+    if explain and fmt != "json":
+        _render_explain(result, explain)
+        return
+    _render(result, fmt, runner, explain, prioritize)
 
 
-def _read_change(repo_path, revspec: str | None, staged: bool, fmt: str):
+def _read_change(repo_path, revspec: str | None, staged: bool, fmt: str, explain: bool = False):
     """``(change set, selection config or None)``, or :class:`CannotEvaluateError`."""
     from repowise.core.ci.base import in_ci
 
-    config = _selection_config(repo_path) if fmt in ("json", "args") else None
+    config = _selection_config(repo_path) if explain or fmt in ("json", "args") else None
     if revspec is None and not staged and in_ci():
         # In CI the change to test is the pull request's, not the staged index.
         revspec = ci_revspec(str(repo_root(str(repo_path))), None)
@@ -147,360 +166,56 @@ def _selection_config(repo_path):
         raise CannotEvaluateError("config_invalid", str(exc)) from exc
 
 
-async def _collect(repo_path, change) -> dict:
-    """Resolve the change's files to impacted tests + labelled fallbacks."""
-    from repowise.core.persistence.crud import (
-        get_health_metrics,
-        get_repository,
-        get_test_coverage_summary,
-    )
-    from repowise.core.persistence.crud.analysis.coverage_map import MAX_TEST_COVERAGE_ROWS
+async def _collect(
+    repo_path, change, checkout, config, explain: str | None, plan, prioritize: bool = False
+) -> dict:
+    """Open the index, collect the change's tests (``test_collection.collect``) and decide."""
+    from repowise.core.analysis.test_collection import collect, empty_result
+    from repowise.core.persistence.crud import get_repository
 
-    out = _empty_result(len(change.files) + len(change.deleted))
-    if not out["changed_files"]:
-        return out
-
+    decide = (change, checkout, config, plan, prioritize)
+    if not (change.files or change.deleted):
+        return await _decide(None, "", empty_result(0), *decide)
     async with repo_index_session(Path(repo_path)) as opened:
         if opened is None:
+            out = empty_result(len(change.files) + len(change.deleted))
             out["no_index"] = True
-            return out
+            return await _decide(None, "", out, *decide)
         session, repo_id = opened
         repo_row = await get_repository(session, repo_id)
-        _indexed_commit(repo_path, repo_row.head_commit if repo_row else None, out)
-
-        summary = await get_test_coverage_summary(session, repo_id)
-        out["map_empty"] = summary.get("pair_count", 0) == 0
-        out["map_truncated"] = summary.get("pair_count", 0) >= MAX_TEST_COVERAGE_ROWS
-        measured = summary.get("ingested_commit_sha")
-        out["map_current"] = out["map_empty"] or measured in {change.base, change.head} - {None}
-
-        # Repo file keys back the filename-pattern fallback (same source the
-        # aggregate coverage ingest resolves against).
-        repo_keys = {m.file_path for m in await get_health_metrics(session, repo_id)}
-        await _resolve_impacted(session, repo_id, _query_lines(change, measured), repo_keys, out)
-        await _place_tests(session, repo_id, out)
-
-    return out
-
-
-async def _place_tests(session, repo_id: str, out: dict) -> None:
-    """Record the tests the graph can see into, which selection needs to find the rest."""
-    from repowise.core.analysis.test_reachability import placed_test_files
-
-    if out["graph_error"] is not None:
-        return
-    try:
-        out["placed_tests"] = await placed_test_files(session, repo_id)
-    except Exception as exc:
-        out["graph_error"] = f"{type(exc).__name__}: {exc}"
-
-
-def _indexed_commit(repo_path, row_commit: str | None, out: dict) -> None:
-    """The commit the index describes: ``state.json`` first, then the repository row.
-
-    The same order the server's freshness check reads. When both are recorded
-    and disagree, the index's own history is in doubt, so the commit is unknown.
-    """
-    from repowise.core.workspace.update import read_state_commit
-
-    state = read_state_commit(Path(repo_path))
-    if state and row_commit and state != row_commit:
-        out["index_problem"] = (
-            f"The index records two commits ({state[:7]} in state.json, {row_commit[:7]} "
-            "in its database), so what it describes is unknown; run `repowise update`."
-        )
-        return
-    out["indexed_commit"] = state or row_commit
-
-
-def _query_lines(change, measured: str | None) -> dict[str, set[int] | None]:
-    """The lines to look up per file, on the side of the diff the map was measured at.
-
-    Coverage measured at the change's base is keyed in the old file's line
-    numbers, at its head in the new file's. Measured anywhere else, or for a
-    deleted or hunkless file, only the file can be matched (``None``).
-    """
-    side = None
-    if measured and measured == change.head:
-        side = "new"
-    elif measured and measured == change.base:
-        side = "old"
-    lines: dict[str, set[int] | None] = dict.fromkeys(change.deleted)
-    for path, diff in change.files.items():
-        lines[path] = _touched_lines(diff.hunks, side) if side and diff.hunks else None
-    return lines
-
-
-def _touched_lines(hunks, side: str) -> set[int]:
-    """Lines the hunks touch on *side*; for a pure insertion or deletion, its two neighbours."""
-    lines: set[int] = set()
-    for old_start, old_count, new_start, new_count in hunks:
-        start, count = (old_start, old_count) if side == "old" else (new_start, new_count)
-        lines.update(range(start, start + count) if count else {start, start + 1} - {0})
-    return lines
-
-
-def _empty_result(changed_files: int) -> dict:
-    return {
-        "no_index": False,
-        "map_empty": False,
-        "map_current": True,
-        "map_truncated": False,
-        "indexed_commit": None,
-        "index_problem": None,
-        "graph_error": None,
-        "placed_tests": None,
-        "helper_importers": {},
-        "changed_files": changed_files,
-        "covered": {},  # test_id -> {test_file, source_files: [...]}
-        "inferred": [],  # {source_file, test_file, via}
-        "unknown": [],  # source_file (nothing knows of a test for it)
-    }
-
-
-async def _resolve_impacted(
-    session,
-    repo_id: str,
-    changed: dict[str, set[int] | None],
-    repo_keys: set[str],
-    out: dict,
-) -> dict:
-    """Classify each changed file: covered tests, inferred tests, or unknown.
-
-    Mutates and returns *out*. Split from ``_collect`` (which owns the DB
-    bootstrap) so the diff -> lines -> tests path is testable against a seeded
-    ``test_coverage`` table. A file mapped to ``None`` is matched by file, not
-    by line (a deleted file, or a map measured at another commit). Every file
-    also asks the graph: coverage records what one run executed, so it adds to
-    the graph's answer and never replaces it.
-
-    Three tiers, and the output says which one answered for every file, because
-    they are not interchangeable:
-
-    ``covered``
-        Recorded per-test coverage intersecting the changed *lines*. The only
-        tier that knows about lines, and the only one that proves execution.
-    ``inferred``
-        What the graph names, beside any coverage. A changed test is its own
-        candidate (``via="changed-test"``). Then the dependency graph, which
-        reports which tier answered: tests whose calls reach the file
-        (``via="call-graph"``), and every test that imports it, directly or
-        through other modules or other tests (``via="import-graph"``). Both are
-        recorded edges, and they find suites whose tests are named for
-        behaviour rather than for the file. The filename pattern answers only
-        when the graph is silent (``via="filename-pattern"``). All are
-        file-level and all over-claim; none may be read as coverage.
-    ``unknown``
-        Nothing said anything. Run the full suite.
-    """
-    from repowise.core.analysis.health.coverage import paired_test_file
-    from repowise.core.persistence.crud import tests_covering
-
-    covered: dict[str, dict] = out["covered"]
-    has_rows: set[str] = set()
-    graph_targets = sorted(changed)
-    for source_file, lines in sorted(changed.items()):
-        rows = await tests_covering(session, repo_id, source_file, lines=lines)
-        for r in rows:
-            has_rows.add(source_file)
-            entry = covered.setdefault(
-                r["test_id"],
-                {"test_file": r["test_file"], "source_files": []},
-            )
-            if source_file not in entry["source_files"]:
-                entry["source_files"].append(source_file)
-
-    if not graph_targets:
-        return out
-
-    try:
-        candidates, importers = await _graph_candidates(session, repo_id, graph_targets)
-    except Exception as exc:
-        # Nothing the graph said can be trusted; selection runs everything.
-        out["graph_error"] = f"{type(exc).__name__}: {exc}"
-        candidates, importers = {}, {}
-    out["helper_importers"] = importers
-    for source_file in graph_targets:
-        found = candidates.get(source_file)
-        if found:
-            out["inferred"].extend(
-                {"source_file": source_file, "test_file": t, "via": via} for t, via in found
-            )
-            continue
-        if source_file in has_rows:
-            continue  # coverage answered; a name-shaped guess adds nothing
-        guess = paired_test_file(source_file, repo_keys)
-        if guess:
-            out["inferred"].append(
-                {
-                    "source_file": source_file,
-                    "test_file": guess,
-                    "via": "filename-pattern",
-                }
-            )
-        else:
-            out["unknown"].append(source_file)
-    return out
-
-
-async def _graph_candidates(
-    session, repo_id: str, targets: list[str]
-) -> tuple[dict[str, list], dict[str, list[str]]]:
-    """``{target: [(test file, via), ...]}`` from the graph, and each test file's importers.
-
-    Candidates come strongest tier first. The importers map says, for every
-    test file the walk met, which test files import it.
-
-    One walk per tier for every target rather than one per file: the seed set
-    is what makes it cheap. Uncapped, since a trimmed list would drop tests a
-    change needs. The import walk treats a test file as a leaf, so the tests
-    importing a candidate (a shared base class, a helper module under
-    ``tests/``) are added until nothing new appears. Only code counts as a test
-    node: a JSON or golden file the index flags as test material is data, not a
-    route. A read failure raises.
-    """
-    from repowise.core.analysis.test_reachability import load_test_files
-    from repowise.core.analysis.test_selection import is_code_file
-
-    test_files = {f for f in await load_test_files(session, repo_id) if is_code_file(f)}
-    found = await _tier_picks(session, repo_id, targets, test_files)
-    seeds = {t for picks in found.values() for t in picks}
-    parents = await _test_importers(session, repo_id, seeds, test_files)
-    out = {target: _with_importers(picks, parents) for target, picks in found.items()}
-    return out, {test: sorted(found_by) for test, found_by in parents.items()}
-
-
-def _all_tests(reached) -> tuple[str, ...]:
-    """Every test a walk found, not the capped list it reports."""
-    return reached.all_tests or tuple(reached.tests)
-
-
-async def _tier_picks(
-    session, repo_id: str, targets: list[str], test_files: set[str]
-) -> dict[str, dict[str, str]]:
-    """``{target: {test file: via}}``: a changed test itself, then the call and import walks."""
-    from repowise.core.analysis.test_reachability import tests_reaching_by_tier
-    from repowise.core.test_paths import is_test_path
-
-    reaching = await tests_reaching_by_tier(session, repo_id, targets, test_files=test_files)
-    importers = await tests_reaching_by_tier(
-        session,
-        repo_id,
-        targets,
-        call_depth=0,
-        import_depth=_IMPORT_CLOSURE_DEPTH,
-        test_files=test_files,
-    )
-    found: dict[str, dict[str, str]] = {}
-    for target in targets:
-        picks = found.setdefault(target, {})
-        if target in test_files or is_test_path(target):
-            picks[target] = "changed-test"
-        for reached, via in ((reaching.get(target), None), (importers.get(target), "import-graph")):
-            for t in _all_tests(reached) if reached else ():
-                picks.setdefault(t, via or reached.via)
-    return found
-
-
-async def _test_importers(
-    session, repo_id: str, seeds: set[str], test_files: set[str]
-) -> dict[str, set[str]]:
-    """``{test file: test files importing it}``, walked until nothing new appears."""
-    from repowise.core.analysis.test_reachability import tests_reaching_by_tier
-
-    parents: dict[str, set[str]] = {}
-    frontier, seen = set(seeds), set(seeds)
-    while frontier:
-        walked = await tests_reaching_by_tier(
+        out = await collect(
             session,
             repo_id,
-            sorted(frontier),
-            call_depth=0,
-            import_depth=_IMPORT_CLOSURE_DEPTH,
-            test_files=test_files,
+            repo_path,
+            change,
+            checkout.roots,
+            config,
+            explain,
+            plan.routes if plan else [],
+            dict(checkout.pytest_texts),
+            indexed_commit=repo_row.head_commit if repo_row else None,
+            read_source=checkout.read,
         )
-        frontier = set()
-        for test, reached in walked.items():
-            parents.setdefault(test, set()).update(_all_tests(reached))
-            frontier.update(set(_all_tests(reached)) - seen)
-        seen |= frontier
-    return parents
+        return await _decide(session, repo_id, out, *decide)
 
 
-def _with_importers(picks: dict[str, str], parents: dict[str, set[str]]) -> list:
-    """*picks* plus every test importing one of them, transitively, as ``import-graph``."""
-    stack = list(picks)
-    while stack:
-        fresh = [p for p in sorted(parents.get(stack.pop(), ())) if p not in picks]
-        picks.update(dict.fromkeys(fresh, "import-graph"))
-        stack.extend(fresh)
-    return list(picks.items())
+async def _decide(session, repo_id: str, out: dict, change, checkout, config, plan, prioritize):
+    """Select (when the config was read) and order the selection, inside the index session.
 
+    ``ranked`` holds the selected tests in run order, then with *prioritize*
+    every other test of the suite.
+    """
+    from repowise.core.analysis.test_ranking import ordered, rank_change, suite
 
-def _select(repo_path, change, result: dict, config):
-    """The run-all-or-subset decision for ``--format args`` / ``json``."""
-    from repowise.core import git_refs
-    from repowise.core.analysis.changed_lines import index_gap
-    from repowise.core.analysis.test_selection import (
-        SelectionInput,
-        doc_readers,
-        is_documentation,
-        is_runnable_test,
-        is_scan_source,
-        plugin_loader,
-        pytest_testpaths,
-        select_tests,
+    if plan is None:
+        return out
+    selection = select(change, out, config, checkout, plan)
+    everything = suite(checkout.tracked, checkout.roots) if prioritize else None
+    out["ranked"] = await rank_change(
+        session, repo_id, change, out, selection, checkout.read, everything=everything
     )
-
-    named = {g["test_file"] for g in result["inferred"]}
-    named |= {i["test_file"] for i in result["covered"].values() if i["test_file"]}
-    root = Path(repo_path)
-    tracked = git_refs.tracked_paths(str(root))
-    go_test_dirs = {str(Path(p).parent.as_posix()) for p in tracked if p.endswith("_test.go")}
-    known_tests = sorted(p for p in tracked if is_runnable_test(p))
-    placed = result["placed_tests"]
-    docs = [p for p in (*change.files, *change.deleted) if is_documentation(p)]
-    sources = [p for p in tracked if is_scan_source(p)]
-    return select_tests(
-        SelectionInput(
-            changed=change.files,
-            deleted=change.deleted,
-            tiers=result,
-            config=config,
-            index_available=not result["no_index"],
-            label=change.label,
-            map_current=result["map_current"],
-            map_truncated=result["map_truncated"],
-            index_gap=index_gap(str(root), result["indexed_commit"], change),
-            index_problem=result["index_problem"],
-            graph_error=result["graph_error"],
-            missing={f for f in named if not (root / f).is_file()},
-            go_test_dirs=go_test_dirs,
-            known_tests=known_tests,
-            doc_readers=doc_readers(docs, _texts(root, sources)) if docs else {},
-            plugin_loader=plugin_loader(_texts(root, sources, pytest_only=True)),
-            unplaced_tests=[] if placed is None else [t for t in known_tests if t not in placed],
-            pytest_testpaths=pytest_testpaths(lambda name: _text(root / name)),
-        )
-    )
-
-
-def _text(path: Path) -> str | None:
-    try:
-        return path.read_text(encoding="utf-8", errors="ignore")
-    except OSError:
-        return None
-
-
-def _texts(root: Path, paths: list[str], *, pytest_only: bool = False):
-    """``(path, text)`` for each readable file; with *pytest_only*, conftests and configs."""
-    from repowise.core.analysis.test_selection import is_code_file
-
-    for path in paths:
-        if pytest_only and is_code_file(path) and not path.endswith("conftest.py"):
-            continue
-        if (text := _text(root / path)) is not None:
-            yield path, text
+    out["selection"] = ordered(selection, out["ranked"])
+    return out
 
 
 def _machine_test_ids(result: dict) -> list[str]:
@@ -512,9 +227,20 @@ def _machine_test_ids(result: dict) -> list[str]:
     return [i for i in ids if not (i in seen or seen.add(i))]
 
 
-def _render(result: dict, fmt: str, runner: str = "auto") -> None:
+def _render(
+    result: dict,
+    fmt: str,
+    runner: str = "auto",
+    explain: str | None = None,
+    prioritize: bool = False,
+) -> None:
     if fmt in ("json", "args"):
-        _render_selection(result, fmt, runner)
+        _render_selection(result, fmt, runner, explain, prioritize)
+        return
+
+    if fmt == "list" and prioritize:
+        for test in _run_list(result, True).tests:
+            click.echo(test)
         return
 
     if fmt == "list":
@@ -536,26 +262,96 @@ def _render(result: dict, fmt: str, runner: str = "auto") -> None:
     _render_table(result)
 
 
-def _render_selection(result: dict, fmt: str, runner: str) -> None:
+def _explanation(result: dict, test: str) -> dict:
+    """``--explain``: the selection's own record for *test*, plus the route behind it."""
+    from repowise.core.analysis.test_selection import explain_test, selected_by_change
+
+    selected, lines = explain_test(result["selection"], test)
+    route = result["explain_route"] if selected_by_change(result["selection"], test) else []
+    if len(route) > 1:
+        lines.append("Route: " + " -> ".join(route))
+    out = {"test": test, "selected": selected, "lines": lines, "route": route}
+    ranked = result.get("ranked") or []
+    path = test.split("::", 1)[0]
+    at = next((i for i, r in enumerate(ranked) if r.test in (test, path)), None)
+    if at is not None:
+        lines.append(f"Order: {at + 1} of {len(ranked)} ({ranked[at].reason}).")
+        out["order"] = {"position": at + 1, "of": len(ranked), **ranked[at].to_dict()}
+    return out
+
+
+def _render_explain(result: dict, test: str) -> None:
+    for line in _explanation(result, test)["lines"]:
+        click.echo(line)
+
+
+def _run_list(result: dict, prioritize: bool):
+    """The selection in run order; with *prioritize*, the whole suite with it first."""
+    from repowise.core.analysis.test_ranking import ordered
+
+    if not prioritize:
+        return result["selection"]
+    return ordered(result["selection"], result["ranked"], whole=True)
+
+
+def _args_header(selection, args: list[str], resolved: str, prioritize: bool) -> str:
+    if prioritize:
+        selected = {*selection.tests, *selection.test_files}
+        head = sum(a in selected for a in args)
+        lead = "Run every test" if selection.run_all else "Run the selected tests first"
+        return (
+            f"{lead}, in this order: {len(args)} argument(s) for {resolved}, "
+            f"the {head} selected first."
+        )
+    if selection.run_all:
+        return "Run every test:"
+    apart = []
+    if selection.broadcast:
+        apart.append(
+            f"{len(selection.broadcast)} only because a conftest on a route keeps every "
+            "test under it"
+        )
+    if selection.import_closure:
+        apart.append(
+            f"{len(selection.import_closure)} only through imports, with no call path to "
+            "the change"
+        )
+    if apart:
+        return (
+            f"{len(args)} argument(s) for {resolved}; selected test files that must still run "
+            f"but are counted apart: {'; '.join(apart)}."
+        )
+    return f"{len(args)} argument(s) for {resolved}."
+
+
+def _render_selection(
+    result: dict, fmt: str, runner: str, explain: str | None = None, prioritize: bool = False
+) -> None:
     """``--format args`` (one line, reasons on stderr) or ``--format json``."""
-    from repowise.core.analysis.test_selection import format_args, resolve_runner, runner_args
+    from repowise.core.analysis.test_selection import (
+        format_args,
+        left_out,
+        resolve_runner,
+        runner_args,
+        runner_notes,
+    )
 
     selection = result["selection"]
-    resolved = resolve_runner(selection, runner)
-    args = runner_args(selection, resolved)
+    run_list = _run_list(result, prioritize)
+    resolved = resolve_runner(run_list, runner)
+    args = runner_args(run_list, resolved)
+    notes = runner_notes(run_list, resolved)
     if fmt == "args":
         click.echo(format_args(args))
         # Plain stderr, one reason per line: a CI log must not wrap or style them.
-        if selection.run_all:
-            click.echo("Run every test:", err=True)
-        else:
-            click.echo(f"{len(args)} argument(s) for {resolved}.", err=True)
-        for reason in selection.reasons:
+        click.echo(_args_header(selection, args, resolved, prioritize), err=True)
+        for reason in (*selection.reasons, *notes):
             click.echo(f"  {reason}", err=True)
         return
 
     selected = selection.to_dict()
-    run_all, reasons = selected.pop("run_all"), selected.pop("reasons")
+    run_all, reasons = selected.pop("run_all"), selected.pop("reasons") + notes
+    extra = {"explain": _explanation(result, explain)} if explain else {}
     emit_json(
         {
             "diff": result["diff"],
@@ -580,6 +376,9 @@ def _render_selection(result: dict, fmt: str, runner: str) -> None:
             "selected": selected,
             "runner": resolved,
             "args": args,
+            "left_out": left_out(run_list, resolved),
+            "order": [r.to_dict() for r in result.get("ranked") or ()],
+            **extra,
         }
     )
 
@@ -606,7 +405,8 @@ def _print_map_state(result: dict) -> None:
         console.print(
             "[yellow]No test-to-code map ingested.[/yellow] Run "
             "[cyan]repowise coverage add[/cyan] on a coverage.py report written with "
-            "[cyan]coverage run --contexts=test[/cyan] to get exact impacted tests. "
+            f"[cyan]{PER_TEST_COVERAGE_COMMAND}[/cyan] (needs pytest-cov) to get exact "
+            "impacted tests. "
             "Falling back to the dependency graph and filename patterns below."
         )
     elif not result["map_current"]:

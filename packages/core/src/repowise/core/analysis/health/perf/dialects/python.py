@@ -1,10 +1,11 @@
 """Python ``PerfDialect``.
 
-Extracted verbatim from the original ``_py_sink_kind`` (``io_boundaries.py``)
-and the Python branches of the walker (``_blocking_sync_api`` / ``_is_constant_for``
-/ the ``_PY_STRING_KINDS`` string-concat predicate). The 6a refactor changes
-zero Python behavior — the defect golden + perf suite lock that.
+Vocabularies live in :mod:`.python_lexicon`, syntax helpers in
+:mod:`.python_nodes`, loop sources in :mod:`.python_sources` and batched forms
+in :mod:`.python_batch`. Their names are re-exported here.
 """
+
+# ruff: noqa: F401
 
 from __future__ import annotations
 
@@ -12,188 +13,98 @@ import builtins
 import re
 from typing import TYPE_CHECKING, ClassVar
 
-from ..loop_facts import BatchForm
+from .. import loop_lexicon as lex
+from ..loop_facts import BatchForm, LoopSource
 from .base import BasePerfDialect
+from .iterables import IterableSources
+from .python_batch import PythonBatchForms
+from .python_lexicon import (
+    _PY_AUG_ASSIGN_KINDS,
+    _PY_BINDING_PARENTS,
+    _PY_BINDING_WRAPPERS,
+    _PY_BUILTINS,
+    _PY_CONSTANT_RHS,
+    _PY_DEF_KINDS,
+    _PY_KEY_READS,
+    _PY_LIST_BUILTINS,
+    _PY_LIST_RHS_KINDS,
+    _PY_LISTINGS,
+    _PY_LOCK_METHODS,
+    _PY_MODEL_NAME_RE,
+    _PY_NONLIST_BUILTINS,
+    _PY_NONLIST_RHS_KINDS,
+    _PY_ONE_ROW,
+    _PY_PASS_THROUGH,
+    _PY_PER_KEY_LIMITS,
+    _PY_QUERY_CHAIN_METHODS,
+    _PY_READ_CAPS,
+    _PY_RECURSIVE_LISTINGS,
+    _PY_RESOURCE_CTORS,
+    _PY_RESOURCE_METHODS,
+    _PY_RESULT_PROJECTIONS,
+    _PY_SCOPES,
+    _PY_SEM_NAME_RE,
+    _PY_SQL_COMMENT_RE,
+    _PY_SQL_LIMIT_RE,
+    _PY_SQL_LITERAL_RE,
+    _PY_STATEMENT_BUILDERS,
+    _PY_STREAMS,
+    _PY_STRING_KINDS,
+    _PY_WRITES,
+    HTTP_VERBS,
+    PY_DB_AMBIGUOUS,
+    PY_DB_NEEDS_EVIDENCE,
+    PY_DB_UNAMBIGUOUS,
+    PY_FS_METHODS,
+    PY_OS_FS_METHODS,
+    PY_SHUTIL_FS_METHODS,
+    PY_SUBPROC_METHODS,
+    PY_UNBOUNDED_READ_BOUND_METHODS,
+)
+from .python_nodes import (
+    _PY_SCALARS,
+    _bindings,
+    _binds,
+    _field_text,
+    _first_arg,
+    _fixed_set,
+    _in_filter,
+    _literal_range,
+    _module_int_constant,
+    _runs_schema_statement,
+    _scalar_literal,
+    _splits_constant,
+    _string_value,
+    _text,
+    _value_refs,
+)
+from .python_paths import PythonPathReceivers
+from .python_sources import PythonLoopSources
 
 if TYPE_CHECKING:
     from tree_sitter import Node
 
-    from ..loop_facts import LoopMagnitude, SinkProbe
 
-# Network round-trip verbs (shared across languages that name HTTP methods).
-HTTP_VERBS: frozenset[str] = frozenset(
-    {"get", "post", "put", "delete", "patch", "head", "options", "request", "send", "stream"}
-)
-
-# Python DBAPI / SQLAlchemy execution sinks, split into three strata so the
-# ambiguous accessors can be gated harder than the unambiguous ones (see
-# ``sink_kind``).
-PY_DB_UNAMBIGUOUS: frozenset[str] = frozenset({"fetchone", "fetchall", "fetchmany"})
-# DB verbs other clients spell too: GitPython's ``repo.commit()``, an HTTP or
-# GraphQL SDK's ``request.execute()``, a builder's ``.scalar()``.
-PY_DB_NEEDS_EVIDENCE: frozenset[str] = frozenset(
-    {"commit", "execute", "executemany", "scalars", "scalar", "scalar_one", "scalar_one_or_none"}
-)
-# Without a db import, the call itself can still show it runs a query: a
-# PostgREST chain (``client.table("t")...execute()``) or a statement argument
-# (``session.execute(select(...))``, ``cur.execute("SELECT ...")``).
-_PY_QUERY_CHAIN_METHODS: frozenset[str] = frozenset({"table", "from_"})
-_PY_STATEMENT_BUILDERS: frozenset[str] = frozenset({"select", "insert", "update", "delete", "text"})
-_PY_SQL_LITERAL_RE = re.compile(
-    r"^[rRuUbBfF]*[\"']+\s*(?:SELECT|INSERT|UPDATE|DELETE|WITH|CREATE|DROP|ALTER|PRAGMA)\b",
-    re.IGNORECASE,
-)
-PY_DB_AMBIGUOUS: frozenset[str] = frozenset({"all", "first", "one", "one_or_none"})
-PY_SUBPROC_METHODS: frozenset[str] = frozenset(
-    {"run", "call", "check_call", "check_output", "Popen"}
-)
-# Any of these anywhere in a read's call chain proves it is bounded, gating
-# ``unbounded_read_reduced_in_memory`` (analysis.health.perf.unbounded_reduction).
-PY_UNBOUNDED_READ_BOUND_METHODS: frozenset[str] = frozenset(
-    {"limit", "range", "single", "maybe_single", "first", "count", "head", "aggregate"}
-)
-
-# Filesystem round-trips, in two strata for the same reason the DB verbs are
-# stratified: how much evidence the name alone carries.
-#
-# ``PY_FS_METHODS`` are matched on the method name alone, because in this
-# ecosystem only a ``pathlib.Path`` spells them — the same reasoning the TS
-# dialect applies to ``readFileSync``. That matters because the dominant real
-# shape binds the path to a local first (``src_path.read_text()``), so the
-# receiver is an ordinary variable and ``io_names`` cannot classify it; keying
-# on the module would miss nearly every genuine site. The Kotlin dialect
-# deliberately excludes its ``readText`` / ``readBytes`` homonyms because
-# kotlinx-io and Ktor mirror those names on in-memory buffers; Python has no
-# such homonym (``io.StringIO`` and every stream type spell it ``.read()``),
-# which is what makes the bare-name match safe here and not there.
-#
-# Metadata syscalls (``exists`` / ``is_file`` / ``is_dir`` / ``stat`` /
-# ``glob``) are deliberately absent. A stat in a loop is cheap and usually
-# correct, so flagging it is the obvious false-positive class — the same call
-# the C++ dialect makes when it excludes buffered stdio.
-PY_FS_METHODS: frozenset[str] = frozenset(
-    {"read_text", "read_bytes", "write_text", "write_bytes"}
-)
-# ``os`` and ``shutil`` verbs, gated on the literal module root the way
-# ``subprocess`` is. ``os`` is far too broad to classify wholesale (``os.environ``
-# / ``os.getpid`` / ``os.path.join`` are not I/O), so it never goes through
-# ``io_names``; the root name plus an explicit verb set is the whole gate.
-#
-# CEILING: ``callee_root_name`` resolves the LEFTMOST identifier of the whole
-# callee chain, so ``os.path.join(a, b).verb()`` also arrives here as
-# ``root == "os"``. The verb set must therefore hold no name that a ``str`` /
-# ``list`` / ``dict`` also answers to. ``replace`` was the one that did, and it
-# was a live false positive on the canonical Windows path idiom
-# (``os.path.join(root, name).replace("\\", "/")`` — five instances across the
-# OSS corpus, each yielding a bogus ``io_in_loop`` AND a ``nested_loop_with_io``).
-# It is omitted at near-zero recall cost: ``os.replace`` is atomic ``os.rename``,
-# which is already listed. Upgrade path if this set ever needs a colliding verb:
-# thread the callee's dotted segment count into ``sink_kind`` and require
-# exactly two, which is the real invariant being approximated here.
-PY_OS_FS_METHODS: frozenset[str] = frozenset(
-    {
-        "walk",
-        "listdir",
-        "scandir",
-        "remove",
-        "unlink",
-        "rename",
-        "makedirs",
-        "mkdir",
-        "rmdir",
-        "removedirs",
-    }
-)
-PY_SHUTIL_FS_METHODS: frozenset[str] = frozenset(
-    {
-        "copy",
-        "copy2",
-        "copyfile",
-        "copytree",
-        "move",
-        "rmtree",
-        "make_archive",
-        "unpack_archive",
-    }
-)
-
-# Python string-literal node kinds (f-strings parse as ``string`` too).
-_PY_STRING_KINDS: frozenset[str] = frozenset({"string", "concatenated_string"})
-_PY_AUG_ASSIGN_KINDS: frozenset[str] = frozenset({"augmented_assignment"})
-
-# Heavy-resource constructors: building one of these per loop iteration opens a
-# fresh connection / client / pool instead of reusing a hoisted one. Keyed as
-# ``(root, method)`` pairs whose root is a distinctive I/O library (so the match
-# is unambiguous without import resolution) ...
-_PY_RESOURCE_CTORS: frozenset[tuple[str, str]] = frozenset(
-    {
-        ("sqlite3", "connect"),
-        ("psycopg", "connect"),
-        ("psycopg2", "connect"),
-        ("pymysql", "connect"),
-        ("MySQLdb", "connect"),
-        ("aiosqlite", "connect"),
-        ("httpx", "Client"),
-        ("httpx", "AsyncClient"),
-        ("requests", "Session"),
-        ("aiohttp", "ClientSession"),
-        ("boto3", "client"),
-        ("boto3", "resource"),
-        ("redis", "Redis"),
-        ("redis", "StrictRedis"),
-        ("pymongo", "MongoClient"),
-    }
-)
-# ... plus a few constructors distinctive enough on their own (the rightmost
-# name), so an aliased ``from sqlalchemy import create_engine`` still resolves.
-_PY_RESOURCE_METHODS: frozenset[str] = frozenset({"create_engine", "MongoClient"})
-
-# Lock acquisition (the contention side only — never ``release``, which would
-# double-count the same critical section). ``.acquire()`` is the threading /
-# asyncio / multiprocessing / filelock primitive verb.
-_PY_LOCK_METHODS: frozenset[str] = frozenset({"acquire"})
-
-# RHS node kinds that prove a name is bound to a list (the membership gate).
-_PY_LIST_RHS_KINDS: frozenset[str] = frozenset({"list", "list_comprehension"})
-# Builtins whose call result is provably a list.
-_PY_LIST_BUILTINS: frozenset[str] = frozenset({"list", "sorted"})
-# RHS shapes that make a name a NON-list container (a set/dict literal or
-# comprehension, or a ``set()`` / ``dict()`` / ``frozenset()`` call). A name
-# bound to one of these ANYWHERE in the file is ambiguous and excluded from the
-# membership gate, even if another scope binds the same name to a list — the
-# ``seen = []`` in one function / ``seen: set = set()`` in another collision.
-_PY_NONLIST_RHS_KINDS: frozenset[str] = frozenset(
-    {"set", "dictionary", "set_comprehension", "dictionary_comprehension"}
-)
-_PY_NONLIST_BUILTINS: frozenset[str] = frozenset({"set", "dict", "frozenset"})
-
-# Promotion facts (perf/loop_facts.py). Calls and attributes that read a query
-# result out without changing how many rows it holds.
-_PY_RESULT_PROJECTIONS: frozenset[str] = frozenset(
-    {"all", "scalars", "fetchall", "json", "data", "rows"}
-)
-_PY_BOUND_NAME_RE = re.compile(r"(?i)retr|attempt")
-# Raw SQL capped in its own text: ``sa.text("... LIMIT 1000")``.
-_PY_SQL_LIMIT_RE = re.compile(rb"(?is)\bselect\b.*\blimit\s+\d+\b")
-_PY_SQL_COMMENT_RE = re.compile(rb"--[^\n]*|/\*.*?\*/", re.S)
-# A per-key call that limits or orders its rows is not the read one IN query makes.
-_PY_PER_KEY_LIMITS: frozenset[str] = frozenset(
-    {
-        "limit", "single", "maybe_single", "first", "one", "scalar_one",
-        "scalar_one_or_none", "order", "order_by", "range", "offset",
-    }
-)
-_PY_ONE_ROW: frozenset[str] = _PY_PER_KEY_LIMITS | {"scalar"}
-_PY_READ_CAPS: frozenset[str] = _PY_ONE_ROW - {"order", "order_by", "offset"}
-_PY_WRITES: frozenset[str] = frozenset({"update", "insert", "upsert", "values"})
-_PY_SCOPES: frozenset[str] = frozenset({"function_definition", "lambda", "class_definition"})
-_PY_BUILTINS: frozenset[str] = frozenset(dir(builtins))
-_PY_SEM_NAME_RE = re.compile(r"(?i)(sem|semaphore|limiter|limit)$")
-# A model class is CapWords; an ALL_CAPS constant (``API_URL``) is not.
-_PY_MODEL_NAME_RE = re.compile(r"^[A-Z]\w*[a-z]\w*$")
+_PY_DB_METHODS: frozenset[str] = PY_DB_UNAMBIGUOUS | PY_DB_NEEDS_EVIDENCE | PY_DB_AMBIGUOUS
+_PY_ROOTED_PROCESS_VERBS: dict[str, frozenset[str]] = {"subprocess": PY_SUBPROC_METHODS}
+_PY_ROOTED_FILE_VERBS: dict[str, frozenset[str]] = {
+    "open": frozenset({"open"}),
+    "os": PY_OS_FS_METHODS,
+    "shutil": PY_SHUTIL_FS_METHODS,
+}
 
 
-class PythonPerfDialect(BasePerfDialect):
+def _db_sink(method: str, is_attribute: bool, evidence: bool) -> str | None:
+    """A DB sink is a member call on a session or cursor (never the builtin
+    ``all(...)``); verbs other clients also spell need db evidence."""
+    if not is_attribute:
+        return None
+    return "db" if method in PY_DB_UNAMBIGUOUS or evidence else None
+
+
+class PythonPerfDialect(
+    PythonBatchForms, PythonLoopSources, PythonPathReceivers, IterableSources
+):
     language = "python"
     lock_acquire_functions = frozenset({"acquire", "__enter__"})
     spin_loop_header = re.compile(r"while\s+True\s*:")
@@ -220,14 +131,8 @@ class PythonPerfDialect(BasePerfDialect):
 
     string_literal_kinds = _PY_STRING_KINDS
     aug_assign_kinds = _PY_AUG_ASSIGN_KINDS
-    # Everything whose cost is bounded by ONE inode: a single file read/write, a
-    # single unlink/mkdir/rename, one directory listing. Outside a loop that is
-    # ordinary work, not a latency risk, so it must not reach ``hot_path_sync_io``
-    # (see ``BasePerfDialect.hot_path_excluded_methods``). What survives is the
-    # unbounded set — a whole-tree walk, a recursive copy/delete, an archive
-    # round-trip — plus the bare ``open(...)`` builtin the marker was originally
-    # calibrated on. Keyed on the method name alone, so a same-named non-``os``
-    # receiver is excluded too: recall-only, never a false positive.
+    # One-inode operations are ordinary work outside a loop; only unbounded ones
+    # (tree walks, recursive copy/delete, archives) and bare ``open`` stay hot-path I/O.
     hot_path_excluded_methods = (
         PY_FS_METHODS
         | (PY_OS_FS_METHODS - {"walk"})
@@ -244,53 +149,23 @@ class PythonPerfDialect(BasePerfDialect):
         io_names: dict[str, str],
         has_db_import: bool,
     ) -> str | None:
-        root_kind = io_names.get(root)
-        db_evidence = has_db_import or root_kind == "db"
-
-        # ``asyncio.sleep`` / ``time.sleep`` / ``trio.sleep`` is a cooperative
-        # yield, never an I/O round-trip — but ``await asyncio.sleep(...)`` would
-        # otherwise hit the awaited-network arm below when ``asyncio`` is
-        # import-classified as network, FP-ing ``io_in_loop`` / ``serial_await``
-        # on every backoff/poll loop, measured across a Python corpus. No legitimate
-        # execution sink is named ``sleep``, so excluding it costs no recall.
+        # ``sleep`` is a cooperative yield, never a round-trip, even when its
+        # module is import-classified as network.
         if method == "sleep":
             return None
-
-        if method in PY_DB_UNAMBIGUOUS:
-            # A real DB sink is always a method on a session/cursor/result
-            # object; a bare identifier call (the builtin ``all(...)``) is not.
-            return "db" if is_attribute else None
-        if method in PY_DB_NEEDS_EVIDENCE:
-            # A DB verb only with db evidence in the file / on the receiver.
-            return "db" if (is_attribute and db_evidence) else None
-        if method in PY_DB_AMBIGUOUS:
-            # ``.all`` / ``.first`` / ``.one`` collide with ordinary collection
-            # helpers — the riskiest stratum. Gate on db evidence.
-            return "db" if (is_attribute and db_evidence) else None
-        if root == "subprocess" and method in PY_SUBPROC_METHODS:
+        root_kind = io_names.get(root)
+        if method in _PY_DB_METHODS:
+            return _db_sink(method, is_attribute, has_db_import or root_kind == "db")
+        if method == "Popen" or method in _PY_ROOTED_PROCESS_VERBS.get(root, ()):
             return "subprocess"
-        if method == "Popen":
-            return "subprocess"
-        if root == "open" and method == "open":  # bare ``open(...)`` builtin
+        # A verb under its literal module root (bare ``open`` too). Pathlib member
+        # calls need their receiver, so ``call_sink_kind`` decides those.
+        if method in _PY_ROOTED_FILE_VERBS.get(root, ()):
             return "filesystem"
-        if is_attribute and method in PY_FS_METHODS:
-            # ``p.read_text()`` / ``Path(x).write_bytes(...)``. ``is_attribute``
-            # mirrors the DB branches: pathlib always spells these as a member
-            # call, so requiring it costs no recall and drops a bare local
-            # helper that happens to share the name.
-            return "filesystem"
-        if root == "os" and method in PY_OS_FS_METHODS:
-            return "filesystem"
-        if root == "shutil" and method in PY_SHUTIL_FS_METHODS:
-            return "filesystem"
-        if method == "urlopen":
-            return "network"
-        if is_attribute and root_kind == "network" and method in HTTP_VERBS:
-            # ``requests.get(...)`` is a member call on an imported client; a bare
-            # ``get(...)`` (e.g. a builtin/local) never has the verb-call shape, so
-            # gate on ``is_attribute`` like the DB branches above.
-            return "network"
-        if awaited and root_kind == "network":
+        # An HTTP verb only as a member call on an imported client: a bare ``get(...)`` is not one.
+        if method == "urlopen" or (
+            root_kind == "network" and (awaited or (is_attribute and method in HTTP_VERBS))
+        ):
             return "network"
         return None
 
@@ -303,8 +178,12 @@ class PythonPerfDialect(BasePerfDialect):
             io_names=io_names,
             has_db_import=has_db_import or self.shows_a_query(call),
         )
-        if kind == "db" and self._reads_a_registry(call, io_names):
+        if kind == "db" and (
+            self._reads_a_registry(call, io_names) or _runs_schema_statement(call, self.reaching_value)
+        ):
             return None
+        if kind is None and self.callee_method_name(call) in PY_FS_METHODS and self.on_path(call):
+            return "filesystem"
         orm_get = self._orm_get(call) if kind is None else None
         if orm_get is not None:
             # ``get`` alone is ``dict.get`` / ``requests.get``; the model-class shape
@@ -337,8 +216,7 @@ class PythonPerfDialect(BasePerfDialect):
 
     def _passes_a_statement(self, call: Node) -> bool:
         """The first argument is a statement builder call or a SQL string literal."""
-        args = call.child_by_field_name("arguments")
-        first = next((c for c in args.children if c.is_named), None) if args is not None else None
+        first = _first_arg(call)
         if first is None:
             return False
         if first.type == "call":
@@ -361,7 +239,7 @@ class PythonPerfDialect(BasePerfDialect):
 
     def _bound_locally(self, call: Node, name: bytes) -> bool:
         """*name* is assigned before *call* in its function, or is a parameter of it."""
-        if self._reaching_rhs(call, name) is not None:
+        if self.bindings_before(call, name):
             return True
         scope = call.parent
         while scope is not None and scope.type != "function_definition":
@@ -378,16 +256,22 @@ class PythonPerfDialect(BasePerfDialect):
                 return False
             loop = loop.parent
         body = loop.child_by_field_name("body") if loop is not None else None
+        if body is None:
+            return False
         session = (self.callee_root_name(call) or "").encode()
-        for node in self._walk(body, prune=_PY_SCOPES) if body is not None else ():
-            args = node.child_by_field_name("arguments") if node.type == "call" else None
-            if args is None or node.end_byte > call.start_byte:
-                continue
-            texts = {arg.text for arg in args.children}
-            same_session = session in texts or self.callee_root_name(node) == session.decode()
-            if key.text in texts and same_session:
-                return True
-        return False
+        return any(
+            self._passes_key(node, call, key, session)
+            for node in self._walk(body, prune=_PY_SCOPES)
+        )
+
+    def _passes_key(self, node: Node, call: Node, key: Node, session: bytes) -> bool:
+        """*node* is a call before *call* passing *key* on the same *session*."""
+        args = node.child_by_field_name("arguments") if node.type == "call" else None
+        if args is None or node.end_byte > call.start_byte:
+            return False
+        texts = {arg.text for arg in args.children}
+        same_session = session in texts or self.callee_root_name(node) == session.decode()
+        return key.text in texts and same_session
 
     def _orm_get(self, call: Node) -> tuple[str, Node] | None:
         """``(Model, key)`` of a ``x.get(Model, key)`` primary-key lookup."""
@@ -404,12 +288,9 @@ class PythonPerfDialect(BasePerfDialect):
         return model, positional[1]
 
     def is_constant_loop(self, node: Node) -> bool:
-        """True if a Python for-loop iterates a compile-time-constant bound.
-
-        Catches ``for _ in range(<int literals>)``, ``for x in (<literal>)``,
-        and ``for x in ALL_CAPS`` (a named module constant by convention).
-        ``while`` loops are never constant.
-        """
+        """``for _ in range(<int literals>)``, ``for x in (<literal>)``,
+        ``for x in ALL_CAPS`` (a module constant by convention) or a split of a
+        string the source spells out (``for stmt in SCHEMA.split(";")``)."""
         if node.type != "for_statement":
             return False
         right = node.child_by_field_name("right")
@@ -417,33 +298,31 @@ class PythonPerfDialect(BasePerfDialect):
             return False
         if right.type in ("list", "tuple", "set"):
             return True
-        # A bare ALL_CAPS identifier is a named constant by convention.
         if right.type == "identifier" and right.text is not None:
             name = right.text.decode("utf-8", "replace")
             if name.isupper() and len(name) > 1:
                 return True
-        if right.type == "call":
-            fn = right.child_by_field_name("function")
-            if fn is None or (fn.text or b"").decode("utf-8", "replace") != "range":
-                return False
-            args = right.child_by_field_name("arguments")
-            if args is None:
-                return False
-            for a in args.children:
-                if not a.is_named:
-                    continue
-                if a.type == "integer":
-                    continue
-                if a.type == "unary_operator" and any(c.type == "integer" for c in a.children):
-                    continue
-                return False  # a non-literal arg (e.g. len(x)) ⇒ data-dependent
-            return True
-        return False
+        return right.type == "call" and (_literal_range(right) or _splits_constant(right))
 
     # Builtins that wrap a collection without changing what is iterated, so the
     # same-collection O(n^2) shape sees through them: ``for x in enumerate(items)``
     # iterates ``items``.
     _ITER_WRAPPERS: frozenset[str] = frozenset({"enumerate", "sorted", "reversed", "list", "set"})
+
+    def defers_body(self, fn: Node) -> bool:
+        """A function containing its own ``yield`` is a generator: calling it
+        runs none of the body, so a read there happens per item, not per call."""
+        if fn.type != "function_definition":
+            return False
+        stack = list(fn.children)
+        while stack:
+            node = stack.pop()
+            if node.type in ("function_definition", "lambda", "class_definition"):
+                continue
+            if node.type == "yield":
+                return True
+            stack.extend(node.children)
+        return False
 
     def loop_iterable_name(self, node: Node) -> str | None:
         if node.type != "for_statement":
@@ -495,16 +374,8 @@ class PythonPerfDialect(BasePerfDialect):
         return len(named) == 3 and named[2].text not in (b"1", b"-1")
 
     def is_string_concat(self, node: Node) -> bool:
-        """``s += "x"`` accumulation — but skip an accumulator that is *reset*
-        each iteration of an enclosing loop.
-
-        ``buf = base[:N]; ... buf += part`` inside a loop builds a fresh, bounded
-        string per iteration (not the O(n^2) cross-iteration accumulation the
-        marker targets), so it is a false positive. Measured on a Python corpus:
-        the reset-per-iteration shape was the dominant FP class (Py 77.8%). When
-        the same name is plainly re-assigned inside an enclosing loop body, the
-        ``+=`` cannot accumulate across iterations, so do not flag it.
-        """
+        """``s += "x"`` accumulation, unless an enclosing loop body re-assigns the
+        name: then the string is rebuilt per iteration, not accumulated across them."""
         if not super().is_string_concat(node):
             return False
         left = node.child_by_field_name("left")
@@ -568,28 +439,13 @@ class PythonPerfDialect(BasePerfDialect):
     ) -> str | None:
         if (root, method) in _PY_RESOURCE_CTORS or method in _PY_RESOURCE_METHODS:
             return "resource_construction_in_loop"
-        # ``lock.acquire()`` — a method call on a receiver (never the builtin
-        # ``acquire(...)``, which does not exist; the attribute gate is a cheap
-        # extra guard against a bare-name collision).
+        # ``lock.acquire()``: the attribute gate guards against a bare-name collision.
         if method in _PY_LOCK_METHODS and self.callee_is_attribute(node):
             return "lock_in_loop"
-        # ``lst.insert(0, x)`` each iteration shifts the whole list -> O(n^2);
-        # ``collections.deque.appendleft`` / build-then-reverse is O(n). Gated to
-        # a literal ``0`` first arg (``insert(i, x)`` at a variable index is not
-        # the front-insertion anti-pattern) AND to a list that is not re-created
-        # each iteration (a fresh ``buf = [...]; buf.insert(0, x)`` is bounded,
-        # not O(n^2) — the same reset-per-iteration FP class as string_concat;
-        # measured on a Python corpus).
-        # ``collections.deque.insert(0, x)`` is O(1) front-insertion by design (it
-        # is the deque's own ``appendleft`` machinery), so exclude a receiver
-        # provably constructed via ``deque()`` / ``collections.deque(...)``.
-        if (
-            method == "insert"
-            and self.callee_is_attribute(node)
-            and self._first_arg_is_zero(node)
-            and not self._receiver_reset_in_loop(node, root)
-            and not self._receiver_bound_to_deque(node, root)
-        ):
+        # ``lst.insert(0, x)`` shifts the whole list each pass: a literal ``0``, on a
+        # list not re-created per iteration, not a ``deque`` (O(1) at the front) and
+        # not followed by an exit that ends the loop.
+        if method == "insert" and self._front_insert_repeats(node, root):
             return "list_insert_zero_in_loop"
         # ``pd.concat([acc, chunk])`` / ``pandas.concat(...)`` in a loop copies
         # the whole frame each pass -> O(n^2); collect a list and concat once.
@@ -598,18 +454,10 @@ class PythonPerfDialect(BasePerfDialect):
         return None
 
     def loop_iterable_call_marker(self, node: Node) -> str | None:
-        """``for _, row in df.iterrows():`` — row-by-row DataFrame iteration.
+        """``for _, row in df.iterrows():``, row-by-row DataFrame iteration in the loop header.
 
-        ``DataFrame.iterrows()`` boxes every row into a fresh Series, an order of
-        magnitude slower than a vectorized operation (and slower than
-        ``itertuples`` / ``to_dict`` when row access is unavoidable). The call
-        sits in the loop header, so the body ``loop_call_marker`` misses it.
-        Gated to the distinctive method name on a member-access receiver
-        (``x.iterrows()``, never a bare ``iterrows(...)``) AND to a file that
-        imports pandas (same style as the ``pd``/``pandas`` root gate in
-        ``pd_concat``). Residual limitation: this is still a name match — a
-        user-defined class with an ``iterrows`` method in a file that also
-        imports pandas would still be flagged.
+        A member call in a file that imports pandas. Ceiling: still a name match,
+        so a user class with an ``iterrows`` method in such a file is flagged too.
         """
         if node.type != "for_statement":
             return None
@@ -641,6 +489,46 @@ class PythonPerfDialect(BasePerfDialect):
                 continue  # imports do not nest further imports
             stack.extend(n.children)
         return False
+
+    def _front_insert_repeats(self, node: Node, root: str) -> bool:
+        if not (self.callee_is_attribute(node) and self._first_arg_is_zero(node)):
+            return False
+        return not (
+            self._receiver_reset_in_loop(node, root)
+            or self._receiver_bound_to_deque(node, root)
+            or self._loop_ends_after(node)
+        )
+
+    def _loop_ends_after(self, node: Node) -> bool:
+        """A ``return``/``raise`` (or, with one loop around *node*, a ``break``)
+        follows *node*'s statement in its block, so it runs once per call.
+        Ceiling: a flag-driven exit (``stop = True`` then ``if stop: break``) is
+        still reported."""
+        stmt = node
+        while stmt.parent is not None and stmt.parent.type != "block":
+            if stmt.type in self.scope_kinds:  # a lambda body runs elsewhere
+                return False
+            stmt = stmt.parent
+        loops, in_try = self._enclosing_loops(stmt)
+        if not loops:
+            return False
+        # A ``raise`` inside a ``try`` may be caught and the loop go on, and a
+        # ``break`` in a loop nest leaves only the inner loop.
+        exits = {"return_statement"} if in_try else {"return_statement", "raise_statement"}
+        if loops == 1:
+            exits.add("break_statement")
+        return self._exit_follows(
+            stmt, lambda s: s.type in exits, frozenset({"continue_statement"})
+        )
+
+    def _enclosing_loops(self, stmt: Node) -> tuple[int, bool]:
+        """Loops around *stmt* in its scope, and whether a ``try`` sits among them."""
+        loops, in_try, cur = 0, False, stmt.parent
+        while cur is not None and cur.type not in self.scope_kinds:
+            loops += cur.type in ("for_statement", "while_statement")
+            in_try = in_try or cur.type == "try_statement"
+            cur = cur.parent
+        return loops, in_try
 
     def _receiver_reset_in_loop(self, node: Node, name: str) -> bool:
         """True if the call's receiver ``name`` is re-assigned (reset to a fresh
@@ -729,16 +617,9 @@ class PythonPerfDialect(BasePerfDialect):
         return "membership_test_against_list_in_loop" if name in list_names else None
 
     def list_bound_names(self, root: Node) -> frozenset[str]:
-        """Names assigned a provable list anywhere in the file, minus any name
-        also bound to a non-list container.
-
-        Covers ``name = [...]`` / ``name = [x for x in ...]`` / ``name =
-        list(...)`` / ``name = sorted(...)``. Conservative on purpose: an opaque
-        ``name = build()`` is not counted, and a name bound to a set/dict in any
-        scope of the file is dropped (the ``seen``-as-list-here /
-        ``seen``-as-set-there collision), so the membership marker only fires
-        against a name we can prove is always a list.
-        """
+        """Names assigned a provable list anywhere in the file (``[...]``, a list
+        comprehension, ``list(...)``, ``sorted(...)``), minus any name also bound to
+        a set or dict, or used as a parameter, in any scope."""
         list_names: set[str] = set()
         exclude: set[str] = set()
         stack: list[Node] = [root]
@@ -759,10 +640,6 @@ class PythonPerfDialect(BasePerfDialect):
                     elif self._rhs_is_nonlist_container(right):
                         exclude.add(name)
             elif n.type == "parameters":
-                # A name also used as a function parameter has no proven binding
-                # inside that scope (the caller could pass a set), so it collides
-                # with an unrelated module-level list of the same name. Exclude it,
-                # mirroring the set/dict-literal exclusion above.
                 exclude.update(self._param_names(n))
             for c in n.children:
                 stack.append(c)
@@ -831,281 +708,30 @@ class PythonPerfDialect(BasePerfDialect):
     scope_kinds = _PY_SCOPES
     sequence_appends = frozenset({"append", "extend", "insert"})
 
-    def loop_magnitude(self, loop: Node, probe: SinkProbe) -> LoopMagnitude | None:
-        if loop.type != "for_statement":
-            return None
-        return self._magnitude(loop.child_by_field_name("right"), loop, probe, hop=True)
+    # -- what a loop walks: the shared reading (perf/dialects/iterables.py) -------
+    function_kinds = _PY_SCOPES
+    member_kinds = frozenset({"attribute"})
+    recursive_listings = _PY_RECURSIVE_LISTINGS
+    recursive_marks = (b"**", b"recursive=True")
+    conditional_kinds = frozenset(
+        {
+            "if_statement", "elif_clause", "else_clause", "for_statement", "while_statement",
+            "try_statement", "except_clause", "match_statement", "case_clause",
+            "conditional_expression", "boolean_operator",
+        }
+    )
+    # The iterable's own syntax (``_magnitude``) says whether a read grows.
+    read_grows = None
 
-    def _magnitude(
-        self, expr: Node | None, loop: Node, probe: SinkProbe, *, hop: bool
-    ) -> LoopMagnitude | None:
-        """Grows (a query result or a directory listing), bounded, or ``None``.
-
-        *hop* allows one step through the name's last assignment before the
-        loop; a parameter has none and stays unknown on purpose.
-        """
-        if expr is None:
-            return None
-        if expr.type in ("await", "parenthesized_expression"):
-            inner = next((c for c in expr.children if c.is_named), None)
-            return self._magnitude(inner, loop, probe, hop=hop)
-        if expr.type == "identifier" and hop and expr.text:
-            rhs = self._reaching_rhs(loop, expr.text)
-            return self._magnitude(rhs, loop, probe, hop=False)
-        if expr.type == "subscript":
-            return self._slice_magnitude(expr)
-        if expr.type == "boolean_operator" and any(c.type == "or" for c in expr.children):
-            # ``(await q.execute()).data or []``: the fallback is empty, the read is not.
-            left = expr.child_by_field_name("left")
-            return self._grows(self._magnitude(left, loop, probe, hop=hop))
-        if expr.type == "attribute":
-            attr = expr.child_by_field_name("attribute")
-            if attr is None or (attr.text or b"").decode() not in _PY_RESULT_PROJECTIONS:
-                return None
-            return self._grows(self._magnitude(expr.child_by_field_name("object"), loop, probe, hop=hop))
-        return self._call_magnitude(expr, loop, probe, hop=hop) if expr.type == "call" else None
-
-    def _call_magnitude(
-        self, expr: Node, loop: Node, probe: SinkProbe, *, hop: bool
-    ) -> LoopMagnitude | None:
-        method = self.callee_method_name(expr) or ""
-        member = self.callee_is_attribute(expr)
-        if method == "range" and not member:
-            return self._range_magnitude(expr, loop, probe, hop=hop)
-        if probe(expr) in ("db", "network"):
-            # A read capped in the query is as large as its cap; a statement or result
-            # built before the loop (``stmt = ....limit(n)``) is read one assignment back.
-            names = [n.text for n in self._walk(expr) if n.type == "identifier"]
-            parts = [expr, *filter(None, (self._reaching_rhs(loop, name) for name in names))]
-            capped = any(self._caps_read(n, loop) for part in parts for n in self._walk(part))
-            return None if capped else "grows_with_data"
-        if member and method in _PY_RESULT_PROJECTIONS:
-            receiver = expr.child_by_field_name("function").child_by_field_name("object")
-            return self._grows(self._magnitude(receiver, loop, probe, hop=hop))
-        return None
-
-    def _caps_read(self, node: Node, loop: Node) -> bool:
-        """``.limit(n)`` and peers, a SQL string saying ``LIMIT n``, or ``.in_()`` over
-        one chunk of keys."""
-        if node.type == "string":
-            return bool(_PY_SQL_LIMIT_RE.search(_PY_SQL_COMMENT_RE.sub(b"", node.text or b"")))
-        method = self.callee_method_name(node) if node.type == "call" else None
-        if method in _PY_READ_CAPS:
-            return True
-        return method == "in_" and self._in_one_chunk(node, loop)
-
-    def _in_one_chunk(self, node: Node, loop: Node) -> bool:
-        """``.in_(xs[i:i + N])``, or ``.in_(chunk)`` where a loop walks ``xs`` in chunks."""
-        args = node.child_by_field_name("arguments")
-        keys = next((c for c in args.children if c.is_named), None) if args else None
-        if keys is None:
-            return False
-        if keys.type == "subscript":
-            return self._slice_magnitude(keys) == "bounded"
-        outer = loop
-        while outer is not None and keys.type == "identifier":
-            target = outer.child_by_field_name("left") if outer.type == "for_statement" else None
-            if target is not None and target.text == keys.text and self.is_chunked_loop(outer):
-                return True
-            outer = outer.parent
-        return False
-
-    def _range_magnitude(
-        self, call: Node, loop: Node, probe: SinkProbe, *, hop: bool
-    ) -> LoopMagnitude | None:
-        """``range(len(rows))`` grows with ``rows``; ``range(MAX_RETRIES)`` is bounded."""
-        args = [c for c in call.child_by_field_name("arguments").children if c.is_named]
-        if not args:
-            return None
-        stop = args[1] if len(args) > 1 else args[0]
-        if stop.type == "call" and self.callee_method_name(stop) == "len":
-            inner = [c for c in stop.child_by_field_name("arguments").children if c.is_named]
-            if len(inner) == 1:
-                return self._grows(self._magnitude(inner[0], loop, probe, hop=hop))
-            return None
-        path = self._dotted_path(stop) if stop.type in ("identifier", "attribute") else None
-        last = path.rsplit(".", 1)[-1] if path else ""
-        if (stop.type == "identifier" and last.isupper() and len(last) > 1) or (
-            last and _PY_BOUND_NAME_RE.search(last)
-        ):
-            return "bounded"
-        return None
-
-    def _slice_magnitude(self, subscript: Node) -> LoopMagnitude | None:
-        """``xs[:5]`` / ``xs[:LIMIT]`` / ``xs[i:i + 4]``: a constant-width slice."""
-        piece = subscript.child_by_field_name("subscript")
-        if piece is None or piece.type != "slice" or sum(c.type == ":" for c in piece.children) != 1:
-            return None
-        colon = next(i for i, c in enumerate(piece.children) if c.type == ":")
-        start = next((c for c in piece.children[:colon] if c.is_named), None)
-        stop = next((c for c in piece.children[colon + 1 :] if c.is_named), None)
-        if stop is None:
-            return None
-        if start is None:
-            text = (stop.text or b"").decode()
-            constant = stop.type == "integer" or (
-                stop.type == "identifier" and text.isupper() and len(text) > 1
-            )
-            return "bounded" if constant else None
-        if stop.type == "binary_operator":
-            left, right = stop.child_by_field_name("left"), stop.child_by_field_name("right")
-            same_start = left is not None and self._dotted_path(left) == self._dotted_path(start)
-            if same_start and right is not None and right.type == "integer":
-                return "bounded"
-        return None
-
-    def _reaching_rhs(self, loop: Node, name: bytes) -> Node | None:
-        """The right side of the last ``name = ...`` before *loop* in its function."""
-        scope = loop.parent
-        while scope is not None and scope.type != "function_definition":
-            scope = scope.parent
-        if scope is None:
-            return None
-        last: Node | None = None
-        for node in self._walk(scope, prune=_PY_SCOPES):
-            if node.type != "assignment" or node.end_byte > loop.start_byte:
-                continue
-            left = node.child_by_field_name("left")
-            named = left is not None and left.type == "identifier" and left.text == name
-            if named and (last is None or node.start_byte > last.start_byte):
-                last = node
-        return last.child_by_field_name("right") if last is not None else None
-
-    def batch_form(self, sink: Node, loop: Node, probe: SinkProbe) -> BatchForm | None:
-        target = loop.child_by_field_name("left")
-        if loop.type != "for_statement" or target is None or target.type != "identifier":
-            return None
-        body = self.loop_body(loop) or loop
-        iterable = self.loop_iterable_name(loop)
-        for node in self._walk(body):
-            if (
-                node.type == "call"
-                and self.callee_is_attribute(node)
-                and self.callee_root_name(node) == iterable
-                and self.callee_method_name(node) in self.sequence_appends
-            ):
-                return None  # a worklist: its keys are not known before the loop
-        refs = [n for n in self._walk(sink) if n.type == "identifier" and n.text == target.text]
-        methods = {self.callee_method_name(n) for n in self._walk(sink) if n.type == "call"}
-        if len(refs) != 1 or methods & _PY_WRITES or self._reads_loop_local(sink, body):
-            return None
-        call = self._keyed_filter(sink, refs[0], methods)
-        if call is None:
-            return None
-        if "delete" in methods:
-            # Batched, a delete also removes rows a skipped iteration would have left.
-            kept = self._unconditional(sink, body)
+    def bindings_of(self, node: Node) -> list[tuple[bytes, Node]]:
+        if node.type == "assignment":
+            target, value = node.child_by_field_name("left"), node.child_by_field_name("right")
+        elif node.type == "named_expression":
+            target, value = node.child_by_field_name("name"), node.child_by_field_name("value")
         else:
-            kept = not self._builds_in_order(body)
-        if self._orm_get(sink) is not None:
-            # ``get`` answers from the session's identity map when the row is already
-            # loaded, which no syntax shows: held out, half of these sites made no
-            # round trip. The bulk form is named, never proven.
-            kept = False
-        equivalent = (
-            kept
-            and not methods & _PY_PER_KEY_LIMITS
-            and not self._limited_downstream(sink, body)
-            and self._only_io_in_body(sink, body, probe)
-            and not self._calls_for_effect(sink, body)
-        )
-        return BatchForm(call, equivalent)
-
-    def _calls_for_effect(self, sink: Node, body: Node) -> bool:
-        """Another statement calls something this function did not build as a list, set
-        or dict (``run_task(doc)``, ``session.add(r)``, ``t = task.delay(d)``), which may
-        write what the batched read would read before it ran."""
-        for node in self._walk(body, prune=_PY_SCOPES):
-            if node.type == "expression_statement":
-                call, assigned = node.named_children[0], False
-            elif node.type == "assignment":
-                call, assigned = node.child_by_field_name("right"), True
-            else:
-                continue
-            if call is not None and call.type == "await":
-                call = next((c for c in call.children if c.is_named), None)
-            if call is None or call.type != "call" or self._within(call, sink):
-                continue
-            if self._has_effect(call, assigned=assigned):
-                return True
-        return False
-
-    def _has_effect(self, call: Node, *, assigned: bool) -> bool:
-        """Not ``seen.add(x)`` on a local collection, and, when its result is kept, not a
-        builtin (``str(r.id)``) or a method on a local (``res.first()``)."""
-        if not self.callee_is_attribute(call):
-            return not (assigned and self.callee_method_name(call) in _PY_BUILTINS)
-        rhs = self._reaching_rhs(call, (self.callee_root_name(call) or "").encode())
-        if rhs is None:
-            return True
-        return not (assigned or self._rhs_is_list(rhs) or self._rhs_is_nonlist_container(rhs))
-
-    def _limited_downstream(self, sink: Node, body: Node) -> bool:
-        """The result is cut to one row after the call (``(await q).first()``,
-        ``res = await q`` then ``res.scalar_one()``), which one IN query does not do."""
-        names: set[bytes | None] = set()
-        cur = sink
-        while cur.parent is not None and cur.parent != body:
-            cur = cur.parent
-            if cur.type == "call" and self.callee_method_name(cur) in _PY_ONE_ROW:
-                return True
-            left = cur.child_by_field_name("left") if cur.type == "assignment" else None
-            if left is not None and left.type == "identifier":
-                names.add(left.text)
-        return any(
-            n.type == "call"
-            and self.callee_method_name(n) in _PY_ONE_ROW
-            and (self.callee_root_name(n) or "").encode() in names
-            for n in self._walk(body)
-        )
-
-    def _keyed_filter(self, sink: Node, ref: Node, methods: set[str | None]) -> str | None:
-        """The bulk filter when *sink* selects or deletes by equality on *ref*."""
-        orm_get = self._orm_get(sink)
-        if orm_get is not None and self._is_key_of(orm_get[1], ref):
-            return f"select({orm_get[0]}).where(inspect({orm_get[0]}).primary_key[0].in_(keys))"
-        for node in self._walk(sink):
-            if node.type == "call" and self.callee_method_name(node) == "eq":
-                # supabase-py: ``.table(t).select(...).eq("col", key)``
-                args = [c for c in node.child_by_field_name("arguments").children if c.is_named]
-                if (
-                    len(args) == 2
-                    and args[0].type == "string"
-                    and self._is_key_of(args[1], ref)
-                    and ("select" in methods) != ("delete" in methods)
-                ):
-                    column = next(
-                        (c.text.decode() for c in args[0].children if c.type == "string_content"),
-                        None,
-                    )
-                    return f'.in_("{column}", keys)' if column else None
-            if node.type == "comparison_operator" and any(c.type == "==" for c in node.children):
-                # SQLAlchemy: ``.where(M.col == key)`` / ``.filter(M.col == key)``
-                sides = [c for c in node.children if c.is_named]
-                if len(sides) != 2:
-                    continue
-                for column, key in (sides, sides[::-1]):
-                    path = self._dotted_path(column)
-                    if path and "." in path and self._is_key_of(key, ref):
-                        return f"{path}.in_(keys)"
-        return None
-
-    def concurrency_bound(self, sink: Node, loop: Node) -> str | None:
-        if self._exits_early(self.loop_body(loop) or loop):
-            return None
-        cur = sink.parent
-        while cur is not None and cur != loop:
-            if cur.type == "with_statement" and any(c.type == "async" for c in cur.children):
-                clause = next((c for c in cur.children if c.type == "with_clause"), None)
-                for item in clause.children if clause is not None else ():
-                    value = item.child_by_field_name("value") if item.type == "with_item" else None
-                    # A name, not a constructor: ``async with Semaphore(5)`` in the
-                    # loop makes a fresh bound per iteration, which bounds nothing.
-                    path = self._dotted_path(value) if value is not None else None
-                    if path and _PY_SEM_NAME_RE.search(path.rsplit(".", 1)[-1]):
-                        return path
-            cur = cur.parent
-        return None
+            return []
+        ok = target is not None and target.type == "identifier" and target.text and value is not None
+        return [(target.text, value)] if ok else []
 
 
 DIALECT = PythonPerfDialect()

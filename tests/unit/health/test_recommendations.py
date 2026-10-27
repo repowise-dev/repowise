@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 from sqlalchemy import event
@@ -16,12 +17,19 @@ from repowise.core.analysis.health.refactoring.recommendations import (
     build_recommendations,
     build_validation_plan,
     detector_native_benefit,
-    hydrate_recommendations,
+    hub_files,
+    listed_steps,
     rehydrate_suggestion,
+    steps_with_verify,
+    stored_recommendation,
     target_symbol_ids,
+    with_step_verify,
 )
-from repowise.core.analysis.test_reachability import ReachDistance, ReachedBy
+from repowise.core.analysis.test_reachability import ReachDistance, ReachedBy, clear_test_map_cache
 from repowise.core.persistence.crud import save_test_coverage
+from repowise.core.persistence.crud.analysis.refactoring_recommendations import (
+    hydrate_recommendations,
+)
 from repowise.core.persistence.database import init_db
 from tests.unit.persistence.helpers import insert_repo
 
@@ -209,13 +217,14 @@ def test_the_test_named_for_the_file_survives_the_cap() -> None:
 def test_a_reached_conftest_validates_with_the_tests_under_it() -> None:
     """``pytest tests/unit/conftest.py`` collects nothing; the tests below it run."""
     from repowise.core.analysis.health.refactoring.recommendations import _expand_scopes
+    from repowise.core.analysis.test_selection import expand_test_scopes
 
     test_files = {"tests/unit/conftest.py", "tests/unit/test_core.py", "tests/other/test_x.py"}
     reached = ReachedBy(
         ["tests/unit/conftest.py"], "call-graph", 1, ("tests/unit/conftest.py",)
     )
     validation = build_validation_plan(
-        _plan("fixture"), {}, {"src/core.py": _expand_scopes("src/core.py", reached, test_files)}
+        _plan("fixture"), {}, {"src/core.py": _expand_scopes("src/core.py", reached, expand_test_scopes(reached.all_tests, test_files))}
     )
     assert validation.basis == "inferred"
     assert validation.tests == ["tests/unit/test_core.py"]
@@ -226,12 +235,15 @@ def test_a_root_conftest_expansion_is_ranked_before_it_is_capped() -> None:
     """A root conftest stands for every test; the cut keeps the nearest, not the first."""
     from repowise.core.analysis.health.refactoring.recommendations import _expand_scopes
     from repowise.core.analysis.test_reachability import MAX_TESTS_PER_TARGET
+    from repowise.core.analysis.test_selection import expand_test_scopes
 
     many = {f"tests/aaa/test_{i:03}.py" for i in range(MAX_TESTS_PER_TARGET + 20)}
     test_files = {"conftest.py", "tests/unit/test_core.py", *many}
     reached = ReachedBy(["conftest.py"], "call-graph", 1, ("conftest.py",))
 
-    expanded = _expand_scopes("src/core.py", reached, test_files)
+    expanded = _expand_scopes(
+        "src/core.py", reached, expand_test_scopes(reached.all_tests, test_files)
+    )
 
     assert expanded.total == MAX_TESTS_PER_TARGET + 21
     assert len(expanded.tests) == MAX_TESTS_PER_TARGET
@@ -287,11 +299,15 @@ async def test_query_count_is_constant_as_plan_and_test_counts_grow() -> None:
 
     event.listen(engine.sync_engine, "before_cursor_execute", record)
     try:
+        # Both calls start from a cold test-map cache, so the count measures the
+        # payload, not whether the first call warmed it.
+        clear_test_map_cache()
         statements.clear()
         await hydrate_recommendations(async_session, repo.id, [_plan("one", file_path="src/f0.py")])
         small = len(statements)
         await save_test_coverage(async_session, repo.id, records, source_format="coverage.py")
         await async_session.commit()
+        clear_test_map_cache()
         statements.clear()
         await hydrate_recommendations(
             async_session,
@@ -411,11 +427,29 @@ def test_tests_in_a_language_with_no_known_runner_suggest_no_command() -> None:
     assert plan.commands == []
 
 
-def test_python_and_js_plans_keep_their_default_commands() -> None:
-    python = build_validation_plan(_plan("target", file_path="a/b.py"), {}, {})
-    assert python.commands == ["pytest"]
-    typescript = build_validation_plan(_plan("target", file_path="web/app.ts"), {}, {})
-    assert typescript.commands == ["npm test", "npm run type-check"]
+def test_a_plan_no_test_reaches_has_no_command_and_asks_for_a_characterization_test() -> None:
+    """A bare ``pytest`` or ``npm test`` ran a whole suite as if it guarded the change."""
+    for path in ("a/b.py", "web/app.ts"):
+        plan = build_validation_plan(_plan("target", file_path=path), {}, {})
+        assert plan.basis == "unknown"
+        assert plan.commands == [], path
+        assert plan.prerequisite == (
+            "No test reaches `target`; add a characterization test before the edit."
+        )
+        assert plan.as_dict()["prerequisite"] == plan.prerequisite
+    # A target that is not a symbol name is named by its file.
+    split = build_validation_plan(_plan("core.py -> 3 files", rtype="split_file"), {}, {})
+    assert "reaches `core.py`;" in split.prerequisite
+    # A graph id names its function, not the file.
+    method = build_validation_plan(_plan("src/core.py::Store::_open"), {}, {})
+    assert "reaches `_open`;" in method.prerequisite
+
+
+def test_a_reached_plan_carries_no_prerequisite() -> None:
+    reached = ReachedBy(["tests/test_b.py"], "call-graph", 1, ("tests/test_b.py",))
+    plan = build_validation_plan(_plan("target", file_path="a/b.py"), {}, {"a/b.py": reached})
+    assert plan.prerequisite is None
+    assert plan.commands == ["pytest tests/test_b.py"]
 
 
 def test_an_untruncated_test_list_keeps_the_precise_command() -> None:
@@ -530,6 +564,8 @@ def test_tests_that_call_the_changed_symbol_lead_the_list_with_reasons() -> None
         _walker_plan(), {}, _walker_reached(), evidence=_walker_evidence()
     )
     assert validation.tests == [
+        # Named for the file: the test someone wrote for it leads.
+        "tests/health/test_walker.py",
         # Calls walk_file directly, more of its functions first.
         "tests/health/test_walks_a_lot.py",
         "tests/health/test_assertions.py",
@@ -537,8 +573,7 @@ def test_tests_that_call_the_changed_symbol_lead_the_list_with_reasons() -> None
         "tests/health/test_imports_it.py",
         # Two calls away from walk_file.
         "tests/health/test_two_hops.py",
-        # Reaches the file only, the named test before the bystander.
-        "tests/health/test_walker.py",
+        # Reaches the file only.
         "tests/health/test_bystander.py",
         # Test support runs nothing on its own, however close it is.
         "tests/health/conftest.py",
@@ -581,8 +616,8 @@ def test_the_cap_keeps_the_strongest_evidence_and_reasons_follow_it() -> None:
         _walker_plan(), {}, _walker_reached(), evidence=_walker_evidence(), test_limit=2
     )
     assert validation.tests == [
+        "tests/health/test_walker.py",
         "tests/health/test_walks_a_lot.py",
-        "tests/health/test_assertions.py",
     ]
     assert list(validation.reasons) == validation.tests
     assert validation.total == len(_WALKER_TESTS)
@@ -628,5 +663,252 @@ def test_a_test_file_the_plan_edits_is_listed_as_edited() -> None:
         "tests/test_user.py": ReachedBy(["tests/test_user.py"], "import-graph", 1),
     }
     validation = build_validation_plan(plan, {}, inferred)
-    assert validation.tests == ["tests/test_user.py", "tests/test_core.py"]
+    # The test named for the file leads; the edited one follows.
+    assert validation.tests == ["tests/test_core.py", "tests/test_user.py"]
     assert validation.reasons["tests/test_user.py"] == "edited by this plan"
+
+
+def test_a_same_stem_test_leads_the_attention_plan() -> None:
+    """``_health_items`` in ``services/attention.py``: the golden test written for
+    the file stays first, ahead of tests that only share its directory."""
+    path = "packages/server/src/repowise/server/services/attention.py"
+    tests = [
+        "tests/unit/server/test_alerts.py",
+        "tests/unit/server/test_overview_attention.py",
+        "tests/unit/server/test_attention_golden.py",
+        "tests/unit/cli/test_far_away.py",
+    ]
+    reached = ReachedBy(tests, "call-graph", len(tests), tuple(tests))
+    for order_tests in (True, False):
+        plan = build_validation_plan(
+            _plan("_health_items", rtype="extract_method", file_path=path),
+            {},
+            {path: reached},
+            order_tests=order_tests,
+        )
+        assert plan.tests[0] == "tests/unit/server/test_attention_golden.py", order_tests
+        assert plan.tests[-1] == "tests/unit/cli/test_far_away.py", order_tests
+
+
+def test_a_qualified_spec_name_counts_as_same_stem() -> None:
+    path = "src/agents/run/attempt.ts"
+    tests = ["src/other/zz.test.ts", "src/agents/run/attempt.spawn-workspace.test.ts"]
+    reached = ReachedBy(tests, "call-graph", 2, tuple(tests))
+    plan = build_validation_plan(_plan("run", file_path=path), {}, {path: reached})
+    assert plan.tests[0] == "src/agents/run/attempt.spawn-workspace.test.ts"
+    assert plan.reasons[plan.tests[0]] == "named for attempt.ts"
+
+
+def test_hubs_are_files_above_the_fan_in_bar_or_in_the_top_percent() -> None:
+    fan_in = {f"src/m{i:03}.py": 2 for i in range(300)}
+    fan_in |= {"src/top.py": 12, "src/wide.py": 51, "src/second.py": 11}
+    fan_in |= {"tests/test_a.py": 90, "external:os": 900}
+    # The top 1% of 303 files is three, and the floor keeps a fan-in of 2 out.
+    assert hub_files(fan_in, {"tests/test_a.py"}) == {"src/top.py", "src/wide.py", "src/second.py"}
+    small = {"src/a.py": 4, "src/b.py": 1}
+    assert hub_files(small, set()) == frozenset()
+
+
+def _stepped_plan(*sites: tuple[str, int]) -> RefactoringSuggestion:
+    """A ``performance_fix`` with one step per call site, as the detector writes it."""
+    plan = _multi_site_plan()
+    plan.plan = {
+        "affected_locations": [
+            {"file_path": path, "line_start": line, "line_end": line} for path, line in sites
+        ],
+        "steps": [
+            {"order": index, "action": "Batch", "symbol": "load", "file_path": path, "line": line}
+            for index, (path, line) in enumerate(sites, 1)
+        ],
+    }
+    return plan
+
+
+_FIRST = "tests/test_orders.py::test_first"
+_MIDDLE = "tests/test_orders.py::test_middle"
+_SITE_COVERAGE = {
+    "svc/orders.py": [
+        {"test_id": _FIRST, "covered_lines": [10]},
+        {"test_id": _MIDDLE, "covered_lines": [40]},
+    ]
+}
+_THREE_SITES = (("svc/orders.py", 10), ("svc/orders.py", 40), ("svc/orders.py", 90))
+
+
+def _stepped(
+    suggestion: RefactoringSuggestion,
+    measured: dict | None = None,
+    inferred: dict | None = None,
+    evidence: ValidationEvidence | None = None,
+):
+    measured = _SITE_COVERAGE if measured is None else measured
+    plan = build_validation_plan(suggestion, measured, inferred or {}, evidence=evidence)
+    return with_step_verify(plan, suggestion, measured, inferred or {}, evidence=evidence)
+
+
+def test_each_step_lists_the_tests_that_run_its_own_site() -> None:
+    validation = _stepped(_stepped_plan(*_THREE_SITES))
+    assert validation.tests == [_FIRST, _MIDDLE]
+    first, middle, last = validation.step_verify
+    assert first == {"commands": [f"pytest {_FIRST}"], "tests": [_FIRST], "coverage": "measured"}
+    assert middle is not None and middle["tests"] == [_MIDDLE]
+    # Coverage proves no test runs line 90: no command, not the plan's.
+    assert last == {"commands": [], "tests": [], "coverage": "none"}
+
+
+def test_a_step_in_another_file_takes_that_files_reach() -> None:
+    reached = {
+        "svc/billing.py": ReachedBy(
+            ["tests/test_billing.py"], "call-graph", 1, ("tests/test_billing.py",), {}
+        )
+    }
+    validation = _stepped(
+        _stepped_plan(("svc/orders.py", 10), ("svc/billing.py", 5)), inferred=reached
+    )
+    orders, billing = validation.step_verify
+    assert orders is not None and orders["coverage"] == "measured"
+    assert billing == {
+        "commands": ["pytest tests/test_billing.py"],
+        "tests": ["tests/test_billing.py"],
+        "coverage": "inferred",
+    }
+
+
+def test_a_step_reached_only_through_a_hub_has_no_test_and_no_command() -> None:
+    hub = "svc/hub.py"
+    reached = {
+        hub: ReachedBy(["tests/test_other.py"], "call-graph", 1, ("tests/test_other.py",), {})
+    }
+    evidence = ValidationEvidence(symbols={hub: [(f"{hub}::load", 1, 20)]}, hubs=frozenset({hub}))
+    validation = _stepped(
+        _stepped_plan(("svc/orders.py", 10), (hub, 5)), inferred=reached, evidence=evidence
+    )
+    assert validation.tests == [_FIRST]
+    orders, through_hub = validation.step_verify
+    # The plan's basis is mixed (one file measured, one unknown); this step's is measured.
+    assert orders is not None and orders["coverage"] == "measured"
+    assert through_hub == {"commands": [], "tests": [], "coverage": "none"}
+
+
+def test_a_step_with_the_plans_answer_carries_none() -> None:
+    measured = {"svc/orders.py": [{"test_id": _FIRST, "covered_lines": [10, 40]}]}
+    suggestion = _stepped_plan(("svc/orders.py", 10), ("svc/orders.py", 40))
+    validation = _stepped(suggestion, measured)
+    assert validation.step_verify == []
+    steps = suggestion.plan["steps"]
+    assert steps_with_verify(steps, validation) == steps
+
+
+def test_a_single_step_plan_has_no_step_verify() -> None:
+    suggestion = _stepped_plan(("svc/orders.py", 10))
+    validation = _stepped(suggestion)
+    assert validation.step_verify == []
+    assert steps_with_verify(suggestion.plan["steps"], validation) == suggestion.plan["steps"]
+
+
+def test_validation_alone_builds_no_step_verify() -> None:
+    """Only finalize asks for step checks; a live read or the empty fallback does not."""
+    suggestion = _stepped_plan(*_THREE_SITES)
+    assert build_validation_plan(suggestion, _SITE_COVERAGE, {}).step_verify == []
+    (recommendation,) = build_recommendations([suggestion])
+    assert recommendation.validation.step_verify == []
+
+
+async def test_only_a_hydration_that_asks_validates_steps() -> None:
+    """An unranked store's live read never rebuilds per-step plans."""
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    await init_db(engine)
+    factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    async with factory() as session:
+        repo = await insert_repo(session)
+        await save_test_coverage(
+            session,
+            repo.id,
+            [
+                TestCoverage(
+                    test_id=test,
+                    file_path="svc/orders.py",
+                    covered_lines=[line],
+                    source_format="coverage.py",
+                    test_file="tests/test_orders.py",
+                )
+                for test, line in ((_FIRST, 10), (_MIDDLE, 40))
+            ],
+            source_format="coverage.py",
+        )
+        await session.commit()
+        clear_test_map_cache()
+        rows = [_stepped_plan(*_THREE_SITES)]
+        (live,) = await hydrate_recommendations(session, repo.id, rows)
+        (finalized,) = await hydrate_recommendations(session, repo.id, rows, step_verify=True)
+    await engine.dispose()
+    assert live.validation.step_verify == []
+    assert len(finalized.validation.step_verify) == 3
+
+
+def _stored_row(suggestion: RefactoringSuggestion, facts: dict) -> dict:
+    return {
+        "id": "p1",
+        "refactoring_type": "performance_fix",
+        "file_path": suggestion.file_path,
+        "target_symbol": suggestion.target_symbol,
+        "plan_json": json.dumps(suggestion.plan),
+        "rank_json": json.dumps(facts),
+    }
+
+
+def test_step_verify_rides_the_stored_rank_and_lists_do_not_carry_it() -> None:
+    suggestion = _stepped_plan(*_THREE_SITES)
+    validation = _stepped(suggestion)
+    (recommendation,) = build_recommendations([suggestion], validations={0: validation})
+    facts = recommendation.rank_facts()
+    assert facts["step_verify"] == validation.step_verify
+    assert "step_verify" not in recommendation.as_dict()["validation"]
+    assert "verify" not in recommendation.as_dict()["plan"]["steps"][0]
+
+    stored = stored_recommendation(_stored_row(suggestion, facts))
+    assert stored is not None
+    steps = stored.detail_dict()["plan"]["steps"]
+    assert [step["verify"]["tests"] for step in steps] == [[_FIRST], [_MIDDLE], []]
+    assert stored.as_dict()["validation"] == recommendation.as_dict()["validation"]
+
+
+def test_a_stored_row_without_usable_step_verify_serves_no_step_verify() -> None:
+    suggestion = _stepped_plan(*_THREE_SITES)
+    (recommendation,) = build_recommendations([suggestion], validations={0: _stepped(suggestion)})
+    facts = recommendation.rank_facts()
+    first = facts["step_verify"][0]
+    for step_verify in (None, facts["step_verify"][:2], [{"tests": []}, None, None]):
+        stored = stored_recommendation(_stored_row(suggestion, {**facts, "step_verify": step_verify}))
+        assert stored is not None
+        steps = stored.detail_dict()["plan"]["steps"]
+        assert all("verify" not in step for step in steps), step_verify
+    # A malformed entry reads as absent; a well-formed one beside it still serves.
+    stored = stored_recommendation(
+        _stored_row(suggestion, {**facts, "step_verify": [first, {"tests": []}, None]})
+    )
+    assert stored is not None
+    steps = stored.detail_dict()["plan"]["steps"]
+    assert ["verify" in step for step in steps] == [True, False, False]
+
+
+def test_a_split_stands_for_the_steps_it_relocates():
+    steps = [
+        {"plan_id": "a", "refactoring_type": "break_cycle"},
+        {"plan_id": "s", "refactoring_type": "split_file"},
+        {"plan_id": "m1", "refactoring_type": "extract_method", "relocated_by": "s"},
+        {"plan_id": "c", "refactoring_type": "extract_class", "relocated_by": "s"},
+        {"plan_id": "m2", "refactoring_type": "extract_method", "relocated_by": "c"},
+    ]
+    rows = listed_steps(steps, 0, 2)
+    assert [r["plan_id"] for r in rows] == ["a", "s"]
+    assert rows[1]["relocates"] == ["m1", "c"]
+    # A step another relocation moves keeps its row; the folded ones do not.
+    assert [r["plan_id"] for r in listed_steps(steps, 2, 5)] == ["m2"]
+    # Without a split, steps list one by one.
+    plain = [{"plan_id": "x", "refactoring_type": "extract_method"}] * 2
+    assert listed_steps(plain, 0, 2) == plain

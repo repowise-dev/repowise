@@ -169,16 +169,17 @@ def hooks_config() -> dict[str, object]:
     startup and edits alone.
     """
     from repowise.cli.agent_adapters.codex import SHELL_TOOL_MATCHER
+    from repowise.core.owned_paths import CODEX_HOOK_COMMAND
 
     context_hook = {
         "type": "command",
-        "command": "repowise-augment --client codex",
+        "command": CODEX_HOOK_COMMAND,
         "timeout": _HOOK_TIMEOUT,
         "statusMessage": "Loading repowise context...",
     }
     freshness_hook = {
         "type": "command",
-        "command": "repowise-augment --client codex",
+        "command": CODEX_HOOK_COMMAND,
         "timeout": _HOOK_TIMEOUT,
         "statusMessage": "Checking repowise freshness...",
     }
@@ -982,6 +983,7 @@ class CodexTarget:
     docs_url = DOCS_URL
     hook_adapter = IDENTITY.hook_adapter
     session_adapter = IDENTITY.session_adapter
+    capture_adapter = IDENTITY.capture_adapter
     methods = METHODS
     project_file_id = PROJECT_FILE_ID
 
@@ -998,9 +1000,7 @@ class CodexTarget:
         answer: the setup path warns when it writes config for a CLI that is
         installed and signed out.
         """
-        import shutil
-
-        return shutil.which("codex") is not None or (Path.home() / ".codex").is_dir()
+        return IDENTITY.is_installed() or (Path.home() / ".codex").is_dir()
 
     def detect(self, repo_path: Path | None = None) -> list[Registration]:
         return detect(repo_path)
@@ -1190,7 +1190,7 @@ class CodexTarget:
             str(instructions_path(repo)),
         ]
 
-    def doctor(self) -> DoctorReport:
+    def doctor(self, repo_path: Path | None = None) -> DoctorReport:
         """Health of the Codex wiring.
 
         The stale-matcher case matters more here than anywhere else: Codex is

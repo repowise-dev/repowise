@@ -17,6 +17,7 @@ Usage::
 from __future__ import annotations
 
 import logging
+import re
 from collections import OrderedDict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -50,6 +51,9 @@ class SearchResult:
 
 
 _SNIPPET_LEN = 200
+
+# Markdown heading lines and blank lines at the start of a text.
+_LEADING_HEADINGS = re.compile(r"\A(?:[ \t]*(?:#{1,6}(?:[ \t][^\n]*)?)?[ \t]*\r?\n)+")
 
 # Every column of ``page_fts``, in table order. ``page_id`` is stored but not
 # indexed — it is the join key, never a thing to match on.
@@ -234,6 +238,19 @@ def snippet_around(content: str, query: str, length: int = _SNIPPET_LEN) -> str:
     start = max(0, position - length // 2)
     start = min(start, max(0, len(content) - length))
     return content[start : start + length].strip()
+
+
+def strip_leading_headings(text: str) -> str:
+    """*text* without its leading markdown heading and blank lines.
+
+    For a served snippet only: a page's heading repeats the path and title its
+    row already carries. Ranking reads the snippet as built, so callers strip
+    after every score is final. Text that is only headings comes back as is.
+    """
+    match = _LEADING_HEADINGS.match(text)
+    if match is None or not text[match.end() :].strip():
+        return text
+    return text[match.end() :]
 
 
 class FullTextSearch:

@@ -2,11 +2,12 @@
 
 import { useCallback, useState, type ElementType, type ReactNode } from "react";
 import { ArrowUpRight, BellOff, Check, X } from "lucide-react";
-import type {
-  ActionDetail,
-  ActionStateValue,
-  ActionSurface,
-  NextAction,
+import {
+  ACTION_TIER_LABELS,
+  type ActionDetail,
+  type ActionStateValue,
+  type ActionSurface,
+  type NextAction,
 } from "@repowise-dev/types/actions";
 
 import { AiPromptBlock } from "../health/ai-prompt-modal";
@@ -16,12 +17,6 @@ import { EFFORT_LABEL } from "../health/labels";
 import { SeverityMark } from "../health/severity-mark";
 import type { Severity } from "../health/tokens";
 import { AdaptivePanel } from "../shared/adaptive-panel";
-
-const TIER_LABEL: Record<NextAction["tier"], string> = {
-  act_now: "Do now",
-  plan: "Worth planning",
-  improve_signal: "Improve what Repowise can see",
-};
 
 /** What the evidence link opens, named for the place it lands. */
 const EVIDENCE_LABEL: Record<ActionSurface, string> = {
@@ -94,7 +89,7 @@ export function ActionDrawer({
   );
   const Link = LinkComponent ?? "a";
   const linkCls =
-    "rounded text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]";
+    "rounded text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]";
 
   return (
     <AdaptivePanel
@@ -102,7 +97,7 @@ export function ActionDrawer({
       onOpenChange={(open) => {
         if (!open) onClose();
       }}
-      eyebrow={action ? TIER_LABEL[action.tier] : "Next action"}
+      eyebrow={action ? ACTION_TIER_LABELS[action.tier] : "Next action"}
       title={action ? renderTitle(action.title) : "Next action"}
       widthClassName="md:max-w-[680px]"
     >
@@ -260,7 +255,7 @@ export function ActionDrawer({
                     onAnswer(state, message);
                     onClose();
                   }}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border-default)] px-2.5 py-1.5 text-xs font-medium text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-surface)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                  className="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border-default)] px-2.5 py-1.5 text-xs font-medium text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-surface)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
                 >
                   <Icon className="h-3.5 w-3.5" aria-hidden="true" />
                   {label}
@@ -308,7 +303,7 @@ function EvidenceList({
                 {href ? (
                   <Link
                     href={href}
-                    className="min-w-0 rounded font-mono text-xs text-[var(--color-accent-primary)] [overflow-wrap:anywhere] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                    className="min-w-0 rounded font-mono text-xs text-[var(--color-accent-primary)] [overflow-wrap:anywhere] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
                   >
                     {where}
                   </Link>
@@ -339,7 +334,7 @@ function EvidenceList({
             <button
               type="button"
               onClick={() => setAll((a) => !a)}
-              className="rounded text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+              className="rounded text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
             >
               {all ? "Show fewer" : `Show all ${details.length.toLocaleString()}`}
             </button>

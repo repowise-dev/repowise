@@ -10,21 +10,30 @@ and ``modules`` come back empty and the answer rides in ``inferred``, so a UI
 cannot render derived data through the measured code path by accident. Nothing
 here derives a percentage from the inferred map: it has no line attribution, so
 any ratio built from it would be a coverage figure the data cannot support.
+
+Both inferred routes share one definition of "a test reaches this file":
+:func:`any_tests_reaching` (call graph, then import graph, then a test-only
+helper or package entry file, then the whole import closure). The Tests tab and
+the file page can therefore never disagree about a file. A walk that fails answers
+``basis: "unavailable"``, never ``"none"``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 from fastapi import Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.test_reachability import (
-    call_graph_from_db,
-    files_reached_by_tests,
-    load_test_files,
+    any_tests_reaching,
+    cached_hub_files,
+    cached_test_files,
+    read_under,
     tests_reaching_by_tier,
+    type_only_files,
 )
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import Repository
@@ -34,6 +43,8 @@ from repowise.server.schemas.coverage import CoverageResponse
 from repowise.server.schemas.patch_coverage import PatchCoverageResponse
 
 from ._router import router
+
+_log = logging.getLogger(__name__)
 
 
 def _score(m: Any) -> float | None:
@@ -197,12 +208,9 @@ async def _inferred_coverage(
 ) -> dict[str, Any]:
     """The graph-inferred test map, in the shape the measured one leaves empty.
 
-    Reuses the health engine's forward walk rather than the attributed reverse
-    one. This is the batch question - "which files does any test reach" - which
-    is one multi-source search over the whole graph, where the reverse walk runs
-    a query per level per seed and is built for a change's files. Sharing the
-    walk also means this can never disagree with the ``untested_hotspot``
-    biomarker, which reads the same function.
+    Reached means :func:`any_tests_reaching`, the same answer the file page
+    gives, so a file listed here as unreached never shows tests on its own
+    page. One batched reverse walk, cached per index state.
 
     ``excluded_paths`` scopes the answer to the files *not* carrying a measured
     coverage row. On the hybrid basis the measured branch already answers those
@@ -212,12 +220,13 @@ async def _inferred_coverage(
     matching the measured branch's ``modules_total``: a truncated page must
     never read as the repo.
 
-    Degrades to ``basis: "none"`` rather than raising. An unindexed graph is the
-    honest unknown, and failing the tab to withhold a secondary signal is the
-    wrong trade - the same call ``pr_blast._inferred_guarding_tests`` makes.
+    ``basis: "none"`` means there are no test files to walk from. A walk that
+    raises is logged and answers ``basis: "unavailable"``: failing the tab over
+    a secondary signal is the wrong trade, and so is passing a failure off as
+    the graph having nothing to say.
     """
     try:
-        test_files = await load_test_files(session, repo_id)
+        test_files = await cached_test_files(session, repo_id)
         if not test_files:
             return {
                 "basis": "none",
@@ -257,11 +266,20 @@ async def _inferred_coverage(
                     "test_file_count": len(test_files),
                 },
             }
-        view = await call_graph_from_db(session, repo_id)
-        reached = files_reached_by_tests(view, test_files)
+        reached = set(await any_tests_reaching(session, repo_id, [m.file_path for m in rows]))
+        # A file of only types has nothing a test could run: not a gap.
+        repo = await session.get(Repository, repo_id)
+        # Reads and parses files: off the event loop.
+        types = await asyncio.to_thread(
+            type_only_files,
+            [m.file_path for m in rows if m.file_path not in reached],
+            read_under(repo.local_path if repo else None),
+        )
+        rows = [m for m in rows if m.file_path not in types]
     except Exception:
+        _log.exception("inferred test map failed for repository %s", repo_id)
         return {
-            "basis": "none",
+            "basis": "unavailable",
             "summary": crud.empty_coverage_summary(),
             "files": [],
             "modules": [],
@@ -302,10 +320,15 @@ async def health_tests_reaching(
 ) -> dict:
     """Which test files reach one file, and which tier of the graph found them.
 
-    The attributed reverse walk, seeded with a single file - the shape it was
-    built for. ``via`` separates ``call-graph`` (a test's calls run into this
-    file) from the weaker ``import-graph`` (a test only imports it), so the file
-    page can say which claim it is making.
+    The same definition as the Tests tab, :func:`any_tests_reaching`. ``via``
+    says which claim the file page is making: ``call-graph`` (a test's calls run
+    into this file), the weaker ``import-graph`` (a test imports it), or
+    ``indirect-import`` (a test imports a file that imports it: a test-only
+    helper, a package entry file, or a longer import chain). The core labels
+    every import route ``import-graph``; ``indirect-import`` is this route's
+    name for the routes past the first hop. ``mocked-only`` names a file whose
+    only reaching tests replace it with a double: the tab counts it as
+    reached, so the page lists those tests and says what they do.
 
     ``tests`` is capped at ``MAX_TESTS_PER_TARGET``; ``total`` is what the walk
     found and ``truncated`` says whether the two differ. A file reached by 124
@@ -315,7 +338,7 @@ async def health_tests_reaching(
     coverage report attributes lines to tests and this attributes files. A file
     nothing reaches returns ``basis: "none"`` rather than an empty ``inferred``
     answer, so "no test reaches this" stays distinguishable from "the graph had
-    nothing to say".
+    nothing to say". A walk that raises answers ``basis: "unavailable"``.
     """
     repo = await crud.get_repository(session, repo_id)
     if repo is None:
@@ -331,23 +354,52 @@ async def health_tests_reaching(
         "truncated": False,
     }
     try:
-        found = await tests_reaching_by_tier(session, repo_id, [file_path])
+        row = (await any_tests_reaching(session, repo_id, [file_path])).get(file_path)
+        listing = None
+        if row is not None and row.reached is not None:
+            test_files = set(await cached_test_files(session, repo_id))
+            # The direct tiers, only to name the tier and order the list: tests
+            # that reach the file only through a hub go last.
+            hubs = await cached_hub_files(session, repo_id)
+            listing = (
+                await tests_reaching_by_tier(
+                    session, repo_id, [file_path], test_files=test_files, hubs=hubs
+                )
+            ).get(file_path)
     except Exception:
+        _log.exception("tests reaching %s failed for repository %s", file_path, repo_id)
+        return {**empty, "basis": "unavailable"}
+    if row is None:
         return empty
-    reached = found.get(file_path)
-    if reached is None or not reached.tests:
+    if row.reached is None:
+        # ``mocked_only``: the only tests reaching the file replace it with a
+        # double. The tab counts it as reached, so the page names those tests.
+        tests = sorted(row.mocked_by)
+        via = "mocked-only"
+        total = len(tests)
+    else:
+        # The shared answer decides which tests count; the direct tiers only
+        # order them. A test the direct walk names but the shared one masks
+        # (it replaces the file) is left out.
+        allowed = list(row.reached.all_tests or row.reached.tests)
+        keep = set(allowed)
+        direct = [t for t in (listing.all_tests or listing.tests) if t in keep] if listing else []
+        tests = [*direct, *(t for t in allowed if t not in set(direct))]
+        via = listing.via if direct else "indirect-import"
+        total = row.reached.total or len(tests)
+        tests = tests[: len(row.reached.tests)]
+    if not tests:
         return empty
-    total = reached.total or len(reached.tests)
     return {
         "file_path": file_path,
         "basis": "inferred",
         "reached": True,
-        "tests": reached.tests,
-        "via": reached.via,
-        # The walk's own count, which ``tests`` may be a trimmed alphabetical
+        "tests": tests,
+        "via": via,
+        # The walk's own count, which ``tests`` may be a ranked, trimmed
         # slice of. Without it a caller renders the cap as the answer.
         "total": total,
-        "truncated": total > len(reached.tests),
+        "truncated": total > len(tests),
     }
 
 
@@ -421,6 +473,7 @@ async def health_coverage_patch(
         label=label,
         head_commit=head_sha or None,
         config=configured_coverage(repo.local_path),
+        repo_path=repo.local_path,
     )
     if patch is None:
         return None

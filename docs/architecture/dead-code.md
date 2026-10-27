@@ -14,7 +14,8 @@ a path says otherwise.
 |--------|------|
 | `analyzer.py` | `DeadCodeAnalyzer`: the four detectors, confidence scoring, caps, rescues. |
 | `constants.py` | Never-flag globs, framework decorator lists, dynamic-dispatch name patterns, non-package directories, language sets. |
-| `risk_factors.py` | Path risk tokens, `SAFE_CONFIDENCE_THRESHOLD` (0.7), `RISK_CAP_CONFIDENCE` (0.4), `effective_safe_to_delete`. |
+| `risk_factors.py` | Path risk tokens, `SAFE_CONFIDENCE_THRESHOLD` (0.7), `RISK_CAP_CONFIDENCE` (0.4). |
+| `deletion_gate.py` | The one `safe_to_delete` rule: `apply_deletion_gate` at analysis time, `effective_safe_to_delete` for stored rows. |
 | `serving.py` | Read side shared by MCP, REST and workspace merges: `TIER_FLOORS`, filtering, tiering, cross-repo adjustment. |
 | `file_reachability.py` | The single "can anything reach this file?" answer. |
 | `entry_shape.py` | Files shaped like programs (shebang, Python main guard). |
@@ -33,7 +34,7 @@ a path says otherwise.
 Related: `analysis/finding_registry.py` decides which finding kinds a default
 surface shows (`unused_internal` is `hidden`). Storage and triage live in
 `persistence/crud/analysis/dead_code.py`. The analyzer runs from
-`pipeline/phases/analysis.py` (init), `pipeline/incremental.py` (update), and
+`pipeline/phases/analysis.py` (init), `pipeline/incremental/analysis.py` (update), and
 the CLI's live path in `cli/commands/dead_code_cmd.py`.
 
 ## Flow
@@ -145,7 +146,9 @@ only at `>= 0.7` with no risk factor.
 
 `unused_internal`: private symbols with no `calls` edge and no cross-file
 importer, base `0.65`, never deletion-ready. Hidden on default surfaces by
-`finding_registry.py` (measured 0.5% precision, 1,511 findings).
+`finding_registry.py` (measured 0.5% precision, 1,511 findings). A COBOL
+paragraph is judged from the program's source text instead of edges
+(`cobol_paragraphs.py`), at `0.30`.
 
 `zombie_package`: a top-level directory with no inter-package import edges,
 base `0.50`, never deletion-ready. `_NEVER_PACKAGE_DIRS` skips non-package
@@ -161,7 +164,7 @@ points (`__init__.py`, `__main__.py`, `conftest.py`, `manage.py`, `wsgi.py`,
 `asgi.py`, `setup.py`, `main.go`), build files (Gradle, Maven, CMake,
 Makefiles, Meson, Bazel, MSBuild, `build.rs`, bundler configs), shell scripts,
 files a CI workflow, task file, manifest or script names by path, framework
-routes (Next.js, SvelteKit, Nuxt, Remix, ASP.NET minimal APIs, Blazor and
+routes (Next.js, SvelteKit, Nuxt, Remix, Astro, ASP.NET minimal APIs, Blazor and
 Razor code-behind), test layouts, generated code (protoc, Qt, Bison/Flex, SWIG,
 Cython, Roslyn `*.g.cs`, Dart `*.g.dart`, `**/generated/**`), reflective
 loading (Alembic and Django migrations, EF configurations, COM class
@@ -176,7 +179,10 @@ built from the `risk_factors.py` constants. The TypeScript mirror is
 `DEAD_CODE_CONFIDENCE` in `packages/types/src/dead-code.ts`, so CLI, web and
 MCP tier identically.
 
-`adjust_cross_repo` runs after tiering in workspace mode: a file with
-cross-repo co-change partners gets confidence `* 0.5` and a
-`cross_repo_note`; otherwise an `unused_export` in a repo that other repos
-depend on as a package gets `* 0.3`.
+`serve_findings` is the one read every surface shares (MCP, REST, CLI, and
+the file, attention, actions, related-work, graph, chat, export and report
+readers): it applies `cross_repo_cut` to each stored row, then the filters, and
+tiering reads the result. A file another repo's contract link points at gets
+confidence `* 0.3`. Cross-repo co-change partners, or an `unused_export` in a
+repo other repos depend on as a package, keep the confidence. Each adds a
+`cross_repo_note` and withdraws `safe_to_delete`.

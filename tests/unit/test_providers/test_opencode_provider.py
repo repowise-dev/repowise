@@ -180,7 +180,7 @@ def test_invalid_model_name_raises(monkeypatch, tmp_path):
 def test_missing_cli_raises(monkeypatch, tmp_path):
     monkeypatch.setattr("shutil.which", lambda _cmd: None)
 
-    with pytest.raises(ProviderError, match="OpenCode CLI is not installed"):
+    with pytest.raises(ProviderError, match=r"OpenCode CLI not found.*opencode.ai/install"):
         OpenCodeProvider(repo_path=tmp_path)
 
 
@@ -212,9 +212,11 @@ async def test_generate_invokes_opencode_with_stdin(monkeypatch, tmp_path):
     assert "system rules" in prompt
     assert "user context" in prompt
     args = list(captured["args"])
-    assert args[:5] == [opencode_cmd, "run", "--format", "json", "--dir"]
+    assert args[:4] == [opencode_cmd, "run", "--format", "json"]
+    # OpenCode CLI v2 removed --dir; the repo is the subprocess cwd instead.
+    assert "--dir" not in args
     assert "--dangerously-skip-permissions" not in args
-    assert args[args.index("--dir") + 1] == str(tmp_path.resolve())
+    assert captured["kwargs"]["cwd"] == str(tmp_path.resolve())
     assert args[args.index("--model") + 1] == "deepseek/deepseek-v4-pro"
     assert re.fullmatch(r"repowise_auto_[0-9a-f]{32}", args[args.index("--title") + 1])
     assert captured["kwargs"]["stdin"] == asyncio.subprocess.PIPE
@@ -240,6 +242,34 @@ async def test_generate_default_model_omits_model_flag(monkeypatch, tmp_path):
 
     args = list(captured["args"])
     assert "--model" not in args
+
+
+def test_build_command_omits_dir_flag(monkeypatch, tmp_path):
+    """OpenCode CLI v2 rejects ``--dir`` with "Unrecognized flag" (issue #3571)."""
+    monkeypatch.setattr("shutil.which", lambda _cmd: "opencode")
+
+    cmd = OpenCodeProvider(
+        model="opencode/deepseek/deepseek-v4-pro", repo_path=tmp_path
+    ).build_command("sys", "auto")
+
+    assert "--dir" not in cmd
+    assert cmd[1:3] == ["run", "--format"]
+
+
+async def test_generate_runs_in_repo_path_as_cwd(monkeypatch, tmp_path):
+    """The repo is passed as the subprocess cwd, since ``--dir`` is gone."""
+    monkeypatch.setattr("shutil.which", lambda _cmd: "opencode")
+    captured: dict[str, Any] = {}
+
+    async def fake_exec(*_args: str, **kwargs: Any) -> FakeProcess:
+        captured["kwargs"] = kwargs
+        return FakeProcess(stdout=_success_jsonl("OK"))
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+
+    await OpenCodeProvider(repo_path=tmp_path).generate("sys", "user")
+
+    assert captured["kwargs"]["cwd"] == str(tmp_path.resolve())
 
 
 async def test_generate_parses_jsonl_tokens(monkeypatch, tmp_path):

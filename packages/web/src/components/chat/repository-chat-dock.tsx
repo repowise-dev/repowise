@@ -1,7 +1,6 @@
 "use client";
 
 import useSWR from "swr";
-import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { CHAT_SHORTCUT_HINT, ChatDock, getArtifactSourceTarget } from "@repowise-dev/ui/chat";
@@ -13,6 +12,9 @@ import { ConversationHistory } from "./conversation-history";
 import { useRepositoryChat } from "./repository-chat-provider";
 import { useChatDockHidden } from "./use-chat-dock-hidden";
 import { config, setChatDockHidden } from "@/lib/config";
+import { useTranslations } from "next-intl";
+import { NoProviderReason } from "./no-provider-reason";
+import { useModelUpgrade } from "@/components/model-upgrade/model-upgrade";
 
 // Sigma's worst-case bottom-right stack is ~197px tall (layout status plus
 // five controls and spacing). Keep a small measured clearance above it.
@@ -63,6 +65,7 @@ export function RepositoryChatDock() {
 type RepositoryChatValue = ReturnType<typeof useRepositoryChat>;
 
 function ConnectedRepositoryChatDock({ chat }: { chat: RepositoryChatValue }) {
+  const t = useTranslations("chat");
   const router = useRouter();
   const searchParams = useSearchParams();
   // Read after mount so SSR and the first client render agree.
@@ -73,6 +76,8 @@ function ConnectedRepositoryChatDock({ chat }: { chat: RepositoryChatValue }) {
     () => getProviders(chat.repoId),
     { revalidateOnFocus: false },
   );
+  // Outside the composer's reason, which unmounts once a provider is set.
+  const upgrade = useModelUpgrade(chat.repoId);
   const anyConfigured =
     providers === undefined || providers.providers.some((provider) => provider.configured);
   const collisionInset = getRepositoryDockCollisionInset(
@@ -81,6 +86,7 @@ function ConnectedRepositoryChatDock({ chat }: { chat: RepositoryChatValue }) {
   );
 
   return (
+    <>
     <ChatDock
       storageKey={`repowise:chat-dock:${chat.repoId}:${chat.conversationId ?? "new"}`}
       repoId={chat.repoId}
@@ -118,19 +124,9 @@ function ConnectedRepositoryChatDock({ chat }: { chat: RepositoryChatValue }) {
       )}
       {...(collisionInset ? { collisionInset } : {})}
       onDismiss={() => setChatDockHidden(true)}
+      unverifiedFigureCopy={{ flag: t("unverifiedFigure"), note: t("unverifiedFiguresNote") }}
       sendDisabled={!anyConfigured}
-      sendDisabledReason={
-        <span>
-          No chat provider is configured. Add an API key in{" "}
-          <Link
-            href="/settings"
-            className="text-[var(--color-accent-primary)] hover:underline"
-          >
-            settings
-          </Link>
-          .
-        </span>
-      }
+      sendDisabledReason={<NoProviderReason message="noProviderShort" onAddModel={upgrade.openSheet} />}
       modelSelectorSlot={<ModelSelector repoId={chat.repoId} activeProvider={chat.selectedProvider} activeModel={chat.selectedModel} onSelect={chat.selectModel} />}
       historySlot={
         <ConversationHistory
@@ -141,5 +137,7 @@ function ConnectedRepositoryChatDock({ chat }: { chat: RepositoryChatValue }) {
         />
       }
     />
+    {upgrade.sheet}
+    </>
   );
 }

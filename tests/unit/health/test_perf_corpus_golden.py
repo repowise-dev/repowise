@@ -14,11 +14,11 @@ from repowise.core.analysis.health.perf.opportunities import (
     build_performance_opportunities,
     link_performance_findings,
 )
-from repowise.core.analysis.health.perf.opportunity_rank import (
-    ACTIONABILITY_ORDER,
+from repowise.core.analysis.health.perf.opportunity_rank import ACTIONABILITY_ORDER
+from repowise.core.analysis.health.queue.eligibility import (
     DEFAULT_QUEUE_EXCLUSIONS,
-    default_queue_counts,
-    default_queue_exclusion,
+    perf_queue_counts,
+    perf_queue_verdict,
 )
 from repowise.core.analysis.health.refactoring.performance_fix import (
     performance_fix_suggestions,
@@ -149,7 +149,8 @@ def test_linking_stamps_the_id_the_builder_derives() -> None:
         ("batch_form_equivalent", 1, {"batch_or_prefetch_io"}),
         ("batch_form_limited", 1, {"batch_or_prefetch_io"}),
         ("bounded_fan_out", 1, {"parallelize_independent_awaits"}),
-        ("retry_loop", 1, {"batch_or_prefetch_io"}),
+        # A bounded retry loop runs a fixed number of times: nothing to batch.
+        ("retry_loop", 1, {None}),
         # Execution context is an identity input: one shape, three contexts.
         ("context_split", 3, {"batch_or_prefetch_io"}),
         # io_in_loop and nested_loop_with_io share one cross-function identity
@@ -279,7 +280,6 @@ def test_reachability_aggregates_any_true_over_all_false() -> None:
         # The bulk form exists, but a per-key limit means it may not read the same rows.
         ("batch_form_limited", "advisory", ("result_equivalence",), '.in_("repo_id", keys)'),
         ("bounded_fan_out", "plan_ready", (), "self._sem"),
-        ("retry_loop", "advisory", ("batch_api_contract", "result_equivalence"), None),
     ],
 )
 def test_promotion_facts_clear_exactly_their_prerequisite(case, state, prerequisites, api) -> None:
@@ -287,6 +287,16 @@ def test_promotion_facts_clear_exactly_their_prerequisite(case, state, prerequis
     assert item.actionability_state == state
     assert item.prerequisites == prerequisites
     assert item.fix is not None and item.fix.api == api
+
+
+def test_a_bounded_loop_is_expected_and_leaves_the_default_queue() -> None:
+    (item,) = build_performance_opportunities(rows_for("retry_loop"))
+    assert (item.actionability_state, item.actionability_reason, item.fix) == (
+        "expected",
+        "bounded_loop",
+        None,
+    )
+    assert perf_queue_verdict(item).reason == "expected"
 
 
 def test_a_loop_that_grows_with_data_outranks_a_bounded_one() -> None:
@@ -300,13 +310,13 @@ def test_a_loop_that_grows_with_data_outranks_a_bounded_one() -> None:
 def test_the_default_queue_counts_everything_it_leaves_out() -> None:
     """Production work with a strategy is queued; every other cause has one reason."""
     items = _opportunities()
-    counts = default_queue_counts(items)
+    counts = perf_queue_counts(items)
     assert counts["total"] + sum(counts["excluded"].values()) == len(items)
     assert tuple(counts["excluded"]) == DEFAULT_QUEUE_EXCLUSIONS
     # The corpus exercises each reason a real repository produces most.
     assert all(counts["excluded"][reason] for reason in ("test", "expected", "no_strategy"))
     for item in items:
-        reason = default_queue_exclusion(item)
+        reason = perf_queue_verdict(item).reason
         if reason is None:
             assert item.execution_context == "production"
             assert item.fix is not None
@@ -319,4 +329,6 @@ def test_a_lazy_load_leads_only_where_its_orm_cleared_the_bar() -> None:
         item.evidence[0]["file_path"]: item.may_lead
         for item in build_performance_opportunities(rows_for("lazy_load_by_orm"))
     }
-    assert by_orm == {"app/issues/views.py": True, "app/incidents/service.py": False}
+    # Neither loop is measured to grow, so neither leads whatever its ORM;
+    # the ORM gate over a growing loop is covered in test_perf_opportunities.
+    assert by_orm == {"app/issues/views.py": False, "app/incidents/service.py": False}

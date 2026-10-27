@@ -65,8 +65,9 @@ class TestParityGoldens:
         }
 
     def test_test_infixes_match_historical_set(self) -> None:
-        # `.test-d.` is the TypeScript type-test infix (`*.test-d.ts`).
-        assert set(REGISTRY.test_infixes()) == {".test.", ".spec.", ".test-d."}
+        # `.test-d.` is the TypeScript type-test infix (`*.test-d.ts`), `.suite.`
+        # a vitest suite module (`*.suite.ts`).
+        assert set(REGISTRY.test_infixes()) == {".test.", ".spec.", ".test-d.", ".suite.", ".e2e."}
 
     def test_test_fixture_stems_match_historical_set(self) -> None:
         assert frozenset(
@@ -110,7 +111,7 @@ class TestParityGoldens:
         camel = REGISTRY.camel_test_res_by_extension()
         assert set(camel) == {
             ".java", ".kt", ".kts", ".scala", ".cs", ".swift", ".php",
-            ".hs", ".lhs", ".vb", ".m", ".mm",
+            ".hs", ".lhs", ".vb", ".m", ".mm", ".cls", ".trigger", ".apex",
         }
         assert camel[".java"].pattern == r"(?<=[a-z0-9])(?:Tests|Test|IT)$"
         assert camel[".scala"].pattern == r"(?<=[a-z0-9])(?:Suite|Spec|Test)$"
@@ -140,7 +141,15 @@ class TestParityGoldens:
 
     def test_test_dir_suffixes_union(self) -> None:
         # .Specs = BDD-style sibling test projects (Polly, validated live).
-        assert REGISTRY.test_dir_suffixes() == (".Specs", ".Tests")
+        assert REGISTRY.test_dir_suffixes() == (
+            ".FunctionalTests",
+            ".FuzzTests",
+            ".IntegrationTests",
+            ".Specs",
+            ".Tests",
+            ".UnitTest",
+            ".UnitTests",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -148,7 +157,12 @@ class TestParityGoldens:
 # ---------------------------------------------------------------------------
 
 _FULL = {
+    # astro projects its frontmatter and <script> bodies to TypeScript
+    # through the same SFC pass as svelte, so its imports are ordinary ESM.
+    "astro",
     "c",
+    # COPY members resolve to copybooks by stem, nearest first.
+    "cobol",
     "cpp",
     "csharp",
     # dart promoted with the tree-sitter grammar (the regex tier stays as
@@ -202,6 +216,9 @@ _PARTIAL = {
     # import QtQuick / import "components": module specs via the qmldir
     # index, quoted references relative to the importing file (#727).
     "qml",
+    # Ansible playbook/role wiring via the lightweight tier: real edges
+    # inside Ansible projects, nothing claimed for plain YAML config (#4397).
+    "yaml",
 }
 
 
@@ -250,7 +267,8 @@ class TestImportSupportTiers:
     def test_unknown_language_reports_none(self) -> None:
         assert REGISTRY.import_support_for("klingon") == "none"
 
-    def test_cobol_is_exempt_from_static_dead_code_claims(self) -> None:
+    def test_runtime_entered_languages_are_exempt_from_static_dead_code_claims(self) -> None:
+        # Apex models its platform entry points instead (apex_reachability).
         assert REGISTRY.dead_code_exempt_languages() == frozenset({"cobol"})
 
 

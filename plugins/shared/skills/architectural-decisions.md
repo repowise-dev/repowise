@@ -55,8 +55,9 @@ Call `get_why()` with no arguments to get the decision-health dashboard:
 
 The same signals surface in the CLI via `repowise decision health` /
 `{{cmd:decision}}`, and you can query *why* mid-task with `repowise why` /
-`{{cmd:why}}` (the `get_why` adapter). Review auto-proposed decisions with
-`repowise decision confirm`.
+`{{cmd:why}}` (the `get_why` adapter). `repowise decision candidates --format json`
+lists proposed decisions with what each still needs; `repowise decision confirm <id>`
+accepts one (see `{{cmd:decision}}`).
 
 ## When a file has decision markers
 
@@ -64,4 +65,14 @@ If you see `# WHY:`, `# DECISION:`, `# TRADEOFF:`, or `# ADR:` comments in code,
 
 ## Recording new decisions
 
-If the user makes an architectural decision during the conversation, suggest: "Want to record this decision? Add a `# DECISION:` comment in the relevant code, or run `repowise decision add` to capture it formally."
+When you settle an architectural choice yourself (you weighed options and picked one), record it:
+
+`repowise decision add --agent <your slug> --title "..." --decision "..." --rationale "<why, and what you rejected>" --affects <path>`
+
+Add `--evidence-commit <sha>` once it is committed. The record lands as a candidate: it never governs until accepted, so recording is safe.
+
+## Reviewing candidates
+
+You may review and accept candidates yourself. `repowise decision candidates --format json` lists each with its `blockers`. Accept one with `repowise decision confirm <id> --agent <your slug>`, adding `--reason`, `--scope <path>`, `--evidence <commit|file|link>` or `--decision` for whatever a blocker names. Dismiss a wrong one with `repowise decision dismiss <id> --agent <your slug> --reason ... --yes`, fold a duplicate with `repowise decision merge <id> <into-id> --agent <your slug>` (the target must already be accepted; confirm it first), and retire one with `repowise decision deprecate <id> --agent <your slug> --reason ...`. When an accepted decision is `needs_review` and still holds, renew it with `repowise decision reaffirm <id> --agent <your slug>`; `confirm` is for candidates only. With `--format json` every review command returns `results[]`, even for one id. Your acceptances are recorded as yours, never a person's. If the repository turned agent acceptance off, the confirm is refused; leave it for a person and mention it.
+
+If the user states a decision, offer to record it the same way without `--agent`.

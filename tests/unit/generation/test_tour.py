@@ -18,6 +18,7 @@ class _FI:
     path: str
     is_entry_point: bool = False
     language: str = "python"
+    is_application_main: bool = False
 
 
 @dataclass
@@ -40,6 +41,19 @@ def test_score_entry_points_rewards_entry_flag_and_filename():
     scored = score_entry_points(files, pr)
     ranked = [p for _, p in scored]
     assert ranked[0] == "src/main.py"  # entry flag + main filename + shallow
+
+
+def test_score_entry_points_puts_a_declared_entry_above_every_guess():
+    # Fineract: a sample's shallow, central ``Main.java`` scores every guess
+    # (flag, stem, depth, PageRank) and still follows the Spring Boot main.
+    main = "lib/Main.java"
+    app = "provider/src/main/java/org/acme/ServerApplication.java"
+    files = [
+        _PF(_FI(path=main, is_entry_point=True, language="java")),
+        _PF(_FI(path=app, is_entry_point=True, language="java", is_application_main=True)),
+    ]
+    scored = score_entry_points(files, {main: 0.9, app: 0.0})
+    assert [p for _, p in scored] == [app, main]
 
 
 def test_score_entry_points_excludes_zero_score():

@@ -31,11 +31,12 @@ design (``asserts/lexicon.py`` carries the vocabulary and the evidence):
 
 ``called_names`` rides along on the same traversal. Alone among these it is
 collected **through** nested function bodies, because nothing else ever
-collects them.
+collects them. ``terminal_share`` (``terminal.py``) counts the same calls.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from ..asserts.lexicon import NARROW_PREFIXES, STUB_EXCEPTIONS, AssertDialect
@@ -46,9 +47,18 @@ from .ast_utils import (
     _receiver_method_verdict,
 )
 from .languages import LanguageNodeMap
+from .terminal import is_terminal_call, terminal_share
 
 if TYPE_CHECKING:
     from tree_sitter import Node
+
+@dataclass(slots=True)
+class _CallTally:
+    """Calls read in one body, and those on the terminal."""
+
+    calls: int = 0
+    terminal: int = 0
+
 
 _EXPRESSION_STATEMENT = "expression_statement"
 _AWAIT_WRAPPER_KINDS = ("await_expression", "await", "parenthesized_expression")
@@ -62,6 +72,16 @@ _NARROW = 2
 _VERIFICATION = 3
 
 
+_PHP_CALL_KINDS = frozenset(
+    {
+        "function_call_expression",
+        "member_call_expression",
+        "scoped_call_expression",
+        "nullsafe_member_call_expression",
+    }
+)
+
+
 def _callee_matches_assert(call_node: Node) -> bool:
     """True if any identifier in *call_node*'s callee chain is assert-ish.
 
@@ -73,10 +93,19 @@ def _callee_matches_assert(call_node: Node) -> bool:
     # Fallback when no ``function``/``macro`` field is exposed: the first
     # named child is usually the callee.
     roots = [callee] if callee is not None else [c for c in call_node.children if c.is_named][:1]
+    # PHP spells identifiers ``name`` (not ``*identifier``), and a method
+    # call keeps its method name in a ``name`` field. Both are gated on PHP's
+    # call node kinds, which no other mapped grammar has.
+    is_php_call = call_node.type in _PHP_CALL_KINDS
+    if is_php_call and call_node.type != "function_call_expression":
+        name_node = call_node.child_by_field_name("name")
+        if name_node is not None:
+            roots.append(name_node)
     stack: list[Node] = list(roots)
     while stack:
         node = stack.pop()
-        if node.type.endswith(_IDENTIFIER_SUFFIX) and node.text is not None:
+        is_ident = node.type.endswith(_IDENTIFIER_SUFFIX) or (is_php_call and node.type == "name")
+        if is_ident and node.text is not None:
             name = node.text.decode("utf-8", errors="replace").lower()
             if any(name.startswith(p) for p in NARROW_PREFIXES):
                 return True
@@ -324,8 +353,8 @@ def _is_oracle_raise(node: Node) -> bool:
 
 def _collect_assertion_facts(
     body_node: Node, lmap: LanguageNodeMap, dialect: AssertDialect | None = None
-) -> tuple[list[tuple[int, int, int]], int, int, int, frozenset[str], frozenset[str]]:
-    """``(blocks, total, verifications, raises, called, bare)`` for one body.
+) -> tuple[list[tuple[int, int, int]], int, int, int, frozenset[str], frozenset[str], float]:
+    """``(blocks, total, verifications, raises, called, bare, terminal)`` for one body.
 
     *blocks* are runs of ≥2 consecutive **narrow-tier** assertion statements,
     each recorded as ``(start_line, end_line, count)``. Runs are found per
@@ -363,26 +392,39 @@ def _collect_assertion_facts(
     *called* is every name called directly in this body, lowercased,
     **including nested function bodies**, which is where it parts company with
     the counts beside it. Those stop at a nested function because its
-    assertions are its own. A name does not work that way here, because a
-    function nested inside an already-collected one is never collected as an
-    entry of its own -- ``ast_utils._collect_function_nodes`` does not descend
-    past a function -- so stopping would attribute its calls to nobody at all,
-    and an ``expect`` inside an inline ``function`` helper would be recorded
-    nowhere. It rides along on this traversal because the traversal already
+    assertions are its own. A name does not work that way here. The nested
+    function has an entry of its own, with its own names, but the test around
+    it is the one asked whether it checked anything, and a test that hands an
+    inline ``function`` helper to something else (``rows.forEach(verifyRow)``)
+    never calls it by name, so stopping would put the helper's ``expect`` out
+    of that test's reach. It rides along on this traversal because the traversal already
     reaches every call node; collecting it separately would mean walking every
     function body twice. It counts nothing and so cannot move a calibrated
     marker. Empty under the early return above, which is fine only because the
     one reader ships no language that takes it.
+
+    *terminal* is :func:`terminal.terminal_share` over the same calls *called*
+    reads, nested bodies included.
     """
     if not lmap.assert_kinds and not lmap.assert_call_kinds:
-        return [], 0, 0, 0, frozenset(), frozenset()
+        return [], 0, 0, 0, frozenset(), frozenset(), 0.0
     blocks: list[tuple[int, int, int]] = []
     total = 0
     verifications = 0
     raises = 0
     called: set[str] = set()
     bare: set[str] = set()
+    tally = _CallTally()
     call_kinds = lmap.call_kinds or lmap.assert_call_kinds
+
+    def _record_call(node: Node) -> None:
+        names = _callee_names(node)
+        if names is not None:
+            called.add(names[0])
+            if not names[1]:
+                bare.add(names[0])
+            tally.calls += 1
+            tally.terminal += is_terminal_call(names[0], names[1])
 
     def _scan_siblings(parent: Node, *, count_total: bool) -> None:
         nonlocal total, verifications
@@ -433,11 +475,7 @@ def _collect_assertion_facts(
         if node.type in lmap.raise_kinds and not under_lambda and _is_oracle_raise(node):
             raises += 1
         if node.type in call_kinds:
-            names = _callee_names(node)
-            if names is not None:
-                called.add(names[0])
-                if not names[1]:
-                    bare.add(names[0])
+            _record_call(node)
         for child in node.children:
             child_under_lambda = under_lambda or child.type in lmap.lambda_kinds
             if child.type in lmap.function_kinds:
@@ -451,11 +489,7 @@ def _collect_assertion_facts(
 
     def _visit_names_only(node: Node) -> None:
         if node.type in call_kinds:
-            names = _callee_names(node)
-            if names is not None:
-                called.add(names[0])
-                if not names[1]:
-                    bare.add(names[0])
+            _record_call(node)
         for child in node.children:
             _visit_names_only(child)
 
@@ -473,4 +507,12 @@ def _collect_assertion_facts(
                 verifications += 1
             elif tier != _NOT_ASSERTION:
                 total += 1
-    return blocks, total, verifications, raises, frozenset(called), frozenset(bare)
+    return (
+        blocks,
+        total,
+        verifications,
+        raises,
+        frozenset(called),
+        frozenset(bare),
+        terminal_share(tally.terminal, tally.calls),
+    )

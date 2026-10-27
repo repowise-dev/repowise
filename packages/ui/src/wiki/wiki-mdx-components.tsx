@@ -62,7 +62,7 @@ export const wikiMdxComponents = {
   ),
   blockquote: (props: React.HTMLAttributes<HTMLQuoteElement>) => (
     <blockquote
-      className="my-4 border-l-2 border-[var(--color-accent-primary)] pl-4 text-sm italic text-[var(--color-text-tertiary)]"
+      className="my-4 border-l-2 border-[var(--color-text-tertiary)] pl-4 text-sm italic text-[var(--color-text-tertiary)]"
       {...props}
     />
   ),

@@ -19,12 +19,16 @@ from pathlib import Path
 
 import pytest
 
+from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
 from repowise.core.workspace.update import (
     commit_exists,
     get_head_commit,
     read_repo_state,
     update_single_repo_index,
 )
+
+# An index written by this build: its git rows follow the current rules.
+CURRENT_GIT_HISTORY = {GIT_HISTORY_VERSION_KEY: GIT_HISTORY_VERSION}
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -53,7 +57,7 @@ def _mark_indexed(repo: Path, commit: str, **extra_state) -> None:
     state_dir = repo / ".repowise"
     state_dir.mkdir(parents=True, exist_ok=True)
     (state_dir / "state.json").write_text(
-        json.dumps({"last_sync_commit": commit, **extra_state}), encoding="utf-8"
+        json.dumps({"last_sync_commit": commit, **CURRENT_GIT_HISTORY, **extra_state}), encoding="utf-8"
     )
     (state_dir / "wiki.db").touch()
 
@@ -340,6 +344,19 @@ def test_full_pipeline_merges_repo_settings_excludes(tmp_path, stub_full_pipelin
 
     _assert_full_pipeline_fallback(result, stub_full_pipeline)
     assert stub_full_pipeline[0]["exclude_patterns"] == ["tools/"]
+
+
+def test_config_yaml_excludes_win_over_legacy_settings(tmp_path, stub_full_pipeline):
+    repo = _make_git_repo(tmp_path)
+    _mark_indexed(repo, "deadbeef" * 5)
+    _write_repo_settings(repo, {"exclude_patterns": ["tools/"]})
+    (repo / ".repowise" / "config.yaml").write_text(
+        "exclude_patterns:\n- vendor/\n", encoding="utf-8"
+    )
+
+    asyncio.run(update_single_repo_index(repo))
+
+    assert stub_full_pipeline[0]["exclude_patterns"] == ["vendor/"]
 
 
 def test_full_pipeline_uses_repo_history_settings(tmp_path, stub_full_pipeline):

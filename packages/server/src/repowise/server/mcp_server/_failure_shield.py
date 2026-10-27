@@ -47,12 +47,12 @@ def _shape_not_indexed() -> dict[str, Any]:
     return {
         "error": "This repository has no repowise index yet.",
         "remedy": (
-            "The user can build one by running 'repowise init --yes' in the "
-            "repo root. No API key is required: without one it renders the "
-            "whole wiki from the code's structure. Suggest --no-editor-setup "
+            "The user can build one by running 'repowise init --yes --no-prose' "
+            "in the repo root. It needs no API key and makes no model calls: "
+            "the documentation is built from code. Suggest --no-editor-setup "
             "too if this is a scratch clone, fixture, or worktree, so init "
             "leaves their global MCP config pointed where it is. Indexing is "
-            "the user's decision — suggest it once, do not run it yourself."
+            "the user's decision: suggest it once, do not run it yourself."
         ),
         "guidance": (
             "Until an index exists, every repowise tool will return this "
@@ -195,21 +195,43 @@ def _shape_internal_error(tool: str, exc: Exception) -> dict[str, Any]:
     }
 
 
-def _shape_exception(tool: str, exc: Exception, *, long_running: bool = True) -> dict[str, Any]:
-    """*long_running* is False for a process that imports fresh on every run (the CLI)."""
+def _exception_reason(exc: Exception) -> str:
+    """The coarse telemetry reason for a shielded exception: a fixed slug."""
     if isinstance(exc, LookupError):
-        if _NOT_INDEXED_MARKER in str(exc):
-            return _shape_not_indexed()
-        return _shape_unknown_repo(exc)
+        return "no_index" if _NOT_INDEXED_MARKER in str(exc) else "not_found"
     # Workspace mode raises ValueError("Unknown repo '<alias>'. Available:
     # [...]") from the registry — same expected condition, different type.
     if isinstance(exc, ValueError) and str(exc).startswith("Unknown repo"):
-        return _shape_unknown_repo(exc)
+        return "not_found"
     if _is_stale_index_error(exc):
-        return _shape_stale_index(exc)
+        return "index_behind"
     if is_stale_server_import(exc):
-        return _shape_stale_server(exc) if long_running else _shape_broken_install(exc)
-    return _shape_internal_error(tool, exc)
+        return "server_stale"
+    return "internal"
+
+
+_SHAPES: dict[str, Callable[[str, Exception, bool], dict[str, Any]]] = {
+    "no_index": lambda tool, exc, long_running: _shape_not_indexed(),
+    "not_found": lambda tool, exc, long_running: _shape_unknown_repo(exc),
+    "index_behind": lambda tool, exc, long_running: _shape_stale_index(exc),
+    "server_stale": lambda tool, exc, long_running: (
+        _shape_stale_server(exc) if long_running else _shape_broken_install(exc)
+    ),
+    "internal": lambda tool, exc, long_running: _shape_internal_error(tool, exc),
+}
+
+
+def _shape_exception(tool: str, exc: Exception, *, long_running: bool = True) -> dict[str, Any]:
+    """*long_running* is False for a process that imports fresh on every run (the CLI).
+
+    Also notes the reason on the call in flight, so the ``mcp_tool_call`` event
+    can say why the call failed without reading the message.
+    """
+    from repowise.server.mcp_server._savings.interaction import note_error_reason
+
+    reason = _exception_reason(exc)
+    note_error_reason(reason)
+    return _SHAPES[reason](tool, exc, long_running)
 
 
 async def _await_import_warmup(tool: str) -> None:

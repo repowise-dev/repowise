@@ -44,13 +44,24 @@ function toPresentations<T extends Record<string, PresentationCopy | undefined>>
   ) as { [K in keyof T]: ChatContextPresentation };
 }
 
+/** The empty chat's questions: what chat can draw, for readers of either kind.
+ *  The empty state shows the first four. */
+export const EMPTY_CHAT_SUGGESTIONS: readonly string[] = [
+  "Chart code health by package as a treemap",
+  "Which files are riskiest to change, and why?",
+  "Show what kinds of changes we made each week",
+  "Give me a one-slide health summary with charts",
+  "Where are the biggest test coverage gaps?",
+  "What dead code can be safely removed?",
+];
+
 const PRESENTATION_COPY: Record<ChatContextKind, PresentationCopy> = {
   repository: {
     placeholder: "Ask about this repository, or paste a file path",
     suggestions: [
       "Give me an overview of this codebase",
+      "Chart code health by package as a treemap",
       "Which files have the worst code health?",
-      "What architectural decisions have been made?",
       "What dead code can be safely removed?",
     ],
   },
@@ -59,7 +70,7 @@ const PRESENTATION_COPY: Record<ChatContextKind, PresentationCopy> = {
     suggestions: [
       "Explain the main architectural boundaries",
       "Which parts of this repository deserve attention first?",
-      "Where should a new contributor start?",
+      "Give me a one-slide health summary with charts",
     ],
   },
   documentation: {
@@ -74,7 +85,7 @@ const PRESENTATION_COPY: Record<ChatContextKind, PresentationCopy> = {
     placeholder: "Ask about this architecture view",
     suggestions: [
       "Explain the main component boundaries",
-      "Which dependencies create the most coupling?",
+      "Chart the architecture layers by file count",
       "Trace a request through this architecture",
     ],
   },
@@ -89,8 +100,8 @@ const PRESENTATION_COPY: Record<ChatContextKind, PresentationCopy> = {
   health: {
     placeholder: "Ask about these code health findings",
     suggestions: [
+      "Show health bands as a donut",
       "Which finding should I address first and why?",
-      "Explain the evidence behind the highest-risk finding",
       "Propose a safe refactoring sequence",
     ],
   },
@@ -99,7 +110,7 @@ const PRESENTATION_COPY: Record<ChatContextKind, PresentationCopy> = {
     suggestions: [
       "Turn this into a safe refactoring plan",
       "Which refactoring opportunity is safest to start with?",
-      "Which refactoring targets affect the most dependents?",
+      "Chart open findings by severity and package",
     ],
   },
   file: {
@@ -153,16 +164,16 @@ const PRESENTATION_COPY: Record<ChatContextKind, PresentationCopy> = {
   risk: {
     placeholder: "Ask about the risk evidence on this page",
     suggestions: [
+      "Top 10 files by bug fixes, rest as Other",
       "Explain the highest-risk result in plain language",
       "Which tests reduce the most uncertainty?",
-      "Propose the safest order for these changes",
     ],
   },
   "dead-code": {
     placeholder: "Ask about this dead-code result",
     suggestions: [
       "Is this safe to remove, and what still reaches it?",
-      "Explain the evidence behind this result",
+      "Dead code by kind and confidence tier",
       "What should I check before deleting it?",
     ],
   },
@@ -200,12 +211,7 @@ const PRESENTATION_COPY: Record<ChatContextKind, PresentationCopy> = {
   },
   chat: {
     placeholder: "Ask a follow-up, or paste a file path",
-    suggestions: [
-      "Give me an overview of this codebase",
-      "Which files have the worst code health?",
-      "Score the change risk of HEAD",
-      "What architectural decisions have been made?",
-    ],
+    suggestions: EMPTY_CHAT_SUGGESTIONS,
   },
 };
 
@@ -244,8 +250,8 @@ const COLLECTION_PRESENTATION_COPY: Partial<
   commit: {
     placeholder: "Ask about repository history",
     suggestions: [
+      "Heatmap of changes by week and category",
       "Review the risk of the latest commit",
-      "Which files have the most bug-fix history?",
       "Find the history behind an architectural choice",
     ],
   },

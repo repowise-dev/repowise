@@ -10,11 +10,16 @@ from __future__ import annotations
 
 import pytest
 
+from repowise.core.dotnet_test_projects import read_dotnet_test_projects
+from repowise.core.phpunit_roots import read_phpunit_roots
+from repowise.core.pytest_roots import read_pytest_roots
 from repowise.core.test_paths import (
+    is_skippable_test_path,
     is_test_path,
     is_test_related_path,
     is_test_support_path,
     is_unambiguous_test_path,
+    names_test_for,
 )
 
 # (path, language or None, expected classification)
@@ -45,6 +50,22 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("src/foo.test.mts", None, "test"),
     ("src/foo.spec.cts", None, "test"),
     ("src/foo.mts", None, ""),
+    # inside a JS-family `src` tree a `tests/` folder is a product feature unless
+    # the file name or another test dir says otherwise; outside `src` it is a
+    # suite, the way Mocha, AVA and `node --test` collect a whole folder
+    ("packages/web/src/app/repos/[id]/tests/page.tsx", None, ""),
+    ("packages/web/src/components/tests/tests-view.tsx", None, ""),
+    ("src/components/tests/TestsView.vue", None, ""),
+    ("Src/Tests/page.svelte", None, ""),
+    ("packages/web/tests/page.tsx", None, "test"),
+    ("src/components/tests/Button.test.tsx", None, "test"),
+    ("src/__tests__/tests/helpers.ts", None, "test"),
+    ("src/tests/__mocks__/api.ts", None, "support"),
+    ("web/src/test/setup.ts", None, "test"),
+    ("tests/foo.test.ts", None, "test"),
+    ("tests/utils.ts", None, "test"),
+    ("test/app.router.js", None, "test"),
+    ("pkg/src/tests/helpers.py", None, "test"),
     # maven / gradle / kotlin multiplatform
     ("src/test/java/Foo.java", None, "test"),
     ("src/it/scala/FooSpec.scala", None, "test"),
@@ -81,8 +102,36 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("spec/models/user.rb", None, ""),
     ("spec/openapi/users.yaml", None, ""),
     ("spec/support/helper.rb", None, "support"),
+    # perl-style t/: `t/` is a test tree for python whatever the filename
+    # (celery layout), and needs a test-shaped filename otherwise — same
+    # ambiguous-token mechanism as `spec/` above (#2962)
+    ("t/unit/app/test_app.py", "python", "test"),
+    ("t/unit/conftest.py", "python", "support"),
+    ("t/unit/tasks/task_config.py", "python", "test"),
+    ("t/integration/tasks.py", "python", "test"),
+    ("t/smoke/tasks.py", "python", "test"),
+    ("t/unit/contrib/proj/foo/tasks.py", "python", "test"),
+    # ...so without the language, only a corroborating filename counts
+    ("t/unit/app/test_app.py", None, "test"),
+    ("t/unit/tasks/task_config.py", None, ""),
+    # ...a non-source file under t/ stays as it is without corroboration
+    ("t/data/expected.json", None, ""),
+    ("t/assets/image.png", None, ""),
+    # ...and a bare `t` that is not a directory segment stays production
+    ("src/t.py", None, ""),
+    ("src/t.py", "python", ""),
+    ("latest/x.py", None, ""),
+    ("contest/x.py", None, ""),
     # e2e suites
     ("e2e/login.ts", None, "test"),
+    # ...and the `.e2e.` infix beside `.test.`/`.spec.`, suites and their helpers
+    ("src/gateway/gateway.e2e.ts", None, "test"),
+    ("src/gateway/test-helpers.e2e.ts", None, "test"),
+    ("apps/desktop/tsconfig.e2e.json", None, ""),
+    ("src/harness/e2e_utils.py", None, ""),
+    # one-word suite directories (gcc, flask before 0.11)
+    ("flask/testsuite/basic.py", None, "test"),
+    ("gcc/testsuite/gcc.dg/pr123.c", None, "test"),
     # production code that merely contains the word: the unanchored
     # `test[s_/]` substring rule classified the first three as tests
     ("src/latest/api.py", None, ""),  # #1103 finding 1
@@ -158,7 +207,32 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     # a library for writing tests is that library's production code
     ("packages/testing-library/src/index.ts", None, ""),
     ("src/testing_library/render.py", None, ""),
-    ("src/test-utils/render.ts", None, ""),
+    # #3244: but a helper directory named for tests holds what only tests
+    # import, wherever it sits, read on its words run together like `testdata`
+    ("ui/src/test-helpers/load-styles.ts", None, "support"),
+    ("src/test_helpers/x.py", None, "support"),
+    ("src/testhelpers/x.ts", None, "support"),
+    ("src/test-utils/render.ts", None, "support"),
+    ("src/test_utils/x.py", None, "support"),
+    ("internal/testutils/x.go", None, "support"),
+    ("pkg/testutil/x.go", None, "support"),
+    ("src/test-support/x.ts", None, "support"),
+    ("src/test_support/x.rb", None, "support"),
+    ("tests/test-utils/x.ts", None, "support"),
+    # a test-shaped filename inside one is still a test
+    ("ui/src/test-helpers/foo.test.ts", None, "test"),
+    ("pkg/testutil/x_test.go", None, "test"),
+    # the bare words still need a test tree, and `testing` names shipped packages
+    ("src/helpers/x.ts", None, ""),
+    ("src/support/x.ts", None, ""),
+    ("src/utils/x.ts", None, ""),
+    ("tests/helpers/x.ts", None, "support"),
+    ("src/testing/x.py", None, ""),
+    ("src/latest-utils/x.py", None, ""),
+    # a helper directory that is a package root ships (preact's `test-utils/`);
+    # path-only, its own manifest is the evidence
+    ("test-utils/package.json", None, ""),
+    ("pkg/testutil/go.mod", None, ""),
     # `test-data` / `test_data` are golden data, the same as Go's `testdata`
     ("test-data/users.json", None, "support"),
     ("pkg/test_data/input.csv", None, "support"),
@@ -178,6 +252,12 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("src/components/__snapshots__/Button.test.tsx.snap", None, "support"),
     # tsd / vitest type tests
     ("src/types/index.test-d.ts", None, "test"),
+    # vitest suite modules a `.test.ts` file registers
+    ("src/gateway/server.auth.default-token.suite.ts", None, "test"),
+    ("src/gateway/suite.ts", None, ""),
+    # infixes apply to every source extension (no per-extension infix rule), so a
+    # benchmark.js suite reads as test: a known false positive, accepted
+    ("bench/array.suite.js", None, "test"),
     # a bare `test`/`tests` stem is a suite in Python and Rust only; `test.ts` in an
     # examples folder is an example, and `scripts/test.sh` runs the suite
     ("examples/basic/src/test.ts", None, ""),
@@ -204,6 +284,49 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("util/env_posix_test_helper.h", None, "test"),
     ("absl/strings/str_cat.h", None, ""),
     ("crates/searcher/src/searcher/util.rs", None, ""),
+    # #2662: Jest manual mocks live in a root `__mocks__/` beside node_modules or
+    # beside the mocked module, never in a test tree, so the dunder dir counts
+    # wherever it sits, like `__fixtures__`. Bare `mocks` stays tree-gated: this
+    # repo's analysis/health/mocks/ and ktor-client-mock are product code.
+    ("__mocks__/axios.js", None, "support"),
+    ("src/__mocks__/api.ts", None, "support"),
+    ("src/__mocks__/api.test.ts", None, "test"),  # a test-shaped name still wins
+    ("src/mocks/handlers.ts", None, ""),
+    ("packages/core/src/repowise/core/analysis/health/mocks/lexicon.py", None, ""),
+    ("ktor-client-mock/common/src/io/ktor/client/engine/mock/MockEngine.kt", None, ""),
+    # #2662: .NET test projects are also named Foo.UnitTests, Foo.IntegrationTests
+    # and Foo.FuzzTests (PowerToys). A shipped Foo.Testing library is not one, and a
+    # scaffolding dir inside a test project is support, as under tests/.
+    ("Settings.UI.UnitTests/ViewModelTests/General.cs", None, "test"),
+    ("Hosts.FuzzTests/Fuzz.cs", None, "test"),
+    ("Foo.IntegrationTests/Sql/Db.cs", None, "test"),
+    ("Foo.IntegrationTests/Helpers/Db.cs", None, "support"),
+    ("src/Polly.Testing/ResiliencePipelineExtensions.cs", None, ""),
+    # A name ending in "test" and a scaffolding word is the support for some
+    # module's tests, wherever it sits (openclaw keeps them beside the module).
+    ("extensions/telegram/src/bot.create-telegram-bot.test-harness.ts", None, "support"),
+    ("scripts/test-projects.test-support.mjs", None, "support"),
+    ("extensions/feishu/src/card-test-helpers.ts", None, "support"),
+    ("src/media-understanding/runner.test-mocks.ts", None, "support"),
+    ("extensions/comfy/test-helpers.ts", None, "support"),
+    ("src/cron/isolated-agent.test-setup.ts", None, "support"),
+    # #3269: a module's own ``.test-*`` companion, beside it in src/.
+    ("src/foo.test-support.ts", None, "support"),
+    ("src/foo.test-helpers.ts", None, "support"),
+    ("src/foo.test-utils.ts", None, "support"),
+    ("src/foo.test-utils.js", None, "support"),
+    ("src/test-supporter.ts", None, ""),
+    # ``test-utils`` is a published entry in React and Preact; ``setup`` alone
+    # is a build script or an app's bootstrap.
+    ("src/test-utils.ts", None, ""),
+    ("packages/react-dom/test-utils.js", None, ""),
+    ("compat/test-utils.mjs", None, ""),
+    ("setup.py", None, ""),
+    ("src/setup.ts", None, ""),
+    ("tests/unit/cli/test_helpers.py", None, "test"),  # a test name stays a test
+    ("src/foo.test-d.ts", None, "test"),  # a type test, not a scaffolding word
+    ("docs/test-helpers.md", None, ""),  # filename rules are source rules
+    ("src/logging/diagnostic-support-bundle.ts", None, ""),
 )
 
 
@@ -232,9 +355,44 @@ def test_related_is_the_union(path: str, language: str | None, expected: str) ->
     assert is_test_related_path(path, language) is (expected != "")
 
 
+def test_a_test_helper_directory_that_is_a_package_root_stays_production() -> None:
+    """#3244: preact's ``test-utils/`` is a package published as
+    ``preact/test-utils``. Only the caller knows the directory holds a manifest,
+    so it says so through *package_root*; path-only callers read it as support."""
+    roots = {"test-utils"}.__contains__
+    assert not is_test_related_path("test-utils/src/index.js", package_root=roots)
+    assert is_test_support_path("test-utils/src/index.js")
+    # Only the helper directory is asked about, so a package root elsewhere on
+    # the path does not rescue it, and a test file in a shipped package is a test.
+    assert is_test_support_path("src/test-utils/x.ts", package_root={"src"}.__contains__)
+    assert is_test_path("test-utils/test/index.test.js", package_root=roots)
+    # Golden data is not a package even beside a manifest (Go fixture modules).
+    assert is_test_support_path("testdata/mod/x.go", package_root=lambda _d: True)
+
+
 @pytest.mark.parametrize("path", ["", ".", "/"])
 def test_degenerate_paths_are_not_tests(path: str) -> None:
     assert not is_test_related_path(path)
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("tests/x.py", True),
+        ("src/__mocks__/api.ts", True),
+        ("packages/web/src/components/tests/tests-view.tsx", False),
+        ("pkg/src/tests/helpers.py", True),
+        ("pkg/tests/helpers/db.py", True),
+        ("packages/core/src/pkg/core/test_selection.py", False),
+        ("src/bot.test-harness.ts", False),
+        (".github/workflows/tests/run.py", False),
+        ("x.py", False),
+    ],
+)
+def test_in_test_tree_reads_directories_only(path: str, expected: bool) -> None:
+    from repowise.core.test_paths import in_test_tree
+
+    assert in_test_tree(path) is expected
 
 
 def test_windows_separators_match_posix() -> None:
@@ -292,3 +450,167 @@ def test_unambiguous_test_paths_need_more_than_a_test_shaped_name_under_src(
     path: str, expected: bool
 ) -> None:
     assert is_unambiguous_test_path(path) is expected
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("tests/api/openapi.yaml", True),
+        ("Foo.Tests/Clients/Orders.cs", True),
+        ("src/api/client.test.ts", True),
+        ("src/__mocks__/api.ts", True),
+        ("pkg/server/handler_test.go", True),
+        # non-source files need a named test tree
+        ("Foo.Specs/openapi.yaml", False),
+        ("spec/support/openapi.yaml", False),
+        ("testdata/openapi.yaml", False),
+        # a PascalCase suite folder alone, or a Python test name under src
+        ("LoadTests/Runner.cs", False),
+        ("src/api/test_routes.py", False),
+        ("src/app/main.ts", False),
+    ],
+)
+def test_skippable_test_paths_never_drop_a_possible_contract(path: str, expected: bool) -> None:
+    assert is_skippable_test_path(path) is expected
+
+
+_ROOTS = read_pytest_roots(
+    [("pyproject.toml", '[tool.pytest.ini_options]\ntestpaths = ["tests"]\n')]
+)
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        # production modules named for what they do, outside testpaths
+        ("packages/core/src/repowise/core/test_paths.py", ""),
+        ("packages/core/src/repowise/core/analysis/test_selection.py", ""),
+        ("mytool/cli/approvals_test.py", ""),
+        # a test directory still settles it, inside testpaths or not
+        ("tests/unit/test_engine.py", "test"),
+        ("packages/ui/tests/test_a.py", "test"),
+        ("pkg/tests/helpers/test_builders.py", "test"),
+        ("conftest.py", "support"),
+        # pytest config says nothing about other languages
+        ("src/app/format.test.ts", "test"),
+        ("pkg/server/handler_test.go", "test"),
+    ],
+)
+def test_pytest_config_overrules_a_test_shaped_python_name(path: str, expected: str) -> None:
+    got = "test" if is_test_path(path, roots=_ROOTS) else ""
+    got = "support" if is_test_support_path(path, roots=_ROOTS) else got
+    assert got == expected
+    # Without the config the name decides, as it does for a bare pytest.
+    assert is_test_related_path(path)
+
+
+_PHPUNIT_ROOTS = read_phpunit_roots(
+    [
+        (
+            "phpunit.xml.dist",
+            """
+            <phpunit>
+                <testsuites>
+                    <testsuite name="Suite">
+                        <directory suffix="Test.php">./tests</directory>
+                    </testsuite>
+                </testsuites>
+            </phpunit>
+            """,
+        )
+    ]
+)
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        # Suite tests keep their test classification
+        ("tests/RouterTest.php", "test"),
+        # Laravel framework production classes named like tests are demoted
+        ("src/Testing/Attributes/UnitTest.php", ""),
+        ("src/Illuminate/Console/Concerns/CreatesMatchingTest.php", ""),
+        ("src/Illuminate/Support/Testing/Fakes/ChainedBatchTruthTest.php", ""),
+        # Non-PHP files are untouched by PHPUnit config
+        ("src/app/format.test.ts", "test"),
+        ("pkg/server/handler_test.go", "test"),
+    ],
+)
+def test_phpunit_config_overrules_a_test_shaped_php_name(path: str, expected: str) -> None:
+    got = "test" if is_test_path(path, phpunit_roots=_PHPUNIT_ROOTS) else ""
+    got = "support" if is_test_support_path(path, phpunit_roots=_PHPUNIT_ROOTS) else got
+    assert got == expected
+    # Without the config, test-shaped PHP filenames decide
+    if path.endswith(".php"):
+        assert is_test_related_path(path)
+
+
+
+
+@pytest.mark.parametrize(
+    ("test_path", "source", "siblings", "named"),
+    [
+        ("tests/test_loader.py", "src/loader.py", (), True),
+        ("tests/test_attention_golden.py", "src/attention.py", (), True),
+        ("tests/test_loaders.py", "src/loader.py", (), False),
+        ("tests/test_foo_bar.py", "src/foo.py", (), True),
+        # A sibling the qualified name names exactly is that file's test.
+        ("tests/test_foo_bar.py", "src/foo.py", ("src/foo_bar.py",), False),
+        ("tests/test_foo_bar.py", "src/foo_bar.py", ("src/foo.py",), True),
+        ("src/attempt.spawn-workspace.test.ts", "src/attempt.ts", (), True),
+        # Multi-dot stems keep PurePath semantics in both directions.
+        ("src/foo.test.ts", "src/foo.config.ts", (), False),
+        ("src/foo.config.test.ts", "src/foo.config.ts", (), True),
+        ("src/foo.config.test.ts", "src/foo.ts", ("src/foo.config.ts",), False),
+        ("pkg/foo_bar_test.go", "pkg/foo.go", (), True),
+        ("pkg/foo_bar_test.go", "pkg/foo.go", ("pkg/foo_bar.go",), False),
+        ("src/FooBarTest.java", "src/Foo.java", (), True),
+        ("src/FooBarTests.cs", "src/Foo.cs", ("src/FooBar.cs",), False),
+        ("src/Footest.java", "src/Foo.java", (), False),
+    ],
+)
+def test_a_test_named_for_a_file_may_carry_a_qualifier(test_path, source, siblings, named):
+    assert names_test_for(test_path, source, siblings) is named
+
+
+_DOTNET_PROJECTS = read_dotnet_test_projects(
+    [
+        (
+            "acceptance/Acme.Acceptance.csproj",
+            '<Project Sdk="Microsoft.NET.Sdk">\n'
+            "  <PropertyGroup><IsTestProject>true</IsTestProject></PropertyGroup>\n"
+            "  <ItemGroup><PackageReference Include=\"Microsoft.NET.Test.Sdk\" Version=\"17.11.0\" /></ItemGroup>\n"
+            "</Project>\n",
+        ),
+        (
+            "src/App/App.csproj",
+            '<Project Sdk="Microsoft.NET.Sdk">\n'
+            "  <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>\n"
+            "</Project>\n",
+        ),
+    ]
+)
+
+
+@pytest.mark.parametrize(
+    ("path", "expected_with", "expected_without"),
+    [
+        ("acceptance/Authentication/AuthSteps.cs", "test", ""),
+        ("acceptance/Authentication/AuthenticationTests.cs", "test", "test"),
+        ("acceptance/Helpers/AuthHelper.cs", "support", ""),
+        ("acceptance/Authentication/AuthFixtures.cs", "support", "support"),
+        ("src/App/Program.cs", "", ""),
+        ("src/App/Program.py", "", ""),
+    ],
+)
+def test_dotnet_test_project_classifies_csharp_files(
+    path: str, expected_with: str, expected_without: str
+) -> None:
+    got_with = "test" if is_test_path(path, dotnet_projects=_DOTNET_PROJECTS) else ""
+    got_with = "support" if is_test_support_path(path, dotnet_projects=_DOTNET_PROJECTS) else got_with
+    assert got_with == expected_with
+
+    got_without = "test" if is_test_path(path) else ""
+    got_without = "support" if is_test_support_path(path) else got_without
+    assert got_without == expected_without
+

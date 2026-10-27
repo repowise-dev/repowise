@@ -20,7 +20,7 @@ import asyncio
 import pytest
 
 from repowise.server.mcp_server import _answer_pipeline as pipeline
-from repowise.server.mcp_server._helpers import _EMBED_TIMEOUT_ENV
+from repowise.server.mcp_server._helpers import _EMBED_TIMEOUT_ENV, _VECTOR_TIMEOUT_ENV
 
 
 class _Store:
@@ -92,9 +92,10 @@ async def test_an_embed_timeout_is_named_and_does_not_fail_the_call(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_a_timeout_is_distinguished_from_an_error():
+async def test_a_timeout_is_distinguished_from_an_error(monkeypatch):
     """They want different responses. A timeout is a budget problem and may
     pass on a retry; an error is a broken backend and will not."""
+    monkeypatch.setenv(_VECTOR_TIMEOUT_ENV, "0.05")
     ctx = _Ctx(store=_Store(search_hangs=True))
     await pipeline._safe_vector_search(ctx, "q")
     assert pipeline.retrieval_legs()["vector"] == "timeout"

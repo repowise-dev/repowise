@@ -20,7 +20,7 @@ from typing import Any
 import networkx as nx
 import structlog
 
-from ..cohesion import is_cohesion_edge
+from ..cohesion import cannot_close_cycle
 from ..models import SYMBOL_USE_EDGE_TYPES, TEMPORAL_EDGE_TYPES
 
 log = structlog.get_logger(__name__)
@@ -42,6 +42,27 @@ _CHURN_BUDGET_FRACTION = 0.002
 def is_test_to_test_edge(g: nx.DiGraph, u: str, v: str) -> bool:
     """Whether both ends are test material; such edges carry no centrality."""
     return bool(g.nodes[u].get("is_test") and g.nodes[v].get("is_test"))
+
+
+def _exact_symbol_betweenness(g: nx.DiGraph) -> dict[str, float]:
+    """Score a directed symbol graph exactly, skipping isolated nodes."""
+    from ._betweenness import betweenness_centrality_fast
+
+    n = g.number_of_nodes()
+    connected = [node for node, degree in g.degree() if degree]
+    if not connected or n <= 2:
+        return dict.fromkeys(g, 0.0)
+    if len(connected) == n:
+        return betweenness_centrality_fast(g, normalized=True)
+
+    # Isolates lie on no shortest path, so removing them leaves raw scores
+    # unchanged. Keep the full symbol population in the normalization factor.
+    raw = betweenness_centrality_fast(g.subgraph(connected).copy(), normalized=False)
+    scale = 1 / ((n - 1) * (n - 2))
+    values = dict.fromkeys(g, 0.0)
+    for node, score in raw.items():
+        values[node] = score * scale
+    return values
 
 
 class MetricsMixin:
@@ -72,6 +93,8 @@ class MetricsMixin:
         Used to materialize the ``graph_metrics`` table. Computes every metric
         from NetworkX (or returns the cached/SQL-loaded values when present).
         """
+        from repowise.core.analysis.communities import stored_community_id
+
         pr = self.pagerank()
         bc = self.betweenness_centrality()
         cd = self.community_detection()
@@ -86,7 +109,7 @@ class MetricsMixin:
             n: {
                 "pagerank": pr.get(n, 0.0),
                 "betweenness": bc.get(n, 0.0),
-                "community_id": cd.get(n, 0),
+                "community_id": stored_community_id(cd, n),
                 "in_degree": ind.get(n, 0),
                 "out_degree": outd.get(n, 0),
             }
@@ -131,13 +154,24 @@ class MetricsMixin:
             return sub
 
     def cycle_subgraph(self) -> nx.DiGraph:
-        """Return :meth:`file_subgraph` minus cohesion edges, for cycle detection.
+        """Return :meth:`file_subgraph` minus the edges no runtime cycle runs
+        through (:func:`~repowise.core.ingestion.cohesion.cannot_close_cycle`).
 
         A cohesion edge records that two files are one compilation unit — Go
         package siblings, JVM same-package classes, C# partial fragments, a C++
         header/implementation pair — not that one depends on the other. See
         :mod:`repowise.core.ingestion.cohesion`. Left in, they turn every
         cohesive package into a fabricated import cycle.
+
+        A ``dynamic_uses`` edge is a hint match, not a resolved dependency — the
+        .NET extractor among others links every file declaring a type of a given
+        short name, so two unrelated same-named classes in different projects
+        form a false two-file cycle (#2886). Type-only and deferred
+        (function-local) imports never run at module load, so they cannot make
+        one either. The predicate is shared with
+        ``refactoring.graph_signals._is_cycle_edge``: this method feeds the wiki
+        SCC pages and the repo-overview cycle list, that one feeds
+        ``break_cycle`` plans.
 
         Kept separate from :meth:`file_subgraph` deliberately: PageRank,
         betweenness and the degree kernels must keep seeing cohesion edges,
@@ -150,7 +184,8 @@ class MetricsMixin:
         only ever read. Callers must treat the result as read-only.
         """
         return self._file_edge_view(
-            "_cycle_subgraph_cache", lambda base, u, v, d: is_cohesion_edge(d)
+            "_cycle_subgraph_cache",
+            lambda base, u, v, d: cannot_close_cycle(d),
         )
 
     def centrality_subgraph(self) -> nx.DiGraph:
@@ -464,6 +499,8 @@ class MetricsMixin:
             ordered.add_nodes_from(sorted(g.nodes()))
             ordered.add_edges_from(g.edges())
             values = nx.betweenness_centrality(ordered, k=k, normalized=True, seed=42)
+        elif kind == "symbol":
+            values = _exact_symbol_betweenness(g)
         else:
             from ._betweenness import betweenness_centrality_fast
 

@@ -14,7 +14,8 @@ from repowise.core.analysis.health.complexity import FileComplexity, walk_file
 from repowise.core.analysis.health.complexity.languages import has_health_dialect
 from repowise.core.analysis.health.duplication import DuplicationReport
 from repowise.core.analysis.health.engine import HealthAnalyzer
-from repowise.core.analysis.health.grading import distribution
+from repowise.core.analysis.health.file_evaluator import FileEvaluator
+from repowise.core.analysis.health.grading import band_for, distribution, headline_band
 from repowise.core.analysis.health.models import HealthFileMetricData
 from repowise.core.analysis.health.ranking import worst_metric
 from repowise.core.analysis.health.scoring import (
@@ -27,12 +28,14 @@ from repowise.core.analysis.health.trends import snapshot_fields
 from repowise.core.pipeline.incremental import _numbers_moved
 
 
-@pytest.mark.parametrize("language", ["python", "typescript", "csharp", "razor", "sql"])
+@pytest.mark.parametrize(
+    "language", ["python", "typescript", "csharp", "razor", "sql", "php", "swift"]
+)
 def test_languages_health_walks_have_a_dialect(language: str) -> None:
     assert has_health_dialect(language)
 
 
-@pytest.mark.parametrize("language", ["php", "swift", "elixir", "markdown", "", None])
+@pytest.mark.parametrize("language", ["lua", "elixir", "markdown", "", None])
 def test_languages_nothing_walks_have_none(language: str | None) -> None:
     assert not has_health_dialect(language)
 
@@ -60,14 +63,19 @@ def _evaluate(path: str, language: str, source: bytes, tmp_path) -> HealthFileMe
         ),
         symbols=[],
     )
-    metric, _, _ = HealthAnalyzer(graph=None)._evaluate_file(
-        pf, fcx, paired_tests=set(), package_roots=set(), disabled=[], dup_report=DuplicationReport()
-    )
+    metric, _, _ = FileEvaluator(
+        HealthAnalyzer(graph=None),
+        paired_tests=set(),
+        package_roots=set(),
+        dup_report=DuplicationReport(),
+    ).evaluate(pf, fcx)
     return metric
 
 
-def test_a_php_file_is_stored_with_no_score_and_no_complexity(tmp_path) -> None:
-    metric = _evaluate("src/Big.php", "php", b"<?php\nfunction f($a) { if ($a) { return 1; } }\n", tmp_path)
+def test_an_unsupported_language_file_is_stored_with_no_score_and_no_complexity(tmp_path) -> None:
+    metric = _evaluate(
+        "src/Big.ex", "elixir", b"defmodule Big do\ndef f(a), do: a\nend\n", tmp_path
+    )
     assert metric.score is None
     assert metric.max_ccn is None and metric.max_nesting is None
     assert all(getattr(metric, name) is None for name in SCORE_FIELDS)
@@ -97,9 +105,9 @@ def test_kpis_leave_unscored_files_out() -> None:
         _metric("a.py", 4.0, nloc=100),
         _metric("b.py", 8.0, nloc=100),
         # Huge and unscored: counted as 10.0 it would drag the average to ~9.
-        _metric("Big.php", None, nloc=10_000),
+        _metric("Big.ex", None, nloc=10_000),
     ]
-    kpis = compute_kpis(rows, {"a.py", "Big.php"})
+    kpis = compute_kpis(rows, {"a.py", "Big.ex"})
     assert kpis["average_health"] == 6.0
     assert kpis["hotspot_health"] == 4.0
     assert kpis["file_count"] == 2
@@ -107,36 +115,53 @@ def test_kpis_leave_unscored_files_out() -> None:
     assert kpis["worst_performer_path"] == "a.py"
 
 
+def test_a_mostly_unanalysed_repo_carries_its_share_and_no_band() -> None:
+    rows = [_metric(f"s{i}.swift", 10.0) for i in range(4)]
+    rows += [_metric(f"u{i}.swift", None) for i in range(431)]
+    kpis = compute_kpis(rows, set())
+    assert kpis["average_health"] == 10.0
+    assert kpis["analysed_share"] < 0.5
+    assert headline_band(kpis["average_health"], kpis["analysed_share"]) is None
+
+
+def test_a_fully_analysed_repo_keeps_its_band() -> None:
+    kpis = compute_kpis([_metric("a.py", 9.0), _metric("b.py", 8.0)], set())
+    assert kpis["analysed_share"] == 1.0
+    avg = kpis["average_health"]
+    assert headline_band(avg, kpis["analysed_share"]) == band_for(avg)
+
+
 def test_a_repository_of_only_unscored_files_has_no_average() -> None:
-    kpis = compute_kpis([_metric("A.php", None), _metric("B.php", None)], {"A.php"})
+    kpis = compute_kpis([_metric("A.ex", None), _metric("B.ex", None)], {"A.ex"})
     assert kpis["average_health"] is None
     assert kpis["hotspot_health"] is None
     assert kpis["unanalysed_file_count"] == 2
     # No trend point for a number nobody measured.
-    assert snapshot_fields(kpis, [_metric("A.php", None)], []) is None
+    assert snapshot_fields(kpis, [_metric("A.ex", None)], []) is None
 
 
-def test_an_empty_repository_keeps_its_old_kpis() -> None:
-    """Control: no rows at all is not the same answer as no scored rows."""
+def test_an_empty_repository_has_no_average_either() -> None:
+    """No rows at all is also no score: a repository of only data and config
+    files arrives with no rows, since those files never get one."""
     kpis = compute_kpis([], set())
-    assert kpis["average_health"] == 10.0
-    assert snapshot_fields(kpis, [], []) is not None
+    assert kpis["average_health"] is None
+    assert snapshot_fields(kpis, [], []) is None
 
 
 def test_unscored_files_are_never_the_worst_or_a_hotspot() -> None:
-    rows = [_metric("Big.php", None), _metric("a.py", 9.0)]
+    rows = [_metric("Big.ex", None), _metric("a.py", 9.0)]
     assert worst_metric(rows, {}).file_path == "a.py"
-    assert worst_metric([_metric("Big.php", None)], {}) is None
-    assert hotspot_health(rows, {"Big.php"}) is None
+    assert worst_metric([_metric("Big.ex", None)], {}) is None
+    assert hotspot_health(rows, {"Big.ex"}) is None
 
 
 def test_unscored_files_have_no_band() -> None:
-    dist = distribution([_metric("Big.php", None), _metric("a.py", 9.0)])
+    dist = distribution([_metric("Big.ex", None), _metric("a.py", 9.0)])
     assert sum(band["files"] for band in dist["bands"].values()) == 1
 
 
 def test_snapshot_score_map_skips_unscored_files() -> None:
-    rows = [_metric("Big.php", None), _metric("a.py", 9.0)]
+    rows = [_metric("Big.ex", None), _metric("a.py", 9.0)]
     fields = snapshot_fields(compute_kpis(rows, set()), rows, [])
     assert fields is not None
     assert fields["per_file_scores"] == {"a.py": 9.0}
@@ -153,7 +178,7 @@ def test_an_update_clears_a_stored_ten_for_an_unscored_file() -> None:
 
 def test_walk_of_an_unsupported_language_is_empty() -> None:
     """Why the score is meaningless: no function is ever measured."""
-    fcx = walk_file("/tmp/x.php", "php", b"<?php\nfunction f() { if (1) {} }\n")
+    fcx = walk_file("/tmp/x.ex", "elixir", b"defmodule X do\ndef f, do: 1\nend\n")
     assert isinstance(fcx, FileComplexity)
     assert fcx.functions == []
 
@@ -161,18 +186,18 @@ def test_walk_of_an_unsupported_language_is_empty() -> None:
 def test_get_health_names_an_unscored_target_for_what_it_is(tmp_path) -> None:
     from repowise.server.mcp_server.tool_health.targets import _unresolved_targets
 
-    (tmp_path / "Big.php").write_text("<?php\n")
+    (tmp_path / "Big.ex").write_text("defmodule Big do\nend\n")
     out = _unresolved_targets(
-        file_targets=["Big.php"],
+        file_targets=["Big.ex"],
         module_targets=[],
         matched_modules=set(),
         resolved_paths=set(),
         excluded_paths=set(),
         unscored_paths=set(),
         repo_root=tmp_path,
-        unanalysed_paths={"Big.php"},
+        unanalysed_paths={"Big.ex"},
     )
-    assert out == [{"target": "Big.php", "reason": "language_not_supported"}]
+    assert out == [{"target": "Big.ex", "reason": "language_not_supported"}]
 
 
 def _refresh(language: str | None, stored_score: float | None):
@@ -190,7 +215,7 @@ def _refresh(language: str | None, stored_score: float | None):
 
 
 def test_the_history_refresh_nulls_a_language_with_no_dialect() -> None:
-    assert _refresh("php", 10.0).score is None
+    assert _refresh("elixir", 10.0).score is None
 
 
 def test_a_file_with_no_graph_node_keeps_its_score() -> None:

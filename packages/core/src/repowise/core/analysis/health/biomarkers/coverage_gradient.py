@@ -17,8 +17,8 @@ adds zero walk cost (it reads already-parsed coverage).
 - **Absent coverage ≠ zero coverage.** When no coverage report was ingested
   (``line_coverage_pct is None``) the biomarker is silent - it never imputes
   uncovered for missing data.
-- Test files are exempt (we don't penalise ``test_foo.py`` for being uncovered),
-  matching ``coverage_gap``.
+- Test files and code that does not ship (tooling, build, vendored, generated,
+  docs examples) are exempt, matching ``coverage_gap``.
 
 It is intentionally distinct from the binary gates and lives in its own capped
 category so the additive continuous signal neither squeezes nor is squeezed by
@@ -27,7 +27,6 @@ the has-tests / hotspot gates.
 
 from __future__ import annotations
 
-from ....test_paths import is_test_related_path
 from ..models import Severity
 from .base import BiomarkerResult, FileContext
 
@@ -59,7 +58,7 @@ class CoverageGradientDetector:
         if cov is None:
             # No coverage data -> silent. Absent is not the same as uncovered.
             return []
-        if is_test_related_path(ctx.file_path, ctx.language):
+        if ctx.outside_coverage_scope or ctx.reexport_only:
             return []
 
         uncovered_fraction = max(0.0, (100.0 - float(cov)) / 100.0)

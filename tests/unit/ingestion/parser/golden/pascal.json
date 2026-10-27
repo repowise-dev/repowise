@@ -1,0 +1,153 @@
+{
+  "pascal/complex.pas": {
+    "file_info": {
+      "path": "lang_samples/pascal/complex.pas",
+      "language": "pascal",
+      "size_bytes": 525,
+      "is_test": false,
+      "is_config": false,
+      "is_api_contract": false,
+      "is_entry_point": false,
+      "is_manifest_entry": false,
+      "is_reachability_root": false,
+      "is_application_main": false
+    },
+    "symbols": [
+      {
+        "id": "lang_samples/pascal/complex.pas::ManyBranches",
+        "name": "ManyBranches",
+        "qualified_name": "lang_samples.pascal.complex.ManyBranches",
+        "kind": "function",
+        "signature": "ManyBranches(A, B, C, D, E: Boolean)",
+        "start_line": 7,
+        "end_line": 46,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "pascal",
+        "parent_name": null,
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [],
+        "alias_of": null
+      }
+    ],
+    "imports": [],
+    "exports": [
+      "ManyBranches"
+    ],
+    "export_aliases": {},
+    "calls": [],
+    "heritage": [],
+    "docstring": null,
+    "parse_errors": [],
+    "content_hash": "524d77a44a2789a26571ca7fd1c35b21688f8c62c9d88127efd378fb5ce86f08",
+    "type_refs": [],
+    "local_refs": [],
+    "registrars": [],
+    "references": [],
+    "schema_refs": [],
+    "grammar_missing": false
+  },
+  "pascal/nested.pas": {
+    "file_info": {
+      "path": "lang_samples/pascal/nested.pas",
+      "language": "pascal",
+      "size_bytes": 493,
+      "is_test": false,
+      "is_config": false,
+      "is_api_contract": false,
+      "is_entry_point": false,
+      "is_manifest_entry": false,
+      "is_reachability_root": false,
+      "is_application_main": false
+    },
+    "symbols": [
+      {
+        "id": "lang_samples/pascal/nested.pas::DeeplyNested",
+        "name": "DeeplyNested",
+        "qualified_name": "lang_samples.pascal.nested.DeeplyNested",
+        "kind": "function",
+        "signature": "DeeplyNested(X: Integer)",
+        "start_line": 7,
+        "end_line": 30,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "pascal",
+        "parent_name": null,
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/pascal/nested.pas::Shallow",
+        "name": "Shallow",
+        "qualified_name": "lang_samples.pascal.nested.Shallow",
+        "kind": "function",
+        "signature": "Shallow(X: Integer)",
+        "start_line": 32,
+        "end_line": 35,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "pascal",
+        "parent_name": null,
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [],
+        "alias_of": null
+      }
+    ],
+    "imports": [],
+    "exports": [
+      "DeeplyNested",
+      "Shallow"
+    ],
+    "export_aliases": {},
+    "calls": [
+      {
+        "target_name": "I",
+        "receiver_name": null,
+        "caller_symbol_id": "lang_samples/pascal/nested.pas::DeeplyNested",
+        "line": 21,
+        "argument_count": null,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      }
+    ],
+    "heritage": [],
+    "docstring": null,
+    "parse_errors": [],
+    "content_hash": "1bea972ee6120b3c63d8a1ca5d678904ad2e58812fbcf49392e43cc5858b170d",
+    "type_refs": [],
+    "local_refs": [],
+    "registrars": [],
+    "references": [],
+    "schema_refs": [],
+    "grammar_missing": false
+  }
+}

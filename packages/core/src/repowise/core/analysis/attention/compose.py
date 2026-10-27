@@ -91,6 +91,13 @@ SOURCE_RANK: dict[str, int] = {
 #: display length.
 PER_SOURCE_CAP = 8
 
+#: How a proposed decision's description names who proposed it; any other
+#: source is a pipeline proposal.
+_PROPOSED_DESCRIPTIONS: dict[str, str] = {
+    "cli": "Decision recorded by hand, awaiting review",
+    "agent": "Decision recorded by an agent, awaiting review",
+}
+
 #: How much an item matters *within* its own source, for breaking ties inside a
 #: severity band. Comparable only against its own kind — a health finding's
 #: impact and a drift finding's confidence are not the same quantity — which is
@@ -127,14 +134,20 @@ class SourceResult:
 
 @dataclass(frozen=True, slots=True)
 class DecisionAttentionInput:
-    """The two fields of a decision record the attention list shows.
+    """The fields of a decision record the attention list shows.
 
     No staleness score: :func:`decision_source` never re-sorts a lane, so a
     producer without one passes the stale lane in whatever order it trusts.
+
+    ``source`` is the record's provenance (see ``SOURCE_RANK``): ``"cli"`` is a
+    human-authored manual entry, ``"agent"`` an agent's own record, everything
+    else is a pipeline proposal. Only
+    the proposed lane reads it — the wording of the description differs.
     """
 
     id: str
     title: str
+    source: str = ""
 
 
 class AttentionArea(TypedDict):
@@ -224,7 +237,9 @@ def decision_source(
                 "id": f"proposed-{d.id}",
                 "type": "proposed_decision",
                 "title": d.title,
-                "description": "Auto-proposed decision awaiting review",
+                "description": _PROPOSED_DESCRIPTIONS.get(
+                    d.source, "Auto-proposed decision awaiting review"
+                ),
                 "severity": "medium",
                 "target_id": d.id,
             }

@@ -73,6 +73,20 @@ async def test_dismissed_decision_survives_reindex_untouched(async_session):
     assert len(await list_decision_evidence(async_session, rec.id)) == evidence_before
 
 
+async def test_deprecated_candidate_survives_reindex_untouched(async_session):
+    from repowise.core.persistence.crud.authority import deprecate_decision
+
+    repo = await insert_repo(async_session)
+    await bulk_upsert_decisions(async_session, repo.id, [_decision("Use Kafka")])
+    rec = await _only_row(async_session, repo.id)
+    await deprecate_decision(async_session, rec, reason="replaced", accepter="tester")
+
+    await bulk_upsert_decisions(async_session, repo.id, [_decision("Use Kafka")])
+
+    rec = await _only_row(async_session, repo.id)
+    assert rec.status == "deprecated"
+
+
 async def test_confirmed_decision_not_walked_back_to_proposed(async_session):
     repo = await insert_repo(async_session)
     await bulk_upsert_decisions(async_session, repo.id, [_decision("Use Redis")])

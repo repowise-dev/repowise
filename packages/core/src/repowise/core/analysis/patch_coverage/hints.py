@@ -339,7 +339,7 @@ async def _walk_tests(
     symbol, then the import tier for only the files a range still needs it
     for. The test-file set is read once for both.
     """
-    from ..test_reachability import load_test_files, tests_reaching_by_tier
+    from ..test_reachability import cached_hub_files, load_test_files, tests_reaching_by_tier
 
     symbol_ids = sorted({s.symbol_id for syms in placed.values() for s in syms if s})[:MAX_SEEDS]
     test_files = await load_test_files(session, repository_id)
@@ -353,6 +353,7 @@ async def _walk_tests(
                 import_depth=0,
                 symbol_seeds={sid: {sid} for sid in symbol_ids},
                 test_files=test_files,
+                hubs=await cached_hub_files(session, repository_id),
             )
         )
     unanswered = [

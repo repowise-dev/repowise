@@ -211,6 +211,13 @@ export function DecisionReviewLanes({
       ) : rows.length === 0 ? (
         isLoading ? null : (
           <EmptyState
+            tone={
+              source !== "all"
+                ? "filtered"
+                : lane === "needs_review" || lane === "uncheckable"
+                  ? "positive"
+                  : "neutral"
+            }
             title={`Nothing in ${LANE_LABEL[lane].toLowerCase()}`}
             description={
               source === "all"
@@ -260,7 +267,7 @@ interface RowProps {
 }
 
 const MICRO_LABEL =
-  "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
+  "font-mono text-caption uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
 
 function DecisionLaneRow({
   decision: d,
@@ -395,7 +402,7 @@ function DecisionLaneRow({
               {onAccept && blockers.length > 0 && (
                 <p className="max-w-[28ch] text-right text-xs text-[var(--color-text-tertiary)]">
                   Cannot accept: {blockers.join("; ")}. Fill it in with{" "}
-                  <code className="font-mono text-[11px]">
+                  <code className="font-mono text-xs">
                     repowise decision confirm {d.id.slice(0, 8)}
                   </code>
                   .
@@ -425,7 +432,7 @@ function SignatureMark({ decision }: { decision: DecisionRecord }) {
     .join(", session ");
   return (
     <span
-      className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-sm border border-[var(--color-border-default)] px-1.5 text-[11px] text-[var(--color-text-tertiary)]"
+      className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-sm border border-[var(--color-border-default)] px-1.5 text-xs text-[var(--color-text-tertiary)]"
       title={who ? `${label}: ${who}` : label}
     >
       {label}
@@ -445,7 +452,7 @@ function SignatureMark({ decision }: { decision: DecisionRecord }) {
 function CurrencyMark({ currency }: { currency: DecisionCurrency }) {
   return (
     <span
-      className="inline-flex items-center gap-1.5 whitespace-nowrap text-[11px] text-[var(--color-text-tertiary)]"
+      className="inline-flex items-center gap-1.5 whitespace-nowrap text-xs text-[var(--color-text-tertiary)]"
       title={DECISION_CURRENCY_DESCRIPTIONS[currency]}
     >
       <span

@@ -707,8 +707,8 @@ def _resolve_pricing(repo_root: Path, override: str | None) -> tuple[str, str]:
 def _rewrite_hook_installed() -> bool:
     """True when any agent surface has a rewrite hook that can actually fire.
 
-    Mirrors the doctor check: Claude Code is always considered, Codex only
-    when it is actually present on the machine. Registered is not enough — an
+    Mirrors the doctor check: Claude Code is always considered, Codex and
+    Cursor only when actually present on the machine. Registered is not enough — an
     entry whose matcher names a renamed tool fires on nothing, and telling
     someone their hook is installed is the one answer that hides why the rows
     below it are still there.
@@ -723,8 +723,9 @@ def _rewrite_hook_installed() -> bool:
 
         if live(ClaudeCodeAdapter()):
             return True
-        codex = CodexAdapter()
-        return codex.detect() and live(codex)
+        from repowise.cli.agent_adapters.cursor import CursorAdapter
+
+        return any(a.detect() and live(a) for a in (CodexAdapter(), CursorAdapter()))
     except Exception:
         return False
 

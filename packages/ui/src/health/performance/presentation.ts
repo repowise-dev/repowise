@@ -1,6 +1,7 @@
 import {
   PERF_BOUNDARY_LABEL,
   type PerformanceActionabilityState,
+  type PerformanceCostProof,
   type PerformanceExecutionContext,
   type PerformanceFacetKey,
   type PerformanceOpportunity,
@@ -11,7 +12,7 @@ import {
 import type { C4IoKind } from "@repowise-dev/types/external-systems";
 
 import { biomarkerLabel } from "../biomarker-glossary";
-import { CONFIDENCE_LABEL } from "../labels";
+import { CONFIDENCE_LABEL, EFFORT_LABEL } from "../labels";
 
 /**
  * Display derivations for the performance queue. Everything here reads fields
@@ -48,6 +49,16 @@ export const ACTIONABILITY_LABEL: Record<PerformanceActionabilityState, string> 
   expected: "Expected",
 };
 
+/** One neutral family, darkest where the change is surest; the state's word
+ *  carries the meaning, so no state borrows a health colour. Shared by the
+ *  actionability bar and each cause's mark. */
+export const ACTIONABILITY_INK: Record<PerformanceActionabilityState, string> = {
+  plan_ready: "var(--color-text-primary)",
+  advisory: "var(--color-text-secondary)",
+  investigate: "var(--color-text-tertiary)",
+  expected: "var(--color-border-default)",
+};
+
 export const ACTIONABILITY_HINT: Record<PerformanceActionabilityState, string> = {
   plan_ready: "A named intervention the analysis considers safe to apply.",
   advisory: "A coherent intervention, but the analysis cannot prove it is safe.",
@@ -63,10 +74,21 @@ export const FACET_LABEL: Record<PerformanceFacetKey, string> = {
   confidence: "Evidence confidence",
   actionability: "Actionability",
   plan_state: "Plan",
+  proof: "Cost",
+  role: "Runs in",
 };
 
+const PROOF_LABEL: Record<PerformanceCostProof, string> = {
+  proven: "Measured",
+  unproven: "Unproven: loop size unknown",
+  background_unproven: "Unproven: scheduled job, growth not shown",
+};
+
+// "Stored plan", not "Plan ready": that name belongs to the actionability
+// state, which the Plan ready tile counts. A stored plan is counted by the
+// "With a stored plan" tile, so the row mark and its tile share one predicate.
 const PLAN_STATE_LABEL: Record<string, string> = {
-  available: "Plan ready",
+  available: "Stored plan",
   no_safe_plan: "No safe plan",
   not_persisted: "Needs an index refresh",
 };
@@ -180,6 +202,8 @@ export function facetValueLabel(facet: PerformanceFacetKey, value: string): stri
   if (facet === "confidence") return CONFIDENCE_LABEL[value as PerformanceOpportunityConfidence] ?? humanizeToken(value);
   if (facet === "actionability")
     return ACTIONABILITY_LABEL[value as PerformanceActionabilityState] ?? humanizeToken(value);
+  if (facet === "proof") return PROOF_LABEL[value as PerformanceCostProof] ?? humanizeToken(value);
+  if (facet === "role") return humanizeToken(value);
   return PLAN_STATE_LABEL[value] ?? humanizeToken(value);
 }
 
@@ -252,6 +276,13 @@ export function affectedSummary(opportunity: PerformanceOpportunity): string {
   return `${sitePart} across ${filePart}`;
 }
 
+const ROLE_PHRASE: Record<string, string> = {
+  request: "runs on every request",
+  event_consumer: "runs on every message",
+  scheduled_job: "runs on a schedule",
+  unknown: "no evidence of what runs it",
+};
+
 const MULTIPLIER_PHRASE: Record<string, string> = {
   io_in_loop: "runs once per loop iteration",
   serial_await_in_loop: "awaited one at a time",
@@ -280,6 +311,8 @@ export function whyRankedPhrase(factor: PerformanceWhyRanked): string {
       return `${contextLabel(String(value) as PerformanceExecutionContext).toLowerCase()} code`;
     case "entry_reachability":
       return "reachable from an entry point";
+    case "execution_role":
+      return ROLE_PHRASE[String(value)] ?? humanizeToken(String(value));
     case "loop_magnitude":
       return value === "grows_with_data" ? "grows with the data" : humanizeToken(String(value));
     case "provenance":
@@ -314,7 +347,7 @@ export interface PlanPresentation {
 export function planPresentation(opportunity: PerformanceOpportunity): PlanPresentation {
   if (opportunity.plan_status === "available" && opportunity.plan_id) {
     return {
-      label: "Structured plan ready",
+      label: PLAN_STATE_LABEL.available!,
       detail: opportunity.plan_reason,
       actionable: true,
     };
@@ -327,6 +360,54 @@ export function planPresentation(opportunity: PerformanceOpportunity): PlanPrese
     };
   }
   return { label: "No safe plan", detail: opportunity.plan_reason, actionable: false };
+}
+
+/** Ends a clause as a sentence, unless the server's text already does. */
+function asSentence(text: string): string {
+  const trimmed = text.trim();
+  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+}
+
+/**
+ * A row's secondary facts in one paragraph, for its tip: why it sits in its
+ * actionability state, where its plan stands, and how well its call path
+ * resolved. Every value is the server's; this only phrases them.
+ */
+export function causeStandingText(opportunity: PerformanceOpportunity): string {
+  const plan = planPresentation(opportunity);
+  return [
+    `${ACTIONABILITY_LABEL[opportunity.actionability_state]}: ${humanizeToken(opportunity.actionability_reason)}`,
+    plan.detail.trim() ? `${plan.label}: ${plan.detail}` : plan.label,
+    `The call path resolved with ${CONFIDENCE_LABEL[opportunity.confidence].toLowerCase()} confidence`,
+  ]
+    .map(asSentence)
+    .join(" ");
+}
+
+/** Each fix strategy as the change a person would make (`actionability.FixStrategy`). */
+const FIX_STRATEGY_LABEL: Record<string, string> = {
+  parallelize_independent_awaits: "Run the independent awaits together",
+  replace_membership_collection: "Use a set for the membership test",
+  buffer_string_accumulation: "Build the string once with a buffer",
+  batch_or_prefetch_io: "Batch or prefetch the calls",
+  shrink_lock_scope: "Move the work out of the lock",
+  push_reduction_into_query: "Do the reduction in the query",
+  eager_load_relationship: "Load the relationship eagerly",
+};
+
+export function fixStrategyLabel(strategy: string): string {
+  return FIX_STRATEGY_LABEL[strategy] ?? humanizeToken(strategy);
+}
+
+export const FIX_SAFETY_LABEL: Record<"proven" | "advisory", string> = {
+  proven: "Proven safe",
+  advisory: "Not proven safe",
+};
+
+/** The stored plan's effort bucket as a word, or null when nothing sized it. */
+export function effortLabel(opportunity: PerformanceOpportunity): string | null {
+  const effort = opportunity.plan_economics?.effort_bucket;
+  return effort && effort in EFFORT_LABEL ? EFFORT_LABEL[effort as keyof typeof EFFORT_LABEL] : null;
 }
 
 /**

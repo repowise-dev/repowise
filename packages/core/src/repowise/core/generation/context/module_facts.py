@@ -24,6 +24,8 @@ from typing import Any
 
 import networkx as nx
 
+from repowise.core.fsutils import strip_dir_prefix as relative_to
+
 # The diagram stays small enough to read without zooming.
 _MAX_PARTS = 9
 _MAX_PART_EDGES = 12
@@ -50,12 +52,6 @@ def module_base(files: Iterable[str]) -> str:
             break
         common.append(level[0])
     return "/".join(common)
-
-
-def relative_to(path: str, base: str) -> str:
-    """*path* relative to *base* when it lies under it, else unchanged."""
-    prefix = f"{base}/" if base else ""
-    return path[len(prefix) :] if prefix and path.startswith(prefix) else path
 
 
 def _part_of(path: str, base: str) -> str:

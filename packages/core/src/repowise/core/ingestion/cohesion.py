@@ -97,6 +97,35 @@ COHESION_HINTS: frozenset[str] = frozenset(
 )
 
 
+#: ``hint_source`` values on an edge that records no use of its target: the
+#: synthetic reverse of a header pair, fragments of one partial type, a name
+#: seen only in a comment, a name the source declares itself, and a parent
+#: module declaring its child. The text-scan hints (JVM ``same_package``,
+#: ``same_namespace``, ``global_using``, ``same_module``) are left out: there the
+#: hinted edge is the only record of a real use.
+NON_USE_HINTS: frozenset[str] = frozenset(
+    {
+        "header_source_pair",
+        "partial_class",
+        DOC_COMMENT_HINT,
+        OWN_TYPE_NAME_HINT,
+        MODULE_DECLARATION_HINT,
+    }
+)
+
+
+def records_no_use(data: Any, source: str, target: str) -> bool:
+    """True if the edge *data* from *source* to *target* records no use of *target*.
+
+    A Go same-package edge joins two files of one package, which import
+    nothing from each other; a JVM one is a resolved type reference and counts.
+    """
+    hint = data.get("hint_source")
+    if hint in NON_USE_HINTS:
+        return True
+    return hint == SAME_PACKAGE_HINT and source.endswith(".go") and target.endswith(".go")
+
+
 def withdraw_declaration_hint(data: dict[str, Any]) -> None:
     """Drop the module-declaration hint once a real reference shares the edge."""
     if data.get("hint_source") == MODULE_DECLARATION_HINT:
@@ -106,3 +135,20 @@ def withdraw_declaration_hint(data: dict[str, Any]) -> None:
 def is_cohesion_edge(data: Any) -> bool:
     """True if *data* — a graph edge's attribute dict — is a cohesion edge."""
     return data.get("hint_source") in COHESION_HINTS
+
+
+def cannot_close_cycle(data: Any) -> bool:
+    """True if *data* is an edge no runtime import cycle can run through.
+
+    The one predicate both cycle definitions share (``cycle_subgraph`` and
+    ``refactoring.graph_signals``): cohesion edges, type-only imports, deferred
+    (function-local) imports, and ``dynamic_uses`` hints, which match a type by
+    short name rather than resolve a dependency (#2886). The edges stay in the
+    graph for reachability and centrality.
+    """
+    return (
+        is_cohesion_edge(data)
+        or bool(data.get("type_only"))
+        or bool(data.get("deferred"))
+        or data.get("edge_type") == "dynamic_uses"
+    )

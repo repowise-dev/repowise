@@ -19,6 +19,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from repowise.core.ids import is_external
+from repowise.core.ingestion.languages.python_strings import PY_DYNAMIC_LOAD_MARKERS
 from repowise.core.ingestion.models import is_dynamic_edge
 
 
@@ -52,14 +53,7 @@ def read_source_text(
 
 # Patterns in source that indicate dynamic/runtime imports, keyed by suffix.
 _DYNAMIC_IMPORT_MARKERS: dict[str, tuple[str, ...]] = {
-    ".py": (
-        "importlib.import_module",
-        # ``from importlib import import_module``, then a bare call.
-        "import_module(",
-        "__import__(",
-        "importlib.reload",
-        "pkgutil.iter_modules",
-    ),
+    ".py": PY_DYNAMIC_LOAD_MARKERS,
     # JS/TS dynamic-dispatch markers. Each implies the surrounding file
     # (and, by the package-co-location heuristic, its siblings) reaches
     # code through a runtime mechanism the static import graph cannot
@@ -517,7 +511,8 @@ def find_dynamic_edge_files(graph) -> set[str]:
     result: set[str] = set()
     try:
         for u, v, data in graph.edges(data=True):
-            if not is_dynamic_edge(data.get("edge_type", "")):
+            # ``dynamic_hint``: a dynamic hint folded into a static edge.
+            if not (is_dynamic_edge(data.get("edge_type", "")) or data.get("dynamic_hint")):
                 continue
             for endpoint in (u, v):
                 if endpoint is None:

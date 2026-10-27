@@ -3,20 +3,26 @@
 /**
  * One Fix-first item: the change to make, where, why, and what it buys.
  *
- * Collapsed, it is two compact lines: tier and title, then file:line and gain.
- * Expanded, it adds the why, effort, confidence and risk, then the work
- * itself: the steps in order with which ones are mechanical, how to
- * verify the change, the history around the file (muted, never ranked on), and
- * the actions. Every word and number is the payload's; this component chooses
+ * Collapsed, it is two compact lines: tier and title, then file:line and
+ * gain; a due item adds its first step. Expanded, it adds the why, effort,
+ * confidence and risk, then the work itself: the steps in order with which
+ * ones are mechanical and what each writes, how to verify the change, the
+ * history around the file (muted, never ranked on), and the actions. Every word and number is the payload's; this component chooses
  * only where each one sits.
  */
 
 import { useState, type ElementType } from "react";
-import { Check, ChevronDown, Copy } from "lucide-react";
-import type { FixItem, FixTier } from "@repowise-dev/types/fix-first";
+import { ChevronDown } from "lucide-react";
+import type { FixItem, FixStep, FixTier } from "@repowise-dev/types/fix-first";
 import type { OpportunityStatus } from "@repowise-dev/types/refactoring";
 
+import { getLanguageFromPath } from "../../c4/panels/CodeViewer";
+import { HighlightedCodeBlock } from "../../shared/code-block";
+import { CommandLine } from "../../shared/command-line";
+import { PlaceholderHint } from "../../refactoring/placeholder-hint";
 import { AiPromptButton } from "../ai-prompt-button";
+import { MICRO } from "../tokens";
+import { AGENT_PROMPT_LABEL } from "../ai-prompt-action";
 import { CONFIDENCE_LABEL, EFFORT_LABEL, STATUS_LABEL } from "../labels";
 import { TIER_LABEL, fixLocation, fixPlanLabel, tierReason } from "./scope";
 
@@ -34,14 +40,13 @@ const TIER_DOT: Record<FixTier, string> = {
   later: "border border-[var(--color-text-tertiary)]",
 };
 
-const MICRO = "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
 
 const LINK =
-  "rounded text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]";
+  "rounded text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]";
 
 /** File paths are reference text: muted at rest, readable on hover, never accent. */
 const PATH_LINK =
-  "rounded text-[var(--color-text-secondary)] underline-offset-2 hover:text-[var(--color-text-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]";
+  "rounded text-[var(--color-text-secondary)] underline-offset-2 hover:text-[var(--color-text-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]";
 
 export interface FixFirstItemProps {
   item: FixItem;
@@ -73,6 +78,7 @@ export function FixFirstItem({
   const location = fixLocation(item);
   const href = fileHref?.(item.target.file_path, item.target.line_start);
   const reason = tierReason(item);
+  const firstStep = item.tier !== "later" ? item.action.steps[0] : undefined;
 
   return (
     <li className="py-1.5">
@@ -94,7 +100,7 @@ export function FixFirstItem({
             onClick={onToggle}
             aria-expanded={expanded}
             aria-controls={panelId}
-            className="group/row flex w-full min-w-0 items-start justify-between gap-3 rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+            className="group/row flex w-full min-w-0 items-start justify-between gap-3 rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
           >
             <span className="min-w-0 text-[13px] font-medium leading-5 text-[var(--color-text-primary)] [overflow-wrap:anywhere]">
               {item.title}
@@ -121,6 +127,12 @@ export function FixFirstItem({
               Gain <span className="text-[var(--color-text-secondary)]">{item.gain.text}</span>
             </span>
           </p>
+          {/* Open, the steps below say it in full. */}
+          {firstStep && !expanded ? (
+            <p className="mt-0.5 min-w-0 text-xs leading-4 text-[var(--color-text-tertiary)] [overflow-wrap:anywhere]">
+              First step <span className="text-[var(--color-text-secondary)]">{firstStep.text}</span>
+            </p>
+          ) : null}
 
           {expanded ? (
             <div id={panelId} className="mt-3 mb-2 flex flex-col gap-4">
@@ -223,6 +235,7 @@ function Steps({
                     <span className="text-[var(--color-text-tertiary)]">{where}</span>
                   )}
                 </p>
+                <StepCode step={step} />
               </div>
             </li>
           );
@@ -237,15 +250,57 @@ function Steps({
   );
 }
 
+/** What a step writes (a helper's header, the call that replaces the span),
+ * the plan's notes on what that code cannot say, and the command that checks
+ * it when it differs from the item's. */
+function StepCode({ step }: { step: FixStep }) {
+  const language = getLanguageFromPath(step.file_path);
+  return (
+    <>
+      {step.signature ? (
+        <HighlightedCodeBlock
+          code={step.signature}
+          language={language}
+          label="New helper"
+          compact
+          className="mb-0 mt-2"
+        />
+      ) : null}
+      {step.call ? (
+        <HighlightedCodeBlock
+          code={step.call}
+          language={language}
+          label="Call"
+          compact
+          className="mb-0 mt-2"
+        />
+      ) : null}
+      <PlaceholderHint texts={[step.signature ?? "", step.call ?? ""]} />
+      {step.notes?.length ? (
+        <ul className="mt-1.5 flex list-disc flex-col gap-0.5 pl-4 text-xs text-[var(--color-text-secondary)]">
+          {step.notes.map((note, i) => (
+            <li key={`${i}:${note}`} className="[overflow-wrap:anywhere]">
+              {note}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {step.command ? <CommandLine command={step.command} /> : null}
+    </>
+  );
+}
+
 /** How to know the change held: the tests that guard it and the command to run them. */
 export function FixVerify({ item }: { item: Pick<FixItem, "verify"> }) {
-  const { tests, tests_total, command } = item.verify;
+  const { tests, tests_total, command, prerequisite } = item.verify;
   return (
     <section>
       <h4 className={MICRO}>Verify</h4>
       {tests.length === 0 ? (
         <p className="mt-1.5 text-xs text-[var(--color-text-secondary)]">
-          No guarding tests found. Write one that pins the current behaviour before changing it.
+          {/* The fallback covers items stored before Verify named its prerequisite. */}
+          {prerequisite ??
+            "No guarding tests found. Write one that pins the current behaviour before changing it."}
         </p>
       ) : (
         <>
@@ -270,35 +325,6 @@ export function FixVerify({ item }: { item: Pick<FixItem, "verify"> }) {
         </>
       )}
     </section>
-  );
-}
-
-function CommandLine({ command }: { command: string }) {
-  const [copied, setCopied] = useState(false);
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(command);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1600);
-    } catch {
-      /* clipboard blocked: the command stays selectable */
-    }
-  };
-  return (
-    <div className="mt-2 flex min-w-0 items-start gap-2 rounded bg-[var(--color-bg-inset)] px-2.5 py-1.5">
-      <code className="min-w-0 flex-1 font-mono text-xs text-[var(--color-text-primary)] [overflow-wrap:anywhere]">
-        {command}
-      </code>
-      <button
-        type="button"
-        onClick={() => void copy()}
-        aria-label={copied ? "Copied" : "Copy command"}
-        className="inline-flex shrink-0 items-center gap-1 rounded text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
-      >
-        {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-        <span aria-hidden>{copied ? "Copied" : "Copy"}</span>
-      </button>
-    </div>
   );
 }
 
@@ -340,7 +366,7 @@ function Actions({
           </Link>
         ) : null}
         {onAiPrompt ? (
-          <AiPromptButton label="Copy prompt for an agent" onClick={() => onAiPrompt(item)} />
+          <AiPromptButton label={AGENT_PROMPT_LABEL} onClick={() => onAiPrompt(item)} />
         ) : null}
       </div>
       {onTriage && findings > 0 ? (
@@ -354,7 +380,7 @@ function Actions({
               type="button"
               disabled={pending || saved === status}
               onClick={() => void triage(status)}
-              className="rounded-md border border-[var(--color-border-default)] px-2 py-1 font-medium text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] disabled:opacity-50"
+              className="rounded-md border border-[var(--color-border-default)] px-2 py-1 font-medium text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] disabled:opacity-50"
             >
               {STATUS_LABEL[status]}
             </button>

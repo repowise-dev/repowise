@@ -33,6 +33,8 @@ _FINAL_HEADROOM_CHARS = 1_200
 #: Floor for a long text field the guard trims in place. Below this the excerpt
 #: stops being worth reading and the omission ref is the whole answer.
 _MIN_KEPT_TEXT_CHARS = 800
+#: Room left for the omission marker that replaces a trimmed text tail.
+_MARKER_RESERVE_CHARS = 200
 
 
 @dataclass(frozen=True)
@@ -96,10 +98,10 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
         "blocks",
         (
             "global_hotspots",
-            "pr_blast_radius.guarding_tests",
             "pr_blast_radius",
             "directive.test_recommendations[]",
             "directive.tests_to_run[]",
+            "directive.tests_to_update[]",
             "directive.may_break[]",
             "directive.next_calls[]",
             "targets[]",
@@ -113,14 +115,16 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
         ),
         requested_projections=(
             (
+                # The cards are the changed files, so they outlive the blast
+                # block, which stays first to go even when asked for.
                 "changed_files",
                 (
                     "directive.test_recommendations[]",
                     "directive.tests_to_run[]",
+                    "directive.tests_to_update[]",
                     "directive.may_break[]",
                     "directive.next_calls[]",
-                    "pr_blast_radius",
-                    "pr_blast_radius.guarding_tests",
+                    "targets[]",
                 ),
             ),
             # targets is required, so it is always asked for. Without this the
@@ -147,15 +151,24 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "patch_coverage.files[]",
             "patch_coverage",
             "impacted_tests",
-            "health_delta.limits",
             "health_delta.skipped",
+            "health_delta.files[]",
             "health_delta.top_findings[]",
+            # A requested checklist sheds its rows' detail lists, then their
+            # details, before the block itself: every row keeps its verdict.
+            "evidence.items[].details[]",
+            "evidence.items[].details",
+            "evidence",
         ),
         protected=(
             "directive",
             "health_delta",
             "classification",
             "risk_percentile",
+        ),
+        # Present only when asked for, and then it is the answer.
+        requested_projections=(
+            ("evidence", ("evidence", "evidence.items[].details[]", "evidence.items[].details")),
         ),
     ),
     "get_answer": ResponseBudgetContract(
@@ -296,6 +309,9 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             ("graph", ("community_summary",)),
             ("ownership", ("knowledge_map",)),
             ("content", ("content_md",)),
+            ("tools", ("tool_surface.opt_in", "tool_surface.tools[]",
+                       "tool_surface.recipes[]", "tool_surface")),
+            ("actions", ("next_actions.quarter.actions[]",)),
         ),
     ),
     "get_health": ResponseBudgetContract(
@@ -306,6 +322,7 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "trend.recent[]",
             "trend.alerts[]",
             "churn_complexity[]",
+            "untested_complexity[]",
             "doc_drift.findings[]",
             "test_findings[]",
             "top_findings[]",
@@ -321,11 +338,14 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "performance_summary",
             "high_leverage_files[]",
             "secondary_rankings",
+            # A named page holds up to 25 items; its tail goes last of all.
+            "fix_first.items[]",
         ),
         protected=(
             "mode",
-            # The one lead, bounded by construction (at most five compact
-            # items): shedding it would leave the dashboard with nothing to do.
+            # The one lead: shedding the block would leave the dashboard with
+            # nothing to do. Bounded by construction (five compact items, or
+            # one named page), and only its page's tail is ever trimmed.
             "fix_first",
             "fix_id",
             "opportunity_id",
@@ -356,12 +376,14 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
     # bodies are context for the root symbol, so they go first. ``source`` is
     # protected so the guard trims it to what fits rather than dropping it: a
     # symbol read with no body is a wasted call even with a recoverable ref.
+    # ``content`` is an omission restore's body, protected for the same reason.
     "get_symbol": ResponseBudgetContract(
         "blocks",
         ("callee_bodies.callees[]", "candidates[]"),
         expansion_argument=None,
         protected=(
             "source",
+            "content",
             "symbol_id",
             "file",
             "name",
@@ -373,6 +395,7 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "verified",
             "continuation",
             "continuation_reference",
+            "members",
             "error",
         ),
     ),
@@ -427,18 +450,32 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
         "blocks",
         ("role_breakdown",),
         expansion_argument=None,
-        protected=("summary", "architecture_type", "score", "core_members", "error"),
+        protected=("summary", "architecture_type", "score", "core_members", "evidence", "error"),
     ),
     "get_conformance": ResponseBudgetContract(
         "blocks",
         expansion_argument=None,
-        protected=("summary", "violation_count", "cycle_count", "total_cycles", "error"),
+        protected=(
+            "summary",
+            "violation_count",
+            "cycle_count",
+            "total_cycles",
+            "total_capped",
+            "cycles_determined",
+            "error",
+        ),
     ),
     "get_blast_radius": ResponseBudgetContract(
         "blocks",
         ("impact_score_semantics",),
         expansion_argument=None,
-        protected=("summary", "targets", "total_impacted", "unresolved_targets"),
+        protected=(
+            "summary",
+            "targets",
+            "total_impacted",
+            "unresolved_targets",
+            "undetermined_targets",
+        ),
     ),
     "list_repos": ResponseBudgetContract(
         "blocks",
@@ -765,16 +802,38 @@ def _emergency_fit(
             container[f"{key}_emitted"] = len(kept)
             container[f"{key}_reduced_reason"] = "response_budget"
         else:
-            marker = collector.add_inline(path, value)
-            suffix = f"\n{marker}" if marker else "\n[reduced to fit]"
             # Keep as much as the budget actually allows rather than a fixed
             # floor: cutting a 33k body to 800 characters costs the caller the
             # whole read to save bytes the budget never asked for.
-            room = limit - (before - len(value)) - len(suffix)
-            container[key] = value[: max(_MIN_KEPT_TEXT_CHARS, room)] + suffix
+            keep = max(
+                _MIN_KEPT_TEXT_CHARS, limit - (before - len(value)) - _MARKER_RESERVE_CHARS
+            )
+            cut = value.rfind("\n", 0, keep)
+            if cut >= _MIN_KEPT_TEXT_CHARS:
+                keep = cut + 1
+            # The ref holds only the cut tail, so restoring it makes progress
+            # instead of serving the kept head again.
+            marker = collector.add_inline(path, value[keep:])
+            suffix = f"\n{marker}" if marker else "\n[reduced to fit]"
+            container[key] = value[:keep].rstrip("\n") + suffix
         result["truncated"] = True
         if response_chars(result) >= before:
             return
+
+
+def _call_arguments(
+    signature: inspect.Signature, args: tuple[Any, ...], kwargs: dict[str, Any]
+) -> dict[str, Any] | None:
+    """The call's arguments with defaults applied; ``None`` when the signature
+    is not the tool's own (a bridged call budgets with an empty one)."""
+    if not signature.parameters:
+        return None
+    try:
+        bound = signature.bind_partial(*args, **kwargs)
+    except TypeError:
+        return None
+    bound.apply_defaults()
+    return dict(bound.arguments)
 
 
 def _lead_with_dropped_targets(
@@ -883,7 +942,7 @@ def enforce_response_budget(
         emergency.attach(result)
         trimmed = True
 
-    run_post_enforce(tool, result)
+    run_post_enforce(tool, result, _call_arguments(signature, args, kwargs))
 
     if result.get("truncated"):
         result.setdefault("_meta", {}).setdefault("state", {})["truncated"] = True

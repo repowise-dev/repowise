@@ -57,10 +57,13 @@ from typing import Any
 from repowise.core.analysis.execution_graph import is_reliable_call_edge
 
 from ....code_origin import is_migration_path, is_vendored_or_generated_path
+from ....ingestion.lang_helpers.anonymous_classes import is_anonymous_scope
+from ....ingestion.symbol_identity import outer_scope
 from ....test_paths import is_test_related_path
 from ...dead_code.file_reachability import BARREL_FILENAMES
+from ..effort import effort_bucket
 from .models import RefactoringContext, RefactoringSuggestion
-from .registry import RefactoringDetector, effort_bucket, register
+from .registry import RefactoringDetector, register
 
 # Edge weights over the intra-file symbol graph (see module docstring).
 _DIRECT_CALL_WEIGHT = 3.0
@@ -702,7 +705,9 @@ class SplitFileDetector(RefactoringDetector):
 
     def _resolve_owner(self, file_path: str, sid: str, defined: dict[str, dict]) -> str:
         """Walk ``parent_name`` up to the outermost top-level symbol (a method
-        rolls up to its class, a nested function to its owner)."""
+        rolls up to its class, a nested function to its owner). An anonymous
+        class has no node, so its member climbs ``A::over#1(int)::Runnable``
+        to the nearest scope that has one."""
         cur = sid
         seen: set[str] = set()
         while cur not in seen:
@@ -711,6 +716,9 @@ class SplitFileDetector(RefactoringDetector):
             parent = data.get("parent_name")
             if not parent:
                 return cur
+            if is_anonymous_scope(data.get("language"), parent):
+                while parent and f"{file_path}::{parent}" not in defined:
+                    parent = outer_scope(parent)
             pid = f"{file_path}::{parent}"
             if pid not in defined or pid == cur:
                 return cur
