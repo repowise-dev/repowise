@@ -25,7 +25,9 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from ...models import FileInfo, Symbol
+from .aura_bundle_js import aura_bundle_js_symbols
 from .cpp_macros import cpp_macro_synthetic_symbols
+from .csharp_extension_blocks import csharp_extension_block_symbols
 from .csharp_mvvm import csharp_synthetic_symbols
 from .java_records import java_record_synthetic_symbols
 from .jvm_codegen import jvm_codegen_synthetic_symbols
@@ -43,7 +45,7 @@ if TYPE_CHECKING:
 _Provider = Callable[["Node", str, FileInfo], list[Symbol]]
 
 _SYNTHETIC_PROVIDERS: dict[str, list[_Provider]] = {
-    "csharp": [csharp_synthetic_symbols],
+    "csharp": [csharp_synthetic_symbols, csharp_extension_block_symbols],
     "java": [
         lombok_synthetic_symbols,
         java_record_synthetic_symbols,
@@ -54,6 +56,13 @@ _SYNTHETIC_PROVIDERS: dict[str, list[_Provider]] = {
     "c": [cpp_macro_synthetic_symbols],
     "svelte": [sfc_component_symbols],
     "vue": [sfc_component_symbols],
+    "astro": [sfc_component_symbols],
+    # A .razor/.cshtml file *is* the component: the name comes from the
+    # filename (PascalCase by convention), same as Svelte/Vue.
+    "razor": [sfc_component_symbols],
+    # Aura bundle JS is an object literal of handlers; path-gated to
+    # aura/<b>/<b>{Controller,Helper,Renderer}.js inside the provider.
+    "javascript": [aura_bundle_js_symbols],
 }
 
 

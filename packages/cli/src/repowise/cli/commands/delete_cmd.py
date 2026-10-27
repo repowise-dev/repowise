@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import click
 from rich.table import Table
 
 from repowise.cli.helpers import (
     console,
+    db_configured,
     get_db_url_for_repo,
     get_repowise_dir,
     resolve_repo_path,
@@ -14,23 +17,53 @@ from repowise.cli.helpers import (
 )
 
 
+def _same_local_path(stored: str | None, repo_path: Path) -> bool:
+    """True when *stored* (a ``Repository.local_path``) names *repo_path*.
+
+    Rows are written from a resolved absolute path, but a caller may reach the
+    same repository through a symlink or a relative argument, so both sides are
+    resolved before comparing. A path that no longer exists still compares by
+    string rather than raising.
+    """
+    if not stored:
+        return False
+    try:
+        return Path(stored).resolve() == repo_path
+    except OSError:
+        return stored == str(repo_path)
+
+
 @click.command("delete")
 @click.argument("repo_id", required=False, default=None)
 @click.option("--force", "-f", is_flag=True, default=False, help="Skip confirmation prompt.")
-@click.option("--path", "-p", default=None, help="Path to the repository directory.")
+@click.option("--path", "-p", default=None, help="Path to the repository to delete.")
 def delete_command(repo_id: str | None, force: bool, path: str | None) -> None:
-    """Delete a repository and all its generated data."""
+    """Delete a repository and all its generated data.
+
+    ``--path`` (or the current directory) names the repository to delete: the
+    row whose ``local_path`` matches it is selected. The path is only a
+    database-location hint when nothing matches and no path was given, in which
+    case every known repository is listed for a numbered selection.
+    """
     repo_path = resolve_repo_path(path)
     repowise_dir = get_repowise_dir(repo_path)
 
-    if not repowise_dir.exists():
-        console.print("[yellow]No .repowise/ directory found. Run 'repowise init' first.[/yellow]")
-        return
+    # These two checks describe the repo-local SQLite default, and only it. A
+    # shared store (REPOWISE_DB_URL pointing at PostgreSQL) holds this
+    # repository's index somewhere the repo has no file for, so demanding
+    # .repowise/wiki.db here refused to delete a repository the configured
+    # database knows about. With no configured URL the messages are unchanged.
+    if not db_configured():
+        if not repowise_dir.exists():
+            console.print(
+                "[yellow]No .repowise/ directory found. Run 'repowise init' first.[/yellow]"
+            )
+            return
 
-    db_path = repowise_dir / "wiki.db"
-    if not db_path.exists():
-        console.print("[yellow]Database not found.[/yellow]")
-        return
+        db_path = repowise_dir / "wiki.db"
+        if not db_path.exists():
+            console.print("[yellow]Database not found.[/yellow]")
+            return
 
     async def _run() -> None:
         from sqlalchemy import func, select
@@ -70,8 +103,23 @@ def delete_command(repo_id: str | None, force: bool, path: str | None) -> None:
             await engine.dispose()
             return
 
-        # If no repo_id given, let the user pick
+        # Find the target repo info
         target_id = repo_id
+        if target_id is None and path is not None:
+            # --path names a repository, so it selects that repository. The
+            # numbered list stays for the no-path case only; offering to delete
+            # some other row after the user named a path is how the wrong
+            # repository gets removed from a shared database.
+            match = next((r for r in repos if _same_local_path(r[2], repo_path)), None)
+            if match is None:
+                console.print(
+                    f"[yellow]No repository in the database matches {repo_path}.[/yellow]"
+                )
+                await engine.dispose()
+                return
+            target_id = match[0]
+
+        # If no repo_id given, let the user pick
         if target_id is None:
             table = Table(title="Repositories")
             table.add_column("#", style="cyan", justify="right")

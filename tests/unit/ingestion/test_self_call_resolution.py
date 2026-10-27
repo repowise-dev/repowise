@@ -277,3 +277,32 @@ class TestStrategy4Shadowing:
         edges = _edges(parsed, tmp_path)
         bad = [e for e in edges if e[0].endswith("::use_missing")]
         assert bad == [], f"unknown method must stay unresolved: {bad}"
+
+
+OBJC_INHERITED_SELECTOR = '''
+@implementation ImageRep
+- (void)load {
+    [self setProperty:NSImageLoopCount withValue:@(2)];
+    [self decode];
+}
+- (void)decode {}
+@end
+'''
+
+
+def test_objc_self_send_of_an_inherited_selector_resolves_to_nothing(tmp_path: Path):
+    """A framework method called on ``self`` has no in-repo target.
+
+    ``-setProperty:withValue:`` belongs to the AppKit superclass, so the repo
+    holds no declaration of it anywhere. The self-receiver tier is a lookup in
+    the ``(class, selector)`` index rather than an id built from the two
+    halves, so it declines; a synthesized id here would mint a confident edge
+    to a symbol that does not exist. The sibling call in the same body pins
+    that the tier still answers when the method is real.
+    """
+    pytest.importorskip("tree_sitter_objc")
+    parsed = _parse_all(tmp_path, {"ImageRep.m": ("objectivec", OBJC_INHERITED_SELECTOR)})
+    edges = _edges(parsed, tmp_path)
+    callees = {callee for _caller, callee, _conf in edges}
+    assert not any("setProperty" in c for c in callees)
+    assert "ImageRep.m::ImageRep::decode" in callees

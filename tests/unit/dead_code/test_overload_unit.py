@@ -1,0 +1,141 @@
+"""An overload set is one dead-code unit.
+
+Java and C# overloads of different arity carry their own ids (``pad#1``,
+``pad#2``). Dead code still judges the set as one symbol: a use of any member
+uses all of them, no member becomes a finding of its own, and the composed
+constructor id ``path::X::X`` finds ``X``'s constructors wherever their arities
+put them.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import networkx as nx
+
+from repowise.core.analysis.dead_code import DeadCodeAnalyzer, DeadCodeKind
+from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
+
+_FILE = "src/Box.cs"
+_CONFIG = {
+    "detect_unreachable_files": False,
+    "detect_unused_exports": False,
+    "detect_zombie_packages": False,
+    "min_confidence": 0.0,
+}
+
+
+def _graph(symbols: list[tuple[str, str, str, int]], calls: list[tuple[str, str]]) -> nx.DiGraph:
+    """*symbols* as ``(id suffix, name, kind, start line)``, all private C#."""
+    g = nx.DiGraph()
+    g.add_node(_FILE, language="csharp")
+    for suffix, name, kind, line in symbols:
+        sym_id = f"{_FILE}::{suffix}"
+        g.add_node(
+            sym_id,
+            node_type="symbol",
+            file_path=_FILE,
+            name=name,
+            kind=kind,
+            language="csharp",
+            visibility="private",
+            decorators=[],
+            start_line=line,
+            end_line=line + 2,
+        )
+        g.add_edge(_FILE, sym_id, edge_type="defines")
+    for caller, callee in calls:
+        g.add_edge(caller, f"{_FILE}::{callee}", edge_type="calls")
+    return g
+
+
+def _unused(g: nx.DiGraph) -> list[tuple[str, int]]:
+    report = DeadCodeAnalyzer(g, git_meta_map={}).analyze(_CONFIG)
+    return sorted(
+        (f.symbol_name, f.start_line)
+        for f in report.findings
+        if f.kind == DeadCodeKind.UNUSED_INTERNAL
+    )
+
+
+_PAD = [("Box::pad#1", "pad", "method", 10), ("Box::pad#2", "pad", "method", 20)]
+
+
+def test_a_use_of_one_overload_uses_the_set() -> None:
+    assert _unused(_graph(_PAD, [("src/Main.cs::Main::Run", "Box::pad#2")])) == []
+
+
+def test_an_unused_overload_set_adds_no_finding_per_member() -> None:
+    """Members are reached through their type, so the split adds no findings."""
+    assert _unused(_graph(_PAD, [])) == []
+
+
+def test_a_constructor_overload_rescues_its_class() -> None:
+    """``new Inner(a, b)`` lands on ``Inner::Inner#2``; the class is used."""
+    symbols = [
+        ("Inner", "Inner", "class", 3),
+        ("Inner::Inner#0", "Inner", "method", 4),
+        ("Inner::Inner#2", "Inner", "method", 5),
+        ("Spare", "Spare", "class", 30),
+    ]
+    found = _unused(_graph(symbols, [("src/Main.cs::Main::Run", "Inner::Inner#2")]))
+    assert ("Inner", 3) not in found
+    assert ("Spare", 30) in found
+
+
+def test_a_call_to_one_cpp_overload_uses_the_exported_set() -> None:
+    """C++ free functions are exports; a call to ``pad#3`` uses ``pad#1`` too."""
+    g = nx.DiGraph()
+    g.add_node("util.cpp", language="cpp")
+    g.add_node("main.cpp", language="cpp")
+    for sym_id, line in (("util.cpp::pad#1", 2), ("util.cpp::pad#3", 3), ("util.cpp::spare", 4)):
+        g.add_node(
+            sym_id,
+            node_type="symbol",
+            file_path="util.cpp",
+            name=sym_id.rpartition("::")[2].partition("#")[0],
+            kind="function",
+            language="cpp",
+            visibility="public",
+            decorators=[],
+            start_line=line,
+            end_line=line,
+        )
+        g.add_edge("util.cpp", sym_id, edge_type="defines")
+    g.add_edge("main.cpp::main", "util.cpp::pad#3", edge_type="calls")
+    config = {**_CONFIG, "detect_unused_exports": True}
+    report = DeadCodeAnalyzer(g, git_meta_map={}).analyze(config)
+    assert sorted(f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT) == [
+        "spare"
+    ]
+
+
+def test_a_call_tied_between_overloads_keeps_the_set_used(tmp_path: Path) -> None:
+    """``new Inner(x)`` and ``cs(x)`` tie between one-argument members.
+
+    The tie still draws an edge into the set, so neither the class nor the
+    method set reads as unused. ``Spare`` is the control.
+    """
+    source = tmp_path / "app" / "Main.java"
+    source.parent.mkdir()
+    source.write_text(
+        "package app;\n"
+        "public class Main {\n"
+        "  private static class Inner {\n"
+        "    Inner() { }\n"
+        "    Inner(String s) { }\n"
+        "    Inner(int n) { }\n"
+        "  }\n"
+        "  private static class Spare { }\n"
+        "  private String cs() { return null; }\n"
+        "  private Main cs(String s) { return this; }\n"
+        "  private Main cs(Object o) { return this; }\n"
+        "  public void run(String x) { new Inner(x); cs(x); }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    parser, builder = ASTParser(), GraphBuilder(repo_path=tmp_path)
+    for fi in FileTraverser(tmp_path).traverse():
+        builder.add_file(parser.parse_file(fi, Path(fi.abs_path).read_bytes()))
+    report = DeadCodeAnalyzer(builder.build(), git_meta_map={}).analyze(_CONFIG)
+    assert sorted(f.symbol_name for f in report.findings) == ["Spare"]

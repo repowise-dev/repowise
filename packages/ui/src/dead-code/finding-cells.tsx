@@ -2,17 +2,18 @@
 
 import { useState, type MouseEvent } from "react";
 import type * as React from "react";
-import { CircleSlash, Eye, GitBranch, MoreHorizontal, Sparkles } from "lucide-react";
+import { CircleSlash, Eye, GitBranch, MoreHorizontal } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "../ui/button";
-import { Badge } from "../ui/badge";
 import { ConfirmDialog } from "../ui/confirm-dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { formatConfidence } from "../lib/format";
 import { toFriendlyMessage } from "../lib/errors";
 import { cn } from "../lib/cn";
+import { FilePath } from "../shared/file-path";
+import { PreviewBadge } from "../health/preview-badge";
+import { RowPromptAction } from "../health/row-prompt-action";
 import {
-  deadCodeConfidenceTier,
   deadCodeRiskFactorLabel,
   type DeadCodeFinding,
   type DeadCodeStatus,
@@ -72,14 +73,15 @@ export interface FindingIdentityProps {
   href?: string | undefined;
   /** Client-side navigation, so a plain click does not trigger a full page load. */
   onNavigate?: ((href: string) => void) | undefined;
+  /** Which safety group is the exception in the current list. */
+  mark?: "safe" | "review" | undefined;
 }
 
 /**
- * File path (linked when the host can route), symbol name, and the detector's
- * reason. The reason was already being fed to the AI prompt builder, so the
- * model saw the justification and the human did not.
+ * File path (linked when the host can route), symbol name, the detector's
+ * reason, and the safety marker for whichever group is the exception.
  */
-export function FindingIdentity({ finding, href, onNavigate }: FindingIdentityProps) {
+export function FindingIdentity({ finding, href, onNavigate, mark }: FindingIdentityProps) {
   const onLinkClick = (e: MouseEvent<HTMLAnchorElement>) => {
     e.stopPropagation();
     if (!href || !onNavigate) return;
@@ -96,17 +98,13 @@ export function FindingIdentity({ finding, href, onNavigate }: FindingIdentityPr
         <a
           href={href}
           onClick={onLinkClick}
-          className="block truncate font-mono text-xs text-[var(--color-text-primary)] hover:text-[var(--color-accent-primary)] hover:underline"
-          title={finding.file_path}
+          className="flex min-w-0 text-[var(--color-text-primary)] hover:text-[var(--color-accent-primary)] hover:underline"
         >
-          {finding.file_path}
+          <FilePath path={finding.file_path} fold />
         </a>
       ) : (
-        <span
-          className="block truncate font-mono text-xs text-[var(--color-text-primary)]"
-          title={finding.file_path}
-        >
-          {finding.file_path}
+        <span className="flex min-w-0 text-[var(--color-text-primary)]">
+          <FilePath path={finding.file_path} fold />
         </span>
       )}
       {finding.symbol_name && (
@@ -119,49 +117,77 @@ export function FindingIdentity({ finding, href, onNavigate }: FindingIdentityPr
       )}
       {finding.reason && (
         <span
-          className="mt-0.5 block truncate text-2xs text-[var(--color-text-tertiary)]"
+          className="mt-0.5 block truncate text-xs text-[var(--color-text-tertiary)]"
           title={finding.reason}
         >
           {finding.reason}
         </span>
       )}
+      {finding.preview ? (
+        <span className="mt-0.5 block">
+          <PreviewBadge note={finding.preview} />
+        </span>
+      ) : null}
+      <FindingSafety finding={finding} mark={mark ?? "review"} />
     </div>
   );
 }
 
-/** Confidence, coloured on the shared tier boundaries rather than local ones. */
+/**
+ * Confidence as a neutral mono percent. Dead code is not an alarm, so the
+ * figure carries no red or amber; the tier is what the filter and the
+ * "Review first" marker act on.
+ */
 export function FindingConfidence({ finding }: { finding: DeadCodeFinding }) {
-  const tier = deadCodeConfidenceTier(finding.confidence);
   return (
-    <span
-      className={cn(
-        "font-medium tabular-nums text-xs",
-        tier === "high"
-          ? "text-[var(--color-error)]"
-          : tier === "medium"
-            ? "text-[var(--color-warning)]"
-            : "text-[var(--color-text-secondary)]",
-      )}
-    >
+    <span className="font-mono text-xs tabular-nums text-[var(--color-text-secondary)]">
       {formatConfidence(finding.confidence)}
     </span>
   );
 }
 
-/** "Candidate" vs "Review", with the risk factors behind the tooltip. */
-export function FindingSafety({ finding }: { finding: DeadCodeFinding }) {
-  if (finding.safe_to_delete) return <Badge variant="fresh">Candidate</Badge>;
+/**
+ * Marks the exception, not the default. When deletion-ready rows are the
+ * minority they carry the dot; otherwise the rows needing review do, with
+ * their risk factors when the engine named any.
+ */
+export function FindingSafety({
+  finding,
+  mark = "review",
+}: {
+  finding: DeadCodeFinding;
+  /** Which group is the exception in the current list. */
+  mark?: "safe" | "review";
+}) {
+  const factors = finding.risk_factors ?? [];
+  const risk =
+    factors.length > 0
+      ? `may load at runtime (${factors.map(deadCodeRiskFactorLabel).join(", ")})`
+      : null;
+  if (mark === "safe") {
+    if (!finding.safe_to_delete) {
+      return risk ? (
+        <span className="mt-0.5 block text-xs text-[var(--color-text-tertiary)]">{risk}</span>
+      ) : null;
+    }
+    return <SafetyMark label="Deletion-ready" />;
+  }
+  if (finding.safe_to_delete) return null;
+  return <SafetyMark label="Review first" detail={risk} />;
+}
+
+function SafetyMark({ label, detail }: { label: string; detail?: string | null }) {
   return (
-    <Badge
-      variant="default"
-      title={
-        finding.risk_factors && finding.risk_factors.length > 0
-          ? `Runtime-load risk (${finding.risk_factors.map(deadCodeRiskFactorLabel).join(", ")}) - verify it isn't loaded outside static imports before deleting`
-          : "Lower confidence - verify before deleting"
-      }
-    >
-      Review
-    </Badge>
+    <span className="mt-0.5 flex min-w-0 items-baseline gap-1.5 text-xs text-[var(--color-text-tertiary)]">
+      <span
+        aria-hidden
+        className="inline-block h-1.5 w-1.5 shrink-0 translate-y-[-1px] rounded-full bg-[var(--color-text-tertiary)]"
+      />
+      <span className="min-w-0">
+        <span className="font-medium text-[var(--color-text-secondary)]">{label}</span>
+        {detail ? ` · ${detail}` : null}
+      </span>
+    </span>
   );
 }
 
@@ -250,13 +276,19 @@ export function FindingRowActions({
   return (
     <span onClick={(e) => e.stopPropagation()}>
       <span className="flex items-center justify-end gap-1">
+        {onGeneratePrompt && (
+          <RowPromptAction
+            subject={finding.file_path}
+            onClick={() => onGeneratePrompt(finding.id)}
+          />
+        )}
         {finding.status === "open" ? (
           <Button
             size="sm"
             variant="ghost"
             disabled={pending}
             onClick={() => setConfirmStatus("resolved")}
-            className="h-6 px-2 text-xs text-[var(--color-success)] hover:text-[var(--color-success)]"
+            className="h-8 px-2 text-xs"
             aria-label={`Resolve ${finding.file_path}`}
           >
             Resolve
@@ -267,7 +299,7 @@ export function FindingRowActions({
             variant="ghost"
             disabled={pending}
             onClick={() => setConfirmStatus("open")}
-            className="h-6 px-2 text-xs"
+            className="h-8 px-2 text-xs"
             aria-label={`Reopen ${finding.file_path}`}
           >
             Reopen
@@ -279,7 +311,7 @@ export function FindingRowActions({
             <Button
               size="sm"
               variant="ghost"
-              className="h-6 w-6 px-0 text-[var(--color-text-tertiary)]"
+              className="h-8 w-8 px-0 text-[var(--color-text-tertiary)]"
               aria-label={`More actions for ${finding.file_path}`}
             >
               <MoreHorizontal className="h-3.5 w-3.5" />
@@ -294,10 +326,6 @@ export function FindingRowActions({
                 )}
               </>
             )}
-            {onGeneratePrompt &&
-              menuItem("Draft AI cleanup prompt", Sparkles, () =>
-                onGeneratePrompt(finding.id),
-              )}
             {graphHref && (
               <a
                 href={graphHref(finding.file_path)}

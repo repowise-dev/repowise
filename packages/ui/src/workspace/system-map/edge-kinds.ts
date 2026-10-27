@@ -13,10 +13,18 @@
  */
 
 import { ArrowRight, Boxes, Database, Link2, Radio, Signal, Zap, type LucideIcon } from "lucide-react";
-import type { SystemEdgeKind, SystemEdgeMatchType } from "@repowise-dev/types";
+import type { SystemEdge, SystemEdgeFamily, SystemEdgeKind, SystemEdgeMatchType } from "@repowise-dev/types";
 
 /** Whether an edge reflects a structural contract/dependency or behavioral co-change. */
 export type EdgeCategory = "structural" | "behavioral";
+
+/**
+ * The filter family an edge kind belongs to. The map offers families, not
+ * kinds, as its first filter row: Runtime and Data are drawn by default, Build
+ * (package) and History (co-change) are opt-in. Core sends it on each edge;
+ * the registry's `family` answers only for payloads written before that.
+ */
+export type EdgeFamily = SystemEdgeFamily;
 
 export interface SystemEdgeKindStyle {
   kind: SystemEdgeKind;
@@ -26,6 +34,7 @@ export interface SystemEdgeKindStyle {
   color: string;
   icon: LucideIcon;
   category: EdgeCategory;
+  family: EdgeFamily;
 }
 
 /**
@@ -34,13 +43,13 @@ export interface SystemEdgeKindStyle {
  * theme vars so the map stays consistent with the C4 / knowledge-graph views.
  */
 export const SYSTEM_EDGE_KINDS: Record<SystemEdgeKind, SystemEdgeKindStyle> = {
-  http: { kind: "http", label: "HTTP", color: "var(--color-accent-secondary)", icon: ArrowRight, category: "structural" },
-  grpc: { kind: "grpc", label: "gRPC", color: "var(--color-accent-fill)", icon: Zap, category: "structural" },
-  socket: { kind: "socket", label: "Socket", color: "var(--color-info)", icon: Signal, category: "structural" },
-  event: { kind: "event", label: "Event", color: "var(--color-warning)", icon: Radio, category: "structural" },
-  package: { kind: "package", label: "Package", color: "var(--color-accent-primary)", icon: Boxes, category: "structural" },
-  db: { kind: "db", label: "Database", color: "var(--color-text-tertiary)", icon: Database, category: "structural" },
-  co_change: { kind: "co_change", label: "Co-change", color: "var(--color-edge-co-change)", icon: Link2, category: "behavioral" },
+  http: { kind: "http", label: "HTTP", color: "var(--color-accent-secondary)", icon: ArrowRight, category: "structural", family: "runtime" },
+  grpc: { kind: "grpc", label: "gRPC", color: "var(--color-accent-fill)", icon: Zap, category: "structural", family: "runtime" },
+  socket: { kind: "socket", label: "Socket", color: "var(--color-info)", icon: Signal, category: "structural", family: "runtime" },
+  event: { kind: "event", label: "Event", color: "var(--color-warning)", icon: Radio, category: "structural", family: "runtime" },
+  package: { kind: "package", label: "Package", color: "var(--color-accent-primary)", icon: Boxes, category: "structural", family: "build" },
+  db: { kind: "db", label: "Database", color: "var(--color-text-tertiary)", icon: Database, category: "structural", family: "data" },
+  co_change: { kind: "co_change", label: "Co-change", color: "var(--color-edge-co-change)", icon: Link2, category: "behavioral", family: "history" },
 };
 
 const FALLBACK_KIND: SystemEdgeKindStyle = {
@@ -49,11 +58,29 @@ const FALLBACK_KIND: SystemEdgeKindStyle = {
   color: "var(--color-text-tertiary)",
   icon: ArrowRight,
   category: "structural",
+  // Matches core: a kind it does not know is History, so it starts hidden.
+  family: "history",
 };
 
 /** Resolve the style for an edge kind, tolerant of an unknown future kind. */
 export function edgeKindStyle(kind: string): SystemEdgeKindStyle {
   return SYSTEM_EDGE_KINDS[kind as SystemEdgeKind] ?? FALLBACK_KIND;
+}
+
+/**
+ * A link a gateway's route config made (`gateway_route` strategy). It keeps
+ * its transport kind and its match dash: routing is how the link was found,
+ * not a third line style, so it is named in words on hover and in the legend
+ * instead.
+ */
+export function isGatewayRouted(edge: Pick<SystemEdge, "strategy">): boolean {
+  return edge.strategy === "gateway_route";
+}
+
+/** The edge's hover label: its kind, plus "via gateway" when a gateway route made it. */
+export function edgeLabel(edge: Pick<SystemEdge, "kind" | "strategy">): string {
+  const label = edgeKindStyle(edge.kind).label;
+  return isGatewayRouted(edge) ? `${label} via gateway` : label;
 }
 
 /** Every edge kind, in legend/display order (structural first, behavioral last). */

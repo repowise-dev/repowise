@@ -6,13 +6,15 @@ every public name, so existing imports are unaffected.
 
 from __future__ import annotations
 
+import asyncio
 import json
-from datetime import datetime
-from pathlib import Path
+from datetime import UTC, datetime
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...forges import read_remote_url, strip_credentials
+from ...git_head import read_head_commit, resolve_git_dir
 from ..models import (
     GenerationJob,
     Page,
@@ -34,10 +36,11 @@ async def upsert_repository(
     *,
     name: str,
     local_path: str,
-    url: str = "",
-    default_branch: str = "main",
+    url: str | None = None,
+    default_branch: str | None = None,
     settings: dict | None = None,
     head_commit: str | None = None,
+    stamp_head: bool = False,
     repo_id: str | None = None,
 ) -> Repository:
     """Create or update a repository record.
@@ -50,83 +53,166 @@ async def upsert_repository(
     per-repo session routing keyed by that id resolves consistently. Ignored
     when a row for ``local_path`` already exists (the existing id wins).
 
+    ``url``, ``default_branch`` and ``settings`` overwrite an existing row only
+    when passed; ``None`` keeps the stored value, so a command that only needs
+    the row never resets a ``master`` branch to ``main``. Pass ``""`` to clear
+    the url. An empty branch counts as not passed, since a repository always
+    has one. When the call creates the row or records a sync and leaves either
+    one unset, it is read from git: the remote url (``origin``, else
+    ``upstream``) with credentials removed, and the default branch. A value
+    git cannot give keeps the stored one, and a new row defaults to ``""``
+    and ``"main"``.
+
     ``head_commit`` records the git commit the index was built against — the
-    value the MCP ``_meta`` freshness check compares to the live HEAD. Callers
-    that already know the synced commit may pass it; otherwise it is read from
-    ``local_path``'s git HEAD via plain file I/O (no ``git`` subprocess). This
-    runs at the start of every index/update, so the stored commit tracks each
-    sync and the MCP staleness signal stays calibrated instead of being NULL
-    forever (which silently disabled the preferred HEAD-vs-index comparison).
+    value the MCP ``_meta`` freshness check compares to the live HEAD. A new
+    row always gets one: the passed value, else ``local_path``'s git HEAD read
+    via plain file I/O (no ``git`` subprocess). An existing row's commit moves
+    only when the caller records a sync, by passing ``head_commit`` or
+    ``stamp_head=True`` (read HEAD). Callers that only need the row, such as
+    decisions, scans and server registration, leave it alone: moving it there
+    made the database claim an index at HEAD while ``state.json`` still named
+    the last real sync. ``updated_at`` (see :func:`index_synced_at`) moves with
+    the commit stamp for the same reason.
     """
     result = await session.execute(select(Repository).where(Repository.local_path == local_path))
     repo = result.scalar_one_or_none()
 
-    resolved_head = head_commit or _read_head_commit(local_path)
+    stamping = repo is None or stamp_head or head_commit is not None
+    resolved_head = (head_commit or _read_head_commit(local_path)) if stamping else None
+    if stamping and (url is None or not default_branch):
+        # Off the event loop: the branch read runs git, and the server awaits this.
+        git_url, git_branch = await asyncio.to_thread(_read_git_remote, local_path)
+        url = git_url if url is None else url
+        default_branch = default_branch or git_branch
 
     if repo is None:
         repo = Repository(
             id=repo_id or _new_uuid(),
             name=name,
             local_path=local_path,
-            url=url,
-            default_branch=default_branch,
+            url=url or "",
+            default_branch=default_branch or "main",
             settings_json=json.dumps(settings or {}),
             head_commit=resolved_head,
         )
         session.add(repo)
     else:
         repo.name = name
-        repo.url = url
-        repo.default_branch = default_branch
+        if url is not None:
+            repo.url = url
+        if default_branch:
+            repo.default_branch = default_branch
         if settings is not None:
-            repo.settings_json = json.dumps(settings)
+            repo.settings_json = json.dumps(keep_analysis_ran(repo.settings_json, settings))
         # Only advance the stamp when we could read a real commit; never blank
         # out a previously recorded one (e.g. a transient non-checkout path).
         if resolved_head:
             repo.head_commit = resolved_head
-        repo.updated_at = _now_utc()
+        if stamping:
+            repo.updated_at = _now_utc()
 
     await session.flush()
     return repo
 
 
+def index_synced_at(repo: Repository | None) -> datetime | None:
+    """When *repo*'s index last synced to the checkout, timezone-aware, or ``None``.
+
+    The one "indexed at" every surface reports. Only a sync moves it: an index
+    run's stamping :func:`upsert_repository` and git-totals write, and the
+    "up to date" re-stamp in ``reconcile_repo_head_commit``.
+    """
+    return as_utc(getattr(repo, "updated_at", None))
+
+
+def as_utc(stamp: datetime | None) -> datetime | None:
+    """*stamp* as timezone-aware UTC; SQLite hands these columns back naive."""
+    if not isinstance(stamp, datetime):
+        return None
+    return stamp if stamp.tzinfo else stamp.replace(tzinfo=UTC)
+
+
+ANALYSIS_RAN_KEY = "analysis_ran_at"
+
+
+def _settings_dict(raw: str | None) -> dict:
+    try:
+        data = json.loads(raw or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def keep_analysis_ran(old_json: str | None, new_settings: dict) -> dict:
+    """Carry the stage-completion stamps across a wholesale settings replace."""
+    kept = _settings_dict(old_json).get(ANALYSIS_RAN_KEY)
+    if kept is None or ANALYSIS_RAN_KEY in new_settings:
+        return new_settings
+    return {**new_settings, ANALYSIS_RAN_KEY: kept}
+
+
+async def stamp_analysis_ran(session: AsyncSession, repository_id: str, stage: str) -> None:
+    """Record that *stage* ("security" or "dead_code") just persisted a result.
+
+    Called only on the success path of the stage's own write, so the stamp
+    proves the stage ran, which a completed index job does not.
+    """
+    repo = await session.get(Repository, repository_id)
+    if repo is None:
+        return
+    settings = _settings_dict(repo.settings_json)
+    stamps = settings.get(ANALYSIS_RAN_KEY)
+    if not isinstance(stamps, dict):
+        stamps = {}
+    stamps[stage] = datetime.now(UTC).isoformat()
+    settings[ANALYSIS_RAN_KEY] = stamps
+    repo.settings_json = json.dumps(settings)
+    await session.flush()
+
+
 def _read_head_commit(local_path: str) -> str | None:
     """Return the repo's current git HEAD SHA via plain file I/O, or None.
 
-    Dependency-free (no ``git`` binary, no gitpython): parse ``.git/HEAD`` and
-    follow at most one ref, falling back to ``packed-refs``. Returns ``None``
-    when *local_path* is not a git checkout (hosted/ephemeral indexes) or the
-    ref can't be resolved. Mirrors the MCP ``_meta`` reader so the value we
-    write is read back the same way — keeping freshness comparisons honest.
+    Dependency-free (no ``git`` binary, no gitpython). Returns ``None`` when
+    *local_path* is not a git checkout (hosted/ephemeral indexes) or the ref
+    can't be resolved. A linked worktree or submodule keeps ``.git`` as a
+    ``gitdir:`` pointer file; the shared reader follows that pointer and
+    resolves the branch against the common dir, so the stored commit is the
+    worktree's own.
+
+    The MCP ``_meta.read_live_head`` reader calls the same helper. The old
+    ``is_dir()`` guard treated a pointer file as non-git on both sides so the
+    written commit and the read-back comparison stayed symmetric; they still
+    share one implementation, and a ``None`` read still never blanks a
+    commit already stored.
     """
-    try:
-        git_dir = Path(local_path) / ".git"
-        # Linked worktrees use a ``.git`` *file* (gitdir pointer), not a dir;
-        # treated as non-git here on purpose so this stays in lockstep with the
-        # MCP ``_meta.read_live_head`` reader (same is_dir() guard), keeping
-        # the written commit and the read-back comparison symmetric.
-        if not git_dir.is_dir():
-            return None
-        head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
-    except OSError:
-        return None
-    if head.startswith("ref: "):
-        ref_rel = head[5:].strip()
-        try:
-            return (git_dir / ref_rel).read_text(encoding="utf-8").strip() or None
-        except OSError:
-            pass
-        try:
-            for raw in (git_dir / "packed-refs").read_text(encoding="utf-8").splitlines():
-                if raw.startswith("#") or raw.startswith("^"):
-                    continue
-                sha, _, name = raw.partition(" ")
-                if name.strip() == ref_rel:
-                    return sha.strip() or None
-        except OSError:
-            return None
-        return None
-    return head or None
+    return read_head_commit(local_path)
+
+
+def _read_git_remote(local_path: str) -> tuple[str | None, str | None]:
+    """``(remote url without credentials, default branch)``, ``None`` where git has no answer."""
+    git_dir = resolve_git_dir(local_path)
+    # Without a HEAD git would search parent directories and answer for another repo.
+    if git_dir is None or not (git_dir / "HEAD").is_file():
+        return None, None
+    # Deferred: git_refs pulls in the change-risk stack, which a session open never needs.
+    from ...git_refs import default_branch
+
+    remote = read_remote_url(local_path)
+    return (strip_credentials(remote) if remote else None), default_branch(local_path)
+
+
+async def set_repo_function_mod_p80(session: AsyncSession, repo_id: str, value: int) -> None:
+    """Store the repo-wide function-mod p80 a full index measured.
+
+    Deliberately not folded into :func:`update_repo_git_totals`: that one
+    carries whole-history git totals (#730), and this is a health quantity that
+    happens to live on the same row. No-ops on a missing repo.
+    """
+    repo = await session.get(Repository, repo_id)
+    if repo is None:
+        return
+    repo.function_mod_p80 = int(value)
 
 
 async def update_repo_git_totals(
@@ -134,6 +220,7 @@ async def update_repo_git_totals(
     repo_id: str,
     *,
     total_commit_count: int | None = None,
+    total_merge_commit_count: int | None = None,
     first_commit_at: datetime | None = None,
     total_contributor_count: int | None = None,
     first_commit_author: str | None = None,
@@ -152,6 +239,7 @@ async def update_repo_git_totals(
     """
     updates = {
         "total_commit_count": total_commit_count,
+        "total_merge_commit_count": total_merge_commit_count,
         "first_commit_at": first_commit_at,
         "total_contributor_count": total_contributor_count,
         "first_commit_author": first_commit_author,
@@ -172,6 +260,8 @@ async def update_repo_git_totals(
     for attr, value in updates.items():
         if value is not None:
             setattr(repo, attr, value)
+    # Index persist is the only caller, so this is a sync; it also moves the
+    # stamp ``index_stamp`` caches whole-history answers on.
     repo.updated_at = _now_utc()
     await session.flush()
 

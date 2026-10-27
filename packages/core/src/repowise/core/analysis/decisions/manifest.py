@@ -23,6 +23,10 @@ from typing import Any
 
 import yaml
 
+from repowise.core.analysis.decisions.lifecycle import (
+    ARCHITECTURAL_KIND,
+    DECISION_KINDS,
+)
 from repowise.core.fsutils import atomic_write_text
 
 __all__ = [
@@ -66,6 +70,10 @@ class ManifestDecision:
     accepted_artifact: str = ""
     currency: str = "active"
     source: str = "cli"
+    #: Which noun. Written only for an agreement, so a file holding nothing but
+    #: architectural decisions renders exactly as it did before the split and a
+    #: store that has not changed still writes no bytes.
+    kind: str = ARCHITECTURAL_KIND
     evidence: list[str] = field(default_factory=list)
     superseded_by: str = ""
     aliases: list[str] = field(default_factory=list)
@@ -87,6 +95,8 @@ class ManifestDecision:
             "source": self.source,
             "accepted_at": self.accepted_at,
         }
+        if self.kind != ARCHITECTURAL_KIND:
+            out["kind"] = self.kind
         if self.accepted_by:
             out["accepted_by"] = self.accepted_by
         if self.accepted_artifact:
@@ -120,6 +130,13 @@ class ManifestDecision:
             accepted_artifact=_text("accepted_artifact"),
             currency=_text("currency") or "active",
             source=_text("source") or "cli",
+            # A hand-edited file is a trust boundary: an unrecognised
+            # noun reads as the checkable one rather than being stored.
+            kind=(
+                _text("kind")
+                if _text("kind") in DECISION_KINDS
+                else ARCHITECTURAL_KIND
+            ),
             evidence=_list("evidence"),
             superseded_by=_text("superseded_by"),
             aliases=_list("aliases"),

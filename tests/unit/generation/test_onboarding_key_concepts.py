@@ -111,9 +111,7 @@ def _graph_builder(files: list[ParsedFile], edges: list[tuple[str, str, str]]):
         g.add_edge(src, dst, edge_type=et)
 
     concept_edges = [
-        (u, v)
-        for u, v, d in g.edges(data=True)
-        if d.get("edge_type") in SYMBOL_USE_EDGE_TYPES
+        (u, v) for u, v, d in g.edges(data=True) if d.get("edge_type") in SYMBOL_USE_EDGE_TYPES
     ]
     sub = nx.DiGraph()
     sub.add_nodes_from(n for n, d in g.nodes(data=True) if d.get("node_type") == "symbol")
@@ -249,6 +247,34 @@ def test_key_concepts_spreads_across_clusters() -> None:
     assert clusters == {"Core", "Storage"}
     core_count = sum(1 for c in ctx.concept_symbols if c.cluster == "Core")
     assert core_count <= 3  # half-the-page cap on a single cluster
+
+
+def test_key_concepts_keeps_a_lifecycle_boundary_ahead_of_graph_only_rank() -> None:
+    """A representative concept set needs the path into the system, not only its hub."""
+    import dataclasses
+
+    files = [
+        _file("app/main.py", [_sym("app/main.py", "Application", "class", exported=True)]),
+        _file("core/store.py", [_sym("core/store.py", "CentralStore", "class", exported=True)]),
+        _file("core/model.py", [_sym("core/model.py", "DomainModel", "class", exported=True)]),
+        _file("lib/client.py", [_sym("lib/client.py", "PublicClient", "class", exported=True)]),
+    ]
+    edges: list[tuple[str, str, str]] = []
+    for i in range(6):
+        caller = f"workers/w{i}.py"
+        files.append(_file(caller, [_sym(caller, f"work_{i}", "function")]))
+        edges.append((f"{caller}::work_{i}", "core/store.py::CentralStore", "calls"))
+    sig = _signals(files, _graph_builder(files, edges))
+    sig = dataclasses.replace(
+        sig,
+        repo_structure=dataclasses.replace(sig.repo_structure, entry_points=["app/main.py"]),
+    )
+
+    ctx = onboarding.get_spec(SLOT_KEY_CONCEPTS).build_context(sig)
+
+    assert ctx is not None
+    assert ctx.lifecycle_entry_points == ["app/main.py"]
+    assert ctx.concept_symbols[0].name == "Application"
 
 
 def test_key_concepts_grounds_relationships_from_edges() -> None:
@@ -934,6 +960,50 @@ def test_grounding_leaves_lowercase_words_alone() -> None:
 def test_collect_known_gathers_paths_and_symbols() -> None:
     paths, symbols = collect_known(_ctx_for_grounding())
     assert "core/graph/builder.py" in paths
-    assert "builder.py" in paths  # basename included
+    assert "builder.py" not in paths  # aliases must not become canonical link targets
     assert "GraphBuilder" in symbols
     assert "LanguageSpec" in symbols
+
+
+def test_grounding_rewrites_preview_style_file_links_to_product_file_references() -> None:
+    content = (
+        "Read [the architecture guide]"
+        "(../../../../../../rw-upper/docs/architecture/ARCHITECTURE.md), then "
+        "visit [the website](https://repowise.dev)."
+    )
+    ctx = {"source_path": "docs/architecture/ARCHITECTURE.md"}
+
+    cleaned, repaired = check_grounding(content, ctx)
+
+    assert "../../" not in cleaned
+    assert "rw-upper" not in cleaned
+    assert "the architecture guide (`docs/architecture/ARCHITECTURE.md`)" in cleaned
+    assert "[the website](https://repowise.dev)" in cleaned
+    assert repaired == ["../../../../../../rw-upper/docs/architecture/ARCHITECTURE.md"]
+
+
+def test_grounding_demotes_unknown_absolute_file_links() -> None:
+    content = r"Read [private notes](C:\Users\person\notes.md)."
+
+    cleaned, repaired = check_grounding(content, {"known": "src/app.py"})
+
+    assert cleaned == "Read private notes."
+    assert repaired == [r"C:\Users\person\notes.md"]
+
+
+def test_grounding_preserves_dot_directory_in_canonical_file_link() -> None:
+    content = "Read [the guide](C:/work/rw-upper/.github/CONTRIBUTING.md)."
+
+    cleaned, repaired = check_grounding(content, {"path": ".github/CONTRIBUTING.md"})
+
+    assert cleaned == "Read the guide (`.github/CONTRIBUTING.md`)."
+    assert repaired == ["C:/work/rw-upper/.github/CONTRIBUTING.md"]
+
+
+def test_grounding_does_not_promote_a_basename_alias_to_a_file_link() -> None:
+    content = "Read [another file](C:/tmp/elsewhere/foo.py)."
+
+    cleaned, repaired = check_grounding(content, {"path": "src/foo.py"})
+
+    assert cleaned == "Read another file."
+    assert repaired == ["C:/tmp/elsewhere/foo.py"]

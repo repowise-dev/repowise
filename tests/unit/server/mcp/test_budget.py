@@ -545,15 +545,15 @@ async def test_get_dead_code_truncation_is_expandable(setup_mcp, repo_root: Path
     from repowise.server.mcp_server import get_dead_code
 
     mcp_mod._repo_path = str(repo_root)
-    # Fixture has two medium-tier findings; limit=1 drops one of them.
+    # Fixture has two high-tier findings (0.9, 0.7); limit=1 drops the second.
     result = await get_dead_code(limit=1)
-    assert result["tiers"]["medium"]["truncated"] is True
+    assert result["tiers"]["high"]["truncated"] is True
     omitted = result["_meta"]["omitted"]
     assert omitted["refs"]
 
     stored = "\n".join(_store_get(repo_root, r) or "" for r in omitted["refs"])
-    assert "OldModel" in stored  # the dropped medium finding
-    assert "medium-tier findings beyond limit=1" in stored
+    assert "deprecated_login" in stored  # the dropped high finding
+    assert "high-tier findings beyond limit=1" in stored
     rec = _store_record(repo_root, omitted["refs"][0])
     assert rec["source"] == "mcp:get_dead_code"
 
@@ -568,12 +568,12 @@ async def test_get_overview_stays_under_a_narrowed_host_cap(
 
     mcp_mod._repo_path = str(repo_root)
     budgeted = tool_middleware(get_overview)
-    full = await budgeted()
+    full = await budgeted(include=["tools"])
     assert "truncated" not in full  # normal cap: nothing sheds
     assert full["tool_surface"]["recipes"]
 
     monkeypatch.setenv("MAX_MCP_OUTPUT_TOKENS", "700")
-    trimmed = await budgeted()
+    trimmed = await budgeted(include=["tools"])
 
     assert trimmed["truncated"] is True
     assert not trimmed.get("tool_surface", {}).get("recipes")
@@ -597,8 +597,12 @@ def test_risk_trim_blast_lists_collects_drops(repo_root: Path):
     trimmed = _trim_blast_lists(blast, None, collector)
     assert len(trimmed["transitive_affected"]) == 15
     assert trimmed["transitive_affected_truncated_total"] == 20
-    assert trimmed["structural_impact_score"] == trimmed["overall_risk_score"] == 4.2
-    assert trimmed["overall_risk_score_compatibility"]["equivalent_value"] is True
+    # The raw structural score is a scales-only projection on the MCP surface.
+    assert "structural_impact_score" not in trimmed
+    assert "overall_risk_score" not in trimmed
+    scaled = _trim_blast_lists(blast, None, None, full_scale=True)
+    assert scaled["structural_impact_score"] == 4.2
+    assert "overall_risk_score_compatibility" not in scaled
 
     response: dict = {"_meta": {}}
     collector.attach(response)
@@ -646,7 +650,7 @@ async def test_get_overview_module_cap_is_expandable(setup_mcp, session, repo_ro
     omitted = result["_meta"]["omitted"]
     stored = "\n".join(_store_get(repo_root, r) or "" for r in omitted["refs"])
     # 27 module pages total, ordered by title — the tail is in the store.
-    assert f"module pages beyond cap={_MODULE_CAP}" in stored
+    assert f"module pages beneath the key modules, cap={_MODULE_CAP}" in stored
     assert stored.count("Extra Module") + stored.count("Module") >= 7
 
 

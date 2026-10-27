@@ -14,10 +14,12 @@
 ) @symbol.def
 
 (class_declaration
+  (modifiers)? @symbol.modifiers
   (identifier) @symbol.name
 ) @symbol.def
 
 (object_declaration
+  (modifiers)? @symbol.modifiers
   (identifier) @symbol.name
 ) @symbol.def
 
@@ -55,18 +57,43 @@
 ; Calls
 ; ---------------------------------------------------------------------------
 
-; Simple call: foo(args)
+; Simple call: foo(args), or foo { ... } whose only argument is a trailing
+; lambda: the grammar gives that form no ``value_arguments`` at all.
 (call_expression
   (identifier) @call.target
-  (value_arguments) @call.arguments
+  [
+    (value_arguments)
+    (annotated_lambda)
+  ] @call.arguments
 ) @call.site
 
 ; Member call: obj.method(args) — and self-dispatch: this.method(args).
 ; See typescript.scm for why ``this`` rides an alternation in the receiver slot
-; instead of a second pattern.
+; instead of a second pattern. ``this.field.method()`` captures the field, as
+; java.scm does, so a constructor property types it.
 (call_expression
   (navigation_expression
-    [(identifier) (this_expression)] @call.receiver
+    [
+      (identifier) @call.receiver
+      (this_expression) @call.receiver
+      (navigation_expression (this_expression) (identifier) @call.receiver)
+    ]
+    (identifier) @call.target
+  )
+  [
+    (value_arguments)
+    (annotated_lambda)
+  ] @call.arguments
+) @call.site
+
+; Call chained on another call: a.b().c(args), a?.b()?.c(args), B.Builder().c().
+; The inner call is captured whole as ``@call.receiver_call``; the grammar
+; names no fields on either node, so ``parser._kotlin_call_receiver`` reads its
+; target, receiver and arguments by position. The ``.`` or ``?.`` between the
+; two is an unnamed token, so one pattern serves both.
+(call_expression
+  (navigation_expression
+    (call_expression) @call.receiver_call
     (identifier) @call.target
   )
   (value_arguments) @call.arguments
@@ -111,7 +138,7 @@
 ; of which carry an import statement of their own. The single
 ; ``@param.type`` capture is reused across languages
 ; (see parser._extract_type_refs); the Kotlin head extractor in
-; parser_helpers.py unwraps ``Foo?`` / ``List<Foo>`` / dotted ``ns.Foo`` and
+; lang_helpers/type_heads.py unwraps ``Foo?`` / ``List<Foo>`` / dotted ``ns.Foo`` and
 ; filters the kotlin-stdlib ubiquitous types.
 
 ; Function parameter: fun f(x: Bar) — `(user_type)` and `(nullable_type)`

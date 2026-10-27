@@ -10,15 +10,16 @@ over-estimate on a re-run: safe direction, wrong number.
 
 The token count is not the missing piece: ``cached_tokens`` already flows
 provider -> ``GeneratedPage`` -> the ``pages`` table, and the run report
-prints it. What is missing is a third rate (here, in
-``generation/cost_tracker.py``, and in the TS mirror at
-``packages/ui/src/dashboard/quick-actions.tsx``), plus splitting the
+prints it. What is missing is a third rate (here and in
+``generation/cost_tracker.py``), plus splitting the
 cached count out of ``input_tokens`` in the cost arithmetic. Worth doing
 when we report cost per re-index, where the discount is the whole story;
 not worth it to move a one-off init estimate by ~10%.
 """
 
 from __future__ import annotations
+
+from repowise.core.providers.llm.specs import ZERO_COST_MODEL_PREFIXES
 
 # Exact-match rates. Per-MTok pricing divided by 1000.
 _COST_TABLE_EXACT: dict[str, tuple[float, float]] = {
@@ -29,22 +30,52 @@ _COST_TABLE_EXACT: dict[str, tuple[float, float]] = {
     # OpenAI GPT-5.6 family. Same input rate as nano, cheaper output: near
     # enough to alias by eye, which is exactly why it gets a real row.
     "gpt-5.6-luna": (0.0002, 0.0012),  # $0.20 / $1.20 per MTok
-    # Gemini family
+    # OpenAI GPT-6 family — https://developers.openai.com/api/docs/pricing
+    "gpt-6-luna": (0.0001, 0.0005),  # $0.10 / $0.50 per MTok
+    "gpt-6-sol": (0.002, 0.010),  # $2 / $10 per MTok
+    "gpt-6.1-sol": (0.002, 0.010),  # $2 / $10 per MTok
+    "gpt-6-astra": (0.01, 0.05),  # $10 / $50 per MTok
+    # Gemini family — https://ai.google.dev/gemini-api/docs/pricing
     "gemini-3.1-pro-preview": (0.002, 0.012),  # $2 / $12 per MTok
     "gemini-3-flash-preview": (0.0005, 0.003),  # $0.50 / $3 per MTok
     "gemini-3.1-flash-lite-preview": (0.00025, 0.0015),  # $0.25 / $1.50 per MTok
-    "gemini-3.5-flash-lite": (0.00025, 0.0015),  # $0.25 / $1.50 per MTok
-    # Anthropic Claude 4.x family
+    "gemini-3.5-flash-lite": (0.0003, 0.0025),  # $0.30 / $2.50 per MTok
+    # Standard rates; both run an introductory price until year end (Argon
+    # $2 / $10 to Nov 30, 3.8 Flash $0.75 / $3.75 to Dec 31).
+    "gemini-3.8-flash": (0.0015, 0.0075),  # $1.50 / $7.50 per MTok
+    "gemini-4-argon": (0.004, 0.02),  # $4 / $20 per MTok
+    # Anthropic Claude 4.x and 5.x families
+    "claude-opus-5-5": (0.004, 0.02),  # $4 / $20 per MTok
+    "claude-opus-5": (0.005, 0.025),  # $5 / $25 per MTok
+    "claude-sonnet-5-5": (0.002, 0.01),  # $2 / $10 per MTok
+    "claude-sonnet-5": (0.002, 0.01),  # $2 / $10 per MTok
     "claude-opus-4-6": (0.005, 0.025),  # $5 / $25 per MTok
     "claude-sonnet-4-6": (0.003, 0.015),  # $3 / $15 per MTok
     "claude-haiku-4-5": (0.001, 0.005),  # $1 / $5 per MTok
+    "claude-haiku-5-5": (0.0001, 0.0005),  # $0.10 / $0.50 per MTok, prompts <= 100K
+    # DeepSeek V4 — https://api-docs.deepseek.com/quick_start/pricing
+    # Peak-hour cache-miss rates; off-peak is half. The legacy flash name is
+    # served by V4.1 Flash at the same price.
+    "deepseek-flash": (0.0003, 0.0012),  # $0.30 / $1.20 per MTok
+    "deepseek-v4-flash": (0.0003, 0.0012),
+    "deepseek-v4-pro": (0.00055, 0.00219),  # $0.55 / $2.19 per MTok
+    "deepseek-chat": (0.00027, 0.00110),
+    "deepseek-reasoner": (0.00055, 0.00219),
+    # Kimi / Moonshot — https://platform.kimi.ai/docs/pricing/chat-k26
+    "kimi-for-coding": (0.0006, 0.0024),  # $0.60 / $2.40 per MTok
+    "kimi-k2.5": (0.0006, 0.0024),
+    "kimi-k2.6": (0.00095, 0.004),  # $0.95 / $4 per MTok
 }
 
 # Prefix fallbacks for unknown variants. No `gpt-5.6` catch-all: the 5.6
 # variants are not one price tier, and an unpriced model reads as free here
-# (``_lookup_cost`` falls through to (0.0, 0.0)), so a guess would be worse
+# (the estimator prices a ``None`` from ``lookup_cost`` at zero), so a guess would be worse
 # than the miss it hides.
 _COST_TABLE_PREFIX: dict[str, tuple[float, float]] = {
+    "gpt-6-luna": (0.0001, 0.0005),
+    "gpt-6-sol": (0.002, 0.010),
+    "gpt-6.1-sol": (0.002, 0.010),
+    "gpt-6-astra": (0.01, 0.05),
     "gpt-5.6-luna": (0.0002, 0.0012),
     "gpt-5.4-nano": (0.0002, 0.00125),
     "gpt-5.4-mini": (0.00075, 0.0045),
@@ -53,29 +84,76 @@ _COST_TABLE_PREFIX: dict[str, tuple[float, float]] = {
     "claude-sonnet": (0.003, 0.015),
     "claude-haiku": (0.001, 0.005),
     "claude": (0.003, 0.015),
-    "gemini": (0.00025, 0.0015),
+    "gemini-3.8-flash": (0.0015, 0.0075),
+    "gemini-4-argon": (0.004, 0.02),
+    "gemini": (0.0003, 0.0025),
+    # DeepSeek V4 family — https://api-docs.deepseek.com/quick_start/pricing
+    # deepseek-chat was the V3 alias; V4 Flash/Pro are the current names.
+    "deepseek-v4-pro": (0.00055, 0.00219),
+    "deepseek-flash": (0.0003, 0.0012),
+    "deepseek-v4-flash": (0.0003, 0.0012),
+    "deepseek-v4": (0.0003, 0.0012),
+    "deepseek-chat": (0.00027, 0.00110),
+    "deepseek-reasoner": (0.00055, 0.00219),
+    "deepseek": (0.00027, 0.00110),
+    # Kimi / Moonshot — https://platform.moonshot.cn/docs/pricing/chat
+    "kimi-k2.6": (0.00095, 0.004),
+    "kimi-k2.5": (0.0006, 0.0024),
+    "kimi-k2": (0.0006, 0.0024),
+    "kimi-for-coding": (0.0006, 0.0024),
+    "kimi": (0.0006, 0.0024),
+    "moonshot": (0.0006, 0.0024),
     "llama": (0.0, 0.0),
     "mock": (0.0, 0.0),
-    "codex_cli/": (0.0, 0.0),
-    "claude_cli/": (0.0, 0.0),
-    "opencode/": (0.0, 0.0),
+    **dict.fromkeys(ZERO_COST_MODEL_PREFIXES, (0.0, 0.0)),
 }
 
 
-def _lookup_cost(model_name: str) -> tuple[float, float]:
-    """Return ``(input_rate, output_rate)`` per 1K tokens for *model_name*."""
+def lookup_cost(model_name: str) -> tuple[float, float] | None:
+    """Return ``(input_rate, output_rate)`` per 1K tokens for *model_name*.
+
+    ``None`` when no entry matches: the model is unpriced, which is not the
+    same as free (the explicit zero rows above).
+    """
     lower = model_name.lower()
     # OpenRouter/LiteLLM slugs carry a routing prefix (`google/gemini-3.5-flash-lite`)
     # that hides the model from every entry below, which priced them at zero.
-    # `codex_cli/` and `opencode/` are genuinely free, so they keep their prefixes.
-    if "/" in lower and not lower.startswith(("codex_cli/", "claude_cli/", "opencode/")):
+    # The agent-CLI prefixes are genuinely free, so they keep their prefixes.
+    if "/" in lower and not lower.startswith(ZERO_COST_MODEL_PREFIXES):
         lower = lower.rsplit("/", 1)[-1]
     if lower in _COST_TABLE_EXACT:
         return _COST_TABLE_EXACT[lower]
     best_prefix = ""
-    best_rates = (0.0, 0.0)
+    best_rates: tuple[float, float] | None = None
     for prefix, rates in _COST_TABLE_PREFIX.items():
         if lower.startswith(prefix) and len(prefix) > len(best_prefix):
             best_prefix = prefix
             best_rates = rates
     return best_rates
+
+
+# Embedding rates, USD per 1K input tokens. Keyed by model; each embedder's
+# row is its constructor default, so an unset model prices as that default.
+_EMBED_COST_BY_MODEL: dict[str, float] = {
+    "gemini-embedding-001": 0.00015,  # $0.15 / MTok
+    "text-embedding-3-small": 0.00002,  # $0.02 / MTok
+    "text-embedding-3-large": 0.00013,  # $0.13 / MTok
+    "text-embedding-ada-002": 0.0001,  # $0.10 / MTok
+    "amazon.titan-embed-text-v2:0": 0.00002,  # $0.02 / MTok, before Eden AI's fee
+}
+_EMBED_DEFAULT_MODEL: dict[str, str] = {
+    "gemini": "gemini-embedding-001",
+    "openai": "text-embedding-3-small",
+    "openrouter": "gemini-embedding-001",
+    "edenai": "amazon.titan-embed-text-v2:0",
+}
+# Local or test vectors: free whatever the model.
+_FREE_EMBEDDERS = frozenset({"mock", "ollama"})
+
+
+def lookup_embedding_cost(embedder: str, model: str | None = None) -> float | None:
+    """USD per 1K tokens to embed with *embedder*, ``None`` when unpriced."""
+    if embedder in _FREE_EMBEDDERS:
+        return 0.0
+    name = (model or _EMBED_DEFAULT_MODEL.get(embedder, "")).lower().rsplit("/", 1)[-1]
+    return _EMBED_COST_BY_MODEL.get(name)

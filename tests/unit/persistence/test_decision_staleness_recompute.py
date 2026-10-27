@@ -26,6 +26,11 @@ from repowise.core.persistence.models import (
 _REPO_ID = "repo1"
 
 
+def _aware(value: datetime) -> datetime:
+    """SQLite hands back naive datetimes for a tz-aware column."""
+    return value if value.tzinfo else value.replace(tzinfo=UTC)
+
+
 @pytest.fixture
 async def session():
     engine = create_async_engine(
@@ -171,3 +176,187 @@ async def test_a_record_naming_no_file_keeps_its_scope_rather_than_inventing_one
 
     rec = await session.get(DecisionRecord, "d1")
     assert json.loads(rec.affected_modules_json) == ["packages"]
+
+
+# --- last_code_change rides the same pass ----------------------------------
+
+
+async def test_the_date_is_the_latest_commit_across_the_files_it_governs(session):
+    await _add_decision(session, files=["src/a.py", "src/b.py"], staleness=0.0)
+    await _add_git_metadata(session, "src/a.py", days_ago=60, commits=1)
+    await _add_git_metadata(session, "src/b.py", days_ago=5, commits=1)
+
+    await recompute_decision_staleness(session, _REPO_ID, {})
+
+    rec = await session.get(DecisionRecord, "d1")
+    expected = datetime.now(UTC) - timedelta(days=5)
+    assert rec.last_code_change is not None
+    assert abs(_aware(rec.last_code_change) - expected) < timedelta(minutes=1)
+
+
+async def test_a_record_naming_nothing_tracked_keeps_no_date(session):
+    """It scores 1.00 stale on the same evidence, so a date would be invented."""
+    await _add_decision(session, files=["src/untracked.py"], staleness=0.0)
+
+    await recompute_decision_staleness(session, _REPO_ID, {})
+
+    rec = await session.get(DecisionRecord, "d1")
+    assert rec.last_code_change is None
+    assert rec.staleness_score == pytest.approx(1.0)
+
+
+async def test_the_date_does_not_churn_updated_at_on_a_second_pass(session):
+    """SQLite drops tzinfo, so a naive round trip would differ from the aware
+    value that wrote it and re-stamp every record on every run."""
+    await _add_decision(session, files=["src/a.py"], staleness=0.0)
+    await _add_git_metadata(session, "src/a.py", days_ago=60, commits=1)
+
+    await recompute_decision_staleness(session, _REPO_ID, {})
+    rec = await session.get(DecisionRecord, "d1")
+    first_date, first_stamp = rec.last_code_change, rec.updated_at
+
+    # Force the round trip the guard exists for: the second pass has to read
+    # the naive value back out of SQLite, not the aware one still in memory.
+    session.expire_all()
+    await recompute_decision_staleness(session, _REPO_ID, {})
+    await session.refresh(rec)
+
+    assert rec.last_code_change == first_date
+    assert rec.updated_at == first_stamp
+
+
+async def test_a_conventions_record_still_gets_a_date(session):
+    """The conventions skip protects its own staleness, which is a score. A
+    date is a fact about the code and is filled for every scoped record."""
+    rec = await _add_decision(session, files=["src/a.py"], staleness=0.42)
+    rec.source = "conventions"
+    await session.flush()
+    await _add_git_metadata(session, "src/a.py", days_ago=3, commits=1)
+
+    await recompute_decision_staleness(session, _REPO_ID, {})
+    await session.refresh(rec)
+
+    assert rec.last_code_change is not None
+    assert rec.staleness_score == pytest.approx(0.42), "its own score is untouched"
+
+
+async def test_the_commit_that_landed_the_record_is_not_scored_as_drift(session, monkeypatch):
+    """A record written on a branch is born before its squash; that squash is the decision."""
+    from repowise.core.analysis.decisions import landing
+
+    landed = datetime.now(UTC) - timedelta(days=10)
+    rec = await _add_decision(session, files=["src/auth.py"], staleness=0.0)
+    rec.evidence_commits_json = '["abc1234"]'
+    session.add(GitMetadata(repository_id=_REPO_ID, file_path="src/auth.py", last_commit_at=landed))
+    await session.flush()
+    monkeypatch.setattr(
+        landing,
+        "evidence_landings",
+        lambda repo_path, evidence: {"abc1234": landing.Landing("f" * 40, landed)},
+    )
+
+    await recompute_decision_staleness(session, _REPO_ID, {})
+    assert rec.staleness_score == 1.0
+
+    await recompute_decision_staleness(session, _REPO_ID, {}, "/repo")
+    assert rec.staleness_score == 0.0
+
+
+def _grant(rec: DecisionRecord, *, days_ago: int, kind: str = "person", seq: int = 1):
+    from repowise.core.persistence.models import DecisionAcceptance
+
+    return DecisionAcceptance(
+        repository_id=_REPO_ID,
+        decision_id=rec.id,
+        seq=seq,
+        action="accepted",
+        currency="active",
+        reason="reviewed",
+        scope_json='["src/a.py"]',
+        evidence_json='["src/a.py"]',
+        accepter="tester",
+        accepter_kind=kind,
+        created_at=datetime.now(UTC) - timedelta(days=days_ago),
+    )
+
+
+async def test_a_change_before_acceptance_was_reviewed_and_one_after_is_drift(session):
+    rec = await _add_decision(session, files=["src/a.py", "src/b.py"], staleness=0.0)
+    await _add_git_metadata(session, "src/a.py", days_ago=10, commits=1)
+    await _add_git_metadata(session, "src/b.py", days_ago=1, commits=1)
+    session.add(_grant(rec, days_ago=5))
+    await session.flush()
+
+    await recompute_decision_staleness(session, _REPO_ID, {})
+
+    assert rec.staleness_score == 0.5
+
+
+async def test_an_imported_acceptance_does_not_move_the_anchor(session):
+    """An import is stamped when it is applied here, not when anyone read the code."""
+    rec = await _add_decision(session, files=["src/a.py"], staleness=0.0)
+    await _add_git_metadata(session, "src/a.py", days_ago=10, commits=1)
+    session.add(_grant(rec, days_ago=1, kind="import"))
+    await session.flush()
+
+    await recompute_decision_staleness(session, _REPO_ID, {})
+
+    assert rec.staleness_score == 1.0
+
+
+async def test_reaffirming_clears_needs_review_without_an_index(session):
+    from repowise.core.persistence.crud.authority import current_currency, reaffirm_decision
+
+    rec = await _add_decision(session, files=["src/a.py"], staleness=1.0)
+    rec.rationale = "because"
+    rec.evidence_file = "src/a.py"
+    await _add_git_metadata(session, "src/a.py", days_ago=10, commits=1)
+    session.add(_grant(rec, days_ago=20))
+    await session.flush()
+    assert await current_currency(session, rec) == "needs_review"
+
+    await reaffirm_decision(session, rec, accepter="tester")
+
+    assert rec.staleness_score == 0.0
+    assert await current_currency(session, rec) == "active"
+
+
+async def test_a_grant_never_raises_the_score_from_partial_metadata(session):
+    """A file the index has not seen yet is the next index's to score."""
+    from repowise.core.persistence.crud.authority import reaffirm_decision
+
+    rec = await _add_decision(session, files=["src/new.py"], staleness=0.0)
+    rec.rationale = "because"
+    rec.evidence_file = "src/new.py"
+    session.add(_grant(rec, days_ago=20))
+    await session.flush()
+
+    await reaffirm_decision(session, rec, accepter="tester")
+
+    assert rec.staleness_score == 0.0
+
+
+async def test_stale_means_what_decision_health_counts(session):
+    """A candidate's score is a fact about its files; only a decision goes stale."""
+    from repowise.core.persistence.crud import get_decision_health_summary, get_stale_decisions
+
+    accepted = await _add_decision(session, files=["src/a.py"], staleness=0.9)
+    session.add(_grant(accepted, days_ago=40))
+    candidate = DecisionRecord(
+        id="d2",
+        repository_id=_REPO_ID,
+        title="Candidate",
+        decision="x",
+        status="proposed",
+        staleness_score=0.9,
+        affected_files_json='["src/a.py"]',
+    )
+    session.add(candidate)
+    await session.flush()
+
+    stale = await get_stale_decisions(session, _REPO_ID)
+    health = await get_decision_health_summary(session, _REPO_ID)
+
+    assert [d.id for d in stale] == ["d1"]
+    assert [d.id for d in health["stale_decisions"]] == ["d1"]
+    assert health["summary"]["stale"] == 1

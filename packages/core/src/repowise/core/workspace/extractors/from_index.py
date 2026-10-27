@@ -35,6 +35,7 @@ import re
 from typing import TYPE_CHECKING
 
 from .http.dialect import build_provider_contract
+from .http.flask import flask_file
 from .http.mounts import compose_prefix, router_prefixes
 from .langs import JS_TS, PYTHON
 
@@ -158,7 +159,14 @@ def _decorators_above(lines: list[str], start_line: int) -> list[str]:
     while i >= floor:
         line = lines[i]
         stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
+        # A comment may sit between two decorators or inside one's argument
+        # list, a blank line only inside the list. Neither ends the run (the
+        # next code line above decides), and neither joins the decorator text,
+        # so a commented ``methods=[...]`` is not read as one.
+        if stripped.startswith("#") or (not stripped and depth > 0):
+            i -= 1
+            continue
+        if not stripped:
             break
         # A line belongs to the stack only as a decorator head or as the
         # argument list of one still open below it. Anything else is ordinary
@@ -245,6 +253,11 @@ def extract_http_providers(
     the whole file text (see the module docstring), so ``ctx.content`` is read
     as well.
     """
+    # A Flask file's routes come from the Flask dialect, whose prefix rule this
+    # path cannot apply: the registration that overrides a blueprint's own
+    # prefix is keyed on a mount map only that dialect writes and reads.
+    if flask_file(ctx.content):
+        return []
     # Routes before prefixes: ``router_prefixes`` scans the whole file, so it
     # is worth paying for only once a route exists to stitch a prefix onto.
     routes = [

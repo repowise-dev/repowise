@@ -6,26 +6,53 @@ every public name, so existing imports are unaffected.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from datetime import UTC, datetime
 
-from sqlalchemy import delete, func, or_, select, text
+from sqlalchemy import ColumnElement, and_, delete, func, or_, select, text, update
+from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...analysis.health.signals import HISTORY_MIN_COMMITS as _HISTORY_MIN_COMMITS
+from ...analysis.health.signals import history_basis as _history_basis
+from ...co_change import CoChangePartner, parse_partners
 from ..models import (
+    Change,
     FixEvent,
     GitCommit,
+    GitCommitFile,
+    GitCommitHealthDelta,
+    GitCommitHealthFinding,
     GitFunctionBlame,
     GitMetadata,
+    Repository,
     _new_uuid,
     _now_utc,
 )
 from ..sql import LIKE_ESCAPE, escape_like
-from ._shared import _BATCH_SIZE, _batch_upsert_keyed
+from ._shared import (
+    _BATCH_SIZE,
+    _batch_delete_in,
+    _batch_upsert_keyed,
+    _row_inserter,
+    _row_updater,
+)
+from .history import CommitFilter, commit_filter_clauses
 
 # ---------------------------------------------------------------------------
 # GitMetadata CRUD
 # ---------------------------------------------------------------------------
+
+
+def code_file_rows(repository_id: str) -> ColumnElement[bool]:
+    """``where`` clause for a repository's code-file git rows.
+
+    Repo-wide ownership, bus-factor and module rollups count only these: a
+    ``history_only`` row (a doc or config file) carries commit counts, not
+    ownership signal.
+    """
+    return and_(GitMetadata.repository_id == repository_id, GitMetadata.history_only.is_(False))
 
 
 async def upsert_git_metadata(
@@ -97,6 +124,25 @@ async def get_git_metadata_bulk(
     return out
 
 
+async def get_co_change_partners(
+    session: AsyncSession, repository_id: str, file_paths: Sequence[str]
+) -> dict[str, list[CoChangePartner]]:
+    """``{file: its stored co-change partners}`` for *file_paths*, reading only that column."""
+    out: dict[str, list[CoChangePartner]] = {}
+    unique_paths = list(dict.fromkeys(file_paths))
+    for i in range(0, len(unique_paths), _BATCH_SIZE):
+        result = await session.execute(
+            select(GitMetadata.file_path, GitMetadata.co_change_partners_json).where(
+                GitMetadata.repository_id == repository_id,
+                GitMetadata.file_path.in_(unique_paths[i : i + _BATCH_SIZE]),
+            )
+        )
+        for file_path, raw in result.all():
+            if partners := parse_partners(raw):
+                out[file_path] = partners
+    return out
+
+
 async def get_all_git_metadata(session: AsyncSession, repository_id: str) -> dict[str, GitMetadata]:
     """Return all GitMetadata rows for a repository."""
     result = await session.execute(
@@ -122,6 +168,19 @@ async def get_hotspot_file_paths(session: AsyncSession, repository_id: str) -> s
         )
     )
     return {row[0] for row in result.all() if row[0] is not None}
+
+
+async def get_short_history_paths(session: AsyncSession, repository_id: str) -> set[str]:
+    """The files whose recorded history ``signals.history_basis`` reads as short."""
+    result = await session.execute(
+        select(
+            GitMetadata.file_path, GitMetadata.commit_count_total, GitMetadata.history_only
+        ).where(
+            GitMetadata.repository_id == repository_id,
+            GitMetadata.commit_count_total < _HISTORY_MIN_COMMITS,
+        )
+    )
+    return {row.file_path for row in result.all() if _history_basis(row)}
 
 
 #: The only git fields dead-code confidence is scored from
@@ -191,6 +250,8 @@ async def get_dead_code_git_fields(session: AsyncSession, repository_id: str) ->
 # wiped the init-computed values for exactly the files that change most.
 _WALK_FIELD_EMPTIES: dict[str, tuple] = {
     "co_change_partners_json": ("[]", "", None),
+    "co_change_partner_count": (0, None),
+    "co_change_mass": (0, 0.0, None),
     "change_entropy": (0, 0.0, None),
     # AI line share comes from the whole trace file, merged only into files
     # reindexed this pass. Preserve a prior non-empty share when a transient
@@ -228,34 +289,80 @@ async def upsert_git_metadata_bulk(
         item_key_fn=lambda meta: meta.get("file_path", ""),
         row_key_fn=lambda row: row.file_path,
         update_fn=_update_git_metadata,
-        insert_fn=lambda meta: GitMetadata(
-            id=_new_uuid(),
-            repository_id=repository_id,
-            **{
-                k: v
-                for k, v in meta.items()
-                if k not in ("id", "repository_id") and hasattr(GitMetadata, k)
-            },
-        ),
+        insert_fn=_row_inserter(GitMetadata, repository_id),
         batch_size=_BATCH_SIZE,
     )
+
+
+def split_blame_line_shares(connection: Connection) -> int:
+    """Move blame line shares stored as commit shares into ``primary_owner_line_pct``.
+
+    Before that column existed, blame overwrote ``primary_owner_commit_pct``
+    with the blame owner's share of current lines, and a file without new
+    commits is never re-walked to fix it. Such a row is recognisable from its
+    own stored data: the value is not the owner's share of the file's commits
+    per ``top_authors_json`` / ``commit_count_total``. Those rows get the value
+    as their line share and the owner's commit share (None when they have no
+    counted commits); every other row, including all commit-only rows, is left
+    alone. Sync so both Alembic and the SQLite schema reconciler can run it,
+    once, when the column is added. Returns the number of rows moved.
+    """
+    rows = connection.execute(
+        text(
+            "SELECT id, primary_owner_name, primary_owner_commit_pct, commit_count_total, "
+            "top_authors_json FROM git_metadata "
+            "WHERE primary_owner_commit_pct IS NOT NULL AND primary_owner_line_pct IS NULL"
+        )
+    ).all()
+    moves: list[dict] = []
+    for row_id, owner, stored_pct, total, authors_json in rows:
+        try:
+            authors = json.loads(authors_json or "[]")
+        except ValueError:
+            continue
+        if not authors or not total:
+            continue  # nothing to check the value against
+        own = next((a.get("commit_count", 0) for a in authors if a.get("name") == owner), 0)
+        commit_pct = own / total if own else None
+        if commit_pct is not None and abs(commit_pct - stored_pct) < 1e-9:
+            continue
+        moves.append({"id": row_id, "line_pct": stored_pct, "commit_pct": commit_pct})
+    if moves:
+        connection.execute(
+            text(
+                "UPDATE git_metadata SET primary_owner_line_pct = :line_pct, "
+                "primary_owner_commit_pct = :commit_pct WHERE id = :id"
+            ),
+            moves,
+        )
+    return len(moves)
 
 
 async def recompute_git_percentiles(
     session: AsyncSession,
     repository_id: str,
 ) -> int:
-    """Recompute churn_percentile, is_hotspot, and change_entropy_pct using SQL
-    PERCENT_RANK window functions.
+    """Recompute churn_percentile, is_hotspot, and the history percentiles in SQL.
 
     Called after incremental updates so that percentile rankings stay fresh
     without a full ``repowise init``.  Returns the number of rows updated.
 
     Primary churn ranking signal is temporal_hotspot_score (exponentially decayed
-    churn); commit_count_90d is the tiebreak. change_entropy_pct ranks files by
-    change_entropy ascending — zero-entropy files tie at the minimum (0.0), so
-    they stay below the biomarker's ≥0.80 gate. Works on both SQLite (3.25+) and
+    churn); commit_count_90d is the tiebreak. Works on both SQLite (3.25+) and
     PostgreSQL.
+
+    ``prior_defect_pct`` ranks over the whole table, ties sharing a rank, since
+    a file with no fixes in the window is a measured zero.
+
+    ``change_entropy_pct`` and ``co_change_scatter_pct`` mirror
+    ``enrich._rank_within_eligible``: ``ROW_NUMBER`` over the files carrying a
+    positive signal, over how many of them there are. Ranking them over the
+    whole table instead gives a file a different percentile here than the
+    Python path gives it, and a gate at 0.80 turns that into findings that
+    appear and disappear on an unchanged tree.
+
+    Every ranking is over code rows: ``history_only`` rows (non-code files)
+    carry counts and authors but no rank, and read 0 / not-a-hotspot.
 
     Hotspot classification mirrors ``enrich.meets_hotspot_floors`` (issue #361):
     the repo-relative top-quartile gate AND the absolute activity floors —
@@ -282,22 +389,49 @@ WITH ranked AS (
     PERCENT_RANK() OVER (
       PARTITION BY repository_id
       ORDER BY COALESCE(temporal_hotspot_score, 0.0), commit_count_90d
-    ) AS prank,
-    PERCENT_RANK() OVER (
-      PARTITION BY repository_id
-      ORDER BY COALESCE(change_entropy, 0.0)
-    ) AS erank
+    ) AS prank
   FROM git_metadata
-  WHERE repository_id = :repo_id
+  WHERE repository_id = :repo_id AND NOT history_only
+),
+entropy_ranked AS (
+  SELECT id,
+    (ROW_NUMBER() OVER (ORDER BY COALESCE(change_entropy, 0.0)) - 1) * 1.0
+      / (SELECT COUNT(*) FROM git_metadata
+         WHERE repository_id = :repo_id AND NOT history_only
+           AND COALESCE(change_entropy, 0.0) > 0.0) AS erank
+  FROM git_metadata
+  WHERE repository_id = :repo_id AND NOT history_only AND COALESCE(change_entropy, 0.0) > 0.0
+),
+scatter_ranked AS (
+  SELECT id,
+    (ROW_NUMBER() OVER (ORDER BY COALESCE(co_change_mass, 0.0)) - 1) * 1.0
+      / (SELECT COUNT(*) FROM git_metadata
+         WHERE repository_id = :repo_id AND NOT history_only
+           AND COALESCE(co_change_mass, 0.0) > 0.0) AS crank
+  FROM git_metadata
+  WHERE repository_id = :repo_id AND NOT history_only AND COALESCE(co_change_mass, 0.0) > 0.0
+),
+defect_ranked AS (
+  SELECT id,
+    PERCENT_RANK() OVER (ORDER BY COALESCE(prior_defect_count, 0)) AS drank
+  FROM git_metadata
+  WHERE repository_id = :repo_id AND NOT history_only
 )
 UPDATE git_metadata
-SET churn_percentile = (SELECT prank FROM ranked WHERE ranked.id = git_metadata.id),
-    is_hotspot = ((SELECT prank FROM ranked WHERE ranked.id = git_metadata.id) >= 0.75
+SET churn_percentile = COALESCE(
+      (SELECT prank FROM ranked WHERE ranked.id = git_metadata.id), 0.0),
+    is_hotspot = (COALESCE((SELECT prank FROM ranked WHERE ranked.id = git_metadata.id), 0.0)
+                  >= 0.75
                   AND git_metadata.commit_count_90d >= :min_commits_90d
                   AND (git_metadata.commit_count_90d >= :high_commits_90d
                        OR COALESCE(git_metadata.temporal_hotspot_score, 0.0)
                           >= :min_temporal_score)),
-    change_entropy_pct = (SELECT erank FROM ranked WHERE ranked.id = git_metadata.id)
+    change_entropy_pct = COALESCE(
+      (SELECT erank FROM entropy_ranked WHERE entropy_ranked.id = git_metadata.id), 0.0),
+    co_change_scatter_pct = COALESCE(
+      (SELECT crank FROM scatter_ranked WHERE scatter_ranked.id = git_metadata.id), 0.0),
+    prior_defect_pct = COALESCE(
+      (SELECT drank FROM defect_ranked WHERE defect_ranked.id = git_metadata.id), 0.0)
 WHERE repository_id = :repo_id;
 """
     await session.execute(
@@ -318,12 +452,7 @@ WHERE repository_id = :repo_id;
 # ---------------------------------------------------------------------------
 
 
-def _update_git_commit(existing: GitCommit, row: dict) -> None:
-    for key, val in row.items():
-        # ``sha`` is the natural key — never reassign it on update.
-        if key not in ("id", "repository_id", "sha") and hasattr(existing, key):
-            setattr(existing, key, val)
-    existing.updated_at = _now_utc()
+_update_git_commit = _row_updater("sha")
 
 
 async def upsert_git_commits_bulk(
@@ -340,16 +469,200 @@ async def upsert_git_commits_bulk(
         item_key_fn=lambda row: row.get("sha", ""),
         row_key_fn=lambda row: row.sha,
         update_fn=_update_git_commit,
-        insert_fn=lambda row: GitCommit(
-            id=_new_uuid(),
-            repository_id=repository_id,
-            **{
-                k: v
-                for k, v in row.items()
-                if k not in ("id", "repository_id") and hasattr(GitCommit, k)
-            },
-        ),
+        insert_fn=_row_inserter(GitCommit, repository_id),
         batch_size=_BATCH_SIZE,
+    )
+
+
+_update_git_commit_file = _row_updater("sha", "file_path")
+
+
+async def upsert_git_commit_files_bulk(
+    session: AsyncSession,
+    repository_id: str,
+    rows: list[dict],
+) -> None:
+    """Bulk upsert per-commit file rows (keyed on ``repository_id`` + sha + path)."""
+    await _batch_upsert_keyed(
+        session,
+        GitCommitFile,
+        rows,
+        prefilter=(GitCommitFile.repository_id == repository_id,),
+        item_key_fn=lambda row: (row.get("sha", ""), row.get("file_path", "")),
+        row_key_fn=lambda row: (row.sha, row.file_path),
+        update_fn=_update_git_commit_file,
+        insert_fn=_row_inserter(GitCommitFile, repository_id),
+        batch_size=_BATCH_SIZE,
+    )
+
+
+async def get_commit_files(
+    session: AsyncSession, repository_id: str, sha: str
+) -> list[GitCommitFile]:
+    """The files one commit touched, largest churn first."""
+    result = await session.execute(
+        select(GitCommitFile)
+        .where(GitCommitFile.repository_id == repository_id, GitCommitFile.sha == sha)
+        .order_by(
+            (GitCommitFile.lines_added + GitCommitFile.lines_deleted).desc(),
+            GitCommitFile.file_path,
+        )
+    )
+    return list(result.scalars().all())
+
+
+async def delete_git_commit_files(session: AsyncSession, repository_id: str) -> None:
+    """Remove all per-commit file rows for a repository (before a clean reindex)."""
+    await session.execute(
+        delete(GitCommitFile).where(GitCommitFile.repository_id == repository_id)
+    )
+    await session.flush()
+
+
+async def delete_git_commit_files_by_sha(
+    session: AsyncSession, repository_id: str, shas: Sequence[str]
+) -> int:
+    """Drop file rows for specific commits, so they leave with their commit."""
+    return await _batch_delete_in(
+        session,
+        GitCommitFile,
+        GitCommitFile.sha,
+        shas,
+        prefilter=(GitCommitFile.repository_id == repository_id,),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Per-commit health delta (what a commit introduced, worsened or resolved)
+# ---------------------------------------------------------------------------
+
+
+_update_git_commit_health_delta = _row_updater("sha")
+_update_git_commit_health_finding = _row_updater("sha", "change_finding_id")
+
+
+async def upsert_commit_health_bulk(
+    session: AsyncSession,
+    repository_id: str,
+    delta_rows: list[dict],
+    finding_rows: list[dict],
+) -> None:
+    """Store a scan's rows, replacing the findings of every commit it covers.
+
+    The findings are deleted first rather than upserted in place: a rescan can
+    return fewer findings than the row it replaces, and a plain upsert would
+    leave the surplus behind as findings no commit ever produced.
+    """
+    shas = [row["sha"] for row in delta_rows if row.get("sha")]
+    if shas:
+        await delete_commit_health_findings_by_sha(session, repository_id, shas)
+    await _batch_upsert_keyed(
+        session,
+        GitCommitHealthDelta,
+        delta_rows,
+        prefilter=(GitCommitHealthDelta.repository_id == repository_id,),
+        item_key_fn=lambda row: row.get("sha", ""),
+        row_key_fn=lambda row: row.sha,
+        update_fn=_update_git_commit_health_delta,
+        insert_fn=_row_inserter(GitCommitHealthDelta, repository_id),
+        batch_size=_BATCH_SIZE,
+    )
+    await _batch_upsert_keyed(
+        session,
+        GitCommitHealthFinding,
+        finding_rows,
+        prefilter=(GitCommitHealthFinding.repository_id == repository_id,),
+        item_key_fn=lambda row: (row.get("sha", ""), row.get("change_finding_id", "")),
+        row_key_fn=lambda row: (row.sha, row.change_finding_id),
+        update_fn=_update_git_commit_health_finding,
+        insert_fn=_row_inserter(GitCommitHealthFinding, repository_id),
+        batch_size=_BATCH_SIZE,
+    )
+
+
+async def get_commit_health(
+    session: AsyncSession, repository_id: str, sha: str
+) -> GitCommitHealthDelta | None:
+    """The stored delta for one commit, or None when it was never scanned."""
+    result = await session.execute(
+        select(GitCommitHealthDelta).where(
+            GitCommitHealthDelta.repository_id == repository_id,
+            GitCommitHealthDelta.sha == sha,
+        )
+    )
+    return result.scalars().first()
+
+
+async def get_commit_health_findings(
+    session: AsyncSession, repository_id: str, sha: str
+) -> list[GitCommitHealthFinding]:
+    """One commit's stored findings, in the worst-first order the scan set."""
+    result = await session.execute(
+        select(GitCommitHealthFinding)
+        .where(
+            GitCommitHealthFinding.repository_id == repository_id,
+            GitCommitHealthFinding.sha == sha,
+        )
+        .order_by(GitCommitHealthFinding.position)
+    )
+    return list(result.scalars().all())
+
+
+async def get_scanned_commit_shas(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    analyzer_version: int,
+    rules_fingerprint: str,
+    performance_model_version: int,
+) -> set[str]:
+    """Shas already scanned by *this* analyzer, so a scan can skip them.
+
+    A row from an older analyzer is deliberately absent from this set: it will
+    be rescanned and overwritten, which is the whole invalidation story.
+    """
+    rows = await session.execute(
+        select(GitCommitHealthDelta.sha).where(
+            GitCommitHealthDelta.repository_id == repository_id,
+            GitCommitHealthDelta.analyzer_version == analyzer_version,
+            GitCommitHealthDelta.rules_fingerprint == rules_fingerprint,
+            GitCommitHealthDelta.performance_model_version == performance_model_version,
+        )
+    )
+    return {sha for (sha,) in rows}
+
+
+async def delete_commit_health(session: AsyncSession, repository_id: str) -> None:
+    """Remove every stored delta and finding (before a clean reindex)."""
+    for model in (GitCommitHealthFinding, GitCommitHealthDelta):
+        await session.execute(delete(model).where(model.repository_id == repository_id))
+    await session.flush()
+
+
+async def delete_commit_health_findings_by_sha(
+    session: AsyncSession, repository_id: str, shas: Sequence[str]
+) -> int:
+    """Drop the findings of specific commits, leaving their delta rows alone."""
+    return await _batch_delete_in(
+        session,
+        GitCommitHealthFinding,
+        GitCommitHealthFinding.sha,
+        shas,
+        prefilter=(GitCommitHealthFinding.repository_id == repository_id,),
+    )
+
+
+async def delete_commit_health_by_sha(
+    session: AsyncSession, repository_id: str, shas: Sequence[str]
+) -> int:
+    """Drop both rows for specific commits, so they leave with their commit."""
+    await delete_commit_health_findings_by_sha(session, repository_id, shas)
+    return await _batch_delete_in(
+        session,
+        GitCommitHealthDelta,
+        GitCommitHealthDelta.sha,
+        shas,
+        prefilter=(GitCommitHealthDelta.repository_id == repository_id,),
     )
 
 
@@ -385,19 +698,13 @@ async def delete_git_commits_by_sha(
     session: AsyncSession, repository_id: str, shas: Sequence[str]
 ) -> int:
     """Drop specific per-commit rows. Returns how many were removed."""
-    removed = 0
-    for start in range(0, len(shas), _BATCH_SIZE):
-        chunk = shas[start : start + _BATCH_SIZE]
-        if not chunk:
-            continue
-        result = await session.execute(
-            delete(GitCommit).where(
-                GitCommit.repository_id == repository_id, GitCommit.sha.in_(chunk)
-            )
-        )
-        removed += int(result.rowcount or 0)
-    await session.flush()
-    return removed
+    return await _batch_delete_in(
+        session,
+        GitCommit,
+        GitCommit.sha,
+        shas,
+        prefilter=(GitCommit.repository_id == repository_id,),
+    )
 
 
 async def get_commit_experience_inputs(session: AsyncSession, repository_id: str) -> list[dict]:
@@ -449,26 +756,69 @@ async def get_author_commit_counts(session: AsyncSession, repository_id: str) ->
     return [tuple(row) for row in result.all()]
 
 
-def _commit_authorship_clause(authorship: str | None):
-    """Optional authorship predicate: ``agent`` keeps agent-attributed commits,
-    ``human`` keeps the rest. ``None`` / ``"all"`` means no filtering."""
-    if authorship == "agent":
-        return GitCommit.agent_name.is_not(None)
-    if authorship == "human":
-        return GitCommit.agent_name.is_(None)
-    return None
+async def clear_attribution(session: AsyncSession, repository_id: str) -> None:
+    """Delete every AI attribution value derived into the index for a repository.
+
+    Commit labels, the per-file rollups and change provenance go; git
+    history, trailers and notes in the repository are untouched. ``repowise attribution purge`` and the
+    ``attribution.enabled: false`` sweep below both use this.
+    """
+    await session.execute(
+        update(GitCommit)
+        .where(GitCommit.repository_id == repository_id)
+        .values(
+            agent_name=None,
+            agent_autonomy_tier=None,
+            agent_channel=None,
+            agent_confidence=None,
+            agent_model_id=None,
+            attribution=None,
+        )
+    )
+    await session.execute(
+        update(GitMetadata)
+        .where(GitMetadata.repository_id == repository_id)
+        .values(
+            agent_commit_count=0,
+            attribution_known_count=0,
+            agent_authored_pct=None,
+            agent_tier_counts_json="{}",
+            agent_line_count=0,
+            agent_line_model_json="{}",
+        )
+    )
+    await session.execute(
+        update(Change)
+        .where(Change.repository_id == repository_id)
+        .values(provenance=None, provenance_agent=None, provenance_known=None)
+    )
+
+
+async def clear_attribution_if_disabled(session: AsyncSession, repository_id: str) -> bool:
+    """Run :func:`clear_attribution` when ``attribution.enabled`` is false.
+
+    Called after every git write, so switching attribution off and running
+    ``repowise update`` leaves nothing about AI in the index, including rows
+    an earlier index wrote. Returns whether it cleared.
+    """
+    from ...attribution import attribution_enabled
+
+    repo = await session.get(Repository, repository_id)
+    if attribution_enabled(repo.local_path if repo is not None else None):
+        return False
+    await clear_attribution(session, repository_id)
+    return True
 
 
 async def count_git_commits(
-    session: AsyncSession, repository_id: str, *, authorship: str | None = None
+    session: AsyncSession,
+    repository_id: str,
+    where: CommitFilter | None = None,
 ) -> int:
-    """Count persisted commits for a repository."""
-    stmt = (
-        select(func.count()).select_from(GitCommit).where(GitCommit.repository_id == repository_id)
+    """Count persisted commits for a repository, under the same filters."""
+    stmt = select(func.count()).select_from(GitCommit).where(
+        GitCommit.repository_id == repository_id, *commit_filter_clauses(where)
     )
-    clause = _commit_authorship_clause(authorship)
-    if clause is not None:
-        stmt = stmt.where(clause)
     result = await session.execute(stmt)
     return int(result.scalar_one() or 0)
 
@@ -520,19 +870,20 @@ async def get_git_commits(
     limit: int = 50,
     offset: int = 0,
     sort: str = "risk",
-    authorship: str | None = None,
+    where: CommitFilter | None = None,
 ) -> list[GitCommit]:
     """Return a page of commits, sorted by change-risk (default) or recency.
 
     ``sort="risk"`` ranks by ``change_risk_score`` descending (the review-
     priority order); ``sort="date"`` ranks by ``committed_at`` descending.
-    ``authorship`` optionally narrows to ``agent`` / ``human`` commits.
+    *where* (:class:`~repowise.core.persistence.crud.history.CommitFilter`)
+    filters the repository rather than the page, so a filter still answers
+    when the page it would have filtered is uniform.
     """
     order = GitCommit.committed_at.desc() if sort == "date" else GitCommit.change_risk_score.desc()
-    stmt = select(GitCommit).where(GitCommit.repository_id == repository_id)
-    clause = _commit_authorship_clause(authorship)
-    if clause is not None:
-        stmt = stmt.where(clause)
+    stmt = select(GitCommit).where(
+        GitCommit.repository_id == repository_id, *commit_filter_clauses(where)
+    )
     result = await session.execute(stmt.order_by(order).limit(limit).offset(offset))
     return list(result.scalars().all())
 
@@ -542,12 +893,7 @@ async def get_git_commits(
 # ---------------------------------------------------------------------------
 
 
-def _update_git_function_blame(existing: GitFunctionBlame, row: dict) -> None:
-    for key, val in row.items():
-        # ``symbol_id`` is the natural key — never reassign it on update.
-        if key not in ("id", "repository_id", "symbol_id") and hasattr(existing, key):
-            setattr(existing, key, val)
-    existing.updated_at = _now_utc()
+_update_git_function_blame = _row_updater("symbol_id")
 
 
 async def upsert_git_function_blame_bulk(
@@ -564,15 +910,7 @@ async def upsert_git_function_blame_bulk(
         item_key_fn=lambda row: row.get("symbol_id", ""),
         row_key_fn=lambda row: row.symbol_id,
         update_fn=_update_git_function_blame,
-        insert_fn=lambda row: GitFunctionBlame(
-            id=_new_uuid(),
-            repository_id=repository_id,
-            **{
-                k: v
-                for k, v in row.items()
-                if k not in ("id", "repository_id") and hasattr(GitFunctionBlame, k)
-            },
-        ),
+        insert_fn=_row_inserter(GitFunctionBlame, repository_id),
         batch_size=_BATCH_SIZE,
     )
 
@@ -614,6 +952,37 @@ async def get_git_function_mod_counts(session: AsyncSession, repository_id: str)
     return [int(mod_count) for (mod_count,) in result.all()]
 
 
+async def get_function_commit_shas(
+    session: AsyncSession, repository_id: str
+) -> dict[str, list[tuple[str, int, int, list[str]]]]:
+    """Each file's stored ``(name, start_line, end_line, shas)`` commit sets.
+
+    One query for the repository. Rows written before the column existed carry
+    no set and are left out.
+    """
+    result = await session.execute(
+        select(
+            GitFunctionBlame.file_path,
+            GitFunctionBlame.function_name,
+            GitFunctionBlame.start_line,
+            GitFunctionBlame.end_line,
+            GitFunctionBlame.commit_shas_json,
+        ).where(
+            GitFunctionBlame.repository_id == repository_id,
+            GitFunctionBlame.commit_shas_json.isnot(None),
+        )
+    )
+    out: dict[str, list[tuple[str, int, int, list[str]]]] = {}
+    for path, name, start, end, raw in result.all():
+        try:
+            shas = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(shas, list) and shas:
+            out.setdefault(path, []).append((name, start, end, [str(s) for s in shas]))
+    return out
+
+
 async def get_git_function_blame(
     session: AsyncSession, repository_id: str, symbol_id: str
 ) -> GitFunctionBlame | None:
@@ -652,12 +1021,7 @@ async def get_git_function_blames(
 # ---------------------------------------------------------------------------
 
 
-def _update_fix_event(existing: FixEvent, row: dict) -> None:
-    for key, val in row.items():
-        # ``fix_sha`` + ``file_path`` are the natural key — never reassigned.
-        if key not in ("id", "repository_id", "fix_sha", "file_path") and hasattr(existing, key):
-            setattr(existing, key, val)
-    existing.updated_at = _now_utc()
+_update_fix_event = _row_updater("fix_sha", "file_path")
 
 
 async def upsert_fix_events_bulk(
@@ -678,15 +1042,7 @@ async def upsert_fix_events_bulk(
         item_key_fn=lambda row: (row.get("fix_sha", ""), row.get("file_path", "")),
         row_key_fn=lambda row: (row.fix_sha, row.file_path),
         update_fn=_update_fix_event,
-        insert_fn=lambda row: FixEvent(
-            id=_new_uuid(),
-            repository_id=repository_id,
-            **{
-                k: v
-                for k, v in row.items()
-                if k not in ("id", "repository_id") and hasattr(FixEvent, k)
-            },
-        ),
+        insert_fn=_row_inserter(FixEvent, repository_id),
         batch_size=_BATCH_SIZE,
     )
 
@@ -738,6 +1094,22 @@ async def prune_fix_events_for_missing_paths(
         delete(FixEvent).where(
             FixEvent.repository_id == repository_id,
             FixEvent.file_path.in_(stale),
+        )
+    )
+    await session.flush()
+    return int(deleted.rowcount or 0)
+
+
+async def prune_fix_events_for_shas(
+    session: AsyncSession, repository_id: str, shas: set[str]
+) -> int:
+    """Drop the fix events of commits the fix rule no longer names a fix."""
+    if not shas:
+        return 0
+    deleted = await session.execute(
+        delete(FixEvent).where(
+            FixEvent.repository_id == repository_id,
+            FixEvent.fix_sha.in_(sorted(shas)),
         )
     )
     await session.flush()

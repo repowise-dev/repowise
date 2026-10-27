@@ -63,6 +63,7 @@ def test_available_model_options_uses_models_endpoint(monkeypatch):
                     {"id": "kimi-for-coding-highspeed"},
                     {"id": "kimi-k2.5"},
                     {"id": "kimi-k2.6"},
+                    {"id": "kimi-k3"},
                 ]
             }
 
@@ -86,16 +87,10 @@ def test_available_model_options_uses_models_endpoint(monkeypatch):
     assert coding.recommended is True
 
     k2 = next(option for option in options if option.model == "kimi-k2.6")
-    assert k2.reasoning_modes == (
-        "auto",
-        "off",
-        "none",
-        "low",
-        "medium",
-        "high",
-        "xhigh",
-        "max",
-    )
+    assert k2.reasoning_modes == ("auto", "off")
+
+    k3 = next(option for option in options if option.model == "kimi-k3")
+    assert k3.reasoning_modes == ("auto", "low", "high", "max")
 
 
 def _make_mock_chat_response(
@@ -246,27 +241,46 @@ async def test_k2_instant_mode_pins_sampling_parameters():
     assert "frequency_penalty" not in kwargs
 
 
-async def test_k2_thinking_mode_pins_sampling_parameters():
+async def test_k2_rejects_fake_graded_reasoning_modes():
     provider = KimiProvider(api_key="sk-test", model="kimi-k2.6")
+
+    with patch("openai.AsyncOpenAI") as mock_client:
+        provider._client = mock_client.return_value
+        with pytest.raises(ProviderError, match="reasoning='high' is not supported"):
+            await provider.generate("system", "user", reasoning="high")
+
+    mock_client.return_value.chat.completions.create.assert_not_called()
+
+
+@pytest.mark.parametrize("reasoning", ["low", "high", "max"])
+async def test_k3_sends_documented_top_level_reasoning_effort(reasoning):
+    provider = KimiProvider(api_key="sk-test", model="kimi-k3")
     mock_response = _make_mock_chat_response()
 
     with patch("openai.AsyncOpenAI") as mock_client:
         mock_client.return_value.chat.completions.create = AsyncMock(return_value=mock_response)
         provider._client = mock_client.return_value
 
-        await provider.generate(
-            "system",
-            "user",
-            temperature=0.3,
-            reasoning="high",
-        )
+        await provider.generate("system", "user", reasoning=reasoning)
 
     kwargs = mock_client.return_value.chat.completions.create.call_args.kwargs
-    assert kwargs["temperature"] == 1.0
-    assert kwargs["top_p"] == 0.95
-    assert kwargs["extra_body"] == {"thinking": {"type": "enabled"}}
-    assert "presence_penalty" not in kwargs
-    assert "frequency_penalty" not in kwargs
+    assert kwargs["reasoning_effort"] == reasoning
+    assert "extra_body" not in kwargs
+
+
+async def test_k3_auto_uses_the_provider_default_effort():
+    provider = KimiProvider(api_key="sk-test", model="kimi-k3")
+    mock_response = _make_mock_chat_response()
+
+    with patch("openai.AsyncOpenAI") as mock_client:
+        mock_client.return_value.chat.completions.create = AsyncMock(return_value=mock_response)
+        provider._client = mock_client.return_value
+
+        await provider.generate("system", "user")
+
+    kwargs = mock_client.return_value.chat.completions.create.call_args.kwargs
+    assert "reasoning_effort" not in kwargs
+    assert "extra_body" not in kwargs
 
 
 async def test_generate_rejects_reasoning_for_non_k2_model():

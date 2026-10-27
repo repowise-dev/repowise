@@ -44,11 +44,17 @@ def repo_db_file(local_path: str | Path) -> Path:
 
 
 def is_primary_db_for(app_state, local_path: str | Path) -> bool:
-    """True when the server's primary database *is* this repo's wiki.db.
+    """True when the server's primary database serves this repo.
 
-    In that case no per-repo engine is needed — the ambient session factory
-    already reads and writes the canonical file.
+    When a database URL is explicitly configured (e.g. PostgreSQL or a shared
+    database), all repositories in the workspace share the ambient primary
+    database regardless of file path. Otherwise (repo-local SQLite mode), returns
+    True only when the ambient database file matches this repo's ``wiki.db``.
     """
+    from repowise.core.persistence.database import get_configured_db_url
+
+    if get_configured_db_url() is not None:
+        return True
     db_url: str = getattr(app_state, "db_url", "") or ""
     return repo_db_file(local_path).as_posix() in db_url.replace("\\", "/")
 
@@ -75,8 +81,8 @@ async def ensure_repo_registration(
     *,
     local_path: str,
     name: str,
-    url: str = "",
-    default_branch: str = "main",
+    url: str | None = None,
+    default_branch: str | None = None,
     settings: dict | None = None,
     repo_id: str | None = None,
 ):
@@ -86,7 +92,8 @@ async def ensure_repo_registration(
     with ``repo_id`` when given, so the primary-DB registry row and the
     canonical row share one id — and registers the session factory plus a
     per-repo FTS instance on ``app_state``. Idempotent: an already-registered
-    repo returns its existing factory.
+    repo returns its existing factory. A ``None`` url or branch on a new row
+    is read from git (:func:`upsert_repository`).
 
     Returns ``(session_factory, repo_id)`` for the canonical row.
     """
@@ -152,8 +159,8 @@ async def _ensure_repo_row(
     *,
     name: str,
     local_path: str,
-    url: str,
-    default_branch: str,
+    url: str | None,
+    default_branch: str | None,
     settings: dict | None,
     repo_id: str | None,
 ) -> str:

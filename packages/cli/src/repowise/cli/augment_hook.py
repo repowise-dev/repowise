@@ -24,6 +24,7 @@ hook installers should write ``repowise-augment`` instead.
 
 from __future__ import annotations
 
+import contextlib
 import sys
 
 
@@ -37,28 +38,46 @@ def _parse_client_arg(argv: list[str]) -> str | None:
 
 
 def main() -> None:
-    try:
-        from repowise.cli.commands.augment_cmd import _run_augment
+    # stdout is the agent's JSON channel: only the hook response goes there.
+    # Anything else that prints (structlog's default logger) goes to stderr.
+    response_stream = sys.stdout
+    with contextlib.redirect_stdout(sys.stderr):
+        try:
+            if "--health-gate" in sys.argv[1:]:
+                # The opt-in PreToolUse gate: its own stdlib-only module, so a
+                # shell call that is not a commit or push pays no augment import.
+                from repowise.cli.health_gate_hook import run
 
-        _run_augment(client=_parse_client_arg(sys.argv[1:]))
-    except (SystemExit, KeyboardInterrupt):
-        raise
-    except BaseException:
-        pass
+                run(sys.stdin, response_stream)
+            else:
+                from repowise.cli.commands.augment_cmd import _run_augment, command
 
-    # Best-effort self-heal for users whose only repowise invocation is
-    # through this hook. Wrapped so a write failure never propagates back to
-    # the agent.
-    #
-    # This is the fire that runs once per matched tool call, so it is where the
-    # version stamp pays for itself: it used to parse ~/.claude/settings.json
-    # every time to discover, almost always, that there was nothing to do.
-    try:
-        from repowise.cli.self_heal import run_editor_migrations
+                command._response_stream = response_stream
+                try:
+                    _run_augment(
+                        client=_parse_client_arg(sys.argv[1:]),
+                        coverage_only="--coverage-only" in sys.argv,
+                    )
+                finally:
+                    command._response_stream = None
+        except (SystemExit, KeyboardInterrupt):
+            raise
+        except BaseException:
+            pass
 
-        run_editor_migrations()
-    except BaseException:
-        pass
+        # Best-effort self-heal for users whose only repowise invocation is
+        # through this hook. Wrapped so a write failure never propagates back to
+        # the agent.
+        #
+        # This is the fire that runs once per matched tool call, so it is where the
+        # version stamp pays for itself: it used to parse ~/.claude/settings.json
+        # every time to discover, almost always, that there was nothing to do.
+        try:
+            from repowise.cli.self_heal import run_editor_migrations
+
+            run_editor_migrations()
+        except BaseException:
+            pass
 
     sys.exit(0)
 

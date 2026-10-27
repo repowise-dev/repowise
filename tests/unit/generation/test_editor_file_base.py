@@ -10,6 +10,7 @@ from repowise.core.generation.editor_files.data import (
     EditorFileData,
     HotspotFile,
 )
+from repowise.core.persistence.crud.analysis.performance import PerformanceHeadline
 
 # ---------------------------------------------------------------------------
 # Minimal concrete subclass for testing
@@ -52,9 +53,8 @@ def test_render_returns_non_empty_string(gen):
 def test_render_never_references_repowise_repo_paths(gen):
     # The generated file lands in USERS' repos — a `docs/layers/CODE_HEALTH.md`-style
     # reference points at a file that only exists in the repowise repo itself.
-    import dataclasses
 
-    data = dataclasses.replace(_minimal_data(), code_health=_health_block(6.4))
+    data = _full_health(_health_block(6.4))
     result = gen.render(data)
     for repo_relative in ("docs/layers/CODE_HEALTH.md", "docs/agent/MCP_TOOLS.md", "docs/agent/DISTILL.md"):
         assert repo_relative not in result
@@ -66,36 +66,247 @@ def test_render_contains_repo_name(gen):
     assert "test-repo" in result
 
 
+def test_render_names_only_what_a_degraded_index_lacks(gen):
+    import dataclasses
+
+    data = dataclasses.replace(
+        _minimal_data(),
+        index_scope={
+            "run_mode": "fast",
+            "content_provenance": "model",
+            "git_tier": "essential",
+            "file_pages": {"eligible": 5, "generated": 0, "omitted": 5},
+            "analysis": {"unavailable": [], "skipped": ["generation"]},
+            "upgrade": {"status": "pending"},
+        },
+    )
+    result = gen.render(data)
+    assert "Scope: essential Git history only · model upgrade pending." in result
+    # MCP serves the full scope in `_meta` and on get_overview; this file is
+    # read into every session, so it names the gaps only.
+    assert "eligible file pages omitted" not in result
+    assert "fast index" not in result
+    assert '"eligible": 5' not in result
+    assert "repowise update --full" in result
+
+
+def test_a_complete_index_has_no_scope_line(gen):
+    import dataclasses
+
+    data = dataclasses.replace(
+        _minimal_data(),
+        index_scope={
+            "run_mode": "standard",
+            "content_provenance": "model",
+            "git_tier": "full",
+            "file_pages": {"eligible": 300, "generated": 48, "omitted": 252},
+            "upgrade": {"status": "complete"},
+            "search": {"full_text": "available", "semantic": "available"},
+        },
+    )
+    result = gen.render(data)
+    assert "Scope:" not in result
+    assert "Last indexed: 2026-03-28 (commit a1b2c3d).\n" in result
+
+
+_KEYLESS_SCOPE = {
+    "run_mode": "standard",
+    "content_provenance": "template",
+    "git_tier": "full",
+    "file_pages": {"eligible": 28, "generated": 25, "omitted": 3},
+    "upgrade": {"status": "pending"},
+    "provider": {"embedder": "mock", "model_cost_possible": False},
+    "search": {"full_text": "available", "semantic": "unavailable"},
+}
+_KEYED_SCOPE = {
+    **_KEYLESS_SCOPE,
+    "content_provenance": "model",
+    "upgrade": {"status": "resumable"},
+    "provider": {"embedder": "openai", "model_cost_possible": True},
+    "search": {"full_text": "available", "semantic": "available"},
+}
+_KEYLESS_BULLET = "**No model on this index.**"
+
+
+@pytest.fixture(params=["claude_md.j2", "agents_md.j2"])
+def any_gen(request):
+    class _Gen(_TestGenerator):
+        template_name = request.param
+
+    return _Gen()
+
+
+def _scoped(scope: dict) -> EditorFileData:
+    import dataclasses
+
+    return dataclasses.replace(_minimal_data(), avg_confidence=1.0, index_scope=scope)
+
+
+def test_keyless_index_gets_keyless_steering(any_gen):
+    result = any_gen.render(_scoped(_KEYLESS_SCOPE))
+    assert _KEYLESS_BULLET in result
+    # Template pages store confidence 1.0, so the figure would read as 100%.
+    assert "Confidence:" not in result
+    assert "(commit a1b2c3d).\nScope: Built from code (no model, full-text search)." in result
+    # A built-from-code index is already full: `--full` has nothing to add.
+    assert "repowise update --full" not in result
+    assert "[fts]` only has no semantic agreement" not in result
+    assert 'Cite `confidence: "high"`' not in result
+    assert "`degraded` means no prose; `confidence` rates the evidence" in result
+    assert "provider key and `repowise generate`" in result
+
+
+def test_index_only_keyless_names_the_fast_to_full_command(any_gen):
+    result = any_gen.render(_scoped({**_KEYLESS_SCOPE, "content_provenance": "none"}))
+    assert "provider key and `repowise update --full`" in result
+    assert "Scope: Index only (no documentation, full-text search)." in result
+
+
+def test_keyed_index_keeps_model_guidance(any_gen):
+    result = any_gen.render(_scoped(_KEYED_SCOPE))
+    assert _KEYLESS_BULLET not in result
+    # The header carries the date and commit only.
+    assert "Confidence:" not in result
+    assert "Scope: model upgrade resumable." in result
+    assert "repowise update --full" in result
+    assert "[fts]` only has no semantic agreement" in result
+    assert 'Cite `confidence: "high"`' in result
+
+
+@pytest.mark.parametrize("scope", [_KEYLESS_SCOPE, _KEYED_SCOPE], ids=["keyless", "keyed"])
+@pytest.mark.parametrize("upgrade", ["pending", "complete"])
+def test_render_has_no_trailing_whitespace_or_double_blank_lines(any_gen, scope, upgrade):
+    result = any_gen.render(_scoped({**scope, "upgrade": {"status": upgrade}}))
+    assert not [line for line in result.splitlines() if line != line.rstrip()]
+    assert "\n\n\n" not in result
+
+
+def test_legacy_empty_scope_renders_keyed_text_and_no_scope_block(any_gen):
+    data = _scoped({})
+    assert data.keyless is False
+    result = any_gen.render(data)
+    assert "Scope:" not in result
+    assert _KEYLESS_BULLET not in result
+    assert "[fts]` only has no semantic agreement" in result
+    assert 'Cite `confidence: "high"`' in result
+
+
+def test_stale_warning_guidance_points_at_served_files(any_gen):
+    import dataclasses
+
+    # In-response warnings carry this guidance, so only the full section repeats it.
+    lean = any_gen.render(_minimal_data())
+    assert "_meta.stale_warning" not in lean
+    full = any_gen.render(
+        dataclasses.replace(_minimal_data(), sections=frozenset({"how_to_work_full"}))
+    )
+    assert "When `_meta.stale_warning` is set, Read the files that response served." in full
+    assert "`repowise update --working-tree`" in full
+
+
 def _health_block(
     maintainability_average: float | None,
     performance_average: float | None = None,
-    performance_findings: int = 0,
+    performance_causes: PerformanceHeadline | None = None,
     performance_coverage_pct: float | None = None,
+    band: str = "Good",
 ) -> CodeHealthBlock:
     return CodeHealthBlock(
         hotspot_health=5.0,
         average_health=7.5,
+        band=band,
         worst_score=2.0,
         worst_path="src/bad.py",
         maintainability_average=maintainability_average,
         performance_average=performance_average,
-        performance_findings=performance_findings,
+        performance_causes=performance_causes,
         performance_coverage_pct=performance_coverage_pct,
     )
 
 
-def test_render_surfaces_maintainability_when_present(gen):
+_FULL_HEALTH = frozenset({"code_health"})
+
+
+def _full_health(block: CodeHealthBlock) -> EditorFileData:
     import dataclasses
 
-    data = dataclasses.replace(_minimal_data(), code_health=_health_block(6.4))
+    return dataclasses.replace(_minimal_data(), code_health=block, sections=_FULL_HEALTH)
+
+
+def test_the_default_health_line_is_the_headline_and_worst_file(gen):
+    import dataclasses
+
+    block = dataclasses.replace(
+        _health_block(
+            6.4,
+            performance_average=9.2,
+            performance_causes=PerformanceHeadline(1, 7, 12, 2.5),
+        ),
+        fix_first=[{"title": "Split f", "where": "src/bad.py:3", "why": "long"}],
+    )
+    result = gen.render(dataclasses.replace(_minimal_data(), code_health=block))
+    assert "### Code health\n7.5/10 avg (Good), worst `src/bad.py` at 2.0/10." in result
+    for detail in ("hotspot health", "maintainability", "worth fixing now", "Fix first"):
+        assert detail not in result.split("### Tools")[0]
+
+
+def test_fix_first_is_opt_in(gen):
+    import dataclasses
+
+    block = dataclasses.replace(
+        _health_block(6.4), fix_first=[{"title": "Split f", "where": "src/bad.py:3", "why": "long"}]
+    )
+    data = dataclasses.replace(
+        _minimal_data(), code_health=block, sections=frozenset({"health", "fix_first"})
+    )
+    assert "- Split f (`src/bad.py:3`): long" in gen.render(data)
+
+
+def test_the_headline_reads_the_same_direction_as_every_other_surface(gen):
+    """A score out of ten beside a risk-shaped label reads inverted.
+
+    The CLI prints "Code health: 7.5/10 [Good]". The generated file is the one
+    an agent reads without a page around it, so it carries the same label and
+    the same band word rather than a bare number.
+    """
+
+    data = _full_health(_health_block(6.4))
+    result = gen.render(data)
+    assert "code health 7.5/10 avg (Good)" in result
+    assert "defect risk 7.5" not in result
+
+
+def test_the_headline_drops_the_band_when_it_is_unknown(gen):
+
+    data = _full_health(_health_block(6.4, band=""))
+    result = gen.render(data)
+    assert "code health 7.5/10 avg," in result
+    assert "avg ()" not in result
+
+
+def test_the_headline_states_the_analysed_share(gen):
+    import dataclasses
+
+    block = dataclasses.replace(
+        _health_block(6.4, band=""), analysed_note="analysed 4 of 435 code files"
+    )
+    result = gen.render(_full_health(block))
+    assert "code health 7.5/10 avg (analysed 4 of 435 code files)," in result
+    block = dataclasses.replace(block, band="Good")
+    result = gen.render(_full_health(block))
+    assert "avg (Good, analysed 4 of 435 code files)," in result
+
+
+def test_render_surfaces_maintainability_when_present(gen):
+
+    data = _full_health(_health_block(6.4))
     result = gen.render(data)
     assert "maintainability 6.4/10" in result
 
 
 def test_render_omits_maintainability_when_unmeasured(gen):
-    import dataclasses
 
-    data = dataclasses.replace(_minimal_data(), code_health=_health_block(None))
+    data = _full_health(_health_block(None))
     result = gen.render(data)
     # Defect-risk headline still renders; the maintainability clause is
     # suppressed (the word still appears in the static tool table, so match
@@ -110,23 +321,29 @@ def test_render_surfaces_performance_when_present(gen):
     data = dataclasses.replace(
         _minimal_data(),
         code_health=_health_block(
-            6.4, performance_average=9.2, performance_findings=7, performance_coverage_pct=88.0
+            6.4,
+            performance_average=9.2,
+            performance_causes=PerformanceHeadline(1, 7, 12, 2.5),
+            performance_coverage_pct=88.0,
         ),
+        sections=_FULL_HEALTH,
     )
     result = gen.render(data)
-    # Leads with the finding COUNT; the bounded [9,10] average and coverage %
-    # are deliberately not rendered (nothing an agent can act on there).
-    assert "performance risk 7 open static I/O-in-loop / N+1 findings" in result
+    # Leads with the causes worth fixing now, production and overall as context;
+    # the bounded [9,10] average and coverage % are deliberately not rendered.
+    assert (
+        "performance 1 cause worth fixing now (7 open in production code, 12 overall)" in result
+    )
+    assert "N+1" not in result
 
 
 def test_render_omits_performance_when_unmeasured(gen):
-    import dataclasses
 
-    data = dataclasses.replace(_minimal_data(), code_health=_health_block(6.4))
+    data = _full_health(_health_block(6.4))
     result = gen.render(data)
     # Maintainability still renders; the performance clause is suppressed.
     assert "maintainability 6.4/10" in result
-    assert "performance risk" not in result
+    assert "worth fixing now" not in result
 
 
 def test_write_creates_new_file(gen, tmp_path):
@@ -193,6 +410,47 @@ def test_write_replaces_between_markers(gen, tmp_path):
     assert "User section." in new_content
     assert "Old managed content." not in new_content
     assert "test-repo" in new_content  # new managed content present
+
+
+@pytest.mark.parametrize("title", [r"C:\Users\x", r"C:\new\tools", r"\1", r"\g<0>"])
+@pytest.mark.parametrize("existing_kind", ["marked", "unmarked", "absent"])
+@pytest.mark.parametrize("method", ["write", "render_full"])
+def test_managed_rewrite_preserves_literal_backslashes(
+    any_gen, tmp_path, title, existing_kind, method
+):
+    from dataclasses import replace
+
+    from repowise.core.generation.editor_files.data import DecisionSummary
+
+    data = replace(
+        _minimal_data(),
+        decisions=[DecisionSummary(title=title, status="active", rationale="Keep literal text.")],
+    )
+    start = any_gen.MARKER_START_FMT.format(tag=any_gen.marker_tag)
+    end = any_gen.MARKER_END_FMT.format(tag=any_gen.marker_tag)
+    prefix = "# User notes\nKeep this.\n\n"
+    suffix = "\n\nUser footer.\n"
+    target = tmp_path / any_gen.filename
+    rendered = any_gen.render(data)
+    assert title in rendered
+    wrapped = f"{start}\n{rendered}\n{end}"
+    if existing_kind == "marked":
+        target.write_text(f"{prefix}{start}\nold managed text\n{end}{suffix}", encoding="utf-8")
+        expected = prefix + wrapped + suffix
+    elif existing_kind == "unmarked":
+        target.write_text(prefix, encoding="utf-8")
+        expected = prefix.rstrip() + "\n\n" + wrapped + "\n"
+    else:
+        expected = any_gen.user_placeholder + "\n" + wrapped + "\n"
+
+    result = getattr(any_gen, method)(tmp_path, data)
+    actual = result.read_text(encoding="utf-8") if method == "write" else result
+    assert actual == expected
+    any_gen.write(tmp_path, data)
+    assert target.read_text(encoding="utf-8") == expected
+    assert any_gen.render_full(tmp_path, data) == expected
+    any_gen.write(tmp_path, data)
+    assert target.read_text(encoding="utf-8") == expected
 
 
 def test_write_replaces_only_managed_section(gen, tmp_path):
@@ -262,10 +520,10 @@ def test_render_hotspot_row_leads_with_fix_history(gen):
 
     data = dataclasses.replace(
         _minimal_data(),
-        hotspots=[_hotspot("src/a.py", fix_count=5, bug_magnet=True, last_fix_age="2 weeks ago")],
+        hotspots=[_hotspot("src/a.py", fix_count=5, bug_magnet=True, last_fix_date="2026-03-14")],
     )
     result = gen.render(data)
-    assert "5 bug fixes, last fix 2 weeks ago (bug magnet); 28 commits/90d" in result
+    assert "5 bug fixes in 6 months, last fix 2026-03-14 (bug magnet); 28 commits/90d" in result
 
 
 def test_render_hotspot_row_singularizes_one_fix(gen):
@@ -273,10 +531,10 @@ def test_render_hotspot_row_singularizes_one_fix(gen):
 
     data = dataclasses.replace(
         _minimal_data(),
-        hotspots=[_hotspot("src/a.py", fix_count=1, last_fix_age="yesterday")],
+        hotspots=[_hotspot("src/a.py", fix_count=1, last_fix_date="2026-03-27")],
     )
     result = gen.render(data)
-    assert "1 bug fix, last fix yesterday" in result
+    assert "1 bug fix in 6 months, last fix 2026-03-27" in result
     assert "1 bug fixes" not in result
 
 
@@ -287,7 +545,7 @@ def test_render_hotspot_row_falls_back_to_churn_without_fix_history(gen):
 
     data = dataclasses.replace(_minimal_data(), hotspots=[_hotspot("src/a.py")])
     result = gen.render(data)
-    assert "- `src/a.py` — 28 commits/90d" in result
+    assert "- `src/a.py`: 28 commits/90d" in result
     assert "bug fix" not in result
 
 
@@ -298,7 +556,7 @@ def test_render_never_shows_a_fix_count_without_its_age(gen):
 
     data = dataclasses.replace(
         _minimal_data(),
-        hotspots=[_hotspot("src/a.py", fix_count=9, bug_magnet=True, last_fix_age=None)],
+        hotspots=[_hotspot("src/a.py", fix_count=9, bug_magnet=True, last_fix_date=None)],
     )
     result = gen.render(data)
     assert "9 bug fixes" not in result

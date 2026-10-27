@@ -27,15 +27,19 @@ export interface StatTileProps {
   label: string;
   value: React.ReactNode;
   hint?: string;
+  /** Tooltip saying what the number counts, when the label alone cannot. */
+  title?: string;
   className?: string;
 }
 
 /** Compact label/value/hint cell — the consolidated inline-stat helper. */
-export function StatTile({ label, value, hint, className }: StatTileProps) {
+export function StatTile({ label, value, hint, title, className }: StatTileProps) {
   return (
     <div
+      title={title}
       className={cn(
         "rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3",
+        title && "cursor-help",
         className,
       )}
     >

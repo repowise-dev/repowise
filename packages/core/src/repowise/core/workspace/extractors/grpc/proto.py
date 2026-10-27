@@ -14,13 +14,16 @@ as service parsing — no new parser.
 
 from __future__ import annotations
 
+import posixpath
 import re
+from fnmatch import fnmatchcase
 from typing import TYPE_CHECKING, NamedTuple
 
 from repowise.core.workspace.contract_schema import ContractSchema, SchemaField
+from repowise.core.workspace.origins import ContractOrigin
 
+from ..dialect import build_contract
 from ..langs import PROTO
-from .dialect import make_grpc_contract
 
 if TYPE_CHECKING:
     from repowise.core.workspace.contracts import Contract
@@ -210,27 +213,88 @@ def _parse_proto_file(
     return package, services, messages
 
 
+#: MSBuild projects, whose ``<Protobuf>`` items say which side a proto generates.
+_PROJECT_FILES = frozenset({".csproj", ".fsproj", ".vbproj"})
+_PROTOBUF_ITEM_RE = re.compile(r"<Protobuf\b([^>]*)>", re.IGNORECASE)
+_ITEM_PATH_RE = re.compile(r"""\b(?:Include|Update)\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
+_GRPC_SERVICES_RE = re.compile(r"""\bGrpcServices\s*=\s*["'](\w+)["']""", re.IGNORECASE)
+
+
+def client_only_protos(project_rel_path: str, content: str) -> list[str]:
+    """Repo-relative path patterns of the protos a project compiles without a server.
+
+    ``<Protobuf Include="x.proto" GrpcServices="Client" />`` (or ``None``)
+    generates a client stub or messages only, so the project serves nothing
+    that proto declares. A path outside the repo is kept as written and
+    matches nothing.
+    """
+    base = posixpath.dirname(project_rel_path)
+    out: list[str] = []
+    content = re.sub(r"<!--.*?-->", "", content, flags=re.DOTALL)
+    for item in _PROTOBUF_ITEM_RE.finditer(content):
+        attrs = item.group(1)
+        side = _GRPC_SERVICES_RE.search(attrs)
+        path = _ITEM_PATH_RE.search(attrs)
+        if side is None or path is None or side.group(1).lower() not in ("client", "none"):
+            continue
+        out.append(posixpath.normpath(posixpath.join(base, path.group(1).replace("\\", "/"))))
+    return out
+
+
+class _ProtoPass:
+    """One repo's protos, less those a project file compiles as client-only."""
+
+    def __init__(self, dialect: ProtoDialect) -> None:
+        self._dialect = dialect
+        self._found: list[Contract] = []
+        self._client_only: list[str] = []
+
+    def scan(self, ctx: ScanContext) -> None:
+        if ctx.suffix in _PROJECT_FILES:
+            self._client_only.extend(client_only_protos(ctx.rel_path, ctx.content))
+        else:
+            self._found.extend(self._dialect.extract(ctx))
+
+    def finish(self) -> list[Contract]:
+        patterns = self._client_only
+        return [
+            c
+            for c in self._found
+            if not any(fnmatchcase(c.file_path.lower(), p.lower()) for p in patterns)
+        ]
+
+
 class ProtoDialect:
     name = "proto"
-    extensions = PROTO
+    extensions = PROTO | _PROJECT_FILES
+    #: A proto provides through a ``service`` block; a project file names the
+    #: client side with ``GrpcServices``.
+    requires = ("service", "GrpcServices")
+
+    def repo_pass(self) -> _ProtoPass:
+        return _ProtoPass(self)
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
+        if ctx.suffix not in PROTO:
+            return []
         package, services, messages = _parse_proto_file(ctx.content)
         out: list[Contract] = []
         for svc in services:
             for method in svc.methods:
-                contract = make_grpc_contract(
+                contract = build_contract(
                     ctx,
+                    contract_type="grpc",
                     contract_id=f"grpc::{svc.full_path}/{method.name}",
                     role="provider",
                     symbol_name=f"{svc.full_path}/{method.name}",
-                    confidence=0.85,
+                    origin=ContractOrigin.IDL,
                     meta={
                         "package": package,
                         "service": svc.name,
                         "method": method.name,
                         "source": "proto",
                     },
+                    line=None,
                 )
                 schema = ContractSchema(
                     source="proto",

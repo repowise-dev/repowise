@@ -3,18 +3,24 @@ import { GitBranch } from "lucide-react";
 import { EmptyState } from "../shared/empty-state";
 import { CommitCategorySparkline } from "../git/commit-category-sparkline";
 import { AgentTierBar } from "../git/agent-tier-bar";
-import { OwnershipDonut } from "../git/ownership-donut";
+import { ProportionBar } from "../shared/proportion-bar";
 import { ChangeHistoryCard } from "../git/change-history-card";
 import { StatRibbon, type RibbonStat } from "../stats/stat-ribbon";
 import { summarizeFixHistory } from "../lib/fix-history";
-import { formatAgeDays, formatNumber, formatRelativeTime, truncatePath } from "../lib/format";
+import {
+  formatAgeDays,
+  formatNumber,
+  formatRelativeTime,
+  ordinal,
+} from "../lib/format";
+import { FilePath } from "../shared/file-path";
 import type { FileDetailGit } from "@repowise-dev/types/files";
 import { FileSection, Fig } from "./file-section";
 import { FileMark } from "./file-marks";
 
 /** Matches `FixHistoryBadge`'s default tooltip — same claim, same wording. */
 const FIX_HISTORY_TITLE =
-  "Bug-fix commits that touched this file in the trailing defect window.";
+  "Bug-fix commits that touched this file in the last 6 months.";
 
 interface FileHistoryTabProps {
   git: FileDetailGit | null;
@@ -44,8 +50,12 @@ export function FileHistoryTab({
   }
 
   const hasCategories = Object.values(git.commit_categories ?? {}).some((v) => v > 0);
+  // Null when attribution is off for the repo. The share is of commits with a
+  // known source and travels with its coverage; unknown is never human.
+  const agent = git.agent;
   const agentPct =
-    git.agent.agent_authored_pct != null ? Math.round(git.agent.agent_authored_pct * 100) : null;
+    agent?.agent_authored_pct != null ? Math.round(agent.agent_authored_pct * 100) : null;
+  const agentCoverage = Math.round((agent?.attribution_coverage ?? 0) * 100);
   // Same helper the wiki sidebar uses, so one file's history reads identically
   // on both surfaces. Null means nothing counted: render nothing.
   const summary = summarizeFixHistory(git.prior_defect_count, git.last_fix_at, git.bug_magnet);
@@ -67,7 +77,7 @@ export function FileHistoryTab({
     { label: "Bus factor", value: formatNumber(git.bus_factor) },
   ];
   if (git.churn_percentile != null) {
-    stats.push({ label: "Churn", value: `${Math.round(git.churn_percentile)}th pct` });
+    stats.push({ label: "Churn", value: `${ordinal(Math.round(git.churn_percentile))} pct` });
   }
 
   return (
@@ -152,12 +162,13 @@ export function FileHistoryTab({
         description={
           <>
             Commit share by author across the indexed history
-            {git.agent.agent_commit_count > 0 && (
+            {agent && agent.agent_commit_count > 0 && (
               <>
                 , and how much of it came from a coding agent —{" "}
-                <Fig>{formatNumber(git.agent.agent_commit_count)}</Fig>{" "}
-                {git.agent.agent_commit_count === 1 ? "commit" : "commits"}
-                {agentPct != null && <> ({agentPct}%)</>}
+                <Fig>{formatNumber(agent.agent_commit_count)}</Fig>{" "}
+                {agent.agent_commit_count === 1 ? "commit" : "commits"} (
+                {agentPct != null && <>at least {agentPct}% of covered, </>}
+                coverage {agentCoverage}%)
               </>
             )}
             .
@@ -171,27 +182,34 @@ export function FileHistoryTab({
                 Author attribution lands with the next index.
               </p>
             ) : (
-              <OwnershipDonut
-                slices={git.top_authors.map((a) => ({ name: a.name, value: a.commit_count }))}
+              <ProportionBar
+                label="Commits by author"
+                segments={git.top_authors.map((a) => ({
+                  key: a.email || a.name,
+                  label: a.name,
+                  value: a.commit_count,
+                }))}
               />
             )}
           </div>
-          <div className="min-w-0">
-            <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-              Agent share
-            </p>
-            {git.agent.agent_commit_count === 0 ? (
-              <p className="mt-2 text-sm text-[var(--color-text-tertiary)]">
-                No agent-attributed commits on this file.
+          {agent && (
+            <div className="min-w-0">
+              <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+                Agent share
               </p>
-            ) : (
-              Object.keys(git.agent.tier_counts).length > 0 && (
-                <div className="mt-3">
-                  <AgentTierBar tierCounts={git.agent.tier_counts} />
-                </div>
-              )
-            )}
-          </div>
+              {agent.agent_commit_count === 0 ? (
+                <p className="mt-2 text-sm text-[var(--color-text-tertiary)]">
+                  No agent-attributed commits on this file.
+                </p>
+              ) : (
+                Object.keys(agent.tier_counts).length > 0 && (
+                  <div className="mt-3">
+                    <AgentTierBar tierCounts={agent.tier_counts} />
+                  </div>
+                )
+              )}
+            </div>
+          )}
         </div>
       </FileSection>
 
@@ -216,12 +234,7 @@ export function FileHistoryTab({
                   href={partnerHref(p.file_path)}
                   className="-mx-2 flex items-baseline justify-between gap-3 rounded px-2 py-2.5 transition-colors hover:bg-[var(--color-bg-elevated)]"
                 >
-                  <span
-                    className="min-w-0 truncate font-mono text-xs text-[var(--color-text-primary)]"
-                    title={p.file_path}
-                  >
-                    {truncatePath(p.file_path, 44)}
-                  </span>
+                  <FilePath path={p.file_path} fold className="text-[var(--color-text-primary)]" />
                   <span className="shrink-0 font-mono text-[11px] tabular-nums text-[var(--color-text-tertiary)]">
                     {p.co_change_count}&times;
                   </span>

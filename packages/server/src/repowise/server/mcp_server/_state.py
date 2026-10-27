@@ -18,6 +18,16 @@ _vector_store: Any = None
 _decision_store: Any = None
 _fts: Any = None
 _repo_path: str | None = None
+# Id of the row the served checkout's own store holds for it, when that store
+# holds exactly one (set by _lifespan). Only that row's live reads follow
+# ``_repo_path`` when its stored local_path differs; see _meta.served_root.
+_served_repo_id: str | None = None
+# When set, the server skips workspace auto-detection even if the path is
+# inside a workspace root. This backs the CLI's `--no-workspace` escape hatch.
+_force_single_repo: bool = False
+# Set by _lifespan when the directory has no .repowise/ and the server is
+# serving the empty in-memory store. Read by the mcp command for telemetry.
+_serving_no_index: bool = False
 # Set to an asyncio.Event by _lifespan; signals that vector stores are loaded.
 # tool_search awaits this before searching to avoid racing a background load.
 _vector_store_ready: asyncio.Event | None = None
@@ -35,6 +45,17 @@ _registry: Any = None          # RepoRegistry | None
 _workspace_root: str | None = None
 _cross_repo_enricher: Any = None  # CrossRepoEnricher | None
 
+# Consumer repo indexes held open for the cross-repo test-impact join, keyed by
+# alias. Opening one costs a full symbol-table load, so a repo is opened once
+# and reused across tool calls; ``None`` records a repo that has no index. Each
+# holds one database session, and a session is not concurrent-safe, so the lock
+# below serializes the joins that read them. Both are cleared by
+# ``_test_impact.close_test_impact_indexes()`` where the enricher is dropped.
+_test_impact_indexes: dict[str, Any] = {}
+# The loop the lock was created on, paired with the lock: an asyncio.Lock is
+# bound to one event loop, and a test or an embedded server can run a second.
+_test_impact_lock: tuple[Any, asyncio.Lock] | None = None
+
 # Embedder health — set by _resolve_embedder() in _server.py. ``None`` until an
 # embedder is resolved. When an explicitly-configured embedder fails to
 # initialise we still fall back to MockEmbedder (so non-RAG tools stay up) but
@@ -43,3 +64,23 @@ _cross_repo_enricher: Any = None  # CrossRepoEnricher | None
 # (issue #306). Shape: {"active": str, "requested": str | None,
 # "degraded": bool, "reason": str (only when degraded)}.
 _embedder_status: dict[str, Any] | None = None
+
+# Semantic indexes that exist on disk but would not open, keyed by repo alias
+# ("" for the single-repo server), valued with the reason. Kept apart from
+# ``_embedder_status`` because resolving the embedder again (every workspace
+# repo load) rewrites that, and must not clear a store failure.
+_vector_store_errors: dict[str, str] = {}
+
+# Release currency. The stdio server is the longest-lived process the product
+# runs and was the one path that never checked PyPI, so a client could sit on
+# an old release for weeks with no signal. ``_release_check`` is the latest
+# ``ReleaseCheck`` from the lifespan's poller (``None`` until the first pass);
+# ``_release_announced`` is the newest version ``_meta`` has already named, so
+# each newer release is surfaced once per process rather than on every call.
+_release_check: Any = None
+_release_announced: str | None = None
+
+# Whether ``get_answer``'s ``no-llm-provider`` degraded path has already named
+# what a key or local model would add in this process. Same once-per-process
+# shape as ``_release_announced``: a fact the caller only needs the first time.
+_keyless_note_announced: bool = False

@@ -3,25 +3,19 @@
 import { useMemo, useState } from "react";
 import { Search } from "lucide-react";
 import { toast } from "sonner";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "../ui/tabs";
+import { Tabs, ScrollableTabsList, TabsTrigger, TabsContent } from "../ui/tabs";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
-import { Slider } from "../ui/slider";
-import { Switch } from "../ui/switch";
+import { Segmented } from "../shared/segmented";
 import { TableSkeleton } from "../shared/loading-skeletons";
 import { ConfirmDialog } from "../ui/confirm-dialog";
 import { EmptyState } from "../shared/empty-state";
 import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-table";
 import { toFriendlyMessage } from "../lib/errors";
 import { AiPromptButton } from "../health/ai-prompt-button";
-import { formatDateTime, formatRelativeTimeOrNull } from "../lib/format";
-import {
-  FindingIdentity,
-  FindingConfidence,
-  FindingSafety,
-  FindingRowActions,
-  DEAD_CODE_STATUS_LABELS,
-} from "./finding-cells";
+import { PromptForRowsButton } from "../health/row-prompt-action";
+import { formatDateTime, formatNumber, formatRelativeTimeOrNull } from "../lib/format";
+import { FindingIdentity, FindingConfidence, FindingRowActions } from "./finding-cells";
 import {
   DEAD_CODE_CONFIDENCE,
   type DeadCodeFinding,
@@ -35,24 +29,40 @@ import {
  * card and the breakdown grid were counting all along.
  */
 const KIND_LABELS: Record<string, string> = {
-  unreachable_file: "Unreachable Files",
-  unused_export: "Unused Exports",
-  unused_internal: "Unused Internals",
-  zombie_package: "Zombie Packages",
+  unreachable_file: "Unreachable files",
+  unused_export: "Unused exports",
+  unused_internal: "Unused internals",
+  zombie_package: "Zombie packages",
 };
 
 const KIND_ORDER = Object.keys(KIND_LABELS);
 
-/** "unused_internal" -> "Unused Internals" for kinds we have no name for. */
+/** "some_future_kind" -> "Some future kind" for kinds we have no name for. */
 function labelForKind(kind: string): string {
   const known = KIND_LABELS[kind];
   if (known) return known;
-  return kind
-    .split(/[_\-\s]+/)
-    .filter(Boolean)
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-    .join(" ");
+  const words = kind.split(/[_\-\s]+/).filter(Boolean).join(" ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
 }
+
+/** Copy for a status slice with nothing in it. Neutral: an empty review list is not news. */
+const EMPTY_STATUS_COPY: Record<DeadCodeStatus, { title: string; description: string }> = {
+  open: { title: "No open findings", description: "Nothing is waiting for review." },
+  acknowledged: {
+    title: "No acknowledged findings",
+    description: "Acknowledge a finding to keep it on record without it counting as open.",
+  },
+  resolved: {
+    title: "No resolved findings",
+    description: "Findings you resolve land here, where you can reopen them.",
+  },
+  false_positive: {
+    title: "No findings marked as false positive",
+    description: "Mark a finding as a false positive to take it off the open list.",
+  },
+};
+
+type ConfidenceScope = "all" | "high";
 
 type SortKey = "path" | "confidence" | "owner" | "lines" | "last_commit_at";
 
@@ -64,7 +74,7 @@ function sortValue(f: DeadCodeFinding, key: SortKey): string | number {
     case "owner":
       return f.primary_owner ?? "";
     case "lines":
-      return f.lines;
+      return f.lines ?? 0;
     case "confidence":
       return f.confidence;
     case "last_commit_at":
@@ -100,8 +110,8 @@ export interface FindingsTableProps {
 
 /**
  * Canonical interactive dead-code table: kind tabs, a search box, sortable
- * columns, a confidence slider (the single confidence control for the spine),
- * cleanup-ready filter, bulk resolve, and per-row status actions.
+ * columns, one confidence control (all or high only), bulk resolve, and
+ * per-row status actions.
  *
  * Built on the shared `ResponsiveTable` so it collapses to stacked cards on
  * small screens and windows its rows — the fetch is capped at 500, which is
@@ -122,10 +132,9 @@ export function FindingsTable({
   isLoading,
 }: FindingsTableProps) {
   const [activeTab, setActiveTab] = useState<string | null>(null);
-  // The slider floor is the server's own `min_confidence` default (0.4, derived from
-  // RISK_CAP_CONFIDENCE in risk_factors.py): nothing below it is ever fetched.
-  const [minConfidence, setMinConfidence] = useState<number>(DEAD_CODE_CONFIDENCE.MEDIUM);
-  const [safeOnly, setSafeOnly] = useState(false);
+  // "High" is the deletion-ready floor (SAFE_CONFIDENCE_THRESHOLD); "all" is
+  // whatever the server sent, which already stops at its own 0.4 floor.
+  const [scope, setScope] = useState<ConfidenceScope>("all");
   const [query, setQuery] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("confidence");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
@@ -134,7 +143,7 @@ export function FindingsTable({
   const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false);
 
   // Tabs come from the unfiltered slice so the set stays put while the
-  // confidence slider empties a bucket, instead of tabs appearing and
+  // confidence filter empties a bucket, instead of tabs appearing and
   // vanishing under the pointer.
   const tabs = useMemo(() => {
     const present = new Set(findings.map((f) => f.kind));
@@ -148,8 +157,7 @@ export function FindingsTable({
     const buckets: Record<string, DeadCodeFinding[]> = {};
     for (const t of tabs) buckets[t.value] = [];
     for (const f of findings) {
-      if (f.confidence < minConfidence) continue;
-      if (safeOnly && !f.safe_to_delete) continue;
+      if (scope === "high" && f.confidence < DEAD_CODE_CONFIDENCE.HIGH) continue;
       if (
         needle &&
         !f.file_path.toLowerCase().includes(needle) &&
@@ -162,7 +170,7 @@ export function FindingsTable({
       buckets[f.kind]?.push(f);
     }
     return buckets;
-  }, [findings, tabs, minConfidence, safeOnly, query]);
+  }, [findings, tabs, scope, query]);
 
   // The active tab can disappear when the slice changes (a refetch, a resolved
   // last row); fall back to the first tab rather than rendering nothing.
@@ -197,8 +205,8 @@ export function FindingsTable({
     setSortOrder(key === "path" || key === "owner" ? "asc" : "desc");
   };
 
-  // Selection is scoped to what is on screen. Without this, raising the
-  // confidence slider after selecting rows would resolve findings the user can
+  // Selection is scoped to what is on screen. Without this, narrowing the
+  // confidence filter after selecting rows would resolve findings the user can
   // no longer see.
   const visibleSelected = useMemo(() => {
     const visible = new Set(current.map((f) => f.id));
@@ -222,12 +230,21 @@ export function FindingsTable({
   };
 
   const resetFilters = () => {
-    setMinConfidence(DEAD_CODE_CONFIDENCE.MEDIUM);
-    setSafeOnly(false);
+    setScope("all");
     setQuery("");
   };
 
-  const filtersActive = minConfidence > DEAD_CODE_CONFIDENCE.MEDIUM || safeOnly || query.trim() !== "";
+  // Mark whichever safety group is the minority, so the mark stays an exception.
+  const safeMark = useMemo(
+    () => (findings.filter((f) => f.safe_to_delete).length * 2 < findings.length ? "safe" : "review"),
+    [findings],
+  );
+
+  // Rows in the active tab that the filters are hiding, for the filtered state.
+  const hiddenInTab = useMemo(
+    () => (effectiveTab ? findings.filter((f) => f.kind === effectiveTab).length : 0),
+    [findings, effectiveTab],
+  );
 
   const resolveSelected = async () => {
     if (!onBulkResolve) return;
@@ -288,12 +305,13 @@ export function FindingsTable({
         key: "path",
         header: "File / Symbol",
         sortable: true,
-        cellClassName: "min-w-[200px] max-w-[480px]",
+        cellClassName: "min-w-[200px] max-w-[360px]",
         render: (f) => (
           <FindingIdentity
             finding={f}
             href={fileHref?.(f.file_path)}
             onNavigate={onNavigate}
+            mark={safeMark}
           />
         ),
         mobileRender: (f) => (
@@ -303,6 +321,7 @@ export function FindingsTable({
               finding={f}
               href={fileHref?.(f.file_path)}
               onNavigate={onNavigate}
+              mark={safeMark}
             />
           </span>
         ),
@@ -313,6 +332,7 @@ export function FindingsTable({
         mobileLabel: "Confidence",
         sortable: true,
         headerClassName: "w-24",
+        align: "right",
         render: (f) => <FindingConfidence finding={f} />,
       },
       {
@@ -338,14 +358,14 @@ export function FindingsTable({
         headerClassName: "w-28",
         render: (f) => (
           <span
-            className="block text-xs tabular-nums text-[var(--color-text-tertiary)]"
+            className="block font-mono text-xs tabular-nums text-[var(--color-text-tertiary)]"
             title={f.last_commit_at ? formatDateTime(f.last_commit_at) : undefined}
           >
             {formatRelativeTimeOrNull(f.last_commit_at)}
             {/* Recent churn is why a finding scores low; saying so makes the
                 confidence number legible instead of arbitrary. */}
             {f.commit_count_90d ? (
-              <span className="block text-2xs text-[var(--color-text-tertiary)]">
+              <span className="block text-xs text-[var(--color-text-tertiary)]">
                 {f.commit_count_90d} commit{f.commit_count_90d === 1 ? "" : "s"}/90d
               </span>
             ) : null}
@@ -360,26 +380,17 @@ export function FindingsTable({
         align: "right",
         headerClassName: "w-16",
         render: (f) => (
-          <span className="text-xs tabular-nums text-[var(--color-text-tertiary)]">{f.lines}</span>
+          <span className="font-mono text-xs tabular-nums text-[var(--color-text-secondary)]">
+            {f.lines == null ? "—" : formatNumber(f.lines)}
+          </span>
         ),
-      },
-      {
-        key: "safety",
-        header: "Safety",
-        mobileLabel: "Safety",
-        // The badge's tooltip is the only place risk_factors surface, so keep
-        // it on tablet widths where the old markup showed it.
-        priority: 2,
-        headerClassName: "w-20",
-        render: (f) => <FindingSafety finding={f} />,
       },
       {
         key: "actions",
         header: <span className="sr-only">Actions</span>,
         mobileLabel: "Actions",
-        // Two controls, not five: the cell no longer has to reserve room for a
-        // cluster that wrapped onto a second line at this width.
-        headerClassName: "w-24",
+        // The agent prompt leads, Resolve follows, the rest sit in the menu.
+        headerClassName: "w-64",
         align: "right",
         render: (f) => (
           <FindingRowActions
@@ -405,6 +416,7 @@ export function FindingsTable({
     onGeneratePrompt,
     onPatch,
     current,
+    safeMark,
   ]);
 
   const openFile =
@@ -414,39 +426,35 @@ export function FindingsTable({
 
   return (
     <div className="space-y-4">
-      {/* Controls — the confidence slider is the only confidence axis. */}
-      <div className="flex flex-wrap items-center gap-4">
-        <div className="relative">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
+        <div className="relative w-full sm:w-72">
           <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--color-text-tertiary)]" />
           <Input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search path, symbol, owner, reason…"
             aria-label="Search findings"
-            className="h-8 w-full pl-8 text-xs sm:w-72"
+            className="h-8 w-full pl-8 text-xs"
           />
         </div>
         <div className="flex items-center gap-2">
-          {/* A live value readout, not a <label>: the thing it describes is a
-              Radix span with role="slider", which htmlFor cannot reach. The
-              accessible name rides on the thumb's aria-label instead. */}
-          <span className="text-xs text-[var(--color-text-secondary)]">
-            Min confidence: {Math.round(minConfidence * 100)}%
+          <span aria-hidden className="text-xs text-[var(--color-text-secondary)]">
+            Confidence
           </span>
-          <Slider
-            min={DEAD_CODE_CONFIDENCE.MEDIUM}
-            max={1}
-            step={0.05}
-            value={[minConfidence]}
-            onValueChange={([v]) => setMinConfidence(v ?? DEAD_CODE_CONFIDENCE.MEDIUM)}
-            aria-label="Minimum confidence"
-            className="w-28"
+          <Segmented<ConfidenceScope>
+            label="Confidence"
+            value={scope}
+            onChange={setScope}
+            options={[
+              { value: "all", label: "All" },
+              {
+                value: "high",
+                label: "High only",
+                hint: `${Math.round(DEAD_CODE_CONFIDENCE.HIGH * 100)}% or higher, the deletion-ready floor`,
+              },
+            ]}
           />
         </div>
-        <label className="flex cursor-pointer select-none items-center gap-1.5 text-xs text-[var(--color-text-secondary)]">
-          <Switch checked={safeOnly} onCheckedChange={setSafeOnly} />
-          Cleanup-ready only
-        </label>
 
         {/* Bulk resolve only makes sense on findings that are still open. */}
         {onBulkResolve && status === "open" && selectedCount > 0 && (
@@ -455,18 +463,26 @@ export function FindingsTable({
             variant="outline"
             disabled={bulkPending}
             onClick={() => setBulkConfirmOpen(true)}
-            className="text-[var(--color-success)] border-[var(--color-success)]/30 hover:bg-[var(--color-success)]/10"
+            className="h-8"
           >
             {bulkPending ? "Resolving…" : `Resolve ${selectedCount} selected`}
           </Button>
         )}
 
-        {onGeneratePrompt && selectedCount > 0 && (
-          <AiPromptButton
-            label={`AI prompt for ${selectedCount} selected`}
-            onClick={() => onGeneratePrompt(visibleSelected)}
-          />
-        )}
+        {/* The selection when there is one, else every row the filters show. */}
+        {onGeneratePrompt &&
+          (selectedCount > 0 ? (
+            <AiPromptButton
+              label={`Copy prompt for ${selectedCount} selected`}
+              onClick={() => onGeneratePrompt(visibleSelected)}
+              className="whitespace-nowrap"
+            />
+          ) : (
+            <PromptForRowsButton
+              count={current.length}
+              onClick={() => onGeneratePrompt(current.map((f) => f.id))}
+            />
+          ))}
       </div>
       <ConfirmDialog
         open={bulkConfirmOpen}
@@ -481,10 +497,7 @@ export function FindingsTable({
       {isLoading && findings.length === 0 ? (
         <TableSkeleton className="mt-2" />
       ) : tabs.length === 0 ? (
-        <EmptyState
-          title="No findings"
-          description={`No ${DEAD_CODE_STATUS_LABELS[status].toLowerCase()} dead-code findings for this repository.`}
-        />
+        <EmptyState {...EMPTY_STATUS_COPY[status]} />
       ) : (
         <Tabs
           // Non-null in this branch: tabs is non-empty, so effectiveTab resolved.
@@ -496,18 +509,18 @@ export function FindingsTable({
             setSelected(new Set());
           }}
         >
-          <TabsList>
+          <ScrollableTabsList>
             {tabs.map((t) => (
               <TabsTrigger key={t.value} value={t.value}>
                 {t.label}
                 {(byKind[t.value]?.length ?? 0) > 0 && (
-                  <span className="ml-1.5 text-xs text-[var(--color-text-tertiary)]">
-                    {byKind[t.value]?.length}
+                  <span className="ml-1.5 font-mono text-xs tabular-nums text-[var(--color-text-tertiary)]">
+                    {formatNumber(byKind[t.value]?.length ?? 0)}
                   </span>
                 )}
               </TabsTrigger>
             ))}
-          </TabsList>
+          </ScrollableTabsList>
 
           {/* One content panel for the active tab only. Rendering a panel per tab
               and filling each with the *active* tab's rows happened to work
@@ -526,20 +539,18 @@ export function FindingsTable({
               virtualize={{ estimateRowHeight: 56, estimateCardHeight: 96 }}
               // The hover class the primitive applies is a different Tailwind
               // variant, so it survives the merge and would blank the selected
-              // tint the moment the pointer lands on a selected row.
+              // ground the moment the pointer lands on a selected row.
               rowClassName={(f) =>
                 selected.has(f.id)
-                  ? "bg-[var(--color-accent-muted)] hover:bg-[var(--color-accent-muted)]"
+                  ? "bg-[var(--color-bg-selected)] hover:bg-[var(--color-bg-selected-hover)]"
                   : undefined
               }
               {...(openFile ? { onRowClick: openFile } : {})}
               empty={
                 <EmptyState
-                  title="No findings"
-                  description="No findings in this category with the current filters."
-                  {...(filtersActive
-                    ? { action: { label: "Reset filters", onClick: resetFilters } }
-                    : {})}
+                  tone="filtered"
+                  title={`${formatNumber(hiddenInTab)} finding${hiddenInTab === 1 ? "" : "s"} hidden by the current filters`}
+                  action={{ label: "Reset filters", onClick: resetFilters }}
                 />
               }
             />

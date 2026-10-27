@@ -30,6 +30,26 @@ describe("QuickActions", () => {
     await waitFor(() => expect(onAction).toHaveBeenCalledWith("sync"));
   });
 
+  it("prices the estimate with the rates it is given, and shows none without them", async () => {
+    const { unmount } = render(
+      <QuickActions
+        onAction={vi.fn()}
+        pageCount={100}
+        modelName="some-model"
+        costPer1k={{ input: 0.001, output: 0.005 }}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Full Re-index/i }));
+    // 100 pages * (3.5K in * $0.001 + 2.2K out * $0.005) = $1.45.
+    expect(await screen.findByText(/1\.45/)).toBeInTheDocument();
+    unmount();
+
+    render(<QuickActions onAction={vi.fn()} pageCount={100} modelName="some-model" />);
+    fireEvent.click(screen.getByRole("button", { name: /Full Re-index/i }));
+    expect(await screen.findByText("Full Re-index", { selector: "h2" })).toBeInTheDocument();
+    expect(screen.queryByText(/Estimated Cost/i)).not.toBeInTheDocument();
+  });
+
   it("renders activeJobSlot in place of the buttons when provided", () => {
     render(
       <QuickActions
@@ -39,6 +59,20 @@ describe("QuickActions", () => {
     );
     expect(screen.getByTestId("job-progress")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Sync$/ })).not.toBeInTheDocument();
+  });
+
+  it("bounds the job panel's width in the header variant", () => {
+    // The header's actions slot does not shrink, so an unbounded panel takes
+    // its content's width and crushes the repo name beside it (#4690).
+    render(
+      <QuickActions
+        onAction={vi.fn()}
+        variant="header"
+        activeJobSlot={<div data-testid="job-progress">progress</div>}
+      />,
+    );
+    const container = screen.getByTestId("job-progress").parentElement!;
+    expect(container).toHaveClass("min-w-0", "sm:w-80");
   });
 
   it("fires non-confirming actions immediately (dead-code path)", () => {

@@ -17,8 +17,12 @@ export interface DirectRiskEntry {
   structural_score: number;
   /** @deprecated Exact alias of structural_score for older clients. */
   risk_score: number;
-  /** 0-1 normalised. */
+  /** Raw decayed churn sum, unbounded; use churn_percentile for 0–1 normalised rank. */
   temporal_hotspot: number;
+  /** Repo-relative rank of temporal_hotspot, 0–1. Comparable as a rank, not as activity. */
+  churn_percentile: number;
+  /** The index's hotspot verdict: top-quartile churn AND its absolute activity floors. */
+  is_hotspot: boolean;
   /** Raw graph centrality (pagerank); typically well below 1. */
   centrality: number;
 }
@@ -48,6 +52,8 @@ export interface TestImpactEvidence {
   basis: TestRecommendationBasis;
   source_file: string;
   via: "coverage-map" | "call-graph" | "import-graph";
+  /** `file` on measured evidence: a test ran the changed file, not necessarily its changed lines. */
+  match?: "file" | null;
   source_format: string | null;
 }
 
@@ -62,6 +68,9 @@ export interface TestRecommendation {
   bases: TestRecommendationBasis[];
   source_files: string[];
   evidence: TestImpactEvidence[];
+  /** A measured row whose test file is gone or changed since the coverage run. */
+  stale?: boolean;
+  stale_reason?: "test_file_missing" | "test_file_changed" | null;
 }
 
 export interface TestImpactResponse {
@@ -74,7 +83,11 @@ export interface TestImpactResponse {
   recommendations_by_primary_basis: Record<TestRecommendationBasis, number>;
   files: Array<{
     source_file: string;
-    status: "measured" | "inferred" | "unknown";
+    status: "measured" | "inferred" | "unknown" | "deleted";
+    /** The path's transition, when the caller supplied one. */
+    change_status?: string | null;
+    /** False for a path the change deletes: it has no head side to cover. */
+    head_present?: boolean;
     measured_tests: string[];
     measured_tests_total: number;
     inferred_tests: string[];
@@ -83,6 +96,8 @@ export interface TestImpactResponse {
   files_total: number;
   files_without_measured_tests: string[];
   unknown_files: string[];
+  /** Changed paths the change deletes. Not a coverage gap. */
+  deleted_files?: string[];
   coverage: {
     status: "available" | "partial" | "unavailable" | "degraded";
     reason: string | null;
@@ -101,6 +116,12 @@ export interface TestImpactResponse {
       ingested_commit: string | null;
       indexed_commit: string | null;
     };
+    /** Stored per-file line coverage, when there is no per-test map. */
+    aggregate?: {
+      file_count: number;
+      ingested_commit: string | null;
+      freshness: "current" | "stale" | "unknown";
+    } | null;
   };
   inference: {
     status: "available" | "degraded";

@@ -5,6 +5,10 @@ after parsing has finished and ``parsed_files`` does not preserve raw
 namespace text in a uniform shape across grammar versions. The regexes
 cover both block-form and file-scoped namespaces (C# 10+) and the
 canonical type declaration forms.
+
+VB.NET gets its own scanner at the bottom of this module: its blocks are
+keyword-delimited rather than braced, and every declared namespace sits
+under the project's ``<RootNamespace>``.
 """
 
 from __future__ import annotations
@@ -40,6 +44,10 @@ _TYPE_DECL_RE = re.compile(
     re.MULTILINE,
 )
 
+# The type-parameter list right after a declared name: ``<TKey, TValue>``.
+# Type parameters are plain identifiers, so the list holds no nested ``<``.
+_GENERIC_PARAMS_RE = re.compile(r"\s*<([^<>]*)>")
+
 
 def declared_namespaces(cs_text: str) -> list[str]:
     """Return every namespace declared in *cs_text*, in source order.
@@ -51,19 +59,28 @@ def declared_namespaces(cs_text: str) -> list[str]:
 
 
 class TypeDecl:
-    """One type declaration: bare + one-level-qualified name, partial flag."""
+    """One type declaration: bare + one-level-qualified name, partial flag.
 
-    __slots__ = ("is_partial", "name", "namespace", "qualified")
+    *arity* is the declaration's own generic parameter count. ``Policy`` and
+    ``Policy<TResult>`` are two types, so ``fqn`` carries it the way the CLR
+    spells it (``Policy`1``) and their partial fragments stay apart.
+    """
 
-    def __init__(self, name: str, qualified: str, namespace: str, is_partial: bool):
+    __slots__ = ("arity", "is_partial", "name", "namespace", "qualified")
+
+    def __init__(
+        self, name: str, qualified: str, namespace: str, is_partial: bool, arity: int = 0
+    ):
         self.name = name
         self.qualified = qualified
         self.namespace = namespace
         self.is_partial = is_partial
+        self.arity = arity
 
     @property
     def fqn(self) -> str:
-        return f"{self.namespace}.{self.qualified}" if self.namespace else self.qualified
+        name = f"{self.qualified}`{self.arity}" if self.arity else self.qualified
+        return f"{self.namespace}.{name}" if self.namespace else name
 
 
 def scan_type_declarations(cs_text: str) -> list[TypeDecl]:
@@ -99,7 +116,9 @@ def scan_type_declarations(cs_text: str) -> list[TypeDecl]:
             else:
                 break
         is_partial = "partial" in (m.group(1) or "").split()
-        decls.append(TypeDecl(name, qualified, namespace, is_partial))
+        generic = _GENERIC_PARAMS_RE.match(cs_text, m.end())
+        arity = generic.group(1).count(",") + 1 if generic else 0
+        decls.append(TypeDecl(name, qualified, namespace, is_partial, arity))
         stack.append((depth, name))
     return decls
 
@@ -168,3 +187,122 @@ def build_namespace_map(
                 seen_p.add(decl.fqn)
                 partials.setdefault(decl.fqn, []).append(path)
     return namespaces, types, partials
+
+
+# ---------------------------------------------------------------------------
+# VB.NET
+# ---------------------------------------------------------------------------
+
+# VB.NET identifiers are Unicode: whole estates are written in Chinese or
+# Cyrillic, so an ASCII-only start character silently drops their types.
+_VB_IDENT = r"[^\W\d]\w*"
+
+# The ``Global.`` prefix is kept in the captured name, not stripped: it is the
+# only thing that says a namespace escapes the project's <RootNamespace>.
+_VB_NAMESPACE_RE = re.compile(
+    r"^Namespace\s+(Global\.)?([^\W\d][\w.]*)", re.IGNORECASE
+)
+_VB_GLOBAL_PREFIX = "Global."
+_VB_END_NAMESPACE_RE = re.compile(r"^End\s+Namespace\b", re.IGNORECASE)
+_VB_MODIFIERS = (
+    r"Public|Private|Protected|Friend|Partial|MustInherit|NotInheritable|"
+    r"Shadows|Overloads|Default|Shared"
+)
+# ``Class Foo(Of TKey, TValue)``: the VB spelling of a type-parameter list.
+_VB_GENERIC_PARAMS_RE = re.compile(r"\s*\(\s*Of\s+([^()]*)\)", re.IGNORECASE)
+_VB_TYPE_DECL_RE = re.compile(
+    rf"^((?:(?:{_VB_MODIFIERS})\s+)*)"
+    rf"(?:Class|Module|Structure|Interface|Enum)\s+({_VB_IDENT})",
+    re.IGNORECASE,
+)
+
+
+def scan_vb_declarations(vb_text: str) -> tuple[list[str], list[TypeDecl]]:
+    """Return ``(namespaces, declarations)`` for one VB.NET file.
+
+    Nested ``Namespace`` blocks concatenate the way the compiler joins them,
+    so the stack is tracked against ``End Namespace`` rather than braces. Names
+    are as written, still carrying a ``Global.`` prefix where the source used
+    one; ``vb_namespace_key`` turns one into the key it resolves under.
+    """
+    stack: list[str] = []
+    namespaces: list[str] = []
+    decls: list[TypeDecl] = []
+    for raw in vb_text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("'"):
+            continue
+        if _VB_END_NAMESPACE_RE.match(line):
+            if stack:
+                stack.pop()
+            continue
+        ns_match = _VB_NAMESPACE_RE.match(line)
+        if ns_match:
+            # Normalise the prefix's casing so the key rule can test it exactly.
+            prefix = _VB_GLOBAL_PREFIX if ns_match.group(1) else ""
+            stack.append(prefix + ns_match.group(2))
+            namespaces.append(".".join(stack))
+            continue
+        type_match = _VB_TYPE_DECL_RE.match(line)
+        if type_match:
+            name = type_match.group(2)
+            is_partial = "partial" in type_match.group(1).lower().split()
+            generic = _VB_GENERIC_PARAMS_RE.match(line, type_match.end())
+            arity = generic.group(1).count(",") + 1 if generic else 0
+            decls.append(TypeDecl(name, name, ".".join(stack), is_partial, arity))
+    return namespaces, decls
+
+
+def build_vb_namespace_map(
+    vb_files: list[Path],
+    *,
+    texts: dict[Path, str],
+    root_namespaces: dict[Path, str] | None = None,
+) -> tuple[dict[str, list[Path]], dict[str, list[Path]], dict[str, list[Path]]]:
+    """Return ``(namespace_map, type_map, partial_map)`` for the VB.NET files.
+
+    *root_namespaces* maps a file to its project's ``<RootNamespace>``. Every
+    key goes through ``vb_namespace_key``, so a namespace-less file lands in
+    the root and a declared one lands under the root unless the source opted
+    out with ``Namespace Global.X``. The partial map is keyed by the resulting
+    fully-qualified name, matching the C# map it is merged into.
+    """
+    namespaces: dict[str, list[Path]] = {}
+    types: dict[str, list[Path]] = {}
+    partials: dict[str, list[Path]] = {}
+    for path in vb_files:
+        text = texts.get(path)
+        if text is None:
+            continue
+        declared, decls = scan_vb_declarations(text)
+        root = (root_namespaces or {}).get(path, "")
+        keys = {vb_namespace_key(ns, root) for ns in declared}
+        if root and not declared:
+            keys.add(root)
+        for key in keys - {""}:
+            namespaces.setdefault(key, []).append(path)
+        for name in {d.name for d in decls}:
+            types.setdefault(name, []).append(path)
+        for fqn in {_vb_fqn(d, root) for d in decls if d.is_partial}:
+            partials.setdefault(fqn, []).append(path)
+    return namespaces, types, partials
+
+
+def vb_namespace_key(namespace: str, root: str) -> str:
+    """The key *namespace* resolves under, given its project's *root*.
+
+    ``Namespace Global.X`` opts out of the root namespace and is reachable as
+    ``X``; a plain ``Namespace X`` in a project rooted at ``R`` is only ever
+    reachable as ``R.X``, never as a bare ``X``.
+    """
+    if namespace.startswith(_VB_GLOBAL_PREFIX):
+        return namespace[len(_VB_GLOBAL_PREFIX) :]
+    if not namespace:
+        return root
+    return f"{root}.{namespace}" if root else namespace
+
+
+def _vb_fqn(decl: TypeDecl, root: str) -> str:
+    """Fully-qualified name of a VB declaration, under its namespace key."""
+    namespace = vb_namespace_key(decl.namespace, root)
+    return TypeDecl(decl.name, decl.qualified, namespace, decl.is_partial, decl.arity).fqn

@@ -51,11 +51,16 @@ def _god_class_src() -> str:
     return "\n".join(lines) + "\n"
 
 
-def _flat_match_src() -> str:
-    """A flat ``match``/``case`` dispatch table: every arm a single-expression
-    return. Long enough to trip the NLOC threshold; CCN is 2 (base 1 + the lone
-    match keyword point) — a layout artefact, not a complexity smell."""
-    lines = ["def dispatch(status):", "    match status:"]
+def _flat_match_src(tangled_arm: bool = False) -> str:
+    """A ``match``/``case`` dispatch table long enough to trip the NLOC threshold.
+
+    Every arm is a single-expression return unless *tangled_arm* nests branches in the first.
+    """
+    lines = ["def dispatch(status, flags):", "    match status:"]
+    if tangled_arm:
+        lines += ["        case -1:", "            if flags.a:", "                if flags.b:"]
+        lines += ["                    return 'ab'", "            elif flags.c:"]
+        lines += ["                return 'c'"]
     for i in range(31):
         lines.append(f"        case {i}:")
         lines.append(f'            return "s{i}"')
@@ -67,10 +72,10 @@ def _flat_match_src() -> str:
 def _branchy_src() -> str:
     """A long method with real branching (several ``if`` statements) — a genuine
     large_method that must still fire after the CCN floor bump."""
-    lines = ["def branchy(n):", "    total = 0"]
-    for i in range(5):
-        lines.append(f"        if n == {i}:")
-        lines.append(f"            total += {i}")
+    lines = ["def branchy(n, limit, step, seed):", "    total = 0"]
+    for i, name in enumerate(("n", "total", "limit", "step", "seed")):
+        lines.append(f"    if {name} > {i}:")
+        lines.append(f"        total += {i}")
     for i in range(60):
         lines.append(f"    total = total + {i}")
     lines.append("    return total")
@@ -95,7 +100,7 @@ def _fn_ctx(functions) -> FileContext:
         nloc=200,
         has_test_file=False,
         module=None,
-        function_metrics={f.name: f for f in functions},
+        all_functions=tuple(functions),
     )
 
 
@@ -150,29 +155,22 @@ def test_unbounded_update_still_flagged(dialect):
 
 
 # --------------------------------------------------------------------------
-# large_method: a large Python match dispatch is real branching (each case
-# is an if/elif-equivalent branch), so it is a size + complexity smell
+# large_method: a match dispatch is judged by the CCN around it plus its
+# heaviest arm, so a table of one-line arms is layout and a tangled arm is not
 # --------------------------------------------------------------------------
 
 
-def test_large_method_fires_on_match_dispatch():
-    """A 31-case Python ``match`` dispatch is real branching, not layout.
-
-    Regression for #1774: Python match/case is pattern matching — each case
-    is a distinct branch, structurally an if/elif chain. The old flat-match
-    suppression reported this dispatch at CCN 2, which let a 65-line
-    dispatcher dodge the large-method detector. It now counts each arm and
-    must be flagged like any other tangled large method.
-    """
-    fm = walk_file("m.py", "python", _flat_match_src().encode())
-    assert fm.functions, "expected a function to be parsed"
-    fn = fm.functions[0]
-    # Trips the NLOC threshold and now also the CCN floor (31 arms + base).
+def test_large_method_skips_a_match_dispatch_of_one_line_arms():
+    fn = walk_file("m.py", "python", _flat_match_src().encode()).functions[0]
     assert fn.nloc >= LargeMethodDetector._NLOC_THRESHOLD
     assert fn.ccn >= LargeMethodDetector._CCN_FLOOR
+    assert LargeMethodDetector().detect(_fn_ctx([fn])) == []
+
+
+def test_large_method_fires_on_a_match_dispatch_with_a_tangled_arm():
+    fn = walk_file("m.py", "python", _flat_match_src(tangled_arm=True).encode()).functions[0]
     out = LargeMethodDetector().detect(_fn_ctx([fn]))
-    assert len(out) == 1, "a large match dispatch must be flagged as large"
-    assert out[0].function_name == "dispatch"
+    assert [f.function_name for f in out] == ["dispatch"]
 
 
 def test_large_method_still_fires_on_real_branching():
@@ -209,7 +207,6 @@ def test_detector_caps_small_sample_pair_at_medium():
         nloc=120,
         has_test_file=False,
         module=None,
-        function_metrics={},
         git_meta={
             "commit_count_total": 5,
             "co_change_partners_json": json.dumps(
@@ -218,6 +215,7 @@ def test_detector_caps_small_sample_pair_at_medium():
                         "file_path": "src/billing.py",
                         "co_change_count": 4,
                         "frequency": 4,
+                        "focused_frequency": 4,
                         "self_commits": 5,
                         "partner_commits": 5,
                         "structural": "unexplained",

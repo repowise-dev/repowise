@@ -1,30 +1,37 @@
 """App-to-database contract extraction.
 
 Scans source files for table *providers* (DDL, migrations, ORM entities) and
-table *consumers* (SQL string literals in app code). Same architecture as the
-HTTP extractor: each recogniser is an independent dialect module registered in
-:data:`PROVIDER_DIALECTS` / :data:`CONSUMER_DIALECTS`; the :class:`DataExtractor`
-orchestrator owns only the file walk and dispatch. Matching happens downstream
-in ``contracts.match_contracts`` on the normalized ``data::<table>`` id, and a
-matched link renders as a ``db`` edge on the Live System Map.
+table *consumers* (SQL string literals and query builders in app code). Each recogniser is an
+independent dialect module registered in :data:`PROVIDER_DIALECTS` /
+:data:`CONSUMER_DIALECTS`, run by the shared :class:`..dialect.DialectExtractor`.
+Matching happens downstream in :mod:`repowise.core.workspace.matching` on the
+normalized ``data::<table>`` id, and a matched link renders as a ``db`` edge on
+the Live System Map.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ..base import ScanContext, select_files
+from ..base import select_files
+from ..dialect import ContractDialect, DialectExtractor
 from .ddl import DdlDialect
-from .dialect import DataDialect
+from .dialect import repo_embedded_engine
+from .drizzle import DrizzleDialect
+from .knex import KnexDialect
+from .laravel import EloquentDialect, LaravelMigrationDialect, LaravelQueryDialect
+from .mybatis import MyBatisDialect
 from .names import normalize_table_name
 from .orm_models import (
     ActiveRecordDialect,
     EfCoreDialect,
-    EloquentDialect,
     JpaDialect,
     SqlAlchemyDjangoDialect,
 )
+from .prisma import PrismaDialect
+from .sequelize import SequelizeDialect
 from .sql_strings import SqlStringsDialect
+from .typeorm import TypeOrmDialect
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -35,38 +42,35 @@ if TYPE_CHECKING:
     from ..base import SourceFile
 
 # Table-ownership recognisers (DDL + one per ORM family).
-PROVIDER_DIALECTS: tuple[DataDialect, ...] = (
+PROVIDER_DIALECTS: tuple[ContractDialect, ...] = (
     DdlDialect(),
     SqlAlchemyDjangoDialect(),
     JpaDialect(),
     EfCoreDialect(),
     ActiveRecordDialect(),
     EloquentDialect(),
+    LaravelMigrationDialect(),
+    PrismaDialect(),
+    TypeOrmDialect(),
+    SequelizeDialect(),
+    DrizzleDialect(),
 )
 
 # Table-access recognisers.
-CONSUMER_DIALECTS: tuple[DataDialect, ...] = (SqlStringsDialect(),)
+# Knex reads both sides (its migrations and its query builder), so it is
+# registered once, here.
+CONSUMER_DIALECTS: tuple[ContractDialect, ...] = (
+    SqlStringsDialect(),
+    LaravelQueryDialect(),
+    KnexDialect(),
+    MyBatisDialect(),
+)
 
 
-def _union_extensions(dialects: tuple[DataDialect, ...]) -> frozenset[str]:
-    out: set[str] = set()
-    for d in dialects:
-        out |= d.extensions
-    return frozenset(out)
-
-
-class DataExtractor:
+class DataExtractor(DialectExtractor):
     """Extract table contracts from source files via registered dialects."""
 
-    provider_dialects: tuple[DataDialect, ...] = PROVIDER_DIALECTS
-    consumer_dialects: tuple[DataDialect, ...] = CONSUMER_DIALECTS
-
-    @classmethod
-    def source_extensions(cls) -> frozenset[str]:
-        """Every extension this extractor's dialects claim."""
-        return _union_extensions(cls.provider_dialects) | _union_extensions(
-            cls.consumer_dialects
-        )
+    dialects = PROVIDER_DIALECTS + CONSUMER_DIALECTS
 
     def extract(
         self,
@@ -75,18 +79,18 @@ class DataExtractor:
         exclude: Callable[[str], bool] | None = None,
         files: Sequence[SourceFile] | None = None,
     ) -> list[Contract]:
-        """Scan all source files in *repo_path* and return Contract instances."""
-        contracts: list[Contract] = []
-        for rel_path, suffix, content in select_files(
-            repo_path, self.source_extensions(), exclude, files
-        ):
-            ctx = ScanContext(repo_alias, rel_path, suffix, content)
-            for dialect in self.provider_dialects:
-                if suffix in dialect.extensions:
-                    contracts.extend(dialect.extract(ctx))
-            for dialect in self.consumer_dialects:
-                if suffix in dialect.extensions:
-                    contracts.extend(dialect.extract(ctx))
+        """The repo's table contracts, each tagged with the repo's embedded engine.
+
+        The engine test reads the files again only when the repo has a table.
+        """
+        contracts = super().extract(repo_path, repo_alias, exclude, files)
+        if not contracts:
+            return contracts
+        selected = select_files(repo_path, self.source_extensions(), exclude, files)
+        engine = repo_embedded_engine(content for _, _, content in selected)
+        if engine:
+            for c in contracts:
+                c.meta.setdefault("embedded", engine)
         return contracts
 
 

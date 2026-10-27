@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { spawn, type ChildProcess } from "node:child_process";
 import { Commands, MIN_SERVER_VERSION } from "../constants";
 import type { RepowiseContext } from "../core/context";
+import { isLoopbackUrl, type ServeLock } from "@repowise-dev/types/serve-lock";
 import { isPidAlive, readLockfile } from "../core/lockfile";
 import type { HealthResult } from "../core/api";
 
@@ -157,7 +158,7 @@ export function registerServerManager(ctx: RepowiseContext): vscode.Disposable {
 
     // The pid gate is not redundant with the probe: a dead writer's port can
     // be re-bound by an unrelated server that answers /health convincingly.
-    const lock = await readLockfile(ws.lockfilePath);
+    const lock = await readLocalLockfile(ws.lockfilePath);
     if (lock && isPidAlive(lock.pid)) {
       const health = await ctx.api.checkHealth(lock.url);
       if (health) {
@@ -180,6 +181,20 @@ export function registerServerManager(ctx: RepowiseContext): vscode.Disposable {
   }
 
   /**
+   * The lockfile, unless its url points off this machine: the file sits in the
+   * repo, so a cloned repo can name any host. Such a lock is ignored and the
+   * normal start/connect path runs.
+   */
+  async function readLocalLockfile(path: string): Promise<ServeLock | null> {
+    const lock = await readLockfile(path);
+    if (lock && !isLoopbackUrl(lock.url)) {
+      ctx.log.warn("Ignoring serve.lock.json: its url is not a loopback address.");
+      return null;
+    }
+    return lock;
+  }
+
+  /**
    * Polls for the lockfile to appear and its server to answer /health, backing
    * off between attempts. Re-reads the lockfile every pass so a port the server
    * auto-bumped is picked up. Returns null on timeout, dispose, or abort.
@@ -194,7 +209,7 @@ export function registerServerManager(ctx: RepowiseContext): vscode.Disposable {
       if (disposed || aborted()) return null;
       // Pid-gated so the poll cannot adopt a stale lockfile (and whatever
       // re-bound its port) in the window before our child overwrites it.
-      const lock = await readLockfile(lockfilePath);
+      const lock = await readLocalLockfile(lockfilePath);
       if (lock && isPidAlive(lock.pid)) {
         const health = await ctx.api.checkHealth(lock.url);
         if (health) return { url: lock.url, health };
@@ -246,7 +261,7 @@ export function registerServerManager(ctx: RepowiseContext): vscode.Disposable {
     // A healthy server may already be up (started outside the editor, or by a
     // prior session). Adopt it instead of spawning a second one. Pid-gated:
     // never adopt through a dead writer's lockfile.
-    const existing = await readLockfile(ws.lockfilePath);
+    const existing = await readLocalLockfile(ws.lockfilePath);
     if (existing && isPidAlive(existing.pid)) {
       const health = await ctx.api.checkHealth(existing.url);
       if (health) {

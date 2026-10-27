@@ -5,14 +5,13 @@ Also works as a base for any OpenAI-compatible API endpoint via the
 `base_url` parameter.
 
 Recommended models (as of 2026):
-    - gpt-5.6-luna   — fastest, cheapest ($0.20/$1.20 per MTok) [default]
-    - gpt-5.4-mini   — balanced speed and quality ($0.75/$4.50 per MTok)
-    - gpt-5.4        — highest quality ($2.50/$15 per MTok)
+    - gpt-5.6-luna   — fast, cheap ($0.20/$1.20 per MTok) [default]
+    - gpt-6-luna     — cheapest ($0.10/$0.50 per MTok)
+    - gpt-6-sol      — highest quality ($2/$10 per MTok)
 """
 
 from __future__ import annotations
 
-import contextlib
 import ipaddress
 import os
 from collections.abc import AsyncIterator
@@ -20,29 +19,30 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 import structlog
-from openai import APIError as _OpenAIAPIError
-from openai import APIStatusError as _OpenAIAPIStatusError
 from openai import AsyncOpenAI
-from openai import RateLimitError as _OpenAIRateLimitError
 from tenacity import RetryError, retry
 
 from repowise.core.providers.llm.base import (
     BaseProvider,
     CacheHint,
     ChatStreamEvent,
-    ChatToolCall,
     GeneratedResponse,
     ProviderError,
     ProviderModelOption,
-    RateLimitError,
+    SdkClientOwner,
     ensure_reasoning_supported,
     fallback_model_option,
-    normalize_stop_reason,
-    parse_retry_after,
     provider_retry_stop,
     provider_retry_wait,
     provider_should_retry,
+    record_generation_cost,
 )
+from repowise.core.providers.llm.openai_compat import (
+    completion_to_response,
+    stream_openai_chat,
+    translate_openai_errors,
+)
+from repowise.core.providers.llm.specs import PROVIDER_SPECS
 from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import ReasoningMode, normalize_reasoning
 
@@ -74,7 +74,7 @@ def _model_leaf(model: str) -> str:
 
 def _supports_openai_reasoning_effort(model: str) -> bool:
     leaf = _model_leaf(model)
-    return leaf.startswith(("gpt-5", "o1", "o3", "o4"))
+    return leaf.startswith(("gpt-5", "gpt-6", "o1", "o3", "o4"))
 
 
 def _supports_chat_template_thinking_toggle(model: str) -> bool:
@@ -95,7 +95,10 @@ def _openai_supported_reasoning_modes(model: str) -> tuple[ReasoningMode, ...]:
         return ("none", "low", "medium", "high")
     if leaf.startswith("gpt-5-pro"):
         return ("high",)
-    if leaf.startswith("gpt-5.6"):
+    if leaf.startswith("gpt-6.1"):
+        # 6.1 dropped `none` as well (verified live on gpt-6.1-sol, 2026-10-15).
+        return ("low", "medium", "high", "xhigh")
+    if leaf.startswith(("gpt-5.6", "gpt-6")):
         # 5.6 dropped `minimal` and added `xhigh`. Must stay above the generic
         # `gpt-5` branch, which is a prefix of this one and would otherwise win
         # and offer `minimal`, which 5.6 rejects, and only on a live call.
@@ -104,7 +107,8 @@ def _openai_supported_reasoning_modes(model: str) -> tuple[ReasoningMode, ...]:
         # API rejects it with `unsupported_value`, naming exactly the five
         # below. Verified live on both gpt-5.6-luna and gpt-5.6-sol
         # (2026-08-15). Family-level rather than per-model on the same
-        # evidence: the two variants answered identically.
+        # evidence: the two variants answered identically. gpt-6-luna and
+        # gpt-6-sol answered the same way (2026-10-15).
         return ("none", "low", "medium", "high", "xhigh")
     if leaf.startswith("gpt-5"):
         return ("minimal", "low", "medium", "high")
@@ -165,19 +169,32 @@ def _openai_temperature(model: str, requested: float) -> float:
     return requested
 
 
+_OPENAI_API_URL = "https://api.openai.com/v1"
+
+#: The key sent to a local OpenAI-compatible server (LM Studio, vLLM, Ollama)
+#: when none is set. They ignore it; the SDK refuses an empty one.
+LOCAL_SERVER_API_KEY = "not-needed"
+
+
 def _openai_chat_tool_kwargs(model: str, *, has_tools: bool) -> dict[str, Any]:
     """Return Chat Completions overrides required by tool-enabled models.
 
-    GPT-5.6 models default to a non-none reasoning effort. OpenAI recommends
+    GPT-5.6 and GPT-6 models default to a non-none reasoning effort. OpenAI recommends
     the Responses API for reasoning with tool-calling, while this provider's
     repository chat loop still uses Chat Completions. Keep the family's normal
     reasoning default for generation and only disable it when function tools
     are attached. Migrating the shared chat protocol is a separate change.
     """
     leaf = _model_leaf(model)
-    if has_tools and (leaf == "gpt-5.6" or leaf.startswith("gpt-5.6-")):
+    if has_tools and (leaf in ("gpt-5.6", "gpt-6") or leaf.startswith(("gpt-5.6-", "gpt-6-"))):
         return {"reasoning_effort": "none"}
     return {}
+
+
+def _cached_prompt_tokens(response: Any) -> int:
+    """Prompt tokens OpenAI served from its automatic prefix cache."""
+    details = getattr(response.usage, "prompt_tokens_details", None) if response.usage else None
+    return (getattr(details, "cached_tokens", 0) or 0) if details is not None else 0
 
 
 def _is_openai_text_model(model_id: str, *, allow_namespaced: bool = False) -> bool:
@@ -198,6 +215,11 @@ def _is_loopback_url(base_url: str) -> bool:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
         return False
+
+
+def needs_api_key(base_url: str | None) -> bool:
+    """False for a local server, which runs on :data:`LOCAL_SERVER_API_KEY`."""
+    return not (base_url and _is_loopback_url(base_url))
 
 
 def _openai_option(
@@ -275,12 +297,13 @@ def _discover_openai_model_options(
     return tuple(_openai_option(model_id, fallback_model=fallback_model) for model_id in model_ids)
 
 
-class OpenAIProvider(BaseProvider):
+class OpenAIProvider(SdkClientOwner, BaseProvider):
     """OpenAI Chat Completions provider.
 
     Args:
-        api_key:   OpenAI API key. Falls back to OPENAI_API_KEY env var.
-        model:     Model identifier. Defaults to gpt-5.6-luna.
+        api_key:   OpenAI API key. Falls back to OPENAI_API_KEY env var, and
+                   is optional for a local (loopback) ``base_url``.
+        model:     Model identifier. Defaults to the spec's default_model.
         base_url:  Optional custom base URL for OpenAI-compatible endpoints.
         rate_limiter: Optional RateLimiter instance.
     """
@@ -288,30 +311,37 @@ class OpenAIProvider(BaseProvider):
     def __init__(
         self,
         api_key: str | None = None,
-        model: str = "gpt-5.6-luna",
+        model: str = PROVIDER_SPECS["openai"].default_model,
         base_url: str | None = None,
         rate_limiter: RateLimiter | None = None,
         cost_tracker: CostTracker | None = None,
     ) -> None:
+        resolved_base_url = base_url or os.environ.get("OPENAI_BASE_URL")
         resolved_key = api_key or os.environ.get("OPENAI_API_KEY")
+        if not resolved_key and not needs_api_key(resolved_base_url):
+            resolved_key = LOCAL_SERVER_API_KEY
         if not resolved_key:
             raise ProviderError(
                 "openai",
                 "No API key provided. Pass api_key= or set OPENAI_API_KEY.",
             )
-        resolved_base_url = base_url or os.environ.get("OPENAI_BASE_URL")
         self._api_key = resolved_key
-        self._base_url = resolved_base_url or "https://api.openai.com/v1"
-        http_client = None
-        if resolved_base_url and _is_loopback_url(resolved_base_url):
-            import httpx
+        self._base_url = resolved_base_url or _OPENAI_API_URL
+        loopback = bool(resolved_base_url and _is_loopback_url(resolved_base_url))
 
-            http_client = httpx.AsyncClient(trust_env=False)
-        self._client = AsyncOpenAI(
-            api_key=resolved_key,
-            base_url=resolved_base_url,
-            http_client=http_client,
-        )
+        def _new_client() -> AsyncOpenAI:
+            http_client = None
+            if loopback:
+                import httpx
+
+                http_client = httpx.AsyncClient(trust_env=False)
+            return AsyncOpenAI(
+                api_key=resolved_key,
+                base_url=resolved_base_url,
+                http_client=http_client,
+            )
+
+        self._open_client(_new_client)
         self._model = model
         self._rate_limiter = rate_limiter
         self._cost_tracker = cost_tracker
@@ -388,81 +418,27 @@ class OpenAIProvider(BaseProvider):
         request_id: str | None,
         reasoning: ReasoningMode,
     ) -> GeneratedResponse:
-        try:
-            kwargs: dict[str, Any] = {
-                "model": self._model,
-                "max_completion_tokens": max_tokens,
-                "temperature": _openai_temperature(self._model, temperature),
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-            }
-            kwargs.update(_openai_reasoning_kwargs(reasoning, model=self._model))
-            response = await self._client.chat.completions.create(
-                **kwargs,
-            )
-        except _OpenAIRateLimitError as exc:
-            raise RateLimitError(
-                "openai",
-                str(exc),
-                status_code=429,
-                retry_after=parse_retry_after(
-                    getattr(getattr(exc, "response", None), "headers", None)
-                ),
-            ) from exc
-        except _OpenAIAPIStatusError as exc:
-            raise ProviderError("openai", str(exc), status_code=exc.status_code) from exc
-        except _OpenAIAPIError as exc:
-            raise ProviderError(
-                "openai", str(exc), status_code=getattr(exc, "status_code", None)
-            ) from exc
+        kwargs: dict[str, Any] = {
+            "model": self._model,
+            "max_completion_tokens": max_tokens,
+            "temperature": _openai_temperature(self._model, temperature),
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        }
+        kwargs.update(_openai_reasoning_kwargs(reasoning, model=self._model))
+        with translate_openai_errors("openai"):
+            response = await self._client.chat.completions.create(**kwargs)
 
-        usage = response.usage
-        cached = 0
-        if usage is not None:
-            details = getattr(usage, "prompt_tokens_details", None)
-            if details is not None:
-                cached = getattr(details, "cached_tokens", 0) or 0
-        choice = response.choices[0]
-        stop_reason, provider_stop_reason = normalize_stop_reason(choice.finish_reason)
-        result = GeneratedResponse(
-            content=choice.message.content or "",
-            input_tokens=usage.prompt_tokens if usage else 0,
-            output_tokens=usage.completion_tokens if usage else 0,
-            cached_tokens=cached,
-            stop_reason=stop_reason,
-            provider_stop_reason=provider_stop_reason,
-            usage={
-                "prompt_tokens": usage.prompt_tokens if usage else 0,
-                "completion_tokens": usage.completion_tokens if usage else 0,
-                "total_tokens": usage.total_tokens if usage else 0,
-                "cached_tokens": cached,
-            },
-        )
+        result = completion_to_response(response, cached_tokens=_cached_prompt_tokens(response))
         log.debug(
             "openai.generate.done",
             input_tokens=result.input_tokens,
             output_tokens=result.output_tokens,
             request_id=request_id,
         )
-
-        if self._cost_tracker is not None:
-            # Await the cost record inline rather than spawning a detached
-            # task. A fire-and-forget create_task can still be flushing its
-            # aiosqlite write when the event loop is torn down (e.g. the
-            # asyncio.run teardown after doc generation), which surfaces as a
-            # noisy "Event loop is closed" worker-thread traceback. record()
-            # swallows its own persistence errors, so generation is unaffected.
-            with contextlib.suppress(Exception):
-                await self._cost_tracker.record(
-                    model=self._model,
-                    input_tokens=result.input_tokens,
-                    output_tokens=result.output_tokens,
-                    operation=self._cost_tracker.operation,
-                    file_path=None,
-                )
-
+        await record_generation_cost(self._cost_tracker, model=self._model, result=result)
         return result
 
     # --- ChatProvider protocol implementation ---
@@ -477,8 +453,6 @@ class OpenAIProvider(BaseProvider):
         request_id: str | None = None,
         tool_executor: Any | None = None,
     ) -> AsyncIterator[ChatStreamEvent]:
-        import json as _json
-
         full_messages = [{"role": "system", "content": system_prompt}, *messages]
         kwargs: dict[str, Any] = {
             "model": self._model,
@@ -487,101 +461,13 @@ class OpenAIProvider(BaseProvider):
             "messages": full_messages,
             "stream": True,
         }
+        if self._base_url == _OPENAI_API_URL:
+            # Without it the stream carries no usage chunk. Only the hosted API
+            # is asked: an OpenAI-compatible server may reject the field.
+            kwargs["stream_options"] = {"include_usage": True}
         if tools:
             kwargs["tools"] = tools
         kwargs.update(_openai_chat_tool_kwargs(self._model, has_tools=bool(tools)))
 
-        try:
-            stream = await self._client.chat.completions.create(**kwargs)
-        except _OpenAIRateLimitError as exc:
-            raise RateLimitError(
-                "openai",
-                str(exc),
-                status_code=429,
-                retry_after=parse_retry_after(
-                    getattr(getattr(exc, "response", None), "headers", None)
-                ),
-            ) from exc
-        except _OpenAIAPIStatusError as exc:
-            raise ProviderError("openai", str(exc), status_code=exc.status_code) from exc
-        except _OpenAIAPIError as exc:
-            raise ProviderError(
-                "openai", str(exc), status_code=getattr(exc, "status_code", None)
-            ) from exc
-
-        # Track in-progress tool calls (OpenAI streams them incrementally)
-        tool_calls_acc: dict[int, dict[str, Any]] = {}
-
-        try:
-            async for chunk in stream:
-                choice = chunk.choices[0] if chunk.choices else None
-                if not choice:
-                    if chunk.usage:
-                        yield ChatStreamEvent(
-                            type="usage",
-                            input_tokens=chunk.usage.prompt_tokens or 0,
-                            output_tokens=chunk.usage.completion_tokens or 0,
-                        )
-                    continue
-
-                delta = choice.delta
-                finish = choice.finish_reason
-
-                # Text content
-                if delta and delta.content:
-                    yield ChatStreamEvent(type="text_delta", text=delta.content)
-
-                # Tool call fragments
-                if delta and delta.tool_calls:
-                    for tc_delta in delta.tool_calls:
-                        idx = tc_delta.index
-                        if idx not in tool_calls_acc:
-                            tool_calls_acc[idx] = {
-                                "id": tc_delta.id or "",
-                                "name": "",
-                                "arguments": "",
-                            }
-                        acc = tool_calls_acc[idx]
-                        if tc_delta.id:
-                            acc["id"] = tc_delta.id
-                        if tc_delta.function:
-                            if tc_delta.function.name:
-                                acc["name"] = tc_delta.function.name
-                            if tc_delta.function.arguments:
-                                acc["arguments"] += tc_delta.function.arguments
-
-                if finish:
-                    # Emit accumulated tool calls
-                    for idx in sorted(tool_calls_acc.keys()):
-                        acc = tool_calls_acc[idx]
-                        try:
-                            args = _json.loads(acc["arguments"]) if acc["arguments"] else {}
-                        except Exception:
-                            args = {}
-                        yield ChatStreamEvent(
-                            type="tool_start",
-                            tool_call=ChatToolCall(
-                                id=acc["id"],
-                                name=acc["name"],
-                                arguments=args,
-                            ),
-                        )
-                    tool_calls_acc.clear()
-
-                    stop_reason = "tool_use" if finish == "tool_calls" else "end_turn"
-                    yield ChatStreamEvent(type="stop", stop_reason=stop_reason)
-        except _OpenAIRateLimitError as exc:
-            raise RateLimitError(
-                "openai",
-                str(exc),
-                status_code=429,
-                retry_after=parse_retry_after(
-                    getattr(getattr(exc, "response", None), "headers", None)
-                ),
-            ) from exc
-        except _OpenAIAPIStatusError as exc:
-            raise ProviderError("openai", str(exc), status_code=exc.status_code) from exc
-        except _OpenAIAPIError as exc:
-            raise ProviderError(
-                "openai", str(exc), status_code=getattr(exc, "status_code", None)
-            ) from exc
+        async for event in stream_openai_chat(self._client, "openai", kwargs):
+            yield event

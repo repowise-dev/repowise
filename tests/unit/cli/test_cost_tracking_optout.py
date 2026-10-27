@@ -92,9 +92,13 @@ class TestEnabledTrackerUsesShortBusyTimeout:
 
         captured: dict = {}
 
+        class _FakeEngine:
+            async def dispose(self) -> None:
+                pass
+
         async def _fake_open_repo_db(repo_path, *, repo_name=None, busy_timeout_ms=None):
             captured["busy_timeout_ms"] = busy_timeout_ms
-            return (object(), object(), "repo-id")
+            return (_FakeEngine(), object(), "repo-id")
 
         import repowise.cli._repo_session as session_mod
 

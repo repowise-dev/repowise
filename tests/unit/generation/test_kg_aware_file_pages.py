@@ -349,9 +349,9 @@ class TestFilePageTemplate:
             kg_layer_role="internal",
         )
         rendered = tmpl.render(ctx=ctx)
-        assert "**Layer:** Core Pipeline" in rendered
-        # The stored value is an enum member; the page spells it for a reader.
-        assert "**Role:** internal to its layer" in rendered
+        assert "`utils.py` belongs to the Core Pipeline layer." in rendered
+        # The stored value is an enum member and never reaches the page.
+        assert "internal" not in rendered
 
     def test_file_page_without_kg(self, jinja_env):
         tmpl = jinja_env.get_template("file_page.j2")
@@ -374,4 +374,4 @@ class TestFilePageTemplate:
             estimated_tokens=0,
         )
         rendered = tmpl.render(ctx=ctx)
-        assert "**Layer:**" not in rendered
+        assert "layer" not in rendered

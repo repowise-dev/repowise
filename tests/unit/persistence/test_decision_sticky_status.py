@@ -19,6 +19,7 @@ from repowise.core.persistence.crud import (
     list_decision_evidence,
     list_decisions,
     purge_proposed_decisions_by_source,
+    purge_proposed_decisions_outside_files,
     update_decision_status,
 )
 from repowise.core.persistence.crud.authority import latest_acceptance
@@ -30,7 +31,8 @@ def _decision(title: str, *, source: str = "changelog", status: str = "proposed"
     return {
         "title": title,
         "decision": f"{title} because reasons",
-        "rationale": "",
+        # A reason, so these records can be accepted: the decision body is not one.
+        "rationale": f"{title} was the cheaper of the two options",
         "source": source,
         "status": status,
         # A scope, so these records can be accepted: acceptance is what the
@@ -69,6 +71,20 @@ async def test_dismissed_decision_survives_reindex_untouched(async_session):
     assert rec.id not in touched
     # Tombstones accrete nothing.
     assert len(await list_decision_evidence(async_session, rec.id)) == evidence_before
+
+
+async def test_deprecated_candidate_survives_reindex_untouched(async_session):
+    from repowise.core.persistence.crud.authority import deprecate_decision
+
+    repo = await insert_repo(async_session)
+    await bulk_upsert_decisions(async_session, repo.id, [_decision("Use Kafka")])
+    rec = await _only_row(async_session, repo.id)
+    await deprecate_decision(async_session, rec, reason="replaced", accepter="tester")
+
+    await bulk_upsert_decisions(async_session, repo.id, [_decision("Use Kafka")])
+
+    rec = await _only_row(async_session, repo.id)
+    assert rec.status == "deprecated"
 
 
 async def test_confirmed_decision_not_walked_back_to_proposed(async_session):
@@ -184,3 +200,24 @@ async def test_purge_drains_proposed_rows_of_source_only(async_session):
         .where(DecisionRecord.id.is_(None))
     )
     assert list(orphan_evidence.scalars().all()) == []
+
+
+async def test_scope_prune_removes_only_unreviewed_decisions(async_session):
+    repo = await insert_repo(async_session)
+    await bulk_upsert_decisions(
+        async_session,
+        repo.id,
+        [_decision("Excluded proposal"), _decision("Accepted history")],
+    )
+    rows = await list_decisions(async_session, repo.id)
+    accepted = next(row for row in rows if row.title == "Accepted history")
+    await update_decision_status(async_session, accepted.id, "active")
+
+    deleted = await purge_proposed_decisions_outside_files(
+        async_session, repo.id, {"kept.py"}
+    )
+
+    assert deleted == 1
+    assert {row.title for row in await list_decisions(async_session, repo.id)} == {
+        "Accepted history"
+    }

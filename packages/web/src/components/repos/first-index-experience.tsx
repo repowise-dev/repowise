@@ -12,6 +12,7 @@ import { startIndexJob } from "@/lib/api/repos";
 import { listJobs, getJob } from "@/lib/api/jobs";
 import { getOverviewSummary } from "@/lib/api/overview";
 import { GenerationProgressWrapper } from "@/components/jobs/generation-progress-wrapper";
+import { useTranslations } from "next-intl";
 
 interface Props {
   repoId: string;
@@ -22,9 +23,11 @@ interface Props {
  * The fresh-repo overview surface: one prominent "Index this repo" action,
  * live phase-labeled progress once a job is running, and a celebratory
  * handoff (with the first five files to read) when the first index lands.
+ * Its button opens the welcome tour on the indexed overview.
  * Hydrates from any in-flight job so a page refresh mid-index rejoins it.
  */
 export function FirstIndexExperience({ repoId, repoName }: Props) {
+  const t = useTranslations("repos");
   const router = useRouter();
   const [jobId, setJobId] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
@@ -76,11 +79,11 @@ export function FirstIndexExperience({ repoId, repoName }: Props) {
           // fall through
         }
       }
-      toast.error("Couldn't start indexing", { description: msg });
+      toast.error(t("firstIndex.startFailed"), { description: msg });
     } finally {
       setStarting(false);
     }
-  }, [repoId]);
+  }, [repoId, t]);
 
   const handleJobDone = useCallback(async () => {
     if (!jobId) return;
@@ -113,12 +116,14 @@ export function FirstIndexExperience({ repoId, repoName }: Props) {
       <IndexCelebration
         repoName={repoName}
         pagesGenerated={completed.pages}
-        onExplore={() => router.refresh()}
+        // Hands off to the welcome on the indexed overview, so the two never stack.
+        exploreLabel={t("firstIndex.takeTour")}
+        onExplore={() => router.push(`/repos/${encodeURIComponent(repoId)}/overview?tour=1`)}
       >
         {startHere.length > 0 && (
           <FirstFiveFiles
             files={startHere}
-            title="Start here"
+            title={t("firstIndex.startHere")}
             // Targets can be symbol pages ("calc.py::add"); link to the file.
             hrefFor={(f) => fileEntityPath(`/repos/${repoId}`, f.file_path.split("::")[0]!)}
           />
@@ -144,10 +149,10 @@ export function FirstIndexExperience({ repoId, repoName }: Props) {
   return (
     <EmptyState
       icon={<Sparkles className="h-8 w-8" />}
-      title="This repo hasn't been indexed yet"
-      description="One click builds the code index, health signals, and documentation. You can watch it happen live."
+      title={t("firstIndex.title")}
+      description={t("firstIndex.description")}
       action={{
-        label: starting ? "Starting…" : "Index this repo",
+        label: starting ? t("firstIndex.starting") : t("firstIndex.action"),
         onClick: () => {
           if (!starting) void startIndex();
         },

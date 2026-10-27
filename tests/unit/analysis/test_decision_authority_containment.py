@@ -258,3 +258,89 @@ class TestPromotionCarriesTheReviewLane:
         row["structured"]["needs_split"] = True
 
         assert all(d.needs_split for d in promotion_decisions(row, Path(".")))
+
+
+class TestBundledClaimsAreFlaggedOnEveryLane:
+    """The detector ran only in the broad lane, which is off, so it never ran.
+
+    Every record in the dogfood store carried ``needs_split=False``, including
+    the ones that visibly bundle two decisions. Evidence-keyed identity folds
+    a bundled claim together with the separate decisions it bundles, so the
+    flag has to be set wherever a candidate is captured, not in one lane.
+    """
+
+    def test_a_marker_in_the_decision_text_raises_the_flag(self):
+        row = _row(kind="user_correction")
+        row["structured"]["decision"] = "Enable WAL; set a bounded busy timeout"
+
+        assert all(d.needs_split for d in promotion_decisions(row, Path(".")))
+
+    def test_an_unbundled_decision_is_not_flagged(self):
+        assert not any(d.needs_split for d in promotion_decisions(_row(), Path(".")))
+
+    def test_a_bare_conjunction_is_not_a_marker(self):
+        """Widening to ``" and "`` flags 194 of 357 records and is not shipping."""
+        row = _row()
+        row["structured"]["decision"] = "Enable WAL and a bounded busy timeout"
+
+        assert not any(d.needs_split for d in promotion_decisions(row, Path(".")))
+
+    def test_a_flag_the_broad_lane_set_survives_prose_that_carries_no_marker(self):
+        row = _row(kind="session_discovery")
+        row["structured"]["decision"] = "Enable WAL and a bounded busy timeout"
+        row["structured"]["needs_split"] = True
+
+        assert all(d.needs_split for d in promotion_decisions(row, Path(".")))
+
+    def test_a_row_with_no_decision_text_at_all_is_not_flagged(self):
+        row = _row()
+        row["structured"]["decision"] = None
+
+        assert not any(d.needs_split for d in promotion_decisions(row, Path(".")))
+
+
+class TestScopeNamesOnlyIndexedCode:
+    """A record is delivered as a rule about the files it names."""
+
+    INDEXED = frozenset({"pkg/engine.py", "docs/DESIGN.md"})
+
+    def test_a_path_outside_the_index_never_reaches_a_record(self):
+        out = promotion_decisions(
+            _row(structured={**_row()["structured"], "affected_files": ["local-stash/PLAN.md"]}),
+            Path("."),
+            indexed=self.INDEXED,
+        )
+        assert all(d.affected_files == [] for d in out)
+
+    def test_an_indexed_path_survives(self):
+        out = promotion_decisions(
+            _row(structured={**_row()["structured"], "affected_files": ["pkg/engine.py"]}),
+            Path("."),
+            indexed=self.INDEXED,
+        )
+        assert all(d.affected_files == ["pkg/engine.py"] for d in out)
+
+    def test_without_an_index_set_nothing_is_filtered(self):
+        out = promotion_decisions(
+            _row(structured={**_row()["structured"], "affected_files": ["local-stash/PLAN.md"]}),
+            Path("."),
+        )
+        assert all(d.affected_files == ["local-stash/PLAN.md"] for d in out)
+
+    def test_a_structured_claim_of_no_files_is_a_refusal_not_a_missing_key(self):
+        """The correction gate empties the list on purpose; staging must not refill it."""
+        out = promotion_decisions(
+            _row(files=["pkg/engine.py"]),  # structured affected_files is []
+            Path("."),
+            indexed=self.INDEXED,
+        )
+        assert all(d.affected_files == [] for d in out)
+
+    def test_a_row_with_no_structured_claim_still_falls_back_to_the_gate_hits(self):
+        structured = {k: v for k, v in _row()["structured"].items() if k != "affected_files"}
+        out = promotion_decisions(
+            _row(structured=structured, files=["pkg/engine.py"]),
+            Path("."),
+            indexed=self.INDEXED,
+        )
+        assert all(d.affected_files == ["pkg/engine.py"] for d in out)

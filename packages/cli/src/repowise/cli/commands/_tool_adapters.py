@@ -85,22 +85,7 @@ def resolve_indexed_repo(
         no_workspace_flag=no_workspace,
         repo_alias=repo_alias,
     )
-    target.notice(_notices(fmt), command=command)
-
-    if target.is_workspace:
-        if target.repo_filter is not None:
-            picked = target.resolve_repo_alias(target.repo_filter)
-            if picked is None:
-                raise click.ClickException(f"Unknown repo alias: {target.repo_filter}")
-            repo_path = picked
-        else:
-            primary = target.primary_path()
-            if primary is None:
-                raise click.ClickException("Workspace has no primary repo configured.")
-            repo_path = primary
-    else:
-        assert target.repo_path is not None
-        repo_path = target.repo_path
+    repo_path = target.narrow(_notices(fmt), command=command)
 
     from repowise.cli.helpers import REPOWISE_DIR
 
@@ -139,8 +124,8 @@ def run(repo_path: Path, factory: Callable[[], Awaitable[dict]], tool_name: str)
     from repowise.cli.helpers import silence_logs_for_machine_output
     from repowise.cli.tool_bridge import call_tool
 
-    silence_logs_for_machine_output()
-    return call_tool(repo_path, factory, tool_name)
+    with silence_logs_for_machine_output():
+        return call_tool(repo_path, factory, tool_name)
 
 
 #: MCP tool name -> the CLI command that now does the same thing.

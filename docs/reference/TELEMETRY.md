@@ -37,6 +37,13 @@ Every event, whatever its type, carries the same anonymous envelope:
 | `python_version` | `3.12` | **major.minor only** |
 | `is_ci` | `true` / `false` | Separate automation from humans |
 
+Every event's `properties.client` names the host that ran repowise, as one
+fixed label: `claude_code`, `codex`, `cursor`, `vscode`, `ci` or `terminal`.
+It comes from which host-specific environment variables are set (never their
+values), from a hook's `--client` flag, or for an MCP tool call from the name
+the client announces when it connects, which can also name another supported
+agent such as `opencode` (`unknown` when nothing matches).
+
 ### `command_run` — once per CLI invocation
 
 | Field | Example | Purpose |
@@ -47,6 +54,13 @@ Every event, whatever its type, carries the same anonymous envelope:
 | `properties.status` | `ok` / `error` / `usage_error` / `interrupted` | Success, failure, a mis-invocation (bad/unknown flag), or user-cancelled (Ctrl-C) |
 | `properties.error_type` | `LLMProviderError` | Exception **class name only** |
 | `properties.duration_ms` | `71840` | Performance in the wild |
+| `properties.failure_reason` | `no_sync_base` | A fixed reason code for a known failure, never the message |
+
+`failure_reason` codes include `store_open_failed`, `db_url_unreachable` and
+`workspace_default_failed` for `mcp`, and `no_index`, `no_sync_base`,
+`no_provider_configured` and `embed_failed` for `update`. An `mcp` run also
+reports `served_no_index` (`true` when it serves a directory with no index),
+and an `update` that defers to one already running reports `outcome: deferred`.
 
 For `init` and `update`, a few coarse **buckets and enums** describe the shape
 of the run so we can see the size of repos people index and whether docs
@@ -65,19 +79,25 @@ generation is used. Never exact counts, never repo or file names:
 
 Emitted by the MCP server (`repowise mcp` / `repowise serve`) so we can see
 which tools coding agents actually use and how often answers come back stale or
-degraded. Only the tool name and coarse enums/booleans — **never the question,
-query, results, paths, or repo/symbol names**:
+degraded. Only the tool name, coarse enums/booleans, and the size of the
+response, **never the question, query, results, paths, or repo/symbol names**:
 
 | Field | Example | Purpose |
 |---|---|---|
 | `properties.tool` | `get_answer`, `search_codebase` | Which tool was called |
 | `properties.status` | `ok` / `error` | Tool error rate |
+| `properties.error_reason` | `not_found` / `invalid_args` / `no_index` / `index_behind` / `server_stale` / `internal` / `other` | Why an `error` call failed, a fixed code |
 | `properties.duration_ms` | `820` | Tool latency in the wild |
 | `properties.confidence` | `high` / `medium` / `low` | Answer confidence distribution |
-| `properties.retrieval_quality` | `strong` / `weak` | Retrieval quality distribution |
+| `properties.retrieval_quality` | `high` / `partial` / `weak` | Retrieval quality distribution; sent only when the call asked for `include=["diagnostics"]` |
 | `properties.results_bucket` | `1-3`, `4-10` | Result count for searches (a range) |
 | `properties.index_behind` | `true` / `false` | How often served content is stale |
 | `properties.embedder_degraded` | `true` / `false` | How often search runs on mock vectors |
+| `properties.grounding` | `symbol_body` / `extracted` | What a confident answer rests on |
+| `properties.degraded` | `no-llm-provider` / `synthesis-failed` | Why an answer carries no synthesised prose |
+| `properties.semantic_search` | `true` / `false` | Whether retrieval had a vector leg |
+| `properties.response_chars` | `10979` | Serialised size of the response, a count only |
+| `properties.response_tokens` | `2744` | The same size as the budget's token estimate |
 
 Example `command_run` payload:
 
@@ -131,6 +151,9 @@ detached process that sends what is queued and removes the file. So the send
 costs you nothing in command time, and you can read the queued file to see
 exactly what is about to leave your machine.
 
+Nothing is queued or sent while a test runner is driving repowise
+(`PYTEST_CURRENT_TEST` or `PYTEST_VERSION` is set, or pytest is loaded).
+
 If the send fails the queued events are discarded, not retried. Disabling
 telemetry also discards anything still queued, so a disable is never followed
 by one last batch.
@@ -152,6 +175,7 @@ Any one of these disables all telemetry:
 repowise telemetry disable        # persisted to ~/.repowise/platform.json
 export REPOWISE_TELEMETRY_DISABLED=1
 export DO_NOT_TRACK=1             # the cross-tool standard (https://consoledonottrack.com)
+export REPOWISE_OFFLINE=1         # also skips the PyPI release check and agent-CLI login probes
 ```
 
 Check the current state anytime:

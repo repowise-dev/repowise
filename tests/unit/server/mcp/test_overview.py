@@ -46,10 +46,10 @@ async def test_get_overview(setup_mcp):
 
 
 @pytest.mark.asyncio
-async def test_get_overview_with_repo_path(setup_mcp):
+async def test_get_overview_with_repo_path(setup_mcp, tmp_path):
     from repowise.server.mcp_server import get_overview
 
-    result = await get_overview(repo="/tmp/test-repo")
+    result = await get_overview(repo=str(tmp_path))
     assert result["title"] == "Test Repo Overview"
 
 
@@ -100,3 +100,15 @@ async def test_include_flag_restores_its_block(setup_mcp, flag, key):
     from repowise.server.mcp_server import get_overview
 
     assert key in await get_overview(include=[flag])
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_include_value_is_named_not_silently_dropped(setup_mcp):
+    from repowise.server.mcp_server import get_overview
+
+    result = await get_overview(include=["tour", "outlines"])
+    assert "reading_order" in result
+    [entry] = result["ignored_arguments"]
+    assert entry["argument"] == "include" and entry["values"] == ["outlines"]
+    assert "outline" in entry["valid"]
+    assert "ignored_arguments" not in await get_overview(include=["tour"])

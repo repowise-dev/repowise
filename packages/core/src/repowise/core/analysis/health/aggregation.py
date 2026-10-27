@@ -13,31 +13,48 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
-from .models import Severity
+from .governance import GOVERNANCE_BIOMARKERS
+from .models import Severity, primary_finding
 from .ranking import worst_metric
-from .rows import detail_map, field
+from .rows import detail_map, field, scored_rows
 from .scoring import (
     CATEGORY_CAPS,
+    HISTORY_CATEGORY,
     SCORE_FLOOR,
     SCORE_MAX,
     biomarker_category,
     biomarker_weight,
+    deduction_split,
+    destacked,
+    dimensions_for,
+    history_cap,
+    is_advisory,
     severity_deduction,
 )
+from .shape_curve import ceiling, continuous_base, group_by_function
 
 __all__ = [
     "MODULE_ROOT_LABEL",
+    "NLOC_NULL_REASON",
     "SEVERITY_ORDER",
     "biomarker_breakdown",
     "finding_base_deduction",
+    "finding_raw_deduction",
+    "group_rollup",
     "module_label",
+    "module_labels",
     "module_rollups",
+    "primary_and_magnitude",
+    "primary_and_magnitude_by_file",
     "score_breakdown",
     "severity_breakdown",
 ]
 
 #: Label for a file that sits directly in the repository root.
 MODULE_ROOT_LABEL = "root"
+
+#: Why a file has no NLOC, for surfaces that show the gap as null.
+NLOC_NULL_REASON = "not measured: health analysis counts NLOC only in files it parses as code"
 
 #: The buckets a severity breakdown always declares, worst first. Fixed rather
 #: than derived from the data so an absent severity reads as 0, not as missing.
@@ -57,6 +74,15 @@ def module_label(file_path: str | None) -> str:
     """
     head, separator, _ = (file_path or "").partition("/")
     return head if separator else MODULE_ROOT_LABEL
+
+
+def module_labels(file_paths: Iterable[str | None]) -> set[str]:
+    """The modules *file_paths* span: the one axis every module count uses.
+
+    Module health buckets on :func:`module_label`, so a count taken any other way
+    (package boundaries, top two segments) names a number no module list shows.
+    """
+    return {module_label(path) for path in file_paths if path}
 
 
 def _nloc(row: Any) -> int:
@@ -107,30 +133,39 @@ def module_rollups(
     files are all held at the floor resolves on the path instead of on depth.
     """
     buckets: dict[str, list[Any]] = {}
-    for row in metrics:
+    # A file health has no dialect for carries no score and so no weight in
+    # its module's average; a module of nothing else is not a row.
+    for row in scored_rows(metrics):
         module = field(row, "module", None)
         if module:
             buckets.setdefault(str(module), []).append(row)
 
-    rows: list[dict[str, Any]] = []
-    for name, group in buckets.items():
-        # Weight floors at 1 per file, so a non-empty group always has weight
-        # and the average never divides by zero.
-        total_weight = sum(max(_nloc(row), 1) for row in group)
-        average = sum(_score(row) * max(_nloc(row), 1) for row in group) / total_weight
-        worst = worst_metric(group, deductions or {})
-        rows.append(
-            {
-                "module": name,
-                "file_count": len(group),
-                "nloc": sum(_nloc(row) for row in group),
-                "average_health": round(average, 2),
-                "worst_performer_path": field(worst, "file_path", None),
-                "worst_performer_score": round(_score(worst), 2),
-            }
-        )
+    rows = [{"module": name, **group_rollup(group, deductions)} for name, group in buckets.items()]
     rows.sort(key=lambda row: (row["average_health"], row["module"]))
     return rows
+
+
+def group_rollup(
+    group: Sequence[Any], deductions: Mapping[str, float] | None = None
+) -> dict[str, Any]:
+    """One NLOC-weighted rollup over a non-empty group of scored rows.
+
+    The fold :func:`module_rollups` applies per module, shared with any surface
+    that buckets files another way (a directory at any depth) so the average
+    and the worst performer mean the same thing everywhere.
+    """
+    # Weight floors at 1 per file, so a non-empty group always has weight
+    # and the average never divides by zero.
+    total_weight = sum(max(_nloc(row), 1) for row in group)
+    average = sum(_score(row) * max(_nloc(row), 1) for row in group) / total_weight
+    worst = worst_metric(group, deductions or {})
+    return {
+        "file_count": len(group),
+        "nloc": sum(_nloc(row) for row in group),
+        "average_health": round(average, 2),
+        "worst_performer_path": field(worst, "file_path", None),
+        "worst_performer_score": round(_score(worst), 2),
+    }
 
 
 def severity_breakdown(findings: Iterable[Any]) -> dict[str, int]:
@@ -140,9 +175,14 @@ def severity_breakdown(findings: Iterable[Any]) -> dict[str, int]:
     ``dict`` keeps the key it was built with — so the returned keys stay plain
     strings even when every finding carried an enum. Do not "fix" that by
     coercing: the wire shape depends on it.
+
+    Advisory findings are excluded so this agrees with ``open_findings``,
+    which is rendered beside it in the same payload.
     """
     out = dict.fromkeys(SEVERITY_ORDER, 0)
     for finding in findings:
+        if is_advisory(field(finding, "biomarker_type", "") or ""):
+            continue
         severity = _severity_key(field(finding, "severity", None))
         if severity in out:
             out[severity] += 1
@@ -174,13 +214,106 @@ def finding_base_deduction(finding: Any) -> float:
 
     Mirrors ``scoring.score_file``: a continuous ``deduction`` recorded in the
     finding's details (the coverage gradient scales with the uncovered fraction)
-    takes the place of the discrete severity table. Reading the override here is
-    what lets a breakdown show the continuous signal rather than a band proxy.
+    takes the place of the discrete severity table, and a critical sized finding
+    scales past its threshold (``shape_curve.continuous_base``).
     """
-    override = detail_map(finding).get("deduction")
+    details = detail_map(finding)
+    override = details.get("deduction")
     if isinstance(override, (int, float)):
         return float(override)
-    return severity_deduction(_severity_key(field(finding, "severity", None)))
+    severity = _severity_key(field(finding, "severity", None))
+    biomarker = field(finding, "biomarker_type", None) or ""
+    base = severity_deduction(severity)
+    return continuous_base(biomarker, base, severity == "critical", details)
+
+
+def finding_raw_deduction(finding: Any) -> float:
+    """One finding's deduction before its function group or category reshaped it.
+
+    ``base x weight``, the quantity ``_score_dimension`` starts from and then
+    scales. ``health_impact`` is what survives that scaling, so it moves
+    when a *neighbour* in the same capped category appears or goes away; this
+    one depends on the finding alone. A breakdown needs it to say how much a
+    category shed, and a change comparison needs it to ask whether one finding
+    got worse without hearing about its neighbours.
+    """
+    return finding_base_deduction(finding) * biomarker_weight(
+        field(finding, "biomarker_type", None)
+    )
+
+
+def primary_and_magnitude(findings: Sequence[Any]) -> dict[str, Any]:
+    """Dominant cause + pre-clamp deduction magnitude for one file's findings.
+
+    ``total_deduction`` sums stored ``health_impact``, the applied (capped)
+    value; :func:`finding_raw_deduction` is unscaled and differs on capped files.
+    """
+    if not findings:
+        return {"primary_biomarker": None, "primary_reason": None, "total_deduction": None}
+    primary = primary_finding(findings)
+    total = sum(float(field(x, "health_impact", 0.0) or 0.0) for x in findings)
+    return {
+        "primary_biomarker": field(primary, "biomarker_type") if primary else None,
+        "primary_reason": field(primary, "reason") if primary else None,
+        "total_deduction": round(total, 3),
+    }
+
+
+def primary_and_magnitude_by_file(findings: Iterable[Any]) -> dict[str, dict[str, Any]]:
+    """:func:`primary_and_magnitude` for each ``file_path`` in *findings*."""
+    by_file: dict[str, list[Any]] = {}
+    for f in findings:
+        by_file.setdefault(field(f, "file_path"), []).append(f)
+    return {path: primary_and_magnitude(fs) for path, fs in by_file.items()}
+
+
+def _scored_raw(findings: list[Any]) -> list[float]:
+    """Each finding's raw deduction as the scorer grouped it by function.
+
+    A governance finding counts 0: the score pass never saw it.
+    """
+    raw = [
+        0.0
+        if field(f, "biomarker_type", None) in GOVERNANCE_BIOMARKERS
+        else finding_raw_deduction(f)
+        for f in findings
+    ]
+    names = [
+        (field(f, "biomarker_type", "") or "", field(f, "function_name", None)) for f in findings
+    ]
+    group_by_function(names, raw)
+    return raw
+
+
+def _category_row(
+    category: str, entries: list[tuple[Any, float]], cap: float
+) -> tuple[dict[str, Any], float]:
+    """One breakdown row from ``(finding, raw)`` pairs, and its applied total."""
+    applied_each = [float(field(f, "health_impact", 0.0) or 0.0) for f, _ in entries]
+    raw_sum = sum(r for _, r in entries)
+    applied_sum = sum(applied_each)
+    row = {
+        "category": category,
+        "cap": round(cap, 2),
+        "raw_deduction": round(raw_sum, 3),
+        "applied_deduction": round(applied_sum, 3),
+        # Held at the cap; a curved category sheds weight but never sits at its ceiling.
+        "capped": category == HISTORY_CATEGORY and applied_sum < raw_sum - 1e-6,
+        "finding_count": len(entries),
+        "findings": [
+            {
+                "id": field(f, "id", None),
+                "biomarker_type": field(f, "biomarker_type", None),
+                "severity": field(f, "severity", None),
+                "raw_impact": round(raw, 3),
+                "applied_impact": round(applied, 3),
+                "function_name": field(f, "function_name", None),
+                "reason": field(f, "reason", None),
+            }
+            for (f, raw), applied in zip(entries, applied_each, strict=True)
+        ],
+    }
+    return row, applied_sum
 
 
 def score_breakdown(findings: Sequence[Any]) -> dict[str, Any]:
@@ -189,54 +322,40 @@ def score_breakdown(findings: Sequence[Any]) -> dict[str, Any]:
     The applied impact is the **stored** ``health_impact`` — the exact
     already-weighted-and-capped value the scorer produced at index time — so the
     breakdown reproduces the file's score instead of re-deriving it. Only the
-    raw (pre-cap) figure is reconstructed, with the same ``base x weight``
-    formula, so a capped category is honest about how much it shed.
+    raw figure is reconstructed, with the same ``base x weight`` formula,
+    function grouping and history de-stacking, so a category is honest about how
+    much its curve or cap shed. ``cap`` is history's hard cap, or for every other
+    category the ceiling its curve approaches.
 
     Categories are emitted in :data:`CATEGORY_CAPS` order and a category with no
     findings is omitted, not zero-filled.
     """
-    per_category: dict[str, list[Any]] = {}
-    for finding in findings:
+    # Findings outside the defect dimension deduct nothing; left in, they
+    # report a raw deduction the file never paid.
+    kept = [
+        f for f in findings if "defect" in dimensions_for(field(f, "biomarker_type", None) or "")
+    ]
+    per_category: dict[str, list[tuple[Any, float]]] = {}
+    for finding, raw in zip(kept, _scored_raw(kept), strict=True):
         category = biomarker_category(field(finding, "biomarker_type", None))
-        per_category.setdefault(category, []).append(finding)
+        per_category.setdefault(category, []).append((finding, raw))
 
     categories: list[dict[str, Any]] = []
     total_deduction = 0.0
-    for category, cap in CATEGORY_CAPS.items():
-        entries = per_category.get(category, [])
-        if not entries:
-            continue
-        raw_each = [
-            finding_base_deduction(f) * biomarker_weight(field(f, "biomarker_type", None))
-            for f in entries
-        ]
-        applied_each = [float(field(f, "health_impact", 0.0) or 0.0) for f in entries]
-        raw_sum = sum(raw_each)
-        applied_sum = sum(applied_each)
-        categories.append(
-            {
-                "category": category,
-                "cap": round(cap, 2),
-                "raw_deduction": round(raw_sum, 3),
-                "applied_deduction": round(applied_sum, 3),
-                # Category shed weight iff its applied total is held at the cap.
-                "capped": applied_sum < raw_sum - 1e-6,
-                "finding_count": len(entries),
-                "findings": [
-                    {
-                        "id": field(f, "id", None),
-                        "biomarker_type": field(f, "biomarker_type", None),
-                        "severity": field(f, "severity", None),
-                        "raw_impact": round(raw, 3),
-                        "applied_impact": round(applied, 3),
-                        "function_name": field(f, "function_name", None),
-                        "reason": field(f, "reason", None),
-                    }
-                    for f, raw, applied in zip(entries, raw_each, applied_each, strict=True)
-                ],
-            }
-        )
-        total_deduction += applied_sum
+    # The history cap follows the structure half, so report the one it scored under.
+    structure, _ = deduction_split(findings)
+    for category, static_cap in CATEGORY_CAPS.items():
+        if entries := per_category.get(category):
+            # Only history keeps a hard cap; every other category follows the curve.
+            if category == HISTORY_CATEGORY:
+                cap = history_cap(structure)
+                raw = destacked([r for _, r in entries])
+                entries = [(f, r) for (f, _), r in zip(entries, raw, strict=True)]
+            else:
+                cap = ceiling(static_cap)
+            row, applied = _category_row(category, entries, cap)
+            categories.append(row)
+            total_deduction += applied
     score = max(SCORE_FLOOR, min(SCORE_MAX, SCORE_MAX - total_deduction))
     return {
         "score": round(score, 2),

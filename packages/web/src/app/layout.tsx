@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
+import { NextIntlClientProvider } from "next-intl";
+import { getLocale, getTranslations } from "next-intl/server";
 import { GeistSans } from "geist/font/sans";
 import { GeistMono } from "geist/font/mono";
 import { Lora } from "next/font/google";
@@ -13,7 +15,9 @@ import { MobileNav } from "@/components/layout/mobile-nav";
 import { CommandPalette } from "@/components/search/command-palette";
 import { ContextDrawerShell } from "@/components/layout/context-drawer-provider";
 import { SWRProvider } from "@/components/layout/swr-provider";
+import { PreviewBadgeStrings } from "@/components/layout/preview-badge-strings";
 import { UpgradeBanner } from "@/components/layout/upgrade-banner";
+import { ReleaseMoment } from "@/components/layout/release-moment";
 import { listRepos } from "@/lib/api/repos";
 import { getWorkspace } from "@/lib/api/workspace";
 import type { WorkspaceResponse } from "@/lib/api/types";
@@ -22,19 +26,33 @@ import "@/styles/globals.css";
 // Serif display face for the docs/wiki reading surfaces (--font-serif token).
 const lora = Lora({ subsets: ["latin"], variable: "--font-lora", display: "swap" });
 
-export const metadata: Metadata = {
-  title: {
-    default: "repowise",
-    template: "%s — repowise",
-  },
-  description: "Open-source codebase documentation engine",
-};
+// The layout asks the API for the repo list at request time. Without this,
+// Next prerenders the static routes (`/settings`, `not-found`) at build time —
+// where no API answers — and serves that frozen `reposUnavailable: true`
+// forever: visiting Settings flips the sidebar to "Can't reach the API" on a
+// healthy server, and it sticks until a hard reload (#2260).
+export const dynamic = "force-dynamic";
+
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getTranslations("app");
+  return {
+    title: {
+      default: "repowise",
+      template: "%s — repowise",
+    },
+    description: t("description"),
+  };
+}
 
 export default async function RootLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
+  // The locale the request resolved to (cookie `NEXT_LOCALE`, else English).
+  // Read here so `<html lang>` and every server-rendered string agree.
+  const locale = await getLocale();
+  const t = await getTranslations("shell");
   // Fetch repos + workspace info server-side for the sidebar.
   //
   // A rejection is NOT an empty account. Falling back to `[]` silently made
@@ -58,32 +76,41 @@ export default async function RootLayout({
 
   return (
     <html
-      lang="en"
+      lang={locale}
       suppressHydrationWarning
       className={`${GeistSans.variable} ${GeistMono.variable} ${lora.variable}`}
     >
       <body className="bg-[var(--color-bg-root)] text-[var(--color-text-primary)] antialiased">
+        {/* Rendered in a Server Component, so every message the request
+            resolved is handed to the client tree automatically — client
+            components call `useTranslations()` against the same catalog the
+            server rendered with. */}
+        <NextIntlClientProvider>
         <ThemeProvider>
         <a
           href="#main-content"
-          className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[100] focus:rounded-md focus:bg-[var(--color-bg-elevated)] focus:px-3 focus:py-2 focus:text-sm focus:text-[var(--color-text-primary)] focus:outline focus:outline-2 focus:outline-[var(--color-accent-primary)]"
+          className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[100] focus:rounded-md focus:bg-[var(--color-bg-elevated)] focus:px-3 focus:py-2 focus:text-sm focus:text-[var(--color-text-primary)] focus:outline focus:outline-2 focus:outline-[var(--color-focus-ring)]"
         >
-          Skip to content
+          {t("skipToContent")}
         </a>
         <NuqsAdapter>
         <SWRProvider>
         <TooltipProvider delayDuration={300}>
+        <PreviewBadgeStrings>
           <Suspense fallback={<AppShellSkeleton />}>
             <ContextDrawerShell>
-              <div className="flex h-screen flex-col overflow-hidden">
+              {/* Printed, the shell unclips so a long page (a chat
+                  transcript) flows across sheets instead of one viewport. */}
+              <div className="flex h-screen flex-col overflow-hidden print:block print:h-auto print:overflow-visible">
                 <UpgradeBanner />
-                <div className="flex flex-1 overflow-hidden">
+                <ReleaseMoment firstRepoId={repos[0]?.id ?? null} />
+                <div className="flex flex-1 overflow-hidden print:block print:overflow-visible">
                 <Sidebar
                   repos={repos}
                   workspace={workspace}
                   reposUnavailable={reposUnavailable}
                 />
-                <div className="flex flex-1 flex-col min-w-0 overflow-hidden">
+                <div className="flex flex-1 flex-col min-w-0 overflow-hidden print:block print:overflow-visible">
                   <MobileNav repos={repos} workspace={workspace} />
                   {/* A flex column, so anything a route layout stacks above
                       the page (repo breadcrumb, reindex hint, active-job
@@ -97,7 +124,7 @@ export default async function RootLayout({
                       it could not be clicked. */}
                   <main
                     id="main-content"
-                    className="flex flex-1 flex-col overflow-auto min-w-0"
+                    className="relative flex flex-1 flex-col overflow-auto min-w-0 print:block print:overflow-visible"
                   >
                     {children}
                   </main>
@@ -107,11 +134,13 @@ export default async function RootLayout({
               <CommandPalette repos={repos} workspace={workspace} />
             </ContextDrawerShell>
           </Suspense>
+        </PreviewBadgeStrings>
         </TooltipProvider>
         </SWRProvider>
         </NuqsAdapter>
         <ThemedToaster />
         </ThemeProvider>
+        </NextIntlClientProvider>
       </body>
     </html>
   );

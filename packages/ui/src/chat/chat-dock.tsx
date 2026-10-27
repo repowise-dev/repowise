@@ -7,8 +7,21 @@ import {
   Minus,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import type { ChatArtifact, ChatUIMessage } from "@repowise-dev/types/chat";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
+import type {
+  ChatArtifact,
+  ChatHandoff,
+  ChatSuggestion,
+  ChatUIMessage,
+} from "@repowise-dev/types/chat";
 import { BrandMark } from "../shared/brand-mark";
 import { Button } from "../ui/button";
 import { ActivityDot } from "../ui/activity-dot";
@@ -18,6 +31,10 @@ import { ChatComposer } from "./chat-composer";
 import { ChatContextIndicator } from "./chat-context-indicator";
 import { getChatContextPresentation, type ChatContext } from "./chat-context";
 import { ChatInterface } from "./chat-interface";
+import type { UnverifiedFigureCopy } from "./chat-message";
+import { buildHandoffDraft } from "./chat-handoff";
+import { ChatSuggestions } from "./chat-suggestions";
+import { CHAT_SHORTCUT_HINT } from "./use-chat-shortcut";
 
 export type ChatDockMode = "minimized" | "compact" | "expanded";
 
@@ -100,8 +117,11 @@ function usePersistentDockState(storageKey: string) {
   };
 }
 
+// Starts desktop, corrected on mount. It cannot read `matchMedia` during
+// render without making the server and the first client render disagree, and
+// defaulting to mobile flashed the full-width sheet on every desktop load.
 function useMobileDock() {
-  const [isMobile, setIsMobile] = useState(true);
+  const [isMobile, setIsMobile] = useState(false);
 
   useEffect(() => {
     if (typeof window.matchMedia !== "function") return;
@@ -115,6 +135,14 @@ function useMobileDock() {
   return isMobile;
 }
 
+/** One imperative request from the host: a keyboard toggle, or a page handing
+ *  the reader's question over. `id` lets the same request repeat. */
+export interface ChatDockCommand {
+  id: number;
+  type: "toggle" | "open" | "handoff";
+  handoff?: ChatHandoff;
+}
+
 export interface ChatDockProps {
   storageKey: string;
   repoId: string;
@@ -125,6 +153,17 @@ export interface ChatDockProps {
   error?: string | null;
   onSend: (text: string, context?: ChatContext) => void | Promise<void>;
   onCancel: () => void;
+  /** Suggestions derived from the live page. Omit to use the static tier the
+   *  page kind already carries. */
+  suggestions?: readonly ChatSuggestion[];
+  /** Applied once, then handed back through `onCommandHandled` so remounting
+   *  the dock does not replay it. */
+  command?: ChatDockCommand | null;
+  onCommandHandled?: () => void;
+  /** Shown once beside the minimized label, then reported back so the host can
+   *  remember it and never show it again. Never a modal, never persistent. */
+  firstVisitHint?: string;
+  onFirstVisitHintShown?: () => void;
   suppressed?: boolean;
   /** Hide the dock entirely. The host owns the preference and where it is
    *  stored: this component's own persisted state is keyed per conversation,
@@ -138,6 +177,7 @@ export interface ChatDockProps {
   assistantAvatarSrc?: string;
   buildCitationHref?: (source: SourceReference) => string;
   linkPrefix?: string;
+  unverifiedFigureCopy?: UnverifiedFigureCopy;
   onOpenFullChat?: () => void;
   owlDarkSrc?: string;
   owlLightSrc?: string;
@@ -163,6 +203,11 @@ export function ChatDock({
   error,
   onSend,
   onCancel,
+  suggestions,
+  command,
+  onCommandHandled,
+  firstVisitHint,
+  onFirstVisitHintShown,
   suppressed = false,
   onDismiss,
   modelSelectorSlot,
@@ -172,6 +217,7 @@ export function ChatDock({
   assistantAvatarSrc,
   buildCitationHref,
   linkPrefix,
+  unverifiedFigureCopy,
   onOpenFullChat,
   owlDarkSrc = "/repowise-logo.png",
   owlLightSrc = "/repowise-logo-light.png",
@@ -183,6 +229,7 @@ export function ChatDock({
   const { mode, draft, setMode, setDraft } = usePersistentDockState(storageKey);
   const [dismissedContext, setDismissedContext] = useState<string | null>(null);
   const [answerReady, setAnswerReady] = useState(false);
+  const [hintVisible, setHintVisible] = useState(false);
   const previousStreaming = useRef(isStreaming);
   const compactTextareaRef = useRef<HTMLTextAreaElement>(null);
   const expandedTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -219,9 +266,88 @@ export function ChatDock({
     if (mode !== "minimized") setAnswerReady(false);
   }, [mode]);
 
+  useEffect(() => {
+    if (!firstVisitHint || mode !== "minimized") return undefined;
+    setHintVisible(true);
+    onFirstVisitHintShown?.();
+    const timeout = window.setTimeout(() => setHintVisible(false), 7000);
+    // Clears the flag as well as the timer: a host that stops passing the hint
+    // once it has been seen would otherwise leave an empty label behind.
+    return () => {
+      window.clearTimeout(timeout);
+      setHintVisible(false);
+    };
+  // One introduction per host decision, not one per mode change.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [firstVisitHint]);
+
+  useEffect(() => {
+    // Suppressed means nothing is rendered, so applying the command here would
+    // consume it against a dock nobody can see. Leave it pending instead.
+    if (!command || suppressed) return;
+    onCommandHandled?.();
+    const focusCompact = () =>
+      window.requestAnimationFrame(() => compactTextareaRef.current?.focus());
+
+    if (command.type === "toggle" || command.type === "open") {
+      // "open" rather than "toggle" when the host has just revealed a dock the
+      // reader had hidden: the stored mode is from before it was hidden, so
+      // toggling it could minimize the thing the keystroke asked to open.
+      if (command.type === "open" || mode === "minimized") {
+        setMode("compact");
+        focusCompact();
+      } else {
+        setMode("minimized");
+        window.requestAnimationFrame(() => minimizedButtonRef.current?.focus());
+      }
+      return;
+    }
+
+    const handoff = command.handoff;
+    if (!handoff) return;
+    const seeded = buildHandoffDraft(handoff);
+    setMode("compact");
+    if (handoff.autoSend && seeded) {
+      setDraft("");
+      void onSend(seeded, handoff.context);
+      focusCompact();
+      return;
+    }
+    setDraft(seeded);
+    window.requestAnimationFrame(() => {
+      const textarea = compactTextareaRef.current;
+      if (!textarea) return;
+      textarea.focus();
+      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    });
+  // Applied once per command id; the host clears it immediately after, so a
+  // remount cannot replay it. `suppressed` is listed so a command that arrived
+  // while nothing was rendered is applied as soon as the dock comes back.
+  // `mode` is not: it is read from the render that produced the command, which
+  // is exactly the state a toggle must act on.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [command, suppressed]);
+
   const activeContext = dismissedContext === identity ? undefined : context;
   const presentation = getChatContextPresentation(activeContext);
-  const suggestion = presentation.suggestions[0];
+
+  // Openers before the first question, the last answer's next steps after, so
+  // the slot is never spent on a stale opener.
+  const chips = useMemo<readonly ChatSuggestion[]>(() => {
+    if (messages.length === 0) return suggestions ?? presentation.suggestions;
+    const last = messages[messages.length - 1];
+    return last?.role === "assistant" && !last.isStreaming
+      ? last.followUps ?? []
+      : [];
+  }, [messages, presentation.suggestions, suggestions]);
+
+  const seedDraft = useCallback(
+    (suggestion: ChatSuggestion) => {
+      setDraft(suggestion.text);
+      compactTextareaRef.current?.focus();
+    },
+    [setDraft],
+  );
 
   if (suppressed) return null;
 
@@ -241,6 +367,10 @@ export function ChatDock({
   const collapse = () => {
     setMode("compact");
     window.requestAnimationFrame(() => compactTextareaRef.current?.focus());
+  };
+  const expand = () => {
+    setMode("expanded");
+    window.requestAnimationFrame(() => expandedTextareaRef.current?.focus());
   };
   const statusText = isStreaming
     ? "Working"
@@ -267,7 +397,7 @@ export function ChatDock({
                 ? `Open repository chat, ${error ? "chat needs attention" : "answer ready"}`
                 : "Open repository chat"
           }
-          className="group flex min-h-11 items-center gap-2 rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)] py-1.5 pl-1.5 pr-3 shadow-[var(--shadow-md)] outline-none transition-[border-color,box-shadow,transform] hover:border-[var(--color-border-hover)] hover:shadow-[var(--shadow-lg)] focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] motion-safe:hover:-translate-y-px motion-reduce:transition-none"
+          className="group flex min-h-11 items-center gap-2 rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)] py-1.5 pl-1.5 pr-3 shadow-[var(--shadow-md)] outline-none transition-[border-color,box-shadow,transform] hover:border-[var(--color-border-hover)] hover:shadow-[var(--shadow-lg)] focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] motion-safe:hover:-translate-y-px motion-reduce:transition-none"
         >
           <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--color-bg-elevated)]">
             <BrandMark
@@ -277,9 +407,14 @@ export function ChatDock({
               alt=""
             />
           </span>
-          <span className="text-[13px] font-medium text-[var(--color-text-primary)]">
+          <span className="text-xs font-medium text-[var(--color-text-primary)]">
             {statusText ?? "Ask Repowise"}
           </span>
+          {hintVisible && !statusText && (
+            <span className="hidden border-l border-[var(--color-border-default)] pl-2 text-xs text-[var(--color-text-tertiary)] sm:inline">
+              {firstVisitHint}
+            </span>
+          )}
           {statusText && (
             <span aria-hidden>
               {isStreaming ? (
@@ -291,17 +426,15 @@ export function ChatDock({
           )}
         </button>
         {onDismiss && (
-          /* Quiet until wanted: the dismiss is the kind of control you look
-             for only once you are already annoyed, and a permanent second
-             button on the pill would make the thing louder to solve the
-             complaint that it is too loud. Focusable while transparent, so
-             the keyboard path is not gated on hover. */
+          /* Quiet until wanted on a mouse: revealed on hover or focus. Always
+             shown on touch screens, where there is no hover, with a hit area
+             padded out to 36px around the small visible disc. */
           <button
             type="button"
             onClick={onDismiss}
             aria-label="Hide Ask Repowise"
             title="Hide Ask Repowise. Bring it back in Settings."
-            className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] text-[var(--color-text-tertiary)] opacity-0 shadow-[var(--shadow-md)] transition-opacity hover:text-[var(--color-text-primary)] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] group-hover/dock:opacity-100 motion-reduce:transition-none"
+            className="absolute -right-1.5 -top-1.5 flex h-6 w-6 items-center justify-center rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] text-[var(--color-text-tertiary)] shadow-[var(--shadow-md)] transition-opacity before:absolute before:-inset-1.5 before:content-[''] hover:text-[var(--color-text-primary)] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] pointer-fine:opacity-0 pointer-fine:group-hover/dock:opacity-100 motion-reduce:transition-none"
           >
             <X className="h-3 w-3" />
           </button>
@@ -335,7 +468,7 @@ export function ChatDock({
             variant="ghost"
             size="icon"
             className="h-8 w-8"
-            onClick={() => setMode("expanded")}
+            onClick={expand}
             aria-label="Expand repository chat"
           >
             <Expand className="h-4 w-4" />
@@ -377,28 +510,22 @@ export function ChatDock({
           isStreaming={isStreaming}
           placeholder={presentation.placeholder}
           disabled={sendDisabled}
+          {...(sendDisabledReason ? { disabledReason: sendDisabledReason } : {})}
           compact
           appearance="bare"
           autoFocus
           textareaRef={compactTextareaRef}
         />
-        {messages.length === 0 && draft.length === 0 && suggestion && (
-          <button
-            type="button"
-            onClick={() => {
-              setDraft(suggestion);
-              compactTextareaRef.current?.focus();
-            }}
-            className="mt-2 block max-w-full truncate rounded-md px-1 py-1 text-left text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
-          >
-            <span className="mr-1.5 text-[var(--color-text-tertiary)]">Try</span>
-            {suggestion}
-          </button>
-        )}
-        {sendDisabled && sendDisabledReason && (
-          <div className="mt-2 text-xs text-[var(--color-text-secondary)]">
-            {sendDisabledReason}
-          </div>
+        {draft.length === 0 && (
+          <ChatSuggestions
+            suggestions={chips}
+            onSelect={seedDraft}
+            layout="chips"
+            ariaLabel={
+              messages.length === 0 ? "Suggested questions" : "Next steps"
+            }
+            className="mt-2"
+          />
         )}
       </aside>
     );
@@ -446,7 +573,7 @@ export function ChatDock({
               <button
                 type="button"
                 onClick={onOpenFullChat}
-                className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
               >
                 <MessageCircle className="h-3.5 w-3.5" />
                 Full chat
@@ -482,10 +609,12 @@ export function ChatDock({
               {...(error !== undefined ? { error } : {})}
               onSend={send}
               onCancel={onCancel}
+              {...(suggestions ? { suggestions } : {})}
               draft={draft}
               onDraftChange={setDraft}
               onContextRemove={removeExpandedContext}
               composerRef={expandedTextareaRef}
+              autoFocus
               modelSelectorSlot={modelSelectorSlot}
               historySlot={historySlot}
               sendDisabled={sendDisabled}
@@ -493,6 +622,7 @@ export function ChatDock({
               {...(assistantAvatarSrc ? { assistantAvatarSrc } : {})}
               {...(buildCitationHref ? { buildCitationHref } : {})}
               {...(linkPrefix ? { linkPrefix } : {})}
+              {...(unverifiedFigureCopy ? { unverifiedFigureCopy } : {})}
               {...(onArtifactPin ? { onArtifactPin } : {})}
               {...(onOpenArtifactSource ? { onOpenArtifactSource } : {})}
               {...(artifactOverrides ? { artifactOverrides } : {})}

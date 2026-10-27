@@ -6,7 +6,7 @@ import click
 import pytest
 from click.testing import CliRunner
 
-from repowise.cli.commands import workspace_cmd
+from repowise.cli.commands.workspace_cmd import group as workspace_cmd_group
 from repowise.cli.main import cli
 
 
@@ -28,8 +28,8 @@ def test_workspace_add_configures_logging_before_workspace_resolution(
         events.append(("workspace", None))
         raise click.ClickException("stop after workspace resolution")
 
-    monkeypatch.setattr(workspace_cmd, "configure_cli_logging", fake_configure_cli_logging)
-    monkeypatch.setattr(workspace_cmd, "_require_workspace", fake_require_workspace)
+    monkeypatch.setattr(workspace_cmd_group, "configure_cli_logging", fake_configure_cli_logging)
+    monkeypatch.setattr(workspace_cmd_group, "_require_workspace", fake_require_workspace)
 
     result = CliRunner().invoke(cli, ["workspace", "add", ".", *extra_args])
 
@@ -56,8 +56,8 @@ def test_workspace_scan_configures_logging_before_path_resolution(
         events.append(("path", None))
         raise click.ClickException("stop after path resolution")
 
-    monkeypatch.setattr(workspace_cmd, "configure_cli_logging", fake_configure_cli_logging)
-    monkeypatch.setattr(workspace_cmd, "resolve_repo_path", fake_resolve_repo_path)
+    monkeypatch.setattr(workspace_cmd_group, "configure_cli_logging", fake_configure_cli_logging)
+    monkeypatch.setattr(workspace_cmd_group, "resolve_repo_path", fake_resolve_repo_path)
 
     result = CliRunner().invoke(cli, ["workspace", "scan", *extra_args])
 

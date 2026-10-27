@@ -49,6 +49,8 @@ def _finding(path: str, line: int, *, marker: str = "serial_await_in_loop", **de
             "path": [node.format(caller=path) for node in _SHARED],
             "resolution_basis": "call-site",
             "dataflow_verified": True,
+            "loop_magnitude": "grows_with_data",
+            "execution_role": "request",
             **details,
         },
         health_impact=0.0,
@@ -94,6 +96,7 @@ async def test_one_pass_materializes_the_queue_its_plans_and_its_headline(
     assert row.plan_state == "available"
     assert row.performance_model_version == PERFORMANCE_MODEL_VERSION
     assert row.analyzed_commit == "b" * 40
+    assert row.cost_proof == "proven"
 
     # Filter and order live in columns; the rest stays in the open payload, and
     # nothing appears in both.
@@ -108,7 +111,9 @@ async def test_one_pass_materializes_the_queue_its_plans_and_its_headline(
 
     summary = await crud.get_performance_summary(async_session, repo.id)
     assert summary.opportunities_total == 1
-    assert json.loads(summary.summary_json)["lead"]["opportunity_id"] == row.opportunity_id
+    # An advisory cause is queued but never the lead: only a plan-ready one is.
+    assert row.actionability_state == "advisory"
+    assert json.loads(summary.summary_json)["lead"] is None
 
 
 @pytest.mark.asyncio
@@ -370,3 +375,118 @@ def test_the_migration_upgrades_and_rolls_back(tmp_path: Path) -> None:
     assert not {"performance_opportunities", "performance_summaries"} & _tables(db_path)
     assert not {"public_id", "opportunity_id"} & _columns(db_path, "health_findings")
     assert "opportunity_id" not in _columns(db_path, "refactoring_suggestions")
+
+
+def test_a_non_leading_marker_never_leads_the_summary():
+    from types import SimpleNamespace
+
+    from repowise.core.persistence.crud.analysis.performance import _summary_payload
+
+    def _opp(oid: str, marker: str, may_lead: bool):
+        return SimpleNamespace(
+            opportunity_id=oid, actionability_state="plan_ready", biomarker_type=marker,
+            boundary_kind="db", execution_context="production", intervention_symbol=None,
+            terminal_sink=None, evidence=[{"file_path": "a.py"}], observations_total=1,
+            affected_call_sites_total=1, affected_files_total=1, why_ranked=[],
+            prerequisites=(), actionability_reason="", may_lead=may_lead,
+            facets={
+                "loop_magnitude": "grows_with_data",
+                "growth_source": "loop",
+                "execution_role": "request",
+            },
+        )
+
+    ranked = [_opp("lazy", "lazy_load_in_loop", False), _opp("io", "io_in_loop", True)]
+    assert _summary_payload(ranked, {})["lead"]["opportunity_id"] == "io"
+    assert _summary_payload(ranked[:1], {})["lead"] is None
+    # A queued cause whose growth only a registry loop shows never leads.
+    ranked[1].facets = {**ranked[1].facets, "growth_source": "registry"}
+    assert _summary_payload(ranked, {})["lead"] is None
+
+
+@pytest.mark.asyncio
+async def test_an_unmeasured_loop_is_stored_unproven_and_never_leads(async_session) -> None:
+    repo = await insert_repo(async_session)
+    await _write(async_session, repo.id, [_finding("src/a.py", 10, loop_magnitude="unknown")])
+
+    (row,) = await _rows(async_session, repo.id)
+    assert row.cost_proof == "unproven"
+    assert json.loads(row.details_json)["may_lead"] is False
+    summary = json.loads((await crud.get_performance_summary(async_session, repo.id)).summary_json)
+    assert summary["lead"] is None
+    assert summary["default_queue"]["total"] == 0
+    assert summary["default_queue"]["excluded"]["unmeasured_cost"] == 1
+
+
+async def _findings(session, repo_id: str) -> list[HealthFinding]:
+    result = await session.execute(select(HealthFinding).where(HealthFinding.repository_id == repo_id))
+    return list(result.scalars().all())
+
+
+@pytest.mark.asyncio
+async def test_every_observation_carries_its_cause_queue_judgement(async_session) -> None:
+    """A finding the queue leaves out says why on its own row, not NULL."""
+    repo = await insert_repo(async_session)
+    await _write(async_session, repo.id, [_finding("src/a.py", 10, loop_magnitude="unknown")])
+    (finding,) = await _findings(async_session, repo.id)
+    assert (finding.queue_eligible, finding.queue_reason) == (False, "unmeasured_cost")
+
+    other = await insert_repo(async_session, name="queued", local_path="/tmp/queued")
+    await _write(async_session, other.id, _corpus())
+    (cause,) = await _rows(async_session, other.id)
+    assert cause.queue_eligible is True
+    for finding in await _findings(async_session, other.id):
+        assert (finding.queue_eligible, finding.queue_reason, finding.queue_tier) == (
+            True,
+            None,
+            cause.queue_tier,
+        )
+
+
+async def _write_with_origin(session, repo_id: str, path: str, origin: str | None) -> None:
+    from repowise.core.analysis.health.models import HealthFileMetricData
+
+    if origin is not None:
+        metric = HealthFileMetricData(
+            file_path=path, score=8.0, max_ccn=3, max_nesting=1, nloc=40, has_test_file=False,
+            code_origin=origin,
+        )
+        await crud.save_health_metrics(session, repo_id, [metric])
+    await _write(session, repo_id, [_finding(path, 10)])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "origin", "context"),
+    [
+        # ``example`` is a JVM package segment here, not an examples tree.
+        ("app/src/main/kotlin/com/example/app/Sync.kt", "production", "production"),
+        ("app/src/main/kotlin/com/example/app/Sync.kt", None, "unknown"),
+        ("examples/basic/run.py", "docs_example", "unknown"),
+        # A root-level file carries no evidence either way, whatever its origin.
+        ("sync.py", "production", "unknown"),
+    ],
+)
+async def test_a_stored_production_origin_settles_an_unknown_context(
+    async_session, path: str, origin: str | None, context: str
+) -> None:
+    repo = await insert_repo(async_session)
+    await _write_with_origin(async_session, repo.id, path, origin)
+    (cause,) = await _rows(async_session, repo.id)
+    assert cause.execution_context == context
+    if context == "unknown":
+        assert cause.queue_reason == "unknown"
+    else:
+        assert cause.queue_eligible is True
+
+
+@pytest.mark.asyncio
+async def test_settling_the_context_keeps_the_cause_id(async_session) -> None:
+    path = "app/src/main/kotlin/com/example/app/Sync.kt"
+    settled = await insert_repo(async_session, name="settled", local_path="/tmp/settled")
+    await _write_with_origin(async_session, settled.id, path, "production")
+    plain = await insert_repo(async_session, name="plain", local_path="/tmp/plain")
+    await _write_with_origin(async_session, plain.id, path, None)
+    (a,) = await _rows(async_session, settled.id)
+    (b,) = await _rows(async_session, plain.id)
+    assert a.opportunity_id == b.opportunity_id

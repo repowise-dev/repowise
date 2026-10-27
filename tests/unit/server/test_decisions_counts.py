@@ -31,7 +31,9 @@ async def _seed(
             title=title,
             status=status,
             context="ctx",
-            decision="dec",
+            # Distinct per seed: identity is the evidence, so ten records
+            # sharing one body over one file are one decision, not ten.
+            decision=f"dec for {title}",
             rationale="why",
             source=source,
             affected_files=["src/app.py"],

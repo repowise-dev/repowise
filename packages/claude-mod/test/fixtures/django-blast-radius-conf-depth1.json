@@ -1,0 +1,748 @@
+{
+ "transitive_affected": [
+  {
+   "path": "django/__init__.py"
+  },
+  {
+   "path": "django/apps/config.py"
+  },
+  {
+   "path": "django/apps/registry.py"
+  },
+  {
+   "path": "django/conf/urls/i18n.py"
+  },
+  {
+   "path": "django/conf/urls/static.py"
+  },
+  {
+   "path": "django/contrib/admin/checks.py"
+  },
+  {
+   "path": "django/contrib/admin/migrations/0001_initial.py"
+  },
+  {
+   "path": "django/contrib/admin/models.py"
+  },
+  {
+   "path": "django/contrib/admin/options.py"
+  },
+  {
+   "path": "django/contrib/admin/sites.py"
+  },
+  {
+   "path": "django/contrib/admin/views/main.py"
+  },
+  {
+   "path": "django/contrib/admin/widgets.py"
+  },
+  {
+   "path": "django/contrib/admindocs/middleware.py"
+  },
+  {
+   "path": "django/contrib/auth/__init__.py"
+  },
+  {
+   "path": "django/contrib/auth/admin.py"
+  },
+  {
+   "path": "django/contrib/auth/base_user.py"
+  },
+  {
+   "path": "django/contrib/auth/checks.py"
+  },
+  {
+   "path": "django/contrib/auth/decorators.py"
+  },
+  {
+   "path": "django/contrib/auth/hashers.py"
+  },
+  {
+   "path": "django/contrib/auth/middleware.py"
+  },
+  {
+   "path": "django/contrib/auth/mixins.py"
+  },
+  {
+   "path": "django/contrib/auth/password_validation.py"
+  },
+  {
+   "path": "django/contrib/auth/tokens.py"
+  },
+  {
+   "path": "django/contrib/auth/views.py"
+  },
+  {
+   "path": "django/contrib/flatpages/forms.py"
+  },
+  {
+   "path": "django/contrib/flatpages/middleware.py"
+  },
+  {
+   "path": "django/contrib/flatpages/templatetags/flatpages.py"
+  },
+  {
+   "path": "django/contrib/flatpages/views.py"
+  },
+  {
+   "path": "django/contrib/gis/db/backends/postgis/operations.py"
+  },
+  {
+   "path": "django/contrib/gis/db/backends/spatialite/base.py"
+  },
+  {
+   "path": "django/contrib/gis/gdal/libgdal.py"
+  },
+  {
+   "path": "django/contrib/gis/geoip2.py"
+  },
+  {
+   "path": "django/contrib/gis/geos/libgeos.py"
+  },
+  {
+   "path": "django/contrib/gis/shortcuts.py"
+  },
+  {
+   "path": "django/contrib/messages/middleware.py"
+  },
+  {
+   "path": "django/contrib/messages/storage/__init__.py"
+  },
+  {
+   "path": "django/contrib/messages/storage/base.py"
+  },
+  {
+   "path": "django/contrib/messages/storage/cookie.py"
+  },
+  {
+   "path": "django/contrib/messages/utils.py"
+  },
+  {
+   "path": "django/contrib/redirects/middleware.py"
+  },
+  {
+   "path": "django/contrib/sessions/backends/base.py"
+  },
+  {
+   "path": "django/contrib/sessions/backends/cache.py"
+  },
+  {
+   "path": "django/contrib/sessions/backends/cached_db.py"
+  },
+  {
+   "path": "django/contrib/sessions/backends/file.py"
+  },
+  {
+   "path": "django/contrib/sessions/management/commands/clearsessions.py"
+  },
+  {
+   "path": "django/contrib/sessions/middleware.py"
+  },
+  {
+   "path": "django/contrib/sitemaps/__init__.py"
+  },
+  {
+   "path": "django/contrib/sites/checks.py"
+  },
+  {
+   "path": "django/contrib/sites/management.py"
+  },
+  {
+   "path": "django/contrib/sites/managers.py"
+  },
+  {
+   "path": "django/contrib/sites/models.py"
+  },
+  {
+   "path": "django/contrib/staticfiles/checks.py"
+  },
+  {
+   "path": "django/contrib/staticfiles/finders.py"
+  },
+  {
+   "path": "django/contrib/staticfiles/handlers.py"
+  },
+  {
+   "path": "django/contrib/staticfiles/management/commands/runserver.py"
+  },
+  {
+   "path": "django/contrib/staticfiles/storage.py"
+  },
+  {
+   "path": "django/contrib/staticfiles/urls.py"
+  },
+  {
+   "path": "django/contrib/staticfiles/utils.py"
+  },
+  {
+   "path": "django/contrib/staticfiles/views.py"
+  },
+  {
+   "path": "django/core/cache/backends/db.py"
+  },
+  {
+   "path": "django/core/checks/caches.py"
+  },
+  {
+   "path": "django/core/checks/compatibility/django_4_0.py"
+  },
+  {
+   "path": "django/core/checks/files.py"
+  },
+  {
+   "path": "django/core/checks/mail.py"
+  },
+  {
+   "path": "django/core/checks/messages.py"
+  },
+  {
+   "path": "django/core/checks/model_checks.py"
+  },
+  {
+   "path": "django/core/checks/security/base.py"
+  },
+  {
+   "path": "django/core/checks/security/csrf.py"
+  },
+  {
+   "path": "django/core/checks/security/sessions.py"
+  },
+  {
+   "path": "django/core/checks/translation.py"
+  },
+  {
+   "path": "django/core/checks/urls.py"
+  },
+  {
+   "path": "django/core/files/storage/__init__.py"
+  },
+  {
+   "path": "django/core/files/storage/filesystem.py"
+  },
+  {
+   "path": "django/core/files/storage/handler.py"
+  },
+  {
+   "path": "django/core/files/storage/memory.py"
+  },
+  {
+   "path": "django/core/files/uploadedfile.py"
+  },
+  {
+   "path": "django/core/files/uploadhandler.py"
+  },
+  {
+   "path": "django/core/handlers/asgi.py"
+  },
+  {
+   "path": "django/core/handlers/base.py"
+  },
+  {
+   "path": "django/core/handlers/exception.py"
+  },
+  {
+   "path": "django/core/handlers/wsgi.py"
+  },
+  {
+   "path": "django/core/mail/__init__.py"
+  },
+  {
+   "path": "django/core/mail/backends/filebased.py"
+  },
+  {
+   "path": "django/core/mail/backends/smtp.py"
+  },
+  {
+   "path": "django/core/mail/deprecation.py"
+  },
+  {
+   "path": "django/core/mail/handler.py"
+  },
+  {
+   "path": "django/core/mail/message.py"
+  },
+  {
+   "path": "django/core/management/__init__.py"
+  },
+  {
+   "path": "django/core/management/commands/compilemessages.py"
+  },
+  {
+   "path": "django/core/management/commands/createcachetable.py"
+  },
+  {
+   "path": "django/core/management/commands/diffsettings.py"
+  },
+  {
+   "path": "django/core/management/commands/listurls.py"
+  },
+  {
+   "path": "django/core/management/commands/loaddata.py"
+  },
+  {
+   "path": "django/core/management/commands/makemessages.py"
+  },
+  {
+   "path": "django/core/management/commands/makemigrations.py"
+  },
+  {
+   "path": "django/core/management/commands/runserver.py"
+  },
+  {
+   "path": "django/core/management/commands/squashmigrations.py"
+  },
+  {
+   "path": "django/core/management/commands/test.py"
+  },
+  {
+   "path": "django/core/management/templates.py"
+  },
+  {
+   "path": "django/core/serializers/__init__.py"
+  },
+  {
+   "path": "django/core/serializers/xml_serializer.py"
+  },
+  {
+   "path": "django/core/servers/basehttp.py"
+  },
+  {
+   "path": "django/core/signing.py"
+  },
+  {
+   "path": "django/db/backends/base/base.py"
+  },
+  {
+   "path": "django/db/backends/base/creation.py"
+  },
+  {
+   "path": "django/db/backends/base/operations.py"
+  },
+  {
+   "path": "django/db/backends/base/schema.py"
+  },
+  {
+   "path": "django/db/backends/mysql/operations.py"
+  },
+  {
+   "path": "django/db/backends/oracle/base.py"
+  },
+  {
+   "path": "django/db/backends/oracle/creation.py"
+  },
+  {
+   "path": "django/db/backends/oracle/operations.py"
+  },
+  {
+   "path": "django/db/backends/postgresql/base.py"
+  },
+  {
+   "path": "django/db/backends/postgresql/operations.py"
+  },
+  {
+   "path": "django/db/backends/sqlite3/operations.py"
+  },
+  {
+   "path": "django/db/migrations/autodetector.py"
+  },
+  {
+   "path": "django/db/migrations/loader.py"
+  },
+  {
+   "path": "django/db/migrations/serializer.py"
+  },
+  {
+   "path": "django/db/migrations/state.py"
+  },
+  {
+   "path": "django/db/migrations/writer.py"
+  },
+  {
+   "path": "django/db/models/base.py"
+  },
+  {
+   "path": "django/db/models/fields/__init__.py"
+  },
+  {
+   "path": "django/db/models/fields/related.py"
+  },
+  {
+   "path": "django/db/models/functions/datetime.py"
+  },
+  {
+   "path": "django/db/models/options.py"
+  },
+  {
+   "path": "django/db/models/query.py"
+  },
+  {
+   "path": "django/db/models/utils.py"
+  },
+  {
+   "path": "django/db/utils.py"
+  },
+  {
+   "path": "django/dispatch/dispatcher.py"
+  },
+  {
+   "path": "django/forms/renderers.py"
+  },
+  {
+   "path": "django/forms/utils.py"
+  },
+  {
+   "path": "django/http/multipartparser.py"
+  },
+  {
+   "path": "django/http/request.py"
+  },
+  {
+   "path": "django/http/response.py"
+  },
+  {
+   "path": "django/middleware/cache.py"
+  },
+  {
+   "path": "django/middleware/clickjacking.py"
+  },
+  {
+   "path": "django/middleware/common.py"
+  },
+  {
+   "path": "django/middleware/csp.py"
+  },
+  {
+   "path": "django/middleware/csrf.py"
+  },
+  {
+   "path": "django/middleware/locale.py"
+  },
+  {
+   "path": "django/middleware/security.py"
+  },
+  {
+   "path": "django/tasks/backends/base.py"
+  },
+  {
+   "path": "django/template/backends/django.py"
+  },
+  {
+   "path": "django/template/backends/jinja2.py"
+  },
+  {
+   "path": "django/template/context_processors.py"
+  },
+  {
+   "path": "django/template/defaulttags.py"
+  },
+  {
+   "path": "django/template/utils.py"
+  },
+  {
+   "path": "django/templatetags/i18n.py"
+  },
+  {
+   "path": "django/templatetags/static.py"
+  },
+  {
+   "path": "django/test/client.py"
+  },
+  {
+   "path": "django/test/selenium.py"
+  },
+  {
+   "path": "django/test/signals.py"
+  },
+  {
+   "path": "django/test/testcases.py"
+  },
+  {
+   "path": "django/test/utils.py"
+  },
+  {
+   "path": "django/urls/resolvers.py"
+  },
+  {
+   "path": "django/utils/cache.py"
+  },
+  {
+   "path": "django/utils/connection.py"
+  },
+  {
+   "path": "django/utils/crypto.py"
+  },
+  {
+   "path": "django/utils/formats.py"
+  },
+  {
+   "path": "django/utils/html.py"
+  },
+  {
+   "path": "django/utils/log.py"
+  },
+  {
+   "path": "django/utils/numberformat.py"
+  },
+  {
+   "path": "django/utils/timezone.py"
+  },
+  {
+   "path": "django/utils/translation/__init__.py"
+  },
+  {
+   "path": "django/utils/translation/reloader.py"
+  },
+  {
+   "path": "django/utils/translation/trans_null.py"
+  },
+  {
+   "path": "django/utils/translation/trans_real.py"
+  },
+  {
+   "path": "django/views/csrf.py"
+  },
+  {
+   "path": "django/views/debug.py"
+  },
+  {
+   "path": "django/views/generic/dates.py"
+  },
+  {
+   "path": "django/views/i18n.py"
+  },
+  {
+   "path": "scripts/manage_translations.py"
+  },
+  {
+   "path": "tests/admin_docs/test_views.py"
+  },
+  {
+   "path": "tests/admin_scripts/configured_dynamic_settings_manage.py"
+  },
+  {
+   "path": "tests/admin_scripts/configured_settings_manage.py"
+  },
+  {
+   "path": "tests/admin_scripts/tests.py"
+  },
+  {
+   "path": "tests/admin_utils/tests.py"
+  },
+  {
+   "path": "tests/admin_widgets/tests.py"
+  },
+  {
+   "path": "tests/auth_tests/test_basic.py"
+  },
+  {
+   "path": "tests/auth_tests/test_decorators.py"
+  },
+  {
+   "path": "tests/auth_tests/test_management.py"
+  },
+  {
+   "path": "tests/auth_tests/test_middleware.py"
+  },
+  {
+   "path": "tests/auth_tests/test_remote_user.py"
+  },
+  {
+   "path": "tests/auth_tests/test_tokens.py"
+  },
+  {
+   "path": "tests/auth_tests/test_views.py"
+  },
+  {
+   "path": "tests/cache/tests.py"
+  },
+  {
+   "path": "tests/check_framework/test_security.py"
+  },
+  {
+   "path": "tests/check_framework/test_urls.py"
+  },
+  {
+   "path": "tests/contenttypes_tests/test_operations.py"
+  },
+  {
+   "path": "tests/contenttypes_tests/test_views.py"
+  },
+  {
+   "path": "tests/csrf_tests/tests.py"
+  },
+  {
+   "path": "tests/db_functions/datetime/test_extract_trunc.py"
+  },
+  {
+   "path": "tests/decorators/test_csrf.py"
+  },
+  {
+   "path": "tests/deprecation/test_signed_cookie_legacy_salt_fallback.py"
+  },
+  {
+   "path": "tests/deprecation/test_use_blank_choice_dash.py"
+  },
+  {
+   "path": "tests/file_storage/tests.py"
+  },
+  {
+   "path": "tests/file_uploads/tests.py"
+  },
+  {
+   "path": "tests/flatpages_tests/test_forms.py"
+  },
+  {
+   "path": "tests/flatpages_tests/test_middleware.py"
+  },
+  {
+   "path": "tests/flatpages_tests/test_views.py"
+  },
+  {
+   "path": "tests/forms_tests/tests/test_forms.py"
+  },
+  {
+   "path": "tests/gis_tests/geoapp/test_feeds.py"
+  },
+  {
+   "path": "tests/gis_tests/geoapp/test_sitemaps.py"
+  },
+  {
+   "path": "tests/gis_tests/layermap/tests.py"
+  },
+  {
+   "path": "tests/gis_tests/test_geoip2.py"
+  },
+  {
+   "path": "tests/gis_tests/utils.py"
+  },
+  {
+   "path": "tests/i18n/patterns/tests.py"
+  },
+  {
+   "path": "tests/i18n/tests.py"
+  },
+  {
+   "path": "tests/indexes/tests.py"
+  },
+  {
+   "path": "tests/logging_tests/logconfig.py"
+  },
+  {
+   "path": "tests/logging_tests/tests.py"
+  },
+  {
+   "path": "tests/mail/__init__.py"
+  },
+  {
+   "path": "tests/mail/test_deprecated.py"
+  },
+  {
+   "path": "tests/mail/tests.py"
+  },
+  {
+   "path": "tests/messages_tests/test_cookie.py"
+  },
+  {
+   "path": "tests/messages_tests/tests.py"
+  },
+  {
+   "path": "tests/middleware/tests.py"
+  },
+  {
+   "path": "tests/middleware_exceptions/tests.py"
+  },
+  {
+   "path": "tests/migrations/test_autodetector.py"
+  },
+  {
+   "path": "tests/migrations/test_loader.py"
+  },
+  {
+   "path": "tests/migrations/test_migrations_custom_user/0001_initial.py"
+  },
+  {
+   "path": "tests/migrations/test_writer.py"
+  },
+  {
+   "path": "tests/model_indexes/tests.py"
+  },
+  {
+   "path": "tests/model_options/test_tablespaces.py"
+  },
+  {
+   "path": "tests/project_template/test_settings.py"
+  },
+  {
+   "path": "tests/redirects_tests/tests.py"
+  },
+  {
+   "path": "tests/responses/tests.py"
+  },
+  {
+   "path": "tests/runtests.py"
+  },
+  {
+   "path": "tests/servers/tests.py"
+  },
+  {
+   "path": "tests/sessions_tests/tests.py"
+  },
+  {
+   "path": "tests/settings_tests/tests.py"
+  },
+  {
+   "path": "tests/shell/tests.py"
+  },
+  {
+   "path": "tests/sites_tests/tests.py"
+  },
+  {
+   "path": "tests/staticfiles_tests/cases.py"
+  },
+  {
+   "path": "tests/staticfiles_tests/storage.py"
+  },
+  {
+   "path": "tests/staticfiles_tests/test_checks.py"
+  },
+  {
+   "path": "tests/staticfiles_tests/test_finders.py"
+  },
+  {
+   "path": "tests/staticfiles_tests/test_forms.py"
+  },
+  {
+   "path": "tests/staticfiles_tests/test_management.py"
+  },
+  {
+   "path": "tests/staticfiles_tests/test_storage.py"
+  },
+  {
+   "path": "tests/staticfiles_tests/test_templatetags.py"
+  },
+  {
+   "path": "tests/staticfiles_tests/test_views.py"
+  },
+  {
+   "path": "tests/template_tests/syntax_tests/i18n/base.py"
+  },
+  {
+   "path": "tests/template_tests/syntax_tests/test_static.py"
+  },
+  {
+   "path": "tests/test_client_regress/views.py"
+  },
+  {
+   "path": "tests/test_runner/tests.py"
+  },
+  {
+   "path": "tests/test_utils/tests.py"
+  },
+  {
+   "path": "tests/urlpatterns_reverse/tests.py"
+  },
+  {
+   "path": "tests/view_tests/tests/test_i18n.py"
+  }
+ ]
+}

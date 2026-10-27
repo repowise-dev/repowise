@@ -1,0 +1,934 @@
+"""Read the stores into the Fix-first queue.
+
+The reads here only narrow; the row-to-item rule is the pure builder in
+``repowise.core.analysis.health.fix_first.build``. Findings are read only for
+files that can become an item or a counted exclusion: the files of worthwhile
+opportunities and ready performance fixes, the files carrying the most
+code-shape deduction, and the history-only files. Explanatory JSON is read
+only for rows that can become an item, so the payload stays proportional to
+the queue, not the repository.
+
+Ceiling: plain finding items come only from the :data:`FINDING_FILES` files
+with the most open code-shape deduction, so a file below that line never
+becomes a finding item (a file with a plan or a performance fix still does).
+Upgrade path: materialize each file's lead finding and its size at index
+time, as refactoring and performance already are, and rank them in SQL.
+
+The built queue is cached in process, keyed by the repository and the
+newest write to each store it reads, so repeated calls between updates cost
+one aggregate read. Index and update also store the production queue
+(:func:`write_fix_first_snapshot`), kept only until a store it reads is
+written (``persistence.read_snapshots``), so the first call of a new process
+reads one row instead of building.
+"""
+
+from __future__ import annotations
+
+from collections import OrderedDict, namedtuple
+from collections.abc import Callable, Iterable
+from dataclasses import asdict, replace
+from typing import Any
+
+from sqlalchemy import and_, case, func, or_, select, true, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from repowise.core.analysis.finding_registry import excluded_types
+from repowise.core.analysis.health.fix_first import (
+    DEFAULT_LIMIT,
+    FIX_FIRST_MODEL_VERSION,
+    FixFirstQueue,
+    build_fix_first,
+)
+from repowise.core.analysis.health.fix_first.build import (
+    DEAD_CONFIDENCE,
+    hot_cut,
+    hot_cut_offset,
+    judge_findings,
+    symbol_key,
+)
+from repowise.core.analysis.health.queue.counts import NOT_IN_QUEUE, Judgement
+from repowise.core.analysis.health.queue.eligibility import DEFAULT_QUEUE_STATES, MIN_WORTH
+from repowise.core.analysis.health.refactoring.identity import REFACTORING_MODEL_VERSION
+from repowise.core.analysis.health.refactoring.models import (
+    RefactoringSuggestion as PlanSuggestion,
+)
+from repowise.core.analysis.health.refactoring.recommendations import (
+    DEFAULT_TEST_LIMIT,
+    build_validation_plan,
+)
+from repowise.core.analysis.health.rows import detail_map
+from repowise.core.analysis.health.scoring import history_biomarkers
+from repowise.core.ingestion.git_indexer.function_blame import _MIN_COMMITS_FOR_BLAME
+
+from ...batches import chunked
+from ...models import (
+    DeadCodeFinding,
+    GitFunctionBlame,
+    GitMetadata,
+    GraphMetric,
+    GraphNode,
+    HealthFileMetric,
+    HealthFinding,
+    PerformanceOpportunity,
+    RefactoringOpportunity,
+    RefactoringSuggestion,
+)
+from ...read_snapshots import decode_or_none, read_snapshot, refresh_snapshot, snapshot_key
+from ...sql import json_text
+from .plain_rows import plain_rows, row_shape
+from .refactoring import shown_plan_predicate
+from .refactoring_recommendations import repository_checkout, validation_inputs
+
+#: Files read for plan-less finding items, by open code-shape deduction.
+#: Ceiling: a file past this rank never becomes a finding item. The queue
+#: shows ten, and finding items rank below plans of the same value.
+FINDING_FILES = 100
+
+
+async def _rows_in(
+    session: AsyncSession, items: Iterable[Any], statement: Callable[[Any], Any]
+) -> list[Any]:
+    """The rows of ``statement(piece)`` for each piece of *items*, concatenated.
+
+    For a statement whose only large bound list is the piece and whose rows no
+    two pieces share; SQLite caps the parameters of one statement.
+    """
+    rows: list[Any] = []
+    for piece in chunked(sorted(set(items))):
+        rows.extend(plain_rows(await session.execute(statement(piece))))
+    return rows
+
+
+async def _metrics(session: AsyncSession, repo_id: str, paths: set[str] | None) -> list[Any]:
+    """The named files' rows; ``None`` reads every file."""
+
+    def query(scoped: Any) -> Any:
+        return (
+            select(
+                HealthFileMetric.file_path,
+                HealthFileMetric.nloc,
+                HealthFileMetric.is_test,
+                HealthFileMetric.code_origin,
+                HealthFileMetric.line_coverage_pct,
+                GitMetadata.commit_count_90d,
+                GitMetadata.contributor_count,
+                GraphMetric.in_degree.label("dependents"),
+            )
+            .outerjoin(
+                GitMetadata,
+                (GitMetadata.repository_id == HealthFileMetric.repository_id)
+                & (GitMetadata.file_path == HealthFileMetric.file_path),
+            )
+            .outerjoin(
+                GraphMetric,
+                (GraphMetric.repository_id == HealthFileMetric.repository_id)
+                & (GraphMetric.node_id == HealthFileMetric.file_path),
+            )
+            .where(HealthFileMetric.repository_id == repo_id, scoped)
+        )
+
+    if paths is None:
+        return plain_rows(await session.execute(query(true())))
+    return await _rows_in(
+        session, paths, lambda piece: query(HealthFileMetric.file_path.in_(piece))
+    )
+
+
+async def _hot_cuts(session: AsyncSession, repo_id: str) -> tuple[float, float]:
+    """The builder's hot-file thresholds over every production file.
+
+    Two integer columns per file, so the whole population costs one narrow read
+    while the builder sees full rows for the candidates only.
+    """
+    m = HealthFileMetric
+    rows = (
+        await session.execute(
+            select(
+                func.coalesce(GitMetadata.commit_count_90d, 0),
+                func.coalesce(GraphMetric.in_degree, 0),
+            )
+            .select_from(m)
+            .outerjoin(
+                GitMetadata,
+                (GitMetadata.repository_id == m.repository_id)
+                & (GitMetadata.file_path == m.file_path),
+            )
+            .outerjoin(
+                GraphMetric,
+                (GraphMetric.repository_id == m.repository_id) & (GraphMetric.node_id == m.file_path),
+            )
+            .where(m.repository_id == repo_id, or_(m.is_test.is_(None), m.is_test.is_(False)))
+        )
+    ).all()
+    if not rows:
+        return hot_cut(None), hot_cut(None)
+    at = hot_cut_offset(len(rows))
+    churn, deps = (sorted(column) for column in zip(*rows, strict=True))
+    return hot_cut(churn[at]), hot_cut(deps[at])
+
+
+async def _function_changes(
+    session: AsyncSession, repo_id: str, findings: list[Any], refactoring: list[Any]
+) -> tuple[dict[str, int] | None, set[str]]:
+    """Commits that changed each function a unit can lead with (a finding's,
+    a plan's lead step's), by ``symbol_id``, and the files among theirs the
+    blame pass skipped for size; ``None`` when the repository keeps no
+    function history at all."""
+    b = GitFunctionBlame
+    any_row = await session.execute(select(b.id).where(b.repository_id == repo_id).limit(1))
+    if any_row.first() is None:
+        return None, set()
+    leads = [(f.file_path, symbol_key(f.file_path, f.function_name)) for f in findings] + [
+        (r.file_path, symbol_key(r.file_path, r.details["steps"][0].get("target_symbol")))
+        for r in refactoring
+        if r.details and r.details.get("steps")
+    ]
+    keys = {key for _path, key in leads if key}
+    if not keys:
+        return {}, set()
+    rows = await _rows_in(
+        session,
+        keys,
+        lambda piece: select(b.symbol_id, b.mod_count).where(
+            b.repository_id == repo_id, b.symbol_id.in_(piece)
+        ),
+    )
+    changes = {r.symbol_id: r.mod_count for r in rows}
+    matched = {path for path, key in leads if key in changes}
+    unmatched = {path for path, key in leads if key} - matched
+    return changes, await _blame_skipped(session, repo_id, unmatched)
+
+
+async def _blame_skipped(session: AsyncSession, repo_id: str, paths: set[str]) -> set[str]:
+    """Of ``paths``, the files the blame pass skipped for size: enough
+    commits to pass its commit floor, yet no function in them has a row.
+
+    Ceiling: a blame that failed, or one whose every line is ignored
+    (``.git-blame-ignore-revs``), looks the same. Upgrade path: the git pass
+    records the size skip on the file's row.
+    """
+    if not paths:
+        return set()
+    floor = await _rows_in(
+        session,
+        paths,
+        lambda piece: select(GitMetadata.file_path).where(
+            GitMetadata.repository_id == repo_id,
+            GitMetadata.file_path.in_(piece),
+            GitMetadata.commit_count_total >= _MIN_COMMITS_FOR_BLAME,
+        ),
+    )
+    candidates = {r.file_path for r in floor}
+    if not candidates:
+        return set()
+    b = GitFunctionBlame
+    # Unindexed, but read only for the few files that pass the floor unmatched.
+    blamed = await _rows_in(
+        session,
+        candidates,
+        lambda piece: (
+            select(b.file_path).where(b.repository_id == repo_id, b.file_path.in_(piece)).distinct()
+        ),
+    )
+    return candidates - {r.file_path for r in blamed}
+
+
+async def _basis(session: AsyncSession, repo_id: str) -> dict[str, str | None]:
+    row = (
+        await session.execute(
+            select(HealthFileMetric.updated_at, HealthFileMetric.analyzed_commit)
+            .where(
+                HealthFileMetric.repository_id == repo_id,
+                HealthFileMetric.updated_at.is_not(None),
+            )
+            .order_by(HealthFileMetric.updated_at.desc())
+            .limit(1)
+        )
+    ).first()
+    if row is None:
+        return {"analyzed_commit": None, "health_analyzed_at": None}
+    return {"analyzed_commit": row.analyzed_commit, "health_analyzed_at": row.updated_at.isoformat()}
+
+
+def queue_findings(repo_id: str) -> Any:
+    """Open, scoring, code-health findings a surface may show."""
+    f = HealthFinding
+    return and_(
+        f.repository_id == repo_id,
+        f.status == "open",
+        f.health_impact > 0,
+        or_(f.dimension.is_(None), f.dimension != "performance"),
+        f.biomarker_type.not_in(excluded_types()),
+    )
+
+
+#: One stand-in row per history-only file: the builder reads from it only
+#: that the file's findings are all history, which is what it counts.
+_HistoryOnly = namedtuple("_HistoryOnly", "file_path biomarker_type health_impact dimension")
+
+
+async def _finding_files(session: AsyncSession, repo_id: str) -> tuple[set[str], list[Any]]:
+    """The heaviest code-shape files, and one row for each history-only file."""
+    f = HealthFinding
+    shaped_impact = func.sum(
+        case((f.biomarker_type.in_(history_biomarkers()), 0.0), else_=f.health_impact)
+    )
+    rows = (
+        await session.execute(
+            select(
+                f.file_path,
+                shaped_impact.label("shaped"),
+                func.max(f.biomarker_type).label("marker"),
+                func.max(f.health_impact).label("impact"),
+            )
+            .where(queue_findings(repo_id))
+            .group_by(f.file_path)
+        )
+    ).all()
+    heaviest = sorted((r for r in rows if r.shaped > 0), key=lambda r: (-r.shaped, r.file_path))
+    history_only = [
+        _HistoryOnly(r.file_path, r.marker, r.impact, "defect") for r in rows if not r.shaped
+    ]
+    return {r.file_path for r in heaviest[:FINDING_FILES]}, history_only
+
+
+async def _findings(
+    session: AsyncSession, repo_id: str, full: set[str], planned: set[str], functions: set[str]
+) -> list[Any]:
+    """Every eligible finding in ``full``; in ``planned`` only what an item quotes.
+
+    A file with a plan that becomes an item needs its history markers (the
+    item's context) and the findings on the function the plan changes (its
+    numbers); its other findings never lead, because the plan speaks for it.
+    """
+    if not full and not planned:
+        return []
+    f = HealthFinding
+    history = history_biomarkers()
+    columns = (
+        f.file_path,
+        f.biomarker_type,
+        f.severity,
+        f.function_name,
+        f.line_start,
+        f.line_end,
+        f.reason,
+        f.health_impact,
+        f.public_id,
+        f.dimension,
+        f.status,
+        # History numbers become plain context sentences.
+        f.details_json,
+    )
+    rows = await _rows_in(
+        session,
+        full,
+        lambda piece: select(*columns).where(queue_findings(repo_id), f.file_path.in_(piece)),
+    )
+    # The function names grow with the plans, so they are matched here rather
+    # than bound beside the paths.
+    quoted = await _rows_in(
+        session,
+        planned - full,
+        lambda piece: select(*columns).where(
+            queue_findings(repo_id),
+            f.file_path.in_(piece),
+            or_(f.biomarker_type.in_(history), f.function_name.is_not(None)),
+        ),
+    )
+    return rows + [r for r in quoted if r.biomarker_type in history or r.function_name in functions]
+
+
+async def _refactoring(session: AsyncSession, repo_id: str) -> list[Any]:
+    o = RefactoringOpportunity
+    return plain_rows(
+        await session.execute(
+            select(
+                o.opportunity_id,
+                o.rank_position,
+                o.rank_score,
+                o.file_path,
+                o.lead_biomarker,
+                o.lead_refactoring_type,
+                o.effort_bucket,
+                o.confidence,
+                o.affected_files_total,
+                o.recoverable_health,
+                o.status,
+                case((o.recoverable_health >= MIN_WORTH, o.details_json)).label("details_json"),
+            )
+            .where(open_opportunities(repo_id))
+            .order_by(o.rank_position)
+        )
+    )
+
+
+async def _performance(session: AsyncSession, repo_id: str) -> list[Any]:
+    p = PerformanceOpportunity
+    # Details are decoded only for a cause the builder can make an item of.
+    ready = and_(
+        p.actionability_state.in_(DEFAULT_QUEUE_STATES),
+        p.plan_state == "available",
+        p.fix_strategy.is_not(None),
+    )
+    # The reason is no column: read for ``expected`` rows only, in SQL, so
+    # the default queue counts each expected reason with no decode.
+    reason = json_text(p.details_json, "actionability_reason")
+    return plain_rows(
+        await session.execute(
+            select(
+                p.opportunity_id,
+                p.rank_position,
+                p.rank_score,
+                p.execution_context,
+                p.execution_role,
+                p.boundary_kind,
+                p.biomarker_type,
+                p.actionability_state,
+                p.plan_state,
+                p.fix_strategy,
+                p.fix_safety,
+                p.file_path,
+                p.intervention_symbol,
+                p.terminal_sink,
+                p.affected_call_sites_total,
+                p.affected_files_total,
+                p.status,
+                case((p.actionability_state == "expected", reason)).label(
+                    "actionability_reason"
+                ),
+                case((ready, p.details_json)).label("details_json"),
+            )
+            .where(p.repository_id == repo_id, p.status == "open")
+            .order_by(p.rank_position)
+        )
+    )
+
+
+def _sure_dead_code(repo_id: str) -> Any:
+    d = DeadCodeFinding
+    return and_(
+        d.repository_id == repo_id,
+        d.status == "open",
+        or_(d.confidence >= DEAD_CONFIDENCE, d.safe_to_delete.is_(True)),
+    )
+
+
+async def _dead_code(session: AsyncSession, repo_id: str) -> list[Any]:
+    """Open dead-code findings sure enough to make what they cover ``unreachable``."""
+    d = DeadCodeFinding
+    return plain_rows(
+        await session.execute(
+            select(
+                d.kind,
+                d.file_path,
+                d.symbol_name,
+                d.start_line,
+                d.end_line,
+                d.confidence,
+                d.safe_to_delete,
+                d.status,
+            ).where(_sure_dead_code(repo_id))
+        )
+    )
+
+
+def _decoded(rows: list[Any]) -> list[Any]:
+    """``details_json`` decoded once into ``details``, which the builder reads first."""
+    if not rows:
+        return rows
+    fields = [("details" if f == "details_json" else f) for f in rows[0]._fields]
+    shape = row_shape(tuple(fields))
+    out = []
+    for r in rows:
+        values = list(r)
+        at = fields.index("details")
+        values[at] = detail_map(r) if r.details_json else None
+        out.append(shape(*values))
+    return out
+
+
+def _steps(refactoring: list[Any]) -> list[dict[str, Any]]:
+    """Every step of the opportunities that can become an item."""
+    return [s for r in refactoring if r.details for s in r.details.get("steps") or []]
+
+
+async def _plans(
+    session: AsyncSession, repo_id: str, steps: list[dict[str, Any]], files: set[str] | None
+) -> list[Any]:
+    """The plans those steps name (span, signature, evidence), the open
+    Extract Method plans in ``files``, where a finding with no plan of its own
+    takes its first concrete step from, and every open Extract Helper plan,
+    whose occurrences say where verified duplicates sit (a plan is stored at
+    one anchor file and names every site, so it is not filtered by file).
+    ``files=None`` reads the Extract Method plans of every file."""
+    ids = {s.get("plan_id") for s in steps if s.get("plan_id")}
+    s = RefactoringSuggestion
+    extract = and_(s.refactoring_type == "extract_method", s.status == "open")
+    helpers = and_(s.refactoring_type == "extract_helper", s.status == "open")
+
+    def query(wanted: Any) -> Any:
+        return select(
+            s.id,
+            s.public_id,
+            s.refactoring_type,
+            s.file_path,
+            s.target_symbol,
+            s.status,
+            s.evidence_json,
+            s.plan_json,
+            s.rank_json,
+        ).where(
+            s.repository_id == repo_id,
+            wanted,
+            # The registry's withheld types, as on every plan list. Fix
+            # first is its own measured lens, so no language gate applies.
+            shown_plan_predicate(include_unverified=True),
+        )
+
+    # The ids and the files go out in pieces, so a row two of these reads
+    # match is kept once, by its id.
+    rows = plain_rows(
+        await session.execute(query(or_(helpers, extract) if files is None else helpers))
+    )
+    rows += await _rows_in(session, ids, lambda piece: query(s.public_id.in_(piece)))
+    if files:
+        rows += await _rows_in(
+            session, files, lambda piece: query(and_(extract, s.file_path.in_(piece)))
+        )
+    return list({row.id: row for row in rows}.values())
+
+
+async def _symbol_lines(session: AsyncSession, repo_id: str, performance: list[Any]) -> dict[str, int]:
+    """First lines of the functions a performance plan step names with no
+    line of its own (the intervention a batched form is added to)."""
+    wanted = {
+        step["symbol"]
+        for row in performance
+        if row.details
+        for step in (row.details.get("plan") or {}).get("steps") or ()
+        if not step.get("line") and "::" in (step.get("symbol") or "")
+    }
+    # And each cause's own function, which the dead-code join places by line.
+    wanted |= {
+        row.intervention_symbol
+        for row in performance
+        if row.details and "::" in (row.intervention_symbol or "")
+    }
+    if not wanted:
+        return {}
+    g = GraphNode
+    rows = await _rows_in(
+        session,
+        wanted,
+        lambda piece: select(g.node_id, g.start_line).where(
+            g.repository_id == repo_id, g.node_id.in_(piece), g.start_line.is_not(None)
+        ),
+    )
+    return {r.node_id: r.start_line for r in rows}
+
+
+def _span_suggestion(path: str, function: Any, start: Any, end: Any) -> PlanSuggestion:
+    """A finding's lines as the plan shape the validation read takes."""
+    return PlanSuggestion(
+        refactoring_type="finding",
+        file_path=path,
+        target_symbol=function or "",
+        line_start=start if isinstance(start, int) else None,
+        line_end=end if isinstance(end, int) else None,
+        plan={},
+        evidence={},
+        impact_delta=0.0,
+        effort_bucket="M",
+        blast_radius={},
+        confidence="medium",
+    )
+
+
+async def _finding_validator(
+    session: AsyncSession, repo_id: str, findings: list[Any]
+) -> Callable[[str, Any, Any, Any], dict[str, Any] | None]:
+    """Tests for a finding with no plan, by the rule a plan's tests follow.
+
+    Measured coverage of the finding's lines first, then the tests that reach
+    the file through the call and import graphs, then a matching test name.
+    One batched read covers every candidate finding; the builder asks only for
+    the items it writes. Ceiling: tests are not ordered by symbol-level reach
+    (the plan path reads that evidence per symbol); upgrade path is passing
+    ``evidence`` to ``build_validation_plan``.
+    """
+    spans = {
+        (f.file_path, f.line_start, f.line_end): f
+        for f in findings
+        if f.file_path and isinstance(f.line_start, int)
+    }
+    if not spans:
+        return lambda *_: None
+    suggestions = [_span_suggestion(p, f.function_name, s, e) for (p, s, e), f in spans.items()]
+    # Built once per store write, so the checkout's package.json reads are too.
+    inputs = await validation_inputs(
+        session,
+        repo_id,
+        suggestions,
+        sorted({s.file_path for s in suggestions}),
+        checkout=await repository_checkout(session, repo_id),
+    )
+
+    def validate(path: str, function: Any, start: Any, end: Any) -> dict[str, Any] | None:
+        plan = build_validation_plan(
+            _span_suggestion(path, function, start, end),
+            inputs.measured,
+            inputs.inferred,
+            test_limit=DEFAULT_TEST_LIMIT,
+            evidence=inputs.evidence,
+            order_tests=False,
+        )
+        if plan.total:
+            return plan.as_dict()
+        # No test found: unknown, with only the step to take before the edit.
+        return {"prerequisite": plan.prerequisite} if plan.prerequisite else None
+
+    return validate
+
+
+#: Built queues kept in process. A handful covers the shapes one surface asks
+#: for (dashboard, CLI, Do next, one id), per repository a server holds.
+CACHE_SIZE = 32
+_cache: OrderedDict[tuple[Any, ...], FixFirstQueue] = OrderedDict()
+
+
+async def _stamp(session: AsyncSession, repo_id: str) -> tuple[Any, ...]:
+    """The newest write and the row count of every store the queue reads.
+
+    A rewrite, a triage change (``updated_at`` moves) or a deletion (the
+    count moves) changes it; git and graph rows are rewritten with the
+    health rows that read them. Function history is counted apart: an
+    update writes it after the health rows.
+    """
+    stamps: list[Any] = []
+    for model in (
+        HealthFileMetric,
+        HealthFinding,
+        RefactoringOpportunity,
+        PerformanceOpportunity,
+        GitFunctionBlame,
+    ):
+        stamps.extend(
+            (
+                await session.execute(
+                    select(func.max(model.updated_at), func.count()).where(
+                        model.repository_id == repo_id
+                    )
+                )
+            ).one()
+        )
+    # Dead-code rows carry no ``updated_at``; a triage change moves the count.
+    stamps.extend(
+        (
+            await session.execute(
+                select(func.max(DeadCodeFinding.analyzed_at), func.count()).where(
+                    _sure_dead_code(repo_id)
+                )
+            )
+        ).one()
+    )
+    return tuple(stamps)
+
+
+#: The stored production queue's ``read_snapshots.kind``.
+SNAPSHOT_KIND = "fix_first"
+_KEY = snapshot_key(SNAPSHOT_KIND, FIX_FIRST_MODEL_VERSION)
+#: Its count vocabulary, stored beside it.
+COUNTS_KIND = "fix_first_counts"
+_COUNTS_KEY = snapshot_key(COUNTS_KIND, FIX_FIRST_MODEL_VERSION)
+
+
+async def write_fix_first_snapshot(session: AsyncSession, repository_id: str) -> bool:
+    """Store the whole production queue, tests resolved, for the next reader,
+    and each refactoring opportunity's and finding's judgement on its row.
+
+    The whole queue rather than its head: an id lookup, a page past the
+    first and the counts are all read from it. The writer of the stores calls
+    this once they are final. Returns whether it wrote (a row still current
+    writes nothing, unless a unit on it was never judged).
+    """
+
+    built: dict[str, Any] = {}
+
+    async def build() -> dict[str, Any]:
+        judged: dict[str, Judgement] = {}
+        full = await _build(
+            session, repository_id, limit=None, scope="production", item_id=None, judged=judged
+        )
+        await _store_judgements(session, repository_id, judged)
+        built["counts"] = full.counts(0).as_dict()
+        return asdict(full)
+
+    async def counts() -> dict[str, Any]:
+        if "counts" not in built:
+            full = await load_fix_first(session, repository_id, limit=None)
+            built["counts"] = full.counts(0).as_dict()
+        return built["counts"]
+
+    wrote = await refresh_snapshot(
+        session,
+        repository_id,
+        SNAPSHOT_KIND,
+        _KEY,
+        build,
+        force=await _unjudged(session, repository_id),
+    )
+    # The items' counts apart, so counting never decodes or builds the queue.
+    await refresh_snapshot(session, repository_id, COUNTS_KIND, _COUNTS_KEY, counts, force=wrote)
+    return wrote
+
+
+async def stored_item_counts(session: AsyncSession, repository_id: str) -> dict[str, Any] | None:
+    """The stored production queue's counts (``shown`` 0); ``None`` when not stored."""
+    payload = await read_snapshot(session, repository_id, COUNTS_KIND, _COUNTS_KEY)
+    return payload if isinstance(payload, dict) else None
+
+
+def open_opportunities(repo_id: str) -> Any:
+    o = RefactoringOpportunity
+    return and_(
+        o.repository_id == repo_id,
+        o.status == "open",
+        o.refactoring_model_version == REFACTORING_MODEL_VERSION,
+    )
+
+
+async def unjudged(session: AsyncSession, model: Any, population: Any) -> bool:
+    """Whether a row of ``population`` has no stored judgement: a store
+    written before the columns, or one whose judging write did not run."""
+    found = await session.execute(
+        select(model.id).where(population, model.queue_eligible.is_(None)).limit(1)
+    )
+    return found.first() is not None
+
+
+async def _unjudged(session: AsyncSession, repo_id: str) -> bool:
+    return await unjudged(
+        session, RefactoringOpportunity, open_opportunities(repo_id)
+    ) or await unjudged(session, HealthFinding, queue_findings(repo_id))
+
+
+async def _store_judgements(
+    session: AsyncSession, repo_id: str, refactoring: dict[str, Judgement]
+) -> None:
+    """Write each open refactoring opportunity's and finding's judgement,
+    only where it changed: an update run rewrites what moved.
+
+    Ceiling: findings are judged over every file, so metrics, findings and
+    Extract Method plans are read again here rather than reused from the
+    queue build, which reads only its candidate files. Upgrade path: one read
+    of the whole population shared by both, once the queue build drops its
+    ``FINDING_FILES`` ceiling.
+    """
+    o = RefactoringOpportunity
+    stored = (
+        await session.execute(
+            select(o.id, o.opportunity_id, o.file_path, *_queue_columns(o)).where(
+                open_opportunities(repo_id)
+            )
+        )
+    ).all()
+    await _write_changed(session, o, ((r, refactoring.get(r.opportunity_id)) for r in stored))
+    eligible = {i for i, j in refactoring.items() if j.reason is None}
+    planned = {r.file_path for r in stored if r.opportunity_id in eligible}
+    findings = await _judged_findings(session, repo_id)
+    paths = {f.file_path for f in findings}
+    judged = judge_findings(
+        metrics=await _metrics(session, repo_id, None) if paths else [],
+        findings=findings,
+        plans=await _plans(session, repo_id, [], None) if paths else [],
+        dead_code=await _dead_code(session, repo_id),
+        hot_cuts=await _hot_cuts(session, repo_id),
+        planned_files=planned,
+    )
+    await _write_changed(session, HealthFinding, ((f, judged.get(f.id)) for f in findings))
+
+
+_NOT_IN_QUEUE = Judgement(NOT_IN_QUEUE)
+
+
+def _queue_columns(model: Any) -> tuple[Any, ...]:
+    return (model.queue_eligible, model.queue_reason, model.queue_value, model.queue_tier)
+
+
+async def _write_changed(
+    session: AsyncSession, model: Any, rows: Iterable[tuple[Any, Judgement | None]]
+) -> None:
+    changed = []
+    for row, judgement in rows:
+        # Not read by the builder this run: judged out, so it settles.
+        values = (judgement or _NOT_IN_QUEUE).columns()
+        if any(getattr(row, name) != value for name, value in values.items()):
+            changed.append({"id": row.id, **values})
+    if changed:
+        await session.execute(update(model), changed)
+
+
+async def _judged_findings(session: AsyncSession, repo_id: str) -> list[Any]:
+    """Every finding the queue judges, with what judging reads and its stored judgement."""
+    f = HealthFinding
+    return plain_rows(
+        await session.execute(
+            select(
+                f.id,
+                f.file_path,
+                f.biomarker_type,
+                f.function_name,
+                f.line_start,
+                f.line_end,
+                f.health_impact,
+                f.dimension,
+                f.status,
+                f.details_json,
+                *_queue_columns(f),
+            ).where(queue_findings(repo_id))
+        )
+    )
+
+
+async def _stored(session: AsyncSession, repo_id: str, scope: str) -> FixFirstQueue | None:
+    """The stored production queue, when one is current and fits the model."""
+    if scope != "production":
+        return None
+    payload = await read_snapshot(session, repo_id, SNAPSHOT_KIND, _KEY)
+    return decode_or_none(FixFirstQueue, payload) if payload is not None else None
+
+
+def clear_fix_first_cache() -> None:
+    _cache.clear()
+
+
+async def load_fix_first(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    limit: int | None = DEFAULT_LIMIT,
+    scope: str = "production",
+    item_id: str | None = None,
+    verify: bool = True,
+) -> FixFirstQueue:
+    """The Fix-first queue for one repository, from its stored analysis.
+
+    ``item_id`` keeps only that item, at its rank, for a lookup by id.
+    ``verify=False`` leaves a plan-less finding's tests unresolved, for a
+    caller that never shows them: that read is most of a cold build.
+
+    The full queue is built once per store write and every ``limit`` and id
+    is a slice of it: the reads are the same whatever is kept, and writing
+    every item costs little next to them. The production queue comes from the
+    stored snapshot while it is current.
+    """
+    base = (
+        str(session.bind.url) if session.bind is not None else None,
+        repository_id,
+        scope,
+        await _stamp(session, repository_id),
+    )
+    key = (*base, verify, limit, item_id)
+    queue = _cached(key)
+    if queue is not None:
+        return queue
+    # A verified queue answers an unverified ask too; never the reverse.
+    full = _cached((*base, True, None, None)) or _cached((*base, verify, None, None))
+    if full is None:
+        # The stored queue is verified, so it answers either ask.
+        full = await _stored(session, repository_id, scope)
+        if full is not None:
+            _remember((*base, True, None, None), full)
+        else:
+            full = await _build(
+                session, repository_id, limit=None, scope=scope, item_id=None, verify=verify
+            )
+            _remember((*base, verify, None, None), full)
+    queue = full if key[-2:] == (None, None) else queue_view(full, limit=limit, item_id=item_id)
+    _remember(key, queue)
+    return queue
+
+
+def _cached(key: tuple[Any, ...]) -> FixFirstQueue | None:
+    queue = _cache.get(key)
+    if queue is not None:
+        _cache.move_to_end(key)
+    return queue
+
+
+def _remember(key: tuple[Any, ...], queue: FixFirstQueue) -> None:
+    _cache[key] = queue
+    while len(_cache) > CACHE_SIZE:
+        _cache.popitem(last=False)
+
+
+def queue_view(
+    full: FixFirstQueue, *, limit: int | None, offset: int = 0, item_id: str | None = None
+) -> FixFirstQueue:
+    """What ``build_fix_first`` returns for this limit or id, from the full
+    queue: the same items at the same ranks, ``shown`` recounted. ``offset``
+    skips that many items, for a page past the first."""
+    if item_id is not None:
+        items = tuple(i for i in full.items if i.id == item_id)
+    else:
+        start = max(offset, 0)
+        items = full.items[start:] if limit is None else full.items[start : start + max(limit, 0)]
+    return replace(full, items=items, totals=replace(full.totals, shown=len(items)))
+
+
+async def _build(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    limit: int | None,
+    scope: str,
+    item_id: str | None,
+    verify: bool = True,
+    judged: dict[str, Judgement] | None = None,
+) -> FixFirstQueue:
+    refactoring = _decoded(await _refactoring(session, repository_id))
+    performance = _decoded(await _performance(session, repository_id))
+    steps = _steps(refactoring)
+    heavy, history_only = await _finding_files(session, repository_id)
+    # Ceiling: a plan whose details carry no steps is not an item, so its
+    # file is read in full like any other.
+    planned = {r.file_path for r in refactoring if r.details and r.details.get("steps")}
+    full = heavy | {p.file_path for p in performance if p.details} | (
+        {r.file_path for r in refactoring if r.details} - planned
+    )
+    functions = {s["target_symbol"] for s in steps if s.get("target_symbol")}
+    findings = await _findings(session, repository_id, full, planned, functions)
+    paths = full | planned | {r.file_path for r in history_only}
+    changes, skipped = await _function_changes(session, repository_id, findings, refactoring)
+    return build_fix_first(
+        metrics=await _metrics(session, repository_id, paths),
+        findings=[*findings, *(r for r in history_only if r.file_path not in full | planned)],
+        refactoring=refactoring,
+        performance=performance,
+        plans=await _plans(session, repository_id, steps, full),
+        dead_code=await _dead_code(session, repository_id),
+        limit=limit,
+        scope=scope,
+        item_id=item_id,
+        basis=await _basis(session, repository_id),
+        hot_cuts=await _hot_cuts(session, repository_id),
+        symbol_lines=await _symbol_lines(session, repository_id, performance),
+        validate=await _finding_validator(session, repository_id, findings) if verify else None,
+        judged=judged,
+        function_changes=changes,
+        blame_skipped=skipped,
+    )
+
+
+__all__ = [
+    "CACHE_SIZE",
+    "COUNTS_KIND",
+    "FINDING_FILES",
+    "SNAPSHOT_KIND",
+    "clear_fix_first_cache",
+    "load_fix_first",
+    "queue_view",
+    "stored_item_counts",
+    "write_fix_first_snapshot",
+]

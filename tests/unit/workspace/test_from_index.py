@@ -125,6 +125,32 @@ class TestFastApiFromDecorators:
         )
         assert ids == {"http::GET::/snapshots/{param}/chat/history"}
 
+    def test_a_comment_inside_a_multi_line_decorator_keeps_the_route(self) -> None:
+        decorator = [
+            "@router.get(",
+            '    "/conversations",',
+            "    # Tight on purpose (one call per load).",
+            "",
+            "    dependencies=[Depends(limit())],",
+            ")",
+        ]
+        ids = _ids(_extract(self.PRELUDE, ("chat", decorator)))
+        assert ids == {"http::GET::/snapshots/{param}/chat/conversations"}
+
+    def test_a_comment_between_stacked_decorators_keeps_the_route(self) -> None:
+        stack = ['@router.post("/fork")', "# Per-IP as well.", '@limiter.limit("10/hour")']
+        ids = _ids(_extract(self.PRELUDE, ("chat", stack)))
+        assert ids == {"http::POST::/snapshots/{param}/chat/fork"}
+
+    def test_a_comment_in_the_arguments_is_not_read_as_one(self) -> None:
+        decorator = ['@router.route("/items",', '    # methods=["POST"]', ")"]
+        ids = _ids(_extract(self.PRELUDE, ("items", decorator)))
+        assert ids == {"http::GET::/snapshots/{param}/chat/items"}
+
+    def test_a_commented_out_decorator_in_a_stack_is_not_a_route(self) -> None:
+        stack =['# @router.delete("/old")', '@limiter.limit("10/hour")']
+        assert _extract(self.PRELUDE, ("chat", stack)) == []
+
     def test_non_route_decorators_are_ignored(self) -> None:
         assert (
             _extract(
@@ -233,14 +259,20 @@ EXAMPLE = "@router.delete('/fabricated')"'''
         assert ids == {"http::GET::/api/real"}
 
     def test_a_commented_out_decorator_is_not_a_route(self) -> None:
-        # The comment stop is what keeps the walk out of the previous symbol's
-        # body, and it makes a commented-out decorator inert on the way.
+        # A comment never joins the decorator text, so a commented-out
+        # decorator is inert; the first code line above ends the walk.
         ids = _ids(_extract(self.PRELUDE, ("plain", ['# @router.get("/commented")'])))
         assert ids == set()
 
 
 class TestFlaskIsInherited:
-    """Flask providers via the index path — no Flask dialect module exists."""
+    """Flask providers via the index path, for a file that names no framework.
+
+    A file that imports Flask is left to the Flask dialect, which owns the
+    ``register_blueprint`` prefix rule this path cannot apply. What is inherited
+    here is the decorator shape: a ``@x.route`` above an indexed handler is read
+    as a route wherever the framework is not spelled out.
+    """
 
     PRELUDE = 'app = Flask(__name__)\nbp = Blueprint("api", __name__)'
 
@@ -272,12 +304,11 @@ class TestFlaskIsInherited:
         ids = _ids(_extract(prelude, ("listing", ['@bp.route("/items")'])))
         assert ids == {"http::GET::/api/items"}
 
-    def test_the_regex_layer_has_no_flask_dialect(self) -> None:
-        # Guards the claim in this class's docstring: if a Flask dialect is
-        # added later, this test should be deleted along with the claim.
-        from repowise.core.workspace.extractors.http import PROVIDER_DIALECTS
-
-        assert "flask" not in {d.name for d in PROVIDER_DIALECTS}
+    def test_a_flask_file_is_left_to_the_flask_dialect(self) -> None:
+        # One layer per file: this one cannot read a `register_blueprint`
+        # prefix, so a route it published would be served somewhere else.
+        prelude = "from flask import Flask\n\n" + self.PRELUDE
+        assert _extract(prelude, ("index", ['@app.route("/health")'])) == []
 
 
 def test_no_index_on_the_context_means_no_symbols() -> None:

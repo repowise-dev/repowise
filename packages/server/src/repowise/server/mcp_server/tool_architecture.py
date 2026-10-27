@@ -56,26 +56,29 @@ async def get_architecture() -> dict[str, Any]:
             "_meta": _build_meta(),
         }
 
+    payload = architecture_payload(metrics)
+    payload["_meta"] = _build_meta(
+        extra=_analysis_meta(
+            metrics.get("generated_at"),
+            {
+                alias: provenance.get("head")
+                for alias, provenance in metrics.get("repo_provenance", {}).items()
+                if provenance.get("head")
+            },
+        )
+    )
+    return payload
+
+
+def architecture_payload(metrics: dict[str, Any]) -> dict[str, Any]:
+    """The ``get_architecture`` answer over computed *metrics*, without ``_meta``."""
     core_members = metrics.get("core_members", [])
     shown_core = core_members[:_MCP_CORE_MEMBER_LIMIT]
     breakdown = metrics.get("role_breakdown", {})
-
-    if metrics.get("core_size", 0):
-        core_phrase = (
-            f"a cyclic core of {metrics['core_size']} service(s) "
-            f"({metrics.get('core_ratio', 0) * 100:.0f}% of the system)"
-        )
-    else:
-        core_phrase = "no cyclic core (acyclic structure)"
-    summary = (
-        f"Architecture score {metrics.get('score', 0)}/10 "
-        f"({metrics.get('architecture_type', 'hierarchical')}): propagation cost "
-        f"{metrics.get('propagation_cost_pct', 0)}%, {core_phrase}, "
-        f"{metrics.get('cycle_count', 0)} dependency cycle(s)."
-    )
+    evidence = metrics.get("evidence") or {}
 
     return {
-        "score": metrics.get("score", 0.0),
+        "score": metrics.get("score"),
         "architecture_type": metrics.get("architecture_type", "hierarchical"),
         "propagation_cost_pct": metrics.get("propagation_cost_pct", 0.0),
         "node_count": metrics.get("node_count", 0),
@@ -84,17 +87,41 @@ async def get_architecture() -> dict[str, Any]:
         "core_members": shown_core,
         "core_members_truncated": max(0, len(core_members) - len(shown_core)),
         "cycle_count": metrics.get("cycle_count", 0),
+        # True when the enumeration budget stopped the count: "at least" cycle_count.
+        "cycle_count_capped": bool(metrics.get("cycle_count_capped", False)),
         "conformance_violations": metrics.get("conformance_violations", 0),
         "role_breakdown": breakdown,
-        "summary": summary,
-        "_meta": _build_meta(
-            extra=_analysis_meta(
-                metrics.get("generated_at"),
-                {
-                    alias: provenance.get("head")
-                    for alias, provenance in metrics.get("repo_provenance", {}).items()
-                    if provenance.get("head")
-                },
-            )
-        ),
+        "evidence": evidence or None,
+        # Calls read but linked to no other service, in-service ones apart.
+        **({"http_calls": calls} if (calls := metrics.get("http_calls")) else {}),
+        "summary": _summary(metrics, evidence),
     }
+
+
+def _summary(metrics: dict[str, Any], evidence: dict[str, Any]) -> str:
+    """One sentence, which says "not determined" rather than score an unseen graph."""
+    from repowise.core.workspace.cycles import cycle_total
+
+    if metrics.get("score") is None:
+        return (
+            f"Architecture not determined for {metrics.get('node_count', 0)} service(s): "
+            f"{evidence.get('summary') or 'no dependency between services was detected'}. "
+            "A score, coupling or cycle verdict over this graph would be vacuous."
+        )
+    if metrics.get("core_size", 0):
+        core_phrase = (
+            f"a cyclic core of {metrics['core_size']} service(s) "
+            f"({metrics.get('core_ratio', 0) * 100:.0f}% of the system)"
+        )
+    else:
+        core_phrase = "no cyclic core (acyclic structure)"
+    summary = (
+        f"Architecture score {metrics['score']}/10 "
+        f"({metrics.get('architecture_type', 'hierarchical')}): propagation cost "
+        f"{metrics.get('propagation_cost_pct', 0)}%, {core_phrase}, "
+        f"{cycle_total(metrics.get('cycle_count') or 0, bool(metrics.get('cycle_count_capped')))}"
+        " dependency cycle(s)."
+    )
+    if evidence.get("state") == "partial":
+        summary += f" Partial evidence: {evidence.get('summary')}."
+    return summary

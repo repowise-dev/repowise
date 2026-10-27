@@ -2,8 +2,10 @@
 
 import * as React from "react";
 import {
+  ACCEPTER_KIND_LABELS,
   DECISION_CURRENCY_DESCRIPTIONS,
   DECISION_CURRENCY_LABELS,
+  DECISION_KIND_LABELS,
   DECISION_LANES,
   DECISION_SOURCES,
   decisionAcceptanceBlockers,
@@ -11,6 +13,7 @@ import {
   isRetiredDecisionSource,
 } from "@repowise-dev/types/decisions";
 import type {
+  AccepterKind,
   DecisionCurrency,
   DecisionLane,
   DecisionRecord,
@@ -75,7 +78,7 @@ const LANE_DESCRIPTION: Record<DecisionLane, string> = {
   uncheckable:
     "Accepted decisions that name no file or module. Nothing can check them against the code and no agent editing a file will be given one. Add the paths they govern and they move to Active.",
   history:
-    "Decisions that were accepted and then withdrawn, superseded or dismissed. Kept so the record of what changed survives.",
+    "Decisions that were accepted and then withdrawn, superseded or dismissed, or whose files no longer exist. Kept so the record of what changed survives.",
 };
 
 /** An empty lane says what will fill it and what the reader can do next. */
@@ -208,6 +211,13 @@ export function DecisionReviewLanes({
       ) : rows.length === 0 ? (
         isLoading ? null : (
           <EmptyState
+            tone={
+              source !== "all"
+                ? "filtered"
+                : lane === "needs_review" || lane === "uncheckable"
+                  ? "positive"
+                  : "neutral"
+            }
             title={`Nothing in ${LANE_LABEL[lane].toLowerCase()}`}
             description={
               source === "all"
@@ -257,7 +267,7 @@ interface RowProps {
 }
 
 const MICRO_LABEL =
-  "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
+  "font-mono text-caption uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
 
 function DecisionLaneRow({
   decision: d,
@@ -273,6 +283,10 @@ function DecisionLaneRow({
   const currency = d.currency ?? null;
   const evidence = d.evidence_preview;
   const scope = [...d.affected_files, ...d.affected_modules];
+  // An agreement governs the repository rather than part of it, so naming no
+  // file is what it is. Saying "names nothing" about one reports the defining
+  // property of the noun as a gap in the record.
+  const isAgreement = d.kind === "agreement";
   // The same four checks the engine refuses on, asked before the button is
   // drawn. A candidate that names nothing already renders "names nothing"
   // beside an Accept that could only fail; predicting the refusal is what
@@ -295,6 +309,7 @@ function DecisionLaneRow({
           {currency !== null && currency !== "active" && (
             <CurrencyMark currency={currency as DecisionCurrency} />
           )}
+          <SignatureMark decision={d} />
           {d.verification && d.verification !== "exact" && (
             <VerificationBadge verification={d.verification} />
           )}
@@ -331,11 +346,13 @@ function DecisionLaneRow({
               list on the title, because the alternative is a row whose
               primary label is crowded off by its own metadata. */}
           <span className={MICRO_LABEL} title={scope.join(", ")}>
-            {scope.length === 0
-              ? "names nothing"
-              : scope.length === 1
-                ? scope[0]
-                : `${scope.length} paths`}
+            {isAgreement && scope.length === 0
+              ? DECISION_KIND_LABELS.agreement.toLowerCase()
+              : scope.length === 0
+                ? "names nothing"
+                : scope.length === 1
+                  ? scope[0]
+                  : `${scope.length} paths`}
           </span>
           {staleness.kind === "moved" && (
             <span className={MICRO_LABEL} title={staleness.sentence}>
@@ -385,7 +402,7 @@ function DecisionLaneRow({
               {onAccept && blockers.length > 0 && (
                 <p className="max-w-[28ch] text-right text-xs text-[var(--color-text-tertiary)]">
                   Cannot accept: {blockers.join("; ")}. Fill it in with{" "}
-                  <code className="font-mono text-[11px]">
+                  <code className="font-mono text-xs">
                     repowise decision confirm {d.id.slice(0, 8)}
                   </code>
                   .
@@ -396,6 +413,30 @@ function DecisionLaneRow({
         </div>
       )}
     </li>
+  );
+}
+
+/**
+ * Who signed the row's current authority record, marked only where it is not
+ * a person — the case this surface was built for, which carries no badge.
+ * `accepter` alone reads as a name, so an agent or an import would be taken
+ * for a colleague; an unrecorded kind would be taken for a person.
+ */
+function SignatureMark({ decision }: { decision: DecisionRecord }) {
+  const kind = decision.accepter_kind;
+  if (kind === null || kind === undefined || kind === "person") return null;
+  const label =
+    kind === "" ? "Signer not recorded" : ACCEPTER_KIND_LABELS[kind as AccepterKind];
+  const who = [decision.accepter, decision.accepter_session]
+    .filter(Boolean)
+    .join(", session ");
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-sm border border-[var(--color-border-default)] px-1.5 text-xs text-[var(--color-text-tertiary)]"
+      title={who ? `${label}: ${who}` : label}
+    >
+      {label}
+    </span>
   );
 }
 
@@ -411,7 +452,7 @@ function DecisionLaneRow({
 function CurrencyMark({ currency }: { currency: DecisionCurrency }) {
   return (
     <span
-      className="inline-flex items-center gap-1.5 whitespace-nowrap text-[11px] text-[var(--color-text-tertiary)]"
+      className="inline-flex items-center gap-1.5 whitespace-nowrap text-xs text-[var(--color-text-tertiary)]"
       title={DECISION_CURRENCY_DESCRIPTIONS[currency]}
     >
       <span

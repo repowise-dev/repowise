@@ -8,9 +8,12 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.security_scan import source_lines
 from repowise.core.persistence.models import Repository, SecurityFinding
 from repowise.server.deps import get_db_session, verify_api_key
-from repowise.server.schemas import SecurityFindingResponse
+from repowise.server.schemas import SecurityFindingResponse, SecuritySummaryResponse
+from repowise.server.services.analysis_ran_at import security_scanned_at
+from repowise.server.services.security_classes import path_classes, security_class_counts
 from repowise.server.services.security_lines import check_finding_line
 
 router = APIRouter(
@@ -59,6 +62,7 @@ async def list_security_findings(
     # on a cold cache. If that ever bites, verify at scan time and persist the
     # outcome instead of re-deriving it per request.
     file_cache: dict[str, list[str] | None] = {}
+    classes = await path_classes(session, repo_id, (row.file_path for row in rows))
 
     responses = []
     for row in rows:
@@ -81,9 +85,23 @@ async def list_security_findings(
                 commit_sha=row.commit_sha or None,
                 commit_at=row.commit_at,
                 found_in_history=bool(row.commit_sha),
+                path_class=classes[row.file_path],
             )
         )
     return responses
+
+
+@router.get("/{repo_id}/security/summary", response_model=SecuritySummaryResponse)
+async def security_summary(
+    repo_id: str,
+    session: AsyncSession = Depends(get_db_session),
+) -> SecuritySummaryResponse:
+    """When the pattern scan last ran (null when unknown), and every stored
+    finding counted by shipped source, tests and docs."""
+    return SecuritySummaryResponse(
+        scanned_at=await security_scanned_at(session, repo_id),
+        **await security_class_counts(session, repo_id),
+    )
 
 
 async def _repo_root(session: AsyncSession, repo_id: str) -> Path | None:
@@ -126,6 +144,8 @@ def _read_guarded(repo_root: Path, file_path: str) -> list[str] | None:
         target = (repo_root / file_path).resolve()
         if not target.is_relative_to(repo_root):
             return None
-        return target.read_text(encoding="utf-8", errors="replace").splitlines()
+        # Split as the scanner numbered the lines (where git splits), so a form
+        # feed or a lone carriage return does not move a verified line.
+        return source_lines(target.read_bytes().decode("utf-8", errors="replace"))
     except (OSError, ValueError):
         return None

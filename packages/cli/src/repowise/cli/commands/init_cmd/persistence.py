@@ -27,8 +27,17 @@ from repowise.cli.helpers import (
 )
 from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
 from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+from repowise.core.analysis.security_scan import SECURITY_SCANNER_VERSION
+from repowise.core.decision_lanes import record_decision_lanes
 from repowise.core.docs_mode import docs_mode_state_fields
 from repowise.core.generation.models import count_stub_fallbacks
+from repowise.core.index_scope import (
+    dropped_files_scope,
+    file_page_scope,
+    stamp_index_scope,
+)
+from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
+from repowise.core.repo_config import config_dependency_fingerprints
 
 logger = structlog.get_logger(__name__)
 
@@ -91,13 +100,21 @@ async def _index_preserved_pages(sf: Any, fts: Any, preserved_page_ids: set[str]
                             Page.content,
                             Page.summary,
                             Page.target_path,
+                            Page.digest,
                         ).where(Page.id.in_(batch))
                     )
                 ).all()
             await fts.index_many(
                 [
-                    (page_id, title or "", content or "", summary or "", target_path or "")
-                    for page_id, title, content, summary, target_path in rows
+                    (
+                        page_id,
+                        title or "",
+                        content or "",
+                        summary or "",
+                        target_path or "",
+                        digest or "",
+                    )
+                    for page_id, title, content, summary, target_path, digest in rows
                 ]
             )
     except Exception as exc:  # pragma: no cover - defensive
@@ -125,7 +142,12 @@ async def persist_result(
     """
     from datetime import UTC, datetime
 
-    from repowise.core.persistence import FullTextSearch, get_session, upsert_repository
+    from repowise.core.persistence import (
+        FullTextSearch,
+        get_session,
+        refresh_planner_stats,
+        upsert_repository,
+    )
     from repowise.core.persistence.crud import upsert_generation_job
     from repowise.core.pipeline import (
         persist_analysis,
@@ -135,6 +157,7 @@ async def persist_result(
         timed,
         tombstone_absent_file_pages,
     )
+    from repowise.core.pipeline.persist import persist_symbol_analysis
 
     engine, sf, _repo_id = await open_repo_db(repo_path, repo_name=result.repo_name)
 
@@ -154,6 +177,7 @@ async def persist_result(
             session,
             name=result.repo_name,
             local_path=str(repo_path),
+            stamp_head=True,
         )
         # Persist the detected tech stack into the repository's settings
         # blob. Merge into any pre-existing settings so we don't clobber
@@ -173,8 +197,19 @@ async def persist_result(
             repo.settings_json = _json.dumps(existing)
         swept_page_ids: list[str] = []
         if index_done:
-            await persist_analysis(result, session, repo.id)
-            await persist_generation(result, session, repo.id)
+            # Health runs after the INDEX checkpoint and mutates the in-memory
+            # symbol complexities. Reconcile them again in this final required
+            # transaction: it heals a best-effort checkpoint failure, and if
+            # this write also fails the ledger below cannot claim ANALYSIS is
+            # complete with parser-default complexity still on disk.
+            with timed(timings, "persist.analysis"):
+                if getattr(result, "health_report", None) is not None:
+                    await persist_symbol_analysis(
+                        session, repo.id, getattr(result, "parsed_files", None)
+                    )
+                await persist_analysis(result, session, repo.id)
+            with timed(timings, "persist.generation"):
+                await persist_generation(result, session, repo.id)
             # persist_generation has already upserted the current pages, so the
             # sweep only retires structurally-keyed pages this run did not
             # reproduce. Without it the incremental-index path (every normal
@@ -251,12 +286,7 @@ async def persist_result(
         if fts is not None and swept_page_ids:
             await fts.delete_many(swept_page_ids)
         if fts is not None and result.generated_pages:
-            await fts.index_many(
-                [
-                    (page.page_id, page.title, page.content, page.summary, page.target_path)
-                    for page in result.generated_pages
-                ]
-            )
+            await fts.index_pages(result.generated_pages)
         await _index_preserved_pages(sf, fts, getattr(result, "preserved_page_ids", None))
 
     # Stamp the analysis (+ generation) phases in the resume ledger now that
@@ -273,6 +303,8 @@ async def persist_result(
         if result.generated_pages:
             await ledger.mark_completed(ResumePhase.GENERATION)
 
+    with timed(timings, "persist.planner_stats"):
+        await refresh_planner_stats(engine)
     await engine.dispose()
     # Closed here rather than after the indexing loop: the preserved-page
     # backfill and the ledger stamp are persistence too, and a phase that
@@ -296,6 +328,45 @@ def git_tier_for_run_mode(run_mode: str) -> str:
     return "essential" if run_mode == "fast" else "full"
 
 
+#: The ``index_scope`` sections that describe documentation.
+_DOCS_SCOPE_KEYS = ("content_provenance", "file_pages", "provider", "search")
+
+
+def keep_prior_documentation(
+    state: dict[str, Any], prior_state: dict[str, Any], run_mode: str
+) -> None:
+    """Restore the documentation stamps a fast run would otherwise clear from *state*.
+
+    Fast mode writes and removes no pages, so over an index that has them the
+    pages stay and so must what state says about them. The git tier stays
+    this run's: fast re-indexed git at the essential tier.
+    """
+    from repowise.core.docs_mode import resolve_docs_mode
+
+    prior_mode = resolve_docs_mode(prior_state)
+    if run_mode != "fast" or prior_mode == "none":
+        return
+    state.update(docs_mode_state_fields(prior_mode))
+    state["total_pages"] = prior_state.get("total_pages", 0)
+    for key in ("provider", "model"):
+        if prior_state.get(key):
+            state[key] = prior_state[key]
+    _restore_docs_scope(state["index_scope"], prior_state, prior_mode)
+
+
+def _restore_docs_scope(scope: dict[str, Any], prior_state: dict[str, Any], prior_mode: str) -> None:
+    """Put the prior run's documentation sections back into this run's *scope*."""
+    from repowise.core.index_scope import resolve_index_scope
+
+    prior_scope = resolve_index_scope(prior_state)
+    for key in _DOCS_SCOPE_KEYS:
+        scope[key] = prior_scope[key]
+    if scope["content_provenance"] in ("none", "unknown"):
+        # A state older than index_scope records only the docs mode.
+        scope["content_provenance"] = "model" if prior_mode == "llm" else "template"
+    scope["analysis"]["skipped"] = [s for s in scope["analysis"]["skipped"] if s != "generation"]
+
+
 def effective_run_mode_for_resume(repo_path: Path, run_mode: str, resume: bool) -> str:
     """On ``--resume``, continue the git tier the prior run used.
 
@@ -316,6 +387,82 @@ def effective_run_mode_for_resume(repo_path: Path, run_mode: str, resume: bool) 
 # ---------------------------------------------------------------------------
 
 
+def apply_git_history_coverage_state(state: dict[str, Any], result: Any) -> None:
+    """Replace achieved Git coverage, clearing stale data when unavailable.
+
+    A run that walked git also wrote every row under the current history
+    rules, so it stamps their version and the next update does not walk again.
+    """
+    summary = getattr(result, "git_summary", None)
+    if summary is None:
+        return
+    state[GIT_HISTORY_VERSION_KEY] = GIT_HISTORY_VERSION
+    coverage = getattr(summary, "history_coverage", None)
+    if coverage is None:
+        state.pop("git_history_coverage", None)
+    else:
+        state["git_history_coverage"] = coverage.to_dict()
+
+
+def _stamp_full_init_scope(
+    state: dict[str, Any],
+    result: Any,
+    provider: Any,
+    *,
+    resolved_commit_limit: int,
+    max_file_pages: int | None,
+    embedder_name_resolved: str,
+    repo_path: Path,
+) -> None:
+    """Attach the canonical scope receipt for a successful model-backed init."""
+    from repowise.core.generation.selection import count_documentable_files
+
+    unavailable = [] if getattr(result, "health_report", None) is not None else ["health"]
+    if getattr(result, "generation_scope", None):
+        pages = result.generation_scope
+    elif hasattr(result, "parsed_files"):
+        pages = file_page_scope(
+            configured_cap=max_file_pages,
+            eligible=count_documentable_files(result.parsed_files),
+            generated_pages=result.generated_pages,
+        )
+    else:
+        pages = {"effective_cap": None, "eligible": None, "generated": None, "omitted": None}
+    from repowise.cli.providers import semantic_search_command, semantic_search_status
+
+    semantic = semantic_search_status(
+        embedder_name_resolved, getattr(result, "embed_failed_pages", 0)
+    )
+    stamp_index_scope(
+        state,
+        {"commit_limit": resolved_commit_limit, "max_file_pages": max_file_pages},
+        run_mode="standard",
+        content_provenance="model",
+        git_tier="full",
+        git_commit_cap=resolved_commit_limit,
+        dropped_files=dropped_files_scope(getattr(result, "traversal_stats", None)),
+        file_pages={"configured_cap": max_file_pages, **pages},
+        analysis={"unavailable": unavailable, "skipped": []},
+        provider={
+            "name": provider.provider_name,
+            "model": provider.model_name,
+            "embedder": embedder_name_resolved,
+            "reused": False,
+            "model_cost_possible": True,
+        },
+        search={
+            "full_text": "available",
+            "semantic": semantic,
+            "next_command": (
+                semantic_search_command(repo_path, embedder_name_resolved)
+                if semantic == "unavailable"
+                else None
+            ),
+        },
+        upgrade={"status": "not_applicable", "retryable": False, "completed_stages": []},
+    )
+
+
 def save_full_state_and_config(
     *,
     repo_path: Path,
@@ -328,6 +475,7 @@ def save_full_state_and_config(
     commit_limit: int | None,
     resolved_commit_limit: int,
     resolved_reasoning: str,
+    max_file_pages: int | None = None,
     include_submodules: bool = False,
     save_key: bool = True,
 ) -> None:
@@ -369,6 +517,18 @@ def save_full_state_and_config(
     # Full-mode docs runs always index the FULL git tier.
     state["run_mode"] = "standard"
     state["git_tier"] = "full"
+    apply_git_history_coverage_state(state, result)
+    # The docs model ran every decision lane, so none is left for a later run.
+    record_decision_lanes(state, repo_path, ran_with_model=True)
+    _stamp_full_init_scope(
+        state,
+        result,
+        provider,
+        resolved_commit_limit=resolved_commit_limit,
+        max_file_pages=max_file_pages,
+        embedder_name_resolved=embedder_name_resolved,
+        repo_path=repo_path,
+    )
     # Same pattern as git_tier: `repowise update` reads this back so its
     # graph rebuild keeps the init run's submodule boundary semantics.
     state["include_submodules"] = include_submodules
@@ -422,11 +582,31 @@ def save_full_state_and_config(
     )
 
     # Re-save state with the fingerprint now that config.yaml is written.
+    stamp_fresh_index(state, repo_path, result)
+    save_state(repo_path, state, full_index=True)
+
+
+def stamp_fresh_index(state: dict[str, Any], repo_path: Path, result: Any) -> None:
+    """Stamp what a just-finished init built, so the first update finds nothing to redo.
+
+    Every init path calls this after its config.yaml writes, since the config
+    fingerprint reads them.
+    """
     state["config_fingerprint"] = config_fingerprint(repo_path)
+    state["config_dependency_fingerprints"] = config_dependency_fingerprints(repo_path)
     # This index's health rows were written by the current analyzer, so start
     # tracking it here — otherwise a fresh install carries no stamp and the
     # first analyzer change after it cannot tell it needs a re-score.
     state["health_analyzer_version"] = HEALTH_ANALYZER_VERSION
+    # Same reasoning for the security scanner (#3072): this run just scanned
+    # every file, so start tracking its version here too.
+    state["security_scanner_version"] = SECURITY_SCANNER_VERSION
+    # The pages were just rendered by this release's structural renderer.
+    # Unstamped, the first update would read the index as pre-stamp and
+    # re-render the whole wiki it had only just written.
+    from repowise.cli.commands.update_cmd.command import _current_renderer_fingerprint
+
+    state["renderer_fingerprint"] = _current_renderer_fingerprint(repo_path)
     # This run just scored every file, so the periodic re-score cadence starts
     # now. Without the stamp the gate reads "never re-scored" and the very next
     # update re-scores the whole repo that init had only just finished scoring.
@@ -441,4 +621,3 @@ def save_full_state_and_config(
     _head_ts = head_commit_ts(repo_path) if getattr(result, "health_report", None) else None
     if _head_ts is not None:
         state["last_full_rescore_at"] = _head_ts
-    save_state(repo_path, state, full_index=True)

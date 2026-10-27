@@ -55,6 +55,30 @@ def test_last_seen_roundtrip(monkeypatch, tmp_path):
     assert wn.read_last_seen_version() is None
     wn.write_last_seen_version("0.21.0")
     assert wn.read_last_seen_version() == "0.21.0"
+    # An older install never lowers the marker; a newer one raises it.
+    wn.write_last_seen_version("0.20.0")
+    assert wn.read_last_seen_version() == "0.21.0"
+    wn.write_last_seen_version("0.22.0")
+    assert wn.read_last_seen_version() == "0.22.0"
+
+
+def test_last_seen_equal_or_suffixed_version_keeps_the_number(monkeypatch, tmp_path):
+    _redirect_global_dir(monkeypatch, tmp_path)
+    wn.write_last_seen_version("0.22.0")
+    wn.write_last_seen_version("0.22.0")
+    assert wn.read_last_seen_version() == "0.22.0"
+    # A pre-release or dev build of the same number compares equal, never lower.
+    wn.write_last_seen_version("0.22.0rc1")
+    assert wn.read_last_seen_version() == "0.22.0rc1"
+    wn.write_last_seen_version("0.21.9.dev1")
+    assert wn.read_last_seen_version() == "0.22.0rc1"
+
+
+def test_last_seen_unparsable_marker_is_replaced(monkeypatch, tmp_path):
+    _redirect_global_dir(monkeypatch, tmp_path)
+    wn.write_last_seen_version("not-a-version")
+    wn.write_last_seen_version("0.20.0")
+    assert wn.read_last_seen_version() == "0.20.0"
 
 
 def test_render_whats_new_returns_false_when_nothing_new():
@@ -86,7 +110,7 @@ def test_render_whats_new_empty_entries_shows_fallback_link():
     assert wn.RELEASES_URL in buf.getvalue()
 
 
-def _check(update_available, latest="9.9.9"):
+def _check(update_available, latest="9.9.9", command="pipx upgrade repowise"):
     return UpdateCheck(
         current_version="0.21.0",
         latest_version=latest,
@@ -94,19 +118,59 @@ def _check(update_available, latest="9.9.9"):
         running_executable="repowise",
         python="python",
         update_available=update_available,
-        suggested_command="pipx upgrade repowise",
+        suggested_command=command,
         install_hint="pipx",
     )
 
 
-def test_advisory_prints_when_update_available():
+def test_advisory_prints_when_update_available(monkeypatch):
     import io
 
+    monkeypatch.setattr("sys.platform", "linux")
     buf = io.StringIO()
     console = Console(file=buf, width=100)
     assert wn.render_update_advisory(console, _check(True)) is True
     assert "9.9.9" in buf.getvalue()
     assert "pipx upgrade repowise" in buf.getvalue()
+
+
+def test_advisory_warns_windows_users_to_stop_locking_processes_first(monkeypatch):
+    import io
+
+    monkeypatch.setattr("sys.platform", "win32")
+    buf = io.StringIO()
+    console = Console(file=buf, width=200)
+
+    assert (
+        wn.render_update_advisory(
+            console,
+            _check(True, command="uv tool upgrade repowise"),
+        )
+        is True
+    )
+
+    out = buf.getvalue()
+    rendered = " ".join(out.split())
+    assert "stop any running Repowise server or MCP process before upgrading" in rendered
+    assert "Repowise: Stop Server" in rendered
+    assert "only stops a server started by the VS Code extension" in rendered
+    assert "stop the server in its terminal" in rendered
+    assert rendered.index("before upgrading") < rendered.index("uv tool upgrade repowise")
+
+
+def test_advisory_preserves_non_windows_output(monkeypatch):
+    import io
+
+    monkeypatch.setattr("sys.platform", "linux")
+    buf = io.StringIO()
+    console = Console(file=buf, width=200)
+
+    assert wn.render_update_advisory(console, _check(True)) is True
+
+    assert (
+        buf.getvalue().strip()
+        == "repowise 9.9.9 is available (you have 0.21.0). Upgrade: pipx upgrade repowise"
+    )
 
 
 def test_advisory_silent_when_up_to_date():
@@ -124,3 +188,38 @@ def test_advisory_silent_when_latest_unknown():
     buf = io.StringIO()
     console = Console(file=buf, width=100)
     assert wn.render_update_advisory(console, _check(None, latest=None)) is False
+
+
+def test_render_whats_new_leads_with_highlights_and_numbers(monkeypatch):
+    import io
+
+    text = (
+        "## [0.57.0] - 2026-10-20\n\nSummary.\n\n### Highlights\n\n"
+        "- **Charts in chat** · Any chart. → /repos/:id/chat\n\n"
+        "### Added\n\n- A feature.\n"
+    )
+    stats = {
+        "0.57.0": {
+            "since": "0.56.0",
+            "days": 3,
+            "prs": 205,
+            "contributors": 24,
+            "first_time_contributors": 11,
+            "files_changed": 1226,
+            "lines_added": 103206,
+            "lines_removed": 11127,
+        }
+    }
+    monkeypatch.setattr(wn, "load_release_stats", lambda: stats)
+    buf = io.StringIO()
+    console = Console(file=buf, width=200)
+    assert wn.render_whats_new(console, parse_changelog(text), since_version="0.56.0")
+    out = buf.getvalue()
+    assert out.index("Charts in chat") < out.index("205 pull requests") < out.index("A feature")
+    assert "24 contributors (11 first-time)" in out
+    assert "+103,206 / -11,127 lines" in out
+
+
+def test_numbers_line_tolerates_missing_figures():
+    assert wn.numbers_line(None) is None
+    assert wn.numbers_line({"prs": 1}) is None

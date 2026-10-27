@@ -56,10 +56,10 @@ const MICRO_LABEL =
  * button rather than disappearing.
  */
 const PRESET_BLURB: Record<string, string> = {
-  default: "The deterministic sources, and no broad model pass.",
+  default: "The deterministic sources, without transcripts or a broad model pass.",
   off: "Capture nothing. Decisions you record by hand still work.",
   local_only: "Only what this checkout can see, with no model call at all.",
-  balanced: "The deterministic sources plus one broad pass over new sessions.",
+  balanced: "The deterministic sources plus transcripts and one broad pass over new sessions.",
   full: "Every source, model stages included.",
 };
 
@@ -179,6 +179,18 @@ export function DecisionCaptureSettings({
           {...(llmMasterReason ? { reason: llmMasterReason } : {})}
           onChange={(v) => void write("llm", { llm: v })}
         />
+        {/* Not a capture switch: capture proposes, this grants. Kept beside
+            them because this is the page for what the layer may do alone. */}
+        <Toggle
+          label="Let agents accept decisions"
+          description="On by default: an agent's acceptances are recorded as the agent's, with the session that signed. Off, an agent can propose and withdraw but never grant authority."
+          checked={settings.agent_acceptance}
+          disabled={locked || busy("agent_acceptance")}
+          {...(readOnlyReason ? { reason: readOnlyReason } : {})}
+          onChange={(v) =>
+            void write("agent_acceptance", { agent_acceptance: v })
+          }
+        />
       </div>
 
       <section className={SECTION}>
@@ -206,7 +218,7 @@ export function DecisionCaptureSettings({
                 className={
                   "rounded-md border px-2.5 py-1 text-xs transition-colors disabled:opacity-40 " +
                   (active
-                    ? "border-[var(--color-accent-primary)] text-[var(--color-accent-primary)]"
+                    ? "border-[var(--color-selection-border)] bg-[var(--color-selection-wash)] text-[var(--color-text-primary)]"
                     : "border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:border-[var(--color-border-hover)] hover:text-[var(--color-text-primary)]")
                 }
               >

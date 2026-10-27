@@ -6,9 +6,14 @@ import { curveBundle, lineRadial } from "d3-shape";
 // Value imports must come from the package root, not the `/coupling` subpath:
 // the vite/rollup base alias clobbers subpath value resolution. Type-only
 // subpath imports are fine (erased before resolution).
-import { bandForScore } from "@repowise-dev/types";
 import type { CouplingEdge, CouplingNode } from "@repowise-dev/types/coupling";
-import type { HealthBand } from "@repowise-dev/types/health";
+import {
+  HEALTH_BAND_LABEL,
+  HEALTH_BAND_ORDER,
+  HEALTH_BAND_RANGE_LABEL,
+  formatScore,
+} from "@repowise-dev/types/health";
+import { healthBandNodeFill, healthNodeFill } from "../health/tokens";
 import { disambiguateBasenames } from "../lib/format";
 import { isSamePair, pairHas, type CouplingPair } from "./claim";
 
@@ -48,17 +53,12 @@ export interface CouplingGraphProps {
   size?: number;
 }
 
-/* CSS-var ink per canonical health band (the 3-bucket currency). A file with
- * no health metric resolves to neutral. SVG stroke/fill accept `var()`. */
+/* A file with no health metric resolves to neutral. SVG stroke/fill accept
+ * `var()`, so the band ink goes in raw. */
 const NEUTRAL_INK = "var(--color-text-tertiary)";
-const BAND_INK: Record<HealthBand, string> = {
-  alert: "var(--color-error)",
-  warning: "var(--color-caution)",
-  healthy: "var(--color-success)",
-};
 
 function inkFor(score: number | null): string {
-  return score == null ? NEUTRAL_INK : BAND_INK[bandForScore(score)];
+  return score == null ? NEUTRAL_INK : healthNodeFill(score);
 }
 
 /** Shared empty neighbor set so the no-focus path allocates nothing. */
@@ -452,7 +452,7 @@ export function CouplingGraph({
                   stroke="var(--color-bg-surface)"
                   strokeWidth={isFocus ? 1.6 : 1}
                 >
-                  <title>{`${n.file_path}${n.score != null ? ` · score ${n.score.toFixed(1)}` : ""} · ${degree.get(n.file_path) ?? 0} couplings`}</title>
+                  <title>{`${n.file_path}${n.score != null ? ` · score ${formatScore(n.score)}` : ""} · ${degree.get(n.file_path) ?? 0} couplings`}</title>
                 </circle>
                 {showLabel ? (
                   <text
@@ -478,15 +478,16 @@ export function CouplingGraph({
 
       {/* Legend */}
       <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[var(--color-text-tertiary)]">
-        <span className="inline-flex items-center gap-1.5">
-          <span className="h-2 w-2 rounded-full bg-[var(--color-success)]" /> healthy
-        </span>
-        <span className="inline-flex items-center gap-1.5">
-          <span className="h-2 w-2 rounded-full bg-[var(--color-caution)]" /> warning
-        </span>
-        <span className="inline-flex items-center gap-1.5">
-          <span className="h-2 w-2 rounded-full bg-[var(--color-error)]" /> alert
-        </span>
+        {HEALTH_BAND_ORDER.map((band) => (
+          <span key={band} className="inline-flex items-center gap-1.5">
+            <span
+              className="h-2 w-2 rounded-full"
+              style={{ backgroundColor: healthBandNodeFill(band) }}
+            />{" "}
+            {HEALTH_BAND_LABEL[band]}{" "}
+            <span className="tabular-nums opacity-70">{HEALTH_BAND_RANGE_LABEL[band]}</span>
+          </span>
+        ))}
         {/* `min-w-0` so this can shrink and wrap rather than force the row
             wider than the viewport; right-aligned only once there is room. */}
         <span className="min-w-0 basis-full sm:basis-auto sm:ml-auto">

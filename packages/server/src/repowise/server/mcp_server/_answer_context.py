@@ -28,6 +28,7 @@ from typing import Any
 from sqlalchemy import select
 
 from repowise.core.analysis.decisions.lifecycle import is_governing
+from repowise.core.analysis.decisions.scope import binds_to_paths
 from repowise.core.persistence.crud.authority import decision_currencies
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import DecisionRecord, GitMetadata
@@ -157,6 +158,10 @@ async def fetch_relevant_decisions(
 
     scored: list[tuple[int, float, DecisionRecord]] = []
     for d in all_decisions:
+        # Ranked by overlap count, so a footprint would outrank a record
+        # naming one file exactly, and this renders into the prompt.
+        if not binds_to_paths(d.scope_basis):
+            continue
         try:
             affected = set(json.loads(d.affected_files_json or "[]"))
         except (json.JSONDecodeError, TypeError):
@@ -210,6 +215,7 @@ async def build_structured_prelude(
     section headers):
 
         Top symbols by relevance: ...
+        Calls made by <entry>, in source order: ...
         Recent significant commits: ...
         Decision records: ...
 
@@ -222,6 +228,11 @@ async def build_structured_prelude(
     top_symbols = _top_symbols_summary(hits)
     if top_symbols:
         sections.append(f"Top symbols by relevance: {top_symbols}")
+
+    # Read from the call graph, so the order is a fact, not a guess.
+    sequence = next((h["_call_sequence"] for h in hits if h.get("_call_sequence")), "")
+    if sequence:
+        sections.append(sequence)
 
     commits_line = await _recent_commits_summary(hits, ctx, repo_id)
     if commits_line:

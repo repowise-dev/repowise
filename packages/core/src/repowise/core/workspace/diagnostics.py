@@ -23,11 +23,20 @@ from typing import Any
 
 from repowise.core.workspace.code_api import CODE_CONTRACT_TYPE
 from repowise.core.workspace.contracts import (
+    TOPIC_KIND_BINDING,
+    TOPIC_NAMES_UNRESOLVED_STAT,
     Contract,
     ContractLink,
     normalize_contract_id,
+    same_service,
 )
 from repowise.core.workspace.extractors.from_index import EXTRACTION_LAYER_KEY, LAYER_REGEX
+from repowise.core.workspace.matching.common import AMBIGUOUS_PROVIDER, shared_idl
+from repowise.core.workspace.network_probe import (
+    UNRECOGNISED_CALL_FILES_STAT,
+    UNRECOGNISED_MESSAGE_FILES_STAT,
+    outside_runtime,
+)
 from repowise.core.workspace.signature_schema import SCHEMA_SOURCE
 
 # ---------------------------------------------------------------------------
@@ -47,6 +56,8 @@ class UnmatchedReason:
     NO_PROVIDER = "no_provider"
     #: The only matching provider(s) live in the same repo + service, so the
     #: call is intra-service and intentionally not surfaced as a cross-repo link.
+    #: Such a consumer is served, so it goes to ``in_service_consumers``, never
+    #: to the unmatched list.
     INTERNAL_ONLY = "internal_only"
     #: A cross-service provider with a matching id exists, but no link was
     #: formed (e.g. an HTTP path that only the candidate pass could bridge and
@@ -55,6 +66,9 @@ class UnmatchedReason:
     #: The call targets a literal third-party host (Stripe, Formspree, …) that is
     #: not a workspace service, so it is intentionally excluded from matching.
     EXTERNAL_HOST = "external_host"
+    #: Two or more repos serve the call's route and neither its host nor its
+    #: base says which one it reaches, so it links to none of them.
+    AMBIGUOUS_PROVIDER = "ambiguous_provider"
 
 
 #: The closed set, for the wire copies that have to agree with it.
@@ -63,6 +77,7 @@ UNMATCHED_REASON_VALUES = (
     UnmatchedReason.INTERNAL_ONLY,
     UnmatchedReason.UNLINKED,
     UnmatchedReason.EXTERNAL_HOST,
+    UnmatchedReason.AMBIGUOUS_PROVIDER,
 )
 
 
@@ -88,6 +103,8 @@ class RepoDiagnostics:
     #: Calls that reached a confirmed HTTP wrapper but whose path could not be
     #: resolved statically. Real endpoint calls, located and then not named.
     http_consumers_unresolved: int = 0
+    #: Broker calls located whose topic or queue name the file does not settle.
+    topic_names_unresolved: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -115,6 +132,9 @@ class OrphanProvider:
     file_path: str
     contract_id: str
     contract_type: str
+    #: Other files of the same repo and service declaring the same id, such as
+    #: a table's model and its migration. One orphan, not one per file.
+    other_files: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -223,6 +243,84 @@ class CodeApiCoverage:
 
 
 @dataclass
+class OpenApiCoverage:
+    """Bounded OpenAPI extraction coverage and explicit refusal reasons."""
+
+    documents: int = 0
+    parsed_documents: int = 0
+    unresolved_documents: int = 0
+    operations: int = 0
+    providers: int = 0
+    schemas_merged: int = 0
+    spec_only_providers: int = 0
+    request_states: dict[str, int] = field(default_factory=dict)
+    response_states: dict[str, int] = field(default_factory=dict)
+    refusal_reasons: dict[str, int] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "documents": self.documents,
+            "parsed_documents": self.parsed_documents,
+            "unresolved_documents": self.unresolved_documents,
+            "operations": self.operations,
+            "providers": self.providers,
+            "schemas_merged": self.schemas_merged,
+            "spec_only_providers": self.spec_only_providers,
+            "request_states": self.request_states,
+            "response_states": self.response_states,
+            "refusal_reasons": self.refusal_reasons,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> OpenApiCoverage:
+        return cls(
+            documents=data.get("documents", 0),
+            parsed_documents=data.get("parsed_documents", 0),
+            unresolved_documents=data.get("unresolved_documents", 0),
+            operations=data.get("operations", 0),
+            providers=data.get("providers", 0),
+            schemas_merged=data.get("schemas_merged", 0),
+            spec_only_providers=data.get("spec_only_providers", 0),
+            request_states=data.get("request_states", {}),
+            response_states=data.get("response_states", {}),
+            refusal_reasons=data.get("refusal_reasons", {}),
+        )
+
+    @classmethod
+    def from_stats(cls, stats_by_repo: dict[str, dict[str, int]]) -> OpenApiCoverage:
+        totals: dict[str, int] = {}
+        for repo_stats in stats_by_repo.values():
+            for key, value in repo_stats.items():
+                if key.startswith("openapi_"):
+                    totals[key] = totals.get(key, 0) + value
+
+        def states(side: str) -> dict[str, int]:
+            prefix = f"openapi_{side}_"
+            return {
+                state: totals.get(f"{prefix}{state}", 0)
+                for state in ("complete", "partial", "unsupported", "unresolved")
+            }
+
+        reason_prefix = "openapi_reason_"
+        return cls(
+            documents=totals.get("openapi_documents", 0),
+            parsed_documents=totals.get("openapi_documents_parsed", 0),
+            unresolved_documents=totals.get("openapi_documents_unresolved", 0),
+            operations=totals.get("openapi_operations", 0),
+            providers=totals.get("openapi_providers", 0),
+            schemas_merged=totals.get("openapi_schemas_merged", 0),
+            spec_only_providers=totals.get("openapi_spec_only_providers", 0),
+            request_states=states("request"),
+            response_states=states("response"),
+            refusal_reasons={
+                key.removeprefix(reason_prefix): value
+                for key, value in sorted(totals.items())
+                if key.startswith(reason_prefix)
+            },
+        )
+
+
+@dataclass
 class ExtractionDiagnostics:
     """Aggregate explanation of contract extraction + matching coverage."""
 
@@ -234,6 +332,10 @@ class ExtractionDiagnostics:
     unmatched_consumers: list[UnmatchedConsumer] = field(default_factory=list)
     unmatched_by_reason: dict[str, int] = field(default_factory=dict)
     orphan_providers: list[OrphanProvider] = field(default_factory=list)
+    #: Consumers whose only provider is their own repo + service: served, not
+    #: cross-repo, so kept out of ``unmatched_consumers``. Reason is always
+    #: :attr:`UnmatchedReason.INTERNAL_ONLY`.
+    in_service_consumers: list[UnmatchedConsumer] = field(default_factory=list)
     #: Workspace-wide rollups of the per-repo layer split.
     providers_by_layer: dict[str, int] = field(default_factory=dict)
     consumers_by_layer: dict[str, int] = field(default_factory=dict)
@@ -248,22 +350,104 @@ class ExtractionDiagnostics:
     schema_coverage: SchemaCoverage = field(default_factory=SchemaCoverage)
     #: Published-package surface coverage. Reported, never asserted.
     code_api: CodeApiCoverage = field(default_factory=CodeApiCoverage)
+    #: OpenAPI document, operation, per-side fidelity, and refusal coverage.
+    openapi: OpenApiCoverage = field(default_factory=OpenApiCoverage)
+    #: Per repo, files with a network-call token that produced no consumer
+    #: contract (:mod:`.network_probe`): calls no dialect recognised. None when
+    #: no repo was probed (an artifact older than the probe).
+    unrecognised_call_files: dict[str, int] | None = None
+    #: HTTP consumers that formed a cross-repo link. None on an artifact
+    #: written before this count, which only knew which calls were read.
+    http_consumers_linked: int | None = None
+    #: Broker calls located whose topic or queue name could not be settled.
+    topic_names_unresolved: int = 0
+    #: Per repo, files using a messaging SDK that produced no topic contract
+    #: (:data:`.network_probe.MESSAGE_PROBE_ROWS`). None when no repo was probed.
+    unrecognised_message_files: dict[str, int] | None = None
+
+    @property
+    def unrecognised_message_file_count(self) -> int | None:
+        if self.unrecognised_message_files is None:
+            return None
+        return sum(self.unrecognised_message_files.values())
+
+    @property
+    def unrecognised_call_file_count(self) -> int | None:
+        if self.unrecognised_call_files is None:
+            return None
+        return sum(self.unrecognised_call_files.values())
 
     @property
     def http_consumer_coverage(self) -> float | None:
-        """Share of located HTTP client calls that became a contract.
+        """Share of client calls that became an HTTP contract, misses included.
 
-        ``None`` when nothing was located, because 0/0 is not 100%. This is a
-        genuine ratio over calls extraction *saw*: it says nothing about calls
-        no dialect recognised, and must not be presented as total recall.
+        The denominator is every call extraction resolved or located, plus one
+        per file the network probe saw calling out with no contract read from
+        it, so a client library no dialect knows lowers the figure instead of
+        vanishing from it. Each such file counts once, a floor on its calls.
+        ``None`` when nothing was seen, because 0/0 is not 100%, and when the
+        artifact predates the probe, since a ratio over located calls alone
+        reads 100% whatever was missed.
         """
-        http_consumers = sum(
-            r.consumers_by_type.get("http", 0) for r in self.repo_breakdown
-        )
-        denominator = http_consumers + self.http_consumers_unresolved
-        if denominator == 0:
+        seen = self.http_calls_seen
+        if seen is None:
             return None
-        return http_consumers / denominator
+        return self.http_consumers_read / seen
+
+    @property
+    def http_consumers_read(self) -> int:
+        """HTTP consumer contracts read, linked or not."""
+        return sum(r.consumers_by_type.get("http", 0) for r in self.repo_breakdown)
+
+    @property
+    def topic_contracts_read(self) -> int:
+        """Topic contracts read, publishes and subscriptions both."""
+        return sum(
+            r.providers_by_type.get("topic", 0) + r.consumers_by_type.get("topic", 0)
+            for r in self.repo_breakdown
+        )
+
+    @property
+    def http_calls_seen(self) -> int | None:
+        """The coverage denominator: calls read, calls located, unread files.
+
+        None when it is zero or the artifact predates the network probe.
+        """
+        missed = self.unrecognised_call_file_count
+        if missed is None:
+            return None
+        seen = self.http_consumers_read + self.http_consumers_unresolved + missed
+        return seen or None
+
+    def http_unlinked(self, repo: str | None = None) -> tuple[dict[str, int], int]:
+        """Read HTTP calls that linked to no other service: per reason, and in-service.
+
+        A call served inside its own repo and service is counted apart, never as
+        unmatched. *repo* narrows both counts to one member.
+        """
+        by_reason: dict[str, int] = defaultdict(int)
+        for u in self.unmatched_consumers:
+            if u.contract_type == "http" and repo in (None, u.repo):
+                by_reason[u.reason] += 1
+        in_service = sum(
+            1
+            for u in self.in_service_consumers
+            if u.contract_type == "http" and repo in (None, u.repo)
+        )
+        return dict(by_reason), in_service
+
+    @property
+    def http_link_coverage(self) -> float | None:
+        """Share of the calls seen that linked to another service's provider.
+
+        Same denominator as :attr:`http_consumer_coverage`, so a call that was
+        read but matched nothing counts against it. None where that one is
+        None, or when the artifact predates the linked count.
+        """
+        seen = self.http_calls_seen
+        if seen is None or self.http_consumers_linked is None:
+            return None
+        return self.http_consumers_linked / seen
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -275,19 +459,37 @@ class ExtractionDiagnostics:
             "unmatched_consumers": [u.to_dict() for u in self.unmatched_consumers],
             "unmatched_by_reason": self.unmatched_by_reason,
             "orphan_providers": [o.to_dict() for o in self.orphan_providers],
+            "in_service_consumers": [u.to_dict() for u in self.in_service_consumers],
             "providers_by_layer": self.providers_by_layer,
             "consumers_by_layer": self.consumers_by_layer,
             "http_consumers_unresolved": self.http_consumers_unresolved,
             "http_consumer_coverage": self.http_consumer_coverage,
+            "http_consumers_linked": self.http_consumers_linked,
+            "http_link_coverage": self.http_link_coverage,
             "symbol_identity": {r: v.to_dict() for r, v in sorted(self.symbol_identity.items())},
             "schema_coverage": self.schema_coverage.to_dict(),
             "code_api": self.code_api.to_dict(),
+            "openapi": self.openapi.to_dict(),
+            "unrecognised_call_files": self.unrecognised_call_files,
+            "unrecognised_call_file_count": self.unrecognised_call_file_count,
+            "topic_names_unresolved": self.topic_names_unresolved,
+            "unrecognised_message_files": self.unrecognised_message_files,
+            "unrecognised_message_file_count": self.unrecognised_message_file_count,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ExtractionDiagnostics:
         schema = data.get("schema_coverage") or {}
         code = data.get("code_api") or {}
+        openapi = data.get("openapi") or {}
+        unmatched = [_unmatched_from_dict(u) for u in data.get("unmatched_consumers", [])]
+        in_service = [_unmatched_from_dict(u) for u in data.get("in_service_consumers", [])]
+        by_reason = dict(data.get("unmatched_by_reason", {}))
+        # An artifact written before in-service consumers were split out lists
+        # them as unmatched; move them so every reader sees one shape.
+        in_service += [u for u in unmatched if u.reason == UnmatchedReason.INTERNAL_ONLY]
+        unmatched = [u for u in unmatched if u.reason != UnmatchedReason.INTERNAL_ONLY]
+        by_reason.pop(UnmatchedReason.INTERNAL_ONLY, None)
         return cls(
             total_providers=data.get("total_providers", 0),
             total_consumers=data.get("total_consumers", 0),
@@ -303,29 +505,23 @@ class ExtractionDiagnostics:
                     providers_by_layer=r.get("providers_by_layer", {}),
                     consumers_by_layer=r.get("consumers_by_layer", {}),
                     http_consumers_unresolved=r.get("http_consumers_unresolved", 0),
+                    topic_names_unresolved=r.get("topic_names_unresolved", 0),
                 )
                 for r in data.get("repo_breakdown", [])
             ],
-            unmatched_consumers=[
-                UnmatchedConsumer(
-                    repo=u.get("repo", ""),
-                    file_path=u.get("file_path", ""),
-                    contract_id=u.get("contract_id", ""),
-                    contract_type=u.get("contract_type", ""),
-                    reason=u.get("reason", UnmatchedReason.NO_PROVIDER),
-                )
-                for u in data.get("unmatched_consumers", [])
-            ],
-            unmatched_by_reason=data.get("unmatched_by_reason", {}),
+            unmatched_consumers=unmatched,
+            unmatched_by_reason=by_reason,
             orphan_providers=[
                 OrphanProvider(
                     repo=o.get("repo", ""),
                     file_path=o.get("file_path", ""),
                     contract_id=o.get("contract_id", ""),
                     contract_type=o.get("contract_type", ""),
+                    other_files=list(o.get("other_files", [])),
                 )
                 for o in data.get("orphan_providers", [])
             ],
+            in_service_consumers=in_service,
             providers_by_layer=data.get("providers_by_layer", {}),
             consumers_by_layer=data.get("consumers_by_layer", {}),
             http_consumers_unresolved=data.get("http_consumers_unresolved", 0),
@@ -353,7 +549,22 @@ class ExtractionDiagnostics:
                 consumers=code.get("consumers", 0),
                 linked_providers=code.get("linked_providers", 0),
             ),
+            openapi=OpenApiCoverage.from_dict(openapi),
+            unrecognised_call_files=data.get("unrecognised_call_files"),
+            http_consumers_linked=data.get("http_consumers_linked"),
+            topic_names_unresolved=data.get("topic_names_unresolved", 0),
+            unrecognised_message_files=data.get("unrecognised_message_files"),
         )
+
+
+def _unmatched_from_dict(u: dict[str, Any]) -> UnmatchedConsumer:
+    return UnmatchedConsumer(
+        repo=u.get("repo", ""),
+        file_path=u.get("file_path", ""),
+        contract_id=u.get("contract_id", ""),
+        contract_type=u.get("contract_type", ""),
+        reason=u.get("reason", UnmatchedReason.NO_PROVIDER),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -373,13 +584,15 @@ def _classify_unmatched(
     """Return the :class:`UnmatchedReason` for an unmatched *consumer*."""
     if consumer.meta.get("external"):
         return UnmatchedReason.EXTERNAL_HOST
+    if consumer.meta.get(AMBIGUOUS_PROVIDER):
+        return UnmatchedReason.AMBIGUOUS_PROVIDER
     candidates = providers_by_norm_id.get(normalize_contract_id(consumer.contract_id))
     if not candidates:
         return UnmatchedReason.NO_PROVIDER
     # A matching provider exists. If every one shares this consumer's repo AND
     # service boundary, the call is intra-service and was filtered on purpose.
     all_internal = all(
-        p.repo == consumer.repo and p.service == consumer.service for p in candidates
+        same_service(p.repo, p.service, consumer.repo, consumer.service) for p in candidates
     )
     return UnmatchedReason.INTERNAL_ONLY if all_internal else UnmatchedReason.UNLINKED
 
@@ -400,7 +613,11 @@ def build_diagnostics(
     contract. Omitting it costs the coverage figures, not the rest.
     """
     stats_by_repo = extraction_stats or {}
-    providers = [c for c in contracts if c.role == "provider"]
+    matched_consumers, matched_providers, weak_links = _matched_endpoints(links)
+    contracts = _runtime_contracts(contracts, matched_consumers)
+    # A vendored proto copy is counted with its repo's rows, never as an orphan.
+    vendored = shared_idl(contracts)
+    providers = [c for c in contracts if c.role == "provider" and id(c) not in vendored]
     consumers = [c for c in contracts if c.role == "consumer"]
 
     # Per-repo breakdown ----------------------------------------------------
@@ -437,56 +654,23 @@ def build_diagnostics(
                 http_consumers_unresolved=stats_by_repo.get(repo, {}).get(
                     "http_consumer_unresolved", 0
                 ),
+                topic_names_unresolved=stats_by_repo.get(repo, {}).get(
+                    TOPIC_NAMES_UNRESOLVED_STAT, 0
+                ),
             )
         )
-
-    # Matched endpoint sets (normalized) ------------------------------------
-    matched_consumers: set[tuple[str, str, str]] = set()
-    matched_providers: set[tuple[str, str, str]] = set()
-    weak_links = 0
-    for lk in links:
-        matched_consumers.add(_contract_key(lk.consumer_repo, lk.consumer_file, lk.contract_id))
-        matched_providers.add(_contract_key(lk.provider_repo, lk.provider_file, lk.contract_id))
-        if lk.confidence <= WEAK_LINK_CONFIDENCE_THRESHOLD:
-            weak_links += 1
 
     providers_by_norm_id: dict[str, list[Contract]] = defaultdict(list)
     for p in providers:
         providers_by_norm_id[normalize_contract_id(p.contract_id)].append(p)
 
-    # Unmatched consumers, grouped by reason --------------------------------
-    unmatched: list[UnmatchedConsumer] = []
+    unmatched, in_service = _unmatched_consumers(
+        consumers, matched_consumers, providers_by_norm_id
+    )
     by_reason: dict[str, int] = defaultdict(int)
-    for c in consumers:
-        key = _contract_key(c.repo, c.file_path, c.contract_id)
-        if key in matched_consumers:
-            continue
-        reason = _classify_unmatched(c, providers_by_norm_id)
-        by_reason[reason] += 1
-        unmatched.append(
-            UnmatchedConsumer(
-                repo=c.repo,
-                file_path=c.file_path,
-                contract_id=c.contract_id,
-                contract_type=c.contract_type,
-                reason=reason,
-            )
-        )
-
-    # Orphan providers — declared but never consumed ------------------------
-    orphans: list[OrphanProvider] = []
-    for p in providers:
-        key = _contract_key(p.repo, p.file_path, p.contract_id)
-        if key in matched_providers:
-            continue
-        orphans.append(
-            OrphanProvider(
-                repo=p.repo,
-                file_path=p.file_path,
-                contract_id=p.contract_id,
-                contract_type=p.contract_type,
-            )
-        )
+    for u in unmatched:
+        by_reason[u.reason] += 1
+    orphans = _orphan_providers(providers, matched_providers)
 
     identity = {
         role: SymbolIdentity(
@@ -543,6 +727,7 @@ def build_diagnostics(
         unmatched_consumers=unmatched,
         unmatched_by_reason=dict(sorted(by_reason.items())),
         orphan_providers=orphans,
+        in_service_consumers=in_service,
         providers_by_layer=dict(sorted(prov_by_layer_all.items())),
         consumers_by_layer=dict(sorted(cons_by_layer_all.items())),
         # Summed from the stats, not from the per-repo breakdown: a repo whose
@@ -554,4 +739,119 @@ def build_diagnostics(
         symbol_identity=identity,
         schema_coverage=schema,
         code_api=code_api,
+        openapi=OpenApiCoverage.from_stats(stats_by_repo),
+        unrecognised_call_files=_probe_counts(stats_by_repo, UNRECOGNISED_CALL_FILES_STAT),
+        http_consumers_linked=sum(
+            1
+            for c in consumers
+            if c.contract_type == "http"
+            and _contract_key(c.repo, c.file_path, c.contract_id) in matched_consumers
+        ),
+        topic_names_unresolved=sum(
+            s.get(TOPIC_NAMES_UNRESOLVED_STAT, 0) for s in stats_by_repo.values()
+        ),
+        unrecognised_message_files=_probe_counts(stats_by_repo, UNRECOGNISED_MESSAGE_FILES_STAT),
     )
+
+
+def _matched_endpoints(
+    links: list[ContractLink],
+) -> tuple[set[tuple[str, str, str]], set[tuple[str, str, str]], int]:
+    """Normalized (consumer, provider) endpoint keys the links reach, and the weak count."""
+    consumers: set[tuple[str, str, str]] = set()
+    providers: set[tuple[str, str, str]] = set()
+    weak = 0
+    for lk in links:
+        consumer_id = lk.consumer_contract_id or lk.contract_id
+        consumers.add(_contract_key(lk.consumer_repo, lk.consumer_file, consumer_id))
+        providers.add(_contract_key(lk.provider_repo, lk.provider_file, lk.contract_id))
+        if lk.confidence <= WEAK_LINK_CONFIDENCE_THRESHOLD:
+            weak += 1
+    return consumers, providers, weak
+
+
+def _runtime_contracts(
+    contracts: list[Contract], matched_consumers: set[tuple[str, str, str]]
+) -> list[Contract]:
+    """*contracts* less the unlinked consumers in tooling and build files.
+
+    A script polling a dev server is not a call of the running system, so it is
+    left out of every count here, as the network probe leaves those files out
+    of its own. One that linked stays: the link shows it reaches a service.
+    Ceiling: the origin is path-only, so a product folder named ``scripts/``
+    reads as tooling too; a classifier that reads the package layout would
+    narrow it, and it belongs in ``code_origin`` when it comes.
+    """
+    return [
+        c
+        for c in contracts
+        if c.role != "consumer"
+        or _contract_key(c.repo, c.file_path, c.contract_id) in matched_consumers
+        or not outside_runtime(c.file_path)
+    ]
+
+
+def _unmatched_consumers(
+    consumers: list[Contract],
+    matched_consumers: set[tuple[str, str, str]],
+    providers_by_norm_id: dict[str, list[Contract]],
+) -> tuple[list[UnmatchedConsumer], list[UnmatchedConsumer]]:
+    """Consumers that formed no link: (unmatched, served in their own service)."""
+    unmatched: list[UnmatchedConsumer] = []
+    in_service: list[UnmatchedConsumer] = []
+    for c in consumers:
+        key = _contract_key(c.repo, c.file_path, c.contract_id)
+        # A binding is wiring its queue's consumers are matched through, not a call.
+        if key in matched_consumers or c.meta.get("kind") == TOPIC_KIND_BINDING:
+            continue
+        reason = _classify_unmatched(c, providers_by_norm_id)
+        row = UnmatchedConsumer(
+            repo=c.repo,
+            file_path=c.file_path,
+            contract_id=c.contract_id,
+            contract_type=c.contract_type,
+            reason=reason,
+        )
+        (in_service if reason == UnmatchedReason.INTERNAL_ONLY else unmatched).append(row)
+    return unmatched, in_service
+
+
+def _orphan_providers(
+    providers: list[Contract], matched_providers: set[tuple[str, str, str]]
+) -> list[OrphanProvider]:
+    """Providers no consumer reaches, one row per repo, service and id.
+
+    A table declared in a model and again in its migration is one endpoint, so
+    the copies fold into ``other_files``. A group any consumer reached is not
+    an orphan, whichever copy the link landed on.
+    """
+    groups: dict[tuple[str, str | None, str], list[Contract]] = {}
+    for p in providers:
+        key = (p.repo, p.service, normalize_contract_id(p.contract_id))
+        groups.setdefault(key, []).append(p)
+    orphans: list[OrphanProvider] = []
+    for members in groups.values():
+        if any(
+            _contract_key(p.repo, p.file_path, p.contract_id) in matched_providers
+            for p in members
+        ):
+            continue
+        first = members[0]
+        orphans.append(
+            OrphanProvider(
+                repo=first.repo,
+                file_path=first.file_path,
+                contract_id=first.contract_id,
+                contract_type=first.contract_type,
+                other_files=sorted({p.file_path for p in members} - {first.file_path}),
+            )
+        )
+    return orphans
+
+
+def _probe_counts(stats_by_repo: dict[str, dict[str, int]], key: str) -> dict[str, int] | None:
+    """A probe's per-repo counts under *key*, or None when no repo carries one."""
+    counts = {
+        repo: stats[key] for repo, stats in sorted(stats_by_repo.items()) if key in stats
+    }
+    return counts or None

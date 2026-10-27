@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from repowise.core.entry_candidacy import (
     GLUE_STEMS,
+    boots_application,
+    conventional_entry_stems,
     entry_point_depth,
     is_glue_leaf,
     not_an_execution_start,
 )
 from repowise.core.generation.entry_points import (
     entry_point_rank_key,
+    rank_entry_point_paths,
     rank_entry_points,
 )
 
@@ -131,3 +134,85 @@ def test_rank_key_orders_bucket_then_depth_then_centrality():
     conv = entry_point_rank_key("a/app.py", pagerank=0.0, conventional_stems=_CONV)
     glue = entry_point_rank_key("a/index.py", pagerank=1.0, conventional_stems=_CONV)
     assert conv < glue  # conventional name beats central glue regardless
+
+
+def test_manifest_tier_outranks_stem():
+    # A package.json ``bin`` target named ``run-it.ts`` five levels deep beats
+    # a shallow, highly central ``main.py`` and a shallow ``cli.ts`` guess.
+    declared = "packages/tool/src/commands/bin/run-it.ts"
+    candidates = [
+        ("main.py", 0.9, 0.9),
+        ("cli.ts", 0.5, 0.5),
+        (declared, 0.0, 0.0),
+    ]
+    ranked = rank_entry_points(candidates, _CONV, frozenset({declared}))
+    assert ranked[0] == declared
+    assert ranked[1:] == ["main.py", "cli.ts"]
+    # Within the tier the usual rules apply: a declared glue ``index`` sorts
+    # after a declared conventional name.
+    both = frozenset({"pkg/src/index.ts", "pkg/src/cli.ts"})
+    ranked = rank_entry_points(
+        [("pkg/src/index.ts", 0.9, 0.9), ("pkg/src/cli.ts", 0.0, 0.0), ("main.py", 0.0, 0.0)],
+        _CONV,
+        both,
+    )
+    assert ranked == ["pkg/src/cli.ts", "pkg/src/index.ts", "main.py"]
+
+
+def test_entry_stem_not_conventional():
+    # ``entry`` names a keyring's ``class Entry`` as often as a front door: it
+    # ranks neutral. ``run`` is a flag stem (dead-code exempt), never a
+    # ranking stem. Both keep the traverser flag.
+    from repowise.core.ingestion.traverser import _ENTRY_POINT_STEMS
+
+    assert "entry" not in conventional_entry_stems()
+    assert "run" not in conventional_entry_stems()
+    assert {"entry", "run"} <= _ENTRY_POINT_STEMS
+    stems = conventional_entry_stems()
+    ranked = rank_entry_points([("src/entry.ts", 0.9, 0.9), ("src/main.ts", 0.0, 0.0)], stems)
+    assert ranked == ["src/main.ts", "src/entry.ts"]
+    key = entry_point_rank_key("src/entry.ts", conventional_stems=stems)
+    assert key[1] == 1  # neutral name bucket
+
+
+def test_boots_application_reads_every_spring_boot_start():
+    assert boots_application("java", "SpringApplication.run(PetClinicApplication.class, args);")
+    # Fineract's ServerApplication starts through the builder.
+    assert boots_application(
+        "java", "configure(new SpringApplicationBuilder(ServerApplication.class)).run(args);"
+    )
+    assert boots_application("kotlin", "fun main(args: Array<String>) { runApplication<App>(*args) }")
+    assert boots_application("java", "@SpringBootApplication\npublic class App {}")
+
+
+def test_boots_application_ignores_mentions_and_other_languages():
+    # A comment naming the method, a Javadoc link, and a servlet initializer's
+    # ``configure(SpringApplicationBuilder builder)`` start nothing.
+    assert not boots_application("java", "// SpringApplication.run(String...) does a System.exit")
+    assert not boots_application("java", "/** See {@link SpringBootApplication}. */")
+    assert not boots_application("java", "SpringApplicationBuilder configure(SpringApplicationBuilder b)")
+    assert not boots_application("python", "SpringApplication.run(App.class, args)")
+
+
+def test_declared_entry_outranks_a_conventional_stem():
+    paths = ["lib/misc/Main.java", "provider/src/main/java/org/acme/ServerApplication.java"]
+    declared = frozenset({"provider/src/main/java/org/acme/ServerApplication.java"})
+    assert rank_entry_point_paths(paths, declared) == [
+        "provider/src/main/java/org/acme/ServerApplication.java",
+        "lib/misc/Main.java",
+    ]
+
+
+def test_example_entries_rank_after_the_systems_own():
+    # ``main`` is a conventional stem and ``ServerApplication`` is not, but a
+    # sample demonstrates the system rather than starting it.
+    paths = ["generator/examples/Main.java", "src/org/acme/ServerApplication.java"]
+    assert rank_entry_point_paths(paths) == [
+        "src/org/acme/ServerApplication.java",
+        "generator/examples/Main.java",
+    ]
+    declared = frozenset({"samples/app/App.java"})
+    assert rank_entry_point_paths(["samples/app/App.java", "src/cli.py"], declared) == [
+        "src/cli.py",
+        "samples/app/App.java",
+    ]

@@ -136,7 +136,7 @@ export async function updatePageNotes(
  */
 export async function regeneratePage(
   pageId: string,
-  opts?: { cascade?: GenerateCascade; style?: string },
+  opts?: { cascade?: GenerateCascade; style?: string; repoId?: string },
 ): Promise<JobLaunchResponse> {
   return apiPost<JobLaunchResponse>(
     "/api/pages/lookup/regenerate",
@@ -144,6 +144,7 @@ export async function regeneratePage(
     undefined,
     {
       page_id: pageId,
+      ...(opts?.repoId ? { repo_id: opts.repoId } : {}),
       ...(opts?.cascade ? { cascade: opts.cascade } : {}),
       ...(opts?.style ? { style: opts.style } : {}),
     },

@@ -42,13 +42,16 @@ language tag.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from .cohesion import OWN_TYPE_NAME_HINT, withdraw_declaration_hint
 from .models import ParsedFile
+from .symbol_identity import symbol_id_path
 
 if TYPE_CHECKING:
     import networkx as nx
@@ -94,6 +97,79 @@ def _build_defined_name_index(graph: nx.DiGraph) -> dict[str, set[str]]:
         if name is not None:
             index.setdefault(src, set()).add(name)
     return index
+
+
+def _stamp_local_type_uses(graph: nx.DiGraph, from_path: str, names: set[str]) -> None:
+    """Record type names a file references from its own declarations.
+
+    No self-loop edge is emitted for them, so the dead-code analyzer reads this
+    node attribute instead to see a type used only inside its own file as live.
+    """
+    if not names or not graph.has_node(from_path):
+        return
+    existing = graph.nodes[from_path].get("local_type_uses")
+    if existing is None:
+        graph.nodes[from_path]["local_type_uses"] = set(names)
+    else:
+        existing.update(names)
+
+
+# Languages whose compilers bind a bare type name to a type the referencing
+# file declares (top-level or nested) before any same-package, same-namespace
+# or imported type of that name. A JVM policy class with its own nested
+# ``Node`` means that ``Node``, never a sibling's; a Kotlin ``expect class`` and
+# its platform ``actual`` each name their own declaration; a C# class naming
+# itself means itself, not a same-named class in another project. The
+# strategies below resolve such names to another file anyway, which minted
+# edges in both directions between files that never name each other.
+#
+# Those edges are only kept out of cycle detection (see :data:`OWN_TYPE_NAME_HINT`):
+# call resolution and dead code read them as scope, and dropping them moved
+# call edges onto worse candidates. Upgrade path: resolve own names to the file
+# itself in every strategy once call resolution no longer leans on them.
+_OWN_TYPE_FIRST_LANGUAGES: frozenset[str] = frozenset({"java", "kotlin", "csharp"})
+
+# Symbol kinds that declare a type name. Properties and fields are left out on
+# purpose: C#'s ``public Color Color { get; }`` names the type ``Color`` from
+# another file through a member of the same name.
+_TYPE_DECLARATION_KINDS: frozenset[str] = frozenset(
+    {"class", "interface", "enum", "struct", "trait", "type_alias"}
+)
+
+
+def _mark_own_name_edges(parsed: ParsedFile, graph: nx.DiGraph) -> None:
+    """Stamp each ``type_use`` edge whose every type name *parsed* declares itself.
+
+    Such an edge carries no reference the file could not satisfy on its own,
+    so it cannot close a dependency cycle. An edge with one name the file does
+    not declare is real evidence and is left alone.
+    """
+    own = {s.name for s in parsed.symbols if s.name and s.kind in _TYPE_DECLARATION_KINDS}
+    src = parsed.file_info.path
+    if not own or not graph.has_node(src):
+        return
+    for _, _, data in graph.out_edges(src, data=True):
+        if _names_only_own_types(data, own):
+            data["hint_source"] = OWN_TYPE_NAME_HINT
+
+
+def _names_only_own_types(data: dict[str, Any], own: set[str]) -> bool:
+    """An unstamped ``type_use`` edge whose type names are all in *own*."""
+    if data.get("edge_type") != "type_use" or "hint_source" in data:
+        return False
+    names = data.get("type_uses")
+    return bool(names) and own.issuperset(names)
+
+
+# Language families a type name can resolve into by file name. A stem match
+# outside the family is a coincidence of names, never a definition.
+_TS_TYPE_LANGUAGES: frozenset[str] = frozenset({"typescript", "javascript", "vue", "svelte"})
+_C_TYPE_LANGUAGES: frozenset[str] = frozenset({"c", "cpp"})
+
+
+def _node_language_in(graph: nx.DiGraph, node: str, languages: frozenset[str]) -> bool:
+    """Whether *node* is a graph file written in one of *languages*."""
+    return graph.has_node(node) and graph.nodes[node].get("language") in languages
 
 
 # ---------------------------------------------------------------------------
@@ -265,8 +341,16 @@ def _find_rust_type_file(
         if type_name in defined_names.get(imp_file, _EMPTY_NAMES):
             return imp_file, False
 
+    # The stem match is Rust-only for the reason the unique-owner index below
+    # states: the stem map spans every language, so a type named ``Tool``
+    # matched ``Tool.tsx`` and a ``Meta`` matched a ``meta.json``.
     candidates = ctx.stem_map.get(type_name.lower(), [])
-    if len(candidates) == 1 and candidates[0] != from_path and graph.has_node(candidates[0]):
+    if (
+        len(candidates) == 1
+        and candidates[0] != from_path
+        and graph.has_node(candidates[0])
+        and graph.nodes[candidates[0]].get("language") == "rust"
+    ):
         return candidates[0], True
 
     owner = _rust_unique_owner_index(graph, defined_names).get(type_name)
@@ -356,12 +440,7 @@ def _resolve_go_type_refs(
         if name in defined_names.get(from_path, _EMPTY_NAMES):
             same_file_refs.add(name)
 
-    if same_file_refs and graph.has_node(from_path):
-        existing = graph.nodes[from_path].get("local_type_uses")
-        if existing is None:
-            graph.nodes[from_path]["local_type_uses"] = same_file_refs
-        else:
-            existing.update(same_file_refs)
+    _stamp_local_type_uses(graph, from_path, same_file_refs)
 
     return emitted
 
@@ -498,12 +577,7 @@ def _resolve_c_type_refs(
                                     type_name=name, origin=ref.origin)
         emitted += 1
 
-    if same_file_refs and graph.has_node(from_path):
-        existing = graph.nodes[from_path].get("local_type_uses")
-        if existing is None:
-            graph.nodes[from_path]["local_type_uses"] = same_file_refs
-        else:
-            existing.update(same_file_refs)
+    _stamp_local_type_uses(graph, from_path, same_file_refs)
 
     return emitted
 
@@ -533,8 +607,13 @@ def _find_c_type_file(
         if type_name in defined_names.get(sib, _EMPTY_NAMES):
             return sib
 
+    # Same language family only: the stem map spans every language.
     candidates = ctx.stem_map.get(type_name.lower(), [])
-    if len(candidates) == 1 and candidates[0] != from_path and graph.has_node(candidates[0]):
+    if (
+        len(candidates) == 1
+        and candidates[0] != from_path
+        and _node_language_in(graph, candidates[0], _C_TYPE_LANGUAGES)
+    ):
         return candidates[0]
 
     return None
@@ -561,8 +640,9 @@ def _resolve_ts_type_refs(
            ``resolved_file`` is the answer.
         2. ``import * as ns from './x'``    — ``ns.Foo`` strips to ``Foo``;
            the namespace alias points at the module.
-        3. Stem-map fallback                — unique global file whose
-           basename matches the type name; matches Rust's strategy.
+        3. Stem-map fallback                — unique global TS/JS file whose
+           basename matches the type name; matches Rust's strategy. A name
+           bound by a package import never reaches this step.
         4. Same-file definitions are skipped silently (no edge needed).
 
     This emits ``type_use`` edges at file granularity — the dead-code
@@ -579,8 +659,15 @@ def _resolve_ts_type_refs(
     name_to_source: dict[str, str] = {}
     # alias -> resolved_file for namespace / module imports.
     namespace_to_source: dict[str, str] = {}
+    # Names bound by a package import (``import { type Dispatch } from
+    # "react"``). Their definition is outside the repo, so a repo file with a
+    # matching name is never the answer.
+    external_names: set[str] = set()
     for imp in parsed.imports:
-        if not imp.resolved_file or imp.resolved_file.startswith("external:"):
+        if not imp.resolved_file:
+            continue
+        if imp.resolved_file.startswith("external:"):
+            external_names.update(b.local_name for b in imp.bindings)
             continue
         for binding in imp.bindings:
             if binding.local_name == "*":
@@ -612,6 +699,12 @@ def _resolve_ts_type_refs(
             same_file_refs.add(name)
             continue
         target = name_to_source.get(name) or namespace_to_source.get(name)
+        if target is None and name in external_names:
+            continue
+        if target is None:
+            target = _find_unique_ambient_declaration(
+                name, from_path, graph, defined_names, ctx
+            )
         if target is None:
             target = _find_ts_type_in_stem_map(
                 name, from_path, ctx, graph, defined_names
@@ -628,14 +721,83 @@ def _resolve_ts_type_refs(
         )
         emitted += 1
 
-    if same_file_refs and graph.has_node(from_path):
-        existing = graph.nodes[from_path].get("local_type_uses")
-        if existing is None:
-            graph.nodes[from_path]["local_type_uses"] = same_file_refs
-        else:
-            existing.update(same_file_refs)
+    _stamp_local_type_uses(graph, from_path, same_file_refs)
 
     return emitted
+
+
+def _find_unique_ambient_declaration(
+    type_name: str,
+    from_path: str,
+    graph: nx.DiGraph,
+    defined_names: dict[str, set[str]],
+    ctx: ResolverContext,
+) -> str | None:
+    """Resolve an unimported type from one ambient ``.d.ts`` owner."""
+    owners_by_name = getattr(ctx, "_ts_ambient_type_owners", None)
+    if owners_by_name is None:
+        owners_by_name: dict[str, list[str]] = {}
+        for path, names in defined_names.items():
+            if not path.endswith(".d.ts") or not graph.has_node(path):
+                continue
+            ambient_names = _ambient_declaration_names(path, names, ctx)
+            for name in ambient_names:
+                owners_by_name.setdefault(name, []).append(path)
+        ctx.__dict__["_ts_ambient_type_owners"] = owners_by_name
+    owners = [path for path in owners_by_name.get(type_name, ()) if path != from_path]
+    return owners[0] if len(owners) == 1 else None
+
+
+def _ambient_declaration_names(
+    path: str, defined_names: set[str], ctx: ResolverContext
+) -> set[str]:
+    """Names declared globally in a script or a module's ``declare global``."""
+    parsed = (ctx.parsed_files or {}).get(path)
+    if parsed is None:
+        return set()
+    has_module_syntax = bool(parsed.imports or parsed.exports)
+    if not has_module_syntax:
+        return set(defined_names)
+    raw = (ctx.source_map or {}).get(path)
+    if raw is None:
+        try:
+            raw = Path(parsed.file_info.abs_path).read_bytes()
+        except OSError:
+            return set()
+    try:
+        import tree_sitter_typescript as ts
+        from tree_sitter import Language, Parser
+
+        source = raw.decode("utf-8", errors="replace")
+        root = Parser(Language(ts.language_typescript())).parse(raw).root_node
+        encoded = source.encode("utf-8")
+    except Exception:
+        return set()
+    global_names: set[str] = set()
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if node.type == "ambient_declaration":
+            prefix = encoded[node.start_byte : min(node.end_byte, node.start_byte + 40)]
+            if re.match(rb"declare\s+global\b", prefix):
+                global_names |= _declared_names_under(node, encoded, defined_names)
+        stack.extend(node.children)
+    return global_names
+
+
+def _declared_names_under(node: Any, encoded: bytes, defined_names: set[str]) -> set[str]:
+    """Names in ``defined_names`` declared anywhere under ``node``."""
+    found: set[str] = set()
+    nested = [node]
+    while nested:
+        declaration = nested.pop()
+        name = declaration.child_by_field_name("name")
+        if name is not None:
+            type_name = encoded[name.start_byte : name.end_byte].decode("utf-8", errors="replace")
+            if type_name in defined_names:
+                found.add(type_name)
+        nested.extend(declaration.children)
+    return found
 
 
 def _find_ts_type_in_stem_map(
@@ -658,6 +820,10 @@ def _find_ts_type_in_stem_map(
         return None
     candidate = candidates[0]
     if candidate == from_path:
+        return None
+    # The stem map spans every language: ``React.Dispatch`` matched a Python
+    # ``dispatch.py`` that defines a ``Dispatch`` class.
+    if not _node_language_in(graph, candidate, _TS_TYPE_LANGUAGES):
         return None
     # Verify the candidate file actually exports a symbol matching name —
     # avoids accidentally matching ``utils.ts`` to a type called ``Utils``.
@@ -754,6 +920,58 @@ def _find_jvm_type_file(
 
 
 # ---------------------------------------------------------------------------
+# Strategy: Apex
+# ---------------------------------------------------------------------------
+
+def _resolve_apex_type_refs(
+    parsed: ParsedFile,
+    ctx: ResolverContext,
+    graph: nx.DiGraph,
+    defined_names: dict[str, set[str]],
+) -> int:
+    """Resolve Apex type references to the type the caller's project declares.
+
+    Apex has no imports: a type name is a top-level class of the file's own
+    sfdx project, compared without case (see ``languages.apex_namespace``).
+    A name the file declares itself is its own, and draws no edge. The edges
+    do not widen call scope: Apex calls bind through the project namespace
+    in the call resolver, never through a file a type was read from.
+    """
+    if not parsed.type_refs or ctx.parsed_files is None:
+        return 0
+    index = _apex_namespaces(ctx)
+    from_path = parsed.file_info.path
+    # Names the file declares itself, then each name already linked.
+    skip = {s.name.lower() for s in parsed.symbols if s.kind in _TYPE_DECLARATION_KINDS}
+    emitted = 0
+    for ref in parsed.type_refs:
+        name = ref.type_name
+        if not name or name.lower() in skip:
+            continue
+        skip.add(name.lower())
+        type_id = index.top_level_type(from_path, name)
+        target = symbol_id_path(type_id) if type_id else from_path
+        if target == from_path or not graph.has_node(target):
+            continue
+        _add_or_merge_type_use_edge(
+            graph, src=from_path, dst=target, type_name=name, origin=ref.origin, widens_scope=False
+        )
+        emitted += 1
+    return emitted
+
+
+def _apex_namespaces(ctx: ResolverContext) -> Any:
+    """The ApexNamespaces index, built once per resolver context."""
+    index = getattr(ctx, "_apex_namespaces", None)
+    if index is None:
+        from .languages.apex_namespace import build_apex_namespaces
+
+        index = build_apex_namespaces(ctx.parsed_files)
+        ctx._apex_namespaces = index  # type: ignore[attr-defined]
+    return index
+
+
+# ---------------------------------------------------------------------------
 # Strategy registry
 # ---------------------------------------------------------------------------
 
@@ -774,6 +992,7 @@ _STRATEGIES: dict[str, Strategy] = {
     "javascript": _resolve_ts_type_refs,
     "java": _resolve_jvm_type_refs,
     "kotlin": _resolve_jvm_type_refs,
+    "apex": _resolve_apex_type_refs,
 }
 
 
@@ -794,6 +1013,8 @@ def resolve_type_refs(
         if strategy is None:
             continue
         emitted = strategy(parsed, ctx, graph, defined_names)
+        if lang in _OWN_TYPE_FIRST_LANGUAGES:
+            _mark_own_name_edges(parsed, graph)
         if emitted:
             counts[lang] = counts.get(lang, 0) + emitted
     if counts:
@@ -852,6 +1073,7 @@ def _add_or_merge_type_use_edge(
         # are genuinely import-linked however the earlier references were found.
         if widens_scope:
             data.pop("no_scope_widening", None)
+        withdraw_declaration_hint(data)
         return
     attrs: dict[str, Any] = {
         "edge_type": "type_use",

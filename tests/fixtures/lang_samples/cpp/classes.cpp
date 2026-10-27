@@ -1,7 +1,7 @@
 // Fixtures for class-level (LCOM4 / god-class) walker tests.
 //
 // Uses explicit `this->` so the member-access node type is exercised; bare
-// member access (idiomatic C++) is the documented "no signal" path.
+// member access is covered in tests/unit/health/test_implicit_member_cohesion.py.
 
 class Cohesive {
     int total;

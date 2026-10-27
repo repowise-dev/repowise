@@ -3,6 +3,7 @@ import type {
   PerformanceOpportunity,
   PerformanceOpportunityDetail,
   PerformanceOpportunityPage,
+  PerformanceOpportunitySibling,
 } from "@repowise-dev/types/health";
 
 import type { PerformanceViewAdapter } from "../../../src/health/performance/adapter";
@@ -14,6 +15,18 @@ import type { PerformanceViewAdapter } from "../../../src/health/performance/ada
  * evidence preview, or a context with no rows has to be reachable on demand,
  * and a live index only offers whatever it happens to hold.
  */
+
+export function sibling(
+  overrides: Partial<PerformanceOpportunitySibling> = {},
+): PerformanceOpportunitySibling {
+  return {
+    opportunity_id: "perf2_sibling",
+    biomarker_type: "nested_loop_with_io",
+    strategy: "batch_or_prefetch_io",
+    relation: "preferred",
+    ...overrides,
+  };
+}
 
 export function opportunity(
   overrides: Partial<PerformanceOpportunity> = {},
@@ -33,6 +46,8 @@ export function opportunity(
     affected_call_sites_total: 2,
     affected_files_total: 2,
     observations_total: 6,
+    // Carried on the wire; the queue does not render it yet.
+    lower_priority: null,
     evidence: [
       {
         finding_id: "finding_1111",
@@ -70,12 +85,13 @@ export function opportunity(
       amplification: "per_iteration",
       leverage: "local",
       change_risk: "moderate",
+      loop_magnitude: "grows_with_data",
     },
     actionability_state: "advisory",
     actionability_reason: "strategy_requires_validation",
     prerequisites: ["batch_api_contract"],
     rank_score: 12.5,
-    rank_position: 1,
+    rank_position: 0,
     rank_factors: { boundary_kind: 4 },
     why_ranked: [{ factor: "boundary_kind", value: "db", points: 4 }],
     fix: {
@@ -123,23 +139,24 @@ export function page(overrides: Partial<PerformanceOpportunityPage> = {}): Perfo
         opportunity_id: "perf2_planready",
         actionability_state: "plan_ready",
         actionability_reason: "proven_strategy",
-        rank_position: 1,
+        rank_position: 0,
         confidence: "high",
         fix: {
           strategy: "parallelize_independent_awaits",
           safety: "proven",
           rationale: "Dataflow proves the iterations carry no dependence.",
+          api: "self._sem",
         },
       }),
       opportunity({
         opportunity_id: "perf2_advisory",
         actionability_state: "advisory",
-        rank_position: 2,
+        rank_position: 1,
       }),
       opportunity({
         opportunity_id: "perf2_investigate",
         actionability_state: "investigate",
-        rank_position: 3,
+        rank_position: 2,
         boundary_kind: null,
         terminal_sink: null,
         intervention_symbol: null,
@@ -156,6 +173,13 @@ export function page(overrides: Partial<PerformanceOpportunityPage> = {}): Perfo
     has_more: true,
     next_offset: 3,
     facets: facets(),
+    scopes: { now: 7, production: 10, all: 13 },
+    areas: {
+      depth: 1,
+      total: 7,
+      more: 0,
+      items: [{ area: "src", total: 7, actionability: { investigate: 4, advisory: 2, plan_ready: 1 } }],
+    },
     summary: {
       status: "current",
       total: 7,
@@ -185,11 +209,11 @@ export function legacyPage(): PerformanceOpportunityPage {
 }
 
 export function resolvedDetail(
-  overrides: Partial<Extract<PerformanceOpportunityDetail, { resolved: true }>> = {},
+  overrides: Partial<Extract<PerformanceOpportunityDetail, { found: true }>> = {},
 ): PerformanceOpportunityDetail {
   return {
     ...opportunity({ opportunity_id: "perf2_planready" }),
-    resolved: true,
+    found: true,
     lifecycle_status: "open",
     analyzed_commit: "848a8f180abc",
     model_state: {

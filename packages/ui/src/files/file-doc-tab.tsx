@@ -8,17 +8,22 @@ interface FileDocTabProps {
   wikiPage: FileWikiPageRef | null;
   /** Server-rendered wiki content (the host renders markdown its own way). */
   docSlot?: ReactNode | undefined;
+  /** The repository's own documents naming this file, rendered below the page. */
+  referencesPanel?: ReactNode | undefined;
 }
 
-export function FileDocTab({ wikiPage, docSlot }: FileDocTabProps) {
+export function FileDocTab({ wikiPage, docSlot, referencesPanel }: FileDocTabProps) {
   if (!wikiPage) {
     return (
-      <EmptyState
-        titleAs="h2"
-        icon={<BookOpen className="h-8 w-8" />}
-        title="No documentation page for this file"
-        description="Repowise writes pages for the files that carry a repository's shape. Re-run the index with a wider page budget to bring this one in."
-      />
+      <div className="space-y-6">
+        <EmptyState
+          titleAs="h2"
+          icon={<BookOpen className="h-8 w-8" />}
+          title="No documentation page for this file"
+          description="Repowise writes pages for the files that carry a repository's shape. Re-run the index with a wider page budget to bring this one in."
+        />
+        {referencesPanel}
+      </div>
     );
   }
 
@@ -44,7 +49,7 @@ export function FileDocTab({ wikiPage, docSlot }: FileDocTabProps) {
       )}
 
       {wikiPage.human_notes && (
-        <div className="border-l-2 border-[var(--color-accent-primary)] pl-4">
+        <div className="border-l-2 border-[var(--color-text-tertiary)] pl-4">
           <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
             Team notes
           </p>
@@ -59,7 +64,11 @@ export function FileDocTab({ wikiPage, docSlot }: FileDocTabProps) {
           our tokens, `code::before/::after` prints literal backticks into the
           page, and `prose-invert` is a static class that cannot follow the
           theme. If the markdown needs a style, it gets styled in the renderer. */}
-      <article className="max-w-none overflow-hidden">{docSlot}</article>
+      <article data-chat-selection="" className="max-w-none overflow-hidden">
+        {docSlot}
+      </article>
+
+      {referencesPanel}
     </div>
   );
 }

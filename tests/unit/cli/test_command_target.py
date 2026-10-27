@@ -218,3 +218,109 @@ def test_is_workspace_property(fake_workspace, chdir):
     assert resolve_command_target().is_workspace is True
     chdir(fake_workspace / "backend")
     assert resolve_command_target().is_workspace is False
+
+
+# ---------------------------------------------------------------------------
+# single_repo_path — the narrowing every read-only command needs
+# ---------------------------------------------------------------------------
+
+
+def test_single_repo_path_honours_repo_alias(fake_workspace, chdir):
+    """``--repo`` resolves to workspace mode with ``repo_path`` left None, so a
+    command reading ``repo_path`` directly refuses every ``--repo`` call it
+    advertises. That is the bug this method exists to stop repeating."""
+    chdir(fake_workspace)
+    target = resolve_command_target(repo_alias="frontend")
+
+    assert target.repo_path is None
+    assert target.single_repo_path() == fake_workspace / "frontend"
+
+
+def test_single_repo_path_falls_back_to_the_primary(fake_workspace, chdir):
+    chdir(fake_workspace)
+    assert resolve_command_target().single_repo_path() == fake_workspace / "backend"
+
+
+def test_single_repo_path_passes_a_single_repo_through(fake_workspace, chdir):
+    chdir(fake_workspace / "backend")
+    target = resolve_command_target()
+
+    assert target.single_repo_path() == target.repo_path
+
+
+def test_single_repo_path_refuses_an_unknown_alias(fake_workspace, chdir):
+    chdir(fake_workspace)
+    target = resolve_command_target()
+    object.__setattr__(target, "repo_filter", "nope")
+
+    with pytest.raises(click.ClickException):
+        target.single_repo_path()
+
+
+# ---------------------------------------------------------------------------
+# narrow: the one repo, with the scope said in one line
+# ---------------------------------------------------------------------------
+
+
+def _said(target, **kwargs) -> tuple[Path, str]:
+    from io import StringIO
+
+    from rich.console import Console
+
+    buf = StringIO()
+    picked = target.narrow(Console(file=buf, width=300), command="health", **kwargs)
+    return picked, buf.getvalue()
+
+
+def test_narrow_from_the_root_names_the_primary_not_the_workspace(fake_workspace, chdir):
+    chdir(fake_workspace)
+    picked, said = _said(resolve_command_target())
+
+    assert picked == fake_workspace / "backend"
+    assert said.strip() == (
+        f"[workspace] health reads one repo: backend (primary) of 2 in {fake_workspace.name}; "
+        "pass --repo <alias> for another"
+    )
+
+
+def test_narrow_names_the_picked_alias(fake_workspace, chdir):
+    chdir(fake_workspace)
+    picked, said = _said(resolve_command_target(repo_alias="frontend"))
+
+    assert picked == fake_workspace / "frontend"
+    assert "reads one repo: frontend of 2" in said and "--repo" not in said
+
+
+def test_narrow_hint_matches_a_command_without_repo_option(fake_workspace, chdir):
+    chdir(fake_workspace)
+    _, said = _said(resolve_command_target(), repo_option=False)
+
+    assert "--repo" not in said and "run it inside another member repo" in said
+
+
+def test_narrow_inside_a_member_repo_says_so(fake_workspace, chdir):
+    chdir(fake_workspace / "backend")
+    picked, said = _said(resolve_command_target())
+
+    assert picked == fake_workspace / "backend"
+    # The tag survives Rich markup, and no --workspace promise is made.
+    assert said.strip() == (
+        f"[single-repo] health reads backend, a repo inside workspace {fake_workspace.name}"
+    )
+
+
+def test_narrow_is_silent_for_an_explicit_single_repo(fake_workspace):
+    picked, said = _said(resolve_command_target(path=str(fake_workspace / "backend")))
+
+    assert picked == fake_workspace / "backend" and said == ""
+
+
+def test_decision_json_skips_the_workspace_line(fake_workspace, chdir, capsys):
+    from repowise.cli.commands.decision_cmd import _resolve_decision_repo
+
+    chdir(fake_workspace)
+    picked = _resolve_decision_repo(None, "json", needs_store=False)
+
+    assert picked == fake_workspace / "backend"
+    out, err = capsys.readouterr()
+    assert "reads one repo" not in out + err

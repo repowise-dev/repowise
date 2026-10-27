@@ -20,8 +20,9 @@ models. Specific pricing figures are provided in a separate proposal.
 
 The open-source distribution covers the full developer-experience surface: the five
 intelligence layers, the ten MCP tools, multi-repo workspaces, the local dashboard,
-auto-sync, and auto-generated `CLAUDE.md`. That is everything an engineer or a team
-needs to make their AI coding agents codebase-aware.
+auto-sync, auto-generated `CLAUDE.md`, and change evidence with local policy and
+reports. That is everything an engineer or a team needs to make their AI coding
+agents codebase-aware and to account for what lands.
 
 The commercial license is for organizations that need to roll Repowise out **at
 scale, in a regulated or security-sensitive environment**:
@@ -42,13 +43,13 @@ scale, in a regulated or security-sensitive environment**:
 All of the following ship in `pip install repowise` today, free for internal use.
 
 - **[Five intelligence layers](../layers/INTELLIGENCE_LAYERS.md)**: Graph
-  (tree-sitter AST across 19 languages, two-tier dependency graph, call
+  (tree-sitter AST across 28 languages, two-tier dependency graph, call
   resolution, heritage extraction, Leiden communities, PageRank / betweenness /
   SCC), Git (hotspots, ownership, co-change pairs, bus factor, significant
   commits, contributor profiles, module health), Documentation (a wiki page per
   module and file, freshness scoring, hybrid search), Decision (architectural
   decision records linked to graph nodes, staleness tracking), and Code Health
-  (49 deterministic detectors, 1–10 score per file, coverage ingestion, trend
+  (53 deterministic detectors, 1–10 score per file, coverage ingestion, trend
   alerts). Full detail on each, and what every layer costs to build:
   **[INTELLIGENCE_LAYERS.md](../layers/INTELLIGENCE_LAYERS.md)**.
 - **Zero LLM calls in every analysis layer.** Graph, git, code health, change
@@ -80,12 +81,24 @@ All of the following ship in `pip install repowise` today, free for internal use
 - **Dead-code detection**: pure graph traversal, confidence-tiered, framework-aware
   (ASP.NET, Django, FastAPI, Flask, Rails, Laravel), dynamic-import aware.
 - **Test intelligence, from a coverage report and from the call graph.** Ingests
-  LCOV / Cobertura / Clover like a coverage service, then does the half a coverage
-  service structurally cannot: answers *which tests reach this file* and *which
-  tests does this diff exercise* **with no report at all**, at **95.7% and 97.5%
-  precision** measured against a real `coverage run --contexts=test`. Measured and
-  inferred rows are labelled and never averaged. Zero LLM calls, no CI integration.
+  LCOV / Cobertura / Clover / JaCoCo / Go coverprofile like a coverage service,
+  then does the half a coverage service structurally cannot: answers *which
+  tests reach this file* and *which tests does this diff exercise* **with no
+  report at all**, at **97.7% precision** on the files tests call into (against the
+  unit suite's coverage) and **97.5%** on the tests to run (against per-test coverage). Measured and inferred rows are labelled and
+  never averaged. Zero LLM calls, no CI integration needed.
   ([TEST_INTELLIGENCE.md](../layers/TEST_INTELLIGENCE.md))
+- **Change evidence and governance**: Change Records with an evidence checklist
+  and outcomes, `repowise suspects`, Backstage-shaped components with declared
+  owners compared against recent activity, local change policy (`repowise check`,
+  SARIF and JUnit), assessment, change and inventory reports, and package usage
+  with a CycloneDX 1.6 export. ([CHANGES.md](../layers/CHANGES.md),
+  [COMPONENTS.md](../layers/COMPONENTS.md), [POLICY.md](../layers/POLICY.md),
+  [REPORTS.md](../layers/REPORTS.md))
+- **Scoped access and plugin seams**: REST, MCP over HTTP and webhooks resolve
+  each caller to a principal scoped to repositories and tools, with hashed,
+  expiring tokens. Authentication, team directory, change metadata, event
+  delivery and report sections are named seams a plugin can fill.
 - **Privacy** (self-hosted): source never leaves your infrastructure, BYOK or fully
   offline via Ollama. Anonymous, opt-out usage telemetry (command names and coarse
   environment only, never code, paths or repo names) can be turned off with
@@ -99,22 +112,26 @@ All of the following ship in `pip install repowise` today, free for internal use
 
 ## 3. First-class language coverage
 
-Repowise parses **19 languages to a full AST** and places **35 on a five-rung
+Repowise parses **28 languages to a full AST** and places **42 on a five-rung
 ladder**, so "do you support X" gets the rung as its answer rather than a yes or a
 no. Both numbers matter and neither is worth quoting alone.
 
-The 19 are the top three rungs. At **Full tier sit 13** (Python, TypeScript,
-JavaScript, Svelte, Vue, Java, Kotlin, Go, Rust, C++, **C#**, Scala, and Ruby) with
+The 28 are the top three rungs. At **Full tier sit 15** (Python, TypeScript,
+JavaScript, Svelte, Vue, Astro, Java, Kotlin, Go, Rust, C++, **C#**, Scala, Ruby and
+Salesforce Apex) with
 AST parsing, import resolution, named bindings, call resolution, heritage
 extraction, multi-project workspace resolvers, framework-aware edges, per-language
-dynamic-hint extractors, and code-health markers. A further **5 at Good tier** (C,
-Swift, PHP, Dart, Object Pascal/Delphi) get all of that except the full health
-suite, and Luau is partial. SQL/dbt, shell, HTML, and the config formats are
+dynamic-hint extractors, and code-health markers. A further **11 at Good tier** (C,
+Swift, PHP, Dart, Object Pascal/Delphi, COBOL, GDScript, VB.NET, Elixir, F#,
+Objective-C) get most of that without the full health suite. COBOL resolves
+literal `CALL` and local `PERFORM` targets but not copybooks or dynamic calls;
+GDScript and F# also lack framework edges and named bindings. Luau
+and Razor/Blazor are partial. SQL/dbt, shell, HTML, and the config formats are
 handled by dedicated extractors on top of that.
 
-Below the AST line the ladder continues rather than stopping: **7 at Lightweight**
-(Elixir, Clojure, Haskell, Lean 4, Erlang, F#, HTML) get a real file-to-file import
-graph with no symbol-level claims, and **9 at Structural** (Objective-C, R, Zig,
+Below the AST line the ladder continues rather than stopping: **6 at Lightweight**
+(Clojure, Haskell, Lean 4, Erlang, HTML, QML) get a real file-to-file import
+graph with no symbol-level claims, and **8 at Structural** (R, Zig,
 Julia, Elm, OCaml, Crystal, Nim, D) get the git intelligence layer only: blame,
 hotspots, co-change, ownership and bug history, with no parsing. Stating the rung
 per language is deliberate, because a support claim that averages these together
@@ -122,9 +139,9 @@ would not survive a technical evaluation. Full ladder:
 [LANGUAGE_SUPPORT.md](../layers/LANGUAGE_SUPPORT.md).
 
 **Languages are never gated.** Every one of them ships in the AGPL distribution,
-including the ones still climbing. What is on the way up, **COBOL** among them,
-is on the public [roadmap](../../ROADMAP.md#languages). Where you need a language
-or framework that is not there, §5.4 covers having it built and maintained by us
+including the ones still climbing. COBOL now ships at the Good tier; remaining
+work is on the public [roadmap](../../ROADMAP.md#languages). Where you need a language
+or framework that is not there, §5.5 covers having it built and maintained by us
 as a commercial line item, and the result still ships to everyone under AGPL.
 
 For estates built on a particular stack, the relevant Full-tier capabilities are
@@ -143,7 +160,7 @@ worth calling out. For **.NET**, as one example:
 The same depth exists for the other Full-tier languages. The language pipeline is
 modular by design; adding or deepening a language touches per-language subpackages,
 not the parser core, which is what makes the **custom language / framework
-extensions** in §5.4 a tractable commercial offering.
+extensions** in §5.5 a tractable commercial offering.
 
 ---
 
@@ -156,7 +173,7 @@ the items that matter most to you can be prioritized.
 
 | Capability | Open Source (AGPL) | Commercial License |
 |------------|:------------------:|:------------------:|
-| Five intelligence layers | ✅ | ✅ |
+| Five foundational intelligence layers plus derived ones (change risk, tests, bug history, security, dead code) | ✅ | ✅ |
 | Ten task-shaped MCP tools (plus `list_repos`) | ✅ | ✅ |
 | Multi-repo workspaces | ✅ | ✅ |
 | Full-tier language support (incl. C# / .NET) | ✅ | ✅ |
@@ -165,6 +182,15 @@ the items that matter most to you can be prioritized.
 | Auto-generated CLAUDE.md | ✅ | ✅ |
 | Test intelligence (coverage ingestion **and** the graph-inferred test map) | ✅ | ✅ |
 | Local full-history secret scan (`repowise security scan --history`) | ✅ | ✅ |
+| Local CI security gate on a change (`repowise security check`, SARIF output, committed baseline) | ✅ | ✅ |
+| Change Records, evidence checklist and suspects | ✅ | ✅ |
+| Local change policy in CI (`repowise check`, SARIF / JUnit) | ✅ | ✅ |
+| Components, declared vs active owners, component events | ✅ | ✅ |
+| Assessment, change evidence and inventory reports | ✅ | ✅ |
+| Package usage with CycloneDX 1.6 usage export | ✅ | ✅ |
+| Scoped tokens for REST, MCP HTTP and webhooks; plugin seams | ✅ | ✅ |
+| Central policy management, org-wide enforcement, approvals and policy audit | — | ✅ *(planned)* |
+| Foresight: learned fix localization, forgotten files, tests to update, learned health | — | ✅ *(waitlist, [FORESIGHT.md](FORESIGHT.md))* |
 | Graph-aware enhanced security scanning | — | ✅ *(GA on hosted)* |
 | Language-specific security rulesets | — | ✅ *(dev)* |
 | CVE-aware dependency analysis (KEV / EPSS / priority-scored) | — | ✅ *(GA on hosted)* |
@@ -175,7 +201,8 @@ the items that matter most to you can be prioritized.
 | Compliance reporting (PCI-DSS / SOC 2) | — | ✅ *(GA on hosted, Teams)* |
 | Audit trail (in-product + JSON / CSV export + webhook stream) | — | ✅ *(GA on hosted, security surface)* |
 | Jira / Confluence integration | — | ✅ *(GA on hosted, Teams)* |
-| GitHub Enterprise / Azure DevOps / GitLab / Bitbucket | — | ✅ *(rolling out)* |
+| GitLab.com repositories (connect, add projects, sync on push) | — | ✅ *(GA on hosted)* |
+| GitHub Enterprise / Azure DevOps / GitLab self-managed / Bitbucket | — | ✅ *(rolling out)* |
 | Slack / Teams security alerting (signed webhooks) | — | ✅ *(GA on hosted, Teams)* |
 | SAML / OIDC SSO + SCIM | — | ✅ *(rolling out)* |
 | RBAC + multi-tenant | — | ✅ *(planned)* |
@@ -278,7 +305,9 @@ integrations beyond this list are available on request.
   page, updated in place and never duplicated; every page carries a link-back and
   a freshness banner stating the exact source commit, with an explicit stale
   warning when the snapshot trails the repository head.
-- **GitHub Enterprise / Azure DevOps / GitLab / Bitbucket**: managed webhooks, a
+- **GitLab.com** *(available on the hosted platform)*: connect a GitLab account,
+  add projects, and keep them current on every push or through polling.
+- **GitHub Enterprise / Azure DevOps / GitLab self-managed / Bitbucket**: managed webhooks, a
   PR-comment bot that posts blast-radius and reviewer suggestions, and a
   branch-protection check that blocks merges touching hotspots without a reviewer
   from the ownership list.
@@ -311,11 +340,22 @@ presentation and policy layer is what's rolling out commercially.
 - **Cross-repo intelligence at scale** *(dev)*: hotspots, dead code, and ownership
   across the entire estate with centralized dashboards (beyond the local-workspace
   scope already shipping in OSS).
-- **Custom decision policies** *(planned)*: required-reviewer rules, mandatory
-  `get_why` checks for governed paths, and merge-gating policies tied to Repowise
-  findings.
+- **Organisation-wide change policy** *(planned)*: policy authoring and local or
+  CI evaluation ship in open source today (`.repowise/policies.yaml` and
+  `repowise check`). The commercial layer adds central policy management,
+  organisation-wide enforcement across repositories, approval workflows and a
+  policy audit trail.
 
-### 5.4 Enterprise Operations
+### 5.4 Foresight *(waitlist)*
+
+Learned models, trained on years of public open-source history, that read the
+index to predict what a piece of work will need: the files and functions a fix
+will touch, the file a change forgot, the tests to update, and a health signal
+with learned weights. No LLM, CPU only, local inference, so it runs self-hosted or
+air-gapped, and it never trains on customer code. Measured results and the
+waitlist: [FORESIGHT.md](FORESIGHT.md).
+
+### 5.5 Enterprise Operations
 
 - **Role-based access control** *(planned)*: repo-, module-, and decision-level
   permissions; SCIM group mapping.
@@ -364,8 +404,10 @@ an in-memory NetworkX graph. The LLM provider and the git server sit alongside
 Repowise in the same network boundary; no outbound connectivity is required in
 air-gapped mode.
 
-**Indexing:** the graph, git, dead-code, and code-health layers build in minutes with
-zero LLM calls (`repowise init --no-prose`); the documentation layer's one-time
+**Indexing:** the graph, git, dead-code, and code-health layers build with zero LLM
+calls (`repowise init --no-prose`), about 20 minutes for a 1.5M-line repository and
+two hours for a 15M-line one on a single laptop
+([scale](../BENCHMARKS.md#scale)); the documentation layer's one-time
 wiki generation scales with repo size and can run in the background. Incremental
 updates after each commit complete in under 30 seconds.
 

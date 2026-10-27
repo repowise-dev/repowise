@@ -109,6 +109,68 @@ def test_trace_uses_dispatch_edges_and_rejects_unreliable_origins():
     ]
 
 
+def _mention_chain(extra_edge_type: str | None, **extra_attrs) -> nx.DiGraph:
+    """main -> load -> parse, with an optional non-call out-edge from parse."""
+    g = nx.DiGraph()
+    for nid, nm in [
+        ("app.py::main", "main"),
+        ("app.py::load", "load"),
+        ("app.py::parse", "parse"),
+        ("app.py::HANDLERS", "HANDLERS"),
+    ]:
+        _sym(g, nid, nm)
+    g.add_edge(
+        "app.py::main",
+        "app.py::load",
+        edge_type="calls",
+        confidence=1.0,
+        resolution_origin="import",
+    )
+    g.add_edge(
+        "app.py::load",
+        "app.py::parse",
+        edge_type="calls",
+        confidence=1.0,
+        resolution_origin="same_file",
+    )
+    if extra_edge_type is not None:
+        g.add_edge(
+            "app.py::parse",
+            "app.py::HANDLERS",
+            edge_type=extra_edge_type,
+            confidence=extra_attrs.get("confidence", 1.0),
+            resolution_origin=extra_attrs.get("resolution_origin", "same_file"),
+        )
+    return g
+
+
+def test_mention_out_edges_terminate_as_no_callees():
+    """references / type_use are mentions, not declined execution successors."""
+    for edge_type in (None, "references", "type_use"):
+        report = trace_execution_flows(
+            _mention_chain(edge_type), {}, FlowConfig(min_flow_depth=1, min_fan_out=1)
+        )
+        flow = next(f for f in report.flows if f.entry_point_id == "app.py::main")
+        assert flow.termination == "no_callees"
+        assert flow.termination_detail == {}
+
+
+def test_weak_call_successor_still_confidence_filtered():
+    """A real calls edge below the floor, or with an unreliable origin, is filtered."""
+    for attrs, origin in [
+        ({"confidence": 0.4, "resolution_origin": "same_file"}, "same_file"),
+        ({"confidence": 1.0, "resolution_origin": "global_unique"}, "global_unique"),
+    ]:
+        report = trace_execution_flows(
+            _mention_chain("calls", **attrs),
+            {},
+            FlowConfig(min_flow_depth=1, min_fan_out=1),
+        )
+        flow = next(f for f in report.flows if f.entry_point_id == "app.py::main")
+        assert flow.termination == "confidence_filtered"
+        assert flow.termination_detail == {origin: 1}
+
+
 def test_min_flow_depth_filters_trivial_flows():
     """A lone single-call entry point is not reported as a flow by default."""
     g = nx.DiGraph()

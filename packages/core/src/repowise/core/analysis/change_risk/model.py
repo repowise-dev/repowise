@@ -120,6 +120,18 @@ class ChangeRisk:
             key=lambda d: -abs(d.contribution),
         )
 
+    @property
+    def top_driver(self) -> RiskDriver | None:
+        """The shown driver that raised the score most; ``None`` when none raised it.
+
+        "Shown" is what a breakdown renders: reportable drivers with a known
+        value. The strongest by absolute size can be one that *lowered* the
+        score, which is no answer to "what drove this risk".
+        """
+        shown = [d for d in self.top_drivers if d.value is not None]
+        best = max(shown, key=lambda d: d.contribution, default=None)
+        return best if best is not None and best.contribution > 0 else None
+
 
 def _sigmoid(z: float) -> float:
     if z >= 0:

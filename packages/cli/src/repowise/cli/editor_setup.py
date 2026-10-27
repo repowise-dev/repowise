@@ -92,8 +92,10 @@ def detect_editor_setup_outcome(
     """Read the ground-truth editor-setup state for the completion panel.
 
     Called after registration and the hook offers, so what it reads is final.
-    Every probe is a cheap local file read and is defensive: a failure degrades
-    to "not set up" rather than crashing ``init``.
+    Every probe is defensive: a failure degrades to "not set up" rather than
+    crashing ``init``. All but one are local file reads; the autosync probe
+    spawns ``git rev-parse`` once, because ``core.hooksPath`` and worktrees make
+    the hooks directory impossible to derive from the repo path alone.
     """
     disabled = is_editor_setup_disabled(no_editor_setup)
 
@@ -101,23 +103,22 @@ def detect_editor_setup_outcome(
     try:
         from repowise.cli.hooks import status as _hook_status
 
-        autosync = _hook_status(repo_path) == "installed"
+        autosync = _hook_status(repo_path).startswith("installed")
     except Exception:
         pass
 
     # The distill rewrite hook is per-agent. Treat it as present when any agent
-    # surface has it (Claude Code always, Codex only when detected), mirroring
+    # surface has it (Claude Code always, Codex and Cursor only when detected), mirroring
     # `repowise hook rewrite status`, so a Codex-only user who set it up on
     # Codex is never nagged to install it again.
     rewrite = False
     try:
         from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
         from repowise.cli.agent_adapters.codex import CodexAdapter
+        from repowise.cli.agent_adapters.cursor import CursorAdapter
 
         surfaces = [ClaudeCodeAdapter()]
-        codex = CodexAdapter()
-        if codex.detect():
-            surfaces.append(codex)
+        surfaces += [a for a in (CodexAdapter(), CursorAdapter()) if a.detect()]
         rewrite = any(surface.rewrite_hook_installed() for surface in surfaces)
     except Exception:
         pass
@@ -195,6 +196,106 @@ def resolve_editor_setup_options(
     )
 
 
+def _resolve_configured_project_file_optouts(
+    repo_path: Path,
+    options: EditorSetupOptions,
+) -> EditorSetupOptions:
+    """Merge explicit ``editor_files: <id>: false`` values into *options*.
+
+    The project-file preference belongs to the setup layer, not to an editor
+    integration. Resolving it here gives every write path the same view and
+    lets a newly registered target reuse the descriptor's ``project_file_id``
+    without adding another config reader beside its writer.
+
+    An explicit per-run project-file override remains stronger than the
+    persisted preference. This preserves ``--agents`` / ``--no-agents`` as
+    command-line overrides while still treating a missing key as "let the
+    integration apply its own default" (notably, ``agents_md`` defaults off on
+    the update path).
+    """
+    from repowise.cli.agent_targets.registry import all_targets
+    from repowise.cli.helpers import load_config
+
+    editor_files = load_config(repo_path).get("editor_files")
+    if not isinstance(editor_files, Mapping):
+        return options
+
+    configured_disabled = {
+        target.project_file_id
+        for target in all_targets()
+        if editor_files.get(target.project_file_id) is False
+    }
+    disabled_project_files = (
+        options.disabled_project_files | frozenset(configured_disabled)
+    ) - options.project_file_overrides.keys()
+    if disabled_project_files == options.disabled_project_files:
+        return options
+
+    return EditorSetupOptions(
+        disabled_project_files=frozenset(disabled_project_files),
+        project_file_overrides=dict(options.project_file_overrides),
+        integration_overrides=dict(options.integration_overrides),
+    )
+
+
+def _installable_rows(rows: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Split agent rows into those init can write and those it cannot."""
+    installable = {integration.integration_id for integration in _resolve_integrations(None)}
+    return (
+        [row for row in rows if row["id"] in installable],
+        [row for row in rows if row["id"] not in installable],
+    )
+
+
+def _ticked(rows: list[dict], options: EditorSetupOptions) -> set[str]:
+    """Detection's default selection, with each flag override applied."""
+    from repowise.cli.agent_targets.registry import default_selection
+
+    ticked = default_selection(rows)
+    for row in rows:
+        flagged = options.integration_overrides.get(row["id"])
+        if flagged is not None:
+            ticked = (ticked | {row["id"]}) if flagged else (ticked - {row["id"]})
+    return ticked
+
+
+def planned_agents(repo_path: Path, options: EditorSetupOptions) -> tuple[str, ...]:
+    """Display names of the agents init connects with *options*, without asking."""
+    from repowise.cli.agent_targets.registry import describe_agents
+
+    rows, _ = _installable_rows(describe_agents(repo_path))
+    ticked = _ticked(rows, options)
+    return tuple(row["display_name"] for row in rows if row["id"] in ticked)
+
+
+def planned_project_files(repo_path: Path, options: EditorSetupOptions) -> tuple[str, ...]:
+    """Root-relative files :func:`write_editor_project_files` may write with *options*.
+
+    A superset, as ``describe_paths`` is. The Claude Code setup also runs the
+    CLAUDE.md generator, which no target describes.
+    """
+    from repowise.cli.agent_targets.registry import get_target
+    from repowise.cli.agent_targets.targets.claude_code import ID as CLAUDE_CODE
+    from repowise.cli.agent_targets.types import Scope
+    from repowise.cli.uninstall.generated_files import generated_blocks
+
+    resolved = _resolve_configured_project_file_optouts(repo_path, options)
+    paths: list[str] = []
+    for integration in _resolve_integrations(None):
+        if integration.project_file_id in resolved.disabled_project_files:
+            continue
+        target = get_target(integration.integration_id)
+        described = target.describe_paths(Scope.PROJECT, repo_path=repo_path) if target else []
+        for raw in described:
+            try:
+                paths.append(Path(raw).relative_to(repo_path).as_posix())
+            except ValueError:
+                continue
+        if integration.integration_id == CLAUDE_CODE:
+            paths.extend(b.relative_path for b in generated_blocks() if b.id == "claude-md")
+    return tuple(dict.fromkeys(paths))
+
+
 def select_agents_interactively(
     console_obj: Any,
     repo_path: Path,
@@ -221,7 +322,7 @@ def select_agents_interactively(
     as ``--codex``) is shown pre-ticked to match the flag, so accepting the
     checklist re-applies what the flag already said.
     """
-    from repowise.cli.agent_targets.registry import default_selection, describe_agents
+    from repowise.cli.agent_targets.registry import describe_agents
     from repowise.cli.ui.agent_selection import AgentChoice, interactive_agent_select
 
     # Offer only what this command can act on. The checklist is built from the
@@ -233,10 +334,7 @@ def select_agents_interactively(
     #
     # ``repowise agents add --target=<id>`` is the command for those, and the
     # line below names it rather than leaving them invisible.
-    rows = describe_agents(repo_path)
-    installable = {integration.integration_id for integration in _resolve_integrations(None)}
-    deferred = [row for row in rows if row["id"] not in installable]
-    rows = [row for row in rows if row["id"] in installable]
+    rows, deferred = _installable_rows(describe_agents(repo_path))
     for row in deferred:
         if row["present"] or row["registrations"]:
             console_obj.print(
@@ -244,11 +342,7 @@ def select_agents_interactively(
                 f"[bold]repowise agents add --target={row['id']}[/bold][/dim]"
             )
 
-    ticked = default_selection(rows)
-    for row in rows:
-        flagged = options.integration_overrides.get(row["id"])
-        if flagged is not None:
-            ticked = (ticked | {row["id"]}) if flagged else (ticked - {row["id"]})
+    ticked = _ticked(rows, options)
 
     chosen = interactive_agent_select(
         console_obj,
@@ -320,6 +414,8 @@ def write_editor_project_files(
         _persist_project_file_optouts(repo_path, resolved_options)
         return []
 
+    resolved_options = _resolve_configured_project_file_optouts(repo_path, resolved_options)
+
     written: list[Path] = []
     for integration in _resolve_integrations(integrations):
         # ``or []`` rather than a required return: an integration that has
@@ -378,5 +474,6 @@ def refresh_editor_project_files(
     """Refresh editor-managed project files without rewriting common MCP config."""
 
     resolved_options = options or EditorSetupOptions()
+    resolved_options = _resolve_configured_project_file_optouts(repo_path, resolved_options)
     for integration in _resolve_integrations(integrations):
         integration.refresh_project_files(console_obj, repo_path, resolved_options)

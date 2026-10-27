@@ -14,17 +14,24 @@ _INCLUDE_BLOCKS = (
     "last_change",
     "callers",
     "callees",
+    "references",
     "metrics",
     "community",
     "decisions",
     "health",
     "skeleton",
+    "skeleton+",
+    "doc_drift",
+    "symbols",
+    "changes",
+    "provenance",
+    "suspects",
 )
 
 #: Card keys the projection replaces or drops. Everything else passes through.
 #:
-#: A denylist, not an allowlist. Most of what a card carries is opt-in: nine
-#: ``--include`` blocks, each landing under its own key, and an allowlist that
+#: A denylist, not an allowlist. Most of what a card carries is opt-in: every
+#: ``--include`` block lands under its own key, and an allowlist that
 #: misses one turns ``--include ownership`` into a flag that changes nothing
 #: the caller can see. The failure mode of a denylist is a payload slightly
 #: larger than intended; the failure mode of an allowlist is a silently
@@ -52,7 +59,7 @@ _REPLACED_KEYS = frozenset(
 #: ``docs`` stays: for a **symbol** target the whole card lives there
 #: (``signature``, ``docstring``, ``used_by``, ``candidates``), and for a file
 #: target it holds ``symbols`` — the list a caller pipes into ``repowise
-#: symbol`` — plus ``content_md``/``documentation`` when ``--include full_doc``
+#: symbol``, plus ``content_md``/``digest_md``/``documentation`` when ``--include full_doc``
 #: asked for them. Denylisting ``docs`` wholesale projected a symbol target to
 #: an empty card and made ``--include full_doc`` an inert flag.
 _LIFTED_DOC_KEYS = ("title", "summary")
@@ -133,9 +140,10 @@ def project(payload: dict, targets: tuple[str, ...]) -> dict:
 
     A target the tool could not resolve gets a card carrying only ``error``,
     and that key survives the trim. Top-level ``truncated`` /
-    ``dropped_targets`` / ``dropped_symbols`` are kept whenever they say
-    something — a silently dropped target is exactly the thing a caller must
-    not have to diff two payloads to notice.
+    ``dropped_targets`` / ``dropped_symbols`` / ``dropped_blocks`` and the
+    ``recovery`` call are kept whenever they say something: a silently
+    dropped target is exactly the thing a caller must not have to diff two
+    payloads to notice.
     """
     cards = payload.get("targets") or {}
     out: dict = {
@@ -143,7 +151,9 @@ def project(payload: dict, targets: tuple[str, ...]) -> dict:
     }
     if payload.get("truncated"):
         out["truncated"] = True
-    for key in ("dropped_targets", "dropped_symbols", "omission_marker"):
+    for key in (
+        "dropped_targets", "recovery", "dropped_symbols", "dropped_blocks", "omission_marker", "suspects"
+    ):
         # omission_marker is the only handle on what truncation banked, so a
         # `truncated: true` without it says content went missing and offers no
         # way to get it back.
@@ -176,11 +186,17 @@ def project(payload: dict, targets: tuple[str, ...]) -> dict:
     default=False,
     help="Add structure, imports and docstrings to each card.",
 )
+@click.option(
+    "--symptom",
+    default=None,
+    help="Issue text, an error or a stack trace for --include suspects to rank against.",
+)
 @_ta.target_options
 def context_command(
     targets: tuple[str, ...],
     include: tuple[str, ...],
     no_compact: bool,
+    symptom: str | None,
     path: str | None,
     repo_alias: str | None,
     no_workspace: bool,
@@ -210,6 +226,7 @@ def context_command(
             targets=list(targets),
             include=list(include) or None,
             compact=not no_compact,
+            symptom=symptom,
         )
 
     payload = _ta.run(repo_path, _factory, "get_context")
@@ -226,6 +243,18 @@ def context_command(
     _ta.print_index_note(payload, fmt)
 
 
+def _fix_signal(fix: dict) -> str:
+    """The card's fix-history signal with its window, or "" when it has none."""
+    if not fix.get("fix_count"):
+        return ""
+    magnet = " (bug magnet)" if fix.get("bug_magnet") else ""
+    window = f" in {fix['window']}" if fix.get("window") else ""
+    return (
+        f"{fix['fix_count']} bug fixes{window}, "
+        f"last {fix.get('last_fix_days_ago', '?')}d ago{magnet}"
+    )
+
+
 def _render(projected: dict) -> None:
     from rich.markup import escape
     from rich.table import Table
@@ -235,6 +264,11 @@ def _render(projected: dict) -> None:
     cards = projected.get("targets") or {}
     if not cards:
         console.print("[yellow]No context for those targets.[/yellow]")
+    for row in (projected.get("suspects") or {}).get("suspects", []):
+        console.print(
+            f"suspect {row['rank']}: {escape(row.get('ref') or row['id'])} {escape(row['title'][:70])}"
+            f" [dim]({', '.join(row['signals'])})[/dim]"
+        )
 
     for card in cards.values():
         if card.get("error"):
@@ -264,12 +298,9 @@ def _render(projected: dict) -> None:
         signals = []
         if card.get("hotspot"):
             signals.append("hotspot")
-        fix = card.get("fix_history") or {}
-        if fix.get("fix_count"):
-            magnet = " (bug magnet)" if fix.get("bug_magnet") else ""
-            signals.append(
-                f"{fix['fix_count']} bug fixes, last {fix.get('last_fix_days_ago', '?')}d ago{magnet}"
-            )
+        fix_signal = _fix_signal(card.get("fix_history") or {})
+        if fix_signal:
+            signals.append(fix_signal)
         if card.get("stale"):
             signals.append("docs stale")
         if card.get("episodes"):

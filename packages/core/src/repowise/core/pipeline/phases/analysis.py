@@ -7,6 +7,7 @@ orchestrator.py) imports these phase functions. No CLI/click/rich imports.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Container
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -19,9 +20,16 @@ from repowise.core.analysis.decisions.discovery import (
     DiscoveryReport,
     run_update_discovery,
 )
+from repowise.core.index_scope import FAST_TO_FULL_COMMAND, MODEL_COMMAND
 from repowise.core.pipeline.progress import ProgressCallback
 
 from ._common import _phase_done
+
+# Shown for the model-only decision sources of a deterministic run, which may
+# well have a key configured.
+STRUCTURAL_RUN_REASON = f"this run builds from code; {MODEL_COMMAND} adds them"
+# The same for a fast run, which writes no pages for `generate` to work on.
+INDEX_ONLY_RUN_REASON = f"this run writes no documentation; {FAST_TO_FULL_COMMAND} adds them"
 
 logger = structlog.get_logger(__name__)
 
@@ -40,6 +48,7 @@ _DECISION_SOURCE_LABELS: tuple[tuple[str, str], ...] = (
     ("comment", "from comments"),
     ("session", "from agent sessions"),
     ("session_discovery", "from session discovery"),
+    ("conventions", "from code conventions"),
 )
 
 
@@ -62,17 +71,10 @@ async def _run_dead_code_analysis(
         if progress:
             progress.on_phase_start("dead_code", dead_code_steps)
 
-        # Files the traverser dropped on size, plus those it dropped for having
-        # no language spec. Without them the analyzer cannot tell "nothing
-        # imports this" from "the importer was never read", which is the
-        # cascade in #1237.
-        unindexed_source_files = [
-            (skipped.path, skipped.reason)
-            for skipped in (
-                *getattr(traversal_stats, "skipped_source_files", []),
-                *getattr(traversal_stats, "unknown_language_files", []),
-            )
-        ]
+        # Files the traverser dropped; see TraversalStats.unindexed_source_files.
+        unindexed_source_files = (
+            traversal_stats.unindexed_source_files() if traversal_stats is not None else []
+        )
 
         analyzer = DeadCodeAnalyzer(
             graph_builder.graph(),
@@ -81,6 +83,7 @@ async def _run_dead_code_analysis(
             source_map=source_map,
             repo_root=repo_path,
             unindexed_source_files=unindexed_source_files,
+            dotnet_index=getattr(graph_builder, "dotnet_index", None),
         )
 
         def _step(_stage: str) -> None:
@@ -107,16 +110,80 @@ async def _run_dead_code_analysis(
         return None
 
 
+async def _run_doc_drift_analysis(
+    source_map: dict[str, bytes] | None,
+    *,
+    file_infos: list[Any] | None = None,
+    graph_builder: Any | None = None,
+    repo_id: str = "",
+    repo_path: Path | None = None,
+    progress: ProgressCallback | None,
+) -> Any | None:
+    """Check the repository's own markdown against the tree (no LLM).
+
+    Reads bytes ingestion already decoded rather than re-walking the tree: this
+    runs on every ``init``, and the update path runs the same analyzer through
+    :func:`~repowise.core.pipeline.incremental.run_doc_drift_partial`, so a
+    second pass over the repository would be a real regression.
+    """
+    try:
+        from repowise.core.analysis.doc_drift import DocDriftAnalyzer
+        from repowise.core.analysis.doc_drift.symbols import SymbolOptions, graph_symbol_names
+
+        # analyze() drives three stages: collect, index, resolve.
+        if progress:
+            progress.on_phase_start("doc_drift", 3)
+
+        # Built here rather than at the call site: the gather has no
+        # per-member exception wrapper, so an argument expression evaluated in
+        # the caller's frame would raise outside this try and abort the whole
+        # index run.
+        tracked_paths = {fi.path for fi in file_infos} if file_infos else None
+
+        analyzer = DocDriftAnalyzer(
+            repo_id,
+            source_map=source_map,
+            tracked_paths=tracked_paths,
+            repo_root=repo_path,
+            symbols=(
+                SymbolOptions(graph_symbol_names(graph_builder.graph())) if graph_builder else None
+            ),
+        )
+
+        def _step(_stage: str) -> None:
+            if progress:
+                progress.on_item_done("doc_drift")
+
+        report = await asyncio.to_thread(analyzer.analyze, None, on_step=_step)
+
+        if progress and report.documents_scanned:
+            progress.on_message(
+                "info",
+                f"→ {report.total_findings} drift findings across "
+                f"{report.documents_scanned} documents "
+                f"({report.references_checked:,} references checked)",
+            )
+
+        _phase_done(progress, "doc_drift")
+        return report
+    except Exception as exc:
+        if progress:
+            progress.on_message("warning", f"Documentation drift check skipped: {exc}")
+        _phase_done(progress, "doc_drift")
+        return None
+
+
 def _build_pipeline_coverage(
     repo_path: Path,
     parsed_files: list[Any],
     explicit_paths: list[Path] | None,
     *,
     progress: ProgressCallback | None,
-) -> tuple[dict[str, dict], list[Any], str | None, bool]:
+) -> tuple[dict[str, dict], list[Any], str | None, Any]:
     """Discover/parse/resolve coverage reports for an indexing run.
 
-    Returns ``(coverage_map, resolved_files, source_format, mapping_partial)``.
+    Returns ``(coverage_map, resolved_files, source_format, provenance)``, the
+    last a ``CoverageProvenance`` or ``None`` when no report was read.
     Best-effort: any failure logs and yields an empty map so health analysis
     proceeds without coverage. Unmatched report files are surfaced via
     *progress* so "coverage didn't show up" is never silent.
@@ -125,23 +192,16 @@ def _build_pipeline_coverage(
         from repowise.core.analysis.health.coverage import (
             CoverageConfig,
             build_coverage_map,
-            discover_artifacts,
+            prefix_hint,
         )
         from repowise.core.repo_config import load_repo_config
 
         cfg = CoverageConfig.from_repo_config(load_repo_config(repo_path))
 
-        if explicit_paths:
-            report_paths = list(explicit_paths)
-        elif cfg.paths:
-            report_paths = [repo_path / p for p in cfg.paths if (repo_path / p).is_file()]
-        elif cfg.auto_discover:
-            report_paths = discover_artifacts(repo_path, globs=cfg.artifacts or None)
-        else:
-            return {}, [], None, False
-
+        reports = dict.fromkeys(explicit_paths) if explicit_paths else cfg.reports(repo_path)
+        report_paths = list(reports)
         if not report_paths:
-            return {}, [], None, False
+            return {}, [], None, None
 
         repo_keys = {pf.file_info.path for pf in parsed_files}
         resolved, errors = build_coverage_map(
@@ -151,6 +211,8 @@ def _build_pipeline_coverage(
             coverage_format=cfg.format,
             strip_prefix=cfg.strip_prefix,
             path_prefix=cfg.path_prefix,
+            report_prefixes=reports,
+            ignore=cfg.ignore,
         )
 
         if progress:
@@ -158,37 +220,41 @@ def _build_pipeline_coverage(
             more = f" (+{len(report_paths) - 3} more)" if len(report_paths) > 3 else ""
             progress.on_message(
                 "info",
-                f"→ coverage: {resolved.matched} files matched from {names}{more}",
+                f"→ coverage: {0 if resolved.withheld else resolved.matched} files "
+                f"matched from {names}{more}",
             )
             skipped = len(resolved.unmatched) + len(resolved.ambiguous)
-            if skipped:
-                sample = ", ".join((resolved.unmatched + resolved.ambiguous)[:3])
+            sample = ", ".join((resolved.unmatched + resolved.ambiguous)[:3])
+            if resolved.withheld:
+                progress.on_message(
+                    "warning",
+                    f"  ↳ {skipped} report file(s) did not map (e.g. {sample}), more "
+                    "than half the report, so no coverage was kept; "
+                    f"{prefix_hint(resolved.suggested_prefixes)}.",
+                )
+            elif skipped:
                 progress.on_message(
                     "warning",
                     f"  ↳ {skipped} report file(s) did not map to the repo tree "
                     f"(e.g. {sample}). Set coverage.strip_prefix in "
                     f".repowise/config.yaml if paths are off.",
                 )
-            if resolved.mapping_partial:
-                progress.on_message(
-                    "warning",
-                    "  ↳ more than half the report did not map: the stored "
-                    "coverage is a fragment, not the whole repository.",
-                )
             for path, err in errors:
                 progress.on_message("warning", f"  ↳ coverage {path.name}: {err}")
+            if stale := resolved.alignment.warning():
+                progress.on_message("warning", f"  ↳ coverage: {stale}")
 
         return (
             resolved.coverage_map,
             resolved.files,
             resolved.source_format,
-            resolved.mapping_partial,
+            resolved.provenance,
         )
     except Exception as exc:
         if progress:
             progress.on_message("warning", f"Coverage ingestion skipped: {exc}")
         logger.debug("pipeline_coverage_failed", error=str(exc))
-        return {}, [], None, False
+        return {}, [], None, None
 
 
 async def _run_health_analysis(
@@ -202,6 +268,7 @@ async def _run_health_analysis(
 ) -> Any | None:
     """Run code-health analysis (complexity + biomarkers + scoring)."""
     try:
+        from repowise.core.analysis.communities import file_community_labels
         from repowise.core.analysis.health import HealthAnalyzer
         from repowise.core.analysis.health.config import HealthConfig
 
@@ -212,34 +279,19 @@ async def _run_health_analysis(
             # the entire pre-walk — most of the phase's wall-clock.
             progress.on_phase_start("health", 2 * len(parsed_files))
 
-        # Build a {file_path → community label} map for the refactoring
-        # detectors. Community detection is already computed for the graph
-        # view, so this is essentially free. It is not the ``module`` column:
-        # that is a path, written from the package boundaries.
-        community_label_map: dict[str, str] = {}
-        try:
-            cd = graph_builder.community_detection()
-            ci = graph_builder.community_info()
-            for node_id, comm_id in cd.items():
-                info = ci.get(comm_id)
-                label = getattr(info, "label", None) if info else None
-                if label:
-                    community_label_map[node_id] = label
-        except Exception as exc:
-            logger.debug("health_community_label_map_failed", error=str(exc))
 
         # Ingest coverage (auto-discovered or explicitly passed) so biomarkers
         # see real line/branch coverage instead of the has_test_file fallback.
         coverage_map: dict[str, dict] = {}
         coverage_files: list[Any] = []
         coverage_format: str | None = None
-        coverage_mapping_partial = False
+        coverage_provenance: Any = None
         if repo_path is not None:
             (
                 coverage_map,
                 coverage_files,
                 coverage_format,
-                coverage_mapping_partial,
+                coverage_provenance,
             ) = _build_pipeline_coverage(
                 repo_path, parsed_files, coverage_report_paths, progress=progress
             )
@@ -248,7 +300,7 @@ async def _run_health_analysis(
             graph_builder.graph(),
             git_meta_map=git_meta_map,
             parsed_files=parsed_files,
-            community_label_map=community_label_map,
+            community_label_map=file_community_labels(graph_builder),
             coverage_map=coverage_map,
             duplication_cache_dir=(repo_path / ".repowise") if repo_path is not None else None,
             repo_root=repo_path,
@@ -281,7 +333,7 @@ async def _run_health_analysis(
         if coverage_files:
             report.coverage_files = coverage_files
             report.coverage_format = coverage_format
-            report.coverage_mapping_partial = coverage_mapping_partial
+            report.coverage_provenance = coverage_provenance
 
         if progress:
             findings_count = len(report.findings)
@@ -307,6 +359,7 @@ async def _run_session_discovery(
     llm_client: Any | None,
     policy: Any,
     report: Any,
+    indexed: Container[str] | None = None,
 ) -> DiscoveryOutcome:
     """The one broad session-discovery call, folded into the decision report.
 
@@ -319,6 +372,7 @@ async def _run_session_discovery(
                 repo_path,
                 provider=llm_client,
                 policy=policy,
+                indexed=indexed,
             ),
             timeout=DECISION_EXTRACTION_TIMEOUT_SECS,
         )
@@ -340,8 +394,16 @@ async def _run_decision_extraction(
     parsed_files: list[Any],
     source_map: dict[str, bytes] | None = None,
     progress: ProgressCallback | None,
+    no_model_reason: str | None = None,
+    only_sources: Container[str] | None = None,
 ) -> Any | None:
-    """Extract architectural decisions from source and git history."""
+    """Extract architectural decisions from source and git history.
+
+    *no_model_reason* replaces the no-provider reason when the caller chose a
+    run without a model rather than having none configured. *only_sources* runs
+    just those index sources and skips the session passes: the later run that
+    fills in the lanes a keyless index could not.
+    """
     try:
         from repowise.core.analysis.decision_extractor import DecisionExtractor
         from repowise.core.analysis.decisions.policy import resolve_policy
@@ -352,9 +414,14 @@ async def _run_decision_extraction(
         # sources run and which of them may call a model.
         repo_cfg = load_repo_config(repo_path)
         policy = resolve_policy(repo_cfg).policy
-        enabled = policy.enabled_index_sources()
+        enabled = _index_sources(policy, only_sources)
         if progress:
             progress.on_phase_start("decisions", len(enabled))
+
+        # The indexed file set bounds what a session-mined record may claim
+        # to govern: a transcript names scratch files, plan docs and sibling
+        # checkouts, and only this set knows which paths are this codebase.
+        indexed = frozenset(source_map) if source_map else None
 
         extractor = DecisionExtractor(
             repo_path=repo_path,
@@ -375,145 +442,17 @@ async def _run_decision_extraction(
             timeout=DECISION_EXTRACTION_TIMEOUT_SECS,
         )
 
-        # Session-sourced decisions: a repo indexed for the first time on a
-        # machine with existing agent-session history gets them at init, not
-        # only from the first update. Appended after extract_all's substring
-        # gate on purpose: the miner enforces its own grounding contract, and
-        # re-gating without a source_text would wipe its verification. A
-        # server-side index has no transcript directory and no-ops here.
-        try:
-            from repowise.core.sessions.miners.decisions import mine_session_decisions
-
-            # Not gated on a provider: the same pass records transcript
-            # episodes, which need no model, and gating the read on a key
-            # would leave a keyless index with no transcript supply at all.
-            # The miner skips its own structuring pass when provider is None,
-            # which is also how the policy's LLM switch is enforced here.
-            if policy.source_enabled("session"):
-                session_provider = llm_client if policy.llm_allowed("session") else None
-                session_decisions = await asyncio.wait_for(
-                    mine_session_decisions(
-                        repo_path,
-                        provider=session_provider,
-                        collect_discovery_spans=policy.llm_allowed("session_discovery"),
-                    ),
-                    timeout=DECISION_EXTRACTION_TIMEOUT_SECS,
-                )
-                if session_decisions:
-                    report.decisions.extend(session_decisions)
-                    report.by_source["session"] = len(session_decisions)
-                    report.total_found = len(report.decisions)
-        except Exception as exc:
-            if progress:
-                progress.on_message("warning", f"Session decision mining skipped: {exc}")
-
-        # The broad lane, after the miner because the miner's single read is
-        # what filled its span queue. At most one call, and it reports its own
-        # zero so a switched-off source never reads as an empty repository.
-        discovery = await _run_session_discovery(
-            repo_path, llm_client=llm_client, policy=policy, report=report
-        )
-
-        if progress:
-            # Only the sources that actually found something. On a typical
-            # first index most of these are zero, and the line read as
-            # "0 ADR · 0 changelog · 0 PR ·" with the real numbers buried.
-            bs = report.by_source
-            found = [
-                f"{bs[source]} {label}"
-                for source, label in _DECISION_SOURCE_LABELS
-                if bs.get(source)
-            ]
-            summary = ", ".join(found) if found else ""
-            progress.on_message(
-                "info",
-                f"→ {report.total_found} architectural decisions found"
-                + (f": {summary}" if summary else ""),
+        if only_sources is None:
+            await _session_passes_and_report(
+                repo_path,
+                llm_client=llm_client,
+                policy=policy,
+                report=report,
+                indexed=indexed,
+                enabled=enabled,
+                progress=progress,
+                no_model_reason=no_model_reason,
             )
-            # And the sources that produced nothing. Hiding these was what made
-            # a source failing outright indistinguishable from a source with
-            # honestly nothing to find: every failure inside the extractor is
-            # swallowed and reported only through ``logger.warning``, which no
-            # default CLI run renders. A repo with no ADR files legitimately
-            # scores zero there, so this is not itself a failure report — it is
-            # the list you need to have before you can tell the two apart.
-            # The labels read "from git history" because they are normally
-            # rendered as "5 from git history"; strung together after one
-            # "No decisions" they would read "No decisions from inline
-            # markers, from ADR files". Drop the preposition and name the
-            # sources plainly.
-            #
-            # ``session`` is in the label table but is not one of the
-            # extractor's own sources, so ``source in enabled`` leaves it out
-            # of this list — correct, since it is mined separately below.
-            #
-            # A source that *failed* is listed separately and as a warning.
-            # It is not "nothing found": the repo may be full of decisions
-            # nobody could read. Same shape the update path already uses for
-            # its ``degraded`` list, so both runs report an outage the same
-            # way instead of one of them printing a reassuring zero.
-            failures = dict(getattr(report, "failures", {}) or {})
-            if discovery.report.status == "failed":
-                failures["session_discovery"] = discovery.report.reason
-            # Sources that never ran, and why. Built first because a source
-            # listed here must not also appear as an honest zero below: with no
-            # API key the three model-only sources return [] immediately, and
-            # reporting that as "nothing found" is the confusion this split
-            # exists to remove.
-            runtime = {
-                rt.key: rt
-                for rt in policy.runtime(provider_available=llm_client is not None)
-            }
-            not_run = {
-                key
-                for key, rt in runtime.items()
-                if rt.togglable and rt.status in ("disabled", "skipped_no_provider")
-            }
-            # Broad discovery is not one of the extractor's sources, so it
-            # would fall out of all three lists on ``source in enabled`` alone.
-            # It is always considered, so it lands in exactly one of them. Its
-            # own reason overrides the policy's, being the more specific of the
-            # two ("no new prose since the last update" is not "switched off").
-            considered = set(enabled) | {DISCOVERY_SOURCE}
-            if discovery.report.status in ("not_run", "skipped_no_provider"):
-                not_run.add(DISCOVERY_SOURCE)
-            if discovery.report.reason:
-                runtime[DISCOVERY_SOURCE] = replace(
-                    runtime[DISCOVERY_SOURCE], reason=discovery.report.reason
-                )
-            # A grounded candidate is a finding even though promotion waits for
-            # a second sighting, so discovery is not empty on the run that
-            # first finds something.
-            staged = discovery.report.candidates_grounded
-            empty = [
-                label.removeprefix("from ")
-                for source, label in _DECISION_SOURCE_LABELS
-                if source in considered
-                and source not in not_run
-                and not bs.get(source)
-                and source not in failures
-                and not (source == DISCOVERY_SOURCE and staged)
-            ]
-            if staged:
-                progress.on_message(
-                    "info", f"→ {staged} session-discovery candidate(s) staged for review"
-                )
-            if empty:
-                progress.on_message("info", f"→ Nothing found in: {', '.join(empty)}")
-            for source, label in _DECISION_SOURCE_LABELS:
-                if source in failures:
-                    progress.on_message(
-                        "warning",
-                        f"Decision source {label.removeprefix('from ')} failed, "
-                        f"so this run found none there: {failures[source]}",
-                    )
-            skipped = [
-                f"{label.removeprefix('from ')} ({runtime[source].reason.rstrip('.')})"
-                for source, label in _DECISION_SOURCE_LABELS
-                if source in not_run
-            ]
-            if skipped:
-                progress.on_message("info", f"→ Not run: {', '.join(skipped)}")
 
         _phase_done(progress, "decisions")
         return report
@@ -522,3 +461,207 @@ async def _run_decision_extraction(
             progress.on_message("warning", f"Decision extraction skipped: {exc}")
         _phase_done(progress, "decisions")
         return None
+
+
+def _index_sources(policy: Any, only_sources: Container[str] | None) -> tuple[str, ...]:
+    """The policy's enabled index sources, narrowed to *only_sources* when given."""
+    enabled = policy.enabled_index_sources()
+    if only_sources is None:
+        return enabled
+    return tuple(key for key in enabled if key in only_sources)
+
+
+async def _session_passes_and_report(
+    repo_path: Path,
+    *,
+    llm_client: Any | None,
+    policy: Any,
+    report: Any,
+    indexed: Container[str] | None,
+    enabled: Any,
+    progress: ProgressCallback | None,
+    no_model_reason: str | None = None,
+) -> None:
+    """Session mining, broad discovery, then the per-source summary lines."""
+    await _add_session_decisions(
+        repo_path,
+        llm_client=llm_client,
+        policy=policy,
+        report=report,
+        indexed=indexed,
+        progress=progress,
+    )
+    # After the miner: its single read is what filled the discovery span queue.
+    discovery = await _run_session_discovery(
+        repo_path, llm_client=llm_client, policy=policy, report=report, indexed=indexed
+    )
+    if progress:
+        _report_decision_sources(
+            progress,
+            report,
+            policy=policy,
+            enabled=enabled,
+            discovery=discovery,
+            provider_available=llm_client is not None,
+            no_model_reason=no_model_reason,
+        )
+
+
+async def _add_session_decisions(
+    repo_path: Path,
+    *,
+    llm_client: Any | None,
+    policy: Any,
+    report: Any,
+    indexed: Container[str] | None,
+    progress: ProgressCallback | None,
+) -> None:
+    """Append agent-session decisions to *report*; a mining failure only warns.
+
+    Appended after ``extract_all``'s substring gate on purpose: the miner enforces
+    its own grounding contract. Not gated on a provider, since the same pass
+    records transcript episodes; the miner skips its model pass when it has none.
+    """
+    try:
+        from repowise.core.sessions.miners.decisions import mine_session_decisions
+
+        if policy.source_enabled("session"):
+            session_provider = llm_client if policy.llm_allowed("session") else None
+            session_decisions = await asyncio.wait_for(
+                mine_session_decisions(
+                    repo_path,
+                    provider=session_provider,
+                    harnesses=policy.harnesses,
+                    collect_discovery_spans=policy.llm_allowed("session_discovery"),
+                    indexed=indexed,
+                ),
+                timeout=DECISION_EXTRACTION_TIMEOUT_SECS,
+            )
+            if session_decisions:
+                report.decisions.extend(session_decisions)
+                report.by_source["session"] = len(session_decisions)
+                report.total_found = len(report.decisions)
+    except Exception as exc:
+        if progress:
+            progress.on_message("warning", f"Session decision mining skipped: {exc}")
+
+
+def _report_decision_sources(
+    progress: ProgressCallback,
+    report: Any,
+    *,
+    policy: Any,
+    enabled: Any,
+    discovery: DiscoveryOutcome,
+    provider_available: bool,
+    no_model_reason: str | None = None,
+) -> None:
+    """Say per source what was found, found nothing, failed, or never ran.
+
+    The four are kept apart so a failed or switched-off source never reads as an
+    honest zero.
+    """
+    bs = report.by_source
+    progress.on_message("info", _decision_headline(report))
+    failures = dict(getattr(report, "failures", {}) or {})
+    if discovery.report.status == "failed":
+        failures["session_discovery"] = discovery.report.reason
+    runtime, not_run = _decision_sources_not_run(
+        policy, discovery, provider_available, no_model_reason
+    )
+    # ``session`` is mined outside the extractor, so it is never listed as empty.
+    considered = set(enabled) | {DISCOVERY_SOURCE}
+    # A grounded candidate is a finding even before a second sighting promotes it.
+    staged = discovery.report.candidates_grounded
+    empty = [
+        label.removeprefix("from ")
+        for source, label in _DECISION_SOURCE_LABELS
+        if source in considered
+        and _found_nothing(source, bs, not_run=not_run, failures=failures, staged=staged)
+    ]
+    if staged:
+        progress.on_message(
+            "info", f"→ {staged} session-discovery candidate(s) staged for review"
+        )
+    if empty:
+        progress.on_message("info", f"→ Nothing found in: {', '.join(empty)}")
+    for source, label in _DECISION_SOURCE_LABELS:
+        if source in failures:
+            progress.on_message(
+                "warning",
+                f"Decision source {label.removeprefix('from ')} failed, "
+                f"so this run found none there: {failures[source]}",
+            )
+    skipped = [
+        f"{label.removeprefix('from ')} ({runtime[source].reason.rstrip('.')})"
+        for source, label in _DECISION_SOURCE_LABELS
+        if source in not_run
+    ]
+    if skipped:
+        progress.on_message("info", f"→ Not run: {', '.join(skipped)}")
+
+
+def _found_nothing(
+    source: str, by_source: Any, *, not_run: set[str], failures: dict, staged: Any
+) -> bool:
+    """True when *source* ran, did not fail, and found nothing (staged discovery counts)."""
+    return (
+        source not in not_run
+        and not by_source.get(source)
+        and source not in failures
+        and not (source == DISCOVERY_SOURCE and staged)
+    )
+
+
+def _decision_headline(report: Any) -> str:
+    """Kept-vs-candidate totals plus the sources that found something.
+
+    Per-source counts are taken before the evidence gate and the total after it,
+    so the line names which number is which.
+    """
+    bs = report.by_source
+    found = [f"{bs[source]} {label}" for source, label in _DECISION_SOURCE_LABELS if bs.get(source)]
+    summary = ", ".join(found) if found else ""
+    candidates = sum(bs.values())
+    headline = (
+        f"→ {report.total_found} architectural decisions kept from "
+        f"{candidates} candidates"
+        if candidates > report.total_found
+        else f"→ {report.total_found} architectural decisions found"
+    )
+    return headline + (f": {summary}" if summary else "")
+
+
+def _decision_sources_not_run(
+    policy: Any,
+    discovery: DiscoveryOutcome,
+    provider_available: bool,
+    no_model_reason: str | None = None,
+) -> tuple[dict[str, Any], set[str]]:
+    """Runtime status per source and the togglable sources that never ran.
+
+    Broad discovery is always considered; its own reason overrides the policy's
+    as the more specific one.
+    """
+    runtime = {
+        rt.key: _with_no_model_reason(rt, no_model_reason)
+        for rt in policy.runtime(provider_available=provider_available)
+    }
+    not_run = {
+        key
+        for key, rt in runtime.items()
+        if rt.togglable and rt.status in ("disabled", "skipped_no_provider")
+    }
+    if discovery.report.status in ("not_run", "skipped_no_provider"):
+        not_run.add(DISCOVERY_SOURCE)
+    discovery_reason = _with_no_model_reason(discovery.report, no_model_reason).reason
+    if discovery_reason:
+        runtime[DISCOVERY_SOURCE] = replace(runtime[DISCOVERY_SOURCE], reason=discovery_reason)
+    return runtime, not_run
+
+
+def _with_no_model_reason(status: Any, no_model_reason: str | None) -> Any:
+    """*status* with *no_model_reason* when no model was chosen rather than missing."""
+    if no_model_reason and status.status == "skipped_no_provider":
+        return replace(status, reason=no_model_reason)
+    return status

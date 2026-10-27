@@ -7,11 +7,12 @@ import { bandForScore } from "@repowise-dev/types/health";
 import { cn } from "../lib/cn";
 import { formatLOC, formatNumber } from "../lib/format";
 import { FilesTreemap, type TreemapColor, type TreemapSize } from "./files-treemap";
-import { FilesTable, type SortKey } from "./files-table";
+import { FilesTable, lineCoverage, type SortKey } from "./files-table";
 // One `Fig`, shared with the file detail page. The two Files surfaces are meant
 // to emphasise a figure identically, and two identical local copies is how that
 // stops being true without anyone noticing.
 import { Fig } from "./file-section";
+import { FIELD_CLASS } from "../ui/input";
 
 interface FilesIndexProps {
   files: FileRow[];
@@ -71,7 +72,7 @@ function Segmented<T extends string>({
           className={cn(
             "rounded px-2 py-1 text-xs font-medium transition-colors",
             value === o.value
-              ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
+              ? "bg-[var(--color-selection-wash)] text-[var(--color-text-primary)]"
               : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]",
           )}
         >
@@ -105,16 +106,15 @@ export function FilesIndex({ files, languages, fileHref }: FilesIndexProps) {
   const kpis = useMemo(() => {
     let loc = 0;
     let scored = 0;
-    let healthy = 0;
+    let good = 0;
     for (const f of files) {
       loc += f.loc ?? 0;
       if (f.defect_score != null) {
         scored++;
-        // `bandForScore`, not a local `>= 7`. The threshold here was 7 while
-        // every band this page paints starts Healthy at 8, so the strip was
-        // reporting a share of files as healthy that the map beside it was
-        // colouring amber.
-        if (bandForScore(f.defect_score) === "healthy") healthy++;
+        // `bandForScore`, not a local threshold, so the strip and the map
+        // beside it cannot report different shares of the same files.
+        const band = bandForScore(f.defect_score);
+        if (band === "good" || band === "excellent") good++;
       }
     }
     return {
@@ -122,7 +122,7 @@ export function FilesIndex({ files, languages, fileHref }: FilesIndexProps) {
       loc,
       langCount: languages.length,
       scored,
-      healthyPct: scored > 0 ? Math.round((healthy / scored) * 100) : null,
+      goodPct: scored > 0 ? Math.round((good / scored) * 100) : null,
     };
   }, [files, languages]);
 
@@ -167,7 +167,7 @@ export function FilesIndex({ files, languages, fileHref }: FilesIndexProps) {
           cmp = num(a.loc) - num(b.loc);
           break;
         case "coverage":
-          cmp = num(a.coverage_pct) - num(b.coverage_pct);
+          cmp = num(lineCoverage(a)) - num(lineCoverage(b));
           break;
         case "name":
           cmp = a.file_path.localeCompare(b.file_path);
@@ -201,10 +201,10 @@ export function FilesIndex({ files, languages, fileHref }: FilesIndexProps) {
               <Fig>{formatNumber(kpis.total)}</Fig> files across <Fig>{formatLOC(kpis.loc)}</Fig>{" "}
               lines in <Fig>{kpis.langCount}</Fig> {kpis.langCount === 1 ? "language" : "languages"}
               .{" "}
-              {kpis.healthyPct != null ? (
+              {kpis.goodPct != null ? (
                 <>
-                  <Fig>{kpis.healthyPct}%</Fig> of the <Fig>{formatNumber(kpis.scored)}</Fig>{" "}
-                  carrying a health score are healthy.
+                  <Fig>{kpis.goodPct}%</Fig> of the <Fig>{formatNumber(kpis.scored)}</Fig>{" "}
+                  carrying a health score are Good or better.
                 </>
               ) : (
                 "None carry a health score yet."
@@ -270,7 +270,7 @@ export function FilesIndex({ files, languages, fileHref }: FilesIndexProps) {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Filter files by path…"
-              className="h-9 w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] pl-8 pr-3 text-sm text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)] focus:border-[var(--color-accent-primary)]"
+              className={cn(FIELD_CLASS, "h-9 w-full pl-8 pr-3 text-sm")}
             />
           </div>
           <Segmented<TestFilter>
@@ -286,7 +286,7 @@ export function FilesIndex({ files, languages, fileHref }: FilesIndexProps) {
             <select
               value={langFilter}
               onChange={(e) => setLangFilter(e.target.value)}
-              className="h-9 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2 text-sm text-[var(--color-text-secondary)] outline-none focus:border-[var(--color-accent-primary)]"
+              className="h-9 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2 text-sm text-[var(--color-text-secondary)] outline-none focus:border-[var(--color-focus-ring)]"
             >
               <option value="">All languages</option>
               {languages.map((l) => (

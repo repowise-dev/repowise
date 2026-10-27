@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import importlib
 import json
 from concurrent.futures import ThreadPoolExecutor
@@ -52,6 +53,20 @@ async def test_the_response_leads_with_the_directive_then_the_delta(tool, make_r
     assert result["directive"]["next_actions"]
 
 
+async def test_the_headline_its_first_action_and_the_first_finding_agree(tool, make_repo):
+    module = tool(seeded(make_repo))
+
+    result = await module.get_change_risk("HEAD", baseline=0)
+    directive, delta = result["directive"], result["health_delta"]
+    lead = delta["top_findings"][0]
+
+    assert directive["status"] == "review_required"
+    assert f"in {lead['path']}." in directive["headline"]
+    assert directive["next_actions"][0].endswith(f"({lead['id']})")
+    change = delta["score_change"]
+    assert f"{change['base']:.2f} to {change['head']:.2f}" in directive["headline"]
+
+
 async def test_the_default_response_stays_small_and_omits_score_mechanics(tool, make_repo):
     module = tool(seeded(make_repo))
 
@@ -60,7 +75,7 @@ async def test_the_default_response_stays_small_and_omits_score_mechanics(tool, 
     assert len(json.dumps(result, default=str)) < 8000
     for field in ("drivers", "risk_authority", "features", "score_measures", "score_unit"):
         assert field not in result
-    assert result["change_shape"]["diagnostics_via"] == ("get_change_risk(include=['diagnostics'])")
+    assert "get_change_risk(include=['diagnostics'])" in result["diff_shape"]
 
 
 async def test_diagnostics_are_a_projection_not_a_removal(tool, make_repo):
@@ -68,7 +83,7 @@ async def test_diagnostics_are_a_projection_not_a_removal(tool, make_repo):
 
     expanded = await module.get_change_risk("HEAD", baseline=0, include=["diagnostics"])
 
-    for field in ("drivers", "risk_authority", "features", "score_measures"):
+    for field in ("drivers", "risk_authority", "features", "score_measures", "score"):
         assert field in expanded
 
 
@@ -77,9 +92,25 @@ async def test_legacy_ranked_fields_stay_at_the_top_level(tool, make_repo):
     module = tool(seeded(make_repo))
 
     result = await module.get_change_risk("HEAD", baseline=0)
+    scaled = await module.get_change_risk("HEAD", baseline=0, include=["scales"])
 
-    for field in ("ref", "score", "risk_percentile", "review_priority", "classification"):
+    for field in ("ref", "risk_percentile"):
         assert field in result
+    # The size tercile repeats the percentile, so it ships with the scales.
+    for field in ("review_priority", "classification"):
+        assert field not in result
+        assert field in scaled
+
+
+async def test_the_raw_score_is_not_on_the_wire_by_default(tool, make_repo):
+    """It ranks 0.99 against lines added, so the percentile already says it."""
+    module = tool(seeded(make_repo))
+
+    result = await module.get_change_risk("HEAD", baseline=0)
+
+    assert "score" not in result
+    assert "fallback_band" not in result
+    assert "change_shape" not in result
 
 
 async def test_the_top_findings_cap_is_recoverable(tool, make_repo):
@@ -109,12 +140,29 @@ async def test_a_surfaced_finding_can_be_expanded_by_its_id(tool, make_repo):
 
     listing = await module.get_change_risk("HEAD", baseline=0)
     row = listing["health_delta"]["top_findings"][0]
-    assert row["inspect"] == f"get_change_risk(revspec='HEAD', finding_id={row['id']!r})"
+    assert "inspect" not in row
+    full = await module.get_change_risk("HEAD", baseline=0, include=["findings"])
+    inspect = full["health_delta"]["top_findings"][0]["inspect"]
+    assert inspect == f"get_change_risk(revspec='HEAD', finding_id={row['id']!r})"
 
     detail = await module.get_change_risk("HEAD", baseline=0, finding_id=row["id"])
 
     assert detail["finding"]["id"] == row["id"]
     assert "evidence" in detail["finding"]
+
+
+async def test_a_drill_down_skips_the_blocks_it_never_returns(tool, make_repo, monkeypatch):
+    module = tool(seeded(make_repo))
+    listing = await module.get_change_risk("HEAD", baseline=0)
+    row = listing["health_delta"]["top_findings"][0]
+
+    async def _unexpected(*_a, **_k):
+        raise AssertionError("a drill-down needs no tests, coverage or fix blocks")
+
+    monkeypatch.setattr(module, "_attach_change_blocks", _unexpected)
+    detail = await module.get_change_risk("HEAD", baseline=0, finding_id=row["id"])
+
+    assert detail["finding"]["id"] == row["id"]
 
 
 async def test_an_unknown_finding_id_says_so_and_lists_the_real_ones(tool, make_repo):
@@ -145,7 +193,7 @@ async def test_a_clean_change_says_analyzed_scope_not_safe(tool, make_repo):
 async def test_a_partial_comparison_never_reads_as_clear(tool, make_repo):
     repo = make_repo()
     repo.commit("seed", {"app.py": "x = 1\n"})
-    repo.commit("mixed", {"app.py": python_complex("tangle", 18), "notes.md": "text\n"})
+    repo.commit("mixed", {"app.py": python_complex("tangle", 18), "lib.ex": "defmodule A do\nend\n"})
     module = tool(repo)
 
     result = await module.get_change_risk("HEAD", baseline=0)
@@ -153,6 +201,19 @@ async def test_a_partial_comparison_never_reads_as_clear(tool, make_repo):
     assert result["health_delta"]["status"] == "partial"
     assert result["health_delta"]["skipped"]["total"] == 1
     assert any("not analysed" in reason for reason in result["directive"]["reasons"])
+
+
+async def test_a_docs_only_change_says_there_is_no_code_to_analyse(tool, make_repo):
+    repo = make_repo()
+    repo.commit("seed", {"app.py": "x = 1\n", "CHANGES.rst": "a\n"})
+    repo.commit("docs", {"CHANGES.rst": "b\n"})
+    module = tool(repo)
+
+    result = await module.get_change_risk("HEAD", baseline=0)
+
+    assert result["directive"]["status"] == "clear_in_analyzed_scope"
+    assert "No code changed" in result["directive"]["headline"]
+    assert result["health_delta"]["skipped"]["by_reason"] == {"not_code": 1}
 
 
 async def test_performance_findings_do_not_by_themselves_demand_review(tool, make_repo):
@@ -185,11 +246,17 @@ async def test_every_surfaced_finding_carries_an_attribution(tool, make_repo):
 async def test_the_delta_names_the_analyzer_and_the_two_sides(tool, make_repo):
     module = tool(seeded(make_repo))
 
-    delta = (await module.get_change_risk("HEAD", baseline=0))["health_delta"]
+    default = (await module.get_change_risk("HEAD", baseline=0))["health_delta"]
+    delta = (await module.get_change_risk("HEAD", baseline=0, include=["diagnostics"]))[
+        "health_delta"
+    ]
 
+    # Comparison mechanics are a projection: absent by default, exact on request.
+    assert not {"analyzer", "base", "head", "limits"} & set(default)
     assert delta["analyzer"]["analyzer_version"] > 0
     assert delta["base"]["sha"] and delta["head"]["sha"]
-    assert delta["basis"] == "both_sides_analyzed"
+    assert delta["limits"]
+    assert default["basis"] == delta["basis"] == "both_sides_analyzed"
 
 
 # -- caching and concurrency ------------------------------------------------
@@ -229,3 +296,72 @@ def test_a_working_tree_comparison_is_keyed_by_content_not_by_head(make_repo):
 
     assert first.introduced_total >= 1
     assert second.introduced_total == 0
+
+
+def test_every_request_filter_is_part_of_the_cache_key(make_repo):
+    repo = seeded(make_repo)
+    service = ChangeHealthDeltaService(repo_path=str(repo.path))
+    pair = service.source.resolve("HEAD")
+    plain = DeltaRequest(str(repo.path), "HEAD")
+    # repo_path and revspec reach the key through the service and the resolved pair.
+    for field in dataclasses.fields(DeltaRequest):
+        if field.name in ("repo_path", "revspec", "dependents"):
+            continue
+        narrowed = dataclasses.replace(plain, **{field.name: ("vendor/",)})
+        assert service._cache_key(narrowed, pair) != service._cache_key(plain, pair), field.name
+        # A comma is legal inside a pattern, so one "a,b" pattern is not "a" and "b".
+        joined = dataclasses.replace(plain, **{field.name: ("a,b",)})
+        split = dataclasses.replace(plain, **{field.name: ("a", "b")})
+        assert service._cache_key(joined, pair) != service._cache_key(split, pair), field.name
+    counted = dataclasses.replace(plain, dependents={"app.py": 3})
+    recounted = dataclasses.replace(plain, dependents={"app.py": 4})
+    assert len({service._cache_key(r, pair) for r in (plain, counted, recounted)}) == 3
+
+
+async def test_include_paths_as_a_string_filters_like_the_list(tool, make_repo):
+    repo = make_repo()
+    repo.commit("seed", {"app.py": "x = 1\n"})
+    repo.commit(
+        "add",
+        {"app.py": python_complex("a", 16), "vendor/lib.py": python_complex("b", 16)},
+    )
+    module = tool(repo)
+
+    async def changed(**kwargs):
+        result = await module.get_change_risk("HEAD", baseline=0, **kwargs)
+        return result["health_delta"]["scope"]["changed"]
+
+    assert await changed(include_paths="vendor/") == 1
+    assert await changed(include_paths=["vendor/"]) == 1
+    assert await changed(include_paths="docs/, vendor/") == 1
+    # A filtered result is never served to the unfiltered call.
+    assert await changed() == 2
+
+
+async def test_include_paths_scope_the_score_and_every_block_that_reads_the_files(
+    tool, make_repo, monkeypatch
+):
+    repo = make_repo()
+    repo.commit("seed", {"app.py": "x = 1\n"})
+    repo.commit(
+        "add",
+        {"app.py": python_complex("a", 16), "vendor/lib.py": python_complex("b", 16)},
+    )
+    module = tool(repo)
+    # The changed-lines read every enrichment block shares, seen at the cross-repo join.
+    seen: list[list[str]] = []
+
+    async def cross_repo_tests(_alias, files):
+        seen.append(files)
+
+    monkeypatch.setattr(module, "cross_repo_tests", cross_repo_tests)
+
+    result = await module.get_change_risk(
+        "HEAD", baseline=0, include_paths="vendor/", include=["diagnostics"]
+    )
+
+    assert result["features"]["nf"] == 1
+    assert result["health_delta"]["scope"]["changed"] == 1
+    assert seen == [["vendor/lib.py"]]
+    nothing = await module.get_change_risk("HEAD", baseline=0, include_paths="docs/")
+    assert nothing["status"] == "nothing_to_score"

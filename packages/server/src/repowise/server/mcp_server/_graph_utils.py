@@ -10,6 +10,7 @@ import json
 from collections import Counter
 from typing import Any
 
+from repowise.core.analysis.communities import has_community
 from repowise.core.analysis.execution_flows import FlowTermination, classify_termination
 from repowise.core.analysis.execution_graph import (
     is_excluded_execution_path,
@@ -55,6 +56,13 @@ def community_cohesion(node: GraphNode) -> float:
     """Extract cohesion score from community_meta_json."""
     meta = parse_community_meta(node)
     return float(meta.get("cohesion", 0.0) or 0.0)
+
+
+def community_conductance(node: GraphNode) -> float | None:
+    """Conductance from community_meta_json; ``None`` on an older index."""
+    meta = parse_community_meta(node)
+    value = meta.get("conductance")
+    return float(value) if value is not None else None
 
 
 def entry_point_score(node: GraphNode) -> float:
@@ -197,7 +205,7 @@ async def resolve_trace_communities(
     for nid in trace:
         n = node_cache.get(nid)
         cid = n.community_id if n else 0
-        if cid is not None and cid not in seen:
+        if has_community(cid) and cid not in seen:
             seen.add(cid)
             communities_visited.append(cid)
 
@@ -266,8 +274,12 @@ def build_visual_context(
     # --- Community analysis ---
     src_meta = node_meta.get(source)
     tgt_meta = node_meta.get(target)
-    src_community = src_meta.community_id if src_meta else None
-    tgt_community = tgt_meta.community_id if tgt_meta else None
+    src_community = (
+        src_meta.community_id if src_meta and has_community(src_meta.community_id) else None
+    )
+    tgt_community = (
+        tgt_meta.community_id if tgt_meta and has_community(tgt_meta.community_id) else None
+    )
 
     context["community"] = {
         "source_community": src_community,
@@ -280,7 +292,8 @@ def build_visual_context(
         bridge_nodes = []
         nodes_by_community: dict[int, set[str]] = {}
         for n in nodes:
-            nodes_by_community.setdefault(n.community_id, set()).add(n.node_id)
+            if has_community(n.community_id):
+                nodes_by_community.setdefault(n.community_id, set()).add(n.node_id)
 
         src_community_nodes = nodes_by_community.get(src_community, set())
         tgt_community_nodes = nodes_by_community.get(tgt_community, set())

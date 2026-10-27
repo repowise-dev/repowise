@@ -9,7 +9,7 @@ Internal layout:
     pertype.py     — per-page-type generate_* methods (mixin)
     orchestrate.py — level-by-level generate_all orchestration
     levels.py      — per-level coroutine builders
-    tiering.py     — tier-1/tier-2 partition (large-repo doc generation)
+    structural.py  — renderers that build a page from structure, no model
     prompts.py     — SYSTEM_PROMPTS constants + language names
     validation.py  — hallucination detection for LLM output
     helpers.py     — pure helpers (summaries, significance, clone dedupe)

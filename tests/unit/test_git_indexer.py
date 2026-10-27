@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
@@ -173,30 +175,30 @@ class TestCoChangeDetection:
         )
         mock_repo.git.log.return_value = raw_log
 
-        result, _entropy = compute_co_changes_and_entropy(mock_repo, all_files, commit_limit=500)
+        result = compute_co_changes_and_entropy(mock_repo, all_files, commit_limit=500)
 
         # a.py <-> b.py should appear (co-changed 4 times)
-        assert "a.py" in result
-        partner_paths = [p["file_path"] for p in result["a.py"]]
+        assert "a.py" in result.partners
+        partner_paths = [p["file_path"] for p in result.partners["a.py"]]
         assert "b.py" in partner_paths
 
-        assert "b.py" in result
-        partner_paths_b = [p["file_path"] for p in result["b.py"]]
+        assert "b.py" in result.partners
+        partner_paths_b = [p["file_path"] for p in result.partners["b.py"]]
         assert "a.py" in partner_paths_b
 
         # Three of the four commits are the pair alone, so each contributes its
         # full weight; the three-file commit contributes half.
-        co_count = next(p["co_change_count"] for p in result["a.py"] if p["file_path"] == "b.py")
+        co_count = next(p["co_change_count"] for p in result.partners["a.py"] if p["file_path"] == "b.py")
         assert 3.4 <= co_count <= 3.6
 
         # The plain count is undecayed and unsplit.
-        entry_b = next(p for p in result["a.py"] if p["file_path"] == "b.py")
+        entry_b = next(p for p in result.partners["a.py"] if p["file_path"] == "b.py")
         assert entry_b["frequency"] == 4
         assert entry_b["self_commits"] == 4
         assert entry_b["partner_commits"] == 4
 
         # Verify last_co_change date is present
-        entry = next(p for p in result["a.py"] if p["file_path"] == "b.py")
+        entry = next(p for p in result.partners["a.py"] if p["file_path"] == "b.py")
         assert "last_co_change" in entry
         assert entry["last_co_change"] is not None
 
@@ -318,6 +320,48 @@ class TestHotspotAbsoluteFloors:
         assets = next(m for m in metas if m["file_path"] == "assets.bin")
         assert assets["is_hotspot"] is True
 
+    def test_percentiles_parity_with_sql_percent_rank(self) -> None:
+        """N=5 percentiles mirror SQL PERCENT_RANK() exactly: [0.0, 0.25, 0.50, 0.75, 1.00]."""
+        from repowise.core.ingestion.git_indexer.enrich import compute_percentiles
+
+        metas = [
+            {
+                "file_path": f"f{i}.py",
+                "temporal_hotspot_score": float(i * 10),
+                "commit_count_90d": 10,
+                "lines": 100,
+            }
+            for i in range(1, 6)
+        ]
+        compute_percentiles(metas)
+        pcts = [m["churn_percentile"] for m in metas]
+        assert pcts == [0.0, 0.25, 0.50, 0.75, 1.00]
+        # f4 and f5 are >= 0.75 and clear floors
+        assert metas[0].get("is_hotspot", False) is False
+        assert metas[1].get("is_hotspot", False) is False
+        assert metas[2].get("is_hotspot", False) is False
+        assert metas[3].get("is_hotspot", False) is True
+        assert metas[4].get("is_hotspot", False) is True
+
+    def test_percentiles_tie_breaking_shared_rank(self) -> None:
+        """Ties share the same rank and hotspot classification instead of being arbitrarily split."""
+        from repowise.core.ingestion.git_indexer.enrich import compute_percentiles
+
+        metas = [
+            {"file_path": "quiet.py", "temporal_hotspot_score": 1.0, "commit_count_90d": 2, "lines": 50},
+            {"file_path": "tied_a.py", "temporal_hotspot_score": 50.0, "commit_count_90d": 12, "lines": 100},
+            {"file_path": "tied_b.py", "temporal_hotspot_score": 50.0, "commit_count_90d": 12, "lines": 100},
+            {"file_path": "tied_c.py", "temporal_hotspot_score": 50.0, "commit_count_90d": 12, "lines": 100},
+        ]
+        compute_percentiles(metas)
+        assert metas[0]["churn_percentile"] == 0.0
+        # All three tied items have exactly 1 file scoring strictly lower out of 3 possible: 1 / 3 = 0.333...
+        assert metas[1]["churn_percentile"] == pytest.approx(1 / 3)
+        assert metas[2]["churn_percentile"] == pytest.approx(1 / 3)
+        assert metas[3]["churn_percentile"] == pytest.approx(1 / 3)
+        # Hotspot status is identical for all three
+        assert metas[1].get("is_hotspot", False) == metas[2].get("is_hotspot", False) == metas[3].get("is_hotspot", False)
+
 
 class TestCountActiveContributors:
     """count_active_contributors derives the repo's 90-day team size from
@@ -380,6 +424,67 @@ class TestCountActiveContributors:
         metas = [self._meta(("Alice", anchor), ("Bob", anchor - 30 * 86400))]
         assert count_active_contributors(metas) == 2
 
+    @pytest.mark.parametrize(
+        ("authors", "expected"),
+        [
+            pytest.param(
+                [("Alice Smith", "alice@example.com"), ("alice", "alice@example.com")],
+                1,
+                id="same-email-aliases",
+            ),
+            pytest.param(
+                [("Alex", "first@example.com"), ("Alex", "second@example.com")],
+                2,
+                id="same-name-distinct-emails",
+            ),
+            pytest.param(
+                [
+                    ("Alice", "123+alice@users.noreply.github.com"),
+                    ("alice", "alice@users.noreply.github.com"),
+                ],
+                1,
+                id="canonical-noreply-email",
+            ),
+            pytest.param([("Alice", None), (" Alice ", None)], 1, id="name-fallback-whitespace"),
+            pytest.param([("Alice", None), ("alice", None)], 1, id="name-fallback-case-insensitive"),
+            pytest.param([("", "alice@example.com")], 1, id="email-without-name"),
+            pytest.param([("", None)], None, id="missing-identity"),
+        ],
+    )
+    def test_counts_canonical_identities(
+        self, authors: list[tuple[str, str | None]], expected: int | None
+    ) -> None:
+        import json
+
+        from repowise.core.ingestion.git_indexer.enrich import count_active_contributors
+
+        metas = [{
+            "top_authors_json": json.dumps([
+                {"name": name, "email": email, "last_commit_ts": 1_700_000_000}
+                for name, email in authors
+            ])
+        }]
+        assert count_active_contributors(metas) == expected
+
+    def test_identity_keeps_latest_timestamp_across_files(self) -> None:
+        import json
+
+        from repowise.core.ingestion.git_indexer.enrich import count_active_contributors
+
+        anchor = 1_700_000_000
+        cutoff = anchor - 30 * 86400
+        metas = [
+            {"top_authors_json": json.dumps([
+                {"name": "Alice", "email": "alice@example.com", "last_commit_ts": anchor},
+                {"name": "Bob", "email": "bob@example.com", "last_commit_ts": cutoff},
+            ])},
+            {"top_authors_json": json.dumps([
+                {"name": "alice", "email": "alice@example.com", "last_commit_ts": cutoff - 1},
+                {"name": "Carol", "email": "carol@example.com", "last_commit_ts": cutoff - 1},
+            ])},
+        ]
+        assert count_active_contributors(metas, window_days=30) == 2
+
 
 # ---------------------------------------------------------------------------
 # 4. test_stable_classification
@@ -405,6 +510,8 @@ class TestStableClassification:
                 f"\x00sha{i:04d}\x1fAlice\x1falice@example.com\x1fAlice\x1falice@example.com\x1f{ts}\x1f{_iso(ts)}\x1f\x1ffeat: old commit {i}\x1f"
             )
         mock_repo.git.log.return_value = "\n".join(log_lines)
+        # HEAD moved on today in another file; this one sat idle.
+        mock_repo.head.commit.committed_date = int(datetime.now(UTC).timestamp())
 
         meta = indexer._index_file("stable_file.py", mock_repo)
 
@@ -446,11 +553,47 @@ class TestStableClassification:
         assert authors["Alice"]["last_commit_ts"] < authors["Bob"]["last_commit_ts"]
         assert authors["Bob"]["last_commit_ts"] == bob_last
 
+    def test_top_authors_carry_each_authors_own_recent_commit_count(self) -> None:
+        """Each top-author entry records how many of ITS OWN commits on this
+        file fall in the 90-day window, not the file's own window-wide count (#2862)."""
+        import json
+
+        indexer = GitIndexer("/tmp/repo")
+        mock_repo = MagicMock()
+
+        now = datetime.now(UTC)
+        # A bare MagicMock resolves ``float(repo.head.commit.committed_date)``
+        # to 1.0 (its default __float__), anchoring the 90-day window at the
+        # epoch instead of raising and falling back to wall-clock "now" — so
+        # the anchor must be set explicitly for the window to mean anything.
+        mock_repo.head.commit.committed_date = int(now.timestamp())
+        # Alice: one commit 200 days ago (outside the window) and one 10 days
+        # ago (inside). Bob: one commit 150 days ago (outside) only.
+        specs = [
+            ("Alice", "alice@example.com", now - timedelta(days=200)),
+            ("Alice", "alice@example.com", now - timedelta(days=10)),
+            ("Bob", "bob@example.com", now - timedelta(days=150)),
+        ]
+        log_lines = []
+        for i, (name, email, when) in enumerate(specs):
+            ts = int(when.timestamp())
+            log_lines.append(
+                f"\x00sha{i:04d}\x1f{name}\x1f{email}\x1f{name}\x1f{email}\x1f{ts}\x1f{_iso(ts)}\x1f\x1ffeat: c{i}\x1f"
+            )
+        mock_repo.git.log.return_value = "\n".join(log_lines)
+
+        meta = indexer._index_file("shared.py", mock_repo)
+        authors = {a["name"]: a for a in json.loads(meta["top_authors_json"])}
+
+        assert authors["Alice"]["commit_count"] == 2
+        assert authors["Alice"]["recent_commit_count"] == 1
+        assert authors["Bob"]["commit_count"] == 1
+        assert authors["Bob"]["recent_commit_count"] == 0
+
 
 class TestGitWindowAnchor:
-    """REPOWISE_GIT_WINDOW_ANCHOR anchors recency windows to the repo's most
-    recent commit instead of wall-clock now() — default off (product unchanged),
-    on for historical T0 scoring so windowed signals aren't silently empty."""
+    """Recency windows are anchored to the indexed commit by default;
+    REPOWISE_GIT_WINDOW_ANCHOR=now opts back into wall-clock time."""
 
     def _mock_repo_with_old_commits(self) -> tuple[MagicMock, datetime]:
         mock_repo = MagicMock()
@@ -466,16 +609,20 @@ class TestGitWindowAnchor:
         mock_repo.head.commit.committed_date = int(old_date.timestamp())
         return mock_repo, old_date
 
-    def test_default_uses_wall_clock(self, monkeypatch) -> None:
-        monkeypatch.delenv("REPOWISE_GIT_WINDOW_ANCHOR", raising=False)
+    def test_wall_clock_opt_in(self, monkeypatch) -> None:
+        monkeypatch.setenv("REPOWISE_GIT_WINDOW_ANCHOR", "now")
         indexer = GitIndexer("/tmp/repo")
         mock_repo, _ = self._mock_repo_with_old_commits()
         meta = indexer._index_file("f.py", mock_repo)
         # 180-day-old commits are outside a now()-anchored 90d window.
         assert meta["commit_count_90d"] == 0
 
-    def test_anchor_to_head_commit(self, monkeypatch) -> None:
-        monkeypatch.setenv("REPOWISE_GIT_WINDOW_ANCHOR", "head")
+    @pytest.mark.parametrize("value", [None, "head"])
+    def test_anchor_to_head_commit(self, monkeypatch, value) -> None:
+        if value is None:
+            monkeypatch.delenv("REPOWISE_GIT_WINDOW_ANCHOR", raising=False)
+        else:
+            monkeypatch.setenv("REPOWISE_GIT_WINDOW_ANCHOR", value)
         indexer = GitIndexer("/tmp/repo")
         mock_repo, _ = self._mock_repo_with_old_commits()
         meta = indexer._index_file("f.py", mock_repo)
@@ -484,8 +631,10 @@ class TestGitWindowAnchor:
 
 
 class TestFixCommitClassifier:
-    """``is_fix_commit`` must agree byte-for-byte with the benchmark's
-    ``lib/defect_counter.find_fix_commits`` keyword rule (product == benchmark)."""
+    """``is_fix_commit`` must agree with the benchmark's
+    ``lib/defect_counter.find_fix_commits`` keyword rule (product == benchmark),
+    including verb inflections ("fixed", "fixes", "fixing") and compounds
+    ("hotfix", "bugfix")."""
 
     def test_include_patterns_match(self) -> None:
         from repowise.core.ingestion.git_indexer._constants import is_fix_commit
@@ -496,6 +645,12 @@ class TestFixCommitClassifier:
         assert is_fix_commit("closes #123")
         assert is_fix_commit("fixes #99 regression")
         assert is_fix_commit("squash a nasty bug")
+        assert is_fix_commit("Fixed #36012 -- Made QuerySet.update() respect ...")
+        assert is_fix_commit("Fixes crash when config is empty")
+        assert is_fix_commit("Fixing race in worker shutdown")
+        assert is_fix_commit("Fixed a crash in the pager")
+        assert is_fix_commit("hotfix: restore login")
+        assert is_fix_commit("bugfix: off-by-one in pager")
 
     def test_exclude_overrides_include(self) -> None:
         from repowise.core.ingestion.git_indexer._constants import is_fix_commit
@@ -506,12 +661,21 @@ class TestFixCommitClassifier:
         assert not is_fix_commit("Merge fix branch")
         assert not is_fix_commit("bump deps to fix CVE")
         assert not is_fix_commit("fix a typo")
+        assert not is_fix_commit("Fixed typo in docs")
+        assert not is_fix_commit("Fixes lint")
+        assert not is_fix_commit("Fixing formatting in docs")
 
     def test_non_fixes_silent(self) -> None:
         from repowise.core.ingestion.git_indexer._constants import is_fix_commit
 
         assert not is_fix_commit("feat: add new endpoint")
         assert not is_fix_commit("refactor the walker")
+        assert not is_fix_commit("affixed the label")
+        assert not is_fix_commit("fixture update")
+        assert not is_fix_commit("prefix with namespace")
+        assert not is_fix_commit("postfix expression")
+        assert not is_fix_commit("prefixed #123")
+        assert not is_fix_commit("affixed #123")
         assert not is_fix_commit("")
 
 
@@ -964,8 +1128,35 @@ class TestCoChangeBelowThresholdSkipped:
     """A pair is kept on shared commits, not on the decayed weight."""
 
     def test_an_old_pair_survives_where_a_weight_cutoff_would_drop_it(self) -> None:
-        """Three co-changes two years ago decay to a weight under any useful
-        cutoff, but they are still three co-changes and the pair is real."""
+        """Three co-changes buried deep in the history decay to a weight under
+        any useful cutoff, but they are still three co-changes and the pair is
+        real. Deep in COMMITS, not in days: the pair weight decays on the walk
+        position, which is the only clock this measure uses."""
+        mock_repo = MagicMock()
+        import time
+
+        now = int(time.time())
+        # 2,000 unrelated commits ahead of the pair, so it sits four
+        # commit-tau deep in the walk.
+        blocks = [f"\x00{now - i}\nnoise_a.py\nnoise_b.py\n" for i in range(2000)]
+        blocks += [f"\x00{now - 2000 - i}\np.py\nq.py\n" for i in range(3)]
+        mock_repo.git.log.return_value = "".join(blocks)
+
+        result = compute_co_changes_and_entropy(
+            mock_repo,
+            {"p.py", "q.py", "noise_a.py", "noise_b.py"},
+            commit_limit=5000,
+        )
+
+        (partner,) = result.partners["p.py"]
+        assert partner["frequency"] == 3
+        assert partner["co_change_count"] < 0.1
+
+    def test_calendar_age_alone_does_not_decay_a_pair(self) -> None:
+        """The regression the commit clock exists to stop. A repo whose whole
+        indexed history is old is not a repo whose coupling is stale: under the
+        calendar decay these three two-year-old commits weighed ~0.01, and
+        under the commit clock they are the newest commits there are."""
         mock_repo = MagicMock()
         import time
 
@@ -974,13 +1165,48 @@ class TestCoChangeBelowThresholdSkipped:
             f"\x00{old - i * 86400}\np.py\nq.py\n" for i in range(3)
         )
 
-        result, _entropy = compute_co_changes_and_entropy(
+        result = compute_co_changes_and_entropy(
             mock_repo, {"p.py", "q.py"}, commit_limit=500
         )
 
-        (partner,) = result["p.py"]
-        assert partner["frequency"] == 3
-        assert partner["co_change_count"] < 0.1
+        (partner,) = result.partners["p.py"]
+        assert partner["co_change_count"] > 2.9
+        # Breadth is measured over every partner, not the truncated list.
+        assert result.partner_count["p.py"] == 1
+        # Same quantity, stored to one more decimal place than the record.
+        assert result.partner_mass["p.py"] == pytest.approx(
+            partner["co_change_count"], abs=1e-4
+        )
+
+
+class TestCoChangeBreadth:
+    """partner_count / partner_mass are measured before the storage cap."""
+
+    def test_breadth_counts_past_the_partner_cap(self) -> None:
+        import time
+
+        from repowise.core.co_change import MAX_PARTNERS_PER_FILE
+
+        peers = [f"peer_{i}.py" for i in range(MAX_PARTNERS_PER_FILE + 20)]
+        all_files = {"hub.py", *peers}
+        mock_repo = MagicMock()
+
+        now = int(time.time())
+        # Two commits per pair, so every pair clears MIN_CO_CHANGE_SUPPORT.
+        blocks = []
+        for i, peer in enumerate(peers):
+            for rep in range(2):
+                blocks.append(f"\x00{now - (i * 2 + rep)}\nhub.py\n{peer}\n")
+        mock_repo.git.log.return_value = "".join(blocks)
+
+        result = compute_co_changes_and_entropy(mock_repo, all_files, commit_limit=5000)
+
+        # The stored list saturates at the cap; the count does not.
+        assert len(result.partners["hub.py"]) == MAX_PARTNERS_PER_FILE
+        assert result.partner_count["hub.py"] == len(peers)
+        assert result.partner_mass["hub.py"] > sum(
+            p["co_change_count"] for p in result.partners["hub.py"]
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1021,18 +1247,18 @@ class TestChangeEntropy:
         mock_repo = MagicMock()
         mock_repo.git.log.return_value = "".join(blocks)
 
-        _co, entropy = compute_co_changes_and_entropy(
+        entropy = compute_co_changes_and_entropy(
             mock_repo, all_files, commit_limit=2000
         )
 
         # Focused file changed alone → no entropy entry.
-        assert entropy.get("focused.py", 0.0) == 0.0
+        assert entropy.entropy.get("focused.py", 0.0) == 0.0
         # Scattered file accrued positive entropy.
-        assert entropy.get("scattered.py", 0.0) > 0.0
+        assert entropy.entropy.get("scattered.py", 0.0) > 0.0
         # Mass-edit commit excluded → bigcommit.py gets nothing from it.
-        assert entropy.get("bigcommit.py", 0.0) == 0.0
+        assert entropy.entropy.get("bigcommit.py", 0.0) == 0.0
         # Scattered clearly dominates focused.
-        assert entropy["scattered.py"] > entropy.get("focused.py", 0.0)
+        assert entropy.entropy["scattered.py"] > entropy.entropy.get("focused.py", 0.0)
 
     def test_change_entropy_percentile_silent_when_all_zero(self) -> None:
         """ESSENTIAL-tier shape (no entropy on any file) → all pct stay 0.0."""
@@ -1146,12 +1372,12 @@ class TestCoChangeCommitWidth:
             wide,
         )
 
-        result, _entropy = compute_co_changes_and_entropy(
+        result = compute_co_changes_and_entropy(
             mock_repo, all_files, commit_limit=500
         )
 
-        narrow = next(p for p in result["a.py"] if p["file_path"] == "b.py")
-        broad = next(p for p in result["w0.py"] if p["file_path"] == "w1.py")
+        narrow = next(p for p in result.partners["a.py"] if p["file_path"] == "b.py")
+        broad = next(p for p in result.partners["w0.py"] if p["file_path"] == "w1.py")
         assert narrow["frequency"] == broad["frequency"] == 2
         assert narrow["co_change_count"] > broad["co_change_count"] * 10
 
@@ -1170,11 +1396,11 @@ class TestCoChangeCommitWidth:
             now, ("hub.py", *others), ("hub.py", *others)
         )
 
-        result, _entropy = compute_co_changes_and_entropy(
+        result = compute_co_changes_and_entropy(
             mock_repo, all_files, commit_limit=500
         )
 
-        assert len(result["hub.py"]) == MAX_PARTNERS_PER_FILE
+        assert len(result.partners["hub.py"]) == MAX_PARTNERS_PER_FILE
 
     def test_partner_records_carry_each_side_own_commit_total(self) -> None:
         """The two totals differ, which is what makes confidence directional."""
@@ -1190,11 +1416,11 @@ class TestCoChangeCommitWidth:
             ("readme.md", "other.md"),
         )
 
-        result, _entropy = compute_co_changes_and_entropy(
+        result = compute_co_changes_and_entropy(
             mock_repo, {"readme.md", "bench.md", "other.md"}, commit_limit=500
         )
 
-        bench = next(p for p in result["readme.md"] if p["file_path"] == "bench.md")
+        bench = next(p for p in result.partners["readme.md"] if p["file_path"] == "bench.md")
         assert bench["self_commits"] == 4
         assert bench["partner_commits"] == 2
 
@@ -1210,11 +1436,145 @@ class TestCoChangeCommitWidth:
         mock_repo = MagicMock()
         mock_repo.git.log.return_value = self._log(now, shared, shared, *([alone] * 9))
 
-        result, _entropy = compute_co_changes_and_entropy(
+        result = compute_co_changes_and_entropy(
             mock_repo, {"config.py", "loader.py"}, commit_limit=500
         )
 
-        (partner,) = result["config.py"]
+        (partner,) = result.partners["config.py"]
         assert partner["frequency"] == 2
         assert partner["self_commits"] == 11  # 2 shared + 9 alone
         assert partner["partner_commits"] == 2
+
+    def test_the_focused_count_leaves_out_sweep_commits(self) -> None:
+        """A sweep is still a commit of every file it touches, and still a
+        shared commit, but not one the focused count holds as evidence."""
+        import time
+
+        from repowise.core.ingestion.git_indexer._constants import (
+            _MAX_FILES_PER_COMMIT_FOR_ENTROPY,
+        )
+
+        now = int(time.time())
+        sweep = ("a.py", "b.py", *(f"s{i}.py" for i in range(_MAX_FILES_PER_COMMIT_FOR_ENTROPY)))
+        mock_repo = MagicMock()
+        mock_repo.git.log.return_value = self._log(now, ("a.py", "b.py"), sweep, sweep)
+
+        result = compute_co_changes_and_entropy(mock_repo, set(sweep), commit_limit=500)
+
+        partner = next(p for p in result.partners["a.py"] if p["file_path"] == "b.py")
+        assert partner["frequency"] == 3
+        assert partner["focused_frequency"] == 1
+        assert partner["self_commits"] == 3
+
+    def test_the_sweep_cap_is_inclusive(self) -> None:
+        """A commit of exactly the cap is focused; one file more is a sweep."""
+        import time
+
+        from repowise.core.ingestion.git_indexer._constants import (
+            _MAX_FILES_PER_COMMIT_FOR_ENTROPY as CAP,
+        )
+
+        now = int(time.time())
+        at_cap = ("a.py", "b.py", *(f"s{i}.py" for i in range(CAP - 2)))
+        over_cap = (*at_cap, "extra.py")
+        assert (len(at_cap), len(over_cap)) == (CAP, CAP + 1)
+        mock_repo = MagicMock()
+        mock_repo.git.log.return_value = self._log(now, at_cap, over_cap)
+
+        result = compute_co_changes_and_entropy(mock_repo, set(over_cap), commit_limit=500)
+
+        partner = next(p for p in result.partners["a.py"] if p["file_path"] == "b.py")
+        assert partner["frequency"] == 2
+        assert partner["focused_frequency"] == 1
+
+
+# ---------------------------------------------------------------------------
+# index_repo setup must not block the event loop
+# ---------------------------------------------------------------------------
+
+
+class TestIndexRepoDoesNotBlockLoop:
+    """Git setup shares a loop with ingestion, so it has to run off-loop."""
+
+    @pytest.mark.asyncio
+    async def test_blocking_setup_does_not_stall_event_loop(self) -> None:
+        # Warm the lazy import index_repo does on the loop; a cold import in an
+        # isolated run would otherwise show up as lag unrelated to git setup.
+        import repowise.core.pipeline.phase_timing  # noqa: F401
+
+        indexer = GitIndexer("/tmp/repo")
+        repo = MagicMock()
+        repo.git.config.side_effect = ["", ""]
+
+        def slow_tracked_files(_repo: object) -> list[str]:
+            time.sleep(0.6)  # stands in for ls-files plus the commit walk
+            return []
+
+        lags: list[float] = []
+        stop = asyncio.Event()
+
+        async def probe() -> None:
+            while not stop.is_set():
+                t0 = time.monotonic()
+                await asyncio.sleep(0.01)
+                lags.append(time.monotonic() - t0 - 0.01)
+
+        with (
+            patch.object(indexer, "_get_repo", return_value=repo),
+            patch.object(indexer, "_skip_partial_clone_history", return_value=False),
+            patch.object(indexer, "_get_tracked_files", side_effect=slow_tracked_files),
+        ):
+            task = asyncio.create_task(probe())
+            await asyncio.sleep(0)  # let the probe start ticking
+            summary, metadata = await indexer.index_repo("test-repo-id")
+            stop.set()
+            await task
+
+        assert summary.files_indexed == 0
+        assert metadata == []
+        assert len(lags) > 5, "probe barely ran: the loop was blocked"
+        assert max(lags) < 0.2
+
+    @pytest.mark.asyncio
+    async def test_on_start_runs_on_event_loop_thread(self) -> None:
+        import threading
+
+        indexer = GitIndexer("/tmp/repo")
+        repo = MagicMock()
+        repo.git.config.side_effect = ["remote.origin.promisor true", "blob:none"]
+        seen: list[int] = []
+
+        with patch.object(indexer, "_get_repo", return_value=repo):
+            await indexer.index_repo(
+                "test-repo-id", on_start=lambda _n: seen.append(threading.get_ident())
+            )
+
+        assert seen == [threading.get_ident()]
+
+    @pytest.mark.asyncio
+    async def test_full_index_on_real_repo_end_to_end(self, tmp_path) -> None:
+        """The whole path (setup thread, per-file pass, summary) on a real repo."""
+        import subprocess
+
+        def git(*args: str) -> None:
+            subprocess.run(
+                ["git", "-c", "user.name=T", "-c", "user.email=t@example.com", *args],
+                cwd=tmp_path,
+                check=True,
+                capture_output=True,
+            )
+
+        git("init", "-q")
+        (tmp_path / "a.py").write_text("print('a')\n")
+        (tmp_path / "b.py").write_text("print('b')\n")
+        git("add", ".")
+        git("commit", "-q", "-m", "init")
+
+        started: list[int] = []
+        summary, metadata = await GitIndexer(str(tmp_path)).index_repo(
+            "real-repo-id", on_start=started.append
+        )
+
+        assert started and started[0] >= 2
+        assert summary.files_indexed >= 2
+        assert {m["file_path"] for m in metadata} >= {"a.py", "b.py"}

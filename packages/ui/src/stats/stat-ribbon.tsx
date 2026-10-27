@@ -1,8 +1,16 @@
 import * as React from "react";
 
+import { InfoTip } from "../shared/info-tip";
+
 export interface RibbonStat {
   label: string;
   value: string;
+  /**
+   * What this figure means, shown on an `InfoTip` beside the label. A figure a
+   * reader cannot define is a figure they cannot act on, and the native `title`
+   * this used to render was invisible, unreachable by keyboard and absent on
+   * touch — an explainer nobody could find.
+   */
   hint?: string;
   /**
    * Tailwind text-colour class for the value. Only for figures that carry a
@@ -15,6 +23,8 @@ export interface RibbonStat {
   sub?: string | undefined;
   /** Tailwind text-colour class for `sub`. Same rule as `valueColor`. */
   subColor?: string | undefined;
+  /** Marks the figure the page's current selection describes. */
+  highlighted?: boolean | undefined;
   /** Optional jump to the page that owns this figure. Added because the
    *  Overview replaced a strip of *linked* KPI tiles with this component, and
    *  without it Files and Symbols lost their only entry point from that page. */
@@ -32,6 +42,25 @@ export interface RibbonStat {
  * Rendered as a `<dl>` because that is what it is — labelled values, not a
  * layout grid.
  */
+// Column counts follow the number of cells, so four figures fill the row
+// instead of leaving a blank fifth column. Static class names for Tailwind.
+const BASE_COLS = ["", "grid-cols-1", "grid-cols-2"];
+const SM_COLS = ["", "sm:grid-cols-1", "sm:grid-cols-2", "sm:grid-cols-3"];
+const LG_COLS = ["", "lg:grid-cols-1", "lg:grid-cols-2", "lg:grid-cols-3", "lg:grid-cols-4", "lg:grid-cols-5"];
+
+/** Hairlines between cells only; the outer edges come from the wrapper's border-y. */
+function hairlines(i: number, n: number): string {
+  const [base, sm, lg] = [Math.min(n, 2), Math.min(n, 3), Math.min(n, 5)];
+  return [
+    i % base ? "border-l" : "border-l-0",
+    i >= base ? "border-t" : "border-t-0",
+    i % sm ? "sm:border-l" : "sm:border-l-0",
+    i >= sm ? "sm:border-t" : "sm:border-t-0",
+    i % lg ? "lg:border-l" : "lg:border-l-0",
+    i >= lg ? "lg:border-t" : "lg:border-t-0",
+  ].join(" ");
+}
+
 export function StatRibbon({
   stats,
   LinkComponent,
@@ -43,36 +72,28 @@ export function StatRibbon({
   const shown = stats.filter((s) => s.value);
   if (shown.length === 0) return null;
   const A = LinkComponent ?? "a";
+  const n = shown.length;
 
   return (
-    <dl className="grid grid-cols-2 border-y border-[var(--color-border-default)] sm:grid-cols-3 lg:grid-cols-5">
+    <dl
+      className={`grid border-y border-[var(--color-border-default)] ${BASE_COLS[Math.min(n, 2)]} ${
+        SM_COLS[Math.min(n, 3)]
+      } ${LG_COLS[Math.min(n, 5)]}`}
+    >
       {shown.map((s, i) => (
         <div
           key={s.label}
-          title={s.hint}
-          className={[
-            s.href ? "" : "px-4 py-3.5",
-            s.hint ? "cursor-help" : "",
-            // Hairlines between cells only — the outer edges come from the
-            // wrapper's border-y, so cells never double up on the boundary.
-            "border-[var(--color-border-default)]",
-            i % 2 === 1 ? "border-l" : "",
-            i >= 2 ? "border-t" : "",
-            "sm:border-l sm:border-t-0",
-            i % 3 === 0 ? "sm:border-l-0" : "",
-            i >= 3 ? "sm:border-t" : "",
-            "lg:border-l lg:border-t-0",
-            i % 5 === 0 ? "lg:border-l-0" : "",
-          ]
-            .filter(Boolean)
-            .join(" ")}
+          className={`${s.href ? "" : "px-4 py-3.5"} border-[var(--color-border-default)] ${hairlines(i, n)}`}
         >
           {s.href ? (
             // The link wraps the whole cell rather than the value, so the
             // padding is part of the hit target instead of a dead margin
             // around it.
+            // A linked cell keeps the native tooltip: the anchor wraps the whole
+            // cell, and a tip is a button, which cannot nest inside it.
             <A
               href={s.href}
+              title={s.hint}
               className="group block px-4 py-3.5 no-underline transition-colors hover:bg-[var(--color-bg-elevated)]"
             >
               <dt className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
@@ -85,11 +106,23 @@ export function StatRibbon({
               >
                 {s.value}
               </dd>
+              {s.sub && (
+                <dd className="mt-0.5 text-xs tabular-nums text-[var(--color-text-tertiary)]">
+                  {s.sub}
+                </dd>
+              )}
             </A>
           ) : (
             <>
-              <dt className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+              <dt
+                className={`flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.12em] ${
+                  s.highlighted
+                    ? "text-[var(--color-accent-primary)]"
+                    : "text-[var(--color-text-tertiary)]"
+                }`}
+              >
                 {s.label}
+                {s.hint && <InfoTip content={s.hint} label={`What ${s.label} means`} />}
               </dt>
               <dd
                 className={`mt-1 text-xl font-semibold tabular-nums ${

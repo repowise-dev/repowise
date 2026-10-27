@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 from repowise.core.ingestion.framework_routes import django_includes, django_routes
 
 from ..base import line_at
+from ..calls import outside_comments
 from ..langs import PYTHON
 from .dialect import build_provider_contract
 from .mounts import compose_prefix
@@ -48,16 +49,13 @@ def _module_suffixes(rel_path: str) -> list[str]:
 class DjangoDialect:
     name = "django"
     extensions = PYTHON
+    requires = _DJANGO_URLS_IMPORT
 
-    def collect_mounts(self, content: str) -> dict[str, str]:
-        """``include("api.urls")`` mounts declared in *content*, keyed by module."""
-        if not any(mod in content for mod in _DJANGO_URLS_IMPORT):
-            return {}
-        return {_MOUNT_PREFIX + module: prefix for prefix, module in django_includes(content)}
+    def collect_mounts(self, ctx: ScanContext) -> dict[str, str]:
+        """``include("api.urls")`` mounts declared in the file, keyed by module."""
+        return {_MOUNT_PREFIX + module: prefix for prefix, module in django_includes(ctx.content)}
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
-        if not any(mod in ctx.content for mod in _DJANGO_URLS_IMPORT):
-            return []
         mount = next(
             (
                 p
@@ -67,7 +65,7 @@ class DjangoDialect:
             "",
         )
         out: list[Contract] = []
-        for route in django_routes(ctx.content):
+        for route in outside_comments(ctx, django_routes(ctx.content)):
             c = build_provider_contract(
                 ctx,
                 method="*",

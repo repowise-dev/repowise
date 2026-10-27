@@ -29,6 +29,28 @@ from typing import Any
 #: Hint stamped on an edge between two files of one package / build target.
 SAME_PACKAGE_HINT = "same_package"
 
+#: Hint stamped on an edge to a type declared in the file's own namespace
+#: (C#, VB.NET, PHP), where the language needs no import to name it.
+SAME_NAMESPACE_HINT = "same_namespace"
+
+#: Hint stamped on a PHP edge whose only evidence is a class name inside a
+#: comment or docblock (``@param \App\Foo $x``). A docblock type keeps its
+#: target reachable, but no code depends on it, so it cannot close a cycle.
+DOC_COMMENT_HINT = "doc_comment"
+
+#: Hint stamped on a parent module's edge to a child it declares (Rust
+#: ``mod child;``). The declaration places the child in the module tree; it uses
+#: nothing from it, so the child importing its parent is not a cycle. Any real
+#: import or type use between the same two files withdraws the hint
+#: (:func:`withdraw_declaration_hint`).
+MODULE_DECLARATION_HINT = "module_declaration"
+
+#: Hint stamped on a Java, Kotlin or C# ``type_use`` edge whose every type name
+#: the source file declares itself (two classes that each nest a ``Node``, an
+#: ``expect``/``actual`` pair). The language binds those names to the file's own
+#: declaration, so the edge depends on nothing in its target.
+OWN_TYPE_NAME_HINT = "own_type_name"
+
 #: Languages whose import statement names a *compilation unit* that is exactly a
 #: directory, so a fan-out landing in the importer's own directory landed on its
 #: siblings — and a unit cannot depend on itself.
@@ -62,15 +84,71 @@ UNIT_FANOUT_LANGUAGES: frozenset[str] = frozenset({"go", "java"})
 COHESION_HINTS: frozenset[str] = frozenset(
     {
         SAME_PACKAGE_HINT,  # JVM siblings; Go/JVM/C++ unit fan-out onto siblings
-        "same_namespace",  # C# same-namespace types
+        SAME_NAMESPACE_HINT,  # C# / VB.NET / PHP same-namespace types
         "global_using",  # C# project-wide global usings
         "same_module",  # Swift SPM target siblings
         "partial_class",  # C# fragments of one partial type
         "header_source_pair",  # C/C++ foo.h <-> foo.c
+        DOC_COMMENT_HINT,  # PHP name seen only in a comment: not co-membership,
+        # but the same split applies (reachability yes, cycle no)
+        MODULE_DECLARATION_HINT,  # Rust parent module declaring its child
+        OWN_TYPE_NAME_HINT,  # JVM / C# name the source file declares itself
     }
 )
+
+
+#: ``hint_source`` values on an edge that records no use of its target: the
+#: synthetic reverse of a header pair, fragments of one partial type, a name
+#: seen only in a comment, a name the source declares itself, and a parent
+#: module declaring its child. The text-scan hints (JVM ``same_package``,
+#: ``same_namespace``, ``global_using``, ``same_module``) are left out: there the
+#: hinted edge is the only record of a real use.
+NON_USE_HINTS: frozenset[str] = frozenset(
+    {
+        "header_source_pair",
+        "partial_class",
+        DOC_COMMENT_HINT,
+        OWN_TYPE_NAME_HINT,
+        MODULE_DECLARATION_HINT,
+    }
+)
+
+
+def records_no_use(data: Any, source: str, target: str) -> bool:
+    """True if the edge *data* from *source* to *target* records no use of *target*.
+
+    A Go same-package edge joins two files of one package, which import
+    nothing from each other; a JVM one is a resolved type reference and counts.
+    """
+    hint = data.get("hint_source")
+    if hint in NON_USE_HINTS:
+        return True
+    return hint == SAME_PACKAGE_HINT and source.endswith(".go") and target.endswith(".go")
+
+
+def withdraw_declaration_hint(data: dict[str, Any]) -> None:
+    """Drop the module-declaration hint once a real reference shares the edge."""
+    if data.get("hint_source") == MODULE_DECLARATION_HINT:
+        del data["hint_source"]
 
 
 def is_cohesion_edge(data: Any) -> bool:
     """True if *data* — a graph edge's attribute dict — is a cohesion edge."""
     return data.get("hint_source") in COHESION_HINTS
+
+
+def cannot_close_cycle(data: Any) -> bool:
+    """True if *data* is an edge no runtime import cycle can run through.
+
+    The one predicate both cycle definitions share (``cycle_subgraph`` and
+    ``refactoring.graph_signals``): cohesion edges, type-only imports, deferred
+    (function-local) imports, and ``dynamic_uses`` hints, which match a type by
+    short name rather than resolve a dependency (#2886). The edges stay in the
+    graph for reachability and centrality.
+    """
+    return (
+        is_cohesion_edge(data)
+        or bool(data.get("type_only"))
+        or bool(data.get("deferred"))
+        or data.get("edge_type") == "dynamic_uses"
+    )

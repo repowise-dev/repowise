@@ -1,12 +1,14 @@
 """Single-file-component source preparation.
 
-A ``.svelte`` or ``.vue`` file is three languages in one file: ``<script>``
-blocks hold TS/JS, the markup is a framework-flavoured HTML, and ``<style>`` is
-CSS. The markup grammars parse the file but hand each ``<script>`` body back as
-one opaque ``raw_text`` node — a ``.scm`` query run against them captures no
-symbol, no import and no call.
+A ``.svelte``, ``.vue``, ``.razor`` or ``.astro`` file is more than one
+language in one file: ``<script>`` blocks (and Astro's ``---`` frontmatter)
+hold TS/JS, the markup is a framework-flavoured HTML, and ``@code`` /
+``@{ }`` regions hold C#. The markup grammars parse
+the file but hand each ``<script>`` body back as one opaque ``raw_text``
+node, so a ``.scm`` query run against them captures no symbol, no import and
+no call.
 
-So a markup grammar is used here only to *locate* the JS-bearing regions:
+So a markup grammar is used here only to *locate* the code-bearing regions:
 
 * every ``<script>`` body,
 * every markup expression — Svelte's ``{expr}`` and ``on:click={inc}``, Vue's
@@ -27,7 +29,8 @@ the markup would make the dead-code pass wrong on nearly every component.
 Only the *region-location* step differs per language, so it lives behind
 :data:`_LOCATORS`; the blanking, fencing, caching and offset invariants are
 shared. Adding a markup language means adding a :class:`Locator`, not a second
-copy of the walker.
+copy of the walker: grammar-backed for Svelte and Vue, byte-scanned for
+Razor and Astro, which have no usable tree-sitter grammar (see their locators).
 
 Binding forms are deliberately skipped rather than kept: Svelte's
 ``{#each items as item}`` and ``{#await}`` heads, and Vue's ``v-for="item in
@@ -39,12 +42,13 @@ not reads, so keeping them would mint phantom identifier references.
 :func:`prepare_source` is also where a language registers a byte-preserving
 sanitizer for a grammar gap that has nothing to do with multi-language files —
 Pascal's project-file ``uses X in 'path'`` clauses being the current example,
-handled by ``prepare_pascal_source`` in ``parser_helpers.py``. Same contract as
+handled by ``prepare_pascal_source`` in ``lang_helpers/source_prep.py``. Same contract as
 a :class:`Locator`, no-op unless the language matches.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from functools import lru_cache
 from typing import TYPE_CHECKING, NamedTuple
@@ -108,13 +112,15 @@ _SPACE = 0x20
 _SEMICOLON = 0x3B
 _OPEN_BRACE = 0x7B
 _CLOSE_BRACE = 0x7D
+_CLOSE_ANGLE = 0x3E
 _DOUBLE_QUOTE = 0x22
 _SINGLE_QUOTE = 0x27
 
 # Only a byte the scan pointed at *and* that is a real delimiter is ever
 # rewritten to ``;`` — never a byte that turned out to be part of a kept
-# expression. Svelte fences with braces, Vue with attribute quotes.
-_FENCE_BYTES = frozenset({_OPEN_BRACE, _CLOSE_BRACE, _DOUBLE_QUOTE, _SINGLE_QUOTE})
+# expression. Svelte fences with braces, Vue with attribute quotes, Astro with
+# the ``>`` of a script's opening tag.
+_FENCE_BYTES = frozenset({_OPEN_BRACE, _CLOSE_BRACE, _DOUBLE_QUOTE, _SINGLE_QUOTE, _CLOSE_ANGLE})
 
 
 class SfcScan(NamedTuple):
@@ -138,15 +144,29 @@ _EMPTY_SCAN = SfcScan(js_spans=(), terminators=(), component_tags=(), has_error=
 
 
 class Locator(NamedTuple):
-    """How one markup language exposes its JS regions and component tags."""
+    """How one markup language exposes its code regions and component tags.
 
-    # Importable module exposing a ``language()`` capsule.
-    grammar_module: str
-    # Called for every node; appends to ``state`` (spans/terminators/tags).
-    visit: Callable[[Node, dict], None]
+    Two shapes are supported. A **grammar-backed** locator (Svelte, Vue)
+    parses the file with a tree-sitter markup grammar and ``visit`` walks
+    every node. A **byte-scanned** locator (Razor, Astro) has ``grammar_module`` /
+    ``visit`` left as None and ``byte_scan`` instead walks the raw bytes;
+    there is no usable ``tree-sitter-razor`` on PyPI, and an HTML grammar
+    actively mis-parses Razor (``List<Order>`` reads as an HTML element).
+    Both shapes append to the same ``state`` dict and produce the same
+    :class:`SfcScan`.
+    """
+
+    # Importable module exposing a ``language()`` capsule (None = byte-scan).
+    grammar_module: str | None = None
+    # Called for every node (grammar-backed locators); appends to ``state``.
+    visit: Callable[[Node, dict], None] | None = None
     # Maps a raw markup tag name to the component name it instantiates, or
     # None when the tag is not a user component.
-    component_name: Callable[[str], str | None]
+    component_name: Callable[[str], str | None] | None = None
+    # Byte-scanned locators (Razor, Astro): called once with the raw source bytes;
+    # appends ``(start, end)`` spans / terminator offsets / ``(name, line)``
+    # component tags to ``state`` exactly like a grammar walk would.
+    byte_scan: Callable[[bytes, dict], None] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -351,6 +371,336 @@ def vue_component_name_from_stem(stem: str, parent_dir: str = "") -> str:
 
 
 # ---------------------------------------------------------------------------
+# Razor / Blazor
+# ---------------------------------------------------------------------------
+
+# Razor's C#-bearing constructs, without the leading ``@`` sigil (the scan
+# compares against ``source[at + 1:]``). ``@code`` / ``@functions`` / ``@{ }``
+# hold class-body or statement content.
+_RAZOR_BLOCK_OPENERS = (b"code", b"functions", b"{")
+
+# Razor comments hide both markup and C#. HTML comments only hide markup: a
+# Razor expression inside ``<!-- -->`` still runs, so only the tag pass skips
+# them.
+_RAZOR_COMMENT_CLOSE = b"*@"
+_HTML_COMMENT_CLOSE = b"-->"
+
+
+def _csharp_literal_end(source: bytes, index: int) -> int | None:
+    """Index just past the C# literal or comment starting at ``index``.
+
+    The brace-depth walk must not count braces inside these: a ``{`` in a
+    string would leave the block unclosed or swallow the markup after it.
+    """
+    two = source[index : index + 2]
+    if two == b"//":
+        newline = source.find(b"\n", index + 2)
+        return len(source) if newline < 0 else newline
+    if two == b"/*":
+        close = source.find(b"*/", index + 2)
+        return len(source) if close < 0 else close + 2
+
+    cursor = index
+    verbatim = False
+    # ``$`` and ``@`` may appear in either order. An interpolated literal's
+    # braces are balanced by construction, so skipping the whole literal is
+    # right for it too.
+    while source[cursor : cursor + 1] in (b"@", b"$"):
+        verbatim = verbatim or source[cursor : cursor + 1] == b"@"
+        cursor += 1
+    quote = source[cursor : cursor + 1]
+
+    if quote == b'"':
+        cursor += 1
+        while cursor < len(source):
+            byte = source[cursor : cursor + 1]
+            if verbatim:
+                if byte == b'"':
+                    if source[cursor + 1 : cursor + 2] == b'"':
+                        cursor += 2
+                        continue
+                    return cursor + 1
+                cursor += 1
+                continue
+            if byte == b"\\":
+                cursor += 2
+                continue
+            if byte == b'"':
+                return cursor + 1
+            cursor += 1
+        return len(source)
+
+    if quote == b"'" and cursor == index:
+        # A char literal is at most a few bytes (``'\u0041'``); an apostrophe
+        # in markup inside ``@{ }`` must not swallow the rest of the block.
+        probe = cursor + 1
+        while probe < len(source) and probe <= cursor + 8:
+            byte = source[probe : probe + 1]
+            if byte == b"\\":
+                probe += 2
+                continue
+            if byte == b"'":
+                return probe + 1
+            probe += 1
+    return None
+
+
+def _razor_byte_scan(source: bytes, state: dict) -> None:
+    """Locate C# regions and component tags in ``.razor`` / ``.cshtml`` bytes.
+
+    The scanner walks the raw bytes with no grammar: ``@code { ... }`` /
+    ``@functions { ... }`` / ``@{ ... }`` interiors are projected as C#
+    (brace-depth matched so nested object initialisers survive), and
+    PascalCase tags (``<RadzenDataGrid>``) are recorded as component
+    instantiations. Everything else (directives, markup, attributes) is
+    blanked by :func:`_blank`.
+
+    Deliberate exclusions, mirroring the Svelte/Vue ceilings:
+
+    * ``@@`` is the Razor escape for a literal ``@`` (``@@code`` renders
+      ``@code``), skipped so an escaped sigil never opens a false block.
+    * A ``@`` that is part of a longer identifier token (``email@host``,
+      ``user@@example.com``) is not a directive: the following character
+      must be alphabetic or ``{`` for the sigil to count.
+    * ``@* ... *@`` comments are skipped by both passes. Commented-out code
+      compiles to nothing, so a block or tag inside one would be a wrong edge.
+    * ``@using X`` directives are NOT projected (Razor drops the trailing
+      ``;``, which the C# grammar needs; the projection would have to
+      rewrite bytes to satisfy it). The ``@inject`` / ``@bind`` /
+      ``@on*`` attribute-value forms are two-way bindings, not call edges,
+      the same posture as Svelte's ``{#each}`` heads and Vue's ``v-for``.
+    """
+    comments: list[tuple[int, int]] = []
+
+    # -- C# regions ----------------------------------------------------------
+    # Scanned FIRST so the component-tag pass below can skip their interiors:
+    # ``List<Order>`` inside a C# region is a generic type argument, not a
+    # component tag, and the C# grammar (not the tag pass) owns that text.
+    # One sequential walk, so a ``@code`` inside a comment and a ``@*`` inside
+    # a C# string are each jumped over rather than matched.
+    pos = 0
+    while True:
+        at = source.find(b"@", pos)
+        if at < 0:
+            break
+        following = source[at + 1 : at + 2]
+        # Skip the @@ escape.
+        if following == b"@":
+            pos = at + 2
+            continue
+        if following == b"*":
+            close = source.find(_RAZOR_COMMENT_CLOSE, at + 2)
+            end = len(source) if close < 0 else close + len(_RAZOR_COMMENT_CLOSE)
+            comments.append((at, end))
+            pos = end
+            continue
+        rest = source[at + 1 :]
+        matched = None
+        for opener in _RAZOR_BLOCK_OPENERS:
+            if rest.startswith(opener):
+                matched = opener
+                break
+        if matched is None:
+            # Not a block opener: keep scanning for the next sigil.
+            pos = at + 1
+            continue
+
+        open_brace = at + 1 + len(matched)
+        if matched == b"{":
+            # For ``@{`` the sigil IS the opener: the brace sits at ``at + 1``,
+            # not one past a keyword like ``code`` / ``functions``.
+            open_brace = at + 1
+        # Skip whitespace between the keyword and the opening brace.
+        while open_brace < len(source) and source[open_brace : open_brace + 1] in (
+            b" ",
+            b"\t",
+            b"\r",
+            b"\n",
+        ):
+            open_brace += 1
+        if open_brace >= len(source) or source[open_brace : open_brace + 1] != b"{":
+            pos = at + 1
+            continue
+
+        depth = 0
+        end = None
+        cursor = open_brace
+        while cursor < len(source):
+            byte = source[cursor : cursor + 1]
+            if byte in (b'"', b"'", b"/", b"@", b"$"):
+                skip = _csharp_literal_end(source, cursor)
+                if skip is not None:
+                    cursor = skip
+                    continue
+            if byte == b"{":
+                depth += 1
+            elif byte == b"}":
+                depth -= 1
+                if depth == 0:
+                    end = cursor
+                    break
+            cursor += 1
+        if end is None:
+            pos = at + 1
+            continue
+
+        # The interior is the C# body. Fence it with both braces so a
+        # sibling block cannot run into it and vice versa.
+        interior_start, interior_end = open_brace + 1, end
+        if interior_end > interior_start:
+            state["spans"].append((interior_start, interior_end))
+            state["terminators"].append(open_brace)
+            state["terminators"].append(end)
+        pos = end + 1
+
+    # -- component tags: <PascalCase ...> / <PascalCase /> ------------------
+    # Skip any ``<`` inside a C# region or a Razor comment: ``List<Order>`` is
+    # a generic type argument, ``a < b`` is a comparison, and a commented-out
+    # tag renders nothing. HTML comments are jumped over for the same reason.
+    _byte_scan_tags(source, [*state["spans"], *comments], _razor_component_name, state)
+
+
+_MARKUP_TAG = re.compile(rb"<(?:!--|([\w.]+))")
+
+
+def _byte_scan_tags(
+    source: bytes,
+    hidden: list[tuple[int, int]],
+    name_of: Callable[[str], str | None],
+    state: dict,
+) -> None:
+    """Record ``(name, line)`` for each component tag, skipping ``hidden`` and HTML comments."""
+    pos = 0
+    while (tag := _MARKUP_TAG.search(source, pos)) is not None:
+        pos = tag.end()
+        if any(start <= tag.start() < end for start, end in hidden):
+            continue
+        if tag.group(1) is None:
+            close = source.find(_HTML_COMMENT_CLOSE, pos)
+            pos = len(source) if close < 0 else close + len(_HTML_COMMENT_CLOSE)
+            continue
+        # A namespace-qualified tag (``<Shared.Grid />``) instantiates the last
+        # dotted segment.
+        name = name_of(tag.group(1).decode("utf-8").rsplit(".", 1)[-1])
+        if name:
+            state["tags"].append((name, source.count(b"\n", 0, tag.start()) + 1))
+
+
+def _razor_component_name(name: str) -> str | None:
+    """``<RadzenDataGrid>`` instantiates a component; ``<div>`` is HTML.
+
+    The Svelte rule transfers verbatim: a PascalCase tag names a user
+    component, a lowercase tag is a plain element. Razor components are
+    PascalCase by convention, so no kebab- or ``+``-normalisation is
+    needed.
+    """
+    if not name or not name[0].isupper():
+        return None
+    return name
+
+
+# ---------------------------------------------------------------------------
+# Astro
+# ---------------------------------------------------------------------------
+
+# The ``---`` fence opens the file after an optional BOM and any whitespace, as
+# in Astro's compiler (``FrontmatterInitial``). Astro also closes on an
+# indented ``---`` or one right after a ``;`` / ``}`` on the same line; a
+# ``// ---`` divider comment matches neither.
+# shortcut: a ``---`` line inside a template literal closes the block early
+# (Astro reads strings); fine until a real file does that.
+_ASTRO_FRONTMATTER = re.compile(
+    rb"\A(?:\xef\xbb\xbf)?\s*---[ \t]*\r?\n(.*?)(?:^[ \t]*|(?<=[;}]))---[ \t]*\r?$",
+    re.DOTALL | re.MULTILINE,
+)
+# ``<!--`` and a markup ``{/* */}`` hide text that may mention ``<script>``; a
+# bare ``/*`` is not a comment in markup (``accept="audio/*"``). A ``<style>``
+# body is hidden whole, which covers its CSS comments. Case-sensitive: Astro
+# reads ``<Script>`` as a component. Attribute values may hold ``>`` (``=>``);
+# any other start tag is consumed whole, so ``<script>`` in its values is skipped.
+# shortcut: a ``{...}`` value nested 3+ braces deep is not read as an opener;
+# widen the brace group once a real file does that.
+# shortcut: a ``<script>`` in a JS string of a child ``{...}`` expression still
+# opens one (``{cond && <script>}`` must); read JS strings once a real file does that.
+_ASTRO_OPENER = re.compile(
+    rb"(<!--|\{/\*)|<(?:(script|style)|[A-Za-z][\w.-]*)(?=[\s/>])"
+    rb"((?:\"[^\"]*(?:\"|\Z)|'[^']*(?:'|\Z)|\{(?:[^{}]|\{[^{}]*\})*\}|[^>\"'{])*)(?:>|\Z)"
+)
+_ASTRO_COMMENT_CLOSE = {b"<!--": _HTML_COMMENT_CLOSE, b"{/*": b"*/"}
+# An unterminated body runs to EOF (``\Z``).
+_ASTRO_CLOSE = {
+    b"script": re.compile(rb"</script\s*>|\Z", re.IGNORECASE),
+    b"style": re.compile(rb"</style\s*>|\Z", re.IGNORECASE),
+}
+_ASTRO_SCRIPT_TYPE = re.compile(rb"""(?<![\w.-])type\s*=(?!=)\s*["']?([^"'\s>]+)""", re.IGNORECASE)
+# A ``<script>`` with any other ``type`` (``application/ld+json``) holds data.
+_ASTRO_JS_TYPES = frozenset(
+    {b"module", b"text/javascript", b"application/javascript", b"text/typescript"}
+)
+
+
+def _astro_byte_scan(source: bytes, state: dict) -> None:
+    """Locate the frontmatter, ``<script>`` bodies and component tags of ``.astro`` bytes.
+
+    The leading ``---`` frontmatter and every JS ``<script>`` body (plain,
+    ``is:inline``, ``type="module"``, ``define:vars``) project as TypeScript.
+    Markup ``{expr}`` and ``<style>`` are blanked, and a ``<script>`` inside an
+    HTML or ``{/* */}`` comment or a ``<style>`` body is skipped. PascalCase
+    tags in the markup mint component call edges, as for Svelte.
+    """
+    markup_start = 0
+    frontmatter = _ASTRO_FRONTMATTER.match(source)
+    if frontmatter:
+        state["spans"].append(frontmatter.span(1))
+        markup_start = frontmatter.end()
+    hidden = _astro_record_scripts(source, markup_start, state)
+
+    # shortcut: a TS generic inside a markup {expr} (``Array<Foo>``) or a tag inside a
+    # string reads as a tag; fine until a false component edge shows up in a real repo.
+    _byte_scan_tags(source, [*state["spans"], *hidden], _astro_component_name, state)
+
+
+def _astro_record_scripts(source: bytes, pos: int, state: dict) -> list[tuple[int, int]]:
+    """Record JS ``<script>`` bodies from ``pos`` on; return the comment, script and style ranges."""
+    hidden: list[tuple[int, int]] = []
+    while (opener := _ASTRO_OPENER.search(source, pos)) is not None:
+        if opener.group(1) is not None:
+            close_bytes = _ASTRO_COMMENT_CLOSE[opener.group(1)]
+            close = source.find(close_bytes, opener.end())
+            end = len(source) if close < 0 else close + len(close_bytes)
+            hidden.append((opener.start(), end))
+            pos = end
+            continue
+        tag, attrs = opener.group(2), opener.group(3)
+        # shortcut: a <script src="./x.ts"> mints no import, so a file loaded
+        # only that way reads as unreachable; emit an Import as
+        # lightweight_imports/html.py does once a site needs it.
+        if tag is None or attrs.rstrip().endswith(b"/"):  # another tag, or <script src="..." />
+            pos = opener.end()
+            continue
+        close_match = _ASTRO_CLOSE[tag].search(source, opener.end())
+        end = close_match.start()
+        if _astro_is_js_script(tag, attrs):
+            state["spans"].append((opener.end(), end))
+            state["terminators"].append(opener.end() - 1)
+        hidden.append((opener.start(), end))
+        pos = close_match.end()
+    return hidden
+
+
+def _astro_is_js_script(tag: bytes, attrs: bytes) -> bool:
+    if tag != b"script":
+        return False
+    script_type = _ASTRO_SCRIPT_TYPE.search(attrs)
+    return script_type is None or script_type.group(1).lower() in _ASTRO_JS_TYPES
+
+
+def _astro_component_name(name: str) -> str | None:
+    """``<Header />`` instantiates a component; ``<div>`` and ``<Fragment>`` do not."""
+    return None if name == "Fragment" else _razor_component_name(name)
+
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 
@@ -378,6 +728,17 @@ _LOCATORS: dict[str, Locator] = {
         visit=_vue_visit,
         component_name=_vue_component_name,
     ),
+    # Razor has no usable tree-sitter grammar on PyPI, and an HTML grammar
+    # actively mis-parses it (``List<Order>`` reads as an HTML element). The
+    # locator byte-scans instead: ``@code`` / ``@functions`` / ``@{ }``
+    # interiors project as C#, PascalCase tags become component calls.
+    "razor": Locator(
+        component_name=_razor_component_name,
+        byte_scan=_razor_byte_scan,
+    ),
+    # No tree-sitter-astro on PyPI: the ``---`` frontmatter and ``<script>``
+    # bodies are byte-scanned and project as TypeScript.
+    "astro": Locator(byte_scan=_astro_byte_scan),
 }
 
 
@@ -419,7 +780,21 @@ def scan(language: str, source: bytes) -> SfcScan:
 @lru_cache(maxsize=4)
 def _cached_scan(language: str, source: bytes) -> SfcScan:
     locator = _LOCATORS[language]
-    grammar = _grammar(locator.grammar_module)
+    state: dict = {"spans": [], "terminators": [], "tags": []}
+
+    # Byte-scanned locator (Razor, Astro): no markup grammar exists, so the raw
+    # bytes are scanned directly. There is no tree to carry a parse-error
+    # flag, and a byte scan cannot mis-parse, so ``has_error`` stays False.
+    if locator.byte_scan is not None:
+        locator.byte_scan(source, state)
+        return SfcScan(
+            js_spans=tuple(sorted(state["spans"])),
+            terminators=tuple(sorted(state["terminators"])),
+            component_tags=tuple(state["tags"]),
+            has_error=False,
+        )
+
+    grammar = _grammar(locator.grammar_module or "")
     if grammar is None:
         return _EMPTY_SCAN
 
@@ -431,7 +806,6 @@ def _cached_scan(language: str, source: bytes) -> SfcScan:
         log.debug("sfc_scan_failed", language=language, error=str(exc))
         return _EMPTY_SCAN
 
-    state: dict = {"spans": [], "terminators": [], "tags": []}
     _walk(tree.root_node, locator.visit, state)
     return SfcScan(
         js_spans=tuple(sorted(state["spans"])),
@@ -514,4 +888,20 @@ def prepare_source(language: str, source: bytes, *, path: str | None = None) -> 
         from .parser_helpers import prepare_pascal_source
 
         return prepare_pascal_source(source, path)
+    if language == "objectivec" and source:
+        from .parser_helpers import prepare_objectivec_source
+
+        return prepare_objectivec_source(source)
+    if language == "apex" and source:
+        from .parser_helpers import prepare_apex_source
+
+        return prepare_apex_source(source)
+    if language == "cobol" and source:
+        from .cobol import prepare_cobol_source
+
+        return prepare_cobol_source(source)
+    if language == "cpp" and source:
+        from .lang_helpers.source_prep import prepare_cpp_source
+
+        return prepare_cpp_source(source)
     return source

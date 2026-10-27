@@ -62,11 +62,44 @@ class GraphExportResponse(BaseModel):
 
 
 # Architecture / community super-node graph
+class PopulationBreakdown(BaseModel):
+    """What the map is counting.
+
+    Every count in the payload is over ``visible``. The category totals are
+    reported whether or not included, so a client can offer "show tests (N)".
+    """
+
+    total: int
+    visible: int
+    tests: int = 0
+    examples: int = 0
+    docs: int = 0
+    include_tests: bool = False
+    include_examples: bool = False
+    include_docs: bool = False
+
+
+class UnclusteredFiles(BaseModel):
+    """Visible files below ``min_members``; almost all have no dependency edge.
+
+    ``files`` is the head by PageRank, capped.
+    """
+
+    file_count: int
+    files: list[str] = []
+
+
 class ArchitectureNodeResponse(BaseModel):
     community_id: int
     label: str
+    #: Decays with size; kept for older clients. The map reads ``conductance``.
     cohesion: float
+    #: ``cut / (2 * intra + cut)`` over production members, lower is tighter.
+    #: ``None`` on an older index or when nothing is linked.
+    conductance: float | None = None
+    #: Members in the requested population; every figure below is over them.
     member_count: int
+    hidden_member_count: int = 0
     top_file: str
     avg_pagerank: float
     hotspot_count: int = 0
@@ -85,6 +118,8 @@ class ArchitectureEdgeResponse(BaseModel):
 class ArchitectureGraphResponse(BaseModel):
     nodes: list[ArchitectureNodeResponse]
     edges: list[ArchitectureEdgeResponse]
+    population: PopulationBreakdown | None = None
+    unclustered: UnclusteredFiles | None = None
 
 
 class CommunitySliceNodeResponse(GraphNodeResponse):
@@ -102,6 +137,7 @@ class CommunitySliceResponse(BaseModel):
     member_count: int
     # True if members were capped (very large community).
     truncated: bool = False
+    hidden_member_count: int = 0
 
 
 class EgoGraphResponse(BaseModel):

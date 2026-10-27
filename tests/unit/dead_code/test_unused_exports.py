@@ -276,3 +276,118 @@ def test_unused_export_not_rescued_for_index_stem():
     )
     names = {f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT}
     assert "stranded_export" in names
+
+
+def test_unused_export_rust_impl_non_importable():
+    """An impl block cannot be imported by name and must not be flagged as unused export."""
+    g = _build_graph(
+        nodes={
+            "src/lib.rs": {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "language": "rust",
+                "symbol_count": 1,
+                "symbols": [
+                    {
+                        "name": "MyStruct",
+                        "kind": "impl",
+                        "visibility": "public",
+                        "language": "rust",
+                        "decorators": [],
+                        "start_line": 10,
+                        "end_line": 25,
+                        "complexity_estimate": 1,
+                    },
+                ],
+            },
+        },
+    )
+    analyzer = DeadCodeAnalyzer(g, git_meta_map={})
+    report = analyzer.analyze(
+        {
+            "detect_unreachable_files": False,
+            "detect_unused_internals": False,
+            "detect_zombie_packages": False,
+            "min_confidence": 0.0,
+        }
+    )
+    names = {f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT}
+    assert "MyStruct" not in names
+
+
+
+def test_java_package_private_class_is_not_an_unused_export():
+    """A modifier-less Java class is package-private, not public API.
+
+    Shaped on gson's ``@JsonAdapter(Deserializer.class)`` test class: the
+    nested class has no importer and never could, and must not be reported
+    as a public symbol. A public class with no importer still is.
+    """
+    from datetime import datetime
+
+    from repowise.core.ingestion.models import FileInfo
+    from repowise.core.ingestion.parser import ASTParser
+
+    path = "src/main/java/com/example/Holder.java"
+    src = b"""
+package com.example;
+public class Holder {
+    @JsonAdapter(Deserializer.class) DummyClass f4;
+    static class Deserializer implements JsonDeserializer<DummyClass> {}
+}
+public class Unused {}
+"""
+    info = FileInfo(
+        path=path,
+        abs_path=f"/repo/{path}",
+        language="java",
+        size_bytes=len(src),
+        git_hash="",
+        last_modified=datetime.now(),
+        is_test=False,
+        is_config=False,
+        is_api_contract=False,
+        is_entry_point=False,
+    )
+    symbols = [
+        {
+            "name": s.name,
+            "kind": s.kind,
+            "visibility": s.visibility,
+            "parent_name": s.parent_name,
+            "decorators": [],
+            "start_line": s.start_line,
+            "end_line": s.end_line,
+        }
+        for s in ASTParser().parse_file(info, src).symbols
+    ]
+    g = _build_graph(
+        nodes={
+            path: {
+                "language": "java",
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": len(symbols),
+                "symbols": symbols,
+            },
+            "src/main/java/com/example/Main.java": {
+                "language": "java",
+                "is_entry_point": True,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": 0,
+                "symbols": [],
+            },
+        },
+        edges=[("src/main/java/com/example/Main.java", path, {"imported_names": ["Holder"]})],
+    )
+
+    report = DeadCodeAnalyzer(g, git_meta_map={}).analyze(
+        {"detect_unreachable_files": False, "detect_zombie_packages": False}
+    )
+
+    unused = {f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT}
+    assert "Deserializer" not in unused
+    assert "Unused" in unused

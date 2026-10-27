@@ -4,8 +4,12 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from .context import ResolverContext
+
+if TYPE_CHECKING:
+    from tree_sitter import Node
 
 
 def _get_frozen_path_set(ctx: ResolverContext) -> frozenset[str]:
@@ -77,25 +81,29 @@ def resolve_rust_import(
             resolved = _follow_crate_root_reexport(crate_root, parts[1:], ctx)
         return resolved
 
-    # --- self:: — resolve from the current module's directory ---
-    if prefix == "self":
-        importer_dir = str(Path(importer_path).parent.as_posix())
-        return _probe_rust_path(importer_dir, parts[1:], frozen_path_set)
+    # --- self:: / super:: — resolve from the module tree, not the directory ---
+    if prefix in ("self", "super"):
+        hops = 0
+        while hops < len(parts) and parts[hops] == "super":
+            hops += 1
+        rest = parts[hops:] if hops else parts[1:]
+        resolved = _probe_module_relative(importer_path, hops, rest, frozen_path_set)
+        if resolved is not None or not rest:
+            return resolved
+        # Legacy base, one directory per hop above the importer's own: right
+        # for a crate root outside lib.rs/main.rs (``src/bin/x.rs``), whose
+        # children sit beside it rather than under ``x/``.
+        legacy = Path(importer_path).parent
+        for _ in range(hops):
+            legacy = legacy.parent
+        return _probe_rust_path(legacy.as_posix(), rest, frozen_path_set)
 
-    # --- super:: — resolve from the parent directory (supports chained super::super::) ---
-    if prefix == "super":
-        parent = Path(importer_path).parent
-        idx = 0
-        while idx < len(parts) and parts[idx] == "super":
-            parent = parent.parent
-            idx += 1
-        if not parts[idx:]:
-            return None
-        return _probe_rust_path(str(parent.as_posix()), parts[idx:], frozen_path_set)
-
-    # --- Single-segment bare identifier (e.g. from `mod foo;`) ---
-    # Probe the importer's directory first — `mod foo;` resolves relative
-    # to the declaring file, not the crate root.
+    # --- Bare path: `mod foo;` or a 2018 path through a child module ---
+    # A child module of the importer comes first: `mod foo;` and
+    # `use foo::Bar` both name the declaring module's own child.
+    resolved = _probe_rust_path(_rust_module_dir(importer_path), parts, frozen_path_set)
+    if resolved is not None:
+        return resolved
     if len(parts) == 1:
         importer_dir = str(Path(importer_path).parent.as_posix())
         resolved = _probe_rust_path(importer_dir, parts, frozen_path_set)
@@ -160,6 +168,14 @@ def _follow_crate_root_reexport(
     and resolve that ``pub use``'s own module path instead. Depth is
     capped at one hop: a chain of re-exporting hubs resolves to the next
     hub, whose own ``pub use`` edges keep the graph connected.
+
+    Segments after the matched one are carried through the hop. A
+    re-exported *module* can be named on the way to a submodule, as in
+    ``use crate_x::outer::inner::Type`` against a root that re-exports
+    ``outer``, and dropping the tail resolves the import to the parent
+    module's file instead. ``_probe_rust_path`` probes longest-first and
+    walks down, so a matched name that is a type rather than a module
+    still falls back to the module file for free.
     """
     if not remaining_parts:
         return None
@@ -174,6 +190,7 @@ def _follow_crate_root_reexport(
         return None
 
     name = remaining_parts[0]
+    rest = remaining_parts[1:]
     for imp in getattr(parsed_files[root_path], "imports", []) or []:
         if not getattr(imp, "is_reexport", False):
             continue
@@ -186,18 +203,74 @@ def _follow_crate_root_reexport(
             # carries the selected names.
             if name not in names:
                 continue
-            target_mp = "::".join([*segments[:-1], name])
+            target_mp = "::".join([*segments[:-1], name, *rest])
         elif last == "*":
             # Glob re-export: `pub use crate::module::*` — resolve the module.
+            # `name` names a member of it rather than a path segment, so
+            # neither it nor anything after it is appended.
             target_mp = "::".join(segments[:-1])
         elif last == name or name in names:
-            target_mp = mp
+            # `name` either ends `mp` or is an alias for it: a renamed
+            # re-export carries the alias in `imported_names`, never a
+            # segment below `mp`. Either way it names `mp` itself, so only
+            # the tail is appended.
+            target_mp = "::".join([mp, *rest]) if rest else mp
         else:
             continue
         resolved = resolve_rust_import(target_mp, root_path, ctx, _reexport_depth=1)
         if resolved is not None and not resolved.startswith("external:"):
             return resolved
     return None
+
+
+_DIRECTORY_MODULE_FILES = ("mod.rs", "lib.rs", "main.rs")
+
+
+def _rust_module_dir(file_path: str) -> str:
+    """The directory holding the child modules of the module *file_path* defines.
+
+    ``mod.rs``, ``lib.rs`` and ``main.rs`` own their directory; any other
+    ``foo.rs`` owns ``foo/`` (the 2018 layout, ``foo.rs`` beside ``foo/bar.rs``).
+    """
+    path = Path(file_path)
+    if path.name in _DIRECTORY_MODULE_FILES:
+        return path.parent.as_posix()
+    return (path.parent / path.stem).as_posix()
+
+
+def _probe_module_relative(
+    importer_path: str, hops: int, rest: list[str], path_set: frozenset[str]
+) -> str | None:
+    """Resolve ``self::<rest>`` (no hops) or ``super::<rest>`` climbing *hops* modules.
+
+    A path that names an item of the ancestor module itself
+    (``super::Type``) lands on that module's own file.
+    """
+    base = Path(_rust_module_dir(importer_path))
+    for _ in range(hops):
+        base = base.parent
+    base_dir = base.as_posix()
+    if rest:
+        resolved = _probe_rust_path(base_dir, rest, path_set)
+        if resolved is not None:
+            return resolved
+    if not hops:
+        return None
+    for candidate in _module_files_of_dir(base_dir):
+        if candidate in path_set and candidate != importer_path:
+            return candidate
+    return None
+
+
+def _module_files_of_dir(module_dir: str) -> tuple[str, ...]:
+    """The files that can define the module whose children live in *module_dir*."""
+    roots = tuple(
+        f"{module_dir}/{name}" if module_dir not in (".", "") else name
+        for name in _DIRECTORY_MODULE_FILES
+    )
+    if module_dir in (".", ""):
+        return roots
+    return (f"{module_dir}.rs", *roots)
 
 
 @lru_cache(maxsize=4096)
@@ -272,3 +345,111 @@ def _probe_rust_path(
 ) -> str | None:
     """Probe for a Rust module path, trying ``.rs`` and ``mod.rs`` variants."""
     return _probe_rust_path_cached(base_dir, tuple(path_parts), path_set)
+
+
+def add_macro_rules_mod_imports(ctx: ResolverContext) -> int:
+    """Give each top-level ``name!()`` call the modules ``macro_rules! name`` declares.
+
+    A ``mod x;`` in a ``macro_rules!`` body is a template: it declares ``x`` in
+    the module that calls the macro, and nowhere if nothing calls it. The
+    definition and the call are paired by name within one crate (serde defines
+    ``crate_root!`` in ``crate_root.rs`` and calls it from ``lib.rs``). The
+    imports join the calling file's, so they resolve from there. Returns the
+    number added.
+    """
+    from tree_sitter import Parser
+
+    from ..parser import _get_language  # local import: avoid a cycle at module load
+
+    language = _get_language("rust")
+    sources = _rust_sources(ctx)
+    if language is None or not any(b"macro_rules!" in src for src in sources.values()):
+        return 0
+    parser = Parser(language)
+    templates: dict[tuple[str, str], list[Node]] = {}
+    for path, src in sources.items():
+        if b"macro_rules!" in src:
+            crate_root = _find_rust_crate_root(path, ctx)
+            for name, bodies in _mod_declaring_macros(parser.parse(src).root_node):
+                templates.setdefault((crate_root, name), []).extend(bodies)
+    if not templates:
+        return 0
+    return sum(
+        _add_called_macro_mods(ctx, path, src, templates, parser) for path, src in sources.items()
+    )
+
+
+def _rust_sources(ctx: ResolverContext) -> dict[str, bytes]:
+    parsed_files = ctx.parsed_files or {}
+    sources = ctx.source_map or {}
+    return {
+        path: sources[path]
+        for path, parsed in parsed_files.items()
+        if parsed is not None and parsed.file_info.language == "rust" and path in sources
+    }
+
+
+def _mod_declaring_macros(root: Node) -> list[tuple[str, list[Node]]]:
+    """``(name, rule bodies)`` of each top-level ``macro_rules!`` that declares a module."""
+    from ..extractors.bindings.rust import macro_body_mod_names
+
+    found = []
+    for node in root.children:
+        if node.type != "macro_definition":
+            continue
+        rules = (
+            rule.child_by_field_name("right")
+            for rule in node.children
+            if rule.type == "macro_rule"
+        )
+        bodies = [body for body in rules if body is not None]
+        if any(macro_body_mod_names(body) for body in bodies):
+            found.append((_node_name(node.child_by_field_name("name")), bodies))
+    return found
+
+
+def _add_called_macro_mods(
+    ctx: ResolverContext,
+    path: str,
+    src: bytes,
+    templates: dict[tuple[str, str], list[Node]],
+    parser: Any,
+) -> int:
+    """Append to *path*'s imports the modules of each template it calls."""
+    from ..extractors.bindings.rust import macro_mod_imports
+
+    crate_root = _find_rust_crate_root(path, ctx)
+    names = {name for root, name in templates if root == crate_root and f"{name}!".encode() in src}
+    if not names:
+        return 0
+    imports = ctx.parsed_files[path].imports
+    have = {imp.module_path for imp in imports if imp.imported_names == ["*"]}
+    called = [
+        imp
+        for name in _top_level_macro_calls(parser.parse(src).root_node, names)
+        for body in templates[(crate_root, name)]
+        for imp in macro_mod_imports(body, f"{name}!()")
+    ]
+    added = 0
+    for imp in called:
+        if imp.module_path not in have:
+            have.add(imp.module_path)
+            imports.append(imp)
+            added += 1
+    return added
+
+
+def _top_level_macro_calls(root: Node, names: set[str]) -> list[str]:
+    """Which of *names* the file calls as a macro at its top level, in order."""
+    called: dict[str, None] = {}
+    for node in root.children:
+        call = node.children[0] if node.type == "expression_statement" and node.children else node
+        if call.type == "macro_invocation":
+            name = _node_name(call.child_by_field_name("macro"))
+            if name in names:
+                called[name] = None
+    return list(called)
+
+
+def _node_name(node: Node | None) -> str:
+    return (node.text or b"").decode() if node is not None else ""

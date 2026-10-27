@@ -29,7 +29,7 @@ file-level import graph cannot see:
 The helper derives directories from the graph itself; the
 :class:`CppWorkspaceIndex` populated during ingestion is not threaded
 into the analyzer. Workspace-discovered conditional sources surface
-through the warmup as ``is_never_flag`` / ``is_entry_point`` graph
+through the warmup as ``is_never_flag`` / ``is_reachability_root`` graph
 attributes instead.
 """
 
@@ -38,6 +38,7 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 from typing import Any
 
+from ...entry_candidacy import is_reachability_root
 from ...ingestion.languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
 from ...ingestion.models import REACHABILITY_USE_EDGE_TYPES
 
@@ -171,7 +172,15 @@ def is_cpp_file_reachable(
     generic skips (``is_entry_point``, ``is_test``, ``is_never_flag``,
     fixture / barrel filters). Rules below short-circuit.
     """
-    if graph.in_degree(node) > 0:
+    # Called, not imported at module level: file_reachability imports this module.
+    from .file_reachability import has_dependency_importer
+
+    if has_dependency_importer(graph, node):
+        return True
+
+    # Build-listed rescue: the file is compiled by a CMake target, MSBuild
+    # .vcxproj, or included by an .rc resource script.
+    if graph.nodes.get(node, {}).get("build_listed"):
         return True
 
     # ``int main`` / ``WinMain`` / fuzzer entry — the file IS the binary
@@ -197,8 +206,8 @@ def is_cpp_file_reachable(
         if sibling == node:
             continue
         sib_data = graph.nodes.get(sibling, {})
-        sib_has_importer = graph.in_degree(sibling) > 0
-        if sib_data.get("is_entry_point", False):
+        sib_has_importer = has_dependency_importer(graph, sibling)
+        if is_reachability_root(sib_data):
             has_sibling_entry = True
             break
         if _file_defines_entry_function(graph, sibling):

@@ -16,6 +16,9 @@ conventional entry filename and a shallow path — and uses centrality only to
 break ties. It is deliberately free of any DB/graph/LLM dependency so the
 ordering can be unit-tested directly.
 
+Every orientation surface also passes its list through
+:func:`orientation_entry_points_view`, which sets build and CI tooling aside.
+
 Three callable shapes, one rule: :func:`orientation_entry_points` for a
 ``RepoStructure``, :func:`rank_entry_point_paths` for bare paths, and
 :func:`rank_entry_points` for callers holding centrality.
@@ -27,11 +30,11 @@ and its score reads the ``is_entry_point`` flag itself, which this key never
 sees. Sharing the key there would decide page selection on filename, depth and
 centrality with the one direct piece of evidence dropped.
 
-**Ranking cannot rescue bad candidacy, and the corpus still shows it.** On
-``spring-petclinic`` the Spring stamper flags 24 entity and controller classes
-and never flags ``PetClinicApplication.java``, so no ordering over that set can
-name the front door: the best this key can do is pick a different wrong file.
-That is a candidacy gap, tracked separately.
+**Ranking cannot rescue bad candidacy.** ``spring-petclinic``'s
+``PetClinicApplication.java`` carries no entry-style name, so no ordering over
+the filename guesses could name it. Ingestion now flags a file that boots a
+framework application (``entry_candidacy.boots_application``) and
+``RepoStructure.application_mains`` carries it into the declared tier.
 """
 
 from __future__ import annotations
@@ -45,6 +48,7 @@ from repowise.core.entry_candidacy import (
     conventional_entry_stems,
     entry_point_depth,
 )
+from repowise.core.support_paths import is_example_path
 
 
 def _name_bucket(path: str, conventional_stems: frozenset[str]) -> int:
@@ -63,11 +67,18 @@ def entry_point_rank_key(
     pagerank: float = 0.0,
     betweenness: float = 0.0,
     conventional_stems: frozenset[str] = frozenset(),
-) -> tuple[int, int, float, str]:
+    manifest_entries: frozenset[str] = frozenset(),
+) -> tuple[int, int, int, float, str]:
     """Sort key for an entry-point candidate (ascending tuple = better entry).
 
     Most significant component first:
 
+      0. **tier** — a file a package manifest names (``bin``, ``main``,
+         ``exports["."]``, a console script) or that boots a framework
+         application is declared, not guessed, so it outranks every filename
+         guess. Example, demo and benchmark code (``is_example_path``) ranks
+         after the system's own entries in either case: a sample's
+         ``Main.java`` demonstrates the system rather than starting it.
       1. **name bucket** — a conventional entry name (``main``/``app``/``cli``/
          ``manage``/…) never loses to a generic glue stem (``index``/``mod``),
          and glue never outranks a real entry.
@@ -78,6 +89,7 @@ def entry_point_rank_key(
       4. **path** — deterministic final tiebreak.
     """
     return (
+        (0 if path in manifest_entries else 1) + (2 if is_example_path(path) else 0),
         _name_bucket(path, conventional_stems),
         entry_point_depth(path),
         -(pagerank + betweenness),
@@ -85,7 +97,9 @@ def entry_point_rank_key(
     )
 
 
-def rank_entry_point_paths(paths: Iterable[str]) -> list[str]:
+def rank_entry_point_paths(
+    paths: Iterable[str], declared: frozenset[str] = frozenset()
+) -> list[str]:
     """Rank bare paths, best entry first, with no centrality to break ties.
 
     The sibling for callers that hold a set or a query result rather than a
@@ -93,9 +107,13 @@ def rank_entry_point_paths(paths: Iterable[str]) -> list[str]:
     agree on name and depth, and the path component keeps the order total, so
     omitting it costs nothing but determinism-preserving arbitrariness.
     Callers that do hold centrality should use :func:`rank_entry_points`.
+    *declared* is the tier-0 set :func:`entry_point_rank_key` reads.
     """
     stems = conventional_entry_stems()
-    return sorted(paths, key=lambda p: entry_point_rank_key(p, conventional_stems=stems))
+    return sorted(
+        paths,
+        key=lambda p: entry_point_rank_key(p, conventional_stems=stems, manifest_entries=declared),
+    )
 
 
 def orientation_entry_points(repo_structure: Any, *, limit: int | None = None) -> list[str]:
@@ -157,13 +175,17 @@ def orientation_entry_points(repo_structure: Any, *, limit: int | None = None) -
     so a React ``src/components/App.tsx`` is published as an execution entry
     point, as is any ``run.py`` / ``server.ts`` at any depth.
     """
-    ranked = rank_entry_point_paths(getattr(repo_structure, "entry_points", None) or [])
+    ranked = rank_entry_point_paths(
+        getattr(repo_structure, "entry_points", None) or [],
+        frozenset(getattr(repo_structure, "application_mains", None) or ()),
+    )
     return ranked if limit is None else ranked[:limit]
 
 
 def rank_entry_points(
     candidates: list[tuple[str, float, float]],
     conventional_stems: frozenset[str],
+    manifest_entries: frozenset[str] = frozenset(),
 ) -> list[str]:
     """Rank ``(path, pagerank, betweenness)`` candidates, best entry first."""
     return [
@@ -175,6 +197,24 @@ def rank_entry_points(
                 pagerank=c[1],
                 betweenness=c[2],
                 conventional_stems=conventional_stems,
+                manifest_entries=manifest_entries,
             ),
         )
     ]
+
+
+#: Directories of build and CI tooling. Narrower than the layer map's tooling
+#: tokens: a ``plugins/`` tree can be a runtime plugin system.
+_TOOLING_DIRS = frozenset({"scripts", "docker"})
+
+
+def orientation_entry_points_view(paths: Iterable[str]) -> list[str]:
+    """*paths* without build and CI tooling (``scripts/``, ``docker/``), order kept.
+
+    A lint or gate script is a real entry point, so candidacy and dead code keep
+    it, but it is not where a reader enters the system. When tooling is all
+    there is, the list is returned whole rather than emptied.
+    """
+    paths = list(paths)
+    runtime = [p for p in paths if not _TOOLING_DIRS & set(p.lower().split("/")[:-1])]
+    return runtime or paths

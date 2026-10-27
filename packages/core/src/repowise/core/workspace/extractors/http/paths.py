@@ -9,6 +9,11 @@ from __future__ import annotations
 
 import re
 
+from ..strings import match_paren
+
+# `{id?}`, `{id:int?}`, `{*rest?}`: a route parameter marked optional.
+_OPTIONAL_PARAM_RE = re.compile(r"\{(\*{0,2}[A-Za-z_]\w*(?::[^{}?]*)?)\?\}")
+
 
 def normalize_http_path(path: str) -> str:
     """Normalize an HTTP path for matching.
@@ -19,8 +24,12 @@ def normalize_http_path(path: str) -> str:
       3. Lowercase
       4. Strip trailing slash (but keep root ``/``)
       5. Unify param styles: ``:param``, ``{param}``, ``[param]`` → ``{param}``
+
+    An optional route parameter (ASP.NET and Laravel ``{id?}``,
+    ``{id:int?}``) loses its ``?`` first, so the query-string cut does not
+    end the path inside the brace.
     """
-    s = path.strip().split("?")[0].lower()
+    s = _OPTIONAL_PARAM_RE.sub(r"{\1}", path.strip()).split("?")[0].lower()
     if s != "/":
         s = s.rstrip("/")
     # ASP.NET routes commonly omit the leading slash; add one so all
@@ -38,6 +47,9 @@ def normalize_http_path(path: str) -> str:
     s = re.sub(r"\[[^\]]+\]", "{param}", s)
     # Unify JS template literal ${expr} → {param}
     s = re.sub(r"\$\{[^}]+\}", "{param}", s)
+    # A whole-segment ``*`` (Spring ``/owners/*/pets``, Express ``/files/*``)
+    # matches one segment, as a parameter does.
+    s = re.sub(r"(?<=/)\*(?=/|$)", "{param}", s)
     return s or "/"
 
 
@@ -48,9 +60,45 @@ def _after_authority(url: str) -> str | None:
     """
     if url.startswith("//"):
         return url[2:]
-    if "://" in url:
-        return url.split("://", 1)[1]
-    return None
+    start = 0
+    if url.startswith("${"):
+        # A scheme inside a leading interpolation (`${prod ? 'https://x' : ''}/api`)
+        # is not this URL's; one after it (`${proto}://host/api`) is.
+        start = match_paren(url, 1, closer="}") + 1
+        if start == 0:
+            return None
+    scheme = url.find("://", start)
+    return url[scheme + 3 :] if scheme >= 0 else None
+
+
+# A string literal opening with `?` inside an interpolation: a query suffix.
+# The quote must open a literal, so `a=="x"?b:c` (a closing quote) is not one.
+_QUERY_LITERAL_RE = re.compile(r"""(?:^|[\s?:(,=+|&])[`'"]\?""")
+
+
+def flatten_interpolations(path: str) -> str:
+    """*path* with each ``${...}`` holding braces of its own reduced to ``${expr}``.
+
+    ``/rate/${format(d, F, { in: utc })}`` is one parameter segment; the
+    brace-free patterns of :func:`normalize_http_path` would stop inside it.
+    An unbalanced interpolation is left for :func:`is_unusable_consumer_path`.
+    A last hole holding a literal that starts with ``?``
+    (`` ${q ? `?${q}` : ""} ``) is the query string, so the path ends before it.
+    """
+    out: list[str] = []
+    pos = 0
+    while (start := path.find("${", pos)) >= 0:
+        end = match_paren(path, start + 1, closer="}")
+        if end < 0:
+            break
+        inner = path[start + 2 : end]
+        out.append(path[pos:start])
+        if end == len(path) - 1 and _QUERY_LITERAL_RE.search(inner):
+            return "".join(out)
+        out.append("${expr}" if "{" in inner else path[start : end + 1])
+        pos = end + 1
+    out.append(path[pos:])
+    return "".join(out)
 
 
 def extract_path_from_url(url: str) -> str:

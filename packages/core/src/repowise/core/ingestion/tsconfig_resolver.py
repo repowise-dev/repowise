@@ -21,6 +21,7 @@ Design constraints:
 from __future__ import annotations
 
 import json
+import posixpath
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -84,6 +85,30 @@ class ResolvedConfig:
     """
 
 
+@dataclass(frozen=True)
+class ProjectConfig:
+    """A config together with the source files it compiles.
+
+    A solution-style tsconfig (``"files": []`` plus ``"references"``) owns no
+    files itself; each source file takes its options from the referenced
+    project whose ``files``/``include`` cover it, as ``tsc --build`` does.
+    """
+
+    config: ResolvedConfig
+    files: frozenset[str]
+    """Absolute POSIX paths listed in ``files``."""
+    include: re.Pattern[str] | None
+    exclude: re.Pattern[str] | None
+
+    def owns(self, source_file: str) -> bool:
+        """Whether *source_file* (an absolute POSIX path) belongs to this project."""
+        if source_file in self.files:
+            return True
+        if self.include is None or not self.include.fullmatch(source_file):
+            return False
+        return self.exclude is None or not self.exclude.fullmatch(source_file)
+
+
 # ---------------------------------------------------------------------------
 # Resolver
 # ---------------------------------------------------------------------------
@@ -111,6 +136,9 @@ class TsconfigResolver:
 
         # directory (absolute) -> ResolvedConfig
         self._dir_to_config: dict[Path, ResolvedConfig] = {}
+
+        # solution-style config path -> the projects it references, in order
+        self._config_projects: dict[Path, list[ProjectConfig]] = {}
 
         # source-file directory -> applicable ResolvedConfig (or None)
         self._file_config_cache: dict[Path, ResolvedConfig | None] = {}
@@ -198,6 +226,110 @@ class TsconfigResolver:
             resolved = self._load_and_resolve(config_file.resolve(), visited=frozenset())
             if resolved is not None:
                 self._dir_to_config[directory] = resolved
+                projects = self._load_references(resolved, visited=frozenset())
+                if projects:
+                    self._config_projects[resolved.config_path] = projects
+
+    # ------------------------------------------------------------------
+    # Project references
+    # ------------------------------------------------------------------
+
+    def _load_references(
+        self,
+        config: ResolvedConfig,
+        visited: frozenset[Path],
+    ) -> list[ProjectConfig]:
+        """Return the projects a config points at through ``references``.
+
+        A referenced config that is itself a solution contributes its own
+        references in its place. The config is listed first when it compiles
+        files of its own, so those keep its options.
+        """
+        if config.config_path in visited:
+            return []
+        visited = visited | {config.config_path}
+
+        data = self._parse_json_lenient(config.config_path)
+        references = data.get("references") if data else None
+        if not isinstance(references, list):
+            return []
+
+        projects: list[ProjectConfig] = []
+        own = self._project(config)
+        if own is not None and (own.files or own.include is not None):
+            projects.append(own)
+        for reference in references:
+            ref_path = reference.get("path") if isinstance(reference, dict) else None
+            if not isinstance(ref_path, str):
+                continue
+            target = (config.config_path.parent / ref_path).resolve()
+            if target.is_dir():
+                target = target / "tsconfig.json"
+            if not target.is_file():
+                continue
+            resolved = self._load_and_resolve(target, visited=frozenset())
+            if resolved is None:
+                continue
+            nested = self._load_references(resolved, visited)
+            if nested:
+                projects.extend(nested)
+            elif (project := self._project(resolved)) is not None:
+                projects.append(project)
+        return projects
+
+    def _project(self, config: ResolvedConfig) -> ProjectConfig | None:
+        """Build the :class:`ProjectConfig` for *config* from its file lists."""
+        files, include, exclude = self._file_lists(config.config_path, visited=frozenset())
+        if include is None:
+            # TypeScript includes everything only when ``files`` is absent too.
+            include = [] if files is not None else [(config.config_path.parent / "**/*").as_posix()]
+        return ProjectConfig(
+            config=config,
+            files=frozenset(files or ()),
+            include=_glob_regex(include, subtree=False),
+            exclude=_glob_regex(exclude or [], subtree=True),
+        )
+
+    def _file_lists(
+        self,
+        config_path: Path,
+        visited: frozenset[Path],
+    ) -> tuple[list[str] | None, list[str] | None, list[str] | None]:
+        """Return ``files``, ``include`` and ``exclude`` as absolute POSIX paths.
+
+        Each is inherited through a relative ``extends`` when the config does
+        not set it, and stays relative to the config that defines it.
+        """
+        if config_path in visited:
+            return None, None, None
+        data = self._parse_json_lenient(config_path)
+        if data is None:
+            return None, None, None
+
+        config_dir = config_path.parent
+        inherited: tuple[list[str] | None, ...] = (None, None, None)
+        extends_val = data.get("extends")
+        if isinstance(extends_val, str) and extends_val.startswith("."):
+            parent = (config_dir / extends_val).resolve()
+            if not parent.suffix:
+                parent = parent.with_suffix(".json")
+            if parent.is_file():
+                inherited = self._file_lists(parent, visited | {config_path})
+
+        lists: list[list[str] | None] = []
+        for key, parent_value in zip(("files", "include", "exclude"), inherited, strict=True):
+            value = data.get(key)
+            if isinstance(value, list):
+                lists.append(
+                    [
+                        posixpath.normpath((config_dir / entry).as_posix())
+                        for entry in value
+                        if isinstance(entry, str)
+                    ]
+                )
+            else:
+                lists.append(parent_value)
+        return lists[0], lists[1], lists[2]
 
     # ------------------------------------------------------------------
     # Config loading & extends resolution
@@ -362,9 +494,25 @@ class TsconfigResolver:
     # ------------------------------------------------------------------
 
     def _find_config_for_file(self, source_file: Path) -> ResolvedConfig | None:
-        """Find the nearest tsconfig for a source file by walking up."""
-        directory = source_file.parent.resolve()
+        """Find the nearest tsconfig for a source file by walking up.
 
+        When that config is a solution, the referenced project that owns the
+        file applies instead; a file no project owns keeps the solution's.
+        """
+        directory = source_file.parent.resolve()
+        config = self._find_config_for_dir(directory)
+        if config is None:
+            return None
+        projects = self._config_projects.get(config.config_path)
+        if projects:
+            path = (directory / source_file.name).as_posix()
+            for project in projects:
+                if project.owns(path):
+                    return project.config
+        return config
+
+    def _find_config_for_dir(self, directory: Path) -> ResolvedConfig | None:
+        """Find the nearest tsconfig for a source directory by walking up."""
         if directory in self._file_config_cache:
             return self._file_config_cache[directory]
 
@@ -448,18 +596,89 @@ class TsconfigResolver:
 
     @staticmethod
     def _parse_json_lenient(config_path: Path) -> dict[str, Any] | None:
-        """Parse JSON with trailing-comma tolerance (common in tsconfig)."""
+        """Parse JSON with comment and trailing-comma tolerance (common in tsconfig)."""
         try:
             text = config_path.read_text(encoding="utf-8", errors="ignore")
             try:
                 data = json.loads(text)
             except json.JSONDecodeError:
-                cleaned = re.sub(r",\s*([}\]])", r"\1", text)
+                stripped = _strip_jsonc_comments(text)
+                cleaned = re.sub(r",\s*([}\]])", r"\1", stripped)
                 data = json.loads(cleaned)
             return data if isinstance(data, dict) else None
         except Exception as exc:
-            log.debug("tsconfig_parse_failed", path=str(config_path), error=str(exc))
+            log.warning("tsconfig_parse_failed", path=str(config_path), error=str(exc))
             return None
+
+
+def _glob_regex(patterns: list[str], *, subtree: bool) -> re.Pattern[str] | None:
+    """Compile tsconfig ``include``/``exclude`` globs over absolute POSIX paths.
+
+    ``*`` and ``?`` stay within one path segment and ``**/`` spans any number
+    of directories. An ``include`` entry whose last segment has no extension
+    or wildcard names a directory, so it covers everything below it; with
+    *subtree* (``exclude``) every pattern also covers what lies below a match.
+    """
+    alternatives: list[str] = []
+    for pattern in patterns:
+        segments = pattern.split("/")
+        last = segments[-1]
+        if last == "**":
+            segments.append("*")
+        elif not subtree and "." not in last and "*" not in last and "?" not in last:
+            segments += ["**", "*"]
+        regex = ""
+        for i, segment in enumerate(segments):
+            if segment == "**":
+                regex += "(?:[^/]+/)*"
+                continue
+            regex += "".join(
+                "[^/]*" if c == "*" else "[^/]" if c == "?" else re.escape(c) for c in segment
+            )
+            if i < len(segments) - 1:
+                regex += "/"
+        if subtree:
+            regex += "(?:/.*)?"
+        alternatives.append(f"(?:{regex})")
+    return re.compile("|".join(alternatives)) if alternatives else None
+
+
+def _strip_jsonc_comments(text: str) -> str:
+    """Strip // and /* */ comments from JSONC text while preserving string literals."""
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    in_string = False
+
+    while i < n:
+        c = text[i]
+        if in_string:
+            out.append(c)
+            if c == "\\":
+                if i + 1 < n:
+                    i += 1
+                    out.append(text[i])
+            elif c == '"':
+                in_string = False
+            i += 1
+        else:
+            if c == '"':
+                in_string = True
+                out.append(c)
+                i += 1
+            elif c == "/" and i + 1 < n and text[i + 1] == "/":
+                i += 2
+                while i < n and text[i] != "\n":
+                    i += 1
+            elif c == "/" and i + 1 < n and text[i + 1] == "*":
+                i += 2
+                while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                    i += 1
+                i += 2
+            else:
+                out.append(c)
+                i += 1
+    return "".join(out)
 
 
 def wire_tsconfig_resolver(
@@ -475,7 +694,7 @@ def wire_tsconfig_resolver(
     """
     # Svelte counts: a SvelteKit app's aliases live in its tsconfig, and a
     # .svelte component's imports go through the same TS/JS resolver.
-    _ts_langs = {"typescript", "javascript", "svelte", "vue"}
+    _ts_langs = {"typescript", "javascript", "svelte", "vue", "astro"}
 
     # We duck-type graph_builder to avoid circular imports. It has ._parsed_files.
     parsed_files = graph_builder._parsed_files.values()

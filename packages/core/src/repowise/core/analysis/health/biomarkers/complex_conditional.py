@@ -1,4 +1,4 @@
-"""Complex Conditional — compound boolean expressions inside one branch.
+"""Compound condition — compound boolean expressions inside one branch.
 
 Flags ``if`` / ``while`` / ``for`` / ternary / case guards whose
 condition is glued together from three or more boolean operators
@@ -6,6 +6,10 @@ condition is glued together from three or more boolean operators
 already harder to read at a glance than a single equality; six-operator
 conditions are routinely cited in defect-mining studies as the noisy
 end of a branch's lifetime.
+
+A flat chain of one operator with no negation (``a || b || c || d``)
+reads as a list of alternatives, not a knot, so it produces no finding
+however long it runs.
 
 Category: ``structural_complexity``.
 
@@ -40,20 +44,21 @@ class ComplexConditionalDetector:
 
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
         out: list[BiomarkerResult] = []
-        for fn_name, fc in ctx.function_metrics.items():
+        for fc in ctx.all_functions:
             for cond in fc.complex_conditions or []:
-                if cond.operator_count < _LOW:
+                if cond.operator_count < _LOW or cond.flat_chain:
                     continue
                 out.append(
                     BiomarkerResult(
                         biomarker_type=self.name,
                         severity=_severity_for(cond.operator_count),
-                        function_name=fn_name,
+                        function_name=fc.name,
                         line_start=cond.line,
                         line_end=cond.line,
                         details={
                             "operator_count": cond.operator_count,
                             "enclosing_construct": cond.enclosing_construct,
+                            "dispatch_share": fc.dispatch_share,
                         },
                         reason=(
                             f"{cond.enclosing_construct} condition combines "

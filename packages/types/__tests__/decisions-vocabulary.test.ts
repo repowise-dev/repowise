@@ -11,11 +11,14 @@
  */
 import { describe, it, expect } from "vitest";
 import {
+  ACCEPTER_KINDS,
+  ACCEPTER_KIND_LABELS,
   CANDIDATE_REVIEW_STATES,
   DECISION_CURRENCIES,
   DECISION_SOURCES,
   DECISION_CURRENCY_DESCRIPTIONS,
   DECISION_CURRENCY_LABELS,
+  DECISION_KINDS,
   DECISION_LANES,
   DECISION_PRESETS,
   DECISION_SOURCE_LABELS,
@@ -47,6 +50,16 @@ describe("decision vocabulary matches the engine", () => {
     expect([...DECISION_CURRENCIES]).toEqual(fixture.currencies);
   });
 
+  it("names the same accepter kinds", () => {
+    expect([...ACCEPTER_KINDS]).toEqual(fixture.accepter_kinds);
+  });
+
+  it("labels every accepter kind", () => {
+    expect(Object.keys(ACCEPTER_KIND_LABELS).sort()).toEqual(
+      [...fixture.accepter_kinds].sort(),
+    );
+  });
+
   it("names the same candidate review states", () => {
     expect([...CANDIDATE_REVIEW_STATES]).toEqual(
       fixture.candidate_review_states,
@@ -57,6 +70,10 @@ describe("decision vocabulary matches the engine", () => {
     const labelled = Object.keys(DECISION_SOURCE_LABELS).sort();
     const expected = [...fixture.sources, ...fixture.retired_sources].sort();
     expect(labelled).toEqual(expected);
+  });
+
+  it("names the same kinds", () => {
+    expect([...DECISION_KINDS]).toEqual(fixture.kinds);
   });
 
   it("names the same review lanes, in the same order", () => {
@@ -110,6 +127,7 @@ describe("lookup helpers", () => {
 
 describe("the acceptance contract, mirrored", () => {
   const accepted = {
+    decision: "Keep sessions in Redis",
     rationale: "sessions did not survive a restart",
     affected_files: ["src/auth/service.py"],
     evidence_commits: ["abc1234"],
@@ -134,14 +152,45 @@ describe("the acceptance contract, mirrored", () => {
     ).toContain("no scope: name the files or modules it governs");
   });
 
-  it("falls back to the decision body when there is no rationale", () => {
+  it("refuses a record that never says what was chosen", () => {
+    expect(decisionAcceptanceBlockers({ ...accepted, decision: "  " })).toEqual([
+      "no decision text: state what was chosen",
+    ]);
+    // A typed record needs it too; only its evidence is exempt.
+    expect(
+      decisionAcceptanceBlockers({ ...accepted, decision: "", source: "cli" }),
+    ).toEqual(["no decision text: state what was chosen"]);
+  });
+
+  it("reads the server's flag over a decision filled with the title", () => {
+    expect(
+      decisionAcceptanceBlockers({
+        ...accepted,
+        decision: "Keep sessions in Redis",
+        decision_text_missing: true,
+      }),
+    ).toEqual(["no decision text: state what was chosen"]);
+    expect(
+      decisionAcceptanceBlockers({ ...accepted, decision_text_missing: false }),
+    ).toEqual([]);
+  });
+
+  it("falls back to the context when there is no rationale", () => {
     expect(
       decisionAcceptanceBlockers({
         ...accepted,
         rationale: "",
-        decision: "Issue signed JWTs",
+        context: "sessions were lost on every deploy",
       }),
     ).toEqual([]);
+  });
+
+  it("does not let the decision body stand in for the reason", () => {
+    // The what is not the why. Reading `decision` here is what marked records
+    // acceptable that say only what was chosen.
+    expect(
+      decisionAcceptanceBlockers({ ...accepted, rationale: "", context: "" }),
+    ).toEqual(["no rationale or explicit constraint reason"]);
   });
 
   it("requires evidence from a mined record and not from a typed one", () => {
@@ -162,7 +211,7 @@ describe("the acceptance contract, mirrored", () => {
 
   it("names every gap at once rather than the first", () => {
     expect(
-      decisionAcceptanceBlockers({ source: "session" }).length,
-    ).toBe(3);
+      decisionAcceptanceBlockers({ decision: "", source: "session" }).length,
+    ).toBe(4);
   });
 });

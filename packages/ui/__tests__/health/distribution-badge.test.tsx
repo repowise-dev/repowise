@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import type { HealthDistribution } from "@repowise-dev/types/health";
 import { HealthDistributionBar } from "../../src/health/health-distribution-bar.js";
 import { HealthBadge } from "../../src/health/health-badge.js";
@@ -8,18 +8,24 @@ const DIST: HealthDistribution = {
   total_files: 10,
   total_nloc: 1000,
   bands: {
-    healthy: { files: 6, nloc: 700, pct: 70 },
-    warning: { files: 3, nloc: 200, pct: 20 },
-    alert: { files: 1, nloc: 100, pct: 10 },
+    excellent: { files: 4, nloc: 500, pct: 50 },
+    good: { files: 2, nloc: 200, pct: 20 },
+    fair: { files: 2, nloc: 150, pct: 15 },
+    needs_work: { files: 1, nloc: 50, pct: 5 },
+    at_risk: { files: 1, nloc: 100, pct: 10 },
   },
 };
 
 describe("HealthDistributionBar", () => {
   it("renders the NLOC-weighted per-band shares", () => {
     render(<HealthDistributionBar distribution={DIST} />);
-    expect(screen.getByText(/70% healthy/)).toBeInTheDocument();
-    expect(screen.getByText(/20% warning/)).toBeInTheDocument();
-    expect(screen.getByText(/10% alert/)).toBeInTheDocument();
+    const legend = within(screen.getByRole("list", { name: "Code volume by health band" }));
+    const text = legend.getAllByRole("listitem").map((li) => li.textContent);
+    expect(text).toContain("Excellent50% · 4 files");
+    expect(text).toContain("Good20% · 2 files");
+    expect(text).toContain("Fair15% · 2 files");
+    expect(text).toContain("Needs work5% · 1 file");
+    expect(text).toContain("At risk10% · 1 file");
   });
 
   it("shows an empty state when no files are analyzed", () => {
@@ -27,13 +33,48 @@ describe("HealthDistributionBar", () => {
       total_files: 0,
       total_nloc: 0,
       bands: {
-        healthy: { files: 0, nloc: 0, pct: 0 },
-        warning: { files: 0, nloc: 0, pct: 0 },
-        alert: { files: 0, nloc: 0, pct: 0 },
+        excellent: { files: 0, nloc: 0, pct: 0 },
+        good: { files: 0, nloc: 0, pct: 0 },
+        fair: { files: 0, nloc: 0, pct: 0 },
+        needs_work: { files: 0, nloc: 0, pct: 0 },
+        at_risk: { files: 0, nloc: 0, pct: 0 },
       },
     };
     render(<HealthDistributionBar distribution={empty} />);
     expect(screen.getByText("No files analyzed.")).toBeInTheDocument();
+  });
+
+  it("renders what a server predating the five bands sends, rather than throwing", () => {
+    // The CLI/server and the app that reads it upgrade independently, so a
+    // three-band payload is reachable. A missing band reads as absent.
+    const partial = {
+      total_files: 10,
+      total_nloc: 1000,
+      bands: { excellent: { files: 6, nloc: 700, pct: 70 } },
+    } as unknown as HealthDistribution;
+    render(<HealthDistributionBar distribution={partial} />);
+    expect(screen.getByText("Excellent")).toBeInTheDocument();
+    expect(screen.getByText("70% · 6 files")).toBeInTheDocument();
+    // Absent bands are left out of the split rather than drawn as empty.
+    expect(screen.queryByText("At risk")).not.toBeInTheDocument();
+  });
+
+  it("does not report a repo with a three-band payload as empty in every band", () => {
+    // A server predating the five bands sends correct totals under band names
+    // this build does not know. Rendering that as five zeroes is a confident
+    // false statement — "we analysed 128 files and none is in any band".
+    const legacy = {
+      total_files: 128,
+      total_nloc: 9000,
+      bands: {
+        healthy: { files: 100, nloc: 7000, pct: 78 },
+        warning: { files: 20, nloc: 1500, pct: 17 },
+        alert: { files: 8, nloc: 500, pct: 5 },
+      },
+    } as unknown as HealthDistribution;
+    render(<HealthDistributionBar distribution={legacy} />);
+    expect(screen.getByText("No files analyzed.")).toBeInTheDocument();
+    expect(screen.queryByText(/0% at risk/)).not.toBeInTheDocument();
   });
 });
 
@@ -42,12 +83,21 @@ describe("HealthBadge", () => {
     render(<HealthBadge score={2.5} />);
     const el = screen.getByText("2.5");
     expect(el).toBeInTheDocument();
-    // Alert band → error color class.
+    // At risk band -> error color class.
     expect(el.className).toContain("color-error");
   });
 
   it("renders nothing for a missing score", () => {
     const { container } = render(<HealthBadge score={null} />);
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it("falls back to the score when the API sends a band this build does not know", () => {
+    // A server predating the five bands sends "healthy". Indexing the colour
+    // table with it yields undefined, and the pill renders unstyled.
+    render(<HealthBadge score={2.5} band={"healthy" as never} />);
+    const el = screen.getByText("2.5");
+    expect(el.className).toContain("color-error");
+    expect(el.className).not.toContain("undefined");
   });
 });

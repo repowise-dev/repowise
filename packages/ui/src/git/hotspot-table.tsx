@@ -1,244 +1,169 @@
 "use client";
 
 import * as React from "react";
-import { useState, useMemo } from "react";
-import { TrendingUp, TrendingDown, Search, Flame, Bug, ArrowUpDown, ArrowUp, ArrowDown, GitBranch, BookOpen, Radius, ChevronRight, ChevronDown } from "lucide-react";
-import { Badge } from "../ui/badge";
-import { Input } from "../ui/input";
+import { useMemo } from "react";
+import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react";
+import type {
+  Hotspot,
+  HotspotFacets,
+  HotspotFilter,
+  HotspotOrder,
+  HotspotSort,
+} from "@repowise-dev/types/git";
 import { EmptyState } from "../shared/empty-state";
 import { ResultsFooter } from "../shared/results-footer";
-import { RowActions } from "../shared/row-actions";
-import { AiPromptButton } from "../health/ai-prompt-button";
-import { ChurnBar } from "./churn-bar";
-import { formatLOC } from "../lib/format";
-import { summarizeFixHistory } from "../lib/fix-history";
-import { cn } from "../lib/cn";
 import { useVirtualRows } from "../shared/virtualized-table";
-import { clickableRowProps, CLICKABLE_ROW_CLS } from "../shared/responsive-table";
-import { docsPagePath, filePageId } from "../shared/entity/routes";
-import type { Hotspot } from "@repowise-dev/types/git";
+import { HotspotRow } from "./hotspot-row";
+import { HotspotToolbar } from "./hotspot-toolbar";
 
-/**
- * Collapsed main-row height (px), used as the initial virtualization estimate.
- * Real heights — including expanded detail rows — are measured at runtime via
- * `measureElement`, so this only affects the first paint and off-screen spacers.
- */
-const ESTIMATED_ROW_HEIGHT = 44;
+/** Row height (px); rows are one line, so the estimate is the height. */
+const ROW_HEIGHT = 44;
+
+export interface HotspotSortState {
+  key: HotspotSort;
+  order: HotspotOrder;
+}
+
+export const DEFAULT_HOTSPOT_SORT: HotspotSortState = { key: "score", order: "desc" };
 
 interface HotspotTableProps {
+  /** The loaded rows, in the server's order. */
   hotspots: Hotspot[];
-  repoId?: string;
-  linkPrefix?: string;
-  /**
-   * Optional row-click handler. When set, the entire row becomes clickable and
-   * the host can render a FileCardDialog (or similar) populated from the
-   * passed Hotspot. The action buttons in the rightmost column are still
-   * clickable independently — they stop propagation.
-   */
-  onSelect?: (hotspot: Hotspot) => void;
-  /**
-   * Pagination signals. When `total` is provided, the table renders a
-   * "Showing N of M / Load more" footer so the user can see whether the
-   * data was truncated. `onLoadMore` is wired to the parent's fetch — the
-   * table itself stays presentational.
-   */
+  /** Rows the current filter and search match (server count). */
   total?: number;
+  /** Server counts per filter over the searched set; chips show only with these. */
+  facets?: HotspotFacets;
+  query?: string;
+  /** Called with the settled search (debounced here); the host fetches. */
+  onQueryChange?: (q: string) => void;
+  filter?: HotspotFilter;
+  onFilterChange?: (filter: HotspotFilter) => void;
+  sort?: HotspotSortState;
+  /** Sortable headers render only when the host can sort on the server. */
+  onSortChange?: (sort: HotspotSortState) => void;
   hasMore?: boolean;
   loadingMore?: boolean;
   onLoadMore?: () => void;
-  /**
-   * When provided, each row shows a chevron toggle that expands an inline
-   * panel below it — used for hotspot → "top symbols in this file" drill-down.
-   * The host owns data-fetching and renders the panel body.
-   */
-  renderExpandedRow?: (hotspot: Hotspot) => React.ReactNode;
-  /** When set, each row shows an "AI stabilize" action that calls this. */
+  /** Row click: the host opens its file card. */
+  onSelect?: (hotspot: Hotspot) => void;
+  /** The row's agent prompt (quiet, on hover/focus). */
   onGeneratePrompt?: (hotspot: Hotspot) => void;
+  /** One prompt over the listed rows ("Copy prompt for these N"). */
+  onGenerateBatchPrompt?: (rows: Hotspot[]) => void;
+  /** The header prompt's label; English "Copy prompt for these N" by default. */
+  batchPromptLabel?: (count: number) => string;
+  /**
+   * Accepted and ignored, for callers that still pass them: the row's own
+   * click opens the file card, which already lists the file's top symbols and
+   * links, so a per-row menu and an inline symbols expand were competing
+   * actions. Remove from hosts when they next port.
+   */
+  repoId?: string;
+  linkPrefix?: string;
+  renderExpandedRow?: (hotspot: Hotspot) => React.ReactNode;
 }
 
-type Filter = "all" | "hot" | "risk" | "accelerating" | "magnet";
-type SortKey = "trend" | "churn" | "commits" | "fixes";
-type SortDir = "asc" | "desc";
-
-/** A row's fix history, or null when it has none. */
-const fixOf = (h: Hotspot) =>
-  summarizeFixHistory(h.prior_defect_count, h.last_fix_at, h.bug_magnet);
-
-function SortIcon({ column, sortKey, sortDir }: { column: SortKey; sortKey: SortKey; sortDir: SortDir }) {
-  if (column !== sortKey) return <ArrowUpDown className="inline h-3 w-3 ml-1 opacity-60" />;
-  return sortDir === "desc"
-    ? <ArrowDown className="inline h-3 w-3 ml-1" />
-    : <ArrowUp className="inline h-3 w-3 ml-1" />;
+function SortHeader({
+  column,
+  label,
+  title,
+  sort,
+  onSortChange,
+  align = "right",
+  className,
+}: {
+  column: HotspotSort;
+  label: string;
+  title?: string;
+  sort: HotspotSortState;
+  onSortChange?: ((s: HotspotSortState) => void) | undefined;
+  align?: "left" | "right";
+  className?: string;
+}) {
+  const active = sort.key === column;
+  const ariaSort = active ? (sort.order === "asc" ? "ascending" : "descending") : "none";
+  const Icon = !active ? ArrowUpDown : sort.order === "desc" ? ArrowDown : ArrowUp;
+  return (
+    <th
+      scope="col"
+      aria-sort={onSortChange ? ariaSort : undefined}
+      title={title}
+      className={`px-3 py-2.5 ${align === "left" ? "text-left" : "text-right"} text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider ${className ?? ""}`}
+    >
+      {onSortChange ? (
+        <button
+          type="button"
+          className="cursor-pointer select-none uppercase tracking-wider font-medium hover:text-[var(--color-text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] rounded"
+          onClick={() =>
+            onSortChange({
+              key: column,
+              order: active && sort.order === "desc" ? "asc" : "desc",
+            })
+          }
+        >
+          {label}
+          <Icon className={`inline h-3 w-3 ml-1 ${active ? "" : "opacity-60"}`} />
+        </button>
+      ) : (
+        label
+      )}
+    </th>
+  );
 }
 
-function ariaSortFor(column: SortKey, sortKey: SortKey, sortDir: SortDir): "none" | "ascending" | "descending" {
-  if (column !== sortKey) return "none";
-  return sortDir === "asc" ? "ascending" : "descending";
-}
+const TH = "px-3 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider";
 
 export function HotspotTable({
   hotspots,
-  repoId,
-  linkPrefix,
-  onSelect,
   total,
+  facets,
+  query = "",
+  onQueryChange,
+  filter = "all",
+  onFilterChange,
+  sort = DEFAULT_HOTSPOT_SORT,
+  onSortChange,
   hasMore,
   loadingMore,
   onLoadMore,
-  renderExpandedRow,
+  onSelect,
   onGeneratePrompt,
+  onGenerateBatchPrompt,
+  batchPromptLabel,
 }: HotspotTableProps) {
-  const expandable = !!renderExpandedRow;
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
-  const toggleExpand = (filePath: string) => {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(filePath)) next.delete(filePath);
-      else next.add(filePath);
-      return next;
-    });
-  };
-  const prefix = linkPrefix ?? (repoId ? `/repos/${repoId}` : undefined);
-  const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState<Filter>("all");
-  const [sortKey, setSortKey] = useState<SortKey>("trend");
-  const [sortDir, setSortDir] = useState<SortDir>("desc");
-
-  function handleSort(key: SortKey) {
-    if (key === sortKey) {
-      setSortDir((d) => (d === "desc" ? "asc" : "desc"));
-    } else {
-      setSortKey(key);
-      setSortDir("desc");
-    }
-  }
-
-  const filtered = useMemo(() => {
-    let items = hotspots;
-
-    if (search) {
-      const q = search.toLowerCase();
-      items = items.filter(
-        (h) =>
-          h.file_path.toLowerCase().includes(q) ||
-          (h.primary_owner ?? "").toLowerCase().includes(q),
-      );
-    }
-
-    switch (filter) {
-      case "hot":
-        items = items.filter((h) => h.is_hotspot);
-        break;
-      case "risk":
-        items = items.filter((h) => h.bus_factor <= 1);
-        break;
-      case "accelerating":
-        items = items.filter((h) => h.commit_count_30d * 3 > h.commit_count_90d);
-        break;
-      case "magnet":
-        items = items.filter((h) => fixOf(h)?.magnet);
-        break;
-    }
-
-    const sign = sortDir === "desc" ? -1 : 1;
-    items = [...items].sort((a, b) => {
-      if (sortKey === "trend") {
-        const av = a.temporal_hotspot_score ?? -1;
-        const bv = b.temporal_hotspot_score ?? -1;
-        return sign * (av - bv);
-      }
-      if (sortKey === "churn") return sign * (a.churn_percentile - b.churn_percentile);
-      if (sortKey === "commits") return sign * (a.commit_count_90d - b.commit_count_90d);
-      if (sortKey === "fixes")
-        return sign * ((a.prior_defect_count ?? 0) - (b.prior_defect_count ?? 0));
-      return 0;
-    });
-
-    return items;
-  }, [hotspots, search, filter, sortKey, sortDir]);
-
-  // Memoize the filter chips' counts so the three full `hotspots` scans only
-  // run when the dataset changes, not on every keystroke / sort / expand.
-  const filters: { key: Filter; label: string; count: number }[] = useMemo(() => {
-    const base: { key: Filter; label: string; count: number }[] = [
-      { key: "all", label: "All", count: hotspots.length },
-      { key: "hot", label: "Hot", count: hotspots.filter((h) => h.is_hotspot).length },
-      { key: "risk", label: "Bus factor risk", count: hotspots.filter((h) => h.bus_factor <= 1).length },
-      { key: "accelerating", label: "Accelerating", count: hotspots.filter((h) => h.commit_count_30d * 3 > h.commit_count_90d).length },
-    ];
-    // A repo with no counted magnets gets no chip at all rather than a zero.
-    const magnets = hotspots.filter((h) => fixOf(h)?.magnet).length;
-    if (magnets > 0) base.push({ key: "magnet", label: "Bug magnet", count: magnets });
-    return base;
-  }, [hotspots]);
-
+  const listed = total ?? hotspots.length;
   // Churn and bug-fix history are different claims, so the Fixes column only
-  // appears once the index actually carries fix data for this set of files.
-  const hasFixData = useMemo(
-    () => hotspots.some((h) => (h.prior_defect_count ?? 0) > 0),
-    [hotspots],
+  // appears once the index carries fix data for this set of files: anywhere in
+  // the searched set (the facet), not only on the loaded page.
+  const showFixes = useMemo(
+    () => (facets?.with_fixes ?? 0) > 0 || hotspots.some((h) => (h.prior_defect_count ?? 0) > 0),
+    [facets, hotspots],
   );
-
-  // Window the tbody rows. Rows are variable-height (an expanded row adds a
-  // second <tr>), so we drive the windowing with the lower-level hook and let
-  // it MEASURE real heights via `measureElement`. To capture the *combined*
-  // height of a logical row (main <tr> + optional expanded <tr>) within valid
-  // table semantics, each logical row is rendered as its own <tbody> — a
-  // <table> may contain multiple <tbody>s — and the measured/`data-index`d
-  // element is that <tbody>, so an expanded row's full height is tracked.
-  const {
-    scrollRef,
-    virtualRows,
-    paddingTop,
-    paddingBottom,
-    measureElement,
-  } = useVirtualRows({
-    count: filtered.length,
-    estimateSize: ESTIMATED_ROW_HEIGHT,
+  const { scrollRef, virtualRows, paddingTop, paddingBottom } = useVirtualRows({
+    count: hotspots.length,
+    estimateSize: ROW_HEIGHT,
   });
 
-  if (hotspots.length === 0) {
-    return (
-      <EmptyState
-        title="No hotspots found"
-        description="All files look stable — great work!"
-      />
-    );
+  const narrowed = query !== "" || filter !== "all";
+  if (hotspots.length === 0 && !narrowed) {
+    return <EmptyState title="No hotspots found" description="No file stands out for recent change." />;
   }
 
   return (
     <div className="space-y-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="relative">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />
-          <Input
-            placeholder="Search files or owners…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="pl-8 h-8 w-full sm:w-56 text-xs"
-          />
-        </div>
-        <div className="flex flex-wrap rounded-md border border-[var(--color-border-default)] overflow-hidden text-xs">
-          {filters.map((f) => (
-            <button
-              key={f.key}
-              onClick={() => setFilter(f.key)}
-              className={cn(
-                "px-2.5 py-1.5 font-medium transition-colors",
-                filter === f.key
-                  ? "bg-[var(--color-accent-primary)] text-[var(--color-text-inverse)]"
-                  : "bg-transparent text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)]",
-              )}
-            >
-              {f.label}
-              <span className="ml-1 text-[10px] opacity-70">({f.count})</span>
-            </button>
-          ))}
-        </div>
-      </div>
+      <HotspotToolbar
+        query={query}
+        onQueryChange={onQueryChange}
+        filter={filter}
+        onFilterChange={onFilterChange}
+        facets={facets}
+        total={listed}
+        onPromptForRows={onGenerateBatchPrompt ? () => onGenerateBatchPrompt(hotspots) : undefined}
+        batchPromptLabel={batchPromptLabel}
+      />
 
-      {filtered.length === 0 ? (
-        <EmptyState title="No matches" description="Try adjusting your search or filters." />
+      {hotspots.length === 0 ? (
+        <EmptyState title="No matches" description="Try another search or filter." />
       ) : (
         <div
           ref={scrollRef}
@@ -248,275 +173,88 @@ export function HotspotTable({
           <table className="w-full min-w-[760px] text-sm">
             <thead className="sticky top-0 z-10 bg-[var(--color-bg-surface)]">
               <tr className="border-b border-[var(--color-border-default)] bg-[var(--color-bg-surface)]">
-                {expandable && <th className="w-6 px-1" aria-hidden="true" />}
-                <th className="px-3 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-8">
+                <th scope="col" className={`${TH} w-10`} title="Place by hotspot score">
                   #
                 </th>
-                <th className="px-3 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
+                <th scope="col" className={TH}>
                   File
                 </th>
-                <th
-                  scope="col"
-                  aria-sort={ariaSortFor("commits", sortKey, sortDir)}
-                  className="px-3 py-2.5 text-right text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24"
-                >
-                  <button
-                    type="button"
-                    className="cursor-pointer select-none uppercase tracking-wider font-medium hover:text-[var(--color-text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] rounded"
-                    onClick={() => handleSort("commits")}
-                  >
-                    Commits 90d<SortIcon column="commits" sortKey={sortKey} sortDir={sortDir} />
-                  </button>
-                </th>
-                {hasFixData && (
-                  <th
-                    scope="col"
-                    aria-sort={ariaSortFor("fixes", sortKey, sortDir)}
-                    className="px-3 py-2.5 text-right text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24"
-                  >
-                    <button
-                      type="button"
-                      className="cursor-pointer select-none uppercase tracking-wider font-medium hover:text-[var(--color-text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] rounded"
-                      onClick={() => handleSort("fixes")}
-                      title="Bug-fix commits that touched this file in the trailing defect window. Churn counts every change; this counts only the ones that fixed something."
-                    >
-                      Fixes<SortIcon column="fixes" sortKey={sortKey} sortDir={sortDir} />
-                    </button>
-                  </th>
+                <SortHeader column="commits" label="Commits 90d" sort={sort} onSortChange={onSortChange} className="w-28" />
+                {showFixes && (
+                  <SortHeader
+                    column="fixes"
+                    label="Fixes 6mo"
+                    title="Bug-fix commits that touched this file in the last 6 months. Churn counts every change; this counts only the ones that fixed something."
+                    sort={sort}
+                    onSortChange={onSortChange}
+                    className="w-24"
+                  />
                 )}
-                <th
-                  scope="col"
-                  aria-sort={ariaSortFor("churn", sortKey, sortDir)}
-                  className="px-3 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-32 hidden lg:table-cell"
-                >
-                  <button
-                    type="button"
-                    className="cursor-pointer select-none uppercase tracking-wider font-medium hover:text-[var(--color-text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] rounded"
-                    onClick={() => handleSort("churn")}
-                  >
-                    Churn<SortIcon column="churn" sortKey={sortKey} sortDir={sortDir} />
-                  </button>
+                <SortHeader
+                  column="churn"
+                  label="Churn"
+                  align="left"
+                  sort={sort}
+                  onSortChange={onSortChange}
+                  className="w-32 hidden lg:table-cell"
+                />
+                <SortHeader
+                  column="score"
+                  label="Score"
+                  title="Hotspot score: commits weighted by recency (180-day half-life). The ranking."
+                  sort={sort}
+                  onSortChange={onSortChange}
+                  className="w-24"
+                />
+                <th scope="col" className={`${TH} w-20 hidden md:table-cell`}>
+                  Bus factor
                 </th>
-                <th
-                  scope="col"
-                  aria-sort={ariaSortFor("trend", sortKey, sortDir)}
-                  className="px-3 py-2.5 text-right text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24"
-                >
-                  <button
-                    type="button"
-                    className="cursor-pointer select-none uppercase tracking-wider font-medium hover:text-[var(--color-text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] rounded"
-                    onClick={() => handleSort("trend")}
-                    title="Exponential decay score weighting recent commits more heavily (180-day half-life)"
-                  >
-                    Trend<SortIcon column="trend" sortKey={sortKey} sortDir={sortDir} />
-                  </button>
-                </th>
-                <th className="px-3 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-20 hidden md:table-cell">
-                  Bus Factor
-                </th>
-                <th className="px-3 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24 hidden lg:table-cell">
+                <th scope="col" className={`${TH} w-24 hidden lg:table-cell`}>
                   Lines ±90d
                 </th>
-                <th className="px-3 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider hidden md:table-cell">
+                <th scope="col" className={`${TH} hidden md:table-cell`}>
                   Owner
                 </th>
-                <th className="px-3 py-2.5 w-20" />
+                <th scope="col" className="px-3 py-2.5 w-0">
+                  <span className="sr-only">Actions</span>
+                </th>
               </tr>
             </thead>
-            {paddingTop > 0 && (
-              <tbody aria-hidden>
-                <tr>
+            <tbody>
+              {paddingTop > 0 && (
+                <tr aria-hidden>
                   <td style={{ height: paddingTop, padding: 0, border: 0 }} />
                 </tr>
-              </tbody>
-            )}
-            {virtualRows.map((vr) => {
-              const h = filtered[vr.index];
-              if (h === undefined) return null;
-              const i = vr.index;
-              const accelerating = h.commit_count_30d * 3 > h.commit_count_90d;
-              const fix = fixOf(h);
-              const trendScore = h.temporal_hotspot_score;
-              const isExpanded = expanded.has(h.file_path);
-              return (
-                <tbody key={h.file_path} ref={measureElement} data-index={i}>
-                  <tr
-                    {...(onSelect ? clickableRowProps(() => onSelect(h)) : {})}
-                    className={cn(
-                      "border-b border-[var(--color-table-divider)] hover:bg-[var(--color-bg-elevated)] transition-colors group",
-                      !isExpanded && "last:border-0",
-                      onSelect && CLICKABLE_ROW_CLS,
-                    )}
-                  >
-                    {expandable && (
-                      <td
-                        className="px-1 py-2.5 align-middle"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          toggleExpand(h.file_path);
-                        }}
-                      >
-                        <button
-                          type="button"
-                          aria-label={isExpanded ? "Collapse symbols" : "Expand symbols"}
-                          aria-expanded={isExpanded}
-                          className="flex h-5 w-5 items-center justify-center rounded text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]"
-                        >
-                          {isExpanded ? (
-                            <ChevronDown className="h-3.5 w-3.5" />
-                          ) : (
-                            <ChevronRight className="h-3.5 w-3.5" />
-                          )}
-                        </button>
-                      </td>
-                    )}
-                    <td className="px-3 py-2.5 text-[var(--color-text-tertiary)] tabular-nums text-xs">
-                      {i + 1}
-                    </td>
-                    <td className="px-3 py-2.5 font-mono text-xs text-[var(--color-text-primary)] min-w-[180px] max-w-[420px]">
-                      <span className="block truncate group-hover:underline underline-offset-2" title={h.file_path}>{h.file_path}</span>
-                    </td>
-                    <td className="px-3 py-2.5 tabular-nums text-xs text-right">
-                      <span className="inline-flex items-center justify-end gap-1">
-                        <span className="text-[var(--color-text-secondary)]">
-                          {h.commit_count_90d}
-                        </span>
-                        {accelerating ? (
-                          <TrendingUp className="h-3 w-3 text-[var(--color-error)]" />
-                        ) : (
-                          <TrendingDown className="h-3 w-3 text-[var(--color-success)]" />
-                        )}
-                      </span>
-                    </td>
-                    {hasFixData && (
-                      <td className="px-3 py-2.5 tabular-nums text-xs text-right">
-                        {fix ? (
-                          <span
-                            className={cn(
-                              "inline-flex items-center justify-end gap-1",
-                              fix.magnet
-                                ? "text-[var(--color-error)]"
-                                : "text-[var(--color-text-secondary)]",
-                            )}
-                            title={
-                              fix.magnet
-                                ? `Bug magnet: ${fix.label}`
-                                : `Bug fixes: ${fix.label}`
-                            }
-                          >
-                            <Bug className="h-3 w-3 shrink-0" />
-                            {fix.count}
-                            {/* The magnet emphasis never travels without its age. */}
-                            {fix.magnet && (
-                              <span className="text-[10px] font-normal">{fix.age}</span>
-                            )}
-                          </span>
-                        ) : (
-                          <span className="text-[var(--color-text-tertiary)]">—</span>
-                        )}
-                      </td>
-                    )}
-                    <td className="px-3 py-2.5 hidden lg:table-cell">
-                      <div className="flex items-center gap-2">
-                        <ChurnBar percentile={h.churn_percentile} className="w-16" />
-                        <span className="text-xs text-[var(--color-text-tertiary)] tabular-nums w-8">
-                          {Math.round(h.churn_percentile)}%
-                        </span>
-                      </div>
-                    </td>
-                    <td className="px-3 py-2.5 tabular-nums text-xs text-right">
-                      <span className="inline-flex items-center justify-end gap-1">
-                        {trendScore != null ? (
-                          <>
-                            <Flame className={cn("h-3 w-3 shrink-0", trendScore >= 5 ? "text-[var(--color-error)]" : trendScore >= 2 ? "text-[var(--color-warning)]" : "text-[var(--color-text-tertiary)]")} />
-                            <span className="text-[var(--color-text-secondary)]">
-                              {trendScore.toFixed(2)}
-                            </span>
-                          </>
-                        ) : (
-                          <span className="text-[var(--color-text-tertiary)]">—</span>
-                        )}
-                      </span>
-                    </td>
-                    <td className="px-3 py-2.5 hidden md:table-cell">
-                      <span
-                        className={`inline-flex items-center justify-center rounded px-1.5 py-0.5 text-xs font-medium tabular-nums ${
-                          h.bus_factor <= 1
-                            ? "bg-[var(--color-error)]/15 text-[var(--color-error)]"
-                            : h.bus_factor === 2
-                              ? "bg-[var(--color-warning)]/15 text-[var(--color-warning)]"
-                              : "bg-[var(--color-success)]/15 text-[var(--color-success)]"
-                        }`}
-                      >
-                        {h.bus_factor}
-                      </span>
-                    </td>
-                    <td className="px-3 py-2.5 text-xs tabular-nums hidden lg:table-cell">
-                      <span className="text-[var(--color-success)]">+{formatLOC(h.lines_added_90d)}</span>
-                      {" "}
-                      <span className="text-[var(--color-error)]">-{formatLOC(h.lines_deleted_90d)}</span>
-                    </td>
-                    <td className="px-3 py-2.5 text-xs text-[var(--color-text-secondary)] hidden md:table-cell">
-                      {h.primary_owner ?? "—"}
-                    </td>
-                    <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
-                      <div className="flex items-center gap-1">
-                        {h.is_hotspot && <Badge variant="outdated">Hot</Badge>}
-                        {h.is_stable && <Badge variant="fresh">Stable</Badge>}
-                        {onGeneratePrompt && (
-                          <AiPromptButton
-                            variant="icon"
-                            label="AI stabilization prompt"
-                            onClick={() => onGeneratePrompt(h)}
-                          />
-                        )}
-                        {prefix && (
-                          <RowActions
-                            actions={[
-                              { icon: GitBranch, label: "Graph", href: `${prefix}/architecture?view=graph&node=${encodeURIComponent(h.file_path)}` },
-                              // `?file=` is read by nothing in the docs
-                              // surface, so this used to open the repo
-                              // overview while looking like it had worked.
-                              // `?page=` is the reader's parameter and takes a
-                              // wiki page id; a file with no page gets told so
-                              // by name.
-                              { icon: BookOpen, label: "Docs", href: docsPagePath(prefix, filePageId(h.file_path)) },
-                              { icon: Radius, label: "Blast Radius", href: `${prefix}/code-health?tab=impact&file=${encodeURIComponent(h.file_path)}` },
-                            ]}
-                          />
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                  {expandable && isExpanded && (
-                    <tr className="border-b border-[var(--color-table-divider)] bg-[var(--color-bg-wash)] last:border-0">
-                      <td className="px-1" />
-                      <td colSpan={hasFixData ? 10 : 9} className="px-3 py-3">
-                        {renderExpandedRow!(h)}
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              );
-            })}
-            {paddingBottom > 0 && (
-              <tbody aria-hidden>
-                <tr>
+              )}
+              {virtualRows.map((vr) => {
+                const h = hotspots[vr.index];
+                if (h === undefined) return null;
+                return (
+                  <HotspotRow
+                    key={h.file_path}
+                    hotspot={h}
+                    rank={h.rank ?? vr.index + 1}
+                    showFixes={showFixes}
+                    onSelect={onSelect}
+                    onGeneratePrompt={onGeneratePrompt}
+                  />
+                );
+              })}
+              {paddingBottom > 0 && (
+                <tr aria-hidden>
                   <td style={{ height: paddingBottom, padding: 0, border: 0 }} />
                 </tr>
-              </tbody>
-            )}
+              )}
+            </tbody>
           </table>
-          {total != null && (
-            <ResultsFooter
-              shown={filtered.length}
-              total={total}
-              hasMore={!!hasMore}
-              loading={loadingMore}
-              onLoadMore={onLoadMore}
-              noun="hotspots"
-            />
-          )}
+          <ResultsFooter
+            shown={hotspots.length}
+            total={listed}
+            hasMore={!!hasMore}
+            loading={loadingMore}
+            onLoadMore={onLoadMore}
+            noun="hotspots"
+          />
         </div>
       )}
     </div>

@@ -39,9 +39,20 @@ export function useCommunityFilter(sigmaGraph: SigmaGraph | null) {
 
   const handleCommunityToggle = useCallback(
     (cid: number) => {
+      // A community with nothing on this canvas has nothing to toggle. The
+      // key used to list communities from the repo-wide summary, so clicking
+      // one that was not drawn added a phantom id: nothing dimmed, the swatch
+      // stayed filled, and the phantom then made `next.size` match and reset
+      // the filter to "show all" — the opposite of the label.
+      if (!allCommunityIds.has(cid)) return;
       setActiveCommunities((prev) => {
-        const current = prev ?? new Set(allCommunityIds);
-        const next = new Set(current);
+        // Re-intersected every time: the drawn set changes on a signal toggle,
+        // a module filter, an ego depth and a load-more, and an id left over
+        // from a graph that is gone made the size check below fire on the
+        // wrong click.
+        const next = new Set(
+          prev ? [...prev].filter((id) => allCommunityIds.has(id)) : allCommunityIds,
+        );
         if (next.has(cid)) next.delete(cid);
         else next.add(cid);
         if (next.size === allCommunityIds.size) return null;
@@ -58,6 +69,9 @@ export function useCommunityFilter(sigmaGraph: SigmaGraph | null) {
   return {
     activeCommunities,
     communityDimmedNodes,
+    /** Communities with at least one node on the canvas. The key filters its
+     *  rows by this so it cannot offer a toggle that does nothing. */
+    drawnCommunityIds: allCommunityIds,
     handleCommunityToggle,
     handleToggleAllCommunities,
   };

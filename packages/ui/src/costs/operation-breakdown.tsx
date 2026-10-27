@@ -3,6 +3,7 @@
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
 import { operationBreakdownHeight } from "./chart-height";
 import { formatCost } from "../lib/format";
+import { seriesColor } from "../shared/series";
 
 export interface OperationBreakdownProps {
   groups: Array<{
@@ -17,17 +18,6 @@ export interface OperationBreakdownProps {
   /** Override the dataKey used for bar height. */
   metric?: "cost_usd" | "calls" | "input_tokens" | "output_tokens";
 }
-
-const PALETTE = [
-  "var(--color-accent-primary)",
-  "var(--color-lang-python)",
-  "var(--color-lang-typescript)",
-  "var(--color-lang-go)",
-  "var(--color-lang-rust)",
-  "var(--color-lang-java)",
-  "var(--color-lang-cpp)",
-  "var(--color-lang-other)",
-];
 
 export function OperationBreakdown({ groups, metric = "cost_usd" }: OperationBreakdownProps) {
   const sorted = [...groups].sort((a, b) => (b[metric] ?? 0) - (a[metric] ?? 0)).slice(0, 12);
@@ -88,7 +78,7 @@ export function OperationBreakdown({ groups, metric = "cost_usd" }: OperationBre
           />
           <Bar dataKey={metric} radius={[0, 4, 4, 0]}>
             {sorted.map((row, i) => (
-              <Cell key={row.group} fill={PALETTE[i % PALETTE.length] ?? "var(--color-accent-primary)"} />
+              <Cell key={row.group} fill={seriesColor(i)} />
             ))}
           </Bar>
         </BarChart>

@@ -46,7 +46,7 @@ def _consumer(repo, cid, ctype="http", file="src/client.py") -> Contract:
 
 
 def _link(
-    cid, p_repo, p_file, c_repo, c_file, ctype="http", match="exact", conf=0.72
+    cid, p_repo, p_file, c_repo, c_file, ctype="http", match="exact", conf=0.72, strategy=None
 ) -> ContractLink:
     return ContractLink(
         contract_id=cid,
@@ -61,6 +61,7 @@ def _link(
         consumer_file=c_file,
         consumer_symbol="call",
         consumer_service=None,
+        strategy=strategy,
     )
 
 
@@ -173,8 +174,10 @@ def test_parallel_links_aggregate_into_one_weighted_edge():
         _consumer("web", "http::GET::/b", file="web/c.py"),
     ]
     links = [
-        _link("http::GET::/a", "api", "api/h.py", "web", "web/c.py", match="exact", conf=0.9),
-        _link("http::GET::/b", "api", "api/h.py", "web", "web/c.py", match="candidate", conf=0.5),
+        _link("http::GET::/b", "api", "api/h.py", "web", "web/c.py", match="candidate", conf=0.5,
+              strategy="prefix_stripped"),
+        _link("http::GET::/a", "api", "api/h.py", "web", "web/c.py", match="exact", conf=0.9,
+              strategy="exact_id"),
     ]
     graph = build_system_graph(contracts, links, CrossRepoOverlay(), {})
     edges = _edges_by_key(graph)
@@ -182,6 +185,7 @@ def test_parallel_links_aggregate_into_one_weighted_edge():
     assert edge.weight == 2
     assert edge.confidence == 0.9  # max of contributors
     assert edge.match_type == "exact"  # most authoritative wins
+    assert edge.strategy == "exact_id"  # the strategy behind the edge's confidence
     assert set(edge.contract_refs) == {"http::GET::/a", "http::GET::/b"}
 
 
@@ -207,6 +211,29 @@ def test_package_dep_edge_points_dependent_to_dependency():
     assert edge.structural is True
     assert edge.match_type == "exact"
     assert edge.confidence == 1.0
+
+
+def test_maven_package_edge_keeps_coordinate_evidence():
+    overlay = CrossRepoOverlay(
+        package_deps=[
+            CrossRepoPackageDep(
+                source_repo="consumer",
+                target_repo="producer",
+                source_manifest="app/pom.xml",
+                target_manifest="shared/pom.xml",
+                target_package="com.acme:shared",
+                requested_version="1.2.0",
+                scope="compile",
+                resolution_basis="unique_workspace_coordinate",
+                kind="maven_coordinate",
+            )
+        ]
+    )
+
+    graph = build_system_graph([], [], overlay, {})
+    edge = _edges_by_key(graph)[("consumer", "producer", "package")]
+
+    assert edge.contract_refs == ["maven_coordinate:com.acme:shared:app/pom.xml"]
 
 
 def test_cochange_edge_is_behavioral_and_undirected():
@@ -306,6 +333,8 @@ def test_system_graph_json_shape_is_locked():
         "weight",
         "structural",
         "contract_refs",
+        "strategy",
+        "family",
     }
     assert set(data["diagnostics"]) == {
         "total_providers",
@@ -316,14 +345,53 @@ def test_system_graph_json_shape_is_locked():
         "unmatched_consumers",
         "unmatched_by_reason",
         "orphan_providers",
+        "in_service_consumers",
         "providers_by_layer",
         "consumers_by_layer",
         "http_consumers_unresolved",
         "http_consumer_coverage",
+        "http_consumers_linked",
+        "http_link_coverage",
         "symbol_identity",
         "schema_coverage",
+        "openapi",
         "code_api",
+        "unrecognised_call_files",
+        "unrecognised_call_file_count",
+        "topic_names_unresolved",
+        "unrecognised_message_files",
+        "unrecognised_message_file_count",
     }
+
+
+def test_every_edge_kind_has_one_family():
+    from repowise.core.workspace.system_graph import (
+        EDGE_FAMILIES,
+        EDGE_KIND_FAMILY,
+        EDGE_KINDS,
+        edge_family,
+    )
+
+    assert set(EDGE_KIND_FAMILY) == set(EDGE_KINDS)
+    assert set(EDGE_KIND_FAMILY.values()) == set(EDGE_FAMILIES)
+    assert [edge_family(k) for k in ("http", "db", "package", "co_change")] == [
+        "runtime",
+        "data",
+        "build",
+        "history",
+    ]
+    # An unmapped kind is non-structural in the builder, so it is history here.
+    assert edge_family("carrier_pigeon") == "history"
+
+
+def test_edges_serialize_their_family():
+    contracts = [
+        _provider("api", "http::GET::/users", file="api/h.py"),
+        _consumer("web", "http::GET::/users", file="web/c.py"),
+    ]
+    links = [_link("http::GET::/users", "api", "api/h.py", "web", "web/c.py")]
+    graph = build_system_graph(contracts, links, CrossRepoOverlay(), {})
+    assert [e.to_dict()["family"] for e in graph.edges] == ["runtime"]
 
 
 def test_round_trip_serialization():
@@ -346,3 +414,22 @@ def test_save_and_load(tmp_path: Path):
 
 def test_load_missing_returns_none(tmp_path: Path):
     assert load_system_graph(tmp_path) is None
+
+
+def test_adjacency_is_the_one_view_every_walk_reads():
+    from repowise.core.workspace.system_graph import SystemEdge
+
+    def edge(src, tgt, kind, structural=True):
+        return SystemEdge(
+            id=f"{src}->{tgt}:{kind}", source=src, target=tgt, kind=kind,
+            match_type="exact", confidence=1.0, weight=1, structural=structural,
+        )
+
+    http, event, co = edge("a", "b", "http"), edge("a", "b", "event"), edge("b", "c", "co_change", False)
+    graph = SystemGraph(edges=[http, event, co])
+    assert graph.adjacency() == {"a": {"b": [http, event]}}
+    assert graph.adjacency(impact=True) == {"b": {"a": [http, event]}}
+    assert graph.adjacency(behavioral=True, impact=True) == {
+        "b": {"a": [http, event], "c": [co]},
+        "c": {"b": [co]},
+    }

@@ -135,10 +135,13 @@ async def test_get_context_single_file(setup_mcp):
     assert t["ownership"]["contributor_count"] == 2
     # Last change
     assert t["last_change"]["author"] == "Alice"
-    assert t["last_change"]["days_ago"] == 443
-    # Decisions
-    assert len(t["decisions"]) >= 1
-    assert any(d["title"] == "Use JWT for authentication" for d in t["decisions"])
+    # Days from the file's last commit to the repository's newest one, not the
+    # file's age: this row is the newest, so nothing has changed since.
+    assert t["last_change"]["days_ago"] == 0
+    # Decisions. The fixture record is ``proposed`` with no acceptance behind
+    # it, so it is a candidate — it used to be served as a governing decision.
+    assert t["decisions"] == []
+    assert any(d["title"] == "Use JWT for authentication" for d in t["candidates"])
     # Freshness
     assert t["freshness"]["confidence_score"] == 0.85
     assert t["freshness"]["freshness_status"] == "fresh"
@@ -458,7 +461,8 @@ async def test_batch_isolation_one_target_errors(setup_mcp, monkeypatch):
     # Failing target carries a per-target error entry (keyed on its target).
     assert "boom" in targets
     assert "error" in targets["boom"]
-    assert targets["boom"]["target"] == "boom"
+    # The map key is the target. The card no longer echoes it back as a field.
+    assert "target" not in targets["boom"]
 
 
 @pytest.mark.asyncio
@@ -849,3 +853,237 @@ async def test_concept_target_returns_section_and_children(setup_mcp, session):
     )
     assert all(c["page_type"] != "file_page" for c in children)
     assert any(f["path"] == "src/payments/charge.py" for f in t["docs"]["files"])
+
+
+@pytest.mark.asyncio
+async def test_get_context_meta_envelope(setup_mcp):
+    """get_context returns a well-formed _meta envelope without dead hint fields."""
+    from repowise.server.mcp_server import get_context
+
+    result = await get_context(["src/payments/charge.py"])
+    assert "_meta" in result
+    meta = result["_meta"]
+    assert "index_age_days" in meta
+    # Diagnostics stay off a routine response.
+    assert "contract_version" not in meta
+    assert "timing_ms" not in meta
+    # hint was dead/always None and has been removed; no empty or spurious hint field
+    assert "hint" not in meta
+
+
+
+def _card(name: str, *, symbols: int, callers: int, pad: int = 120) -> dict:
+    return {
+        "target": name,
+        "type": "file",
+        "docs": {
+            "title": name,
+            "summary": "s" * 80,
+            "symbols": [
+                {"name": f"f{j}", "kind": "function", "signature": "x" * pad, "line": j}
+                for j in range(symbols)
+            ],
+        },
+        "callers": [{"file": f"caller_{j}.py", "note": "c" * pad} for j in range(callers)],
+    }
+
+
+def test_two_targets_share_the_budget_instead_of_one_being_dropped():
+    from repowise.server.mcp_server.tool_context import _truncate_to_budget
+
+    result = {
+        "targets": {
+            "a.py": _card("a.py", symbols=40, callers=40),
+            "b.py": _card("b.py", symbols=40, callers=40),
+        },
+        "_meta": {},
+    }
+    out = _truncate_to_budget(result, char_budget=9000)
+
+    assert len(json.dumps(out, separators=(",", ":"), default=str)) <= 9000
+    assert set(out["targets"]) == {"a.py", "b.py"}
+    assert not out.get("dropped_targets")
+    for name, tgt in out["targets"].items():
+        assert tgt["docs"]["title"] == name
+        assert tgt["docs"]["symbols"]
+        assert "callers" in out["dropped_blocks"][name]
+
+
+def test_a_small_target_keeps_everything_while_a_large_one_degrades():
+    from repowise.server.mcp_server.tool_context import _truncate_to_budget
+
+    small = _card("small.py", symbols=2, callers=2)
+    result = {
+        "targets": {
+            "small.py": json.loads(json.dumps(small)),
+            "large.py": _card("large.py", symbols=80, callers=80),
+        },
+        "_meta": {},
+    }
+    out = _truncate_to_budget(result, char_budget=9000)
+
+    assert out["targets"]["small.py"] == small
+    assert "small.py" not in out.get("dropped_blocks", {})
+    assert "large.py" in out["dropped_symbols"]
+
+
+def test_a_dropped_target_leads_the_response_with_its_recovery_call():
+    import inspect
+
+    from repowise.server.mcp_server._budget import enforce_response_budget
+
+    def get_context(targets, include=None, compact=True, repo=None):
+        pass
+
+    # Identity cards alone overflow: every summary is long and cannot shrink.
+    names = [f"src/m{i}.py" for i in range(60)]
+    cards = {name: _card(name, symbols=1, callers=0, pad=10) for name in names}
+    for card in cards.values():
+        card["docs"]["summary"] = "s" * 900
+    payload = {"targets": cards, "_meta": {}}
+    out = enforce_response_budget(
+        "get_context",
+        payload,
+        signature=inspect.signature(get_context),
+        args=(),
+        kwargs={"targets": names, "include": ["callers"]},
+    )
+
+    dropped = out["dropped_targets"]
+    assert dropped and not set(dropped) & set(out["targets"])
+    assert list(out)[:2] == ["dropped_targets", "recovery"]
+    assert out["recovery"] == {
+        "tool": "get_context",
+        "arguments": {"targets": dropped, "include": ["callers"]},
+    }
+
+
+def _crowd(n: int) -> dict:
+    """*n* ordinary cards plus a miss with suggestions and an ambiguous symbol."""
+    targets = {f"src/m{i}.py": _card(f"src/m{i}.py", symbols=6, callers=4, pad=40) for i in range(n)}
+    targets["src/missing.py"] = {
+        "target": "src/missing.py",
+        "error": "Target not found: 'src/missing.py'",
+        "suggestions": ["src/m1.py", "src/m2.py"],
+    }
+    targets["src/amb.py::run"] = {
+        "target": "src/amb.py::run",
+        "type": "symbol",
+        "docs": {
+            "title": "run",
+            "candidates": [{"symbol_id": "src/amb.py::A::run"}, {"symbol_id": "src/amb.py::B::run"}],
+        },
+    }
+    return {"targets": targets, "_meta": {}}
+
+
+def test_suggestions_and_candidates_survive_budget_pressure():
+    from repowise.server.mcp_server.tool_context import _truncate_to_budget
+
+    for n, budget in ((30, 6000), (60, 12000), (80, 12000)):
+        out = _truncate_to_budget(_crowd(n), char_budget=budget)
+        missing = out["targets"].get("src/missing.py")
+        assert missing is not None and missing["suggestions"] == ["src/m1.py", "src/m2.py"]
+        amb = out["targets"].get("src/amb.py::run")
+        if amb is not None:
+            assert len(amb["docs"]["candidates"]) == 2
+        for labels in out.get("dropped_blocks", {}).values():
+            assert "suggestions" not in labels and "docs.candidates" not in labels
+
+
+def test_a_capped_list_dropped_whole_reports_zero_emitted():
+    from repowise.server.mcp_server._budget import truncate_to_budget
+
+    card = _card("a.py", symbols=2, callers=20, pad=200)
+    card.update(callers_total=50, callers_emitted=20)
+    other = _card("b.py", symbols=2, callers=0)
+    out = truncate_to_budget(
+        {"targets": {"a.py": card, "b.py": other}, "_meta": {}},
+        char_budget=2500,
+        record_counts=True,
+    )
+    kept = out["targets"]["a.py"]
+    assert "callers" not in kept
+    assert kept["callers_emitted"] == 0
+    assert kept["callers_total"] == 50
+
+
+def test_survivors_keep_their_detail_when_identity_cards_overflow():
+    from repowise.server.mcp_server.tool_context import _truncate_to_budget
+
+    out = _truncate_to_budget(_crowd(30), char_budget=6000)
+
+    assert out["dropped_targets"]
+    # Eviction came first, so the fair share had room: no survivor lost a block.
+    assert not out.get("dropped_blocks")
+    assert len(json.dumps(out, separators=(",", ":"), default=str)) <= 6000
+
+
+def _git_row(rid: str, path: str, last_commit_at: datetime | None) -> GitMetadata:
+    return GitMetadata(
+        id=f"gm-{path}",
+        repository_id=rid,
+        file_path=path,
+        commit_count_total=1,
+        commit_count_90d=0,
+        commit_count_30d=0,
+        first_commit_at=datetime(2020, 1, 1, tzinfo=UTC),
+        last_commit_at=last_commit_at,
+        primary_owner_name="Dana",
+        primary_owner_email="dana@example.com",
+        primary_owner_commit_pct=1.0,
+        top_authors_json=json.dumps([{"name": "Dana", "count": 1}]),
+        significant_commits_json=json.dumps([]),
+        co_change_partners_json=json.dumps([]),
+        is_hotspot=False,
+        is_stable=True,
+        churn_percentile=0.1,
+        age_days=2000,
+        created_at=_NOW,
+        updated_at=_NOW,
+    )
+
+
+async def _days_ago(path: str) -> int | None:
+    from repowise.server.mcp_server import get_context
+
+    result = await get_context([path], include=["last_change"], compact=False)
+    return result["targets"][path]["last_change"]["days_ago"]
+
+
+@pytest.mark.asyncio
+async def test_last_change_days_ago_counts_to_the_newest_commit_not_the_files_age(
+    setup_mcp, session
+):
+    # A later commit elsewhere in the repository moves the reference date:
+    # service.py was last changed 2026-03-15, four days before it.
+    session.add(_git_row(setup_mcp, "src/later.py", datetime(2026, 3, 19, tzinfo=UTC)))
+    await session.flush()
+
+    assert await _days_ago("src/auth/service.py") == 4
+    assert await _days_ago("src/later.py") == 0
+
+
+@pytest.mark.asyncio
+async def test_last_change_days_ago_is_none_without_a_last_commit(setup_mcp, session):
+    session.add(_git_row(setup_mcp, "src/undated.py", None))
+    await session.flush()
+
+    assert await _days_ago("src/undated.py") is None
+
+
+@pytest.mark.asyncio
+async def test_last_change_days_ago_accepts_a_naive_timestamp(setup_mcp, session):
+    # SQLite hands timestamps back naive; they are read as UTC, not rejected.
+    session.add(_git_row(setup_mcp, "src/naive.py", datetime(2026, 3, 10)))
+    await session.flush()
+
+    assert await _days_ago("src/naive.py") == 5
+
+
+async def test_days_since_last_change_prefers_as_of_ts(session):
+    from repowise.server.mcp_server.tool_context.targets import _days_since_last_change
+
+    last = datetime(2026, 3, 15)
+    as_of = datetime(2026, 3, 25)
+    assert await _days_since_last_change(session, "any-repo-id", last, as_of) == 10

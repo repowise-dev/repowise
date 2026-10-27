@@ -119,12 +119,14 @@ def test_helper_attaches_the_shortlist():
     payload = {"answer": "", "retrieval": []}
     out = _with_candidates(payload, [{"target_path": "a.py"}, {"target_path": "b.py"}])
     assert out["candidates"] == [{"path": "a.py"}, {"path": "b.py"}]
+    assert out["candidate_files"] == ["a.py", "b.py"]
 
 
 def test_helper_adds_nothing_when_the_pool_is_empty():
     """An empty block is worse than none: it reads as "retrieval found nothing"."""
     payload = {"answer": "", "retrieval": []}
-    assert "candidates" not in _with_candidates(payload, [])
+    out = _with_candidates(payload, [])
+    assert "candidates" not in out and "candidate_files" not in out
 
 
 def test_helper_takes_nothing_away():

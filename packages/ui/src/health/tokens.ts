@@ -7,7 +7,14 @@
  * caution/success) so the surface themes correctly in both modes.
  */
 
-import { bandForScore, type HealthBand } from "@repowise-dev/types/health";
+import {
+  bandForScore,
+  formatScore,
+  HEALTH_BAND_LABEL,
+  HEALTHY_MIN,
+  NEEDS_WORK_MIN,
+  type HealthBand,
+} from "@repowise-dev/types/health";
 
 export type Severity = "critical" | "high" | "medium" | "low";
 
@@ -41,143 +48,242 @@ export const SEVERITY_CHIP: Record<Severity, string> = {
   low: "bg-[var(--color-text-tertiary)]/15 text-[var(--color-text-tertiary)] border border-[var(--color-text-tertiary)]/30",
 };
 
-export const SEVERITY_BAR: Record<Severity, string> = {
-  critical: "bg-[var(--color-error)]",
-  high: "bg-[var(--color-warning)]",
-  medium: "bg-[var(--color-caution)]",
-  low: "bg-[var(--color-text-tertiary)]",
+/** The quiet mono label: a field name, a state word, a small tag. */
+export const MICRO = "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
+
+/** Segment fills for a severity split (ProportionBar `color`). */
+export const SEVERITY_SEGMENT: Record<Severity, string> = {
+  critical: "var(--color-error)",
+  high: "var(--color-warning)",
+  medium: "var(--color-caution)",
+  low: "var(--color-text-tertiary)",
 };
 
 /**
- * Internal 4-step COLOR RAMP for score pills. This is presentation granularity
- * only — NOT a labeling scheme. The canonical, defect-backed health *buckets*
- * are the 3 `HealthBand` values (Healthy/Warning/Alert) defined once in
- * `@repowise-dev/types/health` (mirroring core `grading.py`); use those for any
- * surfaced band label or count. `scoreBand` keeps an extra step (poor vs fair
- * inside the Warning band) purely so the file-table pills read on a finer ramp.
+ * The one health band -> colour vocabulary. Excellent and Good share the
+ * green; the band word carries the difference. Every table below is written
+ * out in full because Tailwind only sees class names it can read literally.
  */
-export type ScoreBand = "critical" | "poor" | "fair" | "good";
+const HEALTH_BAND_VAR: Record<HealthBand, string> = {
+  excellent: "var(--color-success)",
+  good: "var(--color-success)",
+  fair: "var(--color-caution)",
+  needs_work: "var(--color-warning)",
+  at_risk: "var(--color-error)",
+};
 
-export function scoreBand(score: number): ScoreBand {
-  if (score < 4) return "critical";
-  if (score < 6) return "poor";
-  if (score < 8) return "fair";
-  return "good";
-}
-
-/* Color classes for the 3 canonical health bands (Alert/Warning/Healthy).
- * Literal strings so Tailwind's static scanner keeps them.
- *
- * These MUST use the same tokens as `HEALTH_BAND_INK` below. They did not:
- * the Warning band read `--color-caution` here and `--color-warning` there,
- * so a 6.9 was one amber as a label and a different amber as a fill —
- * the treemap tile and the file page's score, or the zoom map's dot and its
- * detail panel, describing one file in one viewport. Two marks on one object
- * may not disagree about a colour they both derive from `bandForScore`.
- * `--color-caution` stays where it belongs: the four-step severity/presentation
- * ramp below, which is not a band. */
 const HEALTH_BAND_TEXT: Record<HealthBand, string> = {
-  alert: "text-[var(--color-error)]",
-  warning: "text-[var(--color-warning)]",
-  healthy: "text-[var(--color-success)]",
+  excellent: "text-[var(--color-success)]",
+  good: "text-[var(--color-success)]",
+  fair: "text-[var(--color-caution)]",
+  needs_work: "text-[var(--color-warning)]",
+  at_risk: "text-[var(--color-error)]",
+};
+
+const HEALTH_BAND_BADGE: Record<HealthBand, string> = {
+  excellent:
+    "bg-[var(--color-success)]/15 text-[var(--color-success)] border border-[var(--color-success)]/30",
+  good: "bg-[var(--color-success)]/15 text-[var(--color-success)] border border-[var(--color-success)]/30",
+  fair: "bg-[var(--color-caution)]/15 text-[var(--color-caution)] border border-[var(--color-caution)]/30",
+  needs_work:
+    "bg-[var(--color-warning)]/15 text-[var(--color-warning)] border border-[var(--color-warning)]/30",
+  at_risk:
+    "bg-[var(--color-error)]/15 text-[var(--color-error)] border border-[var(--color-error)]/30",
 };
 
 const HEALTH_BAND_BADGE_SOFT: Record<HealthBand, string> = {
-  alert: "bg-[var(--color-error)]/15 text-[var(--color-error)]",
-  warning: "bg-[var(--color-warning)]/15 text-[var(--color-warning)]",
-  healthy: "bg-[var(--color-success)]/15 text-[var(--color-success)]",
+  excellent: "bg-[var(--color-success)]/15 text-[var(--color-success)]",
+  good: "bg-[var(--color-success)]/15 text-[var(--color-success)]",
+  fair: "bg-[var(--color-caution)]/15 text-[var(--color-caution)]",
+  needs_work: "bg-[var(--color-warning)]/15 text-[var(--color-warning)]",
+  at_risk: "bg-[var(--color-error)]/15 text-[var(--color-error)]",
 };
 
-/** Band → soft badge class. Pass the API-provided band where available; falls
- * back to deriving it from a score via the shared `bandForScore` mirror. */
-export function healthBandSoftBadgeClass(band: HealthBand): string {
-  return HEALTH_BAND_BADGE_SOFT[band];
+/** SVG `fill-` classes, for the marks the scatter charts draw. */
+export const HEALTH_BAND_FILL: Record<HealthBand, string> = {
+  excellent: "fill-[var(--color-success)]",
+  good: "fill-[var(--color-success)]",
+  fair: "fill-[var(--color-caution)]",
+  needs_work: "fill-[var(--color-warning)]",
+  at_risk: "fill-[var(--color-error)]",
+};
+
+/**
+ * Band fills. Good is the same green stepped down in opacity, so it stays
+ * legible where it sits next to Excellent.
+ */
+export const HEALTH_BAND_BAR: Record<HealthBand, string> = {
+  excellent: "bg-[var(--color-success)]",
+  good: "bg-[var(--color-success)]/55",
+  fair: "bg-[var(--color-caution)]",
+  needs_work: "bg-[var(--color-warning)]",
+  at_risk: "bg-[var(--color-error)]",
+};
+
+/** The same fills as CSS values, for a ProportionBar `color`. */
+export const HEALTH_BAND_SEGMENT: Record<HealthBand, string> = {
+  excellent: "var(--color-success)",
+  good: "color-mix(in srgb, var(--color-success) 55%, transparent)",
+  fair: "var(--color-caution)",
+  needs_work: "var(--color-warning)",
+  at_risk: "var(--color-error)",
+};
+
+/**
+ * The canvas ramp. Dense filled shapes carry no band word, so Excellent and
+ * Good separate by value here rather than sharing the one green.
+ */
+const HEALTH_BAND_NODE_FILL: Record<HealthBand, string> = {
+  excellent: "var(--color-node-excellent)",
+  good: "var(--color-node-good)",
+  fair: "var(--color-node-fair)",
+  needs_work: "var(--color-node-needs-work)",
+  at_risk: "var(--color-node-at-risk)",
+};
+
+export function healthBandNodeFill(band: HealthBand): string {
+  return HEALTH_BAND_NODE_FILL[band];
+}
+
+/** The canvas ramp for a 1-10 score. */
+export function healthNodeFill(score: number): string {
+  return HEALTH_BAND_NODE_FILL[bandForScore(score)];
+}
+
+/**
+ * The map's fills: the five canonical bands, softened.
+ *
+ * The same bands every score pill on the page uses, so a dot and the pill
+ * beside it never disagree. Each band's node token is pulled a little toward
+ * the neutral, so a field of thousands reads as pigment rather than as light.
+ * Five fills also keep the canvas at five draw batches.
+ */
+function softened(token: string): string {
+  return `color-mix(in srgb, var(${token}) 82%, var(--color-node-neutral))`;
+}
+
+const NODE_BAND_FILL: Record<HealthBand, string> = {
+  excellent: softened("--color-node-excellent"),
+  good: softened("--color-node-good"),
+  fair: softened("--color-node-fair"),
+  needs_work: softened("--color-node-needs-work"),
+  at_risk: softened("--color-node-at-risk"),
+};
+
+/** The fill for a file that needs nothing under a banded lens. */
+export const NODE_HEALTHY_FILL = NODE_BAND_FILL.good;
+
+/** Three problem stops, for banded lenses (coverage, churn, performance). */
+export const NODE_RAMP_STOP = {
+  warning: NODE_BAND_FILL.fair,
+  serious: NODE_BAND_FILL.needs_work,
+  alert: NODE_BAND_FILL.at_risk,
+} as const;
+
+/** The map fill for a 1-10 score, on the canonical band. */
+export function healthRampFill(score: number): string {
+  return NODE_BAND_FILL[bandForScore(score)];
+}
+
+/** The map fill for a band, for keys. */
+export function healthBandMapFill(band: HealthBand): string {
+  return NODE_BAND_FILL[band];
+}
+
+/**
+ * Whether a map fill marks a file that needs attention, which is what earns a
+ * glow and a place in the "needs attention" count: the Needs work and At risk
+ * fills. Green, gold and the neutral stay quiet.
+ */
+export function isLoudFill(fill: string): boolean {
+  return fill === NODE_BAND_FILL.needs_work || fill === NODE_BAND_FILL.at_risk;
+}
+
+export function healthBandColor(band: HealthBand): string {
+  return HEALTH_BAND_VAR[band];
 }
 
 export function healthBandTextColor(band: HealthBand): string {
   return HEALTH_BAND_TEXT[band];
 }
 
-/* Literal class strings per band so Tailwind's static scanner sees them. */
-const BAND_TEXT: Record<ScoreBand, string> = {
-  critical: "text-[var(--color-error)]",
-  poor: "text-[var(--color-warning)]",
-  fair: "text-[var(--color-caution)]",
-  good: "text-[var(--color-success)]",
-};
+export function healthBandSoftBadgeClass(band: HealthBand): string {
+  return HEALTH_BAND_BADGE_SOFT[band];
+}
 
-const BAND_BADGE: Record<ScoreBand, string> = {
-  critical:
-    "bg-[var(--color-error)]/15 text-[var(--color-error)] border border-[var(--color-error)]/30",
-  poor: "bg-[var(--color-warning)]/15 text-[var(--color-warning)] border border-[var(--color-warning)]/30",
-  fair: "bg-[var(--color-caution)]/15 text-[var(--color-caution)] border border-[var(--color-caution)]/30",
-  good: "bg-[var(--color-success)]/15 text-[var(--color-success)] border border-[var(--color-success)]/30",
-};
-
-const BAND_BADGE_SOFT: Record<ScoreBand, string> = {
-  critical: "bg-[var(--color-error)]/15 text-[var(--color-error)]",
-  poor: "bg-[var(--color-warning)]/15 text-[var(--color-warning)]",
-  fair: "bg-[var(--color-caution)]/15 text-[var(--color-caution)]",
-  good: "bg-[var(--color-success)]/15 text-[var(--color-success)]",
-};
-
+/** Tailwind text colour for a 1-10 score. */
 export function scoreTextColor(score: number | null | undefined): string {
   if (score == null) return "text-[var(--color-text-primary)]";
-  return BAND_TEXT[scoreBand(score)];
+  return HEALTH_BAND_TEXT[bandForScore(score)];
 }
 
-/** Bordered score pill (file table, KPI badges). */
+/** Bordered score pill, for a figure sitting in a table row. */
 export function scoreBadgeClass(score: number): string {
-  return BAND_BADGE[scoreBand(score)];
+  return HEALTH_BAND_BADGE[bandForScore(score)];
 }
 
-/** Borderless compact variant (inline HealthBadge next to file paths). */
+/** Borderless score pill, for a figure sitting inline in prose. */
 export function scoreSoftBadgeClass(score: number): string {
-  return BAND_BADGE_SOFT[scoreBand(score)];
+  return HEALTH_BAND_BADGE_SOFT[bandForScore(score)];
 }
 
-/* Raw CSS custom-property references per canonical band, for SVG/canvas
- * fills and inline styles where a class string cannot be used. */
-const HEALTH_BAND_INK: Record<HealthBand, string> = {
-  alert: "var(--color-error)",
-  warning: "var(--color-warning)",
-  healthy: "var(--color-success)",
-};
-
-/**
- * A canonical band as an ink color, for a key or legend that has a band but no
- * score to derive it from. Exported so an off-canvas key paints from the same
- * table the fills do — a legend with its own copy of the colours is a legend
- * that can describe a canvas it no longer matches.
- */
-export function healthBandInk(band: HealthBand): string {
-  return HEALTH_BAND_INK[band];
-}
-
-/**
- * Canonical banding for a higher-is-better health score on the 0-10 scale,
- * as an ink color usable in `style`/SVG attributes. Thresholds come from the
- * shared `bandForScore` mirror so every surface agrees on what counts as red.
- */
+/** Raw colour for a 1-10 score, for canvas ink and inline styles. */
 export function healthInk(score10: number): string {
-  return healthBandInk(bandForScore(score10));
+  return HEALTH_BAND_VAR[bandForScore(score10)];
 }
 
-/** `healthInk` for scores expressed on a 0-100 scale. */
+/** The same, for the surfaces that carry health on a 0-100 scale. */
 export function healthInk100(score100: number): string {
   return healthInk(score100 / 10);
 }
 
-/** `bandForScore` for scores expressed on a 0-100 scale. */
 export function healthBand100(score100: number): HealthBand {
   return bandForScore(score100 / 10);
 }
 
 /**
- * Banding for a higher-is-worse risk value on the 0-1 scale, as an ink
- * color. Matches the impact-graph node banding (>=0.66 alert, >=0.33
- * warning) so risk reads the same across tables, charts, and graphs.
+ * A 1-10 score as the colour and the word together, so a lede printing the
+ * label and the figure beside it taking the colour cannot disagree.
  */
+export function healthBand(score: number): { color: string; label: string } {
+  const band = bandForScore(score);
+  return { color: HEALTH_BAND_VAR[band], label: HEALTH_BAND_LABEL[band] };
+}
+
+/**
+ * The canonical three bands a label takes beside a health mark: Healthy at
+ * `HEALTHY_MIN` or above, Warning from `NEEDS_WORK_MIN`, Alert below. The five
+ * bands above are for a standalone lede; a dot, a figure and a word drawn
+ * together read on these three, so every mark agrees with every other.
+ */
+export type HealthMarkBand = "healthy" | "warning" | "alert";
+
+/** Top to bottom, with the lower edge of each band, for keys and grounds. */
+export const HEALTH_MARK_BANDS: readonly {
+  band: HealthMarkBand;
+  label: string;
+  color: string;
+  min: number;
+}[] = [
+  { band: "healthy", label: "Healthy", color: "var(--color-success)", min: HEALTHY_MIN },
+  { band: "warning", label: "Warning", color: "var(--color-warning)", min: NEEDS_WORK_MIN },
+  { band: "alert", label: "Alert", color: "var(--color-error)", min: 0 },
+];
+
+export interface HealthMark {
+  /** The score at one decimal, floored so it never crosses a band edge. */
+  value: string;
+  band: HealthMarkBand;
+  label: string;
+  color: string;
+}
+
+/** A 1-10 score as a health mark: figure, word and colour on the three bands. */
+export function healthMark(score: number): HealthMark {
+  const b = HEALTH_MARK_BANDS.find((x) => score >= x.min) ?? HEALTH_MARK_BANDS[HEALTH_MARK_BANDS.length - 1]!;
+  return { value: formatScore(score), band: b.band, label: b.label, color: b.color };
+}
+
 export function riskInk(risk01: number): string {
   if (risk01 >= 0.66) return "var(--color-error)";
   if (risk01 >= 0.33) return "var(--color-warning)";

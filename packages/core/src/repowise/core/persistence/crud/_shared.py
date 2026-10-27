@@ -11,10 +11,13 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from functools import cache
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, insert, inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from repowise.core.persistence.models import _new_uuid, _now_utc
 
 _VALID_JOB_STATUSES = frozenset(
     {"pending", "running", "completed", "failed", "cancelled", "paused"}
@@ -131,7 +134,7 @@ async def _batch_upsert_keyed(
     item_key_fn: Callable[[Any], Any],
     row_key_fn: Callable[[Any], Any],
     update_fn: Callable[[Any, Any], None],
-    insert_fn: Callable[[Any], Any],
+    insert_fn: Callable[[Any], dict[str, Any]],
     batch_size: int | None = None,
     gate: UpsertGate | None = None,
 ) -> None:
@@ -146,8 +149,12 @@ async def _batch_upsert_keyed(
     exactly when the legacy ``key_fn`` filter would have found that row.
 
     Within-batch duplicate keys keep the legacy outcome: the first item
-    inserts, later ones update the pending object (the per-item SELECT used
-    to see the autoflushed insert).
+    inserts, later ones update the not-yet-inserted row (the per-item SELECT
+    used to see the autoflushed insert), or the reloaded row once that insert
+    has been written.
+
+    *insert_fn* returns the new row's column values by attribute name,
+    primary key included, exactly as they would be passed to ``model(...)``.
 
     *gate*, when given, skips items whose stored row already matches (see
     :class:`UpsertGate`). Only the surviving items are hydrated as ORM rows.
@@ -156,8 +163,7 @@ async def _batch_upsert_keyed(
     """
     materialized = list(items)
     if not materialized:
-        if batch_size is None:
-            await session.flush()
+        await session.flush()
         return
 
     gated_keys: list[Any] | None = None
@@ -214,19 +220,142 @@ async def _batch_upsert_keyed(
                 .all()
             )
     by_key: dict[Any, Any] = {row_key_fn(row): row for row in existing_rows}
+    mapper = inspect(model)
 
-    if batch_size is None:
-        chunks: list[list[Any]] = [materialized]
-    else:
-        chunks = [materialized[i : i + batch_size] for i in range(0, len(materialized), batch_size)]
-    for chunk in chunks:
-        for item in chunk:
+    # Rows this call inserted, by key -> primary key. Only the key is kept:
+    # holding every inserted row until the end pinned the whole table in memory
+    # at once (1.8M graph edges took ~5 GiB). A later duplicate key reloads its
+    # row through session.get instead.
+    flushed: dict[Any, tuple] = {}
+    pk_keys = [prop.key for prop in mapper.column_attrs if prop.columns[0].primary_key]
+    size = batch_size or _BATCH_SIZE
+    for start in range(0, len(materialized), size):
+        # New rows go out as one executemany INSERT of plain column values, never
+        # as ORM objects: building them and the unit of work's per-object state,
+        # identity map and flush bookkeeping cost more than the SQL itself.
+        pending: dict[Any, dict[str, Any]] = {}
+        for item in materialized[start : start + size]:
             key = item_key_fn(item)
             existing = by_key.get(key)
+            if existing is None and key in flushed:
+                existing = await session.get(model, flushed[key])
             if existing is not None:
                 update_fn(existing, item)
+            elif key in pending:
+                # Same key twice in one chunk: replay the update on a transient
+                # copy, as it used to land on the still-pending insert.
+                obj = model(**pending[key])
+                update_fn(obj, item)
+                pending[key] = _column_values(
+                    model, {k: v for k, v in vars(obj).items() if not k.startswith("_sa_")}
+                )
             else:
-                obj = insert_fn(item)
-                session.add(obj)
-                by_key[key] = obj
+                pending[key] = _column_values(model, insert_fn(item))
+        if pending:
+            await session.execute(
+                insert(model).execution_options(render_nulls=True), list(pending.values())
+            )
+            for key, values in pending.items():
+                flushed[key] = tuple(values[k] for k in pk_keys)
         await session.flush()
+
+
+@cache
+def _insert_columns(model: type[Any]) -> tuple[tuple[str, Any, bool], ...]:
+    """Per mapped column: attribute key, Python default, server-default-only flag."""
+    return tuple(
+        (
+            prop.key,
+            prop.columns[0].default,
+            prop.columns[0].default is None and prop.columns[0].server_default is not None,
+        )
+        for prop in inspect(model).column_attrs
+    )
+
+
+def _column_values(model: type[Any], values: dict[str, Any]) -> dict[str, Any]:
+    """The INSERT parameters a flush of ``model(**values)`` would send.
+
+    A flush gives a column left unset or None its default, so that is resolved
+    here too. Every row of a model then carries the same keys, which is what
+    lets the bulk INSERT go out as one executemany (rows with differing keys
+    are split into separate statements). The INSERT renders the remaining
+    Nones as NULL, the value a flush writes for a column without a default.
+    """
+    row: dict[str, Any] = {}
+    used = 0
+    for key, default, server_only in _insert_columns(model):
+        if key in values:
+            used += 1
+        value = values.get(key)
+        if value is None:
+            if server_only:
+                continue  # left to the database, as a flush would
+            if default is not None:
+                value = default.arg if default.is_scalar else default.arg(None)
+        row[key] = value
+    if used != len(values):
+        unknown = sorted(set(values) - {c[0] for c in _insert_columns(model)})
+        raise TypeError(f"{unknown!r} are not columns of {model.__name__}")
+    return row
+
+
+async def _batch_delete_in(
+    session: AsyncSession,
+    model: Any,
+    column: Any,
+    values: Iterable[str],
+    *,
+    prefilter: tuple = (),
+) -> int:
+    """Delete rows whose *column* is in *values*, chunked past SQLite's limit.
+
+    Returns how many were removed.
+    """
+    items = list(values)
+    removed = 0
+    for start in range(0, len(items), _BATCH_SIZE):
+        chunk = items[start : start + _BATCH_SIZE]
+        if not chunk:
+            continue
+        result = await session.execute(
+            delete(model).where(*prefilter, column.in_(chunk))
+        )
+        removed += int(result.rowcount or 0)
+    await session.flush()
+    return removed
+
+
+def _row_updater(*natural_key: str) -> Callable[[Any, dict], None]:
+    """Build the ``update_fn`` for a table whose rows come in as plain dicts.
+
+    Copies every column the model actually has, never the surrogate id, the
+    repository, or *natural_key* — reassigning the key an upsert matched on
+    would silently retarget the row.
+    """
+    held = {"id", "repository_id", *natural_key}
+
+    def update(existing: Any, row: dict) -> None:
+        for key, val in row.items():
+            if key not in held and hasattr(existing, key):
+                setattr(existing, key, val)
+        existing.updated_at = _now_utc()
+
+    return update
+
+
+def _row_inserter(model: type[Any], repository_id: str) -> Callable[[dict], dict]:
+    """Build the matching ``insert_fn``: the same columns, on a fresh row."""
+
+    def insert(row: dict) -> dict:
+        return {
+            "id": _new_uuid(),
+            "repository_id": repository_id,
+            **{
+                k: v
+                for k, v in row.items()
+                if k not in ("id", "repository_id") and hasattr(model, k)
+            },
+        }
+
+    return insert

@@ -70,9 +70,57 @@ _FIXTURES = [
     ),
     (
         "java",
+        b"class A { void m(){ try { go(); fail(\"x\"); } catch (Exception e) {} } }\n",
+        {},
+        "Java try ending in fail() -> expected exception idiom, not swallowed",
+    ),
+    (
+        "java",
+        b"class A { void m(){ try { go(); Assert.fail(\"x\"); } catch (Exception e) { // expected\n } } }\n",
+        {},
+        "Java try ending in Assert.fail() -> clean",
+    ),
+    (
+        "java",
+        b"class A { void m(){ try (var r = open()) { go(); Assertions.fail(\"x\"); } catch (Exception e) {} } }\n",
+        {},
+        "Java try-with-resources ending in Assertions.fail() -> clean",
+    ),
+    (
+        "java",
+        b"class A { void m(){ try { fail(\"x\"); go(); } catch (Exception e) {} } }\n",
+        {"swallowed_catch": 1},
+        "Java fail() not last in try -> swallowed",
+    ),
+    (
+        "java",
         b"class A { void m(){ try { go(); } catch (Exception e) { log(e); } } }\n",
         {},
         "handled Java catch",
+    ),
+    (
+        "apex",
+        b"class A { void m(){ try { go(); } catch (Exception e) { // ignore\n } } }\n",
+        {"swallowed_catch": 1},
+        "comment-only Apex catch",
+    ),
+    (
+        "apex",
+        b"class A { void m(){ try { go(); System.assert(false, 'x'); } catch (Exception e) {} } }\n",
+        {},
+        "Apex try ending in System.assert(false) -> expected exception idiom",
+    ),
+    (
+        "apex",
+        b"class A { void m(){ try { go(); Assert.fail(); } catch (Exception e) {} } }\n",
+        {},
+        "Apex try ending in Assert.fail() -> clean",
+    ),
+    (
+        "apex",
+        b"class A { void m(){ try { go(); System.assert(ok); } catch (Exception e) {} } }\n",
+        {"swallowed_catch": 1},
+        "Apex System.assert on a value is no expected-throw idiom",
     ),
     (
         "kotlin",
@@ -205,3 +253,292 @@ def test_biomarker_no_hits_no_findings():
         module=None,
     )
     assert ErrorHandlingDetector().detect(ctx) == []
+
+
+# Rust unwraps that provably cannot panic are no finding; the controls beside
+# each stay findings.
+_RUST_CANNOT_PANIC = [
+    (b"fn f(x: Option<u8>) { if x.is_some() { g(x.unwrap()); } }\n", 0, "is_some guard"),
+    (b"fn f(x: Option<u8>) { if x.is_some() && h() { g(x.unwrap()); } }\n", 0, "guard conjunct"),
+    (b"fn f(x: Option<u8>) { if x.is_some() || h() { g(x.unwrap()); } }\n", 1, "|| is no guard"),
+    (b"fn f(x: Option<u8>) { if !x.is_some() { g(x.unwrap()); } }\n", 1, "negated guard"),
+    (b"fn f(x: Option<u8>) { if x.is_some() { } else { g(x.unwrap()); } }\n", 1, "else branch"),
+    (b"fn f(x: Option<u8>) { if y.is_some() { g(x.unwrap()); } }\n", 1, "other receiver"),
+    (b"fn f(v: Vec<u8>) { if !v.is_empty() && v.last().unwrap() == &0 { } }\n", 0, "non-empty"),
+    (b"fn f(v: Vec<u8>) { if v.is_empty() && v.last().unwrap() == &0 { } }\n", 1, "empty check"),
+    (
+        b"fn f(s: &S) { if s.r.is_some() { let r = (*s.r).as_ref().map(|r| r).unwrap(); } }\n",
+        0,
+        "guard through as_ref/map/deref",
+    ),
+    (
+        b'fn f() -> String { let mut s = String::new(); writeln!(s, "a").unwrap(); s }\n',
+        0,
+        "write into a String",
+    ),
+    (
+        b'fn f(s: &mut String) { write!(&mut s, "a").unwrap(); }\n',
+        0,
+        "write into a &mut String parameter",
+    ),
+    (
+        b'fn f() { let mut o = io::stdout(); writeln!(o, "a").unwrap(); }\n',
+        1,
+        "write into stdout can fail",
+    ),
+    (
+        b"fn f() { let mut w = String::new(); { let mut w = io::stdout(); "
+        b'writeln!(w, "a").unwrap(); } }\n',
+        1,
+        "a shadowing rebind of the String",
+    ),
+    (
+        b'fn f(o: &mut File) { let c = |o: String| 1; writeln!(o, "a").unwrap(); }\n',
+        1,
+        "a closure parameter of the same name",
+    ),
+    (b"fn f(x: Option<u8>) { if x.is_some() { let x = h(); g(x.unwrap()); } }\n", 1, "rebind"),
+    (b"fn f(mut x: Option<u8>) { if x.is_some() { x = h(); g(x.unwrap()); } }\n", 1, "assign"),
+    (
+        b"fn f(s: &mut S) { if s.v.is_some() { s.v = None; g(s.v.unwrap()); } }\n",
+        1,
+        "field assigned after the guard",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("source", "expected", "note"),
+    _RUST_CANNOT_PANIC,
+    ids=[note for _, _, note in _RUST_CANNOT_PANIC],
+)
+def test_rust_unwrap_that_cannot_panic_is_no_hit(source: bytes, expected: int, note: str):
+    hits = [h for h in _hits("rust", source) if h.kind == "unsafe_unwrap"]
+    assert len(hits) == expected, note
+
+
+_RUST_IDIOMS = [
+    (b"fn f(m: &Mutex<u8>) { let g = m.lock().unwrap(); }\n", "lock_poison"),
+    (b"fn f(m: &RwLock<u8>) { let g = m.write().unwrap(); }\n", "lock_poison"),
+    (b"fn f(h: JoinHandle<()>) { h.join().unwrap(); }\n", "thread_join"),
+    (b'fn f() { g().expect("config is validated at load"); }\n', "invariant_expect"),
+    (b"fn f() { g().expect(MSG); }\n", "invariant_expect"),
+    (b'fn f(x: u8) { match x { 0 => {}, _ => unreachable!("x is 0") } }\n', "unreachable"),
+    (b"fn f() { g().unwrap(); }\n", None),
+    (b"fn f(r: &mut File) { r.read(&mut buf).unwrap(); }\n", None),
+    (b'fn f() { g().expect(&format!("bad {}", 1)); }\n', None),
+    (b'fn f() { panic!("boom"); }\n', None),
+]
+
+
+@pytest.mark.parametrize(("source", "idiom"), _RUST_IDIOMS)
+def test_rust_idiomatic_assertions_are_labelled(source: bytes, idiom: str | None):
+    hits = _hits("rust", source)
+    assert len(hits) == 1
+    assert hits[0].idiom == idiom
+
+
+def test_rust_unwrap_anchors_on_the_unwrap_line_of_a_chain():
+    hits = _hits("rust", b"fn f() {\n    let x = g()\n        .h()\n        .unwrap();\n}\n")
+    assert [h.line for h in hits] == [4]
+
+
+def test_idiomatic_hit_is_labelled_and_not_scored():
+    ctx = FileContext(
+        file_path="a.rs",
+        language="rust",
+        nloc=20,
+        has_test_file=False,
+        module=None,
+        error_handling_hits=[
+            ErrorHandlingHit("unsafe_unwrap", 3, "lock_poison"),
+            ErrorHandlingHit("unsafe_unwrap", 5),
+        ],
+    )
+    idiomatic, plain = ErrorHandlingDetector().detect(ctx)
+    assert idiomatic.details == {"kind": "unsafe_unwrap", "idiom": "lock_poison", "deduction": 0.0}
+    assert idiomatic.deduction == 0.0
+    assert idiomatic.reason == (
+        "unwrapping a lock panics only if another thread panicked while holding it"
+    )
+    assert plain.details == {"kind": "unsafe_unwrap"}
+    assert plain.deduction is None
+    assert plain.reason == "unwrap/expect turns a recoverable error into a crash"
+
+
+@pytest.mark.parametrize(
+    ("source", "expected", "note"),
+    [
+        (
+            b"try:\n    x()\nexcept Exception:  # noqa: BLE001\n    pass\n",
+            {"swallowed_catch": 1},
+            "BLE001 suppresses broad_except; swallowed_catch remains",
+        ),
+        (
+            b"try:\n    x()\nexcept Exception:  # noqa: BLE001, E722\n    pass\n",
+            {"swallowed_catch": 1},
+            "multi-code noqa suppresses broad_except",
+        ),
+        (
+            b"try:\n    x()\nexcept:  # noqa: E722\n    pass\n",
+            {"swallowed_catch": 1},
+            "E722 suppresses bare_except",
+        ),
+        (
+            b"try:\n    x()\nexcept:  # noqa: BLE001\n    pass\n",
+            {"swallowed_catch": 1},
+            "BLE001 suppresses bare_except",
+        ),
+        (
+            b"try:\n    x()\nexcept Exception:  # noqa\n    pass\n",
+            {},
+            "blanket noqa suppresses broad_except and swallowed_catch",
+        ),
+        (
+            b"try:\n    x()\nexcept:  # noqa\n    pass\n",
+            {},
+            "blanket noqa suppresses bare_except and swallowed_catch",
+        ),
+        (
+            b"try:\n    x()\nexcept ValueError:  # noqa: S110\n    pass\n",
+            {},
+            "S110 suppresses swallowed_catch",
+        ),
+        (
+            b"try:\n    x()\nexcept Exception:  # noqa: BLE001, S110\n    pass\n",
+            {},
+            "BLE001 + S110 suppresses both broad_except and swallowed_catch",
+        ),
+        (
+            b"try:\n    x()\nexcept Exception:  # noqa: F401\n    pass\n",
+            {"swallowed_catch": 1, "broad_except": 1},
+            "unrelated noqa code does not suppress broad_except",
+        ),
+        (
+            b"try:\n    x()\nexcept:  # noqa: F401\n    pass\n",
+            {"swallowed_catch": 1, "bare_except": 1},
+            "unrelated noqa code does not suppress bare_except",
+        ),
+        (
+            b"try:\n    x()\nexcept Exception:\n    # noqa: BLE001\n    pass\n",
+            {"swallowed_catch": 1, "broad_except": 1},
+            "noqa on the next line inside block does not suppress header",
+        ),
+    ],
+)
+def test_python_noqa_suppression(source: bytes, expected: dict, note: str):
+    hits = _hits("python", source)
+    by_kind: dict[str, int] = {}
+    for h in hits:
+        by_kind[h.kind] = by_kind.get(h.kind, 0) + 1
+    assert by_kind == expected, f"{note}: expected {expected}, got {by_kind}"
+
+
+@pytest.mark.parametrize(
+    ("language", "source", "expected", "note"),
+    [
+        ("python", b"try:\n    x()\nexcept asyncio.CancelledError:\n    pass\n", set(), "asyncio"),
+        ("python", b"try:\n    x()\nexcept CancelledError:\n    pass\n", set(), "bare name"),
+        (
+            "python",
+            b"try:\n    x()\n"
+            b"except (asyncio.CancelledError, concurrent.futures.CancelledError) as e:\n"
+            b"    pass\n",
+            set(),
+            "tuple of cancellations",
+        ),
+        (
+            "python",
+            b"try:\n    x()\nexcept (asyncio.CancelledError, ValueError):\n    pass\n",
+            {"swallowed_catch"},
+            "cancellation mixed with an error is still swallowed",
+        ),
+        (
+            "python",
+            b"try:\n    x()\nexcept CancelledError, ValueError:\n    pass\n",
+            {"swallowed_catch"},
+            "parenthesis-free list keeps every type",
+        ),
+        (
+            "csharp",
+            b"class A{ void M(){ try { Go(); } catch (OperationCanceledException) {} } }\n",
+            set(),
+            "C# OperationCanceledException",
+        ),
+        (
+            "csharp",
+            b"class A{ void M(){ try { Go(); } "
+            b"catch (System.Threading.Tasks.TaskCanceledException e) {} } }\n",
+            set(),
+            "C# qualified TaskCanceledException",
+        ),
+    ],
+)
+def test_cancellation_catch_is_not_swallowed(
+    language: str, source: bytes, expected: set, note: str
+):
+    assert {h.kind for h in _hits(language, source)} == expected, note
+
+
+_FALLBACK_BODY = b"    try:\n        return load()\n    except Exception:\n        return None\n"
+
+
+@pytest.mark.parametrize(
+    ("source", "flagged", "note"),
+    [
+        (b'def f():\n    """Return None on failure."""\n' + _FALLBACK_BODY, False, "docstring"),
+        (b'def f():\n    """Best-effort cache read."""\n' + _FALLBACK_BODY, False, "best-effort"),
+        (b'def f():\n    """Load it. Never raises."""\n' + _FALLBACK_BODY, False, "never raises"),
+        (
+            b'def f():\n    """Falls back to an empty dict if the file cannot be read."""\n'
+            + _FALLBACK_BODY,
+            False,
+            "falls back",
+        ),
+        (
+            b"def f():\n    # best-effort: a missing cache is fine\n" + _FALLBACK_BODY,
+            False,
+            "comment above try",
+        ),
+        (
+            b"def f():\n    try:\n        return load()\n    except Exception:  # best-effort\n"
+            b"        return None\n",
+            False,
+            "comment on the except line",
+        ),
+        (b'def f():\n    """Return the loaded config."""\n' + _FALLBACK_BODY, True, "undocumented"),
+        (
+            b'def f():\n    """Returns the value if the key exists; raises on error."""\n'
+            + _FALLBACK_BODY,
+            True,
+            "failure word in another clause",
+        ),
+        (
+            b'def f():\n    """Does not raise ValueError for blanks."""\n' + _FALLBACK_BODY,
+            True,
+            "a named exception it does not raise is no fallback",
+        ),
+        (
+            b'def f():\n    """Best-effort read."""\n    try:\n        load()\n'
+            b"    except Exception:\n        log()\n",
+            True,
+            "documented but the handler does not return",
+        ),
+        (
+            b'def f():\n    """Best-effort read."""\n    try:\n        return load()\n'
+            b"    except:\n        return None\n",
+            True,
+            "bare except still catches KeyboardInterrupt",
+        ),
+        (
+            b'def f():\n    """Return None on failure."""\n    def g():\n        """Return it."""\n'
+            b"        try:\n            return load()\n        except Exception:\n"
+            b"            return None\n",
+            True,
+            "only the nearest function's docstring counts",
+        ),
+    ],
+)
+def test_documented_fallback_is_not_broad_except(source: bytes, flagged: bool, note: str):
+    kinds = {h.kind for h in _hits("python", source)}
+    assert bool(kinds & {"broad_except", "bare_except"}) is flagged, note

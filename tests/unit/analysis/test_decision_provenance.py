@@ -7,7 +7,9 @@ from pathlib import Path
 
 from repowise.core.analysis.decision_extractor import DecisionExtractor, ExtractedDecision
 from repowise.core.analysis.decision_provenance import (
+    BODY_FIELDS,
     MAX_SOURCE_RANK,
+    completeness,
     compute_confidence,
     rank_for_source,
     verify_quote,
@@ -45,6 +47,21 @@ def test_session_outranks_adr():
     assert rank_for_source("session") > rank_for_source("adr")
 
 
+def test_agent_ranks_with_session():
+    """An agent's own proposal is first-hand reasoning, like a transcript."""
+    from repowise.core.analysis.decisions.provenance import LISTABLE_SOURCES
+
+    assert rank_for_source("agent") == rank_for_source("session") == 8
+    assert "agent" in LISTABLE_SOURCES
+
+
+def test_agent_proposal_is_not_self_authored():
+    """Only a typed ``cli`` record is its own evidence; an agent must cite some."""
+    from repowise.core.analysis.decisions.lifecycle import requirement
+
+    assert not requirement({"source": "agent"}, accepter="reviewer").self_authored
+
+
 def test_adr_and_pr_tie():
     """Both are write-ups rather than the decision being made; later one wins."""
     assert rank_for_source("adr") == rank_for_source("pr") == 7
@@ -65,6 +82,15 @@ def test_swapping_session_and_adr_left_the_scale_intact():
 
 def test_git_archaeology_aliases_commit_rank():
     assert rank_for_source("git_archaeology") == rank_for_source("commit") == 6
+
+
+def test_conventions_sits_with_commit_and_leaves_the_scale_intact():
+    """Counted from the code itself, so it ranks where a commit does."""
+    from repowise.core.analysis.decision_provenance import LISTABLE_SOURCES
+
+    assert rank_for_source("conventions") == 6
+    assert MAX_SOURCE_RANK == 9
+    assert "conventions" in LISTABLE_SOURCES
 
 
 def test_unknown_source_lowest_rank():
@@ -203,3 +229,53 @@ def test_gate_keeps_unverifiable_when_no_source_text(tmp_path):
     assert rejected == 0
     assert len(kept) == 1
     assert kept[0].verification == "unverified"
+
+
+# --- completeness into confidence ------------------------------------------
+
+
+def test_completeness_counts_only_fields_that_say_something():
+    assert completeness() == 0
+    assert completeness(decision="x", rationale="  ", context=None) == 1
+    assert (
+        completeness(
+            decision="d",
+            rationale="r",
+            context="c",
+            consequences=["one"],
+            alternatives=["two"],
+        )
+        == BODY_FIELDS
+    )
+
+
+def test_a_record_that_says_more_scores_higher_at_the_same_rank():
+    thin = compute_confidence(8, 1, "exact", filled_fields=1)
+    full = compute_confidence(8, 1, "exact", filled_fields=5)
+    assert thin < full
+
+
+def test_completeness_outranks_a_rung_of_source_rank():
+    """The inversion this term exists to fix: a thin high-rank record used to
+    outscore a complete lower-rank one."""
+    thin_session = compute_confidence(8, 1, "exact", filled_fields=1)
+    full_pr = compute_confidence(7, 1, "exact", filled_fields=5)
+    assert full_pr > thin_session
+
+
+def test_an_unknown_body_leaves_the_score_unadjusted():
+    assert compute_confidence(8, 1, "exact") == compute_confidence(
+        8, 1, "exact", filled_fields=BODY_FIELDS
+    )
+
+
+def test_a_record_that_says_nothing_keeps_the_evidence_floor():
+    """The 0.4 floor means "there is evidence at all", which a blank record
+    still has. The term withholds the rank credit above it, not the floor."""
+    assert compute_confidence(9, 1, "exact", filled_fields=0) == 0.4
+
+
+def test_completeness_never_breaks_the_bounds_or_the_comment_subtier():
+    for filled in range(-1, BODY_FIELDS + 2):
+        assert 0.0 <= compute_confidence(9, 99, "exact", filled_fields=filled) <= 0.99
+        assert compute_confidence(2, 1, "exact", filled_fields=filled) < 0.5

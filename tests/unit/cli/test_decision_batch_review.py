@@ -19,7 +19,8 @@ from .test_decision_cmd import _seed_wiki_db
 
 _GOOD = "a" * 32
 _ALSO_GOOD = "b" * 32
-#: No rationale and no scope, so the acceptance contract refuses it.
+#: No reason and no scope, so the acceptance contract refuses it. context
+#: is blanked too: the seeder defaults it, and the reason reads it.
 _BARE = "c" * 32
 
 
@@ -39,6 +40,7 @@ def review_repo(tmp_path: Path) -> Path:
                 "status": "proposed",
                 "source": "pr",
                 "rationale": "",
+                "context": "",
                 "decision": "",
                 "affected_files": [],
             },
@@ -105,12 +107,15 @@ def test_preview_reports_a_refusal_without_writing(review_repo: Path) -> None:
     assert _lanes(review_repo)["candidates"] == 3
 
 
-def test_one_id_keeps_the_transition_document(review_repo: Path) -> None:
+def test_one_id_returns_the_batch_document(review_repo: Path) -> None:
+    """One shape for one id or many, so an agent parses one document."""
     result = _run(review_repo, "confirm", "aaaa")
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
-    assert payload == {"id": _GOOD, "status": "active", "action": "accepted"}
+    assert (payload["succeeded"], payload["failed"]) == (1, 0)
+    (only,) = payload["results"]
+    assert (only["id"], only["status"], only["action"]) == (_GOOD, "active", "accepted")
 
 
 def test_batch_dismiss_reports_an_unknown_id_beside_the_rest(review_repo: Path) -> None:
@@ -151,16 +156,16 @@ def test_an_ambiguous_single_id_refuses_instead_of_crashing(tmp_path: Path) -> N
     result = _run(repo, "confirm", "dd")
 
     assert result.exit_code == 1, result.output
-    payload = json.loads(result.output)
-    assert payload["error"] == "ambiguous_id"
-    assert "decision_id" not in payload
-    assert "ambiguous" in payload["message"]
+    (only,) = json.loads(result.output)["results"]
+    assert only["error"] == "ambiguous_id"
+    assert "id" not in only
+    assert "ambiguous" in only["message"]
 
 
 def test_an_id_shaped_directory_stays_an_id(review_repo: Path, monkeypatch) -> None:
     """Reading a hex token as a path would drop it from the batch and exit 0."""
-    monkeypatch.chdir(review_repo.parent)
-    (review_repo.parent / "cccc").mkdir()
+    monkeypatch.chdir(review_repo)
+    (review_repo / "cccc").mkdir()
 
     result = CliRunner().invoke(
         cli, ["decision", "confirm", "aaaa", "cccc", "--preview", "--format", "json"]

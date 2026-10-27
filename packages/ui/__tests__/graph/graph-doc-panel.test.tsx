@@ -40,7 +40,7 @@ describe("GraphDocPanel", () => {
     expect(screen.getByText("claude-haiku-4-5")).toBeTruthy();
   });
 
-  it("renders the empty state when an error is supplied", () => {
+  it("falls back to browsing when the host offers no file page", () => {
     render(
       <GraphDocPanel
         nodeId="src/missing.ts"
@@ -51,7 +51,31 @@ describe("GraphDocPanel", () => {
         onClose={vi.fn()}
       />,
     );
-    expect(screen.getByText("No documentation found for this file.")).toBeTruthy();
+    // Same words as the file page's own empty state. A file with no extracted
+    // symbols that is neither an entry point nor a hotspot is deliberately not
+    // given a page, so "not found" described it as a failure.
+    expect(screen.getByText("No documentation page for this file")).toBeTruthy();
     expect(screen.getByText("Browse all docs").getAttribute("href")).toBe("/repos/r/docs");
+  });
+
+  it("sends the reader to the file's own page, which works without a doc page", () => {
+    render(
+      <GraphDocPanel
+        nodeId="src/missing.ts"
+        page={null}
+        isLoading={false}
+        error={new Error("404")}
+        fullPageHref="/repos/r/files/src/missing.ts"
+        browseDocsHref="/repos/r/docs"
+        onClose={vi.fn()}
+      />,
+    );
+    // A real destination — history, health, symbols and graph position are all
+    // there for an undocumented file — rather than a consolation link to the
+    // whole docs tree.
+    expect(screen.getByText("Open the file page").getAttribute("href")).toBe(
+      "/repos/r/files/src/missing.ts",
+    );
+    expect(screen.queryByText("Browse all docs")).toBeNull();
   });
 });

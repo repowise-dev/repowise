@@ -1,15 +1,9 @@
 import { describe, it, expect } from "vitest";
 import type { SystemEdge, SystemGraph, SystemNode } from "@repowise-dev/types";
-import { collapseToRepos } from "../../src/workspace/system-map/collapse";
-import {
-  applyCollapse,
-  applyView,
-  computeSystemMapPositions,
-  layoutSignature,
-  SYSTEM_MAP_MAX_LAYOUT_NODES,
-} from "../../src/workspace/system-map/layout";
 import {
   edgeKindStyle,
+  edgeLabel,
+  isGatewayRouted,
   matchTypeDash,
   matchTypeLabel,
   EDGE_KIND_ORDER,
@@ -66,106 +60,6 @@ function graph(nodes: SystemNode[], edges: SystemEdge[]): SystemGraph {
   return { version: 1, generated_at: "2026-06-19T00:00:00Z", nodes, edges, diagnostics: {} as never };
 }
 
-describe("collapseToRepos", () => {
-  it("merges services of a repo into one node and sums their counts", () => {
-    const g = graph(
-      [
-        node("api::svc/a", "api", { provider_count: 2, contract_types: ["http"] }),
-        node("api::svc/b", "api", { consumer_count: 3, contract_types: ["grpc"] }),
-        node("web", "web", { kind: "frontend" }),
-      ],
-      [edge("web", "api::svc/a")],
-    );
-    const collapsed = collapseToRepos(g);
-    expect(collapsed.nodes.map((n) => n.id).sort()).toEqual(["api", "web"]);
-    const api = collapsed.nodes.find((n) => n.id === "api")!;
-    expect(api.provider_count).toBe(2);
-    expect(api.consumer_count).toBe(3);
-    expect(api.contract_types).toEqual(["grpc", "http"]);
-    expect(api.service_path).toBeNull();
-  });
-
-  it("drops intra-repo edges and merges parallel cross-repo edges", () => {
-    const g = graph(
-      [node("api::a", "api"), node("api::b", "api"), node("web", "web")],
-      [
-        edge("api::a", "api::b"), // intra-repo → dropped
-        edge("web", "api::a", { weight: 1, confidence: 0.6, match_type: "candidate" }),
-        edge("web", "api::b", { weight: 2, confidence: 0.9, match_type: "exact" }),
-      ],
-    );
-    const collapsed = collapseToRepos(g);
-    expect(collapsed.edges).toHaveLength(1);
-    const e = collapsed.edges[0]!;
-    expect(e.source).toBe("web");
-    expect(e.target).toBe("api");
-    expect(e.weight).toBe(3); // 1 + 2
-    expect(e.confidence).toBe(0.9); // max
-    expect(e.match_type).toBe("exact"); // strongest
-  });
-
-  it("keeps different edge kinds between the same repos distinct", () => {
-    const g = graph(
-      [node("web", "web"), node("api", "api")],
-      [edge("web", "api", { kind: "http" }), edge("web", "api", { kind: "co_change", structural: false })],
-    );
-    const collapsed = collapseToRepos(g);
-    expect(collapsed.edges).toHaveLength(2);
-    expect(new Set(collapsed.edges.map((e) => e.kind))).toEqual(new Set(["http", "co_change"]));
-  });
-
-  it("flags a repo with no surviving edges as isolated", () => {
-    const g = graph([node("api::a", "api"), node("api::b", "api"), node("lonely", "lonely")], [edge("api::a", "api::b")]);
-    const collapsed = collapseToRepos(g);
-    expect(collapsed.nodes.find((n) => n.id === "lonely")!.is_isolated).toBe(true);
-    // api had only an intra-repo edge → also isolated after collapse
-    expect(collapsed.nodes.find((n) => n.id === "api")!.is_isolated).toBe(true);
-  });
-
-  it("preserves a single-kind repo's kind, neutralizes a mixed one", () => {
-    const g = graph(
-      [node("libs::x", "libs", { kind: "library" }), node("libs::y", "libs", { kind: "library" })],
-      [],
-    );
-    expect(collapseToRepos(g).nodes[0]!.kind).toBe("library");
-    const mixed = graph(
-      [node("app::x", "app", { kind: "frontend" }), node("app::y", "app", { kind: "worker" })],
-      [],
-    );
-    expect(collapseToRepos(mixed).nodes[0]!.kind).toBe("service");
-  });
-});
-
-describe("applyView", () => {
-  const g = graph(
-    [node("a", "a"), node("b", "b")],
-    [edge("a", "b", { kind: "http" }), edge("a", "b", { id: "cc", kind: "co_change", structural: false })],
-  );
-
-  it("filters edges to the visible kinds, keeping all nodes", () => {
-    const view = { visibleKinds: new Set(["http"] as const), collapsed: false };
-    const out = applyView(g, view);
-    expect(out.edges).toHaveLength(1);
-    expect(out.edges[0]!.kind).toBe("http");
-    expect(out.nodes).toHaveLength(2);
-  });
-
-  it("hides everything when no kinds are visible", () => {
-    const out = applyView(g, { visibleKinds: new Set(), collapsed: false });
-    expect(out.edges).toHaveLength(0);
-  });
-
-  it("collapses before filtering", () => {
-    const multi = graph(
-      [node("api::a", "api"), node("web", "web")],
-      [edge("web", "api::a", { kind: "http" })],
-    );
-    const out = applyView(multi, { visibleKinds: new Set(["http"] as const), collapsed: true });
-    expect(out.nodes.map((n) => n.id).sort()).toEqual(["api", "web"]);
-    expect(out.edges[0]!.target).toBe("api");
-  });
-});
-
 describe("edge-kind registry", () => {
   it("covers every kind in the union and display order", () => {
     expect(EDGE_KIND_ORDER).toHaveLength(7);
@@ -179,6 +73,15 @@ describe("edge-kind registry", () => {
   it("marks co-change as the only behavioral kind", () => {
     expect(edgeKindStyle("co_change").category).toBe("behavioral");
     expect(edgeKindStyle("http").category).toBe("structural");
+  });
+
+  it("names a gateway-routed link in words, keeping its transport kind", () => {
+    const routed = { kind: "http" as const, strategy: "gateway_route" };
+    expect(isGatewayRouted(routed)).toBe(true);
+    expect(edgeLabel(routed)).toBe("HTTP via gateway");
+    expect(edgeKindStyle(routed.kind).label).toBe("HTTP");
+    expect(isGatewayRouted({ strategy: "service_mapped" })).toBe(false);
+    expect(edgeLabel({ kind: "http", strategy: null })).toBe("HTTP");
   });
 
   it("falls back gracefully for an unknown kind", () => {
@@ -334,14 +237,14 @@ describe("buildBreakingChangeOverlay", () => {
     [edge("web", "api"), edge("idle", "api")],
   );
 
-  it("badges the changed provider and at-risk consumers, highlighting the seam", () => {
+  it("badges the changed provider and exposed consumers, highlighting the seam", () => {
     const overlay = buildBreakingChangeOverlay(g, report([change()]));
     expect(overlay.nodeBadges?.api).toEqual({ label: "1 breaking", tone: "danger" });
-    expect(overlay.nodeBadges?.web).toEqual({ label: "at risk", tone: "warning" });
+    expect(overlay.nodeBadges?.web).toEqual({ label: "exposed", tone: "warning" });
     // Only the consumer→provider edge in the report is highlighted.
     expect(overlay.highlightEdgeIds?.has("web->api")).toBe(true);
     expect(overlay.highlightEdgeIds?.has("idle->api")).toBe(false);
-    expect(overlay.edgeBadges?.["web->api"]).toEqual({ label: "breaking", tone: "danger" });
+    expect(overlay.edgeBadges?.["web->api"]).toEqual({ label: "incompatible", tone: "danger" });
     // Additive overlay: nothing is dimmed.
     expect(overlay.dimNodeIds).toBeUndefined();
   });
@@ -349,9 +252,11 @@ describe("buildBreakingChangeOverlay", () => {
   it("a warning-only provider reads as a warning badge", () => {
     const overlay = buildBreakingChangeOverlay(
       g,
-      report([change({ severity: "warning", kind: "removed_field", impacted_consumers: [] })]),
+      report([change({ severity: "warning", kind: "schema_comparison_uncertain" })]),
     );
     expect(overlay.nodeBadges?.api).toEqual({ label: "1 change", tone: "warning" });
+    expect(overlay.nodeBadges?.web).toBeUndefined();
+    expect(overlay.highlightEdgeIds).toBeUndefined();
   });
 
   it("returns an empty overlay when there are no changes", () => {
@@ -494,66 +399,3 @@ describe("buildDsm", () => {
   });
 });
 
-describe("layout stability under filtering", () => {
-  const g = graph(
-    [node("api", "api"), node("web", "web")],
-    [
-      edge("web", "api"),
-      edge("api", "web", { id: "api->web:co", kind: "co_change", structural: false }),
-    ],
-  );
-
-  it("lays out the whole shape while drawing only the filtered edges", () => {
-    const all = new Set(["http", "co_change"] as const);
-    const httpOnly = new Set(["http"] as const);
-
-    // What we lay out keeps every edge, so a filter cannot move a node…
-    expect(applyCollapse(g, false).edges).toHaveLength(2);
-
-    // …while the drawn graph really does lose the filtered edge.
-    expect(applyView(g, { visibleKinds: httpOnly, collapsed: false }).edges.map((e) => e.id)).toEqual([
-      "web->api",
-    ]);
-    expect(applyView(g, { visibleKinds: all, collapsed: false }).edges).toHaveLength(2);
-
-    // The property that matters: the layout input is filter-independent.
-    expect(layoutSignature(applyView(g, { visibleKinds: all, collapsed: false }))).toBe(
-      layoutSignature(applyCollapse(g, false)),
-    );
-    expect(layoutSignature(applyView(g, { visibleKinds: httpOnly, collapsed: false }))).not.toBe(
-      layoutSignature(applyCollapse(g, false)),
-    );
-  });
-
-  it("changes the layout signature when collapse changes the node set", () => {
-    const withServices = graph(
-      [node("api::svc/a", "api"), node("api::svc/b", "api"), node("web", "web")],
-      [edge("web", "api::svc/a")],
-    );
-    expect(layoutSignature(applyCollapse(withServices, false))).not.toBe(
-      layoutSignature(applyCollapse(withServices, true)),
-    );
-  });
-});
-
-describe("computeSystemMapPositions", () => {
-  it("lays out a normal graph with ELK and reports it is not simplified", async () => {
-    const result = await computeSystemMapPositions(
-      graph([node("api", "api"), node("web", "web")], [edge("web", "api")]),
-    );
-    expect(result.simplified).toBe(false);
-    expect(result.positions.size).toBe(2);
-  });
-
-  it("falls back to a grid above the layout bound and says so", async () => {
-    const many = Array.from({ length: SYSTEM_MAP_MAX_LAYOUT_NODES + 1 }, (_, i) =>
-      node(`n${i}`, `r${i}`),
-    );
-    const result = await computeSystemMapPositions(graph(many, []));
-    expect(result.simplified).toBe(true);
-    expect(result.positions.size).toBe(many.length);
-    // A grid, not a pile: no two nodes share a position.
-    const seen = new Set([...result.positions.values()].map((p) => `${p.x},${p.y}`));
-    expect(seen.size).toBe(many.length);
-  });
-});

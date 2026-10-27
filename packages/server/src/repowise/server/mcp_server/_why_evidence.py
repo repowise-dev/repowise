@@ -36,17 +36,22 @@ ProvenanceKind = Literal[
     "human_decision",
     "extracted_rationale",
     "historical",
+    "computed",
     "inferred",
     "unknown",
 ]
 
 _HUMAN_SOURCES = frozenset({"adr", "cli", "session"})
+# ``agent`` is rationale its author stated, but the author is not a person.
 _RATIONALE_SOURCES = frozenset(
-    {"code_comment", "comment", "inline_marker", "rationale_comment"}
+    {"agent", "code_comment", "comment", "inline_marker", "rationale_comment"}
 )
 _HISTORICAL_SOURCES = frozenset(
     {"changelog", "commit", "git_archaeology", "pr", "readme_mining"}
 )
+# Counted from the code itself rather than written by anyone, so neither
+# rationale prose nor history nor a guess.
+_COMPUTED_SOURCES = frozenset({"conventions"})
 _INFERRED_SOURCES = frozenset({"inferred", "semantic"})
 _FULL_COMMIT_RE = re.compile(r"^[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?$")
 _REFERENCE_CACHE_LIMIT = 4096
@@ -161,6 +166,8 @@ def provenance_for_source(source: str | None) -> ProvenanceKind:
         return "extracted_rationale"
     if normalized in _HISTORICAL_SOURCES:
         return "historical"
+    if normalized in _COMPUTED_SOURCES:
+        return "computed"
     if normalized in _INFERRED_SOURCES:
         return "inferred"
     return "unknown"
@@ -445,20 +452,26 @@ def _annotate_commit_row(
     resolved_commits: Mapping[str, str],
     *,
     channel: str,
+    inherited: bool = False,
 ) -> None:
     commit = row.get("commit") or row.get("sha") or row.get("subject")
-    row["provenance"] = "historical"
     ref = commit_reference(
             repository,
             commit,
             resolved_commits=resolved_commits,
-            fallback={"channel": channel, "row": row},
+            # Hashed as the row always read, provenance included, so ids hold.
+            fallback={"channel": channel, "row": {**row, "provenance": "historical"}},
         )
+    row["evidence_refs"] = [ref]
+    if inherited:
+        # The enclosing block states the provenance once and the lane key
+        # names the channel, so neither repeats per row.
+        return
+    row["provenance"] = "historical"
     ref["provenance"] = "historical"
     ref["source"] = channel
     ref["source_kind"] = channel
     ref["verification_basis"] = "historical"
-    row["evidence_refs"] = [ref]
 
 
 def _annotate_origin(
@@ -468,11 +481,14 @@ def _annotate_origin(
     records_by_id: Mapping[str, Any],
     records_by_title: Mapping[str, list[Any]],
 ) -> None:
-    if origin.get("available"):
+    available = bool(origin.get("available"))
+    if available:
         origin["provenance"] = "historical"
     for row in origin.get("key_commits") or []:
         if isinstance(row, dict):
-            _annotate_commit_row(row, repository, resolved_commits, channel="origin")
+            _annotate_commit_row(
+                row, repository, resolved_commits, channel="origin", inherited=available
+            )
     for linked in origin.get("linked_decisions") or []:
         if not isinstance(linked, dict):
             continue
@@ -554,8 +570,13 @@ def annotate_response_evidence(
     for context in (result.get("target_context") or {}).values():
         if not isinstance(context, dict):
             continue
-        for row in context.get("governing_decisions") or []:
-            if isinstance(row, dict):
+        # Both authority lanes. A candidate is the row a reader is most likely
+        # to want the provenance of, because deciding whether to accept it is
+        # the whole reason it is on the page.
+        for lane in ("governing_decisions", "candidate_decisions"):
+            for row in context.get(lane) or []:
+                if not isinstance(row, dict):
+                    continue
                 candidates = records_by_title.get(str(row.get("title") or ""), [])
                 if len(candidates) == 1:
                     row["id"] = candidates[0].id
@@ -641,5 +662,9 @@ def _annotate_archaeology(
         for row in archaeology.get(key) or []:
             if isinstance(row, dict):
                 _annotate_commit_row(
-                    row, repository, resolved_commits, channel=f"archaeology:{key}"
+                    row,
+                    repository,
+                    resolved_commits,
+                    channel=f"archaeology:{key}",
+                    inherited=True,
                 )

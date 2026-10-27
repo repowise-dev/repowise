@@ -33,7 +33,6 @@ from .conftest import _make_file_info, _make_symbol
 EXPECTED_PAGE_TYPES = [
     "module_page",
     "repo_overview",
-    "architecture_diagram",
     "onboarding",
 ]
 

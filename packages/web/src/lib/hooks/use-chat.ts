@@ -9,6 +9,7 @@ import type {
   ChatUIToolCall as ChatToolCall,
   ChatUIMessage as ChatMessage,
 } from "@repowise-dev/types/chat";
+import { VIEW_TOOLS, parseViewParts } from "@repowise-dev/api-client/views";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 import { toChatUiMessages } from "@/lib/chat/to-chat-ui-messages";
 
@@ -225,6 +226,24 @@ export function useChat(repoId: string) {
             if (m.id !== asstId) return m;
 
             switch (ev.type) {
+              case "grounding":
+                return {
+                  ...m,
+                  toolCalls: [
+                    ...m.toolCalls,
+                    {
+                      id: ev.tool_id,
+                      name: ev.tool_name,
+                      arguments: ev.input,
+                      result: ev.artifact.data as unknown as Record<string, unknown>,
+                      summary: ev.summary,
+                      artifact: ev.artifact,
+                      status: "done" as const,
+                      origin: "grounding" as const,
+                    },
+                  ],
+                };
+
               case "tool_start":
                 return {
                   ...m,
@@ -239,21 +258,47 @@ export function useChat(repoId: string) {
                   ],
                 };
 
-              case "tool_result":
+              case "tool_result": {
+                // The server reports an unservable read as an `error` key plus
+                // an "Error: ..." summary. Without this the failed row renders
+                // exactly like a good one, so the answer above it reads as
+                // evidence-backed when nothing was read.
+                const data = ev.artifact.data as unknown as Record<string, unknown>;
+                const failed =
+                  typeof data === "object" && data !== null && "error" in data;
                 return {
                   ...m,
                   toolCalls: m.toolCalls.map((tc) =>
                     tc.id === ev.tool_id
                       ? {
                           ...tc,
-                          result: ev.artifact.data as unknown as Record<string, unknown>,
+                          result: data,
                           summary: ev.summary,
-                          artifact: ev.artifact,
-                          status: "done" as const,
+                          // A view tool's receipt is not evidence; the view itself renders inline.
+                          ...(VIEW_TOOLS.has(ev.tool_name) ? {} : { artifact: ev.artifact }),
+                          status: failed ? ("error" as const) : ("done" as const),
                         }
                       : tc,
                   ),
                 };
+              }
+
+              case "view": {
+                // Wire data: only a part that validates, once per id, renders.
+                const views = parseViewParts([...(m.views ?? []), ev.view]);
+                return views.length > (m.views?.length ?? 0) ? { ...m, views } : m;
+              }
+
+              case "truncated":
+                return { ...m, truncated: true };
+
+              case "diagnostics":
+                return ev.unverified_figures.length
+                  ? { ...m, unverifiedFigures: ev.unverified_figures }
+                  : m;
+
+              case "suggestions":
+                return { ...m, followUps: ev.suggestions };
 
               case "done":
                 return {

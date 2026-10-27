@@ -24,6 +24,8 @@ import contextlib
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+import structlog
+
 from .languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
 
 if TYPE_CHECKING:
@@ -47,8 +49,50 @@ _CPP_MACRO_SCAN_EXTS: tuple[str, ...] = (
 )
 
 
+def _stamp_entry(graph: Any, parsed_files: dict, path: str) -> None:
+    """Stamp an entry on both the graph node and ``FileInfo``.
+
+    The node flag feeds dead code, ``FileInfo`` the entry-point list and tour.
+    A test file only becomes a reachability root: a runner loads it, but no
+    reader enters the system there.
+    """
+    node = graph.nodes.get(path) if graph is not None else None
+    info = getattr(parsed_files.get(path), "file_info", None)
+    is_test = bool((node or {}).get("is_test") or getattr(info, "is_test", False))
+    flag = "is_reachability_root" if is_test else "is_entry_point"
+    if node is not None:
+        node[flag] = True
+    if info is not None:
+        setattr(info, flag, True)
+
+
+def _is_android_test_project(plugins: frozenset[str]) -> bool:
+    """Whether a Gradle module applies ``com.android.test``, directly or through
+    a version-catalog alias (``android.test``) or a convention plugin named for
+    it (``nowinandroid.android.test``)."""
+    return any(p == "android.test" or p.endswith(".android.test") for p in plugins)
+
+
+def _default_package_definers(graph: Any, index: Any, names: set[str]) -> set[str]:
+    """JVM files outside every package that define a top-level class in *names*."""
+    found: set[str] = set()
+    for path in list(graph.nodes()):
+        if not str(path).endswith((".java", ".kt")) or index.package_for_file(path):
+            continue
+        for succ in graph.successors(path):
+            sym = graph.nodes[succ]
+            if (
+                sym.get("node_type") == "symbol"
+                and sym.get("name") in names
+                and not sym.get("parent_name")
+                and graph.edges[path, succ].get("edge_type") == "defines"
+            ):
+                found.add(path)
+    return found
+
+
 def _warmup_jvm(ctx: ResolverContext) -> None:
-    from .resolvers.jvm_workspace import get_or_build_jvm_index
+    from .resolvers.jvm_workspace import get_or_build_jvm_index, resource_class_names
 
     index = get_or_build_jvm_index(ctx)
     graph = getattr(ctx, "graph", None)
@@ -59,7 +103,7 @@ def _warmup_jvm(ctx: ResolverContext) -> None:
     # graph cannot see: META-INF/services lines, JPMS ``provides ... with``
     # directives (both merged into ``index.services``), and Spring Boot
     # autoconfig imports (Boot-2 ``spring.factories``, Boot-3 ``.imports``).
-    # Stamp the defining file node as ``is_entry_point`` so the
+    # Stamp the defining file node a reachability root so the
     # unreachable-file pass treats it as live without a per-language
     # check on every node.
     entry_fqns: set[str] = set()
@@ -67,12 +111,23 @@ def _warmup_jvm(ctx: ResolverContext) -> None:
         entry_fqns.update(impls)
     for fqns in index.autoconfig_imports.values():
         entry_fqns.update(fqns)
+    # Classes a Gradle build script names (plugin ``classname``,
+    # ``implementationClass``, ``mainClass``) and loads by reflection.
+    from .resolvers.jvm_gradle import build_script_class_names
 
-    for fqn in entry_fqns:
-        for path in index.files_for_fqn(fqn):
-            node = graph.nodes.get(path)
-            if node is not None:
-                node["is_entry_point"] = True
+    entry_fqns.update(build_script_class_names(ctx))
+    # Classes a main resource file names for a framework to load (Hibernate,
+    # H2 aliases, MyBatis type handlers, P6Spy).
+    entry_fqns.update(resource_class_names(ctx))
+
+    root_paths = {path for fqn in entry_fqns for path in index.files_for_fqn(fqn)}
+    # A bare name is a default-package class, which the index does not key.
+    if bare := {n for n in entry_fqns if "." not in n}:
+        root_paths.update(_default_package_definers(graph, index, bare))
+    for path in root_paths:
+        node = graph.nodes.get(path)
+        if node is not None:
+            node["is_reachability_root"] = True
 
     # Stamp every JVM source file under a non-``main`` Gradle source-set
     # (``testFixtures``, ``integrationTest``, ``javaPoet``, ``jcstress``,
@@ -83,7 +138,9 @@ def _warmup_jvm(ctx: ResolverContext) -> None:
     # beyond the hardcoded never-flag globs and picks up arbitrary
     # repo-defined names (Caffeine's ``javaPoet`` and ``jcstress`` are
     # not Gradle-builtin conventions). The check uses the workspace
-    # source-set ``src_dirs`` discovered by ``jvm_gradle.py``.
+    # source-set ``src_dirs`` discovered by ``jvm_gradle.py``. Every source
+    # set of an Android test module (benchmarks, baseline profiles) counts:
+    # the instrumentation runner runs its ``main`` too.
     try:
         from .resolvers.jvm_gradle import get_or_build_jvm_gradle_index
 
@@ -95,8 +152,9 @@ def _warmup_jvm(ctx: ResolverContext) -> None:
         non_main_prefixes: list[str] = []
         for project in gradle_index.projects.values():
             base = project.root_dir.rstrip("/")
+            android_test = _is_android_test_project(project.plugins)
             for ss in project.source_sets.values():
-                if ss.is_main:
+                if ss.is_main and not android_test:
                     continue
                 for src_dir in ss.src_dirs:
                     prefix = f"{base}/{src_dir}/" if base else f"{src_dir}/"
@@ -110,6 +168,93 @@ def _warmup_jvm(ctx: ResolverContext) -> None:
                     nd = graph.nodes.get(node_name)
                     if nd is not None:
                         nd["is_never_flag"] = True
+
+    # Stamp qualifying JVM source files in publishing modules as package_export.
+    # A module publishes if:
+    # 1. Gradle: applies java-library or maven-publish (or java-library.*) and not application.
+    # 2. Maven: packaging is jar.
+    # If the module defines a module-info.java, only files in packages it exports qualify.
+    # Test files and pom aggregators never qualify.
+    parsed = getattr(ctx, "parsed_files", None) or {}
+    repo_path = getattr(ctx, "repo_path", None)
+    snapshot = getattr(ctx, "walk_snapshot", None)
+    jpms_exports = getattr(index, "jpms_exports", {})
+
+    def _qualifies(path: str, mod_dir: str) -> bool:
+        pf = parsed.get(path)
+        if pf is not None and getattr(pf.file_info, "is_test", False):
+            return False
+        if path.endswith(("module-info.java", "package-info.java")):
+            return False
+        if mod_dir in jpms_exports:
+            pkg = index.package_for_file(path)
+            if not pkg or pkg not in jpms_exports[mod_dir]:
+                return False
+        return True
+
+    # 1. Gradle publishing modules
+    if gradle_index is not None:
+        from .resolvers.jvm_gradle import is_publishing_gradle_project
+
+        for project in gradle_index.projects.values():
+            if not is_publishing_gradle_project(project):
+                continue
+            base = project.root_dir.rstrip("/")
+            mod_dir = project.root_dir.strip("/")
+            if mod_dir == ".":
+                mod_dir = ""
+            main_src_dirs: list[str] = []
+            for ss in project.source_sets.values():
+                if ss.is_main:
+                    main_src_dirs.extend(ss.src_dirs)
+            if not main_src_dirs:
+                main_src_dirs = ["src/main/java", "src/main/kotlin"]
+
+            prefixes = [f"{base}/{sd}/" if base else f"{sd}/" for sd in main_src_dirs]
+            for path in parsed:
+                if (
+                    (path.endswith(".java") or path.endswith(".kt"))
+                    and any(path.startswith(p) for p in prefixes)
+                    and _qualifies(path, mod_dir)
+                ):
+                    node = graph.nodes.get(path)
+                    if node is not None:
+                        node["package_export"] = True
+
+    # 2. Maven publishing modules
+    if repo_path is not None:
+        from pathlib import PurePosixPath
+
+        from repowise.core.fs_walk import glob_via
+
+        pom_paths = [
+            p
+            for p in glob_via(
+                snapshot, repo_path, "pom.xml", prune_nested_git=ctx.prune_nested_git
+            )
+            if p.is_file()
+        ]
+        if pom_paths:
+            try:
+                from .external_systems.maven_model import load_maven_reactor
+
+                reactor = load_maven_reactor(repo_path, pom_paths)
+                for proj in reactor.projects:
+                    if proj.packaging.lower() == "jar":
+                        pom_parent = PurePosixPath(proj.manifest).parent
+                        mod_dir = "" if str(pom_parent) == "." else str(pom_parent).strip("/")
+                        prefix = f"{mod_dir}/src/main/" if mod_dir else "src/main/"
+                        for path in parsed:
+                            if (
+                                (path.endswith(".java") or path.endswith(".kt"))
+                                and path.startswith(prefix)
+                                and _qualifies(path, mod_dir)
+                            ):
+                                node = graph.nodes.get(path)
+                                if node is not None:
+                                    node["package_export"] = True
+            except Exception:
+                pass
 
 
 def _warmup_cpp(ctx: ResolverContext) -> None:
@@ -129,7 +274,7 @@ def _warmup_cpp(ctx: ResolverContext) -> None:
     ``RCLCPP_COMPONENTS_REGISTER_NODE``, ``BOOST_CLASS_EXPORT``,
     ``LLVMFuzzerTestOneInput``, ``Q_OBJECT``, ``__attribute__((constructor))``,
     ``[[gnu::retain]]`` / ``[[gnu::used]]`` and the like — and stamps
-    ``is_entry_point=True`` on the file node. These macros wire the file
+    ``is_reachability_root=True`` on the file node. These macros wire the file
     into a runtime registry at static-init time, so a static call edge
     will never exist; without this rescue, every such TU reads as
     ``unreachable_file``.
@@ -171,6 +316,7 @@ def _warmup_cpp(ctx: ResolverContext) -> None:
                         break
 
     _mark_cpp_entry_point_files(parsed_files, graph, getattr(ctx, "source_map", None))
+    _stamp_cpp_build_listed(ctx, graph, index)
 
 
 # Tokens whose presence means the surrounding TU wires itself into a
@@ -205,26 +351,14 @@ def _read_warmup_source(
     parsed: Any,
     source_map: dict[str, bytes] | None,
 ) -> str | None:
-    """Text of *path* for a marker scan, from *source_map* if it has it.
+    """Text of *path* for a marker scan, preferring the bytes ingestion already read.
 
-    Neither ``ParsedFile`` nor ``FileInfo`` carries the source, so before
-    ``source_map`` existed these scans always re-opened the file. Decoding
-    matches what the disk fallback below does (utf-8 / replace) so a hit and
-    a miss can never disagree about the same bytes. Returns None when the
-    file is unavailable, which the callers treat as "no markers".
+    None when the file is unavailable, which the callers treat as "no markers".
     """
-    if source_map is not None:
-        data = source_map.get(path)
-        if data is not None:
-            return data.decode("utf-8", errors="replace")
-    abs_path = getattr(parsed.file_info, "abs_path", None)
-    if not abs_path:
-        return None
-    try:
-        with open(abs_path, encoding="utf-8", errors="replace") as f:
-            return f.read()
-    except OSError:
-        return None
+    from .source_text import source_text
+
+    abs_path = getattr(parsed.file_info, "abs_path", None) or ""
+    return source_text(path, abs_path, source_map, errors="replace")
 
 
 def _mark_cpp_entry_point_files(
@@ -232,7 +366,7 @@ def _mark_cpp_entry_point_files(
     graph: Any,
     source_map: dict[str, bytes] | None = None,
 ) -> None:
-    """Stamp ``is_entry_point=True`` on TU file nodes matching an entry marker."""
+    """Stamp TU file nodes carrying a registration marker as reachability roots."""
     for path, parsed in parsed_files.items():
         lang = parsed.file_info.language
         if lang not in ("cpp", "c"):
@@ -244,7 +378,7 @@ def _mark_cpp_entry_point_files(
             continue
         node = graph.nodes.get(path)
         if node is not None:
-            node["is_entry_point"] = True
+            node["is_reachability_root"] = True
 
 
 _SWIFT_ENTRY_RE = None  # compiled lazily inside _warmup_swift
@@ -284,9 +418,121 @@ def _warmup_swift(ctx: ResolverContext) -> None:
 
 
 def _warmup_dotnet(ctx: ResolverContext) -> None:
+    """Build the .NET project index, then mark every C# file of a project that
+    ships a package as published, for the per-symbol public API flag
+    (``analysis.public_api``).
+
+    The package comes from the same reader dead code uses, so the two cannot
+    disagree about what ships. A file belongs to its innermost project: a
+    sample or test project nested in a library's folder ships nothing. With no
+    readable project file nothing is stamped.
+    """
+    from ..analysis.published_packages import BuildFacts, dotnet_published, package_of
     from .resolvers.dotnet import get_or_build_index
 
-    get_or_build_index(ctx)
+    index = get_or_build_index(ctx)
+    graph = getattr(ctx, "graph", None)
+    if index is None or graph is None:
+        return
+    roots = dotnet_published(BuildFacts(repo_root=index.repo_path, dotnet_index=index))
+    if not any(roots.values()):
+        return
+    parsed = getattr(ctx, "parsed_files", None) or {}
+    for path, pf in parsed.items():
+        if pf.file_info.language != "csharp":
+            continue
+        node = graph.nodes.get(path)
+        if node is not None and package_of(path, roots):
+            node["package_export"] = True
+
+
+def _warmup_ruby(ctx: ResolverContext) -> None:
+    """Mark each gem's entry file as published, for the per-symbol public API
+    flag (``analysis.public_api``).
+
+    A gem's front door is ``lib/<name>.rb`` beside its gemspec. Only the entry
+    is stamped here, together with the ``lib`` root it sits in
+    (``ruby_gem_lib``): the files it requires are not resolved yet, so
+    ``stamp_public_api`` follows them once imports are. With no gemspec nothing
+    is stamped.
+    """
+    from .resolvers.ruby import gem_entry_files
+
+    graph = getattr(ctx, "graph", None)
+    if graph is None:
+        return
+    for path, lib_root in gem_entry_files(ctx).items():
+        node = graph.nodes.get(path)
+        if node is not None:
+            node["package_export"] = True
+            node["ruby_gem_lib"] = lib_root
+
+
+def _warmup_rust(ctx: ResolverContext) -> None:
+    """Stamp Cargo ``[[bin]]``/``[[test]]``/``[[bench]]``/``[[example]]``
+    targets that name an explicit ``path`` as live, so a file Cargo discovers
+    only through the manifest (not convention) is not reported as dead (#2936).
+
+    ``[[bin]]`` targets are entry points: cargo runs them directly. The other
+    three are runner-loaded the same way a test file is, so they become
+    reachability roots instead — the same "roots, not entry points" split the
+    TypeScript warmup above makes for its own non-manifest entry paths.
+
+    First, ``mod`` items a ``macro_rules!`` body declares join the imports of
+    the files that call the macro, before any import is resolved.
+    """
+    from .resolvers.rust import add_macro_rules_mod_imports
+    from .resolvers.rust_workspace import get_or_build_cargo_workspace_index
+
+    try:
+        add_macro_rules_mod_imports(ctx)
+    except Exception as exc:  # the pass must not abort the build
+        structlog.get_logger(__name__).debug("rust_macro_mods_failed", error=str(exc))
+    index = get_or_build_cargo_workspace_index(ctx)
+    if index is None:
+        return
+    graph = getattr(ctx, "graph", None)
+    if graph is None:
+        return
+    parsed = getattr(ctx, "parsed_files", None) or {}
+    for crate in index.crates:
+        for path in crate.bin_paths:
+            _stamp_entry(graph, parsed, path)
+        for path in crate.reachability_root_paths:
+            node = graph.nodes.get(path)
+            if node is not None:
+                node["is_reachability_root"] = True
+
+
+def _warmup_php(ctx: ResolverContext) -> None:
+    """Stamp the PHP files a tool loads with no importer as reachability roots.
+
+    Composer's autoloader loads every file a ``composer.json`` lists in
+    ``autoload.files`` on every run (a ``helpers.php`` of global functions),
+    and PHPStan alone runs a type-test corpus (:mod:`.phpstan`).
+    """
+    from .composer import repo_composer_manifests
+    from .phpstan import type_test_files
+
+    graph = getattr(ctx, "graph", None)
+    repo_path = getattr(ctx, "repo_path", None)
+    if graph is None:
+        return
+    manifests = repo_composer_manifests(ctx)
+    roots = {path for manifest in manifests for path in manifest.files}
+    if repo_path is not None:
+        parsed = getattr(ctx, "parsed_files", None) or {}
+        source_map = getattr(ctx, "source_map", None)
+        roots |= type_test_files(
+            repo_path,
+            manifests,
+            (path for path, pf in parsed.items() if pf.file_info.language == "php"),
+            lambda path: _read_warmup_source(path, parsed[path], source_map),
+        )
+    for path in roots:
+        node = graph.nodes.get(path)
+        if node is not None:
+            node["is_reachability_root"] = True
 
 
 def _warmup_go(ctx: ResolverContext) -> None:
@@ -295,34 +541,43 @@ def _warmup_go(ctx: ResolverContext) -> None:
     is semantic, not filename-based — ``cmd/task/task.go`` is as much a
     binary entry as ``cmd/release/main.go``, so the traverser's stem
     heuristic alone misses real binaries.
+
+    Also stamps ``package_export`` on every file of each package a consumer
+    outside the repo can import (:func:`exported_go_files`), the way the
+    TypeScript warmup does for a ``package.json``'s published files, for the
+    per-symbol public API flag (``analysis.public_api``).
     """
-    from .resolvers.go_workspace import get_or_build_go_index
+    from .resolvers.go_workspace import exported_go_files, get_or_build_go_index
 
     index = get_or_build_go_index(ctx)
     graph = getattr(ctx, "graph", None)
     parsed = getattr(ctx, "parsed_files", None) or {}
     for pkg in index.packages.values():
         for path in pkg.main_files:
-            # The graph attribute feeds dead-code reachability; the parsed
-            # FileInfo flag feeds the exported KG's entry tags and the tour
-            # seeds — both surfaces must agree.
-            if graph is not None:
-                node = graph.nodes.get(path)
-                if node is not None:
-                    node["is_entry_point"] = True
-            pf = parsed.get(path)
-            if pf is not None and getattr(pf, "file_info", None) is not None:
-                pf.file_info.is_entry_point = True
+            _stamp_entry(graph, parsed, path)
+    if graph is None:
+        return
+    for path in exported_go_files(index):
+        node = graph.nodes.get(path)
+        if node is not None:
+            node["package_export"] = True
 
 
 def _warmup_typescript(ctx: ResolverContext) -> None:
-    """Build the TS workspace index and stamp ``is_entry_point`` on every
-    source file the workspace's ``package.json`` ``exports`` map resolves
-    to. Without this, files reachable only through the package boundary
+    """Build the TS workspace index and stamp every source file the
+    workspace's ``package.json`` ``exports`` map resolves to as a
+    reachability root. Without this, files reachable only through the package boundary
     (downstream npm consumers) read as ``in_degree==0`` and ship as
     unreachable findings.
+
+    Files a ``package.json`` declares as where it starts (``bin``, ``main``,
+    ``exports["."]``) are stamped on the parsed ``FileInfo`` too, as
+    manifest entries: they are what the entry-point list ranks first. The
+    other sources here stay graph-only, since they keep code alive without
+    being anywhere a reader enters.
     """
     from .resolvers.ts_workspace import (
+        find_grafana_plugin_targets,
         find_mdx_import_targets,
         find_npm_script_entry_targets,
         find_vitest_include_targets,
@@ -333,7 +588,19 @@ def _warmup_typescript(ctx: ResolverContext) -> None:
     graph = getattr(ctx, "graph", None)
     if graph is None:
         return
-    entry_paths: set[str] = set(index.exports_entry_paths)
+    parsed = getattr(ctx, "parsed_files", None) or {}
+    # Every file a ``package.json`` publishes, subpaths included, for the
+    # per-symbol public API flag (``analysis.public_api``).
+    for path in index.exports_entry_paths | index.manifest_entry_paths:
+        node = graph.nodes.get(path)
+        if node is not None:
+            node["package_export"] = True
+    for path in index.manifest_entry_paths:
+        _stamp_entry(graph, parsed, path)
+        pf = parsed.get(path)
+        if pf is not None and getattr(pf, "file_info", None) is not None:
+            pf.file_info.is_manifest_entry = True
+    entry_paths: set[str] = set(index.exports_entry_paths) | index.manifest_entry_paths
     # MDX-only consumers (docs sites that import TSX components into
     # ``.mdx``) and custom vitest layouts (``runtime-tests/**``) — both
     # invisible to the TS parser, both real entry points.
@@ -341,16 +608,19 @@ def _warmup_typescript(ctx: ResolverContext) -> None:
         entry_paths |= find_mdx_import_targets(ctx)
     with contextlib.suppress(Exception):
         entry_paths |= find_vitest_include_targets(ctx)
+    # Grafana plugin entry files (module.ts/js beside plugin.json or in src/).
+    with contextlib.suppress(Exception):
+        entry_paths |= find_grafana_plugin_targets(ctx)
     # ``package.json`` ``scripts.*`` references: benchmark / bench-runner /
     # rollup-input paths that ship as live code but are never imported
     # by the main entry graph.
     with contextlib.suppress(Exception):
         entry_paths |= find_npm_script_entry_targets(ctx)
-    for path in entry_paths:
+    # Roots, not entry points: these keep code alive without being a front door.
+    for path in entry_paths - index.manifest_entry_paths:
         node = graph.nodes.get(path)
-        if node is None:
-            continue
-        node["is_entry_point"] = True
+        if node is not None:
+            node["is_reachability_root"] = True
 
 
 _FLUTTER_SHELL_DIRS = ("android/", "ios/", "linux/", "macos/", "windows/", "web/")
@@ -390,12 +660,99 @@ def _warmup_dart(ctx: ResolverContext) -> None:
         # forms can't express — stamp them here instead.
         basename = s.rsplit("/", 1)[-1]
         if basename.startswith("main_") and basename.endswith(".dart"):
+            _stamp_entry(graph, parsed, node_name)
+
+
+def _warmup_godot(ctx: ResolverContext) -> None:
+    """Stamp Godot engine-invoked entry points, and vendored ``addons/``.
+
+    Two facts about a Godot project that the import graph cannot express, both
+    read off its ini manifests.
+
+    **Autoloads, the main scene and an addon's EditorPlugin are entry points.**
+    Godot instantiates every ``[autoload]`` singleton before the first scene,
+    boots into ``run/main_scene``, and loads an addon's ``plugin.cfg``
+    ``script`` when the plugin is enabled. No source imports any of them by
+    name (an autoload is reached through a global identifier the engine
+    injects), so such a file has inbound edges from the manifest alone, and the
+    unreachable-file pass would report the most load-bearing scripts in the
+    project. See ``lightweight_imports/godot.py`` for why every import on one
+    of these manifests is an execution start.
+
+    Two deliberate imprecisions here. An autoload named by ``uid://`` rather
+    than ``res://`` is unstamped when the uid names a scene, which has no
+    ``.uid`` sidecar to map it (a uid naming a script resolves and is
+    stamped). And a ``plugin.cfg`` script
+    is stamped whether or not ``project.godot``'s ``[editor_plugins] enabled=``
+    lists it: a checked-in but switched-off plugin is not dead code, it is
+    off.
+
+    **``addons/`` is vendored when a Godot project encloses it.** Godot has no
+    package manager: a plugin is distributed by copying its ``addons/<name>/``
+    tree into the consuming project, so ``addons/`` is a checked-in
+    ``node_modules``. Its scripts are a third party's public API, reached by
+    the editor or by the plugin's own scenes, and reporting them as dead is
+    reporting on code the repo does not own.
+
+    But the *publisher* of a plugin also keeps it in ``addons/``, and there the
+    same tree is the entire product. The discriminator implemented here is
+    whether a ``project.godot`` sits in an *ancestor* directory of the
+    ``addons/`` tree, not whether the repo has one anywhere. On the corpus
+    that exempts Pixelorama's 39 vendored scripts and spares dialogic's 264
+    first-party ones, which matters because 97% of dialogic *is* ``addons/``.
+
+    **Its known failure mode**, and it is not hypothetical: a publisher that
+    ships a demo or test project at the repo root gets its own product
+    never-flagged. dialogic escapes only because its single ``project.godot``
+    is a CI fixture parked under ``.github/``. Two of the four corpus repos
+    have no ``addons/`` at all, so the rule is really evidenced by n=2.
+
+    The alternative rule, vendored unless the project declares a plugin entry
+    for it, reaches the same verdict on both corpus repos. It differs only for
+    a vendored plugin that is switched *off*, which ``[editor_plugins]
+    enabled=`` would not list and which this treats as vendored anyway.
+    """
+    graph = getattr(ctx, "graph", None)
+    if graph is None:
+        return
+
+    project_files: list[str] = []
+    manifests: list[str] = []
+    for p in getattr(ctx, "sorted_paths", ()):
+        name = p.rsplit("/", 1)[-1]
+        if name == "project.godot":
+            project_files.append(p)
+            manifests.append(p)
+        elif name == "plugin.cfg":
+            manifests.append(p)
+    if not manifests:
+        return
+
+    from .resolvers.gdscript import resolve_gdscript_import
+
+    parsed_files = getattr(ctx, "parsed_files", None) or {}
+    for path in manifests:
+        parsed = parsed_files.get(path)
+        for imp in getattr(parsed, "imports", ()) or ():
+            target = resolve_gdscript_import(imp.module_path, path, ctx)
+            # An unresolved path comes back as an ``external:`` node the
+            # resolver just minted. Flagging that says nothing about a file in
+            # this repo, so only in-repo targets are stamped.
+            if target is None or target not in ctx.path_set:
+                continue
+            _stamp_entry(graph, parsed_files, target)
+
+    # A project root of "" (project.godot at the repo root) gives "addons/".
+    # Keyed on project.godot only: a plugin.cfg is what marks an addon, not
+    # what makes it someone else's.
+    if not project_files:
+        return
+    addon_prefixes = tuple(p[: -len("project.godot")] + "addons/" for p in project_files)
+    for node_name in list(graph.nodes()):
+        if str(node_name).startswith(addon_prefixes):
             nd = graph.nodes.get(node_name)
             if nd is not None:
-                nd["is_entry_point"] = True
-            pf = parsed.get(node_name)
-            if pf is not None and getattr(pf, "file_info", None) is not None:
-                pf.file_info.is_entry_point = True
+                nd["is_never_flag"] = True
 
 
 # Map language tag → (phase-event name, warmup function). The phase
@@ -410,12 +767,21 @@ _WARMUPS: dict[str, tuple[str, Warmup]] = {
     "kotlin": ("graph.jvm_index", _warmup_jvm),
     "csharp": ("graph.dotnet_index", _warmup_dotnet),
     "go": ("graph.go_index", _warmup_go),
+    "rust": ("graph.rust_targets", _warmup_rust),
+    "ruby": ("graph.ruby_gems", _warmup_ruby),
     "typescript": ("graph.ts_index", _warmup_typescript),
     "javascript": ("graph.ts_index", _warmup_typescript),
     "cpp": ("graph.cpp_index", _warmup_cpp),
     "c": ("graph.cpp_index", _warmup_cpp),
     "swift": ("graph.swift_entry", _warmup_swift),
+    "php": ("graph.composer_files", _warmup_php),
     "dart": ("graph.dart_shells", _warmup_dart),
+    # Registered under both tags: a repo of loose .gd scripts has no scenes,
+    # and an addon distributed as scenes plus a project.godot may carry no
+    # first-party .gd at all. Shared event name, and the warmup is a no-op
+    # without a project.godot, so firing twice is harmless.
+    "gdscript": ("graph.godot_project", _warmup_godot),
+    "godot_resource": ("graph.godot_project", _warmup_godot),
 }
 
 
@@ -451,3 +817,59 @@ def run_warmups(
             done = getattr(progress, "on_phase_done", None)
             if callable(done):
                 done(phase_name)
+
+
+def _stamp_cpp_build_listed(ctx: ResolverContext, graph: Any, index: Any) -> None:
+    """Stamp file nodes compiled by CMake, .vcxproj, or included by .rc as build_listed."""
+    import re
+
+    from repowise.core.fs_walk import glob_via
+
+    repo_path = ctx.repo_path
+    if repo_path is None:
+        return
+    root = repo_path.resolve()
+
+    # 1. CMake targets from cpp_workspace index (sources only; headers are not compiled TUs)
+    for target in getattr(index, "targets", {}).values():
+        for src in getattr(target, "sources", ()):
+            if src in graph.nodes:
+                graph.nodes[src]["build_listed"] = True
+
+    # 2. MSBuild .vcxproj files (ClCompile only; ClInclude headers are not compiled TUs)
+    item_re = re.compile(r"""<ClCompile\s+Include=["']([^"']+)["']""", re.IGNORECASE)
+    for vcxproj in glob_via(ctx.walk_snapshot, root, "*.vcxproj", prune_nested_git=ctx.prune_nested_git):
+        try:
+            content = vcxproj.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        vdir = vcxproj.parent
+        for m in item_re.finditer(content):
+            inc = m.group(1).strip()
+            if "$(" in inc or "*" in inc or "?" in inc:
+                continue
+            resolved = (vdir / inc.replace("\\", "/")).resolve()
+            try:
+                rel = str(resolved.relative_to(root)).replace("\\", "/")
+                if rel in graph.nodes:
+                    graph.nodes[rel]["build_listed"] = True
+            except ValueError:
+                pass
+
+    # 3. Windows resource scripts (.rc)
+    rc_re = re.compile(r"""^[ 	]*#[ 	]*include[ 	]+["']([^"']+)["']""", re.MULTILINE)
+    for rc in glob_via(ctx.walk_snapshot, root, "*.rc", prune_nested_git=ctx.prune_nested_git):
+        try:
+            content = rc.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        rc_dir = rc.parent
+        for m in rc_re.finditer(content):
+            inc = m.group(1).strip()
+            resolved = (rc_dir / inc.replace("\\", "/")).resolve()
+            try:
+                rel = str(resolved.relative_to(root)).replace("\\", "/")
+                if rel in graph.nodes:
+                    graph.nodes[rel]["build_listed"] = True
+            except ValueError:
+                pass

@@ -38,6 +38,7 @@ def _make(**overrides) -> UpdateCheck:
 def test_update_available_shows_warn_and_command(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr("sys.platform", "linux")
     out = _capture(monkeypatch, _make())
     assert "CLI version" in out
     assert "WARN" in out
@@ -47,6 +48,36 @@ def test_update_available_shows_warn_and_command(
     assert "/tmp/venv/bin/repowise" in out  # full running command (may differ)
     assert "pip install -U repowise" in out
     assert "Restart" in out
+
+
+def test_windows_update_available_warns_to_stop_locking_processes_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("sys.platform", "win32")
+
+    out = _capture(
+        monkeypatch,
+        _make(suggested_command="uv tool upgrade repowise", install_hint="uv tool"),
+    )
+    rendered = " ".join(out.split())
+
+    assert "stop any running Repowise server or MCP process before upgrading" in rendered
+    assert "Repowise: Stop Server" in rendered
+    assert "only stops a server started by the VS Code extension" in rendered
+    assert "stop the server in its terminal" in rendered
+    assert rendered.index("before upgrading") < rendered.index("uv tool upgrade repowise")
+
+
+def test_non_windows_update_available_preserves_existing_guidance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("sys.platform", "linux")
+
+    out = _capture(monkeypatch, _make())
+
+    assert "stop any running Repowise server or MCP process" not in out
+    assert "Repowise: Stop Server" not in out
+    assert "Restart Claude/Codex/Cursor or any MCP client after updating." in out
 
 
 def test_up_to_date_shows_ok_no_command(monkeypatch: pytest.MonkeyPatch) -> None:

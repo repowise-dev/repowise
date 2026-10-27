@@ -11,18 +11,25 @@ import {
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { fileEntityPath } from "../shared/entity/routes";
-import { truncatePath } from "../lib/format";
+import { AllClearStat } from "../shared/empty-state";
+import { FilePath } from "../shared/file-path";
+import { healthBand, SEVERITY_LABEL, SEVERITY_SEGMENT, type Severity } from "../health/tokens";
+import { ProportionBar } from "../shared/proportion-bar";
+import { formatScore, type HealthBand, type PerformanceCauses } from "@repowise-dev/types/health";
 import { Sparkline } from "../health/sparkline";
 
 export interface HealthOverviewPoint {
   taken_at: string | null;
   average_health: number;
-  hotspot_health: number;
+  hotspot_health: number | null;
 }
 
 export interface HealthOverviewData {
   /** Repo-wide biomarker health average, 1–10 (null until first health run). */
   average_health: number | null;
+  /** Server-graded band for the average; `null` when it was withheld because
+   *  too few code files were analysed. Absent on an older server. */
+  band?: HealthBand | null;
   /** Health of the highest-churn files, 1–10. */
   hotspot_health: number | null;
   /** Lowest-scoring file and its score (1–10). */
@@ -35,8 +42,14 @@ export interface HealthOverviewData {
   maintainability_average?: number | null;
   /** Co-equal performance pillar headline (1–10, static risk), null until measured. */
   performance_average?: number | null;
-  /** Open findings homing under the performance pillar — the actionable count. */
-  performance_findings?: number;
+  /** Open performance causes: worth fixing now (the default queue), in
+   *  production code, and overall. */
+  performance_causes?: PerformanceCauses | null;
+  /**
+   * @deprecated Every open performance finding, as payloads from the previous
+   * release carry it. Shown only when `performance_causes` is absent.
+   */
+  performance_findings?: number | null;
   /** Snapshot history, oldest→newest, for the trend sparkline. */
   history: HealthOverviewPoint[];
   snapshot_count: number;
@@ -72,23 +85,7 @@ interface HealthOverviewCardProps {
   className?: string;
 }
 
-/* 1–10 health bands — the moat metric, distinct from the 0–100 composite
-   shown in the header badge. */
-function band(v: number): { color: string; label: string } {
-  if (v >= 8) return { color: "var(--color-success)", label: "Excellent" };
-  if (v >= 6.5) return { color: "var(--color-success)", label: "Good" };
-  if (v >= 5) return { color: "var(--color-caution)", label: "Fair" };
-  if (v >= 3.5) return { color: "var(--color-warning)", label: "Needs work" };
-  return { color: "var(--color-error)", label: "Critical" };
-}
-
-const SEVERITY_ORDER = ["critical", "high", "medium", "low"] as const;
-const SEVERITY_COLOR: Record<string, string> = {
-  critical: "var(--color-error)",
-  high: "var(--color-accent-fill)",
-  medium: "var(--color-warning)",
-  low: "var(--color-text-tertiary)",
-};
+const SEVERITY_ORDER: Severity[] = ["critical", "high", "medium", "low"];
 
 function TrendChip({ delta }: { delta: number | null | undefined }) {
   if (delta == null || Math.abs(delta) < 0.05) return null;
@@ -117,12 +114,10 @@ function TrendChip({ delta }: { delta: number | null | undefined }) {
 function FindingsLine({
   href,
   segments,
-  total,
   count,
 }: {
   href: string;
-  segments: { key: string; count: number; color: string }[];
-  total: number;
+  segments: { key: Severity; count: number }[];
   count: number;
 }) {
   return (
@@ -134,18 +129,20 @@ function FindingsLine({
         <ShieldAlert className="h-3 w-3" />
         Open findings
       </span>
-      <span
-        className="flex h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-[var(--color-bg-inset)]"
-        title={segments.map((s) => `${s.key}: ${s.count.toLocaleString()}`).join(" · ")}
-      >
-        {segments.map((s) => (
-          <span
-            key={s.key}
-            className="h-full"
-            style={{ width: `${(s.count / total) * 100}%`, background: s.color }}
-          />
-        ))}
-      </span>
+      <ProportionBar
+        className="flex-1"
+        label="Open findings by severity"
+        size="sm"
+        sort={false}
+        legend={false}
+        segments={segments.map((s) => ({
+          key: s.key,
+          label: SEVERITY_LABEL[s.key],
+          value: s.count,
+          detail: s.count.toLocaleString(),
+          color: SEVERITY_SEGMENT[s.key],
+        }))}
+      />
       <span className="shrink-0 tabular-nums text-[var(--color-text-secondary)]">
         {count.toLocaleString()}
       </span>
@@ -180,7 +177,7 @@ function MetricTile({
         <>
           <div className="flex items-baseline gap-1.5">
             <span className="text-3xl font-bold tabular-nums leading-none" style={{ color: b?.color }}>
-              {value.toFixed(1)}
+              {formatScore(value)}
             </span>
             <span className="text-sm text-[var(--color-text-tertiary)]">/10</span>
             <TrendChip delta={delta} />
@@ -264,12 +261,14 @@ export function HealthOverviewCard({
   const avg = data.average_health;
   const hot = data.hotspot_health;
   const avgSeries = data.history.map((p) => p.average_health);
-  const hotSeries = data.history.map((p) => p.hotspot_health);
+  // A snapshot with no hotspot figure is dropped rather than plotted at zero.
+  const hotSeries = data.history
+    .map((p) => p.hotspot_health)
+    .filter((v): v is number => v !== null);
 
   const severities = SEVERITY_ORDER.map((key) => ({
     key,
     count: data.severity_breakdown[key] ?? 0,
-    color: SEVERITY_COLOR[key]!,
   })).filter((s) => s.count > 0);
   const severityTotal = severities.reduce((s, x) => s + x.count, 0);
 
@@ -314,7 +313,7 @@ export function HealthOverviewCard({
                 label="Average health"
                 value={avg}
                 delta={averageDelta}
-                band={avg != null ? band(avg) : null}
+                band={avg != null && data.band !== null ? healthBand(avg) : null}
                 sparkline={avgSeries}
               />
               <MetricTile
@@ -322,28 +321,27 @@ export function HealthOverviewCard({
                 label="Hotspot health"
                 value={hot}
                 delta={hotspotDelta}
-                band={hot != null ? band(hot) : null}
+                band={hot != null ? healthBand(hot) : null}
                 sparkline={hotSeries}
               />
             </div>
 
             {/* The scores above, checked against this repo's own git history. */}
             {defectAccuracy && (
-              <AccuracyStrip data={defectAccuracy} href={`${reportHref}?tab=triage`} />
+              <AccuracyStrip data={defectAccuracy} href={`${reportHref}`} />
             )}
 
             {/* Findings + worst performer */}
             <div className="px-4 py-3.5 space-y-3">
               {severityTotal > 0 ? (
                 <FindingsLine
-                  href={`${reportHref}?tab=triage`}
+                  href={`${reportHref}`}
                   segments={severities}
-                  total={severityTotal}
                   count={data.open_findings}
                 />
               ) : (
                 <a
-                  href={`${reportHref}?tab=triage`}
+                  href={`${reportHref}`}
                   className="flex items-center gap-1.5 text-xs text-[var(--color-success)] hover:underline"
                 >
                   <ShieldAlert className="h-3 w-3" />
@@ -361,15 +359,17 @@ export function HealthOverviewCard({
                     <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)] shrink-0">
                       Worst file
                     </span>
-                    <span className="truncate font-mono text-xs text-[var(--color-text-secondary)] group-hover:text-[var(--color-accent-primary)] transition-colors">
-                      {truncatePath(data.worst_performer_path, 40)}
-                    </span>
+                    <FilePath
+                      path={data.worst_performer_path}
+                      fold
+                      className="text-[var(--color-text-secondary)] transition-colors group-hover:text-[var(--color-accent-primary)]"
+                    />
                   </span>
                   <span
                     className="shrink-0 text-xs font-bold tabular-nums"
-                    style={{ color: band(data.worst_performer_score).color }}
+                    style={{ color: healthBand(data.worst_performer_score).color }}
                   >
-                    {data.worst_performer_score.toFixed(1)}/10
+                    {formatScore(data.worst_performer_score)}/10
                   </span>
                 </a>
               )}
@@ -388,7 +388,8 @@ export function HealthOverviewCard({
                 <PerformancePillarStat
                   href={`${reportHref}?pillar=performance`}
                   score={data.performance_average ?? null}
-                  findings={data.performance_findings ?? 0}
+                  causes={data.performance_causes ?? null}
+                  open={data.performance_findings ?? null}
                 />
               </div>
             )}
@@ -412,7 +413,7 @@ function PillarStat({
   label: string;
   score: number | null;
 }) {
-  const b = score != null ? band(score) : null;
+  const b = score != null ? healthBand(score) : null;
   return (
     <a
       href={href}
@@ -427,7 +428,7 @@ function PillarStat({
       ) : (
         <span className="flex items-baseline gap-1.5">
           <span className="text-xl font-bold tabular-nums leading-none" style={{ color: b?.color }}>
-            {score.toFixed(1)}
+            {formatScore(score)}
           </span>
           <span className="text-xs text-[var(--color-text-tertiary)]">/10</span>
           {b ? (
@@ -441,18 +442,25 @@ function PillarStat({
   );
 }
 
-/** Performance is a risk pillar, so its cell leads with the count of open risks
- *  (the actionable read) and keeps the /10 score as a quiet secondary line. */
+/** Performance is a risk pillar, so its cell leads with the causes worth fixing
+ *  now (the default queue), then how many are open in production code, and
+ *  keeps the /10 score as a quiet secondary line. */
 function PerformancePillarStat({
   href,
   score,
-  findings,
+  causes,
+  open,
 }: {
   href: string;
   score: number | null;
-  findings: number;
+  causes: PerformanceCauses | null;
+  /** The raw open count an older payload carries in place of `causes`. */
+  open: number | null;
 }) {
-  const clear = score != null && findings === 0;
+  const openOnly = causes == null ? open : null;
+  const now = causes?.now ?? openOnly ?? 0;
+  const production = causes?.production ?? openOnly ?? 0;
+  const clear = score != null && now === 0 && production === 0;
   return (
     <a
       href={href}
@@ -465,24 +473,17 @@ function PerformancePillarStat({
       {score == null ? (
         <span className="text-sm text-[var(--color-text-tertiary)]">Not measured</span>
       ) : clear ? (
-        <span className="flex items-baseline gap-1.5">
-          <span className="text-xl font-bold tabular-nums leading-none text-[var(--color-success)]">
-            0
-          </span>
-          <span className="text-[10px] font-medium uppercase tracking-wide text-[var(--color-success)]">
-            All clear
-          </span>
-        </span>
+        <AllClearStat />
       ) : (
         <span className="flex items-baseline gap-1.5">
           <span className="text-xl font-bold tabular-nums leading-none text-[var(--color-text-primary)]">
-            {findings.toLocaleString()}
+            {now.toLocaleString()}
           </span>
           <span className="text-xs text-[var(--color-text-secondary)]">
-            {findings === 1 ? "risk" : "risks"}
+            {openOnly != null ? "open" : "worth fixing now"}
           </span>
           <span className="text-[10px] tabular-nums text-[var(--color-text-tertiary)]">
-            · {score.toFixed(1)}/10
+            {openOnly == null && <>· {production.toLocaleString()} in production </>}· {formatScore(score)}/10
           </span>
         </span>
       )}

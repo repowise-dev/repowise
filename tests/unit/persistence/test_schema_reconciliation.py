@@ -17,9 +17,33 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from sqlalchemy import Boolean, Column
+from sqlalchemy.dialects import postgresql, sqlite
 
 from repowise.core.persistence import create_engine, init_db
 from repowise.core.persistence.models import Base
+
+
+@pytest.mark.parametrize(
+    ("dialect", "value", "expected"),
+    [
+        (sqlite.dialect(), False, '"pinned" BOOLEAN DEFAULT 0 NOT NULL'),
+        (sqlite.dialect(), True, '"pinned" BOOLEAN DEFAULT 1 NOT NULL'),
+        (postgresql.dialect(), False, '"pinned" BOOLEAN DEFAULT false NOT NULL'),
+        (postgresql.dialect(), True, '"pinned" BOOLEAN DEFAULT true NOT NULL'),
+    ],
+)
+def test_python_boolean_defaults_use_dialect_literals(
+    dialect: object,
+    value: bool,
+    expected: str,
+) -> None:
+    """Legacy-column DDL must be accepted by both supported databases."""
+    from repowise.core.persistence.database import _add_column_ddl
+
+    column = Column("pinned", Boolean, nullable=False, default=value)
+
+    assert _add_column_ddl(column, dialect) == expected
 
 
 def _table_columns(db_path: Path, table: str) -> set[str]:
@@ -143,12 +167,12 @@ async def test_reconciler_preserves_existing_row_data(tmp_path: Path) -> None:
         db_path,
         """
         INSERT INTO decision_records
-            (id, repository_id, title, status, context, decision, rationale,
+            (id, repository_id, title, status, kind, context, decision, rationale,
              alternatives_json, consequences_json, affected_files_json,
              affected_modules_json, tags_json, evidence_commits_json,
              source, confidence, staleness_score, created_at, updated_at)
         VALUES
-            ('rec-1', 1, 't', 'active', '', 'd', '',
+            ('rec-1', 1, 't', 'active', 'architectural', '', 'd', '',
              '[]', '[]', '[]',
              '[]', '[]', '[]',
              'inline', 0.5, 0.0, '2026-01-01', '2026-01-01')
@@ -456,3 +480,201 @@ async def test_reconciler_handles_arbitrary_new_column(tmp_path: Path) -> None:
         await engine.dispose()
 
     assert target_column in _table_columns(db_path, target_table)
+
+
+@pytest.mark.asyncio
+async def test_adding_owner_line_pct_moves_stale_blame_line_shares(tmp_path: Path) -> None:
+    """Before ``primary_owner_line_pct`` existed, blame stored the owner's line
+    share as ``primary_owner_commit_pct``. Upgrading must not leave that value
+    labelled a commit share on files no update re-walks."""
+    import json
+
+    from repowise.core.persistence import create_session_factory, crud, get_session
+
+    db_path = tmp_path / "wiki.db"
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    authors = json.dumps(
+        [{"name": "Bob", "commit_count": 3}, {"name": "Ada", "commit_count": 1}]
+    )
+    rows = {
+        # blame owner Ada: 70% of lines, 1 of 4 commits
+        "blame.py": ("Ada", 0.7),
+        # no blame: the top committer and their commit share, already right
+        "commits.py": ("Bob", 0.75),
+        # blame owner with no counted commits
+        "old.py": ("Cy", 0.6),
+    }
+    try:
+        await init_db(engine)
+        async with get_session(create_session_factory(engine)) as session:
+            repo = await crud.upsert_repository(session, name="r", local_path=str(tmp_path))
+            await crud.upsert_git_metadata_bulk(
+                session,
+                repo.id,
+                [
+                    {
+                        "file_path": path,
+                        "commit_count_total": 4,
+                        "top_authors_json": authors,
+                        "primary_owner_name": owner,
+                        "primary_owner_commit_pct": pct,
+                    }
+                    for path, (owner, pct) in rows.items()
+                ],
+            )
+    finally:
+        await engine.dispose()
+
+    try:
+        _execute(db_path, 'ALTER TABLE "git_metadata" DROP COLUMN "primary_owner_line_pct"')
+    except sqlite3.OperationalError as exc:
+        pytest.skip(f"SQLite build doesn't support DROP COLUMN: {exc}")
+
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    try:
+        await init_db(engine)
+    finally:
+        await engine.dispose()
+
+    got = {
+        path: (commit_pct, line_pct)
+        for path, commit_pct, line_pct in _fetchall(
+            db_path,
+            "SELECT file_path, primary_owner_commit_pct, primary_owner_line_pct "
+            "FROM git_metadata",
+        )
+    }
+    assert got == {
+        "blame.py": (0.25, 0.7),
+        "commits.py": (0.75, None),
+        "old.py": (None, 0.6),
+    }
+
+
+async def test_adding_owner_line_pct_with_nothing_to_move_succeeds(tmp_path: Path) -> None:
+    """The data step returns how many rows it moved. Zero is the common case
+    (every row already right, or no git history at all) and must not be taken
+    for a statement to execute."""
+    db_path = tmp_path / "wiki.db"
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    try:
+        await init_db(engine)
+    finally:
+        await engine.dispose()
+
+    try:
+        _execute(db_path, 'ALTER TABLE "git_metadata" DROP COLUMN "primary_owner_line_pct"')
+    except sqlite3.OperationalError as exc:
+        pytest.skip(f"SQLite build doesn't support DROP COLUMN: {exc}")
+
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    try:
+        await init_db(engine)
+    finally:
+        await engine.dispose()
+
+    assert "primary_owner_line_pct" in _table_columns(db_path, "git_metadata")
+
+
+def test_postgres_reconcile_ignores_pgvector_type_warning(monkeypatch: pytest.MonkeyPatch) -> None:
+    import warnings
+    from types import SimpleNamespace
+
+    from sqlalchemy.exc import SAWarning
+
+    from repowise.core.persistence import database as db_module
+
+    table = Base.metadata.tables["wiki_pages"]
+
+    class Inspector:
+        def get_table_names(self) -> list[str]:
+            return ["wiki_pages"]
+
+        def get_columns(self, _name: str) -> list[dict[str, Any]]:
+            warnings.warn("Did not recognize type 'vector' of column 'embedding'", SAWarning, stacklevel=2)
+            return [{"name": c.name, "type": c.type, "nullable": c.nullable} for c in table.columns]
+
+        def get_indexes(self, _name: str) -> list[dict[str, Any]]:
+            return [{"name": i.name} for i in table.indexes]
+
+    monkeypatch.setattr(db_module, "inspect", lambda _conn: Inspector())
+    connection = SimpleNamespace(dialect=postgresql.dialect(), execute=lambda _stmt: None)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        db_module._reconcile_schema(connection)
+
+
+async def _init(db_path: Path) -> None:
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    try:
+        await init_db(engine)
+    finally:
+        await engine.dispose()
+
+
+def _stamp_state(db_path: Path) -> tuple[int, int]:
+    (user_version,) = _fetchall(db_path, "PRAGMA user_version")[0]
+    (cookie,) = _fetchall(db_path, "PRAGMA schema_version")[0]
+    return user_version, cookie
+
+
+@pytest.mark.asyncio
+async def test_stamped_store_skips_the_reconcile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A store carrying the current stamp opens without reflecting a table."""
+    from repowise.core.persistence import database as db_module
+
+    db_path = tmp_path / "wiki.db"
+    await _init(db_path)
+    user_version, cookie = _stamp_state(db_path)
+    assert user_version == db_module.schema_stamp(cookie)
+
+    def _walked(_connection: Any) -> None:
+        raise AssertionError("reconciled a store already on the current schema")
+
+    monkeypatch.setattr(db_module, "_reconcile_schema", _walked)
+    await _init(db_path)
+
+
+@pytest.mark.asyncio
+async def test_store_stamped_by_other_models_is_reconciled(tmp_path: Path) -> None:
+    """A stamp another release wrote (an upgrade, a downgrade) reconciles and restamps."""
+    from repowise.core.persistence import database as db_module
+
+    db_path = tmp_path / "wiki.db"
+    await _init(db_path)
+    try:
+        _execute(db_path, 'ALTER TABLE "decision_records" DROP COLUMN "verification"')
+    except sqlite3.OperationalError as exc:
+        pytest.skip(f"SQLite build doesn't support DROP COLUMN: {exc}")
+    # Stamped after the drop, as a release whose models lack the column would.
+    _, cookie = _stamp_state(db_path)
+    _execute(db_path, f"PRAGMA user_version = {db_module.schema_stamp(cookie) % 1000 + 1}")
+
+    await _init(db_path)
+
+    assert "verification" in _table_columns(db_path, "decision_records")
+    user_version, cookie = _stamp_state(db_path)
+    assert user_version == db_module.schema_stamp(cookie)
+
+
+@pytest.mark.asyncio
+async def test_a_locked_store_opens_without_waiting_for_its_stamp(tmp_path: Path) -> None:
+    """Stamping is the one write a current store's open adds; it must not block."""
+    import time
+
+    db_path = tmp_path / "wiki.db"
+    await _init(db_path)
+    _execute(db_path, "PRAGMA user_version = 0")  # current schema, never stamped
+
+    writer = sqlite3.connect(db_path, isolation_level=None)
+    try:
+        writer.execute("BEGIN IMMEDIATE")  # another update holding the write lock
+        started = time.monotonic()
+        await _init(db_path)
+        assert time.monotonic() - started < 10
+    finally:
+        writer.execute("ROLLBACK")
+        writer.close()
+    assert _stamp_state(db_path)[0] == 0

@@ -12,18 +12,21 @@ from httpx import AsyncClient
 
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
+from repowise.core.persistence.models import DecisionAlias
 from tests.unit.server.conftest import create_test_repo
 
 
-async def _seed_decision(session_factory, repo_id: str) -> str:
+async def _seed_decision(
+    session_factory, repo_id: str, title: str = "Use SQLite for the dev DB"
+) -> str:
     async with get_session(session_factory) as session:
         rec = await crud.upsert_decision(
             session,
             repository_id=repo_id,
-            title="Use SQLite for the dev DB",
+            title=title,
             status="active",
             context="Local dev needs zero-config storage.",
-            decision="SQLite via aiosqlite for all unit tests and CLI runs.",
+            decision=f"Use {title} for all unit tests and CLI runs.",
             affected_modules=["packages/core"],
             affected_files=["packages/core/src/repowise/core/persistence/database.py"],
             source="cli",
@@ -81,28 +84,112 @@ async def test_patch_decision_clear_files(client: AsyncClient, app) -> None:
     assert resp.status_code == 200
     body = resp.json()
     assert body["affected_files"] == []
-    # Modules untouched (None means preserve).
-    assert body["affected_modules"] == ["packages/core"]
+    # Modules follow the files they describe, so clearing one clears the
+    # other: a record naming no file must not keep governing a whole subtree.
+    assert body["affected_modules"] == []
 
 
 @pytest.mark.asyncio
 async def test_patch_decision_status_and_modules(client: AsyncClient, app) -> None:
     repo = await create_test_repo(client)
     decision_id = await _seed_decision(app.state.session_factory, repo["id"])
+    successor_id = await _seed_decision(
+        app.state.session_factory, repo["id"], "Use PostgreSQL in production"
+    )
 
     resp = await client.patch(
         f"/api/repos/{repo['id']}/decisions/{decision_id}",
         json={
             "status": "superseded",
-            "superseded_by": "abc123",
+            "superseded_by": successor_id,
             "affected_modules": ["packages/server"],
         },
     )
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "superseded"
-    assert body["superseded_by"] == "abc123"
+    assert body["superseded_by"] == successor_id
     assert body["affected_modules"] == ["packages/server"]
+
+
+@pytest.mark.asyncio
+async def test_patch_decision_rejects_unknown_successor(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    decision_id = await _seed_decision(app.state.session_factory, repo["id"])
+
+    resp = await client.patch(
+        f"/api/repos/{repo['id']}/decisions/{decision_id}",
+        json={"status": "superseded", "superseded_by": "no-such-decision"},
+    )
+
+    assert resp.status_code == 404
+    current = await client.get(f"/api/repos/{repo['id']}/decisions/{decision_id}")
+    assert current.status_code == 200
+    assert current.json()["status"] == "active"
+    assert current.json()["superseded_by"] is None
+
+
+@pytest.mark.asyncio
+async def test_patch_decision_rejects_cross_repo_successor(client: AsyncClient, app) -> None:
+    repo_a = await create_test_repo(client)
+    repo_b = await create_test_repo(client)
+    decision_id = await _seed_decision(app.state.session_factory, repo_a["id"])
+    foreign_id = await _seed_decision(
+        app.state.session_factory, repo_b["id"], "Use PostgreSQL in the other repo"
+    )
+
+    resp = await client.patch(
+        f"/api/repos/{repo_a['id']}/decisions/{decision_id}",
+        json={"status": "superseded", "superseded_by": foreign_id},
+    )
+
+    assert resp.status_code == 404
+    current = await client.get(f"/api/repos/{repo_a['id']}/decisions/{decision_id}")
+    assert current.status_code == 200
+    assert current.json()["status"] == "active"
+    assert current.json()["superseded_by"] is None
+
+
+@pytest.mark.asyncio
+async def test_patch_decision_resolves_same_repo_successor_alias(
+    client: AsyncClient, app
+) -> None:
+    repo = await create_test_repo(client)
+    sf = app.state.session_factory
+    successor_id = await _seed_decision(sf, repo["id"], "Use the successor decision")
+    decision_id = await _seed_decision(sf, repo["id"], "Retire this decision")
+    retired_id = "f" * 32
+    async with get_session(sf) as session:
+        session.add(
+            DecisionAlias(
+                alias_id=retired_id,
+                repository_id=repo["id"],
+                decision_id=successor_id,
+                reason="superseded",
+            )
+        )
+        await session.commit()
+
+    resp = await client.patch(
+        f"/api/repos/{repo['id']}/decisions/{decision_id}",
+        json={"status": "superseded", "superseded_by": retired_id},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["superseded_by"] == successor_id
+
+
+@pytest.mark.asyncio
+async def test_patch_decision_rejects_self_successor(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    decision_id = await _seed_decision(app.state.session_factory, repo["id"])
+
+    resp = await client.patch(
+        f"/api/repos/{repo['id']}/decisions/{decision_id}",
+        json={"status": "superseded", "superseded_by": decision_id},
+    )
+
+    assert resp.status_code == 400
 
 
 @pytest.mark.asyncio
@@ -113,3 +200,38 @@ async def test_patch_decision_not_found(client: AsyncClient) -> None:
         json={"status": "deprecated"},
     )
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_reaffirm_appends_a_reaffirmed_row(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    decision_id = await _seed_decision(app.state.session_factory, repo["id"])
+
+    resp = await client.post(f"/api/repos/{repo['id']}/decisions/{decision_id}/reaffirm")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "active"
+    async with get_session(app.state.session_factory) as session:
+        latest = await crud.latest_acceptance(session, decision_id)
+    assert (latest.action, latest.accepter, latest.accepter_kind) == ("reaffirmed", "web", "person")
+
+
+@pytest.mark.asyncio
+async def test_reaffirm_refuses_a_candidate(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    async with get_session(app.state.session_factory) as session:
+        rec = await crud.upsert_decision(
+            session,
+            repository_id=repo["id"],
+            title="Never accepted",
+            status="proposed",
+            decision="Do the thing.",
+            affected_files=["src/app.py"],
+            source="cli",
+        )
+        candidate_id = rec.id
+
+    resp = await client.post(f"/api/repos/{repo['id']}/decisions/{candidate_id}/reaffirm")
+
+    assert resp.status_code == 400
+    assert "confirm" in resp.json()["detail"]

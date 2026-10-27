@@ -40,6 +40,8 @@ class ObservationFacts:
     cross_function: bool
     resolution_basis: Any
     reliable_entry_reachability: Any
+    # ``execution_roles.ExecutionRole`` of the loop-owning function, when stamped.
+    execution_role: str | None
     details: dict[str, Any]
 
     @property
@@ -122,12 +124,9 @@ def observation_facts(row: Any) -> ObservationFacts:
         cross_function=bool(details.get("cross_function")),
         resolution_basis=details.get("resolution_basis", "direct"),
         reliable_entry_reachability=details.get("reliable_entry_reachability"),
+        execution_role=details.get("execution_role"),
         details=details,
     )
-
-
-def performance_facts(rows: list[Any]) -> list[ObservationFacts]:
-    return [observation_facts(row) for row in rows if is_performance(row)]
 
 
 def evidence_row(facts: ObservationFacts) -> dict[str, Any]:
@@ -147,6 +146,12 @@ def evidence_row(facts: ObservationFacts) -> dict[str, Any]:
         "reason": facts.reason,
         "path": list(facts.details.get("path", ())),
         "provenance": facts.resolution_basis,
+        # The loop around the call, where a reader starts; absent when the
+        # walk stored none, so older evidence reads unchanged.
+        **({"loop_line": loop} if (loop := facts.details.get("loop_line")) else {}),
+        **({"sink_call": call} if (call := facts.details.get("sink_call")) else {}),
+        **({"subject": subject} if (subject := facts.details.get("subject")) else {}),
+        **({"loop_iterates": what} if (what := facts.details.get("loop_iterates")) else {}),
     }
 
 
@@ -157,5 +162,4 @@ __all__ = [
     "field",
     "is_performance",
     "observation_facts",
-    "performance_facts",
 ]

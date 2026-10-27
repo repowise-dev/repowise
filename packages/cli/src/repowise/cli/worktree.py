@@ -16,7 +16,13 @@ import time
 import uuid
 from pathlib import Path
 
-from repowise.cli.helpers import console
+from repowise.cli.helpers import (
+    UPDATE_LOCK_FILENAME,
+    UPDATE_QUEUED_FILENAME,
+    as_commit_id,
+    console,
+    warn,
+)
 
 _SEED_TEMPDIR_STALENESS_SECS = 3600
 
@@ -79,6 +85,23 @@ def sweep_stale_seed_backups(paths: list[Path]) -> None:
                         pass
 
 
+def _seed_commit_refusal(repo: Path, commit: str, *, require_ancestor: bool) -> str | None:
+    """Why *commit* cannot start a seeded index in *repo*, or None when it can."""
+    if as_commit_id(commit) is None:
+        return "is not a commit id"
+    if require_ancestor:
+        args = ["merge-base", "--is-ancestor", "--end-of-options", commit, "HEAD"]
+        refusal = "is not an ancestor of worktree HEAD"
+    else:
+        args = ["cat-file", "-e", f"{commit}^{{commit}}"]
+        refusal = "is not in this repository"
+    try:
+        subprocess.check_call(["git", *args], cwd=repo, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.CalledProcessError):
+        return refusal
+    return None
+
+
 def _get_initial_commit(p: Path) -> str:
     return _git_output(["rev-list", "--max-parents=0", "HEAD"], p)
 
@@ -90,9 +113,11 @@ def _adopt_repository_identity(repowise_dir: Path, *, src_repo: Path, dest_repo:
     update in the worktree upserts a second repository row named after the
     worktree dir, and every regenerated page lands under it while the seeded
     pages stay under the base row — prior-page reuse and repo-scoped queries
-    both silently split. Rewriting name + local_path (and retargeting the two
-    repo-level pages that are keyed by repo name) makes the copy fully the
-    worktree's own. Best-effort: an unmatched row means the base index is
+    both silently split. Rewriting name + local_path (and re-keying the two
+    repo-level pages whose id carries the repo name) makes the copy fully the
+    worktree's own. Ceiling: the vector store keeps the old page id until the
+    page is regenerated, so semantic search can return an id that no longer
+    resolves; re-keying vectors needs the store open, which seeding avoids. Best-effort: an unmatched row means the base index is
     unusual, and falling through leaves today's (pre-fix) behavior.
     """
     import sqlite3
@@ -114,12 +139,32 @@ def _adopt_repository_identity(repowise_dir: Path, *, src_repo: Path, dest_repo:
             "UPDATE repositories SET name = ?, local_path = ? WHERE id = ?",
             (dest_repo.name, str(dest_repo), repo_id),
         )
-        conn.execute(
-            "UPDATE wiki_pages SET target_path = ? "
-            "WHERE repository_id = ? AND target_path = ? "
-            "AND page_type IN ('repo_overview', 'architecture_diagram')",
-            (dest_repo.name, repo_id, old_name),
-        )
+        # A page id is ``<type>:<target_path>``, so the id moves with the target:
+        # generation writes the new id, and a page left under the old one is
+        # never regenerated and never found by ``generate --page``.
+        has_fts = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name = 'page_fts'"
+        ).fetchone()
+        for page_type in ("repo_overview", "architecture_diagram"):
+            old_id, new_id = f"{page_type}:{old_name}", f"{page_type}:{dest_repo.name}"
+            conn.execute(
+                "UPDATE wiki_pages SET id = ?, target_path = ? "
+                "WHERE repository_id = ? AND id = ?",
+                (new_id, dest_repo.name, repo_id, old_id),
+            )
+            conn.execute(
+                "UPDATE wiki_page_versions SET page_id = ? WHERE page_id = ?", (new_id, old_id)
+            )
+            conn.execute(
+                "UPDATE wiki_pages SET parent_page_id = ? "
+                "WHERE repository_id = ? AND parent_page_id = ?",
+                (new_id, repo_id, old_id),
+            )
+            if has_fts:
+                conn.execute(
+                    "UPDATE page_fts SET page_id = ?, target_path = ? WHERE page_id = ?",
+                    (new_id, dest_repo.name, old_id),
+                )
         conn.commit()
 
 
@@ -130,6 +175,7 @@ def seed_index_from_base(
     seed_base: Path,
     include_submodules: bool | None = None,
     dry_run: bool = False,
+    require_ancestor: bool = True,
 ) -> bool:
     """Copy ``.repowise/`` from a base checkout into each target repo.
 
@@ -142,6 +188,11 @@ def seed_index_from_base(
 
     ``include_submodules`` is the caller's CLI flag; pass None to skip the
     conflict warning (update has no such flag).
+
+    ``require_ancestor=False`` accepts any last_sync_commit the target repo
+    has. ``update`` passes it: its catch-up diffs two trees, so a base that
+    moved past the worktree's fork point is still a valid start, and update
+    has no full init to fall back to.
     """
     sweep_stale_seed_backups([root, *repo_paths])
 
@@ -180,17 +231,11 @@ def seed_index_from_base(
             success = False
             break
 
-        try:
-            subprocess.check_call(
-                ["git", "merge-base", "--is-ancestor", last_sync_commit, "HEAD"],
-                cwd=r_path,
-                stderr=subprocess.DEVNULL,
-            )
-        except subprocess.CalledProcessError:
+        refusal = _seed_commit_refusal(r_path, last_sync_commit, require_ancestor=require_ancestor)
+        if refusal is not None:
             console.print(
                 f"[yellow]Seed source {src_repo} last_sync_commit "
-                f"{last_sync_commit[:8]} is not an ancestor of worktree HEAD. "
-                f"Falling back to full init.[/yellow]"
+                f"{last_sync_commit[:8]} {refusal}. Falling back to full init.[/yellow]"
             )
             success = False
             break
@@ -209,7 +254,14 @@ def seed_index_from_base(
             temp_dir = Path(tempfile.mkdtemp(prefix=".repowise-seed-", dir=r_path))
             temp_dirs.append((r_path, temp_dir))
 
-            shutil.copytree(src_repo / ".repowise", temp_dir, dirs_exist_ok=True)
+            # The base's update markers belong to the base: a copied lock
+            # would defer this checkout's update to a run that never covers it.
+            shutil.copytree(
+                src_repo / ".repowise",
+                temp_dir,
+                dirs_exist_ok=True,
+                ignore=shutil.ignore_patterns(UPDATE_LOCK_FILENAME, UPDATE_QUEUED_FILENAME),
+            )
 
             # Since config.yaml is copied atomically alongside state.json, the
             # config_fingerprint remains valid.
@@ -218,10 +270,10 @@ def seed_index_from_base(
             if include_submodules is not None:
                 state_include = st_data.get("include_submodules", False)
                 if include_submodules != state_include:
-                    console.print(
-                        f"[yellow]Warning: --include-submodules={include_submodules} "
+                    warn(
+                        f"--include-submodules={include_submodules} "
                         f"conflicts with copied state ({state_include}). Seeded state "
-                        f"will take precedence.[/yellow]"
+                        f"will take precedence."
                     )
 
             (temp_dir / "state.json").write_text(json.dumps(st_data, indent=2), encoding="utf-8")

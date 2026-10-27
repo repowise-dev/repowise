@@ -160,6 +160,10 @@ class TestErrorCases:
         result = runner.invoke(cli, ["init", str(tmp_path)])
         assert result.exit_code == 0, result.output
         assert "No model configured" in result.output
+        # Built from code: `generate` is the model step, not the fast-to-full one.
+        out = " ".join(result.output.split())
+        assert "run repowise generate to have a model write it" in out
+        assert "update --full" not in out
 
     def test_init_explicit_provider_still_errors(self, runner, tmp_path, monkeypatch):
         """A named --provider that cannot resolve is a real error, not a fallback.
@@ -305,23 +309,23 @@ class TestInitYesFlag:
                 return_value=fake_scan,
             ),
             patch(
-                "repowise.cli.commands.init_cmd.command.prompt_wiki_style",
+                "repowise.cli.ui.mode_selection.prompt_wiki_style",
                 side_effect=_fake_prompt_wiki_style,
             ),
             patch(
-                "repowise.cli.commands.init_cmd.command.resolve_provider",
+                "repowise.cli.commands.init_cmd._prepare._resolve_provider_stage",
                 side_effect=Exception("stop early"),
             ),
         ):
             runner.invoke(cli, ["init", "-y", "--index-only", str(tmp_path)])
             assert not prompt_called, "-y should bypass the wiki-style interactive prompt"
 
-    def test_yes_skips_mode_select_on_tty(self, runner, tmp_path):
-        """With -y on a TTY, the interactive mode-selection menu is never shown.
+    def test_yes_skips_plan_screen_on_tty(self, runner, tmp_path):
+        """With -y on a TTY, the plan screen is never shown.
 
         Without the ``and not yes`` guard on ``is_interactive`` a scripted
-        ``init -y`` would still block on ``interactive_mode_select`` whenever
-        stdin happens to be a TTY.
+        ``init -y`` would still block on the plan screen whenever stdin
+        happens to be a TTY.
         """
         from unittest.mock import MagicMock, patch
 
@@ -339,18 +343,18 @@ class TestInitYesFlag:
             ),
             patch("sys.stdin.isatty", return_value=True),
             patch(
-                "repowise.cli.commands.init_cmd.command.interactive_mode_select",
+                "repowise.cli.commands.init_cmd._plan.run_plan_screen",
                 side_effect=lambda *_a, **_kw: mode_select_called.append(True),
             ),
             # Stop before the real pipeline runs.
             patch(
-                "repowise.cli.commands.init_cmd.command.resolve_provider",
+                "repowise.cli.commands.init_cmd._prepare._resolve_provider_stage",
                 side_effect=Exception("stop early"),
             ),
         ):
             runner.invoke(cli, ["init", "-y", str(tmp_path)])
             assert not mode_select_called, (
-                "-y must bypass the interactive mode-selection menu even on a TTY"
+                "-y must bypass the plan screen even on a TTY"
             )
 
 
@@ -378,59 +382,6 @@ class TestBuildFilteredChangedPaths:
         assert result == ["src/main.py", ".claude/config.yml"]
 
 
-class TestGitMetadataToDict:
-    def test_converts_orm_row_to_dict(self):
-        from types import SimpleNamespace
-
-        from repowise.cli.commands.update_cmd import _git_metadata_to_dict
-
-        gm = SimpleNamespace(
-            file_path="src/main.py",
-            commit_count_total=42,
-            commit_count_90d=10,
-            commit_count_30d=3,
-            first_commit_at=None,
-            last_commit_at=None,
-            primary_owner_name="alice",
-            primary_owner_email="alice@example.com",
-            primary_owner_commit_pct=0.7,
-            top_authors_json="[]",
-            significant_commits_json="[]",
-            co_change_partners_json="[]",
-            commit_categories_json="{}",
-            is_hotspot=True,
-            is_stable=False,
-            churn_percentile=0.9,
-            age_days=100,
-            commit_count_capped=False,
-            lines_added_90d=120,
-            lines_deleted_90d=30,
-            avg_commit_size=15.0,
-            recent_owner_name="alice",
-            recent_owner_commit_pct=0.8,
-            bus_factor=2,
-            contributor_count=4,
-            original_path=None,
-            merge_commit_count_90d=1,
-            temporal_hotspot_score=0.8,
-            prior_defect_count=5,
-            prior_defect_raw_count=9,
-            change_entropy=0.42,
-            change_entropy_pct=0.6,
-        )
-
-        d = _git_metadata_to_dict(gm)
-        assert d["file_path"] == "src/main.py"
-        assert d["commit_count_total"] == 42
-        assert d["is_hotspot"] is True
-        assert d["bus_factor"] == 2
-        # Columns added by the newer health biomarkers must flow through too.
-        assert d["prior_defect_count"] == 5
-        assert d["prior_defect_raw_count"] == 9
-        assert d["change_entropy"] == 0.42
-        assert d["change_entropy_pct"] == 0.6
-
-
 class TestRescoreFailureFingerprint:
     def test_failed_rescore_does_not_advance_fingerprint(self, tmp_path, monkeypatch):
         """A failed re-score must not persist the new fingerprint, so the next
@@ -448,13 +399,26 @@ class TestRescoreFailureFingerprint:
         monkeypatch.setattr(update_cmd.persistence, "run_async", _boom)
         (tmp_path / "f.py").write_text("x = 1\n", encoding="utf-8")
 
-        update_cmd._run_full_health_rescore(
-            tmp_path, [], {"last_sync_commit": "base"}, "head1", "NEWFP"
-        )
+        with pytest.raises(RuntimeError, match="db down"):
+            update_cmd._run_full_health_rescore(
+                tmp_path, [], {"last_sync_commit": "base"}, "head1", "NEWFP"
+            )
 
         state_file = tmp_path / ".repowise" / "state.json"
         if state_file.exists():
             assert json.loads(state_file.read_text()).get("config_fingerprint") != "NEWFP"
+
+
+def test_config_generation_embedding_warning_is_fatal():
+    from repowise.cli.commands.update_cmd.command import _generation_warning_handler
+
+    degraded: list[str] = []
+    callback = _generation_warning_handler(degraded, require_embedding_success=True)
+
+    with pytest.raises(RuntimeError, match="page embedding failed"):
+        callback("Embedding failed for 2 page(s)")
+
+    assert degraded == ["Embedding failed for 2 page(s)"]
 
 
 class TestBuildRepoGraph:
@@ -477,6 +441,14 @@ class TestBuildRepoGraph:
             return real_parse(self, fi, source)
 
         monkeypatch.setattr(ASTParser, "parse_file", _maybe_raise)
+        # The patch above cannot reach a spawned parse worker, so run the
+        # pool's in-process fallback, where it applies.
+        from repowise.core.pipeline.phases import ingestion as ing
+
+        def _no_pool(*_args, **_kwargs):
+            raise OSError("no pool in this test")
+
+        monkeypatch.setattr(ing, "run_with_deadline", _no_pool)
 
         printed: list[str] = []
 
@@ -488,11 +460,14 @@ class TestBuildRepoGraph:
         # it looks up console — patch the name there.
         monkeypatch.setattr(update_cmd.incremental, "console", _FakeConsole())
 
-        parsed_files, _src, _gb, _struct, _count = update_cmd._build_repo_graph(tmp_path, [])
+        parsed_files, _src, graph_builder, _struct, _count = update_cmd._build_repo_graph(
+            tmp_path, []
+        )
 
         paths = [pf.file_info.path for pf in parsed_files]
         assert any(p.endswith("good.py") for p in paths)
         assert not any(p.endswith("bad.py") for p in paths)
+        assert "bad.py" in graph_builder.traversed_file_paths
         assert any("Skipped" in line for line in printed)
 
     def test_includes_framework_edge_step(self, tmp_path, monkeypatch):
@@ -520,3 +495,21 @@ class TestBuildRepoGraph:
         update_cmd._build_repo_graph(tmp_path, [])
 
         assert calls, "framework-edge step must run in the shared rebuild path"
+
+
+def test_required_vector_refresh_rejects_incompatible_existing_store(
+    tmp_path, monkeypatch
+):
+    import repowise.cli.providers as providers
+    from repowise.cli.commands.update_cmd.incremental import _build_update_vector_store
+
+    (tmp_path / ".repowise" / "lancedb").mkdir(parents=True)
+    monkeypatch.setattr(providers, "build_embedder", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(providers, "resolve_embedder", lambda *_args, **_kwargs: "mock")
+    monkeypatch.setattr(providers, "build_vector_store", lambda *_args, **_kwargs: None)
+    degraded: list[str] = []
+
+    with pytest.raises(RuntimeError, match="cannot safely refresh"):
+        _build_update_vector_store(tmp_path, {"embedder": "mock"}, degraded, required=True)
+
+    assert degraded and "cannot safely refresh" in degraded[0]

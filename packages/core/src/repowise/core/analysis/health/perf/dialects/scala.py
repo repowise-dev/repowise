@@ -33,16 +33,15 @@ from typing import TYPE_CHECKING
 
 from .base import BasePerfDialect
 from .java import (
-    _SPRING_DERIVED,
     AMBIGUOUS_DB,
     FILES_METHODS,
     FS_CONSTRUCTORS,
     JAVA_LOCK_METHODS,
     JAVA_RESOURCE_CTORS,
-    JDBC_METHODS,
-    JPA_METHODS,
     NET_CONSTRUCTORS,
-    SPRING_REPO_METHODS,
+    RECEIVER_DB_METHODS,
+    ambiguous_db_verbs,
+    is_repository_call,
 )
 
 if TYPE_CHECKING:
@@ -65,6 +64,7 @@ DOOBIE_METHODS: frozenset[str] = frozenset({"transact"})
 # Slick's ``db.run(action)`` - ``run`` is generic, so it is gated on file-level
 # db evidence like the shared AMBIGUOUS_DB stratum.
 SLICK_AMBIGUOUS_DB: frozenset[str] = frozenset({"run"})
+_SCALA_AMBIGUOUS_DB: frozenset[str] = AMBIGUOUS_DB | SLICK_AMBIGUOUS_DB
 # http4s client verbs, gated on network evidence (``expect`` collides with the
 # test-assertion vocabulary when un-gated).
 HTTP4S_METHODS: frozenset[str] = frozenset({"expect", "fetch"})
@@ -134,7 +134,6 @@ class ScalaPerfDialect(BasePerfDialect):
         has_db_import: bool,
     ) -> str | None:
         root_kind = io_names.get(root)
-        db_ev = has_db_import or root_kind == "db"
         net_ev = root_kind == "network" or "network" in io_names.values()
 
         # JVM interop - verbatim from the Java lexicon.
@@ -142,9 +141,9 @@ class ScalaPerfDialect(BasePerfDialect):
             return "filesystem"
         if method in NET_CONSTRUCTORS:
             return "network"
-        if method in JDBC_METHODS or method in JPA_METHODS or method in SPRING_REPO_METHODS:
+        if is_attribute and method in RECEIVER_DB_METHODS:
             return "db"
-        if _SPRING_DERIVED.match(method):
+        if is_repository_call(method, root, io_names):
             return "db"
         if root == "Files" and method in FILES_METHODS:
             return "filesystem"
@@ -167,8 +166,10 @@ class ScalaPerfDialect(BasePerfDialect):
             return "network"
         if method in HTTP4S_METHODS and is_attribute and net_ev:
             return "network"
-        if is_attribute and db_ev and (method in AMBIGUOUS_DB or method in SLICK_AMBIGUOUS_DB):
-            return "db"
+        if is_attribute and method in _SCALA_AMBIGUOUS_DB:
+            # Slick's ``run`` needs the same library evidence as ``get``.
+            verb = "get" if method in SLICK_AMBIGUOUS_DB else method
+            return "db" if verb in ambiguous_db_verbs(io_names) else None
         return None
 
     # -- loops ----------------------------------------------------------------

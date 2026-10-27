@@ -51,6 +51,22 @@ export const DECISION_STATUS_LABELS: Record<DecisionStatus, string> = {
   dismissed: "Dismissed",
 };
 
+/**
+ * The two nouns the store holds. An `architectural` decision is a claim about
+ * the code that a diff can violate. An `agreement` is a claim about how the
+ * work is conducted, which no diff can violate, so it names no file and is
+ * never checked against one.
+ */
+export const DECISION_KINDS = ["architectural", "agreement"] as const;
+
+export type DecisionKind = (typeof DECISION_KINDS)[number];
+
+/** The word for a kind. Presentation, so the fixture pins coverage only. */
+export const DECISION_KIND_LABELS: Record<DecisionKind, string> = {
+  architectural: "Decision",
+  agreement: "Working agreement",
+};
+
 /** Sort key for a status. An unknown status sorts after every known one. */
 export function decisionStatusRank(status: string): number {
   const i = (DECISION_STATUSES as readonly string[]).indexOf(status);
@@ -66,9 +82,11 @@ export function decisionStatusRank(status: string): number {
  */
 export const DECISION_SOURCES = [
   "adr",
+  "agent",
   "cli",
   "comment",
   "commit",
+  "conventions",
   "git_archaeology",
   "inline_marker",
   "llm_inferred",
@@ -105,9 +123,11 @@ export const DECISION_SOURCE_LABELS: Record<
   string
 > = {
   adr: "ADR",
+  agent: "Agent",
   cli: "Manual",
   comment: "Comment",
   commit: "Commit",
+  conventions: "Convention",
   git_archaeology: "Git history",
   inline_marker: "Marker",
   llm_inferred: "Model",
@@ -146,6 +166,7 @@ export const DECISION_CURRENCIES = [
   "active",
   "needs_review",
   "uncheckable",
+  "stale",
   "superseded",
   "dismissed",
 ] as const;
@@ -164,6 +185,7 @@ export const DECISION_CURRENCY_LABELS: Record<DecisionCurrency, string> = {
   active: "Active",
   needs_review: "Needs review",
   uncheckable: "Uncheckable",
+  stale: "Stale",
   superseded: "Superseded",
   dismissed: "Dismissed",
 };
@@ -174,9 +196,30 @@ export const DECISION_CURRENCY_DESCRIPTIONS: Record<DecisionCurrency, string> =
     needs_review: "Accepted, but the code it names has moved since.",
     uncheckable:
       "Accepted, but it names no file or module, so nothing checks it against the code.",
+    stale: "Accepted, but nothing it names exists in the code any more.",
     superseded: "Replaced by a later decision.",
     dismissed: "Authority withdrawn. Kept for history.",
   };
+
+/**
+ * What signed an acceptance, as against who. `accepter` is a free string that
+ * resolves to the repository's git identity, so a machine signing read as a
+ * person. A stored `""` is a row written before the column and is not
+ * `person`: "unrecorded" and "a human signed" are what this keeps apart.
+ */
+export const ACCEPTER_KINDS = ["person", "agent", "import"] as const;
+
+export type AccepterKind = (typeof ACCEPTER_KINDS)[number];
+
+/**
+ * Worded for the signature, not the action: the same row records withdrawals,
+ * so "accepted" would present a revocation as a grant.
+ */
+export const ACCEPTER_KIND_LABELS: Record<AccepterKind, string> = {
+  person: "Signed by a person",
+  agent: "Signed by an agent",
+  import: "Signed by a tracked artifact",
+};
 
 /** Currencies that still bind future work. A moved decision is one to re-read. */
 export const GOVERNING_CURRENCIES: readonly DecisionCurrency[] = [
@@ -227,6 +270,12 @@ export interface DecisionRecord {
   /** Trust tier of the decision's primary supporting evidence. Optional for back-compat. */
   verification?: DecisionVerification;
   /**
+   * Which noun this record is. An `agreement` names no file on purpose, so it
+   * is never shown as missing a scope. Optional for back-compat with a backend
+   * written before the split; absent reads as `architectural`.
+   */
+  kind?: DecisionKind;
+  /**
    * Derived granularity level. Optional for back-compat with older backends;
    * null when the record has no code linkage at all.
    */
@@ -244,6 +293,21 @@ export interface DecisionRecord {
    * surface that needs the distinction should ask for the lane instead.
    */
   currency?: DecisionCurrency | null;
+  /**
+   * Who signed the current authority record. Null on a candidate, beside
+   * `currency`. `""` means written before provenance, not that a person did.
+   */
+  accepter?: string | null;
+  accepter_kind?: AccepterKind | "" | null;
+  accepter_session?: string | null;
+  /** Why a record just created stayed a candidate. Create endpoint only. */
+  blockers?: string[] | null;
+  /**
+   * True when the stored decision text is blank and `decision` carries the
+   * title fallback. Acceptance reads the stored text, so this is what predicts
+   * the "no decision text" refusal. Optional for back-compat.
+   */
+  decision_text_missing?: boolean;
   /** Number of evidence rows backing the record. List endpoint only. */
   evidence_count?: number | null;
   /** Top-ranked evidence row, slimmed for list rows. List endpoint only. */
@@ -261,6 +325,11 @@ export interface EvidencePreview {
 
 export interface DecisionCreateInput {
   title: string;
+  /**
+   * Omit to state no opinion: the engine then leaves an existing record's
+   * noun alone rather than defaulting it back to `architectural`.
+   */
+  kind?: DecisionKind;
   context?: string;
   decision?: string;
   rationale?: string;
@@ -434,37 +503,57 @@ export const DECISION_PRESETS = [
  * What `record_acceptance` would refuse this record for, mirrored so a review
  * surface can disable a control it knows will be refused instead of finding out
  * from the error toast. Pinned against the Python contract by the vocabulary
- * tests. The fourth check, accepter-or-artifact identity, is not here: the
+ * tests. The accepter-or-artifact identity check is not here: the
  * reviewer supplies that at the moment they act, so it is never something the
  * record is missing. `record_blockers` on the Python side asks the same way.
  *
  * `selfAuthored` is the exemption for a record somebody typed: they wrote the
  * claim rather than reviewing an inference, so the entry is its own provenance.
- * The engine grants it to `source === "cli"` when an accepter is known.
+ * The engine grants it to `source === "cli"` when an accepter is known. It
+ * covers evidence only.
+ *
+ * The reason reads `rationale` then `context`, never `decision`: `context` is
+ * what forced the choice, `decision` is the choice itself, and letting the what
+ * stand in for the why is what marked empty records acceptable. Every record
+ * needs its `decision`, typed or mined: one that never says what was chosen
+ * binds nobody to anything. A server response fills a blank `decision` with the
+ * title for readers, so `decision_text_missing` is what says the stored text is
+ * blank.
  */
 export function decisionAcceptanceBlockers(record: {
+  // Required so a caller cannot leave it out and have every record refused.
+  decision: string;
+  decision_text_missing?: boolean;
   rationale?: string;
-  decision?: string;
+  context?: string;
   affected_files?: string[];
   affected_modules?: string[];
   evidence_commits?: string[];
   evidence_file?: string | null;
   source?: string;
+  kind?: string;
 }): string[] {
   const blockers: string[] = [];
   const nonBlank = (values: (string | null | undefined)[]) =>
     values.some((v) => (v ?? "").trim().length > 0);
 
-  if (!nonBlank([record.rationale, record.decision])) {
+  const selfAuthored = record.source === "cli";
+  if (record.decision_text_missing || !nonBlank([record.decision])) {
+    blockers.push("no decision text: state what was chosen");
+  }
+  if (!nonBlank([record.rationale, record.context])) {
     blockers.push("no rationale or explicit constraint reason");
   }
+  // An agreement governs the repository rather than part of it, so naming no
+  // file is what it is rather than a gap in it. The server states that scope
+  // explicitly on the acceptance row; here it just means no blocker.
   if (
+    record.kind !== "agreement" &&
     !nonBlank(record.affected_files ?? []) &&
     !nonBlank(record.affected_modules ?? [])
   ) {
     blockers.push("no scope: name the files or modules it governs");
   }
-  const selfAuthored = record.source === "cli";
   if (
     !selfAuthored &&
     !nonBlank(record.evidence_commits ?? []) &&
@@ -528,6 +617,11 @@ export interface DecisionSettings {
   enabled: boolean;
   llm: boolean;
   preset: DecisionPreset;
+  /**
+   * Whether an agent may grant a decision authority, as against withdrawing
+   * it. False is the shipped posture.
+   */
+  agent_acceptance: boolean;
   discovery: DecisionDiscoveryBudget;
   sources: DecisionSourceState[];
   provider_available: boolean;
@@ -549,6 +643,7 @@ export interface DecisionSettingsUpdate {
   enabled?: boolean;
   llm?: boolean;
   preset?: Exclude<DecisionPreset, "custom">;
+  agent_acceptance?: boolean;
   sources?: Record<string, DecisionSourcePatch>;
   discovery?: DecisionDiscoveryPatch;
   etag?: string;

@@ -29,7 +29,7 @@ end-to-end trace through the system, narrated phase by phase.
 {% if ctx.flows %}
 ## Detected execution flows (use these as the spine of the narrative)
 {% for f in ctx.flows %}
-### Flow from `{{ f.entry_point }}` (score: {{ "%.3f"|format(f.score) }})
+### Flow from `{{ f.entry_point }}` (score: {{ "%.3f"|format(f.score) }}, lifecycle regions: {{ f.lifecycle_breadth }})
 {% for h in f.hops %}
 {{ loop.index }}. `{{ h }}`
 {% endfor %}
@@ -54,6 +54,11 @@ Produce a How It Works markdown page. Required structure:
    - pipeline → "when input enters at `<the real source>`, …"
    - module → narrate the highest-scoring flow above as a generic
      control-flow story.
+   Prefer the first flow: candidates are ranked for a declared entry boundary,
+   breadth across architectural layers/directories, trace depth, and only then
+   graph score. A narrow subsystem trace may illustrate a stage, but it must not
+   stand in for the repository's end-to-end lifecycle when broader evidence is
+   available.
 {% if exact_source_available | default(false) %}
    Walk through only behavior established by exact source excerpts. A detected
    flow is a static graph path, not permission to invent a chronological
@@ -77,6 +82,9 @@ Produce a How It Works markdown page. Required structure:
 
 Hard rules:
 - Every file path or symbol you name must come from the data above.
+- Cite files only as backticked repository-relative paths. Never emit local
+  checkout/worktree paths or Markdown file URLs; the wiki resolves inline code
+  to file pages.
 {% if exact_source_available | default(false) %}
 - Attribute behavior only to the symbol whose exact source excerpt establishes
   it. Never transfer behavior from one hop to an adjacent hop.

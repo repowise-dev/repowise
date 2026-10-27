@@ -11,7 +11,6 @@ export * from "./contributors-strip";
 export * from "./contributor-network";
 export * from "./fix-history-badge";
 export * from "./hotspot-table";
-export * from "./ownership-donut";
 export * from "./ownership-table";
 export * from "./ownership-treemap";
 export * from "./risk-distribution-chart";

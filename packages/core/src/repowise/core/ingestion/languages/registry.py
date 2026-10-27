@@ -23,21 +23,25 @@ from .spec import LanguageSpec
 from .specs import ALL_SPECS as _SPECS
 
 # Entry-point filename stems that are conventional across languages rather
-# than owned by any one of them ("bootstrap.php", "entry.ts", "cli.py",
-# "server.go", "main.rs", "app.py", "index.js" …). Language-unique stems
+# than owned by any one of them ("bootstrap.php", "cli.py", "server.go",
+# "main.rs", "app.py", "index.js" …). Language-unique stems
 # (manage/wsgi/asgi/__main__ → python, mod → rust) live on their specs.
 _GENERIC_ENTRY_STEMS: frozenset[str] = frozenset(
-    {"main", "index", "app", "server", "cli", "bootstrap", "entry"}
+    {"main", "index", "app", "server", "cli", "bootstrap"}
 )
 
 # Stems that are entry-point evidence on their own, for any language. The
 # traverser flags on this *unioned* with the tour-bonus stems above (see
 # ``traverser._ENTRY_POINT_STEMS``): the two were hand-kept and disagreed both
 # ways, so this one keeps run/start, which the tour set lacks, and inherits
-# cli/bootstrap/entry, which it lacked. Per-language flag stems (wsgi/asgi →
+# cli/bootstrap, which it lacked. Per-language flag stems (wsgi/asgi →
 # python) live on the specs.
+#
+# ``entry`` is a flag stem only: a bundler's ``entry.ts`` keeps its dead-code
+# exemption, but the name ranks neutral, since an ``entry.ts`` is as often a
+# module defining ``class Entry`` as a front door.
 _GENERIC_ENTRY_FLAG_STEMS: frozenset[str] = frozenset(
-    {"main", "index", "app", "run", "server", "start"}
+    {"main", "index", "app", "run", "server", "start", "entry"}
 )
 
 # =========================================================================
@@ -91,6 +95,10 @@ class LanguageRegistry:
         """Return ``{ext: tag}`` for all registered extensions."""
         return dict(self._ext_map)
 
+    def all_name_suffixes(self) -> dict[str, str]:
+        """Return ``{lowercase name ending: tag}`` for multi-dot endings."""
+        return {sfx: s.tag for s in self._specs.values() for sfx in s.name_suffixes}
+
     def all_special_filenames(self) -> dict[str, str]:
         """Return ``{filename: tag}`` for all special filenames."""
         return dict(self._filename_map)
@@ -126,6 +134,10 @@ class LanguageRegistry:
     def passthrough_languages(self) -> frozenset[str]:
         """Return tags for languages with no AST parser."""
         return frozenset(s.tag for s in self._specs.values() if s.is_passthrough)
+
+    def dead_code_exempt_languages(self) -> frozenset[str]:
+        """Languages whose external runtime makes static reachability unsound."""
+        return frozenset(s.tag for s in self._specs.values() if s.dead_code_exempt)
 
     def unparseable_data_languages(self) -> frozenset[str]:
         """Config/markup/data plus infra passthrough tags, without ``openapi``
@@ -200,6 +212,10 @@ class LanguageRegistry:
             for f in s.manifest_files
             if f not in s.build_config_manifests
         )
+
+    def package_manifest_globs(self) -> frozenset[str]:
+        """Glob patterns that mark their directory as a package root (``*.csproj``)."""
+        return frozenset(g for s in self._specs.values() for g in s.manifest_globs)
 
     def blocked_dirs(self) -> frozenset[str]:
         """Return the union of all per-language blocked directories."""

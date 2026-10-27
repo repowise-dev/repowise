@@ -1,0 +1,801 @@
+"""Rules about the code itself: what got worse, what keeps breaking, what to fix first."""
+
+from __future__ import annotations
+
+import math
+import posixpath
+from collections import defaultdict
+from datetime import datetime
+
+from ..context import HISTORY_TOO_SHORT, RepoContext
+from ..facts import MOCKED_ONLY_VIA, FileFacts, RepoFacts
+from ..model import (
+    SEVERITY_VALUE,
+    Action,
+    ActionCommand,
+    ActionDetail,
+    RuleOutcome,
+    WhyFact,
+    evidence_severity,
+    fingerprint,
+    shared_priority,
+)
+from ._text import code, plural
+
+#: Files that tell the week's story as well as the quarter's: busy fragile
+#: files someone touched this week, strongest first.
+FRAGILE_WEEK_ROWS = 5
+
+#: Line coverage at or above this reads as "the tests exist"; below it, adding
+#: tests is the action.
+COVERED_PCT = 80.0
+
+#: ``fix_concentration`` needs enough fixes that a share means something, a
+#: share worth a sentence, and lift: the folder's share of fixes over its share
+#: of files. Lift is what separates `update_cmd/` (9% of fixes in 0.3% of the
+#: files) from `packages/cli/` (29% of fixes in 7% of the files): both are
+#: true, only one is an area someone can take on.
+CONCENTRATION_MIN_FIXES = 20
+CONCENTRATION_MIN_SHARE = 0.08
+CONCENTRATION_MIN_LIFT = 4.0
+CONCENTRATION_MIN_REPEAT_FILES = 3
+CONCENTRATION_MAX_ACTIONS = 2
+
+
+#: Fix-first items Do next reads; the queue is ranked, so these are its head.
+FIX_FIRST_ACTIONS = 3
+
+#: Up to this many files, each gets its own action; beyond it, one action
+#: carries the week and names the worst files. A heavy week of feature work can
+#: add findings to seventy files, and seventy rows is not a to-do list.
+REGRESSION_FILE_ROWS = 3
+
+
+def fresh_regressions(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
+    """Findings the last week of commits added and nobody has fixed yet.
+
+    The loader keeps only findings the commit demonstrably wrote (added lines,
+    a new file, or a changed symbol), still open, in production code, and not
+    history markers: "you made this worse" has to be true of the diff.
+
+    Only defect-class findings act now: a proven performance cause or lost
+    coverage. Code shape (a long or nested method) is what a week of feature
+    work leaves on any active repository, so it rolls up into one maintainability
+    item to plan. A credential is ``live_secret``'s whichever commit added it,
+    and the scanner's pattern kinds stay on the Security tab (``hygiene``).
+    """
+    rule = "fresh_regressions"
+    if "commit_health" in facts.unavailable:
+        return RuleOutcome(rule, "unavailable", facts.unavailable["commit_health"])
+    if ctx.anchor is None:
+        return RuleOutcome(rule, "not_applicable", "No commit history in the index.")
+    defects: dict[str, list] = defaultdict(list)
+    shape: dict[str, list] = defaultdict(list)
+    for f in facts.recent_findings:
+        (defects if f.defect else shape)[f.file_path].append(f)
+    actions: list[Action] = []
+    if defects:
+        ranked = sorted(defects.items(), key=lambda kv: (-_regression_weight(kv[1]), kv[0]))
+        if len(ranked) > REGRESSION_FILE_ROWS:
+            actions.append(_regression_rollup(ranked))
+        else:
+            actions.extend(
+                _regression_file(path, found, ctx, _regression_weight(found))
+                for path, found in ranked
+            )
+    if shape:
+        ranked = sorted(shape.items(), key=lambda kv: (-_shape_weight(kv[1]), kv[0]))
+        actions.append(_shape_rollup(ranked))
+    return RuleOutcome(rule, "evaluated", "", tuple(actions))
+
+
+#: How much each defect class weighs when files are ordered: a proven
+#: performance cause runs on every call, lost coverage is a risk to the next one.
+_KIND_WEIGHT = {"performance": 3.0, "coverage": 1.0}
+
+#: How a defect-class finding is named in a sentence.
+_KIND_NOUN = {"performance": "performance regression", "coverage": "coverage drop"}
+
+
+def _regression_weight(found: list) -> float:
+    return sum(_KIND_WEIGHT.get(f.kind, 1.0) for f in found)
+
+
+def _shape_weight(found: list) -> float:
+    return sum(f.severity == "critical" for f in found) * 10.0 + len(found)
+
+
+def _regression_value(found: list) -> int:
+    """The value a defect-class regression ranks on: a proven performance
+    cause outranks lost coverage.
+
+    The action's severity tops out at high. Critical on an action is kept for
+    a live credential (``live_secret``).
+    """
+    return 4 if any(f.kind == "performance" for f in found) else 3
+
+
+def _kinds_text(found: list) -> str:
+    """``1 performance regression and 2 coverage drops``, worst class first."""
+    counts = {k: sum(f.kind == k for f in found) for k in _KIND_NOUN}
+    parts = [plural(n, _KIND_NOUN[k]) for k, n in counts.items() if n]
+    return " and ".join(parts) or plural(len(found), "finding")
+
+
+def _regression_file(path: str, found: list, ctx: RepoContext, weight: float) -> Action:
+    symbols = sorted({f.symbol for f in found if f.symbol})
+    commits = {f.sha: f for f in found}
+    lead = max(found, key=lambda f: (_KIND_WEIGHT.get(f.kind, 1.0), f.line or 0))
+    kinds = {f.kind for f in found}
+    if kinds == {"coverage"}:
+        title = f"Restore the test coverage this week's changes lost in {code(path)}"
+    elif kinds == {"performance"} and len(symbols) == 1:
+        title = f"Fix the performance regression in {code(symbols[0])} in {code(path)}"
+    elif kinds == {"performance"}:
+        title = f"Fix the performance regressions this week's changes added to {code(path)}"
+    else:
+        title = f"Fix what this week's changes added to {code(path)}"
+    latest = max(commits.values(), key=lambda f: f.committed_at or ctx.anchor)
+    details = _regression_details(found)
+    return Action(
+        rule="fresh_regressions",
+        tier="act_now",
+        horizons=("week",),
+        severity=_details_severity(details, "high"),
+        title=title,
+        impact=(
+            f"{plural(len(commits), 'commit')} in the last 7 days added "
+            f"{_kinds_text(found)} here, still open. "
+            "Fixing now costs less than after the next change."
+        ),
+        why=(
+            WhyFact("defect findings", str(len(found))),
+            WhyFact("kinds", ", ".join(sorted(kinds))),
+            WhyFact("latest commit", latest.subject[:72] or latest.sha[:7]),
+        ),
+        target_kind="symbol" if len(symbols) == 1 else "file",
+        target_path=path,
+        target_symbol=symbols[0] if len(symbols) == 1 else None,
+        surface="performance" if kinds == {"performance"} else "findings",
+        effort="S" if len(symbols) <= 2 else "M",
+        confidence="high",
+        done_when="The findings close on the next update.",
+        marker=lead.biomarker,
+        weight=weight,
+        value=_regression_value(found),
+        evidence_ids=tuple(sorted(commits)),
+        evidence_total=len(found),
+        fingerprint=fingerprint(len(found), *sorted(kinds)),
+        details=details,
+        commands=_regression_commands([path], latest.sha),
+    )
+
+
+def _regression_details(found: list) -> tuple[ActionDetail, ...]:
+    ordered = sorted(
+        found,
+        key=lambda f: (-_KIND_WEIGHT.get(f.kind, 0.0), f.severity != "critical", f.file_path, f.line or 0),
+    )
+    return tuple(
+        ActionDetail(
+            path=f.file_path,
+            line=f.line,
+            symbol=f.symbol,
+            marker=f.biomarker,
+            severity=f.severity,
+            reason=f.reason,
+            ref=f.sha,
+        )
+        for f in ordered
+    )
+
+
+def _details_severity(details: tuple[ActionDetail, ...], default: str) -> str:
+    return evidence_severity((d.severity for d in details), default)
+
+
+def _regression_commands(paths: list[str], sha: str) -> tuple[ActionCommand, ...]:
+    first = paths[0]
+    return (
+        ActionCommand.call(
+            "Every open finding in these files, with its line and reason",
+            "get_health",
+            {"targets": paths[:10], "include": ["biomarkers"]},
+            cli=f"repowise health --file {first}",
+        ),
+        ActionCommand.call(
+            "The commit that last made the first file worse, and what it put at risk",
+            "get_change_risk",
+            {"revspec": sha},
+            cli=f"git show {sha[:12]} -- {first}",
+        ),
+        ActionCommand.call(
+            "A file's structure and callers before editing it",
+            "get_context",
+            {"targets": [first], "include": ["skeleton", "callers"]},
+            cli=f"repowise context {first}",
+        ),
+    )
+
+
+def _regression_rollup(ranked: list[tuple[str, list]]) -> Action:
+    found = [f for _, fs in ranked for f in fs]
+    commits = {f.sha for f in found}
+    worst_path, worst = ranked[0]
+    # Evidence in the order the files are ranked, so it starts where the
+    # impact line says to start; the commit to inspect is the latest one
+    # that touched that same file.
+    details = tuple(d for _, fs in ranked for d in _regression_details(fs))
+    return Action(
+        rule="fresh_regressions",
+        tier="act_now",
+        horizons=("week",),
+        severity=_details_severity(details, "high"),
+        title=(
+            f"Fix what this week's commits added: {_kinds_text(found)} "
+            f"in {len(ranked):,} files"
+        ),
+        impact=(
+            f"{plural(len(commits), 'commit')} in the last 7 days added them, and they are "
+            f"still open. Start with {code(worst_path)}, which has {_kinds_text(worst)}."
+        ),
+        why=(
+            WhyFact("defect findings", str(len(found))),
+            WhyFact("kinds", ", ".join(sorted({f.kind for f in found}))),
+            WhyFact("files", str(len(ranked))),
+        ),
+        target_kind="repo",
+        target_path="",
+        surface="commits",
+        effort="L" if len(ranked) > 10 else "M",
+        confidence="high",
+        done_when="The findings close on the next update.",
+        weight=_regression_weight(found),
+        value=_regression_value(found),
+        evidence_ids=tuple(sorted(commits)),
+        evidence_total=len(found),
+        includes=tuple(path for path, _ in ranked[:10]),
+        fingerprint=fingerprint(len(found) // 10, *sorted({f.kind for f in found})),
+        details=details,
+        details_total=len(found),
+        commands=_regression_commands(
+            [path for path, _ in ranked],
+            max(worst, key=lambda f: f.committed_at or datetime.min).sha,
+        ),
+    )
+
+
+def _shape_rollup(ranked: list[tuple[str, list]]) -> Action:
+    """The week's code-shape findings as one maintainability item to plan.
+
+    One item however many files: a week of feature work can leave long or
+    nested methods in seventy files, and none of them is an emergency.
+    """
+    found = [f for _, fs in ranked for f in fs]
+    commits = {f.sha for f in found}
+    worst_path, worst = ranked[0]
+    where = code(worst_path) if len(ranked) == 1 else f"{len(ranked):,} files"
+    details = tuple(d for _, fs in ranked for d in _regression_details(fs))
+    return Action(
+        rule="fresh_regressions",
+        tier="plan",
+        horizons=("week",),
+        severity=_details_severity(details, "medium"),
+        title=(
+            f"Tidy the code shape this week's commits left: "
+            f"{plural(len(found), 'finding')} in {where}"
+        ),
+        impact=(
+            f"{plural(len(commits), 'commit')} in the last 7 days added or worsened long, "
+            f"complex or deeply nested code, still open. Start with {code(worst_path)}"
+            f" ({plural(len(worst), 'finding')}): tidying it while the change is fresh "
+            "costs less than after the next one."
+        ),
+        why=(
+            WhyFact("code-shape findings", str(len(found))),
+            WhyFact("files", str(len(ranked))),
+            WhyFact("commits", str(len(commits))),
+        ),
+        target_kind="repo" if len(ranked) > 1 else "file",
+        target_path="" if len(ranked) > 1 else worst_path,
+        # Its own identity, so it never shares an id with a defect action.
+        identity="code_shape",
+        surface="commits" if len(ranked) > 1 else "findings",
+        effort="L" if len(ranked) > 10 else "M",
+        confidence="high",
+        done_when="The findings close on the next update.",
+        marker=max(worst, key=lambda f: (f.severity == "critical", f.line or 0)).biomarker,
+        weight=float(len(found)),
+        value=SEVERITY_VALUE["medium"],
+        evidence_ids=tuple(sorted(commits)),
+        evidence_total=len(found),
+        includes=tuple(path for path, _ in ranked[:10]),
+        fingerprint=fingerprint("shape", len(found) // 10),
+        details=details,
+        details_total=len(found),
+        commands=_regression_commands(
+            [path for path, _ in ranked],
+            max(worst, key=lambda f: f.committed_at or datetime.min).sha,
+        ),
+    )
+
+
+def _coverage_fact(f: FileFacts, facts: RepoFacts) -> WhyFact:
+    if f.line_coverage_pct is not None:
+        basis = "measured"
+        value = f"{f.line_coverage_pct:.0f}%"
+        if facts.coverage.status == "stale":
+            value += " (measured at an earlier commit)"
+        return WhyFact("line coverage", value, basis)
+    if facts.coverage.status == "unknown":
+        return WhyFact("line coverage", "Unknown, no report", "unknown")
+    if facts.coverage.partial:
+        return WhyFact("line coverage", "Unknown, the report only partly mapped", "unknown")
+    return WhyFact("line coverage", "Unknown, not in the report", "unknown")
+
+
+def _reach_fact(f: FileFacts) -> WhyFact:
+    if f.tests_reaching_via == MOCKED_ONLY_VIA:
+        return WhyFact("tests that reach it", "Only tests that replace it reach it", "inferred")
+    if not f.tests_reaching:
+        return WhyFact("tests that reach it", "None in the code graph", "inferred")
+    via = (f.tests_reaching_via or "code graph").replace("-", " ")
+    return WhyFact(
+        "tests that reach it", f"{plural(f.tests_reaching, 'test file')}, {via}", "inferred"
+    )
+
+
+def _lead_name(f: FileFacts) -> str | None:
+    """The lead function's name, unless the parser could only call it anonymous."""
+    name = f.lead.function if f.lead else None
+    return None if not name or name.startswith("<anonymous") else name
+
+
+def _fragile_step(f: FileFacts) -> tuple[str, str, str] | None:
+    """Title, done-when and variant for a fragile file, or ``None`` to stay quiet.
+
+    Measured coverage decides first. Without it, "add tests" holds only when no
+    test reaches the file in the code graph; a file tests do reach gets the
+    simplify step instead, as an inferred claim. "Simplify" names the lead only
+    when its function is worth breaking up by the shared rule; otherwise the
+    step is to review why fixes keep landing, which names no finding.
+    """
+    cov = f.line_coverage_pct
+    if cov is not None and cov < COVERED_PCT:
+        return (
+            f"Raise test coverage on {code(f.path)} from {cov:.0f}%",
+            "Line coverage on this file reaches 80%.",
+            "raise",
+        )
+    if cov is None and f.tests_reaching is None:
+        # Unknown is not zero: with no coverage and no test map, neither "add
+        # tests" nor "tests reach it" is a claim the facts support.
+        return None
+    if cov is None and f.tests_reaching == 0:
+        if f.tests_reaching_via == MOCKED_ONLY_VIA:
+            # Tests reach it but replace it: that is a real gap, stated as one.
+            title = f"Add tests around {code(f.path)} before its next change"
+        else:
+            # The graph cannot see code a framework invokes (URL routes, CLI
+            # commands, registries), so an empty walk is absence of evidence,
+            # not proof the file is untested. Say what the graph found.
+            title = (
+                f"No test reaches {code(f.path)} in the code graph: "
+                "confirm it is tested before its next change"
+            )
+        return (
+            title,
+            "A coverage report includes it at 80% or more.",
+            "unknown",
+        )
+    if f.lead is None:
+        return None
+    return _lead_step(f, measured=cov is not None)
+
+
+def _lead_step(f: FileFacts, *, measured: bool) -> tuple[str, str, str]:
+    """:func:`_fragile_step` for a tested file with a lead finding."""
+    tested = "it is tested" if measured else "tests reach it"
+    if not f.lead or not f.lead.worth:
+        return (
+            f"Review why fixes keep landing in {code(f.path)}: {tested}",
+            "Bug-fix commits slow down.",
+            "review" if measured else "review_reached",
+        )
+    name = _lead_name(f)
+    where = code(name) + " in " if name else ""
+    return (
+        f"Simplify {where}{code(f.path)}: {tested}, and fixes keep landing",
+        "Its lead finding closes and bug-fix commits slow down.",
+        "simplify" if measured else "reached",
+    )
+
+
+def is_fragile(f: FileFacts, ctx: RepoContext) -> bool:
+    return (
+        not f.is_test
+        and f.bug_magnet
+        and f.commits_90d >= ctx.busy_threshold
+        and f.fix_commits_90d >= ctx.fix_threshold
+        # A file with no branching is declarations: types, constants, a
+        # re-export barrel. Tests are not what it needs, and "add tests around
+        # types.ts" is the kind of advice that teaches a reader to skip the list.
+        and (f.max_ccn is None or f.max_ccn > 1)
+    )
+
+
+def fragile_file(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
+    """Busy files where bug fixes keep landing, with the next step their tests allow."""
+    rule = "fragile_file"
+    if "files" in facts.unavailable:
+        return RuleOutcome(rule, "unavailable", facts.unavailable["files"])
+    if ctx.history_too_short:
+        return RuleOutcome(rule, "not_applicable", HISTORY_TOO_SHORT)
+    if ctx.fix_commits_90d == 0:
+        return RuleOutcome(rule, "not_applicable", "No bug-fix commits in the last 90 days.")
+    # A file Fix first already names carries one action, not two.
+    named = fix_first_paths(facts)
+    fragile = sorted(
+        (f for f in facts.files.values() if is_fragile(f, ctx) and f.path not in named),
+        key=lambda f: -(f.fix_commits_90d * f.commits_90d),
+    )
+    touched = [f for f in fragile if ctx.in_week(f.last_commit_at)]
+    week_rows = {f.path for f in touched[:FRAGILE_WEEK_ROWS]}
+    actions = []
+    for f in fragile:
+        step = _fragile_step(f)
+        if step is not None:
+            actions.append(_fragile_action(f, step, facts, week=f.path in week_rows))
+    return RuleOutcome(rule, "evaluated", "", tuple(actions))
+
+
+def _fragile_why(f: FileFacts, facts: RepoFacts) -> tuple[tuple[WhyFact, ...], str]:
+    """A fragile file's why facts and impact line."""
+    why = [
+        WhyFact("commits in 90 days", str(f.commits_90d)),
+        WhyFact("bug-fix commits", str(f.fix_commits_90d)),
+        _coverage_fact(f, facts),
+    ]
+    if f.line_coverage_pct is None:
+        why.append(_reach_fact(f))
+    impact = (
+        f"Changed {f.commits_90d} times in 90 days, and {f.fix_commits_90d} "
+        "of those commits were bug fixes."
+    )
+    if f.dependents and f.dependents >= 5:
+        why.append(WhyFact("files that import it", str(f.dependents)))
+        impact += f" {f.dependents} files import it."
+    return tuple(why), impact
+
+
+def _fragile_action(
+    f: FileFacts, step: tuple[str, str, str], facts: RepoFacts, *, week: bool
+) -> Action:
+    title, done, variant = step
+    # A review step names no finding, so it shows none as its lead.
+    lead = None if variant.startswith("review") else f.lead
+    why, impact = _fragile_why(f, facts)
+    return Action(
+        rule="fragile_file",
+        tier="plan",
+        horizons=("week", "quarter") if week else ("quarter",),
+        severity="high" if f.fix_commits_90d >= 10 else "medium",
+        title=title,
+        impact=impact,
+        why=why,
+        target_kind="file",
+        target_path=f.path,
+        target_symbol=_lead_name(f) if variant in ("simplify", "reached") else None,
+        identity=f.path,
+        surface="file",
+        effort="M" if (f.nloc or 0) < 600 else "L",
+        confidence="high" if variant in ("raise", "simplify", "review") else "medium",
+        done_when=done,
+        marker=lead.biomarker if lead else None,
+        weight=float(f.fix_commits_90d * f.commits_90d),
+        fingerprint=fingerprint(variant, f.fix_commits_90d // 5),
+        details=(
+            (
+                ActionDetail(
+                    path=f.path,
+                    line=lead.line,
+                    symbol=lead.function,
+                    marker=lead.biomarker,
+                    severity=lead.severity,
+                    reason=lead.reason,
+                ),
+            )
+            if lead
+            else ()
+        ),
+        commands=(
+            ActionCommand.call(
+                "Its bug-fix history, co-change partners and test gaps",
+                "get_risk",
+                {"targets": [f.path]},
+                cli=f"repowise risk -t {f.path}",
+            ),
+            ActionCommand.call(
+                "Every open finding in the file",
+                "get_health",
+                {"targets": [f.path], "include": ["biomarkers"]},
+                cli=f"repowise health --file {f.path}",
+            ),
+        ),
+    )
+
+
+def fix_concentration(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
+    """One folder that takes a disproportionate share of the bug fixes.
+
+    Told as an area of work rather than a list of files, because that is how a
+    lead plans it. The deepest folder that still clears the share wins, so the
+    answer is `update_cmd/`, not `packages/`. The title names where to start:
+    the first step of its most fixed fragile file. A folder with no such step
+    is left out and counted in the outcome's reason, and its files keep their
+    own rows.
+    """
+    rule = "fix_concentration"
+    if "files" in facts.unavailable:
+        return RuleOutcome(rule, "unavailable", facts.unavailable["files"])
+    if ctx.history_too_short:
+        return RuleOutcome(rule, "not_applicable", HISTORY_TOO_SHORT)
+    total = ctx.fix_commits_90d
+    if total < CONCENTRATION_MIN_FIXES:
+        return RuleOutcome(
+            rule,
+            "not_applicable",
+            f"{plural(total, 'bug-fix commit')} in 90 days; a share needs "
+            f"at least {CONCENTRATION_MIN_FIXES}.",
+        )
+    production = {p: f for p, f in facts.files.items() if not f.is_test}
+    files_per_folder: dict[str, int] = defaultdict(int)
+    for path in production:
+        for folder in _ancestors(path):
+            files_per_folder[folder] += 1
+    shas_per_folder: dict[str, set[str]] = defaultdict(set)
+    fixed_files: dict[str, list[str]] = defaultdict(list)
+    for path, shas in facts.fix_shas_by_file.items():
+        f = production.get(path)
+        if f is None:
+            continue
+        for folder in _ancestors(path):
+            shas_per_folder[folder] |= shas
+            if f.fix_commits_90d >= 3:
+                fixed_files[folder].append(path)
+    n_prod = len(production)
+    named = fix_first_paths(facts)
+
+    def lift(folder: str) -> float:
+        return (len(shas_per_folder[folder]) / total) / (files_per_folder[folder] / n_prod)
+
+    candidates = [
+        folder
+        for folder, shas in shas_per_folder.items()
+        if len(shas) / total >= CONCENTRATION_MIN_SHARE
+        # Files Fix first names do not make a folder an area of work twice.
+        and len([p for p in fixed_files[folder] if p not in named])
+        >= CONCENTRATION_MIN_REPEAT_FILES
+        and lift(folder) >= CONCENTRATION_MIN_LIFT
+    ]
+    chosen: list[str] = []
+    for folder in sorted(candidates, key=lambda d: -lift(d)):
+        if any(folder.startswith(c + "/") or c.startswith(folder + "/") for c in chosen):
+            continue
+        chosen.append(folder)
+    actions = []
+    no_step = 0
+    for folder in chosen[:CONCENTRATION_MAX_ACTIONS]:
+        n = len(shas_per_folder[folder])
+        members = sorted(
+            fixed_files[folder], key=lambda p: -production[p].fix_commits_90d
+        )
+        includes = tuple(
+            p for p in members if is_fragile(production[p], ctx) and p not in named
+        )
+        first = _first_step(includes, production)
+        if first is None:
+            no_step += 1
+            continue
+        actions.append(
+            _folder_action(
+                folder,
+                first=first,
+                fixes=(n, total),
+                files=(files_per_folder[folder], n_prod),
+                members=[(p, production[p]) for p in members],
+                includes=includes,
+            )
+        )
+    reason = (
+        f"{plural(no_step, 'folder')} left out: no file in it names a first step."
+        if no_step
+        else ""
+    )
+    return RuleOutcome(rule, "evaluated", reason, tuple(actions))
+
+
+def _folder_action(
+    folder: str,
+    *,
+    first: str,
+    fixes: tuple[int, int],
+    files: tuple[int, int],
+    members: list[tuple[str, FileFacts]],
+    includes: tuple[str, ...],
+) -> Action:
+    """The folder's action: ``fixes`` is (the folder's bug-fix commits, the
+    repository's), ``files`` (its production files, the repository's)."""
+    n, total = fixes
+    share = round(100 * n / total)
+    paths = [p for p, _f in members]
+    return Action(
+        rule="fix_concentration",
+        tier="plan",
+        horizons=("quarter",),
+        severity="high",
+        title=f"Stabilise {code(folder + '/')}: first, {first}",
+        impact=(
+            f"{n} of the {total} bug-fix commits in the last 90 days ({share}%) "
+            f"touched this folder's {plural(files[0], 'file')}, "
+            f"{files[0] / files[1]:.1%} of the production files."
+        ),
+        why=(
+            WhyFact("share of bug-fix commits", f"{share}%"),
+            WhyFact("files with repeated fixes", str(len(members))),
+            WhyFact("most fixed", posixpath.basename(paths[0])),
+        ),
+        target_kind="folder",
+        target_path=folder,
+        surface="findings",
+        effort="L",
+        confidence="medium",
+        done_when="Its share of bug-fix commits falls over the next 90 days.",
+        weight=float(n),
+        evidence_total=len(members),
+        includes=includes,
+        fingerprint=fingerprint(share // 5),
+        details=tuple(
+            ActionDetail(
+                path=p,
+                reason=f"{f.fix_commits_90d} bug-fix commits, {f.commits_90d} commits in 90 days",
+            )
+            for p, f in members
+        ),
+        commands=(
+            ActionCommand.call(
+                "Bug-fix history and co-change partners for the most fixed files",
+                "get_risk",
+                {"targets": paths[:5]},
+                cli="repowise risk " + " ".join(f"-t {p}" for p in paths[:5]),
+            ),
+            ActionCommand.call(
+                "Why the folder is shaped this way",
+                "get_why",
+                {"targets": [f"{folder}/"]},
+                cli=f"repowise why {folder}/",
+            ),
+        ),
+    )
+
+
+def _first_step(includes: tuple[str, ...], production: dict[str, FileFacts]) -> str | None:
+    """The first step of the most fixed file in ``includes`` that has one, as
+    a clause: ``simplify `run` in `a.py```."""
+    for path in includes:
+        step = _fragile_step(production[path])
+        if step is not None:
+            # The unknown variant's title carries its own ask after the colon,
+            # so it stays whole; the others drop their ": tests reach it" tail.
+            title = step[0] if step[2] == "unknown" else step[0].split(": ", 1)[0]
+            return title[0].lower() + title[1:]
+    return None
+
+
+def _ancestors(path: str) -> list[str]:
+    parts = path.split("/")[:-1]
+    return ["/".join(parts[: i + 1]) for i in range(len(parts))]
+
+
+#: Fix-first tiers that become actions; ``later`` stays on the Code Health page.
+#: Both are due, so both are listed this week as well as this quarter.
+_FIX_FIRST_TIER = {"now": "act_now", "next": "plan"}
+
+
+def fix_first_paths(facts: RepoFacts) -> set[str]:
+    """Files the ``fix_first`` rule emits, so file-level rules do not repeat them."""
+    return {i.target.file_path for i in facts.fix_first if i.tier in _FIX_FIRST_TIER}
+
+
+def fix_first(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
+    """The head of the shared Fix-first queue: one ranking for every surface.
+
+    Code health, refactoring and performance work all reach this list through
+    it, so Do next and the Code Health lead cannot disagree about what to fix.
+    """
+    rule = "fix_first"
+    if "fix_first" in facts.unavailable:
+        return RuleOutcome(rule, "unavailable", facts.unavailable["fix_first"])
+    actions = []
+    # A cause this week's commits added acts now as a fresh regression, with
+    # the commit that added it; it is not listed twice.
+    fresh_perf = {
+        (f.file_path, _short(f.symbol)) for f in facts.recent_findings if f.kind == "performance"
+    }
+    # Do next's number for each item, held to the queue's order: a later item
+    # never outranks an earlier one, whatever its effort.
+    ceiling = math.inf
+    for item in facts.fix_first:
+        tier = _FIX_FIRST_TIER.get(item.tier)
+        if tier is None or (
+            item.kind == "perf_fix"
+            and (item.target.file_path, _short(item.target.symbol)) in fresh_perf
+        ):
+            continue
+        effort = _effort(item.effort.bucket)
+        confidence = "high" if item.confidence.level == "high" else "medium"
+        tier_severity = "high" if tier == "act_now" else "medium"
+        # A finding item's severity fact is its evidence; a performance or
+        # refactoring item carries none and reads its tier. Order stays the tier's.
+        severity = evidence_severity(
+            (f.value for f in item.facts if f.label == "severity"), tier_severity
+        )
+        ceiling = min(ceiling, shared_priority(item.value, tier_severity, confidence, effort))
+        target = item.target
+        symbol = target.symbol
+        actions.append(
+            Action(
+                rule=rule,
+                tier=tier,
+                horizons=("week", "quarter"),
+                severity=severity,
+                title=item.title,
+                impact=item.why,
+                why=(
+                    WhyFact("gain", item.gain.text, "inferred"),
+                    *(WhyFact(f.label, f.value, f.basis) for f in item.facts[:3]),
+                ),
+                target_kind="symbol" if symbol else "file",
+                target_path=target.file_path,
+                target_symbol=symbol,
+                identity=item.id,
+                surface="performance" if item.kind == "perf_fix" else "findings",
+                effort=effort,
+                confidence=confidence,
+                done_when="It leaves Fix first on the next update.",
+                weight=float(len(facts.fix_first) - item.rank),
+                value=item.value,
+                priority=ceiling,
+                evidence_ids=tuple(
+                    x for x in (item.source.opportunity_id, *item.source.finding_ids) if x
+                ),
+                fingerprint=fingerprint(item.tier, item.gain.text),
+                details=tuple(
+                    ActionDetail(path=step.file_path, line=step.line, reason=step.text)
+                    for step in item.action.steps
+                ),
+                details_total=item.action.steps_total,
+                commands=(
+                    ActionCommand.call(
+                        "The full item: steps, tests to run, risk",
+                        "get_health",
+                        {"fix_id": item.id},
+                        cli="repowise health",
+                    ),
+                ),
+            )
+        )
+    return RuleOutcome(rule, "evaluated", "", tuple(actions))
+
+
+def _short(symbol: str | None) -> str | None:
+    """A symbol's own name: ``a.py::Repo.load`` and ``Repo.load`` are ``load``."""
+    return symbol.rsplit("::", 1)[-1].rsplit(".", 1)[-1] if symbol else None
+
+
+def _effort(bucket: str | None) -> str:
+    if bucket == "S":
+        return "S"
+    if bucket in ("L", "XL"):
+        return "L"
+    return "M"

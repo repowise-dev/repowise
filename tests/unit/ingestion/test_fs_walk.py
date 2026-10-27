@@ -143,12 +143,21 @@ class TestPruning:
         assert list(iter_glob(tmp_path, "app.py")) == [tmp_path / "Library" / "app.py"]
         assert list(iter_glob(tmp_path, "worker.py")) == [tmp_path / "Logs" / "worker.py"]
 
-    def test_derived_set_prunes_output_dirs(self, tmp_path: Path) -> None:
-        """PRUNED_DIRS_DERIVED (dynamic hints) prunes derived-output names."""
-        _write(tmp_path, "dist/settings.py")
+    def test_derived_set_prunes_out(self, tmp_path: Path) -> None:
+        """PRUNED_DIRS_DERIVED (dynamic hints) prunes ``out`` by name."""
+        _write(tmp_path, "out/settings.py")
         _write(tmp_path, "src/settings.py")
         found = list(iter_glob(tmp_path, "settings.py", prune_dirs=PRUNED_DIRS_DERIVED))
         assert found == [tmp_path / "src" / "settings.py"]
+
+    def test_prune_predicate_decides_per_directory(self, tmp_path: Path) -> None:
+        """``prune`` sees each directory's path, so two dirs with one name can differ."""
+        _write(tmp_path, "a/gen/settings.py")
+        _write(tmp_path, "b/gen/settings.py")
+        found = list(
+            iter_glob(tmp_path, "settings.py", prune=lambda d: d == tmp_path / "a" / "gen")
+        )
+        assert found == [tmp_path / "b" / "gen" / "settings.py"]
 
     def test_default_prune_set_contents(self) -> None:
         """Canary: the dirs behind past incidents stay pruned."""
@@ -156,9 +165,12 @@ class TestPruning:
             assert d in PRUNED_DIRS
         for d in ("Library", "Temp", "Logs", "UserSettings", "MemoryCaptures"):
             assert d not in PRUNED_DIRS
-        for d in ("dist", "build", "out", "coverage"):
+        for d in ("dist", "build", "out", "coverage", "target"):
             assert d not in PRUNED_DIRS  # possible source dirs — derived set only
-            assert d in PRUNED_DIRS_DERIVED
+        # The traverser's is_output_dir decides these per directory.
+        for d in ("dist", "build", "coverage", "target"):
+            assert d not in PRUNED_DIRS_DERIVED
+        assert "out" in PRUNED_DIRS_DERIVED
 
 
 # ---------------------------------------------------------------------------
@@ -412,6 +424,70 @@ class TestLinkCyclesStillTerminate:
         # what moves. Four files: the three seeded plus the external one, once.
         assert files == sorted([*_EXPECTED_FILES, "vendored/pkg/ext.py"]), files[:8]
 
+    @pytest.mark.parametrize("link", [_symlink, _junction], ids=["symlink", "junction"])
+    def test_siblings_linking_to_each_other_terminate(self, tmp_path: Path, link) -> None:
+        _seed_tree(tmp_path)
+        _write(tmp_path, "other/o.py")
+        link(tmp_path / "svc" / "to_other", tmp_path / "other")
+        link(tmp_path / "other" / "to_svc", tmp_path / "svc")
+
+        dirs, files = _walked(tmp_path)
+        assert dirs == sorted([*_EXPECTED_DIRS, "other"])
+        assert files == sorted([*_EXPECTED_FILES, "other/o.py"])
+
+    def test_an_out_of_tree_sibling_loop_lists_each_file_once(self, tmp_path: Path) -> None:
+        """Two junctions into one external tree, the first at a subdirectory
+        of the second's target. A plain directory under the second resolves by
+        joining onto its parent, so it must still meet the visited set."""
+        outside = tmp_path.parent / f"{tmp_path.name}_ext_siblings"
+        _write(outside, "a/a.py")
+        _write(outside, "b/b.py")
+        _junction(outside / "a" / "to_b", outside / "b")
+        _junction(outside / "b" / "to_a", outside / "a")
+        root = tmp_path / "repo"
+        root.mkdir()
+        _seed_tree(root)
+        _junction(root / "a_first", outside / "a")
+        _junction(root / "b_all", outside)
+
+        _dirs, files = _walked(root)
+        ext = [f for f in files if f.endswith(("a.py", "b.py"))]
+        assert sorted(Path(f).name for f in ext) == ["a.py", "b.py"], ext
+
+
+class TestRealpathOnlyForLinks:
+    """``realpath`` costs two ``_getfinalpathname`` calls on Windows and was
+    paid for every directory; a plain directory resolves by a join."""
+
+    def test_an_unlinked_tree_resolves_only_the_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _seed_tree(tmp_path)
+        _write(tmp_path, "deep/a/b/c/d.py")
+        calls: list[str] = []
+        real = os.path.realpath
+        monkeypatch.setattr(
+            os.path, "realpath", lambda p, *a, **k: calls.append(p) or real(p, *a, **k)
+        )
+
+        dirs, _files = _walked(tmp_path)
+        assert len(dirs) == 8
+        assert len(calls) == 1
+
+    def test_a_link_is_still_resolved(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _seed_tree(tmp_path)
+        _symlink(tmp_path / "linked", tmp_path / "svc")
+        calls: list[str] = []
+        real = os.path.realpath
+        monkeypatch.setattr(
+            os.path, "realpath", lambda p, *a, **k: calls.append(p) or real(p, *a, **k)
+        )
+
+        assert _walked(tmp_path) == (_EXPECTED_DIRS, _EXPECTED_FILES)
+        assert len(calls) == 2
+
 
 # ---------------------------------------------------------------------------
 # --include-submodules plumbing — scanners must honor prune_nested_git=False
@@ -546,9 +622,9 @@ _WALK_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # Sizes .repowise/ only — repowise-owned, cannot contain junk trees.
     ("cli", "commands/status_cmd.py"): frozenset({"rglob"}),
     # Scans repowise's own packaged web/ui source dirs, not the user repo.
-    ("cli", "commands/serve_cmd.py"): frozenset({"rglob"}),
+    ("cli", "commands/serve_cmd/_web_assets.py"): frozenset({"rglob"}),
     # Sizes .repowise/ only — repowise-owned, cannot contain junk trees.
-    ("server", "routers/overview.py"): frozenset({"rglob"}),
+    ("server", "services/index_storage.py"): frozenset({"rglob"}),
 }
 
 

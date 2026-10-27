@@ -12,6 +12,7 @@ import { fileEntityPath } from "../shared/entity/routes";
 import { cn } from "../lib/cn";
 import { truncatePath } from "../lib/format";
 import type { CouplingEdge, CouplingGraphResponse, CouplingNode } from "@repowise-dev/types/coupling";
+import { FIELD_CLASS } from "../ui/input";
 
 // Stable identities so the `?? []` fallbacks do not invalidate a memo on every
 // render when the payload really is missing its arrays.
@@ -379,7 +380,7 @@ export function CouplingExplorer({
                     className={cn(
                       "h-8 shrink-0 whitespace-nowrap border-r border-[var(--color-border-default)] px-2.5 text-xs last:border-r-0",
                       selected
-                        ? "bg-[var(--color-accent-muted)]/40 font-medium text-[var(--color-text-primary)]"
+                        ? "bg-[var(--color-bg-selected)] font-medium text-[var(--color-text-primary)] shadow-[inset_0_-2px_0_var(--color-tab-active)]"
                         : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)]",
                     )}
                   >
@@ -407,7 +408,7 @@ export function CouplingExplorer({
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Filter by file path…"
               aria-label="Filter the couplings by file path"
-              className="h-8 w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] pl-8 pr-3 text-xs text-[var(--color-text-primary)] placeholder:text-[var(--color-text-tertiary)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-accent-primary)]"
+              className={cn(FIELD_CLASS, "h-8 w-full pl-8 pr-3 text-xs")}
             />
           </div>
           <div className="flex items-center gap-2">
@@ -459,6 +460,12 @@ export function CouplingExplorer({
           }
           moduleFor={moduleFor}
           hasDetails
+          historyFiles={data.total_files}
+          filtered={edges.length > 0}
+          onClearFilters={() => {
+            setQuery("");
+            setSegment("all");
+          }}
           linkForPath={linkForPath}
           LinkComponent={LinkComponent}
         />

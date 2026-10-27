@@ -47,6 +47,54 @@ async def test_list_security_empty(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_security_summary_scanned_at(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    url = f"/api/repos/{repo['id']}/security/summary"
+    assert (await client.get(url)).json() == {
+        "scanned_at": None,
+        "total": 0,
+        "class_counts": {"source": 0, "test": 0, "docs": 0},
+        "source_high": 0,
+    }
+
+    await _insert(app.state.session_factory, repo["id"], snippet="x")
+    assert (await client.get(url)).json()["scanned_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_security_summary_scanned_at_zero_findings(client: AsyncClient, app) -> None:
+    from repowise.core.analysis.security_scan import SecurityScanner
+    from repowise.core.persistence.database import get_session
+
+    repo = await create_test_repo(client)
+    async with get_session(app.state.session_factory) as session:
+        await SecurityScanner(session, repo["id"]).replace_findings({}, ["a.py"])
+    resp = await client.get(f"/api/repos/{repo['id']}/security/summary")
+    assert resp.json()["scanned_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_security_settings_patch_keeps_stamp(client: AsyncClient, app) -> None:
+    from repowise.core.persistence.crud import stamp_analysis_ran
+    from repowise.core.persistence.database import get_session
+
+    repo = await create_test_repo(client)
+    async with get_session(app.state.session_factory) as session:
+        await stamp_analysis_ran(session, repo["id"], "security")
+    await client.patch(f"/api/repos/{repo['id']}", json={"settings": {"x": 1}})
+    resp = await client.get(f"/api/repos/{repo['id']}/security/summary")
+    assert resp.json()["scanned_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_security_summary_ignores_history_rows(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    await _insert(app.state.session_factory, repo["id"], commit_sha="a" * 40)
+    resp = await client.get(f"/api/repos/{repo['id']}/security/summary")
+    assert resp.json()["scanned_at"] is None
+
+
+@pytest.mark.asyncio
 async def test_line_number_verified_against_live_file(client: AsyncClient, app) -> None:
     """The stored line still holds, so it is served verified."""
     repo = await create_test_repo(client)
@@ -151,6 +199,27 @@ async def test_symbol_name_finding_is_never_relocated_or_withdrawn(
 
 
 @pytest.mark.asyncio
+async def test_masked_credential_snippet_still_locates_its_line(
+    client: AsyncClient, app
+) -> None:
+    """A masked snippet is not verbatim on its line, but the code is still there."""
+    repo = await create_test_repo(client)
+    src = Path(repo["local_path"]) / "app.py"
+    src.write_text("import os\n\nAPI_KEY = 'sk_live_0123456789'\n")  # pragma: allowlist secret
+
+    await _insert(
+        app.state.session_factory,
+        repo["id"],
+        snippet="API_KEY = 'sk_l****'",
+        line_number=1,
+    )
+
+    row = (await client.get(f"/api/repos/{repo['id']}/security")).json()[0]
+    assert row["line_number"] == 3
+    assert row["line_verified"] is True
+
+
+@pytest.mark.asyncio
 async def test_path_outside_the_repo_is_not_read(client: AsyncClient, app) -> None:
     """A finding path is not a licence to read anywhere on disk."""
     repo = await create_test_repo(client)
@@ -216,3 +285,30 @@ async def test_working_tree_finding_has_no_commit_date(client: AsyncClient, app)
     row = (await client.get(f"/api/repos/{repo['id']}/security")).json()[0]
     assert row["found_in_history"] is False
     assert row["commit_at"] is None
+
+
+def test_snippet_cut_inside_a_mask_still_locates_its_line() -> None:
+    from repowise.server.services.security_lines import check_finding_line
+
+    line = 'API_KEY = "sk_live_0123456789"'  # pragma: allowlist secret
+    check = check_finding_line(["", line], 1, 'API_KEY = "sk_l**', "hardcoded_secret")
+    assert check.line_number == 2
+    assert check.verified is True
+
+
+def test_a_literal_star_run_is_matched_verbatim_first() -> None:
+    from repowise.server.services.security_lines import check_finding_line
+
+    snippet = "****md5**** is weak"
+    check = check_finding_line(["x = 1", snippet], 1, snippet, "weak_hash")
+    assert (check.line_number, check.verified) == (2, True)
+
+
+def test_a_short_prefix_before_stars_is_not_a_match() -> None:
+    """A deleted banner must not verify against any line starting with '/'."""
+    from repowise.server.services.security_lines import check_finding_line
+
+    snippet = "/******** md5 helpers ********/"
+    check = check_finding_line(["/* other */", "int x;"], 1, snippet, "weak_hash")
+    assert check.line_number is None
+    assert check.verified is False

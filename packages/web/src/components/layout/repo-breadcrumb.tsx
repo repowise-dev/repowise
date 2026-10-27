@@ -1,12 +1,16 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import { useTranslations } from "next-intl";
+import { MessageSquare } from "lucide-react";
 import { Breadcrumb } from "@repowise-dev/ui/shared/breadcrumb";
 import type { BreadcrumbSegment } from "@repowise-dev/ui/shared/breadcrumb";
 import { DocsModeBadge, type DocsMode } from "@repowise-dev/ui/docs/docs-mode-badge";
-import { getRepoBreadcrumbSegmentLabel } from "./repo-breadcrumb-label";
+import { getRepoBreadcrumbSegmentLabel, SEGMENT_MESSAGE_KEYS } from "./repo-breadcrumb-label";
 import { showsRouteBreadcrumb } from "./repo-breadcrumb-route";
+import { commitsViewHref } from "@/lib/changes";
+import { useModelUpgrade } from "@/components/model-upgrade/model-upgrade";
 
 export function RepoBreadcrumb({
   repoName,
@@ -16,6 +20,9 @@ export function RepoBreadcrumb({
   /** Provenance of the repo's wiki, from the repos API `docs_mode`. */
   docsMode?: DocsMode;
 }) {
+  const t = useTranslations("nav");
+  const tb = useTranslations("breadcrumb");
+  const ts = useTranslations("shell");
   const pathname = usePathname();
   const match = pathname.match(/^\/repos\/([^/]+)(.*)/);
   if (!match) {
@@ -30,28 +37,66 @@ export function RepoBreadcrumb({
   const rest = match[2]?.replace(/^\//, "").split("/").filter(Boolean) ?? [];
 
   const segments: BreadcrumbSegment[] = [
-    { label: "Dashboard", href: "/" },
+    { label: t("dashboard"), href: "/" },
     { label: repoName, href: `/repos/${repoId}` },
   ];
 
   let currentPath = `/repos/${repoId}`;
   for (const seg of rest) {
     currentPath += `/${seg}`;
+    const messageKey = SEGMENT_MESSAGE_KEYS[seg];
     segments.push({
-      label: getRepoBreadcrumbSegmentLabel(seg),
-      href: currentPath,
+      // A configured segment is translated; anything else (a dynamic id, a
+      // path we do not know) keeps the decoded value it always had.
+      label: messageKey ? tb(messageKey) : getRepoBreadcrumbSegmentLabel(seg),
+      // `/changes` has no page of its own: the change list is a Commits view.
+      href: currentPath === `/repos/${repoId}/changes` ? commitsViewHref(repoId, "changes") : currentPath,
     });
   }
 
   const showCrumbs = segments.length > 2 && showsRouteBreadcrumb(pathname);
   const showBadge = docsMode !== "none";
   // Nothing to show at the repo root with no docs — stay out of the way.
+  // The Ask entry rides this row rather than earning one of its own: a bar
+  // that exists only to hold a chat link is new permanent chrome.
   if (!showCrumbs && !showBadge) return null;
+  const onChatPage = rest[0] === "chat";
 
   return (
     <div className="flex items-center justify-between gap-3 px-4 sm:px-6 py-2 border-b border-[var(--color-border-default)] bg-[var(--color-bg-surface)]">
       {showCrumbs ? <Breadcrumb segments={segments} LinkComponent={Link} /> : <span />}
-      {showBadge && <DocsModeBadge mode={docsMode} />}
+      <div className="flex shrink-0 items-center gap-3">
+        {showBadge && <DocsModeAction repoId={repoId} docsMode={docsMode} />}
+        {!onChatPage && (
+          <Link
+            href={`/repos/${repoId}/chat`}
+            className="inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
+          >
+            <MessageSquare className="h-3.5 w-3.5" aria-hidden />
+            {ts("ask")}
+          </Link>
+        )}
+      </div>
     </div>
+  );
+}
+
+/** The docs-mode chip as the way in to a model: it opens the model sheet,
+ *  and a finished run refreshes the layout so the chip retires. */
+function DocsModeAction({ repoId, docsMode }: { repoId: string; docsMode: DocsMode }) {
+  const t = useTranslations("modelUpgrade");
+  const router = useRouter();
+  const upgrade = useModelUpgrade(repoId, { onGenerated: () => router.refresh() });
+  return (
+    <>
+      <DocsModeBadge
+        mode={docsMode}
+        onAction={upgrade.openSheet}
+        label={t("badgeLabel")}
+        actionLabel={t("badgeAction")}
+        title={t("badgeTitle")}
+      />
+      {upgrade.sheet}
+    </>
   );
 }

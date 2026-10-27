@@ -8,13 +8,14 @@ checks out, resets, or writes to the caller's tree.
 
 from __future__ import annotations
 
-import subprocess
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
-from ..changed_lines import FileDiff, parse_unified_diff
+from ..changed_lines import FileDiff, is_shallow_root, parse_unified_diff, untracked_diffs
+from ..git_cat_file import cat_file_batch
+from ..git_cli import path_filter, run_git, split_revspec, untracked_paths
 
 GIT_TIMEOUT_SECONDS = 120
 
@@ -33,6 +34,12 @@ class FileChange:
     base_path: str | None
     status: str  # added | modified | deleted | renamed
     diff: FileDiff | None = None
+    # Why there is no parsed diff, when the provider knows. ``None`` means it
+    # did not say, and :attr:`diff_reliability` infers from ``diff`` instead.
+    # A provider that serves truncated patches (a size-capped API page) or
+    # binary blobs sets this so a consumer can tell "no lines changed" apart
+    # from "the line-level view of this change was never available".
+    diff_status: str | None = None  # parsed | unavailable | truncated | binary
 
     @property
     def is_new(self) -> bool:
@@ -41,6 +48,40 @@ class FileChange:
     @property
     def is_rename(self) -> bool:
         return self.status == "renamed"
+
+    @property
+    def is_deleted(self) -> bool:
+        return self.status == "deleted"
+
+    @property
+    def path(self) -> str:
+        """The one path that names this change.
+
+        The head side where there is one, falling back to the base side for a
+        deletion. Every change has exactly one of these, which is what keyed
+        collections and per-file evidence lanes need.
+        """
+        path = self.head_path or self.base_path
+        if not path:  # pragma: no cover - a change with neither side is malformed
+            raise ValueError("FileChange has neither a head_path nor a base_path")
+        return path
+
+    @property
+    def diff_reliability(self) -> str:
+        """``parsed`` | ``unavailable`` | ``truncated`` | ``binary``.
+
+        An explicit *diff_status* wins; otherwise the presence of a parsed diff
+        is the answer. A deletion legitimately has no new-side lines, so an
+        empty :attr:`added_lines` is never on its own evidence of an unreliable
+        diff -- read this instead.
+        """
+        if self.diff_status:
+            return self.diff_status
+        return "parsed" if self.diff is not None else "unavailable"
+
+    @property
+    def diff_reliable(self) -> bool:
+        return self.diff_reliability == "parsed"
 
     @property
     def added_lines(self) -> set[int]:
@@ -88,15 +129,7 @@ class RevisionSource(Protocol):
 
 
 def _git(args: list[str], repo_path: str, *, check: bool = True) -> str:
-    proc = subprocess.run(
-        ["git", "-C", repo_path, *args],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        stdin=subprocess.DEVNULL,
-        timeout=GIT_TIMEOUT_SECONDS,
-    )
+    proc = run_git(["-C", repo_path, *args], timeout=GIT_TIMEOUT_SECONDS)
     if check and proc.returncode != 0:
         raise ValueError((proc.stderr or "").strip() or f"git {args[0]} failed")
     return proc.stdout
@@ -109,19 +142,21 @@ def _status_word(code: str) -> str:
 class GitRevisionSource:
     """Local adapter over a Git checkout."""
 
-    def __init__(self, repo_path: str) -> None:
+    def __init__(self, repo_path: str, *, hunks: bool = True) -> None:
         self.repo_path = repo_path
+        # False for callers that read only which paths changed, not the lines.
+        self.hunks = hunks
 
     # -- resolution ---------------------------------------------------------
 
     def resolve(self, revspec: str | None) -> RevisionPair:
         if not revspec:
             return self._resolve_working_tree()
-        if ".." in revspec:
-            return self._resolve_range(revspec)
+        if (parts := split_revspec(revspec)) is not None:
+            return self._resolve_range(*parts)
         return self._resolve_commit(revspec)
 
-    def _sha(self, ref: str) -> str:
+    def commit_sha(self, ref: str) -> str:
         out = _git(
             ["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
             self.repo_path,
@@ -132,23 +167,37 @@ class GitRevisionSource:
         return out
 
     def _resolve_working_tree(self) -> RevisionPair:
-        head = self._sha("HEAD")
+        head = self.commit_sha("HEAD")
+        # Untracked files are part of the uncommitted change, as change risk
+        # and the changed lines count them.
+        if self.hunks:
+            untracked = untracked_diffs(self.repo_path)
+        else:
+            untracked = dict.fromkeys(untracked_paths(self.repo_path))
         return RevisionPair(
             "HEAD",
             "WORKTREE",
             head,
             "",
             True,
-            self._changes(["diff", f"-M{_RENAME_SIMILARITY}%", "HEAD"]),
+            self._changes(["diff", f"-M{_RENAME_SIMILARITY}%", "HEAD"])
+            + [
+                FileChange(head_path=path, base_path=None, status="added", diff=diff)
+                for path, diff in untracked.items()
+            ],
         )
 
     def _resolve_commit(self, ref: str) -> RevisionPair:
-        head = self._sha(ref)
+        head = self.commit_sha(ref)
         parent = _git(
             ["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}^"],
             self.repo_path,
             check=False,
         ).strip()
+        if not parent and is_shallow_root(self.repo_path, ref):
+            # A shallow boundary's parents are cut off, not absent; the empty
+            # tree would make every line of the snapshot read as changed.
+            raise ValueError(f"{ref!r} has no parent in this shallow clone; fetch more history")
         base = parent or _EMPTY_TREE
         return RevisionPair(
             f"{ref}^" if parent else _EMPTY_TREE,
@@ -159,17 +208,15 @@ class GitRevisionSource:
             self._changes(["diff", f"-M{_RENAME_SIMILARITY}%", base, head]),
         )
 
-    def _resolve_range(self, revspec: str) -> RevisionPair:
-        base, _, head = revspec.partition("..")
-        three_dot = head.startswith(".")
-        head = head.lstrip(".") or "HEAD"
-        base = base or "HEAD"
-        base_sha = self._sha(base)
-        head_sha = self._sha(head)
-        if three_dot:
-            base_sha = (
-                _git(["merge-base", base, head], self.repo_path, check=False).strip() or base_sha
-            )
+    def _resolve_range(self, base: str, sep: str, head: str) -> RevisionPair:
+        base_sha = self.commit_sha(base)
+        head_sha = self.commit_sha(head)
+        if sep == "...":
+            # Same meaning as change risk and changed lines: no merge-base (a
+            # shallow clone) is an error, not a silent two-dot diff.
+            base_sha = _git(["merge-base", base, head], self.repo_path, check=False).strip()
+            if not base_sha:
+                raise ValueError(f"No merge-base between {base!r} and {head!r}.")
         return RevisionPair(
             base,
             head,
@@ -183,7 +230,11 @@ class GitRevisionSource:
 
     def _changes(self, diff_args: list[str]) -> list[FileChange]:
         name_status = _git([*diff_args, "--name-status", "-z"], self.repo_path)
-        diffs = parse_unified_diff(_git([*diff_args, "--unified=0", "--format="], self.repo_path))
+        diffs = (
+            parse_unified_diff(_git([*diff_args, "--unified=0", "--format="], self.repo_path))
+            if self.hunks
+            else {}
+        )
         changes: list[FileChange] = []
         for code, base_path, head_path in _iter_name_status(name_status):
             status = _status_word(code)
@@ -217,6 +268,92 @@ class GitRevisionSource:
         return out
 
 
+class MappingRevisionSource:
+    """A :class:`RevisionSource` over content the caller already holds.
+
+    The comparison engine is synchronous and reads bytes in bulk, which suits a
+    checkout and not a caller that has to fetch them. Such a caller collects the
+    content first and hands it here; this source only serves what it was given
+    and does no IO, so comparison, matching, and attribution stay unchanged.
+
+    *base* and *head* map repository-relative path to bytes. A path absent from
+    its side did not exist there -- the same thing :meth:`GitRevisionSource.read`
+    reports by omitting it. So a deletion is a path in *base* and not in *head*;
+    ``b""`` means the file existed and was empty, and the two are not the same.
+
+    ``pair.working_tree`` decides what :meth:`read_working_tree` means: an
+    uncommitted head side answers from its blobs, a commit has none and raises.
+    """
+
+    def __init__(
+        self,
+        pair: RevisionPair,
+        base: dict[str, bytes],
+        head: dict[str, bytes],
+    ) -> None:
+        self.pair = pair
+        self._base = base
+        self._head = head
+
+    def resolve(self, revspec: str | None) -> RevisionPair:
+        """Return the supplied pair.
+
+        Nothing is derived here, so a *revspec* naming a different pair raises
+        rather than silently answering a question nobody asked.
+        """
+        if revspec is not None and revspec not in self._spellings():
+            raise ValueError(
+                f"{revspec!r} does not name this revision pair "
+                f"({self.pair.base_ref}..{self.pair.head_ref}); "
+                "a supplied source cannot resolve a different revision."
+            )
+        return self.pair
+
+    def _spellings(self) -> set[str]:
+        base, head = self.pair.base_ref, self.pair.head_ref
+        return {head, f"{base}..{head}", f"{base}...{head}"}
+
+    def read(self, sha: str, paths: list[str]) -> dict[str, bytes]:
+        """Serve *paths* from whichever supplied side *sha* names."""
+        if not paths:
+            return {}
+        if sha == self.pair.base_sha:
+            side = self._base
+        elif sha == self.pair.head_sha:
+            side = self._head
+        else:
+            raise ValueError(
+                f"{sha!r} is neither side of this revision pair "
+                f"({self.pair.base_sha!r}, {self.pair.head_sha!r})."
+            )
+        return {path: side[path] for path in paths if path in side}
+
+    def read_working_tree(self, paths: list[str]) -> dict[str, bytes]:
+        if not self.pair.working_tree:
+            raise ValueError(
+                "This revision pair compares two commits; it has no working tree to read."
+            )
+        return {path: self._head[path] for path in paths if path in self._head}
+
+
+def filter_changes(
+    changes: list[FileChange],
+    *,
+    extensions: tuple[str, ...] = (),
+    exclude_patterns: tuple[str, ...] = (),
+    include_paths: tuple[str, ...] = (),
+) -> list[FileChange]:
+    """Drop the changes a caller's extension, inclusion and exclusion filters exclude.
+
+    One implementation, because a change the health comparison counted and one
+    the change manifest counted have to be the same change; two copies of this
+    rule drift the moment either grows a case.
+    """
+    counts = path_filter(extensions, exclude_patterns, include_paths)
+    # A deletion has no head path, so it is matched on the path it had.
+    return [c for c in changes if (path := c.head_path or c.base_path) and counts(path)]
+
+
 def _iter_name_status(raw: str) -> Iterator[tuple[str, str, str]]:
     """Yield ``(code, base_path, head_path)`` from ``--name-status -z`` output."""
     fields = [f for f in raw.split("\0") if f != ""]
@@ -235,32 +372,18 @@ def _iter_name_status(raw: str) -> Iterator[tuple[str, str, str]]:
 
 def _cat_file_batch(repo_path: str, sha: str, paths: list[str]) -> dict[str, bytes]:
     """One batch read; an object missing at *sha* is omitted rather than raising."""
-    specs = "\n".join(f"{sha}:{path}" for path in paths) + "\n"
-    proc = subprocess.run(
-        ["git", "-C", repo_path, "cat-file", "--batch"],
-        input=specs.encode("utf-8"),
-        capture_output=True,
-        timeout=GIT_TIMEOUT_SECONDS,
-    )
-    if proc.returncode != 0:
-        return {}
-    out: dict[str, bytes] = {}
-    data, cursor = proc.stdout, 0
-    for path in paths:
-        newline = data.find(b"\n", cursor)
-        if newline == -1:
-            break
-        header = data[cursor:newline]
-        # A missing object echoes the whole spec back: "<sha>:<path> missing".
-        # Match the suffix, not the field count, because a path may hold spaces.
-        if header.endswith(b" missing"):
-            cursor = newline + 1
-            continue
-        fields = header.decode("utf-8", "replace").split()
-        if len(fields) < 3 or not fields[2].isdigit():
-            break  # unparseable header: stop rather than misread the stream
-        size = int(fields[2])
-        start = newline + 1
-        out[path] = data[start : start + size]
-        cursor = start + size + 1  # trailing newline
-    return out
+    read = read_blobs(repo_path, [(sha, path) for path in paths])
+    return {path: blob for (_, path), blob in (read or {}).items()}
+
+
+def read_blobs(repo_path: str, specs: list[tuple[str, str]]) -> dict[tuple[str, str], bytes] | None:
+    """``{(rev, path): bytes}`` over one ``git cat-file --batch``; ``None`` if git failed.
+
+    An object missing at its revision, or one that is not a file (a submodule),
+    is omitted instead of raising.
+    """
+    req_specs = [f"{rev}:{path}" for rev, path in specs]
+    read = cat_file_batch(repo_path, req_specs, on_missing="omit", timeout=GIT_TIMEOUT_SECONDS)
+    if read is None:
+        return None
+    return {spec: blob for spec, (_, blob) in zip(specs, read, strict=True) if blob is not None}

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -12,7 +13,11 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from repowise.cli.commands.distill_cmd import _render_command, distill_command
+from repowise.cli.commands.distill_cmd import (
+    _posix_shell,
+    _render_command,
+    distill_command,
+)
 from repowise.cli.commands.expand_cmd import expand_command
 from repowise.core.distill.markers import parse_marker_refs
 from repowise.core.distill.store import OmissionStore
@@ -146,7 +151,7 @@ def test_render_command_roundtrips_argv_through_the_shell(payload: str, tmp_path
     render and reads the child's ``sys.argv`` back.
     """
     tokens = (sys.executable, "-c", "import sys,json;print(json.dumps(sys.argv[1:]))", payload)
-    proc = subprocess.run(
+    proc = subprocess.run(  # repowise-security-ignore: subprocess_shell_true
         _render_command(tokens),
         shell=True,
         capture_output=True,
@@ -180,7 +185,7 @@ def test_render_command_keeps_an_executable_path_with_spaces_intact(tmp_path: Pa
     # renderer. Argument fidelity is covered by the parametrized test above.
     shim.write_text("@echo SHIM_OK\n", encoding="utf-8")
 
-    proc = subprocess.run(
+    proc = subprocess.run(  # repowise-security-ignore: subprocess_shell_true
         _render_command((str(shim), "arg one", "a&b")),
         shell=True,
         capture_output=True,
@@ -193,6 +198,31 @@ def test_render_command_keeps_an_executable_path_with_spaces_intact(tmp_path: Pa
 
     assert proc.returncode == 0, proc.stderr or proc.stdout
     assert "SHIM_OK" in proc.stdout
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe program-name resolution")
+def test_render_command_runs_a_forward_slash_program_path(tmp_path: Path) -> None:
+    """A Git Bash spelling like ``./bin/tool.cmd`` must reach cmd as one program.
+
+    Unquoted, cmd reads the leading ``.`` as the program and ``/bin`` as a
+    switch, so a rewritten ``./.venv/Scripts/python.exe -m pytest`` never ran.
+    """
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "bin" / "tool.cmd").write_text("@echo TOOL_OK\n", encoding="utf-8")
+
+    proc = subprocess.run(  # repowise-security-ignore: subprocess_shell_true
+        _render_command(("./bin/tool.cmd", "arg")),
+        shell=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=tmp_path,
+        timeout=60,
+    )
+
+    assert proc.returncode == 0, proc.stderr or proc.stdout
+    assert "TOOL_OK" in proc.stdout
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe rendering rules")
@@ -219,6 +249,113 @@ def test_render_command_refuses_newlines(payload: str) -> None:
     silently, so the child would get a quietly different argv."""
     with pytest.raises(Exception, match="newline"):
         _render_command(("git", "log", f"--grep={payload}"))
+
+
+# ---------------------------------------------------------------------------
+# --source also names a dialect: the command runs in the shell it was
+# written for
+#
+# The rewrite hook declined every compound command on a Windows host because
+# distill handed everything to cmd.exe, where a POSIX command line means
+# something else. These pin the replacement: the dialect travels with the
+# command, and when the shell it names cannot be found distill refuses rather
+# than running a different command than the one it was given.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe is only the default on Windows")
+@pytest.mark.parametrize(
+    "shell_value",
+    [
+        pytest.param(None, id="unset"),
+        pytest.param("powershell.exe", id="powershell-also-takes--c"),
+        pytest.param("system32-bash", id="wsl-is-a-posix-shell-and-still-wrong"),
+    ],
+)
+def test_only_a_real_posix_shell_is_accepted(monkeypatch, shell_value) -> None:
+    """Breaking what the guard protects, one substitute at a time.
+
+    ``-c`` is how ``powershell.exe`` takes a command too, so an
+    existence check would hand a POSIX pipeline to PowerShell and get a
+    plausible answer to a different question. WSL's ``System32\bash.exe``
+    passes a name test and is still another machine.
+    """
+    if shell_value is None:
+        monkeypatch.delenv("SHELL", raising=False)
+    elif shell_value == "system32-bash":
+        root = os.environ.get("SYSTEMROOT", r"C:\Windows")
+        wsl = os.path.join(root, "System32", "bash.exe")
+        if not os.path.isfile(wsl):
+            pytest.skip("WSL bash.exe not installed on this host")
+        monkeypatch.setenv("SHELL", wsl)
+    else:
+        found = shutil.which(shell_value)
+        if found is None:
+            pytest.skip(f"{shell_value} not on this host")
+        monkeypatch.setenv("SHELL", found)
+    assert _posix_shell() is None
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe is only the default on Windows")
+def test_a_plain_command_never_needs_a_posix_shell(repo_cwd: Path, monkeypatch) -> None:
+    """The refusal must not reach commands that were always fine in cmd.exe.
+
+    A multi-token argv is the same command in either dialect. Only the
+    single-token shape the hook wraps a chain in carries POSIX syntax of its
+    own, so only that shape may ever refuse to run.
+    """
+    monkeypatch.delenv("SHELL", raising=False)
+    result = CliRunner().invoke(
+        distill_command, ["--source", "hook-bash", *_py("print('still runs')")]
+    )
+    assert result.exit_code == 0, result.output
+    assert "still runs" in result.output
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe is only the default on Windows")
+def test_posix_dialect_runs_in_a_posix_shell(repo_cwd: Path) -> None:
+    """``echo "a b" | tr " " "_"`` is the cheapest proof the shell changed.
+
+    cmd.exe keeps the quotes literal and answers ``"a_b"_``; bash answers
+    ``a_b``. Both exit 0, so a wrong shell here is silent corruption rather
+    than an error — which is why the hook used to decline the command
+    outright.
+    """
+    if _posix_shell() is None:
+        pytest.skip("no POSIX shell on this host")
+    command = ['echo "a b" | tr " " "_"']
+    posix = CliRunner().invoke(distill_command, ["--source", "hook-bash", *command])
+    assert posix.exit_code == 0, posix.output
+    assert posix.output.strip() == "a_b"
+
+    host = CliRunner().invoke(distill_command, command)
+    assert host.output.strip() != "a_b"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe is only the default on Windows")
+def test_posix_dialect_refuses_rather_than_falling_back_to_cmd(
+    repo_cwd: Path, monkeypatch
+) -> None:
+    """Breaking what the guard protects: with no POSIX shell it must not run.
+
+    Falling back to the host shell is the exact bug this path exists to
+    close, and it fails silently, so the refusal is the safer half of the
+    trade. A command that did not run is recoverable; a command that ran and
+    meant something else is not.
+    """
+    monkeypatch.delenv("SHELL", raising=False)
+    result = CliRunner().invoke(distill_command, ["--source", "hook-bash", "echo ran-anyway"])
+    assert result.exit_code != 0
+    assert "ran-anyway" not in result.output
+    assert "POSIX shell" in result.output
+
+
+def test_no_shell_flag_keeps_the_host_default(repo_cwd: Path) -> None:
+    """Plain ``repowise distill ...`` from a terminal is untouched by any of
+    this: no dialect named means the shell this host would have used."""
+    result = CliRunner().invoke(distill_command, _py("print('host default')"))
+    assert result.exit_code == 0
+    assert "host default" in result.output
 
 
 def test_distill_and_expand_roundtrip(repo_cwd: Path, fixtures_dir: Path) -> None:

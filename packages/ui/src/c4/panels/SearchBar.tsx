@@ -144,7 +144,7 @@ export function SearchBar() {
                     style={{
                       width: `${result.score * 100}%`,
                       height: "100%",
-                      background: "var(--color-accent-primary)",
+                      background: "var(--color-progress-fill)",
                       borderRadius: 2,
                     }}
                   />

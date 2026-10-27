@@ -7,7 +7,7 @@ delegates to :mod:`crud`. Split out to keep store files under 400 lines.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,6 +22,9 @@ from ..models import (
     HealthFinding,
     HealthSnapshot,
 )
+
+if TYPE_CHECKING:
+    from repowise.core.analysis.health.coverage.discovery import CoverageProvenance
 
 
 class _SqlAnalysisMixin(AnalysisIndexStore):
@@ -166,18 +169,14 @@ class _SqlAnalysisMixin(AnalysisIndexStore):
         return await crud.delete_decision(self._session, decision_id)
 
     async def recompute_decision_staleness(
-        self, repository_id: str, git_meta_map: dict[str, dict]
+        self, repository_id: str, git_meta_map: dict[str, dict], repo_path: str | None = None
     ) -> int:
         return await crud.recompute_decision_staleness(
-            self._session, repository_id, git_meta_map
+            self._session, repository_id, git_meta_map, repo_path
         )
 
-    async def get_stale_decisions(
-        self, repository_id: str, threshold: float = 0.5
-    ) -> list[DecisionRecord]:
-        return await crud.get_stale_decisions(
-            self._session, repository_id, threshold
-        )
+    async def get_stale_decisions(self, repository_id: str) -> list[DecisionRecord]:
+        return await crud.get_stale_decisions(self._session, repository_id)
 
     async def get_decision_health_summary(self, repository_id: str) -> dict:
         return await crud.get_decision_health_summary(self._session, repository_id)
@@ -253,12 +252,16 @@ class _SqlAnalysisMixin(AnalysisIndexStore):
         self,
         repository_id: str,
         *,
-        hotspot_health: float,
+        hotspot_health: float | None,
         average_health: float,
         worst_performer_path: str | None,
         worst_performer_score: float | None,
         per_file_scores: dict[str, float] | None = None,
         per_file_deductions: dict[str, float] | None = None,
+        structure_average: float | None = None,
+        history_average: float | None = None,
+        production_average: float | None = None,
+        maintainability_average: float | None = None,
         taken_at: datetime | None = None,
     ) -> HealthSnapshot:
         return await crud.save_health_snapshot(
@@ -270,6 +273,10 @@ class _SqlAnalysisMixin(AnalysisIndexStore):
             worst_performer_score=worst_performer_score,
             per_file_scores=per_file_scores,
             per_file_deductions=per_file_deductions,
+            structure_average=structure_average,
+            history_average=history_average,
+            production_average=production_average,
+            maintainability_average=maintainability_average,
             taken_at=taken_at,
         )
 
@@ -287,7 +294,7 @@ class _SqlAnalysisMixin(AnalysisIndexStore):
         *,
         source_format: str,
         ingested_commit_sha: str | None = None,
-        mapping_partial: bool = False,
+        provenance: CoverageProvenance | None = None,
     ) -> None:
         await crud.save_coverage_files(
             self._session,
@@ -295,7 +302,7 @@ class _SqlAnalysisMixin(AnalysisIndexStore):
             files,
             source_format=source_format,
             ingested_commit_sha=ingested_commit_sha,
-            mapping_partial=mapping_partial,
+            provenance=provenance,
         )
 
     async def load_coverage_for_repo(

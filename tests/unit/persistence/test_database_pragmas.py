@@ -51,6 +51,17 @@ async def test_file_sqlite_engine_sets_busy_timeout(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_file_sqlite_engine_sets_page_cache(tmp_path: Path) -> None:
+    """Large index writes need more than SQLite's 2 MiB default page cache."""
+    engine = create_engine(f"sqlite+aiosqlite:///{tmp_path / 'wiki.db'}")
+    try:
+        await init_db(engine)
+        assert int(await _read_pragma(engine, "cache_size")) == -65536
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_busy_timeout_override_is_applied(tmp_path: Path) -> None:
     """A custom ``busy_timeout_ms`` must reach the connection pragma so the
     cost tracker's best-effort engine fails fast under contention instead of
@@ -274,3 +285,103 @@ def test_a_non_operational_pragma_failure_still_raises() -> None:
 
     with pytest.raises(sqlite3.ProgrammingError):
         listener(_Conn(), None)
+
+
+@pytest.mark.asyncio
+async def test_planner_stats_count_every_row_of_a_single_repository(tmp_path: Path) -> None:
+    """Every index leads with ``repository_id``. A sampled ANALYZE reads that
+    column as selective and the planner then scans the wide covering index for
+    a target lookup, so the stats must come from the whole table."""
+    from repowise.core.persistence import create_session_factory, refresh_planner_stats
+    from repowise.core.persistence.models import GraphEdge, Repository
+
+    db = tmp_path / "wiki.db"
+    engine = create_engine(f"sqlite+aiosqlite:///{db}")
+    try:
+        await init_db(engine)
+        async with create_session_factory(engine)() as session:
+            session.add(Repository(id="r1", name="r", local_path="/r"))
+            await session.flush()
+            session.add_all(
+                GraphEdge(repository_id="r1", source_node_id=f"s{i % 3}", target_node_id=f"t{i}")
+                for i in range(3000)
+            )
+            await session.commit()
+        await refresh_planner_stats(engine)
+    finally:
+        await engine.dispose()
+
+    conn = sqlite3.connect(db)
+    stat = conn.execute(
+        "SELECT stat FROM sqlite_stat1 WHERE idx = 'ix_graph_edges_repo_target'"
+    ).fetchone()
+    plan = conn.execute(
+        "EXPLAIN QUERY PLAN SELECT DISTINCT source_node_id, target_node_id FROM graph_edges "
+        "WHERE repository_id = 'r1' AND target_node_id IN ('t1', 't2') AND edge_type IN ('imports')"
+    ).fetchall()
+    conn.close()
+    assert stat is not None and stat[0].split()[:2] == ["3000", "3000"]
+    assert "ix_graph_edges_repo_target" in str(plan)
+
+
+@pytest.mark.asyncio
+async def test_planner_stats_rerun_only_when_a_table_drifts(tmp_path: Path) -> None:
+    """A full pass reads the whole store, so a write that leaves every table
+    near the size ANALYZE recorded keeps the statistics it has."""
+    from repowise.core.persistence import create_session_factory, refresh_planner_stats
+    from repowise.core.persistence.models import GraphEdge, Repository
+
+    db = tmp_path / "wiki.db"
+    engine = create_engine(f"sqlite+aiosqlite:///{db}")
+
+    async def add_edges(start: int, count: int) -> None:
+        async with create_session_factory(engine)() as session:
+            session.add_all(
+                GraphEdge(repository_id="r1", source_node_id="s", target_node_id=f"t{i}")
+                for i in range(start, start + count)
+            )
+            await session.commit()
+
+    def recorded() -> str:
+        conn = sqlite3.connect(db)
+        try:
+            return conn.execute(
+                "SELECT stat FROM sqlite_stat1 WHERE idx = 'ix_graph_edges_repo_target'"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+    try:
+        await init_db(engine)
+        async with create_session_factory(engine)() as session:
+            session.add(Repository(id="r1", name="r", local_path="/r"))
+            await session.commit()
+        await add_edges(0, 100)
+        await refresh_planner_stats(engine)
+        await add_edges(100, 50)
+        await refresh_planner_stats(engine)
+        within_band = recorded()
+        await add_edges(150, 100)
+        await refresh_planner_stats(engine)
+        drifted = recorded()
+    finally:
+        await engine.dispose()
+
+    assert within_band.split()[0] == "100"
+    assert drifted.split()[0] == "250"
+
+
+@pytest.mark.asyncio
+async def test_planner_stats_skip_other_backends() -> None:
+    from repowise.core.persistence import refresh_planner_stats
+
+    class _Dialect:
+        name = "postgresql"
+
+    class _Engine:
+        dialect = _Dialect()
+
+        def begin(self):  # pragma: no cover - reaching it is the failure
+            raise AssertionError("ANALYZE must not run off SQLite")
+
+    await refresh_planner_stats(_Engine())  # type: ignore[arg-type]

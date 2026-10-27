@@ -11,20 +11,39 @@ the tree-sitter parsers — so the rest of the pipeline treats them identically.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from functools import lru_cache
 from pathlib import Path
 
 import structlog
 
+from .cobol.bms import parse_bms_file
+from .cobol.csd import parse_csd_file
+from .cobol.jcl import parse_jcl_file
 from .models import FileInfo, Import, ParsedFile, Symbol
+from .salesforce_flow import parse_flow_file
+from .salesforce_schema import parse_object_metadata
+from .salesforce_soql import parse_soql_file
 
 log = structlog.get_logger(__name__)
 
 
 # Language tags routed to parse_special by the parser. Kept here, next to
 # the handler table, so the two can't drift apart.
-SPECIAL_HANDLER_LANGUAGES = frozenset({"openapi", "dockerfile", "makefile", "sql"})
+SPECIAL_HANDLER_LANGUAGES = frozenset(
+    {
+        "openapi",
+        "dockerfile",
+        "makefile",
+        "sql",
+        "salesforce_flow",
+        "salesforce_object",
+        "soql",
+        "jcl",
+        "bms",
+        "csd",
+    }
+)
 
 
 # ---------------------------------------------------------------------------
@@ -39,6 +58,12 @@ def parse_special(file_info: FileInfo, source: bytes, lang: str) -> ParsedFile:
         "dockerfile": _parse_dockerfile,
         "makefile": _parse_makefile,
         "sql": _parse_sql,
+        "salesforce_flow": parse_flow_file,
+        "salesforce_object": parse_object_metadata,
+        "soql": parse_soql_file,
+        "jcl": parse_jcl_file,
+        "bms": parse_bms_file,
+        "csd": parse_csd_file,
     }.get(lang, _parse_unknown)
     try:
         return handler(file_info, source)
@@ -218,9 +243,49 @@ def _parse_dockerfile(file_info: FileInfo, source: bytes) -> ParsedFile:
 # ---------------------------------------------------------------------------
 
 # Matches: target_name: [prerequisites...]
-_TARGET_RE = re.compile(r"^([a-zA-Z0-9_][a-zA-Z0-9_\-./]*):[^=]")
+#
+# The colon is followed by a negative lookahead rather than a consumed
+# non-``=`` character. Consuming one required something to follow the
+# colon on the same line, so a target declared with no prerequisites ---
+# ``build:`` on its own line, the commonest form there is --- matched
+# nothing and never became a symbol. The lookahead still rejects the
+# ``:=`` assignment operator, which is all the character was there for.
+_TARGET_RE = re.compile(r"^([a-zA-Z0-9_][a-zA-Z0-9_\-./ \t]*?)\s*:(?!=)")
+
+# One rule may declare several targets: ``test lint:`` is valid and common.
+# The capture above is non-greedy and admits spaces, so the whole left-hand
+# side arrives here to be split.
+_TARGET_SEP_RE = re.compile(r"[ \t]+")
 _INCLUDE_RE = re.compile(r"^include\s+(.+)", re.IGNORECASE)
 _PHONY_RE = re.compile(r"^\.PHONY\s*:\s*(.+)")
+
+
+def iter_make_targets(text: str) -> Iterator[tuple[str, int]]:
+    """Yield ``(target name, 1-indexed line)`` for every target *text* declares.
+
+    Public because the target vocabulary of a Makefile is asked for in more
+    than one place: this handler turns them into graph symbols, and the
+    documentation drift detector checks a documented ``make <target>`` against
+    them. A second regex would drift --- the character class here deliberately
+    admits ``.``, ``-`` and ``/``, so a directory-style target like
+    ``docs/build`` is a target rather than an unrecognised string.
+
+    One rule may declare several targets (``test lint:``); each is yielded
+    separately. Dot-prefixed directives (``.PHONY``, ``.SUFFIXES``) are not
+    targets and are skipped, as are comments and blank lines.
+    """
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        m = _TARGET_RE.match(line)
+        if not m:
+            continue
+        for name in _TARGET_SEP_RE.split(m.group(1).strip()):
+            # Dot-prefixed directives (``.PHONY``, ``.SUFFIXES``) are not
+            # targets.
+            if name and not name.startswith("."):
+                yield name, lineno
 
 
 def _parse_makefile(file_info: FileInfo, source: bytes) -> ParsedFile:
@@ -236,30 +301,26 @@ def _parse_makefile(file_info: FileInfo, source: bytes) -> ParsedFile:
         if m:
             phony_targets.update(m.group(1).split())
 
-    # Second pass: extract targets
-    for lineno, line in enumerate(lines, start=1):
-        line_stripped = line.strip()
-        if not line_stripped or line_stripped.startswith("#"):
-            continue
+    for target, lineno in iter_make_targets(text):
+        symbols.append(
+            Symbol(
+                id=f"{file_info.path}::{target}",
+                name=target,
+                qualified_name=target,
+                kind="function",
+                signature=f"{target}:",
+                start_line=lineno,
+                end_line=lineno,
+                docstring=None,
+                visibility="public",
+                language="makefile",
+            )
+        )
 
-        m = _TARGET_RE.match(line)
-        if m:
-            target = m.group(1)
-            if not target.startswith("."):  # skip .PHONY, .SUFFIXES, etc.
-                symbols.append(
-                    Symbol(
-                        id=f"{file_info.path}::{target}",
-                        name=target,
-                        qualified_name=target,
-                        kind="function",
-                        signature=f"{target}:",
-                        start_line=lineno,
-                        end_line=lineno,
-                        docstring=None,
-                        visibility="public",
-                        language="makefile",
-                    )
-                )
+    # Includes are scanned separately: a line is either a target or an
+    # include, and ``iter_make_targets`` already skipped the ones it claimed.
+    for line in lines:
+        if _TARGET_RE.match(line):
             continue
 
         m = _INCLUDE_RE.match(line)
@@ -332,23 +393,14 @@ def _parse_sql(file_info: FileInfo, source: bytes) -> ParsedFile:
 
 def _extract_sql_symbols(file_info: FileInfo, text: str) -> tuple[list[Symbol], list[str]]:
     try:
-        import sqlglot
         from sqlglot import exp
     except ImportError:
         return [], ["sqlglot not installed"]
 
-    # sqlglot warns per statement it falls back to a generic Command for
-    # (procedural bodies, vendor syntax); routine here, so keep it quiet.
-    import logging
-
-    logging.getLogger("sqlglot").setLevel(logging.ERROR)
+    from .sql_parse import parse_sql
 
     try:
-        statements = sqlglot.parse(
-            text,
-            read=_sql_dialect_for(file_info),
-            error_level=sqlglot.ErrorLevel.IGNORE,
-        )
+        statements = parse_sql(text, dialect=_sql_dialect_for(file_info))
     except Exception as exc:
         # Tokenizer errors and dialect-specific syntax sqlglot can't
         # recover from: degrade the file to passthrough behaviour.

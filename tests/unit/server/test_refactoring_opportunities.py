@@ -18,6 +18,7 @@ from httpx import AsyncClient
 from sqlalchemy import event
 
 from repowise.core.persistence import crud
+from repowise.core.persistence.crud.analysis.fix_first import clear_fix_first_cache
 
 
 async def _repo(client: AsyncClient) -> str:
@@ -44,7 +45,11 @@ def _plan(path: str, symbol: str, **over: Any) -> dict[str, Any]:
         "target_symbol": symbol,
         "line_start": 10,
         "line_end": 30,
-        "plan": {"extracted_name": f"_{symbol}_part", "local_scope": True},
+        "plan": {
+            "extracted_name": f"_{symbol}_part",
+            "local_scope": True,
+            "span": {"start": 12, "end": 28},
+        },
         "evidence": {"ccn_removed": 6, "slice_nloc": 20},
         "impact_delta": 1.0,
         "effort_bucket": "S",
@@ -56,19 +61,30 @@ def _plan(path: str, symbol: str, **over: Any) -> dict[str, Any]:
     return plan
 
 
-def _finding(path: str, biomarker: str = "complex_method", impact: float = 3.0) -> dict[str, Any]:
+def _finding(
+    path: str, biomarker: str = "complex_method", impact: float = 3.0, function_name: str = "f"
+) -> dict[str, Any]:
     return {
         "file_path": path,
         "biomarker_type": biomarker,
         "severity": "high",
-        "function_name": "f",
+        "function_name": function_name,
         "line_start": 10,
         "line_end": 30,
-        "details": {},
+        # Large enough to lead with no history, so the composed plan is a candidate.
+        "details": {"ccn": 85},
         "health_impact": impact,
         "reason": "seeded",
         "dimension": "defect",
     }
+
+
+async def _finalize(session: Any, repo_id: str, **kwargs: Any) -> None:
+    """Compose the opportunities, then judge them, as an index run does."""
+    from repowise.core.persistence.crud.analysis.actions import write_read_snapshots
+
+    await crud.finalize_refactoring_opportunities(session, repo_id, **kwargs)
+    await write_read_snapshots(session, repo_id)
 
 
 async def _seed(client: AsyncClient, app, *, files: int = 8) -> str:
@@ -76,13 +92,17 @@ async def _seed(client: AsyncClient, app, *, files: int = 8) -> str:
     repo_id = await _repo(client)
     paths = [f"pkg{i % 3}/mod{i}.py" for i in range(files)]
     async with app.state.session_factory() as session:
-        await crud.save_health_findings(session, repo_id, [_finding(p) for p in paths])
+        await crud.save_health_findings(
+            session,
+            repo_id,
+            [_finding(p, function_name=f"sym{i}") for i, p in enumerate(paths)],
+        )
         await crud.save_refactoring_suggestions(
             session,
             repo_id,
             [_plan(path, f"sym{i}", impact_delta=float(files - i)) for i, path in enumerate(paths)],
         )
-        await crud.finalize_refactoring_opportunities(session, repo_id, analyzed_commit="c" * 40)
+        await _finalize(session, repo_id, analyzed_commit="c" * 40)
         await session.commit()
     return repo_id
 
@@ -116,7 +136,7 @@ async def test_finalizer_composes_one_opportunity_per_file(client, app):
     assert body["total"] == 5
     assert len({item["file_path"] for item in body["items"]}) == 5
     for item in body["items"]:
-        assert item["opportunity_id"].startswith("refop2_")
+        assert item["opportunity_id"].startswith("refop4_")
         assert item["step_count"] == 1
         # The lead was supplied, so this is a real answer rather than unknown.
         assert item["addresses_primary_problem"] is True
@@ -128,7 +148,7 @@ async def test_addresses_primary_problem_is_unknown_without_a_lead(client, app):
     repo_id = await _repo(client)
     async with app.state.session_factory() as session:
         await crud.save_refactoring_suggestions(session, repo_id, [_plan("pkg/x.py", "s")])
-        await crud.finalize_refactoring_opportunities(session, repo_id)
+        await _finalize(session, repo_id)
         await session.commit()
     body = (await client.get(f"/api/repos/{repo_id}/refactoring/opportunities")).json()
     assert body["items"][0]["addresses_primary_problem"] is None
@@ -142,7 +162,7 @@ async def test_an_opportunity_nobody_composes_resolves_rather_than_vanishing(cli
     async with app.state.session_factory() as session:
         # A run that detects nothing resolves every plan, so nothing composes.
         await crud.save_refactoring_suggestions(session, repo_id, [])
-        await crud.finalize_refactoring_opportunities(session, repo_id)
+        await _finalize(session, repo_id)
         await session.commit()
     after = (await client.get(f"/api/repos/{repo_id}/refactoring/opportunities")).json()
     assert after["total"] == 0
@@ -165,7 +185,7 @@ async def test_lifecycle_rolls_up_from_the_member_plans(client, app):
     plan_id = detail["steps"][0]["plan_id"]
     async with app.state.session_factory() as session:
         await crud.update_refactoring_suggestion_status(session, repo_id, plan_id, "acknowledged")
-        await crud.finalize_refactoring_opportunities(session, repo_id)
+        await _finalize(session, repo_id)
         await session.commit()
     refreshed = (
         await client.get(
@@ -173,6 +193,255 @@ async def test_lifecycle_rolls_up_from_the_member_plans(client, app):
         )
     ).json()
     assert refreshed["status"] == "acknowledged"
+
+
+async def _seed_older_model(app, repo_id: str, statuses: list[str]) -> list[str]:
+    """Copies of the current rows as an older model left them, one per status."""
+    from sqlalchemy import select
+
+    from repowise.core.analysis.health.refactoring.identity import REFACTORING_MODEL_VERSION
+    from repowise.core.persistence.models import RefactoringOpportunity, _new_uuid
+
+    old = REFACTORING_MODEL_VERSION - 1
+    skip = {"id", "opportunity_id", "refactoring_model_version", "status"}
+    async with app.state.session_factory() as session:
+        current = (
+            await session.execute(
+                select(RefactoringOpportunity).where(
+                    RefactoringOpportunity.repository_id == repo_id
+                )
+            )
+        ).scalars().all()
+        ids = []
+        for row, status in zip(current, statuses, strict=False):
+            values = {
+                c.name: getattr(row, c.name)
+                for c in RefactoringOpportunity.__table__.columns
+                if c.name not in skip
+            }
+            opportunity_id = f"refop{old}_{row.opportunity_id.split('_', 1)[1]}"
+            session.add(
+                RefactoringOpportunity(
+                    id=_new_uuid(),
+                    opportunity_id=opportunity_id,
+                    refactoring_model_version=old,
+                    status=status,
+                    **values,
+                )
+            )
+            ids.append(opportunity_id)
+        await session.commit()
+    return ids
+
+
+async def _states(app, repo_id: str) -> dict[str, str]:
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import RefactoringOpportunity
+
+    async with app.state.session_factory() as session:
+        rows = await session.execute(
+            select(RefactoringOpportunity.opportunity_id, RefactoringOpportunity.status).where(
+                RefactoringOpportunity.repository_id == repo_id
+            )
+        )
+        return dict(rows.all())
+
+
+@pytest.mark.asyncio
+async def test_a_model_bump_retires_the_older_models_open_opportunities(client, app):
+    """An older model's open rows resolve on the next run and are never served.
+
+    Its plans were already resolved by the bump, so an open opportunity folded
+    from them names work nobody can act on, and it doubled every count.
+    """
+    from repowise.core.persistence.crud.analysis.queue_counts import unit_counts
+
+    repo_id = await _seed(client, app, files=3)
+    open_old, dismissed_old, picked_up_old = await _seed_older_model(
+        app, repo_id, ["open", "false_positive", "acknowledged"]
+    )
+    clear_fix_first_cache()
+
+    # Served reads skip the older model even before a run retires it.
+    listed = (await client.get(f"/api/repos/{repo_id}/refactoring/opportunities?scope=all")).json()
+    assert listed["total"] == 3
+    async with app.state.session_factory() as session:
+        rows, total = await crud.list_refactoring_opportunities(session, repo_id)
+        facets = await crud.refactoring_facet_counts(session, repo_id)
+        counts = await unit_counts(session, repo_id, "plans")
+    assert total == 3
+    assert not {row.opportunity_id for row in rows} & {open_old, picked_up_old}
+    assert all(sum(counts.values()) == 3 for counts in facets.values())
+    # The older model's rows are no plans of the queue's inventory either.
+    assert counts.inventory == 3
+
+    async with app.state.session_factory() as session:
+        await _finalize(session, repo_id)
+        await session.commit()
+    states = await _states(app, repo_id)
+    assert states[open_old] == "resolved"
+    assert states[picked_up_old] == "resolved"
+    # A person's dismissal is a different claim from "this got done".
+    assert states[dismissed_old] == "false_positive"
+    current = {k: v for k, v in states.items() if k not in {open_old, dismissed_old, picked_up_old}}
+    assert list(current.values()) == ["open"] * 3
+
+    # A later run with no model change resolves nothing more.
+    async with app.state.session_factory() as session:
+        await _finalize(session, repo_id)
+        await session.commit()
+    assert await _states(app, repo_id) == states
+
+
+# ---------------------------------------------------------------------------
+# Scope: Fix first's eligible set by default, the inventory on request
+# ---------------------------------------------------------------------------
+
+
+async def _seed_mixed(client: AsyncClient, app) -> str:
+    """Two eligible opportunities, one in a test file, one under the worth floor."""
+    repo_id = await _repo(client)
+    paths = ["pkg/a.py", "pkg/b.py", "tests/test_c.py", "pkg/d.py"]
+    gains = [3.0, 2.0, 3.0, 0.2]
+    async with app.state.session_factory() as session:
+        await crud.save_health_findings(
+            session,
+            repo_id,
+            [_finding(p, function_name=f"sym{i}") for i, p in enumerate(paths)],
+        )
+        await crud.save_refactoring_suggestions(
+            session,
+            repo_id,
+            [_plan(p, f"sym{i}", impact_delta=g) for i, (p, g) in enumerate(zip(paths, gains, strict=True))],
+        )
+        await _finalize(session, repo_id, analyzed_commit="c" * 40)
+        await session.commit()
+    return repo_id
+
+
+@pytest.mark.asyncio
+async def test_the_default_lists_what_fix_first_takes_and_counts_the_rest(client, app):
+    repo_id = await _seed_mixed(client, app)
+    url = f"/api/repos/{repo_id}/refactoring/opportunities"
+    body = (await client.get(url)).json()
+    assert body["scope"] == "fix_first"
+    assert sorted(i["file_path"] for i in body["items"]) == ["pkg/a.py", "pkg/b.py"]
+    assert body["total"] == 2
+    assert body["hidden"] == {"total": 2, "by_reason": {"test": 1, "below_min_worth": 1}}
+    assert sum(body["facets"]["effort"].values()) == 2
+
+    everything = (await client.get(url, params={"scope": "all"})).json()
+    assert everything["scope"] == "all" and everything["total"] == 4
+    assert "hidden" not in everything
+
+
+@pytest.mark.asyncio
+async def test_every_surface_reports_the_same_counts(client, app):
+    """The list, the Code Health overview and the Fix first route carry one
+    count object per unit, read from the judgements the index stored."""
+    repo_id = await _seed_mixed(client, app)
+    get_health = await _mcp(app)
+    page = (await client.get(f"/api/repos/{repo_id}/refactoring/opportunities")).json()
+    assert page["counts"] == {
+        "inventory": 4,
+        "in_scope": 3,
+        "eligible": 2,
+        "due": page["counts"]["due"],
+        "shown": 2,
+        "excluded": {"below_min_worth": 1, "test": 1},
+        "gated": 0,
+    }
+    overview = (await client.get(f"/api/repos/{repo_id}/health/overview")).json()
+    by_unit = overview["queue_counts"]
+    assert {**by_unit["plans"], "shown": 2} == page["counts"]
+    fix_first = (await client.get(f"/api/repos/{repo_id}/health/fix-first")).json()
+    assert {**fix_first["counts"], "shown": 0} == by_unit["items"]
+    mcp = await get_health(
+        repo=repo_id, include=["refactoring"], only=["refactoring_plans"], limit=25
+    )
+    assert {**mcp["refactoring_plans_counts"], "shown": 2} == page["counts"]
+
+
+@pytest.mark.asyncio
+async def test_an_unjudged_store_lists_what_fix_first_takes_live(client, app):
+    """A store whose rows carry no verdict yet (an older store, or a judging
+    write that did not run) still lists Fix first's plans, counted not judged."""
+    from sqlalchemy import update
+
+    from repowise.core.persistence.models import RefactoringOpportunity
+
+    repo_id = await _seed_mixed(client, app)
+    async with app.state.session_factory() as session:
+        await session.execute(
+            update(RefactoringOpportunity).values(queue_eligible=None, queue_reason=None)
+        )
+        await session.commit()
+    clear_fix_first_cache()
+    body = (await client.get(f"/api/repos/{repo_id}/refactoring/opportunities")).json()
+    assert sorted(i["file_path"] for i in body["items"]) == ["pkg/a.py", "pkg/b.py"]
+    assert body["hidden"] == {"total": 2, "by_reason": {"not_judged": 2}}
+    assert body["counts"]["excluded"] == {"not_judged": 4}
+
+
+@pytest.mark.asyncio
+async def test_a_stale_verdict_is_judged_again_by_the_next_write(client, app):
+    from sqlalchemy import select, update
+
+    from repowise.core.persistence.crud.analysis.actions import write_read_snapshots
+    from repowise.core.persistence.models import RefactoringOpportunity
+
+    repo_id = await _seed_mixed(client, app)
+    o = RefactoringOpportunity
+    async with app.state.session_factory() as session:
+        # An update moved a.py's plan under the worth floor.
+        await session.execute(
+            update(o).where(o.file_path == "pkg/a.py").values(recoverable_health=0.1)
+        )
+        await write_read_snapshots(session, repo_id)
+        await session.commit()
+        row = (await session.execute(select(o).where(o.file_path == "pkg/a.py"))).scalar_one()
+    assert (row.queue_eligible, row.queue_reason) == (False, "below_min_worth")
+    body = (await client.get(f"/api/repos/{repo_id}/refactoring/opportunities")).json()
+    assert [i["file_path"] for i in body["items"]] == ["pkg/b.py"]
+
+
+@pytest.mark.asyncio
+async def test_a_file_or_a_triaged_status_reads_the_inventory(client, app):
+    repo_id = await _seed_mixed(client, app)
+    url = f"/api/repos/{repo_id}/refactoring/opportunities"
+    own = (await client.get(url, params={"file_path": "tests/test_c.py"})).json()
+    assert own["scope"] == "all" and own["total"] == 1
+    resolved = (await client.get(url, params={"status": "resolved"})).json()
+    assert resolved["scope"] == "all"
+
+
+@pytest.mark.asyncio
+async def test_hidden_counts_follow_the_filters(client, app):
+    repo_id = await _seed_mixed(client, app)
+    body = (
+        await client.get(
+            f"/api/repos/{repo_id}/refactoring/opportunities", params={"search": "tests/"}
+        )
+    ).json()
+    assert body["total"] == 0
+    assert body["hidden"] == {"total": 1, "by_reason": {"test": 1}}
+
+
+@pytest.mark.asyncio
+async def test_rest_and_mcp_agree_on_the_scope(client, app):
+    repo_id = await _seed_mixed(client, app)
+    get_health = await _mcp(app)
+    rest = (await client.get(f"/api/repos/{repo_id}/refactoring/opportunities")).json()
+    mcp = await get_health(include=["refactoring"], only=["refactoring_opportunities"])
+    assert mcp["refactoring_opportunities_total"] == rest["total"]
+    assert mcp["refactoring_opportunities_scope"] == "fix_first"
+    assert mcp["refactoring_opportunities_hidden"] == rest["hidden"]
+    everything = await get_health(
+        include=["refactoring"], only=["refactoring_opportunities"], refactoring_scope="all"
+    )
+    assert everything["refactoring_opportunities_total"] == 4
+    assert "refactoring_opportunities_hidden" not in everything
 
 
 # ---------------------------------------------------------------------------
@@ -274,7 +543,11 @@ def _counter(engine) -> list[str]:
 async def test_queue_query_count_is_constant_in_page_size_and_row_count(
     client, app, test_engine
 ):
-    """The statement count must not move when the page or the repository grows."""
+    """The statement count must not move when the page or the repository grows.
+
+    Each request is measured cold: the default scope builds the Fix-first
+    queue, which is cached per store write, and a warm hit costs less.
+    """
     small = await _seed(client, app, files=4)
     large = await _seed(client, app, files=40)
     counts = {}
@@ -286,6 +559,7 @@ async def test_queue_query_count_is_constant_in_page_size_and_row_count(
         ("large-20", large, 20),
         ("large-100", large, 100),
     ):
+        clear_fix_first_cache()
         seen.clear()
         resp = await client.get(
             f"/api/repos/{repo_id}/refactoring/opportunities", params={"limit": limit}
@@ -299,11 +573,13 @@ async def test_queue_query_count_is_constant_in_page_size_and_row_count(
 async def test_a_deep_offset_costs_the_same_as_the_first_page(client, app, test_engine):
     repo_id = await _seed(client, app, files=40)
     seen = _counter(test_engine)
+    clear_fix_first_cache()
     seen.clear()
     await client.get(
         f"/api/repos/{repo_id}/refactoring/opportunities", params={"limit": 5, "offset": 0}
     )
     first = len(seen)
+    clear_fix_first_cache()
     seen.clear()
     await client.get(
         f"/api/repos/{repo_id}/refactoring/opportunities", params={"limit": 5, "offset": 30}
@@ -364,35 +640,41 @@ async def test_a_files_opportunities_are_one_indexed_lookup(client, app, test_en
 
 
 @pytest.mark.asyncio
-async def test_bare_get_health_carries_one_bounded_refactoring_directive(client, app):
+async def test_bare_get_health_leads_with_fix_first_and_links_the_opportunity(client, app):
     repo_id = await _seed(client, app, files=12)
     get_health = await _mcp(app)
     result = await get_health()
-    directive = result["refactoring_directive"]
-    assert directive["status"] == "available"
-    assert directive["opportunity_id"].startswith("refop2_")
-    assert directive["next_action"]["arguments"]["opportunity_id"] == directive["opportunity_id"]
-    assert directive["opportunities_total"] == 12
-    # Level 0 is a lead, not a queue: it must stay small enough to survive.
-    assert len(str(directive)) < 1536
+    assert "refactoring_directive" not in result
     assert "refactoring_opportunities" not in result
+    lead = result["fix_first"]["lead"]
+    assert lead["kind"] == "refactor"
+    opportunity_id = lead["next_call"]["arguments"]["opportunity_id"]
+    assert opportunity_id.startswith("refop4_")
+    # Level 0 is a lead, not a queue: it must stay small enough to survive.
+    assert len(str(result["fix_first"])) < 6000
 
     # And the id it names resolves in one call.
-    detail = await get_health(opportunity_id=directive["opportunity_id"])
-    assert detail["resolved"] is True
+    detail = await get_health(opportunity_id=opportunity_id)
+    assert detail["found"] is True
+    # The lookup flag never shares a name with the lifecycle it sits beside:
+    # ``resolved: true`` next to ``status: "open"`` read as a contradiction.
+    assert "resolved" not in detail
+    assert detail["status"] == "open"
     assert detail["mode"] == "refactoring_opportunity"
     assert detail["steps"]
     del repo_id
 
 
 @pytest.mark.asyncio
-async def test_the_directive_is_clear_rather_than_absent_with_no_opportunities(client, app):
+async def test_the_rest_rollup_lead_is_clear_not_absent_with_no_opportunities(
+    client, app
+):
     repo_id = await _repo(client)
     async with app.state.session_factory() as session:
-        await crud.finalize_refactoring_opportunities(session, repo_id)
+        await _finalize(session, repo_id)
         await session.commit()
-    get_health = await _mcp(app)
-    assert (await get_health())["refactoring_directive"]["status"] == "clear"
+    body = (await client.get(f"/api/repos/{repo_id}/refactoring/summary")).json()
+    assert body["directive"]["status"] == "clear"
 
 
 @pytest.mark.asyncio
@@ -408,7 +690,8 @@ async def test_the_summary_rolls_up_by_type_effort_and_classification(client, ap
     assert summary["mechanical_steps_total"] + summary["judgment_steps_total"] == 6
     assert summary["addresses_primary_problem"]["yes"] == 6
     assert "facets" in summary
-    assert "refactoring_opportunities" in summary["next_call"]
+    assert summary["next_call"]["arguments"]["only"] == ["refactoring_opportunities"]
+    assert "refactoring_opportunities" in summary["next_call"]["mcp"]
 
 
 @pytest.mark.asyncio
@@ -424,7 +707,7 @@ async def test_the_default_queue_does_not_reproduce_the_ranked_head(client, app)
     plans += [_plan("other/a.py", "a", impact_delta=1.0), _plan("third/b.py", "b", impact_delta=1.0)]
     async with app.state.session_factory() as session:
         await crud.save_refactoring_suggestions(session, repo_id, plans)
-        await crud.finalize_refactoring_opportunities(session, repo_id)
+        await _finalize(session, repo_id)
         await session.commit()
 
     default = (
@@ -461,6 +744,44 @@ async def test_a_step_names_the_findings_its_cause_produced(client, app):
     get_health = await _mcp(app)
     resolved = await get_health(finding_id=step["finding_ids"][0])
     assert resolved["resolved"] is True
+
+
+@pytest.mark.asyncio
+async def test_lead_finding_ids_follow_the_findings_not_their_insert_order(client, app):
+    """Stored finding id lists must not depend on which index the planner reads."""
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import HealthFinding, RefactoringOpportunity
+
+    repo_id = await _repo(client)
+    path = "pkg/mod.py"
+    async with app.state.session_factory() as session:
+        await crud.save_health_findings(
+            session,
+            repo_id,
+            [_finding(path, function_name=name) for name in ("zeta", "alpha", "mid")],
+        )
+        await crud.save_refactoring_suggestions(session, repo_id, [_plan(path, "alpha")])
+        await _finalize(session, repo_id)
+        await session.commit()
+        by_function = {
+            row.function_name: row.public_id
+            for row in (
+                await session.execute(
+                    select(HealthFinding).where(HealthFinding.repository_id == repo_id)
+                )
+            ).scalars()
+        }
+        details = json.loads(
+            (
+                await session.execute(
+                    select(RefactoringOpportunity.details_json).where(
+                        RefactoringOpportunity.repository_id == repo_id
+                    )
+                )
+            ).scalar_one()
+        )
+    assert details["lead_finding_ids"] == [by_function[n] for n in ("alpha", "mid", "zeta")]
 
 
 @pytest.mark.asyncio
@@ -501,14 +822,15 @@ async def test_a_plan_id_resolves_to_the_opportunity_that_owns_it(client, app):
 async def test_an_unknown_opportunity_id_says_which_kind_of_unknown(client, app):
     await _seed(client, app, files=2)
     get_health = await _mcp(app)
-    missing = await get_health(opportunity_id="refop2_" + "0" * 20)
-    assert missing["resolved"] is False
+    missing = await get_health(opportunity_id="refop4_" + "0" * 20)
+    assert missing["found"] is False
     assert missing["model_state"]["state"] == "current"
     stale = await get_health(opportunity_id="refop1_" + "0" * 20)
     assert stale["model_state"]["state"] == "stale_model"
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("dry_violation_shown")
 async def test_each_step_keeps_its_own_validation_profile(client, app):
     """Validation must be keyed by plan, not by position.
 
@@ -541,7 +863,7 @@ async def test_each_step_keeps_its_own_validation_profile(client, app):
     async with app.state.session_factory() as session:
         # Inserted lowest-rank-first, so the rank order is the reverse.
         await crud.save_refactoring_suggestions(session, repo_id, [local, spanning])
-        await crud.finalize_refactoring_opportunities(session, repo_id)
+        await _finalize(session, repo_id)
         await session.commit()
 
     body = (await client.get(f"/api/repos/{repo_id}/refactoring/opportunities")).json()
@@ -577,7 +899,7 @@ async def test_rest_and_mcp_agree_under_every_queue_filter(client, app):
     ]
     async with app.state.session_factory() as session:
         await crud.save_refactoring_suggestions(session, repo_id, plans)
-        await crud.finalize_refactoring_opportunities(session, repo_id)
+        await _finalize(session, repo_id)
         await session.commit()
     get_health = await _mcp(app)
 
@@ -846,7 +1168,7 @@ async def test_a_dismissal_survives_the_next_index(client, app):
         json={"status": "false_positive"},
     )
     async with app.state.session_factory() as session:
-        await crud.finalize_refactoring_opportunities(session, repo_id)
+        await _finalize(session, repo_id)
         await session.commit()
         row = await crud.get_refactoring_opportunity(session, repo_id, oid)
         assert row is not None
@@ -866,7 +1188,7 @@ async def test_an_acknowledgement_survives_the_next_index(client, app):
         json={"status": "acknowledged"},
     )
     async with app.state.session_factory() as session:
-        await crud.finalize_refactoring_opportunities(session, repo_id)
+        await _finalize(session, repo_id)
         await session.commit()
         row = await crud.get_refactoring_opportunity(session, repo_id, oid)
         assert row is not None
@@ -903,3 +1225,189 @@ async def test_a_transition_that_writes_nothing_is_not_reported_as_success(clien
         assert row is not None
         # Untouched, rather than silently reset to open.
         assert row.status == "open"
+
+
+def test_the_diversified_queue_never_gives_a_zero_credit_group_a_head_slot():
+    from types import SimpleNamespace
+
+    from repowise.core.persistence.crud.analysis.refactoring_opportunities import (
+        _diversified_order,
+    )
+
+    def item(path, kind, health):
+        return SimpleNamespace(
+            file_path=path,
+            lead_biomarker="complex_method" if health else None,
+            lead_refactoring_type=kind,
+            recoverable_health=health,
+        )
+
+    # Rank order: credited first, zero-credit after (``rank_sort_key``).
+    ranked = [
+        item("pkg/a/x.py", "extract_method", 0.9),
+        item("pkg/a/y.py", "extract_method", 0.8),
+        item("pkg/b/z.py", "extract_method", 0.3),
+        item("pkg/c/cycle.py", "break_cycle", 0.0),
+        item("pkg/d/split.py", "split_file", 0.0),
+    ]
+    order = _diversified_order(ranked)
+    assert order[:3] != [0, 1, 2]  # still interleaves the credited work
+    assert sorted(order[:3]) == [0, 1, 2]
+    assert order[3:] == [3, 4]
+
+
+# ---------------------------------------------------------------------------
+# The finding registry and test files
+# ---------------------------------------------------------------------------
+
+
+def _clone_plan(path: str, symbol: str) -> dict[str, Any]:
+    """A cross-file, co-changed clone: a step when its biomarker is shown."""
+    return _plan(
+        path,
+        symbol,
+        refactoring_type="extract_helper",
+        evidence={"is_intra_file": False, "co_change_count": 9},
+        impact_delta=4.0,
+        source_biomarker="dry_violation",
+    )
+
+
+@pytest.mark.asyncio
+async def test_withheld_plans_reach_no_list_queue_or_lead(client, app):
+    repo_id = await _repo(client)
+    plans = [_clone_plan(f"dup{i}/m{i}.py", f"c{i}") for i in range(6)]
+    plans.append(_plan("svc/core.py", "work", impact_delta=0.5))
+    async with app.state.session_factory() as session:
+        await crud.save_refactoring_suggestions(session, repo_id, plans)
+        await _finalize(session, repo_id)
+        # Stored all the same: the registry decides visibility, not persistence.
+        assert len(await crud.get_refactoring_suggestions(session, repo_id)) == 1
+        assert await crud.count_refactoring_suggestions(session, repo_id) == 1
+        await session.commit()
+
+    queue = (await client.get(f"/api/repos/{repo_id}/refactoring/opportunities")).json()
+    assert [item["file_path"] for item in queue["items"]] == ["svc/core.py"]
+    targets = (await client.get(f"/api/repos/{repo_id}/refactoring/targets")).json()
+    assert [plan["file_path"] for plan in targets["plans"]] == ["svc/core.py"]
+    rollup = (await client.get(f"/api/repos/{repo_id}/refactoring/summary")).json()
+    assert rollup["directive"]["fix_first"] == "svc/core.py"
+
+
+@pytest.mark.asyncio
+async def test_a_test_file_is_never_the_lead_or_ahead_of_production(client, app):
+    repo_id = await _repo(client)
+    plans = [
+        _plan("tests/test_core.py", "helper", impact_delta=9.0),
+        _plan("svc/a.py", "a", impact_delta=0.5),
+        _plan("svc/b.py", "b", impact_delta=0.4),
+    ]
+    async with app.state.session_factory() as session:
+        await crud.save_refactoring_suggestions(session, repo_id, plans)
+        await _finalize(session, repo_id)
+        await session.commit()
+
+    for view in ("diversified", "canonical"):
+        items = (
+            await client.get(
+                f"/api/repos/{repo_id}/refactoring/opportunities",
+                params={"view": view, "scope": "all"},
+            )
+        ).json()["items"]
+        assert [item["file_path"] for item in items][-1] == "tests/test_core.py"
+    rollup = (await client.get(f"/api/repos/{repo_id}/refactoring/summary")).json()
+    assert rollup["directive"]["fix_first"] == "svc/a.py"
+
+
+@pytest.mark.asyncio
+async def test_the_directive_names_no_test_file_when_only_tests_have_work(client, app):
+    repo_id = await _repo(client)
+    async with app.state.session_factory() as session:
+        await crud.save_refactoring_suggestions(
+            session, repo_id, [_plan("tests/test_core.py", "helper")]
+        )
+        await _finalize(session, repo_id)
+        await session.commit()
+    rollup = (await client.get(f"/api/repos/{repo_id}/refactoring/summary")).json()
+    directive = rollup["directive"]
+    assert directive["status"] == "clear"
+    assert directive["reason"] == "only_test_file_opportunities"
+    assert directive["opportunities_total"] == 1
+
+
+# ---------------------------------------------------------------------------
+# The recipe and the agent prompts core renders from it
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_plans_recipe_is_served_only_when_asked_and_alike_on_rest_and_mcp(client, app):
+    repo_id = await _seed(client, app, files=2)
+    body = (await client.get(f"/api/repos/{repo_id}/refactoring/opportunities")).json()
+    owner = body["items"][0]["opportunity_id"]
+    detail = (await client.get(f"/api/repos/{repo_id}/refactoring/opportunities/{owner}")).json()
+    plan_id = detail["steps"][0]["plan_id"]
+    get_health = await _mcp(app)
+
+    bare = (await client.get(f"/api/repos/{repo_id}/refactoring/{plan_id}")).json()
+    assert "recipe" not in bare
+    assert "recipe" not in (await get_health(plan_id=plan_id))["plan"]
+
+    rest = (
+        await client.get(
+            f"/api/repos/{repo_id}/refactoring/{plan_id}", params={"include": "recipe"}
+        )
+    ).json()["recipe"]
+    mcp = (await get_health(plan_id=plan_id, include=["recipe"]))["plan"]["recipe"]
+    assert rest["id"] == mcp["id"] == plan_id
+    assert rest["steps"] == mcp["steps"]
+    (step,) = rest["steps"]
+    assert step["action"] == "extract"
+    assert step["span"] == {"start": 12, "end": 28}
+    assert rest["postconditions"][0]["kind"] == "verify"
+
+
+@pytest.mark.asyncio
+async def test_the_plan_and_opportunity_prompts_are_rendered_by_the_server(client, app):
+    repo_id = await _seed(client, app, files=2)
+    body = (await client.get(f"/api/repos/{repo_id}/refactoring/opportunities")).json()
+    owner = body["items"][0]["opportunity_id"]
+    detail = (await client.get(f"/api/repos/{repo_id}/refactoring/opportunities/{owner}")).json()
+    plan_id = detail["steps"][0]["plan_id"]
+
+    plan = (
+        await client.get(
+            f"/api/repos/{repo_id}/refactoring/{plan_id}/prompt",
+            params={"flavor": "claude-code-mcp"},
+        )
+    ).json()
+    assert plan["flavor"] == "claude-code-mcp"
+    assert "## Extract Method (`opp-repo`)" in plan["text"]
+    assert f'get_health(plan_id="{plan_id}")' in plan["text"]
+
+    opportunity = (
+        await client.get(f"/api/repos/{repo_id}/refactoring/opportunities/{owner}/prompt")
+    ).json()
+    assert f"`{owner}`" in opportunity["text"]
+    assert f"Step id: `{plan_id}`" in opportunity["text"]
+    # The step's own instruction comes from its plan's recipe.
+    assert "Move lines 12-28 of `" in opportunity["text"]
+
+    missing = await client.get(f"/api/repos/{repo_id}/refactoring/opportunities/refop_nope/prompt")
+    assert missing.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_the_opportunity_prompt_route_is_not_read_as_a_plan_id(client, app):
+    """``/refactoring/{suggestion_id}/prompt`` must not swallow the opportunity
+    prompt path, nor ``opportunities/{id}`` the plan prompt."""
+    repo_id = await _seed(client, app, files=1)
+    body = (await client.get(f"/api/repos/{repo_id}/refactoring/opportunities")).json()
+    owner = body["items"][0]["opportunity_id"]
+
+    resp = await client.get(f"/api/repos/{repo_id}/refactoring/opportunities/{owner}/prompt")
+    assert resp.status_code == 200
+    assert "composed the ordered refactoring steps" in resp.json()["text"]
+    # "opportunities" alone is the opportunity detail route, never a plan id.
+    shadow = await client.get(f"/api/repos/{repo_id}/refactoring/opportunities/prompt")
+    assert shadow.json().get("detail") == "Unknown opportunity id"

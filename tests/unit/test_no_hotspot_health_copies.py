@@ -40,25 +40,34 @@ _PACKAGES = pathlib.Path(__file__).resolve().parents[2] / "packages"
 _PLUMBING: dict[str, str] = {
     # --- storage and schema: the value arrives already computed --------------
     "repowise/core/persistence/models.py": "the column",
-    "repowise/core/persistence/crud/analysis/health.py": "writes/reads the column",
+    "repowise/core/persistence/crud/analysis/health/snapshots.py": "writes/reads the column",
     "repowise/core/persistence/crud/git.py": "supplies the hotspot path set, not the score",
+    "repowise/server/services/health_map.py": (
+        "reads the hotspot path set for the map's hotspot lens, not the score"
+    ),
     "repowise/core/persistence/stores/_sql_analysis.py": "passthrough to the crud writer",
+    "repowise/core/workspace/store.py": "copies the latest snapshot column into the workspace store",
     "repowise/core/persistence/_interfaces/_analysis.py": "the store ABC's parameter name",
     "repowise/server/schemas/repository.py": "the response field",
     "repowise/server/schemas/code_health.py": "the trend response fields",
     "alembic/versions/0019_code_health.py": "the migration that adds the column",
-    # --- writers: hand ``compute_kpis`` output to the snapshot ---------------
-    "repowise/core/pipeline/persist.py": "persists the KPI dict from the health report",
-    "repowise/cli/commands/health_cmd/persist.py": "same, for `repowise health`",
-    "repowise/cli/commands/upgrade_flow.py": "same, for `repowise upgrade`",
+    "alembic/versions/0108_health_snapshot_hotspot_nullable.py": "the migration that allows NULL",
     # --- trend surfaces: diff recorded snapshots, no current value -----------
-    "repowise/core/analysis/health/trends.py": "diffs snapshots; owns no current value",
+    "repowise/core/analysis/health/trends.py": (
+        "diffs snapshots and builds the snapshot writers' arguments; owns no current value"
+    ),
     "repowise/server/routers/code_health/trends_routes.py": "serves the snapshot series",
     "repowise/cli/commands/health_cmd/trends.py": "prints the snapshot series",
+    "repowise/server/mcp_server/tool_health/blocks.py": "renders get_health's snapshot diff",
     # --- pure renderers: read a value someone else computed ------------------
     "repowise/cli/commands/health_cmd/command.py": "prints the KPI dict it was handed",
     "repowise/core/generation/editor_files/data.py": "the CodeHealthBlock field",
-    "repowise/server/routers/repos.py": "serves the latest snapshot column on /repos/summary",
+    "repowise/server/routers/_repo_summary.py": "serves the latest snapshot column on /repos/summary",
+    "repowise/server/chat_view_builders.py": "charts the trend snapshots get_health already returned",
+    "repowise/server/chat_datasets/history.py": "lists the snapshot scalars get_health trends read",
+    "repowise/core/report/sections/estate_health.py": (
+        "renders the snapshot column the workspace store copied per repo"
+    ),
 }
 
 

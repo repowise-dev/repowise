@@ -1,0 +1,356 @@
+"""Read-only git ref queries, against a real repository built under tmp_path."""
+
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from repowise.core.git_refs import (
+    BranchRef,
+    ahead_behind,
+    branch_with_path,
+    changed_files,
+    commit_file_sets,
+    current_branch,
+    default_base,
+    default_branch,
+    find_path_removal,
+    list_branches,
+    remote_name,
+    resolve,
+)
+
+
+def _run(repo: Path, *args: str) -> str:
+    proc = subprocess.run(
+        ["git", *args],
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        stdin=subprocess.DEVNULL,
+        check=True,
+    )
+    return proc.stdout
+
+
+def _commit(repo: Path, name: str, body: str, message: str) -> None:
+    (repo / name).write_text(body, encoding="utf-8")
+    _run(repo, "add", name)
+    _run(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", message)
+
+
+@pytest.fixture
+def repo(tmp_path: Path) -> Path:
+    """main with two commits, a feat branch forked after the first, remote refs."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    _run(root, "init", "-b", "main")
+    _commit(root, "base.txt", "base\n", "base")
+
+    _run(root, "checkout", "-b", "feat")
+    _commit(root, "feat_one.txt", "one\n", "feat one")
+    _commit(root, "feat_two.txt", "two\n", "feat two")
+
+    _run(root, "checkout", "main")
+    # A commit on main after the fork: three-dot diffs must not attribute it
+    # to feat, and it makes feat one commit behind.
+    _commit(root, "main_only.txt", "later\n", "main moves on")
+
+    _run(root, "checkout", "-b", "other")
+    _commit(root, "feat_one.txt", "other edit\n", "other touches a feat file")
+    _run(root, "checkout", "main")
+
+    _run(root, "update-ref", "refs/remotes/origin/main", "main")
+    _run(root, "update-ref", "refs/remotes/origin/feat", "refs/heads/feat")
+    _run(root, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+    return root
+
+
+class TestListBranches:
+    def test_lists_local_and_remote_tips_newest_first(self, repo: Path) -> None:
+        refs = list_branches(str(repo))
+        names = [ref.name for ref in refs]
+        assert set(names) == {"main", "feat", "other", "origin/main", "origin/feat"}
+        dates = [ref.committed_at for ref in refs]
+        assert dates == sorted(dates, reverse=True)
+        assert all(isinstance(ref, BranchRef) for ref in refs)
+
+    def test_symbolic_remote_head_is_skipped(self, repo: Path) -> None:
+        assert "origin/HEAD" not in {ref.name for ref in list_branches(str(repo))}
+
+    def test_is_remote_separates_tracking_refs(self, repo: Path) -> None:
+        by_name = {ref.name: ref for ref in list_branches(str(repo))}
+        assert by_name["origin/feat"].is_remote is True
+        assert by_name["feat"].is_remote is False
+        # The tracking ref was made to point at the local branch, same commit.
+        assert by_name["origin/feat"].sha == by_name["feat"].sha
+
+    def test_a_non_repository_yields_nothing(self, tmp_path: Path) -> None:
+        assert list_branches(str(tmp_path / "nowhere_at_all")) == []
+
+
+class TestCurrentBranch:
+    def test_reports_the_checked_out_branch(self, repo: Path) -> None:
+        assert current_branch(str(repo)) == "main"
+
+    def test_detached_head_is_none(self, repo: Path) -> None:
+        sha = _run(repo, "rev-parse", "HEAD").strip()
+        _run(repo, "checkout", "--detach", sha)
+        assert current_branch(str(repo)) is None
+
+    def test_a_non_repository_is_none(self, tmp_path: Path) -> None:
+        assert current_branch(str(tmp_path / "nowhere_at_all")) is None
+
+
+class TestDefaultBase:
+    def test_prefers_the_origin_head_symbolic_ref(self, repo: Path) -> None:
+        assert default_base(str(repo)) == "origin/main"
+
+    def test_falls_back_to_a_local_trunk(self, repo: Path) -> None:
+        _run(repo, "symbolic-ref", "-d", "refs/remotes/origin/HEAD")
+        assert default_base(str(repo)) == "main"
+
+    def test_falls_back_to_head_when_no_trunk_exists(self, tmp_path: Path) -> None:
+        root = tmp_path / "trunkless"
+        root.mkdir()
+        _run(root, "init", "-b", "topic")
+        _commit(root, "a.txt", "a\n", "a")
+        assert default_base(str(root)) == "HEAD"
+
+    def test_a_non_repository_is_head(self, tmp_path: Path) -> None:
+        assert default_base(str(tmp_path / "nowhere_at_all")) == "HEAD"
+
+    def test_a_local_branch_named_like_the_remote_one_does_not_change_the_answer(self, repo: Path) -> None:
+        _run(repo, "update-ref", "refs/remotes/origin/trunk", "main")
+        _run(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk")
+        _run(repo, "branch", "origin/trunk", "main")
+        assert default_base(str(repo)) == "origin/trunk"
+
+    def test_a_tag_named_like_a_trunk_is_not_a_base(self, tmp_path: Path) -> None:
+        root = tmp_path / "tagged"
+        root.mkdir()
+        _run(root, "init", "-b", "topic")
+        _commit(root, "a.txt", "a\n", "a")
+        _run(root, "tag", "main")
+        assert default_base(str(root)) == "HEAD"
+
+    def test_falls_back_to_a_remote_trunk_when_there_is_no_local_one(self, repo: Path) -> None:
+        _run(repo, "symbolic-ref", "-d", "refs/remotes/origin/HEAD")
+        _run(repo, "checkout", "-q", "feat")
+        _run(repo, "branch", "-D", "main")
+        assert default_base(str(repo)) == "origin/main"
+
+
+class TestDefaultBranch:
+    def test_is_the_origin_head_target_without_the_remote(self, repo: Path) -> None:
+        _run(repo, "branch", "master", "main")
+        _run(repo, "update-ref", "refs/remotes/origin/master", "master")
+        _run(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/master")
+        assert default_branch(str(repo)) == "master"
+
+    def test_falls_back_to_a_local_trunk(self, tmp_path: Path) -> None:
+        root = tmp_path / "legacy"
+        root.mkdir()
+        _run(root, "init", "-b", "master")
+        _commit(root, "a.txt", "a\n", "a")
+        assert default_branch(str(root)) == "master"
+
+    def test_is_none_when_git_cannot_name_one(self, tmp_path: Path) -> None:
+        root = tmp_path / "trunkless"
+        root.mkdir()
+        _run(root, "init", "-b", "topic")
+        _commit(root, "a.txt", "a\n", "a")
+        assert default_branch(str(root)) is None
+        assert default_branch(str(tmp_path / "nowhere_at_all")) is None
+
+
+class TestChangedFiles:
+    def test_three_dot_semantics_exclude_the_base_side(self, repo: Path) -> None:
+        files = changed_files(str(repo), "main", "feat")
+        assert files == ["feat_one.txt", "feat_two.txt"]
+        assert "main_only.txt" not in files
+
+    def test_the_same_revision_changes_nothing(self, repo: Path) -> None:
+        assert changed_files(str(repo), "main", "main") == []
+
+    def test_an_unknown_revision_yields_nothing(self, repo: Path) -> None:
+        assert changed_files(str(repo), "main", "no-such-branch") == []
+
+    def test_a_non_repository_yields_nothing(self, tmp_path: Path) -> None:
+        assert changed_files(str(tmp_path / "nowhere_at_all"), "main", "feat") == []
+
+
+class TestAheadBehind:
+    def test_ahead_counts_commits_only_on_the_branch(self, repo: Path) -> None:
+        assert ahead_behind(str(repo), "main", "feat") == (2, 1)
+
+    def test_the_orientation_reverses_with_the_arguments(self, repo: Path) -> None:
+        assert ahead_behind(str(repo), "feat", "main") == (1, 2)
+
+    def test_an_unknown_revision_is_zero(self, repo: Path) -> None:
+        assert ahead_behind(str(repo), "main", "no-such-branch") == (0, 0)
+
+    def test_a_non_repository_is_zero(self, tmp_path: Path) -> None:
+        assert ahead_behind(str(tmp_path / "nowhere_at_all"), "main", "feat") == (0, 0)
+
+
+class TestResolve:
+    def test_names_the_commit_a_branch_points_at(self, repo: Path) -> None:
+        assert resolve(str(repo), "feat") == _run(repo, "rev-parse", "feat").strip()
+
+    def test_an_unknown_revision_yields_nothing(self, repo: Path) -> None:
+        assert resolve(str(repo), "no-such-branch") == ""
+
+    def test_a_non_repository_yields_nothing(self, tmp_path: Path) -> None:
+        assert resolve(str(tmp_path / "nowhere_at_all"), "main") == ""
+
+
+class TestCommitFileSets:
+    def test_a_range_yields_one_set_per_commit_oldest_first(self, tmp_path: Path) -> None:
+        root = tmp_path / "ranged"
+        root.mkdir()
+        _run(root, "init", "-b", "main")
+        _commit(root, "base.txt", "base\n", "base")
+        _run(root, "checkout", "-b", "work")
+        _commit(root, "one.txt", "1\n", "one")
+        (root / "two.txt").write_text("2\n", encoding="utf-8")
+        (root / "one.txt").write_text("1b\n", encoding="utf-8")
+        _run(root, "add", "-A")
+        _run(root, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "middle")
+        _commit(root, "three.txt", "3\n", "three")
+
+        assert commit_file_sets(str(root), "main..work") == [
+            frozenset({"one.txt"}),
+            frozenset({"one.txt", "two.txt"}),
+            frozenset({"three.txt"}),
+        ]
+
+    def test_the_three_dot_form_reads_as_the_same_range(self, repo: Path) -> None:
+        assert commit_file_sets(str(repo), "main...feat") == commit_file_sets(
+            str(repo), "main..feat"
+        )
+
+    def test_a_single_revision_carries_nothing(self, repo: Path) -> None:
+        assert commit_file_sets(str(repo), "HEAD") == []
+        assert commit_file_sets(str(repo), None) == []
+
+    def test_a_non_repository_yields_nothing(self, tmp_path: Path) -> None:
+        assert commit_file_sets(str(tmp_path / "nowhere_at_all"), "main..feat") == []
+
+
+class TestBranchWithPath:
+    def test_names_the_other_branch_that_has_the_path(self, repo: Path) -> None:
+        assert branch_with_path(str(repo), "feat_two.txt") == "feat"
+
+    def test_skips_the_checked_out_branch(self, repo: Path) -> None:
+        # Only main, the checked-out branch whose tree the caller read, has it.
+        _commit(repo, "late.txt", "late\n", "main only")
+        assert branch_with_path(str(repo), "late.txt") is None
+        assert branch_with_path(str(repo), "typo.txt") is None
+
+    def test_finds_a_file_committed_in_a_linked_worktree(self, repo: Path, tmp_path: Path) -> None:
+        wt = tmp_path / "wt"
+        _run(repo, "worktree", "add", "-b", "wt-branch", str(wt), "main")
+        _commit(wt, "only_in_wt.txt", "x\n", "worktree work")
+
+        assert branch_with_path(str(repo), "only_in_wt.txt") == "wt-branch"
+
+
+class TestFindPathRemoval:
+    def test_a_pure_rename_names_its_new_path(self, tmp_path: Path) -> None:
+        root = tmp_path / "renamed"
+        root.mkdir()
+        _run(root, "init", "-b", "main")
+        _commit(root, "old_name.py", "def f():\n    return 1\n" * 5, "add old_name")
+        _run(root, "mv", "old_name.py", "new_name.py")
+        _run(root, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "rename")
+
+        removal = find_path_removal(str(root), "old_name.py")
+
+        assert removal is not None
+        assert removal.moved_to == ["new_name.py"]
+
+    def test_a_split_into_a_same_named_directory_lists_its_files(self, tmp_path: Path) -> None:
+        """The #1929 shape: ``shell.py`` becomes the package ``shell/``."""
+        root = tmp_path / "split"
+        root.mkdir()
+        _run(root, "init", "-b", "main")
+        _commit(root, "shell.py", "def run():\n    pass\n", "add shell")
+        _run(root, "rm", "shell.py")
+        (root / "shell").mkdir()
+        # Content unlike the original on both sides: close enough to it and
+        # git's similarity index calls it a rename instead of a split, and the
+        # rename branch above wins before this one is ever reached.
+        (root / "shell" / "__init__.py").write_text("PACKAGE_VERSION = 1\n", encoding="utf-8")
+        (root / "shell" / "commands.py").write_text(
+            "class Commands:\n    def dispatch(self, *args):\n        raise NotImplementedError\n",
+            encoding="utf-8",
+        )
+        _run(root, "add", "-A")
+        _run(root, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "split into shell/")
+
+        removal = find_path_removal(str(root), "shell.py")
+
+        assert removal is not None
+        assert removal.moved_to == ["shell/__init__.py", "shell/commands.py"]
+
+    def test_an_unexplained_deletion_names_the_commit_with_nothing_moved(
+        self, tmp_path: Path
+    ) -> None:
+        root = tmp_path / "deleted"
+        root.mkdir()
+        _run(root, "init", "-b", "main")
+        _commit(root, "gone.py", "x = 1\n", "add gone")
+        _run(root, "rm", "gone.py")
+        _run(root, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "delete gone")
+
+        removal = find_path_removal(str(root), "gone.py")
+
+        assert removal is not None
+        assert removal.moved_to == []
+
+    def test_a_path_never_committed_yields_none(self, repo: Path) -> None:
+        assert find_path_removal(str(repo), "never_existed.py") is None
+
+    def test_a_path_still_on_disk_yields_none(self, repo: Path) -> None:
+        assert find_path_removal(str(repo), "base.txt") is None
+
+    def test_a_non_repository_yields_none(self, tmp_path: Path) -> None:
+        assert find_path_removal(str(tmp_path / "nowhere_at_all"), "gone.py") is None
+
+    def test_a_path_escaping_the_repo_is_rejected(self, repo: Path) -> None:
+        assert find_path_removal(str(repo), "../outside.py") is None
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://github.com/pallets/flask.git",
+        "git@github.com:pallets/flask.git",
+        "https://gitlab.example.com/group/sub/flask/",
+        "https://gitlab.com/group/flask/-/tree/main",
+        "git@ssh.dev.azure.com:v3/org/project/flask",
+        "/srv/git/flask.git",
+    ],
+)
+def test_remote_name_is_the_last_url_segment(tmp_path: Path, url: str) -> None:
+    root = tmp_path / "checkout-folder"
+    root.mkdir()
+    _run(root, "init", "-b", "main")
+    _run(root, "remote", "add", "origin", url)
+    assert remote_name(str(root)) == "flask"
+
+
+def test_remote_name_unescapes_a_name_with_spaces(tmp_path: Path) -> None:
+    _run(tmp_path, "init", "-b", "main")
+    _run(tmp_path, "remote", "add", "origin", "https://dev.azure.com/org/p/_git/My%20Repo")
+    assert remote_name(str(tmp_path)) == "My Repo"
+
+
+def test_remote_name_is_empty_without_a_remote(tmp_path: Path) -> None:
+    _run(tmp_path, "init", "-b", "main")
+    assert remote_name(str(tmp_path)) == ""

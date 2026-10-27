@@ -8,7 +8,10 @@ built from the pool before the 5-hit synthesis cap.
 
 from __future__ import annotations
 
-from repowise.server.mcp_server.tool_answer.retrieval import serialize_candidates
+from repowise.server.mcp_server.tool_answer.retrieval import (
+    serialize_candidate_files,
+    serialize_candidates,
+)
 
 
 def _hit(path, symbols=None):
@@ -159,3 +162,11 @@ def test_the_char_budget_is_spent_in_rank_order_and_truncates_nothing():
     for e in out:
         if e.get("defines"):
             assert all(":" in pair for pair in e["defines"].split(", "))
+
+
+def test_candidate_files_are_ranked_openable_paths_beyond_the_candidates_cap():
+    hits = [_hit("a.py::One"), _hit("a.py"), {"title": "no path"}]
+    hits += [_hit(f"f{i}.py") for i in range(20)]
+    out = serialize_candidate_files(hits)
+    assert out == ["a.py", *[f"f{i}.py" for i in range(9)]]
+    assert len(serialize_candidates(hits)) == 5

@@ -344,6 +344,9 @@ async def test_grounded_candidates_persist_and_rerunning_is_idempotent(tmp_path)
     )
     assert first.report.candidates_grounded == 1
     assert first.report.candidates_new == 1
+    # Promoted on this sighting: the bar is a stated reason, and a grounded
+    # discovery candidate carries one. It used to take a second session.
+    assert len(first.decisions) == 1
     # Spans are spent once read, so a second update has nothing left to send.
     second = await run_update_discovery(
         tmp_path, provider=provider, policy=preset_policy("balanced"), now=300.0
@@ -354,11 +357,20 @@ async def test_grounded_candidates_persist_and_rerunning_is_idempotent(tmp_path)
     with SessionStagingStore.open_default(tmp_path) as store:
         assert store.pending_raws(10) == []  # never fed to the deterministic lane
         rows = store.promotable()
-    assert rows == []  # one observation is not enough to propose anything
+    # Already emitted on the first run, and no new session has observed it, so
+    # there is nothing new to say. This is re-emission being idempotent, not
+    # the promotion bar holding it back.
+    assert rows == []
 
 
 @pytest.mark.asyncio
-async def test_a_second_session_promotes_the_candidate_as_proposed(tmp_path):
+async def test_a_second_session_re_emits_the_candidate_with_its_evidence(tmp_path):
+    """A second sighting is accretion, not admission.
+
+    It was admission until the promotion bar became a stated reason: the
+    candidate is already proposed after the first session, and what the second
+    adds is another evidence row on the record it already has.
+    """
     provider = FakeProvider(json.dumps(_payload(_candidate())))
     _queue(tmp_path, [_span(1, "s1")], now=100.0)
     await run_update_discovery(
@@ -389,7 +401,12 @@ async def test_discovery_never_promotes_the_deterministic_lanes_backlog(tmp_path
             "det1",
             kind="user_correction",
             title="A deterministic gate hit",
-            structured={"decision": "Do the thing", "verification": "exact"},
+            structured={
+                "decision": "Do the thing",
+                # Promotion needs a stated reason; this test is about lanes.
+                "rationale": "because the alternative was measured slower",
+                "verification": "exact",
+            },
             quotes=[QUOTE],
             files=["packages/core/a.py"],
             session_id="s9",
@@ -503,7 +520,11 @@ def test_discovery_and_deterministic_titles_never_share_a_staging_row(tmp_path):
             "det1",
             kind="user_correction",
             title="Never run ruff format",
-            structured={"decision": "the deterministic text", "verification": "exact"},
+            structured={
+                "decision": "the deterministic text",
+                "rationale": "because the alternative was measured slower",
+                "verification": "exact",
+            },
             quotes=[QUOTE],
             files=[],
             session_id="s9",
@@ -517,7 +538,11 @@ def test_discovery_and_deterministic_titles_never_share_a_staging_row(tmp_path):
             "dis1",
             kind=DISCOVERY_KIND,
             title="Never run ruff format",
-            structured={"decision": "the discovery text", "verification": "exact"},
+            structured={
+                "decision": "the discovery text",
+                "rationale": "because the alternative was measured slower",
+                "verification": "exact",
+            },
             quotes=[QUOTE],
             files=[],
             session_id="s8",
@@ -529,7 +554,11 @@ def test_discovery_and_deterministic_titles_never_share_a_staging_row(tmp_path):
         rows = {row["key"]: row for row in store.promotable()}
     assert rows[det_key]["kind"] == "user_correction"
     assert rows[det_key]["structured"]["decision"] == "the deterministic text"
-    assert dis_key not in rows  # one discovery observation does not promote
+    # The other lane kept its own row, its own kind and its own text rather
+    # than overwriting this one. Which lane may emit it is decided by the
+    # caller, on the kind, not by holding it out of this list.
+    assert rows[dis_key]["kind"] == DISCOVERY_KIND
+    assert rows[dis_key]["structured"]["decision"] == "the discovery text"
 
 
 def test_pending_spans_are_never_pruned_before_they_are_read(tmp_path):

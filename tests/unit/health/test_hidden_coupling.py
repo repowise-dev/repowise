@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import itertools
 import json
+import re
 
 from repowise.core.analysis.health.biomarkers import FileContext
 from repowise.core.analysis.health.biomarkers.hidden_coupling import (
@@ -29,6 +31,7 @@ def _partners(
                 "file_path": p,
                 "co_change_count": float(support),
                 "frequency": support,
+                "focused_frequency": support,
                 "self_commits": self_commits,
                 "partner_commits": repo_commits.get(p, 0),
                 "structural": structural,
@@ -52,7 +55,6 @@ def _ctx(
         nloc=120,
         has_test_file=False,
         module=None,
-        function_metrics={},
         git_meta={
             "commit_count_total": self_commits,
             "co_change_partners_json": _partners(
@@ -130,7 +132,6 @@ def test_unlabelled_partner_is_not_a_finding():
         nloc=120,
         has_test_file=False,
         module=None,
-        function_metrics={},
         git_meta={
             "commit_count_total": 20,
             "co_change_partners_json": json.dumps(
@@ -178,7 +179,6 @@ def test_essential_tier_empty_partners_short_circuits():
         nloc=120,
         has_test_file=False,
         module=None,
-        function_metrics={},
         git_meta={"commit_count_total": 100, "co_change_partners_json": "[]"},
         dependents_count=0,
     )
@@ -292,3 +292,92 @@ def test_ratio_reads_the_record_not_the_repo_wide_commit_total():
     assert finding.details["self_commits"] == 10
     assert finding.details["partner_commits"] == 10
     assert finding.details["correlation"] == 0.9
+
+
+_REASON = re.compile(
+    r"^(?P<partner>\S+) changed with this file in (?P<support>\d+) of "
+    r"(?P<whose>this file's|its) (?P<denom>\d+) commits \((?P<pct>\d+)%\) "
+    r"but no static dependency exists$"
+)
+
+
+def test_printed_counts_are_the_ones_the_ratio_used():
+    """Every sentence quotes support over the denominator the ratio divided by.
+
+    Exhaustive over a grid rather than sampled: the printed pair used to be the
+    shared count over this file's total while the percentage divided by the
+    smaller of the two totals, which read as "6 of its 54 commits (50%)".
+    """
+    seen = 0
+    for self_commits, partner_commits, support in itertools.product(
+        range(5, 16), range(5, 16), range(0, 20)
+    ):
+        ctx = _ctx(
+            "src/payments.py",
+            partners={"src/billing.py": support},
+            self_commits=self_commits,
+            repo_commits={"src/billing.py": partner_commits},
+        )
+        for finding in HiddenCouplingDetector().detect(ctx):
+            m = _REASON.match(finding.reason)
+            assert m, finding.reason
+            printed_support, denom = int(m["support"]), int(m["denom"])
+            assert printed_support == support
+            assert denom == min(self_commits, partner_commits)
+            assert m["whose"] == ("this file's" if self_commits <= partner_commits else "its")
+            assert printed_support <= denom
+            assert int(m["pct"]) == round(100 * printed_support / denom)
+            assert finding.details["correlation"] == round(printed_support / denom, 3)
+            seen += 1
+    assert seen > 100  # the grid reached the detector, not only its gates
+
+
+def test_more_shared_commits_than_the_smaller_file_has_is_not_reported():
+    """A record claiming 12 shared commits for a file with 10 has no honest ratio."""
+    ctx = _ctx(
+        "src/payments.py",
+        partners={"src/billing.py": 12},
+        self_commits=10,
+        repo_commits={"src/billing.py": 30},
+    )
+    assert HiddenCouplingDetector().detect(ctx) == []
+
+
+def _record(**overrides) -> FileContext:
+    record = {
+        "file_path": "src/billing.py",
+        "co_change_count": 1.0,
+        "frequency": 18,
+        "focused_frequency": 18,
+        "self_commits": 20,
+        "partner_commits": 22,
+        "structural": STRUCTURAL_UNEXPLAINED,
+        **overrides,
+    }
+    record = {k: v for k, v in record.items() if v is not None}
+    return FileContext(
+        file_path="src/payments.py",
+        language="python",
+        nloc=120,
+        has_test_file=False,
+        module=None,
+        git_meta={"co_change_partners_json": json.dumps([record])},
+        dependents_count=0,
+    )
+
+
+def test_a_pair_seen_only_in_sweep_commits_is_not_hidden_coupling():
+    """18 shared commits, every one a wide sweep: no evidence the two belong together."""
+    assert HiddenCouplingDetector().detect(_record(focused_frequency=0)) == []
+
+
+def test_the_ratio_counts_only_focused_shared_commits():
+    (out,) = HiddenCouplingDetector().detect(_record(focused_frequency=12))
+    assert out.details["co_change_count"] == 12
+    assert out.details["correlation"] == 0.6
+    assert "in 12 of this file's 20 commits" in out.reason
+
+
+def test_a_record_without_the_focused_count_yields_nothing():
+    """Written before the walk counted it: sweeps cannot be told apart, so silence."""
+    assert HiddenCouplingDetector().detect(_record(focused_frequency=None)) == []

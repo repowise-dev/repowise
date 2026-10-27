@@ -1,0 +1,30 @@
+openapi: 3.0.3
+info: {title: Parameter merge, version: '1'}
+paths:
+  /users/{userId}:
+    parameters:
+      - {$ref: '#/components/parameters/UserId'}
+      - {name: trace, in: header, schema: {type: string}}
+    get:
+      parameters:
+        - {name: trace, in: header, required: true, schema: {type: string}}
+        - {name: verbose, in: query, schema: {type: boolean}}
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  required: [id]
+                  properties:
+                    id: {type: integer}
+components:
+  parameters:
+    UserId:
+      name: userId
+      in: path
+      required: true
+      schema: {type: string}

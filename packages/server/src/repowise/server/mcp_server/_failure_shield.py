@@ -47,17 +47,18 @@ def _shape_not_indexed() -> dict[str, Any]:
     return {
         "error": "This repository has no repowise index yet.",
         "remedy": (
-            "The user can build one by running 'repowise init --yes' in the "
-            "repo root. No API key is required: without one it renders the "
-            "whole wiki from the code's structure. Suggest --no-editor-setup "
+            "The user can build one by running 'repowise init --yes --no-prose' "
+            "in the repo root. It needs no API key and makes no model calls: "
+            "the documentation is built from code. Suggest --no-editor-setup "
             "too if this is a scratch clone, fixture, or worktree, so init "
             "leaves their global MCP config pointed where it is. Indexing is "
-            "the user's decision — suggest it once, do not run it yourself."
+            "the user's decision: suggest it once, do not run it yourself."
         ),
         "guidance": (
             "Until an index exists, every repowise tool will return this "
-            "notice. Answer questions about this repo with your built-in "
-            "tools (Read/Grep/Glob) for the rest of the session."
+            "notice. Answer questions about this repo with your own "
+            "file-reading and searching tools, whatever they are called, "
+            "for the rest of the session."
         ),
     }
 
@@ -132,8 +133,52 @@ def _shape_stale_index(exc: Exception) -> dict[str, Any]:
         "guidance": (
             "If the retry returns this notice too, every repowise tool will "
             "keep returning it until the index is rebuilt. Answer questions "
-            "about this repo with your built-in tools (Read/Grep/Glob) for the "
-            "rest of the session."
+            "about this repo with your own file-reading and searching tools, "
+            "whatever they are called, for the rest of the session."
+        ),
+    }
+
+
+def is_stale_server_import(exc: BaseException) -> bool:
+    """True when a lazy import of repowise's own code failed.
+
+    A long-running server keeps the modules it loaded at start. When the
+    checkout moves under it, a module imported later comes from the new tree
+    and can ask for a name the old in-memory module lacks (``ImportError``),
+    or the old code can ask for a module the new tree removed
+    (``ModuleNotFoundError``). Both resolve on restart. A third-party import
+    failure is a missing dependency instead, so it keeps the generic shape.
+    """
+    name = getattr(exc, "name", None) or ""
+    return isinstance(exc, ImportError) and (name == "repowise" or name.startswith("repowise."))
+
+
+def stale_server_notice(exc: BaseException) -> str:
+    """Plain explanation and next step for :func:`is_stale_server_import`."""
+    return (
+        "The MCP server is running older repowise code than this checkout "
+        f"({exc}). Restart the MCP server (or the editor session) and retry."
+    )
+
+
+def _shape_stale_server(exc: Exception) -> dict[str, Any]:
+    """Success-shaped response for a server whose loaded code predates the checkout."""
+    return {
+        "error": stale_server_notice(exc),
+        "remedy": (
+            "Restarting the MCP server is the user's step: ask them once. "
+            "The index itself is fine and needs no rebuild."
+        ),
+    }
+
+
+def _shape_broken_install(exc: Exception) -> dict[str, Any]:
+    """The same failure in a process that imported fresh: the install itself is broken."""
+    return {
+        "error": f"This repowise install is incomplete or mixed ({exc}).",
+        "remedy": (
+            "Reinstall repowise, or repair the environment it runs from, and "
+            "retry. That is the user's step: ask them once."
         ),
     }
 
@@ -150,18 +195,43 @@ def _shape_internal_error(tool: str, exc: Exception) -> dict[str, Any]:
     }
 
 
-def _shape_exception(tool: str, exc: Exception) -> dict[str, Any]:
+def _exception_reason(exc: Exception) -> str:
+    """The coarse telemetry reason for a shielded exception: a fixed slug."""
     if isinstance(exc, LookupError):
-        if _NOT_INDEXED_MARKER in str(exc):
-            return _shape_not_indexed()
-        return _shape_unknown_repo(exc)
+        return "no_index" if _NOT_INDEXED_MARKER in str(exc) else "not_found"
     # Workspace mode raises ValueError("Unknown repo '<alias>'. Available:
     # [...]") from the registry — same expected condition, different type.
     if isinstance(exc, ValueError) and str(exc).startswith("Unknown repo"):
-        return _shape_unknown_repo(exc)
+        return "not_found"
     if _is_stale_index_error(exc):
-        return _shape_stale_index(exc)
-    return _shape_internal_error(tool, exc)
+        return "index_behind"
+    if is_stale_server_import(exc):
+        return "server_stale"
+    return "internal"
+
+
+_SHAPES: dict[str, Callable[[str, Exception, bool], dict[str, Any]]] = {
+    "no_index": lambda tool, exc, long_running: _shape_not_indexed(),
+    "not_found": lambda tool, exc, long_running: _shape_unknown_repo(exc),
+    "index_behind": lambda tool, exc, long_running: _shape_stale_index(exc),
+    "server_stale": lambda tool, exc, long_running: (
+        _shape_stale_server(exc) if long_running else _shape_broken_install(exc)
+    ),
+    "internal": lambda tool, exc, long_running: _shape_internal_error(tool, exc),
+}
+
+
+def _shape_exception(tool: str, exc: Exception, *, long_running: bool = True) -> dict[str, Any]:
+    """*long_running* is False for a process that imports fresh on every run (the CLI).
+
+    Also notes the reason on the call in flight, so the ``mcp_tool_call`` event
+    can say why the call failed without reading the message.
+    """
+    from repowise.server.mcp_server._savings.interaction import note_error_reason
+
+    reason = _exception_reason(exc)
+    note_error_reason(reason)
+    return _SHAPES[reason](tool, exc, long_running)
 
 
 async def _await_import_warmup(tool: str) -> None:

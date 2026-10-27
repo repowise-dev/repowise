@@ -27,16 +27,22 @@ class LanguageSpec:
     # -- File matching ---------------------------------------------------
     extensions: frozenset[str] = field(default_factory=frozenset)  # (".py", ".pyi")
     special_filenames: frozenset[str] = field(default_factory=frozenset)  # ("Dockerfile",)
+    # Lowercase multi-dot name endings (``.flow-meta.xml``), matched before the one-suffix lookup.
+    name_suffixes: frozenset[str] = field(default_factory=frozenset)
 
     # -- Classification --------------------------------------------------
     is_code: bool = True  # False for yaml, json, markdown, etc.
     is_infra: bool = False  # True for dockerfile, makefile, terraform, shell
     is_passthrough: bool = False  # True = no AST parser (config/data/markup)
     is_api_contract: bool = False  # True for proto, graphql, openapi
+    # True when files/symbols are invoked primarily by an external runtime and
+    # static reachability therefore cannot support dead-code claims.
+    dead_code_exempt: bool = False
 
     # -- Tree-sitter -----------------------------------------------------
     grammar_package: str | None = None  # "tree_sitter_python"
     grammar_loader: str = "language"  # function name in grammar package
+    grammar_loader_args: tuple[str, ...] = ()  # args for shared grammar packs
     scm_file: str | None = None  # "python.scm" — None = no AST queries
     shares_grammar_with: str | None = None  # C shares cpp grammar
 
@@ -101,9 +107,11 @@ class LanguageSpec:
 
     # Single-segment test-dir tokens that are UNAMBIGUOUS for this
     # language's files. The generic table treats "spec(s)/" as ambiguous
-    # (OpenAPI specs, language specs) and demands a test-shaped filename —
-    # but a Ruby file under spec/ is RSpec material whatever its name
-    # (support helpers, vendored fixtures like okjson.rb included).
+    # (OpenAPI specs, language specs) and "t/" as ambiguous (a single
+    # letter) and demands a test-shaped filename — but a Ruby file under
+    # spec/ is RSpec material whatever its name (support helpers, vendored
+    # fixtures like okjson.rb included), and a Python file under t/ is test
+    # material whatever its name.
     test_dir_tokens: tuple[str, ...] = ()
 
     # Case-sensitive directory-segment suffixes that mark a test project
@@ -132,6 +140,10 @@ class LanguageSpec:
     # -- Ecosystem -------------------------------------------------------
     entry_point_patterns: tuple[str, ...] = ()  # ("main.py", "app.py")
     manifest_files: tuple[str, ...] = ()  # ("pyproject.toml",)
+    # Package manifests whose name varies per package, as globs matched
+    # case-insensitively by the package-root scan only. Exact-name readers of
+    # ``manifest_files`` never see them.
+    manifest_globs: tuple[str, ...] = ()  # ("*.csproj",)
     # The subset of ``manifest_files`` that configures a build rather than
     # declaring a distributable unit. Every name in ``manifest_files`` and not
     # here is a *package root*: it marks its directory as a package boundary

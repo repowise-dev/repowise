@@ -8,6 +8,7 @@ import { ActivityDot } from "../ui/activity-dot";
 import { Button } from "../ui/button";
 import { JobLog, type JobLogEntry } from "./job-log";
 import { formatTokens, formatNumber } from "../lib/format";
+import { jobOutcome, providerIssue, type ProviderIssue } from "./job-outcome";
 
 /** Subset of the Job shape this presentational shell renders. */
 export interface GenerationProgressJob {
@@ -40,7 +41,37 @@ export interface GenerationProgressProps {
   onRetry?: () => void;
   /** Where provider/API-key settings live; offered as a failure recovery path. */
   settingsHref?: string;
+  /** Clears a finished panel. Without it a failure would vanish unread. */
+  onDismiss?: () => void;
+  /** Words a provider issue in the host's language; defaults to its message. */
+  formatIssue?: (issue: ProviderIssue) => string;
+  labels?: Partial<GenerationProgressLabels>;
 }
+
+export interface GenerationProgressLabels {
+  /** Heading for a run that completed but lost pages or skipped docs. */
+  warningTitle: string;
+  /** No page was written; every one fell back to a placeholder. */
+  noPagesWritten: string;
+  somePagesFailed: (failed: number, total: number) => string;
+  docsSkipped: string;
+  retry: string;
+  startAgain: string;
+  providerSettings: string;
+  dismiss: string;
+}
+
+export const DEFAULT_GENERATION_PROGRESS_LABELS: GenerationProgressLabels = {
+  warningTitle: "Finished with problems",
+  noPagesWritten: "No documentation pages were written.",
+  somePagesFailed: (failed, total) =>
+    `${formatNumber(failed)} of ${formatNumber(total)} pages could not be written. Run it again to retry them.`,
+  docsSkipped: "Documentation was not updated.",
+  retry: "Retry",
+  startAgain: "Start again",
+  providerSettings: "Provider settings",
+  dismiss: "Dismiss",
+};
 
 const PHASE_LABELS: Record<number, string> = {
   0: "Indexing",
@@ -65,20 +96,33 @@ export function GenerationProgress({
   phase,
   onRetry,
   settingsHref,
+  onDismiss,
+  formatIssue = (issue) => issue.message,
+  labels,
 }: GenerationProgressProps) {
-  const progress = job
-    ? job.total_pages > 0
-      ? Math.round((job.completed_pages / job.total_pages) * 100)
-      : 0
+  const l = { ...DEFAULT_GENERATION_PROGRESS_LABELS, ...labels };
+  const rawProgress = job?.total_pages && job.total_pages > 0
+    ? Math.round((job.completed_pages / job.total_pages) * 100)
+    : 0;
+  const progress = Number.isFinite(rawProgress)
+    ? Math.max(0, Math.min(100, rawProgress))
     : 0;
 
   const elapsedStr = `${Math.floor(elapsed / 60000)}m ${Math.floor((elapsed % 60000) / 1000)}s`;
   const isPending = job?.status === "pending";
   const isRunning = job?.status === "running";
   const isInflight = isPending || isRunning;
-  const isDone = job?.status === "completed";
+  const outcome = jobOutcome(job);
+  const isDone = outcome === "completed";
+  const isWarning = outcome === "warning";
+  const issue = isWarning || job?.status === "failed" ? providerIssue(job) : null;
+  const failedPages = job?.failed_pages ?? 0;
   const isFailed = job?.status === "failed";
   const isCancelled = job?.status === "cancelled";
+  // A failure may be the provider's; a warning only offers it when it was.
+  const showSettings = isFailed || issue !== null;
+  // Rerunning only helps a warning that lost pages; skipped docs need setup.
+  const showRetry = Boolean(onRetry) && (isFailed || isCancelled || failedPages > 0);
   const phaseLabel = phase
     ? humanizePhase(phase)
     : job?.current_level == null
@@ -90,6 +134,7 @@ export function GenerationProgress({
       <div className="flex items-center gap-2">
         {isInflight && <Spinner className="text-[var(--color-model)]" />}
         {isDone && <CheckCircle className="h-4 w-4 text-[var(--color-fresh)] shrink-0" />}
+        {isWarning && <AlertTriangle className="h-4 w-4 text-[var(--color-warning)] shrink-0" />}
         {isFailed && <XCircle className="h-4 w-4 text-[var(--color-outdated)] shrink-0" />}
         {isCancelled && <Ban className="h-4 w-4 text-[var(--color-text-tertiary)] shrink-0" />}
 
@@ -97,6 +142,7 @@ export function GenerationProgress({
           {isPending && "Queued — waiting for worker…"}
           {isRunning && `${phaseLabel}…`}
           {isDone && "Generation complete"}
+          {isWarning && l.warningTitle}
           {isFailed && "Generation failed"}
           {isCancelled && "Cancelled"}
         </span>
@@ -138,6 +184,7 @@ export function GenerationProgress({
           value={progress}
           {...(isFailed ? { indicatorClassName: "bg-[var(--color-outdated)]" } : {})}
           {...(isCancelled ? { indicatorClassName: "bg-[var(--color-text-tertiary)]" } : {})}
+          {...(isWarning ? { indicatorClassName: "bg-[var(--color-warning)]" } : {})}
         />
         <div className="flex justify-between text-xs text-[var(--color-text-tertiary)]">
           <span>
@@ -165,7 +212,28 @@ export function GenerationProgress({
         </div>
       )}
 
-      {isDone && job && (
+      {isWarning && job && (
+        <div
+          role="status"
+          className="flex items-start gap-2 rounded-md border border-[var(--color-warning)]/40 bg-[var(--color-warning)]/10 px-3 py-2 text-xs text-[var(--color-text-primary)]"
+        >
+          <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5 text-[var(--color-warning)]" />
+          <div className="flex-1 space-y-0.5">
+            <p className="font-medium">
+              {failedPages > 0
+                ? job.completed_pages > 0
+                  ? l.somePagesFailed(failedPages, job.total_pages)
+                  : l.noPagesWritten
+                : l.docsSkipped}
+            </p>
+            {issue && (
+              <p className="text-[var(--color-text-secondary)] break-words">{formatIssue(issue)}</p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {(isDone || isWarning) && job && (
         <div className="grid grid-cols-3 gap-2">
           <div className="rounded border border-[var(--color-border-default)] p-2 text-center">
             <p className="text-lg font-semibold text-[var(--color-text-primary)]">
@@ -188,8 +256,10 @@ export function GenerationProgress({
         </div>
       )}
 
-      {isFailed && job?.error_message && (
-        <p className="text-sm text-[var(--color-outdated)] break-words">{job.error_message}</p>
+      {isFailed && (issue || job?.error_message) && (
+        <p className="text-sm text-[var(--color-outdated)] break-words">
+          {issue ? formatIssue(issue) : job?.error_message}
+        </p>
       )}
 
       {isCancelled && (
@@ -199,20 +269,27 @@ export function GenerationProgress({
         </p>
       )}
 
-      {(isFailed || isCancelled) && (onRetry || (isFailed && settingsHref)) && (
+      {(isFailed || isCancelled || isWarning) &&
+        (showRetry || onDismiss || (showSettings && settingsHref)) && (
         <div className="flex flex-wrap gap-2">
-          {onRetry && (
+          {showRetry && (
             <Button size="sm" variant="outline" onClick={onRetry} className="h-7 px-2 text-xs">
               <RotateCw className="h-3.5 w-3.5 mr-1" />
-              {isCancelled ? "Start again" : "Retry"}
+              {isCancelled ? l.startAgain : l.retry}
             </Button>
           )}
-          {isFailed && settingsHref && (
+          {showSettings && settingsHref && (
             <Button size="sm" variant="ghost" asChild className="h-7 px-2 text-xs">
               <a href={settingsHref}>
                 <Settings className="h-3.5 w-3.5 mr-1" />
-                Provider settings
+                {l.providerSettings}
               </a>
+            </Button>
+          )}
+          {onDismiss && (
+            <Button size="sm" variant="ghost" onClick={onDismiss} className="h-7 px-2 text-xs">
+              <X className="h-3.5 w-3.5 mr-1" />
+              {l.dismiss}
             </Button>
           )}
         </div>

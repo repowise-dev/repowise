@@ -33,12 +33,36 @@ def build_signature(node_type: str, name: str, params_text: str, def_node: Node,
         # Detect async via child "async" keyword (tree-sitter-python >= 0.23)
         prefix = "async " if any(c.type == "async" for c in def_node.children) else ""
         return f"{prefix}def {name}{params_text}{_ret(('return_type',))}"
-    if node_type == "function_item":
-        # Rust: return_type field
+    if node_type in ("function_item", "function_signature_item"):
+        # Rust: return_type field. A bodiless ``function_signature_item`` carries
+        # the same ``name`` / ``parameters`` / ``return_type`` fields, so it
+        # takes this branch rather than the bare-name fallback at the end.
         return f"fn {name}{params_text}{_ret(('return_type',))}"
-    if node_type in ("function_declaration", "generator_function_declaration"):
+    if node_type in ("function_declaration", "generator_function_declaration") or (
+        # TS overload signature; Dart's same-named node has no ``parameters`` field.
+        node_type == "function_signature" and def_node.child_by_field_name("parameters")
+    ):
         # TS/JS use return_type; Go uses result
-        return f"function {name}{params_text}{_ret(('return_type', 'result'))}"
+        returns = _ret(("return_type", "result")) or _kotlin_return(def_node, src)
+        return f"function {name}{params_text}{returns}"
+    if node_type == "function_signature":
+        # Dart: the return type is the unfielded nodes ahead of the name.
+        name_node = def_node.child_by_field_name("name")
+        returns = ""
+        for child in def_node.children if name_node is not None else ():
+            if child == name_node:
+                break
+            returns += node_text(child, src)
+        return f"{name}{params_text} -> {returns}" if returns else f"{name}{params_text}"
+    if node_type == "getter_signature":
+        # Dart: the return type is the nodes ahead of ``get``. A getter takes no
+        # parameters, so it reads ``name -> Type``, with no parameter list.
+        returns = ""
+        for child in def_node.children:
+            if child.type == "get":
+                break
+            returns += node_text(child, src)
+        return f"{name} -> {returns}" if returns else name
     if node_type in ("class_definition", "class_declaration", "abstract_class_declaration"):
         base = f"class {name}"
         if params_text:
@@ -46,11 +70,28 @@ def build_signature(node_type: str, name: str, params_text: str, def_node: Node,
         return base
     if node_type == "interface_declaration":
         return f"interface {name}"
+    if node_type == "annotation_type_declaration":
+        return f"@interface {name}"
+    if node_type == "annotation_type_element_declaration":
+        # Java: an element takes no arguments and its declared type is what it returns.
+        return f"{name}(){_ret(('type',))}"
     if node_type == "type_alias_declaration":
         return f"type {name}"
+    if node_type == "type_alias" and any(c.type == "typealias" for c in def_node.children):
+        # Kotlin: keep the aliased type, which a call through the alias constructs.
+        target = def_node.children[-1]
+        return f"typealias {name} = {node_text(target, src)}"
     if node_type == "enum_declaration":
         return f"enum {name}"
-    if node_type == "method_definition":
+    if node_type == "trigger_declaration":
+        # Apex: the sObject and the DML events are the trigger's whole contract.
+        sobject = def_node.child_by_field_name("object")
+        events = ", ".join(
+            node_text(e, src) for e in def_node.children_by_field_name("events") if e.is_named
+        )
+        on = f" on {node_text(sobject, src)}" if sobject is not None else ""
+        return f"trigger {name}{on} ({events})"
+    if node_type in ("method_definition", "method_signature"):
         # TypeScript/JavaScript class method
         return f"{name}{params_text}{_ret(('return_type',))}"
     if node_type == "method_declaration":
@@ -94,3 +135,19 @@ def build_signature(node_type: str, name: str, params_text: str, def_node: Node,
         return f"{name}{params_text}"
     # Fallback
     return f"{name}{params_text}"
+
+
+def _kotlin_return(def_node: Node, src: str) -> str:
+    """`` -> T`` for a Kotlin function: the unfielded type after ``(..):``."""
+    after_parameters = False
+    colon = False
+    for child in def_node.children:
+        if child.type == "function_value_parameters":
+            after_parameters = True
+        elif after_parameters and child.type == ":":
+            colon = True
+        elif colon:
+            return f" -> {node_text(child, src)}"
+        elif after_parameters:
+            return ""
+    return ""

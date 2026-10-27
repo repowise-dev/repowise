@@ -1,7 +1,7 @@
 ---
 frontmatter: |
     description: Triage card for files, modules, or symbols — layer, hotspot, fix history, freshness (relationships, not source bytes).
-    allowed-tools: Bash, Read
+    allowed-tools: Bash(repowise context:*), Read
 ---
 
 # Repowise Context
@@ -37,7 +37,8 @@ repowise context src/api/routes.py --include skeleton
 
 `--include skeleton` adds the body-elided, line-verified file shape. For the
 exact function body, prefer `{{cmd:symbol}}` (or `get_symbol`) with a
-`symbol_id` from the card.
+`symbol_id` from the card; a symbol row without one is addressed as
+`path::name`.
 
 Shared targeting flags (`--path`, `--repo`, `--no-workspace`) work the same as
 the other tool-adapter commands.

@@ -35,7 +35,7 @@ class MembershipTestAgainstListInLoopDetector:
                     function_name=hit.function,
                     line_start=hit.line,
                     line_end=hit.line,
-                    details={},
+                    details=hit.loop_facts(),
                     reason=(
                         "membership tested against a list inside a loop (O(n·m)); "
                         "use a set for O(1) lookups"

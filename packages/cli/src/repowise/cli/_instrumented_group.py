@@ -59,10 +59,36 @@ class InstrumentedGroup(click.Group):
     call it.
     """
 
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(self, *args, discover_plugins: bool = False, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         #: name -> "module:attr", for commands not yet imported.
         self._lazy_commands: dict[str, str] = {}
+        #: Only the real root discovers plugins; True once it has.
+        self._plugins_pending = discover_plugins
+
+    def _load_plugin_commands(self) -> bool:
+        """Load installed plugins once and attach any commands they registered.
+
+        Deferred to an unknown name or a listing because discovery costs
+        about 100 ms, which every hook fire would otherwise pay.
+        """
+        if not self._plugins_pending:
+            return False
+        self._plugins_pending = False
+        from repowise.core.registry import cli_registry
+        from repowise.core.registry.plugins import load_plugins
+
+        load_plugins()
+        cli_registry.apply(self, replace=False)
+        return True
+
+    def main(self, *args, **kwargs):
+        # Click expands wildcards in arguments on Windows by default, so a
+        # quoted ``--report "artifacts/**/lcov.info"`` arrived as several
+        # arguments, without the pruning the commands apply. A command that
+        # takes a glob expands it itself, the same on every platform.
+        kwargs.setdefault("windows_expand_args", False)
+        return super().main(*args, **kwargs)
 
     def add_lazy_command(self, name: str, target: str) -> None:
         """Register *name* without importing the module that defines it."""
@@ -81,6 +107,7 @@ class InstrumentedGroup(click.Group):
 
     def list_commands(self, ctx: click.Context) -> list[str]:
         """Every command name, resolved and unresolved, importing nothing."""
+        self._load_plugin_commands()
         return sorted({*super().list_commands(ctx), *self._lazy_commands})
 
     def get_command(self, ctx: click.Context, name: str) -> click.Command | None:
@@ -90,6 +117,8 @@ class InstrumentedGroup(click.Group):
             return resolved
         target = self._lazy_commands.get(name)
         if target is None:
+            if self._load_plugin_commands():
+                return self.get_command(ctx, name)
             return None
         from repowise.core.registry import LazyCommand
 

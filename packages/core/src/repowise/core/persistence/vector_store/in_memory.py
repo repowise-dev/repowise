@@ -5,7 +5,7 @@ from __future__ import annotations
 from repowise.core.providers.embedding.base import Embedder
 
 from ..search import SearchResult
-from ._base import VectorStore, cosine_similarity, iter_embed_chunks
+from ._base import VectorStore, cap_embed_text, cosine_similarity, iter_embed_chunks
 
 __all__ = ["InMemoryVectorStore"]
 
@@ -23,7 +23,7 @@ class InMemoryVectorStore(VectorStore):
         self._store: dict[str, tuple[list[float], dict]] = {}
 
     async def embed_and_upsert(self, page_id: str, text: str, metadata: dict) -> None:
-        vectors = await self._embedder.embed([text])
+        vectors = await self._embedder.embed([cap_embed_text(page_id, text)])
         self._store[page_id] = (vectors[0], dict(metadata))
 
     async def embed_batch(self, items: list[tuple[str, str, dict]]) -> None:

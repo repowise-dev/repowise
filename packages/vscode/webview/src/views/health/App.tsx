@@ -25,7 +25,7 @@ import { CodeHealthLede } from "@repowise-dev/ui/health/code-health-lede";
 import { TrendView } from "@repowise-dev/ui/health/trend-view";
 import { scoreTextColor } from "@repowise-dev/ui/health/tokens";
 import { OverviewSection } from "@repowise-dev/ui/overview";
-import type { HealthFileMetric } from "@repowise-dev/types/health";
+import { formatScore, type HealthFileMetric } from "@repowise-dev/types/health";
 import type { ViewProps } from "../../runtime/mount";
 import {
   useChurnLens,
@@ -152,7 +152,7 @@ function Dashboard({
                 than no key: every node is the "no data" swatch when the churn
                 request failed, so say that instead. */}
             {churnFailed ? (
-              <span className="text-[11px] text-[var(--color-text-tertiary)]">
+              <span className="text-xs text-[var(--color-text-tertiary)]">
                 Could not load churn for this lens. The other lenses are
                 unaffected.
               </span>
@@ -232,7 +232,7 @@ function FocusedScore({ label, value }: { label: string; value: number | null })
         {label}
       </p>
       <p className={`font-mono text-[15px] tabular-nums ${tone}`}>
-        {value == null ? "-" : value.toFixed(1)}
+        {value == null ? "-" : formatScore(value)}
       </p>
     </div>
   );

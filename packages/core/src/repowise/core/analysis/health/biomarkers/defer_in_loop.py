@@ -37,7 +37,7 @@ class DeferInLoopDetector:
                     function_name=hit.function,
                     line_start=hit.line,
                     line_end=hit.line,
-                    details={},
+                    details=hit.loop_facts(),
                     reason=(
                         "a deferred call inside a loop runs only when the "
                         "enclosing function returns, so the resource stays held "

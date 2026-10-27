@@ -16,7 +16,12 @@ from pathlib import Path
 
 import pytest
 
-from repowise.core.providers.embedding.base import MockEmbedder
+from repowise.core.providers.embedding.base import (
+    KeylessEmbedder,
+    MockEmbedder,
+    is_semantic_embedder,
+)
+from repowise.core.providers.embedding.caching import CachingEmbedder
 from repowise.server.mcp_server import _server, _state
 from repowise.server.mcp_server._meta import build_meta
 
@@ -330,3 +335,39 @@ def test_build_meta_omits_degraded_when_embedder_unresolved(monkeypatch):
     meta = build_meta(timing_ms=1.0)
     assert "embedder_degraded" not in meta
     assert "semantic_search" not in meta
+
+
+class TestQueryEmbedderWrapping:
+    """``_query_embedder`` is what the server's stores actually embed with.
+
+    It memoizes repeated queries, but must never wrap a keyless embedder:
+    ``is_semantic_embedder`` identifies that one by type in order to switch the
+    vector leg off, and a wrapper would report as semantic and silently
+    reactivate a leg whose vectors carry no signal.
+    """
+
+    def test_configured_embedder_is_wrapped_for_caching(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("REPOWISE_EMBEDDER", "openai")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+        embedder = _server._query_embedder()
+
+        assert isinstance(embedder, CachingEmbedder)
+        assert is_semantic_embedder(embedder)
+
+    def test_unconfigured_keyless_is_left_unwrapped(self):
+        embedder = _server._query_embedder()
+
+        assert isinstance(embedder, KeylessEmbedder)
+        assert not is_semantic_embedder(embedder), "the vector leg must stay off"
+
+    def test_degraded_fallback_is_left_unwrapped(self, monkeypatch):
+        """A configured embedder that cannot initialise falls back to keyless —
+        wrapping that would hide it from the vector-leg check."""
+        monkeypatch.setenv("REPOWISE_EMBEDDER", "openai")
+
+        embedder = _server._query_embedder()
+
+        assert _state._embedder_status["degraded"] is True
+        assert isinstance(embedder, KeylessEmbedder)
+        assert not is_semantic_embedder(embedder)

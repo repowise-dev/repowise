@@ -11,7 +11,8 @@
  * requests go to the same origin, proxied by the Next.js rewrite).
  *
  * API key: read from localStorage in the browser (set by the settings page)
- * and from REPOWISE_API_KEY / NEXT_PUBLIC_REPOWISE_API_KEY on the server.
+ * and from REPOWISE_API_KEY on the server. Never a NEXT_PUBLIC_ variable: Next.js
+ * inlines those into browser bundles.
  */
 
 import { configureApiClient } from "@repowise-dev/api-client";
@@ -29,7 +30,7 @@ function getApiKey(): string | null {
     return localStorage.getItem("repowise_api_key") ?? null;
   }
   // In server components: use env var
-  return process.env.REPOWISE_API_KEY ?? process.env.NEXT_PUBLIC_REPOWISE_API_KEY ?? null;
+  return process.env.REPOWISE_API_KEY ?? null;
 }
 
 configureApiClient({ baseUrl: BASE_URL, token: getApiKey });

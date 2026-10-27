@@ -36,6 +36,47 @@ def test_claude_plugin_manifest_paths() -> None:
     assert "[TODO" not in manifest_path.read_text(encoding="utf-8")
 
 
+def test_claude_plugin_lens_module() -> None:
+    hooks = _load_json(PLUGIN_ROOT / "hooks" / "hooks.json")
+
+    # The engine takes exactly one module, relative to hooks.json.
+    assert hooks["modules"] == ["./lens/lens.js"]
+    bundle = PLUGIN_ROOT / "hooks" / "lens" / "lens.js"
+    assert bundle.is_file()
+    assert re.search(r"export\s*\{\s*register\s*\}", bundle.read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize(
+    ("field", "default", "read_as"),
+    [
+        # On by default: the bundle treats only `false` as off.
+        ("lens_margin", True, "!== false"),
+        ("lens_squeeze", True, "!== false"),
+        ("lens_review", True, "!== false"),
+        ("lens_flow", True, "!== false"),
+        # Off by default: the map opens unasked only for someone who turned this on.
+        ("lens_pane_autoopen", False, "=== true"),
+        # Off by default: the map is quiet tiles; health colours are a button away.
+        ("lens_map_health", False, "=== true"),
+    ],
+)
+def test_claude_plugin_lens_toggles(field: str, default: bool, read_as: str) -> None:
+    config = _load_json(PLUGIN_ROOT / ".claude-plugin" / "plugin.json")["userConfig"]
+
+    assert set(config[field]) == {"type", "title", "description", "default"}
+    assert config[field]["type"] == "boolean"
+    assert config[field]["default"] is default
+    assert "—" not in config[field]["description"]
+    bundle = (PLUGIN_ROOT / "hooks" / "lens" / "lens.js").read_text(encoding="utf-8")
+    assert f'options["{field}"] {read_as}' in bundle
+
+
+def test_claude_plugin_lens_toggles_are_all_tested() -> None:
+    config = _load_json(PLUGIN_ROOT / ".claude-plugin" / "plugin.json")["userConfig"]
+
+    assert set(config) == {"lens_margin", "lens_squeeze", "lens_review", "lens_flow", "lens_pane_autoopen", "lens_map_health"}
+
+
 def test_claude_plugin_mcp_uses_repowise() -> None:
     config = _load_json(PLUGIN_ROOT / ".mcp.json")
 
@@ -55,7 +96,10 @@ def test_claude_plugin_hooks_match_installer() -> None:
 
     command = claude_config._AUGMENT_HOOK_COMMAND
 
-    assert rows("PostToolUse") == [(claude_config._AUGMENT_MATCHER, command)]
+    assert rows("PostToolUse") == [
+        (claude_config._AUGMENT_MATCHER, command),
+        (claude_config._CAPTURE_MATCHER, claude_config._CAPTURE_HOOK_COMMAND),
+    ]
     assert rows("SessionStart") == [(claude_config._SESSION_START_MATCHER, command)]
     assert rows("PostToolUseFailure") == [(claude_config._FAILURE_MATCHER, command)]
 
@@ -69,6 +113,7 @@ def test_claude_plugin_hooks_match_installer() -> None:
         for entries in hooks.values()
         for entry in entries
         for hook in entry["hooks"]
+        if entry.get("matcher") != claude_config._CAPTURE_MATCHER
     ]
     assert commands == [command] * len(hooks)
 
@@ -121,6 +166,101 @@ def test_the_augment_hook_is_silent_when_the_console_script_is_absent(tmp_path: 
     assert proc.returncode == 0, f"exited {proc.returncode}: {proc.stderr!r}"
     assert proc.stdout == ""
     assert proc.stderr == ""
+
+
+def _fake_augment(bin_dir: Path, marker: Path) -> None:
+    """A ``repowise-augment`` on PATH that records the payload it was given."""
+    script = bin_dir / "repowise-augment"
+    script.write_text(f"#!/bin/sh\ncat > '{marker.as_posix()}'\n", encoding="utf-8")
+    script.chmod(0o755)
+
+
+def _run_capture_hook(shell: str, payload: dict, bin_dir: Path) -> None:
+    import subprocess
+
+    proc = subprocess.run(
+        [shell, "-c", claude_config._CAPTURE_HOOK_COMMAND],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PATH": bin_dir.as_posix() + os.pathsep + os.environ.get("PATH", "")},
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == ""
+
+
+def _shells() -> list[str]:
+    """Git Bash or bash, plus a plain ``sh`` where it is a different shell (dash)."""
+    import shutil
+
+    found = [s for s in (_posix_bash(),) if s]
+    sh = shutil.which("sh") if os.name != "nt" else None
+    if sh and os.path.realpath(sh) != os.path.realpath(found[0] if found else ""):
+        found.append(sh)
+    return found
+
+
+def _shell_payload(command: str) -> dict:
+    return {
+        "hook_event_name": "PostToolUse",
+        "tool_name": "Bash",
+        "tool_input": {"command": command},
+        "tool_response": {"stdout": "x" * 40_000, "stderr": ""},
+    }
+
+
+def test_the_capture_hook_starts_nothing_for_a_shell_call_that_is_not_a_commit(
+    tmp_path: Path,
+) -> None:
+    """The shell entry fires on every shell call, so the gate lives in the shell.
+
+    A Python start is what made the shell matcher cost 51% of hook invocations;
+    a call that is not a commit must never reach the console script.
+    """
+    shells = _shells()
+    if not shells:
+        pytest.skip("no POSIX shell available to execute a hook command")
+    marker = tmp_path / "ran.json"
+    _fake_augment(tmp_path, marker)
+
+    for shell in shells:
+        _run_capture_hook(shell, _shell_payload("npm test"), tmp_path)
+        assert not marker.exists(), shell
+
+
+def test_the_capture_hook_hands_a_commit_to_augment_intact(tmp_path: Path) -> None:
+    shells = _shells()
+    if not shells:
+        pytest.skip("no POSIX shell available to execute a hook command")
+    marker = tmp_path / "ran.json"
+    _fake_augment(tmp_path, marker)
+    payload = _shell_payload('git commit -m "use sqlite, not postgres"')
+
+    for shell in shells:
+        _run_capture_hook(shell, payload, tmp_path)
+        assert json.loads(marker.read_text(encoding="utf-8")) == payload, shell
+        marker.unlink()
+
+
+def test_the_capture_hook_is_silent_when_the_console_script_is_absent(tmp_path: Path) -> None:
+    bash = _posix_bash()
+    if bash is None:
+        pytest.skip("no POSIX bash available to execute a hook command")
+    import shutil
+    import subprocess
+
+    # Coreutils stay reachable; only the console script is missing.
+    cat_dir = Path(shutil.which("cat", path=os.environ.get("PATH")) or "/usr/bin/cat").parent
+    proc = subprocess.run(
+        [bash, "-c", claude_config._CAPTURE_HOOK_COMMAND],
+        input=json.dumps(_shell_payload("git commit -m x")),
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PATH": f"{tmp_path}{os.pathsep}{cat_dir}"},
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert (proc.stdout, proc.stderr) == ("", "")
 
 
 def test_claude_plugin_skills_have_metadata() -> None:

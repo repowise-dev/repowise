@@ -3,9 +3,27 @@
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _ceiling_workspace_walk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Keep the workspace walk inside each test's tmp_path.
+
+    ``find_workspace_root`` walks up to the filesystem root, so a tmp_path
+    that sits below a directory holding ``.repowise-workspace.yaml`` (say
+    ``~/work/.tmp``) makes unit tests find the developer's real workspace
+    instead of none. Ceiling the walk at tmp_path: the directory itself is
+    still checked, so workspaces a test creates inside it keep working.
+    """
+    from repowise.core.workspace.config import WORKSPACE_CEILING_ENV_VAR
+
+    monkeypatch.setenv(WORKSPACE_CEILING_ENV_VAR, str(tmp_path))
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -110,6 +128,53 @@ def _isolate_db_url_env():
 
 
 @pytest.fixture(autouse=True)
+def _isolate_tokens_file(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory):
+    """Keep a developer's ``~/.repowise/tokens.yaml`` from turning server auth on."""
+    missing = tmp_path_factory.getbasetemp() / "no-tokens.yaml"
+    monkeypatch.setenv("REPOWISE_TOKENS_FILE", str(missing))
+
+
+_REAL_HOME = Path.home()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_provider_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+):
+    """Keep a developer's ``~/.repowise`` provider and embedder settings out.
+
+    Every LLM resolver reads ``provider_config.json`` (global default, stored
+    keys) and the embedder resolver reads ``~/.repowise/config.yaml``, so real
+    ones on the machine would decide what a test resolves. A test that moves
+    ``Path.home`` on purpose still gets its own home.
+    """
+    scratch = tmp_path_factory.mktemp("provider-config")
+    monkeypatch.setenv("REPOWISE_CONFIG_DIR", str(scratch))
+    from repowise.core.providers.embedding import resolve as embedding_resolve
+
+    def _global_embedder_config() -> Path:
+        home = Path.home()
+        return (scratch if home == _REAL_HOME else home / ".repowise") / "config.yaml"
+
+    monkeypatch.setattr(embedding_resolve, "global_config_path", _global_embedder_config)
+    sys.modules["repowise.core.providers.llm.resolve"].clear_cache()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_per_index_caches():
+    """Drop the MCP server's per-index caches before every test.
+
+    Test repositories share one id and one ``updated_at`` and have no state file,
+    so every test's index looks the same to the cache key. Looked up in
+    ``sys.modules`` so a test that never loads the server pays nothing.
+    """
+    for name in ("_basis", "_scope", "_graph_files", "tool_overview.graph", "_components"):
+        module = sys.modules.get(f"repowise.server.mcp_server.{name}")
+        if module is not None:
+            module.reset_cache()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_structlog_config():
     """Restore structlog's global configuration after every test.
 
@@ -135,6 +200,40 @@ def _isolate_structlog_config():
     finally:
         structlog.configure(**saved)
 
+@pytest.fixture(autouse=True)
+def _isolate_silenced_logger_levels():
+    """Restore stdlib logger levels mutated by silence_logs_for_machine_output.
+
+    That helper also calls ``logging.getLogger(name).setLevel(logging.ERROR)``
+    on ``httpx``, ``httpcore``, ``repowise.core``, and ``repowise.server`` —
+    process-global state that ``_isolate_structlog_config`` (above) does not
+    touch, since it only snapshots structlog's own configuration.
+
+    Without this, a test that exercises any ``--format json``/``--format md``
+    command leaves those loggers raised to ERROR for the rest of the session.
+    A later test asserting a ``caplog`` record from a module under
+    ``repowise.core`` or ``repowise.server`` then reads an empty list: the
+    module's own logger has no level set, so its *effective* level is
+    inherited from the ancestor now pinned at ERROR, and
+    ``logger.warning(...)`` is dropped before any handler — including
+    ``caplog``'s — ever runs. Same failure shape as the structlog case
+    above: passes when the file is run alone, fails only in a full run,
+    depending on whether a machine-output command executed first (#1976).
+
+    Snapshot and restore rather than reset to ``NOTSET``: a test that sets a
+    level on purpose keeps working, and the next test still starts clean.
+    """
+    import logging
+
+    from repowise.cli.helpers import MACHINE_OUTPUT_LOGGER_NAMES
+
+    loggers = [logging.getLogger(name) for name in MACHINE_OUTPUT_LOGGER_NAMES]
+    previous_levels = [logger.level for logger in loggers]
+    try:
+        yield
+    finally:
+        for logger, level in zip(loggers, previous_levels, strict=True):
+            logger.setLevel(level)
 
 @pytest.fixture(scope="session")
 def repo_root() -> Path:
@@ -152,7 +251,35 @@ def sample_repo_path(repo_root: Path) -> Path:
     return path
 
 
+@pytest.fixture
+def sample_repo_copy(sample_repo_path: Path, tmp_path: Path) -> Path:
+    """A git-backed copy of sample_repo for tests that write into it.
+
+    The pipeline reads git history, so the copy gets one commit of its own.
+    """
+    dest = tmp_path / "sample_repo"
+    shutil.copytree(sample_repo_path, dest)
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@e.x",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@e.x",
+    }
+    for args in (["init", "-q"], ["add", "-A"], ["commit", "-q", "-m", "init"]):
+        subprocess.run(["git", *args], cwd=dest, check=True, capture_output=True, env=env)
+    return dest
+
+
 @pytest.fixture(scope="session")
 def fixtures_dir(repo_root: Path) -> Path:
     """Path to the tests/fixtures/ directory."""
     return repo_root / "tests" / "fixtures"
+
+
+@pytest.fixture
+def dry_violation_shown(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Show ``dry_violation`` for tests of the clone mechanics the registry hides."""
+    from repowise.core.analysis import finding_registry
+
+    monkeypatch.delitem(finding_registry.REGISTRY, "dry_violation")

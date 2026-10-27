@@ -11,7 +11,7 @@
  * and hosted render the same view from one source.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
 import { Plus, Flame } from "lucide-react";
 import type { BlastRadiusResponse } from "@repowise-dev/types/blast-radius";
@@ -23,6 +23,8 @@ import { FilePathPicker } from "../health/file-path-picker";
 import { BlastRadiusResults } from "./blast-radius-results";
 import type { ImpactAdapter } from "./impact-adapter";
 import { toFriendlyMessage } from "../lib/errors";
+import { disambiguateBasenames } from "../lib/format";
+import { FilePath } from "../shared/file-path";
 
 export function ImpactView({
   adapter,
@@ -53,6 +55,10 @@ export function ImpactView({
     `blast-radius-suggestions:${adapter.cacheKey}`,
     () => adapter.listHotspots(8),
     { revalidateOnFocus: false },
+  );
+  const suggestionLabels = useMemo(
+    () => disambiguateBasenames((hotspotSuggestions ?? []).map((h) => h.file_path)),
+    [hotspotSuggestions],
   );
 
   const addPaths = (paths: string[]) => {
@@ -154,11 +160,15 @@ export function ImpactView({
                   type="button"
                   onClick={() => addPaths([h.file_path])}
                   className="inline-flex items-center gap-1 rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2.5 py-1 text-xs font-mono text-[var(--color-text-secondary)] hover:border-[var(--color-accent-primary)] hover:text-[var(--color-text-primary)] transition-colors"
-                  title={h.file_path}
                   aria-label={`Add ${h.file_path} to changed files`}
                 >
                   <Flame className="h-3 w-3 text-[var(--color-warning)]" />
-                  <span className="truncate max-w-[260px]">{h.file_path}</span>
+                  <FilePath
+                    path={h.file_path}
+                    mode="distinguishing"
+                    labels={suggestionLabels}
+                    className="max-w-[260px]"
+                  />
                   <Plus className="h-3 w-3 opacity-60" />
                 </button>
               ))}
@@ -181,7 +191,7 @@ export function ImpactView({
                 max={10}
                 value={maxDepth}
                 onChange={(e) => setMaxDepth(Math.max(1, Math.min(10, Number(e.target.value))))}
-                className="w-16 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-1 text-xs text-[var(--color-text-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-primary)]"
+                className="w-16 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-1 text-xs text-[var(--color-text-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-focus-ring)]"
                 aria-label="Maximum dependency depth (1–10)"
               />
             </label>

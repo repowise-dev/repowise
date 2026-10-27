@@ -1,104 +1,20 @@
-"""Tests for the configurable MCP tool surface (_tool_selection)."""
+"""MCP tool surface against the real registry and the live FastMCP server.
+
+The pure selection rules are tested in tests/unit/registry/test_mcp_tool_selection.py.
+"""
 
 from __future__ import annotations
 
 import pytest
 
-from repowise.core.registry import ToolEntry
-from repowise.server.mcp_server._tool_selection import resolve_enabled_tools
-
-
-def _fn(name):
-    def f():  # pragma: no cover - never called
-        return None
-
-    f.__name__ = name
-    return f
-
-
-# A representative catalog: canonical defaults, one workspace utility, and specialists.
-CATALOG = [
-    ToolEntry(_fn("get_answer"), "get_answer"),
-    ToolEntry(_fn("get_context"), "get_context"),
-    ToolEntry(
-        _fn("list_repos"),
-        "list_repos",
-        requires_workspace=True,
-        tier="utility",
-    ),
-    ToolEntry(
-        _fn("get_blast_radius"),
-        "get_blast_radius",
-        default=False,
-        requires_workspace=True,
-        tier="specialist",
-    ),
-    ToolEntry(_fn("get_dependency_path"), "get_dependency_path", default=False),
-]
-
-
-def test_default_single_repo_surface():
-    enabled = resolve_enabled_tools(CATALOG, is_workspace=False)
-    assert enabled == {"get_answer", "get_context"}
-
-
-def test_default_workspace_adds_workspace_only():
-    enabled = resolve_enabled_tools(CATALOG, is_workspace=True)
-    assert enabled == {"get_answer", "get_context", "list_repos"}
-
-
-def test_opt_in_tool_off_by_default():
-    assert "get_dependency_path" not in resolve_enabled_tools(CATALOG, is_workspace=True)
-
-
-def test_delta_add_and_remove():
-    enabled = resolve_enabled_tools(
-        CATALOG, is_workspace=False, override="+get_dependency_path,-get_context"
-    )
-    assert enabled == {"get_answer", "get_dependency_path"}
-
-
-def test_delta_string_or_list_equivalent():
-    a = resolve_enabled_tools(CATALOG, is_workspace=False, override="+get_dependency_path")
-    b = resolve_enabled_tools(CATALOG, is_workspace=False, override=["+get_dependency_path"])
-    assert a == b == {"get_answer", "get_context", "get_dependency_path"}
-
-
-def test_explicit_allowlist_replaces_default():
-    enabled = resolve_enabled_tools(
-        CATALOG, is_workspace=False, override="get_answer,get_dependency_path"
-    )
-    assert enabled == {"get_answer", "get_dependency_path"}
-
-
-def test_all_enables_everything_usable():
-    assert resolve_enabled_tools(CATALOG, is_workspace=True, override="all") == {
-        e.name for e in CATALOG
-    }
-    # In single-repo, "all" still excludes workspace-only tools.
-    assert resolve_enabled_tools(CATALOG, is_workspace=False, override="all") == {
-        "get_answer",
-        "get_context",
-        "get_dependency_path",
-    }
-
-
-def test_lean_profile_single_repo():
-    # Intersected with the catalog: only the lean tools this registry has.
-    enabled = resolve_enabled_tools(CATALOG, is_workspace=False, override="lean")
-    assert enabled == {"get_answer", "get_context"}
-
-
-def test_lean_profile_workspace_adds_list_repos():
-    enabled = resolve_enabled_tools(CATALOG, is_workspace=True, override="LEAN")
-    assert enabled == {"get_answer", "get_context", "list_repos"}
+from repowise.core.registry.tool_selection import resolve_enabled_tools
 
 
 def test_lean_profile_full_registry():
     """Against the real registry, lean is exactly the agent-lean tools."""
     from repowise.core.registry import mcp_tool_registry
+    from repowise.core.registry.tool_selection import LEAN_TOOLS
     from repowise.server.mcp_server import ensure_full_surface
-    from repowise.server.mcp_server._tool_selection import LEAN_TOOLS
 
     ensure_full_surface()  # tool modules import lazily
     enabled = resolve_enabled_tools(
@@ -143,31 +59,6 @@ def test_conformance_and_refactoring_are_opt_in():
     )
     assert "generate_refactoring_code" in opted_single
     assert "get_conformance" not in opted_single
-
-
-def test_workspace_only_named_explicitly_is_dropped_single_repo():
-    enabled = resolve_enabled_tools(
-        CATALOG, is_workspace=False, override="get_answer,get_blast_radius"
-    )
-    assert enabled == {"get_answer"}
-
-
-def test_workspace_only_named_explicitly_kept_in_workspace():
-    enabled = resolve_enabled_tools(
-        CATALOG, is_workspace=True, override="get_answer,get_blast_radius"
-    )
-    assert enabled == {"get_answer", "get_blast_radius"}
-
-
-def test_unknown_tool_ignored():
-    enabled = resolve_enabled_tools(CATALOG, is_workspace=False, override="+does_not_exist")
-    assert enabled == {"get_answer", "get_context"}
-
-
-def test_empty_override_falls_back_to_default():
-    assert resolve_enabled_tools(CATALOG, is_workspace=False, override="") == (
-        resolve_enabled_tools(CATALOG, is_workspace=False)
-    )
 
 
 def test_real_registry_phase_one_surfaces_are_exact():
@@ -254,3 +145,49 @@ async def test_apply_trims_and_restores_live_server(tmp_path, monkeypatch):
         if _tool_selection._full_surface is not None:
             mcp._tool_manager._tools = dict(_tool_selection._full_surface)
         _tool_selection._selected_surface = None
+
+
+# --- available_when, boot and settings ------------------------------------
+
+
+def _gate(monkeypatch, name: str) -> None:
+    """Gate one live entry on a ``flows`` fact the default facts do not carry."""
+    from dataclasses import replace
+
+    from repowise.core.registry import mcp_tool_registry
+    from repowise.server.mcp_server import ensure_full_surface
+
+    ensure_full_surface()
+    gated = [
+        replace(e, available_when=lambda f: f.counts.get("flows", 0) > 0) if e.name == name else e
+        for e in mcp_tool_registry.entries()
+    ]
+    monkeypatch.setattr(mcp_tool_registry, "entries", lambda: list(gated))
+
+
+def test_boot_selection_evaluates_predicates(tmp_path, monkeypatch):
+    from repowise.server.mcp_server import _tool_selection
+
+    _gate(monkeypatch, "get_health")
+    monkeypatch.setattr(_tool_selection, "_is_workspace", lambda _path: False)
+    monkeypatch.setattr(_tool_selection, "_selected_surface", None)
+
+    enabled = _tool_selection.apply_tool_selection(object(), repo_path=str(tmp_path))
+
+    assert "get_health" not in enabled
+    assert "get_answer" in enabled
+
+
+def test_settings_surface_marks_a_gated_tool_ineligible(tmp_path, monkeypatch):
+    from repowise.server.mcp_server import _tool_selection
+
+    _gate(monkeypatch, "get_health")
+    monkeypatch.setattr(_tool_selection, "_is_workspace", lambda _path: False)
+
+    rows = {
+        row["name"]: row for row in _tool_selection.describe_tool_surface(str(tmp_path))["tools"]
+    }
+
+    assert rows["get_health"]["eligible"] is False
+    assert rows["get_health"]["enabled"] is False
+    assert rows["get_answer"]["eligible"] is True

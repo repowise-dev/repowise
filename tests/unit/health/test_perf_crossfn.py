@@ -531,3 +531,61 @@ def test_crossfn_finding_scores_performance_not_defect():
     assert scores["defect"] == 10.0
     assert scores["performance"] < 10.0
     assert all(d == 0.0 for d in deductions)
+
+
+def test_crossfn_hit_carries_the_owning_loops_magnitude(tmp_path):
+    """The loop that pays for the helper's sink is in the caller, so its trip
+    count travels with the cross-function hit into the finding."""
+    source = _SCHEDULER.replace(
+        "        for repo in repos:",
+        "        orders = self.session.execute(select(Order)).scalars().all()\n"
+        "        for repo in orders:",
+    )
+    walked, graph = _build(tmp_path, {"scheduler.py": source})
+    (hit,) = [h for hs in collect_crossfn_io_in_loop(walked, graph).values() for h in hs]
+    assert hit.loop is not None and hit.loop.magnitude == "grows_with_data"
+    ctx = FileContext(
+        file_path="scheduler.py",
+        language="python",
+        nloc=20,
+        has_test_file=False,
+        module="scheduler",
+        perf_hits=[hit],
+    )
+    (finding,) = IoInLoopDetector().detect(ctx)
+    assert finding.details["loop_magnitude"] == "grows_with_data"
+
+
+def test_crossfn_keyed_call_is_not_key_unused_beside_a_key_free_call(tmp_path):
+    """``load(i)`` reaches ``requests.get`` and ``ping`` does not. Sharing the
+    loop line must not mark the keyed hit ``loop_key_unused`` in either order."""
+    source = (
+        "import requests\n"
+        "def load(i):\n"
+        "    return requests.get(i)\n"
+        "def ping():\n"
+        "    return 1\n"
+        "def run(ids):\n"
+        "    for i in ids:\n"
+        "        {body}\n"
+    )
+    for name, body in (
+        ("keyed-first", "load(i); ping()"),
+        ("key-free-first", "ping(); load(i)"),
+    ):
+        walked, graph = _build(tmp_path / name, {"client.py": source.format(body=body)})
+        hits = [h for hs in collect_crossfn_io_in_loop(walked, graph).values() for h in hs]
+        (hit,) = [h for h in hits if h.path[-1].endswith("::load")]
+        assert "loop_key_unused" not in hit.loop_facts()
+        assert hit.loop_facts()["loop_iterates"] == "parameter"
+
+
+def test_crossfn_hit_carries_the_owning_loops_chunking(tmp_path):
+    """A caller that already walks its rows a batch at a time is not told to batch."""
+    source = _SCHEDULER.replace(
+        "        for repo in repos:\n            out.append(self._poll(repo))",
+        "        for batch in batched(repos, 100):\n            out.append(self._poll(batch))",
+    )
+    walked, graph = _build(tmp_path, {"scheduler.py": source})
+    (hit,) = [h for hs in collect_crossfn_io_in_loop(walked, graph).values() for h in hs]
+    assert hit.loop is not None and hit.loop.chunked

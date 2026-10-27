@@ -5,7 +5,7 @@ which table the repo owns. Consumers of the model are already visible through
 the import graph, so this module never scans for model *usage*; it only emits
 the declaration.
 
-Explicit names (``__tablename__``, ``@Table(name=...)``, ``$table``,
+Explicit names (``__tablename__``, ``@Table(name=...)``,
 ``self.table_name``, ``db_table``) are extracted verbatim at high confidence.
 Convention-derived names (JPA entity class, ActiveRecord class, EF ``DbSet``
 property) are emitted at lower confidence: a wrong guess costs a missed link
@@ -15,79 +15,18 @@ property) are emitted at lower confidence: a wrong guess costs a missed link
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from repowise.core.workspace.origins import ContractOrigin
+
 from ..base import ScanContext, line_at
-from ..langs import CSHARP, JAVA, KOTLIN, PHP, PYTHON, RUBY
-from .dialect import build_table_provider
+from ..langs import CSHARP, JAVA, KOTLIN, PYTHON, RUBY
+from ..strings import call_arguments
+from .dialect import _Found, dedup_emit, found_names
+from .names import normalize_table_name, pluralize, snake_case
 
 if TYPE_CHECKING:
     from repowise.core.workspace.contracts import Contract
-
-_EXPLICIT_CONFIDENCE = 0.85
-_CONVENTION_CONFIDENCE = 0.6
-
-
-def _snake_case(name: str) -> str:
-    return re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", name).lower()
-
-
-def _pluralize(name: str) -> str:
-    """Naive English pluralization, matching the common ActiveRecord cases.
-
-    Deliberate ceiling: irregular nouns (person/people) are wrong here and
-    yield a missed link, not a false one. Upgrade path: vendor a real
-    inflector if Rails smoke tests show it matters.
-    """
-    if name.endswith(("s", "x", "z", "ch", "sh")):
-        return name + "es"
-    if name.endswith("y") and len(name) > 1 and name[-2] not in "aeiou":
-        return name[:-1] + "ies"
-    return name + "s"
-
-
-#: One table declaration: ``(raw_name, confidence, line)``.
-_Found = tuple[str, float, int]
-
-
-def _found(
-    pattern: re.Pattern[str],
-    content: str,
-    confidence: float,
-    transform: Callable[[str], str] = str,
-) -> list[_Found]:
-    r"""Every match of *pattern*'s first group, with the line it sits on.
-
-    The line comes from the group, not the match: three of these patterns open
-    with ``^\s*`` under ``MULTILINE``, where ``^`` matches at a preceding blank
-    line and ``\s*`` eats the newlines, putting ``m.start()`` above the
-    declaration.
-    """
-    return [
-        (transform(m.group(1)), confidence, line_at(content, m.start(1)))
-        for m in pattern.finditer(content)
-    ]
-
-
-def _dedup_emit(
-    ctx: ScanContext,
-    framework: str,
-    found: list[_Found],
-) -> list[Contract]:
-    out: list[Contract] = []
-    seen: set[str] = set()
-    for raw, confidence, line in found:
-        if raw in seen:
-            continue
-        seen.add(raw)
-        contract = build_table_provider(
-            ctx, table_raw=raw, framework=framework, line=line, confidence=confidence
-        )
-        if contract is not None:
-            out.append(contract)
-    return out
-
 
 class SqlAlchemyDjangoDialect:
     """Python ORMs and migrations: SQLAlchemy ``__tablename__``, Django
@@ -96,18 +35,72 @@ class SqlAlchemyDjangoDialect:
 
     name = "python-orm"
     extensions = PYTHON
+    # `__tablename__`, `db_table`, `op.create_table` and `table=True` all hold it.
+    requires = ("table",)
 
     _TABLENAME_RE = re.compile(r"^\s*__tablename__\s*[:=]\s*.*?['\"](\S+?)['\"]", re.MULTILINE)
     _DB_TABLE_RE = re.compile(r"^\s*db_table\s*=\s*['\"](\S+?)['\"]", re.MULTILINE)
-    _CREATE_TABLE_RE = re.compile(r"\bop\.create_table\(\s*['\"](\w+)['\"]")
+    _CREATE_TABLE_RE = re.compile(r"\bop\.create_table\s*\(")
     _SQLMODEL_RE = re.compile(r"\bclass\s+(\w+)\([^)]*\btable\s*=\s*True[^)]*\)")
+    _BARE_STRING_RE = re.compile(r"['\"](\w+)['\"]")
+    _SCHEMA_KWARG_RE = re.compile(r"schema\s*=\s*['\"](\w+)['\"]")
+
+    def _created_tables(self, content: str) -> list[_Found]:
+        r"""The tables each ``op.create_table`` call declares, schema-qualified.
+
+        Alembic takes the target schema as a ``schema=`` keyword that usually
+        trails the column list, so the call's first string literal is the bare
+        table name and the qualifier has to come from the keyword: a
+        schema-qualified migration would otherwise be recorded as ``owners``
+        where its SQL consumers say ``core.owners``, and the two keys would
+        never meet. The argument list is split at top level
+        (:func:`..strings.call_arguments`) so a ``schema=`` belonging to a
+        later statement, or one on a nested call inside the argument list,
+        cannot lend its schema to this table. The qualified token goes through
+        :func:`normalize_table_name` so the case folding - and the default
+        schema drop - is the SQL consumer side's own.
+        """
+        found: list[_Found] = []
+        for m in self._CREATE_TABLE_RE.finditer(content):
+            args = call_arguments(content, m.end() - 1)  # m.end()-1 is the '('
+            if not args:
+                continue
+            name = self._BARE_STRING_RE.fullmatch(args[0])
+            if name is None:
+                continue
+            table = name.group(1)
+            for arg in args[1:]:
+                schema = self._SCHEMA_KWARG_RE.fullmatch(arg)
+                if schema is not None:
+                    table = f"{schema.group(1)}.{table}"
+                    break
+            raw = normalize_table_name(table)
+            if raw is not None:
+                found.append((raw, ContractOrigin.DDL, line_at(content, m.start())))
+        return found
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
-        found = _found(self._TABLENAME_RE, ctx.content, _EXPLICIT_CONFIDENCE)
-        found += _found(self._DB_TABLE_RE, ctx.content, _EXPLICIT_CONFIDENCE)
-        found += _found(self._CREATE_TABLE_RE, ctx.content, _EXPLICIT_CONFIDENCE)
-        found += _found(self._SQLMODEL_RE, ctx.content, _CONVENTION_CONFIDENCE, str.lower)
-        return _dedup_emit(ctx, self.name, found)
+        # A migration's `create_table` defines the schema; the rest model it.
+        # Each pattern runs only where its literal is: the `^\s*` ones have no
+        # literal prefix for the regex engine to skip ahead by.
+        content = ctx.content
+        seen: set[str] = set()
+        created = (
+            self._created_tables(content)
+            if ctx.has_any(("op.create_table",))
+            else []
+        )
+        out = dedup_emit(ctx, self.name, created, schema="create", seen=seen)
+        found: list[tuple[str, ContractOrigin, int]] = []
+        if ctx.has_any(("__tablename__",)):
+            found += found_names(self._TABLENAME_RE, content, ContractOrigin.EXPLICIT_TABLE)
+        if ctx.has_any(("db_table",)):
+            found += found_names(self._DB_TABLE_RE, content, ContractOrigin.EXPLICIT_TABLE)
+        if ctx.has_any(("True",)):
+            found += found_names(
+                self._SQLMODEL_RE, content, ContractOrigin.NAME_CONVENTION, str.lower
+            )
+        return out + dedup_emit(ctx, self.name, found, seen=seen)
 
 
 class JpaDialect:
@@ -115,6 +108,7 @@ class JpaDialect:
 
     name = "jpa"
     extensions = JAVA | KOTLIN
+    requires = ("@Table", "@Entity")
 
     _TABLE_RE = re.compile(r"@Table\s*\(\s*name\s*=\s*\"([^\"]+)\"")
     # @Entity (optionally parameterized) followed by its class declaration.
@@ -123,14 +117,14 @@ class JpaDialect:
     )
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
-        found = _found(self._TABLE_RE, ctx.content, _EXPLICIT_CONFIDENCE)
+        found = found_names(self._TABLE_RE, ctx.content, ContractOrigin.EXPLICIT_TABLE)
         if not found:
             # Only fall back to the class-name convention when no explicit
             # @Table names the table (one entity per file is the JPA norm).
-            found = _found(
-                self._ENTITY_CLASS_RE, ctx.content, _CONVENTION_CONFIDENCE, _snake_case
+            found = found_names(
+                self._ENTITY_CLASS_RE, ctx.content, ContractOrigin.NAME_CONVENTION, snake_case
             )
-        return _dedup_emit(ctx, self.name, found)
+        return dedup_emit(ctx, self.name, found)
 
 
 class EfCoreDialect:
@@ -138,14 +132,15 @@ class EfCoreDialect:
 
     name = "efcore"
     extensions = CSHARP
+    requires = ("[Table(", "DbSet<")
 
     _TABLE_ATTR_RE = re.compile(r"\[Table\(\s*\"([^\"]+)\"")
     _DBSET_RE = re.compile(r"\bDbSet<\s*\w+\s*>\s+(\w+)")
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
-        found = _found(self._TABLE_ATTR_RE, ctx.content, _EXPLICIT_CONFIDENCE)
-        found += _found(self._DBSET_RE, ctx.content, _CONVENTION_CONFIDENCE)
-        return _dedup_emit(ctx, self.name, found)
+        found = found_names(self._TABLE_ATTR_RE, ctx.content, ContractOrigin.EXPLICIT_TABLE)
+        found += found_names(self._DBSET_RE, ctx.content, ContractOrigin.NAME_CONVENTION)
+        return dedup_emit(ctx, self.name, found)
 
 
 class ActiveRecordDialect:
@@ -153,6 +148,7 @@ class ActiveRecordDialect:
 
     name = "activerecord"
     extensions = RUBY
+    requires = ("table_name", "ApplicationRecord", "ActiveRecord::Base")
 
     _TABLE_NAME_RE = re.compile(r"self\.table_name\s*=\s*['\"](\w+)['\"]")
     _MODEL_CLASS_RE = re.compile(
@@ -160,25 +156,12 @@ class ActiveRecordDialect:
     )
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
-        found = _found(self._TABLE_NAME_RE, ctx.content, _EXPLICIT_CONFIDENCE)
+        found = found_names(self._TABLE_NAME_RE, ctx.content, ContractOrigin.EXPLICIT_TABLE)
         if not found:
-            found = _found(
+            found = found_names(
                 self._MODEL_CLASS_RE,
                 ctx.content,
-                _CONVENTION_CONFIDENCE,
-                lambda m: _pluralize(_snake_case(m)),
+                ContractOrigin.NAME_CONVENTION,
+                lambda m: pluralize(snake_case(m)),
             )
-        return _dedup_emit(ctx, self.name, found)
-
-
-class EloquentDialect:
-    """Laravel Eloquent: ``protected $table = '...'``."""
-
-    name = "eloquent"
-    extensions = PHP
-
-    _TABLE_RE = re.compile(r"protected\s+\$table\s*=\s*['\"](\w+)['\"]")
-
-    def extract(self, ctx: ScanContext) -> list[Contract]:
-        found = _found(self._TABLE_RE, ctx.content, _EXPLICIT_CONFIDENCE)
-        return _dedup_emit(ctx, self.name, found)
+        return dedup_emit(ctx, self.name, found)

@@ -88,7 +88,14 @@ def scan_for_repos(
     - If *root* itself is a git repo, returns a single-element result.
     - Stops descending once a ``.git`` boundary is found (no nested repos).
     - Skips common junk directories (``node_modules``, ``.venv``, etc.).
-    - Submodules (``.git`` is a file) are excluded unless *include_submodules* is True.
+    - Submodules (``.git`` is a file) found *during the walk* are excluded
+      unless *include_submodules* is True. The flag never applies to *root*
+      itself: that is the repo the caller explicitly pointed at, not something
+      discovery turned up, so it is always eligible.
+    - Linked git worktrees found during the walk are skipped: each is another
+      checkout of a repo that is (or can be) listed on its own.
+    - A repo reached twice (a symlink or junction to another listed repo) is
+      listed once.
     """
     root = Path(root).resolve()
 
@@ -101,6 +108,7 @@ def scan_for_repos(
     # nested repos like backend/ and frontend/).
     found: list[tuple[Path, bool]] = []  # (abs_path, is_submodule)
     skipped: list[str] = []
+    seen: set[str] = {_path_key(root)} if root_is_repo else set()
 
     for dirpath_str, dirnames, _filenames in os.walk(root):
         dirpath = Path(dirpath_str)
@@ -118,15 +126,20 @@ def scan_for_repos(
         for dirname in list(dirnames):
             child = dirpath / dirname
             if _is_git_repo(child):
+                repos_at_this_level.append(dirname)
+                if _is_linked_worktree(child):
+                    continue
                 is_sub = _is_submodule(child)
                 if not is_sub or include_submodules:
                     try:
                         resolved = child.resolve()
                         resolved.relative_to(root)
-                        found.append((resolved, is_sub))
                     except (OSError, ValueError):
                         continue  # broken symlink or resolved outside root
-                repos_at_this_level.append(dirname)
+                    key = _path_key(resolved)
+                    if key not in seen:
+                        seen.add(key)
+                        found.append((resolved, is_sub))
 
         # Don't descend into discovered repos
         for dirname in repos_at_this_level:
@@ -134,17 +147,21 @@ def scan_for_repos(
 
     # If root is a git repo and no sub-repos found → single-repo result
     # If root is a git repo AND sub-repos found → include root in the list
+    #
+    # Neither branch consults ``include_submodules``. That flag decides whether
+    # the walk descends into submodules it *discovers*; the root is not a
+    # discovery, it is the path the caller named. Gating it here meant that
+    # running `repowise init` inside a submodule that itself contains ordinary
+    # nested clones built a workspace out of the clones and silently left the
+    # targeted repo unindexed and unselectable.
     if root_is_repo:
         if not found:
             # Pure single-repo — no sub-repos
-            if root_is_sub and not include_submodules:
-                return ScanResult(repos=[], root=root)
             aliases = _generate_aliases([(root, root)])
             repo = _make_repo(root, root, aliases[root], root_is_sub)
             return ScanResult(repos=[repo], root=root)
         # Root + sub-repos → workspace mode; add root to the list
-        if not root_is_sub or include_submodules:
-            found.insert(0, (root, root_is_sub))
+        found.insert(0, (root, root_is_sub))
 
     # Sort by relative path for deterministic ordering
     found.sort(key=lambda item: item[0].relative_to(root).as_posix())
@@ -166,17 +183,25 @@ def _is_git_repo(path: Path) -> bool:
 
 def _is_submodule(path: Path) -> bool:
     """A submodule has ``.git`` as a file pointing to the parent's modules dir."""
+    return (path / ".git").is_file() and not _is_linked_worktree(path)
+
+
+def _is_linked_worktree(path: Path) -> bool:
+    """A linked worktree's ``.git`` file points into another repo's ``.git/worktrees/``."""
     git_file = path / ".git"
     if not git_file.is_file():
         return False
-
     try:
-        # Distinguish submodules from git worktrees (which also use a .git file)
-        # by checking if the gitdir points to a worktrees directory.
         content = git_file.read_text(encoding="utf-8")
-        return "/worktrees/" not in content
     except OSError:
-        return True
+        return False
+    # Git writes forward slashes, but a hand-edited Windows pointer may not.
+    return "/worktrees/" in content.replace("\\", "/")
+
+
+def _path_key(path: Path) -> str:
+    """One key per directory on disk, whatever case the filesystem ignores."""
+    return os.path.normcase(str(path))
 
 
 def _prune_dirs(

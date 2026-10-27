@@ -20,10 +20,15 @@ from __future__ import annotations
 
 import subprocess
 import types
+from pathlib import Path
 
 import pytest
 
 from repowise.server.mcp_server import _meta
+from tests.unit.persistence.test_repository_head_commit import (
+    linked_worktree,
+    submodule_checkout,
+)
 
 _INDEXED = "a" * 40
 _LIVE = "b" * 40
@@ -61,6 +66,28 @@ def test_no_git_signal_omits_index_behind_entirely(tmp_path, monkeypatch):
     monkeypatch.setattr(_meta, "read_live_head", lambda p: None)
     out = _meta.freshness_from_repo(_repo(tmp_path), targets=["a.py"])
     assert "index_behind" not in out
+
+
+def test_build_meta_exposes_the_persisted_index_scope(tmp_path, monkeypatch):
+    repowise_dir = tmp_path / ".repowise"
+    repowise_dir.mkdir()
+    (repowise_dir / "state.json").write_text(
+        '{"run_mode":"fast","git_tier":"essential","docs_mode":"none"}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(_meta, "read_live_head", lambda p: None)
+
+    out = _meta.build_meta(repository=_repo(tmp_path))
+    whole = _meta.build_meta_with_full_scope(repository=_repo(tmp_path))
+
+    # An ordinary response carries the digest; what it says about the run is
+    # the same, and the diagnostics it leaves out are one get_overview away.
+    assert out["index_scope"]["run_mode"] == "fast"
+    assert out["index_scope"]["content_provenance"] == "none"
+    assert out["index_scope"]["projection"] == "compact"
+    assert whole["index_scope"]["run_mode"] == "fast"
+    assert whole["index_scope"]["content_provenance"] == "none"
+    assert whole["index_scope"]["git_history_coverage"] is None
 
 
 def test_served_target_changed_warns(tmp_path, monkeypatch):
@@ -224,7 +251,7 @@ def test_confident_answer_is_never_told_retrieval_found_nothing() -> None:
 
     assert answer_hint("high") is None
     assert answer_hint("medium") is None
-    assert "Read the listed fallback_targets" in (answer_hint("low") or "")
+    assert "candidate_files" in (answer_hint("low") or "")
 
 
 def test_no_answer_hint_names_an_external_tool() -> None:
@@ -240,3 +267,117 @@ def test_no_answer_hint_names_an_external_tool() -> None:
     assert not [h for h in hints if h and "Grep" in h]
     assert "Grep" not in NO_HITS_RECOVERY_HINT
     assert "search_codebase" in NO_HITS_RECOVERY_HINT
+
+
+async def _stamp_head_commit(sha: str) -> None:
+    """Give the fixture repository an indexed commit so freshness has something
+    to report. Without it ``freshness_from_repo`` emits only the age fields, and
+    a tool that forgot to pass ``repository`` would look identical to one that
+    passed it."""
+    from sqlalchemy import update
+
+    import repowise.server.mcp_server as mcp_mod
+    from repowise.core.persistence.database import get_session
+    from repowise.core.persistence.models import Repository
+
+    async with get_session(mcp_mod._session_factory) as session:
+        await session.execute(update(Repository).values(head_commit=sha))
+
+
+@pytest.mark.asyncio
+async def test_structured_search_meta_carries_freshness(setup_mcp):
+    """A single-repo symbol search compares against one index, so it must say
+    which commit that index was built from."""
+    from repowise.server.mcp_server import search_codebase
+
+    await _stamp_head_commit(_INDEXED)
+    result = await search_codebase("AuthService", mode="symbol")
+    assert result["_meta"]["indexed_commit"] == _INDEXED[:12]
+
+
+@pytest.mark.asyncio
+async def test_execution_flows_meta_carries_freshness(setup_mcp):
+    """get_execution_flows serves traces over files of one repo, so its
+    envelope carries that repo's freshness like every other default tool."""
+    from repowise.server.mcp_server.tool_flows import get_execution_flows
+
+    await _stamp_head_commit(_INDEXED)
+    result = await get_execution_flows()
+    assert result["_meta"]["indexed_commit"] == _INDEXED[:12]
+
+
+@pytest.mark.asyncio
+async def test_execution_flows_targets_name_the_traced_files(setup_mcp, monkeypatch):
+    """A stale warning is scoped to what the response served, so the files the
+    published traces walk have to reach freshness as targets."""
+    from repowise.server.mcp_server import tool_flows
+
+    seen: list = []
+    real = tool_flows._build_meta
+
+    def spy(**kwargs):
+        seen.append(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setattr(tool_flows, "_build_meta", spy)
+    await _stamp_head_commit(_INDEXED)
+    result = await tool_flows.get_execution_flows(entry_point="src/auth/service.py")
+    assert result["flows"]
+    assert result["_meta"]["indexed_commit"] == _INDEXED[:12]
+    assert seen[-1]["repository"] is not None
+    assert "src/auth/service.py" in seen[-1]["targets"]
+
+
+def test_read_live_head_plain_git_dir(tmp_path: Path) -> None:
+    sha = "a" * 40
+    git = tmp_path / ".git"
+    (git / "refs" / "heads").mkdir(parents=True)
+    (git / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    (git / "refs" / "heads" / "main").write_text(sha + "\n", encoding="utf-8")
+    assert _meta.read_live_head(str(tmp_path)) == sha
+
+
+def test_read_live_head_non_git_and_empty(tmp_path: Path) -> None:
+    assert _meta.read_live_head(str(tmp_path)) is None
+    assert _meta.read_live_head(None) is None
+    assert _meta.read_live_head("") is None
+
+
+def test_read_live_head_worktree_loose_ref(tmp_path: Path) -> None:
+    sha = "a" * 40
+    checkout = linked_worktree(tmp_path, sha, how="loose")
+    assert _meta.read_live_head(str(checkout)) == sha
+
+
+def test_read_live_head_worktree_packed_refs(tmp_path: Path) -> None:
+    sha = "c" * 40
+    checkout = linked_worktree(tmp_path, sha, how="packed")
+    assert _meta.read_live_head(str(checkout)) == sha
+
+
+def test_read_live_head_worktree_detached(tmp_path: Path) -> None:
+    sha = "b" * 40
+    checkout = linked_worktree(tmp_path, sha, how="detached")
+    assert _meta.read_live_head(str(checkout)) == sha
+
+
+def test_read_live_head_worktree_relative_gitdir(tmp_path: Path) -> None:
+    sha = "f" * 40
+    checkout = linked_worktree(tmp_path, sha, how="loose", relative=True)
+    assert _meta.read_live_head(str(checkout)) == sha
+
+
+def test_read_live_head_worktree_missing_gitdir_returns_none(tmp_path: Path) -> None:
+    (tmp_path / ".git").write_text("gitdir: /somewhere/.git/worktrees/wt\n", encoding="utf-8")
+    assert _meta.read_live_head(str(tmp_path)) is None
+
+
+def test_read_live_head_garbled_gitfile_returns_none(tmp_path: Path) -> None:
+    (tmp_path / ".git").write_text("not a gitdir\n", encoding="utf-8")
+    assert _meta.read_live_head(str(tmp_path)) is None
+
+
+def test_read_live_head_submodule_gitdir(tmp_path: Path) -> None:
+    sha = "9" * 40
+    checkout = submodule_checkout(tmp_path, sha)
+    assert _meta.read_live_head(str(checkout)) == sha

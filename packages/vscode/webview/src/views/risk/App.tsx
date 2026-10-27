@@ -26,6 +26,7 @@ import { Badge, Button } from "@repowise-dev/ui/ui";
 import { EmptyState } from "@repowise-dev/ui/shared";
 import { PageLede } from "@repowise-dev/ui/shared/page-lede";
 import { OverviewSection } from "@repowise-dev/ui/overview";
+import { PatchCoverageSummary } from "@repowise-dev/ui/health/patch-coverage-summary";
 import type { ViewProps } from "../../runtime/mount";
 import type { WebviewHost } from "../../runtime/rpc";
 import type {
@@ -181,6 +182,20 @@ export function App({ host, repo, refreshToken }: ViewProps<"risk">) {
         <>
           <ScoreHero report={report} />
           <VerdictStrip impact={impact} cochangeFloor={cochangeFloor} />
+          {report.patchCoverage && (
+            // Absent (no coverage ingested, or an older server) renders
+            // nothing: an unmeasured change is not a finding.
+            <section className="flex flex-col gap-1 border-t border-[var(--color-border-default)] pt-6 sm:pt-8">
+              <PatchCoverageSummary
+                coverage={report.patchCoverage}
+                onOpenFile={(path) => host.openFile(path)}
+              />
+              <p className="text-xs text-[var(--color-text-tertiary)]">
+                Committed changes against{" "}
+                <code>{report.base}</code>; uncommitted edits are not counted.
+              </p>
+            </section>
+          )}
           <ChangeImpact
             impact={impact}
             loading={impactLoading}
@@ -198,7 +213,7 @@ export function App({ host, repo, refreshToken }: ViewProps<"risk">) {
  *  holds its shape while the working tree is scored. */
 function RiskSkeleton({ base }: { base: string }) {
   return (
-    <div className="flex flex-col gap-6 sm:gap-8" aria-hidden>
+    <div className="flex flex-col gap-6 sm:gap-8" role="status" aria-label="Loading change risk">
       <div className="flex flex-col gap-4 sm:flex-row sm:gap-8">
         <div className="flex shrink-0 flex-col gap-2.5">
           <div className="h-3 w-20 animate-pulse rounded bg-[var(--color-bg-inset)]" />
@@ -314,7 +329,7 @@ function FixHistoryNote({
   if (!history.available) {
     return (
       <p className="mt-2.5">
-        Fix history unavailable — the git history walk failed.
+        Fix history is unavailable for this range.
       </p>
     );
   }

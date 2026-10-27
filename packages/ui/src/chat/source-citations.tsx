@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
-import { ArrowUpRight } from "lucide-react";
+import { ChevronRight } from "lucide-react";
 import { getPageTypeIcon } from "../lib/page-types";
 import { filePageId } from "../shared/entity/routes";
 import type { ChatUIToolCall } from "@repowise-dev/types/chat";
@@ -28,6 +28,24 @@ export function extractSources(
   const seen = new Set<string>();
   const sources: SourceReference[] = [];
 
+  // The scored tools (risk, health, dead code, change risk, one symbol) cite
+  // the files they scored. Without this the claims a reader most needs to
+  // check, a risk score or a health finding, carry no link at all.
+  const pushFile = (toolCallId: string, toolName: string, filePath: unknown) => {
+    if (typeof filePath !== "string" || !filePath) return;
+    const pageId = filePageId(filePath);
+    if (seen.has(pageId)) return;
+    seen.add(pageId);
+    sources.push({
+      id: `${toolCallId}:${pageId}`,
+      pageId,
+      title: filePath.split("/").pop() ?? filePath,
+      pageType: "file_page",
+      targetPath: filePath,
+      toolName,
+    });
+  };
+
   for (const tc of toolCalls) {
     if (tc.status !== "done" || !tc.result) continue;
 
@@ -36,23 +54,32 @@ export function extractSources(
     if (tc.name === "search_codebase") {
       const results = (result.results as Array<Record<string, unknown>>) ?? [];
       for (const r of results) {
-        // `page_id` is `${page_type}:${target_path}`, and the tool now omits it
-        // wherever those two rebuild it. Derive rather than skip: the previous
-        // `const pageId = r.page_id` dropped the whole row — and its citation —
-        // for any result without one. Same fallback the get_context branch uses.
+        // `page_id` is `${page_type}:${symbol_id ?? path}`, and the tool omits
+        // it (and a structural `title`) wherever those rebuild it. Derive rather
+        // than skip, or the row and its citation would vanish. A page's
+        // `target_path` is also dropped where it equals `path`, so fall back to
+        // `path`, the same way the server builds the id it compares against.
         const pageType = r.page_type as string | undefined;
-        const targetPath = r.target_path as string | undefined;
+        const symbolId = r.symbol_id as string | undefined;
+        const targetPath =
+          (r.target_path as string | undefined) || (r.path as string | undefined);
+        const idTarget =
+          pageType === "symbol_spotlight" && symbolId ? symbolId : targetPath;
         const pageId =
           (r.page_id as string | undefined) ??
-          (pageType && targetPath ? `${pageType}:${targetPath}` : "");
+          (pageType && idTarget ? `${pageType}:${idTarget}` : "");
         if (!pageId || seen.has(pageId)) continue;
         seen.add(pageId);
         sources.push({
           id: `${tc.id}:${pageId}`,
           pageId,
-          title: (r.title as string) ?? pageId,
+          title:
+            (r.title as string | undefined) ??
+            symbolId ??
+            targetPath?.split("/").pop() ??
+            pageId,
           pageType: (r.page_type as string) ?? "file_page",
-          targetPath: (r.target_path as string) ?? "",
+          targetPath: targetPath ?? "",
           confidence: r.confidence_score as number | undefined,
           toolName: tc.name,
         });
@@ -96,6 +123,48 @@ export function extractSources(
           });
         }
       }
+    }
+
+    // `targets` is a path-keyed object on the MCP wire and an array on legacy
+    // fixtures; both shapes appear in stored conversations.
+    if (tc.name === "get_risk" || tc.name === "get_change_risk") {
+      const targets = result.targets as Record<string, unknown> | unknown[] | undefined;
+      if (Array.isArray(targets)) {
+        for (const row of targets.slice(0, 8)) {
+          const r = row as Record<string, unknown>;
+          pushFile(tc.id, tc.name, r.file_path ?? r.target);
+        }
+      } else if (targets && typeof targets === "object") {
+        for (const key of Object.keys(targets).slice(0, 8)) pushFile(tc.id, tc.name, key);
+      }
+      const fixHistory = result.fix_history as { files?: Array<{ path?: string }> } | undefined;
+      for (const f of (fixHistory?.files ?? []).slice(0, 5)) pushFile(tc.id, tc.name, f.path);
+    }
+
+    if (tc.name === "get_health") {
+      const findings = (result.findings as Array<Record<string, unknown>>) ?? [];
+      for (const f of findings.slice(0, 8)) pushFile(tc.id, tc.name, f.file_path);
+      const opportunities =
+        (result.refactoring_opportunities as Array<Record<string, unknown>>) ?? [];
+      for (const o of opportunities.slice(0, 5)) pushFile(tc.id, tc.name, o.file_path);
+      const targets = (result.targets as unknown[]) ?? [];
+      for (const t of targets.slice(0, 8)) pushFile(tc.id, tc.name, t);
+    }
+
+    if (tc.name === "get_dead_code") {
+      const tiers = (result.tiers as Record<string, { findings?: Array<Record<string, unknown>> }>) ?? {};
+      const lookup = result.finding as Record<string, unknown> | null | undefined;
+      const rows = [
+        ...(lookup ? [lookup] : []),
+        ...(tiers.high?.findings ?? []),
+        ...(tiers.medium?.findings ?? []),
+      ];
+      for (const r of rows.slice(0, 10)) pushFile(tc.id, tc.name, r.file_path);
+    }
+
+    // get_symbol names the file it verified as `file`, not `file_path`.
+    if (tc.name === "get_symbol") {
+      pushFile(tc.id, tc.name, result.file);
     }
 
     if (tc.name === "get_why") {
@@ -161,36 +230,35 @@ export function SourceCitations({
   if (sources.length === 0) return null;
 
   return (
-    <details className="group mt-5 border-t border-[var(--color-border-default)] pt-3">
-      <summary className="flex min-h-8 cursor-pointer list-none items-center gap-2 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)] marker:hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] [&::-webkit-details-marker]:hidden">
-        <span>Sources · {sources.length}</span>
-        <span aria-hidden className="transition-transform group-open:rotate-90">›</span>
+    <details className="group/cites">
+      <summary className="inline-flex min-h-8 cursor-pointer list-none items-center gap-1.5 rounded-md text-xs text-[var(--color-text-tertiary)] marker:hidden hover:text-[var(--color-text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] [&::-webkit-details-marker]:hidden">
+        <span className="tabular-nums">Sources · {sources.length}</span>
+        <ChevronRight aria-hidden className="h-3 w-3 transition-transform group-open/cites:rotate-90 motion-reduce:transition-none" />
       </summary>
-      {/* Links, not chips. Each one goes somewhere, so the accent is earned on
-          hover; a border and a ground on every entry turned a list of eight
-          into a wall of boxes that outweighed the answer above it. The counter
-          badge went with them — numbering is only worth its weight when the
-          prose cites [1], and a reply does not. */}
-      <ul className="flex flex-col gap-1.5 pb-1 pt-2">
+      {/* Links, not chips: each goes somewhere, so the accent is earned on
+          hover. Titles wrap rather than truncate. */}
+      <ul className="flex flex-col gap-1 pb-1 pt-1">
         {sources.map((source) => (
           <li key={source.id}>
             <a
               href={buildHref ? buildHref(source) : defaultBuildHref(source, prefix)}
-              className="group flex w-full min-w-0 items-baseline gap-2 text-[13px] text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] transition-colors"
+              className="group flex min-h-8 w-full min-w-0 flex-wrap items-baseline gap-x-2 rounded-md py-1 text-xs text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-accent-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
             >
               <SourceIcon
                 pageType={source.pageType}
                 className="h-3.5 w-3.5 shrink-0 self-center text-[var(--color-text-tertiary)] group-hover:text-[var(--color-accent-primary)] transition-colors"
               />
-              {/* No truncation: a cut title reports a layout decision to the
-                  reader as missing content. Long ones wrap. */}
-              <span className="min-w-0 font-medium [overflow-wrap:anywhere]">{source.title}</span>
+              <span className="min-w-0 [overflow-wrap:anywhere]">{source.title}</span>
+              {source.targetPath && source.targetPath !== source.title && (
+                <span className="min-w-0 font-mono text-[var(--color-text-tertiary)] [overflow-wrap:anywhere]">
+                  {source.targetPath}
+                </span>
+              )}
               {source.confidence != null && (
-                <span className="font-mono text-[11px] text-[var(--color-text-tertiary)] tabular-nums">
+                <span className="font-mono text-[var(--color-text-tertiary)] tabular-nums">
                   {(source.confidence * 100).toFixed(0)}%
                 </span>
               )}
-              <ArrowUpRight className="h-3 w-3 shrink-0 self-center opacity-0 group-hover:opacity-100 transition-opacity" />
             </a>
           </li>
         ))}
