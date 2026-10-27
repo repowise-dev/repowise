@@ -690,11 +690,10 @@ def test_cpp_export_macro_class_and_annotated_fields_are_measured(tmp_path):
   int y_ GUARDED_BY(mu_);
 };
 """
+    _require_language("cpp")
     p = tmp_path / "big.h"
     p.write_bytes(source)
     classes = {c.name: c for c in walk_file(str(p), "cpp", source).classes}
-    if not classes:
-        pytest.skip("tree-sitter language pack missing for cpp")
     assert classes["Big"].method_count == 2
     assert classes["Big"].field_count == 2
 
