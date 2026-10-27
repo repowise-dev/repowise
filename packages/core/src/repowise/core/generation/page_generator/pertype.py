@@ -52,7 +52,7 @@ from ..overview_tables import (
 )
 from ..page_sources import lint_sources
 from ..structural_labels import structural_page_title
-from .reuse import files_digest, model_reuse_key
+from .reuse import files_digest, group_material, model_reuse_key
 
 log = structlog.get_logger(__name__)
 
@@ -395,12 +395,9 @@ class PerTypeGenerationMixin:
         # its prose across RAG drift while an edited member regenerates it
         # (issue #1089). Folded with the renderer fingerprint, so a
         # prompt/template/style upgrade still forces a one-time regen.
-        member_files = files_digest(
-            members or [fc.file_path for fc in file_contexts], source_map or {}
-        )
         reuse_key = model_reuse_key(
             self,
-            structural_key and f"{structural_key}|{member_files}",
+            group_material(structural_key, members, source_map),
             "module_page",
             "module_page.j2",
         )

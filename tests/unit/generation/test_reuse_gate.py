@@ -26,7 +26,7 @@ from repowise.core.generation.context_assembler import ContextAssembler, FilePag
 from repowise.core.generation.models import STUB_FALLBACK_ERROR
 from repowise.core.generation.page_generator import PageGenerator
 from repowise.core.generation.page_generator.core import PriorPage
-from repowise.core.generation.page_generator.reuse import files_digest, model_reuse_key
+from repowise.core.generation.page_generator.reuse import group_material, model_reuse_key
 from repowise.core.providers.llm.mock import MockProvider
 
 
@@ -139,7 +139,7 @@ async def test_a_stub_row_is_never_reused_on_a_top_up_run(sample_config):
     # Compute the exact subject key the generator will look up, so the match
     # would succeed if not for the stub guard.
     stub_key = model_reuse_key(
-        gen, f"concept-resolvers|{files_digest(['a.py'], {})}", "module_page", "module_page.j2"
+        gen, group_material("concept-resolvers", None, None), "module_page", "module_page.j2"
     )
     prior = {
         "module_page:pkg/resolvers": PriorPage(
@@ -159,6 +159,7 @@ async def test_a_stub_row_is_never_reused_on_a_top_up_run(sample_config):
         refill_gen, structural_key="concept-resolvers", contexts=[_ctx("a.py")]
     )
 
+    assert page.content_hash == stub_key  # the subject matched; only the guard refused
     assert refill_provider.call_count == 1
     assert page.metadata.get("reused_from_prior_run") is None
     assert page.content != "# Resolvers\n\n(stub — the provider was down)"

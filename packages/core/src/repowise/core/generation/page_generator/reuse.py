@@ -44,6 +44,19 @@ def files_digest(paths: Iterable[str], source_map: Mapping[str, bytes]) -> str:
     return "\x1f".join(sorted(parts))
 
 
+def group_material(
+    structural_key: str, members: Iterable[str] | None, source_map: Mapping[str, bytes] | None
+) -> str:
+    """A module page's subject: its membership key plus its members' bytes.
+
+    Empty without a ``structural_key``, which keeps the page on the
+    prompt-hash gate.
+    """
+    if not structural_key:
+        return ""
+    return f"{structural_key}|{files_digest(members or (), source_map or {})}"
+
+
 def model_reuse_key(generator: Any, material: str, page_type: str, template: str) -> str:
     """Stable reuse key for a model-written page's subject.
 
