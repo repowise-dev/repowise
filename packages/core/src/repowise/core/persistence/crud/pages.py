@@ -387,7 +387,7 @@ async def upsert_page_from_generated(
         digest=getattr(gp, "digest", "") or "",
         target_path=gp.target_path,  # type: ignore[attr-defined]
         source_hash=gp.source_hash,  # type: ignore[attr-defined]
-        content_hash=getattr(gp, "content_hash", "") or "",  # type: ignore[attr-defined]
+        content_hash=getattr(gp, "content_hash", "") or "",
         model_name=gp.model_name,  # type: ignore[attr-defined]
         provider_name=gp.provider_name,  # type: ignore[attr-defined]
         input_tokens=gp.input_tokens,  # type: ignore[attr-defined]
