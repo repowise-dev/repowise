@@ -58,13 +58,20 @@ def primary_finding(findings: Sequence[Any]) -> Any | None:
     of 3,011 files moved, and every one of them had been led by
     ``coverage_gradient``.
     """
+    return lead_and_worth(findings)[0]
+
+
+def lead_and_worth(findings: Sequence[Any]) -> tuple[Any | None, bool]:
+    """:func:`primary_finding`, and whether its function is worth breaking up
+    first by the shared rule (:func:`worth.low_priority`, at the break-up bar).
+    A surface that tells someone to simplify the lead asks the second."""
     from .biomarkers.registry import continuous_biomarkers
     from .governance import GOVERNANCE_BIOMARKERS
     from .rows import field as row_field
     from .scoring import HISTORY_CATEGORY, biomarker_category, is_advisory
 
     if not findings:
-        return None
+        return None, False
     # An advisory finding describes; it never accuses. Leaving it eligible made
     # it the stated "one reason" for any file whose only open finding was
     # advisory - printed beside a total deduction of zero.
@@ -72,7 +79,7 @@ def primary_finding(findings: Sequence[Any]) -> Any | None:
         item for item in findings if not is_advisory(row_field(item, "biomarker_type"))
     ]
     if not candidates:
-        return None
+        return None, False
     # A history marker is measured from git, so it names a file's context, not
     # something an edit changes. When the file also carries a code-shape
     # finding, that one leads: the Findings list put `change_entropy` at the
@@ -100,7 +107,7 @@ def primary_finding(findings: Sequence[Any]) -> Any | None:
     # quantise to the same deduction), and a bare ``max`` let input order pick
     # the lead, so two indexes of one tree disagreed. Severity breaks the tie
     # first; the rest only makes it stable.
-    return min(
+    lead = min(
         pool,
         key=lambda item: (
             -break_up.get(id(item), -1),
@@ -111,6 +118,7 @@ def primary_finding(findings: Sequence[Any]) -> Any | None:
             str(row_field(item, "function_name") or ""),
         ),
     )
+    return lead, id(lead) in break_up
 
 
 def _break_up_ccn(findings: Sequence[Any]) -> dict[int, int]:

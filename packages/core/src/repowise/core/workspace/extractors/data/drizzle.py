@@ -12,11 +12,13 @@ import re
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
+from repowise.core.workspace.origins import ContractOrigin
+
 from ..base import ScanContext, line_at
 from ..calls import Call, call_sites, receiver_at
 from ..langs import JS_TS
 from ..strings import Arg
-from .dialect import EXPLICIT_CONFIDENCE, dedup_emit
+from .dialect import dedup_emit
 
 if TYPE_CHECKING:
     from repowise.core.workspace.contracts import Contract
@@ -38,11 +40,10 @@ def _schema_tables(names: tuple[str, ...]) -> tuple[Call, ...]:
 class DrizzleDialect:
     name = "drizzle"
     extensions = JS_TS
+    requires = (_DRIZZLE,)
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content
-        if _DRIZZLE not in content:
-            return []
         found: list[tuple[str, float, int]] = []
         schemas: dict[str, str] = {}
         for call, args, m, strings in call_sites(ctx, (_TABLE, _SCHEMA)):
@@ -56,11 +57,11 @@ class DrizzleDialect:
                 if bound is not None:
                     schemas[bound.group("name")] = names[0]
             else:
-                found.append((names[0], EXPLICIT_CONFIDENCE, line_at(content, m.start())))
+                found.append((names[0], ContractOrigin.EXPLICIT_TABLE, line_at(content, m.start())))
         if schemas:
             for _call, args, m, strings in call_sites(ctx, _schema_tables(tuple(sorted(schemas)))):
                 names, refused = strings.resolve(args[:1], _FIRST)
                 if names and not refused and receiver_at(content, m.start()):
                     table = f"{schemas[m.group('schema')]}.{names[0]}"
-                    found.append((table, EXPLICIT_CONFIDENCE, line_at(content, m.start())))
+                    found.append((table, ContractOrigin.EXPLICIT_TABLE, line_at(content, m.start())))
         return dedup_emit(ctx, self.name, found)

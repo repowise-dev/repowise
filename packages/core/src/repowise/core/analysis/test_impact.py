@@ -8,18 +8,22 @@ from an empty recommendation population.
 
 from __future__ import annotations
 
+import asyncio
+import sys
 from collections import defaultdict
 from collections.abc import Collection, Iterable, Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.health.coverage.freshness import coverage_freshness
-from repowise.core.analysis.test_reachability import MAX_TESTS_PER_TARGET, rank_tests
+from repowise.core.analysis.test_reachability import MAX_TESTS_PER_TARGET, rank_reaching
 from repowise.core.analysis.test_selection import expand_test_scopes
 from repowise.core.exclusion import is_excluded
-from repowise.core.persistence.models import Repository
+from repowise.core.persistence.crud.analysis.coverage_map import map_is_truncated
+from repowise.core.persistence.models import CoverageFile, Repository
 
 _BASIS_ORDER = {"measured": 0, "inferred": 1}
 
@@ -60,15 +64,6 @@ _FRESHNESS_REASONS: dict[str, str | None] = {
 }
 
 
-def _recommendation_sort_key(row: dict[str, Any]) -> tuple[int, int, str, str]:
-    return (
-        -len(row["source_files"]),
-        _BASIS_ORDER[row["basis"]],
-        row["repository"],
-        row["test_id"],
-    )
-
-
 async def analyze_test_impact(
     session: AsyncSession,
     repository_id: str,
@@ -95,7 +90,15 @@ async def analyze_test_impact(
         return assemble_test_impact([], {}, {}, {}, **fold)
 
     summary, measured, coverage_error = await _read_coverage(session, repository_id, changed)
-    indexed_commit, indexed_commit_error = await _read_indexed_commit(session, repository_id)
+    indexed_commit, local_path, indexed_commit_error = await _read_repository(
+        session, repository_id
+    )
+    aggregate = None
+    if not summary.get("pair_count"):
+        aggregate = await _read_aggregate(session, repository_id, indexed_commit)
+    stale_tests = await _stale_measured_tests(
+        measured, summary.get("ingested_commit_sha"), local_path
+    )
     inferred, test_files, inference_error = await _read_inferred(session, repository_id, changed)
 
     return assemble_test_impact(
@@ -108,6 +111,8 @@ async def analyze_test_impact(
         indexed_commit_error=indexed_commit_error,
         coverage_error=coverage_error,
         inference_error=inference_error,
+        aggregate_summary=aggregate,
+        stale_tests=stale_tests,
         **fold,
     )
 
@@ -137,39 +142,119 @@ async def _read_coverage(
     return summary, measured, coverage_error
 
 
-async def _read_indexed_commit(
+async def _read_repository(
     session: AsyncSession, repository_id: str
-) -> tuple[str | None, str | None]:
-    """The repository's indexed head commit, or ``None`` and the read error."""
+) -> tuple[str | None, str | None, str | None]:
+    """The indexed head commit and checkout path, or ``None`` and the read error."""
     try:
-        indexed_commit = (
+        row = (
             await session.execute(
-                select(Repository.head_commit).where(Repository.id == repository_id)
+                select(Repository.head_commit, Repository.local_path).where(
+                    Repository.id == repository_id
+                )
+            )
+        ).one_or_none()
+    except Exception as exc:
+        return None, None, type(exc).__name__
+    return (row[0], row[1], None) if row else (None, None, None)
+
+
+async def _read_aggregate(
+    session: AsyncSession, repository_id: str, indexed_commit: str | None
+) -> Mapping[str, Any] | None:
+    """How many files stored line coverage names and where it was measured; ``None`` if none.
+
+    A count and the newest row, not the full summary: this is an aside on
+    every PR-mode call and needs no figures.
+    """
+    scope = CoverageFile.repository_id == repository_id
+    try:
+        count = (
+            await session.execute(select(func.count()).select_from(CoverageFile).where(scope))
+        ).scalar_one()
+        if not count:
+            return None
+        commit = (
+            await session.execute(
+                select(CoverageFile.ingested_commit_sha)
+                .where(scope)
+                .order_by(CoverageFile.ingested_at.desc())
+                .limit(1)
             )
         ).scalar_one_or_none()
-    except Exception as exc:
-        return None, type(exc).__name__
-    return indexed_commit, None
+    except Exception:  # an aside to the per-test answer; never fail it
+        return None
+    return {
+        "file_count": count,
+        "ingested_commit_sha": commit,
+        "freshness": {"status": coverage_freshness(commit, indexed_commit)},
+    }
+
+
+async def _stale_measured_tests(
+    measured: Mapping[str, Sequence[Mapping[str, Any]]],
+    ingested_commit: str | None,
+    local_path: str | None,
+) -> dict[str, str]:
+    """``{test file: reason}`` for measured test files that differ from the measured run.
+
+    Read from git between the measured commit and the checkout's working tree:
+    ``test_file_missing`` when the file is deleted, ``test_file_changed`` when
+    it is edited. Only what git can prove: without a checkout or a measured
+    commit, or when git cannot tell, nothing is flagged. Ceiling: a checkout
+    nested below its git root reports root-relative paths, which match nothing.
+    """
+    from repowise.core.analysis.patch_coverage.stored import _changed_since
+
+    files = {f for rows in measured.values() for row in rows if (f := _runnable_file(row))}
+    if not files or not ingested_commit or not local_path or not Path(local_path).is_dir():
+        return {}
+    since = await asyncio.to_thread(_changed_since, local_path, ingested_commit, None)
+    return {
+        f: "test_file_changed" if (Path(local_path) / f).is_file() else "test_file_missing"
+        for f in sorted(files & (since or set()))
+    }
+
+
+def _runnable_file(row: Mapping[str, Any]) -> str | None:
+    """A measured row's test file: its own, or the path part of a ``path::name`` id."""
+    if row.get("test_file"):
+        return str(row["test_file"])
+    test_id = str(row["test_id"])
+    return test_id.split("::", 1)[0] if "::" in test_id else None
 
 
 async def _read_inferred(
     session: AsyncSession, repository_id: str, changed: list[str]
 ) -> tuple[dict[str, dict[str, Any]], set[str], str | None]:
     """The tests the graph walk reaches per changed path, the test files, and the walk error."""
-    from repowise.core.analysis.test_reachability import load_test_files, tests_reaching_by_tier
+    from repowise.core.analysis.test_reachability import (
+        cached_hub_files,
+        load_test_files,
+        tests_reaching_by_tier,
+    )
 
     inference_error: str | None = None
     test_files: set[str] = set()
     try:
         test_files = await load_test_files(session, repository_id)
         reached_by_file = await tests_reaching_by_tier(
-            session, repository_id, changed, test_files=test_files
+            session,
+            repository_id,
+            changed,
+            test_files=test_files,
+            hubs=await cached_hub_files(session, repository_id),
         )
     except Exception as exc:
         reached_by_file = {}
         inference_error = type(exc).__name__
     inferred = {
-        path: {"tests": list(reached.all_tests or reached.tests), "via": reached.via}
+        path: {
+            "tests": list(reached.all_tests or reached.tests),
+            "via": reached.via,
+            "reach": reached.reach,
+            "transitive": reached.transitive,
+        }
         for path, reached in reached_by_file.items()
     }
     if inference_error is None:
@@ -207,6 +292,8 @@ def assemble_test_impact(
     inference_error: str | None = None,
     indexed_commit_error: str | None = None,
     repository_test_files: Collection[str] = (),
+    aggregate_summary: Mapping[str, Any] | None = None,
+    stale_tests: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Fold coverage and reachability evidence into the test-impact result.
 
@@ -215,11 +302,13 @@ def assemble_test_impact(
     when *coverage_summary* reports pairs. *inferred_by_file* maps a changed path
     to ``{"tests": [...], "via": tier}``, both keys required, with ``tests`` the
     uncapped list (``ReachedBy.all_tests``, not the display-capped ``tests``), and
-    ``narrowed`` true when a reached conftest was already resolved to its tests;
-    paths outside *changed_files* are ignored. That list is used as the walk
-    found it, except where a scope file expanded (below). *coverage_summary* carries
-    ``pair_count``, ``test_count``, ``source_file_count``, ``ingested_at``,
-    ``source_format`` and ``ingested_commit_sha``. The ``*_error`` arguments
+    ``narrowed`` true when a reached conftest was already resolved to its tests,
+    and optional ``reach`` and ``transitive`` (from ``ReachedBy``); paths
+    outside *changed_files* are ignored. That list is used in the walk's order,
+    except where a scope file expanded (below), and inferred recommendations
+    keep that order. *coverage_summary* carries ``pair_count``, ``test_count``,
+    ``source_file_count``, ``ingested_at``, ``source_format`` and
+    ``ingested_commit_sha``. The ``*_error`` arguments
     are the exception type names of a failed read; each marks the analysis degraded.
     *changed_files* is filtered by *exclude_spec* here too.
 
@@ -235,6 +324,17 @@ def assemble_test_impact(
     changed file, so ``files[*].inferred_tests`` and the recommendations it
     feeds are bounded; ``inferred_tests_total`` and
     ``inference.candidates_before_dedup`` keep the count before the cap.
+
+    *aggregate_summary* is the stored per-file line coverage summary
+    (``file_count``, ``ingested_commit_sha``, ``freshness``), read when there
+    is no per-test map. It cannot say which test ran a file, so it fills no
+    recommendation; ``coverage.aggregate`` says it exists (``None`` otherwise).
+
+    *stale_tests* maps a measured test file to why the checkout no longer
+    matches it (``test_file_missing``, ``test_file_changed``): every row carries
+    ``stale`` and ``stale_reason``, set only on rows measured coverage alone backs. Measured rows
+    match a changed file, not its changed lines, so measured evidence says
+    ``match: "file"`` (``None`` on inferred evidence).
     """
     changed = _changed_paths(changed_files, exclude_spec)
     repository = repository or repository_id
@@ -263,6 +363,7 @@ def assemble_test_impact(
                 "changed_files_without_measured_tests": 0,
                 "ingested_at": None,
                 "source_format": None,
+                "aggregate": None,
                 "freshness": {
                     "status": "unknown",
                     "reason": "no_changed_files",
@@ -289,6 +390,8 @@ def assemble_test_impact(
     inferred_tests_by_file: dict[str, list[str]] = {path: [] for path in changed}
     evidence: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     test_files: dict[tuple[str, str], set[str]] = defaultdict(set)
+    # Each inferred test's best place in a walk's ranked list (rank_reaching).
+    walk_order: dict[tuple[str, str], int] = {}
 
     summary = coverage_summary
     map_present = summary.get("pair_count", 0) > 0
@@ -309,6 +412,7 @@ def assemble_test_impact(
                     "basis": "measured",
                     "source_file": path,
                     "via": "coverage-map",
+                    "match": "file",
                     "source_format": row.get("source_format"),
                 }
                 if detail not in evidence[key]:
@@ -335,15 +439,24 @@ def assemble_test_impact(
         if reached.get("narrowed") or expanded != list(reached["tests"]):
             # A root conftest stands for every test in the repository: rank the
             # expansion nearest-first and keep the walk's own per-target cap.
-            kept_tests = rank_tests(path, kept_tests)[:MAX_TESTS_PER_TARGET]
-        for test_id in kept_tests:
+            kept_tests = rank_reaching(
+                path,
+                kept_tests,
+                reach=reached.get("reach"),
+                changed=changed,
+                transitive=reached.get("transitive") or (),
+            )
+            kept_tests = kept_tests[:MAX_TESTS_PER_TARGET]
+        for place, test_id in enumerate(kept_tests):
             inferred_tests_by_file[path].append(test_id)
             key = (repository_id, test_id)
+            walk_order[key] = min(walk_order.get(key, place), place)
             test_files[key].add(test_id)
             detail = {
                 "basis": "inferred",
                 "source_file": path,
                 "via": reached["via"],
+                "match": None,
                 "source_format": None,
             }
             if detail not in evidence[key]:
@@ -359,6 +472,8 @@ def assemble_test_impact(
             )
         )
         bases = sorted({row["basis"] for row in details}, key=_BASIS_ORDER.__getitem__)
+        runnable = {*test_files[(repo_id, test_id)], test_id.split("::", 1)[0]}
+        stale_reason = _stale_reason(bases, runnable, stale_tests)
         recommendations.append(
             {
                 "test_id": test_id,
@@ -371,9 +486,19 @@ def assemble_test_impact(
                 "bases": bases,
                 "source_files": sorted({row["source_file"] for row in details}),
                 "evidence": details,
+                "stale": stale_reason is not None,
+                "stale_reason": stale_reason,
             }
         )
-    recommendations.sort(key=_recommendation_sort_key)
+    recommendations.sort(
+        key=lambda row: (
+            -len(row["source_files"]),
+            _BASIS_ORDER[row["basis"]],
+            row["repository"],
+            walk_order.get((row["repository_id"], row["test_id"]), sys.maxsize),
+            row["test_id"],
+        )
+    )
 
     matched_files = sum(bool(tests) for tests in measured_tests_by_file.values())
     coverage_reason: str | None
@@ -382,7 +507,16 @@ def assemble_test_impact(
         coverage_reason = f"{coverage_error}: coverage_query_failed"
     elif not map_present:
         coverage_status = "unavailable"
-        coverage_reason = "no_per_test_coverage_map"
+        coverage_reason = (
+            "no_per_test_map_aggregate_available"
+            if aggregate_summary
+            else "no_per_test_coverage_map"
+        )
+    elif map_is_truncated(summary):
+        # Whole tests were cut at the row cap: a file without measured tests
+        # may have had them, so its gaps are withheld rather than reported.
+        coverage_status = "degraded"
+        coverage_reason = "per_test_coverage_map_truncated"
     elif 0 < matched_files < len(changed):
         coverage_status = "partial"
         coverage_reason = "coverage_map_matches_only_part_of_change"
@@ -404,6 +538,13 @@ def assemble_test_impact(
         "ingested_at": _iso(summary.get("ingested_at")),
         "source_format": summary.get("source_format"),
         "freshness": freshness,
+        "aggregate": {
+            "file_count": int(aggregate_summary.get("file_count") or 0),
+            "ingested_commit": aggregate_summary.get("ingested_commit_sha"),
+            "freshness": (aggregate_summary.get("freshness") or {}).get("status", "unknown"),
+        }
+        if aggregate_summary
+        else None,
     }
     inference = {
         "status": inference_status,
@@ -495,3 +636,15 @@ def assemble_test_impact(
             ),
         },
     }
+
+
+def _stale_reason(
+    bases: Sequence[str], files: Collection[str], stale_tests: Mapping[str, str] | None
+) -> str | None:
+    """Why a measured-only row's test file differs from the measured run, if it does.
+
+    A row the graph also backs keeps its inferred evidence, which is read live.
+    """
+    if not stale_tests or list(bases) != ["measured"]:
+        return None
+    return next((stale_tests[f] for f in sorted(files) if f in stale_tests), None)

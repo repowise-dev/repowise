@@ -175,7 +175,9 @@ extension points.
 - **New marker.** Drop a file under `biomarkers/`, implement
   `Biomarker.detect(ctx) -> list[BiomarkerResult]`, register in
   `biomarkers/registry.py`, add a suggestion in `suggestions.py`, add the
-  category mapping in `scoring._BIOMARKER_CATEGORY`.
+  category mapping in `scoring._BIOMARKER_CATEGORY`. Add its label in
+  `biomarker_labels.py` (then run `scripts/generate_biomarker_labels.py`) and
+  its entry in the web glossary `packages/ui/src/health/biomarker-glossary.ts`.
 - **New complexity language.** Add a `LanguageNodeMap` entry to
   `complexity/languages.py`. No new `.scm` files needed.
 - **New coverage format.** Drop a parser under `coverage/` and register it
@@ -199,4 +201,4 @@ parallel path automatically when `len(parsed_files) >= 500`.
 - API: `packages/server/src/repowise/server/routers/code_health.py`.
 - UI primitives: `packages/ui/src/health/`. Web routes:
   `packages/web/src/app/repos/[id]/health/`.
-- CLAUDE.md template stanza: `packages/core/src/repowise/core/generation/templates/claude_md.j2`.
+- CLAUDE.md template stanza: `packages/core/src/repowise/core/generation/templates/_editor_block.j2`.

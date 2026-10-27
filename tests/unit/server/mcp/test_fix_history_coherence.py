@@ -115,9 +115,11 @@ async def test_risk_summary_leads_with_fix_history_when_present(setup_mcp, sessi
 
     # The defect evidence comes before the churn number, and agrees with the
     # risk_type printed further along the same line.
-    assert "4 bug fixes in 6mo, last 7d before the indexed commit (bug magnet)" in summary
-    assert summary.index("bug fixes") < summary.index("hotspot score")
+    assert "4 bug fixes in 6 months, last 7d before the indexed commit (bug magnet)" in summary
+    assert summary.index("bug fixes") < summary.index("direct dependents")
     assert "bug-prone" in summary
+    # Not a churn hotspot (is_hotspot=False), so the summary makes no churn claim.
+    assert "hotspot" not in summary
 
 
 @pytest.mark.asyncio
@@ -128,7 +130,43 @@ async def test_risk_summary_unchanged_without_fix_history(setup_mcp):
     summary = result["targets"]["src/auth/service.py"]["risk_summary"]
 
     assert "bug fix" not in summary
-    assert summary.startswith("src/auth/service.py — hotspot score")
+    assert summary.startswith("src/auth/service.py — churn hotspot, top 8% (")
+
+
+@pytest.mark.asyncio
+async def test_risk_summary_drops_churn_clause_below_the_hotspot_cut(setup_mcp):
+    from repowise.server.mcp_server import get_risk
+
+    # models.py is in the fixture with churn_percentile=0.15 and is_hotspot=False.
+    result = await get_risk(["src/db/models.py"])
+    target = result["targets"]["src/db/models.py"]
+
+    assert target["is_hotspot"] is False
+    assert "hotspot" not in target["risk_summary"]
+    assert "15%" not in target["risk_summary"]
+    assert target["risk_summary"].startswith("src/db/models.py — 1 direct dependents")
+
+
+@pytest.mark.parametrize(
+    ("percentile", "expected"),
+    [
+        (0.92, "churn hotspot, top 8% (stable), "),
+        (0.86, "churn hotspot, top 14% (stable), "),  # 1 - 0.86 is not exactly 0.14
+        (0.9992, "churn hotspot, top 1% (stable), "),  # rounded up, never "top 0%"
+        (1.0, "churn hotspot, top 1% (stable), "),
+        (0.75, "churn hotspot, top 25% (stable), "),
+    ],
+)
+def test_churn_clause_states_the_rank_as_top_n_percent(percentile, expected):
+    from repowise.server.mcp_server.tool_risk.assessment import _churn_clause
+
+    assert _churn_clause(percentile, True, "stable") == expected
+
+
+def test_churn_clause_is_empty_for_a_file_that_is_not_a_hotspot():
+    from repowise.server.mcp_server.tool_risk.assessment import _churn_clause
+
+    assert _churn_clause(0.9, False, "increasing") == ""
 
 
 @pytest.mark.asyncio
@@ -154,6 +192,8 @@ async def test_get_context_triage_reports_fix_history(setup_mcp, session, repo_i
     t = result["targets"]["src/auth/service.py"]
 
     assert t["fix_history"]["fix_count"] == 5
+    # The count names its window, so it is never read as the 90-day churn figure.
+    assert t["fix_history"]["window"] == "6 months"
     assert t["fix_history"]["last_fix_days_ago"] == 3
     assert t["fix_history"]["bug_magnet"] is True
 
@@ -210,7 +250,7 @@ async def test_fix_history_anchors_to_historical_commit_two_years_ago(
     # get_risk: risk_summary, defect_profile
     risk_res = await get_risk(["src/old/fixed.py"])
     target_risk = risk_res["targets"]["src/old/fixed.py"]
-    assert "1 bug fix in 6mo, last 30d before the indexed commit" in target_risk["risk_summary"]
+    assert "1 bug fix in 6 months, last 30d before the indexed commit" in target_risk["risk_summary"]
     assert target_risk["defect_profile"]["last_fix_days_ago"] == 30
     assert target_risk["defect_profile"]["fix_count"] == 1
 

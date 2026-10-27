@@ -4,7 +4,6 @@ import type {
   RepoCreate,
   RepoUpdate,
   RepoResponse,
-  JobResponse,
   RepoStatsResponse,
   PreflightResponse,
   GenerateRequest,
@@ -35,20 +34,23 @@ export async function updateRepo(repoId: string, data: RepoUpdate): Promise<Repo
   return apiPatch<RepoResponse>(`/api/repos/${repoId}`, data);
 }
 
-export async function syncRepo(repoId: string): Promise<JobResponse> {
-  return apiPost<JobResponse>(`/api/repos/${repoId}/sync`);
+/** POST a repo job endpoint that answers 202 with `{job_id, stream_token}`. */
+function launchRepoJob(repoId: string, action: string): Promise<JobLaunchResponse> {
+  return apiPost<JobLaunchResponse>(`/api/repos/${repoId}/${action}`);
 }
 
-export async function fullResyncRepo(repoId: string): Promise<JobResponse> {
-  return apiPost<JobResponse>(`/api/repos/${repoId}/full-resync`);
+export async function syncRepo(repoId: string): Promise<JobLaunchResponse> {
+  return launchRepoJob(repoId, "sync");
+}
+
+export async function fullResyncRepo(repoId: string): Promise<JobLaunchResponse> {
+  return launchRepoJob(repoId, "full-resync");
 }
 
 /** Start the first full index (docs included) for a registered repo.
  * Returns 409 when a job is already active for it. */
-export async function startIndexJob(
-  repoId: string,
-): Promise<{ job_id: string; status: string }> {
-  return apiPost<{ job_id: string; status: string }>(`/api/repos/${repoId}/index`);
+export async function startIndexJob(repoId: string): Promise<JobLaunchResponse> {
+  return launchRepoJob(repoId, "index");
 }
 
 /** Provider connectivity smoke test + page/cost estimate for a first index. */
@@ -66,12 +68,14 @@ export async function preflightIndex(
 
 /** Cost + page counts for a generate selection, cascade fallout included.
  *  Heavy (rehydrates the graph and re-parses), so fetch it lazily — never on
- *  every render. */
+ *  every render. `provider` prices a provider the repo does not use yet. */
 export async function generateEstimate(
   repoId: string,
   body: GenerateRequest,
+  options: { provider?: string } = {},
 ): Promise<GenerateEstimate> {
-  return apiPost<GenerateEstimate>(`/api/repos/${repoId}/generate/estimate`, body);
+  const qs = options.provider ? `?provider=${encodeURIComponent(options.provider)}` : "";
+  return apiPost<GenerateEstimate>(`/api/repos/${repoId}/generate/estimate${qs}`, body);
 }
 
 /** Launch a scoped generate job (writes the selected pages with a model).

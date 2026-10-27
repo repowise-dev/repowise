@@ -112,11 +112,14 @@ def _emit(repo_path: Path, resolution, fmt: str) -> None:
     console.print(f"  [dim]Harnesses read: {', '.join(policy.harnesses)}.[/dim]")
     if policy.agent_acceptance:
         console.print(
-            "  [yellow]Agent acceptance is ON: an agent may grant a decision "
-            "authority. Its acceptances are signed as an agent's, not yours.[/yellow]"
+            "  [dim]Agent acceptance: on. An agent may accept a decision, signed as "
+            "the agent's, never yours.[/dim]"
         )
     else:
-        console.print("  [dim]Agent acceptance: off. Agents withdraw authority, never grant it.[/dim]")
+        console.print(
+            "  [yellow]Agent acceptance: off. Agents withdraw authority; only a "
+            "person grants it.[/yellow]"
+        )
     if policy.capture_prompt:
         from repowise.cli.editor_integrations.claude_config import (
             claude_code_capture_hook_installed,
@@ -133,7 +136,7 @@ def _emit(repo_path: Path, resolution, fmt: str) -> None:
             )
         elif not claude_code_capture_hook_installed():
             # The flag is per repository and the hook is per install, so the
-            # two drift: another repository's --off removes the shared entry.
+            # two drift: a settings file from before the entry shipped lacks it.
             console.print(
                 "  [yellow]  ...but no shell hook is installed to fire it. "
                 "Re-run `decision config capture-prompt --on`.[/yellow]"
@@ -346,9 +349,9 @@ def config_agent_acceptance(
 ) -> None:
     """Allow, or forbid, an agent granting a decision authority.
 
-    Off by default, and off is complete: an agent still withdraws authority,
-    proposes candidates and reads what governs. On, its acceptances are
-    recorded as an agent's, with the session that signed, on every surface.
+    On by default: an agent's acceptances are recorded as an agent's, with the
+    session that signed, on every surface. Off is complete: an agent still
+    withdraws authority, proposes candidates and reads what governs.
     """
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 
@@ -369,10 +372,14 @@ def config_capture_prompt(
 ) -> None:
     """Ask the agent to record a decision after a commit that states one.
 
-    Off by default. An agent cannot decline a hook, so this fires at most once
+    On by default. An agent cannot decline a hook, so this fires at most once
     a session, only on a commit whose message carries two or more decision
     signals, and never on one a record already cites. It proposes; nothing is
     recorded without the agent running `repowise decision add`.
+
+    `--off` is per repository and leaves the per-install shell hook in place:
+    the hook starts nothing on a shell call that is not a commit, and stays
+    silent in a repository with the prompt off.
     """
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 
@@ -384,12 +391,13 @@ def config_capture_prompt(
     # The flag is per repository; the hook it fires from is a per-install
     # matcher, and the shared one deliberately excludes the shell tools.
     # Writing the flag without this would store a switch nothing reads.
+    # Off removes nothing: other repositories rely on the same entry.
     from repowise.cli.editor_integrations.claude_config import (
         claude_code_capture_hook_installed,
         set_claude_code_capture_hook,
     )
 
-    settings = set_claude_code_capture_hook(bool(enabled))
+    settings = set_claude_code_capture_hook(True) if enabled else None
     if fmt == "json":
         emit_json(
             {
@@ -409,19 +417,10 @@ def config_capture_prompt(
             "`repowise init` or install the editor integration first.[/yellow]"
         )
         return
-    if settings is None:
-        return
-    if enabled:
+    if settings is not None:
         console.print(
-            f"[dim]Added a shell PostToolUse hook to {settings}. Other "
-            "repositories on this machine pay a process start on shell calls "
-            "and emit nothing unless they switch this on too.[/dim]"
-        )
-    else:
-        console.print(
-            f"[dim]Removed the shell PostToolUse hook from {settings}. Any "
-            "other repository using the capture prompt needs "
-            "`capture-prompt --on` again.[/dim]"
+            f"[dim]Updated the shell PostToolUse hook in {settings}. A shell call "
+            "that is not a commit starts nothing.[/dim]"
         )
 
 

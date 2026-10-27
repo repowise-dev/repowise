@@ -74,7 +74,7 @@ import re
 from typing import TYPE_CHECKING, ClassVar
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
     from tree_sitter import Node
 
@@ -235,6 +235,11 @@ class BasePerfDialect:
             io_names=io_names,
             has_db_import=has_db_import,
         )
+
+    def runs_once_in_loop(self, call: Node) -> bool:
+        """*call* sits in a loop it ends (a ``return`` or ``break`` follows), so it
+        is no per-iteration call to a helper."""
+        return False
 
     def defers_body(self, fn: Node) -> bool:
         """*fn*'s body runs when its result is iterated, not when it is called
@@ -540,6 +545,22 @@ class BasePerfDialect:
             if cur.type not in prune or cur == node:
                 stack.extend(cur.children)
 
+    @classmethod
+    def _exit_follows(
+        cls, stmt: Node, is_exit: Callable[[Node], bool], jumps: frozenset[str]
+    ) -> bool:
+        """A later statement in *stmt*'s block ends the loop (*is_exit*), and no
+        statement before it holds a jump (*jumps*, e.g. ``continue``) that could
+        loop back first. Then *stmt* runs at most once per loop entry."""
+        nxt = stmt.next_named_sibling
+        while nxt is not None:
+            if is_exit(nxt):
+                return True
+            if any(n.type in jumps for n in cls._walk(nxt)):
+                return False
+            nxt = nxt.next_named_sibling
+        return False
+
     @staticmethod
     def _grows(magnitude: LoopMagnitude | None) -> LoopMagnitude | None:
         """A projection of a growing source grows; nothing else carries through it."""
@@ -673,98 +694,6 @@ class BasePerfDialect:
             stack.extend(n.children)
         return False
 
-    def accumulates_across_iterations(
-        self, node: Node, name: bytes, loop_kinds: frozenset[str]
-    ) -> bool:
-        """True when the ``+=`` at *node* can grow *name* across iterations of
-        an enclosing loop in its own function.
-
-        The loops are walked from the innermost out. One whose body re-binds
-        *name* (:meth:`binds_name`) bounds the growth to a single pass, so
-        neither it nor any loop outside it is accumulating. An append directly
-        followed by ``return`` / ``throw`` runs once per call, and one followed
-        by a ``break`` once per run of the innermost loop: the interrupted-message
-        and fallback shapes (``msg += "[interrupted]"; break``). With no loop
-        found inside the function the walker's own loop verdict stands.
-        """
-        exit_kind = self._exit_after(node, loop_kinds)
-        if exit_kind not in (None, "break_statement"):
-            return False
-        loops = self._enclosing_loops(node, loop_kinds)
-        if not loops:
-            return True
-        for depth, loop in enumerate(loops):
-            if self._rebinds(loop, node, name, loop_kinds):
-                return False
-            if depth or exit_kind is None:
-                return True
-        return False
-
-    def _enclosing_loops(self, node: Node, loop_kinds: frozenset[str]) -> list[Node]:
-        """The loops around *node* inside its own function, innermost first."""
-        loops: list[Node] = []
-        cur = node.parent
-        while cur is not None and cur.type not in self.scope_kinds:
-            if cur.type in loop_kinds:
-                loops.append(cur)
-            cur = cur.parent
-        return loops
-
-    def _rebinds(self, loop: Node, append: Node, name: bytes, loop_kinds: frozenset[str]) -> bool:
-        """*loop*'s body re-binds *name* whenever *append* runs.
-
-        A binding under a branch or a nested loop that does not also hold the
-        append (``if (first) s = "head"``) may not run, so it is no reset.
-        """
-        body = self.loop_body(loop) or loop
-        return any(
-            self.binds_name(n, name) and self._runs_with(n, append, body, loop_kinds)
-            for n in self._walk(body, self.scope_kinds)
-        )
-
-    def _runs_with(self, node: Node, append: Node, body: Node, loop_kinds: frozenset[str]) -> bool:
-        """*node* runs on every pass that runs *append*: climbing from *node*, a
-        block holding *append* is reached before any branch or nested loop."""
-        cur = node.parent
-        while cur is not None and cur != body:
-            if cur.type in self.branch_kinds or cur.type in loop_kinds:
-                return False
-            if self._within(cur, append):
-                return True
-            cur = cur.parent
-        return True
-
-    def _exit_after(self, node: Node, loop_kinds: frozenset[str]) -> str | None:
-        """The kind of exit statement later in the block of the statement holding
-        *node*, or ``None``; a ``break`` that only leaves a ``switch`` is none."""
-        parent = node.parent
-        stmt = parent if parent is not None and parent.type == "expression_statement" else node
-        exit_stmt = self._next_exit(stmt)
-        if exit_stmt is None or exit_stmt.type == "continue_statement":
-            return None
-        if exit_stmt.type == "break_statement" and self._in_switch(stmt, loop_kinds):
-            return None
-        return exit_stmt.type
-
-    def _next_exit(self, stmt: Node) -> Node | None:
-        """The first exit statement after *stmt* in its block, unless a statement
-        in between can ``continue`` the loop instead."""
-        sib = stmt.next_named_sibling
-        while sib is not None and sib.type not in self.exit_kinds:
-            if any(n.type == "continue_statement" for n in self._walk(sib, self.scope_kinds)):
-                return None
-            sib = sib.next_named_sibling
-        return sib
-
-    def _in_switch(self, stmt: Node, loop_kinds: frozenset[str]) -> bool:
-        """A ``switch`` sits between *stmt* and its nearest loop."""
-        cur = stmt.parent
-        while cur is not None and cur.type not in loop_kinds:
-            if cur.type in self.switch_kinds:
-                return True
-            cur = cur.parent
-        return False
-
     def _rhs_is_stringish(self, node: Node) -> bool:
         """True if an augmented-assignment's RHS is provably string-typed.
 
@@ -866,6 +795,11 @@ class BasePerfDialect:
         ``name = build()`` never enables the marker. Default: empty (the marker
         cannot fire for a language that does not override this).
         """
+        return frozenset()
+
+    def awaits_in_loop_allowed(self, source: bytes) -> frozenset[int]:
+        """1-indexed lines where the source states that awaiting inside a loop is
+        intended (a lint suppression naming that rule). Default: none."""
         return frozenset()
 
     def async_blocking_member(self, node: Node) -> str | None:

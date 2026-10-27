@@ -18,6 +18,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
+from repowise.core.fsutils import comparable_path
 from repowise.server.mcp_server import _state
 
 if TYPE_CHECKING:
@@ -40,14 +41,6 @@ __all__ = [
     "cross_repo_tests_for",
     "tests_block_for",
 ]
-
-
-def _norm(path: str) -> str:
-    """The same one comparable spelling ``core.workspace.test_impact`` uses."""
-    cleaned = (path or "").replace("\\", "/")
-    while cleaned.startswith("./"):
-        cleaned = cleaned[2:]
-    return cleaned
 
 
 def _lock() -> asyncio.Lock:
@@ -118,7 +111,8 @@ async def cross_repo_tests_for(
     ``None`` only outside workspace mode or without contract data, so a caller
     can omit its block entirely. Every other empty answer names its reason in
     ``summary``: ``no_matching_links`` when the contract map knows no consumer
-    of those files, ``lookup_failed`` when the join itself broke. Never raises.
+    of those files, ``no_contract_links`` when it links no consumer anywhere (so
+    it cannot tell), ``lookup_failed`` when the join itself broke. Never raises.
     """
     if _state._registry is None:
         return None
@@ -147,7 +141,12 @@ async def cross_repo_tests_for(
             {lk.consumer_repo for lk in links if lk.consumer_repo != lk.provider_repo}
         )
         if not changed or not consumers:
-            return _empty_result("no_matching_links")
+            # Only a map that links something can say these files have no consumer.
+            linked = any(
+                raw.get("consumer_repo") != raw.get("provider_repo")
+                for raw in enricher.contract_links
+            )
+            return _empty_result("no_matching_links" if linked else "no_contract_links")
 
         async with _lock():
             opened = {}
@@ -210,7 +209,7 @@ def tests_block_for(
         block["unresolved_reason"] = "lookup_failed"
         block["unresolved_detail"] = result.summary.get("detail")
         return block
-    path = _norm(consumer_file)
+    path = comparable_path(consumer_file)
     rows = [
         rec
         for rec in result.recommendations

@@ -51,6 +51,9 @@ class TestImpactEvidence(BaseModel):
     basis: Literal["measured", "inferred"]
     source_file: str
     via: Literal["coverage-map", "call-graph", "import-graph"]
+    #: ``file`` on measured evidence: a test ran the changed file, not
+    #: necessarily its changed lines.
+    match: Literal["file"] | None = None
     source_format: str | None = None
 
 
@@ -63,6 +66,9 @@ class TestRecommendation(BaseModel):
     bases: list[Literal["measured", "inferred"]]
     source_files: list[str]
     evidence: list[TestImpactEvidence]
+    #: A measured row whose test file is gone or changed since the coverage run.
+    stale: bool = False
+    stale_reason: Literal["test_file_missing", "test_file_changed"] | None = None
 
 
 class TestImpactFile(BaseModel):
@@ -85,6 +91,12 @@ class TestImpactFreshness(BaseModel):
     indexed_commit: str | None = None
 
 
+class TestImpactAggregate(BaseModel):
+    file_count: int
+    ingested_commit: str | None = None
+    freshness: Literal["current", "stale", "unknown"]
+
+
 class TestImpactCoverage(BaseModel):
     status: Literal["available", "partial", "unavailable", "degraded"]
     reason: str | None = None
@@ -98,6 +110,8 @@ class TestImpactCoverage(BaseModel):
     ingested_at: str | None = None
     source_format: str | None = None
     freshness: TestImpactFreshness
+    #: Stored per-file line coverage, when there is no per-test map.
+    aggregate: TestImpactAggregate | None = None
 
 
 class TestImpactInference(BaseModel):

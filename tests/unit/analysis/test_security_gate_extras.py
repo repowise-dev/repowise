@@ -115,6 +115,18 @@ def test_detect_secrets_pragmas_do_not_enter_gate_or_suppressed_report(repo):
     assert scan.suppressed == []
 
 
+def test_other_scanners_allow_markers_keep_a_secret_out_of_the_gate(repo):
+    _write(
+        repo,
+        "cfg.go",
+        f'var a = "{KEY}" // gitleaks:allow\nvar b = "{KEY}" // #nosec G101\nvar c = "{KEY}"\n',
+    )
+    _commit(repo, "add")
+    scan = _scan(repo)
+    assert [(f["kind"], f["line_number"]) for f in scan.findings] == [("aws_access_key", 3)]
+    assert scan.suppressed == []
+
+
 def test_a_kind_scoped_marker_silences_only_the_kinds_it_names(repo):
     _write(
         repo,

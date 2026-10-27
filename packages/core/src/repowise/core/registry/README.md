@@ -23,6 +23,13 @@ needs the collected entries.
 | `cli_registry` | `cli_registry` | Collect Click commands; `apply(root)` attaches them |
 | `mcp_tool_registry` | `mcp_tool_registry` | Collect MCP tool functions; `apply(mcp)` registers them with FastMCP |
 | `pipeline_hooks` | `pipeline_hooks` | Pre/post phase hooks; wrap a `ProgressCallback` with `HookProgressCallback` to fire them |
+| `plugins` | `load_plugins()` | Discover plugins (`repowise.plugins` entry points, `REPOWISE_PLUGINS`); `SeamRegistry` maps a seam to named implementations, `get()` picks one and `all()` returns every one |
+
+`PLUGIN_API_VERSION` (exported from `repowise.core.registry`) is bumped on a
+breaking change to any registry or seam contract. Every registry, plus
+`register_provider` and `register_embedder`, records what a loading plugin
+registers as `kind:name` (`cli-command`, `mcp-tool`, `pipeline-hook`,
+`llm-provider`, `embedder`, or the seam name), which `repowise plugins` lists.
 
 The convenience helpers `register_command(...)` and `register_hook(...)`
 operate on the default singletons. Tests construct their own
@@ -37,11 +44,12 @@ registry/
   cli_registry.py        # CLIRegistry + cli_registry singleton
   mcp_tool_registry.py   # MCPToolRegistry + mcp_tool_registry singleton
   pipeline_hooks.py      # PipelineHookRegistry + HookProgressCallback + singleton
+  plugins.py             # load_plugins + SeamRegistry
   README.md
 ```
 
-Every file is under 200 lines; no module-level state beyond the three
-singletons.
+No module-level state beyond the three singletons, the plugin loader's
+record of what loaded, and the seams defined so far.
 
 ## Extension points
 
@@ -55,12 +63,16 @@ singletons.
 - **Adding a pipeline hook:** call `register_hook("parse", callback,
   when="post")`. The orchestrator already wraps its progress callback
   with `HookProgressCallback`, so the hook fires automatically.
+- **Adding an LLM provider or embedder:** call `register_provider(name,
+  factory)` or `register_embedder(name, factory)` from a plugin. Asking for a
+  name that is not built in loads plugins first.
 
 ## Tests
 
 - `tests/unit/registry/test_cli_registry.py`
 - `tests/unit/registry/test_mcp_tool_registry.py`
 - `tests/unit/registry/test_pipeline_hooks.py`
+- `tests/unit/registry/test_plugins.py`
 
 Each test uses an isolated registry instance to avoid coupling across
 tests.

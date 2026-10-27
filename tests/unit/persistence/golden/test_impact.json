@@ -11,6 +11,7 @@
       "status": "partial"
     },
     "coverage": {
+      "aggregate": null,
       "changed_files_total": 7,
       "changed_files_with_measured_tests": 4,
       "changed_files_without_measured_tests": 3,
@@ -148,6 +149,7 @@
         "evidence": [
           {
             "basis": "measured",
+            "match": "file",
             "source_file": "src/both.py",
             "source_format": "coverage.py",
             "via": "coverage-map"
@@ -158,6 +160,8 @@
         "source_files": [
           "src/both.py"
         ],
+        "stale": false,
+        "stale_reason": null,
         "test_file": "tests/test_both.py",
         "test_id": "tests/test_both.py::test_measured"
       },
@@ -169,6 +173,7 @@
         "evidence": [
           {
             "basis": "measured",
+            "match": "file",
             "source_file": "src/measured.py",
             "source_format": "coverage.py",
             "via": "coverage-map"
@@ -179,6 +184,8 @@
         "source_files": [
           "src/measured.py"
         ],
+        "stale": false,
+        "stale_reason": null,
         "test_file": "tests/test_measured.py",
         "test_id": "tests/test_measured.py::test_measured"
       },
@@ -190,6 +197,7 @@
         "evidence": [
           {
             "basis": "measured",
+            "match": "file",
             "source_file": "src/seed.py",
             "source_format": "coverage.py",
             "via": "coverage-map"
@@ -200,6 +208,8 @@
         "source_files": [
           "src/seed.py"
         ],
+        "stale": false,
+        "stale_reason": null,
         "test_file": "tests/test_seed.py",
         "test_id": "tests/test_seed.py::test_seed"
       },
@@ -211,6 +221,7 @@
         "evidence": [
           {
             "basis": "measured",
+            "match": "file",
             "source_file": "src/truncate.py",
             "source_format": "coverage.py",
             "via": "coverage-map"
@@ -221,6 +232,8 @@
         "source_files": [
           "src/truncate.py"
         ],
+        "stale": false,
+        "stale_reason": null,
         "test_file": "tests/test_truncate.py",
         "test_id": "tests/test_truncate.py::test_00"
       },
@@ -232,6 +245,7 @@
         "evidence": [
           {
             "basis": "measured",
+            "match": "file",
             "source_file": "src/truncate.py",
             "source_format": "coverage.py",
             "via": "coverage-map"
@@ -242,6 +256,8 @@
         "source_files": [
           "src/truncate.py"
         ],
+        "stale": false,
+        "stale_reason": null,
         "test_file": "tests/test_truncate.py",
         "test_id": "tests/test_truncate.py::test_01"
       },
@@ -253,6 +269,7 @@
         "evidence": [
           {
             "basis": "measured",
+            "match": "file",
             "source_file": "src/truncate.py",
             "source_format": "coverage.py",
             "via": "coverage-map"
@@ -263,6 +280,8 @@
         "source_files": [
           "src/truncate.py"
         ],
+        "stale": false,
+        "stale_reason": null,
         "test_file": "tests/test_truncate.py",
         "test_id": "tests/test_truncate.py::test_02"
       },
@@ -274,6 +293,7 @@
         "evidence": [
           {
             "basis": "measured",
+            "match": "file",
             "source_file": "src/truncate.py",
             "source_format": "coverage.py",
             "via": "coverage-map"
@@ -284,6 +304,8 @@
         "source_files": [
           "src/truncate.py"
         ],
+        "stale": false,
+        "stale_reason": null,
         "test_file": "tests/test_truncate.py",
         "test_id": "tests/test_truncate.py::test_03"
       },
@@ -295,6 +317,7 @@
         "evidence": [
           {
             "basis": "measured",
+            "match": "file",
             "source_file": "src/truncate.py",
             "source_format": "coverage.py",
             "via": "coverage-map"
@@ -305,6 +328,8 @@
         "source_files": [
           "src/truncate.py"
         ],
+        "stale": false,
+        "stale_reason": null,
         "test_file": "tests/test_truncate.py",
         "test_id": "tests/test_truncate.py::test_04"
       },
@@ -316,6 +341,7 @@
         "evidence": [
           {
             "basis": "measured",
+            "match": "file",
             "source_file": "src/truncate.py",
             "source_format": "coverage.py",
             "via": "coverage-map"
@@ -326,6 +352,8 @@
         "source_files": [
           "src/truncate.py"
         ],
+        "stale": false,
+        "stale_reason": null,
         "test_file": "tests/test_truncate.py",
         "test_id": "tests/test_truncate.py::test_05"
       },
@@ -337,6 +365,7 @@
         "evidence": [
           {
             "basis": "measured",
+            "match": "file",
             "source_file": "src/truncate.py",
             "source_format": "coverage.py",
             "via": "coverage-map"
@@ -347,6 +376,8 @@
         "source_files": [
           "src/truncate.py"
         ],
+        "stale": false,
+        "stale_reason": null,
         "test_file": "tests/test_truncate.py",
         "test_id": "tests/test_truncate.py::test_06"
       },
@@ -358,6 +389,7 @@
         "evidence": [
           {
             "basis": "measured",
+            "match": "file",
             "source_file": "src/truncate.py",
             "source_format": "coverage.py",
             "via": "coverage-map"
@@ -368,6 +400,8 @@
         "source_files": [
           "src/truncate.py"
         ],
+        "stale": false,
+        "stale_reason": null,
         "test_file": "tests/test_truncate.py",
         "test_id": "tests/test_truncate.py::test_07"
       },
@@ -379,6 +413,7 @@
         "evidence": [
           {
             "basis": "measured",
+            "match": "file",
             "source_file": "src/truncate.py",
             "source_format": "coverage.py",
             "via": "coverage-map"
@@ -389,6 +424,8 @@
         "source_files": [
           "src/truncate.py"
         ],
+        "stale": false,
+        "stale_reason": null,
         "test_file": "tests/test_truncate.py",
         "test_id": "tests/test_truncate.py::test_08"
       },
@@ -400,6 +437,7 @@
         "evidence": [
           {
             "basis": "measured",
+            "match": "file",
             "source_file": "src/truncate.py",
             "source_format": "coverage.py",
             "via": "coverage-map"
@@ -410,6 +448,8 @@
         "source_files": [
           "src/truncate.py"
         ],
+        "stale": false,
+        "stale_reason": null,
         "test_file": "tests/test_truncate.py",
         "test_id": "tests/test_truncate.py::test_09"
       },
@@ -421,6 +461,7 @@
         "evidence": [
           {
             "basis": "measured",
+            "match": "file",
             "source_file": "src/truncate.py",
             "source_format": "coverage.py",
             "via": "coverage-map"
@@ -431,6 +472,8 @@
         "source_files": [
           "src/truncate.py"
         ],
+        "stale": false,
+        "stale_reason": null,
         "test_file": "tests/test_truncate.py",
         "test_id": "tests/test_truncate.py::test_10"
       },
@@ -442,6 +485,7 @@
         "evidence": [
           {
             "basis": "measured",
+            "match": "file",
             "source_file": "src/truncate.py",
             "source_format": "coverage.py",
             "via": "coverage-map"
@@ -452,6 +496,8 @@
         "source_files": [
           "src/truncate.py"
         ],
+        "stale": false,
+        "stale_reason": null,
         "test_file": "tests/test_truncate.py",
         "test_id": "tests/test_truncate.py::test_11"
       },
@@ -463,6 +509,7 @@
         "evidence": [
           {
             "basis": "inferred",
+            "match": null,
             "source_file": "src/both.py",
             "source_format": null,
             "via": "import-graph"
@@ -473,6 +520,8 @@
         "source_files": [
           "src/both.py"
         ],
+        "stale": false,
+        "stale_reason": null,
         "test_file": "tests/test_both_inferred.py",
         "test_id": "tests/test_both_inferred.py"
       },
@@ -484,6 +533,7 @@
         "evidence": [
           {
             "basis": "inferred",
+            "match": null,
             "source_file": "src/inferred.py",
             "source_format": null,
             "via": "import-graph"
@@ -494,6 +544,8 @@
         "source_files": [
           "src/inferred.py"
         ],
+        "stale": false,
+        "stale_reason": null,
         "test_file": "tests/test_inferred.py",
         "test_id": "tests/test_inferred.py"
       }
@@ -521,6 +573,7 @@
       "status": "partial"
     },
     "coverage": {
+      "aggregate": null,
       "changed_files_total": 8,
       "changed_files_with_measured_tests": 0,
       "changed_files_without_measured_tests": 8,
@@ -654,27 +707,7 @@
         "evidence": [
           {
             "basis": "inferred",
-            "source_file": "src/inferred.py",
-            "source_format": null,
-            "via": "import-graph"
-          }
-        ],
-        "repository": "<bare>",
-        "repository_id": "<bare>",
-        "source_files": [
-          "src/inferred.py"
-        ],
-        "test_file": "tests/excluded/test_hidden.py",
-        "test_id": "tests/excluded/test_hidden.py"
-      },
-      {
-        "bases": [
-          "inferred"
-        ],
-        "basis": "inferred",
-        "evidence": [
-          {
-            "basis": "inferred",
+            "match": null,
             "source_file": "src/both.py",
             "source_format": null,
             "via": "import-graph"
@@ -685,6 +718,8 @@
         "source_files": [
           "src/both.py"
         ],
+        "stale": false,
+        "stale_reason": null,
         "test_file": "tests/test_both_inferred.py",
         "test_id": "tests/test_both_inferred.py"
       },
@@ -696,6 +731,7 @@
         "evidence": [
           {
             "basis": "inferred",
+            "match": null,
             "source_file": "src/inferred.py",
             "source_format": null,
             "via": "import-graph"
@@ -706,8 +742,34 @@
         "source_files": [
           "src/inferred.py"
         ],
+        "stale": false,
+        "stale_reason": null,
         "test_file": "tests/test_inferred.py",
         "test_id": "tests/test_inferred.py"
+      },
+      {
+        "bases": [
+          "inferred"
+        ],
+        "basis": "inferred",
+        "evidence": [
+          {
+            "basis": "inferred",
+            "match": null,
+            "source_file": "src/inferred.py",
+            "source_format": null,
+            "via": "import-graph"
+          }
+        ],
+        "repository": "<bare>",
+        "repository_id": "<bare>",
+        "source_files": [
+          "src/inferred.py"
+        ],
+        "stale": false,
+        "stale_reason": null,
+        "test_file": "tests/excluded/test_hidden.py",
+        "test_id": "tests/excluded/test_hidden.py"
       }
     ],
     "recommendations_by_primary_basis": {
@@ -736,6 +798,7 @@
       "status": "partial"
     },
     "coverage": {
+      "aggregate": null,
       "changed_files_total": 0,
       "changed_files_with_measured_tests": 0,
       "changed_files_without_measured_tests": 0,
@@ -788,6 +851,7 @@
       "status": "partial"
     },
     "coverage": {
+      "aggregate": null,
       "changed_files_total": 6,
       "changed_files_with_measured_tests": 3,
       "changed_files_without_measured_tests": 3,
@@ -913,6 +977,7 @@
         "evidence": [
           {
             "basis": "measured",
+            "match": "file",
             "source_file": "src/both.py",
             "source_format": "coverage.py",
             "via": "coverage-map"
@@ -923,6 +988,8 @@
         "source_files": [
           "src/both.py"
         ],
+        "stale": false,
+        "stale_reason": null,
         "test_file": "tests/test_both.py",
         "test_id": "tests/test_both.py::test_measured"
       },
@@ -934,6 +1001,7 @@
         "evidence": [
           {
             "basis": "measured",
+            "match": "file",
             "source_file": "src/measured.py",
             "source_format": "coverage.py",
             "via": "coverage-map"
@@ -944,6 +1012,8 @@
         "source_files": [
           "src/measured.py"
         ],
+        "stale": false,
+        "stale_reason": null,
         "test_file": "tests/test_measured.py",
         "test_id": "tests/test_measured.py::test_measured"
       },
@@ -955,6 +1025,7 @@
         "evidence": [
           {
             "basis": "measured",
+            "match": "file",
             "source_file": "src/truncate.py",
             "source_format": "coverage.py",
             "via": "coverage-map"
@@ -965,6 +1036,8 @@
         "source_files": [
           "src/truncate.py"
         ],
+        "stale": false,
+        "stale_reason": null,
         "test_file": "tests/test_truncate.py",
         "test_id": "tests/test_truncate.py::test_00"
       },
@@ -976,6 +1049,7 @@
         "evidence": [
           {
             "basis": "measured",
+            "match": "file",
             "source_file": "src/truncate.py",
             "source_format": "coverage.py",
             "via": "coverage-map"
@@ -986,6 +1060,8 @@
         "source_files": [
           "src/truncate.py"
         ],
+        "stale": false,
+        "stale_reason": null,
         "test_file": "tests/test_truncate.py",
         "test_id": "tests/test_truncate.py::test_01"
       },
@@ -997,6 +1073,7 @@
         "evidence": [
           {
             "basis": "measured",
+            "match": "file",
             "source_file": "src/truncate.py",
             "source_format": "coverage.py",
             "via": "coverage-map"
@@ -1007,6 +1084,8 @@
         "source_files": [
           "src/truncate.py"
         ],
+        "stale": false,
+        "stale_reason": null,
         "test_file": "tests/test_truncate.py",
         "test_id": "tests/test_truncate.py::test_02"
       },
@@ -1018,6 +1097,7 @@
         "evidence": [
           {
             "basis": "measured",
+            "match": "file",
             "source_file": "src/truncate.py",
             "source_format": "coverage.py",
             "via": "coverage-map"
@@ -1028,6 +1108,8 @@
         "source_files": [
           "src/truncate.py"
         ],
+        "stale": false,
+        "stale_reason": null,
         "test_file": "tests/test_truncate.py",
         "test_id": "tests/test_truncate.py::test_03"
       },
@@ -1039,6 +1121,7 @@
         "evidence": [
           {
             "basis": "measured",
+            "match": "file",
             "source_file": "src/truncate.py",
             "source_format": "coverage.py",
             "via": "coverage-map"
@@ -1049,6 +1132,8 @@
         "source_files": [
           "src/truncate.py"
         ],
+        "stale": false,
+        "stale_reason": null,
         "test_file": "tests/test_truncate.py",
         "test_id": "tests/test_truncate.py::test_04"
       },
@@ -1060,6 +1145,7 @@
         "evidence": [
           {
             "basis": "measured",
+            "match": "file",
             "source_file": "src/truncate.py",
             "source_format": "coverage.py",
             "via": "coverage-map"
@@ -1070,6 +1156,8 @@
         "source_files": [
           "src/truncate.py"
         ],
+        "stale": false,
+        "stale_reason": null,
         "test_file": "tests/test_truncate.py",
         "test_id": "tests/test_truncate.py::test_05"
       },
@@ -1081,6 +1169,7 @@
         "evidence": [
           {
             "basis": "measured",
+            "match": "file",
             "source_file": "src/truncate.py",
             "source_format": "coverage.py",
             "via": "coverage-map"
@@ -1091,6 +1180,8 @@
         "source_files": [
           "src/truncate.py"
         ],
+        "stale": false,
+        "stale_reason": null,
         "test_file": "tests/test_truncate.py",
         "test_id": "tests/test_truncate.py::test_06"
       },
@@ -1102,6 +1193,7 @@
         "evidence": [
           {
             "basis": "measured",
+            "match": "file",
             "source_file": "src/truncate.py",
             "source_format": "coverage.py",
             "via": "coverage-map"
@@ -1112,6 +1204,8 @@
         "source_files": [
           "src/truncate.py"
         ],
+        "stale": false,
+        "stale_reason": null,
         "test_file": "tests/test_truncate.py",
         "test_id": "tests/test_truncate.py::test_07"
       },
@@ -1123,6 +1217,7 @@
         "evidence": [
           {
             "basis": "measured",
+            "match": "file",
             "source_file": "src/truncate.py",
             "source_format": "coverage.py",
             "via": "coverage-map"
@@ -1133,6 +1228,8 @@
         "source_files": [
           "src/truncate.py"
         ],
+        "stale": false,
+        "stale_reason": null,
         "test_file": "tests/test_truncate.py",
         "test_id": "tests/test_truncate.py::test_08"
       },
@@ -1144,6 +1241,7 @@
         "evidence": [
           {
             "basis": "measured",
+            "match": "file",
             "source_file": "src/truncate.py",
             "source_format": "coverage.py",
             "via": "coverage-map"
@@ -1154,6 +1252,8 @@
         "source_files": [
           "src/truncate.py"
         ],
+        "stale": false,
+        "stale_reason": null,
         "test_file": "tests/test_truncate.py",
         "test_id": "tests/test_truncate.py::test_09"
       },
@@ -1165,6 +1265,7 @@
         "evidence": [
           {
             "basis": "measured",
+            "match": "file",
             "source_file": "src/truncate.py",
             "source_format": "coverage.py",
             "via": "coverage-map"
@@ -1175,6 +1276,8 @@
         "source_files": [
           "src/truncate.py"
         ],
+        "stale": false,
+        "stale_reason": null,
         "test_file": "tests/test_truncate.py",
         "test_id": "tests/test_truncate.py::test_10"
       },
@@ -1186,6 +1289,7 @@
         "evidence": [
           {
             "basis": "measured",
+            "match": "file",
             "source_file": "src/truncate.py",
             "source_format": "coverage.py",
             "via": "coverage-map"
@@ -1196,6 +1300,8 @@
         "source_files": [
           "src/truncate.py"
         ],
+        "stale": false,
+        "stale_reason": null,
         "test_file": "tests/test_truncate.py",
         "test_id": "tests/test_truncate.py::test_11"
       },
@@ -1207,27 +1313,7 @@
         "evidence": [
           {
             "basis": "inferred",
-            "source_file": "src/inferred.py",
-            "source_format": null,
-            "via": "import-graph"
-          }
-        ],
-        "repository": "<stale>",
-        "repository_id": "<stale>",
-        "source_files": [
-          "src/inferred.py"
-        ],
-        "test_file": "tests/excluded/test_hidden.py",
-        "test_id": "tests/excluded/test_hidden.py"
-      },
-      {
-        "bases": [
-          "inferred"
-        ],
-        "basis": "inferred",
-        "evidence": [
-          {
-            "basis": "inferred",
+            "match": null,
             "source_file": "src/both.py",
             "source_format": null,
             "via": "import-graph"
@@ -1238,6 +1324,8 @@
         "source_files": [
           "src/both.py"
         ],
+        "stale": false,
+        "stale_reason": null,
         "test_file": "tests/test_both_inferred.py",
         "test_id": "tests/test_both_inferred.py"
       },
@@ -1249,6 +1337,7 @@
         "evidence": [
           {
             "basis": "inferred",
+            "match": null,
             "source_file": "src/inferred.py",
             "source_format": null,
             "via": "import-graph"
@@ -1259,8 +1348,34 @@
         "source_files": [
           "src/inferred.py"
         ],
+        "stale": false,
+        "stale_reason": null,
         "test_file": "tests/test_inferred.py",
         "test_id": "tests/test_inferred.py"
+      },
+      {
+        "bases": [
+          "inferred"
+        ],
+        "basis": "inferred",
+        "evidence": [
+          {
+            "basis": "inferred",
+            "match": null,
+            "source_file": "src/inferred.py",
+            "source_format": null,
+            "via": "import-graph"
+          }
+        ],
+        "repository": "<stale>",
+        "repository_id": "<stale>",
+        "source_files": [
+          "src/inferred.py"
+        ],
+        "stale": false,
+        "stale_reason": null,
+        "test_file": "tests/excluded/test_hidden.py",
+        "test_id": "tests/excluded/test_hidden.py"
       }
     ],
     "recommendations_by_primary_basis": {

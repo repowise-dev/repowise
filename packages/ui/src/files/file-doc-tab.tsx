@@ -8,8 +8,6 @@ interface FileDocTabProps {
   wikiPage: FileWikiPageRef | null;
   /** Server-rendered wiki content (the host renders markdown its own way). */
   docSlot?: ReactNode | undefined;
-
-
   /** The repository's own documents naming this file, rendered below the page. */
   referencesPanel?: ReactNode | undefined;
 }
@@ -26,7 +24,8 @@ export function FileDocTab({ wikiPage, docSlot, referencesPanel }: FileDocTabPro
         />
         {referencesPanel}
       </div>
-    );  }
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -50,7 +49,7 @@ export function FileDocTab({ wikiPage, docSlot, referencesPanel }: FileDocTabPro
       )}
 
       {wikiPage.human_notes && (
-        <div className="border-l-2 border-[var(--color-accent-primary)] pl-4">
+        <div className="border-l-2 border-[var(--color-text-tertiary)] pl-4">
           <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
             Team notes
           </p>

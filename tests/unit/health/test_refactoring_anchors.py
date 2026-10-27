@@ -34,6 +34,7 @@ from repowise.core.analysis.health.refactoring.models import RefactoringContext
 from repowise.core.analysis.health.refactoring.recipe import (
     ELSEWHERE_NOTE,
     LINE_RULE,
+    RENAME_NOTE,
     SCRIPT_RULE,
     build_recipe,
 )
@@ -271,6 +272,7 @@ def test_the_apply_rules_read_the_same_in_every_renderer():
         assert wording in text
         assert f'"{wording}"' in steps_ts
     assert f'"{ELSEWHERE_NOTE}"' in steps_ts
+    assert f'"{RENAME_NOTE}"' in steps_ts
     # The opportunity fallback reads the same constants.
     assert "SCRIPT_RULE_TEXT," in prompts_ts and "LINE_RULE_TEXT," in prompts_ts
 

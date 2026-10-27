@@ -23,6 +23,12 @@ _INFLECTIONS = {
 }
 
 
+def window_term_weight(df: int, n: int) -> float:
+    """Weight of a term that *df* of *n* retrieved hits carry: 1 when every hit
+    carries it, more the fewer do, so the word that tells hits apart leads."""
+    return 1.0 + math.log((n + 1) / (df + 1))
+
+
 def _ranking_terms(text: str, *, max_terms: int = 8) -> set[str]:
     """Content terms with a tiny retrieval-only inflection normalisation."""
     return {_INFLECTIONS.get(term, term) for term in content_terms(text, max_terms=max_terms)}
@@ -103,8 +109,7 @@ def rerank_by_context_coverage(
         term: sum(1 for tokens in tokens_by_hit if term in tokens) for term in terms
     }
     weights = {
-        term: 1.0 + math.log((len(hits) + 1) / (document_frequency[term] + 1))
-        for term in terms
+        term: window_term_weight(document_frequency[term], len(hits)) for term in terms
     }
     total_weight = sum(weights.values())
 

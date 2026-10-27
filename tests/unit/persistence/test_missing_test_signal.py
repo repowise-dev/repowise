@@ -138,3 +138,28 @@ async def test_uncovered_lines_are_narrowed_to_the_change(async_session):
     # this is a stale-test candidate, not an untested change.
     assert report.untested_changes == []
     assert len(report.stale_test_candidates) == 1
+
+
+async def test_a_truncated_map_reads_missing_tests_as_unknown(async_session, monkeypatch):
+    # At the row cap whole tests were left out, so neither an uncovered change
+    # nor an unedited covering test proves anything: both files are unknown.
+    from repowise.core.persistence.crud.analysis import coverage_map
+
+    repo = await _seed(
+        async_session,
+        [
+            _rec("tests/test_foo.py::test_a", "src/foo.py", [1, 2], "tests/test_foo.py"),
+            _rec("tests/test_bar.py::test_b", "src/bar.py", [5], "tests/test_bar.py"),
+        ],
+    )
+    monkeypatch.setattr(coverage_map, "MAX_TEST_COVERAGE_ROWS", 2)
+
+    report = await detect_missing_tests(
+        async_session, repo.id, {"src/foo.py": {99}, "src/bar.py": {5}}
+    )
+
+    assert report.map_truncated is True
+    assert report.untested_changes == []
+    assert report.stale_test_candidates == []
+    assert sorted(report.no_data) == ["src/bar.py", "src/foo.py"]
+    assert report.has_signal() is False

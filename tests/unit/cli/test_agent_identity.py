@@ -72,6 +72,7 @@ def test_a_descriptor_does_not_restate_what_its_identity_says(target_id: str) ->
     assert target.display_name == agent.display_name
     assert target.hook_adapter == agent.hook_adapter
     assert target.session_adapter == agent.session_adapter
+    assert target.capture_adapter == agent.capture_adapter
 
 
 @pytest.mark.parametrize("target_id", ALL_IDS)
@@ -120,6 +121,7 @@ class _WindsurfTarget:
     docs_url = None
     hook_adapter = SEVENTH.hook_adapter
     session_adapter = SEVENTH.session_adapter
+    capture_adapter = SEVENTH.capture_adapter
     methods = ()
     project_file_id = "windsurf_rules"
 
@@ -357,3 +359,17 @@ def test_an_unannounced_client_is_stored_as_unknown_not_as_the_fallback() -> Non
     resolved, _ = normalize_mcp_identity(None)
     assert resolved == UNKNOWN_AGENT
     assert resolved != identity_for_target_id("claude-code").slug  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize(
+    ("announced", "slug"),
+    [
+        ("codex-mcp-client", "codex"),
+        ("cursor-vscode", "cursor"),
+        ("Visual Studio Code", "vscode"),
+        ("Visual Studio Code - Insiders", "vscode"),
+        ("claude-code", "claude_code"),
+    ],
+)
+def test_hosts_resolve_from_the_name_they_announce(announced, slug):
+    assert resolve_client_identity(announced) == slug

@@ -61,6 +61,20 @@ describe("QuickActions", () => {
     expect(screen.queryByRole("button", { name: /^Sync$/ })).not.toBeInTheDocument();
   });
 
+  it("bounds the job panel's width in the header variant", () => {
+    // The header's actions slot does not shrink, so an unbounded panel takes
+    // its content's width and crushes the repo name beside it (#4690).
+    render(
+      <QuickActions
+        onAction={vi.fn()}
+        variant="header"
+        activeJobSlot={<div data-testid="job-progress">progress</div>}
+      />,
+    );
+    const container = screen.getByTestId("job-progress").parentElement!;
+    expect(container).toHaveClass("min-w-0", "sm:w-80");
+  });
+
   it("fires non-confirming actions immediately (dead-code path)", () => {
     const onAction = vi.fn().mockResolvedValue(undefined);
     render(<QuickActions onAction={onAction} />);

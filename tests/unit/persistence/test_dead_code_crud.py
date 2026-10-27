@@ -354,10 +354,12 @@ async def test_get_dead_code_git_fields_is_empty_for_an_unknown_repo(async_sessi
 
 
 async def test_summary_uses_shared_confidence_thresholds(async_session, monkeypatch):
+    from repowise.core.analysis.dead_code.serving import TIER_FLOORS
     from repowise.core.persistence.crud.analysis import dead_code as dead_code_crud
 
-    monkeypatch.setattr(dead_code_crud, "SAFE_CONFIDENCE_THRESHOLD", 0.8)
-    monkeypatch.setattr(dead_code_crud, "RISK_CAP_CONFIDENCE", 0.3)
+    # The summary tiers through the serving module's one table.
+    monkeypatch.setitem(TIER_FLOORS, "high", 0.8)
+    monkeypatch.setitem(TIER_FLOORS, "medium", 0.3)
 
     repo = await insert_repo(async_session)
 
@@ -442,6 +444,8 @@ async def test_unknown_line_count_is_stored_as_null_and_summed_as_nothing(async_
     summary = await dead_code_crud.get_dead_code_summary(async_session, repo.id)
     assert summary["total_lines"] == 19
     assert summary["deletable_lines"] == 19
+    # Both are deletion-ready; the count includes the one of unknown size.
+    assert summary["safe_to_delete_count"] == 2
 
 
 async def test_unknown_line_count_is_stored_as_null(async_session):
@@ -470,3 +474,38 @@ async def test_legacy_not_null_store_still_accepts_an_unknown_count(async_sessio
     await save_dead_code_findings(async_session, repo.id, findings)
     await replace_dead_code_findings(async_session, repo.id, findings)
     assert sorted(r.lines for r in await _rows(async_session, repo.id)) == [0, 1]
+
+
+async def test_scoped_replace_past_one_delete_chunk_keeps_exactly_the_right_rows(async_session):
+    """A scope wider than one delete chunk deletes every open row in it, and
+    only those: acted-on rows, rows outside the scope, and another repo's
+    rows come through unchanged."""
+    repo = await insert_repo(async_session)
+    other = await insert_repo(async_session, name="other", local_path="/tmp/other")
+    paths = [f"f{i}.py" for i in range(1200)]
+    await save_dead_code_findings(async_session, repo.id, [_finding(p, "s") for p in paths])
+    await save_dead_code_findings(async_session, other.id, [_finding("f0.py", "s")])
+    await async_session.commit()
+    for row in await _rows(async_session, repo.id):
+        if row.file_path in {"f3.py", "f1100.py"}:
+            row.status = "ignored"
+    await async_session.commit()
+
+    scope = set(paths[:1150])
+    incoming = [_finding(p, "new") for p in ("f3.py", "f7.py", "f1199.py")]
+    await replace_dead_code_findings(
+        async_session, repo.id, [*incoming, _finding("f3.py", "s")], scope=scope
+    )
+    await async_session.commit()
+
+    rows = await _rows(async_session, repo.id)
+    got = sorted((r.file_path, r.symbol_name, r.status) for r in rows)
+    expected = sorted(
+        [("f3.py", "s", "ignored"), ("f1100.py", "s", "ignored")]
+        + [(p, "s", "open") for p in paths[1150:]]
+        + [("f3.py", "new", "open"), ("f7.py", "new", "open")]
+    )
+    assert got == expected
+    assert [(r.file_path, r.status) for r in await _rows(async_session, other.id)] == [
+        ("f0.py", "open")
+    ]

@@ -111,7 +111,9 @@ def _cap_archaeology(
     archaeology: dict[str, Any], collector: OmissionCollector, *, label: str
 ) -> None:
     """Cap fully annotated archaeology lanes without discarding their tails."""
-    for key, cap in (("file_commits", 10), ("cross_references", 10), ("git_log", 20)):
+    # git_log at five, like origin key_commits: its head is the file's own
+    # newest commits, and the tail stays recoverable through the collector.
+    for key, cap in (("file_commits", 10), ("cross_references", 10), ("git_log", 5)):
         rows = archaeology.get(key)
         if isinstance(rows, list):
             cap_collection(

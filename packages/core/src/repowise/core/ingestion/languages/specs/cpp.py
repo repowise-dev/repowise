@@ -18,9 +18,9 @@ from .c import TEST_SUPPORT_STEM_SUFFIXES
 #: no symbols, no edges, no error. Reassigned here on the corpus count: 24 of
 #: the 25 code-bearing ``.inc`` files are C++ and none are Pascal, on a corpus
 #: that does contain Pascal. The one PHP ``.inc`` (a Drush plugin) is the known
-#: cost; ``.inc`` is shared by C++, PHP and Pascal in the wild, and a
-#: content- or sibling-aware router is the real answer if a second language's
-#: usage ever shows up in the corpus.
+#: cost of extension-only routing. ``.inc`` is also shared with PL/I, PHP and
+#: Pascal: traverser's content check now keeps this C++ default only when the
+#: file's head contains C/C++ evidence, leaving other members unindexed.
 INCLUDE_FRAGMENT_EXTENSIONS: frozenset[str] = frozenset({".inl", ".ipp", ".tpp", ".inc"})
 
 SPEC = LanguageSpec(

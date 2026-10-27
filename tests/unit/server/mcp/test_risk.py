@@ -26,7 +26,9 @@ async def test_get_risk_single_target(setup_mcp):
     assert t["primary_owner"] == "Alice"
     assert "owner_pct" not in t  # detailed owner metrics require include=["owners"]
     assert "risk_summary" in t
-    assert "hotspot score" in t["risk_summary"]
+    # churn_percentile=0.92 and is_hotspot → named as a rank, not a bare percentage
+    assert "churn hotspot, top 8% (" in t["risk_summary"]
+    assert "hotspot score" not in t["risk_summary"]
 
     # include=["owners"] opt-in adds owner_pct
     owners_result = await get_risk(["src/auth/service.py"], include=["owners"])
@@ -386,17 +388,19 @@ async def test_get_risk_pr_directive_falls_back_to_the_graph_without_a_map(pr_ch
 async def test_get_risk_pr_directive_runs_tests_in_import_reach(pr_checkout):
     """No map and no call-graph test -> the tests in reverse-import reach, inferred.
 
-    ``tests/test_service.py`` reaches ``models.py`` through ``service.py``. With
-    no coverage the gap list is withheld, not sent empty.
+    ``tests/test_service.py`` reaches ``models.py`` only through ``service.py``,
+    so it runs but is counted apart from the headline. With no coverage the gap
+    list is withheld, not sent empty.
     """
     from repowise.server.mcp_server import get_risk
 
     result = await get_risk(["src/db/models.py"], changed_files=["src/db/models.py"])
     directive = result["directive"]
 
-    assert directive["tests_to_run"] == ["tests/test_service.py"]
+    assert directive["tests_to_run"] == []
+    assert directive["tests_import_closure_total"] == 1
+    assert "1 more test(s) must still run because they import the change" in directive["summary"]
     assert directive["tests_to_run_basis"] == "inferred"
-    assert directive["tests_to_run_kind"] == "test_file"
     assert "missing_tests" not in directive
     assert directive["coverage"]["status"] == "unavailable"
     assert "test gaps are withheld" in directive["summary"]
@@ -858,7 +862,7 @@ async def test_get_risk_names_an_unknown_include_rather_than_applying_it(setup_m
         {
             "argument": "include",
             "values": ["nonsense"],
-            "valid": ["blast", "churn", "graph", "owners", "scales", "tests"],
+            "valid": ["blast", "changes", "churn", "graph", "owners", "scales", "tests"],
         }
     ]
 
@@ -1100,7 +1104,13 @@ async def test_security_signals_are_ranked_high_first(setup_mcp, session):
     from repowise.server.mcp_server.tool_risk.assessment import _get_security_signals
 
     for line, (kind, severity) in enumerate(
-        [("weak_hash", "low"), ("tls_verify_false", "med"), ("pickle_loads", "high")], start=1
+        [
+            ("weak_hash", "low"),
+            ("tls_verify_false", "med"),
+            ("pickle_loads", "high"),
+            ("security_sensitive_symbol", "low"),
+        ],
+        start=1,
     ):
         session.add(
             SecurityFinding(
@@ -1117,7 +1127,12 @@ async def test_security_signals_are_ranked_high_first(setup_mcp, session):
     await session.flush()
 
     signals = await _get_security_signals(session, "repo1", "src/auth/service.py")
-    assert [s["severity"] for s in signals] == ["high", "med", "low"]
+    # A symbol-name row is stored for the dashboard but never served to an agent.
+    assert [(s["kind"], s["severity"]) for s in signals] == [
+        ("pickle_loads", "high"),
+        ("tls_verify_false", "med"),
+        ("weak_hash", "low"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -1148,3 +1163,48 @@ async def test_get_risk_pr_mode_puts_docs_and_config_cards_last(setup_mcp):
     files = ["CHANGES.rst", "setup.cfg", "src/auth/service.py"]
     result = await get_risk(files, changed_files=files)
     assert next(iter(result["targets"])) == "src/auth/service.py"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["queries/java.scm", "docs/guide.md"])
+async def test_get_risk_history_tier_file_omits_unmeasured_signals(setup_mcp, session, path):
+    """A history-only row carries commits and owner, never zeros posing as measurements."""
+    from datetime import UTC, datetime
+
+    from repowise.core.persistence.models import GitMetadata
+    from repowise.server.mcp_server import get_risk
+
+    session.add(
+        GitMetadata(
+            id=f"gm-history-{path}",
+            repository_id=setup_mcp,
+            file_path=path,
+            history_only=True,
+            commit_count_total=11,
+            commit_count_90d=4,
+            commit_count_30d=1,
+            last_commit_at=datetime(2026, 3, 1, tzinfo=UTC),
+            primary_owner_name="Carol",
+            primary_owner_commit_pct=0.5,
+            top_authors_json=json.dumps([{"name": "Carol", "count": 6}]),
+        )
+    )
+    await session.flush()
+
+    for result in (
+        await get_risk([path], include=["graph", "churn"]),
+        await get_risk([path], changed_files=[path]),
+    ):
+        card = result["targets"][path]
+        assert card["signal_tier"] == "history"
+        assert card["commit_count_total"] == 11
+        assert card["last_commit_at"].startswith("2026-03-01")
+        assert card["primary_owner"] == "Carol"
+        for key in ("hotspot_score", "is_hotspot", "co_change_partners", "risk_type"):
+            assert key not in card
+        assert "co_change_partners_emitted" not in card
+        assert "hotspot" not in card["risk_summary"]
+        # Detailed owner metrics stay behind include=["owners"], as on a scored card.
+        assert "owner_pct" not in card and "contributor_count" not in card
+    owners = (await get_risk([path], include=["owners"]))["targets"][path]
+    assert owners["owner_pct"] == 0.5

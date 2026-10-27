@@ -2,11 +2,23 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
+from repowise.core.generation.cascade import build_page_dependencies
 from repowise.core.generation.page_selection import (
     PageRecord,
     PageSelectionIntent,
     resolve_page_selection,
 )
+from repowise.core.generation.scope import resolve_scope
+
+
+@dataclass(frozen=True)
+class _MG:
+    """Duck-typed stand-in for selection.ModuleGroup."""
+
+    key: str
+    file_paths: tuple[str, ...]
 
 
 def _records() -> list[PageRecord]:
@@ -25,14 +37,35 @@ def _records() -> list[PageRecord]:
     ]
 
 
-def test_unwritten_selects_template_pages_only() -> None:
+def test_unwritten_selects_model_written_template_pages_only() -> None:
+    # File pages are structural: always templates, never written by a model.
     result = resolve_page_selection(_records(), PageSelectionIntent(unwritten=True))
-    assert result.page_ids == {
-        "file_page:src/a.py",
-        "file_page:tests/t.py",
-        "module_page:src",
-    }
+    assert result.page_ids == {"module_page:src"}
     assert result.unknown_page_ids == ()
+
+
+def test_unwritten_does_not_pull_written_module_pages_through_the_cascade() -> None:
+    # #3205: template file pages used to seed `--unwritten`, and the default
+    # `dependents` cascade then regenerated the written module page above them.
+    records = [
+        PageRecord("file_page:src/a.py", "file_page", "src/a.py", is_template=True),
+        PageRecord("file_page:lib/b.py", "file_page", "lib/b.py", is_template=True),
+        PageRecord("module_page:src", "module_page", "src", is_template=False),
+        PageRecord("module_page:lib", "module_page", "lib", is_template=True),
+        PageRecord("repo_overview:demo", "repo_overview", "demo", is_template=False),
+    ]
+    deps = build_page_dependencies(
+        module_groups=[_MG("src", ("src/a.py",)), _MG("lib", ("lib/b.py",))],
+        scc_groups=[],
+        repo_wide_ids=("repo_overview:demo",),
+    )
+    plan = resolve_scope(
+        records=records,
+        intent=PageSelectionIntent(unwritten=True),
+        cascade_mode="dependents",
+        deps=deps,
+    )
+    assert plan.generate_ids == {"module_page:lib"}
 
 
 def test_all_pages_selects_everything() -> None:

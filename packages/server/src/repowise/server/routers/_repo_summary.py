@@ -13,6 +13,8 @@ from sqlalchemy import case, func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.persistence.crud import count_symbols_by_repo, indexed_file
+from repowise.core.persistence.crud.analysis.shown import ungated
 from repowise.core.persistence.models import (
     DeadCodeFinding,
     GitMetadata,
@@ -33,28 +35,26 @@ def _fresh_case(column: Any, value: Any) -> Any:
 
 
 async def _file_figures(session: AsyncSession) -> _Figures:
-    # `graph_nodes` also holds symbol rows, so every count is scoped to files.
+    # `graph_nodes` also holds symbol and import-target rows; `indexed_file` is
+    # the population `crud.count_files` counts.
     result = await session.execute(
         select(
             GraphNode.repository_id,
             func.count(GraphNode.id),
-            func.coalesce(func.sum(GraphNode.symbol_count), 0),
             _fresh_case(GraphNode.is_entry_point, True),
         )
-        .where(GraphNode.node_type == "file")
+        .where(indexed_file())
         .group_by(GraphNode.repository_id)
     )
     return [
-        (
-            repo_id,
-            {
-                "file_count": int(files or 0),
-                "symbol_count": int(symbols or 0),
-                "entry_point_count": int(entries or 0),
-            },
-        )
-        for repo_id, files, symbols, entries in result.all()
+        (repo_id, {"file_count": int(files or 0), "entry_point_count": int(entries or 0)})
+        for repo_id, files, entries in result.all()
     ]
+
+
+async def _symbol_figures(session: AsyncSession) -> _Figures:
+    counts = await count_symbols_by_repo(session)
+    return [(repo_id, {"symbol_count": n}) for repo_id, n in counts.items()]
 
 
 async def _page_figures(session: AsyncSession) -> _Figures:
@@ -79,6 +79,7 @@ async def _dead_export_figures(session: AsyncSession) -> _Figures:
         .where(
             DeadCodeFinding.kind == "unused_export",
             DeadCodeFinding.status == "open",
+            ungated("dead_code", DeadCodeFinding.file_path, DeadCodeFinding.kind),
         )
         .group_by(DeadCodeFinding.repository_id)
     )
@@ -132,6 +133,7 @@ async def _health_figures(session: AsyncSession) -> _Figures:
 
 _SECTIONS = (
     _file_figures,
+    _symbol_figures,
     _page_figures,
     _dead_export_figures,
     _hotspot_figures,

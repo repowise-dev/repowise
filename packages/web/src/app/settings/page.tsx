@@ -1,57 +1,7 @@
-import type { Metadata } from "next";
-import Link from "next/link";
-import { PageShell } from "@repowise-dev/ui/shared/page-shell";
-import { ConnectionSection } from "@/components/settings/connection-section";
-import { ProviderSection } from "@/components/settings/provider-section";
-import { WebhookSection } from "@/components/settings/webhook-section";
-import { McpSection } from "@/components/settings/mcp-section";
-import { McpToolsSection } from "@/components/settings/mcp-tools-section";
-import { DisplaySection } from "@/components/settings/display-section";
-import { getTranslations } from "next-intl/server";
-import { HostedNudgeSlot } from "@/components/hosted/hosted-nudge-slot";
+import { SettingsRedirect } from "@/components/settings/settings-nav";
+import { GLOBAL_SETTINGS_BASE, GLOBAL_SETTINGS_GROUPS } from "@/components/settings/settings-groups";
 
-export const metadata: Metadata = { title: "Settings" };
-
-/**
- * Global settings.
- *
- * Was seven `Card`s in a hand-rolled `p-4 sm:p-6 max-w-2xl` frame, while the
- * per-repo settings page used `PageShell` — two settings surfaces, two layout
- * systems, two heading scales for the same role. Both run `PageShell` and
- * `OverviewSection` now, and everything on the page autosaves.
- *
- * `narrow` rather than the default 1280: this is a form, and a control that
- * stretches to 1280 loses the relationship between its label and itself.
- */
-export default async function SettingsPage() {
-  const t = await getTranslations("views.globalSettings");
-
-  return (
-    <PageShell
-      title={t("title")}
-      description={t("description")}
-      maxWidth="narrow"
-    >
-      <ConnectionSection />
-      <ProviderSection />
-      <DisplaySection />
-      <HostedNudgeSlot candidates={["mcp"]} />
-      <McpSection />
-      <McpToolsSection />
-      <WebhookSection />
-
-      <p className="border-t border-[var(--color-border-default)] pt-6 text-xs text-[var(--color-text-tertiary)]">
-        {t.rich("footer", {
-          link: (chunks) => (
-            <Link
-              href="/"
-              className="text-[var(--color-accent-primary)] hover:underline"
-            >
-              {chunks}
-            </Link>
-          ),
-        })}
-      </p>
-    </PageShell>
-  );
+/** `/settings` opens the first group, or the one an old `#group-<id>` link named. */
+export default function SettingsIndexPage() {
+  return <SettingsRedirect base={GLOBAL_SETTINGS_BASE} groups={GLOBAL_SETTINGS_GROUPS} />;
 }

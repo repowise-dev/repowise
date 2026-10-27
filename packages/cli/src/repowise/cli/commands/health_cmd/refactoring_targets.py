@@ -64,7 +64,9 @@ def _render_refactoring_targets(
             serialize_recommendations,
         )
 
-        ranked_plans = serialize_recommendations(build_recommendations(suggestions))[:limit]
+        ranked_plans = serialize_recommendations(
+            build_recommendations(suggestions, findings=findings)
+        )[:limit]
     else:
         ranked_plans = [_list_row(_suggestion_to_dict(s)) for s in suggestions][:limit]
 
@@ -147,7 +149,11 @@ def _render_stored_refactoring_targets(
             findings = [
                 f
                 for f in await crud.get_health_findings(
-                    session, repo_id, exclude_dimensions=tuple(sorted(ZERO_IMPACT_DIMENSIONS))
+                    session,
+                    repo_id,
+                    exclude_dimensions=tuple(sorted(ZERO_IMPACT_DIMENSIONS)),
+                    # The targets table weighs history itself, as the web queue does.
+                    hold_history=False,
                 )
                 if keep(f.file_path)
             ]
@@ -316,8 +322,8 @@ def _emit(
         for t in targets:
             click.echo(
                 f"- **{t['file_path']}** ({t['effort_bucket']}, "
-                f"score {t['score']:.1f}/10, -{t['total_impact']:.2f}) "
-                f"— {t['primary_biomarker']}: {t['primary_reason']}"
+                f"score {t['score']:.1f}/10, -{t['total_impact']:.2f}), "
+                f"{t['primary_biomarker']}: {t['primary_reason']}"
             )
         _render_opportunities_md(opportunities, plan_by_id)
         _render_unattached_md(unattached)
@@ -342,6 +348,22 @@ def _emit(
     console.print(table)
     _render_opportunities_console(opportunities, plan_by_id)
     _render_unattached_console(unattached)
+    _render_preview_lines(opportunities, unattached)
+
+
+def _render_preview_lines(opportunities: list[dict], plans: list[dict]) -> None:
+    """The measurement behind refactoring rows listed on a preview language."""
+    from repowise.core.analysis.finding_registry import preview_lines
+
+    def get(row: dict, key: str) -> Any:
+        return row.get(key)
+
+    lines = [
+        *preview_lines("refactoring", opportunities, kind="lead_refactoring_type", get=get),
+        *preview_lines("refactoring", plans, kind="refactoring_type", get=get),
+    ]
+    for line in dict.fromkeys(lines):
+        console.print(f"[dim]{line}[/dim]")
 
 
 def _compose(findings: list, suggestions: list) -> tuple[list, dict]:

@@ -7,9 +7,6 @@
 const KEYS = {
   apiKey: "repowise_api_key",
   apiUrl: "repowise_api_url",
-  provider: "repowise_default_provider",
-  model: "repowise_default_model",
-  embedder: "repowise_embedder",
   weekend: "repowise_weekend",
   chatDockHidden: "repowise_chat_dock_hidden",
   chatAskControlsHidden: "repowise_chat_ask_controls_hidden",
@@ -38,16 +35,6 @@ export const config = {
 
   getApiUrl: () => read(KEYS.apiUrl),
   setApiUrl: (v: string) => write(KEYS.apiUrl, v),
-
-  /** "" when unset; the settings page then shows the server's active one. */
-  getProvider: () => read(KEYS.provider),
-  setProvider: (v: string) => write(KEYS.provider, v),
-
-  getModel: () => read(KEYS.model),
-  setModel: (v: string) => write(KEYS.model, v),
-
-  getEmbedder: () => read(KEYS.embedder),
-  setEmbedder: (v: string) => write(KEYS.embedder, v),
 
   /** Weekend-days preset id; "" means unset, which resolves to Sat/Sun. */
   getWeekend: () => read(KEYS.weekend),

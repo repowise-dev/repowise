@@ -53,7 +53,7 @@ export function CodeFrame({ code, language, children, compact = false, label, cl
         <button
           type="button"
           onClick={() => void copy()}
-          className="inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs text-[var(--color-text-tertiary)] transition-opacity hover:text-[var(--color-text-primary)] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] pointer-fine:opacity-0 pointer-fine:group-hover/code:opacity-100 pointer-coarse:h-8 motion-reduce:transition-none"
+          className="inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs text-[var(--color-text-tertiary)] transition-opacity hover:text-[var(--color-text-primary)] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] pointer-fine:opacity-0 pointer-fine:group-hover/code:opacity-100 pointer-coarse:h-8 motion-reduce:transition-none"
           aria-label="Copy code"
         >
           {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}

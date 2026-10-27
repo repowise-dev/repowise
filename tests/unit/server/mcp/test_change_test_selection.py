@@ -50,19 +50,20 @@ async def _index(
     edges: list[tuple[str, str, str]] = (),
     coverage: list | None = None,
     measured_at: str | None = None,
+    db_file: Path | None = None,
 ):
     """An index built at *base*: file nodes (``True`` test, ``str`` always-run reason), edges."""
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-    from sqlalchemy.pool import StaticPool
+    from sqlalchemy.pool import NullPool, StaticPool
 
     from repowise.core.persistence.crud import save_test_coverage
     from repowise.core.persistence.database import init_db
     from repowise.core.persistence.models import GraphEdge, GraphNode, Repository
 
     engine = create_async_engine(
-        "sqlite+aiosqlite:///:memory:",
+        f"sqlite+aiosqlite:///{db_file.as_posix()}" if db_file else "sqlite+aiosqlite:///:memory:",
         connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
+        poolclass=NullPool if db_file else StaticPool,
     )
     await init_db(engine)
     factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
@@ -128,7 +129,7 @@ async def _change_risk(monkeypatch, repo: Path, factory) -> dict:
         return SimpleNamespace(path=str(repo), session_factory=factory)
 
     monkeypatch.setattr(module, "_resolve_repo_context", _context)
-    return await module.get_change_risk("HEAD", baseline=0)
+    return await module.get_change_risk("HEAD", baseline=0, include=["tests"])
 
 
 async def _risk_directive(monkeypatch, repo: Path, factory, changed: list[str]) -> dict:
@@ -355,7 +356,7 @@ async def test_a_path_the_checkout_lacks_fails_closed_and_backslashes_are_paths(
     assert missing["tests_run_all"] is True
     assert missing["tests_run_all_reasons"][0].startswith("src/nope.py was deleted")
 
-    windows = await _risk_directive(monkeypatch, repo, factory, ["src\status.py"])
+    windows = await _risk_directive(monkeypatch, repo, factory, ["src\\status.py"])
     assert windows["tests_run_all"] is False
     assert sorted(windows["tests_to_run"]) == ["tests/test_status.py", "tests/test_walks.py"]
 
@@ -451,3 +452,150 @@ async def test_both_tools_list_tests_in_the_selections_run_order(tmp_path, monke
     order = ["tests/test_z.py", "tests/test_status.py", "tests/test_walks.py"]
     assert it["tests_to_run"] == order and list(it["why"]) == order
     assert directive["tests_to_run"] == order
+
+
+@pytest.mark.asyncio
+async def test_a_repeated_selection_is_reused_until_the_tree_or_index_moves(
+    tmp_path, monkeypatch
+) -> None:
+    import threading
+    from collections import OrderedDict
+
+    from sqlalchemy import update
+
+    from repowise.core.persistence.models import Repository
+    from repowise.server.mcp_server import _test_selection
+
+    repo, base = _repo(tmp_path, _STATUS)
+    factory = await _index(
+        base,
+        {"src/status.py": False, "tests/test_status.py": True},
+        db_file=tmp_path / "wiki.db",
+    )
+    threads: list[int] = []
+    real = _test_selection._select_here
+
+    async def _recording(*args, **kwargs):
+        threads.append(threading.get_ident())
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(_test_selection, "_select_here", _recording)
+    monkeypatch.setattr(_test_selection, "_DONE", OrderedDict())
+
+    async def _select() -> tuple:
+        change = _test_selection.files_change(repo, ["src/status.py"])
+        return await _test_selection.select_change_tests(repo, factory, change)
+
+    first = await _select()
+    assert await _select() is first
+    # The selection ran on a worker thread, off the server's loop.
+    assert threads == [threads[0]] and threads[0] != threading.get_ident()
+
+    (repo / "src" / "status.py").write_text("def status():\n    return 2\n", encoding="utf-8")
+    dirty = await _select()
+    assert dirty is not first and len(threads) == 2
+    assert await _select() is dirty
+
+    async with factory() as session:
+        await session.execute(update(Repository).values(head_commit="moved"))
+        await session.commit()
+    assert await _select() is not dirty and len(threads) == 3
+
+
+def _broad(*, run_all: bool = False) -> object:
+    from repowise.core.analysis.test_selection import Selection
+
+    suite = tuple(f"tests/test_{i}.py" for i in range(20))
+    return Selection(
+        run_all=run_all,
+        reasons=("an index-gap reason",),
+        tests=suite[:15],
+        test_files=suite[:15],
+        known_tests=suite,
+    )
+
+
+@pytest.mark.parametrize("gap", [["src/elsewhere.py"], []])
+def test_a_lagging_index_that_fills_most_of_the_suite_reads_degraded(tmp_path, gap) -> None:
+    from repowise.server.mcp_server._budget import OmissionCollector
+    from repowise.server.mcp_server._test_selection import selection_block
+
+    collector = OmissionCollector("get_change_risk", store_path=tmp_path / "omissions.db")
+    block = selection_block(
+        {"index_gap": gap}, _broad(), collector, limit=10, label="impacted_tests", detail=False
+    )
+
+    assert "why" not in block and "basis_by_file" not in block
+    if gap:
+        assert block["status"] == "degraded" and block["run_all"] is False
+        assert "so 15 of 20 test files were selected; run the whole suite" in block["summary"]
+        # Most of the suite under a run-everything verdict: no tail is stored.
+        assert collector.empty
+    else:
+        assert block["status"] == "selected"
+        assert not collector.empty
+
+
+def test_a_run_all_list_holding_most_of_the_suite_stores_no_tail(tmp_path) -> None:
+    from repowise.server.mcp_server._budget import OmissionCollector
+    from repowise.server.mcp_server._test_selection import selection_block
+
+    collector = OmissionCollector("get_change_risk", store_path=tmp_path / "omissions.db")
+    block = selection_block({}, _broad(run_all=True), collector, limit=10, label="impacted_tests")
+
+    assert block["status"] == "run_all" and block["truncated"] is True
+    assert collector.empty
+
+
+def _spread(*, run_all: bool = False) -> object:
+    from repowise.core.analysis.test_selection import Selection
+
+    suite = tuple(f"tests/test_{i}.py" for i in range(20))
+    return Selection(
+        run_all=run_all,
+        reasons=("tests/conftest.py keeps every test under it",),
+        tests=suite[:5],
+        test_files=suite[:5],
+        known_tests=suite,
+        why=dict.fromkeys(suite[:5], "src/a.py changed (import-graph)"),
+        broadcast=dict.fromkeys(suite[2:5], "tests/conftest.py"),
+        import_closure={suite[1]: 3},
+    )
+
+
+def test_the_broadcast_and_import_closure_are_counted_apart_from_the_headline(tmp_path) -> None:
+    from repowise.server.mcp_server._budget import OmissionCollector
+    from repowise.server.mcp_server._test_selection import selection_block
+
+    collector = OmissionCollector("get_change_risk", store_path=tmp_path / "omissions.db")
+    block = selection_block({}, _spread(), collector, limit=10, label="impacted_tests")
+
+    assert block["total"] == 1
+    assert block["broadcast_total"] == 3 and block["import_closure_total"] == 1
+    assert block["tests_to_run"] == ["tests/test_0.py"]
+    assert block["summary"].startswith("1 test(s) to run for this change (1 of 20 test files).")
+    assert "3 more test(s) must still run because a conftest" in block["summary"]
+    assert "1 more test(s) must still run because they import the change" in block["summary"]
+    # The tests counted apart are stored for recovery, not dropped.
+    assert not collector.empty
+
+    # A full run has no broadcast: every listed test is what to run first.
+    full = selection_block({}, _spread(run_all=True), collector, limit=10, label="impacted_tests")
+    assert full["total"] == 5 and "broadcast_total" not in full
+    assert "import_closure_total" not in full
+
+
+def test_get_risk_counts_the_broadcast_and_import_closure_apart(tmp_path) -> None:
+    from repowise.server.mcp_server._budget import OmissionCollector
+    from repowise.server.mcp_server.tool_risk.directives import ChangeTests, _tests_to_run
+    from repowise.server.mcp_server.tool_risk.directives_pr import tests_summary
+
+    collector = OmissionCollector("get_risk", store_path=tmp_path / "omissions.db")
+    population, basis, fields = _tests_to_run(ChangeTests(selection=_spread()), collector)
+
+    assert population == ["tests/test_0.py"]
+    assert fields["tests_broadcast_total"] == 3
+    assert fields["tests_import_closure_total"] == 1
+    summary = tests_summary(len(population), basis, fields, {}, False, 10)
+    assert "3 more test(s) must still run because a conftest" in summary
+    assert "1 more test(s) must still run because they import the change" in summary

@@ -3,6 +3,8 @@
 import * as React from "react";
 import { ArrowRight, MessageCircleQuestion, Waypoints } from "lucide-react";
 import { Card } from "../ui/card";
+import { FIELD_CLASS } from "../ui/input";
+import { cn } from "../lib/cn";
 
 interface KnowledgeGraphCardProps {
   /** Link to the repo's knowledge-graph page. */
@@ -80,13 +82,13 @@ export function AskAnythingCard({
           onChange={(e) => setQuestion(e.target.value)}
           placeholder={placeholder}
           aria-label="Ask a question about this codebase"
-          className="h-9 w-full min-w-0 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 text-sm text-[var(--color-text-primary)] placeholder:text-[var(--color-text-tertiary)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-accent-primary)]"
+          className={cn(FIELD_CLASS, "h-9 w-full min-w-0 px-3 text-sm")}
         />
         <button
           type="submit"
           disabled={!question.trim()}
           aria-label="Ask"
-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-[var(--color-accent-fill)] text-[var(--color-text-on-accent)] transition-opacity hover:opacity-90 disabled:opacity-40"
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-[var(--color-action-primary)] text-[var(--color-text-on-action)] transition-colors hover:bg-[var(--color-action-primary-hover)] disabled:opacity-40"
         >
           <ArrowRight className="h-4 w-4" />
         </button>

@@ -183,7 +183,7 @@ export function DecisionCaptureSettings({
             them because this is the page for what the layer may do alone. */}
         <Toggle
           label="Let agents accept decisions"
-          description="Off, an agent can propose and withdraw but never grant authority. On, its acceptances are recorded as an agent's, with the session that signed."
+          description="On by default: an agent's acceptances are recorded as the agent's, with the session that signed. Off, an agent can propose and withdraw but never grant authority."
           checked={settings.agent_acceptance}
           disabled={locked || busy("agent_acceptance")}
           {...(readOnlyReason ? { reason: readOnlyReason } : {})}
@@ -218,7 +218,7 @@ export function DecisionCaptureSettings({
                 className={
                   "rounded-md border px-2.5 py-1 text-xs transition-colors disabled:opacity-40 " +
                   (active
-                    ? "border-[var(--color-accent-primary)] text-[var(--color-accent-primary)]"
+                    ? "border-[var(--color-selection-border)] bg-[var(--color-selection-wash)] text-[var(--color-text-primary)]"
                     : "border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:border-[var(--color-border-hover)] hover:text-[var(--color-text-primary)]")
                 }
               >

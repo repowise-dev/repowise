@@ -10,10 +10,10 @@ xs)`` / ``foreach (var (a, b) in pairs)``), the C-style ``for`` initializer,
 ``using`` declarations and statements, ``out var`` / ``out T`` / ``out``
 arguments (writes), ``ref`` arguments (both read and write), pattern variables
 (``is string s``, ``case Foo f``) and tuple deconstruction (``(int p, int q) =
-...``). A ``catch (Exception e)`` binder stays an unmatched use, matching the
-Java and C++ dialects. Field targets (``obj.f = ...`` / ``this.f = ...``) and
-indexer targets (``arr[i] = ...``) bind no *local*, so their base identifiers
-are reads.
+...``). A ``catch (Exception e)`` clause binds ``e`` as a def scoped to the
+handler block, and its ``when (...)`` filter is read as part of the head. Field
+targets (``obj.f = ...`` / ``this.f = ...``) and indexer targets
+(``arr[i] = ...``) bind no *local*, so their base identifiers are reads.
 
 An ``invocation_expression``'s called method name is not a variable, so the
 walk processes only its receiver and arguments. A ``switch`` statement or
@@ -44,6 +44,9 @@ _ARGUMENT = "argument"
 _DECLARATION_EXPR = "declaration_expression"
 _DECLARATION_PATTERN = "declaration_pattern"
 _IS_PATTERN = "is_pattern_expression"
+_CATCH = "catch_clause"
+_CATCH_DECL = "catch_declaration"  # ``catch (Exception e)``; ``e`` is optional
+_CATCH_FILTER = "catch_filter_clause"  # ``catch (E e) when (cond)``
 
 # Field (``obj.f``, ``this.f``) and indexer (``arr[i]``) targets bind no local.
 _MEMBER_ACCESS = "member_access_expression"
@@ -107,6 +110,23 @@ class CSharpDefUseDialect(BaseDefUseDialect):
             return (), bound
         kind = decl.child_by_field_name("type") if decl is not None else None
         return ((node_text(kind),) if kind is not None else None), bound
+
+    def handler_def_use(self, handler: Node) -> StatementDefUse:
+        """``catch (Exception e)`` binds ``e`` for the handler block only; the
+        name is optional (``catch (IOException)``, bare ``catch``). A ``when
+        (...)`` filter runs before the block, so what it reads belongs to the
+        head. The exception type is a bare ``identifier`` in this grammar but
+        sits under the declaration's ``type`` field, which is never walked."""
+        defs: list[Occurrence] = []
+        uses: list[Occurrence] = []
+        decl = next((c for c in handler.named_children if c.type == _CATCH_DECL), None)
+        name = decl.child_by_field_name("name") if decl is not None else None
+        if decl is not None and name is not None:
+            defs.append(self._occ(name))
+            self._declare(defs, 0, decl)
+        flt = next((c for c in handler.named_children if c.type == _CATCH_FILTER), None)
+        self.collect_reads(flt, uses)
+        return StatementDefUse(defs=tuple(defs), uses=tuple(uses))
 
     def collect_reads(self, node: Node | None, out: list[Occurrence]) -> None:
         """Collect variable reads under *node*.
@@ -212,6 +232,12 @@ class CSharpDefUseDialect(BaseDefUseDialect):
         if node is None:
             return
         t = node.type
+        if t == _CATCH:  # a handler walked whole (inside a lambda or a ``switch`` arm)
+            sdu = self.handler_def_use(node)
+            defs.extend(sdu.defs)
+            uses.extend(sdu.uses)
+            self._process(node.child_by_field_name("body"), defs, uses)
+            return
         if t in _ASSIGN_KINDS:
             self._assignment(node, defs, uses)
             return
@@ -273,10 +299,11 @@ class CSharpDefUseDialect(BaseDefUseDialect):
             start = len(defs)
             name_node = child.child_by_field_name("name")
             self._targets(name_node, defs, uses)
-            self._declare(defs, start, child)
-            for sub in child.named_children:
-                if sub != name_node:
-                    self._process(sub, defs, uses)
+            rest = [sub for sub in child.named_children if sub != name_node]
+            # ``int x;``: definite assignment makes a read before a write an error.
+            self._declare(defs, start, child, valueless=not rest)
+            for sub in rest:
+                self._process(sub, defs, uses)
 
     def _invocation(self, node: Node, defs: list[Occurrence], uses: list[Occurrence]) -> None:
         fn = _callee(node)

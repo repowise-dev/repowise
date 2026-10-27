@@ -17,10 +17,15 @@ import pytest
 
 from repowise.core.analysis.health.complexity.languages import get_language_map
 from repowise.core.analysis.health.dataflow import Extraction, analyze_file
+from repowise.core.analysis.health.dataflow.slice import _unwrap_container
 from repowise.core.analysis.health.dataflow.stages import (
     STAGE_MAX_CCN,
     STAGE_MAX_NLOC,
+    _Blocks,
     _composes,
+    _Cutter,
+    _descent,
+    _FunctionFacts,
     find_stages,
 )
 from repowise.core.analysis.health.refactoring.extract_method import ExtractMethodDetector
@@ -123,7 +128,8 @@ def test_persistence_shape_yields_a_staged_plan():
     residual = plan.plan["orchestrator"]
     assert residual["ccn_after"] == residual["ccn_before"] - removed
     # Credited the summed drop, not one span's share.
-    assert plan.impact_delta == pytest.approx(2.0 * removed / residual["ccn_before"], abs=1e-3)
+    assert plan.evidence["recovered_share"] == round(removed / residual["ccn_before"], 3)
+    assert plan.impact_delta > 0
     # Stages carry the raise their sections hold (it propagates unchanged).
     lines = textwrap.dedent(_persist()).splitlines()
     assert any(
@@ -133,12 +139,15 @@ def test_persistence_shape_yields_a_staged_plan():
     )
 
 
-def test_stage_names_come_from_timed_labels_and_banners():
-    stages = _plans(_persist(sections=8, extend=()))["persist"].plan["stages"]
-    # A stage covering one section takes its label; one spanning two is named
-    # for the host and its subject.
-    for stage in stages:
-        assert stage["suggested_name"].startswith("_persist_")
+def test_stage_names_are_numbered_placeholders():
+    plan = _plans(_persist(sections=8, extend=()))["persist"].plan
+    names = [stage["suggested_name"] for stage in plan["stages"]]
+    # Labels and banners name nothing: the agent applying the plan names each.
+    assert names == ["_extracted_helper"] + [f"_extracted_helper_{n}" for n in range(2, len(names) + 1)]
+    for stage in plan["stages"]:
+        name = stage["suggested_name"]
+        assert stage["new_symbol"]["signature_text"].startswith(f"async def {name}(")
+        assert f"await {name}(" in stage["call_site"]["new_text"]
 
 
 def test_shared_values_travel_on_a_parameter_object():
@@ -670,20 +679,6 @@ def test_a_loop_body_is_cut_and_the_loop_stays_in_the_function():
     residual = plan.plan["orchestrator"]
     # The loop's own decision point stays with the function.
     assert residual["ccn_after"] >= 2
-    # A stage running across two banners is named after both.
-    assert "_handle_gamma_and_delta" in [s["suggested_name"] for s in plan.plan["stages"]]
-
-
-def test_a_name_joining_sections_keeps_shared_words_once():
-    from repowise.core.analysis.health.refactoring.helper_naming import _joined
-
-    assert _joined([["persist", "kg"], ["persist", "git"]]) == ["persist", "kg", "and", "git"]
-    assert _joined([["persist", "kg"], ["persist", "git"], ["persist", "decisions"]]) == [
-        "persist", "kg", "git", "and", "decisions"
-    ]
-    # A section adding no words of its own, or a name past six words, gives none.
-    assert _joined([["load", "config"], ["load"]]) == []
-    assert _joined([["load", "the", "pages"], ["sweep", "old", "rows"]]) == []
 
 
 def test_a_value_the_next_iteration_reads_comes_back_out_of_its_stage():
@@ -877,6 +872,45 @@ def _ts_section(n: int) -> str:
       skip{n}(item);
     }}
 """
+
+
+def test_a_stage_ending_in_a_constant_keeps_its_carried_output():
+    # The trailing-constant check must see the carried outputs merged in, not
+    # liveness alone: this loop-body stage ends in ``flag = False`` (flag is
+    # read after the loop) and also advances the loop-carried ``total`` the
+    # ``while`` header reads, so its signature is (flag, total) — a real
+    # split, not a constant-returning helper.
+    src = """
+def run(items, limit):
+    total = 0
+    n = 0
+    flag = True
+    while total < limit:
+        x = items[n]
+        if x > limit:
+            total += x
+        else:
+            total -= x
+        if total > 1000:
+            total = 1000
+        flag = False
+        n += 1
+    return flag
+"""
+    (fn,) = _functions(src)
+    lmap = get_language_map("python")
+    blocks = _Blocks(fn, lmap, None, {})
+    facts = _FunctionFacts(fn, lmap)
+    body = fn.fn_node.child_by_field_name("body")
+    looped = [(b, loops) for b, loops in _descent(_unwrap_container(body, lmap.block_kinds), blocks, lmap) if loops]
+    assert looped, "expected the cut to descend into the loop body"
+    block, loops = looped[0]
+    code, pre = blocks.code(block)
+    cutter = _Cutter(facts, lmap, None, block, code, pre, 3, loops)
+    j = next(k for k, st in enumerate(code) if "flag = False" in (st.text or b"").decode())
+    stage = cutter._stage(0, j)
+    assert stage is not None
+    assert set(stage.returns) == {"flag", "total"}
 
 
 @pytest.mark.parametrize("shape", ["labelled", "do_while"])

@@ -20,6 +20,7 @@ from repowise.core.ingestion.git_commit_index import (
 from repowise.core.ingestion.git_indexer.agent_provenance import (
     AgentProvenanceClassifier,
     AgentTraceIndex,
+    GitAiNote,
     _agent_from_git_ai_note,
     _agent_from_trace_record,
     _count_distinct_lines,
@@ -331,7 +332,7 @@ def test_load_git_ai_note_agents_parses_present_ref() -> None:
     note = _git_ai_note("cursor")
     repo.git.log.return_value = f"\x00sha_agent\x1f{note}\n\x00sha_human\x1f\n"
     agents = load_git_ai_note_agents(repo, 100)
-    assert agents == {"sha_agent": "cursor"}
+    assert agents == {"sha_agent": GitAiNote(agent="cursor", model="m")}
 
 
 # ---------------------------------------------------------------------------
@@ -416,7 +417,11 @@ def test_walk_carries_provenance_into_sink_rows_and_rollup() -> None:
     assert rows["ccc"]["agent_autonomy_tier"] == 1
     assert rows["ccc"]["agent_confidence"] == "high"
 
-    # Per-file rollup: 2 of 3 commits agent-attributed, tiers {1: 1, 2: 1}.
+    assert by_sha["aaa"]["attribution"] == "unknown"
+    assert rows["bbb"]["attribution"] == "agent"
+
+    # Per-file rollup: 2 agent commits, 1 unknown. The share is of the known
+    # commits only; the unknown one is never counted as human.
     meta = index_file(
         repo,
         "src/a.py",
@@ -427,11 +432,12 @@ def test_walk_carries_provenance_into_sink_rows_and_rollup() -> None:
         precomputed_commits=index["src/a.py"],
     )
     assert meta["agent_commit_count"] == 2
-    assert abs(meta["agent_authored_pct"] - 2 / 3) < 1e-9
+    assert meta["attribution_known_count"] == 2
+    assert meta["agent_authored_pct"] == 1.0
     assert json.loads(meta["agent_tier_counts_json"]) == {"1": 1, "2": 1}
 
 
-def test_rollup_zero_for_human_only_history() -> None:
+def test_rollup_has_no_share_for_unmarked_history() -> None:
     commits = [
         _CommitRec(
             sha=f"s{i}",
@@ -453,7 +459,8 @@ def test_rollup_zero_for_human_only_history() -> None:
         precomputed_commits=commits,
     )
     assert meta["agent_commit_count"] == 0
-    assert meta["agent_authored_pct"] == 0.0
+    assert meta["attribution_known_count"] == 0
+    assert meta["agent_authored_pct"] is None
     assert json.loads(meta["agent_tier_counts_json"]) == {}
 
 

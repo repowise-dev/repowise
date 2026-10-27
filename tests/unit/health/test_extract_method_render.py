@@ -99,13 +99,13 @@ def test_python_plan_carries_an_awaited_method_header_and_call():
     plan = _py_plan()
     sym = plan["new_symbol"]
     # No label or banner: named for the host and the value it returns.
-    assert plan["suggested_name"] == "_run_total"
+    assert plan["suggested_name"] == "_extracted_helper"
     assert sym["signature_text"] == (
-        "async def _run_total(self, items: list[int], limit: int) -> int:"
+        "async def _extracted_helper(self, items: list[int], limit: int) -> int:"
     )
     assert plan["call_site"] == {
         "replace_span": plan["span"],
-        "new_text": "total = await self._run_total(items, limit)",
+        "new_text": "total = await self._extracted_helper(items, limit)",
     }
     # The receiver is not a parameter of a method.
     assert sym["params"] == [
@@ -117,7 +117,7 @@ def test_python_plan_carries_an_awaited_method_header_and_call():
 
 def test_a_span_that_does_not_await_is_not_awaited():
     plan = _py_plan("print(-i)")
-    assert plan["new_symbol"]["signature_text"].startswith("def _run_total(items: list[int]")
+    assert plan["new_symbol"]["signature_text"].startswith("def _extracted_helper(items: list[int]")
     assert "await" not in plan["call_site"]["new_text"]
 
 
@@ -204,6 +204,92 @@ def _shape(language: str, **kw) -> HelperShape:
 )
 def test_each_language_writes_its_own_header_and_call(shape, sig, call):
     assert render(shape)[:2] == (sig, call)
+
+
+def test_java_helper_copies_the_hosts_throws_clause():
+    shape = _shape(
+        "java",
+        kind="function",
+        returns=(),
+        throws_clause="throws IOException, InterruptedException",
+    )
+    assert render(shape).signature == (
+        "private static void loadTotals(T1 items, <type> limit) "
+        "throws IOException, InterruptedException {"
+    )
+
+
+def test_java_extraction_reads_throws_from_the_host():
+    (fn,) = _functions("java", "java", "class C { void f() throws IOException, InterruptedException { } }")
+    dialect = get_defuse_dialect("java")
+    fields = em._render_fields(
+        fn,
+        Extraction(1, 1, (), (), slice_nloc=1, ccn_removed=1),
+        dialect,
+        "java",
+        "helper",
+        {"new_symbol": {"kind": "function", "receiver": None}},
+        async_host=True,
+    )
+    assert fields["new_symbol"]["signature_text"] == (
+        "private static void helper() throws IOException, InterruptedException {"
+    )
+
+
+def test_java_try_resource_has_its_declared_type():
+    (fn,) = _functions(
+        "java",
+        "java",
+        "class C { void f() { try (Writer log = open()) { log.write(\"x\"); } } }",
+    )
+    definition = next(d for d in fn.def_use.definitions if d.var == "log")
+    row = definition.line - 1
+    name = fn.fn_node.descendant_for_point_range(
+        (row, definition.column), (row, definition.column + len(definition.var))
+    )
+    assert get_defuse_dialect("java").declared_types.of(name) == "Writer"
+
+
+def test_java_var_new_expression_uses_the_created_type():
+    (fn,) = _functions(
+        "java",
+        "java",
+        "class C { void f() { var out = new HashMap<String, Object>(); } }",
+    )
+    definition = next(d for d in fn.def_use.definitions if d.var == "out")
+    row = definition.line - 1
+    name = fn.fn_node.descendant_for_point_range(
+        (row, definition.column), (row, definition.column + len(definition.var))
+    )
+    assert get_defuse_dialect("java").declared_types.of(name) == "HashMap<String, Object>"
+
+
+def test_java_var_cast_initializer_uses_the_cast_type():
+    (fn,) = _functions(
+        "java",
+        "java",
+        "class C { void f() { var out = (Writer) open(); } }",
+    )
+    definition = next(d for d in fn.def_use.definitions if d.var == "out")
+    row = definition.line - 1
+    name = fn.fn_node.descendant_for_point_range(
+        (row, definition.column), (row, definition.column + len(definition.var))
+    )
+    assert get_defuse_dialect("java").declared_types.of(name) == "Writer"
+
+
+def test_java_var_diamond_initializer_stays_unknown():
+    (fn,) = _functions(
+        "java",
+        "java",
+        "class C { void f() { var out = new HashMap<>(); } }",
+    )
+    definition = next(d for d in fn.def_use.definitions if d.var == "out")
+    row = definition.line - 1
+    name = fn.fn_node.descendant_for_point_range(
+        (row, definition.column), (row, definition.column + len(definition.var))
+    )
+    assert get_defuse_dialect("java").declared_types.of(name) is None
 
 
 def test_rust_borrows_a_value_the_host_reads_after_the_call():

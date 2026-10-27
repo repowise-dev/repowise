@@ -130,9 +130,11 @@ def new_meta(file_path: str) -> dict[str, Any]:
         "prior_defect_raw_count": 0,
         # Repo-relative rank of prior_defect_count; see enrich.compute_percentiles.
         "prior_defect_pct": 0.0,
-        # Share of this file's indexed history that is agent-attributed (local
-        # channels only); agent_authored_pct stays None for a file with no commits.
+        # Agent share of the file's commits with a known source (agent or
+        # human-attested); None when no commit has one. Never a share of all
+        # commits: unknown is not human (see repowise.core.attribution).
         "agent_commit_count": 0,
+        "attribution_known_count": 0,
         "agent_authored_pct": None,
         "agent_tier_counts_json": "{}",
         # Distinct agent-written lines and {model_id: line_count} from the
@@ -160,7 +162,7 @@ def _parse_per_file_log(
     commit_limit: int,
     follow_renames: bool,
     provenance_classifier: Any | None = None,
-    note_agents: dict[str, str] | None = None,
+    note_agents: dict[str, Any] | None = None,
     trace_index: Any | None = None,
 ) -> tuple[list[_CommitRec] | None, str | None]:
     """Run a per-file ``git log --numstat`` and parse it into commit records.
@@ -207,6 +209,7 @@ def _parse_per_file_log(
             prov = labeler.label(header, changed_paths)
             current.agent = prov.agent
             current.agent_tier = prov.autonomy_tier
+            current.attribution = prov.attribution
     return commits, orig_path
 
 
@@ -281,28 +284,18 @@ class _CommitLabeler:
     """Labels a commit's agent provenance from its header and changed paths."""
 
     def __init__(
-        self, classifier: Any, note_agents: dict[str, str] | None, trace_index: Any | None
+        self, classifier: Any, note_agents: dict[str, Any] | None, trace_index: Any | None
     ) -> None:
         self._classifier = classifier
         self._note_agents = note_agents or {}
         self._trace_index = trace_index
 
     def label(self, header: dict, changed_paths: set[str]) -> Any:
-        trace_hit = (
-            self._trace_index.resolve(header["sha"], header["parents"], changed_paths)
-            if self._trace_index
-            else None
-        )
-        return self._classifier.classify(
-            header["author_name"],
-            header["author_email"],
-            header["committer_name"],
-            header["committer_email"],
-            f"{header['subject']}\n{header['body']}",
-            note_agent=self._note_agents.get(header["sha"]),
-            trace_agent=trace_hit[0] if trace_hit else None,
-            trace_confidence=trace_hit[1] if trace_hit else "high",
-        )
+        from .agent_provenance import classify_commit
+
+        return classify_commit(
+            self._classifier, header, changed_paths, self._note_agents, self._trace_index
+        )[0]
 
 
 def index_file(
@@ -316,7 +309,7 @@ def index_file(
     precomputed_commits: list[_CommitRec] | None = None,
     as_of_ts: float | None = None,
     provenance_classifier: Any | None = None,
-    note_agents: dict[str, str] | None = None,
+    note_agents: dict[str, Any] | None = None,
     trace_index: Any | None = None,
     history_only: bool = False,
     forge: ForgeKind = ForgeKind.GENERIC,
@@ -472,6 +465,7 @@ class _Authors:
             "name": name,
             "email": self.emails.get(name, ""),
             "commit_count": count,
+            "recent_commit_count": self.recent_counts.get(name, 0),
         }
         if name in self.last_ts:
             entry["last_commit_ts"] = self.last_ts[name]
@@ -481,10 +475,17 @@ class _Authors:
 
 
 def _add_agent_rollup(meta: dict[str, Any], commits: list[_CommitRec]) -> None:
-    """Share of the file's commits that are agent-attributed, and the per-tier breakdown."""
-    agent_commits = [c for c in commits if getattr(c, "agent", None)]
+    """Agent commits, commits with a known source, and the per-tier breakdown.
+
+    Leaves the defaults when attribution is off (every label ``None``).
+    """
+    if all(c.attribution is None for c in commits):
+        return
+    agent_commits = [c for c in commits if c.agent]
+    known = len(agent_commits) + sum(1 for c in commits if c.attribution == "human_attested")
     meta["agent_commit_count"] = len(agent_commits)
-    meta["agent_authored_pct"] = len(agent_commits) / len(commits)
+    meta["attribution_known_count"] = known
+    meta["agent_authored_pct"] = len(agent_commits) / known if known else None
     tier_counts: Counter[str] = Counter(str(c.agent_tier) for c in agent_commits if c.agent_tier)
     meta["agent_tier_counts_json"] = json.dumps(dict(tier_counts))
 

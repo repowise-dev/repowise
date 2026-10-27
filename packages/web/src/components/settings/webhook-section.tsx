@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { OverviewSection } from "@repowise-dev/ui/overview";
 import { CopyLine, SettingsRow, SettingsRows } from "@repowise-dev/ui/settings";
 import { useTranslations } from "next-intl";
 
@@ -26,11 +25,7 @@ export function WebhookSection() {
   }, []);
 
   return (
-    <OverviewSection
-      title={t("webhook.title")}
-      description={t("webhook.description")}
-    >
-      <SettingsRows>
+    <SettingsRows>
         <SettingsRow label="GitHub" hint={t("webhook.githubHint")}>
           <CopyLine value={`${serverUrl}/api/webhooks/github`} />
         </SettingsRow>
@@ -55,7 +50,6 @@ export function WebhookSection() {
             </p>
           </div>
         </SettingsRow>
-      </SettingsRows>
-    </OverviewSection>
+    </SettingsRows>
   );
 }

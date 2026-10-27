@@ -47,7 +47,9 @@ from repowise.server.mcp_server._helpers import (
     is_excluded,
     read_repo_file_text,
 )
+from repowise.server.mcp_server._meta import served_root
 from repowise.server.mcp_server._query_shape import (
+    _NL_QUESTION_TOKENS,
     _canonical_symbol_query,
     _identifier_candidates,
     _qual_norm,
@@ -79,17 +81,35 @@ _KIND_ORDER = {"definition": 0, "import": 1, "call": 2, "reference": 3, "match":
 _MIXED_KIND_ORDER = {"definition": 0, "call": 1, "import": 2, "reference": 3, "match": 3}
 _QUOTED = re.compile(r"""^(["'`])(.+)\1$""")
 _TOKEN = re.compile(r"^[A-Za-z0-9_$][\w$.]*$")
+# Code punctuation: a leading decorator ``@``, an identifier glued to an opening
+# ``(`` or ``{`` (``send(``), or a glued ``=`` (``path="/x"``). Prose such as
+# ``Add (optional) support`` has a space before its parenthesis and matches none.
+_CODE_PUNCT = re.compile(r"^@\w|[\w)\]][({]|\S=\S")
 _DECL_WORDS = r"def|class|function|const|let|var|fn|func|type|interface|struct|enum"
 
 
 def _literal(query: str) -> tuple[str, bool] | None:
-    """``(needle, word_bounded)`` for a single-token query, else ``None``."""
+    """``(needle, word_bounded)`` for a single-token or code-shaped query, else ``None``."""
     q = query.strip()
     if m := _QUOTED.match(q):
         return m.group(2), False
     if len(q) >= 2 and _TOKEN.match(q) and not q.endswith("."):
         return q, True
+    if len(q) >= 2 and "/" in q and q.strip("./") and not any(char.isspace() for char in q):
+        return q, False
+    if _is_code_shaped(q):
+        return q, False
     return None
+
+
+def _is_code_shaped(q: str) -> bool:
+    """A one-line, non-question query carrying code punctuation, scanned as-is."""
+    if len(q) < 3 or "\n" in q or q.endswith("?"):
+        return False
+    words = q.split()
+    if words[0].lower().rstrip(",.;:") in _NL_QUESTION_TOKENS:
+        return False
+    return _CODE_PUNCT.search(q) is not None
 
 
 def _definition_re(needle: str, word: bool) -> re.Pattern[str]:
@@ -235,6 +255,14 @@ def _scan_listed(root: Path, needle: str, word: bool) -> tuple[list[dict[str, An
         files = kept
     rows, scan_reasons = scan_literal(root, files, needle, word)
     return rows, reasons + scan_reasons
+
+
+def production_lines(root: Path, token: str) -> list[dict[str, Any]]:
+    """The word-bounded lines holding *token* in production files, from the
+    same scan a literal search runs. For get_answer, which reads live lines
+    the wiki never rendered (function bodies, string literals)."""
+    rows, _reasons = _scan_listed(root, token, True)
+    return [r for r in rows if _scan_rank(r["path"]) == 0]
 
 
 def scan_literal(
@@ -393,10 +421,18 @@ async def attach_line_hits(
 async def _attach(
     response: dict, query: str, mode: str, names: Container[str] | None, repo: str | None
 ) -> None:
-    if repo == "all" or mode == "path":
+    if repo == "all":
         return
     literal = _literal(query)
+    if mode == "path" and (
+        response.get("results") or literal is None or "/" not in literal[0]
+    ):
+        return
     candidates = _identifier_candidates(query, mode, names)
+    if literal and not literal[1] and not _QUOTED.match(query.strip()):
+        # Code punctuation names the text itself: an identifier inside it
+        # (``copy_with`` in ``copy_with(path="/x")``) is not the question.
+        candidates = []
     if not candidates and literal and literal[1]:
         candidates = [literal[0]]
     if not candidates and not literal:
@@ -405,7 +441,7 @@ async def _attach(
     spec = _get_exclude_spec(ctx.path)
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
-        root = Path(repository.local_path or ctx.path)
+        root = Path(served_root(repository, ctx.path))
         nodes = []
         if candidates:
             found = await _exact_symbols(session, repository.id, query, candidates)
@@ -460,6 +496,28 @@ async def _attach(
     response["complete"] = not reasons
     if reasons:
         response["reasons"] = reasons
+    if response["lines"]:
+        _reconcile_symbol_miss(response, literal_scan=not sets)
+
+
+def _reconcile_symbol_miss(response: dict, *, literal_scan: bool) -> None:
+    """Keep the symbol stage's miss advice from contradicting the lines found.
+
+    ``grep_hint`` and the no-exact-symbol ``note`` were written before any
+    line was read, and tell the reader to recheck spelling or grep. With
+    lines in hand both are wrong; ``exact_match: false`` still says no symbol
+    has the name, so the note stays only to label fuzzy results.
+    """
+    response.pop("grep_hint", None)
+    if not literal_scan or response.get("exact_match") is not False:
+        return
+    if response.get("results"):
+        response["note"] = (
+            "No indexed symbol has this exact name: the results are other "
+            "symbols, and `lines` are where the text occurs."
+        )
+    else:
+        response.pop("note", None)
 
 
 def _lines_after_budget(result: dict[str, Any]) -> None:

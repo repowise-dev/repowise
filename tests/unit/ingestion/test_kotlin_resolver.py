@@ -7,7 +7,10 @@ from pathlib import Path
 import networkx as nx
 
 from repowise.core.ingestion.resolvers.context import ResolverContext
-from repowise.core.ingestion.resolvers.kotlin import resolve_kotlin_import
+from repowise.core.ingestion.resolvers.kotlin import (
+    resolve_kotlin_import,
+    resolve_kotlin_import_all,
+)
 from repowise.core.ingestion.resolvers.kotlin_gradle import build_kotlin_index
 
 
@@ -149,3 +152,66 @@ class TestKotlinStdlibFiltering:
         ctx = _ctx(tmp_path, ["src/CommentRoutes.kt"])
         result = resolve_kotlin_import("com.acme.domain.commentRoutes", "Main.kt", ctx)
         assert result == "src/CommentRoutes.kt"
+
+
+class TestTopLevelFunctionImports:
+    """``import pkg.fn`` must reach the file declaring ``fn``, whatever its name."""
+
+    def _util_repo(self, repo: Path) -> tuple[str, str]:
+        util = "core/src/main/kotlin/com/acme/util/StringUtils.kt"
+        app = "app/src/main/kotlin/com/acme/app/Main.kt"
+        for rel, body in (
+            (
+                util,
+                "package com.acme.util\n\n"
+                "fun String.shout(): String = uppercase() + \"!\"\n\n"
+                "fun twice(s: String): String = s + s\n",
+            ),
+            (
+                app,
+                "package com.acme.app\n\n"
+                "import com.acme.util.shout\nimport com.acme.util.twice\n\n"
+                "fun main() { println(twice(\"hi\".shout())) }\n",
+            ),
+        ):
+            full = repo / rel
+            full.parent.mkdir(parents=True, exist_ok=True)
+            full.write_text(body)
+        return util, app
+
+    def test_function_import_resolves_to_utility_file(self, tmp_path: Path) -> None:
+        util, app = self._util_repo(tmp_path)
+        ctx = _ctx(tmp_path, [util, app])
+
+        assert resolve_kotlin_import_all("com.acme.util.twice", app, ctx) == (util,)
+        assert resolve_kotlin_import_all("com.acme.util.shout", app, ctx) == (util,)
+
+    def test_function_import_is_not_an_external_node(self, tmp_path: Path) -> None:
+        util, app = self._util_repo(tmp_path)
+        ctx = _ctx(tmp_path, [util, app])
+
+        result = resolve_kotlin_import("com.acme.util.twice", app, ctx)
+
+        assert result == util
+        assert not str(result).startswith("external:")
+
+    def test_unknown_function_in_known_package_stays_external(self, tmp_path: Path) -> None:
+        util, app = self._util_repo(tmp_path)
+        ctx = _ctx(tmp_path, [util, app])
+
+        result = resolve_kotlin_import("com.acme.util.missing", app, ctx)
+
+        assert result == "external:com.acme.util.missing"
+
+    def test_private_function_import_does_not_resolve(self, tmp_path: Path) -> None:
+        # A file name unrelated to the function, so the stem fallback cannot
+        # be what resolves (or fails to resolve) it.
+        rel = "src/main/kotlin/com/acme/util/Internals.kt"
+        full = tmp_path / rel
+        full.parent.mkdir(parents=True)
+        full.write_text("package com.acme.util\n\nprivate fun hidden() {}\n")
+        ctx = _ctx(tmp_path, [rel])
+
+        assert resolve_kotlin_import("com.acme.util.hidden", "x.kt", ctx) == (
+            "external:com.acme.util.hidden"
+        )

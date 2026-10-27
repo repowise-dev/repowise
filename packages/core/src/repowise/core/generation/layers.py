@@ -53,7 +53,7 @@ _LAYER_HINTS: tuple[tuple[str, frozenset[str]], ...] = (
 # helpers or a Django `views/` package are not a frontend.
 _UI_LAYER = "UI"
 _UI_EXTENSIONS = frozenset(
-    {".tsx", ".jsx", ".vue", ".svelte", ".html", ".htm", ".css", ".scss", ".sass", ".less"}
+    {".tsx", ".jsx", ".vue", ".svelte", ".astro", ".html", ".htm", ".css", ".scss", ".sass", ".less"}
 )
 
 # Layers that observe or support the runtime stack rather than participate in

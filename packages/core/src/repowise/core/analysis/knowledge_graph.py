@@ -220,7 +220,9 @@ def _slugify(text: str) -> str:
 # ``test`` tag on file nodes without moving a node or edge count.
 # "6": a test-named Python module that pytest's config does not collect is no
 # longer a test, moving its ``test`` tag.
-KG_BUILDER_VERSION = "6"
+# "7": a JavaScript-family file under a ``tests/`` folder inside a ``src`` tree
+# is not a test by that folder alone, moving its ``test`` tag.
+KG_BUILDER_VERSION = "7"
 
 # An unmapped type is dropped from the export entirely (see the
 # `if not kg_type: continue` below), which is silent. Six real types used to be

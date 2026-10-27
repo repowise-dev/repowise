@@ -7,15 +7,22 @@ REST API, editors) reads what ``coverage add`` or indexing stored. Both end in
 
 from __future__ import annotations
 
+import asyncio
 import json
-from collections.abc import Iterable, Mapping
+import subprocess
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..git_cli import _git, checkout_relative, untracked_paths
 from ..health.coverage.discovery import CoverageScope
-from ..health.coverage.freshness import coverage_freshness, working_tree_freshness
+from ..health.coverage.freshness import (
+    FreshnessStatus,
+    coverage_freshness,
+    working_tree_freshness,
+)
 from .compute import BranchData, PatchCoverage, PatchScope, compute_patch_coverage
 from .delta import ProjectDelta, ProjectTotals, incomparable_reasons
 from .risk import IndexFacts
@@ -34,6 +41,7 @@ async def stored_patch_coverage(
     threshold: float | None = None,
     config: CoverageConfig | None = None,
     working_tree_mtime: float | None = None,
+    repo_path: str | None = None,
 ) -> PatchCoverage | None:
     """Patch coverage of *changed* against stored coverage; ``None`` when none is stored.
 
@@ -50,6 +58,10 @@ async def stored_patch_coverage(
     commit names that code, so freshness is whether the last ingest came after
     it (``working_tree_freshness``). :func:`attach_history_delta` adds the
     project delta.
+    Stale coverage keeps numbers only for files git shows unchanged between the
+    measured commit and the change's head in *repo_path*; the rest read
+    ``stale_file``. Every measured file does when that cannot be told (no
+    *repo_path*, no measured commit, a commit this clone lacks).
     """
     from repowise.core.persistence.crud import (
         get_coverage_summary,
@@ -64,14 +76,18 @@ async def stored_patch_coverage(
         return None
     summary = await get_coverage_summary(session, repository_id, rows=rows)
     measured = {row.file_path for row in rows}
-    wanted = sorted(set(changed) & measured)
-    coverage = await load_file_coverage(session, repository_id, file_paths=wanted) if wanted else {}
     commit = summary["ingested_commit_sha"]
     paths = summary["report_paths"]
     if working_tree_mtime is not None:
         freshness = working_tree_freshness(summary["ingested_at"], working_tree_mtime)
     else:
         freshness = coverage_freshness(commit, head_commit)
+    stale: set[str] = set()
+    if freshness == "stale":
+        until = None if working_tree_mtime is not None else head_commit
+        stale = await _stale_files(set(changed) & measured, repo_path, commit, until)
+    wanted = sorted(set(changed) & measured - stale)
+    coverage = await load_file_coverage(session, repository_id, file_paths=wanted) if wanted else {}
     cfg = config or CoverageConfig()
     return compute_patch_coverage(
         changed,
@@ -82,6 +98,7 @@ async def stored_patch_coverage(
         gates=cfg.gates,
         judge_gates=freshness == "current" and not cfg.gate_errors,
         report_paths=measured,
+        stale=stale,
         scope=PatchScope(
             label=label,
             source_formats=tuple(summary["source_formats"]),
@@ -94,6 +111,60 @@ async def stored_patch_coverage(
             branch_data=await _stored_branch_data(session, repository_id, rows),
         ),
     )
+
+
+async def _stale_files(
+    files: set[str], repo_path: str | None, measured_commit: str | None, until: str | None
+) -> set[str]:
+    """The *files* that changed since *measured_commit*; all of them when git cannot tell."""
+    if not repo_path or not measured_commit:
+        return files
+    since = await asyncio.to_thread(_changed_since, repo_path, measured_commit, until)
+    return files if since is None else files & since
+
+
+async def file_on_disk_freshness(
+    repo_path: str | None, measured_commit: str | None, file_path: str
+) -> FreshnessStatus:
+    """Whether coverage measured at *measured_commit* still lines up with *file_path* on disk.
+
+    The ``stale_file`` rule for one file read from the working tree: ``stale``
+    when git shows it differs from the measured commit or is untracked,
+    ``unknown`` when git cannot tell (no *repo_path*, no measured commit, a
+    commit this clone lacks). *file_path* is relative to *repo_path*.
+    """
+    if not repo_path or not measured_commit:
+        return "unknown"
+    since = await asyncio.to_thread(
+        _changed_since, repo_path, measured_commit, None, (file_path,)
+    )
+    if since is None:
+        return "unknown"
+    return "stale" if file_path in since else "current"
+
+
+def _changed_since(
+    repo_path: str, since: str, until: str | None, paths: Sequence[str] = ()
+) -> set[str] | None:
+    """Files that differ between *since* and *until* (the working tree when ``None``).
+
+    Relative to *repo_path*, like the stored coverage rows, even when it sits
+    below the git top level; limited to *paths* when given, so one file costs
+    one file. ``None`` when git cannot tell. Two dots: any content difference
+    moves the report's line numbers, whichever side made it.
+    """
+    tail = [until] if until else []
+    spec = [f":(literal){p}" for p in paths]
+    try:
+        listing = _git(
+            ["diff", "--name-only", "-z", "--no-renames", since, *tail, "--", *spec], repo_path
+        )
+        changed = {p for p in listing.split("\0") if p}
+        if until is None:
+            changed |= set(untracked_paths(repo_path, pathspecs=spec or (":/",)))
+        return set(checkout_relative(repo_path, dict.fromkeys(changed)))
+    except (subprocess.SubprocessError, OSError):
+        return None
 
 
 async def _stored_branch_data(

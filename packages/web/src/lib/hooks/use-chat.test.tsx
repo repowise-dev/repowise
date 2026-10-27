@@ -3,6 +3,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useChat } from "./use-chat";
+import fixture from "../../../../types/fixtures/views.conformance.json";
 
 const mocks = vi.hoisted(() => ({
   signal: undefined as AbortSignal | undefined,
@@ -392,5 +393,100 @@ describe("useChat grounding and truncation events", () => {
     expect(result.current.messages.at(-1)?.truncated).toBe(true);
     expect(result.current.messages.at(-1)?.isStreaming).toBe(false);
     expect(result.current.error).toBeNull();
+  });
+
+  it("marks the figures the numeric check could not find", async () => {
+    const spans = [{ text: "17", start: 9, end: 11 }];
+    const push = streamed([
+      { type: "text_delta", text: "a.py has 17 callers." },
+      {
+        type: "diagnostics",
+        figures_checked: 1,
+        figures_unverified: 1,
+        unverified_figures: spans,
+      },
+      { type: "done", conversation_id: "c1", message_id: "m1" },
+    ]);
+    const { result } = renderHook(() => useChat("r1"));
+
+    await act(async () => {
+      const sending = result.current.sendMessage("callers?");
+      await push();
+      await sending;
+    });
+
+    expect(result.current.messages.at(-1)?.unverifiedFigures).toEqual(spans);
+  });
+
+  it("shows a show_view call as a step and puts its view on the answer", async () => {
+    const view = fixture.valid.c1;
+    const receipt = { view_id: "c1", kind: "chart", title: view.title };
+    const push = streamed([
+      { type: "tool_start", tool_id: "t2", tool_name: "show_view", input: { view: "table" } },
+      {
+        type: "tool_result",
+        tool_id: "t2",
+        tool_name: "show_view",
+        summary: "Built a chart",
+        artifact: { ...artifact, id: "art-2", tool_name: "show_view", data: receipt },
+      },
+      { type: "view", tool_id: "t2", view },
+      // A repeat id and a part that does not validate are both dropped.
+      { type: "view", tool_id: "t2", view },
+      { type: "view", tool_id: "t3", view: { id: "v9", kind: "table" } },
+      { type: "done", conversation_id: "c1", message_id: "m1" },
+    ]);
+    const { result } = renderHook(() => useChat("r1"));
+
+    await act(async () => {
+      const sending = result.current.sendMessage("chart it");
+      await push();
+      await sending;
+    });
+
+    const answer = result.current.messages.at(-1);
+    expect(answer?.toolCalls).toEqual([
+      {
+        id: "t2",
+        name: "show_view",
+        arguments: { view: "table" },
+        result: receipt,
+        summary: "Built a chart",
+        status: "done",
+      },
+    ]);
+    expect(answer?.views?.map((part) => part.id)).toEqual(["c1"]);
+    expect(answer?.isStreaming).toBe(false);
+    expect(result.current.error).toBeNull();
+  });
+
+  it("marks a refused show_view step as failed and adds no view", async () => {
+    const push = streamed([
+      { type: "tool_start", tool_id: "t2", tool_name: "show_view", input: {} },
+      {
+        type: "tool_result",
+        tool_id: "t2",
+        tool_name: "show_view",
+        summary: "Error: insufficient coverage",
+        artifact: {
+          ...artifact,
+          id: "art-2",
+          tool_name: "show_view",
+          data: { error: "insufficient coverage", error_code: "insufficient_coverage" },
+        },
+      },
+      { type: "done", conversation_id: "c1", message_id: "m1" },
+    ]);
+    const { result } = renderHook(() => useChat("r1"));
+
+    await act(async () => {
+      const sending = result.current.sendMessage("chart it");
+      await push();
+      await sending;
+    });
+
+    const answer = result.current.messages.at(-1);
+    expect(answer?.toolCalls[0]?.status).toBe("error");
+    expect(answer).not.toHaveProperty("views");
   });
 });

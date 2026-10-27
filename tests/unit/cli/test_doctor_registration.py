@@ -106,3 +106,103 @@ def test_registration_target_extraction(tmp_path: Path) -> None:
     assert _registration_target({"args": "mcp"}) is None
     assert _registration_target({}) is None
     assert _registration_target({"args": ["mcp", "--transport", "stdio"]}) is None
+
+
+def test_entry_serving_another_repo_is_advisory(tmp_path: Path) -> None:
+    # Not broken state, so it must not fail the run; and doctor never
+    # repoints the one global entry.
+    other, repo = tmp_path / "other", tmp_path / "repo"
+    other.mkdir()
+    repo.mkdir()
+    _write_settings(_entry(other))
+    check, wedged = _claude_registration_check(repo)
+    assert check.ok is True
+    assert wedged is False
+    assert f"serves {other}; this repo is not registered" in check.detail
+    assert "repowise agents add --target=claude-code --scope=project" in check.detail
+
+
+def test_entry_serving_this_repo_is_ok(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write_settings(_entry(repo))
+    check, _ = _claude_registration_check(repo)
+    assert check.ok is True
+    assert "not registered" not in check.detail
+
+
+def test_project_mcp_json_covers_a_global_entry_elsewhere(tmp_path: Path) -> None:
+    other, repo = tmp_path / "other", tmp_path / "repo"
+    other.mkdir()
+    repo.mkdir()
+    _write_settings(_entry(other))
+    (repo / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"repowise": _entry(repo)}}), encoding="utf-8"
+    )
+    check, _ = _claude_registration_check(repo)
+    assert check.ok is True
+    assert "not registered" not in check.detail
+
+
+def test_workspace_entry_covers_its_member_repos(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    repo = workspace / "repo"
+    repo.mkdir(parents=True)
+    (workspace / ".repowise-workspace.yaml").write_text("repos: []\n", encoding="utf-8")
+    _write_settings(_entry(workspace))
+    check, _ = _claude_registration_check(repo)
+    assert check.ok is True
+    assert "not registered" not in check.detail
+
+
+def _write_project_entry(repo: Path, target: Path | str) -> None:
+    (repo / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"repowise": _entry(target)}}), encoding="utf-8"
+    )
+
+
+def test_project_mcp_json_copied_from_another_repo_does_not_count(tmp_path: Path) -> None:
+    other, repo = tmp_path / "other", tmp_path / "repo"
+    other.mkdir()
+    repo.mkdir()
+    _write_settings(_entry(other))
+    _write_project_entry(repo, other)
+    check, _ = _claude_registration_check(repo)
+    assert check.ok is True
+    assert "this repo is not registered" in check.detail
+
+
+def test_relative_project_entry_counts(tmp_path: Path) -> None:
+    other, repo = tmp_path / "other", tmp_path / "repo"
+    other.mkdir()
+    repo.mkdir()
+    _write_settings(_entry(other))
+    _write_project_entry(repo, ".")
+    check, _ = _claude_registration_check(repo)
+    assert "not registered" not in check.detail
+
+
+def test_local_scope_entry_in_claude_json_counts(tmp_path: Path) -> None:
+    other, repo = tmp_path / "other", tmp_path / "repo"
+    other.mkdir()
+    repo.mkdir()
+    _write_settings(_entry(other))
+    (Path.home() / ".claude.json").write_text(
+        json.dumps({"projects": {str(repo): {"mcpServers": {"repowise": _entry(repo)}}}}),
+        encoding="utf-8",
+    )
+    check, _ = _claude_registration_check(repo)
+    assert "not registered" not in check.detail
+
+
+def test_local_scope_entry_for_another_repo_does_not_count(tmp_path: Path) -> None:
+    other, repo = tmp_path / "other", tmp_path / "repo"
+    other.mkdir()
+    repo.mkdir()
+    _write_settings(_entry(other))
+    (Path.home() / ".claude.json").write_text(
+        json.dumps({"projects": {str(other): {"mcpServers": {"repowise": _entry(repo)}}}}),
+        encoding="utf-8",
+    )
+    check, _ = _claude_registration_check(repo)
+    assert "this repo is not registered" in check.detail

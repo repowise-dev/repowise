@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .biomarker_names import canonical_biomarker
+
 _TEMPLATES: dict[str, str] = {
     "brain_method": (
         "Split this function. It carries high cyclomatic complexity and "
@@ -48,11 +50,10 @@ _TEMPLATES: dict[str, str] = {
         "conditional axes; if it dispatches on a type tag, replace the "
         "if/elif ladder with polymorphism or a lookup table."
     ),
-    "bumpy_road": (
-        "Smooth the road. Multiple branches at the same nesting depth "
-        "usually means the function is doing several jobs — split it "
-        "into stages so each stage stays at a single level of "
-        "abstraction."
+    "repeated_nesting": (
+        "Split the function into stages. Several nested blocks side by side "
+        "usually mean it does several jobs; give each stage its own helper "
+        "at a single level of abstraction."
     ),
     "large_method": (
         "Shorten the function. Extract paragraphs (each comment block "
@@ -74,6 +75,11 @@ _TEMPLATES: dict[str, str] = {
         "high-dependents but lacks coverage — add characterization "
         "tests for the current behavior first, then refactor with "
         "confidence."
+    ),
+    "untested_complexity": (
+        "Test this function's branches first: it is complex and little of it "
+        "runs under test. When its complexity is 30 or more, split it instead, "
+        "since no amount of coverage brings its score under the bar."
     ),
     "coverage_gap": (
         "Cover the uncovered branches. Start with the highest-impact "
@@ -244,8 +250,8 @@ _TEMPLATES: dict[str, str] = {
         "iteration."
     ),
     "json_parse_in_loop": (
-        "Parse once. Hoist the parse or stringify out of the loop, and replace a "
-        "JSON round-trip clone with structuredClone."
+        "Clone without the JSON round-trip. Use structuredClone, or clone once "
+        "outside the loop if every iteration copies the same value."
     ),
     "membership_test_against_list_in_loop": (
         "Look up in a set. Build a set from the list once before the loop and "
@@ -310,20 +316,55 @@ _TEMPLATES: dict[str, str] = {
         "Confirm the statement should touch every row. Add the WHERE clause it "
         "needs, or a comment stating that the full-table change is intended."
     ),
+    # Apex.
+    "apex_soql_injection": (
+        "Bind the value. Write it as a bind variable (`:value`) in the query "
+        "string, or pass it through String.escapeSingleQuotes before splicing it in."
+    ),
+    "apex_missing_sharing": (
+        "Declare the sharing mode. Add `with sharing` (or `inherited sharing`), or "
+        "`without sharing` with a comment saying why the class must see every record."
+    ),
+    "apex_hardcoded_id": (
+        "Look the record up instead. Query it by a stable field (DeveloperName, a "
+        "unique name) or read the Id from custom metadata or a custom setting."
+    ),
+    "apex_see_all_data": (
+        "Create the test's data. Insert the records the test needs (a test data "
+        "factory or @TestSetup) and drop SeeAllData=true."
+    ),
+    "cobol_unstructured_flow": (
+        "Return through the range exit. Replace the jump with a flag the caller "
+        "tests, or PERFORM the target paragraph, and set the next step with a "
+        "value instead of ALTER."
+    ),
 }
 
 
 def suggestion_for(biomarker_type: str) -> str:
     """Return the canonical refactoring suggestion for a biomarker.
 
-    Unknown biomarker names fall back to a generic prompt — keeps the
-    field non-null on every finding so the UI can rely on it.
+    A renamed marker's old id reads its current template, so stored findings
+    keep their advice. Unknown biomarker names fall back to a generic prompt —
+    keeps the field non-null on every finding so the UI can rely on it.
     """
     return _TEMPLATES.get(
-        biomarker_type,
+        canonical_biomarker(biomarker_type),
         "Review this finding and decide whether the underlying smell is "
         "worth refactoring or suppressing via `.repowise/health-rules.json`.",
     )
+
+
+def hint_for(biomarker_type: str) -> str | None:
+    """The first sentence of the marker's template, for a one-line fix hint.
+
+    ``None`` when the marker has no template: the generic fallback is no hint.
+    """
+    template = _TEMPLATES.get(canonical_biomarker(biomarker_type))
+    if template is None:
+        return None
+    head, dot, _ = template.partition(". ")
+    return head + "." if dot else template
 
 
 def annotate_finding(finding: dict[str, Any]) -> dict[str, Any]:

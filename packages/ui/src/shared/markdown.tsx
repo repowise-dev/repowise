@@ -258,6 +258,65 @@ function buildComponents(s: Scale, measure: string): Components {
   };
 }
 
+/** A span of `content` (UTF-16 offsets) to mark, e.g. a figure no tool returned. */
+export interface MarkdownFlag {
+  start: number;
+  end: number;
+}
+
+interface MdNode {
+  type: string;
+  value?: string;
+  children?: MdNode[];
+  position?: { start: { offset?: number }; end: { offset?: number } };
+  data?: object;
+}
+
+const FLAG_CLASS =
+  "cursor-help underline decoration-dotted decoration-[var(--color-text-tertiary)] underline-offset-4";
+
+/** Splits text nodes at each flag. A text node whose value differs from its
+ *  source (escapes, entities) cannot be mapped by offset and stays unmarked. */
+function flagSpans(node: MdNode, flags: readonly MarkdownFlag[], label: string): void {
+  if (!node.children) return;
+  node.children = node.children.flatMap((child): MdNode[] => {
+    const from = child.position?.start.offset;
+    const to = child.position?.end.offset;
+    if (child.type !== "text" || child.value === undefined || from === undefined || to === undefined) {
+      flagSpans(child, flags, label);
+      return [child];
+    }
+    const value = child.value;
+    if (value.length !== to - from) return [child];
+    const inside = flags
+      .filter((f) => f.start >= from && f.end <= to && f.end > f.start)
+      .sort((a, b) => a.start - b.start);
+    if (!inside.length) return [child];
+    const out: MdNode[] = [];
+    let at = 0;
+    for (const flag of inside) {
+      const start = flag.start - from;
+      if (start < at) continue;
+      if (start > at) out.push({ type: "text", value: value.slice(at, start) });
+      out.push({
+        type: "flag",
+        data: { hName: "span", hProperties: { className: FLAG_CLASS, title: label, "data-flagged": "" } },
+        children: [
+          { type: "text", value: value.slice(start, flag.end - from) },
+          {
+            type: "flagLabel",
+            data: { hName: "span", hProperties: { className: "sr-only" } },
+            children: [{ type: "text", value: ` (${label})` }],
+          },
+        ],
+      });
+      at = flag.end - from;
+    }
+    if (at < value.length) out.push({ type: "text", value: value.slice(at) });
+    return out;
+  });
+}
+
 export interface MarkdownProps {
   content: string;
   /** `narrow` for the chat dock, `compact` for chrome-sized side panels. */
@@ -267,19 +326,37 @@ export interface MarkdownProps {
   /** Fill the host column instead of capping prose at 72ch. For hosts that
    *  already set a reading width, such as the chat column. */
   fill?: boolean;
+  /** Spans to mark with a dotted underline; `flagLabel` is their tooltip and
+   *  screen-reader text, so the mark never rests on color alone. */
+  flags?: readonly MarkdownFlag[];
+  flagLabel?: string;
 }
 
 const REMARK_PLUGINS = [remarkGfm];
 
-export function Markdown({ content, density = "reading", streaming = false, fill = false }: MarkdownProps) {
+export function Markdown({
+  content,
+  density = "reading",
+  streaming = false,
+  fill = false,
+  flags,
+  flagLabel = "Flagged",
+}: MarkdownProps) {
   const measure = density === "reading" && !fill ? "max-w-[72ch]" : "max-w-full";
   const components = useMemo(
     () => buildComponents(SCALES[density], measure),
     [density, measure],
   );
+  const remarkPlugins = useMemo(
+    () =>
+      flags?.length
+        ? [...REMARK_PLUGINS, () => (tree: MdNode) => flagSpans(tree, flags, flagLabel)]
+        : REMARK_PLUGINS,
+    [flags, flagLabel],
+  );
   return (
     <StreamingContext.Provider value={streaming}>
-      <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={components}>
+      <ReactMarkdown remarkPlugins={remarkPlugins} components={components}>
         {content}
       </ReactMarkdown>
     </StreamingContext.Provider>

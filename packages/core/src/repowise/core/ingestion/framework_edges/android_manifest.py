@@ -6,9 +6,12 @@ manifest is the runtime's hand-off into source — none of those class
 references appear in any ``import`` statement, so the dead-code pass
 would otherwise flag every Activity that has no in-source caller.
 
-Strategy: parse every ``AndroidManifest.xml`` we can find, pull the
-``android:name`` attributes, and emit a synthetic ``framework`` edge
-from the manifest file to the named class's source file.
+Strategy: read every ``AndroidManifest.xml`` on disk (the traverser does
+not index XML), pull the component ``android:name`` attributes, and link
+the named class's source file from the ``framework:android`` anchor. A
+relative name (``.MainActivity``) is completed with the manifest
+``package``, or with the module's Gradle ``namespace`` when the manifest
+has none (AGP 7+).
 """
 
 from __future__ import annotations
@@ -18,65 +21,96 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from repowise.core.fs_walk import glob_via
+
+from ..framework_facts import ANDROID
 from ..resolvers import ResolverContext
 from .base import (
     DetectionContext,
     FrameworkHandler,
-    _add_edge_if_new,
+    anchor_edge,
 )
 
 if TYPE_CHECKING:
     import networkx as nx
 
 
-_ANDROID_NAME_RE = re.compile(r"android:name=\"([\w.$]+)\"")
+# XML allows either quote and spaces around ``=``.
+_ANDROID_NAME_RE = re.compile(r"""android:name\s*=\s*['"]([\w.$]+)['"]""")
 _ANDROID_COMPONENT_TAGS = ("<activity", "<service", "<receiver",
                            "<provider", "<application")
 
 
-def _has_android_manifests(parsed_files: dict[str, Any]) -> bool:
-    return any(p.endswith("AndroidManifest.xml") for p in parsed_files)
+_MANIFEST_PACKAGE_RE = re.compile(r"""<manifest\b[^>]*?\bpackage\s*=\s*['"]([\w.]+)['"]""")
+_GRADLE_NAMESPACE_RE = re.compile(r"""\bnamespace\s*=?\s*['"]([\w.]+)['"]""")
 
 
-def _add_android_edges(
-    graph: nx.DiGraph,
-    parsed_files: dict[str, Any],
-    path_set: set[str],
-    ctx: ResolverContext,
-) -> int:
-    count = 0
+def _has_jvm_sources(parsed_files: dict[str, Any]) -> bool:
+    return any(p.endswith((".java", ".kt")) for p in parsed_files)
 
+
+def _add_android_edges(graph: nx.DiGraph, path_set: set[str], ctx: ResolverContext) -> int:
+    if ctx.repo_path is None:
+        return 0
     try:
         from ..resolvers.jvm_workspace import get_or_build_jvm_index
 
         jvm_index = get_or_build_jvm_index(ctx)
     except Exception:
-        jvm_index = None
+        return 0
 
-    for path in list(path_set):
-        if not path.endswith("AndroidManifest.xml"):
-            continue
-        text = _read_manifest(parsed_files, path)
-        if text is None or jvm_index is None:
-            continue
-        for fqn in _component_class_names(text):
-            for target in jvm_index.files_for_fqn(fqn):
-                if target in path_set and _add_edge_if_new(graph, path, target):
-                    count += 1
-                    node = graph.nodes.get(target)
-                    if node is not None:
-                        node["is_entry_point"] = True
+    count = 0
+    for name in _registered_class_names(ctx.repo_path.resolve(), ctx):
+        for target in jvm_index.files_for_fqn(name):
+            if target not in path_set:
+                continue
+            count += anchor_edge(graph, ANDROID, target)
+            node = graph.nodes.get(target)
+            if node is not None:
+                node["is_entry_point"] = True
 
     return count
 
 
-def _read_manifest(parsed_files: dict[str, Any], path: str) -> str | None:
-    try:
-        return Path(parsed_files[path].file_info.abs_path).read_text(
-            encoding="utf-8", errors="ignore"
-        )
-    except (OSError, KeyError, AttributeError):
-        return None
+def _registered_class_names(root: Path, ctx: ResolverContext) -> Iterator[str]:
+    """Fully-qualified component class names from every manifest under *root*."""
+    for manifest in glob_via(
+        ctx.walk_snapshot, root, "AndroidManifest.xml", prune_nested_git=ctx.prune_nested_git
+    ):
+        try:
+            text = manifest.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        package = _manifest_package(manifest, text)
+        for name in _component_class_names(text):
+            yield _qualify(name, package)
+
+
+def _manifest_package(manifest: Path, text: str) -> str:
+    """The package relative component names complete against.
+
+    The manifest ``package`` attribute, else the ``namespace`` of the module
+    whose ``src/<set>/`` holds the manifest (or of the manifest's own folder,
+    the pre-``src`` layout).
+    """
+    if m := _MANIFEST_PACKAGE_RE.search(text):
+        return m.group(1)
+    module = manifest.parent.parent.parent if manifest.parent.parent.name == "src" else manifest.parent
+    for build_name in ("build.gradle.kts", "build.gradle"):
+        try:
+            build_text = (module / build_name).read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if m := _GRADLE_NAMESPACE_RE.search(build_text):
+            return m.group(1)
+    return ""
+
+
+def _qualify(name: str, package: str) -> str:
+    """Android's rule: ``.Foo`` and a bare ``Foo`` live in *package*."""
+    if name.startswith(".") or "." not in name:
+        return f"{package}.{name.lstrip('.')}" if package else name.lstrip(".")
+    return name
 
 
 def _component_class_names(text: str) -> Iterator[str]:
@@ -89,14 +123,13 @@ def _component_class_names(text: str) -> Iterator[str]:
         for chunk in text.split(tag)[1:]:
             head = chunk.split(">", 1)[0]
             for m in _ANDROID_NAME_RE.finditer(head):
-                fqn = m.group(1).lstrip(".")
-                if fqn:
-                    yield fqn
+                if m.group(1).strip("."):
+                    yield m.group(1)
 
 
 class _AndroidManifestHandler:
     def detect(self, dctx: DetectionContext) -> bool:
-        return _has_android_manifests(dctx.parsed_files)
+        return _has_jvm_sources(dctx.parsed_files)
 
     def add_edges(
         self,
@@ -105,7 +138,7 @@ class _AndroidManifestHandler:
         ctx: ResolverContext,
         path_set: set[str],
     ) -> int:
-        return _add_android_edges(graph, parsed_files, path_set, ctx)
+        return _add_android_edges(graph, path_set, ctx)
 
 
 HANDLERS: list[FrameworkHandler] = [_AndroidManifestHandler()]

@@ -16,7 +16,7 @@ SPEC = LanguageSpec(
     # JCL, schedulers and dynamic CALL data-items invoke programs outside the
     # source graph. Without those inputs, unused/unreachable claims are unsound.
     dead_code_exempt=True,
-    import_support="none",
+    import_support="full",
     entry_point_patterns=(),
     manifest_files=(),
     shebang_tokens=(),

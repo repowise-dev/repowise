@@ -1,0 +1,21 @@
+{
+  "conversation_id": "c0ffee00-0000-4000-8000-0000000000aa",
+  "generation_id": "gen-42",
+  "model": "claude-sonnet-4-5",
+  "model_id": "claude-sonnet-4-5",
+  "model_params": [],
+  "hook_event_name": "afterFileEdit",
+  "cursor_version": "2.0.0",
+  "workspace_roots": [
+    "/work/demo"
+  ],
+  "user_email": "dev@example.com",
+  "transcript_path": null,
+  "file_path": "/work/demo/src/billing.py",
+  "edits": [
+    {
+      "old_string": "def total(items):\n    return 0\n",
+      "new_string": "def total(items):\n    subtotal = sum(item.price for item in items)\n    return round(subtotal * 1.2, 2)\n"
+    }
+  ]
+}

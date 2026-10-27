@@ -87,7 +87,7 @@ describe("notesFromAugment", () => {
     expect(notesFromAugment([fixLine])).toEqual([{ kind: "fixes", count: 5, age: "2 weeks ago", symbol: "run_pipeline" }]);
   });
 
-  const standing = "[repowise] a.py is governed by a standing decision: Keep the cache bounded because memory is finite (confirmed across 3 sessions).";
+  const standing = "[repowise] a.py is governed by a standing decision: Keep the cache bounded because memory is finite (seen in 3 sessions).";
 
   it("reads a standing decision without its rationale or confirmation tail", () => {
     expect(notesFromAugment([standing])).toEqual([{ kind: "decision", reviewed: true, title: "Keep the cache bounded" }]);

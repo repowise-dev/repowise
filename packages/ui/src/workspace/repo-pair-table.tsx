@@ -2,7 +2,7 @@
 
 import { EmptyState } from "../shared/empty-state";
 import { clickableRowProps, CLICKABLE_ROW_CLS } from "../shared/responsive-table";
-import { AiPromptButton } from "../health/ai-prompt-button";
+import { RowPromptAction } from "../health/row-prompt-action";
 import { PAIR_MICRO as MICRO } from "../coupling/pair-drawer-parts";
 import { cn } from "../lib/cn";
 import { formatDate, formatDateTime } from "../lib/format";
@@ -69,9 +69,9 @@ export function RepoPairTable({ repoPairs, onSelectPair, selectedPairId, onPromp
               <tr
                 key={p.id}
                 className={cn(
-                  "border-t border-[var(--color-border-default)] first:border-t-0",
+                  "group/row border-t border-[var(--color-border-default)] first:border-t-0",
                   onClick && "hover:bg-[var(--color-bg-elevated)]",
-                  isSelected && "bg-[var(--color-accent-muted)]",
+                  isSelected && "bg-[var(--color-selection-wash)]",
                   onClick && CLICKABLE_ROW_CLS,
                 )}
                 aria-current={isSelected ? "true" : undefined}
@@ -108,7 +108,7 @@ export function RepoPairTable({ repoPairs, onSelectPair, selectedPairId, onPromp
                           className={cn(
                             "whitespace-nowrap text-xs max-sm:sr-only",
                             isSelected
-                              ? "font-medium text-[var(--color-accent-primary)]"
+                              ? "font-medium text-[var(--color-text-primary)]"
                               : "text-[var(--color-text-tertiary)]",
                           )}
                         >
@@ -116,9 +116,9 @@ export function RepoPairTable({ repoPairs, onSelectPair, selectedPairId, onPromp
                         </span>
                       )}
                       {onPrompt && (
-                        <AiPromptButton
+                        <RowPromptAction
                           variant="icon"
-                          label={`AI prompt for ${p.repo1} and ${p.repo2}`}
+                          label={`Copy prompt for ${p.repo1} and ${p.repo2}`}
                           onClick={() => onPrompt(p)}
                         />
                       )}

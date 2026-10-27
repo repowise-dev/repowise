@@ -15,7 +15,9 @@ import { MobileNav } from "@/components/layout/mobile-nav";
 import { CommandPalette } from "@/components/search/command-palette";
 import { ContextDrawerShell } from "@/components/layout/context-drawer-provider";
 import { SWRProvider } from "@/components/layout/swr-provider";
+import { PreviewBadgeStrings } from "@/components/layout/preview-badge-strings";
 import { UpgradeBanner } from "@/components/layout/upgrade-banner";
+import { ReleaseMoment } from "@/components/layout/release-moment";
 import { listRepos } from "@/lib/api/repos";
 import { getWorkspace } from "@/lib/api/workspace";
 import type { WorkspaceResponse } from "@/lib/api/types";
@@ -87,24 +89,28 @@ export default async function RootLayout({
         <ThemeProvider>
         <a
           href="#main-content"
-          className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[100] focus:rounded-md focus:bg-[var(--color-bg-elevated)] focus:px-3 focus:py-2 focus:text-sm focus:text-[var(--color-text-primary)] focus:outline focus:outline-2 focus:outline-[var(--color-accent-primary)]"
+          className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[100] focus:rounded-md focus:bg-[var(--color-bg-elevated)] focus:px-3 focus:py-2 focus:text-sm focus:text-[var(--color-text-primary)] focus:outline focus:outline-2 focus:outline-[var(--color-focus-ring)]"
         >
           {t("skipToContent")}
         </a>
         <NuqsAdapter>
         <SWRProvider>
         <TooltipProvider delayDuration={300}>
+        <PreviewBadgeStrings>
           <Suspense fallback={<AppShellSkeleton />}>
             <ContextDrawerShell>
-              <div className="flex h-screen flex-col overflow-hidden">
+              {/* Printed, the shell unclips so a long page (a chat
+                  transcript) flows across sheets instead of one viewport. */}
+              <div className="flex h-screen flex-col overflow-hidden print:block print:h-auto print:overflow-visible">
                 <UpgradeBanner />
-                <div className="flex flex-1 overflow-hidden">
+                <ReleaseMoment firstRepoId={repos[0]?.id ?? null} />
+                <div className="flex flex-1 overflow-hidden print:block print:overflow-visible">
                 <Sidebar
                   repos={repos}
                   workspace={workspace}
                   reposUnavailable={reposUnavailable}
                 />
-                <div className="flex flex-1 flex-col min-w-0 overflow-hidden">
+                <div className="flex flex-1 flex-col min-w-0 overflow-hidden print:block print:overflow-visible">
                   <MobileNav repos={repos} workspace={workspace} />
                   {/* A flex column, so anything a route layout stacks above
                       the page (repo breadcrumb, reindex hint, active-job
@@ -118,7 +124,7 @@ export default async function RootLayout({
                       it could not be clicked. */}
                   <main
                     id="main-content"
-                    className="relative flex flex-1 flex-col overflow-auto min-w-0"
+                    className="relative flex flex-1 flex-col overflow-auto min-w-0 print:block print:overflow-visible"
                   >
                     {children}
                   </main>
@@ -128,6 +134,7 @@ export default async function RootLayout({
               <CommandPalette repos={repos} workspace={workspace} />
             </ContextDrawerShell>
           </Suspense>
+        </PreviewBadgeStrings>
         </TooltipProvider>
         </SWRProvider>
         </NuqsAdapter>

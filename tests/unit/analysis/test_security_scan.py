@@ -232,10 +232,10 @@ class TestScanFile:
     def test_masking_blanks_comments_and_strings_in_place(
         self, source: str, code: str, uncommented: str
     ) -> None:
-        from repowise.core.analysis.security_scan import _mask_comments_and_strings
+        from repowise.core.analysis.security_scan import mask_comments_and_strings
 
-        assert _mask_comments_and_strings(source) == code
-        assert _mask_comments_and_strings(source, strings=False) == uncommented
+        assert mask_comments_and_strings(source) == code
+        assert mask_comments_and_strings(source, strings=False) == uncommented
 
     def test_file_without_a_call_word_skips_the_call_scan(self) -> None:
         from repowise.core.analysis.security_scan import _call_findings
@@ -691,6 +691,26 @@ class TestScanFile:
             ("a.py", 'key = hashlib.sha1(f"({a})".encode(), usedforsecurity=False)\n', False),
             ("a.py", 'key = hashlib.sha1(b"usedforsecurity=False")\n', True),
             ("a.py", "key = hashlib.sha1(\n    text.encode()\n)\nok = sha256(b, usedforsecurity=False)\n", True),
+            # Cut to a few characters where it is computed, or kept as a key: an id.
+            ("a.py", "short = hashlib.md5(name.encode()).hexdigest()[:8]\n", False),
+            ("a.py", "short = hashlib.sha1(name.encode()).hexdigest()[0:12]\n", False),
+            ("a.js", 'const id = crypto.createHash("md5").update(s).digest("hex").slice(0, 8);\n', False),
+            ("a.py", "etag = hashlib.md5(body).hexdigest()\n", False),
+            ("a.py", "cache_key = hashlib.sha1(url.encode()).hexdigest()\n", False),
+            ("a.ts", 'const cacheKey = createHash("md5").update(url).digest("hex");\n', False),
+            ("a.py", 'slug = title + "-" + md5(title.encode()).hexdigest()\n', False),
+            # A credential stays a finding, truncated or named as a key.
+            ("a.py", "pw = hashlib.md5(password.encode()).hexdigest()[:8]\n", True),
+            ("a.py", "cache_key = hashlib.md5(token).hexdigest()\n", True),
+            ("a.py", "digest = hashlib.md5(data).hexdigest()[8:]\n", True),
+            ("a.py", "full = hashlib.md5(data).digest()\n", True),
+            ("a.py", "pw = hashlib.md5(p.encode()).hexdigest()[:8]\n", True),
+            ("a.py", "whole = hashlib.md5(data).hexdigest()[:32]\n", True),
+            ("a.py", "mac = hmac.new(k, m, hashlib.md5).hexdigest()[:8]\n", True),
+            ("a.py", "if cache_key in seen: h = hashlib.md5(data).hexdigest()\n", True),
+            ("a.ts", 'const cacheKey: string = createHash("md5").update(url).digest("hex");\n', False),
+            ("a.py", 'row = {"etag": hashlib.md5(body).hexdigest()}\n', False),
+            ("a.py", "author_slug = hashlib.md5(name.encode()).hexdigest()\n", False),
         ],
     )
     def test_weak_hash_is_an_algorithm_in_use(self, path: str, source: str, expected: bool) -> None:
@@ -975,6 +995,32 @@ class TestScanSource:
         (hit,) = [f for f in scan_source("config.ts", source) if f["kind"] == "public_env_secret"]
         assert hit["snippet"] == source.strip()
 
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "VITE_API_TOKEN=\n",
+            'NEXT_PUBLIC_API_SECRET=""\n',
+            "VITE_AUTH_TOKEN=''\n",
+            "VITE_API_TOKEN= # set in .env.local\n",
+        ],
+    )
+    def test_empty_public_env_secret_is_dropped(self, source: str) -> None:
+        assert [f for f in scan_source(".env", source) if f["kind"] == "public_env_secret"] == []
+
+    def test_public_env_secret_with_value_still_fires(self) -> None:
+        hits = [f for f in scan_source(".env", "VITE_API_TOKEN=abc123\n") if f["kind"] == "public_env_secret"]
+        assert len(hits) == 1
+        assert hits[0]["snippet"] == "VITE_API_TOKEN=abc1****"
+
+    def test_public_env_secret_code_read_still_fires(self) -> None:
+        hits = [
+            f
+            for f in scan_source("app.ts", "const t = import.meta.env.VITE_API_TOKEN;\n")
+            if f["kind"] == "public_env_secret"
+        ]
+        assert len(hits) == 1
+        assert hits[0]["snippet"] == "const t = import.meta.env.VITE_API_TOKEN;"
+
     def test_secret_kinds_and_history_gate_are_unchanged(self) -> None:
         from repowise.core.analysis.history_scan import HistorySecurityScanner
         from repowise.core.analysis.security_scan import SECRET_KINDS
@@ -1170,6 +1216,28 @@ class TestVendorShapeEdges:
     )
     def test_key_names_and_templates_are_not_secrets(self, source: str) -> None:
         assert "hardcoded_secret" not in self._kinds(source)
+
+    @pytest.mark.parametrize(
+        "value",
+        ["COMFY_CLOUD_API_KEY", "NO_REPLY", "HEARTBEAT_OK", "AWS_V2_API_KEY", "TOKEN_123_KEY", "_PRIVATE_KEY"],
+    )
+    @pytest.mark.parametrize("path", ["config.py", "config.ts", ".env"])
+    def test_uppercase_identifiers_are_not_secrets(self, value: str, path: str) -> None:
+        assert "hardcoded_secret" not in self._kinds(f'API_KEY = "{value}"\n', path)
+
+    @pytest.mark.parametrize(
+        "value",
+        ["ABCD_1234_EFGH", "ABCD_1234567890_EFGH", "ABCD_eFGH_12", "ABCD-EFGH-1234"],
+    )
+    def test_credential_shaped_values_still_fire(self, value: str) -> None:
+        assert "hardcoded_secret" in self._kinds(f'API_KEY = "{value}"\n')
+
+    def test_uppercase_password_is_not_exempted(self) -> None:
+        assert "hardcoded_password" in self._kinds('password = "SECRET_PHRASE"\n')
+
+    def test_vendor_key_is_not_exempted_by_uppercase_identifier(self) -> None:
+        key = "AKIA" + "BCDEFGHIJKLMNOPQ"
+        assert "aws_access_key" in self._kinds(f'API_KEY = "{key}"\n')
 
     def test_vendor_shape_and_keyword_report_one_finding(self) -> None:
         source = 'GITHUB_TOKEN = "ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"\n'  # pragma: allowlist secret
@@ -1395,6 +1463,11 @@ class TestSecretPrecision:
             ("src/app.py", 'API_KEY = "prefix-${VAR}-suffix"\n'),
             ("src/app.py", 'TOKEN = "prefix-{{var}}-suffix"\n'),
             ("src/app.py", 'TOKEN = "xxxxxxxxxxxx"\n'),
+            ("classes/RD2_NamingService.cls", "String token = '{!npe03__Donor_Name__c}';\n"),
+            ("pages/Pay.page", '<c:pay accessToken="{!$Credential.OAuthToken}"/>\n'),
+            ("aura/Pay/Pay.cmp", '<c:pay token="{#v.sessionToken}"/>\n'),
+            ("classes/Api.cls", "String token = 'Bearer {!$Credential.OAuthToken}';\n"),
+            ("classes/RegExps.cls", "static final String EXP_NUMBER_TOKEN = '(_D[0-9]+D_)';\n"),
         ],
     )
     def test_elided_or_templated_values_are_not_secrets(self, path: str, source: str) -> None:
@@ -1433,6 +1506,7 @@ class TestSecretPrecision:
         ("source", "kind"),
         [
             ('TOKEN = "xQzRmWpLkVnBtYcH"\n', "hardcoded_secret"),
+            ('TOKEN = "Zx9[a]+Qw8Rt5Yu3"\n', "hardcoded_secret"),
             ('TOKEN = "Bearer eyJhbGciOiJIUzI1NiJ9abc"\n', "hardcoded_secret"),
             ('const val API_TOKEN = "productionAccessKey"\n', "hardcoded_secret"),
             ('password="Tr0ub4dor 3xyz"\n', "hardcoded_password"),
@@ -1479,3 +1553,231 @@ class TestSecretPrecision:
     def test_vendor_key_in_a_comment_still_fires(self) -> None:
         kinds = {f["kind"] for f in scan_source("src/app.py", "# AKIAQZXNRTVYWMPKLBHG\n")}  # pragma: allowlist secret
         assert kinds == {"aws_access_key"}
+
+
+class TestNoAlarmOnCodeThatDoesNotShip:
+    """Type annotations, release scripts, bundles and marked fixtures raise nothing high."""
+
+    KEY: ClassVar[str] = "AKIA" + "QZXNRTVYWMPKLBHG"
+
+    @staticmethod
+    def _found(path: str, source: str) -> list[tuple[str, str]]:
+        return [(f["kind"], f["severity"]) for f in scan_source(path, source)]
+
+    @pytest.mark.parametrize("annotation", ["string", "TrustedHTML", "string | TrustedHTML"])
+    def test_inner_html_type_annotation_is_not_a_sink(self, annotation: str) -> None:
+        source = f"interface Props {{\n  dangerouslySetInnerHTML: {{ __html: {annotation} }};\n}}\n"
+        assert self._found("src/props.ts", source) == []
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "interface P { __html: string }\n",
+            "interface P {\n  __html: string;\n}\n",
+            "type P = { __html: string | TrustedHTML };\n",
+            "const [h, setH] = useState<{ __html: string }>(init);\n",
+            "function f(p: { __html: TrustedHTML }) {}\n",
+        ],
+    )
+    def test_inner_html_in_a_type_position_is_not_a_sink(self, source: str) -> None:
+        assert self._found("src/props.tsx", source) == []
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "<div dangerouslySetInnerHTML={{__html: string}} />\n",
+            "<div dangerouslySetInnerHTML={{ __html: TrustedHTML }} />\n",
+            "const props = { __html: string };\n",
+            "return {\n  __html: string,\n};\n",
+        ],
+    )
+    def test_inner_html_from_a_value_named_like_a_type_is_still_medium(self, source: str) -> None:
+        assert self._found("src/view.tsx", source) == [("unsafe_inner_html", "med")]
+
+    def test_no_written_code_raises_no_symbol_finding(self) -> None:
+        sym = SimpleNamespace(name="password", start_line=1)
+        source = "declare const password: string;\n"
+        for path in ("types/auth.d.ts", "dist/app.min.js"):
+            assert scan_source(path, source, [sym]) == []
+        kinds = {f["kind"] for f in scan_source("src/auth.ts", source, [sym])}
+        assert kinds == {"security_sensitive_symbol"}
+
+    def test_declaration_file_holds_no_sink(self) -> None:
+        assert self._found("types/react.d.ts", "type T = { __html: SafeHtml };\n") == []
+
+    def test_a_library_release_in_a_static_resource_holds_no_sink(self) -> None:
+        source = 'eval("console.log("+args.join(",")+")")\n'
+        resources = "force-app/main/default/staticresources/Libs"
+        assert self._found(f"{resources}/arbor-v0.92/src/etc.js", source) == []
+        assert self._found(f"{resources}/app/main.js", source) == [("eval_call", "high")]
+
+    def test_inner_html_from_a_value_is_still_medium(self) -> None:
+        source = "<div dangerouslySetInnerHTML={{__html: foo}} />\n"
+        assert self._found("src/view.tsx", source) == [("unsafe_inner_html", "med")]
+
+    def test_inner_html_from_a_name_starting_with_a_type_word_is_still_medium(self) -> None:
+        source = "<div dangerouslySetInnerHTML={{__html: stringValue}} />\n"
+        assert self._found("src/view.tsx", source) == [("unsafe_inner_html", "med")]
+
+    def test_a_release_script_sink_is_low(self) -> None:
+        source = 'import { execSync } from "child_process";\nexecSync(cmd);\n'
+        assert self._found("scripts/release.ts", source) == [("exec_call", "low")]
+        assert self._found("src/run.ts", source) == [("exec_call", "high")]
+
+    def test_a_secret_in_a_script_stays_high(self) -> None:
+        source = f'import os\nos.system(cmd)\nAWS = "{self.KEY}"\n'
+        assert self._found("scripts/deploy.py", source) == [
+            ("os_system", "low"),
+            ("aws_access_key", "high"),
+        ]
+
+    def test_a_minified_bundle_has_no_call_sink_but_keeps_its_secrets(self) -> None:
+        bundle = "var a=1;" * 400 + 'var f=new Function("x",y);'
+        assert self._found("static/app.3f2a.js", bundle) == []
+        assert self._found("static/app.3f2a.js", bundle + f'var k="{self.KEY}";') == [
+            ("aws_access_key", "high")
+        ]
+
+    def test_new_function_in_written_source_is_still_high(self) -> None:
+        source = 'const f = new Function("x", y);\n'
+        assert self._found("src/app.js", source) == [("new_function_call", "high")]
+
+    @pytest.mark.parametrize(
+        ("path", "marker"),
+        [
+            ("cfg.go", "// gitleaks:allow"),
+            ("README.md", "#gitleaks:allow"),
+            ("cfg.go", "// #nosec G101"),
+            ("cfg.py", "# nosec"),
+            ("cfg.py", "# trufflehog:ignore"),
+            ("cfg.py", "# noqa: E501, S105"),
+        ],
+    )
+    def test_other_scanners_allow_markers_silence_a_secret(self, path: str, marker: str) -> None:
+        source = f'key = "{self.KEY}"  {marker}\n'
+        assert self._found(path, source) == []
+
+    @pytest.mark.parametrize(
+        ("path", "source"),
+        [
+            ("README.md", "key {key} pragma: allowlist secret\n"),
+            ("README.md", "key {key} <!-- nosec -->\n"),
+            ("README.md", "key {key} # pragma: allowlist secret\n"),
+            ("docs/guide.rst", "key {key} nosec\n"),
+            ("README.md", "pragma: allowlist nextline secret\nkey {key}\n"),
+        ],
+    )
+    def test_prose_allow_markers_need_no_comment_opener(self, path: str, source: str) -> None:
+        assert self._found(path, source.format(key=self.KEY)) == []
+
+    def test_a_word_containing_a_marker_does_not_silence_prose(self) -> None:
+        source = f"key {self.KEY} nosecurity\n"
+        assert self._found("README.md", source) == [("aws_access_key", "high")]
+
+    def test_a_bare_marker_outside_a_comment_still_fires_in_code(self) -> None:
+        source = f'key = "{self.KEY}"  nosec\n'
+        assert self._found("src/settings.py", source) == [("aws_access_key", "high")]
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            'key = "{key}"  # noqa: E501\n',
+            'key = "{key} // gitleaks:allow"\n',
+            'key = "{key}"\n',
+        ],
+    )
+    def test_a_secret_without_a_marker_comment_still_fires(self, source: str) -> None:
+        source = source.format(key=self.KEY)
+        assert self._found("src/settings.py", source) == [("aws_access_key", "high")]
+
+    def test_an_allow_marker_does_not_hide_a_call(self) -> None:
+        source = "eval(payload)  # nosec\n"
+        assert self._found("src/app.py", source) == [("eval_call", "high")]
+
+    def test_a_secret_in_testdata_is_low(self) -> None:
+        source = f'var k = "{self.KEY}"\n'
+        assert self._found("pkg/testdata/creds.go", source) == [("aws_access_key", "low")]
+
+    def test_slack_prefix_inside_a_document_id_is_not_a_token(self) -> None:
+        url = "https://docs.google.com/document/d/1W7KCxOxP-1Fy5EyF2lbJGE2WuKmu5v0suYqoHas1jRM"
+        assert self._found("src/links.py", f'URL = "{url}"\n') == []
+
+    def test_kotlin_nested_block_comment_is_comment_to_its_end(self) -> None:
+        source = '/* outer /* inner */ password = "Tr0ub4dor&3x" */\nval x = 1\n'
+        assert self._found("src/App.kt", source) == []
+
+    def test_go_raw_string_ends_at_a_backslash(self) -> None:
+        source = r"s := `C:\dir\`" + '\nt := `password = "Tr0ub4dor&3x"`\n'
+        assert self._found("cmd/paths.go", source) == []
+
+    @pytest.mark.parametrize(
+        ("options", "masked"),
+        [
+            ({}, "a " + " " * 12 + " d */ e"),
+            ({"nested_comments": True}, "a " + " " * 17 + " e"),
+        ],
+    )
+    def test_masking_nests_block_comments_only_when_asked(
+        self, options: dict[str, bool], masked: str
+    ) -> None:
+        from repowise.core.analysis.security_scan import mask_comments_and_strings
+
+        assert mask_comments_and_strings("a /* b /* c */ d */ e", **options) == masked
+
+    def test_csharp_interpolated_string_quotes_inside_hole_are_masked(self) -> None:
+        from repowise.core.analysis.security.masking import mask_comments_and_strings, mask_dialect
+
+        src = 'var u = $"{b}items/by?ids={string.Join("&ids=", ids)}";\nvar x = 1;\n'
+        masked = mask_comments_and_strings(
+            src, strings=True, hash_comments=False, **mask_dialect("a.cs")
+        )
+        assert masked == "var u = $  b               string.Join(       , ids)  ;\nvar x = 1;\n"
+        assert (
+            mask_comments_and_strings(
+                src, strings=False, hash_comments=False, **mask_dialect("a.cs")
+            )
+            == src
+        )
+
+    def test_csharp_interpolated_string_comment_inside_hole_does_not_mask_line(self) -> None:
+        from repowise.core.analysis.security.masking import mask_comments_and_strings, mask_dialect
+
+        src = 'var u = $"{b}items/by?ids={string.Join("//x", ids)}";\nvar x = 1;\n'
+        masked = mask_comments_and_strings(
+            src, strings=True, hash_comments=False, **mask_dialect("a.cs")
+        )
+        assert masked == "var u = $  b               string.Join(     , ids)  ;\nvar x = 1;\n"
+
+    def test_csharp_interpolated_string_verbatim_and_escaped_braces(self) -> None:
+        from repowise.core.analysis.security.masking import mask_comments_and_strings, mask_dialect
+
+        src = 'var u = $@"c:\\dir\\{sub}\""name""";\nvar x = 1;\n'
+        masked = mask_comments_and_strings(
+            src, strings=True, hash_comments=False, **mask_dialect("a.cs")
+        )
+        assert masked == "var u = $@         sub          ;\nvar x = 1;\n"
+
+        src_braces = 'var u = $"escaped {{literal}} and {hole}";\n'
+        masked_braces = mask_comments_and_strings(
+            src_braces, strings=True, hash_comments=False, **mask_dialect("a.cs")
+        )
+        assert masked_braces == "var u = $                          hole  ;\n"
+
+@pytest.mark.parametrize("prefix", ["$@", "@$"])
+@pytest.mark.parametrize("strings", [False, True])
+def test_verbatim_interpolation_trailing_backslash_preserves_following_code(prefix, strings):
+    from repowise.core.analysis.security.masking import mask_dialect
+    from repowise.core.analysis.security_scan import mask_comments_and_strings
+
+    literal = r'"c:\dir\"'
+    source = f"var p = {prefix}{literal}; DangerousCall(); // real comment\nNext();\n"
+    masked = mask_comments_and_strings(
+        source, strings=strings, hash_comments=False, **mask_dialect("a.cs")
+    )
+    expected_literal = " " * len(literal) if strings else literal
+    assert masked == (
+        f"var p = {prefix}{expected_literal}; DangerousCall(); "
+        + " " * len("// real comment")
+        + "\nNext();\n"
+    )
+    assert len(masked) == len(source)

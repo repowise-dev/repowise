@@ -70,14 +70,6 @@ TS_SINK_METHODS: frozenset[str] = (
     )
 )
 
-_TS_STRING_KINDS: frozenset[str] = frozenset({"string", "template_string"})
-_TS_AUG_ASSIGN_KINDS: frozenset[str] = frozenset({"augmented_assignment_expression"})
-# The walker's TS/JS loop kinds (``complexity.languages``), which cannot be
-# imported here without a cycle through the complexity package.
-_TS_LOOP_KINDS: frozenset[str] = frozenset(
-    {"for_statement", "for_in_statement", "for_of_statement", "while_statement", "do_statement"}
-)
-
 # A function/lambda scope: the boundary for the reaching-assignment walk and the
 # "not a loop exit" skip for break/return/throw inside a nested closure (a
 # callback's own ``return`` doesn't exit the loop).
@@ -96,6 +88,48 @@ _PRISMA_BULK_FORMS: dict[str, str] = {
 # method async-mutex (``runExclusive``) and bottleneck (``schedule``) run work through.
 _LIMITER_NAME_RE = re.compile(r"(?i)(sem|semaphore|limiter|limit|mutex)$")
 _LIMITER_METHODS: frozenset[str] = frozenset({"runExclusive", "schedule"})
+
+# ESLint's rule for an ``await`` inside a loop, and its directive comments:
+# ``// eslint-disable-next-line no-await-in-loop -- why`` and friends.
+_AWAIT_IN_LOOP_RULE = "no-await-in-loop"
+_ESLINT_DIRECTIVE_RE = re.compile(
+    rb"(?://|/\*)[ \t]*eslint-(disable-next-line|disable-line|disable|enable)\b([^\r\n]*)"
+)
+
+
+def _directive_rules(tail: bytes) -> set[str]:
+    """Rule names a directive lists, its ``-- reason`` and comment end dropped."""
+    text = tail.decode("utf-8", "replace").split("*/")[0].split("--")[0]
+    return {rule.strip() for rule in text.split(",") if rule.strip()}
+
+
+def _eslint_allowed_lines(source: bytes, rule: str) -> frozenset[int]:
+    """1-indexed lines an ESLint directive naming *rule* switches it off on.
+
+    A directive with no rule list switches off every rule; it says nothing about
+    this one in particular, so it does not count.
+    """
+    lines: set[int] = set()
+    opened: int | None = None
+    for match in _ESLINT_DIRECTIVE_RE.finditer(source):
+        kind = match.group(1)
+        rules = _directive_rules(match.group(2))
+        line = source.count(b"\n", 0, match.start()) + 1
+        if kind == b"enable":
+            if opened is not None and (not rules or rule in rules):
+                lines.update(range(opened, line + 1))
+                opened = None
+        elif rule not in rules:
+            continue
+        elif kind == b"disable-next-line":
+            lines.add(line + 1)
+        elif kind == b"disable-line":
+            lines.add(line)
+        elif opened is None:
+            opened = line
+    if opened is not None:
+        lines.update(range(opened, source.count(b"\n") + 2))
+    return frozenset(lines)
 
 _ASSIGNMENT_FIELDS: dict[str, tuple[str, str]] = {
     "variable_declarator": ("name", "value"),
@@ -288,23 +322,15 @@ def _sole_where_pair(call: Node) -> tuple[Node, Node] | None:
     return (key, value) if key is not None and value is not None else None
 
 
-def _assigned_value(node: Node, name: bytes) -> Node | None:
-    """The value *node* binds to the bare identifier *name*, if it is such a binding."""
-    fields = _ASSIGNMENT_FIELDS.get(node.type)
-    if fields is None:
-        return None
-    target, value = (node.child_by_field_name(field) for field in fields)
-    if target is None or target.type != "identifier" or target.text != name:
-        return None
-    return value
-
-
 class TsJsPerfDialect(TsJsMarkerHooks, IterableSources):
     language = "typescript"
+    read_call_kinds = frozenset({"call_expression"})
     markers = frozenset(
         {
             "io_in_loop",
-            "string_concat_in_loop",
+            # No ``string_concat_in_loop``: every major JS engine (V8, SpiderMonkey,
+            # JavaScriptCore) concatenates through ropes, so ``s += x`` in a loop
+            # is linear and is the idiom, not the problem (as Rust's ``push_str``).
             "resource_construction_in_loop",
             "serial_await_in_loop",
             "membership_test_against_list_in_loop",
@@ -318,8 +344,6 @@ class TsJsPerfDialect(TsJsMarkerHooks, IterableSources):
         }
     )
 
-    string_literal_kinds = _TS_STRING_KINDS
-    aug_assign_kinds = _TS_AUG_ASSIGN_KINDS
     switch_kinds = frozenset({"switch_statement"})
     # Node's ``child_process`` launchers return a ChildProcess at once and report
     # through callbacks or events; only their ``*Sync`` forms wait for the child.
@@ -328,32 +352,15 @@ class TsJsPerfDialect(TsJsMarkerHooks, IterableSources):
     # is excluded with them, a recall loss only.
     hot_path_excluded_methods = frozenset({"spawn", "exec", "execFile"})
 
-    def is_string_concat(self, node: Node) -> bool:
-        """``s += "x"`` that can grow ``s`` across loop iterations.
-
-        A ``let`` declared or freshly assigned inside the loop body is bounded
-        per pass, and an append right before ``break`` / ``return`` / ``throw``
-        runs once. A member or subscript target (``buf[0] += ...``) keeps the
-        flag: nothing here re-binds it.
-        """
-        if not super().is_string_concat(node):
-            return False
-        left = node.child_by_field_name("left")
-        if left is None or left.type != "identifier" or left.text is None:
-            return True
-        return self.accumulates_across_iterations(node, left.text, _TS_LOOP_KINDS)
-
-    def binds_name(self, node: Node, name: bytes) -> bool:
-        # ``s = s + part`` keeps accumulating; only a value not built from ``s`` resets it.
-        value = _assigned_value(node, name)
-        return value is not None and not any(
-            n.type == "identifier" and n.text == name for n in self._walk(value)
-        )
-
     # Only ``for ... of`` / ``for ... in`` multiply over a collection. C-style
     # ``for (;;)``, ``while`` and ``do`` are cursors (pagination / polling), so
     # they do not make an inner sink a nested O(n*m) round-trip.
     _ITERATION_LOOP_KINDS: frozenset[str] = frozenset({"for_in_statement", "for_of_statement"})
+
+    def awaits_in_loop_allowed(self, source: bytes) -> frozenset[int]:
+        if _AWAIT_IN_LOOP_RULE.encode() not in source:
+            return frozenset()
+        return _eslint_allowed_lines(source, _AWAIT_IN_LOOP_RULE)
 
     def is_iteration_loop(self, node: Node) -> bool:
         return node.type in self._ITERATION_LOOP_KINDS
@@ -520,7 +527,8 @@ class TsJsPerfDialect(TsJsMarkerHooks, IterableSources):
         iterates, claim = self._source(right, loop, probe, hop=True)
         if iterates == "unknown" and baseline is None:
             return None
-        return LoopSource(iterates, claim or baseline or "unknown")
+        source = LoopSource(iterates, claim or baseline or "unknown")
+        return self.with_read_tables(source, right, loop, probe)
 
     def _expr_magnitude(
         self, expr: Node | None, loop: Node, probe: SinkProbe
@@ -612,17 +620,18 @@ class TsJsPerfDialect(TsJsMarkerHooks, IterableSources):
             return self._source(first, loop, probe, hop=hop)
         return self._source(receiver, loop, probe, hop=hop)
 
-    def reads_config_table(self, call: Node, nodes: list[Node]) -> bool:
-        """Every table the read names is a registry (``FROM repos``), or with no SQL,
-        the delegate does (``prisma.repository.findMany()``)."""
-        sql = [n.text or b"" for n in self._walk(call) if n.type in ("string", "template_string")]
-        sql = [text for text in sql if lex.sql_tables(text)]
-        if sql:
-            return all(lex.is_config_sql(text) for text in sql)
+    def read_tables(self, call: Node, nodes: list[Node]) -> tuple[str, ...]:
+        """The tables the read's SQL names (``FROM repos``), or with no SQL, its
+        delegate's model (``prisma.repository.findMany()`` -> ``Repository``)."""
+        texts = [n.text or b"" for n in self._walk(call) if n.type in ("string", "template_string")]
+        texts = [text for text in texts if lex.sql_tables(text)]
+        if texts:
+            tables = [lex.read_sql_tables(text) for text in texts]
+            return tuple(dict.fromkeys(t for found in tables for t in found)) if all(tables) else ()
         model = _callee_object(call)
         prop = model.child_by_field_name("property") if model is not None else None
         delegate = _text(prop) if prop is not None and model.type == "member_expression" else ""
-        return bool(delegate) and lex.is_config_model(delegate[:1].upper() + delegate[1:])
+        return (delegate[:1].upper() + delegate[1:],) if delegate else ()
 
     def _awaited_wrapper_call(self, closure: Node) -> Node | None:
         """The awaited call *closure* is passed to (``await limit(() => f(x))``).

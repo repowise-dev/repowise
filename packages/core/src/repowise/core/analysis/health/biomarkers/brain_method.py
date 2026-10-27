@@ -3,7 +3,7 @@
 A function that does too much. We flag when **all three** conditions
 hold:
 
-- NLOC ≥ 70 (the function is long)
+- NLOC ≥ 70, JSX markup lines excluded (the function is long)
 - CCN ≥ 9  (it has many decision paths)
 - the enclosing file is *central* — see the centrality gate below.
 
@@ -71,9 +71,22 @@ class BrainMethodDetector:
 
         out: list[BiomarkerResult] = []
         for fn in ctx.all_functions:
-            severity = self.severity_for(judged_ccn(fn), fn.nloc)
+            judged = judged_ccn(fn)
+            # JSX markup lines are layout, as in large_method.
+            code_lines = fn.nloc - fn.markup_nloc
+            severity = self.severity_for(judged, code_lines)
             if severity is None:
                 continue
+            details = {"ccn": fn.ccn, "nloc": fn.nloc, "max_nesting": fn.max_nesting}
+            if fn.markup_nloc:
+                details["markup_nloc"] = fn.markup_nloc
+            # Severity was judged on the dispatch-flat number, so the reason
+            # leads with it — the raw one stays in ``details["ccn"]``.
+            besides = f" besides {fn.markup_nloc} of JSX markup" if fn.markup_nloc else ""
+            reason = f"Brain Method: {fn.name} is {code_lines} lines{besides}, CCN {judged}"
+            if judged != fn.ccn:
+                details["judged_ccn"] = judged
+                reason += f" ({fn.ccn} counting every arm of its dispatch)"
             out.append(
                 BiomarkerResult(
                     biomarker_type=self.name,
@@ -82,17 +95,12 @@ class BrainMethodDetector:
                     line_start=fn.start_line,
                     line_end=fn.end_line,
                     details={
-                        "ccn": fn.ccn,
-                        "nloc": fn.nloc,
-                        "max_nesting": fn.max_nesting,
+                        **details,
                         "dependents_count": ctx.dependents_count,
                         "centrality_floor": floor,
                         **shape_details(fn),
                     },
-                    reason=(
-                        f"Brain Method: {fn.name} is {fn.nloc} lines, CCN {fn.ccn}, "
-                        f"in a file imported by {ctx.dependents_count} others"
-                    ),
+                    reason=f"{reason}, in a file imported by {ctx.dependents_count} others",
                 )
             )
         return out

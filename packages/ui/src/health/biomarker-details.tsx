@@ -26,6 +26,13 @@ function str(v: unknown): string | null {
   return typeof v === "string" && v.length > 0 ? v : null;
 }
 
+/** What an estimated ``untested_complexity`` tier means, in words. */
+const CRAP_TIER_LABEL: Record<string, string> = {
+  direct: "a test calls it",
+  reached: "tests reach it",
+  none: "no test found reaching it",
+};
+
 function pct(v: number | null, digits = 0): string | null {
   return v == null ? null : `${(v * 100).toFixed(digits)}%`;
 }
@@ -70,7 +77,7 @@ function PartnerLink({
             onPartnerSelect(path);
           }
         }}
-        className="text-[var(--color-accent-primary)] hover:underline"
+        className="text-[var(--color-text-primary)] underline decoration-[var(--color-border-hover)] underline-offset-2 hover:decoration-current"
       >
         {inner}
       </a>
@@ -84,7 +91,7 @@ function PartnerLink({
           e.stopPropagation();
           onPartnerSelect(path);
         }}
-        className="text-[var(--color-accent-primary)] hover:underline text-left"
+        className="text-left text-[var(--color-text-primary)] underline decoration-[var(--color-border-hover)] underline-offset-2 hover:decoration-current"
       >
         {inner}
       </button>
@@ -313,9 +320,9 @@ export function BiomarkerDetails({
           : null,
       );
       break;
-    case "bumpy_road":
+    case "repeated_nesting":
       line = joinStats(
-        num(details.bumps) != null ? `${num(details.bumps)} bumps` : null,
+        num(details.bumps) != null ? `${num(details.bumps)} nested blocks` : null,
         num(details.ccn) != null ? `CCN ${num(details.ccn)}` : null,
         num(details.max_nesting) != null ? `nest ${num(details.max_nesting)}` : null,
       );
@@ -368,6 +375,24 @@ export function BiomarkerDetails({
         num(details.branch_coverage_pct) != null
           ? `${num(details.branch_coverage_pct)?.toFixed(0)}% branch`
           : null,
+      );
+      break;
+    }
+    case "untested_complexity": {
+      // Measured coverage reads as a percentage; an estimate names its tier
+      // and never a percentage.
+      const measured = str(details.coverage_basis) === "measured";
+      const tier = str(details.coverage_tier);
+      line = joinStats(
+        num(details.crap) != null ? `CRAP ${num(details.crap)?.toFixed(0)}` : null,
+        (num(details.judged_ccn) ?? num(details.ccn)) != null
+          ? `complexity ${num(details.judged_ccn) ?? num(details.ccn)}`
+          : null,
+        measured && num(details.coverage_pct) != null
+          ? `${num(details.coverage_pct)?.toFixed(0)}% covered`
+          : null,
+        !measured && tier ? `estimated: ${CRAP_TIER_LABEL[tier] ?? tier}` : null,
+        str(details.action) === "refactor" ? "simplify first" : null,
       );
       break;
     }

@@ -1,14 +1,17 @@
+import type * as React from "react";
 import { Bug } from "lucide-react";
 import { AskAboutThis } from "../chat/ask-about-this";
 import { AgentBadge, NewContributorBadge, isNewContributor } from "./agent-badge";
 import { PriorityBadge } from "./priority-badge";
 import { RiskDriverBreakdown, describeDriver } from "./risk-driver-breakdown";
 import { CommitFilesTable } from "./commit-files-table";
-import { CommitHealthTable } from "./commit-health-table";
-import { PageLede } from "../shared/page-lede";
+import { FindingsByFile } from "./findings-by-file";
+import { betterSentence, commitDelta, readCommitHealth, worseSentence } from "./commit-health-copy";
+import { HealthDeltaLede, type HealthDeltaLedeCopy } from "./health-delta-lede";
+import type { HealthDeltaLabels } from "./health-delta-mark";
 import { OverviewSection } from "../overview/section";
 import { formatDateTime } from "../lib/format";
-import type { CommitDetail, CommitHealth } from "@repowise-dev/types/git";
+import type { CommitDetail } from "@repowise-dev/types/git";
 
 /** Above this many files, the list starts collapsed. */
 const LONG_FILE_LIST = 10;
@@ -18,103 +21,133 @@ export interface CommitDetailCardProps {
   /** Rank of this change's fix density against recent commits, when a live
    *  scorer supplied one. Drives only the reconciliation sentence. */
   fixPercentile?: number | null | undefined;
+  /** The primary action beside the verdict, typically the agent prompt. */
+  action?: React.ReactNode;
+  /** Words for the health mark beside the lede figure. */
+  healthLabels?: Partial<HealthDeltaLabels> | undefined;
+  /** The lede's words; the host's translations, English by default. */
+  ledeCopy?: Partial<HealthDeltaLedeCopy> | undefined;
+  /** Where to fix a file's findings (its health view). Without it the
+   *  "Got worse" groups carry no link. */
+  fileHref?: ((path: string) => string) | undefined;
+  /** The file link's word; English by default. */
+  openFileLabel?: string | undefined;
+  LinkComponent?: React.ElementType | undefined;
   className?: string;
 }
 
 /**
- * Drill-down for one commit.
- *
- * The benchmarked repo-relative percentile and its server-owned priority lead.
- * The supporting raw score remains visible with its per-commit unit and
- * diff-shape interpretation, never as a probability.
+ * Drill-down for one commit, in the order a reader acts on it: what it did to
+ * code health (the verdict, then "Got better", then "Got worse" with each
+ * finding's file and line), then the diff-shape review priority as context.
  */
 export function CommitDetailCard({
   commit,
   fixPercentile,
+  action,
+  healthLabels,
+  ledeCopy,
+  fileHref,
+  openFileLabel = "Open file",
+  LinkComponent,
   className,
 }: CommitDetailCardProps) {
+  const A = LinkComponent ?? "a";
   const c = commit;
   const files = c.files ?? [];
   const health = c.health ?? null;
+  const delta = commitDelta(c.health_delta, health);
+  const read = readCommitHealth(c.health_delta, health);
+  const counted = read.kind !== null && !read.stale;
+  const improvedFiles = (c.health_delta?.files ?? []).filter((f) => (f.change ?? 0) > 0);
+  const reconciled = reconcile(c, fixPercentile ?? null);
 
   return (
     <div className={className}>
-      <div className="flex flex-col gap-1.5">
-        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-          <span className="font-mono text-xs text-[var(--color-text-secondary)]">
-            {c.short_sha}
-          </span>
-          {c.is_fix && (
-            <span className="inline-flex items-center gap-1 text-xs text-[var(--color-error)]">
-              <Bug className="h-3 w-3" />
-              fix
-            </span>
-          )}
-          {c.agent_name && (
-            <AgentBadge
-              agentName={c.agent_name}
-              tier={c.agent_autonomy_tier}
-              confidence={c.agent_confidence}
-            />
-          )}
-          {!c.agent_name && isNewContributor(c.author_commit_count) && (
-            <NewContributorBadge commitCount={c.author_commit_count as number} />
-          )}
-          <AskAboutThis
-            context={{
-              kind: "commit",
-              label: c.short_sha,
-              target: c.sha,
-              targetKind: "commit",
-            }}
-            question={`Summarize the intent and impact of commit ${c.short_sha}, and say which files deserve the closest review.`}
-            label={`Ask about commit ${c.short_sha}`}
-            className="h-6 w-6"
-          />
-        </div>
-        {/* The subject wraps. It is the one thing on this sheet a reader has to
-            be able to read in full, so it never gets an ellipsis. */}
-        <p className="text-base font-semibold leading-snug text-[var(--color-text-primary)] [overflow-wrap:anywhere] [text-wrap:pretty]">
-          {c.subject || "(no subject)"}
-        </p>
-        <p className="text-xs text-[var(--color-text-tertiary)]">
-          {c.author_name || "unknown"}
-          {c.committed_at ? ` · ${formatDateTime(c.committed_at)}` : ""}
-        </p>
-        {c.agent_name && c.agent_channel && (
-          <p className="text-xs text-[var(--color-text-tertiary)]">
-            Attributed through {c.agent_channel}
-            {c.agent_confidence ? `, ${c.agent_confidence} confidence` : ""}
-          </p>
-        )}
-      </div>
+      <CommitHeader commit={c} />
 
       <div className="mt-7">
-        {/* Named for what it measures: diff size, not danger. */}
-        <PageLede
-          label="Review priority"
-          value={`${Math.round(c.risk_percentile)}th`}
-          unit="percentile in this repo"
-          badge={<PriorityBadge priority={c.review_priority} />}
-        >
-          <p>{riskSentence(c)}</p>
-          {reconcile(c, fixPercentile ?? null) && (
-            <p>{reconcile(c, fixPercentile ?? null)}</p>
-          )}
-        </PageLede>
+        <HealthDeltaLede
+          delta={delta}
+          copy={{ label: "What this commit did to code health", ...ledeCopy }}
+          markLabels={healthLabels}
+          action={action}
+        />
       </div>
 
-      {health && (
+      {counted && delta && read.better > 0 && (
         <OverviewSection
           className="mt-7"
-          title="What this commit did to code health"
-          description={healthSentence(health)}
-          hint={healthHint(health)}
-          collapsible
+          title="Got better"
+          description={betterSentence(delta)}
         >
-          <CommitHealthTable findings={health.findings} />
+          {improvedFiles.length > 0 && (
+            <ul className="space-y-1 font-mono text-[11px] text-[var(--color-text-secondary)]">
+              {improvedFiles.map((f) => (
+                <li key={f.path} className="[overflow-wrap:anywhere]">
+                  {f.path}{" "}
+                  <span className="tabular-nums text-[var(--color-success)]">
+                    {f.before?.toFixed(1)} to {f.after?.toFixed(1)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
         </OverviewSection>
       )}
+
+      {counted && health && health.findings.length > 0 && (
+        <OverviewSection className="mt-7" title="Got worse" description={worseSentence(health)}>
+          <FindingsByFile
+            findings={health.findings}
+            fileAction={(g) =>
+              fileHref ? (
+                <A
+                  href={fileHref(g.path)}
+                  className="text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] hover:underline focus-visible:text-[var(--color-accent-primary)]"
+                >
+                  {openFileLabel}
+                </A>
+              ) : null
+            }
+          />
+        </OverviewSection>
+      )}
+
+      <OverviewSection
+        className="mt-7"
+        title="Risk context"
+        description={riskSentence(c)}
+        hint={`${Math.round(c.risk_percentile)}th percentile`}
+        collapsible
+        // Open only when health has nothing to say: then it is the only signal.
+        defaultOpen={read.kind === null}
+      >
+        <div className="space-y-3 text-xs text-[var(--color-text-secondary)]">
+          <p className="flex flex-wrap items-center gap-2">
+            <span className="tabular-nums">
+              Review priority: {Math.round(c.risk_percentile)}th percentile in this repo
+            </span>
+            <PriorityBadge priority={c.review_priority} />
+          </p>
+          {reconciled && <p>{reconciled}</p>}
+          {/* The drivers explain a diff-size statistic that ranks 0.99 against
+              lines added, so they are transparency about the model rather
+              than the finding a reviewer opened this for. */}
+          <details className="group">
+            <summary className="cursor-pointer text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]">
+              How the diff-shape rank was computed
+            </summary>
+            <p className="mt-2 max-w-[62ch] text-[var(--color-text-tertiary)]">
+              The measurements behind the rank, and the signed points each moved it
+              by against the model&apos;s baseline commit. File, directory and
+              subsystem counts are left out: they enter the score, but their fitted
+              signs are collinearity with diff size rather than a finding.
+            </p>
+            <RiskDriverBreakdown className="mt-3" drivers={c.drivers} />
+          </details>
+        </div>
+      </OverviewSection>
 
       {files.length > 0 && (
         <OverviewSection
@@ -123,75 +156,56 @@ export function CommitDetailCard({
           description="The files this commit touched, and how much bug-fix history each one carries. Unlike the percentile above, this does not grow with the size of the diff."
           hint={`${files.length} file${files.length === 1 ? "" : "s"}`}
           collapsible
-          // A long file list is the thing that buries everything below it, and
-          // it is the one block a reader can already get from the host.
+          // A long file list is the thing that buries everything below it.
           defaultOpen={files.length <= LONG_FILE_LIST}
         >
           <CommitFilesTable files={files} />
         </OverviewSection>
       )}
-
-      {/* Collapsed, deliberately. The drivers explain a diff-size statistic
-          that ranks 0.99 against lines added, so they are transparency about
-          the model rather than the finding a reviewer opened this for. */}
-      <details className="group mt-7">
-        <summary className="cursor-pointer text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]">
-          How the diff-shape rank was computed
-        </summary>
-        <p className="mt-2 max-w-[62ch] text-xs text-[var(--color-text-tertiary)]">
-          The measurements behind the rank, and the signed points each moved it
-          by against the model&apos;s baseline commit. File, directory and
-          subsystem counts are left out: they enter the score, but their fitted
-          signs are collinearity with diff size rather than a finding.
-        </p>
-        <RiskDriverBreakdown className="mt-3" drivers={c.drivers} />
-      </details>
     </div>
   );
 }
 
-function plural(n: number, word: string): string {
-  return `${n} ${word}${n === 1 ? "" : "s"}`;
-}
-
-/** The counts, phrased so "2 new, 1 made worse" only appears when it adds
- *  something the total does not already say. */
-function madePhrase(h: CommitHealth): string | null {
-  const made = h.introduced_count + h.worsened_count;
-  if (made === 0) return null;
-  const split =
-    h.introduced_count > 0 && h.worsened_count > 0
-      ? ` (${h.introduced_count} new, ${h.worsened_count} made worse)`
-      : "";
-  return `Introduced or worsened ${plural(made, "finding")}${split}.`;
-}
-
-/** What a collapsed health section still says: the count that matters most. */
-function healthHint(h: CommitHealth): string {
-  const made = h.introduced_count + h.worsened_count;
-  if (made > 0) return `${made} introduced or worsened`;
-  return h.resolved_count > 0 ? `${h.resolved_count} resolved` : "clean";
-}
-
-/**
- * Summarises the comparison, including what it could not see.
- *
- * Counts before the list: the list is capped and the counts are not.
- */
-function healthSentence(h: CommitHealth): string {
-  const made = h.introduced_count + h.worsened_count;
-  const parts = [
-    madePhrase(h),
-    h.resolved_count > 0 ? `Resolved ${plural(h.resolved_count, "existing finding")}.` : null,
-    h.findings.length < made ? `Showing the ${h.findings.length} most severe.` : null,
-    h.files_skipped > 0
-      ? `${h.files_skipped} of ${h.files_analyzed + h.files_skipped} changed files could not be analysed.`
-      : null,
-  ].filter((p): p is string => p !== null);
-
-  // Said out loud: silence would read as "not analysed".
-  if (parts.length === 0) return "Compared clean: nothing introduced, worsened or resolved.";
-  return parts.join(" ");
+function CommitHeader({ commit: c }: { commit: CommitDetail }) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+        <span className="font-mono text-xs text-[var(--color-text-secondary)]">{c.short_sha}</span>
+        {c.is_fix && (
+          <span className="inline-flex items-center gap-1 text-xs text-[var(--color-error)]">
+            <Bug className="h-3 w-3" />
+            fix
+          </span>
+        )}
+        {c.agent_name && (
+          <AgentBadge agentName={c.agent_name} tier={c.agent_autonomy_tier} confidence={c.agent_confidence} />
+        )}
+        {!c.agent_name && isNewContributor(c.author_commit_count) && (
+          <NewContributorBadge commitCount={c.author_commit_count as number} />
+        )}
+        <AskAboutThis
+          context={{ kind: "commit", label: c.short_sha, target: c.sha, targetKind: "commit" }}
+          question={`Summarize the intent and impact of commit ${c.short_sha}, and say which files deserve the closest review.`}
+          label={`Ask about commit ${c.short_sha}`}
+          className="h-6 w-6"
+        />
+      </div>
+      {/* The subject wraps: the one thing here a reader must read in full. */}
+      <p className="text-base font-semibold leading-snug text-[var(--color-text-primary)] [overflow-wrap:anywhere] [text-wrap:pretty]">
+        {c.subject || "(no subject)"}
+      </p>
+      <p className="text-xs text-[var(--color-text-tertiary)]">
+        {c.author_name || "unknown"}
+        {c.committed_at ? ` · ${formatDateTime(c.committed_at)}` : ""}
+      </p>
+      {c.agent_name && c.agent_channel && (
+        <p className="text-xs text-[var(--color-text-tertiary)]">
+          Attributed through {c.agent_channel}
+          {c.agent_confidence ? `, ${c.agent_confidence} confidence` : ""}
+        </p>
+      )}
+    </div>
+  );
 }
 
 /**

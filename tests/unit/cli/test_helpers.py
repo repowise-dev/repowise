@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+import click
 import pytest
 
 from repowise.cli.helpers import (
@@ -21,6 +22,7 @@ from repowise.cli.helpers import (
     resolve_reasoning,
     resolve_repo_path,
     run_async,
+    save_config,
     save_state,
     validate_provider_config,
     warn,
@@ -564,6 +566,15 @@ class TestValidateProviderConfig:
         assert len(warnings) == 1
         assert "ANTHROPIC_API_KEY" in warnings[0]
 
+    def test_key_in_the_repo_env_file_counts(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("REPOWISE_PROVIDER", "openai")
+        (tmp_path / ".repowise").mkdir()
+        (tmp_path / ".repowise" / ".env").write_text("OPENAI_API_KEY=sk-test\n")
+
+        assert validate_provider_config(repo_path=tmp_path) == []
+        assert validate_provider_config() != []
+
     def test_openai_missing_key(self, monkeypatch):
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.setenv("REPOWISE_PROVIDER", "openai")
@@ -587,6 +598,14 @@ class TestValidateProviderConfig:
         monkeypatch.setenv("REPOWISE_PROVIDER", "kimi")
 
         assert validate_provider_config() == []
+
+    def test_mock_provider_needs_no_key_and_is_not_unknown(self):
+        assert validate_provider_config("mock") == []
+
+    def test_unregistered_provider_still_warns_unknown(self):
+        warnings = validate_provider_config("nope")
+        assert len(warnings) == 1
+        assert "Unknown provider 'nope'" in warnings[0]
 
     def test_gemini_with_gemini_key(self, monkeypatch):
         monkeypatch.setenv("GEMINI_API_KEY", "test-key")
@@ -813,13 +832,73 @@ class TestResolveProviderConfigModel:
         assert resolve_provider(None, None, repo_path=tmp_path) == "provider"
         assert captured["kwargs"].get("model") == "anthropic/claude-sonnet-5"
 
-    def test_env_model_overrides_config_model(self, monkeypatch, tmp_path):
+    def test_config_model_overrides_env_model(self, monkeypatch, tmp_path):
+        """config.yaml outranks REPOWISE_MODEL, the order every entry point shares."""
         captured = self._capture(monkeypatch, tmp_path, {"model": "google/gemini-3.1"})
         monkeypatch.setenv("REPOWISE_PROVIDER", "openrouter")
         monkeypatch.setenv("REPOWISE_MODEL", "anthropic/claude-opus-5")
 
         assert resolve_provider(None, None, repo_path=tmp_path) == "provider"
-        assert captured["kwargs"].get("model") == "anthropic/claude-opus-5"
+        assert captured["kwargs"].get("model") == "google/gemini-3.1"
+
+    def test_config_provider_overrides_env_provider(self, monkeypatch, tmp_path):
+        captured = self._capture(
+            monkeypatch, tmp_path, {"provider": "openrouter", "model": "google/gemini-3.1"}
+        )
+        monkeypatch.setenv("REPOWISE_PROVIDER", "anthropic")
+        monkeypatch.setenv("REPOWISE_MODEL", "claude-opus-4-6")
+
+        assert resolve_provider(None, None, repo_path=tmp_path) == "provider"
+        assert captured["name"] == "openrouter"
+        assert captured["kwargs"].get("model") == "google/gemini-3.1"
+
+    def test_flag_provider_does_not_inherit_another_providers_model(
+        self, monkeypatch, tmp_path
+    ):
+        captured = self._capture(
+            monkeypatch, tmp_path, {"provider": "gemini", "model": "gemini-3.1-pro-preview"}
+        )
+
+        assert resolve_provider("openrouter", None, repo_path=tmp_path) == "provider"
+        from repowise.core.providers.llm.specs import PROVIDER_SPECS
+
+        assert captured["kwargs"].get("model") == PROVIDER_SPECS["openrouter"].default_model
+
+    def test_config_base_url_beats_env_base_url(self, monkeypatch, tmp_path):
+        captured = self._capture(
+            monkeypatch,
+            tmp_path,
+            {"provider": "openai", "model": "qwen", "openai": {"base_url": "http://localhost:1234/v1"}},
+        )
+        monkeypatch.setenv("OPENAI_API_KEY", "lm-studio")
+        monkeypatch.setenv("OPENAI_BASE_URL", "http://other:4000/v1")
+
+        assert resolve_provider(None, None, repo_path=tmp_path) == "provider"
+        assert captured["kwargs"]["base_url"] == "http://localhost:1234/v1"
+
+    def test_unconfirmed_remote_base_url_is_refused_with_its_url(self, monkeypatch, tmp_path):
+        self._capture(
+            monkeypatch,
+            tmp_path,
+            {"provider": "openai", "openai": {"base_url": "https://collector.example/v1"}},
+        )
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-shell")
+
+        with pytest.raises(click.ClickException, match=r"collector\.example") as info:
+            resolve_provider(None, None, repo_path=tmp_path)
+        assert "repowise init" in info.value.message
+
+    def test_init_confirms_the_base_url_it_saves(self, monkeypatch, tmp_path):
+        captured = self._capture(
+            monkeypatch,
+            tmp_path,
+            {"provider": "openai", "openai": {"base_url": "https://gateway.example/v1"}},
+        )
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-shell")
+        save_config(tmp_path, "openai", "gpt-x", "mock", save_key=False)
+
+        assert resolve_provider(None, None, repo_path=tmp_path) == "provider"
+        assert captured["kwargs"]["base_url"] == "https://gateway.example/v1"
 
     def test_explicit_model_flag_overrides_env_model(self, monkeypatch, tmp_path):
         captured = self._capture(monkeypatch, tmp_path, {"model": "google/gemini-3.1"})

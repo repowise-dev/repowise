@@ -4,7 +4,7 @@ Split out of a single ~1k-line module into cohesive parts:
 
 * :mod:`._types` — the ``DoctorCheck`` NamedTuple + tiny formatting helpers
 * :mod:`.advisories` — advisory-only signals (CLAUDE.md stamp, CLI version)
-* :mod:`.repo_checks` — the per-repo check battery + ``--repair``
+* :mod:`.repo_checks` — the per-repo check battery (``collect_repo_checks``) + ``--repair``
 * :mod:`.workspace_checks` — workspace-level validation + MCP detection
 * :mod:`.command` — the Click command + single/workspace orchestration
 
@@ -26,7 +26,7 @@ from .advisories import (
     _print_cli_version_status,
 )
 from .command import doctor_command
-from .repo_checks import _decision_vector_ids, _distill_checks
+from .repo_checks import _decision_vector_ids, _distill_checks, collect_repo_checks
 from .workspace_checks import _check_mcp_registered, _run_workspace_checks
 
 __all__ = [
@@ -40,6 +40,7 @@ __all__ = [
     "_print_cli_version_status",
     "_run_workspace_checks",
     "advisories",
+    "collect_repo_checks",
     "command",
     "console",
     "doctor_command",

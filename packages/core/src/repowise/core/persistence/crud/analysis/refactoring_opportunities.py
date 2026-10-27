@@ -31,6 +31,7 @@ from ...models import (
     _now_utc,
 )
 from ...sql import order_by, rule_predicate
+from .shown import gated_counts, ungated
 
 if TYPE_CHECKING:
     from ....analysis.health.refactoring.opportunity import (
@@ -300,7 +301,9 @@ async def _rank_live_plans(
             select(RefactoringSuggestion).where(
                 RefactoringSuggestion.repository_id == repository_id,
                 RefactoringSuggestion.status.in_(tuple(_LIVE_PLAN_STATUSES)),
-                shown_plan_predicate(),
+                # Test-file plans still rank: the hold is a serving rule, and
+                # ranking without them would move the tests the others list.
+                shown_plan_predicate(file_holds=False),
             )
         )
     ).scalars()
@@ -619,11 +622,15 @@ async def _write_summary(
 # ---------------------------------------------------------------------------
 
 
-def _opportunity_filters(repository_id: str, **params: Any) -> list[Any]:
+def _opportunity_filters(
+    repository_id: str, *, include_unverified: bool = False, **params: Any
+) -> list[Any]:
     """The ``WHERE`` for *params*, built from the serving layer's filter table.
 
     Only the current model's rows are served: an older model's ids are never
-    composed again, so a row of one is history, not queue.
+    composed again, so a row of one is history, not queue. Opportunities on a
+    file of a language the registry gates for refactoring are left out unless
+    ``include_unverified``.
     """
     from ....analysis.health.queue_rules import active_filters
     from ....analysis.health.refactoring.identity import REFACTORING_MODEL_VERSION
@@ -632,11 +639,39 @@ def _opportunity_filters(repository_id: str, **params: Any) -> list[Any]:
     return [
         RefactoringOpportunity.repository_id == repository_id,
         RefactoringOpportunity.refactoring_model_version == REFACTORING_MODEL_VERSION,
+        ungated(
+            "refactoring",
+            RefactoringOpportunity.file_path,
+            RefactoringOpportunity.lead_refactoring_type,
+            include_unverified=include_unverified,
+        ),
         *(
             rule_predicate(RefactoringOpportunity, rule, value)
             for rule, value in active_filters(FILTERS, params)
         ),
     ]
+
+
+async def gated_opportunity_counts(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    status: str = "open",
+    include_unverified: bool = False,
+) -> dict[str, dict]:
+    """The current-model opportunities a language gate holds back, by language."""
+    from ....analysis.health.refactoring.identity import REFACTORING_MODEL_VERSION
+
+    return await gated_counts(
+        session,
+        "refactoring",
+        RefactoringOpportunity,
+        RefactoringOpportunity.repository_id == repository_id,
+        RefactoringOpportunity.refactoring_model_version == REFACTORING_MODEL_VERSION,
+        RefactoringOpportunity.status == status,
+        kind_col=RefactoringOpportunity.lead_refactoring_type,
+        include_unverified=include_unverified,
+    )
 
 
 async def list_refactoring_opportunities(
@@ -657,12 +692,14 @@ async def list_refactoring_opportunities(
     order: str | None = None,
     limit: int = 20,
     offset: int = 0,
+    include_unverified: bool = False,
 ) -> tuple[list[RefactoringOpportunity], int]:
     """One page and its total: two statements, whatever the row count."""
     from ....analysis.health.refactoring.serving import sort_keys
 
     predicates = _opportunity_filters(
         repository_id,
+        include_unverified=include_unverified,
         status=status,
         lead_types=lead_types,
         confidence=confidence,
@@ -903,6 +940,7 @@ async def owning_refactoring_opportunity(
 
 __all__ = [
     "finalize_refactoring_opportunities",
+    "gated_opportunity_counts",
     "get_refactoring_opportunity",
     "get_refactoring_summary",
     "list_refactoring_opportunities",

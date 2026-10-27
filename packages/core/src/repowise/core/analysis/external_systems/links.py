@@ -19,6 +19,12 @@ from .records import field, package_key
 #: Graph nodes standing for a third-party package carry this ``node_id`` prefix.
 EXTERNAL_NODE_PREFIX = "external:"
 
+#: ``language`` of a graph "file" row that is an import target, not a file the
+#: index read: a third-party package, or a path an edge names that traversal
+#: never parsed (a directory, an excluded or generated file). Traversal drops
+#: unknown-language files, so no parsed file carries either tag.
+IMPORT_TARGET_LANGUAGES = ("external", "unknown")
+
 
 @dataclass(frozen=True, slots=True)
 class ExternalSystemLink:

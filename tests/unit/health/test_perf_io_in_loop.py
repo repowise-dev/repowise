@@ -117,6 +117,55 @@ _CASES = [
     ),
     (
         "python",
+        b"import sqlite3\n"
+        b"def f(conn):\n"
+        b"    for (t,) in conn.execute('SELECT name FROM sqlite_master').fetchall():\n"
+        b"        conn.execute(f'DROP TABLE \"{t}\"')\n"
+        b"    for t in conn.execute('SELECT name FROM t').fetchall():\n"
+        b"        sql = f'ALTER TABLE {t} ADD COLUMN c'\n"
+        b"        conn.execute(sql)\n"
+        b"        conn.execute(text('CREATE INDEX i ON t (c)'))\n",
+        [],
+        "a schema statement runs once per schema object, not per row",
+    ),
+    (
+        "python",
+        b"import sqlite3\n"
+        b"def f(conn, ids):\n"
+        b"    for i in ids:\n"
+        b"        conn.execute('SELECT * FROM t WHERE id = ?', (i,))\n"
+        b"        conn.execute(f'UPDATE t SET n = 1 WHERE id = {i}')\n",
+        [("io_in_loop", "db"), ("io_in_loop", "db")],
+        "a data statement in the same shape stays a sink",
+    ),
+    (
+        "python",
+        b"import sqlite3\n"
+        b'_SCHEMA = """CREATE TABLE a (x); CREATE TABLE b (y)"""\n'
+        b"def f(conn):\n"
+        b"    for statement in _SCHEMA.split(';'):\n"
+        b"        conn.execute(statement)\n"
+        b"    for name in 'a b'.split():\n"
+        b"        conn.execute(name)\n",
+        [],
+        "a split of a module string literal is a constant loop",
+    ),
+    (
+        "python",
+        b"import sqlite3\n"
+        b"_ROWS = load()\n"
+        b"def f(conn, text):\n"
+        b"    for line in _ROWS.split():\n"
+        b"        conn.execute(line)\n"
+        b"    for line in text.split():\n"
+        b"        conn.execute(line)\n"
+        b"    for line in f'{text}'.split():\n"
+        b"        conn.execute(line)\n",
+        [("io_in_loop", "db"), ("io_in_loop", "db"), ("io_in_loop", "db")],
+        "a split of a name not bound to a literal is not constant",
+    ),
+    (
+        "python",
         b"from sqlalchemy import select\n"
         b"def f(repos):\n"
         b"    for r in repos:\n"
@@ -533,6 +582,50 @@ def test_string_concat_not_reported_in_test_files(path, expected):
     ctx = _ctx([PerfHit("string_concat_in_loop", 2, "f", "")])
     ctx.file_path = path
     assert len(StringConcatInLoopDetector().detect(ctx)) == expected
+
+
+def test_string_concat_one_finding_per_loop_and_string():
+    """A loop's appends to one string are one edit, so one finding on the first."""
+    ctx = _ctx(
+        [
+            PerfHit("string_concat_in_loop", 9, "f", "", 3, loop_line=7, subject="out"),
+            PerfHit("string_concat_in_loop", 8, "f", "", 3, loop_line=7, subject="out"),
+            PerfHit("string_concat_in_loop", 12, "f", "", 3, loop_line=7, subject="out"),
+            # Another string in the same loop, and the same string in another loop.
+            PerfHit("string_concat_in_loop", 10, "f", "", 3, loop_line=7, subject="log"),
+            PerfHit("string_concat_in_loop", 15, "f", "", 3, loop_line=14, subject="out"),
+        ]
+    )
+    findings = sorted(StringConcatInLoopDetector().detect(ctx), key=lambda f: f.line_start)
+    # ``line_end`` stays on the first append, so an unanchored row's id is stable.
+    assert [(f.line_start, f.line_end) for f in findings] == [(8, 8), (10, 10), (15, 15)]
+    assert findings[0].details["lines"] == [8, 9, 12]
+    assert "lines" not in findings[1].details
+
+
+def test_string_concat_unnamed_targets_in_one_loop_stay_apart():
+    """``buf[0] +=`` and ``other[i] +=`` keep no name, so nothing says they are one string."""
+    ctx = _ctx(
+        [
+            PerfHit("string_concat_in_loop", 8, "f", "", 3, loop_line=7),
+            PerfHit("string_concat_in_loop", 9, "f", "", 3, loop_line=7),
+            PerfHit("string_concat_in_loop", 10, "f", "", 3, loop_line=7, subject="self.a"),
+            PerfHit("string_concat_in_loop", 11, "f", "", 3, loop_line=7, subject="self.b"),
+        ]
+    )
+    findings = StringConcatInLoopDetector().detect(ctx)
+    assert sorted(f.line_start for f in findings) == [8, 9, 10, 11]
+
+
+def test_string_concat_unnamed_targets_on_one_line_stay_apart():
+    """``a[0] += x; b[0] += y`` on one line: two unnamed targets, two findings."""
+    ctx = _ctx(
+        [
+            PerfHit("string_concat_in_loop", 8, "f", "", 3, loop_line=7),
+            PerfHit("string_concat_in_loop", 8, "f", "", 3, loop_line=7),
+        ]
+    )
+    assert len(StringConcatInLoopDetector().detect(ctx)) == 2
 
 
 def test_no_perf_hits_yields_no_findings():

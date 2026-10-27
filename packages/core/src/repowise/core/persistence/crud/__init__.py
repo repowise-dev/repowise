@@ -12,19 +12,41 @@ Versioning contract for upsert_page:
                     in place (version increments).  created_at is preserved.
 
 This module is a façade: the implementations live in per-domain submodules
-(repository, pages, graph, external_systems, git, analysis, decisions, chat,
+(repository, pages, graph, external_systems, git, history, analysis, decisions, chat,
 knowledge_graph). Import names from here — sub-module layout may change.
+
+The ``analysis`` names load on first use: that package pulls in the coverage,
+doc-drift and health analyzers, most of this façade's import cost, and a
+caller reading pages or the repository row does not need them.
 """
 
 from __future__ import annotations
 
-from .analysis import *  # noqa: F403
+import importlib
+from typing import Any
+
 from .authority import *  # noqa: F403
+from .changes import *  # noqa: F403
 from .chat import *  # noqa: F403
 from .decisions import *  # noqa: F403
 from .external_systems import *  # noqa: F403
 from .git import *  # noqa: F403
 from .graph import *  # noqa: F403
+from .history import *  # noqa: F403
 from .knowledge_graph import *  # noqa: F403
 from .pages import *  # noqa: F403
 from .repository import *  # noqa: F403
+
+
+def __getattr__(name: str) -> Any:
+    # A private or dunder probe (``hasattr(crud, "__wrapped__")``) never loads it.
+    if name.startswith("_"):
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    analysis = importlib.import_module(".analysis", __name__)
+    if name == "analysis":
+        return analysis
+    if name not in analysis.__all__:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(analysis, name)
+    globals()[name] = value
+    return value
