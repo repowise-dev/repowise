@@ -559,8 +559,55 @@ class ReceiverTypingMixin(
             return None if builtin_local and external_type_name(field) else (field, "field", file_path)
         if builtin_local:
             return None
+        extended = self._extended_class_field(file_path, caller_id, name, language)
+        if extended is not None:
+            return extended
         inherited = self._inherited_field(file_path, caller_id, class_id, name, language)
         return None if inherited is None else (inherited[1], "field", inherited[0])
+
+    def _extended_class_field(
+        self, file_path: str, caller_id: str, name: str, language: str
+    ) -> tuple[str | None, str, str] | None:
+        """The property *name* of the class a Kotlin extension function extends.
+
+        The extended class is the function's implicit ``this``, so ``buffer``
+        in ``fun Source.f() = buffer.size()`` is ``Source``'s property. A
+        ``private`` or ``protected`` one is not visible outside its class.
+        Ceiling: a lambda with receiver (``with(other) { .. }``) rebinds
+        ``this`` and is not read, the same as for the caller class's own fields.
+        """
+        caller = self._symbols_by_id.get(caller_id)
+        if caller is None or caller.language != "kotlin" or not caller.extension_receiver:
+            return None
+        class_id = self._extended_class_id(file_path, caller)
+        if class_id is None:
+            return None
+        class_file = self._symbol_paths_by_id[class_id]
+        fields = self._field_types_in(class_file, language).get(class_id, {})
+        if name not in fields or self._is_hidden_member(class_file, class_id, name, language):
+            return None
+        return fields[name], "field", class_file
+
+    def _extended_class_id(self, file_path: str, caller: Symbol) -> str | None:
+        """The class *caller*'s receiver names: imported or declared here, else a package sibling."""
+        receiver = caller.extension_receiver or ""
+        found = self._class_named(file_path, receiver)
+        if found is not None:
+            return found[1]
+        hit = self._class_seen_from(file_path, caller.id, receiver, caller.start_line)
+        return None if hit is None else hit.callee_id
+
+    def _is_hidden_member(self, class_file: str, class_id: str, name: str, language: str) -> bool:
+        """Is the property *name* of *class_id* ``private`` or ``protected``, a constructor one included?"""
+        start, end = self._spans_for(class_file).get(class_id, (1, 0))
+        lines = self._text_of(class_file).splitlines()
+        hidden = re.compile(
+            rf"\b(?:private|protected)\b[^,(){{}}=]*\b(?:val|var)\s+`?{re.escape(name)}\b"
+        )
+        return any(
+            d.name == name and start <= d.line <= end and hidden.search(lines[d.line - 1])
+            for d in self._declarations_for(class_file, language)
+        )
 
     def _inherited_field(
         self, file_path: str, caller_id: str, class_id: str, name: str, language: str

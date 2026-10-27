@@ -294,12 +294,16 @@ def _java_method_refusing(symbol: Symbol | None, argument_count: int | None) -> 
 def _kotlin_function_refusing(symbol: Symbol | None, argument_count: int | None) -> bool:
     """Whether *symbol* is a Kotlin function whose parameters cannot take *argument_count*.
 
-    Never an ``override``: it inherits defaults its own list does not write.
+    An ``override`` inherits defaults its own list does not write, but never a
+    parameter, so only more arguments than it lists refuse it.
     """
     if symbol is None or argument_count is None or symbol.language != "kotlin":
         return False
-    if symbol.kind not in _FUNCTION_KINDS or "override" in symbol.modifiers:
+    if symbol.kind not in _FUNCTION_KINDS:
         return False
+    if "override" in symbol.modifiers:
+        admitted = signature_parameter_range(symbol.signature or "", "kotlin")
+        return admitted is not None and admitted[1] is not None and argument_count > admitted[1]
     return not _takes(symbol, argument_count)
 
 
