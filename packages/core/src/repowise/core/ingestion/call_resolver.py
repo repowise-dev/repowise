@@ -947,6 +947,8 @@ class CallResolver(
         if invoked is not None:
             return invoked
         hit = self._resolve_free_call(file_path, call, caller_id)
+        if hit is not None and self._cpp_names_no_repo_member(file_path, call, hit.callee_id):
+            return None
         alias = self._symbols_by_id.get(hit.callee_id) if hit is not None else None
         if _is_kotlin_alias(alias):
             return self._through_kotlin_alias(alias, call, caller_id)

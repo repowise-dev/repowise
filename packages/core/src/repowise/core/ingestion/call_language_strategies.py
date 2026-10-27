@@ -71,6 +71,29 @@ _TYPED_RECEIVER = ("_resolve_typed_receiver",)
 _EXPECT = "expect"
 
 
+_FRIEND = re.compile(r"\bfriend\b")
+
+
+def _is_member_function(symbol: Symbol | None) -> bool:
+    """A method other than a constructor, which a bare call may still name."""
+    return (
+        symbol is not None
+        and symbol.kind == "method"
+        and bool(symbol.parent_name)
+        and symbol.name != bare_type_name(symbol.parent_name or "")
+    )
+
+
+def _is_free_function(symbol: Symbol | None) -> bool:
+    """A function outside every class, not a macro body (``TEST_F``) that may sit in one."""
+    return (
+        symbol is not None
+        and symbol.kind == "function"
+        and not symbol.parent_name
+        and not symbol.name.isupper()
+    )
+
+
 def _gradle_script_receiver(path: str) -> str | None:
     """The ``this`` a Gradle Kotlin script's own code runs with."""
     if not path.endswith(".gradle.kts"):
@@ -312,6 +335,55 @@ class LanguageStrategiesMixin:
         if sym_id == caller_id:
             return None
         return ResolvedCall(caller_id, sym_id, 0.93, call.line, "scoped_name")
+
+    def _cpp_names_no_repo_member(self, file_path: str, call: CallSite, callee_id: str) -> bool:
+        """Can a receiver-less C/C++ call not mean *callee_id*, whatever its name?
+
+        ``std::find(..)`` is the standard library's, never a repo symbol that
+        shares the name. A bare ``count(..)`` in a function outside every class
+        cannot reach a member function either: with no ``this`` and no
+        qualifier, only a free function or a ``using namespace`` import answers.
+        A constructor is still reached (``Slice(s)``). A caller named in
+        capitals is a macro body (``TEST_F``), which may sit inside a class,
+        and a caller that is not a function may be a class whose member bodies
+        the parse folded in, so both are left alone.
+        """
+        if self._language_of(file_path) not in ("c", "cpp"):
+            return False
+        scope = call.scope_name or ""
+        if scope == "std" or scope.startswith("std::"):
+            return True
+        if call.receiver_call is not None or scope:
+            return False
+        callee = self._symbols_by_id.get(callee_id)
+        caller = self._symbols_by_id.get(call.caller_symbol_id or "")
+        return _is_free_function(caller) and self._is_cpp_member_function(callee)
+
+    def _is_cpp_member_function(self, symbol: Symbol | None) -> bool:
+        """Is *symbol* a member function a bare call from outside its class cannot reach?
+
+        Not when its parent names no repo type: ``int util::clamp()`` is a
+        namespace's free function. Nor a ``friend`` defined in the class body,
+        which lives at namespace scope and is found by argument lookup. And
+        only a body inside its class, or one whose own line writes
+        ``Parent::name``: a macro before a C return type
+        (``INLINE rtree_t\\nrtree_read(..)``) can parse as a member of that type.
+        """
+        if not _is_member_function(symbol):
+            return False
+        assert symbol is not None
+        parent = bare_type_name(symbol.parent_name or "")
+        if not self._declared_types_named(parent):
+            return False
+        path = self._symbol_paths_by_id.get(symbol.id, "")
+        lines = self._text_of(path).splitlines()
+        head = lines[symbol.start_line - 1] if 0 < symbol.start_line <= len(lines) else ""
+        if _FRIEND.search(head):
+            return False
+        span = self._spans_for(path).get(self._only_type_in(path, parent) or "")
+        return f"::{symbol.name}" in head or (
+            span is not None and span[0] <= symbol.start_line <= span[1]
+        )
 
     def _resolve_cpp_same_target(
         self,
