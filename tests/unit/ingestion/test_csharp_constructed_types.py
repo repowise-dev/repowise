@@ -145,3 +145,24 @@ class TestRefusals:
             "    public class R\n    {\n        public R(int n) { }\n    }\n}\n"
         )
         assert _calls_from_m(tmp_path, {"Outer.cs": nested, "C.cs": CALLER}) == set()
+
+    def test_a_using_alias_of_the_name_shadows_the_repo_type(self, tmp_path: Path) -> None:
+        caller = "using Widget = X.Other;\n" + CALLER.replace("new R(1)", "new Widget(1)")
+        widget = R_IN_AB.replace("class R", "class Widget").replace("public R(", "public Widget(")
+        assert _calls_from_m(tmp_path, {"Impl.cs": widget, "C.cs": caller}) == set()
+
+    def test_a_bcl_name_with_one_repo_declaration_is_not_taken(self, tmp_path: Path) -> None:
+        """``new List(1)`` with no ``using`` of the repo's namespace may mean the BCL type."""
+        repo_list = R_IN_AB.replace("class R", "class List").replace("public R(", "public List(")
+        caller = CALLER.replace("new R(1)", "new List(1)")
+        assert _calls_from_m(tmp_path, {"List.cs": repo_list, "C.cs": caller}) == set()
+
+    def test_commas_inside_nested_type_arguments_are_not_counted(self, tmp_path: Path) -> None:
+        pair = (
+            "namespace A.B;\npublic class Pair<K, V>\n{\n    public Pair(K k) { }\n}\n"
+            "public class Pair<K, V, W>\n{\n    public Pair(K k) { }\n}\n"
+        )
+        caller = CALLER.replace("new R(1)", "new Pair<Dictionary<string, int>, string>(1)")
+        assert _calls_from_m(tmp_path, {"Pair.cs": pair, "C.cs": caller}) == {
+            ("Pair.cs::Pair`2::Pair", "global_unique")
+        }
