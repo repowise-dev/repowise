@@ -154,3 +154,40 @@ async def test_pin_refuses_a_page_belonging_to_another_repository(
         page = await session.get(Page, "file_page:src/shared.py")
         assert page is not None
         assert page.pinned in (False, None), "the other repository's page was pinned"
+
+
+@pytest.mark.asyncio
+async def test_pin_revives_a_tombstoned_page(client: AsyncClient, app) -> None:
+    """Generation skips tombstoned rows, so a pin on one would never be acted
+    on. The file exists again, so the pin revives the page as stale."""
+    from datetime import UTC, datetime
+
+    repo = await create_test_repo(client)
+    _write(repo["local_path"], "src/back.py")
+    async with get_session(app.state.session_factory) as session:
+        session.add(
+            Page(
+                id="file_page:src/back.py",
+                repository_id=repo["id"],
+                page_type="file_page",
+                title="back.py",
+                content="old prose",
+                target_path="src/back.py",
+                source_hash="abc",
+                model_name="claude",
+                provider_name="anthropic",
+                freshness_status="tombstone",
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            )
+        )
+        await session.commit()
+
+    resp = await client.post(f"/api/repos/{repo['id']}/files/src/back.py/pin-doc")
+    assert resp.status_code == 200
+
+    async with get_session(app.state.session_factory) as session:
+        page = await session.get(Page, "file_page:src/back.py")
+        assert page is not None
+        assert page.pinned is True
+        assert page.freshness_status == "stale"

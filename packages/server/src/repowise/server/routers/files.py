@@ -321,6 +321,12 @@ async def pin_file_doc(
             created_at=datetime.now(UTC),
             updated_at=datetime.now(UTC),
         )
+    elif page.freshness_status == "tombstone":
+        # Generation never loads a tombstoned row, so a pin on one would be
+        # recorded and never acted on. The file exists again (checked above),
+        # so the old doc is revived as stale: selection picks it up and
+        # regenerates it.
+        page.freshness_status = "stale"
     page = await crud.set_page_pinned(session, page_id, True)
     if page is None:
         raise HTTPException(status_code=404, detail="Page not found")
