@@ -111,6 +111,70 @@ class TestCallAttachesToDefinition:
         assert _callers_of(graph, "circle.cpp::Area") == set()
         assert _callers_of(graph, "square.cpp::Area") == set()
 
+    def test_definition_with_the_declared_parameters_is_chosen(self, tmp_path: Path) -> None:
+        # The body sits in an ``-inl.h`` that reaches the header through
+        # another, while a file including it directly defines an ``emit`` of
+        # other parameters, as a sibling namespace may.
+        (tmp_path / "base.h").write_text("void emit(const char* s);\n")
+        (tmp_path / "format.h").write_text('#include "base.h"\n')
+        (tmp_path / "format-inl.h").write_text(
+            '#include "format.h"\nvoid emit(const char* s) { }\n'
+        )
+        (tmp_path / "color.h").write_text('#include "base.h"\nvoid emit(int style) { }\n')
+        (tmp_path / "use.cpp").write_text('#include "base.h"\nvoid run() { emit("x"); }\n')
+        graph = _build(tmp_path)
+        assert _callers_of(graph, "format-inl.h::emit") == {"use.cpp::run"}
+        assert _callers_of(graph, "color.h::emit") == set()
+
+    def test_prototype_beside_an_inline_overload_reaches_its_body(self, tmp_path: Path) -> None:
+        (tmp_path / "api.h").write_text(
+            "void emit(const char* s);\ninline void emit(int n) { emit(\"n\"); }\n"
+        )
+        (tmp_path / "api.cc").write_text('#include "api.h"\nvoid emit(const char* s) { }\n')
+        (tmp_path / "use.cpp").write_text('#include "api.h"\nvoid run() { emit("x"); }\n')
+        graph = _build(tmp_path)
+        assert _callers_of(graph, "api.cc::emit") == {"use.cpp::run", _id_at(graph, "api.h", 2)}
+
+    def test_static_namesake_in_another_file_does_not_block_pairing(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "util.h").write_text("void canon(char* p);\n")
+        (tmp_path / "util.cc").write_text('#include "util.h"\nvoid canon(char* p) { }\n')
+        (tmp_path / "util_test.cc").write_text(
+            '#include "util.h"\nnamespace {\nvoid canon(char* p) { ::canon(p); }\n}\n'
+        )
+        (tmp_path / "app.cc").write_text('#include "util.h"\nvoid run(char* p) { canon(p); }\n')
+        graph = _build(tmp_path)
+        assert "app.cc::run" in _callers_of(graph, "util.cc::canon")
+
+    def test_platform_variants_of_a_method_stay_unlinked(self, tmp_path: Path) -> None:
+        (tmp_path / "sub.h").write_text("struct Sub { int Finish(); };\n")
+        for name in ("sub-posix.cc", "sub-win32.cc"):
+            (tmp_path / name).write_text('#include "sub.h"\nint Sub::Finish() { return 0; }\n')
+        (tmp_path / "run.cc").write_text(
+            '#include "sub.h"\nint run(Sub* s) { return s->Finish(); }\n'
+        )
+        graph = _build(tmp_path)
+        assert _callers_of(graph, "sub-posix.cc::Sub::Finish") == set()
+        assert _callers_of(graph, "sub-win32.cc::Sub::Finish") == set()
+
+    def test_recursion_through_the_prototype_draws_no_edge(self, tmp_path: Path) -> None:
+        (tmp_path / "walk.h").write_text("int walk(int n);\n")
+        (tmp_path / "walk.c").write_text(
+            '#include "walk.h"\nint walk(int n) { return n ? walk(n - 1) : 0; }\n'
+        )
+        graph = _build(tmp_path)
+        assert _callers_of(graph, "walk.h::walk") == set()
+        assert _callers_of(graph, "walk.c::walk") == set()
+
+
+def _id_at(graph, path: str, line: int) -> str:
+    return next(
+        node
+        for node, data in graph.nodes(data=True)
+        if data.get("file_path") == path and data.get("start_line") == line
+    )
+
 
 class TestTypeDeclarationFlag:
     """``class Env;`` is a declaration too, and only the ``body`` field says so.

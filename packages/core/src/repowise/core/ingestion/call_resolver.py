@@ -59,6 +59,7 @@ from .call_overload_selection import (  # noqa: F401
     _JAVA_UNBOXED,
     _JAVA_WIDENING,
     _UNJUDGED_LEVEL,
+    C_LINKAGE_LANGUAGES,
     OverloadSelectionMixin,
     _argument_fit,
     _ArgumentTypes,
@@ -107,7 +108,7 @@ from .return_types import (
     normalize_return_type,
     signature_parameter_count,
 )
-from .symbol_identity import id_segment_name, outer_scope
+from .symbol_identity import id_segment_name, outer_scope, same_parameters
 from .type_names import (
     bare_type_name,
     csharp_extension_receiver,
@@ -265,11 +266,16 @@ def _has_internal_linkage(path: str, sym: Symbol) -> bool:
     so only a source file keeps the symbol to itself.
     """
     return (
-        sym.language in ("c", "cpp", "objectivec")
+        sym.language in C_LINKAGE_LANGUAGES
         and sym.parent_name is None
         and sym.visibility == "private"
         and path.lower().endswith(_SOURCE_TU_EXTS)
     )
+
+
+# (parent, name) -> [(file, index id, symbol)], and [(file, symbol, index id)].
+_Definitions = dict[tuple[str | None, str], list[tuple[str, str, Symbol]]]
+_Declarations = list[tuple[str, Symbol, str]]
 
 
 def _same_translation_unit(decl_file: str, def_file: str) -> bool:
@@ -418,9 +424,11 @@ class CallResolver(
         self._property_accessor_ids: set[str] = set()
 
         # C/C++ forward declaration → the definition it declares. Populated by
-        # ``_build_indices``; applied to every resolved call so the edge lands
-        # on the body rather than the header line that announced it.
+        # ``_build_indices``; ``_settle_callee`` applies it to every resolved
+        # call so the edge lands on the body rather than the header line.
         self._decl_to_def: dict[str, str] = {}
+        # {file: every file it includes, transitively}, filled on demand.
+        self._include_closure: dict[str, set[str]] = {}
 
         # Plain-name alias → the real symbol it stands for (``s`` in
         # ``s = widget``), same-file only. Populated by ``_index_file``,
@@ -491,11 +499,11 @@ class CallResolver(
 
         (Import-name maps are shared — see ``import_index.build_import_name_maps``.)
         """
-        # (parent, name) → [(file, symbol_id)] over symbols that carry a body,
-        # and the bodiless declarations waiting to be paired against them.
+        # (parent, name) → [(file, symbol_id, symbol)] over symbols that carry a
+        # body, and the bodiless declarations waiting to be paired against them.
         # Both feed ``_link_declarations`` once every file has been indexed.
-        definitions: dict[tuple[str | None, str], list[tuple[str, str]]] = defaultdict(list)
-        declarations: list[tuple[str, str, tuple[str | None, str]]] = []
+        definitions: _Definitions = defaultdict(list)
+        declarations: _Declarations = []
         # (extended type, method) -> the symbols claiming it. Settled after the
         # loop, because ambiguity is judged repo-wide.
         extensions: dict[tuple[str, str], set[tuple[str, str]]] = defaultdict(set)
@@ -511,8 +519,8 @@ class CallResolver(
         self,
         path: str,
         parsed: ParsedFile,
-        definitions: dict[tuple[str | None, str], list[tuple[str, str]]],
-        declarations: list[tuple[str, str, tuple[str | None, str]]],
+        definitions: _Definitions,
+        declarations: _Declarations,
         extensions: dict[tuple[str, str], set[tuple[str, str]]],
     ) -> None:
         """Index one file's symbols, collecting what is settled repo-wide later."""
@@ -539,9 +547,9 @@ class CallResolver(
                 # ``(parent, name)`` would redirect the spec onto an unrelated
                 # type's method, so it stays unlinked.
                 if sym.language != "go":
-                    declarations.append((path, index_id, decl_key))
+                    declarations.append((path, sym, index_id))
             else:
-                definitions[decl_key].append((path, index_id))
+                definitions[decl_key].append((path, index_id, sym))
             _index_bare_name(sym, index_id, file_syms, top_level)
 
             if sym.alias_of is not None and (
@@ -672,9 +680,7 @@ class CallResolver(
             self._file_extension_methods.setdefault(path, {})[key] = sym_id
 
     def _link_declarations(
-        self,
-        declarations: list[tuple[str, str, tuple[str | None, str]]],
-        definitions: dict[tuple[str | None, str], list[tuple[str, str]]],
+        self, declarations: _Declarations, definitions: _Definitions
     ) -> dict[str, str]:
         """Pair each C/C++ forward declaration with the definition it declares.
 
@@ -696,29 +702,108 @@ class CallResolver(
         proves the method name unique and says nothing about the class, and two
         unrelated classes of one name would pair across. A free function has no
         class identity to get wrong and is unchanged.
+
+        C-family prototypes pair member by member (``_c_definition_of``).
         """
         redirects: dict[str, str] = {}
-        for decl_file, decl_id, key in declarations:
-            candidates = definitions.get(key, ())
-            # An overload stub's implementation shares its id: already defined.
-            if not candidates or any(sym_id == decl_id for _f, sym_id in candidates):
+        for decl_file, decl, decl_index in declarations:
+            rows = definitions.get((decl.parent_name, decl.name), ())
+            if decl.language in C_LINKAGE_LANGUAGES:
+                target = self._c_definition_of(decl_file, decl, decl_index, rows)
+                if target is not None:
+                    redirects[decl.id] = target
                 continue
-            # Deduped by symbol id, not by row: an overload set defined in one
-            # file is several definitions sharing one id, and counting rows
-            # reads that as an ambiguity that does not exist.
-            including = {
-                sym_id
-                for def_file, sym_id in candidates
-                if decl_file in self._import_targets.get(def_file, ())
-            }
-            distinct = {sym_id for _def_file, sym_id in candidates}
-            if len(including) == 1:
-                redirects[decl_id] = next(iter(including))
-            elif len(distinct) == 1:
-                def_file = candidates[0][0]
-                if key[0] is None or _same_translation_unit(decl_file, def_file):
-                    redirects[decl_id] = next(iter(distinct))
+            candidates = [(def_file, sym_id) for def_file, sym_id, _sym in rows]
+            # An overload stub's implementation shares its id: already defined.
+            if any(sym_id == decl_index for _f, sym_id in candidates):
+                continue
+            defined = self._defining_set(decl_file, decl.parent_name, candidates)
+            if defined is not None:
+                redirects[decl_index] = defined
         return redirects
+
+    def _defining_set(
+        self, decl_file: str, parent: str | None, candidates: list[tuple[str, str]]
+    ) -> str | None:
+        """The one definition a declaration in *decl_file* can mean, or None."""
+        # Deduped by symbol id, not by row: an overload set defined in one
+        # file is several definitions sharing one id, and counting rows
+        # reads that as an ambiguity that does not exist.
+        including = {
+            sym_id
+            for def_file, sym_id in candidates
+            if decl_file in self._import_targets.get(def_file, ())
+        }
+        if len(including) == 1:
+            return next(iter(including))
+        distinct = {sym_id for _def_file, sym_id in candidates}
+        if len(distinct) == 1 and (
+            parent is None or _same_translation_unit(decl_file, candidates[0][0])
+        ):
+            return next(iter(distinct))
+        return None
+
+    def _c_definition_of(
+        self, decl_file: str, decl: Symbol, decl_index: str, rows: list[tuple[str, str, Symbol]]
+    ) -> str | None:
+        """The definition C-family prototype *decl* declares, member by member.
+
+        Another member of *decl*'s own overload set is a different function,
+        and a ``static`` body in another translation unit is invisible to the
+        header, so neither is a candidate. Definitions with *decl*'s parameter
+        list in its own source file or in a file including it, directly or
+        not, come first when there are any: a file including the header
+        directly may define a same-named function of another namespace.
+        Platform variants defining one signature in two files stay unlinked.
+        """
+        # A same-file definition shares the prototype's id: already defined.
+        if any(sym.id == decl.id for _f, _i, sym in rows):
+            return None
+        rows = [
+            (def_file, index_id, sym)
+            for def_file, index_id, sym in rows
+            if index_id != decl_index
+            and (def_file == decl_file or index_id not in self._tu_local_ids)
+        ]
+        candidates = self._signature_candidates(decl_file, decl, rows)
+        defined = self._defining_set(decl_file, decl.parent_name, candidates)
+        if defined is None:
+            return None
+        return self._paired_member(decl, decl_index, [r[2] for r in rows if r[1] == defined])
+
+    def _signature_candidates(
+        self, decl_file: str, decl: Symbol, rows: list[tuple[str, str, Symbol]]
+    ) -> list[tuple[str, str]]:
+        """*rows* narrowed to bodies with *decl*'s parameters that see it, when any.
+
+        Only asked when several definitions compete, which keeps the include
+        walk and the signature reads off the common one-definition path.
+        """
+        everything = [(def_file, index_id) for def_file, index_id, _sym in rows]
+        if len({index_id for _f, index_id in everything}) < 2:
+            return everything
+        matching = [
+            (def_file, index_id)
+            for def_file, index_id, sym in rows
+            if same_parameters(decl, sym)
+            and (
+                _same_translation_unit(decl_file, def_file)
+                or self._includes(def_file, decl_file)
+            )
+        ]
+        return matching or everything
+
+    def _includes(self, path: str, header: str) -> bool:
+        """Does *path* include *header*, directly or through other headers?"""
+        reached = self._include_closure.get(path)
+        if reached is None:
+            reached = self._include_closure[path] = set()
+            stack = [path]
+            while stack:
+                fresh = set(self._import_targets.get(stack.pop(), ())) - reached
+                reached |= fresh
+                stack.extend(fresh)
+        return header in reached
 
     @property
     def declaration_definitions(self) -> dict[str, str]:
@@ -730,8 +815,12 @@ class CallResolver(
         """
         return self._decl_to_def
 
-    def _redirect_to_definition(self, resolved: ResolvedCall) -> ResolvedCall:
-        """Redirect calls through aliases and declarations to the final target."""
+    def _redirect_to_definition(self, resolved: ResolvedCall) -> ResolvedCall | None:
+        """Redirect calls through aliases and declarations to the final target.
+
+        None when the target is the caller itself: recursion through its own
+        prototype draws no edge, as recursion on an overload does not.
+        """
         original = resolved.callee_id
         target = original
         visited: set[str] = set()
@@ -752,8 +841,10 @@ class CallResolver(
         ):
             return resolved
 
-        if target == original or target == resolved.caller_id:
+        if target == original:
             return resolved
+        if target == resolved.caller_id:
+            return None if original in self._decl_to_def else resolved
 
         return ResolvedCall(
             resolved.caller_id,
@@ -872,7 +963,7 @@ class CallResolver(
 
             resolved = self._overload_sibling_call(call) or self._resolve_one(file_path, call)
             if resolved:
-                resolved = self._narrow_overload(self._redirect_to_definition(resolved), call)
+                resolved = self._settle_callee(resolved, call)
             if resolved:
                 # The edge type is a property of the call syntax, not of the
                 # tier that answered, so it is stamped once here.
@@ -888,6 +979,26 @@ class CallResolver(
                 )
 
         return results
+
+    def _settle_callee(self, resolved: ResolvedCall, call: CallSite) -> ResolvedCall | None:
+        """Carry *resolved* through prototypes, aliases and overload sets to its body.
+
+        A C-family prototype pairs member by member, so its overload set is
+        narrowed before the redirect; any other set is redirected first and
+        narrowed among its definition's members. The final redirect covers a
+        chosen member whose body lives in another file.
+        """
+        callee = self._symbols_by_id.get(resolved.callee_id)
+        member_paired = (
+            callee is not None
+            and callee.language in C_LINKAGE_LANGUAGES
+            and resolved.callee_id in self._overload_rep
+        )
+        if not member_paired:
+            resolved = self._redirect_to_definition(resolved)
+        if resolved:
+            resolved = self._narrow_overload(resolved, call)
+        return self._redirect_to_definition(resolved) if resolved else None
 
     def _resolve_one(self, file_path: str, call: CallSite) -> ResolvedCall | None:
         """Resolve a single CallSite through the three-tier fallback."""

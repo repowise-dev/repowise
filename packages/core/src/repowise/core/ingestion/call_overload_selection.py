@@ -26,6 +26,10 @@ from .symbol_identity import (
     split_symbol_id,
 )
 
+# Languages whose prototypes and bodies pair member by member, and whose
+# ``static`` (or anonymous-namespace) symbols no other translation unit sees.
+C_LINKAGE_LANGUAGES = ("c", "cpp", "objectivec")
+
 
 def _overload_phase(admitted: tuple[int, int | None], argument_count: int) -> int | None:
     """The first phase in which a member with *admitted* arguments takes the call.
@@ -443,18 +447,19 @@ class OverloadSelectionMixin:
     def _pair_overload_members(self) -> None:
         """Pair each member of a declared overload set with its definition.
 
-        ``_link_declarations`` pairs a declared set with a defined one by their
-        representatives; the members pair here by parameter count and types
-        (``pair_overloads``), so each declaration records its definition, even
-        when the source defines one plain-id member. The definition also admits
-        the defaults its declaration writes: C++ writes them on the header
-        declaration only, so ``f(int, int)`` alone would refuse the one-argument
-        call ``f(int, int = 0)`` admits.
+        Outside C, C++ and Objective-C, ``_link_declarations`` pairs a declared
+        set with a defined one by their representatives; the members pair here
+        by parameter count and types (``pair_overloads``), so each declaration
+        records its definition, even when the source defines one plain-id
+        member. The C family pairs member by member there already. Either way
+        the definition also admits the defaults its declaration writes: C++
+        writes them on the header declaration only, so ``f(int, int)`` alone
+        would refuse the one-argument call ``f(int, int = 0)`` admits.
         """
         symbols = self._symbols_by_id
         for declared, defined in list(self._decl_to_def.items()):
             declared_members = self._overload_members.get(declared, ())
-            if not declared_members:
+            if not declared_members or symbols[declared].language in C_LINKAGE_LANGUAGES:
                 continue
             defined_members = self._overload_members.get(defined, ())
             pairs = pair_overloads(
@@ -469,6 +474,39 @@ class OverloadSelectionMixin:
                 del self._decl_to_def[declared]
             if defined_members:
                 self._carry_declared_floors(defined, declared_members, pairs)
+        self._carry_member_floors()
+
+    def _carry_member_floors(self) -> None:
+        """Carry each C-family declared set's defaults onto the sets it pairs with.
+
+        Walked by set rather than by link, so a set whose first member has no
+        definition still lends its other members' defaults.
+        """
+        for rep, declared_members in list(self._overload_members.items()):
+            if self._symbols_by_id[rep].language not in C_LINKAGE_LANGUAGES:
+                continue
+            by_defined: dict[str, dict[str, str]] = defaultdict(dict)
+            for member, _ in declared_members:
+                target = self._decl_to_def.get(member)
+                if target is not None:
+                    by_defined[self._overload_rep.get(target, target)][member] = target
+            for defined, pairs in by_defined.items():
+                if defined in self._overload_members:
+                    self._carry_declared_floors(defined, declared_members, pairs)
+
+    def _paired_member(self, decl: Symbol, decl_index: str, members: list[Symbol]) -> str | None:
+        """The member of one definition set that C-family prototype *decl* declares.
+
+        A lone definition of a lone prototype pairs by name, as it always has.
+        Otherwise the parameter lists pair the way a declared set pairs with a
+        defined one (``pair_overloads``).
+        """
+        if len(members) == 1 and decl.id not in self._overload_rep:
+            return members[0].id
+        declared = [self._symbols_by_id[m] for m, _ in self._overload_members.get(decl_index, ())]
+        if all(sym.id != decl.id for sym in declared):
+            declared.append(decl)
+        return pair_overloads(declared, members).get(decl.id)
 
     def _carry_declared_floors(
         self,

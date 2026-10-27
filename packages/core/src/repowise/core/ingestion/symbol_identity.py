@@ -412,6 +412,16 @@ def parameter_type_arity(parameter: str) -> int:
     return type_argument_count(" ".join(written[:-1]) or parameter)
 
 
+def same_parameters(declared: Symbol, defined: Symbol) -> bool:
+    """Do both declare one parameter list, by count and erased types?"""
+    count = _parameter_count(declared)
+    return (
+        count is not None
+        and count == _parameter_count(defined)
+        and _parameter_types(declared) == _parameter_types(defined)
+    )
+
+
 def pair_overloads(declared: list[Symbol], defined: list[Symbol]) -> dict[str, str]:
     """``{declared id: defined id}``: by count and erased types, then by count.
 
