@@ -150,3 +150,44 @@ def test_a_member_function_outranks_a_property_of_its_name(tmp_path: Path) -> No
 
 def test_a_parameter_outranks_a_member_function_of_its_name(tmp_path: Path) -> None:
     assert _callees(tmp_path, "Reader.g") == {"App.kt::Parser::invoke"}
+
+
+def test_plain_constructor_parameter_used_in_property_initializer_reaches_invoke(
+    tmp_path: Path,
+) -> None:
+    source = """\
+package app
+
+class UseCase {
+    operator fun invoke(): String = ""
+}
+
+class ViewModel(
+    plainUseCase: UseCase,
+) {
+    val result = plainUseCase()
+
+    fun later() = plainUseCase()
+}
+"""
+    path = tmp_path / "App.kt"
+    path.write_text(source, encoding="utf-8")
+    info = FileInfo(
+        path="App.kt",
+        abs_path=str(path),
+        language="kotlin",
+        size_bytes=len(source),
+        git_hash="",
+        last_modified=datetime.now(),
+        is_test=False,
+        is_config=False,
+        is_api_contract=False,
+        is_entry_point=False,
+    )
+    parsed = {"App.kt": parse_file(info, source.encode("utf-8"))}
+    resolver = CallResolver(parsed, {"App.kt": set()}, repo_path=str(tmp_path))
+    calls_by_caller = {
+        rc.caller_id: rc.callee_id for rc in resolver.resolve_file("App.kt", parsed["App.kt"].calls)
+    }
+    assert calls_by_caller.get("App.kt::ViewModel::result") == "App.kt::UseCase::invoke"
+    assert "App.kt::ViewModel::later" not in calls_by_caller
