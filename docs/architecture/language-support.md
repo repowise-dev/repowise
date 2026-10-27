@@ -1312,14 +1312,19 @@ mislead the masker.
 |----------|-----------|-----------|
 | **HTTP** | Express, Hono, Fastify, Koa, Elysia, NestJS, Next.js, Remix, FastAPI, Flask, Django, Spring, JAX-RS, Micronaut, Laravel, Go, ASP.NET, Axum/Actix/Rocket, OpenAPI 3.x | Client calls in JS/TS, Python, PHP, Java, Kotlin, Go, C#, Ruby and Rust; JS/TS client instances carry their base URL across files |
 | **gRPC** | `.proto` IDL, Go, Java (bare or package-qualified `ImplBase`), Python, NestJS (`@GrpcMethod`), Node grpc-js (`server.addService(X.service)`), C# (gRPC-dotnet, primary-constructor impls too) | Go, Java, Python, C# (`new X.XClient(...)`, `AddGrpcClient<X.XClient>`, and the class the client is injected into) |
-| **Topic** | Kafka (Spring `KafkaTemplate` under any name, kafka-clients `ProducerRecord`, kafkajs, kafka-python, aiokafka, confluent-kafka for Python and .NET, Go sarama, segmentio/kafka-go and franz-go), RabbitMQ (Spring AMQP, amqplib, pika, php-amqplib), NATS (nats.go, jnats, nats.js, nats-py; read only in a file importing one), Redis pub/sub, BullMQ / Bull, SQS / SNS, NestJS `ClientProxy`, Dapr `PublishEventAsync` (C#), Laravel job dispatch | The same libraries' consumers (including pattern subscriptions, Dapr `[Topic]` and `Subscription` manifests, and Laravel `ShouldQueue` classes), plus RabbitMQ queue bindings |
+| **Topic** | Kafka (Spring `KafkaTemplate` under any name, kafka-clients `ProducerRecord`, kafkajs, kafka-python, aiokafka, confluent-kafka for Python and .NET, Go sarama, segmentio/kafka-go and franz-go), RabbitMQ (Spring AMQP, amqplib, pika, php-amqplib), NATS (nats.go, jnats, nats.js, nats-py; read only in a file importing one), Redis pub/sub, BullMQ / Bull, SQS / SNS, NestJS `ClientProxy`, Laravel job dispatch | The same libraries' consumers (including pattern subscriptions, and Laravel `ShouldQueue` classes), plus RabbitMQ queue bindings |
 | **Socket** | SignalR `MapHub`, FastAPI `@app.websocket`, `ws`, NestJS gateways; socket.io `emit`, Laravel broadcast events, Pusher `trigger` | ClientWebSocket, SignalR client, NativeWebSocket, WebSocketSharp, `new WebSocket(url)`; socket.io `on`, Laravel Echo, pusher-js |
 | **Data** | DDL `CREATE`/`ALTER`, Alembic `op.create_table`, Laravel `Schema::create`/`Schema::table`, Knex migrations, ORM models (SQLAlchemy, SQLModel, Django, JPA, EF Core, ActiveRecord, Eloquent, Prisma, TypeORM, Sequelize, Drizzle) | SQL string literals in app code (sqlglot-parsed, verb-anchored-regex fallback), Laravel `DB::table`, Knex queries |
 | **Topic (C# integration events)** | `IntegrationEvent` subclasses constructed and passed to a publish call, keyed by short type name | `AddSubscription<T, TH>`, `Subscribe<T, TH>`, `IIntegrationEventHandler<T>` |
 | **Topic (JMS)** | Spring `JmsTemplate` / `JmsMessagingTemplate` sends with a destination argument | `@JmsListener(destination)`, template `receive` / `receiveAndConvert`, listener containers' `setDestinationName` |
+| **Topic (Dapr)** | `PublishEventAsync` (C#), `publishEvent` (Java), `pubsub.publish` on a declared `DaprClient` (JS/TS), `publish_event(...)` with the topic as `topic_name=` or the second positional argument, in a file importing the Dapr Python SDK (Python), `PublishEvent` / `PublishEvents` `(ctx, pubsub, topic, ...)` (Go) | `[Topic]` (C#), `@Topic` (Java), `pubsub.subscribe` on a declared `DaprServer` (JS/TS), `@app.subscribe(topic=...)` in a file importing the Dapr Python SDK (Python), `common.Subscription{Topic: ...}` (Go), the `{pubsubname, topic}` objects a `/dapr/subscribe` route answers with, `Subscription` manifests |
 
 RabbitMQ topics are also read from Go (streadway/amqp, amqp091-go), including
 a queue named through its declaration's result (`q.Name`).
+
+A Dapr, Laravel or NestJS name runs over a transport the code does not show, so
+it links to a same-named destination on Kafka, RabbitMQ, NATS or Redis; BullMQ
+excepted, since only BullMQ reads the Redis keys its queue is made of.
 
 See [docs/scale/WORKSPACES.md](../scale/WORKSPACES.md) for the user-facing
 workspace guide, and [workspace.md](workspace.md) for the layer's pipeline,

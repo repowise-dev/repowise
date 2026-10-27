@@ -87,6 +87,12 @@ nothing). Such a link carries the exchange as its `contract_id` and the queue as
 binding site itself is linked. A publish to the default exchange
 (`publish('', 'jobs')`) is a publish to the queue `jobs`.
 
+Two ends link only when they can be one broker's destination. The same broker
+always can. A Dapr, Laravel or NestJS name runs over a transport configured
+outside the code, so it meets any broker but BullMQ — whose queue is Redis keys
+only BullMQ reads. Any other pair must be the same broker: a Kafka topic and a
+RabbitMQ queue of one name are two things.
+
 ## Data contracts
 
 Data/DB contracts use the id scheme `data::<table>` and render as a `db` edge in the [system graph](../scale/WORKSPACES.md#system-graph). An ORM model with no explicit table name takes its library's default: the Prisma model name, the TypeORM class name in snake case, the Sequelize model name pluralized, the Eloquent class name in snake case and plural. A service that only models a table (an ORM class, no migration) is linked to the service whose migration or DDL defines that table's schema, when exactly one service defines it; two services that each migrate a table of one name are read as separate databases and not linked. A table on an embedded database (SQLite) links only within its own repo, on either side: a reader or declaration in a file that opens one, and every table in a repo whose code names an embedded engine and no server database (Postgres, MySQL, SQL Server), since that file is the repo's own database. The consumer side (SQL string matching) is heuristic and lower-confidence than the ORM-based providers; unlike HTTP and gRPC, there is no field-level breaking-change diffing for data contracts, only table/route-level removal.
