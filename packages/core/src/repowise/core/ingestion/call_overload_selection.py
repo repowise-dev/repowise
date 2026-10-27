@@ -7,9 +7,10 @@ member by argument count, then by the typed arguments (Java's most-specific rule
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from functools import cache
+from types import MappingProxyType
 
 from .call_receiver_typing import _FUNCTION_KINDS, _TYPE_KINDS
 from .language_data import get_builtin_types
@@ -97,16 +98,22 @@ _JAVA_LITERAL_LEVELS: dict[str, dict[str, int]] = {
 _UNJUDGED_LEVEL = {**dict.fromkeys(_JAVA_WIDENING, 2), "String": 1, "null": 1}
 
 
-def _argument_fit(parameter: str, argument: str) -> int | None:
+_NO_REPO_TYPES: Mapping[str, bool] = MappingProxyType({})
+
+
+def _argument_fit(
+    parameter: str, argument: str, repo_types: Mapping[str, bool] = _NO_REPO_TYPES
+) -> int | None:
     """How near a Java argument reaches *parameter*: 0 exactly, 1 widened, 2 boxed; None never.
 
     *argument* is a literal's type or a named argument's declared one; a
     named ``String`` or primitive takes the literal path. A coarse form of the
     most-specific rule: a call ``f(true)`` takes ``f(boolean)`` over
-    ``f(Object)``, and ``f('c')`` takes ``f(int)`` over it.
+    ``f(Object)``, and ``f('c')`` takes ``f(int)`` over it. *repo_types*
+    says which repository type names are interfaces, for a lambda.
     """
     if argument.startswith("->"):
-        return _lambda_fit(parameter, argument)
+        return _lambda_fit(parameter, argument, repo_types)
     if argument == "Class" and parameter.rstrip("?") == "Class":
         # ``Class<?>`` erases to ``Class?``; a class literal fits it exactly.
         return 0
@@ -129,7 +136,7 @@ _JAVA_FUNCTIONAL_SHAPES = {
 }
 
 
-def _lambda_fit(parameter: str, argument: str) -> int | None:
+def _lambda_fit(parameter: str, argument: str, repo_types: Mapping[str, bool]) -> int | None:
     """How a lambda of shape ``->N:value|void|either`` reaches *parameter*.
 
     0 for a JDK functional interface of that shape, None for one of another
@@ -147,11 +154,28 @@ def _lambda_fit(parameter: str, argument: str) -> int | None:
         if result == "either":
             return 0 if returns else 1
         return 0 if returns == (result == "value") else None
-    return None if parameter in _NO_LAMBDA_TARGETS or parameter.endswith("[]") else 1
+    return 1 if _may_take_lambda(parameter, repo_types) else None
 
 
-# Parameter types no lambda converts to.
-_NO_LAMBDA_TARGETS = _JAVA_PRIMITIVES | _JAVA_FINAL_PARAMETERS | frozenset({"Object", ""})
+def _may_take_lambda(parameter: str, repo_types: Mapping[str, bool]) -> bool:
+    """Whether *parameter* may be a functional interface: a lambda converts to no class.
+
+    A repository name answers by its kind (*repo_types*); any other name
+    may be a library interface unless it is a known JDK class.
+    """
+    if parameter in repo_types:
+        return repo_types[parameter]
+    return parameter not in _NO_LAMBDA_TARGETS and not parameter.endswith("[]")
+
+
+# Parameter types no lambda converts to: primitives and the JDK classes a
+# parameter commonly names.
+_NO_LAMBDA_TARGETS = _JAVA_PRIMITIVES | _JAVA_FINAL_PARAMETERS | frozenset(
+    {"Object", "", "Class", "Enum", "Record", "Number", "Void", "Thread", "Throwable",
+     "Exception", "RuntimeException", "Error", "StringBuilder", "StringBuffer", "Optional",
+     "ArrayList", "LinkedList", "HashMap", "LinkedHashMap", "TreeMap", "HashSet",
+     "LinkedHashSet", "TreeSet", "ArrayDeque", "CompletableFuture"}
+)
 
 
 def _reference_fit(parameter: str, argument: str) -> int | None:
@@ -196,7 +220,10 @@ def _array_fit(parameter: str, argument: str) -> int | None:
 
 
 def _closest_fit(
-    members: list[tuple[str, list[str]]], argument_types: tuple[str | None, ...], expanded: bool
+    members: list[tuple[str, list[str]]],
+    argument_types: tuple[str | None, ...],
+    expanded: bool,
+    repo_types: Mapping[str, bool] = _NO_REPO_TYPES,
 ) -> str | None:
     """The one member the typed arguments fit most closely, or None on a tie.
 
@@ -209,7 +236,9 @@ def _closest_fit(
     ranked: dict[int, list[str]] = defaultdict(list)
     for member, parameters in members:
         fits = [
-            _argument_fit(_parameter_taking(parameters, argument_types, index, expanded), argument)
+            _argument_fit(
+                _parameter_taking(parameters, argument_types, index, expanded), argument, repo_types
+            )
             for index, argument in enumerate(argument_types)
             if argument is not None
         ]
@@ -675,7 +704,7 @@ class OverloadSelectionMixin:
         if self._symbols_by_id[found[0]].language == "apex":
             closest = _exact_apex_fit(typed, argument_types, self._folded_type_names())
         else:
-            closest = _closest_fit(typed, argument_types, expanded)
+            closest = _closest_fit(typed, argument_types, expanded, self._jvm_lambda_type_map())
         return found if closest is None else [closest]
 
     def _csharp_takers(self, found: list[str], argument_types: tuple[str | None, ...]) -> list[str]:
@@ -778,6 +807,16 @@ class OverloadSelectionMixin:
         }
         paths = {self._symbol_paths_by_id[c] for c in classes}
         return "converts" if any("operator" in self._text_of(p) for p in paths) else "value"
+
+    def _jvm_lambda_type_map(self) -> dict[str, bool]:
+        """{repository JVM type name: whether a type of that name is an interface}, built once."""
+        if self._jvm_lambda_types is None:
+            kinds: dict[str, bool] = {}
+            for symbol in self._symbols_by_id.values():
+                if symbol.language in ("java", "kotlin") and symbol.kind in _TYPE_KINDS:
+                    kinds[symbol.name] = kinds.get(symbol.name, False) or symbol.kind == "interface"
+            self._jvm_lambda_types = kinds
+        return self._jvm_lambda_types
 
     def _folded_type_names(self) -> frozenset[str]:
         """The repository's Apex type names, lowercased, built once."""

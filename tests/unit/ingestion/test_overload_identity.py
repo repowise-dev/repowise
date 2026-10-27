@@ -1322,6 +1322,17 @@ class TestJavaLiteralArguments:
             "Class", "String", None, "->0:void", "->0:value", "->0:either", "->2:value", None, None
         )
 
+    def test_a_nested_return_or_a_guarded_throw_leaves_a_block_void(self) -> None:
+        """A nested lambda's ``return`` is its own; a throw under an ``if`` can complete normally."""
+        text = (
+            "class A {\n  void go(boolean ready) {\n"
+            "    f(() -> { Runnable r = () -> { return 1; }; },\n"
+            "      () -> { if (ready) throw new E(); });\n"
+            "  }\n}\n"
+        )
+        call = next(c for c in _parse("A.java", "java", text).calls if c.target_name == "f")
+        assert call.argument_types == ("->0:void", "->0:void")
+
     _ACCESS = (
         "package app;\nimport java.util.function.Supplier;\npublic class Access {\n"
         "  public static void as(String t, Runnable r) { r.run(); }\n"
@@ -1335,6 +1346,8 @@ class TestJavaLiteralArguments:
             ("() -> { use(t); }", "as#2(String,Runnable)"),
             ("() -> { return 1; }", "as#2(String,Supplier)"),
             ("() -> new Access()", "as#2(String,Supplier)"),
+            ("() -> { if (t == null) throw new IllegalStateException(); }", "as#2(String,Runnable)"),
+            ("() -> { Supplier<Integer> s = () -> { return 1; }; }", "as#2(String,Runnable)"),
         ],
     )
     def test_a_lambda_takes_the_functional_interface_of_its_shape(
@@ -1343,6 +1356,30 @@ class TestJavaLiteralArguments:
         text = self._ACCESS.replace("BODY", body)
         edges = _edges(tmp_path, {"app/Access.java": ("java", text)})
         assert ("app/Access.java::Access::use", f"app/Access.java::Access::{member}") in edges
+
+    @pytest.mark.parametrize(
+        ("first", "member"),
+        [
+            # A lambda converts to no class: not a JDK one, not a repository one.
+            ("Throwable", "f#2(Handler,int)"),
+            ("Task", "f#2(Handler,int)"),
+            # A library type may be a functional interface, so it ties and the
+            # set keeps its first member.
+            ("Listener", "f#2(Listener,int)"),
+        ],
+    )
+    def test_a_lambda_takes_only_a_parameter_that_may_be_an_interface(
+        self, tmp_path: Path, first: str, member: str
+    ) -> None:
+        text = (
+            "package app;\ninterface Handler { void handle(); }\nclass Task { }\n"
+            "public class S {\n"
+            f"  void f({first} x, int i) {{ }}\n"
+            "  void f(Handler h, int i) { }\n"
+            "  void use() {\n    f(() -> { }, 1);\n  }\n}\n"
+        )
+        edges = _edges(tmp_path, {"app/S.java": ("java", text)})
+        assert edges == {("app/S.java::S::use", f"app/S.java::S::{member}")}
 
     def test_a_class_literal_takes_the_class_parameter(self, tmp_path: Path) -> None:
         text = (
