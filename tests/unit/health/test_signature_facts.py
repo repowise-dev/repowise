@@ -287,3 +287,88 @@ def test_kotlin_constructor_parameter_list():
     ctor = next(c for c in body.named_children if c.type == "secondary_constructor")
     assert _count_parameters(ctor) == 2
     assert typed_param_counts(_parameter_list(ctor), get_language_map("kotlin")) == (2, 2)
+
+
+@pytest.mark.parametrize(
+    "decorators",
+    [
+        "@click.command()\n@click.option('--a')\n@click.argument('b')\n",
+        "@cli.group()\n",
+        "@app.command()\n",
+        "@click.option('--a')\n",
+    ],
+)
+def test_python_cli_command_signatures_are_fixed(decorators: str):
+    fns = _fns("cli.py", "python", f"{decorators}def run({FIVE}):\n    pass\n")
+    assert fns["run"].signature_fixed
+
+
+def test_python_cli_marker_in_a_string_argument_fixes_nothing():
+    fns = _fns("a.py", "python", f"@register('command')\ndef run({FIVE}):\n    pass\n")
+    assert not fns["run"].signature_fixed
+
+
+@pytest.mark.parametrize(
+    ("signature", "keyword_only"),
+    [
+        (f"a, *, {FIVE}", 5),
+        (f"a, *args: int, {FIVE}, **kw", 6),
+        (f"a, *args, {FIVE}", 5),
+        (f"{FIVE}, **kw", 0),
+        (f"a, /, {FIVE}", 0),
+    ],
+)
+def test_python_keyword_only_parameter_count(signature: str, keyword_only: int):
+    fns = _fns("a.py", "python", f"def f({signature}):\n    pass\n")
+    assert fns["f"].keyword_only_param_count == keyword_only
+
+
+def test_python_method_overriding_a_base_in_the_same_file_is_fixed():
+    source = (
+        "class Base:\n"
+        f"    def run(self, {FIVE}):\n        pass\n"
+        "class Middle(Base):\n"
+        "    pass\n"
+        "@dataclass\n"
+        "class Child(Middle, metaclass=M):\n"
+        "    @cache\n"
+        f"    def run(self, {FIVE}):\n        pass\n"
+        f"    def walk(self, {FIVE}):\n        pass\n"
+        "class Other(Imported):\n"
+        f"    def run(self, {FIVE}):\n        pass\n"
+    )
+    fns = walk_file("a.py", "python", source.encode()).functions
+    fixed = {(f.name, f.start_line): f.signature_fixed for f in fns}
+    # The base itself, an override reached through Middle, a name Base lacks,
+    # and a base imported from elsewhere, which is not followed.
+    assert fixed == {
+        ("run", 2): False,
+        ("run", 9): True,
+        ("walk", 11): False,
+        ("run", 14): False,
+    }
+
+
+def test_python_class_shadowing_an_imported_base_is_not_its_own_base():
+    fns = _fns(
+        "a.py",
+        "python",
+        f"from x import Foo\nclass Foo(Foo):\n    def run(self, {FIVE}):\n        pass\n",
+    )
+    assert not fns["run"].signature_fixed
+
+
+def test_python_fastapi_bound_parameters():
+    fns = _fns(
+        "routes.py",
+        "python",
+        "async def route(repo_id: str, limit: int = Query(200), q: Annotated[str, Query()] = '',\n"
+        "        s: Session = fastapi.Depends(get_db), name: str = 'x', *, h: str = Header(None),\n"
+        "        when: str = default_when()):\n    pass\n",
+    )
+    route = fns["route"]
+    assert route.param_count == 7
+    assert route.bound_param_count == 4
+    # ``h`` is bound, so the keyword-only count leaves it to ``bound_param_count``.
+    assert route.keyword_only_param_count == 1
+    assert (route.typed_param_count, route.primitive_param_count) == (3, 3)

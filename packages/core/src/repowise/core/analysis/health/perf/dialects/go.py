@@ -118,6 +118,24 @@ def _single_identifier(node: Node | None) -> bytes | None:
 _GO_FN_KINDS: frozenset[str] = frozenset({"function_declaration", "method_declaration", "func_literal"})
 
 
+def _in_event_loop_case(node: Node) -> bool:
+    """*node* sits in a ``select`` case of a bare ``for { select { ... } }`` event loop.
+
+    The case runs once per received event and the loop blocks between events,
+    so there is no lock to hoist.
+    """
+    in_case = False
+    cur = node.parent
+    while cur is not None and cur.type not in _GO_FN_KINDS:
+        if cur.type == "communication_case":
+            in_case = True
+        elif cur.type == "for_statement":
+            # A bare ``for {`` has its body as its only named child.
+            return in_case and len(cur.named_children) == 1
+        cur = cur.parent
+    return False
+
+
 def _go_bindings(node: Node) -> list[tuple[bytes, Node]]:
     """What *node* binds: ``x := v`` / ``x = v`` / ``var x = v`` (one call
     answering several names counts for each), or a read filling ``&x`` (GORM
@@ -282,7 +300,7 @@ class GoPerfDialect(IterableSources):
         # ``mu.Lock()`` / ``mu.RLock()`` — a method on a receiver (the package-
         # level ``sync.Lock`` does not exist, so the attribute gate is a guard).
         if method in GO_LOCK_METHODS and self.callee_is_attribute(node):
-            return "lock_in_loop"
+            return None if _in_event_loop_case(node) else "lock_in_loop"
         return None
 
     def defers_body(self, fn: Node) -> bool:

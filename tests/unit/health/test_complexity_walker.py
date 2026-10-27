@@ -678,6 +678,82 @@ EXPORT_API const struct S *fn5(int a) { if (a) { return 0; } return 0; }
     assert expected <= {r.name for r in results}
 
 
+def _names_by_line(tmp_path, language: str, source: bytes) -> dict[int, str]:
+    p = tmp_path / ("unit.cpp" if language == "cpp" else "unit.c")
+    p.write_bytes(source)
+    results = walk_file_complexity(str(p), language, source)
+    if not results:
+        pytest.skip(f"tree-sitter language pack missing for {language}")
+    return {r.start_line: r.name for r in results}
+
+
+@pytest.mark.parametrize(
+    ("source", "name"),
+    [
+        (b"const T& A::f() const { return x; }", "A::f"),
+        (b"T& f() { return x; }", "f"),
+        (b"A& operator=(const A& o) { return *this; }", "operator="),
+        (b"bool operator==(const A& o) const { return true; }", "operator=="),
+        (b"struct A { int operator()(int x) { return x; } };", "operator()"),
+        (b"struct A { operator bool() const { return true; } };", "operator bool"),
+        (b"A::operator const char*() const { return 0; }", "A::operator const char*"),
+        (b"struct A { ~A() {} };", "~A"),
+        (b"A::~A() {}", "A::~A"),
+        (b"template <typename T> int Foo<T>::g() { return 1; }", "Foo<T>::g"),
+    ],
+)
+def test_cpp_declarator_names(tmp_path, source, name):
+    assert list(_names_by_line(tmp_path, "cpp", source).values()) == [name]
+
+
+@pytest.mark.parametrize(
+    ("source", "name"),
+    [
+        (b"CLI11_INLINE bool\nApp::_parse_arg(int a) { return true; }", "App::_parse_arg"),
+        (b"CLI11_INLINE std::string App::q() { return s; }", "App::q"),
+        (b"API_ std::string Convert(const char* s) { return s; }", "Convert"),
+        (b"API_ Cardinality AtMost(int n) { return n; }", "AtMost"),
+        (b"API_ W W::Get() { return W(); }", "W::Get"),
+        (b"API_ Reporter* GetReporter() { return 0; }", "GetReporter"),
+    ],
+)
+def test_cpp_macro_prefixed_definition_is_named_by_its_qualified_identifier(
+    tmp_path, source, name
+):
+    assert list(_names_by_line(tmp_path, "cpp", source).values()) == [name]
+
+
+@pytest.mark.parametrize(
+    ("prefix", "scope"),
+    [
+        ("bool ", ""),
+        ("A<B<int>>::", "A<B<int>>::"),
+        ("EXPORT std::vector<int> A<B<int>>::", "A<B<int>>::"),
+        # An unmatched ``>`` ends the scope run there.
+        ("x>::", "::"),
+    ],
+)
+def test_scope_start_keeps_only_the_trailing_scope_run(prefix, scope):
+    from repowise.core.analysis.health.complexity.ast_utils import _scope_start
+
+    assert prefix[_scope_start(prefix) :] == scope
+
+
+def test_c_function_returning_a_function_pointer_is_named(tmp_path):
+    source = b"int (*fp(int a))(int) { return 0; }\n"
+    assert list(_names_by_line(tmp_path, "c", source).values()) == ["fp"]
+
+
+def test_cpp_defaulted_and_deleted_members_are_not_function_units(tmp_path):
+    source = b"""struct A {
+  A() = default;
+  A(const A&) = delete;
+  int get() { return 1; }
+};
+"""
+    assert _names_by_line(tmp_path, "cpp", source) == {4: "get"}
+
+
 def test_cpp_class_body_skips_a_nested_type_read_as_a_function(tmp_path):
     source = b"""class Outer {
  public:
