@@ -346,10 +346,11 @@ _NATIVE_TREE = "native"
 # sub-packages (``internal/deps/resolver/``) is usually first-party.
 _DEPS_DIR = "deps"
 _DEPS_LANGUAGES = ("c", "cpp")
-# C and C++ trees also keep copies in ``extern/`` (matplotlib's
-# ``extern/agg24-svn/``) and ``bundled/`` (spdlog's ``fmt/bundled/``). Only
+# C and C++ trees also keep copies in a root ``extern/`` (matplotlib's
+# ``extern/agg24-svn/``) and in ``bundled/`` (spdlog's ``fmt/bundled/``). Only
 # there: javalin's Kotlin ``plugin/bundled/`` is its own code.
-_NATIVE_VENDORED_DIRS = frozenset({"extern", "bundled"})
+_NATIVE_VENDORED_ROOT = "extern"
+_NATIVE_VENDORED_DIR = "bundled"
 _MINIFIED_SUFFIXES = (".min.js", ".min.css", ".min.mjs")
 
 
@@ -364,7 +365,9 @@ def _is_vendored_path(lowered_name: str, dirs: list[str]) -> bool:
     ):
         return True
     if lowered_name.endswith(_deps_suffixes()) and (
-        _DEPS_DIR in dirs[:-1] or not _NATIVE_VENDORED_DIRS.isdisjoint(dirs)
+        _DEPS_DIR in dirs[:-1]
+        or _NATIVE_VENDORED_DIR in dirs
+        or dirs[:1] == [_NATIVE_VENDORED_ROOT]
     ):
         return True
     return lowered_name.endswith(_MINIFIED_SUFFIXES) or _in_static_release_dir(dirs)
@@ -414,31 +417,37 @@ _LICENSE_VERSION_RE = re.compile(
 _URL_RE = re.compile(r"https?://\S+")
 # A single-header library copied into the source tree (``src/json.hpp``), or
 # a browser library dropped in the root ``scripts/`` folder. Outside asset
-# directories the header rule runs only on these, and only when the project
-# is known, so the repository's own banner can be told apart.
+# directories the header rule runs only on these, only when the project is
+# known, and only when the banner names the file itself: a repository's own
+# header names its owner, not each file.
 _LIBRARY_HEADER_SUFFIXES = (".h", ".hh", ".hpp", ".hxx")
 _ROOT_SCRIPTS_DIR = "scripts"
 _SCRIPT_SUFFIXES = (".js", ".mjs", ".cjs")
 _MIN_SELF_NAME = 4
+# Links into a repository's source tree name a file, not a library's home page.
+_SOURCE_LINK_SEGMENTS = frozenset({"blob", "tree", "src"})
 
 
-def _may_be_copied_library(name: str, dirs: list[str], project: str | None) -> bool:
+def _copied_library_scope(name: str, dirs: list[str], project: str | None) -> str | None:
+    """``"asset"`` under an asset directory, ``"library"`` for a single-file
+    library shape outside one, None where the header rule does not run."""
     if any(d in _ASSET_DIR_TOKENS for d in dirs):
-        return True
+        return "asset"
     lowered = name.lower()
-    return bool(project) and (
-        lowered.endswith(_LIBRARY_HEADER_SUFFIXES)
-        or (dirs[:1] == [_ROOT_SCRIPTS_DIR] and lowered.endswith(_SCRIPT_SUFFIXES))
+    shaped = lowered.endswith(_LIBRARY_HEADER_SUFFIXES) or (
+        dirs[:1] == [_ROOT_SCRIPTS_DIR] and lowered.endswith(_SCRIPT_SUFFIXES)
     )
+    return "library" if project and shaped else None
 
 
-def _names_itself(name: str, comments: str) -> bool:
-    """Whether a URL in the comments names the file (exprtk.hpp's
-    ``.../programming/exprtk/``): a library's home page, not an owner's."""
-    stem = _squash(PurePosixPath(name).stem)
-    return len(stem) >= _MIN_SELF_NAME and any(
-        stem in _squash(url) for url in _URL_RE.findall(comments)
-    )
+def _homepage_names(stem: str, comments: str) -> bool:
+    """Whether a URL in the comments is the file's home page (exprtk.hpp's
+    ``partow.net/programming/exprtk/``)."""
+    for url in _URL_RE.findall(comments):
+        segments = [_squash(s) for s in url.split("/")[3:]]
+        if stem in segments and _SOURCE_LINK_SEGMENTS.isdisjoint(segments):
+            return True
+    return False
 
 
 def _comment_lines(header: str) -> list[str]:
@@ -459,23 +468,31 @@ def _squash(text: str) -> str:
     return re.sub(r"[^0-9a-z]", "", text.lower())
 
 
-def _third_party_header(name: str, header: str, project: str | None) -> bool:
+def _third_party_header(
+    name: str, header: str, project: str | None, *, names_file: bool = False
+) -> bool:
     """Whether the leading comments carry another project's license banner.
 
     Conservative on purpose: it needs a license or copyright line **and** a
     versioned or preserved banner, both in comments, and the banner must not
     name *project* when the caller knows it. A repository's own
     ``Copyright (c) 2024 Acme`` header has no release banner, so it stays.
-    With *project* known, a URL naming the file counts as the banner too.
+    With *names_file*, the banner must be preserved (``/*!``) or a URL to the
+    file's own home page, and the comments must name the file's stem.
     """
     comments = "\n".join(_comment_lines(header))
+    stem = _squash(PurePosixPath(name).stem)
+    if names_file and (len(stem) < _MIN_SELF_NAME or stem not in _squash(comments)):
+        return False
     # The comment prefix is stripped from *comments*, so a preserved ``/*!``
     # opener is read from the raw head.
-    banner = (
-        _BANNER_RE.search(_LICENSE_VERSION_RE.sub(" ", comments))
-        or header.lstrip().startswith("/*!")
-        or (project and _names_itself(name, comments))
-    )
+    if header.lstrip().startswith("/*!"):
+        banner = True
+    elif names_file:
+        # "protocol v1.2" in a first-party header is not a release banner.
+        banner = _homepage_names(stem, comments)
+    else:
+        banner = bool(_BANNER_RE.search(_LICENSE_VERSION_RE.sub(" ", comments)))
     if not comments or not _LICENSE_RE.search(comments) or not banner:
         return False
     return not (project and _squash(project) in _squash(comments))
@@ -931,13 +948,16 @@ def code_origin(
 
     if _is_generated_path(name, dirs) or (header and _is_generated_content(name, dirs, header)):
         return "generated"
-    if _is_vendored_path(name.lower(), dirs) or (
-        header
-        and _may_be_copied_library(name, dirs, project)
-        and _third_party_header(name, header, project)
-    ):
+    if _is_vendored_path(name.lower(), dirs) or _copied_library(name, dirs, header, project):
         return "vendored"
     return _maintained_origin(normalized, name, dirs, is_test, repo_root, header)
+
+
+def _copied_library(name: str, dirs: list[str], header: str, project: str | None) -> bool:
+    scope = _copied_library_scope(name, dirs, project) if header else None
+    return scope is not None and _third_party_header(
+        name, header, project, names_file=scope == "library"
+    )
 
 
 def _is_generated_content(name: str, dirs: list[str], header: str) -> bool:

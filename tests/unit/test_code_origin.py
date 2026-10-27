@@ -411,6 +411,19 @@ def test_own_single_header_banner_is_not_vendored() -> None:
     assert code_origin("include/acme/widgets.hpp", own, project="acme-widgets") == "production"
 
 
+@pytest.mark.parametrize(
+    "comment",
+    [
+        "// Implements widgets protocol v1.2, see RFC 7230 section 3.1",
+        "// https://github.com/acme/widgets/blob/main/src/widgets.h",
+        "// Widgets for the engine. https://acme.dev/engine/",
+    ],
+)
+def test_own_header_without_its_project_name_is_not_vendored(comment: str) -> None:
+    head = f"// Copyright 2020 Acme Corp.\n// MIT License\n{comment}\n#pragma once\n"
+    assert code_origin("src/widgets.h", head, project="engine-core") == "production"
+
+
 def test_license_version_is_not_a_release_banner() -> None:
     apache = (
         "// Copyright 2017 The Abseil Authors.\n"
@@ -438,7 +451,9 @@ def test_native_library_shelves_are_vendored(path: str) -> None:
 
 def test_bundled_and_extern_count_only_for_c_and_cpp() -> None:
     assert code_origin("src/main/java/io/javalin/plugin/bundled/CorsPlugin.kt") == "production"
-    assert code_origin("pkg/extern/client.go") == "production"
+    assert code_origin("extern/client.go") == "production"
+    # Below the root, ``extern/`` is as often a library's own C API.
+    assert code_origin("include/foo/extern/api.h") == "production"
 
 
 _RAGEL_C = (
