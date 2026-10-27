@@ -388,6 +388,9 @@ class CallResolver(
             symbol.name for symbol in self._symbols_by_id.values() if symbol.kind in _TYPE_KINDS
         )
         self._folded_types: frozenset[str] | None = None
+        # {C# type name: the type symbols declaring it}, then each name's shape.
+        self._csharp_type_shapes: dict[str, set[str]] | None = None
+        self._csharp_shape_answers: dict[str, str | None] = {}
         # Narrowed to C# for the extension index: the set above is a bare
         # cross-language name match, so a type of that name in any language
         # would admit an extension on the BCL type it shadows.

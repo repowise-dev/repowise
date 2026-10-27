@@ -379,7 +379,7 @@ def _split_by_generic_arity(
 ) -> dict[int, str]:
     """*by_index* with each key two members share respelled with CLR arities.
 
-    Only the members that collide change, so a sibling keeps its id.
+    Only the members that collide change; a sibling that does not keeps its id.
     """
     seen = Counter(by_index.values())
     return {
@@ -388,19 +388,28 @@ def _split_by_generic_arity(
     }
 
 
-# An erased type's name, then its array, pointer and nullable marks.
-_ERASED_MARKS = re.compile(r"([^\[\]*&?]*)(.*)")
+# The array, pointer and nullable marks that may follow an erased type's name.
+_ERASED_MARKS = "[]*&?"
 
 
 def _clr_parameter_types(symbol: Symbol) -> str:
     """``(Func`2,int)``: each erased type with its type argument count, as the CLR names it."""
-    spelled = []
-    for parameter in signature_parameters(symbol.signature or "") or []:
-        written = parameter.partition("=")[0].split()
-        arity = type_argument_count(" ".join(written[:-1]) or parameter)
-        name, marks = _ERASED_MARKS.fullmatch(erased_type(parameter)).groups()  # type: ignore[union-attr]
-        spelled.append(f"{name}`{arity}{marks}" if arity else name + marks)
-    return "(" + ",".join(spelled) + ")"
+    parameters = signature_parameters(symbol.signature or "") or []
+    return "(" + ",".join(clr_parameter_type(p) for p in parameters) + ")"
+
+
+def clr_parameter_type(parameter: str) -> str:
+    """``Func<A, B> f`` -> ``Func`2``: the erased type with its type argument count."""
+    arity = parameter_type_arity(parameter)
+    erased = erased_type(parameter)
+    name = erased.rstrip(_ERASED_MARKS)
+    return f"{name}`{arity}{erased[len(name):]}" if arity else erased
+
+
+def parameter_type_arity(parameter: str) -> int:
+    """How many type arguments a C# parameter's type is given: ``Func<A, B> f`` -> 2."""
+    written = parameter.partition("=")[0].split()
+    return type_argument_count(" ".join(written[:-1]) or parameter)
 
 
 def pair_overloads(declared: list[Symbol], defined: list[Symbol]) -> dict[str, str]:
@@ -474,6 +483,7 @@ def _reparent_members(symbols: list[Symbol], owner: Symbol, segment: str) -> Non
 
 __all__ = [
     "base_symbol_id",
+    "clr_parameter_type",
     "disambiguate_colliding_ids",
     "has_overload_identity",
     "id_segment_name",
@@ -481,6 +491,7 @@ __all__ = [
     "outer_scope",
     "overload_sets",
     "pair_overloads",
+    "parameter_type_arity",
     "split_symbol_id",
     "symbol_discriminator",
     "symbol_id_arity",

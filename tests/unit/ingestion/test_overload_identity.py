@@ -845,6 +845,147 @@ def test_fixture_ids_carry_a_discriminator_only_on_collision() -> None:
     assert checked > 500
 
 
+_CS_TIMEOUT = (
+    "namespace App;\npublic interface IKey { }\npublic class Ttl : IKey { public Ttl() { } }\n"
+    "public static class P {\n"
+    "  public static void T(int seconds, Action<int, int> on) { }\n"
+    "  public static void T(Func<int> provider, Action<int, int> on) { }\n"
+    "  public static void T(Func<int, int> provider, Action<int, int> on) { }\n"
+    "  public static void T(Func<int, int> provider, Action<int, int, string> on) { }\n"
+    "  public static void K(TimeSpan ttl, Func<int, string> key) { }\n"
+    "  public static void K(IKey ttl, Func<int, string> key) { }\n"
+    "  public static void K(IKey ttl, IKey key) { }\n"
+    "}\n"
+)
+
+
+class TestCSharpArgumentShapes:
+    """Same-count C# overloads chosen by what a lambda, a construction or a typed name can reach."""
+
+    def _callee(self, tmp_path: Path, body: str, members: str = "") -> set[str]:
+        caller = "namespace App;\npublic class C {\n" + members + "  public void Run() { " + body + " }\n}\n"
+        edges = _edges(tmp_path, {"P.cs": ("csharp", _CS_TIMEOUT), "C.cs": ("csharp", caller)})
+        return {callee.removeprefix("P.cs::P::") for caller_id, callee in edges if caller_id == "C.cs::C::Run"}
+
+    def test_a_lambda_takes_the_delegate_of_its_parameter_count(self, tmp_path: Path) -> None:
+        assert self._callee(tmp_path, "P.T(_ => 1, (a, b) => { });") == {"T#2(Func`2,Action`2)"}
+        assert self._callee(tmp_path, "P.T(() => 1, (a, b) => { });") == {"T#2(Func`1,Action`2)"}
+
+    def test_a_forwarded_delegate_and_a_method_group_take_their_own_arity(self, tmp_path: Path) -> None:
+        members = (
+            "  void On(int a, int b, string c) { }\n"
+            "  public void Fwd(Action<int, int, string> on) { P.T(_ => 1, on); }\n"
+        )
+        assert self._callee(tmp_path, "P.T(_ => 1, On);", members) == {"T#2(Func`2,Action`3)"}
+        edges = _edges(tmp_path, {"P.cs": ("csharp", _CS_TIMEOUT), "C.cs": (
+            "csharp", "namespace App;\npublic class C {\n" + members + "}\n")})
+        assert ("C.cs::C::Fwd", "P.cs::P::T#2(Func`2,Action`3)") in edges
+
+    def test_a_repository_class_or_interface_reaches_no_builtin_or_delegate(self, tmp_path: Path) -> None:
+        members = "  IKey key;\n"
+        callees = self._callee(tmp_path, "P.K(new Ttl(), key);", members)
+        assert {c for c in callees if c.startswith("K#")} == {"K#2(IKey,IKey)"}
+
+    def test_a_user_conversion_keeps_the_builtin_member(self, tmp_path: Path) -> None:
+        holder = (
+            "namespace App;\npublic class Span { public static implicit operator int(Span s) => 0; }\n"
+            "public static class Q {\n"
+            "  public static void M(int a) { }\n"
+            "  public static void M(Func<int> a) { }\n"
+            "}\n"
+        )
+        caller = "namespace App;\npublic class C {\n  public void Run() { Q.M(new Span()); }\n}\n"
+        edges = _edges(tmp_path, {"Q.cs": ("csharp", holder), "C.cs": ("csharp", caller)})
+        # The conversion leaves both admissible, so the tie keeps the first member.
+        assert ("C.cs::C::Run", "Q.cs::Q::M#1(int)") in edges
+
+    def test_an_extension_called_on_a_value_skips_its_this_parameter(self, tmp_path: Path) -> None:
+        holder = (
+            "namespace App;\npublic class Foo { public Foo(int n) { } }\npublic interface IFoo { }\n"
+            "public static class Ext {\n"
+            "  public static void E(this IFoo f, string a, Foo b) { }\n"
+            "  public static void E(this IFoo f, Foo a, string b) { }\n"
+            "}\n"
+        )
+        caller = (
+            "namespace App;\npublic class C {\n"
+            "  public void Run(IFoo f, string s) { f.E(s, new Foo(1)); }\n"
+            "  public void Static(IFoo f, string s) { Ext.E(f, new Foo(1), s); }\n"
+            "}\n"
+        )
+        edges = _edges(tmp_path, {"Ext.cs": ("csharp", holder), "C.cs": ("csharp", caller)})
+        assert ("C.cs::C::Run", "Ext.cs::Ext::E#3(IFoo,string,Foo)") in edges
+        assert ("C.cs::C::Static", "Ext.cs::Ext::E#3(IFoo,Foo,string)") in edges
+
+    def test_an_extension_on_the_receivers_own_type_wins_an_otherwise_equal_tie(
+        self, tmp_path: Path
+    ) -> None:
+        holder = (
+            "namespace App;\npublic interface IOpts { }\npublic interface IConds : IOpts { }\n"
+            "public static class W {\n"
+            "  public static void When(this IOpts r, Func<int, bool> p) { }\n"
+            "  public static void When(this IConds r, Func<int, bool> p) { }\n"
+            "  public static void When(this IOpts r, Func<int, string, bool> p) { }\n"
+            "  public static void When(this IConds r, Func<int, string, bool> p) { }\n"
+            "}\n"
+        )
+        caller = (
+            "namespace App;\npublic class C {\n"
+            "  public void Run(IConds rule) { rule.When((x, ctx) => true); }\n}\n"
+        )
+        edges = _edges(tmp_path, {"W.cs": ("csharp", holder), "C.cs": ("csharp", caller)})
+        assert ("C.cs::C::Run", "W.cs::W::When#2(IConds,Func`3)") in edges
+
+    def test_a_repository_type_named_like_a_framework_delegate_is_a_class(self, tmp_path: Path) -> None:
+        holder = (
+            "namespace App;\npublic abstract class Expression { }\n"
+            "public class Binary : Expression { public Binary(int n) { } }\npublic class Statement { }\n"
+            "public static class V {\n"
+            "  public static void Visit(Expression e) { }\n"
+            "  public static void Visit(Statement s) { }\n"
+            "}\n"
+        )
+        caller = "namespace App;\npublic class C {\n  public void Run() { V.Visit(new Binary(1)); }\n}\n"
+        edges = _edges(tmp_path, {"V.cs": ("csharp", holder), "C.cs": ("csharp", caller)})
+        assert ("C.cs::C::Run", "V.cs::V::Visit#1(Expression)") in edges
+
+    def test_a_method_group_reaches_any_delegate_of_its_parameter_count(self, tmp_path: Path) -> None:
+        holder = (
+            "namespace App;\npublic static class F {\n"
+            "  public static void Where(int n) { }\n"
+            "  public static void Where(Predicate<int> p) { }\n"
+            "}\n"
+        )
+        caller = (
+            "namespace App;\npublic class C {\n"
+            "  bool IsOk(int x) => true;\n  public void Run() { F.Where(IsOk); }\n}\n"
+        )
+        edges = _edges(tmp_path, {"F.cs": ("csharp", holder), "C.cs": ("csharp", caller)})
+        assert ("C.cs::C::Run", "F.cs::F::Where#1(Predicate)") in edges
+
+    def test_a_base_class_conversion_keeps_the_builtin_member(self, tmp_path: Path) -> None:
+        holder = (
+            "namespace App;\npublic static class Q {\n"
+            "  public static void M(int a) { }\n"
+            "  public static void M(Func<int> a) { }\n"
+            "}\n"
+        )
+        base = "namespace App;\npublic class Base { public static implicit operator int(Base b) => 0; }\n"
+        derived = "namespace App;\npublic class Derived : Base { public Derived() { } }\n"
+        caller = "namespace App;\npublic class C {\n  public void Run() { Q.M(new Derived()); }\n}\n"
+        edges = _edges(tmp_path, {
+            "Q.cs": ("csharp", holder), "B.cs": ("csharp", base),
+            "D.cs": ("csharp", derived), "C.cs": ("csharp", caller),
+        })
+        assert ("C.cs::C::Run", "Q.cs::Q::M#1(int)") in edges
+
+    def test_a_named_argument_reads_no_position(self) -> None:
+        parsed = _parse("C.cs", "csharp", "class C { void R() { F(on: x => 1, 2); G(x => 1, new Ttl()); } }")
+        shapes = {c.target_name: c.argument_types for c in parsed.calls}
+        assert shapes["F"] is None
+        assert shapes["G"] == ("=>1", "new Ttl")
+
+
 class TestNarrowingShapes:
     """Call shapes the narrowing step must read by argument count alone."""
 

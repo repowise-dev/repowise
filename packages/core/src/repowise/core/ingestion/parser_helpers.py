@@ -402,12 +402,18 @@ def _overload_arguments(language: str, arg_nodes: list[Node]) -> list[Node]:
     Read from the argument list already in hand, the way ``_count_arguments``
     counts it.
     """
-    if language not in ("java", "apex") or not arg_nodes:
+    if language not in ("java", "apex", "csharp") or not arg_nodes:
         return []
     skip_types = frozenset({"(", ")", ","})
-    return [
+    arguments = [
         c for c in arg_nodes[0].children if c.type not in skip_types and "comment" not in c.type
     ]
+    if language == "csharp":
+        # A named argument (``onRetry: f``) binds by name, so no position is known.
+        if any(a.child_by_field_name("name") is not None for a in arguments):
+            return []
+        return [a.named_children[-1] if a.named_children else a for a in arguments]
+    return arguments
 
 
 def _argument_literal_types(
@@ -415,11 +421,33 @@ def _argument_literal_types(
 ) -> tuple[str | None, ...] | None:
     """The type of each literal argument, None where an argument is no literal.
 
-    None overall when no argument is a literal.
+    None overall when no argument is a literal. C# reports a lambda's and a
+    construction's shape instead (``_csharp_argument_shape``).
     """
-    literal_type = _apex_literal_type if language == "apex" else _java_literal_type
+    literal_type = {"apex": _apex_literal_type, "csharp": _csharp_argument_shape}.get(
+        language, _java_literal_type
+    )
     types = tuple(literal_type(argument, src) for argument in arguments)
     return types if any(types) else None
+
+
+def _csharp_argument_shape(node: Node, src: str) -> str | None:
+    """``=>2`` for a two-parameter lambda (``=>`` when unwritten), ``new Foo`` for a construction."""
+    if node.type == "lambda_expression":
+        parameters = node.child_by_field_name("parameters")
+        if parameters is not None and parameters.type == "implicit_parameter":
+            return "=>1"
+        return f"=>{len(parameters.named_children)}" if parameters is not None else "=>"
+    if node.type == "anonymous_method_expression":
+        parameters = next((c for c in node.named_children if c.type == "parameter_list"), None)
+        return "=>" if parameters is None else f"=>{len(parameters.named_children)}"
+    if node.type == "object_creation_expression":
+        created = node.child_by_field_name("type")
+        if created is not None and created.type == "generic_name":
+            created = created.named_children[0] if created.named_children else None
+        if created is not None and created.type == "identifier":
+            return f"new {node_text(created, src)}"
+    return None
 
 
 def _argument_names(arguments: list[Node], src: str) -> tuple[str | None, ...] | None:

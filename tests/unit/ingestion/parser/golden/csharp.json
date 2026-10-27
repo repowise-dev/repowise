@@ -398,7 +398,9 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": [
+          "u"
+        ]
       },
       {
         "target_name": "SaveChangesAsync",
@@ -430,7 +432,9 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": [
+          "p"
+        ]
       },
       {
         "target_name": "Wait",
@@ -890,7 +894,10 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": [
+          "x",
+          null
+        ]
       }
     ],
     "heritage": [],

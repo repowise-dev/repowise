@@ -7,6 +7,7 @@ member by argument count, then by the typed arguments (Java's most-specific rule
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import replace
 from functools import cache
 
@@ -15,8 +16,15 @@ from .language_data import get_builtin_types
 from .languages.receiver_types import external_type_name
 from .models import CallSite, ParsedFile, Symbol
 from .resolved_call import ResolvedCall
-from .return_types import signature_parameter_range
-from .symbol_identity import erased_parameter_types, erased_type, pair_overloads, split_symbol_id
+from .return_types import signature_parameter_range, signature_parameters
+from .symbol_identity import (
+    clr_parameter_type,
+    erased_parameter_types,
+    erased_type,
+    pair_overloads,
+    parameter_type_arity,
+    split_symbol_id,
+)
 
 
 def _overload_phase(admitted: tuple[int, int | None], argument_count: int) -> int | None:
@@ -309,6 +317,78 @@ def _takes(symbol: Symbol, argument_count: int) -> bool:
     return admitted is None or _overload_phase(admitted, argument_count) is not None
 
 
+# C# types no lambda, and no repository class or interface, converts to: the
+# keyword types and the framework structs a signature most often spells.
+_CSHARP_CLOSED_TYPES = frozenset(
+    {"bool", "byte", "sbyte", "char", "decimal", "double", "float", "int", "uint", "long",
+     "ulong", "short", "ushort", "nint", "nuint", "string", "TimeSpan", "DateTime",
+     "DateTimeOffset", "Guid", "CancellationToken"}
+)
+
+# How many parameters a lambda converting to ``Func`N`` / ``Action`N`` declares, past N.
+_CSHARP_LAMBDA_PARAMETERS = {"Func": -1, "Action": 0}
+
+# Delegate types no repository class or interface converts to.
+_CSHARP_DELEGATES = frozenset({*_CSHARP_LAMBDA_PARAMETERS, "Predicate", "Expression"})
+
+
+def _csharp_may_take(parameter: str, argument: str, shape_of: Callable[[str], str | None]) -> bool:
+    """Could C# *parameter* take an argument of shape or type *argument*?
+
+    *argument* is a lambda (``=>1``), a method group (``group`1``), a
+    construction (``new Foo``) or a named value's declared type, a framework
+    delegate's with its arity (``Func`2``). Refused only on proof: a lambda
+    or a method group reaches a delegate taking its parameter count, and a
+    delegate value its own type, never a builtin or a repository type; a
+    repository class or interface reaches neither a framework delegate nor a
+    builtin, unless the class declares a conversion (C# allows none on an
+    interface). An array (``params``) or any other type takes it.
+    *shape_of* answers for a repository type, so a repository ``Expression``
+    or ``Action`` is never read as the framework's.
+    """
+    erased = erased_type(parameter)
+    if erased.endswith("[]"):
+        return True
+    head = erased.rstrip("?")
+    framework = shape_of(head) is None
+    if argument.startswith("=>") or "`" in argument:
+        return framework and _csharp_delegate_fits(parameter, head, argument)
+    written = argument.removeprefix("new ")
+    if written == head or shape_of(written) not in ("interface", "value"):
+        return True
+    return not framework or (head not in _CSHARP_CLOSED_TYPES and head not in _CSHARP_DELEGATES)
+
+
+def _csharp_delegate_fits(parameter: str, head: str, argument: str) -> bool:
+    """A lambda, method group or delegate value against a parameter of framework type *head*."""
+    if head in _CSHARP_CLOSED_TYPES:
+        return False
+    arity = parameter_type_arity(parameter)
+    kind, _, written_arity = argument.partition("`")
+    if kind in _CSHARP_LAMBDA_PARAMETERS:
+        return head not in _CSHARP_DELEGATES or (head, arity) == (kind, int(written_arity))
+    count = argument[2:] if argument.startswith("=>") else written_arity
+    return not count or _csharp_count_fits(head, arity, int(count))
+
+
+def _csharp_count_fits(head: str, arity: int, count: int) -> bool:
+    """Does a framework delegate *head* of *arity* type arguments take *count* parameters?"""
+    if head == "Predicate":
+        return count == 1
+    offset = _CSHARP_LAMBDA_PARAMETERS.get(head)
+    if offset is None or (head == "Func" and not arity):
+        return True
+    return count == arity + offset
+
+
+def _csharp_parameter_named(signature: str, name: str) -> str | None:
+    """The parameter of *signature* that declares *name*, as written, or None."""
+    for parameter in signature_parameters(signature) or []:
+        if parameter.partition("=")[0].split()[-1:] == [name]:
+            return parameter
+    return None
+
+
 class OverloadSelectionMixin:
     """Overload-set indexing and member selection."""
 
@@ -537,12 +617,115 @@ class OverloadSelectionMixin:
         """*found* narrowed to the one member its typed arguments fit closest, if one does."""
         if len(found) < 2 or not argument_types:
             return found
+        if self._symbols_by_id[found[0]].language == "csharp":
+            return self._csharp_takers(found, argument_types)
         typed = [(m, erased_parameter_types(self._symbols_by_id[m])) for m in found]
         if self._symbols_by_id[found[0]].language == "apex":
             closest = _exact_apex_fit(typed, argument_types, self._folded_type_names())
         else:
             closest = _closest_fit(typed, argument_types, expanded)
         return found if closest is None else [closest]
+
+    def _csharp_takers(self, found: list[str], argument_types: tuple[str | None, ...]) -> list[str]:
+        """*found* narrowed to the C# members no argument's shape or type refuses.
+
+        *argument_types* leads with the call's receiver and its type
+        (``_csharp_arguments``). Every member refusing leaves *found* as it
+        was: the evidence is then about a call this set may not hold.
+        """
+        receiver, receiver_type, *arguments = argument_types
+        takers = [
+            member
+            for member in found
+            if all(
+                argument is None or _csharp_may_take(parameter, argument, self._csharp_shape)
+                for parameter, argument in zip(
+                    self._csharp_parameters(member, receiver), arguments, strict=False
+                )
+            )
+        ]
+        return self._csharp_exact_this(takers, receiver_type) or found
+
+    def _csharp_exact_this(self, members: list[str], receiver_type: str | None) -> list[str]:
+        """*members* narrowed to the extensions whose ``this`` is the receiver's own type.
+
+        Only among members that differ in nothing else, where the identity
+        conversion is the better one (``When(this IRuleOptions r, ..)`` over
+        ``When(this IRuleConditions r, ..)`` for an ``IRuleOptions`` receiver).
+        """
+        if len(members) < 2 or not receiver_type:
+            return members
+        parameters = {
+            member: signature_parameters(self._symbols_by_id[member].signature or "") or []
+            for member in members
+        }
+        rest = {tuple(clr_parameter_type(p) for p in found[1:]) for found in parameters.values()}
+        if len(rest) != 1:
+            return members
+        exact = [
+            member
+            for member, found in parameters.items()
+            if found[:1] and found[0].split()[:1] == ["this"] and erased_type(found[0]) == receiver_type
+        ]
+        return exact or members
+
+    def _csharp_parameters(self, member: str, receiver: str | None) -> list[str]:
+        """*member*'s parameters as a call on *receiver* fills them.
+
+        An extension method called on a value (``x.Ext(a)``) takes the value
+        as its ``this`` parameter, so the arguments start at the next one;
+        called through its class (``Exts.Ext(x, a)``) or bare, they do not.
+        """
+        symbol = self._symbols_by_id[member]
+        parameters = signature_parameters(symbol.signature or "") or []
+        # A call's C# receiver is a bare name: a dotted one mints no site.
+        on_value = receiver is not None and receiver != symbol.parent_name
+        if on_value and parameters and parameters[0].split()[:1] == ["this"]:
+            return parameters[1:]
+        return parameters
+
+    def _csharp_shape(self, name: str) -> str | None:
+        """``"interface"``, ``"value"`` or ``"converts"`` for the repository's C# type *name*.
+
+        None for a name the repository does not declare as a type, declares
+        as both an interface and a class, or also declares as a delegate. A
+        class whose file, or a repository base class's, declares an
+        ``operator`` is ``"converts"``: it may reach a builtin. Files are read
+        on first ask only.
+        """
+        if self._csharp_type_shapes is None:
+            found: dict[str, set[str]] = defaultdict(set)
+            delegates: set[str] = set()
+            for symbol_id, symbol in self._symbols_by_id.items():
+                if symbol.language != "csharp":
+                    continue
+                if symbol.kind in _TYPE_KINDS:
+                    found[symbol.name].add(symbol_id)
+                elif symbol.kind == "function" and symbol.name != symbol.parent_name:
+                    # A delegate; a constructor shares its class's name.
+                    delegates.add(symbol.name)
+            self._csharp_type_shapes = {n: ids for n, ids in found.items() if n not in delegates}
+        if name not in self._csharp_shape_answers:
+            self._csharp_shape_answers[name] = self._csharp_shape_of(
+                self._csharp_type_shapes.get(name, set())
+            )
+        return self._csharp_shape_answers[name]
+
+    def _csharp_shape_of(self, type_ids: set[str]) -> str | None:
+        """The shape the C# types *type_ids*, all of one name, share; see ``_csharp_shape``."""
+        interfaces = {self._symbols_by_id[t].kind == "interface" for t in type_ids}
+        if len(interfaces) != 1:
+            return None
+        if interfaces == {True}:
+            return "interface"
+        classes = {
+            ancestor
+            for type_id in type_ids
+            for ancestor in (type_id, *self._ancestors_of(type_id))
+            if getattr(self._symbols_by_id.get(ancestor), "kind", "interface") != "interface"
+        }
+        paths = {self._symbol_paths_by_id[c] for c in classes}
+        return "converts" if any("operator" in self._text_of(p) for p in paths) else "value"
 
     def _folded_type_names(self) -> frozenset[str]:
         """The repository's Apex type names, lowercased, built once."""
@@ -560,8 +743,12 @@ class OverloadSelectionMixin:
         So ``f(start, n)`` is judged as ``f(1L, 2)`` is. Asked only of a call
         to a name an overload set carries.
         """
+        if call.target_name not in self._overloaded_names:
+            return call
+        if self._language_of(file_path) == "csharp":
+            return replace(call, argument_types=self._csharp_arguments(file_path, call))
         names = call.argument_names
-        if not names or call.target_name not in self._overloaded_names:
+        if not names:
             return call
         caller_id = call.caller_symbol_id or ""
         literals = call.argument_types or (None,) * len(names)
@@ -570,6 +757,29 @@ class OverloadSelectionMixin:
             for literal, name in zip(literals, names, strict=True)
         )
         return replace(call, argument_types=types if any(types) else None)
+
+    def _csharp_arguments(self, file_path: str, call: CallSite) -> tuple[str | None, ...] | None:
+        """The receiver (``""`` when chained, None when bare), its type, then each argument's shape or type.
+
+        None when no argument says anything.
+        """
+        names = call.argument_names or (None,) * len(call.argument_types or ())
+        literals = call.argument_types or (None,) * len(names)
+        caller_id = call.caller_symbol_id or ""
+        types = tuple(
+            literal or (self._argument_type(file_path, caller_id, name) if name else None)
+            for literal, name in zip(literals, names, strict=True)
+        )
+        if not any(types):
+            return None
+        return (*self._csharp_receiver(file_path, call), *types)
+
+    def _csharp_receiver(self, file_path: str, call: CallSite) -> tuple[str | None, str | None]:
+        """A C# call's receiver (``""`` when chained, None when bare) and its declared type."""
+        receiver = call.receiver_name or ("" if call.receiver_call is not None else None)
+        if not receiver or not receiver.isidentifier():
+            return receiver, None
+        return receiver, self._argument_type(file_path, call.caller_symbol_id or "", receiver)
 
     def _argument_type(self, file_path: str, caller_id: str, name: str) -> str | None:
         """Argument *name*'s declared type, spelled as an overload id spells a parameter.
@@ -589,9 +799,46 @@ class OverloadSelectionMixin:
             )
             if scope == "field" and self._declares_name(file_path, caller_id, name):
                 return None
+        if type_name is None and language == "csharp":
+            return self._csharp_delegate_argument(file_path, caller_id, name)
         if type_name is None or "::" in type_name:
             return None
         return erased_type(external_type_name(type_name) or type_name)
+
+    def _csharp_delegate_argument(self, file_path: str, caller_id: str, name: str) -> str | None:
+        """``Func`2`` when argument *name* is a ``Func<A, B>``, ``group`1`` for a method group; else None.
+
+        The declaration scan types no builtin, so a forwarded delegate is read
+        off the caller's own parameters, and a name the body neither binds
+        nor declares may be a method of the caller's class: one member, no
+        overload set and no ``params``, whose parameter count a delegate
+        conversion matches. Ceiling: a lambda parameter shadowing a caller
+        parameter (C# 8) reads as the parameter, and a method a base class
+        overloads as the caller class's one member.
+        """
+        caller = self._symbols_by_id.get(caller_id)
+        parameter = _csharp_parameter_named(caller.signature or "", name) if caller else None
+        if parameter is not None:
+            head = erased_type(parameter)
+            if head not in _CSHARP_LAMBDA_PARAMETERS:
+                return None
+            return f"{head}`{parameter_type_arity(parameter)}"
+        if name in self._bound_names_in(file_path, caller_id, "csharp") or self._declares_name(
+            file_path, caller_id, name
+        ):
+            return None
+        return self._csharp_method_group(caller_id, name)
+
+    def _csharp_method_group(self, caller_id: str, name: str) -> str | None:
+        """``group`N`` when *name* is the caller class's one method of that name, of N fixed parameters."""
+        method_id = self._declares(self._caller_class_id(caller_id), name)
+        method = self._symbols_by_id.get(method_id) if method_id else None
+        if method is None or method.kind != "method" or method_id in self._overload_rep:
+            return None
+        parameters = signature_parameters(method.signature or "")
+        if parameters is None or (parameters and parameters[-1].split()[:1] == ["params"]):
+            return None
+        return f"group`{len(parameters)}"
 
     def _overload_sibling_call(self, call: CallSite) -> ResolvedCall | None:
         """An overload calling another member of its own set, ``f(a)`` inside ``f(a, b)``.

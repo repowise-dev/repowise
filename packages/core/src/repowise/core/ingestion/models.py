@@ -381,9 +381,10 @@ class CallSite:
     # COBOL ``CALL`` / ``LINK`` / ``XCTL``: names a PROGRAM-ID, never a paragraph.
     program_call: bool = False
     # Java: each argument's type where it is a literal (``"String"``, ``"int"``,
-    # ``"null"``), else None; None overall when no argument is one.
+    # ``"null"``), else None; None overall when no argument is one. C# writes a
+    # lambda's or a construction's shape here (``"=>2"``, ``"new Foo"``).
     argument_types: tuple[str | None, ...] | None = None
-    # Java: each argument that is a bare name (``start``), else None; None overall
+    # Java and C#: each argument that is a bare name (``start``), else None; None overall
     # when no argument is one. The resolver reads its declared type.
     argument_names: tuple[str | None, ...] | None = None
 
