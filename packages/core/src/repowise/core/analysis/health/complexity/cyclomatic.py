@@ -277,26 +277,29 @@ def _condition_subtrees(node: Node, lmap: LanguageNodeMap) -> list[Node]:
     value = node.child_by_field_name("value")
     if value is not None and "case" in node.type:
         return [value]
-    # Fallback: direct children minus bodies / blocks.
+    return _non_body_children(node, lmap)
+
+
+_BLOCK_KINDS = frozenset({"block", "compound_statement", "statement_block"})
+
+
+def _non_body_children(node: Node, lmap: LanguageNodeMap) -> list[Node]:
+    """Direct named children of *node* minus bodies / blocks."""
     body_nodes: set[int] = set()
     for fname in _BODY_FIELD_NAMES:
         child = node.child_by_field_name(fname)
         if child is not None:
             body_nodes.add(child.id)
-    out: list[Node] = []
-    for child in node.children:
-        if child.id in body_nodes:
-            continue
-        if not child.is_named:
-            continue
-        if child.type in ("block", "compound_statement", "statement_block"):
-            continue
-        # A ``case ... if guard`` guard is its own branch node and counts its
-        # condition there.
-        if child.type in lmap.branch_kinds:
-            continue
-        out.append(child)
-    return out
+    # A ``case ... if guard`` guard is its own branch node and counts its
+    # condition there.
+    return [
+        child
+        for child in node.children
+        if child.is_named
+        and child.id not in body_nodes
+        and child.type not in _BLOCK_KINDS
+        and child.type not in lmap.branch_kinds
+    ]
 
 
 def _collect_case_children(node: Node, lmap: LanguageNodeMap) -> list[Node]:
