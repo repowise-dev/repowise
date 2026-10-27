@@ -104,6 +104,9 @@ def _line(node: Node) -> int:
     return node.start_point[0] + 1
 
 
+_TYPE_DECLARATIONS = frozenset(
+    {"class_declaration", "interface_declaration", "enum_declaration", "record_declaration"}
+)
 _NONE = re.compile(r"\bAccessLevel\.NONE\b|\(\s*NONE\s*\)")
 _XARGS = frozenset({"NoArgsConstructor", "RequiredArgsConstructor", "AllArgsConstructor"})
 
@@ -321,16 +324,29 @@ def _emit_setter(
 
 def _emit_builder(
     fields: list[_Field], line: int, file_info: FileInfo, class_name: str,
-    out: list[Symbol],
+    out: list[Symbol], *, scope: str, self_typed: bool = False,
 ) -> None:
-    """``Foo.builder()``, the inner ``FooBuilder`` and one method per field."""
+    """``Foo.builder()``, the inner ``FooBuilder`` and one method per field.
+
+    A ``@SuperBuilder`` builder is generic in the builder it returns, as
+    Lombok writes it, so a subclass builder's chain keeps its own type
+    through a method it inherits.
+    """
     builder_class = f"{class_name}Builder"
-    out.append(build_synthetic_symbol(
+    header = builder_class
+    returns = builder_class
+    if self_typed:
+        header = f"{builder_class}<C extends {class_name}, B extends {builder_class}<C, B>>"
+        returns = "B"
+    builder = build_synthetic_symbol(
         name=builder_class, kind="class",
-        signature=f"class {builder_class}",
+        signature=f"class {header}",
         start_line=line, end_line=line,
         file_info=file_info, parent_name=class_name,
-    ))
+    )
+    # A member type's id names every enclosing type, as a written one's does.
+    builder.id = f"{file_info.path}::{scope}::{builder_class}"
+    out.append(builder)
     _add(out, file_info, name="builder", kind="method",
          parent=class_name, line=line,
          signature=f"builder() -> {builder_class}")
@@ -339,13 +355,26 @@ def _emit_builder(
             continue
         _add(out, file_info, name=field.name, kind="method",
              parent=builder_class, line=field.name_line,
-             signature=f"{field.name}({field.type_text or 'Object'} {field.name}) -> {builder_class}")
+             signature=f"{field.name}({field.type_text or 'Object'} {field.name}) -> {returns}")
     _add(out, file_info, name="build", kind="method",
          parent=builder_class, line=line,
          signature=f"build() -> {class_name}")
     _add(out, file_info, name="toString", kind="method",
          parent=builder_class, line=line,
          signature="toString() -> String")
+
+
+def _type_scope(class_node: Node, src: str) -> str:
+    """``Outer::Inner`` for *class_node* and every type declared around it."""
+    names: list[str] = []
+    node: Node | None = class_node
+    while node is not None:
+        if node.type in _TYPE_DECLARATIONS:
+            name_node = node.child_by_field_name("name")
+            if name_node is not None:
+                names.append(node_text(name_node, src).strip())
+        node = node.parent
+    return "::".join(reversed(names))
 
 
 def _emit_for_class(
@@ -371,7 +400,8 @@ def _emit_for_class(
     _emit_constructors(class_node, annotations, fields, file_info, class_name, line, out)
     if "Builder" in annotations or "SuperBuilder" in annotations:
         _emit_builder(fields, _ann_line(annotations, ("Builder", "SuperBuilder"), line),
-                      file_info, class_name, out)
+                      file_info, class_name, out, scope=_type_scope(class_node, src),
+                      self_typed="SuperBuilder" in annotations)
     # Logger field: only one logger annotation per class is valid.
     for ann, logger_type in _TYPE_LOGGER_ANNOTATIONS.items():
         if ann in annotations:
@@ -442,3 +472,17 @@ def lombok_synthetic_symbols(
             _emit_for_class(node, src, file_info, out)
         stack.extend(node.children)
     return out
+
+
+def superbuilder_parent(class_node: Node, src: str, parent: str) -> str | None:
+    """The builder ``@SuperBuilder`` on *class_node* extends: its superclass *parent*'s.
+
+    Lombok requires the superclass to carry ``@SuperBuilder`` too, so its
+    builder exists wherever the class compiles.
+    """
+    if "lombok" not in src:
+        return None
+    modifiers = _modifiers(class_node)
+    if modifiers is None or "SuperBuilder" not in _annotation_nodes(modifiers, src):
+        return None
+    return f"{parent}Builder"

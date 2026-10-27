@@ -5,7 +5,8 @@ from __future__ import annotations
 import posixpath
 import re
 
-from ..models import CallSite
+from ..models import CallSite, Symbol
+from ..return_types import declared_return_type
 from ..symbol_identity import outer_scope, symbol_id_path
 from ..type_names import bare_type_name, strip_type_arguments, type_qualifier
 from ._shared import _FUNCTION_KINDS, _TYPE_KINDS
@@ -32,6 +33,12 @@ def _header_type_parameters(header: str) -> set[str]:
     for param in strip_type_arguments(header[opened.end() : close - 1]).split(","):
         names.update(param.split()[:1])
     return names
+
+
+def _self_bounded(header: str, parameter: str, owner: str) -> bool:
+    """Is *parameter* declared in *header* as ``parameter extends owner<...>``?"""
+    bound = rf"[<,]\s*{re.escape(parameter)}\s+extends\s+{re.escape(owner)}\s*<"
+    return re.search(bound, header) is not None
 
 
 class JavaTypeVisibility:
@@ -230,3 +237,28 @@ class JavaTypeVisibility:
             header = "\n".join(lines[start - 1 : end]).partition("{")[0]
             names.update(_header_type_parameters(header))
         return names
+
+    def _returns_java_self_type(self, callee_id: str) -> bool:
+        """Does *callee_id* return its class's self-bounded type parameter?
+
+        ``B`` of ``class Builder<B extends Builder<B>>`` is the receiver's own
+        type, a subclass included, which is how a fluent builder hierarchy
+        keeps chaining through a method it inherits. Ceiling: a method's own
+        ``<B>`` shadowing the class's is not read.
+        """
+        symbol = self._symbols_by_id.get(callee_id)
+        if symbol is None or not symbol.parent_name:
+            return False
+        returned = declared_return_type(symbol.signature or "") or ""
+        path = symbol_id_path(callee_id)
+        owner = self._symbols_by_id.get(self._only_type_in(path, symbol.parent_name) or "")
+        if owner is None or not returned.isidentifier():
+            return False
+        return _self_bounded(self._java_type_header(path, owner), returned, symbol.parent_name)
+
+    def _java_type_header(self, file_path: str, symbol: Symbol) -> str:
+        """A type's declaration up to its body, or the signature a synthesised one carries."""
+        if "<" in (symbol.signature or ""):
+            return symbol.signature or ""
+        start, end = self._spans_for(file_path).get(symbol.id, (1, 0))
+        return "\n".join(self._text_of(file_path).splitlines()[start - 1 : end]).partition("{")[0]

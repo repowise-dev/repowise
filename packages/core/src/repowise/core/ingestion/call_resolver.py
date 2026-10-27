@@ -459,6 +459,11 @@ class CallResolver(
         # the chain links being typed right now, which a cycle would revisit.
         self._chained_sites: dict[str, dict[tuple[int, str | None, str], CallReceiver]] = {}
         self._chain_links_in_flight: set[tuple[str, int, str | None, str]] = set()
+        # Each chain link's resolved inner call, for the file being resolved: a
+        # self-typed hop walks back down its chain, which would otherwise
+        # re-resolve every lower link once per hop above it.
+        self._chain_inner_resolved: dict[tuple[Any, ...], ResolvedCall | None] = {}
+        self._chain_cycle_hits = 0
         self._unindexed_extensions: frozenset[str] | None = None
 
         # Barrel re-export origins: {barrel_file: {name: origin_file}}
@@ -863,6 +868,7 @@ class CallResolver(
     def resolve_file(self, file_path: str, calls: list[CallSite]) -> list[ResolvedCall]:
         """Resolve all calls in a single file to symbol-level edges."""
         results: list[ResolvedCall] = []
+        self._chain_inner_resolved.clear()
 
         for call in calls:
             if not call.caller_symbol_id:
@@ -1118,7 +1124,7 @@ class CallResolver(
         type_name = (
             tabled
             if tabled is not None
-            else self._callee_chain_return_type(inner_callee, inner, language)
+            else self._callee_chain_return_type(file_path, call, inner, inner_callee, caller_id, language)
         )
         if type_name is None:
             return False, None
@@ -1270,21 +1276,14 @@ class CallResolver(
             # types is not admitted for this language.
             return None
         link = (file_path, call.line, inner.receiver_name, inner.target_name)
-        if link in self._chain_links_in_flight:
+        memo_key = (*link, inner.argument_count, caller_id)
+        if memo_key in self._chain_inner_resolved:
+            resolved_inner = self._chain_inner_resolved[memo_key]
+        elif link in self._chain_links_in_flight:
+            self._chain_cycle_hits += 1
             return None
-        inner_call = CallSite(
-            target_name=inner.target_name,
-            receiver_name=inner.receiver_name,
-            caller_symbol_id=caller_id,
-            line=call.line,
-            argument_count=inner.argument_count,
-            receiver_call=self._nested_receiver_call(file_path, call.line, inner, language),
-        )
-        self._chain_links_in_flight.add(link)
-        try:
-            resolved_inner = self._resolve_one(file_path, inner_call)
-        finally:
-            self._chain_links_in_flight.discard(link)
+        else:
+            resolved_inner = self._resolve_chain_link(file_path, call, inner, caller_id, language)
         if resolved_inner is None:
             return None
         # The overload the inner call's arguments select is the one whose type it returns.
@@ -1305,11 +1304,55 @@ class CallResolver(
                 callee_id = target
         return callee_id
 
+    def _resolve_chain_link(
+        self,
+        file_path: str,
+        call: CallSite,
+        inner: CallReceiver,
+        caller_id: str,
+        language: str,
+    ) -> ResolvedCall | None:
+        """Resolve a chain's inner call, remembered unless a cycle cut it short."""
+        link = (file_path, call.line, inner.receiver_name, inner.target_name)
+        inner_call = CallSite(
+            target_name=inner.target_name,
+            receiver_name=inner.receiver_name,
+            caller_symbol_id=caller_id,
+            line=call.line,
+            argument_count=inner.argument_count,
+            receiver_call=self._nested_receiver_call(file_path, call.line, inner, language),
+        )
+        cycles = self._chain_cycle_hits
+        self._chain_links_in_flight.add(link)
+        try:
+            resolved = self._resolve_one(file_path, inner_call)
+        finally:
+            self._chain_links_in_flight.discard(link)
+        if self._chain_cycle_hits == cycles:
+            self._chain_inner_resolved[(*link, inner.argument_count, caller_id)] = resolved
+        return resolved
+
     def _callee_chain_return_type(
-        self, callee_id: str | None, inner: CallReceiver, language: str
+        self,
+        file_path: str,
+        call: CallSite,
+        inner: CallReceiver,
+        callee_id: str | None,
+        caller_id: str,
+        language: str,
     ) -> str | None:
         if callee_id is None:
             return None
+        if language == "java" and self._returns_java_self_type(callee_id):
+            # A self-bounded ``B`` is the type of whatever the call was made on.
+            # Ceiling: only a chained receiver is typed; ``b.name(x).w(1)`` stops.
+            nested = self._nested_receiver_call(file_path, call.line, inner, language)
+            if nested is None:
+                return None
+            nested_callee = self._chain_inner_callee(file_path, call, nested, caller_id, language)
+            return self._callee_chain_return_type(
+                file_path, call, nested, nested_callee, caller_id, language
+            )
         return self._callee_return_type(callee_id, inner.argument_count, language)
 
     def _nested_receiver_call(

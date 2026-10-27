@@ -361,3 +361,151 @@ class TestLombokCallEdges:
         assert "src/Child.java::Child::name" in callees
         assert "src/Dto.java::DtoBuilder::label" in callees
         assert "src/Dto.java::DtoBuilder::build" in callees
+
+
+def _resolve_with_heritage(tmp_path: Path, files: dict[str, str], caller_file: str) -> list[str]:
+    """Callees of *caller_file*, with heritage resolved as the graph builder does."""
+    from repowise.core.ingestion.call_resolver import CallResolver
+    from repowise.core.ingestion.heritage_resolver import HeritageResolver
+
+    parsed = {}
+    for rel, src in files.items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        parsed[rel] = _parse_full(tmp_path, rel, src)
+    imports: dict[str, set[str]] = {p: set() for p in parsed}
+    parents: dict[str, set[str]] = {}
+    for rel, pf in parsed.items():
+        for rh in HeritageResolver(parsed, imports).resolve_file(rel, pf.heritage):
+            parents.setdefault(rh.child_id, set()).add(rh.parent_id)
+    resolver = CallResolver(parsed, imports, repo_path=str(tmp_path), heritage_parents=parents)
+    return sorted(rc.callee_id for rc in resolver.resolve_file(caller_file, parsed[caller_file].calls))
+
+
+class TestSuperBuilder:
+    """A ``@SuperBuilder`` subclass builder extends its superclass's, generic in itself."""
+
+    _BASE = (
+        "package p;\nimport lombok.experimental.SuperBuilder;\n"
+        "@SuperBuilder\npublic class Base {\n    private String name;\n}\n"
+    )
+    _SUB = (
+        "package p;\nimport lombok.experimental.SuperBuilder;\n"
+        "@SuperBuilder\npublic class Sub extends Base {\n    private int w;\n}\n"
+    )
+
+    def test_the_subclass_builder_extends_the_superclass_builder(self, tmp_path: Path) -> None:
+        pf = _parse_full(tmp_path, "Sub.java", self._SUB)
+        assert [(h.child_name, h.parent_name) for h in pf.heritage] == [
+            ("Sub", "Base"),
+            ("SubBuilder", "BaseBuilder"),
+        ]
+
+    def test_a_plain_builder_adds_no_builder_heritage(self, tmp_path: Path) -> None:
+        src = self._SUB.replace("SuperBuilder", "Builder").replace(".experimental", "")
+        pf = _parse_full(tmp_path, "Sub.java", src)
+        assert [(h.child_name, h.parent_name) for h in pf.heritage] == [("Sub", "Base")]
+
+    def test_a_chain_keeps_the_subclass_builder_through_an_inherited_method(
+        self, tmp_path: Path
+    ) -> None:
+        use = (
+            "package p;\nclass Use {\n    Sub u() {\n"
+            "        return Sub.builder().name(\"a\").w(1).build();\n    }\n}\n"
+        )
+        files = {"p/Base.java": self._BASE, "p/Sub.java": self._SUB, "p/Use.java": use}
+        assert _resolve_with_heritage(tmp_path, files, "p/Use.java") == [
+            "p/Base.java::BaseBuilder::name",
+            "p/Sub.java::Sub::builder",
+            "p/Sub.java::SubBuilder::build",
+            "p/Sub.java::SubBuilder::w",
+        ]
+
+    def test_a_nested_builder_is_a_member_type_of_its_host(self, tmp_path: Path) -> None:
+        """Two outer types nest a ``Create``; each chain stays on its own host's builders."""
+        outer = (
+            "package p;\nimport lombok.experimental.SuperBuilder;\n"
+            "public interface {o} {{\n"
+            "    @SuperBuilder\n    final class Create extends UpdateCreate {{\n"
+            "        private String key;\n    }}\n"
+            "    @SuperBuilder\n    class UpdateCreate {{\n        private String colour;\n    }}\n"
+            "    static Object u() {{\n"
+            "        return Create.builder().colour(\"c\").key(\"k\").build();\n    }}\n}}\n"
+        )
+        files = {"p/AMgmt.java": outer.format(o="AMgmt"), "p/BMgmt.java": outer.format(o="BMgmt")}
+        pf = _parse_full(tmp_path, "AMgmt.java", files["p/AMgmt.java"])
+        assert "AMgmt.java::AMgmt::Create::CreateBuilder" in {s.id for s in pf.symbols}
+        callees = _resolve_with_heritage(tmp_path, files, "p/AMgmt.java")
+        assert "p/AMgmt.java::UpdateCreateBuilder::colour" in callees
+        assert "p/AMgmt.java::CreateBuilder::key" in callees
+        assert "p/AMgmt.java::CreateBuilder::build" in callees
+        assert not any(c.startswith("p/BMgmt.java") for c in callees), callees
+
+
+class TestSelfBoundedReturn:
+    """``B`` of ``Base<B extends Base<B>>`` is the receiver's own type in a chain."""
+
+    def test_a_self_bounded_return_keeps_the_receivers_type(self, tmp_path: Path) -> None:
+        outer = (
+            "package p;\npublic class Outer {\n"
+            "    public abstract static class Base<B extends Base<B>> {\n"
+            "        public B name(String n) { return null; }\n    }\n"
+            "    public static class Sub extends Base<Sub> {\n"
+            "        public Sub extra(int x) { return this; }\n    }\n"
+            "    public static Sub sub() { return new Sub(); }\n}\n"
+        )
+        use = "package p;\nclass Use {\n    void go() {\n        Outer.sub().name(\"a\").extra(1);\n    }\n}\n"
+        files = {"p/Outer.java": outer, "p/Use.java": use}
+        assert _resolve_with_heritage(tmp_path, files, "p/Use.java") == [
+            "p/Outer.java::Base::name",
+            "p/Outer.java::Outer::sub",
+            "p/Outer.java::Sub::extra",
+        ]
+
+    def test_a_type_parameter_bounded_by_another_type_is_not_the_receiver(
+        self, tmp_path: Path
+    ) -> None:
+        """``T extends Other<T>`` is not ``Base``'s self type, so the chain stops."""
+        outer = (
+            "package p;\npublic class Outer {\n"
+            "    public static class Other<T> {}\n"
+            "    public abstract static class Base<B extends Other<B>> {\n"
+            "        public B name(String n) { return null; }\n    }\n"
+            "    public static class Sub extends Base<Sub> {\n"
+            "        public Sub extra(int x) { return this; }\n    }\n"
+            "    public static Sub sub() { return new Sub(); }\n}\n"
+        )
+        use = "package p;\nclass Use {\n    void go() {\n        Outer.sub().name(\"a\").extra(1);\n    }\n}\n"
+        files = {"p/Outer.java": outer, "p/Use.java": use}
+        assert "p/Outer.java::Sub::extra" not in _resolve_with_heritage(tmp_path, files, "p/Use.java")
+
+
+def test_a_long_superbuilder_chain_resolves_each_link_once(tmp_path: Path, monkeypatch) -> None:
+    """Each self-typed hop walks back down its chain; a remembered link keeps that linear."""
+    from repowise.core.ingestion.call_resolver import CallResolver
+
+    fields = [f"f{i}" for i in range(24)]
+    base = (
+        "package p;\nimport lombok.experimental.SuperBuilder;\n@SuperBuilder\npublic class Base {\n"
+        + "".join(f"    private int {f};\n" for f in fields)
+        + "}\n"
+    )
+    sub = (
+        "package p;\nimport lombok.experimental.SuperBuilder;\n"
+        "@SuperBuilder\npublic class Sub extends Base {\n    private int w;\n}\n"
+    )
+    chain = "".join(f".{f}({i})" for i, f in enumerate(fields))
+    use = f"package p;\nclass Use {{\n    Sub u() {{\n        return Sub.builder(){chain}.w(1).build();\n    }}\n}}\n"
+    calls = 0
+    resolve_one = CallResolver._resolve_one
+
+    def counted(self, *args):
+        nonlocal calls
+        calls += 1
+        return resolve_one(self, *args)
+
+    monkeypatch.setattr(CallResolver, "_resolve_one", counted)
+    files = {"p/Base.java": base, "p/Sub.java": sub, "p/Use.java": use}
+    callees = _resolve_with_heritage(tmp_path, files, "p/Use.java")
+    assert {f"p/Base.java::BaseBuilder::{f}" for f in fields} <= set(callees)
+    assert "p/Sub.java::SubBuilder::build" in callees
+    assert calls < 20 * len(fields)
