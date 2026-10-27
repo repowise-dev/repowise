@@ -261,6 +261,24 @@ def _enrich_knowledge_graph(
             )
 
 
+def _checkpoint_failed_page_ids(repo_path: Path | str, result: Any) -> list[str]:
+    """Failed page ids read back from the jobs directory, for a run that did not report."""
+    jobs_dir = Path(repo_path) / ".repowise" / "jobs"
+    if not jobs_dir.exists():
+        return []
+    with contextlib.suppress(Exception):
+        from repowise.core.generation import JobSystem
+
+        js = JobSystem(jobs_dir)
+        job_id = getattr(result, "job_id", None)
+        if job_id:
+            return js.get_checkpoint(job_id).failed_page_ids
+        jobs = js.list_jobs()
+        if jobs:
+            return jobs[0].failed_page_ids
+    return []
+
+
 def run_repo_generation(
     *,
     repo_path: Any,
@@ -415,19 +433,7 @@ def run_repo_generation(
     # lookup as a fallback, but never let stale job data override a callback
     # that explicitly reported zero failures for the current run.
     if not generation_reported:
-        jobs_dir = Path(repo_path) / ".repowise" / "jobs"
-        if jobs_dir.exists():
-            with contextlib.suppress(Exception):
-                from repowise.core.generation import JobSystem
-
-                js = JobSystem(jobs_dir)
-                job_id = getattr(result, "job_id", None)
-                if job_id:
-                    failed_page_ids[:] = js.get_checkpoint(job_id).failed_page_ids
-                else:
-                    jobs = js.list_jobs()
-                    if jobs:
-                        failed_page_ids[:] = jobs[0].failed_page_ids
+        failed_page_ids[:] = _checkpoint_failed_page_ids(repo_path, result)
 
     result.generated_pages = generated_pages
     result.failed_page_ids = failed_page_ids

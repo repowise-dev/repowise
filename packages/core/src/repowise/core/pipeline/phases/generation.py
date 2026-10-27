@@ -75,6 +75,20 @@ class _GenerationDisplay:
             emit_phase_failed(self._progress, "embedding")
 
 
+def _report_run_failures(
+    job_system: Any, job_id: str | None, on_complete: Callable[[list[str]], None]
+) -> None:
+    """Hand *on_complete* this run's failed page ids, never failing the run."""
+    if job_id is None:
+        return
+    # Broad on purpose: reporting is advisory, and a caller's callback or an
+    # unreadable checkpoint must not turn a finished generation into an error.
+    try:
+        on_complete(job_system.get_checkpoint(job_id).failed_page_ids)
+    except Exception as exc:
+        logger.warning("generation_completion_callback_failed", error=str(exc))
+
+
 async def run_generation(
     *,
     repo_path: Path,
@@ -280,12 +294,8 @@ async def run_generation(
     )
     if stats_out is not None:
         stats_out["embed_failed_pages"] = generator.embed_failed_pages
-    if on_generation_complete is not None and generator.last_job_id is not None:
-        try:
-            checkpoint = job_system.get_checkpoint(generator.last_job_id)
-            on_generation_complete(checkpoint.failed_page_ids)
-        except Exception as exc:
-            logger.warning("generation_completion_callback_failed", error=str(exc))
+    if on_generation_complete is not None:
+        _report_run_failures(job_system, generator.last_job_id, on_generation_complete)
     selection = getattr(generator, "selection", None)
     if selection_out is not None and selection is not None:
         selection_out.update(
