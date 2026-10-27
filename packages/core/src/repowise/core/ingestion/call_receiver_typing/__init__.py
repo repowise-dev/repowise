@@ -388,7 +388,8 @@ class ReceiverTypingMixin(
         of that name declares the method anywhere, an out-of-line body in a
         ``.cc`` included, since that declaration hides the base's. The owner is
         compared bare: an out-of-line template member keeps its class's
-        arguments (``Foo<T>::bar``).
+        arguments (``Foo<T>::bar``). Not the ``inherited_typed_receiver`` flag:
+        its Java visibility gate refuses a type reached through an include.
         """
         if (bare, call.target_name) in self._global_methods or any(
             bare_type_name(self._symbols_by_id[sym_id].parent_name or "") == bare

@@ -152,3 +152,56 @@ class TestOtherLanguagesSkipTheCppBranch:
             "class Use {\n  void run(Specs specs) { specs.setAlign(1); }\n}\n"
         )
         _build(tmp_path)
+
+
+class TestCppBaseClassTargetGuards:
+    """Each refusal of ``_cpp_base_class_target`` on its own, with an ancestor always on offer."""
+
+    _HIT = "lib/specs.h::basic_specs::set_align"
+
+    def _resolver(self, **state):
+        from types import SimpleNamespace
+
+        base = {
+            "_global_methods": {},
+            "_global_symbols": {},
+            "_symbols_by_id": {},
+            "_declared_types_named": lambda _name: [
+                ("lib/specs.h", ("lib/specs.h::format_specs", "0"), 0)
+            ],
+            "_ancestor_method": lambda *_a: self._HIT,
+        }
+        return SimpleNamespace(**{**base, **state})
+
+    def _target(self, resolver):
+        from repowise.core.ingestion.call_receiver_typing import ReceiverTypingMixin
+        from repowise.core.ingestion.models import CallSite
+
+        call = CallSite("set_align", "specs", "lib/parse.cc::parse_align", 2, 1)
+        return ReceiverTypingMixin._cpp_base_class_target(
+            resolver, call, "lib/parse.cc::parse_align", "format_specs"
+        )
+
+    def test_answers_with_the_ancestor_when_no_guard_fires(self) -> None:
+        assert self._target(self._resolver()) == (self._HIT, "global")
+
+    def test_a_declared_class_method_pair_refuses(self) -> None:
+        pairs = {("format_specs", "set_align"): [("lib/specs.h", "x")]}
+        assert self._target(self._resolver(_global_methods=pairs)) is None
+
+    def test_a_same_named_class_declaring_the_method_refuses(self) -> None:
+        from types import SimpleNamespace
+
+        sym_id = "lib/specs.cc::format_specs<T>::set_align"
+        resolver = self._resolver(
+            _global_symbols={"set_align": [sym_id]},
+            _symbols_by_id={sym_id: SimpleNamespace(parent_name="format_specs<T>")},
+        )
+        assert self._target(resolver) is None
+
+    def test_an_ambiguous_type_name_refuses(self) -> None:
+        two = [
+            ("lib/specs.h", ("lib/specs.h::format_specs", "0"), 0),
+            ("lib/other.h", ("lib/other.h::format_specs", "0"), 0),
+        ]
+        assert self._target(self._resolver(_declared_types_named=lambda _name: two)) is None
