@@ -115,3 +115,40 @@ class TestCppBaseClassReceiver:
         _repo(tmp_path, specs_h)
         targets = _call_targets(_build(tmp_path), "lib/parse.cc::parse_align")
         assert not any(t.endswith("::set_align") for t in targets)
+
+
+class TestOtherLanguagesSkipTheCppBranch:
+    def test_python_typed_receiver_never_asks_the_cpp_base_class_rule(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        from repowise.core.ingestion.call_receiver_typing import ReceiverTypingMixin as M
+
+        def _boom(*_a, **_k):
+            raise AssertionError("C++ base-class rule used for a non-C++ file")
+
+        monkeypatch.setattr(M, "_cpp_base_class_target", _boom, raising=True)
+        (tmp_path / "base.py").write_text("class Base:\n    def set_align(self, a):\n        pass\n")
+        (tmp_path / "derived.py").write_text(
+            "from base import Base\n\nclass Specs(Base):\n    width = 0\n"
+        )
+        (tmp_path / "use.py").write_text(
+            "from derived import Specs\n\n"
+            "def run(specs: Specs):\n    specs.set_align(1)\n"
+        )
+        _build(tmp_path)
+
+    def test_java_typed_receiver_never_asks_the_cpp_base_class_rule(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        from repowise.core.ingestion.call_receiver_typing import ReceiverTypingMixin as M
+
+        def _boom(*_a, **_k):
+            raise AssertionError("C++ base-class rule used for a non-C++ file")
+
+        monkeypatch.setattr(M, "_cpp_base_class_target", _boom, raising=True)
+        (tmp_path / "Base.java").write_text("class Base {\n  void setAlign(int a) {}\n}\n")
+        (tmp_path / "Specs.java").write_text("class Specs extends Base {\n  int width;\n}\n")
+        (tmp_path / "Use.java").write_text(
+            "class Use {\n  void run(Specs specs) { specs.setAlign(1); }\n}\n"
+        )
+        _build(tmp_path)
