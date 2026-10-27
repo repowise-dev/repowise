@@ -594,6 +594,8 @@ def _finalize_symbols(
         # The grammar reads a C# 14 extension block as a constructor
         # named ``extension``; its members were added above instead.
         symbols = drop_extension_block_symbols(symbols, root, src)
+    if lang == "python":
+        symbols = _drop_python_rebindings(symbols)
     # Anonymous members go last, once the overloads holding them carry
     # their discriminators.
     anonymous = [s for s in symbols if is_anonymous_member(s)]
@@ -601,6 +603,21 @@ def _finalize_symbols(
     follow_renamed_hosts(symbols)
     disambiguate_colliding_ids(anonymous, lang)
     return symbols
+
+
+_PYTHON_ASSIGNMENT_KINDS = frozenset({"variable", "constant"})
+
+
+def _drop_python_rebindings(symbols: list[Symbol]) -> list[Symbol]:
+    """Drop a module-level assignment that rebinds a ``def`` or ``class`` of its name.
+
+    ``Factory = _add_hash(Factory)`` declares nothing new, yet it shares the
+    class's id, so the graph node took the assignment's line and every call to
+    ``Factory`` landed there.
+    """
+    defined = {s.id for s in symbols if s.kind not in _PYTHON_ASSIGNMENT_KINDS}
+    return [s for s in symbols if s.kind not in _PYTHON_ASSIGNMENT_KINDS or s.id not in defined]
+
 
 def _python_name_alias_chain(def_node: Node, src: str) -> tuple[list[str], str | None]:
     """Every bare-identifier target of a Python assignment, and its terminal name.

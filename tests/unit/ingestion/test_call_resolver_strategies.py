@@ -2245,6 +2245,35 @@ class TestExternalReceiverType:
         assert [d.type_name for d in scan_declarations("List<Foo> xs;\n", "java")] == [
             "external:List"
         ]
+
+
+class TestPythonRebindingOfADefinition:
+    """``Factory = deco(Factory)`` rebinds the class; it is not a second symbol."""
+
+    def test_a_rebound_class_keeps_its_own_symbol(self, tmp_path: Path) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "mod.py": (
+                    "python",
+                    "def deco(cls):\n    return cls\n\n"
+                    "class Factory:\n    pass\n\n"
+                    "Factory = deco(Factory)\n\n"
+                    "def use_it():\n    Factory()\n",
+                )
+            },
+        )
+        factories = [s for s in parsed["mod.py"].symbols if s.name == "Factory"]
+        assert [(s.kind, s.start_line) for s in factories] == [("class", 4)]
+        assert ("mod.py::use_it", "mod.py::Factory", 0.95, "same_file") in _edges(
+            parsed, tmp_path
+        )
+
+    def test_an_assignment_with_no_definition_stays_a_symbol(self, tmp_path: Path) -> None:
+        parsed = _parse_all(tmp_path, {"mod.py": ("python", "handler = make()\n")})
+        assert [s.kind for s in parsed["mod.py"].symbols] == ["variable"]
+
+
 class TestPythonNameAliasAssignment:
     """A plain-name alias must redirect onto the real definition, not its own line (#2791)."""
 
