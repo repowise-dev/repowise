@@ -538,8 +538,11 @@ class CallResolver(
             ):
                 aliases.append((sym.id, sym.alias_of, sym.parent_name))
 
-            # Method index: (class_name, method_name) → symbol_id
-            if sym.parent_name:
+            # Method index: (class_name, method_name) → symbol_id. A property
+            # holding no function is a value: ``x.f()`` never calls it, and a
+            # same-named extension or inherited method is what it reaches.
+            uncallable = _is_data_member(sym) and not self._holds_function(path, sym)
+            if sym.parent_name and not (uncallable and sym.language in _PROPERTY_VARIABLE_LANGUAGES):
                 key = (sym.parent_name, sym.name)
                 file_methods[key] = index_id
                 self._global_methods[key].append((path, index_id))
@@ -552,7 +555,7 @@ class CallResolver(
             if extended is not None:
                 extensions[(extended, sym.name)].add((path, index_id))
 
-            self._index_globally(path, sym, index_id)
+            self._index_globally(path, sym, index_id, uncallable)
 
         for alias_id, alias_of_name, parent_name in aliases:
             # Prefer a target in the alias's own scope before falling back
@@ -597,10 +600,10 @@ class CallResolver(
             return None
         return self._kotlin_receiver(sym)
 
-    def _index_globally(self, path: str, sym: Symbol, index_id: str) -> None:
+    def _index_globally(self, path: str, sym: Symbol, index_id: str, uncallable: bool) -> None:
         if _has_internal_linkage(path, sym):
             self._tu_local_ids.add(index_id)
-        self._record_callability(path, sym, index_id)
+        self._record_callability(index_id, uncallable)
         # A getter and its setter are two declarations under one id, which reads
         # as an overload set and is not one: the name is an attribute.
         if is_property_accessor(sym.decorators):
@@ -610,12 +613,12 @@ class CallResolver(
         if not (bodiless_method or sym.kind in _EXTENSION_KINDS or is_anonymous_member(sym)):
             self._global_symbols[sym.name].append(index_id)
 
-    def _record_callability(self, path: str, sym: Symbol, index_id: str) -> None:
+    def _record_callability(self, index_id: str, uncallable: bool) -> None:
         """Mark *index_id* a data member's, unless anything callable shares it.
 
         A Kotlin `val isDark` and `fun isDark()` in one file are one id.
         """
-        if _is_data_member(sym) and not self._holds_function(path, sym):
+        if uncallable:
             if index_id not in self._callable_ids:
                 self._non_callable_ids.add(index_id)
         else:
