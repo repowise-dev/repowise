@@ -254,3 +254,44 @@ def test_a_caller_id_two_definitions_share_draws_no_self_edge(tmp_path: Path) ->
 def test_a_caller_id_one_definition_holds_draws_a_self_edge(tmp_path: Path) -> None:
     text = "def fact(n):\n    return fact(n - 1)\n"
     assert _edges(tmp_path, "python", "m.py", text) == {("m.py::fact", "m.py::fact")}
+
+
+def _shared_ids(tmp_path: Path, language: str, rel: str, text: str) -> frozenset[str]:
+    from repowise.core.ingestion.call_resolver import _shared_definition_ids
+
+    (tmp_path / rel).write_text(text, encoding="utf-8")
+    info = FileInfo(
+        path=rel,
+        abs_path=str(tmp_path / rel),
+        language=language,
+        size_bytes=len(text),
+        git_hash="",
+        last_modified=datetime.now(),
+        is_test=False,
+        is_config=False,
+        is_api_contract=False,
+        is_entry_point=False,
+    )
+    return _shared_definition_ids({rel: _PARSER.parse_file(info, text.encode("utf-8"))})
+
+
+def test_a_declaration_twin_of_one_definition_does_not_share_the_id(tmp_path: Path) -> None:
+    text = "class S {\npublic:\n  int walk(int n);\n};\nint S::walk(int n) { return n ? walk(n - 1) : 0; }\n"
+    assert _shared_ids(tmp_path, "cpp", "m.cpp", text) == frozenset()
+    # The one definition still draws its self edge.
+    assert _edges(tmp_path, "cpp", "m.cpp", text) == {("m.cpp::S::walk", "m.cpp::S::walk")}
+
+
+def test_two_definitions_of_one_id_are_shared(tmp_path: Path) -> None:
+    text = "def fact(n):\n    return fact(n - 1)\n\ndef fact(n):\n    return fact(n - 1)\n"
+    assert _shared_ids(tmp_path, "python", "m.py", text) == frozenset({"m.py::fact"})
+
+
+def test_an_overload_representative_calls_a_sibling_not_itself(tmp_path: Path) -> None:
+    # f#1 is the set's representative; its call has another arity, so it is no recursion.
+    text = (
+        "class A {\n  int f(int a) { return f(a, 1, 2); }\n"
+        "  int f(int a, int b) { return b; }\n"
+        "  int f(int a, int b, int c) { return c; }\n}\n"
+    )
+    assert _edges(tmp_path, "java", "A.java", text) == {("A.java::A::f#1", "A.java::A::f#3")}
