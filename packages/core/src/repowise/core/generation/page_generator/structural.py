@@ -556,10 +556,9 @@ FILE_PAGE_TEMPLATE = "file_page.j2"
 SYMBOL_SPOTLIGHT_TEMPLATE = "symbol_spotlight.j2"
 
 # Metadata key holding a structural page's render fingerprint. It lives in
-# metadata rather than in a column of its own because ``GeneratedPage`` already
-# has a ``content_hash`` field that is never persisted (nothing populates it
-# when prior pages are loaded), and a second unpersisted hash would be worse
-# than none. metadata_json is written and read back on every page already.
+# metadata rather than in a column of its own because ``wiki_pages.content_hash``
+# is already the model pages' subject reuse key (issue #1089), a different
+# digest. metadata_json is written and read back on every page already.
 RENDER_KEY = "render_key"
 
 
