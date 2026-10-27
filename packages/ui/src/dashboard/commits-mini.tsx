@@ -78,7 +78,7 @@ export function CommitsMini({ commits, repoId, linkPrefix, previewCount = 8 }: C
                 }`}
                 title={
                   c.review_priority
-                    ? `${c.review_priority} repo-relative review priority`
+                    ? `${c.review_priority} repo-relative size and spread`
                     : c.change_risk_level
                       ? `${c.change_risk_level} absolute per-commit fallback band`
                       : undefined
