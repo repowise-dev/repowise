@@ -32,7 +32,7 @@ def test_the_migration_adds_and_drops_the_column(tmp_path: Path) -> None:
     config = _alembic_config(db_path)
     command.upgrade(config, "0120")
     assert "content_hash" in _columns(db_path)
-    command.downgrade(config, "0118")
+    command.downgrade(config, "0119")
     assert "content_hash" not in _columns(db_path)
 
 
