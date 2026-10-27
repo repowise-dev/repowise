@@ -91,7 +91,7 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
         if not _ANY_PATTERN.search(line):
             continue
         snippet: str | None = None
-        secret_hits: list[tuple[dict, str, int]] = []
+        secret_hits: list[tuple[dict, tuple[int, int], int]] = []
         for pattern, kind, severity in _PATTERNS:
             if kind in _CALL_KINDS:
                 continue
@@ -133,8 +133,8 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
                 if match and kind == "unsafe_inner_html" and _is_html_type_annotation(line, match):
                     match = None
             if match:
-                value_span = _value_span(kind, match, line) if match.groups() else (0, 0)
-                value = line[slice(*value_span)] if match.groups() else ""
+                value_span = _value_span(kind, match, line)
+                value = line[slice(*value_span)]
                 if kind in SECRET_KINDS:
                     name = _assignment_name(line[: value_span[0]])
                     if not _is_secret_value(kind, value, name):
@@ -150,12 +150,12 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
                     "line": lineno,
                 }
                 findings.append(finding)
-                if kind in SECRET_KINDS:
-                    secret_hits.append((finding, value, _SECRET_SPECIFICITY.get(kind, 2)))
-        # One secret, one finding: the highest-ranked kind that saw it names it.
-        # Either value can hold the other: a keyword's runs to the closing quote.
-        for finding, value, rank in secret_hits:
-            if any(r > rank and (o in value or value in o) for _, o, r in secret_hits):
+                if value:
+                    secret_hits.append((finding, value_span, _SECRET_SPECIFICITY.get(kind, 2)))
+        # One secret, one finding: the highest-ranked kind that saw its span names it.
+        # Either span can hold the other: a keyword's runs to the closing quote.
+        for finding, (start, end), rank in secret_hits:
+            if any(r > rank and max(start, s) < min(end, e) for _, (s, e), r in secret_hits):
                 findings.remove(finding)
 
     # Calls that open on one line and set ``shell=True`` on a later one; reported

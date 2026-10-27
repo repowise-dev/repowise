@@ -463,12 +463,6 @@
           "severity": "high",
           "snippet": "NEXT_PUBLIC_STRIPE_SECRET=sk_l****",
           "line": 1
-        },
-        {
-          "kind": "public_env_secret",
-          "severity": "high",
-          "snippet": "NEXT_PUBLIC_STRIPE_SECRET=sk_l****",
-          "line": 1
         }
       ]
     },

@@ -195,6 +195,10 @@ def _string_end(line: str, start: int) -> int:
 
 def _value_span(kind: str, match: re.Match, line: str) -> tuple[int, int]:
     """The captured credential's span; a keyword value runs to its closing quote."""
+    if kind == "public_env_secret":
+        return _public_env_value(line, match.end()) or (0, 0)
+    if not match.groups():
+        return (0, 0)
     start, end = match.span(1)
     return (start, _string_end(line, start)) if kind in _KEYWORD_KINDS else (start, end)
 
