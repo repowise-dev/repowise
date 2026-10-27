@@ -678,6 +678,27 @@ EXPORT_API const struct S *fn5(int a) { if (a) { return 0; } return 0; }
     assert expected <= {r.name for r in results}
 
 
+def test_cpp_export_macro_class_and_annotated_fields_are_measured(tmp_path):
+    # ``class API Big {`` used to lose the class and its first method, and
+    # ``int x_ GUARDED_BY(mu_);`` hid the field from cohesion.
+    source = b"""class LIB_API Big {
+ public:
+  void a() { x_ = 1; }
+  void b() { y_ = 2; }
+ private:
+  int x_ GUARDED_BY(mu_);
+  int y_ GUARDED_BY(mu_);
+};
+"""
+    p = tmp_path / "big.h"
+    p.write_bytes(source)
+    classes = {c.name: c for c in walk_file(str(p), "cpp", source).classes}
+    if not classes:
+        pytest.skip("tree-sitter language pack missing for cpp")
+    assert classes["Big"].method_count == 2
+    assert classes["Big"].field_count == 2
+
+
 def test_cpp_class_body_skips_a_nested_type_read_as_a_function(tmp_path):
     source = b"""class Outer {
  public:
