@@ -220,6 +220,11 @@ def test_guard_counts_once(language: str, src: str):
         ("csharp", "class C { void f(bool a, bool b) { foreach (var x in H(a && b || a)) { G(x); } } }\n"),
         ("kotlin", "fun f(a: Boolean, b: Boolean) { for (x in h(a && b || a)) g(x) }\n"),
         ("ruby", "def f(a, b, c)\n  for x in (a && b || c)\n    g(x)\n  end\nend\n"),
+        ("rust", "fn f(a: bool, b: bool) { for x in h(a && b || a) { g(x); } }\n"),
+        ("swift", "func f(a: Bool, b: Bool) {\n for x in h(a && b || a) { g(x) }\n}\n"),
+        ("cpp", "void f(bool a, bool b) { for (auto x : h(a && b || a)) { g(x); } }\n"),
+        ("php", "<?php function f($a, $b) { foreach (h($a && $b || $a) as $x) { g($x); } }\n"),
+        ("scala", "object O { def f(a: Boolean, b: Boolean) = { for (x <- h(a && b || a)) g(x) } }\n"),
     ],
 )
 def test_foreach_iterable_is_not_a_condition(language: str, src: str):
