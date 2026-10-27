@@ -34,3 +34,19 @@ def test_a_helper_in_test_material_is_not_flagged(path: str, is_test: bool | Non
 def test_the_same_signature_in_production_code_is_flagged() -> None:
     [finding] = PrimitiveObsessionDetector().detect(_ctx("src/graph.py", False))
     assert finding.function_name == "_add_edge"
+
+
+@pytest.mark.parametrize(("keyword_only", "flagged"), [(2, False), (1, True)])
+def test_keyword_only_parameters_are_not_counted(keyword_only: int, flagged: bool) -> None:
+    helper = FunctionComplexity(
+        "configure", 1, 12, ccn=1, max_nesting=0, cognitive=0, nloc=10,
+        param_count=6, keyword_only_param_count=keyword_only,
+    )
+    ctx = FileContext(
+        file_path="src/app.py", language="python", nloc=80, has_test_file=False, module=None,
+        is_test=False, all_functions=(helper, _FILLER),
+    )
+    findings = PrimitiveObsessionDetector().detect(ctx)
+    assert bool(findings) is flagged
+    if findings:
+        assert findings[0].reason.endswith("takes 6 parameters, 1 keyword-only")

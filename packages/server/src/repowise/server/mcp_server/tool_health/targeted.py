@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from repowise.core.analysis.finding_registry import split_held
 from repowise.core.analysis.health.aggregation import module_rollups as _module_rollups
 from repowise.core.analysis.health.trends import file_trend
 from repowise.server.mcp_server.tool_health.loading import HealthData, history_of
@@ -52,6 +53,7 @@ def build_targeted(
             "findings",
         ),
         "findings_total": findings_total,
+        **_findings_hidden(data),
         # Which reading the scores are on; last, so identity keys lead.
         "scope": pop.reported_scope,
         "counts": pop.reported_counts,
@@ -79,6 +81,24 @@ def build_targeted(
     return result, ModeTotals(
         metrics=len(metric_payload), trends=len(trends), modules=len(module_rollup)
     )
+
+
+def _findings_hidden(data: HealthData) -> dict[str, str]:
+    """One line beside ``findings`` naming what the holds kept off it and the
+    points those rows still deduct, so the list is never read as the whole
+    deduction. Absent when nothing was held."""
+    held = data.findings.held_rows
+    if not held:
+        return {}
+    _, by_hold = split_held("health", held, data.pop.files, kind="biomarker_type")
+    kinds = ", ".join(f"{key} {n}" for key, n in sorted(by_hold.items()))
+    points = sum(float(f.health_impact or 0.0) for f in held)
+    return {
+        "findings_hidden": (
+            f"{len(held)} held-back findings ({kinds}) carry {points:.2f} points of total_deduction "
+            'not listed here; include=["unverified"] lists them.'
+        )
+    }
 
 
 def _metric_payload(data: HealthData) -> list[dict[str, Any]]:

@@ -74,7 +74,7 @@ import re
 from typing import TYPE_CHECKING, ClassVar
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
     from tree_sitter import Node
 
@@ -544,6 +544,22 @@ class BasePerfDialect:
             yield cur
             if cur.type not in prune or cur == node:
                 stack.extend(cur.children)
+
+    @classmethod
+    def _exit_follows(
+        cls, stmt: Node, is_exit: Callable[[Node], bool], jumps: frozenset[str]
+    ) -> bool:
+        """A later statement in *stmt*'s block ends the loop (*is_exit*), and no
+        statement before it holds a jump (*jumps*, e.g. ``continue``) that could
+        loop back first. Then *stmt* runs at most once per loop entry."""
+        nxt = stmt.next_named_sibling
+        while nxt is not None:
+            if is_exit(nxt):
+                return True
+            if any(n.type in jumps for n in cls._walk(nxt)):
+                return False
+            nxt = nxt.next_named_sibling
+        return False
 
     @staticmethod
     def _grows(magnitude: LoopMagnitude | None) -> LoopMagnitude | None:
