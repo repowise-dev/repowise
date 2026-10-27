@@ -12,6 +12,7 @@ Covers the maintainer's review points for issue #818:
 from __future__ import annotations
 
 import os
+import subprocess
 import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -229,6 +230,7 @@ async def test_history_secrets_only_scan_skips_non_secret_patterns(session: Asyn
     scanner._blob_introductions = lambda *a, **k: (  # type: ignore[assignment]
         {"blob1": "abc123"},
         {"abc123": "2026-01-01T00:00:00+00:00"},
+        {},
     )
     scanner._read_blobs_batch = lambda *a, **k: {"blob1": content}  # type: ignore[assignment]
     scanner._is_source = staticmethod(lambda p: True)  # type: ignore[assignment]
@@ -260,6 +262,7 @@ async def test_history_unique_blob_scanned_once(session: AsyncSession) -> None:
             "c1": "2026-01-01T00:00:00+00:00",
             "c2": "2026-02-01T00:00:00+00:00",
         },
+        {},
     )
 
     def _read(*a, **k):
@@ -281,7 +284,7 @@ async def test_history_progress_fires_for_clean_repo(session: AsyncSession) -> N
     scanner = HistorySecurityScanner(session, "repo-1")
     scanner._list_commits = lambda *a, **k: [("abc123", "2026-01-01T00:00:00+00:00")]  # type: ignore[assignment]
     scanner._unique_blobs = lambda *a, **k: {"blob1": "README.md"}  # type: ignore[assignment]
-    scanner._blob_introductions = lambda *a, **k: ({}, {})  # type: ignore[assignment]
+    scanner._blob_introductions = lambda *a, **k: ({}, {}, {})  # type: ignore[assignment]
     scanner._read_blobs_batch = lambda *a, **k: {"blob1": "# docs\n"}  # type: ignore[assignment]
     scanner._is_source = staticmethod(lambda p: True)  # type: ignore[assignment]
 
@@ -310,6 +313,9 @@ def test_secret_kinds_are_the_genuine_credential_patterns() -> None:
         "slack_token",
         "google_api_key",
         "stripe_key",
+        "gitlab_token",
+        "azure_devops_pat",
+        "git_url_credentials",
         "private_key_pem",
     } == SECRET_KINDS
 
@@ -327,10 +333,13 @@ def test_secret_kinds_are_the_genuine_credential_patterns() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _git(repo: Path, *args: str) -> None:
+def _git(repo: Path, *args: str) -> str:
     import subprocess
 
-    subprocess.run(["git", *args], cwd=str(repo), check=True, capture_output=True)
+    result = subprocess.run(
+        ["git", *args], cwd=str(repo), check=True, capture_output=True, text=True
+    )
+    return result.stdout.strip()
 
 
 @pytest.fixture
@@ -377,6 +386,212 @@ async def test_history_scan_on_real_repo_records_commit_provenance(
         assert m["line_number"] == 1
         assert m["commit_sha"], "no introducing commit recorded"
         assert m["commit_at"] is not None, "introducing commit has no date"
+
+
+async def test_history_drops_secrets_in_a_gitleaks_allowlisted_path(
+    session: AsyncSession, secret_repo: Path
+) -> None:
+    (secret_repo / ".gitleaks.toml").write_text("[allowlist]\npaths = ['''^leak\\.py$''']\n")
+    await HistorySecurityScanner(session, "repo-1").scan_history(secret_repo, secrets_only=True)
+    assert not (await session.execute(text("SELECT 1 FROM security_findings"))).all()
+
+
+async def test_history_reports_a_blob_at_its_path_outside_the_allowlist(
+    session: AsyncSession, secret_repo: Path
+) -> None:
+    # One blob at two paths; git lists the allowlisted one first.
+    (secret_repo / ".gitleaks.toml").write_text("[allowlist]\npaths = ['''^(a_fixtures/|leak)''']\n")
+    secret = (secret_repo / "leak.py").read_text()
+    for folder in ("a_fixtures", "src"):
+        (secret_repo / folder).mkdir()
+        (secret_repo / folder / "creds.py").write_text(secret)
+    _git(secret_repo, "add", ".")
+    _git(secret_repo, "commit", "-m", "copy the key")
+    await HistorySecurityScanner(session, "repo-1").scan_history(secret_repo, secrets_only=True)
+    rows = (await session.execute(text("SELECT file_path FROM security_findings"))).all()
+    assert {r._mapping["file_path"] for r in rows} == {"src/creds.py"}
+
+
+async def test_history_deduplicates_non_secrets_in_an_allowlisted_path(
+    session: AsyncSession, secret_repo: Path
+) -> None:
+    """The path allowlist suppresses secrets while non-secret findings deduplicate."""
+    (secret_repo / ".gitleaks.toml").write_text("[allowlist]\npaths = ['''^leak\\.py$''']\n")
+    source = secret_repo / "leak.py"
+    with source.open("a") as stream:
+        stream.write('import os\nos.system("echo hello")\n')
+    _git(secret_repo, "add", "leak.py")
+    _git(secret_repo, "commit", "-m", "add a non-secret finding")
+    first_commit = _git(secret_repo, "rev-parse", "HEAD")
+    with source.open("a") as stream:
+        stream.write("value = 1\n")
+    _git(secret_repo, "add", "leak.py")
+    _git(secret_repo, "commit", "-m", "unrelated edit")
+
+    scanner = HistorySecurityScanner(session, "repo-1")
+    summary = await scanner.scan_history(secret_repo, secrets_only=False)
+    rows = (await session.execute(text("SELECT kind, commit_sha FROM security_findings"))).all()
+    assert [(row.kind, row.commit_sha) for row in rows] == [("os_system", first_commit)]
+    assert summary.findings_inserted == 1
+    assert summary.by_kind == {"os_system": 1}
+
+    rerun = await scanner.scan_history(secret_repo, secrets_only=False)
+    assert rerun.findings_inserted == 0
+    assert rerun.by_kind == {}
+    assert rerun.by_severity == {}
+
+
+@pytest.mark.parametrize(
+    ("versions", "introduction_indexes"),
+    [
+        (
+            [
+                'password = "hunter2-not-a-real-secret"\n',
+                'password = "hunter2-not-a-real-secret"\nvalue = 1\n',
+                'password = "hunter2-not-a-real-secret"\nvalue = 2\n',
+            ],
+            [0],
+        ),
+        (
+            [
+                'password = "hunter2-not-a-real-secret"\n',
+                'password = "different-not-a-real-secret"\n',
+                'password = "different-not-a-real-secret"\nvalue = 1\n',
+            ],
+            [0, 1],
+        ),
+        (
+            [
+                'password = "hunter2-not-a-real-secret"\n',
+                "value = 1\n",
+                'password = "hunter2-not-a-real-secret"\nvalue = 2\n',
+            ],
+            [0],
+        ),
+    ],
+    ids=["unrelated-edits", "changed-password", "removed-and-readded"],
+)
+async def test_history_deduplicates_findings_across_file_versions(
+    session: AsyncSession,
+    secret_repo: Path,
+    versions: list[str],
+    introduction_indexes: list[int],
+) -> None:
+    """An unchanged finding belongs to its earliest commit, not every later blob."""
+    _git(secret_repo, "commit", "--amend", "--no-edit", "--date=2026-01-01T00:00:00+00:00")
+    commits = [_git(secret_repo, "rev-parse", "HEAD")]
+    for index, content in enumerate(versions[1:], start=2):
+        (secret_repo / "leak.py").write_text(content)
+        _git(secret_repo, "add", "leak.py")
+        _git(
+            secret_repo,
+            "commit",
+            "-m",
+            f"version {index}",
+            f"--date=2026-01-{index:02d}T00:00:00+00:00",
+        )
+        commits.append(_git(secret_repo, "rev-parse", "HEAD"))
+
+    scanner = HistorySecurityScanner(session, "repo-1")
+    summary = await scanner.scan_history(secret_repo)
+    rows = (await session.execute(text("SELECT commit_sha FROM security_findings"))).all()
+    assert {row.commit_sha for row in rows} == {commits[i] for i in introduction_indexes}
+    assert len(rows) == summary.findings_inserted == len(introduction_indexes)
+    assert summary.by_kind == {"hardcoded_password": len(introduction_indexes)}
+    assert summary.by_severity == {"high": len(introduction_indexes)}
+    assert summary.commits_scanned == 3
+    assert summary.files_scanned == summary.blobs_scanned == 4
+
+    rerun = await scanner.scan_history(secret_repo)
+    assert rerun.findings_inserted == 0
+    assert rerun.by_kind == {}
+    assert rerun.by_severity == {}
+    rows_after_rerun = (await session.execute(text("SELECT id FROM security_findings"))).all()
+    assert len(rows_after_rerun) == len(rows)
+
+
+@pytest.mark.parametrize(
+    "later_author_date",
+    ["2026-01-01T00:00:00+00:00", "2025-12-31T00:00:00+00:00"],
+    ids=["equal-author-dates", "backdated-later-commit"],
+)
+async def test_history_uses_commit_order_regardless_of_author_dates(
+    session: AsyncSession, secret_repo: Path, later_author_date: str
+) -> None:
+    """Equal or backdated author dates must not let a later edit win attribution."""
+    date = "2026-01-01T00:00:00+00:00"
+    _git(secret_repo, "commit", "--amend", "--no-edit", f"--date={date}")
+    first_commit = _git(secret_repo, "rev-parse", "HEAD")
+    with (secret_repo / "leak.py").open("a") as source:
+        source.write("value = 1\n")
+    _git(secret_repo, "add", "leak.py")
+    _git(secret_repo, "commit", "-m", "unrelated edit", f"--date={later_author_date}")
+
+    summary = await HistorySecurityScanner(session, "repo-1").scan_history(secret_repo)
+    rows = (await session.execute(text("SELECT commit_sha FROM security_findings"))).all()
+    assert [row.commit_sha for row in rows] == [first_commit]
+    assert summary.findings_inserted == 1
+
+
+async def test_history_keeps_distinct_vendor_keys_with_the_same_masked_snippet(
+    session: AsyncSession, secret_repo: Path
+) -> None:
+    """Vendor-key identity includes the raw material's hash, not just its mask."""
+    commits = []
+    for index, suffix in enumerate(["QZXNRTVYWMPKLBHG", "ZXCVBNMLKJHGFDSA"], start=1):
+        (secret_repo / "client.py").write_text(f'client_id = "AKIA{suffix}"\n')
+        _git(secret_repo, "add", "client.py")
+        _git(
+            secret_repo,
+            "commit",
+            "-m",
+            f"key {index}",
+            f"--date=2026-01-{index:02d}T00:00:00+00:00",
+        )
+        commits.append(_git(secret_repo, "rev-parse", "HEAD"))
+
+    summary = await HistorySecurityScanner(session, "repo-1").scan_history(secret_repo)
+    rows = (
+        await session.execute(
+            text("SELECT snippet, commit_sha FROM security_findings WHERE kind = 'aws_access_key'")
+        )
+    ).all()
+    assert len(rows) == 2
+    assert len({row.snippet for row in rows}) == 1
+    assert {row.commit_sha for row in rows} == set(commits)
+    assert summary.by_kind["aws_access_key"] == 2
+
+
+async def test_history_prefers_known_introduction_over_missing_provenance(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scanner = HistorySecurityScanner(session, "repo-1")
+    content = 'password = "hunter2-not-a-real-secret"\n'
+    monkeypatch.setattr(scanner, "_list_commits", lambda *a: [("c1", "2026-01-01T00:00:00Z")])
+    monkeypatch.setattr(scanner, "_unique_blobs", lambda *a: {"unknown": "a.py", "known": "a.py"})
+    monkeypatch.setattr(
+        scanner,
+        "_blob_introductions",
+        lambda *a: (
+            {"known": "c1"},
+            {"c1": "2026-01-01T00:00:00Z"},
+            {},
+        ),
+    )
+    monkeypatch.setattr(
+        scanner,
+        "_read_blobs_batch",
+        lambda *a: {
+            "unknown": content + "value = 1\n",
+            "known": content,
+        },
+    )
+
+    summary = await scanner.scan_history(Path("/unused"))
+    rows = (await session.execute(text("SELECT commit_sha FROM security_findings"))).all()
+    assert [row.commit_sha for row in rows] == ["c1"]
+    assert summary.files_scanned == 2
+    assert summary.findings_inserted == 1
 
 
 async def test_history_default_skips_test_fixtures_and_placeholders(
@@ -476,10 +691,20 @@ async def test_blob_introductions_resolves_real_blobs(secret_repo: Path) -> None
     """Every source blob rev-list reports must resolve to an introducing commit."""
     scanner = HistorySecurityScanner.__new__(HistorySecurityScanner)
     blobs = scanner._unique_blobs(secret_repo, None, None)
-    intro, dates = scanner._blob_introductions(secret_repo, None, None)
+    intro, dates, _ = scanner._blob_introductions(secret_repo, None, None)
 
     source = [sha for sha, path in blobs.items() if HistorySecurityScanner._is_source(path)]
     assert source, "no source blobs found in the fixture repo"
     for sha in source:
         assert sha in intro, f"blob {sha} has no introducing commit (SHA width mismatch?)"
         assert dates.get(intro[sha]), "introducing commit has no author date"
+
+
+def test_read_blobs_batch_git_failure_raises(tmp_path: Path) -> None:
+    """A git failure in history scan must raise rather than silently returning {}."""
+    scanner = HistorySecurityScanner.__new__(HistorySecurityScanner)
+    not_a_repo = tmp_path / "not_a_repo"
+    not_a_repo.mkdir()
+    with pytest.raises(subprocess.CalledProcessError):
+        scanner._read_blobs_batch(not_a_repo, ["abc1234"])
+

@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from repowise.core.workspace.extractors.topic import TopicExtractor
+from repowise.core.workspace.origins import ContractOrigin
 
 
 def _extract(tmp_path: Path, rel: str, content: str, alias: str = "svc"):
@@ -267,9 +268,111 @@ class TestPhpAmqplib:
         assert _extract(tmp_path, "X.php", "<?php\n$x->basic_publish($m, 'orders');\n") == []
 
 
+class TestGoAmqp:
+    _IMPORT = 'package main\n\nimport "github.com/streadway/amqp"\n\n'
+
+    def test_publish_consume_and_a_bind_on_the_declared_queue(self, tmp_path: Path) -> None:
+        src = self._IMPORT + (
+            'q, err := ch.QueueDeclare("orders", true, false, false, false, nil)\n'
+            'err = ch.QueueBind(q.Name, "orders", "robot-shop", false, nil)\n'
+            'msgs, err := ch.Consume(q.Name, "", true, false, false, false, nil)\n'
+            'ch.Publish("robot-shop", "order.created", false, false, msg)\n'
+        )
+        rows = {
+            (c.role, c.contract_id, c.meta["kind"]): c for c in _extract(tmp_path, "main.go", src)
+        }
+        assert set(rows) == {
+            ("consumer", "topic::robot-shop", "binding"),
+            ("consumer", "topic::orders", "queue"),
+            ("provider", "topic::robot-shop", "exchange"),
+        }
+        assert rows["consumer", "topic::robot-shop", "binding"].meta["queue"] == "orders"
+        provider = rows["provider", "topic::robot-shop", "exchange"]
+        assert provider.meta["routing_key"] == "order.created"
+
+    def test_with_context_calls_skip_the_context(self, tmp_path: Path) -> None:
+        src = 'import amqp "github.com/rabbitmq/amqp091-go"\n' + (
+            'ch.PublishWithContext(ctx, "", "jobs", false, false, msg)\n'
+            'ch.ConsumeWithContext(ctx, "jobs", "", true, false, false, false, nil)\n'
+        )
+        rows = {(c.role, c.contract_id, c.meta["kind"]) for c in _extract(tmp_path, "w.go", src)}
+        assert rows == {("provider", "topic::jobs", "queue"), ("consumer", "topic::jobs", "queue")}
+
+    @pytest.mark.parametrize(
+        "declare",
+        [
+            'q, err := ch.QueueDeclare("", false, false, true, false, nil)\n',  # server-named
+            'q, err := ch.QueueDeclare("a", true, false, false, false, nil)\n'
+            'q, err = ch.QueueDeclare("b", true, false, false, false, nil)\n',
+            "",  # declared in another file
+            'q, err := ch.QueueDeclare("a", true, false, false, false, nil)\n'
+            "q := other()\n",  # bound to something else too
+            'q, err := ch.QueueDeclare("a", true, false, false, false, nil)\n'
+            "func bind(ch *amqp.Channel, q amqp.Queue) {\n",  # a parameter of that name
+            'q, err := ch.QueueDeclare("a", true, false, false, false, nil)\n'
+            "for _, q := range queues {\n",  # a loop variable of that name
+        ],
+    )
+    def test_an_unsettled_declared_queue_binds_nothing(self, tmp_path: Path, declare: str) -> None:
+        src = self._IMPORT + declare + 'ch.QueueBind(q.Name, "", "logs", false, nil)\n'
+        assert _extract(tmp_path, "main.go", src) == []
+
+    def test_nothing_without_the_library(self, tmp_path: Path) -> None:
+        src = 'package main\n\nch.Publish("orders", "k", false, false, msg)\nch.Consume("jobs")\n'
+        assert _extract(tmp_path, "main.go", src) == []
+
+
+class TestDeclaredQueues:
+    def test_amqplib_assert_queue_names_the_bound_and_consumed_queue(
+        self, tmp_path: Path
+    ) -> None:
+        src = _AMQP + (
+            "const q = await ch.assertQueue('audit');\n"
+            "await ch.bindQueue(q.queue, 'orders', 'order.*');\n"
+            "await ch.consume(q.queue, h);\n"
+        )
+        rows = {
+            (c.contract_id, c.meta["kind"], c.meta.get("queue"))
+            for c in _extract(tmp_path, "w.ts", src)
+        }
+        assert rows == {("topic::orders", "binding", "audit"), ("topic::audit", "queue", None)}
+
+    def test_pika_queue_declare_result_names_the_queue(self, tmp_path: Path) -> None:
+        src = (
+            "result = channel.queue_declare(queue='audit', durable=True)\n"
+            "channel.queue_bind(exchange='orders', queue=result.method.queue)\n"
+        )
+        c = _one(_extract(tmp_path, "w.py", src), "consumer")
+        assert (c.contract_id, c.meta["queue"]) == ("topic::orders", "audit")
+
+    def test_another_member_of_the_result_is_not_the_queue(self, tmp_path: Path) -> None:
+        src = _AMQP + "const q = await ch.assertQueue('audit');\nawait ch.consume(q.other, h);\n"
+        assert _extract(tmp_path, "w.ts", src) == []
+
+
+class TestPythonClassConstants:
+    def test_pika_publish_reads_unspaced_class_constants_through_self(
+        self, tmp_path: Path
+    ) -> None:
+        src = (
+            "import pika\n\nclass Publisher:\n"
+            "    EXCHANGE='robot-shop'\n"
+            "    ROUTING_KEY = 'orders'\n\n"
+            "    def publish(self, msg):\n"
+            "        self._channel.basic_publish(exchange=self.EXCHANGE,\n"
+            "                                    routing_key=self.ROUTING_KEY, body=msg)\n"
+        )
+        c = _one(_extract(tmp_path, "rabbitmq.py", src), "provider")
+        assert (c.contract_id, c.meta["routing_key"]) == ("topic::robot-shop", "orders")
+
+
+_NATS_GO = 'import "github.com/nats-io/nats.go"\n'
+_NATS_TS = "import { connect } from 'nats';\n"
+
+
 class TestNats:
     def test_subscribe_and_publish(self, tmp_path: Path) -> None:
-        src = 'nc.Subscribe("events.created", h)\nnc.Publish("events.deleted", d)\n'
+        src = _NATS_GO + 'nc.Subscribe("events.created", h)\nnc.Publish("events.deleted", d)\n'
         rows = _extract(tmp_path, "main.go", src)
         assert {(c.role, c.contract_id) for c in rows} == {
             ("consumer", "topic::events.created"),
@@ -280,28 +383,47 @@ class TestNats:
     @pytest.mark.parametrize(
         ("rel", "src", "role"),
         [
-            ("sub.py", 'await nc.subscribe("events.created", cb=h)\n', "consumer"),
-            ("Pub.java", 'nc.publish("events.created", data);', "provider"),
-            ("pub.ts", "nc.publish('events.created', sc.encode(x));", "provider"),
+            ("sub.py", 'import nats\nawait nc.subscribe("events.created", cb=h)\n', "consumer"),
+            ("Pub.java", 'import io.nats.client.Connection;\nnc.publish("events.created", data);', "provider"),
+            ("pub.ts", _NATS_TS + "nc.publish('events.created', sc.encode(x));", "provider"),
+            ("pub.mjs", "import { connect } from '@nats-io/transport-node';\nnc.publish('events.created', x);", "provider"),
+            ("ws.js", 'import { connect } from "nats.ws";\nnc.publish("events.created", x);', "provider"),
+            ("cjs.js", 'const { connect } = require("nats");\nnc.publish("events.created", x);', "provider"),
+            ("aio.py", "from nats.aio.client import Client\nawait nc.publish('events.created', b)\n", "provider"),
+            ("deno.ts", 'import { connect } from "npm:nats@2";\nnc.publish("events.created", x);', "provider"),
         ],
     )
     def test_nats_in_other_languages(self, tmp_path: Path, rel: str, src: str, role: str) -> None:
         c = _one(_extract(tmp_path, rel, src), role)
         assert c.contract_id == "topic::events.created"
 
+    @pytest.mark.parametrize(
+        ("rel", "src"),
+        [
+            ("mqtt.js", "const mqtt = require('mqtt');\nclient.publish('home/kitchen/temp', v);\nclient.subscribe('home/#');\n"),
+            ("paho.py", "import paho.mqtt.client as mqtt\nclient.publish('home/kitchen/temp', v)\nclient.subscribe('home/#')\n"),
+            ("ably.ts", "import * as Ably from 'ably';\nclient.publish('orders', d);\n"),
+            ("main.go", 'nc.Publish("events.created", d)\n'),
+        ],
+    )
+    def test_nothing_without_a_nats_client(self, tmp_path: Path, rel: str, src: str) -> None:
+        assert _extract(tmp_path, rel, src) == []
+
     def test_an_unrelated_receiver_is_not_nats(self, tmp_path: Path) -> None:
-        assert _extract(tmp_path, "x.ts", "store.subscribe('state', h);") == []
+        assert _extract(tmp_path, "x.ts", _NATS_TS + "store.subscribe('state', h);") == []
 
     def test_bare_sub_is_not_a_nats_receiver(self, tmp_path: Path) -> None:
-        assert _extract(tmp_path, "x.ts", "sub.subscribe('events.created', h);") == []
+        assert _extract(tmp_path, "x.ts", _NATS_TS + "sub.subscribe('events.created', h);") == []
 
     @pytest.mark.parametrize("subject", ["events.*", "events.>"])
     def test_a_wildcard_subscription_is_a_pattern(self, tmp_path: Path, subject: str) -> None:
-        c = _one(_extract(tmp_path, "sub.go", f'nc.Subscribe("{subject}", h)\n'), "consumer")
+        src = _NATS_GO + f'nc.Subscribe("{subject}", h)\n'
+        c = _one(_extract(tmp_path, "sub.go", src), "consumer")
         assert c.meta["pattern"] == "nats"
 
     def test_a_plain_subject_is_not_a_pattern(self, tmp_path: Path) -> None:
-        c = _one(_extract(tmp_path, "sub.go", 'nc.Subscribe("events.created", h)\n'), "consumer")
+        src = _NATS_GO + 'nc.Subscribe("events.created", h)\n'
+        c = _one(_extract(tmp_path, "sub.go", src), "consumer")
         assert "pattern" not in c.meta
 
 
@@ -368,6 +490,35 @@ class TestAws:
     def test_a_queue_url_from_the_environment_is_refused(self, tmp_path: Path) -> None:
         src = "new SendMessageCommand({ QueueUrl: process.env.QUEUE_URL, MessageBody: b });\n"
         assert _extract(tmp_path, "q.ts", src) == []
+
+    def test_a_refused_name_is_counted_once_per_call_site(self, tmp_path: Path) -> None:
+        (tmp_path / "q.ts").write_text(
+            "new SendMessageCommand({ QueueUrl: process.env.QUEUE_URL, MessageBody: b });\n"
+            "new SendMessageCommand({ QueueUrl: 'https://sqs.x/1/orders', MessageBody: b });\n"
+            "// new SendMessageCommand({ QueueUrl: process.env.OLD_URL });\n",
+            encoding="utf-8",
+        )
+        # One client.publish read alike by Redis and NATS is still one call.
+        (tmp_path / "pub.js").write_text(
+            "const redis = require('redis');\nconst nats = require('nats');\n"
+            "client.publish(channelFor(user), msg);\n",
+            encoding="utf-8",
+        )
+        stats: dict[str, int] = {}
+        rows = TopicExtractor().extract(tmp_path, "svc", stats=stats)
+        assert [c.contract_id for c in rows] == ["topic::orders"]
+        assert stats == {"topic_names_unresolved": 2}
+
+    def test_brace_headed_refusals_count_apart(self, tmp_path: Path) -> None:
+        (tmp_path / "main.go").write_text(
+            'import "github.com/segmentio/kafka-go"\n'
+            "w := &kafka.Writer{Topic: os.Getenv(\"A\")}\n"
+            "r := kafka.NewReader(kafka.ReaderConfig{Topic: os.Getenv(\"B\")})\n",
+            encoding="utf-8",
+        )
+        stats: dict[str, int] = {}
+        assert TopicExtractor().extract(tmp_path, "svc", stats=stats) == []
+        assert stats == {"topic_names_unresolved": 2}
 
     def test_sns_topic_arn_names_its_last_field(self, tmp_path: Path) -> None:
         src = "new PublishCommand({ TopicArn: 'arn:aws:sns:eu-west-1:123:orders', Message: m });\n"
@@ -454,3 +605,243 @@ class TestNestMicroservices:
 
     def test_handlers_need_the_microservices_import(self, tmp_path: Path) -> None:
         assert _extract(tmp_path, "c.ts", "@EventPattern('x')\nf() {}\n") == []
+
+
+class TestKafkaByReceiverType:
+    """A client read on whatever name the file declares it with."""
+
+    def test_kafka_template_under_any_name(self, tmp_path: Path) -> None:
+        src = (
+            "import org.springframework.kafka.core.KafkaTemplate;\n"
+            "class Pub {\n"
+            "  private final KafkaTemplate<String, Map<String, Object>> kt;\n"
+            '  void f() { kt.send("orders", o); this.kt.send("refunds", o); other.send("x", o); }\n'
+            "}\n"
+        )
+        rows = _extract(tmp_path, "Pub.java", src)
+        assert sorted(c.contract_id for c in rows) == ["topic::orders", "topic::refunds"]
+        assert {c.origin for c in rows} == {ContractOrigin.CLIENT_CALL}
+
+    def test_a_kafka_template_bean_method_names_no_receiver(self, tmp_path: Path) -> None:
+        src = (
+            "import org.springframework.kafka.core.KafkaTemplate;\n"
+            "KafkaTemplate<String, String> kafkaTemplate(ProducerFactory pf) { return null; }\n"
+            'void f() { template.send("orders", o); }\n'
+        )
+        assert _extract(tmp_path, "Cfg.java", src) == []
+
+    def test_kafka_clients_producer_record(self, tmp_path: Path) -> None:
+        src = (
+            "import org.apache.kafka.clients.producer.ProducerRecord;\n"
+            'p.send(new ProducerRecord<>("payments", k, v));\n'
+        )
+        c = _one(_extract(tmp_path, "P.java", src), "provider")
+        assert c.contract_id == "topic::payments"
+
+    def test_confluent_python_on_a_member_and_a_local(self, tmp_path: Path) -> None:
+        src = (
+            "from confluent_kafka import Producer, Consumer\n"
+            "class P:\n"
+            "    def __init__(self, conf):\n"
+            "        self._p = Producer(conf)\n"
+            "        c = Consumer(conf)\n"
+            "        c.subscribe(['shipments', 'returns'])\n"
+            "    def go(self):\n"
+            "        self._p.produce('invoices', value=b'x')\n"
+        )
+        rows = _extract(tmp_path, "pub.py", src)
+        assert {(c.role, c.contract_id) for c in rows} == {
+            ("consumer", "topic::shipments"),
+            ("consumer", "topic::returns"),
+            ("provider", "topic::invoices"),
+        }
+
+    def test_a_qualified_constructor_is_read_only_through_confluent(self, tmp_path: Path) -> None:
+        src = (
+            "import confluent_kafka\n"
+            "p = confluent_kafka.Producer(conf)\n"
+            "p.produce('invoices')\n"
+            "q = other.Producer(conf)\n"
+            "q.produce('nothere')\n"
+        )
+        rows = _extract(tmp_path, "pub.py", src)
+        assert [c.contract_id for c in rows] == ["topic::invoices"]
+
+    def test_a_producer_class_without_confluent_is_not_read(self, tmp_path: Path) -> None:
+        src = "p = Producer(conf)\np.produce('invoices')\n"
+        assert _extract(tmp_path, "pub.py", src) == []
+
+    def test_kafka_python_and_aiokafka(self, tmp_path: Path) -> None:
+        src = (
+            "from kafka import KafkaProducer, KafkaConsumer\n"
+            "from aiokafka import AIOKafkaProducer\n"
+            "pub = KafkaProducer(bootstrap_servers='b')\n"
+            "pub.send('audit', b'x')\n"
+            "aio = AIOKafkaProducer(bootstrap_servers='b')\n"
+            "await aio.send_and_wait('metrics', b'x')\n"
+            "cons = KafkaConsumer('a1', 'a2', group_id='g')\n"
+        )
+        rows = _extract(tmp_path, "kp.py", src)
+        assert {(c.role, c.contract_id) for c in rows} == {
+            ("provider", "topic::audit"),
+            ("provider", "topic::metrics"),
+            ("consumer", "topic::a1"),
+            ("consumer", "topic::a2"),
+        }
+
+    def test_confluent_dotnet(self, tmp_path: Path) -> None:
+        src = (
+            "using Confluent.Kafka;\n"
+            "public class Pub {\n"
+            "  private readonly IProducer<Null, string> _producer;\n"
+            "  public Pub(IConsumer<Ignore, string> consumer) {\n"
+            '    consumer.Subscribe(new[] { "in.a", "in.b" });\n'
+            "  }\n"
+            "  void Build(ProducerConfig cfg) {\n"
+            "    using var p = new ProducerBuilder<Null, string>(cfg).Build();\n"
+            '    p.Produce("out.b", m);\n'
+            "  }\n"
+            '  async Task Go() { await _producer.ProduceAsync("out.a", m); }\n'
+            "}\n"
+        )
+        rows = _extract(tmp_path, "Pub.cs", src)
+        assert {(c.role, c.contract_id) for c in rows} == {
+            ("consumer", "topic::in.a"),
+            ("consumer", "topic::in.b"),
+            ("provider", "topic::out.a"),
+            ("provider", "topic::out.b"),
+        }
+
+    def test_dotnet_needs_the_confluent_import(self, tmp_path: Path) -> None:
+        src = 'class P { IProducer<string> p; void F() { p.Produce("x", m); } }\n'
+        assert _extract(tmp_path, "P.cs", src) == []
+
+    def test_a_commented_out_send_is_not_read(self, tmp_path: Path) -> None:
+        src = (
+            "import org.springframework.kafka.core.KafkaTemplate;\n"
+            "KafkaTemplate<String, String> kt;\n"
+            '// kt.send("orders", o);\n'
+        )
+        assert _extract(tmp_path, "Pub.java", src) == []
+
+
+class TestGoKafka:
+    def test_sarama_message_and_consumer_group(self, tmp_path: Path) -> None:
+        src = (
+            'import "github.com/IBM/sarama"\n'
+            'const Orders = "orders"\n'
+            "var group sarama.ConsumerGroup\n"
+            "msg := &sarama.ProducerMessage{Topic: Orders, Value: sarama.StringEncoder(b)}\n"
+            'group.Consume(ctx, []string{"payments"}, h)\n'
+        )
+        rows = _extract(tmp_path, "main.go", src)
+        assert {(c.role, c.contract_id) for c in rows} == {
+            ("provider", "topic::orders"),
+            ("consumer", "topic::payments"),
+        }
+
+    def test_segmentio_writer_and_reader(self, tmp_path: Path) -> None:
+        src = (
+            'import kafka "github.com/segmentio/kafka-go"\n'
+            'w := &kafka.Writer{Addr: kafka.TCP("b"), Topic: "out"}\n'
+            'r := kafka.NewReader(kafka.ReaderConfig{Brokers: []string{"b"}, Topic: "in"})\n'
+        )
+        rows = _extract(tmp_path, "main.go", src)
+        assert {(c.role, c.contract_id) for c in rows} == {
+            ("provider", "topic::out"),
+            ("consumer", "topic::in"),
+        }
+
+    def test_franz_go(self, tmp_path: Path) -> None:
+        src = (
+            'import "github.com/twmb/franz-go/pkg/kgo"\n'
+            'cl, _ := kgo.NewClient(kgo.ConsumeTopics("a", "b"))\n'
+            'cl.Produce(ctx, &kgo.Record{Topic: "c", Value: v}, nil)\n'
+        )
+        rows = _extract(tmp_path, "main.go", src)
+        assert {(c.role, c.contract_id) for c in rows} == {
+            ("consumer", "topic::a"),
+            ("consumer", "topic::b"),
+            ("provider", "topic::c"),
+        }
+
+    def test_a_consume_without_a_topic_list_is_not_read(self, tmp_path: Path) -> None:
+        src = (
+            'import "github.com/IBM/sarama"\n'
+            "var g sarama.ConsumerGroup\n"
+            'db.Consume(ctx, "x")\n'
+        )
+        assert _extract(tmp_path, "main.go", src) == []
+
+    def test_a_segmentio_message_is_not_a_publish(self, tmp_path: Path) -> None:
+        src = (
+            'import kafka "github.com/segmentio/kafka-go"\n'
+            'r.CommitMessages(ctx, kafka.Message{Topic: "in", Offset: 4})\n'
+        )
+        assert _extract(tmp_path, "main.go", src) == []
+
+    def test_go_shapes_need_their_library(self, tmp_path: Path) -> None:
+        src = (
+            'w := &kafka.Writer{Topic: "out"}\n'
+            'group.Consume(ctx, []string{"payments"}, h)\n'
+            'r := kgo.Record{Topic: "c"}\n'
+        )
+        assert _extract(tmp_path, "main.go", src) == []
+
+
+_SB = "using Azure.Messaging.ServiceBus;\n"
+
+
+class TestAzureServiceBus:
+    def test_a_sender_and_a_processor_meet_on_the_queue(self, tmp_path: Path) -> None:
+        sender = _SB + 'var sender = client.CreateSender("orders");\nawait sender.SendMessageAsync(m);\n'
+        processor = (
+            _SB
+            + 'var processor = client.CreateProcessor("orders", new ServiceBusProcessorOptions());\n'
+            + 'var receiver = client.CreateReceiver("refunds");\n'
+        )
+        _extract(tmp_path, "sender/OrderPublisher.cs", sender)
+        rows = _extract(tmp_path, "billing/OrderWorker.cs", processor)
+        assert {(c.role, c.contract_id, c.meta["broker"], c.meta["kind"]) for c in rows} == {
+            ("provider", "topic::orders", "azure_servicebus", "queue"),
+            ("consumer", "topic::orders", "azure_servicebus", "queue"),
+            ("consumer", "topic::refunds", "azure_servicebus", "queue"),
+        }
+        assert {c.origin for c in rows} == {ContractOrigin.CLIENT_CALL}
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            'client.CreateProcessor("orders", "billing")',
+            'client.CreateProcessor("orders", "billing", new ServiceBusProcessorOptions())',
+            'client.CreateReceiver("orders", billingSubscription)',
+            'client.CreateSessionProcessor("orders", SubscriptionName, options)',
+            'client.CreateReceiver(topicName: "orders", subscriptionName: "billing")',
+        ],
+    )
+    def test_a_receive_naming_a_subscription_reads_a_topic(self, tmp_path: Path, call: str) -> None:
+        c = _one(_extract(tmp_path, "Worker.cs", _SB + f"var r = {call};\n"), "consumer")
+        assert (c.contract_id, c.meta["kind"]) == ("topic::orders", "topic")
+
+    def test_functions_triggers_are_route_registrations(self, tmp_path: Path) -> None:
+        src = (
+            "public static class RefundFunction {\n"
+            '    [Function("Refund")]\n'
+            '    public static void Run([ServiceBusTrigger("refunds", Connection = "SB")] string msg) { }\n'
+            '    [FunctionName("Audit")]\n'
+            '    public static void Audit([ServiceBusTrigger("orders", "audit")] string msg) { }\n'
+            "}\n"
+        )
+        rows = _extract(tmp_path, "RefundFunction.cs", src)
+        assert {(c.role, c.contract_id, c.meta["kind"], c.origin) for c in rows} == {
+            ("consumer", "topic::refunds", "queue", ContractOrigin.ROUTE_REGISTRATION),
+            ("consumer", "topic::orders", "topic", ContractOrigin.ROUTE_REGISTRATION),
+        }
+
+    def test_a_commented_out_call_is_not_read(self, tmp_path: Path) -> None:
+        src = _SB + '// var sender = client.CreateSender("old-orders");\n/* client.CreateProcessor("x"); */\n'
+        assert _extract(tmp_path, "Old.cs", src) == []
+
+    def test_client_calls_need_the_library_import(self, tmp_path: Path) -> None:
+        src = 'var s = factory.CreateSender("orders");\nvar p = pool.CreateProcessor("jobs");\n'
+        assert _extract(tmp_path, "Other.cs", src) == []

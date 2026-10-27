@@ -53,6 +53,44 @@ class TestJavaRecords:
         names = {s.name for s in result.symbols}
         assert "Point" in names
 
+    def test_implicit_canonical_ctor_takes_record_access(self, parser: ASTParser) -> None:
+        # JLS 8.10.4: an implicit canonical constructor takes the record's
+        # own access level — package-private record => package-private ctor.
+        src = b"package x;\nrecord Foo(int a, int b) {}\n"
+        result = parser.parse_file(_file(), src)
+        ctor = next(s for s in result.symbols if s.name == "Foo" and s.kind == "function")
+        assert ctor.visibility == "internal"
+        assert ctor.signature == "Foo(int a, int b)"
+
+    def test_compact_canonical_ctor_takes_record_access(self, parser: ASTParser) -> None:
+        # An explicit compact constructor with no access keyword is
+        # package-private too — no separate code path, one fix covers both.
+        src = (
+            b"package x;\nrecord Bar(int a, int b) {\n"
+            b"  Bar {\n    if (a < 0) throw new IllegalArgumentException();\n  }\n}\n"
+        )
+        result = parser.parse_file(_file(), src)
+        ctor = next(s for s in result.symbols if s.name == "Bar" and s.kind == "function")
+        assert ctor.visibility == "internal"
+        assert ctor.signature == "Bar(int a, int b)"
+
+    def test_public_record_keeps_public_ctor(self, parser: ASTParser) -> None:
+        src = b"package x;\npublic record Baz(int a) {}\n"
+        result = parser.parse_file(_file(), src)
+        ctor = next(s for s in result.symbols if s.name == "Baz" and s.kind == "function")
+        assert ctor.visibility == "public"
+        assert ctor.signature == "public Baz(int a)"
+
+    def test_record_accessors_stay_public(self, parser: ASTParser) -> None:
+        # Accessors (and equals/hashCode/toString) are mandated public by
+        # the record contract regardless of the record's own access.
+        src = b"package x;\nrecord Foo(int a, int b) {}\n"
+        result = parser.parse_file(_file(), src)
+        accessors = {s.name: s for s in result.symbols if s.kind == "method"}
+        assert accessors["a"].visibility == "public"
+        assert accessors["a"].signature == "public int a()"
+        assert accessors["toString"].visibility == "public"
+
 
 class TestJavaBindings:
     def test_import_produces_binding(self, parser: ASTParser) -> None:
@@ -60,6 +98,24 @@ class TestJavaBindings:
         result = parser.parse_file(_file(), src)
         modules = [imp.module_path for imp in result.imports]
         assert "com.example.Foo" in modules
+
+    def test_static_member_import_names_its_declaring_type(self, parser: ASTParser) -> None:
+        src = b"package x;\nimport static com.example.Outer.Bar.baz;\npublic class App {}\n"
+        (imp,) = parser.parse_file(_file(), src).imports
+        assert imp.imported_names == ["baz", "Bar"]
+        # Only the member is bound: the type's bare name is not in scope.
+        assert [b.local_name for b in imp.bindings] == ["baz"]
+
+    def test_static_wildcard_import_names_only_the_type(self, parser: ASTParser) -> None:
+        # The member is "*", so the last name is already the type.
+        src = b"package x;\nimport static com.example.Bar.*;\npublic class App {}\n"
+        (imp,) = parser.parse_file(_file(), src).imports
+        assert imp.imported_names == ["Bar"]
+
+    def test_plain_import_names_only_the_type(self, parser: ASTParser) -> None:
+        src = b"package x;\nimport com.example.Foo;\npublic class App {}\n"
+        (imp,) = parser.parse_file(_file(), src).imports
+        assert imp.imported_names == ["Foo"]
 
 
 class TestJavaModuleDocstring:

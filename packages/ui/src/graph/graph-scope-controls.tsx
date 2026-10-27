@@ -73,7 +73,7 @@ export function GraphScopeSwitcher({
             tabIndex={active ? 0 : -1}
             title={s.hint}
             onClick={() => onScopeChange(s.id)}
-            className={`rounded px-2.5 py-1 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] ${
+            className={`rounded px-2.5 py-1 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] ${
               active
                 ? "bg-[var(--color-bg-elevated)] font-semibold text-[var(--color-text-primary)]"
                 : "font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
@@ -122,7 +122,7 @@ export function ModuleFilterSelect({
       <select
         value={activeModule ?? ""}
         onChange={(e) => onModuleChange(e.target.value || null)}
-        className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-1 text-xs text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+        className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-1 text-xs text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
       >
         <option value="">All modules</option>
         {prominent.map((g) => (
@@ -162,6 +162,7 @@ export function GraphNarrowingSelect({
   communities,
   activeModule,
   activeCommunity,
+  activeCommunityLabel,
   onChange,
   className,
 }: {
@@ -170,12 +171,13 @@ export function GraphNarrowingSelect({
   communities?: readonly CommunitySummaryItem[] | undefined;
   activeModule: string | null;
   activeCommunity: number | null;
+  activeCommunityLabel?: string | undefined;
   /** Exactly one of the two is ever non-null. */
   onChange: (next: { module: string | null; community: number | null }) => void;
   className?: string | undefined;
 }) {
   const hasCommunities = (communities?.length ?? 0) > 0;
-  if (modules.length < 2 && !hasCommunities) return null;
+  if (modules.length < 2 && !hasCommunities && activeCommunity === null && !activeModule) return null;
 
   const prominent = modules.slice(0, PROMINENT_MODULES);
   const rest = modules.slice(PROMINENT_MODULES);
@@ -186,6 +188,16 @@ export function GraphNarrowingSelect({
   // nothing. Give the stale value an option that says so.
   const staleModule =
     activeModule && !modules.some((g) => g.id === activeModule) ? activeModule : null;
+  // When drilled into a community outside the largest 20 returned by the
+  // endpoint (or if communities haven't loaded yet), the controlled <select>
+  // would match no option and fall back to displaying the first option ("All files").
+  // Provide a fallback option for the active community.
+  const staleCommunity =
+    activeCommunity !== null &&
+    activeCommunity !== undefined &&
+    !communities?.some((c) => c.community_id === activeCommunity)
+      ? activeCommunity
+      : null;
 
   // Encoded rather than two parallel values, because a <select> has one value
   // and the two kinds share a namespace ("external" is a module id, 3 is a
@@ -212,13 +224,18 @@ export function GraphNarrowingSelect({
           else if (v.startsWith("m:")) onChange({ module: v.slice(2), community: null });
           else onChange({ module: null, community: null });
         }}
-        className="max-w-[15rem] rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-1 text-xs text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+        className="max-w-[15rem] rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-1 text-xs text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
       >
         <option value="">All files</option>
         {staleModule && <option value={`m:${staleModule}`}>{staleModule} · 0</option>}
-        {hasCommunities && (
+        {(hasCommunities || staleCommunity !== null) && (
           <optgroup label="Community">
-            {communities!.map((c) => (
+            {staleCommunity !== null && (
+              <option value={`c:${staleCommunity}`}>
+                {activeCommunityLabel ?? `Community ${staleCommunity}`}
+              </option>
+            )}
+            {communities?.map((c) => (
               <option key={c.community_id} value={`c:${c.community_id}`}>
                 {c.label} · {formatNumber(c.member_count)}
               </option>

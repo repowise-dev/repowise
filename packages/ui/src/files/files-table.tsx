@@ -4,7 +4,8 @@ import { useRef, useState } from "react";
 import { ArrowDown, ArrowUp, FlaskConical, LogIn } from "lucide-react";
 import type { FileRow } from "@repowise-dev/types/files";
 import { cn } from "../lib/cn";
-import { formatLOC, truncatePath } from "../lib/format";
+import { formatLOC } from "../lib/format";
+import { FilePath } from "../shared/file-path";
 import { healthInk } from "../health/tokens";
 
 export type SortKey =
@@ -81,6 +82,15 @@ function SortHeader({
 // overflows — the first column is always `minmax(0,1fr)` so paths truncate.
 const GRID =
   "grid grid-cols-[minmax(0,1fr)_auto_56px] sm:grid-cols-[minmax(0,1fr)_92px_64px_64px] md:grid-cols-[minmax(0,1fr)_100px_84px_72px_64px_72px] items-center gap-2 px-3 sm:px-4";
+
+/** A row's line coverage; an older server sends only the deprecated `coverage_pct`. */
+export function lineCoverage(f: FileRow): number | null {
+  return f.line_coverage_pct ?? f.coverage_pct;
+}
+
+function formatCoverage(pct: number | null): string {
+  return pct != null ? `${Math.round(pct)}%` : "—";
+}
 
 export function FilesTable({ files, fileHref, sortKey, sortDir, onSort }: FilesTableProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -162,8 +172,6 @@ export function FilesTable({ files, fileHref, sortKey, sortDir, onSort }: FilesT
           <div style={{ height: total * ROW_HEIGHT }} className="relative">
             <div style={{ transform: `translateY(${start * ROW_HEIGHT}px)` }}>
               {visible.map((f) => {
-                const name = f.file_path.split("/").pop() ?? f.file_path;
-                const dir = f.file_path.slice(0, f.file_path.length - name.length);
                 return (
                   <a
                     key={f.file_path}
@@ -182,14 +190,11 @@ export function FilesTable({ files, fileHref, sortKey, sortDir, onSort }: FilesT
                       {f.is_test && (
                         <FlaskConical className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)]" />
                       )}
-                      <span className="min-w-0 truncate font-mono text-[13px]">
-                        <span className="text-[var(--color-text-tertiary)]">
-                          {truncatePath(dir, 40)}
-                        </span>
-                        <span className="text-[var(--color-text-primary)] underline-offset-2 group-hover:underline">
-                          {name}
-                        </span>
-                      </span>
+                      <FilePath
+                        path={f.file_path}
+                        fold
+                        className="text-[13px] text-[var(--color-text-primary)] underline-offset-2 group-hover:underline"
+                      />
                     </span>
 
                     {/* Dependents. One decimal, not `Math.round`: the server
@@ -200,7 +205,7 @@ export function FilesTable({ files, fileHref, sortKey, sortDir, onSort }: FilesT
                         a sort you could not see the basis of. */}
                     <span className="flex items-center justify-end gap-1.5 tabular-nums text-[var(--color-text-secondary)]">
                       <span
-                        className="hidden h-1.5 rounded-full bg-[var(--color-accent-primary)] sm:inline-block"
+                        className="hidden h-1.5 rounded-full bg-[var(--color-progress-fill)] sm:inline-block"
                         style={{ width: `${Math.max(2, (f.pagerank_pct / 100) * 28)}px` }}
                       />
                       {f.pagerank_pct.toFixed(1)}
@@ -226,7 +231,7 @@ export function FilesTable({ files, fileHref, sortKey, sortDir, onSort }: FilesT
 
                     {/* Coverage */}
                     <span className="hidden justify-end tabular-nums text-[var(--color-text-secondary)] md:flex">
-                      {f.coverage_pct != null ? `${Math.round(f.coverage_pct)}%` : "—"}
+                      {formatCoverage(lineCoverage(f))}
                     </span>
                   </a>
                 );

@@ -52,6 +52,8 @@ export interface PageSummary {
 
 export interface PageResponse extends PageSummary {
   content: string;
+  /** Agent material kept off the page body; the reader shows it on request. */
+  digest?: string;
   metadata: Record<string, unknown>;
 }
 

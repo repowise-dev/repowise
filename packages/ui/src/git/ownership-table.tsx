@@ -90,7 +90,7 @@ export function OwnershipTable({ entries, repoId, linkPrefix }: OwnershipTablePr
           <div className="flex items-center gap-2 min-w-[100px]">
             <div className="h-1.5 flex-1 rounded-full bg-[var(--color-bg-elevated)]">
               <div
-                className="h-1.5 rounded-full bg-[var(--color-accent-primary)]"
+                className="h-1.5 rounded-full bg-[var(--color-progress-fill)]"
                 style={{ width: `${Math.min(100, entry.owner_pct * 100)}%` }}
               />
             </div>
@@ -132,7 +132,7 @@ export function OwnershipTable({ entries, repoId, linkPrefix }: OwnershipTablePr
             <RowActions
               actions={[
                 { icon: GitBranch, label: "Graph", href: `${prefix}/architecture?view=files&node=${encodeURIComponent(entry.module_path)}` },
-                { icon: Flame, label: "Hotspots", href: `${prefix}/code-health?tab=triage` },
+                { icon: Flame, label: "Hotspots", href: `${prefix}/code-health` },
               ]}
             />
           )}
@@ -161,7 +161,7 @@ export function OwnershipTable({ entries, repoId, linkPrefix }: OwnershipTablePr
             className={cn(
               "px-2.5 py-1.5 font-medium transition-colors",
               filter === "all"
-                ? "bg-[var(--color-accent-primary)] text-[var(--color-text-inverse)]"
+                ? "bg-[var(--color-control-selected)] text-[var(--color-control-selected-text)]"
                 : "bg-transparent text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)]",
             )}
           >
@@ -172,7 +172,7 @@ export function OwnershipTable({ entries, repoId, linkPrefix }: OwnershipTablePr
             className={cn(
               "px-2.5 py-1.5 font-medium transition-colors",
               filter === "silo"
-                ? "bg-[var(--color-accent-primary)] text-[var(--color-text-inverse)]"
+                ? "bg-[var(--color-control-selected)] text-[var(--color-control-selected-text)]"
                 : "bg-transparent text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)]",
             )}
           >

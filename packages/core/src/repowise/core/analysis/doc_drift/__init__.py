@@ -3,8 +3,8 @@
 Documents make assertions about the repository. This package checks the ones
 that are checkable, and is explicit about the ones that are not.
 
-Four reference classes ship: ``path``, ``link``, ``anchor`` and ``command``.
-A fifth, ``symbol``, was measured and rejected --- see
+Five reference classes ship: ``path``, ``link``, ``anchor``, ``command`` and
+``symbol``. The last needs an index and git history; see
 :class:`~.models.DriftKind`.
 """
 

@@ -102,14 +102,14 @@ def test_npm_run_commands_are_extracted():
 # ---------------------------------------------------------------------------
 
 
-def test_backticked_identifiers_are_not_extracted():
-    """Phase 1 killed the symbol class at a 55-69% flag rate.
+def test_only_code_shaped_identifiers_become_symbol_candidates():
+    """Backticks mean "literal": a word or a constant is never a candidate.
 
-    Backticks in technical prose mean "literal token", not "code symbol". The
-    top flagged tokens were `string`, `boolean`, `true`, `OPENAI_API_KEY`.
+    Candidacy is shape only; git history decides whether one was a symbol.
     """
     text = "Set `OPENAI_API_KEY`, pass a `string`, and call `resolve_target`."
-    assert extract(text, "docs/x.md") == []
+    refs = extract(text, "docs/x.md")
+    assert [(r.kind, r.target) for r in refs] == [(DriftKind.SYMBOL, "resolve_target")]
 
 
 # ---------------------------------------------------------------------------

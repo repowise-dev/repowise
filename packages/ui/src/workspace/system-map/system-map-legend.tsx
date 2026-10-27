@@ -2,14 +2,17 @@
 
 /**
  * Key for the Live System Map, as one caption row between the controls and
- * the canvas: the line styles actually drawn (structural ink, co-change
- * dotted, candidate dashed), the health mark's three bands, and how to get
- * more. Reads the same registries the map renders from, so the two cannot
- * drift, and lists only what the graph contains.
+ * the canvas: bands when any are drawn, the line styles actually drawn
+ * (structural ink, co-change dotted, candidate dashed), the health mark's
+ * three bands, and how to get more. Reads the same constants the map renders
+ * from, so the two cannot drift, and lists only what is drawn.
  */
 
-import type { SystemEdgeMatchType } from "@repowise-dev/types";
-import { matchTypeDash } from "./edge-kinds";
+import type { SystemEdge, SystemEdgeMatchType } from "@repowise-dev/types";
+import type { DrawnEdge } from "./level-types";
+import { HEALTH_MARK_BANDS } from "../../health/tokens";
+import { isGatewayRouted, matchTypeDash } from "./edge-kinds";
+import { BAND_STROKE, bandWidth } from "./system-map-band";
 
 function Item({ swatch, label }: { swatch: React.ReactNode; label: string }) {
   return (
@@ -39,12 +42,57 @@ const LINE_LABEL: Record<SystemEdgeMatchType, string> = {
   inferred: "Co-change from git history",
 };
 
+/** "8+", "4 to 8", "below 4": each band's range, read off the shared edges. */
+function markRange(i: number): string {
+  const b = HEALTH_MARK_BANDS[i]!;
+  if (i === 0) return `${b.min}+`;
+  const above = HEALTH_MARK_BANDS[i - 1]!.min;
+  if (i === HEALTH_MARK_BANDS.length - 1) return `below ${above}`;
+  return `${b.min} to ${above}`;
+}
+
 export interface SystemMapLegendProps {
   /** Match types present on the drawn edges; only these get a key. */
   matchTypes?: ReadonlySet<SystemEdgeMatchType>;
+  /** Drawn lines a gateway route made; they share the HTTP line, so the key names them in words. */
+  gatewayRouted?: number;
+  /** Whether any band is drawn; only then does the key explain one. */
+  bands?: boolean;
 }
 
-export function SystemMapLegend({ matchTypes }: SystemMapLegendProps) {
+function BandSwatch() {
+  return (
+    <svg width={26} height={10} aria-hidden>
+      <line
+        x1={0}
+        y1={5}
+        x2={26}
+        y2={5}
+        stroke="var(--color-diagram-edge)"
+        strokeOpacity={BAND_STROKE.opacity}
+        strokeWidth={bandWidth(17)}
+      />
+    </svg>
+  );
+}
+
+/** What the key lists for the connectors drawn: their match types, gateway-made lines, and whether any band is drawn. */
+export function legendKeyFor(
+  edges: readonly DrawnEdge[],
+  edgesById: ReadonlyMap<string, SystemEdge>,
+): Required<SystemMapLegendProps> {
+  const matchTypes = new Set<SystemEdgeMatchType>();
+  let gatewayRouted = 0;
+  for (const e of edges) {
+    const edge = e.type === "edge" ? edgesById.get(e.edgeId) : undefined;
+    if (!edge) continue;
+    matchTypes.add(edge.match_type);
+    if (isGatewayRouted(edge)) gatewayRouted += 1;
+  }
+  return { matchTypes, gatewayRouted, bands: edges.some((e) => e.type === "band") };
+}
+
+export function SystemMapLegend({ matchTypes, gatewayRouted = 0, bands = false }: SystemMapLegendProps) {
   const order: SystemEdgeMatchType[] = ["exact", "manual", "candidate", "inferred"];
   const shown = order.filter((m) => !matchTypes || matchTypes.has(m));
   // Exact and manual draw the same solid line; one key covers both.
@@ -52,6 +100,7 @@ export function SystemMapLegend({ matchTypes }: SystemMapLegendProps) {
 
   return (
     <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
+      {bands && <Item swatch={<BandSwatch />} label="Band: every link between two cards; its width and number give the count" />}
       {lines.map((m) => (
         <Item
           key={m}
@@ -64,14 +113,22 @@ export function SystemMapLegend({ matchTypes }: SystemMapLegendProps) {
           }
         />
       ))}
+      {gatewayRouted > 0 && (
+        <span className="text-xs text-[var(--color-text-secondary)]">
+          <span className="font-mono tabular-nums">{gatewayRouted}</span>{" "}
+          {gatewayRouted === 1 ? "line runs" : "lines run"} through a gateway route; hover shows which
+        </span>
+      )}
       <span className="inline-flex items-center gap-2.5">
         <span className="text-xs text-[var(--color-text-tertiary)]">Repository health</span>
-        <Item swatch={<Dot color="var(--color-success)" />} label="Healthy 8+" />
-        <Item swatch={<Dot color="var(--color-warning)" />} label="Warning 4 to 8" />
-        <Item swatch={<Dot color="var(--color-error)" />} label="Alert below 4" />
+        {HEALTH_MARK_BANDS.map((b, i) => (
+          <Item key={b.band} swatch={<Dot color={b.color} />} label={`${b.label} ${markRange(i)}`} />
+        ))}
       </span>
       <span className="text-xs text-[var(--color-text-tertiary)]">
-        Hover a line for its kind and weight. Click a service or line for details.
+        {bands
+          ? "Hover a band for its kinds. Open a group to see its services. Click anything for details."
+          : "Hover a line for its kind and link count. Click a service or line for details."}
       </span>
     </div>
   );

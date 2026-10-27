@@ -36,7 +36,6 @@ another is generated after it.
 | 3 | `scc_page` | dependency cycle | structure |
 | 4 | `module_page` | subsystem in the concept tree | model, structure when keyless |
 | 6 | `repo_overview` | repository | model, structure when keyless |
-| 6 | `architecture_diagram` | repository | model, structure when keyless |
 | 7 | `infra_page` | infrastructure file (Dockerfile, CI, IaC) | structure |
 | 8 | `onboarding` | slot | model, structure when keyless |
 
@@ -45,17 +44,18 @@ Works, Active Landscape and Glossary. Project Overview is not generated
 separately, the repository overview is tagged into that slot, and Glossary is
 rendered from mined terms with no model in every run, keyed or not.
 
-`layer_page` was retired. Layers stopped being pages and became grouping rows in
-the docs tree, built from provenance stamped on their members. An inbound link
-to a retired layer page lands on the repository overview.
+Layers are grouping rows in the docs tree, built from provenance stamped on
+their members, not pages of their own. The repository overview carries the
+system map, a tiered diagram of who uses the system, the ways in, the server,
+the engine and the data store. Structure picks its boxes and arrows; a
+configured model only names them.
 
 ## Which pages exist
 
-There is no page budget to spend by default. Every page type below the concept
-tree is rendered from structure and costs no tokens, and the concept partition
-is a total cover of the production files that would stop being a map of the
-repository if it were rationed. So each bucket takes every candidate that clears
-its eligibility floor.
+By default there is no page budget. Every page type below the concept tree is
+rendered from structure and costs no tokens, and the concept partition covers
+every production file, so rationing it would stop it being a map of the
+repository. Each bucket takes every candidate that clears its eligibility floor.
 
 The one exception is opt-in and owner-chosen. `max_file_pages` bounds the file
 bucket, highest importance first, for repositories large enough that the tail
@@ -64,24 +64,22 @@ policy decide, `0` means one page per eligible file however many that is, and a
 positive value is a hard cap. It does not reduce model spend, because file pages
 are rendered from structure either way.
 
-Selection does not fork on whether a key is present, and that is the point: a
-keyed and a keyless index of the same commit agree about which files have pages
-at all.
+Selection does not depend on whether a key is present: a keyed and a keyless
+index of the same commit agree about which files have pages.
 
 ## What a model writes
 
-Four page types are model-written when a provider is configured: `module_page`,
-`repo_overview`, `architecture_diagram` and `onboarding`. That is the layer
-where prose earns its keep, the one that explains how the codebase fits together
-above the file level. Everything else is rendered from the parse, the import
-graph and git history, and no model ever sees it.
+Three page types are model-written when a provider is configured: `module_page`,
+`repo_overview` and `onboarding`. These pages explain how the codebase fits
+together above the file level. Everything else is rendered from the parse, the
+import graph and git history, and no model ever sees it.
 
 A model-written page is not prompted with raw source. It is prompted with
 assembled material: parsed structure and signatures, what the subject imports
 and what imports it, ownership and churn signals, the significant commits from
 its history with merges, dependency bumps and lint-only commits filtered out,
-and cross-references to the pages it should link to. That is the recipe for a
-page that explains *why* rather than restating *what*.
+and cross-references to the pages it should link to. The result explains *why*
+instead of restating *what*.
 
 ### Keyless runs
 
@@ -96,22 +94,21 @@ decision archaeology are identical.
 
 ### Two facts on every page
 
-Worth keeping apart, because collapsing them is the mistake this layer has
-already made once:
+Each page records two separate facts:
 
 - **`provider_name`** answers *has a model written this page yet*. It is what
   the docs tree's "not written yet" marker and the reader's upgrade affordance
   read.
 - **`confidence`** answers *how far should a reader trust the statements*. A
-  structure-rendered page is `1.0`, because everything on it was extracted
-  rather than summarised. A model-written page is `0.8`: grounded in the
-  assembled material and checked against it, but a summary of the code rather
-  than an extraction from it. Nothing gates on the difference, it is reported.
+  structure-rendered page is `1.0`, because everything on it is extracted from
+  the code. A model-written page is `0.8`: grounded in the assembled material
+  and checked against it, but a summary of the code instead of an extraction.
+  Nothing gates on the difference; it is reported.
 
 The axis is trust, not completeness. A page can be thin and still be entirely
-true. The only `0.3` left is a page that was meant to carry prose and lost it to
-a provider outage, which is the one state a reader cannot infer from the page
-itself. A keyless run produces `1.0` pages throughout, because an index built
+true. A `0.3` marks a page that was meant to carry prose and lost it to a
+provider outage, the one state a reader cannot infer from the page itself. A
+keyless run produces `1.0` pages throughout, because an index built
 without a key is that shape by design.
 
 ## Adding prose later
@@ -129,7 +126,7 @@ repowise update --full                   # the whole wiki at once
 ```
 
 `generate` writes the model-written pages and only those. Naming a structural
-page with `--page` is an actionable error rather than a silent LLM re-render,
+page with `--page` is an actionable error instead of a silent LLM re-render,
 because those pages refresh on `repowise update` for free. Run it bare on a
 terminal and it prints the wiki's state, defaults to the unwritten pages, and
 ends at the normal cost confirmation.
@@ -147,13 +144,11 @@ Two mechanisms decide what is stale:
   verbatim, with no tokens spent.
 - **Structure-rendered pages** fold the subject's own hash together with a
   fingerprint of the renderer: the template source, the resolved style and the
-  output language. Nothing else refreshes these pages, and no model will ever
-  come along and fix them, so comparing the stored key against a freshly
-  computed one is what turns a released template change into exactly one
-  regeneration.
+  output language. Comparing the stored key against a freshly computed one
+  turns a released template change into exactly one regeneration.
 
-That second mechanism is why shipping a template edit shows up as a one-time
-re-render of every page of that type. It is the intended behaviour, not drift.
+So a new Repowise release that edits a template re-renders every page of that
+type once. That is intended, not drift.
 
 `--cascade-budget N` caps how many pages a single update may regenerate from
 cascading changes. It is adaptive when unset, which is what you want except on a
@@ -199,7 +194,7 @@ reuses the existing index and git data, so nothing is re-resolved or re-blamed.
 repowise restyle reference
 ```
 
-In the web app, **Settings → Documentation style** does the same, and an
+In the web app, **Settings > Documentation style** does the same, and an
 individual page can be regenerated in a one-off style from its **Regenerate**
 control.
 
@@ -262,7 +257,10 @@ Changing the language later does not retranslate existing pages. Re-run
   SQLite full-text and vector results through Reciprocal Rank Fusion, biased by
   PageRank, then expands one to two hops along the imports and projected-calls
   graph for flow-shaped questions. Full-text works with no embedder; semantic
-  search needs one configured.
+  search needs one configured. A module page's agent digest (the questions it
+  answers, its concept index, public API and git signals) is stored beside the
+  page body, indexed with it, and returned by `get_context` as `digest_md`
+  with `include=["full_doc"]`.
 - **CLI**: `repowise ask`, `repowise search`, `repowise context`.
 - **Dashboard**: `repowise serve`, then the Docs tab.
 - **Files**: `repowise export --format markdown|html|json`, written to

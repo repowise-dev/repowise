@@ -18,6 +18,7 @@ import { EmptyState } from "../shared/empty-state";
  * separate cause and not folded into the stale-index one.
  */
 type Copy = { title: string; description: string; retryable: boolean };
+export type DocDriftUnavailableCopy = Copy;
 
 const COPY: Record<DocDriftUnavailable, Copy> = {
   not_computed: {
@@ -53,6 +54,13 @@ const UNKNOWN: Copy = {
   retryable: true,
 };
 
+/** The copy for one refusal, for a surface too small for the full state. */
+export function docDriftUnavailableCopy(
+  reason: DocDriftUnavailable,
+): DocDriftUnavailableCopy {
+  return COPY[reason] ?? UNKNOWN;
+}
+
 export function DocDriftUnavailableState({
   reason,
   titleAs,
@@ -63,7 +71,7 @@ export function DocDriftUnavailableState({
   /** Offered only where retrying could change the answer. */
   onRetry?: (() => void) | undefined;
 }) {
-  const copy = COPY[reason] ?? UNKNOWN;
+  const copy = docDriftUnavailableCopy(reason);
   return (
     <EmptyState
       icon={<FileQuestion className="h-6 w-6" />}

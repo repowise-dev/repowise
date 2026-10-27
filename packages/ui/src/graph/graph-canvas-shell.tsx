@@ -33,8 +33,20 @@ export interface GraphCanvasShellProps {
    * `footer` or `rail`.
    */
   overlay?: React.ReactNode | undefined;
+  /**
+   * `page` (default) fills a full-bleed page and pads its rows. `section` sits
+   * inside a padded page section: rows align with the section's text, and the
+   * canvas and rail share one hairline frame.
+   */
+  variant?: "page" | "section" | undefined;
   className?: string | undefined;
 }
+
+/** Row padding and canvas frame per variant. */
+const VARIANT = {
+  page: { pad: "px-4 sm:px-6", frame: "" },
+  section: { pad: "", frame: "overflow-hidden rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-root)]" },
+} as const;
 
 /**
  * The single canvas container for every graph surface.
@@ -54,12 +66,14 @@ export function GraphCanvasShell({
   rail,
   footer,
   overlay,
+  variant = "page",
   className,
 }: GraphCanvasShellProps) {
+  const { pad, frame } = VARIANT[variant];
   return (
     <div className={cn("flex h-full flex-col", className)}>
       {(breadcrumb || title || description || titleActions) && (
-        <div className="flex shrink-0 flex-wrap items-start justify-between gap-2 px-4 pt-3 sm:px-6">
+        <div className={cn("flex shrink-0 flex-wrap items-start justify-between gap-2 pt-3", pad)}>
           <div className="min-w-0 max-w-2xl">
             {breadcrumb && <div className="mb-1 min-w-0">{breadcrumb}</div>}
             {title && (
@@ -80,12 +94,13 @@ export function GraphCanvasShell({
           )}
         </div>
       )}
-      {banner && <div className="shrink-0 px-4 pt-3 sm:px-6">{banner}</div>}
+      {banner && <div className={cn("shrink-0 pt-3", pad)}>{banner}</div>}
 
       <div
         className={cn(
           "relative mt-3 grid min-h-0 flex-1",
           rail ? "lg:grid-cols-[minmax(0,1fr)_340px]" : "grid-cols-1",
+          frame,
         )}
       >
         {/* A floor, so a tall header or key row cannot squeeze the subject to
@@ -138,7 +153,7 @@ export function GraphCanvasShell({
         )}
       </div>
 
-      {footer && <div className="shrink-0 px-4 pb-3 pt-2 sm:px-6">{footer}</div>}
+      {footer && <div className={cn("shrink-0 pb-3 pt-2", pad)}>{footer}</div>}
     </div>
   );
 }

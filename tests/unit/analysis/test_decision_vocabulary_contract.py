@@ -97,10 +97,9 @@ def test_review_lanes_match_lifecycle() -> None:
 def test_review_lanes_are_the_currencies_plus_candidates() -> None:
     """The five partition a repository, so they must cover the vocabulary."""
     lanes = set(_FIXTURE["review_lanes"])
-    assert lanes == (set(_FIXTURE["currencies"]) | {"candidates"}) - {
-        "superseded",
-        "dismissed",
-    } | {"history"}
+    assert lanes == (set(_FIXTURE["currencies"]) | {"candidates"}) - set(
+        lifecycle.HISTORY_CURRENCIES
+    ) | {"history"}
 
 
 def test_the_acceptance_blocker_sentences_are_stable() -> None:

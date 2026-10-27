@@ -479,6 +479,39 @@ async def test_batch_upsert_symbols_inserts(async_session):
     assert names == {"foo", "bar"}
 
 
+async def test_batch_upsert_symbols_stores_the_implementation_of_an_overload_set(async_session):
+    from types import SimpleNamespace
+
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import WikiSymbol
+
+    def sym(start: int, end: int, is_declaration: bool) -> SimpleNamespace:
+        return SimpleNamespace(
+            id="src/a.py::parse",
+            name="parse",
+            kind="function",
+            file_path="src/a.py",
+            start_line=start,
+            end_line=end,
+            is_declaration=is_declaration,
+        )
+
+    repo = await insert_repo(async_session)
+    # Implementation first: the stored row must not depend on emission order.
+    await batch_upsert_symbols(
+        async_session, repo.id, [sym(10, 14, False), sym(4, 4, True), sym(7, 7, True)]
+    )
+    await async_session.commit()
+
+    saved = (
+        (await async_session.execute(select(WikiSymbol).where(WikiSymbol.repository_id == repo.id)))
+        .scalars()
+        .all()
+    )
+    assert [(s.start_line, s.end_line) for s in saved] == [(10, 14)]
+
+
 # ---------------------------------------------------------------------------
 # WebhookEvent CRUD
 # ---------------------------------------------------------------------------

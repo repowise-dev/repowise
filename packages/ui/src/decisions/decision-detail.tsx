@@ -22,6 +22,7 @@ import {
   Flame,
   GitCommitHorizontal,
 } from "lucide-react";
+import type { ChatContext } from "@repowise-dev/types/chat";
 import type {
   DecisionRecord,
   DecisionStatus,
@@ -60,6 +61,7 @@ const SOURCE_LABEL: Record<string, string> = {
   adr: "ADR",
   changelog: "Changelog",
   session: "Session",
+  agent: "Agent",
   conventions: "Convention",
 };
 
@@ -110,6 +112,13 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
   // Which AI-prompt flavor the modal shows: verification ("is this decision
   // still true?") or enforcement ("make the code conform to it").
   const [promptMode, setPromptMode] = React.useState<"verify" | "enforce" | null>(null);
+  // One subject for both the chat control and the prompt modal's "Ask in chat".
+  const chatContext: ChatContext = {
+    kind: "decision",
+    label: stripMarkdown(decision.title),
+    target: decision.id,
+    targetKind: "decision",
+  };
 
   // Read from `decision.affected_files` and not from `linkedFiles`, which the
   // editor below mutates locally. `staleness_score` is a proportion the server
@@ -290,12 +299,7 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
               <VerificationBadge verification={decision.verification} />
             )}
             <AskAboutThis
-              context={{
-                kind: "decision",
-                label: stripMarkdown(decision.title),
-                target: decision.id,
-                targetKind: "decision",
-              }}
+              context={chatContext}
               question={`Why was this decision made, what evidence supports it, and has later work conflicted with it?`}
               label="Ask about this decision"
             />
@@ -481,10 +485,10 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
               <button
                 onClick={() => handleStatusChange("active")}
                 disabled={loading}
-                // Accent, not a filled green: green/amber/red are reserved for
+                // Ink, not a filled green: green/amber/red are reserved for
                 // health readouts where they carry a band. This is the page's
-                // one primary action, which is what the accent is for.
-                className="rounded-md bg-[var(--color-accent-primary)] px-3 py-1.5 text-sm font-medium text-[var(--color-text-on-accent)] hover:opacity-90 disabled:opacity-50"
+                // one primary action, and primary actions are ink.
+                className="rounded-md bg-[var(--color-action-primary)] px-3 py-1.5 text-sm font-medium text-[var(--color-text-on-action)] hover:bg-[var(--color-action-primary-hover)] disabled:opacity-50"
               >
                 Confirm
               </button>
@@ -575,6 +579,7 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
           })
         }
         filePath={stripMarkdown(decision.title)}
+        chatContext={chatContext}
         title={
           promptMode === "enforce"
             ? "AI decision enforcement"

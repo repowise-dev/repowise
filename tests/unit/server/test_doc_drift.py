@@ -95,6 +95,42 @@ class TestFindings:
         assert data["summary"]["by_kind"] == {"anchor": 1, "path": 2}
 
     @pytest.mark.asyncio
+    async def test_findings_new_since_the_last_update_are_marked(
+        self, client: AsyncClient, app
+    ) -> None:
+        repo = await create_test_repo(client)
+        await _seed(app.state.session_factory, repo["id"], findings=[_finding()])
+        await _seed(
+            app.state.session_factory,
+            repo["id"],
+            findings=[_finding(), _finding(target="src/new.py", raw="src/new.py")],
+        )
+
+        data = (await client.get(f"/api/repos/{repo['id']}/doc-drift")).json()
+        new = {f["target"]: (f["is_new"], f["first_seen_at"]) for f in data["findings"]}
+        assert new["src/auth.py"] == (False, None)
+        assert new["src/new.py"][0] is True
+        assert new["src/new.py"][1] is not None
+        assert data["summary"]["new_since_last_update"] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_failing_history_read_is_reported_not_raised(
+        self, client: AsyncClient, app, monkeypatch
+    ) -> None:
+        from sqlalchemy.exc import OperationalError
+
+        repo = await create_test_repo(client)
+        await _seed(app.state.session_factory, repo["id"], findings=[_finding()])
+
+        async def _locked(*_a, **_k):
+            raise OperationalError("select", {}, Exception("database is locked"))
+
+        monkeypatch.setattr(crud, "doc_drift_last_written", _locked)
+        resp = await client.get(f"/api/repos/{repo['id']}/doc-drift")
+        assert resp.status_code == 200
+        assert resp.json()["unavailable"] == "drift_read_failed"
+
+    @pytest.mark.asyncio
     async def test_a_count_never_travels_without_what_it_covers(
         self, client: AsyncClient, app
     ) -> None:

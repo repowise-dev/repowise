@@ -78,7 +78,7 @@ def test_sa_query_filter_all(tmp_path: Path):
     assert len(hits) == 1
     assert hits[0].function == "f"
     assert hits[0].detail == "db"
-    assert hits[0].path == ("Incident.owner", "selectinload(Incident.owner)")
+    assert hits[0].path == ("Incident.owner", "selectinload(Incident.owner)", "sqlalchemy")
     assert hits[0].loop is not None
     assert hits[0].loop.magnitude == "grows_with_data"
 
@@ -97,7 +97,7 @@ def test_sa_flask_query_filter_by(tmp_path: Path):
         """,
     )
     assert len(hits) == 1
-    assert hits[0].path == ("Users.profile", "selectinload(Users.profile)")
+    assert hits[0].path == ("Users.profile", "selectinload(Users.profile)", "sqlalchemy")
 
 
 def test_sa_select_via_scalars(tmp_path: Path):
@@ -115,7 +115,7 @@ def test_sa_select_via_scalars(tmp_path: Path):
         """,
     )
     assert len(hits) == 1
-    assert hits[0].path == ("Build.repo", "selectinload(Build.repo)")
+    assert hits[0].path == ("Build.repo", "selectinload(Build.repo)", "sqlalchemy")
 
 
 def test_sa_execute_scalars(tmp_path: Path):
@@ -148,7 +148,7 @@ def test_sa_mapped_relationship(tmp_path: Path):
         """,
     )
     assert len(hits) == 1
-    assert hits[0].path == ("Team.members", "selectinload(Team.members)")
+    assert hits[0].path == ("Team.members", "selectinload(Team.members)", "sqlalchemy")
 
 
 def test_sa_declared_attr_on_mixin(tmp_path: Path):
@@ -170,7 +170,7 @@ def test_sa_declared_attr_on_mixin(tmp_path: Path):
         """,
     )
     assert len(hits) == 1
-    assert hits[0].path == ("Incident.owner", "selectinload(Incident.owner)")
+    assert hits[0].path == ("Incident.owner", "selectinload(Incident.owner)", "sqlalchemy")
 
 
 def test_sa_backref(tmp_path: Path):
@@ -190,7 +190,7 @@ def test_sa_backref(tmp_path: Path):
         """,
     )
     assert len(hits) == 1
-    assert hits[0].path == ("Child.parent", "selectinload(Child.parent)")
+    assert hits[0].path == ("Child.parent", "selectinload(Child.parent)", "sqlalchemy")
 
 
 def test_sa_lazy_dynamic(tmp_path: Path):
@@ -459,7 +459,7 @@ def test_django_objects_filter(tmp_path: Path):
         """,
     )
     assert len(hits) == 1
-    assert hits[0].path == ("Issue.project", 'select_related("project")')
+    assert hits[0].path == ("Issue.project", 'select_related("project")', "django")
     assert hits[0].loop.magnitude == "grows_with_data"
 
 
@@ -483,7 +483,7 @@ def test_django_reverse_default_related_name(tmp_path: Path):
         """,
     )
     assert len(hits) == 1
-    assert hits[0].path == ("Project.issue_set", 'prefetch_related("issue_set")')
+    assert hits[0].path == ("Project.issue_set", 'prefetch_related("issue_set")', "django")
 
 
 def test_django_related_name(tmp_path: Path):
@@ -504,7 +504,7 @@ def test_django_related_name(tmp_path: Path):
         """,
     )
     assert len(hits) == 1
-    assert hits[0].path == ("Project.issues", 'prefetch_related("issues")')
+    assert hits[0].path == ("Project.issues", 'prefetch_related("issues")', "django")
 
 
 def test_django_m2m_all(tmp_path: Path):
@@ -522,7 +522,7 @@ def test_django_m2m_all(tmp_path: Path):
         """,
     )
     assert len(hits) == 1
-    assert hits[0].path == ("Issue.tags", 'prefetch_related("tags")')
+    assert hits[0].path == ("Issue.tags", 'prefetch_related("tags")', "django")
 
 
 def test_django_refinement(tmp_path: Path):

@@ -44,7 +44,7 @@ export function FileMark({
  * a quiet header is a healthy file rather than a header that failed to load.
  */
 export function FileMarks({ data }: { data: FileDetailResponse }) {
-  const deadLines = data.dead_code.reduce((s, f) => s + f.lines, 0);
+  const deadLines = data.dead_code.reduce((s, f) => s + (f.lines ?? 0), 0);
   const freshness = data.wiki_page?.freshness_status;
   const docStale = freshness === "stale" || freshness === "outdated";
 

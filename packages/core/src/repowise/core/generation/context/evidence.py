@@ -220,6 +220,7 @@ def _resolve_reference_excerpt(
     reference: str,
     source_map: Mapping[str, bytes],
     parsed_by_path: Mapping[str, object],
+    max_lines: int | None = None,
 ) -> tuple[_ExactExcerpt | None, str | None]:
     """Resolve a ``path::symbol`` reference to a framed excerpt, or return a skip reason."""
     if "::" not in reference:
@@ -248,9 +249,14 @@ def _resolve_reference_excerpt(
     end_line = min(end_line, len(lines))
     if end_line < start_line:
         return None, "invalid_line_range"
+    capped = max_lines is not None and end_line - start_line + 1 > max_lines
+    if capped:
+        end_line = start_line + max_lines - 1
     body = "".join(lines[start_line - 1 : end_line])
     if not body.strip():
         return None, "empty_excerpt"
+    if capped:
+        body = body.rstrip("\n") + "\n" + _TRUNCATED
     body = _EVIDENCE_FRAME_TAG.sub(lambda match: escape(match.group(), quote=False), body)
     return (path, reference, start_line, end_line, body), None
 
@@ -259,6 +265,7 @@ def _eligible_reference_excerpts(
     references: Sequence[str],
     source_map: Mapping[str, bytes],
     parsed_by_path: Mapping[str, object],
+    max_lines: int | None = None,
 ) -> tuple[list[_ExactExcerpt], list[EvidenceSkip]]:
     """Resolve every reference in order, partitioning into eligible excerpts and skips."""
     eligible: list[_ExactExcerpt] = []
@@ -270,7 +277,9 @@ def _eligible_reference_excerpts(
             skipped.append(EvidenceSkip(reference, "duplicate_reference"))
             continue
         seen.add(reference)
-        excerpt, reason = _resolve_reference_excerpt(reference, source_map, parsed_by_path)
+        excerpt, reason = _resolve_reference_excerpt(
+            reference, source_map, parsed_by_path, max_lines
+        )
         if reason is not None:
             skipped.append(EvidenceSkip(reference, reason))
         else:
@@ -327,20 +336,52 @@ def _render_exact_excerpts(
     return included, blocks, skipped
 
 
-def _select_symbol_reference_evidence(
+def _keep_whole_excerpts(
+    eligible: list[_ExactExcerpt],
+    hard_char_limit: int,
+) -> tuple[list[EvidenceItem], list[str], list[EvidenceSkip]]:
+    """Keep line-capped excerpts whole, in priority order, up to the first that does not fit.
+
+    Stopping there keeps the result a priority prefix: a smaller, lower-priority
+    body never takes the place of a higher-priority one.
+    """
+    included: list[EvidenceItem] = []
+    blocks: list[str] = []
+    skipped: list[EvidenceSkip] = []
+    used = len(_EXACT_HEADER)
+    for index, (path, reference, start_line, end_line, body) in enumerate(eligible):
+        truncated = body.endswith(_TRUNCATED)
+        block = _source_wrapper(path, reference, start_line, end_line, body, truncated=truncated)
+        if used + len(block) > hard_char_limit:
+            skipped.extend(EvidenceSkip(ref, "budget_too_small") for _, ref, *_ in eligible[index:])
+            break
+        used += len(block)
+        included.append(EvidenceItem(path, body, truncated, reference, start_line, end_line))
+        blocks.append(block)
+    return included, blocks, skipped
+
+
+def select_symbol_evidence(
     source_map: Mapping[str, bytes],
     references: Sequence[str],
     parsed_files: Sequence[object],
     *,
     token_budget: int,
+    max_lines: int | None = None,
 ) -> EvidenceSelection:
-    """Select bounded exact bodies for symbol references, with skip provenance."""
+    """Select bounded exact bodies for symbol references, with skip provenance.
+
+    With *max_lines*, each body is capped to that many lines and kept whole in
+    reference order while it fits, instead of every body sharing the budget.
+    """
     parsed_by_path = {
         parsed.file_info.path: parsed
         for parsed in parsed_files
         if getattr(getattr(parsed, "file_info", None), "path", None)
     }
-    eligible, skipped = _eligible_reference_excerpts(references, source_map, parsed_by_path)
+    eligible, skipped = _eligible_reference_excerpts(
+        references, source_map, parsed_by_path, max_lines
+    )
 
     if not eligible:
         return EvidenceSelection(skipped=tuple(skipped))
@@ -349,6 +390,9 @@ def _select_symbol_reference_evidence(
         return EvidenceSelection(skipped=tuple(skipped))
 
     hard_char_limit = token_budget * 4 + 3
+    if max_lines is not None:
+        included, blocks, render_skips = _keep_whole_excerpts(eligible, hard_char_limit)
+        return _exact_selection(included, blocks, skipped + render_skips, token_budget)
     selected, budget_skips = _drop_references_over_budget(eligible, hard_char_limit)
     skipped.extend(budget_skips)
     if not selected:
@@ -365,8 +409,15 @@ def _select_symbol_reference_evidence(
         else _MIN_TRUNCATED_CONTENT * len(selected)
     )
     included, blocks, render_skips = _render_exact_excerpts(selected, remaining_chars)
-    skipped.extend(render_skips)
+    return _exact_selection(included, blocks, skipped + render_skips, token_budget)
 
+
+def _exact_selection(
+    included: list[EvidenceItem],
+    blocks: list[str],
+    skipped: list[EvidenceSkip],
+    token_budget: int,
+) -> EvidenceSelection:
     if not included:
         return EvidenceSelection(skipped=tuple(skipped))
     rendered = _EXACT_HEADER + "".join(blocks)
@@ -396,7 +447,7 @@ def _select_reference_evidence(
     if not symbol_references:
         return select_source_evidence(source_map, file_references, token_budget=token_budget)
     if not file_references:
-        return _select_symbol_reference_evidence(
+        return select_symbol_evidence(
             source_map,
             symbol_references,
             parsed_files,
@@ -409,7 +460,7 @@ def _select_reference_evidence(
         file_references,
         token_budget=max(0, token_budget - symbol_budget - 1),
     )
-    symbols = _select_symbol_reference_evidence(
+    symbols = select_symbol_evidence(
         source_map,
         symbol_references,
         parsed_files,

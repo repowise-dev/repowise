@@ -23,6 +23,7 @@ from repowise.core.workspace.contract_schema import (
     SchemaField,
     SchemaIssue,
 )
+from repowise.core.workspace.origins import ContractOrigin, origin_confidence
 
 from .base import SourceFile, select_files
 from .from_index import EXTRACTION_LAYER_KEY
@@ -573,7 +574,8 @@ def _operation_contract(
         role="provider",
         file_path=rel_path,
         symbol_name=f"openapi:{method.upper()} {path}",
-        confidence=0.98,
+        confidence=origin_confidence(ContractOrigin.IDL),
+        origin=ContractOrigin.IDL,
         meta={
             EXTRACTION_LAYER_KEY: OPENAPI_EXTRACTION_LAYER,
             "openapi_version": version,

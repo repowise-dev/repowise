@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "basis": "Documentation drift accepted as known. A listed finding does not fail the gate; it is keyed on document, kind and target, not line.",
+  "entries": []
+}

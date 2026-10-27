@@ -124,11 +124,11 @@ def test_cache_shares_interned_kinds_and_can_release_memory(tmp_path: Path):
     cache = DuplicationTokenCache(tmp_path, 20, HEALTH_ANALYZER_VERSION)
     kinds = [bytearray(b"identifier").decode() for _ in range(2)]
 
-    cache.put("digest", kinds, 1, [(1, 0, 1, 1)])
+    cache.put("digest", kinds, ["", ""], 1, [(1, 0, 1, 1)])
     cached = cache.get("digest")
 
     assert cached is not None
-    cached_kinds, _, _ = cached
+    cached_kinds, _, _, _ = cached
     assert cached_kinds is kinds
     assert all(kind is sys.intern(kind) for kind in kinds)
 

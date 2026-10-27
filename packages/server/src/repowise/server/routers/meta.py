@@ -8,21 +8,32 @@ failures degrade to partial responses, never errors.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Request
+from pydantic import ValidationError
 
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
 from repowise.core.upgrade import UpgradeTier, assess
-from repowise.core.upgrade.release import check_latest_version_cached, load_bundled_changelog
+from repowise.core.upgrade.changelog import ChangelogEntry, ChangelogHighlight
+from repowise.core.upgrade.release import (
+    ReleaseCheck,
+    check_latest_version_cached,
+    latest_highlights_cached,
+    load_bundled_changelog,
+    load_release_stats,
+)
 from repowise.server import __version__
 from repowise.server.deps import resolve_session_factory, verify_api_key
 from repowise.server.schemas import (
     ChangelogEntryModel,
+    ChangelogHighlightModel,
     ChangelogResponse,
     ChangelogSectionModel,
+    ReleaseStatsModel,
     VersionResponse,
 )
 
@@ -40,17 +51,29 @@ async def get_version(request: Request, repo_id: str | None = None) -> VersionRe
     The global version/freshness path needs no database; a session is opened
     lazily only when a ``repo_id`` is supplied (for the store-format fields).
     """
-    check = check_latest_version_cached(__version__)
+    # Off the event loop: a cache miss makes up to two 2 s network calls.
+    check, latest_titles = await asyncio.to_thread(_freshness)
+    current = next((e for e in load_bundled_changelog() if e.version == __version__), None)
     resp = VersionResponse(
         server_version=__version__,
         latest_version=check.latest_version,
         update_available=check.update_available,
         upgrade_command=_UPGRADE_COMMAND,
+        highlights=[_highlight(h) for h in current.highlights] if current else [],
+        latest_highlights=latest_titles,
     )
 
     if repo_id:
         await _attach_store_status(resp, repo_id, request)
     return resp
+
+
+def _freshness() -> tuple[ReleaseCheck, list[str]]:
+    """PyPI check, plus the newer release's highlight titles when there is one."""
+    check = check_latest_version_cached(__version__)
+    if check.update_available and check.latest_version:
+        return check, latest_highlights_cached(check.latest_version)
+    return check, []
 
 
 async def _attach_store_status(resp: VersionResponse, repo_id: str, request: Request) -> None:
@@ -76,15 +99,28 @@ async def _attach_store_status(resp: VersionResponse, repo_id: str, request: Req
 async def get_changelog(limit: int = 20) -> ChangelogResponse:
     """Return repowise's bundled changelog, newest first, capped at *limit*."""
     entries = load_bundled_changelog()[: max(0, limit)]
-    return ChangelogResponse(
-        entries=[
-            ChangelogEntryModel(
-                version=e.version,
-                label=e.label,
-                sections=[
-                    ChangelogSectionModel(name=s.name, items=list(s.items)) for s in e.sections
-                ],
-            )
-            for e in entries
-        ]
+    stats = load_release_stats()
+    return ChangelogResponse(entries=[_entry(e, stats.get(e.version)) for e in entries])
+
+
+def _highlight(h: ChangelogHighlight) -> ChangelogHighlightModel:
+    return ChangelogHighlightModel(id=h.id, title=h.title, blurb=h.blurb, href=h.href)
+
+
+def _entry(e: ChangelogEntry, stats: dict | None) -> ChangelogEntryModel:
+    return ChangelogEntryModel(
+        version=e.version,
+        label=e.label,
+        summary=e.summary,
+        highlights=[_highlight(h) for h in e.highlights],
+        stats=_stats(stats),
+        sections=[ChangelogSectionModel(name=s.name, items=list(s.items)) for s in e.sections],
     )
+
+
+def _stats(raw: dict | None) -> ReleaseStatsModel | None:
+    """Validated figures, or ``None`` for a missing or malformed record."""
+    try:
+        return ReleaseStatsModel.model_validate(raw) if raw else None
+    except ValidationError:
+        return None

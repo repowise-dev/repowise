@@ -346,6 +346,46 @@ async def test_test_files_are_out_of_scope(client: AsyncClient, session_factory)
 
 
 @pytest.mark.anyio
+async def test_a_plan_the_registry_withholds_is_not_attention(
+    client: AsyncClient, session_factory
+) -> None:
+    repo = await create_test_repo(client)
+    repo_id = repo["id"]
+    plan = {
+        "refactoring_type": "extract_method",
+        "target_symbol": "work",
+        "line_start": 1,
+        "line_end": 20,
+        "impact_delta": 2.0,
+        "effort_bucket": "S",
+        "confidence": "high",
+    }
+    async with get_session(session_factory) as session:
+        await crud.save_refactoring_suggestions(
+            session,
+            repo_id,
+            [
+                {**plan, "file_path": "src/shown.py", "source_biomarker": "complex_method"},
+                {
+                    **plan,
+                    "refactoring_type": "extract_helper",
+                    "file_path": "src/hidden.py",
+                    "source_biomarker": "dry_violation",
+                },
+            ],
+        )
+
+    async with get_session(session_factory) as session:
+        result = await build_attention(
+            session, repo_id, decision_health={}, knowledge_silos=[]
+        )
+
+    paths = [i["target_id"] for i in result["items"] if i["type"] == "refactoring"]
+    assert paths == ["src/shown.py"]
+    assert result["by_source"]["refactoring"] == 1
+
+
+@pytest.mark.anyio
 async def test_areas_roll_up_and_lead_with_the_worst_item(
     client: AsyncClient, session_factory
 ) -> None:
@@ -507,3 +547,45 @@ async def test_health_leads_with_the_worst_file_not_the_worst_finding(
     assert health[1]["severity"] == "low"
     # The count is still findings, so the row can say how much the area holds.
     assert result["by_source"]["health_finding"] == 7
+
+
+@pytest.mark.anyio
+async def test_a_med_security_finding_is_medium_and_ranks_above_low(
+    client: AsyncClient, session_factory
+) -> None:
+    """The scanner writes `med`; the ladder reads `medium`, above a newer `low`."""
+    repo = await create_test_repo(client)
+    repo_id = repo["id"]
+    async with get_session(session_factory) as session:
+        for kind, severity, day in (("tls_verify_false", "med", 1), ("weak_hash", "low", 2)):
+            session.add(
+                SecurityFinding(
+                    repository_id=repo_id,
+                    file_path="src/net.py",
+                    kind=kind,
+                    severity=severity,
+                    snippet="",
+                    line_number=day,
+                    commit_sha="",
+                    detected_at=datetime(2026, 9, day, tzinfo=UTC),
+                )
+            )
+        await session.commit()
+
+    async with get_session(session_factory) as session:
+        result = await build_attention(
+            session,
+            repo_id,
+            decision_health={
+                "stale_decisions": [],
+                "proposed_awaiting_review": [],
+                "ungoverned_hotspots": [],
+            },
+            knowledge_silos=[],
+        )
+
+    security = [i for i in result["items"] if i["type"] == "security_finding"]
+    assert [(i["subtype"], i["severity"]) for i in security] == [
+        ("tls_verify_false", "medium"),
+        ("weak_hash", "low"),
+    ]

@@ -21,8 +21,8 @@ from repowise.core.analysis.health.refactoring.identity import (
     refactoring_public_id,
 )
 
-EXTRACT_METHOD_ID = "refac2_f98f466eecc2dd332485"
-CLONE_ID = "refac2_e0d9feee45201e014bc3"
+EXTRACT_METHOD_ID = "refac4_f98f466eecc2dd332485"
+CLONE_ID = "refac4_e0d9feee45201e014bc3"
 
 
 def _extract_method(**overrides):
@@ -86,7 +86,7 @@ def _clone(**overrides):
 
 
 def test_the_model_version_is_pinned_and_is_carried_by_the_id_prefix() -> None:
-    assert REFACTORING_MODEL_VERSION == 2
+    assert REFACTORING_MODEL_VERSION == 4
     assert refactoring_public_id(_extract_method()) == EXTRACT_METHOD_ID
     assert refactoring_public_id(_clone()) == CLONE_ID
     assert EXTRACT_METHOD_ID.startswith(f"refac{REFACTORING_MODEL_VERSION}_")
@@ -99,6 +99,8 @@ def test_the_model_version_is_pinned_and_is_carried_by_the_id_prefix() -> None:
         (EXTRACT_METHOD_ID, "current"),
         ("refac_" + "0" * 20, "stale_model"),
         ("refac1_" + "0" * 20, "stale_model"),
+        ("refac2_f98f466eecc2dd332485", "stale_model"),
+        ("refac3_f98f466eecc2dd332485", "stale_model"),
         ("plan_" + "0" * 20, "unrecognized"),
         ("", "unrecognized"),
     ],

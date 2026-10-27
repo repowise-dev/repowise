@@ -49,6 +49,12 @@ _BOUNDARY_PHRASING: dict[str, str] = {
 }
 
 
+def _shape(boundary_kind: str) -> str:
+    """ "N+1" names a query per row, so it needs a database boundary; any other
+    boundary is only an I/O call inside a loop."""
+    return "N+1 query" if boundary_kind == "db" else "I/O call inside a loop"
+
+
 class IoInLoopDetector:
     name = _KIND
     category = "performance"
@@ -74,7 +80,7 @@ class IoInLoopDetector:
                             "cross_function": False,
                             **hit.loop_facts(),
                         },
-                        reason=f"{phrasing} runs once per loop iteration (N+1 / IO-in-loop)",
+                        reason=f"{phrasing} runs once per loop iteration ({_shape(hit.detail)})",
                     )
                 )
         return out
@@ -100,7 +106,7 @@ class IoInLoopDetector:
             },
             reason=(
                 f"{phrasing} is reached once per loop iteration through "
-                f"{chain} (cross-function N+1)"
+                f"{chain} (cross-function {_shape(hit.detail)})"
             ),
         )
 

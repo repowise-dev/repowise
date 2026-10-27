@@ -86,6 +86,23 @@ class TestGoReachabilityHelper:
         # pruner.go itself has in_degree 0 but cache.go (its sibling) is imported.
         assert is_go_file_reachable("pkg/cache/pruner.go", g, pkgs)
 
+    def test_co_change_is_not_an_importer(self):
+        """A package only ever committed alongside another is not imported."""
+        g = _build_graph(
+            nodes={
+                "pkg/cache/cache.go": _go_file(),
+                "pkg/cache/pruner.go": _go_file(),
+                "pkg/user/user.go": _go_file(),
+            },
+            edges=[
+                ("pkg/user/user.go", "pkg/cache/cache.go", {"edge_type": "co_changes"}),
+                ("pkg/user/user.go", "pkg/cache/pruner.go", {"edge_type": "co_changes"}),
+            ],
+        )
+        pkgs = build_go_package_files(g)
+        assert not is_go_file_reachable("pkg/cache/cache.go", g, pkgs)
+        assert not is_go_file_reachable("pkg/cache/pruner.go", g, pkgs)
+
     def test_orphaned_package_is_unreachable(self):
         """A package nobody imports — no entry sibling — stays unreachable."""
         g = _build_graph(
@@ -184,7 +201,11 @@ class TestGoNeverFlagPatterns:
         assert self._matches("common/doc.go")
 
     def test_magefile(self):
-        assert self._matches("magefile.go")
+        # A build file by type (``code_origin``), not a glob.
+        from repowise.core.analysis.dead_code.constants import never_flag_path
+
+        assert never_flag_path("magefile.go")
+        assert never_flag_path("build/magefile.go")
 
     def test_generated_code(self):
         assert self._matches("api/v1/types.pb.go")

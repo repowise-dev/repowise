@@ -577,6 +577,27 @@ class TestLexicalNoiseIsNotEvidence:
         # that the call *after* it still parses, which a desynced scan loses.
         assert "http::GET::/plain" in _ids(contracts)
 
+    def test_a_nested_template_query_suffix_reads_the_route(self):
+        source = (
+            "export class C {\n"
+            "  private async fetch<T>(p: string): Promise<T> {\n"
+            "    return (await fetch(p)).json();\n"
+            "  }\n"
+            "  wins(id: string, q: string) {\n"
+            '    return this.fetch<W>(`/snapshots/${id}/wins${q ? `?${q}` : ""}`);\n'
+            "  }\n"
+            "  file(id: string, qs: string) {\n"
+            '    return this.fetch<F>(`/files/${encodeURIComponent(id)}${qs ? `?${qs}` : ""}`);\n'
+            "  }\n"
+            "}\n"
+        )
+        contracts, unresolved, _c = _run(source, "src/lib/c.ts")
+        assert _ids(contracts) == {
+            "http::GET::/snapshots/{param}/wins",
+            "http::GET::/files/{param}",
+        }
+        assert unresolved == 0
+
     def test_a_regex_literal_containing_a_paren_does_not_desync(self):
         source = (
             "export class C {\n"

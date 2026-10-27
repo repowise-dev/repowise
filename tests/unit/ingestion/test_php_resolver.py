@@ -255,11 +255,13 @@ class TestUseDeclarations:
         pf = ASTParser().parse_file(fi, src)
         return [(i.module_path, i.imported_names) for i in pf.imports]
 
+    # ``imported_names`` is the class as its file declares it; an alias is
+    # the local name only, kept on the binding.
     def test_grouped_use_becomes_one_import_per_class(self) -> None:
         got = self._imports(b"<?php\nuse App\\Models\\{User, Http\\Post as P};\n")
         assert got == [
             ("App\\Models\\User", ["User"]),
-            ("App\\Models\\Http\\Post", ["P"]),
+            ("App\\Models\\Http\\Post", ["Post"]),
         ]
 
     def test_function_and_const_imports_bind_no_class(self) -> None:
@@ -271,4 +273,4 @@ class TestUseDeclarations:
 
     def test_comma_separated_use_keeps_every_clause(self) -> None:
         got = self._imports(b"<?php\nuse \\App\\X, App\\Y as Z;\n")
-        assert got == [("App\\X", ["X"]), ("App\\Y", ["Z"])]
+        assert got == [("App\\X", ["X"]), ("App\\Y", ["Y"])]

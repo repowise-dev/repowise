@@ -105,6 +105,7 @@ def tool_middleware(fn: Any) -> Any:
        It must be here rather than further out, because the estimators read
        fields a later budget pass is free to drop.
     6. ``timed`` — stamps ``_meta.timing_ms`` for any tool that did not.
+       On a lean envelope it removes the field instead (see ``_meta.full_meta``).
     7. ``budget`` — accounts for those final middleware fields and rechecks.
     8. ``record`` — writes the one savings event for the call.
 
@@ -128,7 +129,7 @@ def tool_middleware(fn: Any) -> Any:
         resolve_response_budget_repo_root,
     )
     from repowise.server.mcp_server._failure_shield import shield
-    from repowise.server.mcp_server._meta import finalize_trust_envelope
+    from repowise.server.mcp_server._meta import finalize_trust_envelope, full_meta
     from repowise.server.mcp_server._rounding import quantize
     from repowise.server.mcp_server._savings import event as savings_event
     from repowise.server.mcp_server._savings import instrument
@@ -150,7 +151,8 @@ def tool_middleware(fn: Any) -> Any:
         """Stamp elapsed time for the tools that do not thread it themselves.
 
         A tool that already reports ``timing_ms`` keeps its own number, which
-        measures its retrieval rather than the middleware around it.
+        measures its retrieval rather than the middleware around it. On a lean
+        envelope the field is a diagnostic, so it is removed instead.
         """
 
         @wraps(inner)
@@ -159,8 +161,11 @@ def tool_middleware(fn: Any) -> Any:
             result = await inner(*args, **kwargs)
             if isinstance(result, dict):
                 meta = result.setdefault("_meta", {})
-                if isinstance(meta, dict) and meta.get("timing_ms") is None:
-                    meta["timing_ms"] = round((time.perf_counter() - started) * 1000, 2)
+                if isinstance(meta, dict):
+                    if not full_meta(fn.__name__):
+                        meta.pop("timing_ms", None)
+                    elif meta.get("timing_ms") is None:
+                        meta["timing_ms"] = round((time.perf_counter() - started) * 1000, 2)
             return result
 
         return wrapped
@@ -214,6 +219,51 @@ def tool_middleware(fn: Any) -> Any:
     return record(budget(timed(instrument(budget(quantize(trust(shield(fn))))))))
 
 
+#: Restores FastMCP's indented text block, for a client that turns out to need it.
+PRETTY_JSON_ENV = "REPOWISE_MCP_PRETTY_JSON"
+
+
+def wire_result(payload: Any) -> Any:
+    """*payload* as FastMCP would serve it, with the text block compact.
+
+    FastMCP renders the text with ``indent=2`` beside a structured copy that is
+    already compact. The same ``fallback=str`` keeps a value JSON cannot hold
+    rendering as before, and the structured copy is converted exactly as
+    FastMCP converts it. Anything but a dict, or ``REPOWISE_MCP_PRETTY_JSON=1``,
+    is left to FastMCP's own conversion.
+    """
+    import os
+
+    pretty = os.environ.get(PRETTY_JSON_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+    if pretty or not isinstance(payload, dict):
+        return payload
+    import pydantic_core
+    from mcp.types import CallToolResult, TextContent
+
+    text = pydantic_core.to_json(payload, fallback=str).decode()
+    return CallToolResult(
+        content=[TextContent(type="text", text=text)],
+        structuredContent={"result": pydantic_core.to_jsonable_python(payload)},
+    )
+
+
+def registered_tool(fn: Any) -> Any:
+    """What the server registers: :func:`tool_middleware` plus the wire text.
+
+    Kept out of ``tool_middleware`` because tests and the CLI await the
+    middleware-wrapped functions directly and expect the dict back.
+    """
+    from functools import wraps
+
+    inner = tool_middleware(fn)
+
+    @wraps(inner)
+    async def wrapped(*args: Any, **kwargs: Any) -> Any:
+        return wire_result(await inner(*args, **kwargs))
+
+    return wrapped
+
+
 def ensure_full_surface() -> Any:
     """Import every tool module and attach the registry to the FastMCP server.
 
@@ -247,10 +297,21 @@ def ensure_full_surface() -> Any:
                 exc,
             )
 
+    # The mcp SDK lives above packages/core, so the registry stores plain
+    # hint dicts and this surface materialises them into ToolAnnotations.
+    from mcp.types import ToolAnnotations
+
     from repowise.core.registry import mcp_tool_registry
+    from repowise.core.registry.mcp_tool_registry import SAFETY_TO_ANNOTATION_HINTS
+    from repowise.core.registry.plugins import load_plugins
     from repowise.server.mcp_server._tool_selection import snapshot_full_surface
 
-    mcp_tool_registry.apply(_mcp, middleware=tool_middleware)
+    load_plugins()  # plugin tools register before the surface is attached
+    mcp_tool_registry.apply(
+        _mcp,
+        middleware=registered_tool,
+        annotations_for=lambda safety: ToolAnnotations(**SAFETY_TO_ANNOTATION_HINTS[safety]),
+    )
 
     # Snapshot the full registered surface so per-server tool selection
     # (single-repo vs workspace, config/CLI overrides) can rebuild from it.
@@ -280,6 +341,7 @@ _STATE_NAMES = frozenset(
         "_decision_store",
         "_fts",
         "_repo_path",
+        "_served_repo_id",
         "_vector_store_ready",
         "_lancedb_ready",
         "_registry",
@@ -288,6 +350,7 @@ _STATE_NAMES = frozenset(
         "_embedder_status",
         "_release_check",
         "_release_announced",
+        "_keyless_note_announced",
     }
 )
 

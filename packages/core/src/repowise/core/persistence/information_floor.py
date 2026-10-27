@@ -165,12 +165,14 @@ def reset_pages_denied_a_vector() -> None:
     _pages_denied_a_vector = 0
 
 
-def meets_information_floor(content: str, floor: int | None = None) -> bool:
-    """Whether *content* says enough to be worth a slot in the index.
+def meets_information_floor(content: str, floor: int | None = None, digest: str = "") -> bool:
+    """Whether *content* and the page's *digest* say enough to be worth an index slot.
 
-    A floor of 0 admits everything, which is how the feature is turned off.
+    Both count: the digest is indexed with the body, and a short page whose
+    words moved into its digest still answers questions. A floor of 0 admits
+    everything, which is how the feature is turned off.
     """
     limit = information_floor() if floor is None else floor
     if limit <= 0:
         return True
-    return len(substantive_text(content)) >= limit
+    return len(substantive_text(f"{content}\n{digest}")) >= limit

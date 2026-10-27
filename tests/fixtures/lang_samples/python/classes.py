@@ -24,10 +24,10 @@ class Cohesive:
 
 
 class Splintered:
-    """Two disjoint method clusters plus a loner → LCOM4 == 3.
+    """Two disjoint method clusters plus a loner → LCOM4 == 2.
 
     {set_a, get_a} share self.a; {set_b, get_b} share self.b; loner
-    touches neither. Fields are class-level so no constructor bridges the
+    touches neither, so it is a component that does not count. Fields are class-level so no constructor bridges the
     clusters.
     """
 

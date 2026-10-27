@@ -301,14 +301,7 @@ async def execute_scoped_generation(
         try:
             if swept_page_ids:
                 await fts.delete_many(swept_page_ids)
-            for page in generated_pages:
-                await fts.index(
-                    page.page_id,
-                    page.title,
-                    page.content,
-                    summary=page.summary,
-                    target_path=page.target_path,
-                )
+            await fts.index_pages(generated_pages)
         except Exception as exc:
             logger.debug("fts_index_skipped", error=str(exc))
 

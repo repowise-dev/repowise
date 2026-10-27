@@ -17,6 +17,7 @@ from repowise.core.analysis.change_risk import (
     features_from_file_changes,
     score_change,
     score_live_change,
+    working_tree_is_dirty,
 )
 from repowise.core.analysis.change_risk.model import _CONSTANTS, _sigmoid
 
@@ -104,9 +105,9 @@ def test_payload_includes_friendly_repo_relative_classification() -> None:
     assert payload["classification"] == "Typical"
     assert payload["baseline_sample_size"] == 200
     assert payload["risk_authority"] == {
-        "authoritative_for": "live_change_review",
-        "primary_fields": ["risk_percentile", "classification"],
-        "primary_basis": "benchmarked_population_relative",
+        "authoritative_for": "diff_size_rank",
+        "primary_fields": ["risk_percentile"],
+        "primary_basis": "population_relative_diff_size",
         "fallback_field": "fallback_band",
         "fallback_basis": "absolute_model_score_band",
         "score_role": "supporting_diff_shape_signal",
@@ -204,6 +205,15 @@ def git_repo(tmp_path: Path) -> Path:
     _git(["config", "user.email", "seed@e.com"], repo)
     _commit(repo, {"README.md": "# seed\n"}, "chore: seed", author="Seed")
     return repo
+
+
+def test_repowise_state_alone_does_not_make_the_tree_dirty(git_repo: Path) -> None:
+    """A fresh init leaves .repowise/ untracked; that is not a code change."""
+    (git_repo / ".repowise").mkdir()
+    (git_repo / ".repowise" / "wiki.db").write_text("x", encoding="utf-8")
+    assert not working_tree_is_dirty(str(git_repo))
+    (git_repo / "new.py").write_text("x = 1\n", encoding="utf-8")
+    assert working_tree_is_dirty(str(git_repo))
 
 
 def test_extract_commit_features_counts_diffusion(git_repo: Path) -> None:
@@ -336,11 +346,11 @@ def test_score_live_change_three_dot_range_is_valid(git_repo: Path) -> None:
         ["git", "rev-parse", "HEAD"], cwd=git_repo, check=True, capture_output=True, text=True
     ).stdout.strip()
     _commit(git_repo, {"r/a.py": "a=1\n"}, "feat: a", author="Dev")
-    # Three-dot syntax (base...HEAD) must degrade to a valid anchor rather than
-    # leaving a leading dot that git rejects as a ref.
+    # Three-dot syntax (base...HEAD) resolves to valid refs and keeps its
+    # merge-base meaning in the label.
     result = score_live_change(str(git_repo), f"{base}...HEAD", baseline=0)
     assert result.features.nf == 1
-    assert result.features.ref == f"{base}..HEAD"
+    assert result.features.ref == f"{base}...HEAD"
 
 
 def test_score_live_change_below_min_baseline_yields_no_percentile(git_repo: Path) -> None:
@@ -389,16 +399,72 @@ def test_baseline_cache_hits_on_second_call_and_busts_on_new_commit(
     baseline.clear_baseline_cache()
 
 
-def test_baseline_cache_shared_across_distinct_commits(git_repo: Path, monkeypatch) -> None:
-    # The memo exists for the long-lived MCP server that scores many changes
-    # against one repo state. Keying it on the target defeated that, so two
-    # different merged commits must now share a single walk.
+def _merged_change(repo: Path) -> str:
+    """A merge commit with history before it and larger commits landing after it."""
+    for i in range(10):
+        _commit(repo, {f"src/f{i}.py": f"x = {i}\n"}, f"feat: file {i}", author="Dev")
+    _git(["checkout", "-q", "-b", "feature"], repo)
+    _commit(repo, {"src/pr.py": "".join(f"p{i} = {i}\n" for i in range(6))}, "feat: pr", "Dev")
+    _git(["checkout", "-q", "-"], repo)
+    _commit(repo, {"src/main.py": "m = 1\n"}, "feat: main moves", author="Dev")
+    merge_cmd = ["merge", "-q", "--no-ff", "feature", "-m", "Merge pr"]
+    _git(["-c", "user.name=Dev", "-c", "user.email=t@e.com", *merge_cmd], repo)
+    merge = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    # Larger commits after the merge: a sample read at HEAD would rank it lower.
+    for i in range(10):
+        body = "".join(f"y{j} = {j}\n" for j in range(40))
+        _commit(repo, {f"src/later{i}.py": body}, f"feat: later {i}", author="Dev")
+    return merge
+
+
+def test_a_change_ranks_the_same_however_it_is_spelled(git_repo: Path) -> None:
+    # The commit, its first-parent range and its checklist rank against one
+    # sample: the commits before the change, wherever HEAD has moved since.
+    import asyncio
+
+    from repowise.core.analysis.change_risk import baseline
+    from repowise.core.changes.collect import evidence_for_revspec
+    from repowise.core.changes.evidence import item_line
+
+    merge = _merged_change(git_repo)
+    parent = subprocess.run(
+        ["git", "rev-parse", f"{merge}^1"],
+        cwd=git_repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    baseline.clear_baseline_cache()
+
+    commit = score_live_change(str(git_repo), merge, baseline=200)
+    ranged = score_live_change(str(git_repo), f"{merge}^1..{merge}", baseline=200)
+    checklist = asyncio.run(evidence_for_revspec(None, "", str(git_repo), merge))
+    row = next(i for i in checklist.items if i.kind == "risk_score").to_dict()
+    line = item_line(row)
+
+    assert commit.percentile is not None
+    assert commit.percentile == ranged.percentile
+    assert commit.baseline_as_of == ranged.baseline_as_of == parent
+    assert commit.baseline_sample_size == ranged.baseline_sample_size
+    assert line["key"] == "risk_score_before"
+    assert line["params"] == {
+        "percentile": round(commit.percentile, 1),
+        "sample": commit.baseline_sample_size,
+        "as_of": parent[:10],
+    }
+    baseline.clear_baseline_cache()
+
+
+def test_baseline_cache_shared_by_spellings_of_one_change(git_repo: Path, monkeypatch) -> None:
+    # The memo is keyed on the anchor, so a commit and its first-parent range
+    # share one walk.
     from repowise.core.analysis.change_risk import baseline
 
     for i in range(10):
         _commit(git_repo, {f"src/f{i}.py": f"x = {i}\n"}, f"feat: file {i}", author="Dev")
-    older = _commit(git_repo, {"src/a.py": "a = 1\n"}, "feat: a", author="Dev")
-    newer = _commit(git_repo, {"src/b.py": "b = 2\n"}, "feat: b", author="Dev")
+    head = _commit(git_repo, {"src/b.py": "b = 2\n"}, "feat: b", author="Dev")
 
     baseline.clear_baseline_cache()
     calls = {"n": 0}
@@ -410,15 +476,11 @@ def test_baseline_cache_shared_across_distinct_commits(git_repo: Path, monkeypat
 
     monkeypatch.setattr(baseline, "baseline_samples", _counting)
 
-    first = score_live_change(str(git_repo), older, baseline=200)
-    second = score_live_change(str(git_repo), newer, baseline=200)
-    third = score_live_change(str(git_repo), baseline=200)  # clean tree -> HEAD
+    score_live_change(str(git_repo), head, baseline=200)
+    score_live_change(str(git_repo), f"{head}^..{head}", baseline=200)
+    score_live_change(str(git_repo), baseline=200)  # clean tree -> HEAD
 
     assert calls["n"] == 1
-    # Each still excludes only itself, so every sample is the same size.
-    assert first.baseline_sample_size == second.baseline_sample_size
-    assert third.baseline_sample_size == first.baseline_sample_size
-
     baseline.clear_baseline_cache()
 
 
@@ -432,8 +494,7 @@ def test_commit_does_not_rank_against_itself(git_repo: Path) -> None:
     samples = baseline.baseline_samples(str(git_repo), "HEAD", 200, ())
     result = score_live_change(str(git_repo), "HEAD", baseline=200)
 
-    # The cached walk holds every commit; the ranking drops exactly one - the
-    # target - so the two sizes differ by one and no more.
+    # The sample runs back from the parent, so it is every commit but the target.
     assert result.baseline_sample_size == len(samples) - 1
     baseline.clear_baseline_cache()
 
@@ -501,6 +562,110 @@ def test_dirt_the_filters_drop_falls_back_to_head(git_repo: Path) -> None:
     assert result.working_tree is False
     assert result.features.ref == "HEAD"
     assert result.features.nf == 1  # the committed src/a.py, not an empty change
+
+
+def _block_format() -> str:
+    from repowise.core.generation.editor_files.base import BaseEditorFileGenerator as Gen
+
+    start = Gen.MARKER_START_FMT.format(tag="REPOWISE")
+    return start + "\n{body}\n" + Gen.MARKER_END_FMT.format(tag="REPOWISE") + "\n"
+
+
+_BLOCK = _block_format()
+
+
+def test_repowise_output_alone_falls_back_to_head(git_repo: Path) -> None:
+    """The index, a written .mcp.json and a refreshed managed block are not the user's change."""
+    _commit(
+        git_repo, {".claude/CLAUDE.md": "# Mine\n\n" + _BLOCK.format(body="v1")}, "docs", "Dev"
+    )
+    (git_repo / ".claude" / "CLAUDE.md").write_text(
+        "# Mine\n\n" + _BLOCK.format(body="v2\nmore"), encoding="utf-8"
+    )
+    (git_repo / ".repowise").mkdir()
+    (git_repo / ".repowise" / "config.yaml").write_text("provider: x\n", encoding="utf-8")
+    (git_repo / ".mcp.json").write_text(
+        '{"mcpServers": {"repowise": {"command": "repowise"}}}', encoding="utf-8"
+    )
+    (git_repo / "AGENTS.md").write_text(_BLOCK.format(body="hi"), encoding="utf-8")
+
+    result = score_live_change(str(git_repo), baseline=0)
+
+    assert result.working_tree is False
+    assert result.features.ref == "HEAD"
+    assert ".repowise/" in change_risk_payload(result)["exclude_patterns"]
+
+
+def test_a_users_edit_to_a_managed_file_still_counts(git_repo: Path) -> None:
+    block = _BLOCK.format(body="v1")
+    _commit(git_repo, {".claude/CLAUDE.md": "# Mine\n\n" + block}, "docs", "Dev")
+    (git_repo / ".claude" / "CLAUDE.md").write_text("# Mine, edited\n\n" + block, encoding="utf-8")
+    (git_repo / ".mcp.json").write_text(
+        '{"mcpServers": {"repowise": {}, "mine": {"command": "x"}}}', encoding="utf-8"
+    )
+
+    result = score_live_change(str(git_repo), baseline=0)
+
+    assert result.working_tree is True
+    assert {path for path, _ in result.features.file_churn} == {".claude/CLAUDE.md", ".mcp.json"}
+
+
+def _working_tree_file_sets(repo: Path, result) -> tuple[set[str], set[str]]:
+    """The files the score and the changed lines read; the health delta must count as many."""
+    from repowise.core.analysis.change_health.service import (
+        ChangeHealthDeltaService,
+        DeltaRequest,
+    )
+    from repowise.core.analysis.changed_lines import changed_lines
+
+    scored = {path for path, _ in result.features.file_churn}
+    changed, _ = changed_lines(str(repo), working_tree=True)
+    delta = ChangeHealthDeltaService(repo_path=str(repo)).compare(
+        DeltaRequest(str(repo), None, (), result.riskignore_excludes)
+    )
+    assert delta.scope.changed == result.features.nf
+    return scored, set(changed)
+
+
+def test_untracked_files_are_one_file_set_for_score_lines_and_delta(git_repo: Path) -> None:
+    """An untracked-only tree is a real change everywhere, never "high" beside "no files"."""
+    (git_repo / "src").mkdir()
+    (git_repo / "src" / "new.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    (git_repo / "notes.md").write_text("n\n", encoding="utf-8")
+
+    result = score_live_change(str(git_repo), baseline=0)
+
+    assert result.working_tree is True
+    assert _working_tree_file_sets(git_repo, result) == ({"src/new.py", "notes.md"},) * 2
+    assert result.features.la == 3
+
+
+def test_a_tracked_edit_and_an_untracked_file_both_count(git_repo: Path) -> None:
+    _commit(git_repo, {"src/a.py": "x = 1\n"}, "feat: a", author="Dev")
+    (git_repo / "src" / "a.py").write_text("x = 1\ny = 2\n", encoding="utf-8")
+    (git_repo / "src" / "new.py").write_text("n = 1\n", encoding="utf-8")
+    (git_repo / ".repowise").mkdir()
+    (git_repo / ".repowise" / "wiki.db").write_bytes(b"\x00" * 64)
+
+    result = score_live_change(str(git_repo), baseline=0)
+
+    assert result.features.nf == 2
+    assert _working_tree_file_sets(git_repo, result) == ({"src/a.py", "src/new.py"},) * 2
+
+
+def test_owned_excludes_name_repowise_output_not_the_users_filters(git_repo: Path) -> None:
+    """Test selection drops only repowise's output; .riskignore and request excludes stay."""
+    _commit(git_repo, {"src/a.py": "x = 1\n", ".riskignore": "vendor/\n"}, "feat: a", "Dev")
+    (git_repo / "src" / "a.py").write_text("x = 1\ny = 2\n", encoding="utf-8")
+    (git_repo / "AGENTS.md").write_text(_BLOCK.format(body="hi"), encoding="utf-8")
+    (git_repo / ".repowise").mkdir()
+    (git_repo / ".repowise" / "config.yaml").write_text("provider: x\n", encoding="utf-8")
+
+    result = score_live_change(str(git_repo), baseline=0, exclude_patterns=("docs/",))
+
+    assert result.working_tree is True
+    assert result.owned_excludes == (".repowise/", "/AGENTS.md")
+    assert {"vendor/", "docs/"} <= set(result.riskignore_excludes + result.request_excludes)
 
 
 def test_explicit_head_scores_the_commit_even_when_dirty(git_repo: Path) -> None:
@@ -612,3 +777,26 @@ def test_payload_offers_the_absolute_band_only_as_a_fallback(git_repo: Path) -> 
     assert unranked["fallback_band"] in {"low", "moderate", "high"}
     assert unranked["score_unit"] == "per-commit"
     assert "probability" not in ranked and "level" not in ranked
+
+
+@pytest.mark.parametrize(
+    "features",
+    [
+        ChangeFeatures(la=la, ld=ld, nf=nf, nd=nd, ns=ns, entropy=ent, exp=exp)
+        for la in (0, 3, 40, 900)
+        for ld in (0, 25, 400)
+        for nf, nd, ns, ent in ((1, 1, 1, 0.0), (6, 3, 2, 2.1), (80, 20, 6, 5.5))
+        for exp in (None, 0, 12, 4000)
+    ],
+)
+def test_top_driver_is_the_argmax_of_the_shown_contributions(features) -> None:
+    """The list's "top driver" is the biggest score-raising row the breakdown shows."""
+    risk = score_change(features)
+    shown = [d for d in risk.top_drivers if d.value is not None]
+    raising = [d for d in shown if d.contribution > 0]
+    if not raising:
+        assert risk.top_driver is None
+        return
+    assert risk.top_driver is not None
+    assert risk.top_driver.contribution == max(d.contribution for d in shown)
+    assert risk.top_driver in shown

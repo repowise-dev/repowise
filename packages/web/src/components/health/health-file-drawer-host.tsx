@@ -1,9 +1,10 @@
 "use client";
 
+import { useCallback, useMemo } from "react";
 import useSWR from "swr";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { HealthFileDrawer } from "@repowise-dev/ui/health";
+import { HealthFileDrawer, useRelatedWorkQuery } from "@repowise-dev/ui/health";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import {
   getPerformanceOpportunities,
@@ -13,7 +14,9 @@ import {
   getFileOpportunity,
   refactoringOpportunityHref,
 } from "@/lib/api/file-opportunity";
+import { getRelatedWork, relatedWorkHref } from "@/lib/api/related-work";
 import { useFileBreakdown } from "./use-file-breakdown";
+import { useTranslations } from "next-intl";
 import type { HealthCounts } from "@repowise-dev/types/health";
 
 /** Causes listed for one file. A file with more than this is its own queue. */
@@ -25,8 +28,11 @@ export function HealthFileDrawerHost({
   onClose,
   lens,
   counts,
+  inline,
 }: {
   repoId: string;
+  /** Render in place (the map's rail) instead of in a sheet. */
+  inline?: boolean;
   filePath: string | null;
   onClose: () => void;
   /** The reading the row that opened this drawer was scored under. */
@@ -34,8 +40,9 @@ export function HealthFileDrawerHost({
   /** The surface the file was opened from; drives what the drawer leads with. */
   lens?: string;
 }) {
+  const t = useTranslations("health");
   const router = useRouter();
-  const { data, isLoading } = useFileBreakdown(repoId, filePath, counts);
+  const { data, error, isLoading, mutate } = useFileBreakdown(repoId, filePath, counts);
   const prefix = `/repos/${repoId}`;
   const filePageHref = filePath ? fileEntityPath(prefix, filePath) : undefined;
 
@@ -65,16 +72,34 @@ export function HealthFileDrawerHost({
     { revalidateOnFocus: false, shouldRetryOnError: false },
   );
 
+  // What the other lenses hold for this file. One request, one read per lens.
+  const fetchRelated = useCallback(
+    (paths: string[]) => getRelatedWork(repoId, paths),
+    [repoId],
+  );
+  // Cached per path, so going back to a file already looked at is instant.
+  const related = useRelatedWorkQuery(fetchRelated, [filePath]);
+  const toRelated = useMemo(() => relatedWorkHref(repoId), [repoId]);
+
   return (
     <HealthFileDrawer
       open={filePath !== null}
+      inline={inline ?? false}
       opportunity={opportunity}
       refactoringOpportunityHref={(id) => refactoringOpportunityHref(repoId, id)}
+      related={related.data?.files?.[0]}
+      relatedError={related.error}
+      onRelatedRetry={related.retry}
+      relatedWorkHref={toRelated}
+      onNavigate={(href) => router.push(href)}
       onClose={onClose}
+      filePath={filePath}
       loading={isLoading}
+      error={error}
+      onRetry={() => void mutate()}
       metric={data?.metric ?? null}
       breakdown={
-        data
+        data?.breakdown
           ? {
               score: data.breakdown.score,
               total_deduction: data.breakdown.total_deduction,
@@ -84,6 +109,7 @@ export function HealthFileDrawerHost({
       }
       findings={data?.findings ?? []}
       suggestions={data?.suggestions ?? {}}
+      heldBack={data?.gated ?? null}
       trend={data?.trend ?? null}
       signals={data?.signals ?? null}
       lens={lens}
@@ -104,11 +130,16 @@ export function HealthFileDrawerHost({
             findingId,
             status as Parameters<typeof updateFindingStatus>[2],
           );
-          toast.success(`Finding marked ${status.replace("_", " ")}`);
+          toast.success(
+            t("findingMarked", { status: status.replace("_", " ") }),
+          );
         } catch (err) {
-          toast.error("Couldn't update finding status");
+          toast.error(t("findingStatusFailed"));
           throw err;
         }
+        // The score, leading cause and category totals all count open
+        // findings, so they re-read rather than describe the old status.
+        void mutate();
       }}
     />
   );

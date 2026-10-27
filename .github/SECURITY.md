@@ -2,9 +2,13 @@
 
 ## Supported Versions
 
+Security fixes go into the latest minor release line only. Older lines do not
+receive backports; upgrade to the latest release to pick up a fix.
+
 | Version | Supported |
 |---------|-----------|
-| 0.1.x   | Yes       |
+| 0.54.x (latest minor) | Yes |
+| Older than 0.54 | No |
 
 ## Reporting a Vulnerability
 

@@ -10,7 +10,7 @@ heritage_node_types / parent_class_types are both "declType", not the more
 obvious "declClass"/"declIntf"/"declHelper". Pascal nests the actual class
 body one level inside a `Name = <class|interface|helper body>;` wrapper
 (`declType`), and only the wrapper carries a `name` field -- `declClass`
-itself has none. `ASTParser._find_parent` looks up
+itself has none. `parser.symbols._find_parent` looks up
 `ancestor.child_by_field_name("name")` on whatever ancestor type matches
 `parent_class_types`, so pointing it at "declClass" would silently return
 no parent name for every method. See extractors/heritage/pascal.py for the
@@ -48,8 +48,8 @@ SPEC = LanguageSpec(
     shebang_tokens=(),
     # Common RTL calls worth excluding from the project call graph, spelled
     # the way the RTL itself declares them (Pascal is case-insensitive, but
-    # `ASTParser._extract_calls` does a case-sensitive `target_name in
-    # _call_builtins` check against the raw source text, so entries need to
+    # `parser.calls._extract_calls` does a case-sensitive `target_name in
+    # call_builtins` check against the raw source text, so entries need to
     # match real-world casing, not lowercased). This list is intentionally
     # conservative -- System-unit built-ins only; framework calls (VCL/FMX/
     # LCL) are ordinary project dependencies and should still show up as
@@ -73,7 +73,7 @@ SPEC = LanguageSpec(
     # latter overlap with builtin_parents above) -- none of these ever have
     # an in-repo declaration, so resolving them as a type reference is a
     # guaranteed miss. Read back via get_builtin_types("pascal") in
-    # parser_helpers.py's head-identifier extractor.
+    # lang_helpers/type_heads.py's head-identifier extractor.
     builtin_types=frozenset({
         "Integer", "Cardinal", "Boolean", "ByteBool", "WordBool", "LongBool",
         "String", "AnsiString", "WideString", "UnicodeString", "ShortString",

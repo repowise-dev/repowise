@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .biomarker_names import canonical_biomarker
+
 _TEMPLATES: dict[str, str] = {
     "brain_method": (
         "Split this function. It carries high cyclomatic complexity and "
@@ -48,11 +50,10 @@ _TEMPLATES: dict[str, str] = {
         "conditional axes; if it dispatches on a type tag, replace the "
         "if/elif ladder with polymorphism or a lookup table."
     ),
-    "bumpy_road": (
-        "Smooth the road. Multiple branches at the same nesting depth "
-        "usually means the function is doing several jobs — split it "
-        "into stages so each stage stays at a single level of "
-        "abstraction."
+    "repeated_nesting": (
+        "Split the function into stages. Several nested blocks side by side "
+        "usually mean it does several jobs; give each stage its own helper "
+        "at a single level of abstraction."
     ),
     "large_method": (
         "Shorten the function. Extract paragraphs (each comment block "
@@ -74,6 +75,11 @@ _TEMPLATES: dict[str, str] = {
         "high-dependents but lacks coverage — add characterization "
         "tests for the current behavior first, then refactor with "
         "confidence."
+    ),
+    "untested_complexity": (
+        "Test this function's branches first: it is complex and little of it "
+        "runs under test. When its complexity is 30 or more, split it instead, "
+        "since no amount of coverage brings its score under the bar."
     ),
     "coverage_gap": (
         "Cover the uncovered branches. Start with the highest-impact "
@@ -191,20 +197,174 @@ _TEMPLATES: dict[str, str] = {
         "(`repowise decision supersede`) or by adding a 'relates_to' edge "
         "with a clarifying rationale."
     ),
+    # Test quality, advisory.
+    "assertion_free_test": (
+        "Assert on the result. This test runs the code and checks nothing, so it "
+        "passes whatever the code does; add an assertion on the value or the side "
+        "effect the test exists to protect."
+    ),
+    "mock_saturated_test": (
+        "Test behaviour, not wiring. Replace mocks of the code's own collaborators "
+        "with real objects or a fake, and keep mocks for the slow or external "
+        "boundaries."
+    ),
+    # Performance: per-iteration work.
+    "io_in_loop": (
+        "Batch the I/O. Fetch or write everything the loop needs in one call "
+        "before or after it (a bulk query, an IN clause, a batch request) and "
+        "look the results up in memory inside the loop."
+    ),
+    "nested_loop_with_io": (
+        "Lift the I/O out of the inner loop. Batch the inner call across the "
+        "outer loop's items, or load the data once and index it by key."
+    ),
+    "lazy_load_in_loop": (
+        "Load the relationship with the parent rows. Add selectinload or "
+        "joinedload (prefetch_related or select_related in Django) to the query "
+        "the loop iterates."
+    ),
+    "serial_await_in_loop": (
+        "Run independent awaits together. When the iterations do not depend on "
+        "each other, gather them (asyncio.gather, Promise.all, Task.WhenAll) "
+        "with a bound on concurrency."
+    ),
+    "string_concat_in_loop": (
+        "Build the string once. Collect the pieces in a list or buffer inside the "
+        "loop and join them after it."
+    ),
+    "regex_compile_in_loop": (
+        "Compile the pattern once. Move the compile call out of the loop into a "
+        "constant or a field and reuse it."
+    ),
+    "resource_construction_in_loop": (
+        "Create the client once. Construct the connection or client before the "
+        "loop and reuse it for every iteration."
+    ),
+    "lock_in_loop": (
+        "Take the lock once. Acquire it around the whole loop, or collect the "
+        "changes and apply them in one critical section."
+    ),
+    "defer_in_loop": (
+        "Release the resource each iteration. Close it at the end of the loop "
+        "body, or move the body into its own function so the defer runs per "
+        "iteration."
+    ),
+    "json_parse_in_loop": (
+        "Clone without the JSON round-trip. Use structuredClone, or clone once "
+        "outside the loop if every iteration copies the same value."
+    ),
+    "membership_test_against_list_in_loop": (
+        "Look up in a set. Build a set from the list once before the loop and "
+        "test membership against it."
+    ),
+    "list_insert_zero_in_loop": (
+        "Stop inserting at the front. Use collections.deque with appendleft, or "
+        "append and reverse once after the loop."
+    ),
+    "pandas_iterrows_in_loop": (
+        "Vectorize the loop. Express the per-row work as a column operation, or "
+        "use itertuples when row access is unavoidable."
+    ),
+    "pd_concat_in_loop": (
+        "Concatenate once. Append each frame to a list inside the loop and call "
+        "pd.concat on the list after it."
+    ),
+    "array_spread_in_reduce": (
+        "Mutate the accumulator. Push into it and return it, so each step does "
+        "not copy everything gathered so far."
+    ),
+    "goroutine_in_unbounded_loop": (
+        "Bound the fan-out. Use a worker pool, a semaphore channel or an errgroup "
+        "with a limit so the goroutine count does not grow with the input."
+    ),
+    "nested_loop_quadratic": (
+        "Remove the inner scan. If the inner loop searches for a match, index the "
+        "inner collection by key in a map or set once."
+    ),
+    # Performance: blocking work.
+    "blocking_sync_in_async": (
+        "Use the async form of the call (asyncio.sleep, an async HTTP client, "
+        "asyncio subprocess), or run the blocking call in a thread executor."
+    ),
+    "hot_path_sync_io": (
+        "If this function runs on a latency-sensitive path, cache the result, "
+        "move the call to startup, or make it asynchronous."
+    ),
+    "blocking_io_under_lock": (
+        "Do the I/O outside the lock. Read or write first, then take the lock "
+        "only to update the shared state."
+    ),
+    "unbounded_read_reduced_in_memory": (
+        "Select in the query. Move the per-key reduction into SQL (DISTINCT ON, "
+        "a window function, a view) so only the rows you keep are read."
+    ),
+    # SQL.
+    "sql_cartesian_join": (
+        "Add the join predicate. Rewrite the comma join as JOIN ... ON the "
+        "columns that relate the tables, or as CROSS JOIN if the product is "
+        "intended."
+    ),
+    "sql_high_complexity": (
+        "Split the routine. Move branching business logic into the application "
+        "or into smaller routines, each with one job."
+    ),
+    "sql_select_star": (
+        "Name the columns. Replace * with the column list the view's consumers "
+        "read, so a new source column does not change the view's shape."
+    ),
+    "sql_update_delete_without_where": (
+        "Confirm the statement should touch every row. Add the WHERE clause it "
+        "needs, or a comment stating that the full-table change is intended."
+    ),
+    # Apex.
+    "apex_soql_injection": (
+        "Bind the value. Write it as a bind variable (`:value`) in the query "
+        "string, or pass it through String.escapeSingleQuotes before splicing it in."
+    ),
+    "apex_missing_sharing": (
+        "Declare the sharing mode. Add `with sharing` (or `inherited sharing`), or "
+        "`without sharing` with a comment saying why the class must see every record."
+    ),
+    "apex_hardcoded_id": (
+        "Look the record up instead. Query it by a stable field (DeveloperName, a "
+        "unique name) or read the Id from custom metadata or a custom setting."
+    ),
+    "apex_see_all_data": (
+        "Create the test's data. Insert the records the test needs (a test data "
+        "factory or @TestSetup) and drop SeeAllData=true."
+    ),
+    "cobol_unstructured_flow": (
+        "Return through the range exit. Replace the jump with a flag the caller "
+        "tests, or PERFORM the target paragraph, and set the next step with a "
+        "value instead of ALTER."
+    ),
 }
 
 
 def suggestion_for(biomarker_type: str) -> str:
     """Return the canonical refactoring suggestion for a biomarker.
 
-    Unknown biomarker names fall back to a generic prompt — keeps the
-    field non-null on every finding so the UI can rely on it.
+    A renamed marker's old id reads its current template, so stored findings
+    keep their advice. Unknown biomarker names fall back to a generic prompt —
+    keeps the field non-null on every finding so the UI can rely on it.
     """
     return _TEMPLATES.get(
-        biomarker_type,
+        canonical_biomarker(biomarker_type),
         "Review this finding and decide whether the underlying smell is "
         "worth refactoring or suppressing via `.repowise/health-rules.json`.",
     )
+
+
+def hint_for(biomarker_type: str) -> str | None:
+    """The first sentence of the marker's template, for a one-line fix hint.
+
+    ``None`` when the marker has no template: the generic fallback is no hint.
+    """
+    template = _TEMPLATES.get(canonical_biomarker(biomarker_type))
+    if template is None:
+        return None
+    head, dot, _ = template.partition(". ")
+    return head + "." if dot else template
 
 
 def annotate_finding(finding: dict[str, Any]) -> dict[str, Any]:

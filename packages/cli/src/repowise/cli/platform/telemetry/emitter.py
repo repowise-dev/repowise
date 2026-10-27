@@ -27,12 +27,12 @@ import atexit
 import contextlib
 import json
 import os
-import subprocess
 import sys
 
 from repowise.cli.platform import identity, settings
 from repowise.cli.platform.telemetry import environment, spool
 from repowise.cli.platform.telemetry.events import TelemetryEvent
+from repowise.cli.spawn import spawn_detached
 
 #: Module the detached flusher runs as.
 _FLUSHER_MODULE = "repowise.cli.platform.telemetry.flusher"
@@ -48,19 +48,18 @@ def _cli_version() -> str:
 
 
 def _under_test() -> bool:
-    """Return whether we are running inside a pytest session.
+    """Return whether a test runner is driving this process.
 
     The suite drives real CLI commands, and its fixtures relocate the home
-    directory that holds ``anon_id``, so without this every test run delivers
-    events under a freshly minted install. Only delivery is suppressed:
-    consent resolution stays real, so its own tests still exercise the actual
-    precedence rules.
-
-    Shares the env-var check with :func:`environment.under_pytest` so the two
-    cannot drift. The ``sys.modules`` fallback is kept because this guard is
-    only consulted in-process, where an import is evidence enough.
+    directory that holds ``anon_id``, so without this every test run would
+    queue events under a freshly minted install. Only delivery is suppressed:
+    consent resolution and the debug print stay real, so their tests still
+    exercise them. Shared with the core emitter, which also honours the
+    ``REPOWISE_TELEMETRY_IN_TESTS`` opt-in telemetry's own tests use.
     """
-    return environment.under_pytest() or "pytest" in sys.modules
+    from repowise.core.platform.telemetry import under_test
+
+    return under_test()
 
 
 def build_envelope(event: TelemetryEvent) -> dict[str, object]:
@@ -70,7 +69,7 @@ def build_envelope(event: TelemetryEvent) -> dict[str, object]:
         "anon_id": identity.get_anonymous_id(),
         "session_id": identity.get_session_id(),
         "cli_version": _cli_version(),
-        "properties": event.properties(),
+        "properties": {"client": environment.client(), **event.properties()},
     }
     envelope.update(environment.base_facts())
     return envelope
@@ -90,11 +89,29 @@ def record(event: TelemetryEvent) -> None:
                 file=sys.stderr,
             )
             return
+        if _under_test():
+            return
 
         spool.append(envelope)
     except Exception:
         # Telemetry must never break a command.
         return
+
+
+def _flusher_executable() -> str:
+    """Return the executable for the detached flusher.
+
+    On Windows (``os.name == "nt"``) prefer a ``pythonw.exe`` sibling next
+    to ``sys.executable`` (windowless GUI subsystem, never allocates a
+    console) when it exists as a file; otherwise fall back to
+    ``sys.executable``.
+    """
+    if os.name == "nt" and sys.executable:
+        candidate = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+        with contextlib.suppress(Exception):
+            if os.path.isfile(candidate):
+                return candidate
+    return sys.executable or ""
 
 
 def _spawn_flusher() -> bool:
@@ -106,20 +123,10 @@ def _spawn_flusher() -> bool:
     """
     if not sys.executable:
         return False
-    kwargs: dict[str, object] = {
-        "stdin": subprocess.DEVNULL,
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
-        "close_fds": True,
-        "cwd": os.getcwd(),
-    }
-    if os.name == "nt":
-        # DETACHED_PROCESS | CREATE_NO_WINDOW: no console window flashes up
-        # in front of the user between commands.
-        kwargs["creationflags"] = 0x00000008 | 0x08000000
-    else:
-        kwargs["start_new_session"] = True
-    subprocess.Popen([sys.executable, "-m", _FLUSHER_MODULE], **kwargs)  # type: ignore[arg-type]
+    try:
+        spawn_detached([_flusher_executable(), "-m", _FLUSHER_MODULE], os.getcwd())
+    except Exception:
+        return False
     return True
 
 

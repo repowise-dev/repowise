@@ -172,25 +172,15 @@
       "target_id": "src/tiny.py",
       "subtype": "long_method",
       "weight": 0.4
-    },
-    {
-      "id": "dead-dead2",
-      "type": "dead_code",
-      "title": "src/orphan.py",
-      "description": "Unreachable symbol (40 lines)",
-      "severity": "low",
-      "target_id": "src/orphan.py",
-      "subtype": "unreachable_file",
-      "weight": 0.7
     }
   ],
-  "total": 20,
+  "total": 19,
   "by_source": {
     "health_finding": 4,
     "security_finding": 3,
     "refactoring": 2,
     "doc_drift": 2,
-    "dead_code": 2,
+    "dead_code": 1,
     "decisions": 5,
     "knowledge_silo": 2
   },
@@ -281,7 +271,7 @@
     },
     {
       "key": "dead_code",
-      "total": 2,
+      "total": 1,
       "severity": "low",
       "detail": "",
       "lead": {

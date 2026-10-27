@@ -15,20 +15,41 @@ async def test_get_dead_code(setup_mcp):
 
     result = await get_dead_code()
     assert result["summary"]["total_findings"] == 3
-    assert result["summary"]["safe_to_delete_count"] == 2
+    # dc1 is stored safe but is a whole file, so it reads as review-only.
+    assert result["summary"]["safe_to_delete_count"] == 1
 
-    # Tiered structure: dc1 (0.9) in high, dc2 (0.7) + dc3 (0.5) in medium
+    # Engine bands (0.7 / 0.4): dc1 (0.9) + dc2 (0.7) high, dc3 (0.5) medium
     tiers = result["tiers"]
-    assert tiers["high"]["count"] == 1
-    assert tiers["medium"]["count"] == 2
+    assert tiers["high"]["count"] == 2
+    assert tiers["medium"]["count"] == 1
     assert tiers["low"]["count"] == 0
 
     # High tier findings sorted by confidence desc
     high_findings = tiers["high"]["findings"]
-    assert high_findings[0]["confidence"] >= 0.8
+    assert high_findings[0]["confidence"] >= high_findings[1]["confidence"] >= 0.7
+    assert high_findings[0]["kind"] == "unreachable_file"
+    assert high_findings[0]["safe_to_delete"] is False
 
     # Impact estimate present
     assert result["impact"]["total_lines_reclaimable"] > 0
+
+
+@pytest.mark.asyncio
+async def test_get_dead_code_summary_says_what_it_counts(setup_mcp):
+    from repowise.server.mcp_server import get_dead_code
+
+    plain = (await get_dead_code())["summary"]
+    assert "filtered_findings" in plain["scope"]
+    assert "filters" not in plain  # defaults are not echoed
+
+    # A filter that keeps nothing: the totals still count every open finding,
+    # and the summary names the filters that emptied the tiers.
+    result = await get_dead_code(directory="nowhere", min_confidence="high")
+    summary = result["summary"]
+    assert summary["total_findings"] == 3
+    assert summary["filtered_findings"] == 0
+    assert summary["filters"] == {"directory": "nowhere", "min_confidence": 0.7}
+    assert summary["scope"] == plain["scope"]
 
 
 @pytest.mark.asyncio
@@ -39,6 +60,8 @@ async def test_get_dead_code_safe_only(setup_mcp):
     for tier_data in result["tiers"].values():
         for f in tier_data["findings"]:
             assert f["safe_to_delete"] is True
+    # A deletion-ready finding exists, so there is no empty view to explain.
+    assert "safe_only_note" not in result["summary"]
 
 
 @pytest.mark.asyncio
@@ -68,7 +91,7 @@ async def test_get_dead_code_tier_filter(setup_mcp):
     assert "high" in result["tiers"]
     assert "medium" not in result["tiers"]
     assert "low" not in result["tiers"]
-    assert result["tiers"]["high"]["count"] == 1
+    assert result["tiers"]["high"]["count"] == 2
 
 
 @pytest.mark.asyncio
@@ -96,3 +119,62 @@ async def test_get_dead_code_group_by_owner(setup_mcp):
     assert len(owners) >= 1
     owner_names = [o["owner"] for o in owners]
     assert "Bob" in owner_names  # Bob owns dc2 + dc3
+
+
+class _EveryFileConsumed:
+    def has_cross_repo_consumers(self, repo_alias, file_path):
+        return [{"repo": "web"}]
+
+    def get_repos_depending_on(self, repo_alias):
+        return ["web"]
+
+    def get_package_consumers(self, repo_alias):
+        return []
+
+    def get_contract_links_as_provider(self, repo_alias, file_path):
+        return []
+
+
+@pytest.mark.asyncio
+async def test_cross_repo_cut_reaches_summary_and_rollups(setup_mcp, monkeypatch):
+    from repowise.server.mcp_server import get_dead_code, tool_dead_code
+
+    monkeypatch.setattr(
+        tool_dead_code, "_cross_repo_cut", lambda alias: {"lookup": _EveryFileConsumed(), "alias": alias}
+    )
+
+    result = await get_dead_code(group_by="directory", min_confidence=0.0)
+    summary = result["summary"]
+    # The safe counts agree with the tiers: a consumed finding is never safe.
+    assert summary["total_findings"] == 3
+    assert summary["safe_to_delete_count"] == 0
+    assert summary["deletable_lines"] == 0
+    assert all(d["safe_count"] == 0 for d in result["by_directory"])
+    assert not any(f["safe_to_delete"] for t in result["tiers"].values() for f in t["findings"])
+
+    # The cut empties a safe-only view, and the summary says why.
+    safe = await get_dead_code(safe_only=True)
+    assert safe["summary"]["filtered_findings"] == 0
+    assert "safe_only_note" in safe["summary"]
+
+
+class _EveryFileCalled(_EveryFileConsumed):
+    def get_contract_links_as_provider(self, repo_alias, file_path):
+        return [{"consumer_repo": "web"}]
+
+
+@pytest.mark.asyncio
+async def test_the_default_floor_reads_the_cut_confidence(setup_mcp, monkeypatch):
+    from repowise.server.mcp_server import get_dead_code, tool_dead_code
+
+    monkeypatch.setattr(
+        tool_dead_code, "_cross_repo_cut", lambda alias: {"lookup": _EveryFileCalled(), "alias": alias}
+    )
+
+    # 0.9 / 0.7 / 0.5 cut to 0.27 / 0.21 / 0.15: none clears 0.4.
+    result = await get_dead_code()
+    assert not any(t["findings"] for t in result["tiers"].values())
+    assert result["summary"]["filtered_findings"] == 0
+    assert result["summary"]["total_findings"] == 3
+    low = await get_dead_code(min_confidence="low")
+    assert [f["confidence"] for f in low["tiers"]["low"]["findings"]] == [0.27, 0.21, 0.15]

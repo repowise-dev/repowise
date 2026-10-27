@@ -24,8 +24,11 @@ from repowise.core.analysis.doc_drift.models import (
 )
 from repowise.core.analysis.doc_drift.serialize import (
     collapse_reference_sites,
+    derive_doc_drift_fingerprint,
     derive_doc_drift_id,
     documents_with_drift,
+    finding_dict,
+    fingerprint_of,
     serialize_finding,
     serialize_reference,
     serialize_report,
@@ -69,6 +72,8 @@ def _row_from(finding: DocDriftFindingData) -> DocDriftFinding:
         evidence_json=json.dumps(list(finding.evidence)),
         raw=finding.raw,
         context=finding.context,
+        suggestion=finding.suggestion or None,
+        suggestion_basis=finding.suggestion_basis or None,
     )
 
 
@@ -83,6 +88,41 @@ def test_the_evidence_toggle_agrees_on_both_paths():
         _row_from(finding), evidence=False
     )
     assert "evidence" not in serialize_finding(finding, evidence=False)
+
+
+def test_a_suggestion_round_trips_identically_on_both_paths():
+    finding = _finding(suggestion="src/auth/", suggestion_basis="package_split")
+    served = serialize_finding(finding)
+    assert served == serialize_doc_drift_row(_row_from(finding))
+    assert served["suggestion"] == "src/auth/"
+    assert served["suggestion_basis"] == "package_split"
+
+
+def test_no_suggestion_means_no_keys_not_nulls():
+    """MCP get_health serves these dicts; most findings must not grow noise."""
+    assert "suggestion" not in serialize_finding(_finding())
+    assert "suggestion_basis" not in serialize_doc_drift_row(_row_from(_finding()))
+    served = finding_dict(
+        file_path="docs/a.md", kind="path", line_number=1, target="x",
+        confidence=0.9, origin="o", reason="r", raw="x", context="c",
+        suggestion="", suggestion_basis="",
+    )
+    assert "suggestion" not in served and "fingerprint" not in served
+
+
+def test_a_suggestion_with_a_null_basis_omits_the_basis():
+    served = finding_dict(
+        file_path="docs/a.md", kind="path", line_number=1, target="x",
+        confidence=0.9, origin="o", reason="r", raw="x", context="c",
+        suggestion="y/", suggestion_basis=None,
+    )
+    assert served["suggestion"] == "y/" and "suggestion_basis" not in served
+
+
+def test_fingerprint_of_prefers_a_carried_fingerprint():
+    row = {"file_path": "docs/a.md", "kind": "path", "target": "x"}
+    assert fingerprint_of(row) == derive_doc_drift_fingerprint("docs/a.md", "path", "x")
+    assert fingerprint_of({**row, "fingerprint": "abc"}) == "abc"
 
 
 def test_a_report_reference_and_its_stored_row_serialize_identically():
@@ -261,10 +301,11 @@ class TestSerializeReport:
         assert [r["document"] for r in rows] == ["docs/a.md", "docs/b.md"]
 
     def test_the_findings_are_the_same_dicts_a_store_would_serve(self):
-        """Identical but for the id, which no store column holds."""
+        """Identical but for the id and fingerprint, which no store column holds."""
         report = self._report()
         payload = serialize_report(report)
-        served = [{k: v for k, v in f.items() if k != "id"} for f in payload["findings"]]
+        minted = {"id", "fingerprint"}
+        served = [{k: v for k, v in f.items() if k not in minted} for f in payload["findings"]]
         assert served == [
             serialize_doc_drift_row(_row_from(f)) for f in report.findings
         ]
@@ -278,6 +319,20 @@ class TestSerializeReport:
             derive_doc_drift_id(f.file_path, f.kind, f.line_number, f.target)
             for f in report.findings
         ]
+
+    def test_every_finding_carries_a_line_independent_fingerprint(self):
+        report = self._report()
+        payload = serialize_report(report)
+        assert [f["fingerprint"] for f in payload["findings"]] == [
+            derive_doc_drift_fingerprint(f.file_path, f.kind, f.target)
+            for f in report.findings
+        ]
+
+    def test_the_suppressed_count_survives_serialization(self):
+        report = self._report()
+        assert serialize_report(report)["suppressed"] == 0
+        report.suppressed = 3
+        assert serialize_report(report)["suppressed"] == 3
 
     def test_the_uncheckable_denominator_survives_serialization(self):
         """The count that keeps the detector honest about its own coverage."""

@@ -10,11 +10,13 @@ the LLM to:
 from __future__ import annotations
 
 import json
+from collections import Counter
 from typing import Any
 
 import structlog
 
 from repowise.core.generation.entry_points import orientation_entry_points
+from repowise.core.generation.layers import layer_key
 from repowise.core.ids import file_path_of, kg_file_path_of
 
 logger = structlog.get_logger(__name__)
@@ -182,6 +184,7 @@ async def _enrich_layers(
     # position: positional joins silently corrupt every name when a model
     # returns batch-relative indices.
     by_id = {layer["id"]: layer for layer in enriched if layer.get("id")}
+    taken: list[str] = []
 
     for batch_start in range(0, len(layers), _LAYER_BATCH_SIZE):
         batch = layers[batch_start : batch_start + _LAYER_BATCH_SIZE]
@@ -195,10 +198,13 @@ async def _enrich_layers(
                 "id": layer.get("id", ""),
                 "heuristic_label": layer["name"],
                 "file_count": len(file_paths),
+                "folders": _folder_breakdown(file_paths),
                 "top_files": top_files,
             })
 
-        user_prompt = _build_layer_naming_prompt(batch_context, tech_stack, repo_structure)
+        user_prompt = _build_layer_naming_prompt(
+            batch_context, tech_stack, repo_structure, taken_names=taken
+        )
         batch_ids = {layer.get("id") for layer in batch}
 
         try:
@@ -227,14 +233,54 @@ async def _enrich_layers(
                         target["description"] = item["description"]
         except Exception as exc:
             logger.warning("kg_layer_naming_batch_failed", error=str(exc))
+        taken.extend(layer["name"] for layer in batch)
 
+    _dedupe_layer_names(enriched)
     return enriched
+
+
+def _dedupe_layer_names(layers: list[dict]) -> None:
+    """Make every layer name unique, in place.
+
+    Batches are named independently, so two layers can come back with the same
+    name. The first layer in display order keeps it; a later one is qualified
+    with its id slug, which is unique by construction.
+    """
+    seen: set[str] = set()
+    for layer in layers:
+        name = layer["name"]
+        if name.casefold() in seen:
+            qualifier = layer_key(str(layer.get("id") or "")).replace("-", " ")
+            name = f"{layer['name']} ({qualifier})"
+            suffix = 2
+            while name.casefold() in seen:
+                name = f"{layer['name']} ({qualifier} {suffix})"
+                suffix += 1
+            layer["name"] = name
+        seen.add(name.casefold())
+
+
+_FOLDER_DEPTH = 2
+_TOP_FOLDERS = 5
+
+
+def _folder_breakdown(file_paths: list[str]) -> list[tuple[str, int]]:
+    """``(folder, file count)`` for a layer's largest folders, two segments deep.
+
+    The top files are ranked by PageRank, so a layer that is mostly one area
+    but headed by another reads as the head; the counts show the majority.
+    """
+    counts = Counter(
+        "/".join(p.split("/")[:-1][:_FOLDER_DEPTH]) or "(root)" for p in file_paths
+    )
+    return counts.most_common(_TOP_FOLDERS)
 
 
 def _build_layer_naming_prompt(
     batch_context: list[dict],
     tech_stack: list[dict],
     repo_structure: Any,
+    taken_names: list[str] | None = None,
 ) -> str:
     tech_names = [t.get("name", "") for t in tech_stack[:10] if t.get("name")]
     entry_points = orientation_entry_points(repo_structure, limit=5)
@@ -251,13 +297,24 @@ def _build_layer_naming_prompt(
         f"Tech stack: {', '.join(tech_names) if tech_names else 'unknown'}",
         f"Entry points: {', '.join(entry_points) if entry_points else 'none detected'}",
         "",
-        "Communities:",
     ]
+    if taken_names:
+        lines += [
+            "Names already given to other communities (every name must be unique): "
+            + ", ".join(taken_names),
+            "",
+        ]
+    lines.append("Communities:")
 
     for ctx in batch_context:
         lines.append(f"\n--- Community \"{ctx['id']}\" ---")
         lines.append(f"Heuristic label: {ctx['heuristic_label']}")
         lines.append(f"File count: {ctx['file_count']}")
+        folders = ctx.get("folders") or []
+        if folders:
+            shown = ", ".join(f"{folder} {n}" for folder, n in folders)
+            rest = ctx["file_count"] - sum(n for _, n in folders)
+            lines.append(f"Files by folder: {shown}" + (f", other folders {rest}" if rest else ""))
         lines.append(f"Top files: {', '.join(ctx['top_files'][:10])}")
 
     lines.append("")

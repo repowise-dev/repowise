@@ -1,8 +1,9 @@
 """Lazily-declared relationship read on each iteration of a loop.
 
-Lifts ``perf.lazy_load`` hits. ``PerfHit.path`` carries ``(subject, fix)``: the
-relationship read (``Incident.owner``) and the eager load that replaces it
-(``selectinload(Incident.owner)``, ``select_related("owner")``).
+Lifts ``perf.lazy_load`` hits. ``PerfHit.path`` carries ``(subject, fix, orm)``:
+the relationship read (``Incident.owner``), the eager load that replaces it
+(``selectinload(Incident.owner)``, ``select_related("owner")``), and the ORM
+(``sqlalchemy`` or ``django``), which the score and the lead read per finding.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ class LazyLoadInLoopDetector:
         for hit in ctx.perf_hits:
             if hit.kind != _KIND:
                 continue
-            subject, fix = hit.path
+            subject, fix, orm = hit.path
             out.append(
                 BiomarkerResult(
                     biomarker_type=self.name,
@@ -34,6 +35,7 @@ class LazyLoadInLoopDetector:
                         "boundary_kind": hit.detail,
                         "relationship": subject,
                         "eager_load": fix,
+                        "orm": orm,
                         **hit.loop_facts(),
                     },
                     reason=(

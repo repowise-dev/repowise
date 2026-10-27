@@ -6,7 +6,7 @@ import pytest
 
 from repowise.core.analysis.doc_drift.extractor import extract
 from repowise.core.analysis.doc_drift.models import DocReference, DriftKind, DriftVerdict
-from repowise.core.analysis.doc_drift.resolver import RepoIndex, resolve
+from repowise.core.analysis.doc_drift.resolver import RepoIndex, join_relative, resolve
 
 TREE = frozenset(
     {
@@ -80,6 +80,64 @@ def test_foreign_first_segment_is_uncheckable(target: str):
 
 
 # ---------------------------------------------------------------------------
+# Rule: a path the prose places in the reader's own project is uncheckable,
+# before anchoring even runs (#2743)
+# ---------------------------------------------------------------------------
+
+
+def _sentence_ref(context: str, raw: str, target: str | None = None) -> DocReference:
+    """A reference whose ``context`` is a full sentence, not a bare marker.
+
+    ``_ref`` above sets ``context="ctx"``, which carries no prose for the
+    reader-project check to read, so these tests build the real shape.
+    """
+    return DocReference(
+        DriftKind.PATH, raw, target or raw, "docs/architecture/ARCHITECTURE.md", 1, context
+    )
+
+
+@pytest.mark.parametrize(
+    "context,raw",
+    [
+        (
+            "Add this to your project's `src/setupTests.ts`:",
+            "src/setupTests.ts",
+        ),
+        (
+            "Then add the plugin to your project's `config/app.config.ts`.",
+            "config/app.config.ts",
+        ),
+    ],
+)
+def test_a_path_in_the_readers_own_project_is_uncheckable(context: str, raw: str):
+    """Even though ``src``/``config`` are real top-level dirs here, these are not."""
+    res = resolve(_index(), _sentence_ref(context, raw))
+    assert res.verdict is DriftVerdict.UNCHECKABLE
+    assert res.detail == "reader-project"
+
+
+def test_a_missing_path_on_a_neutral_line_still_reports():
+    context = "See `src/index.ts` for the entry point, and `src/gone.py` which was removed."
+    res = resolve(_index(), _sentence_ref(context, "src/gone.py"))
+    assert res.verdict is DriftVerdict.MISSING
+    assert res.detail == "no-candidate"
+
+
+def test_an_earlier_sentences_reader_project_phrase_does_not_leak_forward():
+    """The check is scoped to the current sentence, not the whole line."""
+    context = "This mirrors your project's layout. See `src/gone.py` for details."
+    res = resolve(_index(), _sentence_ref(context, "src/gone.py"))
+    assert res.verdict is DriftVerdict.MISSING
+
+
+def test_a_bare_your_with_no_recognised_phrase_is_still_checked():
+    """'you can find it in ...' must not be swallowed by a bare 'your'."""
+    context = "You can find it in `src/gone.py`."
+    res = resolve(_index(), _sentence_ref(context, "src/gone.py"))
+    assert res.verdict is DriftVerdict.MISSING
+
+
+# ---------------------------------------------------------------------------
 # Rule 6: ambiguous is never reported as missing
 # ---------------------------------------------------------------------------
 
@@ -103,6 +161,51 @@ def test_relative_link_resolves_against_its_own_document():
     res = resolve(_index(), ref)
     assert res.verdict is DriftVerdict.RESOLVED
     assert res.detail == "relative-to-doc"
+
+
+# ---------------------------------------------------------------------------
+# join_relative: normalize segments, never strip characters (#4014)
+# ---------------------------------------------------------------------------
+
+
+def test_join_relative_keeps_the_leading_dot_of_a_dotfile_directory():
+    assert (
+        join_relative("docs/index.md", "../.github/workflows/ci.yml") == ".github/workflows/ci.yml"
+    )
+
+
+def test_join_relative_keeps_parent_segments_that_escape_the_root():
+    assert join_relative("docs/index.md", "../../other-repo/README.md") == "../other-repo/README.md"
+
+
+def test_a_link_into_dotgithub_resolves_instead_of_reporting_drift():
+    idx = _index(tree=TREE | {".github/workflows/ci.yml"})
+    ref = DocReference(
+        DriftKind.LINK,
+        "../.github/workflows/ci.yml",
+        "../.github/workflows/ci.yml",
+        "docs/index.md",
+        1,
+        "ctx",
+    )
+    res = resolve(idx, ref)
+    assert res.verdict is DriftVerdict.RESOLVED
+    assert res.detail == "relative-to-doc"
+    assert res.resolved_target == ".github/workflows/ci.yml"
+
+
+def test_a_link_that_escapes_the_repository_root_is_uncheckable():
+    ref = DocReference(
+        DriftKind.LINK,
+        "../../other-repo/README.md",
+        "../../other-repo/README.md",
+        "docs/index.md",
+        1,
+        "ctx",
+    )
+    res = resolve(_index(), ref)
+    assert res.verdict is DriftVerdict.UNCHECKABLE
+    assert res.detail == "unanchored"
 
 
 # ---------------------------------------------------------------------------
@@ -159,6 +262,27 @@ def test_each_whitespace_character_becomes_its_own_dash():
     idx = _anchor_index("## SQL + dbt\n")
     assert resolve(idx, _anchor_ref("sql--dbt")).verdict is DriftVerdict.RESOLVED
     assert resolve(idx, _anchor_ref("sql-dbt")).verdict is DriftVerdict.MISSING
+
+
+def test_repeated_headings_get_githubs_numbered_anchors():
+    """GitHub names the second ``## Usage`` ``#usage-1`` and the third
+    ``#usage-2``; only one more suffix than there are repeats exists."""
+    idx = _anchor_index("## Usage\n\n## Usage\n\nUsage\n-----\n")
+    for fragment in ("usage", "usage-1", "usage-2"):
+        assert resolve(idx, _anchor_ref(fragment)).verdict is DriftVerdict.RESOLVED
+    res = resolve(idx, _anchor_ref("usage-3"))
+    assert res.verdict is DriftVerdict.MISSING
+    assert res.origin == "anchor_no_heading"
+
+
+def test_a_suffix_skips_a_slug_a_literal_heading_already_took():
+    """``## Usage 1`` claims ``usage-1``, so the repeated ``## Usage`` after it
+    becomes ``usage-2``, and a later repeat of ``## Usage 1`` becomes
+    ``usage-1-1``. This is github-slugger's bookkeeping, not a naive count."""
+    idx = _anchor_index("## Usage\n\n## Usage 1\n\n## Usage\n\n## Usage 1\n")
+    anchors = idx.doc_anchors("README.md")
+    assert {"usage", "usage-1", "usage-2", "usage-1-1"} <= anchors
+    assert "usage-3" not in anchors
 
 
 def test_anchor_into_a_missing_document_is_uncheckable_not_missing():
@@ -246,3 +370,36 @@ def test_end_to_end_on_a_small_document():
     assert (DriftKind.PATH, DriftVerdict.MISSING) in verdicts
     assert (DriftKind.COMMAND, DriftVerdict.RESOLVED) in verdicts
     assert (DriftKind.ANCHOR, DriftVerdict.RESOLVED) in verdicts
+
+
+# ---------------------------------------------------------------------------
+# The on-disk probe: present in the tree, absent from the index
+# ---------------------------------------------------------------------------
+
+
+def _probed_index(present: set[str], asked: list[str] | None = None) -> RepoIndex:
+    def on_disk(rel: str) -> bool:
+        if asked is not None:
+            asked.append(rel)
+        return rel in present
+
+    return RepoIndex.build(TREE, {}, {}, on_disk=on_disk)
+
+
+def test_unindexed_file_on_disk_is_uncheckable_not_missing():
+    res = resolve(_probed_index({"src/util/fixture.py"}), _ref("src/util/fixture.py"))
+    assert res.verdict is DriftVerdict.UNCHECKABLE
+    assert res.detail == "outside-index"
+
+
+def test_probe_that_finds_nothing_leaves_the_finding():
+    res = resolve(_probed_index(set()), _ref("src/util/gone.py"))
+    assert res.verdict is DriftVerdict.MISSING
+
+
+def test_probe_is_asked_only_about_would_be_misses():
+    asked: list[str] = []
+    idx = _probed_index(set(), asked)
+    resolve(idx, _ref("src/app.py"))
+    resolve(idx, _ref("CLAUDE.md"))
+    assert asked == []

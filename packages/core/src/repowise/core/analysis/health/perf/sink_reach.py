@@ -151,6 +151,7 @@ def _hits_for_function(
 
     extra: dict[str, Any] = {"func_start": fact.func_start} if carry_func_start else {}
     loop_facts = dict(fact.loop_call_facts) if carry_loop else {}
+    loop_lines = dict(fact.loop_call_lines) if carry_loop else {}
     hits: list[PerfHit] = []
     seen: set[str] = set()
     for target_name, call_line in entries(fact):
@@ -177,6 +178,7 @@ def _hits_for_function(
                     path=(a_sid, *chain),
                     resolution_basis=basis,
                     loop=loop_facts.get(call_line),
+                    loop_line=loop_lines.get(call_line, 0),
                     **extra,
                 )
             )

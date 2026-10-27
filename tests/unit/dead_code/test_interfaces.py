@@ -6,6 +6,7 @@ from repowise.core.analysis.dead_code import (
     DeadCodeAnalyzer,
     DeadCodeKind,
 )
+from repowise.core.analysis.dead_code.risk_factors import RISK_CAP_CONFIDENCE
 from tests.unit.dead_code._helpers import _build_graph
 
 
@@ -176,9 +177,9 @@ def test_pascal_unused_export_is_not_blanket_capped():
         if f.kind == DeadCodeKind.UNUSED_EXPORT and f.symbol_name == "TConsoleBuffer"
     ]
     assert pascal_findings, "expected a finding for TConsoleBuffer"
-    assert any(f.confidence >= 0.7 and f.safe_to_delete for f in pascal_findings), (
-        "a genuinely-unused Pascal symbol with no risk factors should still be able to "
-        f"reach safe-to-delete confidence, got {[(f.confidence, f.safe_to_delete) for f in pascal_findings]}"
+    assert any(f.confidence > RISK_CAP_CONFIDENCE for f in pascal_findings), (
+        "a genuinely-unused Pascal symbol with no risk factors should not be capped "
+        f"to the review tier, got {[(f.confidence, f.safe_to_delete) for f in pascal_findings]}"
     )
 
 
@@ -291,6 +292,5 @@ def test_release_in_non_com_language_not_clamped():
     com_findings = [f for f in report.findings if f.symbol_name == "Release"]
     for f in com_findings:
         # If it surfaces at all, it must do so under the *normal*
-        # rule — not under the COM clamp specifically. The normal
-        # rule yields 0.7 / 1.0 depending on file-level importers.
-        assert f.confidence >= 0.7 or f.confidence < 0.4
+        # rule, not under the COM clamp, which would cap it to the review tier.
+        assert f.confidence > RISK_CAP_CONFIDENCE

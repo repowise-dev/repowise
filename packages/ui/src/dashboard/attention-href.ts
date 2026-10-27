@@ -89,7 +89,7 @@ export function attentionSourceHref(source: string, prefix: string): string {
     // `doc_drift` and `dead_code` name an area and an item type at once and
     // route to the same page either way, so they need no separate case.
     case "security":
-      return `${prefix}/code-health?tab=security`;
+      return `${prefix}/security`;
     case "health":
       return `${prefix}/code-health?tab=findings`;
     case "ownership":
@@ -101,13 +101,13 @@ export function attentionSourceHref(source: string, prefix: string): string {
     case "knowledge_silo":
       return `${prefix}/owners`;
     case "ungoverned_hotspot":
-      return `${prefix}/code-health?tab=triage`;
+      return `${prefix}/code-health`;
     case "health_finding":
       return `${prefix}/code-health?tab=findings`;
     case "refactoring":
       return `${prefix}/refactoring`;
     case "security_finding":
-      return `${prefix}/code-health?tab=security`;
+      return `${prefix}/security`;
     case "doc_drift":
       return `${prefix}/code-health?tab=doc-drift`;
     case "dead_code":
@@ -115,6 +115,12 @@ export function attentionSourceHref(source: string, prefix: string): string {
     default:
       return prefix;
   }
+}
+
+/** The doc drift tab, narrowed to one document when given. */
+export function docDriftHref(prefix: string, document?: string): string {
+  const base = attentionSourceHref("doc_drift", prefix);
+  return document ? `${base}&document=${encodeURIComponent(document)}` : base;
 }
 
 /** Area keys are not item types, so they get their own names. */
@@ -188,10 +194,9 @@ export function getDefaultHref(item: AttentionItem, prefix: string): string {
       // agent.
       return attentionSourceHref(item.type, prefix);
     case "doc_drift":
-      // Also the category. `target_id` here is the *document* making the false
-      // claim rather than the code it is wrong about, so a file page would
-      // open the wrong subject.
-      return attentionSourceHref(item.type, prefix);
+      // The drift tab filtered to the *document* making the false claim
+      // (`target_id`); a file page would open the code, the wrong subject.
+      return docDriftHref(prefix, target);
     case "dead_code":
       // The row names one symbol, so the category list is the wrong landing:
       // the dead-code tab has no per-file filter, and arriving at a few

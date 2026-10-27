@@ -141,9 +141,9 @@ async def test_list_dead_code_safe_only(client: AsyncClient, app) -> None:
         params={"safe_only": True},
     )
     assert resp.status_code == 200
-    data = resp.json()
-    assert len(data) == 1
-    assert data[0]["safe_to_delete"] is True
+    # The only stored-safe row is a whole file, which reads back as a review
+    # candidate: file-level findings are never deletion-ready.
+    assert resp.json() == []
 
 
 @pytest.mark.asyncio
@@ -155,8 +155,59 @@ async def test_dead_code_summary(client: AsyncClient, app) -> None:
     assert resp.status_code == 200
     data = resp.json()
     assert data["total_findings"] == 2
-    assert data["deletable_lines"] == 50  # Only the safe-to-delete finding
+    # The stored-safe row is a whole file, re-derived as review-only.
+    assert data["deletable_lines"] == 0
     assert "unreachable_file" in data["by_kind"]
+
+
+@pytest.mark.asyncio
+async def test_dead_code_summary_analyzed_at(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    url = f"/api/repos/{repo['id']}/dead-code/summary"
+
+    # Never analyzed: unknown, not fabricated.
+    assert (await client.get(url)).json()["analyzed_at"] is None
+
+    await _insert_dead_code(app.state.session_factory, repo["id"])
+    assert (await client.get(url)).json()["analyzed_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_dead_code_summary_analyzed_at_zero_findings(client: AsyncClient, app) -> None:
+    """A stage run that found nothing still reports when it ran."""
+    from repowise.core.persistence.crud import replace_dead_code_findings
+    from repowise.core.persistence.database import get_session
+
+    repo = await create_test_repo(client)
+    async with get_session(app.state.session_factory) as session:
+        await replace_dead_code_findings(session, repo["id"], [])
+
+    data = (await client.get(f"/api/repos/{repo['id']}/dead-code/summary")).json()
+    assert data["total_findings"] == 0
+    assert data["analyzed_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_completed_job_alone_is_not_analyzed(client: AsyncClient, app) -> None:
+    """A finished index job does not prove the stage ran."""
+    from datetime import UTC, datetime
+
+    from repowise.core.persistence.database import get_session
+    from repowise.core.persistence.models import GenerationJob
+
+    repo = await create_test_repo(client)
+    async with get_session(app.state.session_factory) as session:
+        session.add(
+            GenerationJob(
+                repository_id=repo["id"],
+                status="completed",
+                finished_at=datetime(2026, 1, 2, tzinfo=UTC),
+            )
+        )
+        await session.commit()
+
+    data = (await client.get(f"/api/repos/{repo['id']}/dead-code/summary")).json()
+    assert data["analyzed_at"] is None
 
 
 @pytest.mark.asyncio
@@ -220,3 +271,111 @@ async def test_resolve_finding_invalid_status(client: AsyncClient, app) -> None:
         json={"status": "invalid_status"},
     )
     assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_stored_safe_unreachable_file_is_review_only_on_every_surface(
+    client: AsyncClient, app
+) -> None:
+    from repowise.core.persistence.models import HealthFileMetric
+    from repowise.server.services.attention import _dead_code_items
+
+    repo = await create_test_repo(client)
+    await _insert_dead_code(app.state.session_factory, repo["id"])
+    async with get_session(app.state.session_factory) as session:
+        session.add(
+            HealthFileMetric(
+                repository_id=repo["id"],
+                file_path="src/dead_module.py",
+                score=9.0,
+                max_ccn=1,
+                max_nesting=1,
+                nloc=50,
+                has_test_file=False,
+                module="src",
+                is_test=False,
+            )
+        )
+
+    resp = await client.get(f"/api/repos/{repo['id']}/files/src/dead_module.py")
+    assert resp.status_code == 200
+    assert [f["safe_to_delete"] for f in resp.json()["dead_code"]] == [False]
+
+    async with get_session(app.state.session_factory) as session:
+        items, total, _ = await _dead_code_items(session, repo["id"])
+    assert (items, total) == ([], 0)
+
+
+class _ConsumedLookup:
+    """Co-change partners on one file, an HTTP consumer on the other."""
+
+    def has_cross_repo_consumers(self, repo_alias, file_path):
+        return [{"repo": "web"}] if file_path == "src/dead_module.py" else []
+
+    def get_repos_depending_on(self, repo_alias):
+        return []
+
+    def get_package_consumers(self, repo_alias):
+        return []
+
+    def get_contract_links_as_provider(self, repo_alias, file_path):
+        return [{"consumer_repo": "web"}] if file_path == "src/utils.py" else []
+
+
+@pytest.mark.asyncio
+async def test_workspace_cut_reaches_list_summary_and_patch(
+    client: AsyncClient, app, tmp_path, monkeypatch
+) -> None:
+    from types import SimpleNamespace
+
+    repo = await create_test_repo(client)
+    finding_id = await _insert_dead_code(app.state.session_factory, repo["id"])
+    monkeypatch.setattr(app.state, "cross_repo_enricher", _ConsumedLookup(), raising=False)
+    monkeypatch.setattr(
+        app.state,
+        "workspace_config",
+        SimpleNamespace(repos=[SimpleNamespace(alias="api", path=".")]),
+        raising=False,
+    )
+    monkeypatch.setattr(app.state, "workspace_root", str(tmp_path), raising=False)
+    monkeypatch.setattr(
+        app.state,
+        "workspace_path_to_repo_id",
+        {str(tmp_path.resolve()): repo["id"]},
+        raising=False,
+    )
+
+    # Co-change keeps 0.9 but withdraws safety; 0.5 * 0.3 = 0.15 falls under the floor.
+    listed = (await client.get(f"/api/repos/{repo['id']}/dead-code")).json()
+    assert [(f["file_path"], f["confidence"], f["safe_to_delete"]) for f in listed] == [
+        ("src/dead_module.py", 0.9, False)
+    ]
+    assert any("changes together with" in e for e in listed[0]["evidence"])
+    everything = (
+        await client.get(f"/api/repos/{repo['id']}/dead-code", params={"min_confidence": 0})
+    ).json()
+    assert {f["file_path"]: f["confidence"] for f in everything}["src/utils.py"] == 0.15
+
+    summary = (await client.get(f"/api/repos/{repo['id']}/dead-code/summary")).json()
+    assert summary["confidence_summary"] == {"high": 1, "medium": 0, "low": 1}
+    assert summary["safe_to_delete_count"] == 0
+
+    patched = (
+        await client.patch(f"/api/dead-code/{finding_id}", json={"status": "acknowledged"})
+    ).json()
+    assert patched["confidence"] == 0.9 and patched["safe_to_delete"] is False
+
+
+def test_workspace_alias_for_an_unmapped_repo_is_none(tmp_path) -> None:
+    from types import SimpleNamespace
+
+    from repowise.server.deps import workspace_alias_for
+
+    state = SimpleNamespace(
+        workspace_config=SimpleNamespace(repos=[SimpleNamespace(alias="api", path=".")]),
+        workspace_root=str(tmp_path),
+        workspace_path_to_repo_id={str(tmp_path.resolve()): "r1"},
+    )
+    assert workspace_alias_for(state, "r1") == "api"
+    assert workspace_alias_for(state, "r2") is None
+    assert workspace_alias_for(SimpleNamespace(), "r1") is None

@@ -9,10 +9,11 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from repowise.core.analysis.health.coverage import (
-    STALE_DRIFT_PCT,
-    STALE_MIN_MEASURED,
+    DRIFT_MIN_MEASURED,
+    DRIFT_PCT,
     decay_for_file,
     decay_since,
+    measurement_commit,
     measurement_ref,
 )
 
@@ -46,7 +47,7 @@ def test_no_covered_lines_does_not_divide_by_zero() -> None:
     d = decay_for_file(set(), {1, 2, 3})
     assert (d.measured, d.confirmed, d.invalidated) == (0, 0, 0)
     assert d.drift_pct == 0.0
-    assert d.is_stale is False
+    assert d.is_drifted is False
 
 
 def test_confirmed_and_invalidated_always_sum_to_measured() -> None:
@@ -66,22 +67,22 @@ def test_small_file_is_never_stale_on_ratio_alone() -> None:
     """
     d = decay_for_file({1}, {1})
     assert d.drift_pct == 100.0
-    assert d.is_stale is False
+    assert d.is_drifted is False
 
 
 def test_stale_once_the_file_is_big_enough_and_drift_clears_the_bar() -> None:
-    covered = set(range(1, STALE_MIN_MEASURED + 1))
+    covered = set(range(1, DRIFT_MIN_MEASURED + 1))
     changed = set(list(covered)[:3])  # 30% of 10
     d = decay_for_file(covered, changed)
-    assert d.measured >= STALE_MIN_MEASURED
-    assert d.drift_pct > STALE_DRIFT_PCT
-    assert d.is_stale is True
+    assert d.measured >= DRIFT_MIN_MEASURED
+    assert d.drift_pct > DRIFT_PCT
+    assert d.is_drifted is True
 
 
 def test_big_file_under_the_bar_is_not_stale() -> None:
     covered = set(range(1, 101))
     d = decay_for_file(covered, {1, 2})  # 2%
-    assert d.is_stale is False
+    assert d.is_drifted is False
 
 
 # --- end-to-end against a real git repo ------------------------------------
@@ -195,3 +196,77 @@ def test_naive_timestamp_is_read_as_utc_not_local(git_repo) -> None:
     aware = measurement_ref(str(git_repo), None, now)
     naive = measurement_ref(str(git_repo), None, now.replace(tzinfo=None))
     assert aware == naive
+
+
+# --- the commit a writer stamps a report with (issue #3901) -----------------
+
+
+def _commit_all_lines_moved(repo, *, when: str) -> str:
+    """Rewrite every line of ``mod.py`` and commit at *when*; returns the new HEAD."""
+    (repo / "mod.py").write_text("p = 10\nq = 20\nr = 30\ns = 40\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "rewrite mod.py", when=when)
+    return _git(repo, "rev-parse", "HEAD").strip()
+
+
+def test_measurement_commit_names_the_commit_that_headed_when_the_report_ran(
+    git_repo,
+) -> None:
+    """A report left on disk describes its own date, not the index's HEAD.
+
+    This is the defect: every writer stamped live HEAD, so the forward drift
+    read — which diffs the covered lines from the recorded commit to HEAD —
+    started at a commit that did not exist when the suite ran. It reported
+    zero decay for lines that had all since moved.
+    """
+    first = _git(git_repo, "rev-parse", "HEAD").strip()
+    head = _commit_all_lines_moved(
+        git_repo, when=(datetime.now(UTC) + timedelta(hours=1)).isoformat()
+    )
+    covered = {"mod.py": {1, 2, 3, 4}}
+
+    stamped = measurement_commit(git_repo, datetime.now(UTC), head)
+    assert stamped == first
+
+    # Non-vacuous: the right commit exposes decay the wrong one hides.
+    from_base = decay_since(str(git_repo), stamped, covered)["mod.py"]
+    assert (from_base.confirmed, from_base.invalidated) == (0, 4)
+    from_head = decay_since(str(git_repo), head, covered)["mod.py"]
+    assert (from_head.confirmed, from_head.invalidated) == (4, 0)
+
+
+def test_a_report_written_after_the_last_commit_still_stamps_head(git_repo) -> None:
+    """The common case keeps its behaviour: ``coverage lcov`` and then index.
+
+    The commit that headed at the report's time is HEAD itself, so a fresh
+    report is not pulled back to an ancestor — which is why this fix costs
+    nothing for the shape every writer already got right.
+    """
+    head = _git(git_repo, "rev-parse", "HEAD").strip()
+    assert measurement_commit(git_repo, datetime.now(UTC), head) == head
+
+
+def test_measurement_commit_falls_back_to_head_without_a_time(git_repo) -> None:
+    """A writer that did not resolve the reports knows nothing about their date.
+
+    ``None`` *measured_at* covers both that and a report that cannot be
+    stat'ed; HEAD is what those writers stamped before, and the honest answer
+    is still HEAD when there is no HEAD either.
+    """
+    head = _git(git_repo, "rev-parse", "HEAD").strip()
+    assert measurement_commit(git_repo, None, head) == head
+    assert measurement_commit(None, datetime.now(UTC), head) == head
+    assert measurement_commit(git_repo, None, None) is None
+
+
+def test_an_unreachable_history_falls_back_to_head(git_repo, tmp_path) -> None:
+    """git cannot place the measurement in either case; the ingest still has a commit.
+
+    A report older than every commit predates the history, and a directory
+    that is not a repository has none to search. Returning HEAD matches what
+    every writer did before the fix rather than dropping the stamp.
+    """
+    head = _git(git_repo, "rev-parse", "HEAD").strip()
+    ancient = datetime(2000, 1, 1, tzinfo=UTC)
+    assert measurement_commit(git_repo, ancient, head) == head
+    assert measurement_commit(tmp_path / "not-a-repo", datetime.now(UTC), head) == head

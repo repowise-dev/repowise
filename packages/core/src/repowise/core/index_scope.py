@@ -10,12 +10,44 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 INDEX_SCOPE_VERSION = 1
+
+#: The one command that takes an Index only repo to full git history and
+#: documentation. It needs no key: without a model the documentation is built
+#: from code.
+FAST_TO_FULL_COMMAND = "repowise update --full"
+
+
+def fast_to_full_command(repo_alias: str | None = None) -> str:
+    """:data:`FAST_TO_FULL_COMMAND`, aimed at one workspace repo when *repo_alias* is set."""
+    return f"repowise update --repo {repo_alias} --full" if repo_alias else FAST_TO_FULL_COMMAND
+
+
+#: The command that has a model write the documentation of an index that has
+#: pages. An Index only repo has none yet, so it takes FAST_TO_FULL_COMMAND.
+MODEL_COMMAND = "repowise generate"
+
+
+def upgrade_command(scope: Mapping[str, Any] | None) -> str | None:
+    """The fast-to-full command when *scope* is Index only (no documentation), else None."""
+    if not isinstance(scope, Mapping):
+        return None
+    provenance = scope.get("content_provenance")
+    # A fast run whose state predates the docs stamp is Index only too.
+    if provenance == "none" or (provenance == "unknown" and scope.get("run_mode") == "fast"):
+        return FAST_TO_FULL_COMMAND
+    return None
+
+
+def model_command(scope: Mapping[str, Any] | None) -> str:
+    """The command that has a model write *scope*'s documentation, for its mode."""
+    return upgrade_command(scope) or MODEL_COMMAND
 
 # repo dir -> (identity of the files it was built from, scope). Every MCP
 # response embeds this, so without a cache each one re-reads state.json and
@@ -81,6 +113,80 @@ def _string(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+#: Dropped paths named per reason; the count stays exact. The scope is embedded
+#: in editor files and orientation responses, so it carries a sample, not a
+#: listing of every generated file in a codegen-heavy repo.
+_DROPPED_PATHS_SHOWN = 20
+
+
+def dropped_files_scope(stats: Any) -> dict[str, Any] | None:
+    """What traversal dropped as generated, from its ``TraversalStats``.
+
+    ``None`` when there are no stats, so a run that never walked the tree does
+    not claim it dropped nothing.
+    """
+    paths = getattr(stats, "generated_files", None)
+    if paths is None:
+        return None
+    ordered = sorted(paths)
+    return {
+        "generated": {
+            "count": len(ordered),
+            "paths": ordered[:_DROPPED_PATHS_SHOWN],
+            "truncated": len(ordered) > _DROPPED_PATHS_SHOWN,
+        }
+    }
+
+
+def _dropped_files(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping) or not isinstance(value.get("generated"), Mapping):
+        return None
+    generated = value["generated"]
+    paths = generated.get("paths")
+    return {
+        "generated": {
+            "count": _number(generated.get("count")),
+            "paths": [str(p) for p in paths] if isinstance(paths, list) else [],
+            "truncated": generated.get("truncated") is True,
+        }
+    }
+
+
+def is_legacy_init_notice(message: str) -> bool:
+    """Return True if *message* is an informational notice from an older init run.
+
+    Before v0.56.0 (#3272), progress tips and file size-skips were emitted with
+    warning weight and persisted into ``state["degraded"]``. #3272 reclassified
+    them as notices so new init runs never persist them, but legacy indexes
+    and subsequent updates carried them forward (#4224).
+    """
+    stripped = message.strip()
+    return (
+        stripped.startswith("Graph build can take several minutes")
+        or stripped.startswith("Not indexed: ")
+        or stripped == "...and more source files skipped on size"
+    )
+
+
+def prune_legacy_degraded_notices(messages: list[str]) -> list[str]:
+    """Filter out legacy informational notices from a degraded messages list."""
+    return [msg for msg in messages if not is_legacy_init_notice(str(msg))]
+
+
+def clean_legacy_degraded_state(state: dict[str, Any]) -> None:
+    """Prune legacy informational init notices from ``state`` in place (#4224)."""
+    if "degraded" in state and isinstance(state["degraded"], list):
+        pruned = prune_legacy_degraded_notices(state["degraded"])
+        if pruned:
+            state["degraded"] = pruned
+        else:
+            state.pop("degraded", None)
+    if "index_scope" in state and isinstance(state["index_scope"], dict):
+        analysis = state["index_scope"].get("analysis")
+        if isinstance(analysis, dict) and isinstance(analysis.get("unavailable"), list):
+            analysis["unavailable"] = prune_legacy_degraded_notices(analysis["unavailable"])
+
+
 def resolve_index_scope(
     state: Mapping[str, Any] | None,
     config: Mapping[str, Any] | None = None,
@@ -114,13 +220,15 @@ def resolve_index_scope(
     git_tier = _choice(state.get("git_tier", scope.get("git_tier")), {"essential", "full"})
     if isinstance(stored, Mapping):
         provenance = _choice(
-            scope.get("content_provenance", provenance), {"none", "template", "model"}
+            scope.get("content_provenance", provenance), {"none", "template", "model", "mixed"}
         )
 
     unavailable = analysis.get("unavailable", [])
     degraded = state.get("degraded", [])
     if isinstance(unavailable, list) and isinstance(degraded, list):
         unavailable = [*unavailable, *degraded]
+    if isinstance(unavailable, list):
+        unavailable = prune_legacy_degraded_notices(unavailable)
     skipped = analysis.get("skipped", [])
     return {
         "version": INDEX_SCOPE_VERSION,
@@ -135,6 +243,9 @@ def resolve_index_scope(
             if isinstance(scope.get("git_history_coverage"), Mapping)
             else None
         ),
+        "dropped_files": _dropped_files(scope.get("dropped_files")),
+        # ``init --test-run``: the model wrote documentation for a sample of files.
+        "test_run": scope.get("test_run") if isinstance(scope.get("test_run"), bool) else None,
         "file_pages": {
             "configured_cap": configured_cap,
             "effective_cap": _number(pages.get("effective_cap")),
@@ -185,6 +296,17 @@ def resolve_index_scope(
 COMPACT_INDEX_SCOPE_PROJECTION = "compact"
 CANONICAL_INDEX_SCOPE_PROJECTION = "full"
 
+#: Degraded-analysis entries the compact scope names; the count stays exact and
+#: the full list rides on the canonical scope.
+_DEGRADED_ANALYSES_SHOWN = 3
+
+_ANALYSIS_ID_RE = re.compile(r"[a-z][a-z0-9_]*")
+
+
+def _free_text_last(entry: str) -> bool:
+    """Sort key putting bare analysis ids (``health``) ahead of free-text run warnings."""
+    return _ANALYSIS_ID_RE.fullmatch(entry) is None
+
 #: Set to ``full`` to serve the canonical scope everywhere, as builds before
 #: the compact projection did. The compatibility window for a reader that
 #: parses the whole object and cannot yet ask for it by name.
@@ -193,7 +315,9 @@ INDEX_SCOPE_ENV = "REPOWISE_MCP_INDEX_SCOPE"
 
 #: Upgrade states that mean the index is still being built. Reported ahead of
 #: everything else: they explain the rest and they resolve on their own.
-_UPGRADE_IN_FLIGHT = frozenset({"pending", "running", "resumable"})
+#: ``pending`` joins them only when the run had a provider (see
+#: :func:`_upgrade_in_flight`).
+_UPGRADE_IN_FLIGHT = frozenset({"running", "resumable"})
 
 #: Search legs. A leg that is "pending" is not usable yet, which is a smaller
 #: problem than one that failed but is not nothing.
@@ -206,13 +330,48 @@ def _section(scope: Mapping[str, Any], name: str) -> Mapping[str, Any]:
     return section if isinstance(section, Mapping) else {}
 
 
+def _upgrade_in_flight(upgrade: Mapping[str, Any], scope: Mapping[str, Any]) -> bool:
+    """Whether the model upgrade is under way or waiting on a provider it has.
+
+    Every run without a model stores ``pending`` (``update --full`` reads it),
+    but with no provider nothing will ever take it up, so a keyless index is
+    finished and reads by its evidence like any other.
+    """
+    status = upgrade.get("status")
+    if status in _UPGRADE_IN_FLIGHT:
+        return True
+    return status == "pending" and bool(_section(scope, "provider").get("name"))
+
+
+def _never_meant_to_exist(leg: str, scope: Mapping[str, Any]) -> bool:
+    """Whether an unavailable search leg is the run's design, not a failure.
+
+    A run that skipped generation has no pages to search. A keyless run (no
+    provider, keyless or no embedder) never writes semantic vectors. A real
+    embedder whose writes failed is neither, and stays degraded.
+    """
+    from repowise.core.providers.embedding.registry import KEYLESS_EMBEDDERS
+
+    if "generation" in (_section(scope, "analysis").get("skipped") or ()):
+        return True
+    provider = _section(scope, "provider")
+    return (
+        leg == "semantic"
+        and not provider.get("name")
+        and (not provider.get("embedder") or provider.get("embedder") in KEYLESS_EMBEDDERS)
+    )
+
+
 def _is_degraded(upgrade: Mapping[str, Any], scope: Mapping[str, Any]) -> bool:
     """Whether some part of the index was meant to exist and does not."""
     search = _section(scope, "search")
     return (
         upgrade.get("status") == "failed"
         or bool(_section(scope, "analysis").get("unavailable"))
-        or any(search.get(leg) == "unavailable" for leg in _SEARCH_LEGS)
+        or any(
+            search.get(leg) == "unavailable" and not _never_meant_to_exist(leg, scope)
+            for leg in _SEARCH_LEGS
+        )
     )
 
 
@@ -251,7 +410,7 @@ def _scope_status(scope: Mapping[str, Any]) -> str:
     ``unknown``, which is a different answer and says so.
     """
     upgrade = _section(scope, "upgrade")
-    if upgrade.get("status") in _UPGRADE_IN_FLIGHT:
+    if _upgrade_in_flight(upgrade, scope):
         return "upgrading"
     if _is_degraded(upgrade, scope):
         return "degraded"
@@ -280,7 +439,7 @@ def index_scope_fingerprint(scope: Mapping[str, Any]) -> str:
 
 
 def compact_index_scope(
-    scope: Mapping[str, Any] | None, *, full_hint: str = "get_overview()"
+    scope: Mapping[str, Any] | None, *, full_hint: str = 'get_overview(include=["scope"])'
 ) -> dict[str, Any] | None:
     """The routine-response projection of a canonical scope.
 
@@ -292,7 +451,8 @@ def compact_index_scope(
 
     The one exception is ``degraded_analyses``, carried only when non-empty:
     which analysis is missing changes what an answer means, and "health failed"
-    and "the graph failed" are not the same warning.
+    and "the graph failed" are not the same warning. A long list is sampled,
+    with its exact count.
     """
     if not isinstance(scope, Mapping):
         return None
@@ -308,7 +468,19 @@ def compact_index_scope(
     }
     unavailable = _section(scope, "analysis").get("unavailable")
     if unavailable:
-        compact["degraded_analyses"] = list(unavailable)
+        entries = list(unavailable)
+        if len(entries) > _DEGRADED_ANALYSES_SHOWN:
+            entries.sort(key=_free_text_last)
+        shown = entries[:_DEGRADED_ANALYSES_SHOWN]
+        compact["degraded_analyses"] = shown
+        if len(unavailable) > len(shown):
+            compact["degraded_analyses_total"] = len(unavailable)
+            compact["degraded_analyses_emitted"] = len(shown)
+            compact["degraded_analyses_reduced_reason"] = "compact_projection"
+    # Only an Index only repo carries it, so no other response grows.
+    command = upgrade_command(scope)
+    if command:
+        compact["upgrade_command"] = command
     return compact
 
 
@@ -332,9 +504,16 @@ def file_page_scope(
     *, configured_cap: int | None, eligible: int, generated_pages: list[Any] | None
 ) -> dict[str, int | None]:
     """Build configured/effective/achieved file-page figures for one run."""
+    generated = sum(1 for page in (generated_pages or []) if page.page_type == "file_page")
+    return file_page_counts(configured_cap=configured_cap, eligible=eligible, generated=generated)
+
+
+def file_page_counts(
+    *, configured_cap: int | None, eligible: int, generated: int
+) -> dict[str, int | None]:
+    """The file-page figures from counts, for a run that holds no page list."""
     from repowise.core.generation.selection import auto_file_page_cap
 
-    generated = sum(1 for page in (generated_pages or []) if page.page_type == "file_page")
     effective = configured_cap
     if configured_cap is None:
         effective = auto_file_page_cap(eligible)

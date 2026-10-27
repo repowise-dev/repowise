@@ -56,6 +56,7 @@ __all__ = [
 SOURCE_RANK: dict[str, int] = {
     "cli": 9,  # human-authored manual entry — most authoritative
     "session": 8,  # a user's own words in a transcript, corroborated by them
+    "agent": 8,  # proposed directly by a coding agent from its own reasoning
     "adr": 7,  # architecture decision records (structured, intentional)
     "pr": 7,  # PR / squash-merge body
     "commit": 6,  # individual commit message

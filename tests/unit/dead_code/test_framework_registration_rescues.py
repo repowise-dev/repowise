@@ -8,9 +8,14 @@ writes an extension method's name and never its holder class's.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import networkx as nx
+import pytest
 
 from repowise.core.analysis.dead_code import DeadCodeAnalyzer, DeadCodeKind
+from repowise.core.analysis.dead_code.analyzer import _declared_deliberately_unused
+from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 from tests.unit.dead_code._helpers import _build_graph
 
 
@@ -116,6 +121,65 @@ def test_a_bare_suppresswarnings_still_flags():
         },
     )
     assert "activate" in _unused_export_names(graph)
+
+
+@pytest.mark.parametrize(
+    "decorator",
+    ['@Suppress("unused")', '@Suppress("UNUSED")', '@Suppress("unused", "DEPRECATION")'],
+)
+def test_kotlin_suppress_unused_is_read_as_an_author_statement(decorator: str):
+    """Kotlin's spelling of ``@SuppressWarnings("unused")``, in either case."""
+    assert _declared_deliberately_unused([decorator])
+
+
+@pytest.mark.parametrize(
+    "decorator",
+    [
+        '@Suppress("UNUSED_PARAMETER")',
+        '@Suppress("UNUSED_VARIABLE")',
+        '@Suppress("unused_expression")',
+        '@Suppress("DEPRECATION")',
+        "@Suppress",
+    ],
+)
+def test_kotlin_suppress_of_another_warning_is_not_deliberate(decorator: str):
+    """``UNUSED_PARAMETER`` silences a warning inside the body, not about the symbol."""
+    assert not _declared_deliberately_unused([decorator])
+
+
+_KOTLIN_SUPPRESS_FILES = {
+    "src/main/kotlin/app/AppInfo.kt": (
+        'package app\n\n@Suppress("UNUSED")\nobject AppInfo { fun getVersionCode(): Int = 1 }\n'
+    ),
+    "src/main/kotlin/app/Extensions.kt": (
+        "package app\n\n"
+        '@Suppress("unused")\n'
+        "fun String.selectText(): String = trim()\n\n"
+        "fun String.reallyUnused(): String = this\n"
+    ),
+    "src/main/kotlin/app/Main.kt": 'package app\n\nfun main() { println("hi") }\n',
+}
+
+
+def test_kotlin_suppress_unused_rescues_only_the_annotated_declarations(tmp_path: Path):
+    """``selectText`` is the grammar's shape that detaches a lone annotation."""
+    source_map = {rel: text.encode() for rel, text in _KOTLIN_SUPPRESS_FILES.items()}
+    for rel, source in source_map.items():
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(source)
+    parser = ASTParser()
+    builder = GraphBuilder(repo_path=tmp_path)
+    for fi in FileTraverser(tmp_path).traverse():
+        builder.add_file(parser.parse_file(fi, source_map[fi.path]))
+    builder.set_source_map(source_map)
+    graph = builder.build()
+    report = DeadCodeAnalyzer(
+        graph, git_meta_map={}, source_map=source_map, repo_root=tmp_path
+    ).analyze({"detect_unreachable_files": False, "detect_zombie_packages": False})
+    unused = {f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT}
+    assert "reallyUnused" in unused
+    assert unused.isdisjoint({"AppInfo", "selectText"})
 
 
 def _holder_graph(language: str, wire_call: bool) -> nx.DiGraph:
@@ -228,3 +292,67 @@ def test_an_annotation_beside_suppresswarnings_does_not_leak_its_argument():
         },
     )
     assert "activate" in _unused_export_names(graph)
+
+
+# ---------------------------------------------------------------------------
+# Any ``recv.attr`` decorator is a registration unless it only wraps.
+# ---------------------------------------------------------------------------
+
+
+def _decorated(decorator: str, visibility: str) -> nx.DiGraph:
+    return _build_graph(
+        nodes={
+            "pkg/handlers.py": {
+                "symbols": [
+                    {
+                        "name": "handle_thing",
+                        "kind": "function",
+                        "visibility": visibility,
+                        "decorators": [decorator],
+                        "start_line": 1,
+                        "end_line": 4,
+                    },
+                ],
+            },
+        },
+    )
+
+
+def _reported(decorator: str) -> tuple[bool, bool]:
+    """(reported as unused export, reported as unused internal)."""
+    export = "handle_thing" in _unused_export_names(_decorated(decorator, "public"))
+    report = DeadCodeAnalyzer(_decorated(decorator, "private"), git_meta_map={}).analyze(
+        {"detect_unreachable_files": False, "min_confidence": 0.0}
+    )
+    internal = any(f.kind == DeadCodeKind.UNUSED_INTERNAL for f in report.findings)
+    return export, internal
+
+
+def test_receiver_decorators_are_registrations_in_both_passes():
+    for decorator in ("@nox.session", "@sub.handle('created')", "@mcp.tool()", "@bot.on.message"):
+        assert _reported(decorator) == (False, False), decorator
+
+
+def test_pure_wrapper_decorators_are_not_registrations():
+    for decorator in (
+        "@functools.wraps(fn)",
+        "@functools.lru_cache(maxsize=None)",
+        "@typing.override",
+        "@abc.abstractmethod",
+        "@typing.no_type_check",
+        "@mock.create_autospec(spec)",
+        "@unittest.mock.create_autospec(spec)",
+        "@value.setter",
+    ):
+        assert _reported(decorator) == (True, True), decorator
+
+
+def test_a_deprecation_marker_is_not_a_registration():
+    # An exported deprecated symbol is kept for its own reason, so the internal
+    # pass is where a wrapper-shaped ``deprecated`` shows it registers nothing.
+    assert _reported("@warnings.deprecated('use other')")[1] is True
+
+
+def test_a_qualified_annotation_type_is_not_a_receiver():
+    # ``@java.lang.Deprecated``-style: a capitalised last segment names a type.
+    assert _reported("@org.example.Marker") == (True, True)

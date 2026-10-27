@@ -10,11 +10,15 @@ import pytest
 from repowise.core.git_refs import (
     BranchRef,
     ahead_behind,
+    branch_with_path,
     changed_files,
     commit_file_sets,
     current_branch,
     default_base,
+    default_branch,
+    find_path_removal,
     list_branches,
+    remote_name,
     resolve,
 )
 
@@ -120,6 +124,49 @@ class TestDefaultBase:
     def test_a_non_repository_is_head(self, tmp_path: Path) -> None:
         assert default_base(str(tmp_path / "nowhere_at_all")) == "HEAD"
 
+    def test_a_local_branch_named_like_the_remote_one_does_not_change_the_answer(self, repo: Path) -> None:
+        _run(repo, "update-ref", "refs/remotes/origin/trunk", "main")
+        _run(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk")
+        _run(repo, "branch", "origin/trunk", "main")
+        assert default_base(str(repo)) == "origin/trunk"
+
+    def test_a_tag_named_like_a_trunk_is_not_a_base(self, tmp_path: Path) -> None:
+        root = tmp_path / "tagged"
+        root.mkdir()
+        _run(root, "init", "-b", "topic")
+        _commit(root, "a.txt", "a\n", "a")
+        _run(root, "tag", "main")
+        assert default_base(str(root)) == "HEAD"
+
+    def test_falls_back_to_a_remote_trunk_when_there_is_no_local_one(self, repo: Path) -> None:
+        _run(repo, "symbolic-ref", "-d", "refs/remotes/origin/HEAD")
+        _run(repo, "checkout", "-q", "feat")
+        _run(repo, "branch", "-D", "main")
+        assert default_base(str(repo)) == "origin/main"
+
+
+class TestDefaultBranch:
+    def test_is_the_origin_head_target_without_the_remote(self, repo: Path) -> None:
+        _run(repo, "branch", "master", "main")
+        _run(repo, "update-ref", "refs/remotes/origin/master", "master")
+        _run(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/master")
+        assert default_branch(str(repo)) == "master"
+
+    def test_falls_back_to_a_local_trunk(self, tmp_path: Path) -> None:
+        root = tmp_path / "legacy"
+        root.mkdir()
+        _run(root, "init", "-b", "master")
+        _commit(root, "a.txt", "a\n", "a")
+        assert default_branch(str(root)) == "master"
+
+    def test_is_none_when_git_cannot_name_one(self, tmp_path: Path) -> None:
+        root = tmp_path / "trunkless"
+        root.mkdir()
+        _run(root, "init", "-b", "topic")
+        _commit(root, "a.txt", "a\n", "a")
+        assert default_branch(str(root)) is None
+        assert default_branch(str(tmp_path / "nowhere_at_all")) is None
+
 
 class TestChangedFiles:
     def test_three_dot_semantics_exclude_the_base_side(self, repo: Path) -> None:
@@ -193,3 +240,117 @@ class TestCommitFileSets:
 
     def test_a_non_repository_yields_nothing(self, tmp_path: Path) -> None:
         assert commit_file_sets(str(tmp_path / "nowhere_at_all"), "main..feat") == []
+
+
+class TestBranchWithPath:
+    def test_names_the_other_branch_that_has_the_path(self, repo: Path) -> None:
+        assert branch_with_path(str(repo), "feat_two.txt") == "feat"
+
+    def test_skips_the_checked_out_branch(self, repo: Path) -> None:
+        # Only main, the checked-out branch whose tree the caller read, has it.
+        _commit(repo, "late.txt", "late\n", "main only")
+        assert branch_with_path(str(repo), "late.txt") is None
+        assert branch_with_path(str(repo), "typo.txt") is None
+
+    def test_finds_a_file_committed_in_a_linked_worktree(self, repo: Path, tmp_path: Path) -> None:
+        wt = tmp_path / "wt"
+        _run(repo, "worktree", "add", "-b", "wt-branch", str(wt), "main")
+        _commit(wt, "only_in_wt.txt", "x\n", "worktree work")
+
+        assert branch_with_path(str(repo), "only_in_wt.txt") == "wt-branch"
+
+
+class TestFindPathRemoval:
+    def test_a_pure_rename_names_its_new_path(self, tmp_path: Path) -> None:
+        root = tmp_path / "renamed"
+        root.mkdir()
+        _run(root, "init", "-b", "main")
+        _commit(root, "old_name.py", "def f():\n    return 1\n" * 5, "add old_name")
+        _run(root, "mv", "old_name.py", "new_name.py")
+        _run(root, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "rename")
+
+        removal = find_path_removal(str(root), "old_name.py")
+
+        assert removal is not None
+        assert removal.moved_to == ["new_name.py"]
+
+    def test_a_split_into_a_same_named_directory_lists_its_files(self, tmp_path: Path) -> None:
+        """The #1929 shape: ``shell.py`` becomes the package ``shell/``."""
+        root = tmp_path / "split"
+        root.mkdir()
+        _run(root, "init", "-b", "main")
+        _commit(root, "shell.py", "def run():\n    pass\n", "add shell")
+        _run(root, "rm", "shell.py")
+        (root / "shell").mkdir()
+        # Content unlike the original on both sides: close enough to it and
+        # git's similarity index calls it a rename instead of a split, and the
+        # rename branch above wins before this one is ever reached.
+        (root / "shell" / "__init__.py").write_text("PACKAGE_VERSION = 1\n", encoding="utf-8")
+        (root / "shell" / "commands.py").write_text(
+            "class Commands:\n    def dispatch(self, *args):\n        raise NotImplementedError\n",
+            encoding="utf-8",
+        )
+        _run(root, "add", "-A")
+        _run(root, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "split into shell/")
+
+        removal = find_path_removal(str(root), "shell.py")
+
+        assert removal is not None
+        assert removal.moved_to == ["shell/__init__.py", "shell/commands.py"]
+
+    def test_an_unexplained_deletion_names_the_commit_with_nothing_moved(
+        self, tmp_path: Path
+    ) -> None:
+        root = tmp_path / "deleted"
+        root.mkdir()
+        _run(root, "init", "-b", "main")
+        _commit(root, "gone.py", "x = 1\n", "add gone")
+        _run(root, "rm", "gone.py")
+        _run(root, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "delete gone")
+
+        removal = find_path_removal(str(root), "gone.py")
+
+        assert removal is not None
+        assert removal.moved_to == []
+
+    def test_a_path_never_committed_yields_none(self, repo: Path) -> None:
+        assert find_path_removal(str(repo), "never_existed.py") is None
+
+    def test_a_path_still_on_disk_yields_none(self, repo: Path) -> None:
+        assert find_path_removal(str(repo), "base.txt") is None
+
+    def test_a_non_repository_yields_none(self, tmp_path: Path) -> None:
+        assert find_path_removal(str(tmp_path / "nowhere_at_all"), "gone.py") is None
+
+    def test_a_path_escaping_the_repo_is_rejected(self, repo: Path) -> None:
+        assert find_path_removal(str(repo), "../outside.py") is None
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://github.com/pallets/flask.git",
+        "git@github.com:pallets/flask.git",
+        "https://gitlab.example.com/group/sub/flask/",
+        "https://gitlab.com/group/flask/-/tree/main",
+        "git@ssh.dev.azure.com:v3/org/project/flask",
+        "/srv/git/flask.git",
+    ],
+)
+def test_remote_name_is_the_last_url_segment(tmp_path: Path, url: str) -> None:
+    root = tmp_path / "checkout-folder"
+    root.mkdir()
+    _run(root, "init", "-b", "main")
+    _run(root, "remote", "add", "origin", url)
+    assert remote_name(str(root)) == "flask"
+
+
+def test_remote_name_unescapes_a_name_with_spaces(tmp_path: Path) -> None:
+    _run(tmp_path, "init", "-b", "main")
+    _run(tmp_path, "remote", "add", "origin", "https://dev.azure.com/org/p/_git/My%20Repo")
+    assert remote_name(str(tmp_path)) == "My Repo"
+
+
+def test_remote_name_is_empty_without_a_remote(tmp_path: Path) -> None:
+    _run(tmp_path, "init", "-b", "main")
+    assert remote_name(str(tmp_path)) == ""

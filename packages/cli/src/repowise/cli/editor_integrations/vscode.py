@@ -6,15 +6,18 @@ from pathlib import Path
 from typing import Any
 
 from repowise.cli.agent_targets.targets import vscode as vscode_target
+from repowise.cli.agent_targets.types import FileAction
 from repowise.cli.editor_setup import EditorSetupOptions
+from repowise.cli.ui.glyphs import glyph
 
 
 class VSCodeSetup:
     """Project-local VS Code setup integration.
 
-    Writes the workspace MCP server config (.vscode/mcp.json) and recommends the
-    repowise extension (.vscode/extensions.json). Both are repo-shared files, so
-    they use the bare ``repowise`` command like the committed ``.mcp.json``.
+    Writes the workspace MCP server config (.vscode/mcp.json), recommends the
+    repowise extension (.vscode/extensions.json) and upserts the managed block
+    in .github/copilot-instructions.md. All are repo-shared files, so the MCP
+    entry uses the bare ``repowise`` command like the committed ``.mcp.json``.
     """
 
     #: Read from the descriptor rather than restated, so the ids have one home.
@@ -44,6 +47,11 @@ class VSCodeSetup:
     ) -> None:
         if self.project_file_id in options.disabled_project_files:
             return
+        # A refresh keeps a wired workspace current; it never creates one. An
+        # init that skipped editor setup would otherwise get .vscode files
+        # from its first update.
+        if not vscode_target.detect(repo_path):
+            return
         _write_vscode_files(console_obj, repo_path)
 
 
@@ -64,7 +72,7 @@ def _write_vscode_files(console_obj: Any, repo_path: Path) -> list[Path]:
     written: list[Path] = []
     try:
         mcp_path = save_vscode_mcp_config(repo_path)
-        console_obj.print(f"  [{OK}]✓[/] VS Code MCP configured ({mcp_path})")
+        console_obj.print(f"  [{OK}]{glyph('ok')}[/] VS Code MCP configured ({mcp_path})")
         written.append(Path(mcp_path))
     except ValueError:
         console_obj.print(
@@ -74,7 +82,7 @@ def _write_vscode_files(console_obj: Any, repo_path: Path) -> list[Path]:
 
     try:
         ext_path = save_vscode_extensions_config(repo_path)
-        console_obj.print(f"  [{OK}]✓[/] VS Code extension recommended ({ext_path})")
+        console_obj.print(f"  [{OK}]{glyph('ok')}[/] VS Code extension recommended ({ext_path})")
         written.append(Path(ext_path))
     except ValueError:
         console_obj.print(
@@ -82,4 +90,18 @@ def _write_vscode_files(console_obj: Any, repo_path: Path) -> list[Path]:
             'contain comments). Add "repowise-dev.repowise" to "recommendations" '
             "manually.[/]"
         )
+
+    try:
+        instructions = vscode_target.write_instructions(repo_path)
+    except (OSError, ValueError) as exc:
+        console_obj.print(f"  [{WARN}].github/copilot-instructions.md not written ({exc}).[/]")
+    else:
+        if instructions.action is FileAction.KEPT:
+            console_obj.print(
+                f"  [{WARN}].github/copilot-instructions.md left unchanged: its Repowise "
+                "markers are unpaired or duplicated, or it could not be read.[/]"
+            )
+        else:
+            console_obj.print(f"  [{OK}]{glyph('ok')}[/] Copilot instructions updated ({instructions.path})")
+            written.append(instructions.path)
     return written

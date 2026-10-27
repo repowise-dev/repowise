@@ -1,4 +1,4 @@
-"""A method or function passed as a value, in Go, Rust and Kotlin.
+"""A method, function or class passed as a value, in Go, Rust, Kotlin, TS/JS and Python.
 
 ``list.map(Foo::bar)``, ``register(pkg.Handler)`` and ``Config { on_tick:
 my_func }`` all name something callable and never call it. Go and Rust already
@@ -332,7 +332,7 @@ class TestRustMacroInvocations:
 
 
 class TestReceiverDecidesWhatMayBeNamed:
-    """A bare identifier admits only functions; a qualified name admits methods.
+    """A bare identifier never reaches a method; a qualified name may.
 
     This is what keeps the C/C++ rule that bought #1602's precision — there a
     plain name resolving to a method is a collision, since naming a member
@@ -417,23 +417,246 @@ class TestKotlinCeilings:
 
 
 class TestControls:
+    def test_languages_without_the_captures_gain_nothing(self, tmp_path: Path) -> None:
+        """The pass is self-gating on the captures, not on a language list."""
+        (tmp_path / "App.java").write_text(
+            "class App {\n"
+            "    static void handler() {}\n"
+            "    static void setup() { register(handler); }\n"
+            "}\n"
+        )
+        graph = _build(tmp_path)
+        assert not _edges_of_type(graph, "references")
+
+
+def _write(root: Path, files: dict[str, str]) -> None:
+    for name, body in files.items():
+        (root / name).write_text(body)
+
+
+class TestTypeScriptValueReferences:
+    """A function or class handed over by name: registered, passed, exported."""
+
     @pytest.mark.parametrize(
-        ("name", "body"),
+        ("body", "caller"),
         [
-            (
-                "app.py",
-                "def handler():\n    pass\n\ndef setup():\n    register(handler)\n",
-            ),
-            (
-                "app.ts",
-                "function handler() {}\nfunction setup() { register(handler); }\n",
-            ),
+            ("export function setup() { register(handler); }\n", "setup"),
+            ('export function setup(e: any) { e.on("x", handler); }\n', "setup"),
+            ("export function setup() { setTimeout(handler, 10); }\n", "setup"),
+            ("export function setup() { return { extensions: [handler] }; }\n", "setup"),
+            ("export function setup() { return { onMessage: handler }; }\n", "setup"),
+            ("export function setup() { return { handler }; }\n", "setup"),
+            ("export function setup() { return handler; }\n", "setup"),
+            ("export function setup() { let h; h = handler; return h; }\n", "setup"),
+            ("export default handler;\n", "__module__"),
         ],
     )
-    def test_languages_without_the_captures_gain_nothing(
-        self, tmp_path: Path, name: str, body: str
+    def test_value_positions_reference_an_imported_function(
+        self, tmp_path: Path, body: str, caller: str
     ) -> None:
-        """The pass is self-gating on the captures, not on a language list."""
-        (tmp_path / name).write_text(body)
+        _write(
+            tmp_path,
+            {
+                "handler.ts": "export function handler() {}\n",
+                "setup.ts": 'import { handler } from "./handler";\n' + body,
+            },
+        )
         graph = _build(tmp_path)
+        assert _inbound(graph, "handler.ts::handler", "references") == {f"setup.ts::{caller}"}
+        assert not _inbound(graph, "handler.ts::handler", "calls")
+
+    def test_default_export_registered_by_an_importer(self, tmp_path: Path) -> None:
+        _write(
+            tmp_path,
+            {
+                "ext.ts": "function safeguard() {}\nexport default safeguard;\n",
+                "runner.ts": (
+                    'import safeguard from "./ext";\n'
+                    "export function build() { return { extensions: [safeguard] }; }\n"
+                ),
+            },
+        )
+        graph = _build(tmp_path)
+        assert "runner.ts::build" in _inbound(graph, "ext.ts::safeguard", "references")
+
+    def test_class_and_method_values(self, tmp_path: Path) -> None:
+        _write(
+            tmp_path,
+            {
+                "svc.ts": "export class FooService {}\n",
+                "mod.ts": (
+                    'import { FooService } from "./svc";\n'
+                    "export class Panel {\n"
+                    "  onClick() {}\n"
+                    "  mount(el: any) { el.listen(this.onClick); }\n"
+                    "}\n"
+                    "export function providers() { return [FooService]; }\n"
+                ),
+            },
+        )
+        graph = _build(tmp_path)
+        assert _inbound(graph, "svc.ts::FooService", "references") == {"mod.ts::providers"}
+        assert _inbound(graph, "mod.ts::Panel::onClick", "references") == {
+            "mod.ts::Panel::mount"
+        }
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            # A local of the same name hides the function.
+            "export function setup() { const handler = 1; register(handler); }\n",
+            # So does a parameter.
+            "export function setup(handler: any) { register(handler); }\n",
+            # A string names nothing.
+            'export function setup() { register("handler"); }\n',
+            # A property on an untyped object is not the method of that name.
+            "export function setup(cfg: any) { register(cfg.handler); }\n",
+        ],
+    )
+    def test_negatives_produce_no_reference(self, tmp_path: Path, body: str) -> None:
+        _write(
+            tmp_path,
+            {
+                "lib.ts": "export function handler() {}\nexport class Store {\n  handler() {}\n}\n",
+                "setup.ts": 'import { handler } from "./lib";\n' + body,
+            },
+        )
+        graph = _build(tmp_path)
+        assert not _edges_of_type(graph, "references")
+
+    def test_a_call_stays_a_call(self, tmp_path: Path) -> None:
+        _write(
+            tmp_path,
+            {
+                "handler.ts": "export function handler() { return 1; }\n",
+                "setup.ts": (
+                    'import { handler } from "./handler";\n'
+                    "export function setup() { register(handler()); }\n"
+                ),
+            },
+        )
+        graph = _build(tmp_path)
+        assert _inbound(graph, "handler.ts::handler", "calls") == {"setup.ts::setup"}
+        assert not _edges_of_type(graph, "references")
+
+
+class TestJavaScriptValueReferences:
+    @pytest.mark.parametrize(
+        ("body", "caller"),
+        [
+            ("function setup() { app.use(handler); }\n", "setup"),
+            ("function setup() { return [handler]; }\n", "setup"),
+            ("module.exports.handler = handler;\n", "__module__"),
+            ("function View() { return <button onClick={handler} />; }\n", "View"),
+        ],
+    )
+    def test_value_positions_reference_a_same_file_function(
+        self, tmp_path: Path, body: str, caller: str
+    ) -> None:
+        _write(tmp_path, {"app.jsx": "function handler() {}\n" + body})
+        graph = _build(tmp_path)
+        assert _inbound(graph, "app.jsx::handler", "references") == {f"app.jsx::{caller}"}
+
+    def test_a_shadowing_parameter_produces_no_reference(self, tmp_path: Path) -> None:
+        _write(
+            tmp_path,
+            {"app.js": "function handler() {}\nfunction setup(handler) { app.use(handler); }\n"},
+        )
+        graph = _build(tmp_path)
+        assert not _edges_of_type(graph, "references")
+
+
+class TestPythonValueReferences:
+    @pytest.mark.parametrize(
+        ("body", "caller"),
+        [
+            ("def setup(bus):\n    bus.subscribe(callback=on_message)\n", "setup"),
+            ("def setup(xs):\n    return list(map(on_message, xs))\n", "setup"),
+            ('def setup():\n    return {"msg": on_message}\n', "setup"),
+            ("def setup():\n    return [on_message]\n", "setup"),
+            ("def setup():\n    return (on_message,)\n", "setup"),
+            ("def setup():\n    return on_message\n", "setup"),
+            ("def setup():\n    h = on_message\n    return h\n", "setup"),
+            ("def setup(bus):\n    bus.subscribe(handlers.on_message)\n", "setup"),
+        ],
+    )
+    def test_value_positions_reference_an_imported_function(
+        self, tmp_path: Path, body: str, caller: str
+    ) -> None:
+        _write(
+            tmp_path,
+            {
+                "handlers.py": "def on_message(m):\n    return m\n",
+                "setup.py": "import handlers\nfrom handlers import on_message\n\n" + body,
+            },
+        )
+        graph = _build(tmp_path)
+        assert _inbound(graph, "handlers.py::on_message", "references") == {f"setup.py::{caller}"}
+        assert not _inbound(graph, "handlers.py::on_message", "calls")
+
+    def test_a_wildcard_import_still_reaches_its_names(self, tmp_path: Path) -> None:
+        """The per-file name prefilter must not drop a name only ``*`` binds."""
+        _write(
+            tmp_path,
+            {
+                "handlers.py": "def on_message(m):\n    return m\n",
+                "setup.py": "from handlers import *\n\ndef setup(bus):\n    bus.subscribe(on_message)\n",
+            },
+        )
+        graph = _build(tmp_path)
+        assert _inbound(graph, "handlers.py::on_message", "references") == {"setup.py::setup"}
+
+    def test_class_and_bound_method_values(self, tmp_path: Path) -> None:
+        _write(
+            tmp_path,
+            {
+                "app.py": (
+                    "class NotFound(Exception):\n    pass\n\n"
+                    "class Panel:\n"
+                    "    def on_click(self):\n        pass\n\n"
+                    "    def mount(self, el):\n        el.listen(self.on_click)\n\n"
+                    "def setup(app):\n    app.register_error_handler(404, NotFound)\n"
+                ),
+            },
+        )
+        graph = _build(tmp_path)
+        assert _inbound(graph, "app.py::NotFound", "references") == {"app.py::setup"}
+        assert _inbound(graph, "app.py::Panel::on_click", "references") == {"app.py::Panel::mount"}
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "def setup(on_message):\n    register(on_message)\n",
+            "def setup():\n    on_message = 1\n    register(on_message)\n",
+            'def setup():\n    register("on_message")\n',
+            "def setup(cfg):\n    register(cfg.on_message)\n",
+        ],
+    )
+    def test_negatives_produce_no_reference(self, tmp_path: Path, body: str) -> None:
+        _write(
+            tmp_path,
+            {
+                "lib.py": (
+                    "def on_message(m):\n    return m\n\n"
+                    "class Store:\n    def on_message(self):\n        pass\n"
+                ),
+                "setup.py": "from lib import on_message\n\n" + body,
+            },
+        )
+        graph = _build(tmp_path)
+        assert not _edges_of_type(graph, "references")
+
+    def test_a_call_stays_a_call(self, tmp_path: Path) -> None:
+        _write(
+            tmp_path,
+            {
+                "lib.py": "def on_message(m):\n    return m\n",
+                "setup.py": (
+                    "from lib import on_message\n\n"
+                    "def setup():\n    register(on_message(1))\n"
+                ),
+            },
+        )
+        graph = _build(tmp_path)
+        assert _inbound(graph, "lib.py::on_message", "calls") == {"setup.py::setup"}
         assert not _edges_of_type(graph, "references")

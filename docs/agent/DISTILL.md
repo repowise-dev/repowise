@@ -1,85 +1,84 @@
-# Distill — index-aware output distillation
+# Distill: index-aware output distillation
 
-AI coding agents burn most of their context window on *output they never
-needed*: 300 lines of passing-test dots to find 4 failures, a full `git log`
-to learn "what changed recently", a 60k-token diff to review one hunk. Distill
-compresses that output **before the agent reads it** — errors first, structure
-preserved, everything reversible.
+Coding agents spend much of their context window on output they never needed:
+300 lines of passing tests around 4 failures, a full `git log` to learn what
+changed recently, a 60k-token diff to review one hunk. Distill compresses that
+output before the agent reads it. Errors come first, structure is kept, and
+everything dropped can be restored.
 
-Distill is a **capability**, not a sixth intelligence layer: it reuses the
-index the five layers already build (symbol bounds, graph centrality,
-hotspots) to decide *what to keep*, instead of compressing blind.
+Distill is a capability, not an intelligence layer of its own. It reuses what
+the index already knows (symbol bounds, graph centrality, hotspots) to decide
+what to keep. It needs no LLM key, and its filters work on repos with no index.
 
 ```bash
 repowise distill pytest -x        # run pytest, print a compact errors-first rendering
 repowise expand a1b2c3d4e5f6      # restore anything that was omitted
-repowise saved                    # tokens & dollars saved so far
+repowise saved                    # tokens and dollars saved so far
 ```
 
-**Guarantees** (enforced by the engine, asserted by tests):
+**Guarantees** (enforced by the engine and asserted by tests):
 
-- **Errors always survive.** Every error/failure-classified line in the raw
+- **Errors survive.** Every line classified as an error or failure in the raw
   output appears in the distilled rendering.
-- **Fully reversible.** Raw output is stored *before* any marker is emitted;
-  `repowise expand <ref>` round-trips it byte-for-byte.
-- **Fallback to raw.** Any filter error, storage failure, or non-improvement
-  prints the original output unchanged. Distillation can never lose output.
-- **Net-positive only.** Output is only distilled when it actually gets
-  smaller (marker included) — small outputs pass through untouched.
-- **Exit codes preserved.** `repowise distill <cmd>` is a drop-in wrapper in
-  scripts and agent tool calls alike.
+- **Reversible.** Raw output is stored before any marker is printed;
+  `repowise expand <ref>` returns it byte-for-byte.
+- **Fallback to raw.** A filter error, a storage failure or a rendering that is
+  not smaller prints the original output unchanged.
+- **Net-positive only.** Output is distilled only when it gets smaller, marker
+  included. Small outputs pass through untouched.
+- **Exit codes preserved.** `repowise distill <cmd>` is a drop-in wrapper for
+  scripts and agent tool calls.
 
 ---
 
 ## The surfaces
 
-### 1. `repowise distill <cmd>` — the executor
+### 1. `repowise distill <cmd>`: the executor
 
-Runs the command (shell semantics preserved), captures stdout+stderr, picks a
-filter by command shape (then by content sniff), and prints the compact
-rendering. Eleven filters ship:
+Runs the command (shell semantics preserved), captures stdout and stderr, picks
+a filter by command shape and then by content, and prints the compact
+rendering. These filters ship:
 
 | Filter | Commands | What it keeps |
 |---|---|---|
-| `test_output` | pytest, jest, vitest, cargo test, go test | failures + assertion details + summary; collapses pass parades |
-| `build_output` | npm/tsc/cargo/go builds | errors and warnings grouped; strips progress/boilerplate |
-| `lint_output` | eslint/biome, ruff/flake8/mypy, clippy, golangci-lint | errors verbatim; warnings grouped by rule id with counts + file:line anchors; fixable totals |
-| `install_output` | pip, uv, poetry, npm/pnpm/yarn install, cargo install, brew, bundle, composer | what actually changed + the final summary; drops resolver and download progress. An all-satisfied run collapses to `install: ok (no changes)` |
-| `infra_plan` | `terraform`/`tofu plan`, `helm diff`/`upgrade` | the `Plan: N to add…` summary and the resources that change; drops unchanged-resource dumps. A no-op collapses to `plan: no changes` |
+| `test_output` | pytest, jest, vitest, cargo test, go test | failures, assertion details and the summary; collapses runs of passes |
+| `build_output` | npm/tsc/cargo/go builds | errors and warnings grouped; strips progress and boilerplate |
+| `lint_output` | eslint/biome, ruff/flake8/mypy, clippy, golangci-lint | errors verbatim; warnings grouped by rule id with counts and file:line anchors; fixable totals |
+| `install_output` | pip, uv, poetry, npm/pnpm/yarn install, cargo install, brew, bundle, composer | what changed and the final summary; drops resolver and download progress. An all-satisfied run collapses to `install: ok (no changes)` |
+| `infra_plan` | `terraform`/`tofu plan`, `helm diff`/`upgrade` | the plan summary and the resources that change. A no-op collapses to `plan: no changes` |
 | `git_status` | `git status` | porcelain-style compact status |
-| `git_log` | `git log` | recent subjects + counts |
-| `git_diff` | `git diff`/`show` | stat + the most relevant hunks |
-| `search_results` | grep / rg floods | grouped-by-file digest with per-file counts and anchors |
+| `git_log` | `git log` | recent subjects and counts |
+| `git_diff` | `git diff`/`show`, `gh pr diff` | stat plus the most relevant hunks (`--stat` output has its own `git_diff_stat` filter) |
+| `search_results` | grep / rg floods | digest grouped by file, with per-file counts and anchors |
 | `file_listing` | ls / tree / find | grouped tree rendering |
-| `logs` | anything log-shaped | template-collapse with counts (timestamps/ids normalized) |
+| `logs` | anything log-shaped | template collapse with counts (timestamps and ids normalized) |
 
-Dropped content is stored in the omission store and referenced inline:
+Dropped content goes to the omission store and is referenced inline:
 
 ```
 [repowise#a1b2c3d4e5f6: 230 lines omitted (~6.1k tokens); restore: repowise expand a1b2c3d4e5f6]
 ```
 
-### 2. `repowise expand <ref>` — the reversal
+### 2. `repowise expand <ref>`: the reversal
 
 ```bash
 repowise expand a1b2c3d4e5f6              # full original output
 repowise expand a1b2c3d4e5f6 -q "FAILED"  # only the matching lines
-repowise expand "[repowise#a1b2…]"        # a pasted whole marker works too
+repowise expand "[repowise#a1b2...]"      # a pasted whole marker works too
 ```
 
 Looks in the current repo's store first, then the user-level fallback store.
-MCP clients without a shell can resolve the same refs through
-`get_symbol("repowise#<ref>")` — see [MCP](#5-mcp-response-budget--_metaomitted).
+MCP clients without a shell resolve the same refs with
+`get_symbol("repowise#<ref>")` (see [MCP](#5-mcp-response-budget-_metaomitted)).
 
 ### 3. The command-rewrite hook (Claude Code + Codex)
 
-A PreToolUse hook rewrites noisy agent commands —
-`pytest -x` → `repowise distill pytest -x`. The default posture is `allow`, so
-the rewrite runs without a prompt; it is a bounded substitution, never a new
-command (see [Safety model](#safety-model-in-one-place)). Set
-`permission: ask` in `.repowise/config.yaml` to review each rewrite instead.
-`repowise init` offers to install the hook (default: yes); install manually
-with:
+A PreToolUse hook rewrites noisy agent commands: `pytest -x` becomes
+`repowise distill pytest -x`. Rewrites run without a prompt by default
+(`permission: allow`). That is a bounded substitution, never a new command (see
+[Safety model](#safety-model-in-one-place)). Set `permission: ask` in
+`.repowise/config.yaml` to approve each rewrite. `repowise init` offers to
+install the hook (default: yes), or install it yourself:
 
 ```bash
 repowise hook rewrite install      # or opt in during `repowise init`
@@ -87,63 +86,57 @@ repowise hook rewrite status
 repowise hook rewrite uninstall    # removes only the repowise entries
 ```
 
-The hook covers both Claude Code shell tools — Bash and, on Windows,
-PowerShell. Existing installs are widened automatically on the next
-`install`/`init`.
+The hook covers both Claude Code shell tools: Bash and, on Windows, PowerShell.
 
-**Codex.** When `~/.codex` exists, `install` also covers the Codex CLI, with
-two honest caveats its hook protocol imposes:
+**Codex.** When `~/.codex` exists, `install` also covers the Codex CLI, with two
+limits its hook protocol imposes:
 
-- Codex applies a PreToolUse command rewrite only from **version 0.137**;
-  on older builds the hook entry is skipped (a rewrite response would error
-  on every shell call). `repowise hook rewrite status` reports what your
-  build can do.
-- Codex has **no ask-with-mutation** — a rewrite can only be auto-allowed,
-  never shown for approval. So under Codex, rewrites fire **only for families
-  resolving to `permission: allow`** in `.repowise/config.yaml`, which the
-  default posture already is; any family you set to `ask` passes through
-  unchanged there rather than being silently escalated.
+- Codex applies a PreToolUse rewrite only from **version 0.137**. On older
+  builds the hook entry is skipped. `repowise hook rewrite status` reports what
+  your build can do.
+- Codex cannot show a rewritten command for approval. Under Codex, rewrites fire
+  only for families resolving to `permission: allow` (the default); a family set
+  to `ask` passes through unchanged.
 
-The hook entry lands in `~/.codex/hooks.json` (one install covers every
-repo); Codex requires new hooks to be reviewed — run `/hooks` inside Codex to
-trust it. Independently of any hook, `install` maintains a marker-managed
-**"Output Distillation" section in the repo's `AGENTS.md`** teaching the
-agent to run `repowise distill <cmd>` voluntarily and to `repowise expand`
-markers instead of re-running commands — this works on every Codex version,
-including ones with no usable rewrite hook. `uninstall` removes the section
-and restores your AGENTS.md byte-for-byte.
+The Codex entry lands in `~/.codex/hooks.json`, so one install covers every
+repo. Codex asks you to review new hooks: run `/hooks` inside Codex to trust it.
+Separately, `install` maintains a marker-managed "Output Distillation" section
+in the repo's `AGENTS.md` that teaches the agent to run `repowise distill <cmd>`
+itself and to `repowise expand` markers instead of re-running commands. This
+works on every Codex version. `uninstall` removes the section and restores your
+`AGENTS.md` byte-for-byte.
 
-The hook is deliberately conservative. It never rewrites:
+**Cursor.** When `~/.cursor` exists, `install` also adds a `preToolUse` entry
+(matcher `Shell`) to `~/.cursor/hooks.json`, beside any hooks you already have.
+Cursor's `preToolUse` honours `allow` and `deny` only, so as under Codex, rewrites
+fire only for families resolving to `permission: allow`. `repowise agents add
+--target=cursor --scope=user` writes the same entry.
 
-- redirections, compound commands (`>`, `&&`, `;`, backticks, `$()`) and
-  almost all pipes. Two safe shapes are carved out: a trailing `2>&1`
-  (distill merges stderr into its capture anyway), and, on macOS/Linux only,
-  a single pipe into a bare stdin filter — `head`, `tail`, `grep`, `egrep`,
-  `fgrep`, `rg` — which runs unchanged inside distill's own shell
-  (`pytest -q | head -50` → `repowise distill "pytest -q | head -50"`).
-  The `grep`/`rg` pattern-file forms (`-f`, `--file`) are excluded: they read
-  a file as configuration rather than filtering stdin
-- watch/follow modes (`--watch`, `tail -f`, …)
-- anything on the trivial-command ignore-list, or already-prefixed commands
-- PowerShell-native constructs: `Verb-Noun` cmdlets, `& "path"` invocations,
-  backtick continuations — and, from PowerShell, alias tokens (`ls`, `cat`,
-  `find`, …) that don't mean what their unix namesakes mean
+The hook is conservative. It never rewrites:
+
+- redirections and compound commands (`>`, `&&`, `;`, backticks, `$()`), and
+  almost all pipes. Two shapes are allowed: a trailing `2>&1` (distill merges
+  stderr anyway), and on macOS/Linux a single pipe into `head`, `tail`, `grep`,
+  `egrep`, `fgrep` or `rg`, which runs unchanged inside distill's own shell
+  (`pytest -q | head -50` becomes `repowise distill "pytest -q | head -50"`). The
+  `grep`/`rg` pattern-file forms (`-f`, `--file`) are excluded.
+- watch and follow modes (`--watch`, `tail -f`)
+- trivial commands on the ignore list, and commands already prefixed
+- PowerShell-native constructs (`Verb-Noun` cmdlets, `& "path"` invocations,
+  backtick continuations) and, from PowerShell, alias tokens such as `ls`,
+  `cat` and `find` that do not mean what their unix namesakes mean
 - commands in repos that have not opted into repowise (no `.repowise/` upward)
 
-These decisions are made by tokenizing the command, not by scanning it for
-punctuation, so on macOS/Linux a shell character sitting inside quotes is
-treated as the text it is: `pytest -k "a|b"` is a normal test run, not a
-pipeline, and is rewritten as one. On Windows the blunter rule stands — any
-`|`, `&`, `;`, `<`, `>` or backtick anywhere in the command, quoted or not,
-passes it through untouched — because `cmd.exe` re-parses metacharacters that
-the argv quoting Windows uses does not cover. The conservative answer always
-wins the ambiguity; an unrecognized shape is left alone.
+On macOS/Linux these decisions come from tokenizing the command, so a shell
+character inside quotes is text: `pytest -k "a|b"` is a test run and is
+rewritten. On Windows any `|`, `&`, `;`, `<`, `>` or backtick anywhere in the
+command passes it through untouched, because `cmd.exe` re-parses metacharacters
+that argv quoting does not cover. An unrecognized shape is always left alone.
 
-**The allowlist trap.** A rewrite changes the command string, so a Claude Code
-permission rule you already had — say `Bash(git diff:*)` — no longer matches
-the rewritten `repowise distill git diff …`, and the permission prompt comes
-back for commands you had already allowed. The fix is one extra allow rule
-covering the distill prefix:
+**Allow rules under `ask`.** A rewrite changes the command string. If you set
+`permission: ask`, an allow rule you already had, such as `Bash(git diff:*)`, no
+longer matches `repowise distill git diff ...`, and the prompt comes back. One
+extra rule covers the distill prefix:
 
 ```jsonc
 // ~/.claude/settings.json
@@ -155,60 +148,51 @@ covering the distill prefix:
 }
 ```
 
-`repowise hook rewrite install` offers to add these for you (or pass
-`--allow-rule` / `--no-allow-rule` to decide non-interactively). The default
-posture stays `ask` — the rule only stops *double*-asking for commands you've
-already vetted; `repowise distill` runs the wrapped command unchanged and
-never widens what it can do.
+`repowise hook rewrite install --allow-rule` adds these for you. Under the
+default `allow` posture they are not needed. `repowise distill` runs the
+wrapped command unchanged and never widens what it can do.
 
-Per-repo behavior is configured under `distill.commands` in
-`.repowise/config.yaml` — see [Configuration](#configuration). Declining the
-`repowise init` prompt writes `distill.commands.enabled: false`, so a hook
-installed globally from another repo stays inert in this one. A multi-repo
-workspace `init` asks once and records the verdict in **every selected
-repo**; `repowise hook rewrite install -w` re-enables them all later. The
-hook answers in well under 100 ms (stdlib-only hot path, no database).
+Per-repo behavior lives under `distill.commands` in `.repowise/config.yaml` (see
+[Configuration](#configuration)). Declining the `repowise init` prompt writes
+`distill.commands.enabled: false`, so a hook installed globally from another
+repo stays inert in this one. A multi-repo workspace `init` asks once and
+records the answer in every selected repo; `repowise hook rewrite install -w`
+re-enables them all later.
 
 `repowise init` also adds a short "Output Distillation" section to the managed
-`CLAUDE.md`, teaching the agent to prefer `repowise distill <cmd>` voluntarily
-and to expand markers instead of re-running commands — this works in **any**
-agent that runs shell commands, hook or no hook.
+`CLAUDE.md`, so any agent that runs shell commands can use distill voluntarily,
+hook or no hook.
 
-### 4. Read intelligence — skeletons and stale-read notices
+### 4. Read intelligence: skeletons and stale-read notices
 
 The index knows every symbol's line bounds, so repowise can render a **file
-skeleton** — every signature, imports, and the bodies of only the most central
-symbols — without parsing anything at query time:
+skeleton**: every signature, the imports, and the bodies of only the most
+central symbols, without parsing anything at query time:
 
 ```
 get_context(["src/big_module.py"], include=["skeleton"])
 ```
 
-A typical 600-line file skeletonizes to ~15% of its full tokens with every
-signature present. Body selection is importance-ranked (symbol PageRank,
-hotspot bit, query match) — this is where the index makes distillation
-smarter than blind truncation.
+Body selection is ranked by importance (symbol PageRank, hotspot bit, query
+match), which is where the index beats blind truncation.
 
-The existing PostToolUse hook complements this passively:
+The PostToolUse hook adds passive read surfaces (details in
+[HOOKS.md](HOOKS.md#posttooluse-enrichment-on-tool-calls)):
 
-- **Skeleton replacement** — an unbounded `Read` of a large indexed file is
-  served *as* its skeleton, elision ranges intact, once per file per session
-  (opt-in: `hooks.read_skeleton`). The advisory version of this — a one-line
-  nudge naming the skeleton's token cost — was retired after 516 firings
-  showed no effect above the base rate.
-- **Re-read collapse** — a `Read` of a file this session already read, at the
-  same range, with no intervening edit and an identical content hash, is served
-  as a short notice naming the earlier read (opt-in: `hooks.read_reread`).
-  Never applied twice in a row, so one more Read always returns the content.
-- **Stale-read notice** — after an `Edit`/`Write`, a later `Read` of the same
-  file warns that earlier excerpts predate the edit.
-- **Search digest** — grep floods (≥50 lines) get a compact grouped-by-file
-  digest ordered by graph centrality.
+- **Skeleton replacement** (opt-in, `hooks.read_skeleton`): an unbounded `Read`
+  of a large indexed file is served as its skeleton, once per file per session.
+- **Re-read collapse** (opt-in, `hooks.read_reread`): a `Read` of a range this
+  session already read, with no edit between and identical bytes, is served as
+  a short notice. Never twice in a row, so one more Read always returns content.
+- **Stale-read notice**: after an `Edit`/`Write`, a later `Read` of the same file
+  warns that earlier excerpts predate the edit.
+- **Search digest**: grep floods (50 or more lines) get a digest grouped by file
+  and ordered by graph centrality.
 
-### 5. MCP response budget — `_meta.omitted`
+### 5. MCP response budget: `_meta.omitted`
 
-All MCP tool responses were always token-budgeted; before Distill, truncation
-was silent. Now every drop goes through the same omission store:
+MCP tool responses are token-budgeted, and every drop goes through the same
+omission store:
 
 ```jsonc
 "_meta": {
@@ -220,40 +204,39 @@ was silent. Now every drop goes through the same omission store:
 }
 ```
 
-`get_symbol` resolves omission refs as well as symbol ids — the
-`repowise#<12-hex>` shape is unambiguous next to `path/to/file.py::Name`, and
-the optional `query` parameter searches within the stored content. Resolving
-refs adds no new tool to the surface. See [MCP_TOOLS.md](MCP_TOOLS.md).
+`get_symbol` resolves omission refs as well as symbol ids. The
+`repowise#<12-hex>` shape cannot be confused with `path/to/file.py::Name`, and
+the optional `query` parameter searches within the stored content. See
+[MCP_TOOLS.md](MCP_TOOLS.md).
 
-> **Note:** MCP tool calls now record a *counterfactual* saving — what raw file
-> exploration the curated answer replaced — as `mcp:<tool>` rows in the same
-> ledger (see [`repowise saved`](#repowise-saved--the-savings-report)). Response
-> truncation is folded into that delta (the delivered size is measured after the
-> budget cap), so it is never double-counted.
+MCP calls also record a counterfactual saving (the raw file exploration the
+answer replaced) as `mcp:<tool>` rows in the same ledger. Truncation is folded
+into that figure, so it is never counted twice. The saving is recorded, not
+served: `_meta.tokens_saved` and `_meta.replaced_tokens` appear on a response
+only with `REPOWISE_MCP_DEBUG_META=1` (and on `get_overview`).
 
 ---
 
 ## The omission store
 
-`.repowise/omissions/omissions.db` — a SQLite sidecar (WAL), deliberately
-separate from `wiki.db` so hook-time writes never contend with indexing.
-Falls back to `~/.repowise/omissions/` when the current directory is not
-inside a repowise repo.
+`.repowise/omissions/omissions.db` is a SQLite sidecar, kept separate from
+`wiki.db` so hook-time writes never contend with indexing. Outside a repowise
+repo it falls back to `~/.repowise/omissions/`.
 
-- Content is keyed by a 12-hex truncated SHA-256 — the same ref that appears
-  in markers, so one store serves the CLI, the hook, and MCP.
-- **Durable across sessions** by design: an agent resuming work tomorrow can
-  still expand yesterday's markers.
-- Pruning is TTL + size-cap based (`7 days` / `50 MB` by default, configurable),
-  applied opportunistically on write. The most recent row is never evicted, so
-  a just-rendered marker cannot dangle.
+- Content is keyed by a 12-hex truncated SHA-256: the same ref that appears in
+  markers, so one store serves the CLI, the hook and MCP.
+- It is durable across sessions: an agent resuming tomorrow can still expand
+  yesterday's markers.
+- Pruning is by age and size (7 days and 50 MB by default, configurable),
+  applied on write. The most recent row is never evicted, so a marker just
+  printed cannot dangle.
 
 ---
 
-## `repowise saved` — the savings report
+## `repowise saved`: the savings report
 
 ```bash
-repowise saved                  # per-operation rollup + totals + est. dollars
+repowise saved                  # per-operation rollup, totals, estimated dollars
 repowise saved --by surface     # distill vs hooks vs MCP
 repowise saved --by agent       # which agent the savings went to
 repowise saved --by day         # daily rollup
@@ -262,75 +245,51 @@ repowise saved --missed                  # savings raw commands left on the tabl
 repowise saved --missed --missed-days 30
 ```
 
-Savings are priced at each event's own rate, captured when the event was
-recorded, so a later price change never rewrites what a past saving was worth.
-Events recorded without a rate are reported as unpriced rather than valued at
-today's model, and the command prints both figures. Saved tokens are input the
-agent never had to read, so the input rate applies; the pricing table is the
-one `repowise costs` uses. Token counts are chars/4 estimates.
+One ledger covers the distill command and hook path, the hooks that replace a
+tool result, and MCP calls (each answer counted against the raw exploration it
+replaced). `--by surface` separates them.
 
-The report covers every capture surface in one ledger: the **distill
-command/hook path**, the **hooks that replace a tool result**, and **MCP
-calls**, where each answer is counted against the raw exploration it replaced.
-`repowise saved --by surface` separates them.
+Savings are priced at each event's own rate, captured when it was recorded, so
+a later price change never rewrites a past saving. Events recorded without a
+rate are reported as unpriced. Saved tokens are input the agent never read, so
+the input rate applies, from the same pricing table `repowise costs` uses. Token
+counts are chars/4 estimates.
 
 The total keeps two kinds of evidence apart. **Measured** savings compare a
-known before and after — bytes that really moved. **Inferred** savings estimate
-the exploration an answer replaced. The command prints the split, and calls the
-total "estimated" whenever any of it is inferred.
+known before and after. **Inferred** savings estimate the exploration an answer
+replaced. The command prints the split and calls the total "estimated" whenever
+any of it is inferred.
 
-### Missed savings — `repowise saved --missed`
+### Missed savings: `repowise saved --missed`
 
-The adoption feedback loop: how many tokens did raw commands waste that a
-filter would have caught? `--missed` scans your local Claude Code transcripts
-for Bash/PowerShell tool calls in this repo that were **not** routed through
-`repowise distill`, classifies each with the same router the engine uses, and
-estimates the foregone savings using each filter's *conservative* fixture
-floor (the per-filter minimums asserted in CI, not the medians — the estimate
-undersells on purpose). The scan covers the last 7 days by default
-(`--missed-days N` for more); plain `repowise saved` appends a one-line
-summary when there is anything to report.
+How many tokens did raw commands waste that a filter would have caught?
+`--missed` scans your local Claude Code transcripts for Bash/PowerShell calls in
+this repo that did not go through `repowise distill`, classifies each with the
+engine's own router, and estimates the foregone savings from each filter's
+conservative fixture floor (the per-filter minimums asserted in CI, not the
+medians). The default window is 7 days (`--missed-days N` for more). Plain
+`repowise saved` appends a one-line summary when there is something to report.
 
-The scan is read-only and best-effort: malformed or absent transcripts mean
-an empty report, never an error.
+The scan is read-only and local. Commands and outputs are read from your own
+transcript directory (`~/.claude/projects/...`); nothing is uploaded. Codex
+transcripts are not scanned.
 
-> **Privacy:** the scan stays entirely local. Commands and outputs are read
-> from your own transcript directory (`~/.claude/projects/…`) on this
-> machine; nothing is uploaded, recorded, or sent anywhere. Codex transcripts
-> are not yet scanned.
-
-The local dashboard goes further. The Costs page leads with a **savings hero
-card** that combines two surfaces into one honest number:
-
-- **Distill** — the `repowise distill` command/hook ledger above.
-- **MCP tool savings** — what each tool answer replaced: the raw file
-  exploration the agent would have done without it (`source='mcp:*'`).
-  `get_symbol` stands in for reading the whole file, `get_context` for the files
-  its skeletons summarise, `search_codebase` for opening each cited file; the
-  estimate undersells. Tools without a counterfactual estimator still contribute
-  their response-budget truncation drops.
-
-The dollar figure is **priced at the coding agent's actual model**, not a flat
-guess: saved tokens are *input* the agent never read, so they are worth that
-agent's input rate. The dashboard detects the model from your local agent
-transcripts — the most-recent model that touched the repo across Claude Code
-(`~/.claude/projects/…`) and Codex (`~/.codex/sessions/…`) — and falls back to
-a sensible default when nothing is detectable. Detection is read-only and stays
-on this machine. The missed-savings scan rides along as an "unlock more"
-prompt.
+The local dashboard's Costs page leads with a savings card that combines the
+distill ledger with MCP tool savings. The dollar figure uses the input rate of
+the model your coding agent actually ran, detected from local Claude Code and
+Codex transcripts, with a default when nothing is detectable.
 
 ---
 
-## `repowise corrections` — recurring command fumbles
+## `repowise corrections`: recurring command fumbles
 
-The same transcript reader, pointed at a different waste: commands the agent
-got *wrong* and then fixed. The scan finds consecutive runs of the same base
-command where the first failed (the transcript records a real exit code) and
-a later variant succeeded, classifies the fumble, and aggregates the
-recurring rules:
+The same transcript reader, pointed at commands the agent got wrong and then
+fixed. It finds consecutive runs of one base command where the first failed
+(the transcript records a real exit code) and a later variant succeeded,
+classifies the fumble, and aggregates recurring rules:
 
 ```bash
-repowise corrections                # report-only (default window: 30 days)
+repowise corrections                # report only (default window: 30 days)
 repowise corrections --days 60
 repowise corrections --write        # maintain the managed guidance block
 ```
@@ -342,49 +301,44 @@ repowise corrections --write        # maintain the managed guidance block
 | unknown flag | `pytest` does not support `--looponfail` |
 | missing arg | `tool` needs `--required-thing` |
 
-Classification is deliberately precision-first: apart from the structural
-wrong-tool case, a rule only forms when the error text corroborates it (the
-dropped flag or path is actually named by the error) — a red-green dev loop
-re-running tests with different selections never becomes a "correction".
-Wrong-path rules consult the symbol index when available and note where the
-corrected target actually lives.
+Classification favors precision. Apart from the structural wrong-tool case, a
+rule forms only when the error text names the dropped flag or path, so a
+red-green loop re-running tests with different selections never becomes a
+"correction". Wrong-path rules consult the symbol index when available.
 
-`--write` (strictly opt-in) maintains a short **"Known command corrections"**
-managed block — most-frequent rules first, at least 2 occurrences each,
-capped at 10 lines — between `REPOWISE_CORRECTIONS` markers in the repo's
-`.claude/CLAUDE.md` (and `AGENTS.md` when one exists), so the next agent
-session is told up front. Re-running `--write` refreshes the block in place;
-when no rule clears the threshold anymore, the block is removed. Content
-outside the markers is never touched.
-
-The same privacy contract as the missed scan applies: read-only, best-effort,
-entirely local.
+`--write` (opt-in) maintains a **"Known command corrections"** block between
+`REPOWISE_CORRECTIONS` markers in the repo's `.claude/CLAUDE.md` (and
+`AGENTS.md` when one exists): the most frequent rules first, at least 2
+occurrences each, at most 10. Re-running refreshes it; when no rule clears the
+threshold the block is removed. Content outside the markers is never touched.
+The same privacy contract as the missed scan applies.
 
 ---
 
 ## Measured savings
 
-On a public OSS repository (microdot), one run per command, tokens estimated
-chars/4 — the same estimator the ledger uses:
+On a public OSS repository (microdot), one run per command, tokens estimated as
+chars/4 (the ledger's estimator):
 
 | Command | Raw tokens | Distilled | Saved |
 |---|---:|---:|---:|
-| `pytest -q` (11 failures) | 3,374 | 1,317 | **61%** — all 11 `FAILED` lines preserved |
+| `pytest -q` (11 failures) | 3,374 | 1,317 | **61%**, all 11 `FAILED` lines kept |
 | `git log -50` | 3,064 | 331 | **89%** |
 | `git diff` (30 commits of history) | 62,833 | 8,635 | **86%** |
-| `git log --oneline -30` | 321 | 321 | 0% — already compact, passed through |
-| `git status` (clean tree) | 83 | 83 | 0% — too small to distill, passed through |
+| `git log --oneline -30` | 321 | 321 | 0%, already compact, passed through |
+| `git status` (clean tree) | 83 | 83 | 0%, too small to distill, passed through |
 
-The 0% rows are the net-positive guard working: distill never bloats small
-output. In an end-to-end agent spot-check on the same repo (a seeded
-11-failure bug), the agent diagnosed the exact root-cause line and fix from
-the distilled test output — identical conclusion to the raw-output run.
+The 0% rows are the net-positive guard: distill never bloats small output. In an
+agent spot-check on the same repo (a seeded 11-failure bug), the agent found the
+root-cause line and fix from the distilled test output, the same conclusion as
+the raw-output run.
 
-Fixture-suite medians across the core filters: ≥60% reduction on
-test/build/lint output with zero error-line loss (asserted in CI).
+Fixture-suite medians across the core filters: at least 60% reduction on
+test, build and lint output with zero error-line loss (asserted in CI).
 
-Install and infra-plan logs compress harder, because they are mostly repeated
-boilerplate. Measured on real captures from this repository, one run each:
+Install and infra-plan logs compress harder because they are mostly repeated
+boilerplate. Measured on real captures from the repowise repository, one run
+each:
 
 | Command | Saved |
 |---|---:|
@@ -392,8 +346,8 @@ boilerplate. Measured on real captures from this repository, one run each:
 | `pip install` (everything already satisfied) | collapses to `install: ok (no changes)` |
 | `terraform plan` | **80.2%** |
 
-Every one of those still round-trips through `repowise expand`, and the error
-line in a failing install survives verbatim.
+Each still round-trips through `repowise expand`, and the error line in a
+failing install survives verbatim.
 
 ---
 
@@ -406,8 +360,8 @@ distill:
   enabled: true                  # master switch for this repo
   commands:
     enabled: true                # the command path (CLI + hook rewrites)
-    permission: allow            # ask | allow | off — hook posture (default allow)
-    families:                    # per-filter overrides
+    permission: allow            # ask | allow | off: hook posture (default allow)
+    families:                    # per-filter overrides: ask | allow | off | deny
       test_output: allow         # auto-allow rewrites for test runs
       git_diff: deny             # never rewrite git diff here
     disabled_filters: []         # filters to skip entirely, e.g. [logs]
@@ -416,10 +370,10 @@ distill:
     max_mb: 50                   # size cap, oldest pruned first
 ```
 
-Everything defaults sensibly with no block present. `repowise doctor`
-validates the block (unknown keys, bad permission values, unknown filter
-names, non-positive store sizing) and reports the store size against its cap
-and whether the rewrite hook is installed.
+With no block present, these defaults apply. `repowise doctor` validates the
+block (unknown keys, bad permission values, unknown filter names, non-positive
+store sizes) and reports the store size against its cap and whether the rewrite
+hook is installed. Full key reference: [CONFIG.md](../reference/CONFIG.md#the-distill-block).
 
 ---
 
@@ -427,18 +381,18 @@ and whether the rewrite hook is installed.
 
 | Risk | Mitigation |
 |---|---|
-| A filter eats a critical line | errors-first invariant + fixture tests + `expand` recovery + fallback-to-raw |
-| Silent permission escalation | rewrites default to `allow`, which is not an escalation: a rewrite is always `repowise distill <one recognized command>` drawn from a closed family set, never an arbitrary command smuggled behind the wrapper. Set `permission: ask` to approve each one. Codex has no ask primitive, so only families explicitly set to `allow` rewrite there |
-| Marker with nothing behind it | content stored *before* the marker renders; store failure ⇒ raw output |
-| Compound-command semantics | compound commands, substitution and redirects are never rewritten. The one pipe shape that is (a single stage into a bare stdin filter, macOS/Linux only) is passed through as one quoted token and runs verbatim in distill's shell; anything that could break out of that quoting bails |
-| Unindexed or stale repo | filters work index-free; index only improves ranking |
-| Store growth | TTL + size cap, pruned on write; `repowise doctor` reports size |
+| A filter eats a critical line | errors-first invariant, fixture tests, `expand` recovery, fallback to raw |
+| Silent permission escalation | a rewrite is always `repowise distill <one recognized command>` from a closed family set, never an arbitrary command behind the wrapper. Set `permission: ask` to approve each one. Codex has no ask primitive, so only families resolving to `allow` rewrite there |
+| Marker with nothing behind it | content is stored before the marker prints; a store failure prints raw output |
+| Compound-command semantics | compound commands, substitution and redirects are never rewritten. The one pipe shape that is (macOS/Linux only) is passed as one quoted token and runs verbatim in distill's shell; anything that could break out of that quoting bails |
+| Unindexed or stale repo | filters work without an index; the index only improves ranking |
+| Store growth | age and size caps, pruned on write; `repowise doctor` reports size |
 
 ---
 
 ## See also
 
-- [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md) — `distill`, `expand`, `saved`, `hook rewrite`
-- [MCP_TOOLS.md](MCP_TOOLS.md) — `_meta.omitted`, skeleton include, `get_symbol` ref overload
-- [CONFIG.md](../reference/CONFIG.md) — the `distill:` block
-- [INTELLIGENCE_LAYERS.md](../layers/INTELLIGENCE_LAYERS.md) — the five layers whose index Distill reuses
+- [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-distill-command): `distill`, `expand`, `saved`, `hook rewrite`
+- [MCP_TOOLS.md](MCP_TOOLS.md): `_meta.omitted`, the skeleton include, `get_symbol` refs
+- [CONFIG.md](../reference/CONFIG.md#the-distill-block): the `distill:` block
+- [HOOKS.md](HOOKS.md): every agent hook, including the read surfaces

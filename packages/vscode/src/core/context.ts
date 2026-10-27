@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import { CONFIG_SECTION, REPO_DIR, STATE_CONTEXT_KEY, WORKSPACE_DIR } from "../constants";
 import type { Logger } from "./log";
 import type { RepowiseApi } from "./api";
-import type { RepowiseCache } from "./cache";
+import type { RepowiseCache } from "@repowise-dev/api-client/cache";
 import type { CliRunner } from "./cliRunner";
 import {
   createFreshnessWatcher,

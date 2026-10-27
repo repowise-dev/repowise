@@ -8,13 +8,14 @@ checks out, resets, or writes to the caller's tree.
 
 from __future__ import annotations
 
-import subprocess
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
-from ..changed_lines import FileDiff, parse_unified_diff
+from ..changed_lines import FileDiff, is_shallow_root, parse_unified_diff, untracked_diffs
+from ..git_cat_file import cat_file_batch
+from ..git_cli import path_filter, run_git, split_revspec, untracked_paths
 
 GIT_TIMEOUT_SECONDS = 120
 
@@ -128,15 +129,7 @@ class RevisionSource(Protocol):
 
 
 def _git(args: list[str], repo_path: str, *, check: bool = True) -> str:
-    proc = subprocess.run(
-        ["git", "-C", repo_path, *args],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        stdin=subprocess.DEVNULL,
-        timeout=GIT_TIMEOUT_SECONDS,
-    )
+    proc = run_git(["-C", repo_path, *args], timeout=GIT_TIMEOUT_SECONDS)
     if check and proc.returncode != 0:
         raise ValueError((proc.stderr or "").strip() or f"git {args[0]} failed")
     return proc.stdout
@@ -149,19 +142,21 @@ def _status_word(code: str) -> str:
 class GitRevisionSource:
     """Local adapter over a Git checkout."""
 
-    def __init__(self, repo_path: str) -> None:
+    def __init__(self, repo_path: str, *, hunks: bool = True) -> None:
         self.repo_path = repo_path
+        # False for callers that read only which paths changed, not the lines.
+        self.hunks = hunks
 
     # -- resolution ---------------------------------------------------------
 
     def resolve(self, revspec: str | None) -> RevisionPair:
         if not revspec:
             return self._resolve_working_tree()
-        if ".." in revspec:
-            return self._resolve_range(revspec)
+        if (parts := split_revspec(revspec)) is not None:
+            return self._resolve_range(*parts)
         return self._resolve_commit(revspec)
 
-    def _sha(self, ref: str) -> str:
+    def commit_sha(self, ref: str) -> str:
         out = _git(
             ["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
             self.repo_path,
@@ -172,23 +167,37 @@ class GitRevisionSource:
         return out
 
     def _resolve_working_tree(self) -> RevisionPair:
-        head = self._sha("HEAD")
+        head = self.commit_sha("HEAD")
+        # Untracked files are part of the uncommitted change, as change risk
+        # and the changed lines count them.
+        if self.hunks:
+            untracked = untracked_diffs(self.repo_path)
+        else:
+            untracked = dict.fromkeys(untracked_paths(self.repo_path))
         return RevisionPair(
             "HEAD",
             "WORKTREE",
             head,
             "",
             True,
-            self._changes(["diff", f"-M{_RENAME_SIMILARITY}%", "HEAD"]),
+            self._changes(["diff", f"-M{_RENAME_SIMILARITY}%", "HEAD"])
+            + [
+                FileChange(head_path=path, base_path=None, status="added", diff=diff)
+                for path, diff in untracked.items()
+            ],
         )
 
     def _resolve_commit(self, ref: str) -> RevisionPair:
-        head = self._sha(ref)
+        head = self.commit_sha(ref)
         parent = _git(
             ["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}^"],
             self.repo_path,
             check=False,
         ).strip()
+        if not parent and is_shallow_root(self.repo_path, ref):
+            # A shallow boundary's parents are cut off, not absent; the empty
+            # tree would make every line of the snapshot read as changed.
+            raise ValueError(f"{ref!r} has no parent in this shallow clone; fetch more history")
         base = parent or _EMPTY_TREE
         return RevisionPair(
             f"{ref}^" if parent else _EMPTY_TREE,
@@ -199,17 +208,15 @@ class GitRevisionSource:
             self._changes(["diff", f"-M{_RENAME_SIMILARITY}%", base, head]),
         )
 
-    def _resolve_range(self, revspec: str) -> RevisionPair:
-        base, _, head = revspec.partition("..")
-        three_dot = head.startswith(".")
-        head = head.lstrip(".") or "HEAD"
-        base = base or "HEAD"
-        base_sha = self._sha(base)
-        head_sha = self._sha(head)
-        if three_dot:
-            base_sha = (
-                _git(["merge-base", base, head], self.repo_path, check=False).strip() or base_sha
-            )
+    def _resolve_range(self, base: str, sep: str, head: str) -> RevisionPair:
+        base_sha = self.commit_sha(base)
+        head_sha = self.commit_sha(head)
+        if sep == "...":
+            # Same meaning as change risk and changed lines: no merge-base (a
+            # shallow clone) is an error, not a silent two-dot diff.
+            base_sha = _git(["merge-base", base, head], self.repo_path, check=False).strip()
+            if not base_sha:
+                raise ValueError(f"No merge-base between {base!r} and {head!r}.")
         return RevisionPair(
             base,
             head,
@@ -223,7 +230,11 @@ class GitRevisionSource:
 
     def _changes(self, diff_args: list[str]) -> list[FileChange]:
         name_status = _git([*diff_args, "--name-status", "-z"], self.repo_path)
-        diffs = parse_unified_diff(_git([*diff_args, "--unified=0", "--format="], self.repo_path))
+        diffs = (
+            parse_unified_diff(_git([*diff_args, "--unified=0", "--format="], self.repo_path))
+            if self.hunks
+            else {}
+        )
         changes: list[FileChange] = []
         for code, base_path, head_path in _iter_name_status(name_status):
             status = _status_word(code)
@@ -330,32 +341,17 @@ def filter_changes(
     *,
     extensions: tuple[str, ...] = (),
     exclude_patterns: tuple[str, ...] = (),
+    include_paths: tuple[str, ...] = (),
 ) -> list[FileChange]:
-    """Drop the changes a caller's extension and exclusion filters exclude.
+    """Drop the changes a caller's extension, inclusion and exclusion filters exclude.
 
     One implementation, because a change the health comparison counted and one
     the change manifest counted have to be the same change; two copies of this
     rule drift the moment either grows a case.
     """
-    import pathspec
-
-    spec = (
-        pathspec.PathSpec.from_lines("gitwildmatch", exclude_patterns)
-        if exclude_patterns
-        else None
-    )
-    exts = {e if e.startswith(".") else f".{e}" for e in extensions}
-    return [change for change in changes if _counts(change, spec, exts)]
-
-
-def _counts(change: FileChange, spec: object | None, exts: set[str]) -> bool:
-    """Whether *change* survives the caller's filters. One path, one decision."""
-    path = change.head_path or change.base_path or ""
-    if not path:
-        return False
-    if spec is not None and spec.match_file(path):  # type: ignore[attr-defined]
-        return False
-    return not exts or any(path.endswith(ext) for ext in exts)
+    counts = path_filter(extensions, exclude_patterns, include_paths)
+    # A deletion has no head path, so it is matched on the path it had.
+    return [c for c in changes if (path := c.head_path or c.base_path) and counts(path)]
 
 
 def _iter_name_status(raw: str) -> Iterator[tuple[str, str, str]]:
@@ -376,32 +372,18 @@ def _iter_name_status(raw: str) -> Iterator[tuple[str, str, str]]:
 
 def _cat_file_batch(repo_path: str, sha: str, paths: list[str]) -> dict[str, bytes]:
     """One batch read; an object missing at *sha* is omitted rather than raising."""
-    specs = "\n".join(f"{sha}:{path}" for path in paths) + "\n"
-    proc = subprocess.run(
-        ["git", "-C", repo_path, "cat-file", "--batch"],
-        input=specs.encode("utf-8"),
-        capture_output=True,
-        timeout=GIT_TIMEOUT_SECONDS,
-    )
-    if proc.returncode != 0:
-        return {}
-    out: dict[str, bytes] = {}
-    data, cursor = proc.stdout, 0
-    for path in paths:
-        newline = data.find(b"\n", cursor)
-        if newline == -1:
-            break
-        header = data[cursor:newline]
-        # A missing object echoes the whole spec back: "<sha>:<path> missing".
-        # Match the suffix, not the field count, because a path may hold spaces.
-        if header.endswith(b" missing"):
-            cursor = newline + 1
-            continue
-        fields = header.decode("utf-8", "replace").split()
-        if len(fields) < 3 or not fields[2].isdigit():
-            break  # unparseable header: stop rather than misread the stream
-        size = int(fields[2])
-        start = newline + 1
-        out[path] = data[start : start + size]
-        cursor = start + size + 1  # trailing newline
-    return out
+    read = read_blobs(repo_path, [(sha, path) for path in paths])
+    return {path: blob for (_, path), blob in (read or {}).items()}
+
+
+def read_blobs(repo_path: str, specs: list[tuple[str, str]]) -> dict[tuple[str, str], bytes] | None:
+    """``{(rev, path): bytes}`` over one ``git cat-file --batch``; ``None`` if git failed.
+
+    An object missing at its revision, or one that is not a file (a submodule),
+    is omitted instead of raising.
+    """
+    req_specs = [f"{rev}:{path}" for rev, path in specs]
+    read = cat_file_batch(repo_path, req_specs, on_missing="omit", timeout=GIT_TIMEOUT_SECONDS)
+    if read is None:
+        return None
+    return {spec: blob for spec, (_, blob) in zip(specs, read, strict=True) if blob is not None}

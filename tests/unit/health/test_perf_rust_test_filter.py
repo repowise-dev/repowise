@@ -197,3 +197,9 @@ def test_non_rust_languages_get_empty_ranges_and_are_unaffected(language):
     }
     fc = walk_file(f"t.{language}", language, src_by_lang[language].encode())
     assert fc.rust_test_line_ranges == ()
+
+
+def test_a_build_script_is_never_a_hot_path():
+    """``build.rs`` runs once per compile, never under a request."""
+    walked = _walked("crates/core/build.rs", "rust", _PRODUCTION_FN)
+    assert collect_centrality_gated(walked, _always_hot()) == {}

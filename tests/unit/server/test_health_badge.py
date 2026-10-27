@@ -21,6 +21,14 @@ def test_badge_fields_band_colors() -> None:
     assert _badge_fields(6.0) == ("health", "6.0/10", "yellow", "fair")
     assert _badge_fields(4.5) == ("health", "4.5/10", "orange", "needs_work")
     assert _badge_fields(2.0) == ("health", "2.0/10", "red", "at_risk")
+    # Just under an edge: the message must not round up into the next band.
+    assert _badge_fields(6.98) == ("health", "6.9/10", "yellow", "fair")
+
+
+def test_badge_is_neutral_when_too_little_was_analysed() -> None:
+    # 4 of 435 files scored: the score stays, but not in green.
+    assert _badge_fields(10.0, 4 / 435) == ("health", "10.0/10", "lightgrey", "unknown")
+    assert _badge_fields(9.0, 1.0) == ("health", "9.0/10", "brightgreen", "excellent")
 
 
 def test_every_band_colour_has_a_hex_for_the_self_rendered_svg() -> None:
@@ -135,6 +143,7 @@ def test_file_signals_to_dict_no_data_all_null() -> None:
         "lines_deleted_90d": None,
         "commit_count_90d": None,
         "age_days": None,
+        "history": None,
         "primary_owner_name": None,
         "primary_owner_commit_pct": None,
         "recent_owner_name": None,

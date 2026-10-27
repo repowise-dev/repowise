@@ -35,7 +35,10 @@ import pytest
 _SYMBOL = "run_sweep"
 
 
-def _patch_pipeline(monkeypatch, answer_mod, scores, *, with_symbols=True, matched=False):
+def _patch_pipeline(
+    monkeypatch, answer_mod, scores, *, with_symbols=True, matched=False,
+    summary="How the alpha module clears out stale rows. " * 4,
+):
     """Two file-page hits at *scores*, the top one carrying a hydrated symbol."""
 
     async def _fake_retrieve(question, ctx):
@@ -48,7 +51,7 @@ def _patch_pipeline(monkeypatch, answer_mod, scores, *, with_symbols=True, match
         for i, h in enumerate(hits):
             h["target_path"] = h["page_id"].removeprefix("file_page:")
             h["title"] = h["target_path"]
-            h["summary"] = "Module summary for the page. " * 4
+            h["summary"] = summary
             h["snippet"] = ""
             h["page_type"] = "file_page"
             if with_symbols and i == 0:
@@ -106,7 +109,7 @@ async def test_ambiguous_retrieval_never_reads_as_dominant(setup_mcp, monkeypatc
     _patch_pipeline(monkeypatch, answer_mod, scores=(2.91, 2.91))
     _patch_provider(monkeypatch, answer_mod, _GROUNDED_ANSWER)
 
-    result = await get_answer(_QUESTION)
+    result = await get_answer(_QUESTION, include=["diagnostics"])
     note = result.get("note") or ""
     assert result["confidence"] == "high", "the opt-in must actually reach the high branch"
     assert result["retrieval_quality"] == "weak", "a tied top pair is ambiguous retrieval"
@@ -131,7 +134,7 @@ async def test_grounded_prose_does_not_earn_high_on_weak_retrieval(setup_mcp, mo
     _patch_pipeline(monkeypatch, answer_mod, scores=(2.91, 2.91))
     _patch_provider(monkeypatch, answer_mod, _GROUNDED_ANSWER)
 
-    result = await get_answer(_QUESTION)
+    result = await get_answer(_QUESTION, include=["diagnostics"])
     assert result["retrieval_quality"] == "weak"
     assert result["confidence"] == "medium", (
         "answer-grounding alone must not out-vote an ambiguous retrieval"
@@ -162,6 +165,25 @@ async def test_dominance_grade_honours_the_absolute_gap_tier(setup_mcp, monkeypa
     assert result["confidence"] == "high"
     assert "ambiguous" not in (result.get("note") or ""), "no caveat on a dominant retrieval"
     assert "clearly dominates" in result["note"]
+
+
+@pytest.mark.asyncio
+async def test_a_dominant_top_hit_that_misses_the_question_is_not_high(setup_mcp, monkeypatch):
+    """Dominance compares hits with each other: an off-topic page beating a worse
+    one still dominates. The coverage gate holds it at medium and says why."""
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    _patch_pipeline(
+        monkeypatch, answer_mod, scores=(8.0, 2.0), summary="Parses yaml config files."
+    )
+    _patch_provider(monkeypatch, answer_mod, _PLAIN_ANSWER)
+
+    result = await get_answer(_QUESTION, include=["diagnostics"])
+    assert result["confidence"] == "medium"
+    assert result["retrieval_quality"] == "weak"
+    assert "Coverage gate" in result["note"]
+    assert "stale" in result["note"]
 
 
 @pytest.mark.asyncio
@@ -270,7 +292,7 @@ async def test_a_served_named_body_still_earns_high_on_weak_retrieval(
     )
     _patch_provider(monkeypatch, answer_mod, _GROUNDED_ANSWER)
 
-    result = await get_answer(f"How does {_SYMBOL} work?")
+    result = await get_answer(f"How does {_SYMBOL} work?", include=["diagnostics"])
     assert result["retrieval_quality"] == "weak"
     assert result["symbol_bodies"], "the named body is what the grade rests on"
     assert result["confidence"] == "high"

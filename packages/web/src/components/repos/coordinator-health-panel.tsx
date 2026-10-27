@@ -5,6 +5,7 @@ import { RefreshCw } from "lucide-react";
 import { Button } from "@repowise-dev/ui/ui/button";
 import { getCoordinatorHealth, type CoordinatorHealth } from "@/lib/api/health";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
+import { useTranslations } from "next-intl";
 
 interface Props {
   repoId: string;
@@ -34,6 +35,7 @@ function StatRow({ label, value, help }: { label: string; value: string; help?: 
 }
 
 export function CoordinatorHealthPanel({ repoId, initial }: Props) {
+  const t = useTranslations("repos");
   const [data, setData] = useState<CoordinatorHealth | null>(initial);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -59,7 +61,9 @@ export function CoordinatorHealthPanel({ repoId, initial }: Props) {
       {data ? (
         <>
           <div className="flex items-center justify-between mb-1">
-            <span className="text-xs text-[var(--color-text-secondary)]">Status</span>
+            <span className="text-xs text-[var(--color-text-secondary)]">
+              {t("coordinator.status")}
+            </span>
             <span
               className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_BADGE[data.status]}`}
             >
@@ -67,33 +71,42 @@ export function CoordinatorHealthPanel({ repoId, initial }: Props) {
             </span>
           </div>
           <StatRow
-            label="Wiki Pages"
-            value={`${fmt(data.sql_pages)} SQL / ${fmt(data.vector_page_count)} vectors`}
-            help="Generated wiki pages in SQL vs the matching page vectors in the vector store."
+            label={t("coordinator.wikiPages")}
+            value={t("coordinator.sqlVsVectors", {
+              sql: fmt(data.sql_pages),
+              vectors: fmt(data.vector_page_count),
+            })}
+            help={t("coordinator.wikiPagesHelp")}
           />
           <StatRow
-            label="Page Drift"
+            label={t("coordinator.pageDrift")}
             value={fmtPct(data.page_drift_pct)}
-            help="How far the wiki-page count disagrees with the page-vector count. 0% means every page is embedded; high drift usually means an interrupted index — run a sync to reconcile."
+            help={t("coordinator.pageDriftHelp")}
           />
           <StatRow
-            label="Decisions"
-            value={`${fmt(data.sql_decisions)} SQL / ${fmt(data.vector_decision_count)} vectors`}
-            help="Decision records in SQL vs the matching decision vectors. Decision vectors are counted separately from page vectors."
+            label={t("coordinator.decisions")}
+            value={t("coordinator.sqlVsVectors", {
+              sql: fmt(data.sql_decisions),
+              vectors: fmt(data.vector_decision_count),
+            })}
+            help={t("coordinator.decisionsHelp")}
           />
           <StatRow
-            label="Decision Drift"
+            label={t("coordinator.decisionDrift")}
             value={fmtPct(data.decision_drift_pct)}
-            help="How far the decision-record count disagrees with the decision-vector count."
+            help={t("coordinator.decisionDriftHelp")}
           />
-          <StatRow label="Graph Nodes" value={fmt(data.graph_nodes)} />
+          <StatRow
+            label={t("coordinator.graphNodes")}
+            value={fmt(data.graph_nodes)}
+          />
           {data.detail && (
             <p className="text-xs text-[var(--color-text-secondary)] pt-1.5">{data.detail}</p>
           )}
         </>
       ) : (
         <p className="text-xs text-[var(--color-text-secondary)]">
-          {error ?? "No data — click Refresh to load."}
+          {error ?? t("coordinator.noData")}
         </p>
       )}
       {error && (
@@ -107,7 +120,7 @@ export function CoordinatorHealthPanel({ repoId, initial }: Props) {
         disabled={loading}
       >
         <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${loading ? "motion-safe:animate-spin" : ""}`} />
-        {loading ? "Checking…" : "Refresh"}
+        {loading ? t("coordinator.checking") : t("coordinator.refresh")}
       </Button>
     </div>
   );

@@ -5,6 +5,8 @@ const SEGMENT_LABELS: Record<string, string> = {
   architecture: "Architecture",
   "code-health": "Code Health",
   coverage: "Tests",
+  tests: "Tests",
+  drift: "Doc drift",
   "refactoring-targets": "Refactoring Targets",
   trend: "Trend",
   search: "Search",
@@ -16,7 +18,8 @@ const SEGMENT_LABELS: Record<string, string> = {
   "blast-radius": "Blast Radius",
   decisions: "Decisions",
   commits: "Commits",
-  owners: "Contributors",
+  changes: "Changes",
+  owners: "Ownership",
   modules: "Modules",
   wiki: "Wiki",
   health: "Code Health",
@@ -24,9 +27,53 @@ const SEGMENT_LABELS: Record<string, string> = {
   risk: "Risk",
   security: "Security",
   settings: "Settings",
+  setup: "Setup",
   "knowledge-graph": "Knowledge Graph",
   zoom: "Zoom Map",
   files: "Files",
+};
+
+/**
+ * Message keys under the `breadcrumb` namespace for the configured segments.
+ *
+ * Kept beside the English labels so the two cannot drift: every key here has
+ * a matching entry in `messages/en.json` under `breadcrumb`, and a segment
+ * with no key (a dynamic id, an unknown route) falls back to the decoded
+ * segment itself.
+ */
+export const SEGMENT_MESSAGE_KEYS: Record<string, string> = {
+  overview: "overview",
+  docs: "docs",
+  chat: "chat",
+  architecture: "architecture",
+  "code-health": "codeHealth",
+  coverage: "coverage",
+  tests: "tests",
+  drift: "docDrift",
+  "refactoring-targets": "refactoringTargets",
+  trend: "trend",
+  search: "search",
+  graph: "graph",
+  symbols: "symbols",
+  ownership: "ownership",
+  hotspots: "hotspots",
+  "dead-code": "deadCode",
+  "blast-radius": "blastRadius",
+  decisions: "decisions",
+  commits: "commits",
+  changes: "changes",
+  owners: "owners",
+  modules: "modules",
+  wiki: "wiki",
+  health: "health",
+  costs: "costs",
+  risk: "risk",
+  security: "security",
+  settings: "settings",
+  setup: "setup",
+  "knowledge-graph": "knowledgeGraph",
+  zoom: "zoom",
+  files: "files",
 };
 
 export function getRepoBreadcrumbSegmentLabel(segment: string): string {

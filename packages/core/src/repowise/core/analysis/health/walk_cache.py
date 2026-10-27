@@ -29,7 +29,7 @@ log = structlog.get_logger(__name__)
 
 _CACHE_FILENAME = "health_walk_cache.pkl"
 #: Bump when the walker's output for the same bytes changes.
-_CACHE_VERSION = 1
+_CACHE_VERSION = 2
 
 
 class HealthWalkCache:
@@ -88,7 +88,8 @@ class HealthWalkCache:
             self.misses += 1
             return None
         try:
-            value = pickle.loads(blob)
+            # Our own dumps, or an entry of the file load_sealed_pickle verified.
+            value = pickle.loads(blob)  # repowise-security-ignore: pickle_loads
         except Exception:
             self.misses += 1
             return None

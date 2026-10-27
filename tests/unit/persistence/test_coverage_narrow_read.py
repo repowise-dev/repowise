@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import pytest
 
+from repowise.core.analysis.health.coverage import CoverageProvenance
 from repowise.core.persistence.crud import (
     get_coverage_summary,
     load_coverage_for_repo,
@@ -137,7 +138,7 @@ async def test_summary_reports_mapping_partial_when_ingest_was_fragment(
         r.id,
         _FILES,
         source_format="lcov",
-        mapping_partial=True,
+        provenance=CoverageProvenance(mapping_partial=True),
     )
 
     summary = await get_coverage_summary(async_session, r.id)

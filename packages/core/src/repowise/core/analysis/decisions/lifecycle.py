@@ -29,7 +29,9 @@ __all__ = [
     "DECISION_KINDS",
     "DECISION_STATUS_ORDER",
     "GRANTING_ACTIONS",
+    "HISTORY_CURRENCIES",
     "NEEDS_REVIEW_STALENESS",
+    "NO_DECISION_BLOCKER",
     "REVIEW_LANES",
     "SPLIT_MARKERS",
     "STORED_CURRENCIES",
@@ -77,6 +79,7 @@ DECISION_CURRENCIES: tuple[str, ...] = (
     "active",  # accepted and still describes the code
     "needs_review",  # accepted, but the code it names has moved
     "uncheckable",  # accepted, but names nothing the repository can be asked about
+    "stale",  # accepted, but nothing it names exists at HEAD any more
     "superseded",  # replaced by a later decision, via an explicit lineage edge
     "dismissed",  # authority withdrawn; kept for history
 )
@@ -115,8 +118,8 @@ def bundles_decisions(text: str) -> bool:
     return any(marker in low for marker in SPLIT_MARKERS)
 
 
-#: The currencies a person or artifact can *set*. ``needs_review`` and
-#: ``uncheckable`` are also derived from the code by :func:`effective_currency`,
+#: The currencies a person or artifact can *set*. ``needs_review``,
+#: ``uncheckable`` and ``stale`` are also derived from the code by :func:`effective_currency`,
 #: which is why the stored set is smaller than the vocabulary.
 STORED_CURRENCIES: tuple[str, ...] = (
     "active",
@@ -148,9 +151,9 @@ def status_rank(status: str) -> int:
 
 #: The review lanes, which partition a repository: every record is in exactly
 #: one, and the five sum to the total. ``candidates`` is the absence of an
-#: acceptance; the other four are the currencies, with ``superseded`` and
-#: ``dismissed`` folded into ``history`` because a reader working a queue does
-#: not need those apart. ``governing`` is deliberately not here: it is the
+#: acceptance; the other four are the currencies, with ``superseded``,
+#: ``dismissed`` and ``stale`` folded into ``history`` because a reader working
+#: a queue does not need those apart. ``governing`` is deliberately not here: it is the
 #: roll-up of ``active`` and ``needs_review``, so it overlaps two lanes and
 #: belongs in a filter rather than in a tab row.
 REVIEW_LANES: tuple[str, ...] = (
@@ -161,6 +164,9 @@ REVIEW_LANES: tuple[str, ...] = (
     "history",
 )
 
+#: The currencies the ``history`` lane holds: none of them binds new work.
+HISTORY_CURRENCIES: frozenset[str] = frozenset({"superseded", "dismissed", "stale"})
+
 #: What an acceptance row records having happened.
 ACCEPTANCE_ACTIONS: tuple[str, ...] = (
     "accepted",
@@ -169,9 +175,12 @@ ACCEPTANCE_ACTIONS: tuple[str, ...] = (
     "superseded",
     "dismissed",
     "returned_to_review",
+    # A withdrawal like ``dismissed``, stored at the same currency; the action
+    # is what tells a retired decision from a rejected one.
+    "deprecated",
 )
 
-#: Actions that create or renew authority, against the three that withdraw it.
+#: Actions that create or renew authority, against the ones that withdraw it.
 GRANTING_ACTIONS: frozenset[str] = frozenset({"accepted", "reaffirmed", "merged"})
 
 #: Who signed an acceptance. ``person`` is a human, ``agent`` a coding agent
@@ -189,11 +198,11 @@ UNRECORDED_ACCEPTER_KIND = ""
 #: a longer id rather than hand Postgres a truncation error.
 ACCEPTER_SESSION_MAX = 64
 
-#: What fixes a :func:`machine_grant_blocker` refusal. Addressed to a person,
-#: because the party reading it is the agent that was just refused.
+#: What fixes a :func:`machine_grant_blocker` refusal. The agent reading it
+#: cannot fix it alone: the repository switched agent grants off on purpose.
 AGENT_ACCEPTANCE_REMEDY = (
-    "Someone who owns this repository can allow it with "
-    "`repowise decision config agent-acceptance --on`, or accept it themselves."
+    "Agent acceptance is off for this repository. Ask a person to accept it, or to "
+    "turn agent acceptance back on with `repowise decision config agent-acceptance --on`."
 )
 
 
@@ -209,15 +218,16 @@ def accepter_kind_blocker(kind: str) -> str | None:
 def machine_grant_blocker(kind: str, action: str, *, granted: bool) -> str | None:
     """Why an agent may not take *action*, or ``None``.
 
-    A machine revokes but does not grant: withdrawing narrows what a record
-    claims and re-accepting undoes it, while granting mints a constraint
-    nobody agreed to. Stated rather than left true by omission.
+    Agents grant by default, signed as themselves. *granted* is ``False`` only
+    where the repository turned agent acceptance off: then an agent still
+    withdraws authority, since withdrawing narrows what a record claims and
+    re-accepting undoes it, but granting waits for a person.
     """
     if kind != "agent" or action not in GRANTING_ACTIONS or granted:
         return None
     return (
-        f"an agent may not record a {action!r} acceptance: machines withdraw "
-        "authority but do not grant it"
+        f"an agent may not record a {action!r} acceptance here: agent acceptance "
+        "is off for this repository"
     )
 
 
@@ -269,6 +279,7 @@ def effective_currency(
     has_scope: bool,
     staleness: float,
     repo_wide: bool = False,
+    artifacts_gone: bool = False,
 ) -> str:
     """The currency to show for a decision stored at *stored*.
 
@@ -281,6 +292,10 @@ def effective_currency(
     no file, which makes ``uncheckable`` a complaint about it being what it is,
     and it has no files that can move, which makes ``needs_review`` a reading of
     a staleness score measured over nothing.
+
+    *artifacts_gone* says every file and path the record names is absent at
+    HEAD, renames followed: it describes code that no longer exists, so it is
+    ``stale`` history. Never ``superseded``, which needs a successor.
     """
     if stored != "active":
         return stored if stored in DECISION_CURRENCIES else "active"
@@ -288,6 +303,8 @@ def effective_currency(
         return "active"
     if not has_scope:
         return "uncheckable"
+    if artifacts_gone:
+        return "stale"
     if staleness >= NEEDS_REVIEW_STALENESS:
         return "needs_review"
     return "active"
@@ -306,21 +323,33 @@ class AcceptanceRequirement:
     #: inferred. Then the entry itself is the provenance, and demanding a
     #: separate reference would make manual capture impossible.
     self_authored: bool = False
+    #: What was chosen. ``None`` when the action grants nothing new, so a
+    #: record with no text can still be withdrawn or carried over by an import.
+    #: A self-authored record needs it too: a title names the choice, it does
+    #: not state it.
+    decision: str | None = None
 
 
 #: Named because the review row's ``scope_unresolved`` flag is this exact
 #: verdict, and re-deriving it would be a second opinion about scope.
 NO_SCOPE_BLOCKER = "no scope: name the files or modules it governs"
 
+NO_DECISION_BLOCKER = "no decision text: state what was chosen"
+
 
 def acceptance_blockers(req: AcceptanceRequirement) -> list[str]:
     """Return the reasons *req* cannot become an acceptance, empty if it can.
 
-    The same four checks the ``decision_acceptances`` CHECK constraints
-    enforce, stated once in prose so a caller can explain a refusal instead of
-    surfacing an IntegrityError.
+    Reason, scope, evidence and identity are the checks the
+    ``decision_acceptances`` CHECK constraints enforce, stated once in prose so
+    a caller can explain a refusal instead of surfacing an IntegrityError. The
+    decision-text check is enforced here only: a fresh grant of a mined record
+    needs it, because one that never says what was chosen binds nobody to it,
+    whether it was mined or typed.
     """
     blockers: list[str] = []
+    if req.decision is not None and not req.decision.strip():
+        blockers.append(NO_DECISION_BLOCKER)
     if not req.reason.strip():
         blockers.append("no rationale or explicit constraint reason")
     if not [s for s in req.scope if s and s.strip()]:
@@ -333,7 +362,7 @@ def acceptance_blockers(req: AcceptanceRequirement) -> list[str]:
 
 
 # The readers below take a mapping keyed ``affected_files``, ``affected_modules``,
-# ``kind``, ``rationale``, ``context``, ``source``, ``evidence_commits``,
+# ``kind``, ``rationale``, ``context``, ``decision``, ``source``, ``evidence_commits``,
 # ``evidence_file``; list fields may be stored JSON text. ORM rows go through
 # ``crud.authority.decision_fields``.
 
@@ -407,8 +436,12 @@ def requirement(
     evidence: list[str] | None = None,
     accepter: str = "",
     artifact: str = "",
+    grant: bool = False,
 ) -> AcceptanceRequirement:
-    """What the acceptance contract would be asked to take for *rec*."""
+    """What the acceptance contract would be asked to take for *rec*.
+
+    *grant* asks for the decision text too: it is what a new acceptance binds.
+    """
     # A record somebody typed is its own provenance: the accepter did not read
     # an inference, they wrote the claim. Everything mined from a transcript, a
     # commit or a document still has to say what it rests on.
@@ -425,6 +458,7 @@ def requirement(
         accepter=accepter,
         artifact=artifact,
         self_authored=self_authored,
+        decision=(rec.get("decision") or "") if grant else None,
     )
 
 
@@ -435,7 +469,7 @@ def record_blockers(rec: Mapping[str, Any]) -> list[str]:
     act, so this asks with an identity in hand: what is left is what a person
     has to go and fill in first.
     """
-    return acceptance_blockers(requirement(rec, accepter="reviewer"))
+    return acceptance_blockers(requirement(rec, accepter="reviewer", grant=True))
 
 
 #: How the pre-split ``decision_records.status`` column maps onto currency, and
@@ -452,6 +486,7 @@ _CURRENCY_TO_LEGACY: dict[str, str] = {
     "active": "active",
     "needs_review": "active",
     "uncheckable": "active",
+    "stale": "active",
     "superseded": "superseded",
     "dismissed": "deprecated",
 }

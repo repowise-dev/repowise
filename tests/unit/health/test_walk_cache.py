@@ -11,6 +11,8 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from repowise.core.analysis.health.asserts.lexicon import AssertVocabulary
 from repowise.core.analysis.health.complexity import walk_file
 from repowise.core.analysis.health.engine import HEALTH_ANALYZER_VERSION, HealthAnalyzer
@@ -99,7 +101,14 @@ def test_only_used_entries_are_written_back(tmp_path: Path) -> None:
     assert third.get(gone) is None
 
 
-def test_the_analyzer_walks_once_and_serves_the_second_pass_from_the_cache(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("parallel", [False, True], ids=["analyze", "analyze_async"])
+def test_the_analyzer_walks_once_and_serves_the_second_pass_from_the_cache(
+    tmp_path: Path, monkeypatch, parallel: bool
+) -> None:
+    # Both paths persist the cache: the parallel one serves ``init`` on large
+    # repos, and a walk it never saved is paid again on the next pass.
+    import asyncio
+
     import networkx as nx
 
     from repowise.core.analysis.health import engine as engine_mod
@@ -127,8 +136,11 @@ def test_the_analyzer_walks_once_and_serves_the_second_pass_from_the_cache(tmp_p
             repo_root=tmp_path,
         )
 
-    first = analyzer().analyze(None)
-    second = analyzer().analyze(None)
+    def run():
+        return asyncio.run(analyzer().analyze_async(None)) if parallel else analyzer().analyze(None)
+
+    first = run()
+    second = run()
     assert len(calls) == 1
     assert [m.score for m in first.metrics] == [m.score for m in second.metrics]
     assert [(f.biomarker_type, f.function_name) for f in first.findings] == [
@@ -155,11 +167,18 @@ def test_the_walk_itself_does_not_serve_a_ts_file_to_a_tsx_file(tmp_path: Path) 
     # revert to keying on the language tag fails here rather than passing.
     src = b'const C = () => <div>{label}</div>;\nit("t", () => { render(<C />); });\n'
     cache = HealthWalkCache(tmp_path, HEALTH_ANALYZER_VERSION)
-    analyzer = SimpleNamespace(read_source=lambda _p: src, _walk_cache=cache)
+    analyzer = SimpleNamespace(
+        read_source=lambda _p: src,
+        _walk_cache=cache,
+        _origins={},
+        _origin=lambda _pf, _source=None: "production",
+    )
 
     def parsed(name: str):
         return SimpleNamespace(
-            file_info=SimpleNamespace(abs_path=str(tmp_path / name), language="typescript")
+            file_info=SimpleNamespace(
+                path=name, abs_path=str(tmp_path / name), language="typescript"
+            )
         )
 
     vocab = AssertVocabulary()

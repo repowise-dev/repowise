@@ -107,10 +107,9 @@ async def list_doc_drift(
         # ``?min_confidence=0.7`` over findings that all sit lower would report
         # a tree holding findings as one nobody has ever checked.
         computed = (
-            bool(rows)
-            or await crud.doc_drift_findings_stored(session, repo_id)
-            or await crud.doc_drift_references_stored(session, repo_id)
+            bool(rows) or await crud.doc_drift_pass_ran(session, repo_id)
         )
+        last_written = await crud.doc_drift_last_written(session, repo_id) if rows else None
     except (SQLAlchemyError, OSError, LookupError) as exc:
         return DocDriftResponse(
             findings=[],
@@ -131,11 +130,19 @@ async def list_doc_drift(
         rows = [row for row in rows if row.kind == kind]
 
     serialized = [crud.serialize_doc_drift_row(row) for row in rows]
-    emitted = serialized[:limit]
+    new = [crud.is_new_doc_drift_row(row, last_written) for row in rows]
+    findings = []
+    for row, data, is_new in zip(rows[:limit], serialized[:limit], new, strict=False):
+        finding = DocDriftFindingResponse.from_dict(data)
+        finding.first_seen_at = row.first_seen_at
+        finding.is_new = is_new
+        findings.append(finding)
+    summary = summarize_findings(serialized)
+    summary["new_since_last_update"] = sum(new)
     return DocDriftResponse(
-        findings=[DocDriftFindingResponse.from_dict(f) for f in emitted],
-        findings_emitted=len(emitted),
-        summary=summarize_findings(serialized),
+        findings=findings,
+        findings_emitted=len(findings),
+        summary=summary,
     )
 
 

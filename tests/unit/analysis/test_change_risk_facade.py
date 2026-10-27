@@ -164,3 +164,11 @@ def test_author_experience_is_excluded_from_the_ranking_score():
     # ...but the repo-relative ranking is about the change, so it does not.
     assert ranked_novice.percentile == ranked_veteran.percentile
     assert ranked_novice.priority == ranked_veteran.priority
+
+
+@pytest.mark.parametrize("revspec", ["--output=leak.txt", "HEAD..--output=leak.txt", "-n1"])
+def test_option_like_revspec_is_rejected_before_git(make_repo, revspec):
+    repo = make_repo()
+    with pytest.raises(ValueError, match="cannot start with"):
+        score_live_change(str(repo.path), revspec)
+    assert not (repo.path / "leak.txt").exists()

@@ -4,6 +4,7 @@ import { Scissors, Sparkles, Zap } from "lucide-react";
 import { Card, CardContent } from "../ui/card";
 import { Skeleton, SkeletonRegion } from "../ui/skeleton";
 import { formatCost, formatTokens } from "../lib/format";
+import { ProportionBar } from "../shared/proportion-bar";
 
 export interface SavingsBreakdownRow {
   group: string | null;
@@ -168,8 +169,6 @@ export function SavingsCard({ data }: SavingsCardProps) {
 
   const measured = data.measured_saved_input_tokens;
   const inferred = data.inferred_saved_input_tokens;
-  const measuredPct = total > 0 ? Math.round((measured / total) * 100) : 0;
-  const inferredPct = 100 - measuredPct;
   const topOperations = data.per_operation.slice(0, 5);
   const topSurfaces = data.per_surface.slice(0, 5);
   const missed = (data.missed_tokens_est ?? 0) > 0;
@@ -231,32 +230,15 @@ export function SavingsCard({ data }: SavingsCardProps) {
         </div>
 
         {/* Evidence mix — the distinction the headline must not flatten. */}
-        <div className="mt-4 flex h-2.5 w-full overflow-hidden rounded-full bg-[var(--color-bg-inset)]">
-          {measured > 0 && (
-            <div
-              className="h-full bg-[var(--color-savings-distill)]"
-              style={{ width: `${measuredPct}%` }}
-              title={`Measured — ${formatTokens(measured)} (${measuredPct}%)`}
-            />
-          )}
-          {inferred > 0 && (
-            <div
-              className="h-full bg-[var(--color-savings-mcp)]"
-              style={{ width: `${inferredPct}%` }}
-              title={`Inferred — ${formatTokens(inferred)} (${inferredPct}%)`}
-            />
-          )}
-        </div>
-        <div className="mt-1.5 flex items-center gap-4 text-xs text-[var(--color-text-secondary)]">
-          <span className="flex items-center gap-1.5">
-            <span className="h-2 w-2 rounded-full bg-[var(--color-savings-distill)]" /> Measured{" "}
-            {formatTokens(measured)}
-          </span>
-          <span className="flex items-center gap-1.5">
-            <span className="h-2 w-2 rounded-full bg-[var(--color-savings-mcp)]" /> Inferred{" "}
-            {formatTokens(inferred)}
-          </span>
-        </div>
+        <ProportionBar
+          className="mt-4"
+          label="Tokens saved by evidence"
+          sort={false}
+          segments={[
+            { key: "measured", label: "Measured", value: measured, detail: formatTokens(measured) },
+            { key: "inferred", label: "Inferred", value: inferred, detail: formatTokens(inferred) },
+          ]}
+        />
 
         {/* Where the savings came from */}
         <div className="mt-4 grid grid-cols-1 gap-x-8 gap-y-4 sm:grid-cols-2">

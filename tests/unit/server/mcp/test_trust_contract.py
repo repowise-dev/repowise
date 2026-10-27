@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from repowise.server.mcp_server import _meta
 
 
-def test_build_meta_carries_contract_and_index_identity(tmp_path, monkeypatch):
+def test_build_meta_carries_index_identity_without_diagnostics(tmp_path, monkeypatch):
     indexed = "a" * 40
     monkeypatch.setattr(_meta, "read_live_head", lambda _path: indexed)
     repository = SimpleNamespace(
@@ -16,12 +16,18 @@ def test_build_meta_carries_contract_and_index_identity(tmp_path, monkeypatch):
         head_commit=indexed,
     )
 
-    meta = _meta.build_meta(repository=repository, targets=["src/a.py"])
+    meta = _meta.build_meta(repository=repository, targets=["src/a.py"], timing_ms=5.0)
 
-    assert meta["contract_version"] == _meta.MCP_CONTRACT_VERSION
+    assert "contract_version" not in meta
+    assert "timing_ms" not in meta
     assert meta["indexed_commit"] == indexed[:12]
     assert meta["live_head"] == indexed[:12]
     assert meta["index_behind"] is False
+
+    monkeypatch.setenv(_meta.DEBUG_META_ENV, "1")
+    debug = _meta.build_meta(repository=repository, targets=["src/a.py"], timing_ms=5.0)
+    assert debug["contract_version"] == _meta.MCP_CONTRACT_VERSION
+    assert debug["timing_ms"] == 5.0
 
 
 def test_shared_boundary_surfaces_degraded_partial_and_truncated_states():

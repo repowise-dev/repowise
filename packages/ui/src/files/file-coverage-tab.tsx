@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { PageLede } from "../shared/page-lede";
 import { coverageBand } from "../health/tokens";
+import { COVERAGE_REPORT_FORMATS } from "../health/coverage-formats";
 import { formatNumber, formatRelativeTime } from "../lib/format";
 import type { FileDetailCoverage } from "@repowise-dev/types/files";
 import { FileSection, Fig } from "./file-section";
@@ -44,12 +45,12 @@ export function FileCoverageTab({
           title="Line-level coverage"
           description="What a report would add here: which lines of this file your tests actually executed, rather than which tests can reach it."
         >
-          <p className="max-w-[62ch] text-[13px] leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
+          <p className="max-w-[62ch] text-xs leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
             Run your suite with coverage on and hand us the report with{" "}
             <span className="font-mono text-[var(--color-text-primary)]">
               repowise coverage add &lt;report&gt;
             </span>
-            . LCOV, Cobertura and coverage.py output all work.
+            . Any of {COVERAGE_REPORT_FORMATS.join(", ")} works.
           </p>
         </FileSection>
       </div>
@@ -64,6 +65,10 @@ export function FileCoverageTab({
   const band = coverageBand(pct);
   const coveredCount = coverage.covered_line_count ?? coverage.covered_lines.length;
   const uncovered = Math.max(0, coverage.total_coverable_lines - coveredCount);
+  // Covered line numbers from an earlier version of the file would tint the
+  // wrong lines, so a stale file shows no tinted source at all.
+  const stale = coverage.freshness === "stale";
+  const codeHtml = stale ? undefined : coverageCodeHtml;
 
   return (
     <div>
@@ -94,19 +99,18 @@ export function FileCoverageTab({
         }
       >
         <p>
-          Tests reach{" "}
+          Tests ran{" "}
           <Fig>
             {formatNumber(coveredCount)} of {formatNumber(coverage.total_coverable_lines)}{" "}
             coverable lines
           </Fig>
-          , leaving <Fig>{formatNumber(uncovered)}</Fig> with nothing executing them
+          , leaving <Fig>{formatNumber(uncovered)}</Fig> that no test executed
           {coverage.branch_coverage_pct != null && (
             <>
               . Branch coverage is <Fig>{coverage.branch_coverage_pct.toFixed(1)}%</Fig>
             </>
           )}
-          . These are the lines your own test run executed, so this figure is
-          line-level and exact.
+          . Measured by your own test run, not inferred from the dependency graph.
         </p>
         <p className="mt-2.5">
           Read from a{" "}
@@ -133,12 +137,14 @@ export function FileCoverageTab({
       <FileSection
         title="Source"
         description={
-          coverageCodeHtml
+          codeHtml
             ? "Every coverable line, tinted by whether the last report saw it run."
-            : "The highlighted source appears here for files under the render cap once a coverage report has been ingested for them."
+            : stale
+              ? "This file changed after coverage was measured; re-run tests with coverage to refresh."
+              : "The highlighted source appears here for files under the render cap once a coverage report has been ingested for them."
         }
       >
-        {coverageCodeHtml ? (
+        {codeHtml ? (
           <div
             data-chat-selection=""
             {...(filePath ? { "data-chat-selection-path": filePath } : {})}
@@ -146,7 +152,7 @@ export function FileCoverageTab({
           >
             {/* Highlighted by the host through the shared shiki path; the
                 data-covered line attributes drive the gutter tint below. */}
-            <div dangerouslySetInnerHTML={{ __html: coverageCodeHtml }} />
+            <div dangerouslySetInnerHTML={{ __html: codeHtml /* shiki output; repowise-security-ignore: unsafe_inner_html */ }} />
             <style>{`
             .coverage-code pre { margin: 0; padding: 0.75rem 0; background: transparent !important; }
             .coverage-code code { display: block; }
@@ -157,7 +163,9 @@ export function FileCoverageTab({
           </div>
         ) : (
           <p className="text-sm text-[var(--color-text-tertiary)]">
-            Source preview unavailable for this file.
+            {stale
+              ? "Source preview hidden until coverage is measured again."
+              : "Source preview unavailable for this file."}
           </p>
         )}
       </FileSection>

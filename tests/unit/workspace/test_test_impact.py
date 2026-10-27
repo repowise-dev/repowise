@@ -494,8 +494,20 @@ async def test_a_link_inside_one_repo_and_service_is_not_cross_repo(
     )
 
     assert result.summary["relevant_contract_links"] == 0
-    assert result.summary["reason"] == "no_matching_links"
+    # The only link is intra-service, so the map links no consumer across
+    # services and cannot say this file has none.
+    assert result.summary["reason"] == "no_contract_links"
     assert not result.recommendations
+
+
+async def test_a_map_with_links_elsewhere_says_no_matching_links(
+    workspace: WorkspaceIndex,
+) -> None:
+    result = await analyze_workspace_test_impact(
+        workspace, [BOUND], [{"repo": "backend", "path": "app/untouched.py"}]
+    )
+
+    assert result.summary["reason"] == "no_matching_links"
 
 
 async def test_a_changed_file_no_contract_names_is_reported(
@@ -714,3 +726,59 @@ async def test_a_caller_supplies_its_own_reads_over_an_index_built_from_rows() -
         ("tests/walk.test.ts", "inferred"),
     }
     assert result.unresolved == []
+
+
+# ---------------------------------------------------------------------------
+# A conftest the walk stopped at
+# ---------------------------------------------------------------------------
+
+
+async def test_a_conftest_stands_for_the_tests_under_it_and_drops_out_with_none(
+    tmp_path: Path,
+) -> None:
+    """pytest collects nothing from a conftest; it runs for the tests below it.
+
+    ``client`` in ``tests/unit/conftest.py`` is the only caller of ``get_user``,
+    so its link is guarded by the test under that directory. ``tests/lonely/``
+    has no test, so ``list_users``, reached only by its conftest, has none.
+    """
+    index = await make_repo_index(
+        tmp_path / "frontend",
+        {"src/api.py": [_symbol("src/api.py::get_user"), _symbol("src/api.py::list_users")]},
+        alias="frontend",
+        graph_nodes=(
+            ("src/api.py", False),
+            ("tests/unit/conftest.py", True),
+            ("tests/unit/test_users.py", True),
+            ("tests/lonely/conftest.py", True),
+        ),
+        graph_edges=(
+            ("src/api.py", "src/api.py::get_user", "defines"),
+            ("src/api.py", "src/api.py::list_users", "defines"),
+            ("tests/unit/conftest.py", "tests/unit/conftest.py::client", "defines"),
+            ("tests/lonely/conftest.py", "tests/lonely/conftest.py::db", "defines"),
+            ("tests/unit/conftest.py::client", "src/api.py::get_user", "calls"),
+            ("tests/lonely/conftest.py::db", "src/api.py::list_users", "calls"),
+        ),
+    )
+    guarded = _link(consumer_file="src/api.py", consumer_symbol_id="src/api.py::get_user")
+    lonely = _link(
+        consumer_file="src/api.py",
+        consumer_symbol_id="src/api.py::list_users",
+        contract_id="http::GET::/users",
+    )
+    try:
+        both = await analyze_workspace_test_impact(
+            WorkspaceIndex({"frontend": index}), [guarded, lonely], CHANGED, include_measured=False
+        )
+        alone = await analyze_workspace_test_impact(
+            WorkspaceIndex({"frontend": index}), [lonely], CHANGED, include_measured=False
+        )
+    finally:
+        await index.close()
+
+    assert [(r.test_file, r.consumer_symbol_ids) for r in both.recommendations] == [
+        ("tests/unit/test_users.py", ["src/api.py::get_user"])
+    ]
+    assert not alone.recommendations
+    assert [row["state"] for row in alone.files_analyzed] == ["none"]

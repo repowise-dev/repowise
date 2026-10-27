@@ -2,8 +2,8 @@
 
 An un-upgraded store learns from ``doctor`` that a re-index is available, since
 the once-per-store update nag may already have been shown and suppressed. The
-row is always OK (a pre-upgrade store works degraded, it is not broken) and
-carries the exact command.
+row never fails (a pre-upgrade store works degraded, it is not broken): it is a
+warn carrying the exact command.
 """
 
 from __future__ import annotations
@@ -48,8 +48,10 @@ def _store_format_row(tmp_path: Path) -> dict:
 
 def test_doctor_flags_reindex_for_old_store(tmp_path: Path) -> None:
     row = _store_format_row(_repo_with_store(tmp_path, 1))
-    # Reported OK (degraded, not broken) with an actionable command.
+    # A warn (degraded, not broken) with an actionable command.
     assert row["ok"] is True
+    assert row["level"] == "warn"
+    assert row["fix"] == "repowise init --force"
     assert "repowise init --force" in row["detail"]
     # Plain text only: no Rich markup leaking through the JSON surface.
     assert "[" not in row["detail"] or "]" not in row["detail"]
@@ -58,4 +60,5 @@ def test_doctor_flags_reindex_for_old_store(tmp_path: Path) -> None:
 def test_doctor_reports_current_store_as_current(tmp_path: Path) -> None:
     row = _store_format_row(_repo_with_store(tmp_path, STORE_FORMAT_VERSION))
     assert row["ok"] is True
+    assert row["level"] == "ok"
     assert row["detail"] == "Current"

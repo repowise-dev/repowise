@@ -12,7 +12,7 @@ key required for fulltext and symbol modes.
 
 ```bash
 cd /path/to/your-repo
-repowise init --index-only --yes
+repowise init --yes --no-prose
 ```
 
 ## 1. Full-text search (default)

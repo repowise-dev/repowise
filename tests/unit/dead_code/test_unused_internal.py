@@ -6,6 +6,8 @@ from repowise.core.analysis.dead_code import (
     DeadCodeAnalyzer,
     DeadCodeKind,
 )
+from repowise.core.analysis.dead_code.name_occurrences import UNVERIFIED_INTERNAL_CONFIDENCE
+from repowise.core.analysis.dead_code.risk_factors import RISK_CAP_CONFIDENCE
 from tests.unit.dead_code._helpers import _build_graph
 
 
@@ -199,6 +201,52 @@ def test_unused_internal_skipped_when_referenced_as_a_value():
     assert "_handle" not in names
 
 
+def _private_nested_classes(edges: list) -> set[str]:
+    """Unused-internal names for a C# file holding private nested ``Inner``/``Spare``."""
+    g = _build_graph(
+        nodes={
+            "src/Outer.cs": {
+                "language": "csharp",
+                "symbols": [
+                    {
+                        "name": name,
+                        "kind": "class",
+                        "language": "csharp",
+                        "visibility": "private",
+                        "decorators": [],
+                        "start_line": line,
+                        "end_line": line + 4,
+                    }
+                    for name, line in (("Inner", 3), ("Spare", 9))
+                ],
+            },
+        },
+        edges=edges,
+    )
+    report = DeadCodeAnalyzer(g, git_meta_map={}).analyze(
+        {
+            "detect_unreachable_files": False,
+            "detect_unused_exports": False,
+            "detect_zombie_packages": False,
+            "min_confidence": 0.0,
+        }
+    )
+    return {f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_INTERNAL}
+
+
+def test_a_class_constructed_through_its_constructor_is_used():
+    """``new Inner(..)`` lands on ``Inner``'s constructor, not on the class node."""
+    ctor = "src/Outer.cs::Inner::Inner"
+    edges = [("src/Main.cs::Main::Run", ctor, {"edge_type": "calls"})]
+    assert _private_nested_classes(edges) == {"Spare"}
+
+
+def test_a_constructor_with_only_containment_edges_does_not_rescue_its_class():
+    ctor = "src/Outer.cs::Inner::Inner"
+    edges = [("src/Outer.cs", ctor, {"edge_type": "defines"})]
+    assert _private_nested_classes(edges) == {"Inner", "Spare"}
+
+
 def test_unused_internal_still_flagged_with_only_containment_edges():
     """A ``defines`` / ``has_method`` containment edge alone must not count as use."""
     g = _build_graph(
@@ -378,3 +426,159 @@ def test_unused_internal_rust_impl_uncallable():
     names = {f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_INTERNAL}
     assert "MyStruct" not in names
 
+
+# ---------------------------------------------------------------------------
+# In-file use: the graph carries no ``reads`` edge for a constant, a callback
+# passed as a value, or a type in an annotation, so the file's own text decides.
+# ---------------------------------------------------------------------------
+
+
+def _internals_over(path: str, source: str, symbols: list[dict], language: str = "python") -> dict:
+    """Unused-internal findings for one file analysed with its own source."""
+    g = _build_graph(
+        nodes={
+            path: {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbols": [
+                    {
+                        "visibility": "private",
+                        "decorators": [],
+                        "kind": "function",
+                        "language": language,
+                        **s,
+                    }
+                    for s in symbols
+                ],
+            },
+        },
+    )
+    report = DeadCodeAnalyzer(g, git_meta_map={}, source_map={path: source.encode()}).analyze(
+        {
+            "detect_unreachable_files": False,
+            "detect_unused_exports": False,
+            "detect_zombie_packages": False,
+            "min_confidence": 0.0,
+        }
+    )
+    return {f.symbol_name: f for f in report.findings if f.kind == DeadCodeKind.UNUSED_INTERNAL}
+
+
+def test_ts_module_const_read_in_the_same_file_is_not_reported():
+    source = (
+        "const RETRY_LIMIT = 5;\n"  # 1
+        "const STRANDED = 9;\n"  # 2
+        "export function run(n: number) {\n"  # 3
+        "  return n < RETRY_LIMIT;\n"  # 4
+        "}\n"
+    )
+    found = _internals_over(
+        "src/run.ts",
+        source,
+        [
+            {"name": "RETRY_LIMIT", "kind": "constant", "start_line": 1, "end_line": 1},
+            {"name": "STRANDED", "kind": "constant", "start_line": 2, "end_line": 2},
+        ],
+        language="typescript",
+    )
+    assert "RETRY_LIMIT" not in found
+    assert "STRANDED" in found  # the control: a const nothing reads
+
+
+def test_python_callback_passed_as_target_is_not_reported():
+    source = (
+        "import threading\n"  # 1
+        "def _worker():\n"  # 2
+        "    pass\n"  # 3
+        "def start():\n"  # 4
+        "    threading.Thread(target=_worker).start()\n"  # 5
+    )
+    found = _internals_over(
+        "pkg/jobs.py", source, [{"name": "_worker", "start_line": 2, "end_line": 3}]
+    )
+    assert found == {}
+
+
+def test_python_function_handed_to_re_sub_is_not_reported():
+    source = (
+        "import re\n"
+        "def _escape(match):\n"
+        "    return match.group(0)\n"
+        "def clean(text):\n"
+        "    return re.sub(r'x', _escape, text)\n"
+    )
+    found = _internals_over(
+        "pkg/text.py", source, [{"name": "_escape", "start_line": 2, "end_line": 3}]
+    )
+    assert found == {}
+
+
+def test_class_named_only_in_a_type_annotation_is_not_reported():
+    source = (
+        "class _Options:\n"  # 1
+        "    verbose = False\n"  # 2
+        "def configure(opts: '_Options') -> None:\n"  # 3
+        "    print(opts)\n"
+    )
+    found = _internals_over(
+        "pkg/opts.py",
+        source,
+        [{"name": "_Options", "kind": "class", "start_line": 1, "end_line": 2}],
+    )
+    assert found == {}
+
+
+def test_recursive_only_function_stays_reported():
+    source = (
+        "def _walk(node):\n"  # 1
+        "    for child in node:\n"  # 2
+        "        _walk(child)\n"  # 3
+    )
+    found = _internals_over(
+        "pkg/tree.py", source, [{"name": "_walk", "start_line": 1, "end_line": 3}]
+    )
+    assert "_walk" in found
+    assert found["_walk"].confidence == 0.65
+
+
+def test_unknown_span_is_kept_but_hidden_below_the_review_floor():
+    source = "def _helper():\n    pass\n"
+    found = _internals_over("pkg/util.py", source, [{"name": "_helper"}])
+    assert found["_helper"].confidence == UNVERIFIED_INTERNAL_CONFIDENCE
+    assert UNVERIFIED_INTERNAL_CONFIDENCE < RISK_CAP_CONFIDENCE
+    assert "unverified" in found["_helper"].evidence[-1]
+
+
+def test_a_mention_in_a_comment_counts_as_a_use():
+    # The accepted textual ceiling: a comment naming the helper is read as a
+    # use. It can only cost recall, never report a live symbol.
+    source = "# see _helper below\ndef _helper():\n    pass\n"
+    found = _internals_over(
+        "pkg/util.py", source, [{"name": "_helper", "start_line": 2, "end_line": 3}]
+    )
+    assert found == {}
+
+
+def test_without_source_the_finding_is_left_as_it_was():
+    g = _build_graph(
+        nodes={
+            "pkg/util.py": {
+                "symbols": [
+                    {
+                        "name": "_helper",
+                        "kind": "function",
+                        "visibility": "private",
+                        "decorators": [],
+                        "start_line": 1,
+                        "end_line": 2,
+                    }
+                ],
+            },
+        },
+    )
+    report = DeadCodeAnalyzer(g, git_meta_map={}).analyze(
+        {"detect_unreachable_files": False, "detect_unused_exports": False, "min_confidence": 0.0}
+    )
+    [finding] = [f for f in report.findings if f.kind == DeadCodeKind.UNUSED_INTERNAL]
+    assert finding.confidence == 0.65

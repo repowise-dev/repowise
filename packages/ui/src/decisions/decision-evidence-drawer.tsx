@@ -59,7 +59,7 @@ export function DecisionEvidenceDrawer({
         >
           <header className="flex items-start justify-between gap-3 border-b border-[var(--color-border-default)] px-4 py-3">
             <div className="min-w-0">
-              <p className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
+              <p className="text-caption uppercase tracking-wider text-[var(--color-text-tertiary)]">
                 Evidence
               </p>
               <DialogPrimitive.Title className="mt-0.5 break-words text-sm font-medium leading-snug text-[var(--color-text-primary)]">
@@ -114,20 +114,20 @@ function EvidenceRow({ row, isPrimary }: { row: DecisionEvidence; isPrimary?: bo
         </span>
         {isPrimary ? (
           <span
-            className="rounded bg-[var(--color-accent-muted)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--color-accent-primary)]"
+            className="text-xs font-medium text-[var(--color-text-primary)]"
             title="The most-trusted source backing this decision — its quote provides the headline fields. Higher rank = more trusted source type."
           >
             primary source
           </span>
         ) : (
           <span
-            className="text-[10px] text-[var(--color-text-tertiary)]"
+            className="text-caption text-[var(--color-text-tertiary)]"
             title="Source-type trust rank. Higher ranks are more trusted; the top-ranked row is the primary source."
           >
             rank {row.source_rank}
           </span>
         )}
-        <span className="ml-auto text-[10px] tabular-nums text-[var(--color-text-tertiary)]">
+        <span className="ml-auto text-caption tabular-nums text-[var(--color-text-tertiary)]">
           {Math.round(row.confidence * 100)}% confidence
         </span>
       </div>

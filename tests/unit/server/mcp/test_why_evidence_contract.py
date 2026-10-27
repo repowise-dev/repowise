@@ -16,6 +16,9 @@ from repowise.server.mcp_server._why_evidence import (
 )
 from repowise.server.mcp_server.tool_why import _rank_keyword_matches
 
+# These tests read the accounting the lean envelope leaves out by default.
+pytestmark = pytest.mark.usefixtures("debug_meta")
+
 
 def _row_by_id(result: dict, decision_id: str) -> dict:
     """The row for *decision_id*, from whichever lane the response put it in.
@@ -188,6 +191,7 @@ def sealed_evidence_fixture() -> tuple[list[SimpleNamespace], dict]:
 def test_provenance_vocabulary_is_explicit_and_legacy_safe() -> None:
     assert provenance_for_source("session") == "human_decision"
     assert provenance_for_source("inline_marker") == "extracted_rationale"
+    assert provenance_for_source("agent") == "extracted_rationale"
     assert provenance_for_source("git_archaeology") == "historical"
     assert provenance_for_source("inferred") == "inferred"
     assert provenance_for_source("future_extractor") == "unknown"
@@ -564,9 +568,14 @@ async def test_every_single_repository_mode_is_exactly_accounted_after_middlewar
 
 
 @pytest.mark.asyncio
-async def test_no_decision_and_unsupported_modes_remain_compatible(setup_mcp) -> None:
+async def test_no_decision_and_unsupported_modes_remain_compatible(
+    setup_mcp, tmp_path
+) -> None:
     from repowise.server.mcp_server import get_why
 
+    # On disk, so path mode answers rather than reporting the path missing.
+    (tmp_path / "src/other").mkdir(parents=True)
+    (tmp_path / "src/other/utils.py").write_text("x = 1\n", encoding="utf-8")
     fallback = await get_why("src/other/utils.py")
     assert list(fallback)[:5] == [
         "mode",
@@ -582,6 +591,50 @@ async def test_no_decision_and_unsupported_modes_remain_compatible(setup_mcp) ->
     assert unsupported == {
         "error": (
             "repo='all' is not supported for get_why (health dashboard). "
-            "Specify a repo alias instead. Available: []"
+            "Specify a repo alias instead. Available: [] "
+            "To search all repositories, pass a query."
         )
     }
+
+
+def test_history_blocks_state_provenance_once_not_per_row() -> None:
+    """Archaeology and origin commits inherit their block's provenance."""
+    sha = "c" * 40
+    payload = {
+        "origin_story": {"available": True, "key_commits": [{"sha": sha}]},
+        "git_archaeology": {
+            "file_commits": [{"sha": sha}],
+            "cross_references": [{"sha": sha}],
+            "git_log": [{"sha": sha, "source": "git_log_follow"}],
+        },
+        "episodes": [{"subject": sha}],
+    }
+    result = annotate_response_evidence(payload, "Repo-A")
+
+    assert result["origin_story"]["provenance"] == "historical"
+    assert result["git_archaeology"]["provenance"] == "historical"
+    rows = [result["origin_story"]["key_commits"][0]] + [
+        result["git_archaeology"][lane][0]
+        for lane in ("file_commits", "cross_references", "git_log")
+    ]
+    for row in rows:
+        assert "provenance" not in row
+        (ref,) = row["evidence_refs"]
+        assert {"provenance", "source", "source_kind", "verification_basis"}.isdisjoint(ref)
+        assert ref["kind"] == "commit"
+    # The row's own git-log channel is data, not a repeated label.
+    assert result["git_archaeology"]["git_log"][0]["source"] == "git_log_follow"
+    # Episodes sit in a bare list with no block to inherit from.
+    assert result["episodes"][0]["evidence_refs"][0]["provenance"] == "historical"
+
+
+def test_git_log_is_capped_at_five_with_the_tail_recoverable(tmp_path) -> None:
+    from repowise.server.mcp_server._budget import OmissionCollector
+    from repowise.server.mcp_server.tool_why.caps import _cap_archaeology
+
+    archaeology = {"git_log": [{"sha": f"{i:012x}"} for i in range(20)]}
+    collector = OmissionCollector("get_why", repo_root=tmp_path)
+    _cap_archaeology(archaeology, collector, label="a.py")
+
+    assert len(archaeology["git_log"]) == 5
+    assert archaeology["git_log_total"] == 20

@@ -73,6 +73,7 @@ class SqlJobStore(JobStore):
         *,
         cursor: str | None = None,
         error: str | None = None,
+        metadata: dict | None = None,
     ) -> JobRecord:
         row = await self._session.get(PipelineJob, job_id)
         if row is None:
@@ -82,6 +83,13 @@ class SqlJobStore(JobStore):
             row.cursor = cursor
         if error is not None:
             row.error = error
+        if metadata is not None:
+            try:
+                current_meta = json.loads(row.metadata_json) if row.metadata_json else {}
+            except json.JSONDecodeError:
+                current_meta = {}
+            current_meta.update(metadata)
+            row.metadata_json = json.dumps(current_meta)
         row.updated_at = _now_utc()
         await self._session.flush()
         return _to_record(row)

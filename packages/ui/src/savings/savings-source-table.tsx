@@ -153,7 +153,7 @@ function Share({ value, total, label }: { value: number; total: number; label: s
         className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-[var(--color-bg-inset)]"
       >
         <span
-          className="block h-full rounded-full bg-[var(--color-accent-fill)]"
+          className="block h-full rounded-full bg-[var(--color-progress-fill)]"
           style={{ width: `${width}%` }}
         />
       </span>

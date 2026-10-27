@@ -30,6 +30,8 @@ from repowise.core.ingestion.git_indexer.records import _extract_rename_paths
         ),
         # Mid-path segment rename.
         ("a/{b => c}/d.py", "a/b/d.py", "a/c/d.py"),
+        # No shared leading or trailing component: git prints no braces.
+        ("a.py => src/b.py", "a.py", "src/b.py"),
     ],
 )
 def test_rename_marker_forms(stat_path: str, want_old: str, want_new: str) -> None:

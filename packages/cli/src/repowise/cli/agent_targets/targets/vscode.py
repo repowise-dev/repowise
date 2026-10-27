@@ -3,8 +3,14 @@
 Good tier, and the descriptor makes that structural rather than editorial: it
 names neither a hook adapter nor a transcript adapter, so :func:`derive_tier`
 cannot place it at Full however many files it writes. VS Code gets the MCP
-server and an extension recommendation; it has no hook protocol for repowise to
+server, an extension recommendation and the managed instructions block in
+``.github/copilot-instructions.md``; it has no hook protocol for repowise to
 intercept tool calls through, and no transcript format to mine.
+
+Copilot Chat reads ``.github/copilot-instructions.md`` in every chat request:
+https://code.visualstudio.com/docs/copilot/customization/custom-instructions
+Copilot CLI reads the same file, so the ``copilot`` target shares this block
+rather than writing a second one, and uninstall asks before stripping it.
 
 The distinguishing quirk is that both files it writes may legally contain
 comments — VS Code accepts JSONC throughout ``.vscode/``. So this target is the
@@ -25,6 +31,9 @@ from pathlib import Path
 
 from repowise.core.agents import identity
 
+# Defined in core: change risk tells this recommendation from a user's edit.
+from repowise.core.owned_paths import EXTENSION_ID
+
 from ..formats.server_entry import RemoteServerEntryError
 from ..types import (
     Capability,
@@ -43,7 +52,6 @@ ID = IDENTITY.cli_target_id
 DISPLAY_NAME = IDENTITY.display_name
 DOCS_URL = "https://code.visualstudio.com/docs/copilot/chat/mcp-servers"
 
-EXTENSION_ID = "repowise-dev.repowise"
 
 #: Config key gating this agent's managed project files.
 PROJECT_FILE_ID = "vscode_mcp"
@@ -51,7 +59,7 @@ PROJECT_FILE_ID = "vscode_mcp"
 METHODS = (
     InstallMethod(
         id="direct",
-        provides=frozenset({Capability.MCP}),
+        provides=frozenset({Capability.MCP, Capability.INSTRUCTIONS}),
         managed_by="repowise",
         preferred=True,
     ),
@@ -64,6 +72,10 @@ def mcp_config_path(repo_path: Path) -> Path:
 
 def extensions_config_path(repo_path: Path) -> Path:
     return repo_path / ".vscode" / "extensions.json"
+
+
+def instructions_path(repo_path: Path) -> Path:
+    return repo_path / ".github" / "copilot-instructions.md"
 
 
 def server_entry(repo_path: Path) -> dict:
@@ -143,6 +155,56 @@ def write_extensions_config(repo_path: Path) -> FileWrite:
     return FileWrite(path=config_path, action=write_json_config(config_path, merged))
 
 
+def write_instructions(repo_path: Path) -> FileWrite:
+    """Upsert the managed block into ``.github/copilot-instructions.md``.
+
+    A file users write in, so no prefix: install appends to what is there and
+    uninstall deletes the file only when our block was all it held.
+    """
+    from ..formats import marker_block
+    from ..instructions import DISTILL_MARKER_END, DISTILL_MARKER_START, DISTILL_SECTION
+
+    path = instructions_path(repo_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    action = marker_block.upsert(
+        path, f"\n{DISTILL_SECTION}\n", DISTILL_MARKER_START, DISTILL_MARKER_END
+    )
+    return FileWrite(path=path, action=action)
+
+
+def remove_instructions(repo_path: Path, *, exclude: str) -> tuple[Path, FileAction, str | None]:
+    """Strip the managed block unless another wired target still reads it.
+
+    Shared with the ``copilot`` target, which passes its own id as *exclude*.
+    Same guard as ``AGENTS.md`` in ``opencode.py``: see
+    :func:`..registry.other_managers_of`.
+    """
+    from ..formats import marker_block
+    from ..formats.marker_block import BlockState
+    from ..instructions import DISTILL_MARKER_END, DISTILL_MARKER_START
+    from ..registry import other_managers_of
+
+    path = instructions_path(repo_path)
+    state = marker_block.inspect(path, DISTILL_MARKER_START, DISTILL_MARKER_END).state
+    if state is BlockState.PRESENT:
+        owners = other_managers_of(path, exclude=exclude, scope=Scope.PROJECT, repo_path=repo_path)
+        if owners:
+            from ..registry import all_targets
+
+            ids = ",".join(t.id for t in all_targets() if t.display_name in owners)
+            return path, FileAction.KEPT, (
+                f"{' and '.join(owners)} still reads the same managed block; to remove "
+                f"it too, run 'repowise agents remove --target={ids}'"
+            )
+    if marker_block.remove(path, DISTILL_MARKER_START, DISTILL_MARKER_END):
+        return path, FileAction.REMOVED, None
+    if state in (BlockState.ABSENT_FILE, BlockState.ABSENT):
+        return path, FileAction.NOT_FOUND, None
+    # PRESENT with no other owner means the write failed rather than a refusal.
+    action = FileAction.FAILED if state is BlockState.PRESENT else FileAction.KEPT
+    return path, action, marker_block.refusal_reason(state)
+
+
 def _remove_server_entry(config_path: Path) -> tuple[Path, FileAction, str | None]:
     """Drop ``servers.repowise``, preserving sibling servers."""
     from ..formats.json_merge import load_json_object_or_value_error, write_json_config
@@ -219,20 +281,20 @@ def _remove_extension_recommendation(config_path: Path) -> tuple[Path, FileActio
 
 
 def _prune_project_dir(repo_path: Path) -> None:
-    """Remove ``.vscode/`` once uninstall emptied it, and never otherwise.
+    """Remove ``.vscode/`` and ``.github/`` once uninstall emptied them, never otherwise.
 
     ``rmdir`` rather than a recursive delete, so a directory still holding
     anything at all, ours or the user's ``settings.json``, is left exactly as it
     is. The symlink guard is Cursor's: following a junction to delete something
     outside the repo is not a risk worth a tidy directory.
     """
-    directory = mcp_config_path(repo_path).parent
-    if directory.is_symlink() or not directory.is_dir():
-        return
-    try:
-        directory.rmdir()
-    except OSError:
-        return
+    for directory in (mcp_config_path(repo_path).parent, instructions_path(repo_path).parent):
+        if directory.is_symlink() or not directory.is_dir():
+            continue
+        try:
+            directory.rmdir()
+        except OSError:
+            continue
 
 
 def detect(repo_path: Path | None = None) -> list[Registration]:
@@ -271,6 +333,7 @@ class VSCodeTarget:
     docs_url = DOCS_URL
     hook_adapter = IDENTITY.hook_adapter
     session_adapter = IDENTITY.session_adapter
+    capture_adapter = IDENTITY.capture_adapter
     methods = METHODS
     project_file_id = PROJECT_FILE_ID
 
@@ -286,11 +349,9 @@ class VSCodeTarget:
         never installed, because the file is committed and read by whoever
         opens the repo next.
         """
-        import shutil
-
         if repo_path is not None and (repo_path / ".vscode").is_dir():
             return True
-        if shutil.which("code") is not None:
+        if IDENTITY.is_installed():
             return True
         home = Path.home()
         return any((home / candidate).is_dir() for candidate in (".vscode", ".vscode-server"))
@@ -361,13 +422,30 @@ class VSCodeTarget:
                 f'it may contain comments). Add "{EXTENSION_ID}" to "recommendations" '
                 "manually."
             )
+        try:
+            written = write_instructions(repo_path)
+        except (ValueError, OSError) as exc:
+            result.record(instructions_path(repo_path), FileAction.KEPT, f"could not be written ({exc})")
+            result.note(f".github/copilot-instructions.md could not be written ({exc}).")
+        else:
+            reason = None
+            if written.action is FileAction.KEPT:
+                from ..formats import marker_block
+                from ..instructions import DISTILL_MARKER_END, DISTILL_MARKER_START
+
+                state = marker_block.inspect(
+                    written.path, DISTILL_MARKER_START, DISTILL_MARKER_END
+                ).state
+                reason = marker_block.refusal_reason(state)
+                result.note(f"{written.path} left unchanged: {reason}.")
+            result.record(written.path, written.action, reason)
         return result
 
     def uninstall(self, scope: Scope, *, repo_path: Path | None = None) -> WriteResult:
-        """Remove the server entry and the extension recommendation.
+        """Remove the server entry, the extension recommendation and our block.
 
-        Both files, because :meth:`install` writes both and
-        :meth:`describe_paths` names both. Leaving the recommendation behind
+        Every file, because :meth:`install` writes each and
+        :meth:`describe_paths` names each. Leaving the recommendation behind
         meant ``agents remove --target=vscode`` still had the editor prompting
         every contributor to install an extension for an integration that was
         just removed — and said nothing about the file it had skipped.
@@ -377,6 +455,10 @@ class VSCodeTarget:
             return result
         result.record(*_remove_server_entry(mcp_config_path(repo_path)))
         result.record(*_remove_extension_recommendation(extensions_config_path(repo_path)))
+        path, action, reason = remove_instructions(repo_path, exclude=ID)
+        result.record(path, action, reason)
+        if action is FileAction.KEPT:
+            result.note(f"{path} kept: {reason}.")
         # Only when something of ours actually went, matching Cursor. Pruning
         # unconditionally deleted a `.vscode/` that happened to be empty and
         # that this uninstall had just reported finding nothing in.
@@ -391,19 +473,30 @@ class VSCodeTarget:
         if scope is not Scope.PROJECT:
             return []
         repo = repo_path or Path.cwd()
-        return [str(mcp_config_path(repo)), str(extensions_config_path(repo))]
+        return [
+            str(mcp_config_path(repo)),
+            str(extensions_config_path(repo)),
+            str(instructions_path(repo)),
+        ]
 
-    def doctor(self) -> DoctorReport:
-        """Health is repo-scoped, so a bare call can only report the honest answer.
+    def doctor(self, repo_path: Path | None = None) -> DoctorReport:
+        """Health is repo-scoped, so only a call with *repo_path* can say OK.
 
         Without a repo path there is nothing user-level to inspect. Reporting
         ``OK`` would be a claim we have not checked, so this reports
         not-installed with the command that would wire it.
         """
+        if repo_path is not None and detect(repo_path):
+            return DoctorReport(target_id=ID, status=DoctorStatus.OK)
+        issue = (
+            "VS Code is not wired in this repo."
+            if repo_path is not None
+            else "VS Code wiring is workspace-local; run this from a repo to check it."
+        )
         return DoctorReport(
             target_id=ID,
             status=DoctorStatus.NOT_INSTALLED,
-            issues=("VS Code wiring is workspace-local; run this from a repo to check it.",),
+            issues=(issue,),
             fix_command="repowise init",
         )
 

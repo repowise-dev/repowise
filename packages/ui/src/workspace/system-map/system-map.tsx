@@ -1,75 +1,100 @@
 "use client";
 
 /**
- * The Live System Map: a code-derived diagram of the workspace's services
- * (nodes) and their typed relationships (edges), laid out with the shared ELK
- * stack and explored through a detail drawer.
+ * The Live System Map: the workspace's services and the typed relationships
+ * between them, drawn a level at a time within a fixed draw budget. The
+ * estate shows group cards joined by bands (or services, below the grouping
+ * threshold); a group opens in place into its services; focus and between
+ * levels come from the level state. Whatever does not fit is folded into a
+ * "+N more" card and stated in the caption.
  *
- * A canvas surface: the controls sit in the section header, the key in one
- * row under them, and the canvas takes the width. The host supplies the graph,
- * the lens control (`toolbar`) and the drawer's data; this component owns the
- * edge-kind filter, the service/repository switch, hover and selection.
+ * Built on `GraphCanvasShell`: the lens and extra actions in the title row,
+ * the family chips and key above the canvas, the caption under it, and the
+ * details in the rail, a grid peer of the canvas (a bottom sheet on phones).
+ * The host supplies data, routes and the links loader through props only; it
+ * may control the level state and the selection to keep them in its URL.
+ * Search, the Map | List switch, keyboard shortcuts, comparing two services
+ * and a live line announcing each level change come from
+ * `use-map-navigation.ts`; card and rail verbs from `use-map-verbs.ts`.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import {
-  Background,
-  BackgroundVariant,
-  Controls,
-  MiniMap,
-  ReactFlow,
-  ReactFlowProvider,
-  useReactFlow,
-  useStore,
-  type EdgeChange,
-  type EdgeMouseHandler,
-  type NodeChange,
-  type NodeMouseHandler,
-} from "@xyflow/react";
-import "@xyflow/react/dist/style.css";
-import type { NodeArchitectureRole, SystemEdgeKind, SystemEdgeMatchType, SystemGraph } from "@repowise-dev/types";
-import { EmptyState } from "../../shared/empty-state";
-import { systemMapNodeTypes } from "./system-map-node";
-import { systemMapEdgeTypes } from "./system-map-edge";
-import { SystemMapLegend } from "./system-map-legend";
-import { SystemMapFilters } from "./system-map-filters";
-import { SystemMapDrawer, type SystemMapDrawerData } from "./system-map-drawer";
-import { SystemMapFocusContext, createSystemMapFocusStore } from "./system-map-focus";
-import { edgeKindStyle } from "./edge-kinds";
-import { useSystemMapLayout } from "./use-system-map-layout";
-import { resolveViewSelection } from "./system-map-model";
-import { SYSTEM_MAP_MAX_LAYOUT_NODES, SYSTEM_MAP_NODE_SIZE, applyCollapse, type SystemMapView } from "./layout";
+import { useCallback, useEffect, useMemo, useRef, type ReactNode, type RefObject } from "react";
+import { ReactFlowProvider } from "@xyflow/react";
+import type { NodeArchitectureRole, SystemGraph } from "@repowise-dev/types";
+import { GraphCanvasShell } from "../../graph/graph-canvas-shell";
+import { GraphShortcutHelp } from "../../graph/graph-shortcut-help";
+import type { ActivateTrigger } from "./activate";
+import { levelAnnouncement } from "./announce";
+import { toFlowElements, type FlowElements } from "./flow-elements";
+import { navCopyWith, type SystemMapNavCopy } from "./nav-copy";
+import { scopeCaption } from "./scope-caption";
+import type { SystemMapRouteLoader } from "./search-index";
+import { shortcutHelpRows } from "./shortcuts";
+import { SystemMapActionsContext } from "./system-map-actions";
+import { SystemMapCanvas } from "./system-map-canvas";
+import { mapChrome } from "./system-map-chrome";
+import type { SystemMapDrawerData } from "./system-map-drawer";
+import { SystemMapCanvasEmpty } from "./system-map-empty";
+import { SystemMapFocusContext, createSystemMapFocusStore, type SystemMapFocusStore } from "./system-map-focus";
+import { legendKeyFor } from "./system-map-legend";
+import { SystemMapList } from "./system-map-list";
+import { SystemMapNavActions } from "./system-map-nav-actions";
+import type { LoadLinksBetween } from "./routes-between";
+import { railContent } from "./system-map-rail-content";
 import type { RepoHealth, SystemMapOverlay, SystemMapSelection } from "./types";
-import { toFriendlyMessage } from "../../lib/errors";
-
-/** Below this many nodes the whole map fits on screen and a minimap is noise. */
-export const SYSTEM_MAP_MINIMAP_MIN_NODES = 40;
+import { useDropUndrawnAggregate, useMapLevel, type MapLevel } from "./use-map-level";
+import { useMapNavigation, type MapNavigation } from "./use-map-navigation";
+import { useMapInput, useRailVerbs } from "./use-map-verbs";
+import type { SystemMapPhase } from "./use-system-map-phases";
+import { useSystemMapSearch } from "./use-system-map-search";
+import { useSystemMapState, type SystemMapState } from "./use-system-map-state";
+import { TRAY_OPEN_TOKEN, type MapViewState } from "./view-state";
 
 /** The canvas's height, shared with the host's loading placeholder so nothing reflows. */
 export const SYSTEM_MAP_CANVAS_HEIGHT = "h-[420px] sm:h-[clamp(460px,calc(100dvh-240px),800px)]";
 
-/** Width the drawer takes on desktop; selections are kept clear of it. */
-const DRAWER_WIDTH = 480;
-
-const FIT_OPTIONS = { padding: 0.08, maxZoom: 1.2 } as const;
+const FADE_CSS = ".sm-canvas[data-focused] .sm-edge:not([data-active]){opacity:.22}.sm-canvas .sm-edge{transition:opacity 120ms}";
 
 export interface SystemMapProps {
   graph: SystemGraph | null;
   loading?: boolean;
   error?: Error | null;
-  /** Repo health by repo alias, joined onto service nodes (optional). */
+  /** Repo health by repo alias, joined onto service and group cards (optional). */
   healthByRepo?: ReadonlyMap<string, RepoHealth>;
   /** Additive decoration from the active lens (ripple, badges, violations). */
   overlay?: SystemMapOverlay;
-  /** Per-service architecture role, named on nodes and in the drawer (optional). */
+  /** Per-service architecture role, named on cards and in the rail (optional). */
   roleByNodeId?: ReadonlyMap<string, NodeArchitectureRole>;
-  /** The lens control, placed at the head of the section header. */
+  /** The section heading, in the title row beside the lens. */
+  title?: string;
+  /** The lens control, in the title row. */
   toolbar?: ReactNode;
-  /** Data and routes for the detail drawer. */
+  /** More title-row controls after the lens (search, a between picker). */
+  actions?: ReactNode;
+  /** Data and routes for the rail's service and relationship details. */
   drawer?: SystemMapDrawerData;
   /** Controlled selection, so the host can put it in the URL. */
   selection?: SystemMapSelection;
   onSelectionChange?: (selection: SystemMapSelection) => void;
+  /** Controlled level state (`open`, `focus`, `a`/`b`, `kinds` in a URL). */
+  view?: MapViewState;
+  onViewChange?: (view: MapViewState) => void;
+  /**
+   * One page of routes between two services (`GET /api/workspace/system-graph/links`).
+   * The Between level lists them in the rail and a relationship shows its own;
+   * without it both say route detail is not available.
+   */
+  loadLinksBetween?: LoadLinksBetween;
+  /** Lists what a "+N more" card folded; the card offers it only when present. */
+  onShowFolded?: (serviceIds: readonly string[]) => void;
+  /** The breadcrumb's root, e.g. the workspace name. */
+  estateLabel?: string;
+  /** Called as each render phase completes, for host-side timing. */
+  onPhase?: (phase: SystemMapPhase) => void;
+  /** Contract links matching a search, so search finds routes too; without it search covers services and groups. */
+  loadRoutes?: SystemMapRouteLoader;
+  /** The navigation's words (search, list, shortcuts, announcements); English by default. */
+  navCopy?: Partial<SystemMapNavCopy>;
 }
 
 export function SystemMap(props: SystemMapProps) {
@@ -80,419 +105,186 @@ export function SystemMap(props: SystemMapProps) {
   );
 }
 
-function sameSelection(a: SystemMapSelection, b: SystemMapSelection): boolean {
-  return a?.type === b?.type && a?.id === b?.id;
-}
-
-function SystemMapInner({
-  graph,
-  loading,
-  error,
-  healthByRepo,
-  overlay,
-  roleByNodeId,
-  toolbar,
-  drawer,
-  selection: controlledSelection,
-  onSelectionChange,
-}: SystemMapProps) {
-  const [hiddenKinds, setHiddenKinds] = useState<Set<SystemEdgeKind>>(() => new Set());
-  const [collapsed, setCollapsed] = useState(false);
-  const [uncontrolledSelection, setUncontrolledSelection] = useState<SystemMapSelection>(null);
-  const isControlled = onSelectionChange !== undefined;
-  const selection = isControlled ? (controlledSelection ?? null) : uncontrolledSelection;
-
-  // Handlers below are memoised for the component's lifetime, so they read the
-  // live props through a ref. A click also fires React Flow's own selection
-  // change; `last` drops the duplicate so the host sees one update.
-  const latest = useRef({ selection, onSelectionChange });
-  latest.current = { selection, onSelectionChange };
-  const last = useRef<SystemMapSelection>(selection);
-  last.current = selection;
-
-  const setSelection = useCallback((next: SystemMapSelection) => {
-    if (sameSelection(last.current, next)) return;
-    last.current = next;
-    const notify = latest.current.onSelectionChange;
-    if (notify) notify(next);
-    else setUncontrolledSelection(next);
-  }, []);
-
-  // The collapse-applied shape, before the kind filter: what the filter offers.
-  const shaped = useMemo(() => (graph ? applyCollapse(graph, collapsed) : null), [graph, collapsed]);
-  const kindCounts = useMemo(() => {
-    const m = new Map<SystemEdgeKind, number>();
-    for (const e of shaped?.edges ?? []) m.set(e.kind, (m.get(e.kind) ?? 0) + 1);
-    return m;
-  }, [shaped]);
-  const visibleKinds = useMemo<Set<SystemEdgeKind>>(
-    () => new Set([...kindCounts.keys()].filter((k) => !hiddenKinds.has(k))),
-    [kindCounts, hiddenKinds],
-  );
-  const view = useMemo<SystemMapView>(() => ({ visibleKinds, collapsed }), [visibleKinds, collapsed]);
-
-  const { nodes, edges, loading: layoutLoading, viewGraph, simplified } = useSystemMapLayout({
-    graph,
-    view,
-    ...(healthByRepo ? { healthByRepo } : {}),
-    // Overlays are keyed by service; on merged repo nodes only the repo roots
-    // would match, which marks some repositories and not others. Off instead.
-    ...(overlay && !collapsed ? { overlay } : {}),
-    ...(roleByNodeId ? { roleByNodeId } : {}),
-  });
-
-  // Lists and the URL name raw ids; map them onto what is drawn, and show a
-  // hidden kind or the service view when that is the only way to draw them.
-  const resolved = useMemo(
-    () =>
-      graph && viewGraph
-        ? resolveViewSelection(selection, graph, viewGraph, collapsed)
-        : { selection: null, fix: null },
-    [selection, graph, viewGraph, collapsed],
-  );
-  const drawnSelection = resolved.selection;
-  const fixKey = resolved.fix ? `${resolved.fix.kind}:${"edgeKind" in resolved.fix ? resolved.fix.edgeKind : ""}` : "";
-  useEffect(() => {
-    const fix = resolved.fix;
-    if (!fix) return;
-    if (fix.kind === "expand") setCollapsed(false);
-    else
-      setHiddenKinds((prev) => {
-        if (!prev.has(fix.edgeKind)) return prev;
-        const next = new Set(prev);
-        next.delete(fix.edgeKind);
-        return next;
-      });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fixKey]);
-
-  // Only the selected node gets a new object, so React Flow re-renders one node.
-  const selectedNode = drawnSelection?.type === "node" ? drawnSelection.id : null;
-  const drawnNodes = useMemo(
-    () => (selectedNode ? nodes.map((n) => (n.id === selectedNode ? { ...n, selected: true } : n)) : nodes),
-    [nodes, selectedNode],
-  );
-
-  const matchTypes = useMemo(
-    () => new Set<SystemEdgeMatchType>((viewGraph?.edges ?? []).map((e) => e.match_type)),
-    [viewGraph],
-  );
-
-  // Hover and selection for edges live outside React state (see system-map-focus).
+/** The connector store, with the canvas's fade attribute and the selection kept in step with it. */
+function useFocusStore(level: MapLevel) {
   const focus = useMemo(() => createSystemMapFocusStore(), []);
   const canvasRef = useRef<HTMLDivElement>(null);
-  useEffect(
-    () =>
-      focus.subscribe(() => {
-        canvasRef.current?.toggleAttribute("data-focused", focus.focused());
-      }),
-    [focus],
-  );
+  useEffect(() => focus.subscribe(() => canvasRef.current?.toggleAttribute("data-focused", focus.focused())), [focus]);
+  const drawnId = level.resolved?.drawnId ?? null;
+  const kind = level.resolved?.drawnKind ?? null;
   useEffect(() => {
-    focus.setSelected({
-      node: drawnSelection?.type === "node" ? drawnSelection.id : null,
-      edge: drawnSelection?.type === "edge" ? drawnSelection.id : null,
-    });
-  }, [focus, drawnSelection]);
+    focus.setSelected({ node: kind === "node" ? drawnId : null, edge: kind === "edge" ? drawnId : null });
+  }, [focus, kind, drawnId]);
+  return { focus, canvasRef };
+}
 
-  const toggleKind = useCallback((kind: SystemEdgeKind) => {
-    setHiddenKinds((prev) => {
-      const next = new Set(prev);
-      if (next.has(kind)) next.delete(kind);
-      else next.add(kind);
-      return next;
-    });
-  }, []);
-
-  const onNodeClick = useCallback<NodeMouseHandler>((_, node) => setSelection({ type: "node", id: node.id }), [setSelection]);
-  const onEdgeClick = useCallback<EdgeMouseHandler>((_, edge) => setSelection({ type: "edge", id: edge.id }), [setSelection]);
-  // Keyboard selection (Enter or Space on a focused node or edge) arrives as a
-  // React Flow selection change, and lands on the same object a click would.
-  const onNodesChange = useCallback(
-    (changes: NodeChange[]) => {
-      for (const c of changes) if (c.type === "select" && c.selected) setSelection({ type: "node", id: c.id });
-    },
-    [setSelection],
+/** What the live region says: the level, the display, or a pending Between pick. */
+function useAnnouncement(graph: SystemGraph | null, level: MapLevel, view: MapViewState, nav: MapNavigation, copy: SystemMapNavCopy) {
+  const { levelView, nodesById } = level;
+  return useMemo(
+    () =>
+      levelAnnouncement({
+        levelView,
+        view,
+        display: nav.display,
+        services: graph?.nodes.length ?? 0,
+        pendingFrom: nav.pendingFrom,
+        name: (id) => nodesById.get(id)?.name ?? id,
+        groupLabel: (id) => (id === TRAY_OPEN_TOKEN ? "Not linked at runtime" : (graph?.groups?.find((g) => g.id === id)?.label ?? id)),
+        copy,
+      }),
+    [graph, levelView, nodesById, view, nav.display, nav.pendingFrom, copy],
   );
-  const onEdgesChange = useCallback(
-    (changes: EdgeChange[]) => {
-      for (const c of changes) if (c.type === "select" && c.selected) setSelection({ type: "edge", id: c.id });
-    },
-    [setSelection],
-  );
-  const onPaneClick = useCallback(() => setSelection(null), [setSelection]);
-  const onNodeMouseEnter = useCallback<NodeMouseHandler>((_, n) => focus.setHover({ node: n.id }), [focus]);
-  const onNodeMouseLeave = useCallback<NodeMouseHandler>(() => focus.setHover({ node: null }), [focus]);
-  const onEdgeMouseEnter = useCallback<EdgeMouseHandler>((_, e) => focus.setHover({ edge: e.id }), [focus]);
-  const onEdgeMouseLeave = useCallback<EdgeMouseHandler>(() => focus.setHover({ edge: null }), [focus]);
+}
 
-  // Collapsing changes node ids, so a selection cannot survive it.
-  const onCollapsedChange = useCallback(
-    (next: boolean) => {
-      setCollapsed(next);
-      setSelection(null);
-    },
-    [setSelection],
-  );
+function SystemMapInner(props: SystemMapProps) {
+  const { graph, healthByRepo, overlay, roleByNodeId, toolbar, actions: extraActions } = props;
+  const own = useSystemMapState(props);
+  const nav = useMapNavigation(own);
+  // Every input selects through the navigation, so a pending Between pick completes wherever the second service is picked.
+  const state: SystemMapState = { ...own, setSelection: nav.setSelection };
+  const { view, setView, selection, setSelection } = state;
+  const copy = useMemo(() => navCopyWith(props.navCopy), [props.navCopy]);
+  const level = useMapLevel(graph, view, selection, setView, props.onPhase);
+  useDropUndrawnAggregate(selection, level, own.setSelection);
+  const { nodesById, edgesById, levelView, layout } = level;
+  const { focus, canvasRef } = useFocusStore(level);
+  const input = useMapInput(levelView, state, props.onShowFolded);
+  const verbs = useRailVerbs(state, nav);
+  const search = useSystemMapSearch(graph, nav.onSearchPick, props.loadRoutes);
+  const announcement = useAnnouncement(graph, level, view, nav, copy);
+  const listing = nav.display === "list";
+  const selectedId = level.resolved?.drawnId ?? null;
 
-  const isLoading = loading || layoutLoading;
+  const flow = useMemo<FlowElements>(
+    () =>
+      levelView
+        ? toFlowElements({ view: levelView, positions: layout.positions, nodesById, edgesById, healthByRepo, overlay, roleByNodeId, selectedId })
+        : { nodes: [], edges: [] },
+    [levelView, layout.positions, nodesById, edgesById, healthByRepo, overlay, roleByNodeId, selectedId],
+  );
+  const name = useCallback((id: string) => nodesById.get(id)?.name ?? id, [nodesById]);
+  const caption = useMemo(() => (levelView ? scopeCaption(levelView, name) : []), [levelView, name]);
+  const legend = useMemo(() => legendKeyFor(levelView?.edges ?? [], edgesById), [levelView, edgesById]);
+
   const hasGraph = Boolean(graph && graph.nodes.length > 0);
-  const hasEdges = (graph?.edges.length ?? 0) > 0;
-  const canCollapse = Boolean(graph?.nodes.some((n) => n.service_path));
+  const showCaption = !listing && hasGraph && caption.length > 0;
+  const railNode =
+    graph && levelView
+      ? railContent({
+          graph,
+          levelView,
+          selection,
+          nodesById,
+          edgesById,
+          healthByRepo,
+          roleByNodeId,
+          drawer: props.drawer,
+          loadLinksBetween: props.loadLinksBetween,
+          routeFilter: nav.routeFilter,
+          onSelect: setSelection,
+          onOpenGroup: input.actions.openContainer,
+          verbs,
+        })
+      : null;
+  const { breadcrumb, banner, betweenControl } = mapChrome({ graph, level, view, setView, nav, legend, estateLabel: props.estateLabel });
+  const empty = (
+    <SystemMapCanvasEmpty
+      error={props.error}
+      loading={Boolean(props.loading) || (hasGraph && layout.loading && flow.nodes.length === 0)}
+      hasGraph={hasGraph}
+      hasEdges={(graph?.edges.length ?? 0) > 0}
+    />
+  );
 
   return (
     <SystemMapFocusContext.Provider value={focus}>
-      <div className="flex min-w-0 flex-col gap-3">
-        {/* Section header: the lens, then what is drawn. Nothing sits on the canvas. */}
-        <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-6 gap-y-3">
-          {toolbar}
-          <SystemMapFilters
-            kindCounts={kindCounts}
-            visibleKinds={visibleKinds}
-            onToggleKind={toggleKind}
-            canCollapse={canCollapse}
-            collapsed={collapsed}
-            onCollapsedChange={onCollapsedChange}
-          />
-        </div>
-
-        <SystemMapLegend matchTypes={matchTypes} />
-
-        <div
-          ref={canvasRef}
-          className={`sm-canvas relative min-w-0 overflow-hidden rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-root)] ${SYSTEM_MAP_CANVAS_HEIGHT}`}
+      <SystemMapActionsContext.Provider value={input.actions}>
+        <GraphCanvasShell
+          variant="section"
+          breadcrumb={breadcrumb}
+          title={props.title}
+          titleActions={
+            <>
+              {toolbar}
+              {extraActions}
+              {betweenControl}
+              <SystemMapNavActions nav={nav} search={search} copy={copy} name={name} />
+            </>
+          }
+          banner={banner}
+          rail={railNode}
+          footer={showCaption ? <p className="text-xs text-[var(--color-text-secondary)]">{caption.join(" ")}</p> : undefined}
         >
-          <style>{".sm-canvas[data-focused] .sm-edge:not([data-active]){opacity:.22}.sm-canvas .sm-edge{transition:opacity 120ms}"}</style>
-          {error ? (
-            <Centered>
-              <EmptyState title="Couldn't load the system map" description={toFriendlyMessage(error)} />
-            </Centered>
-          ) : !isLoading && !hasGraph ? (
-            <Centered>
-              <EmptyState
-                title="No services to map yet"
-                description="The system map appears once the workspace has at least two indexed repositories with detected cross-repo relationships."
+          <div className="relative min-w-0">
+            {listing && graph ? (
+              <SystemMapList
+                graph={graph}
+                healthByRepo={healthByRepo}
+                selectedId={selection?.type === "node" ? selection.id : null}
+                onSelect={(id) => setSelection({ type: "node", id })}
+                copy={copy}
               />
-            </Centered>
-          ) : !isLoading && !hasEdges ? (
-            <Centered>
-              <EmptyState
-                title="No cross-repo relationships detected"
-                description="Services are indexed, but no HTTP, gRPC, event, package, database or co-change links were found between them yet."
-              />
-            </Centered>
-          ) : null}
-
-          <ReactFlow
-            nodes={drawnNodes}
-            edges={edges}
-            nodeTypes={systemMapNodeTypes}
-            edgeTypes={systemMapEdgeTypes}
-            onNodeClick={onNodeClick}
-            onEdgeClick={onEdgeClick}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            onPaneClick={onPaneClick}
-            onNodeMouseEnter={onNodeMouseEnter}
-            onNodeMouseLeave={onNodeMouseLeave}
-            onEdgeMouseEnter={onEdgeMouseEnter}
-            onEdgeMouseLeave={onEdgeMouseLeave}
-            fitView
-            fitViewOptions={FIT_OPTIONS}
-            minZoom={0.15}
-            maxZoom={2}
-            proOptions={{ hideAttribution: true }}
-            nodesDraggable={false}
-            nodesConnectable={false}
-            ariaLabelConfig={{ "node.a11yDescription.default": "Press Enter to open this service's details." }}
-          >
-            <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="var(--color-border-hover)" />
-            <Controls showInteractive={false} />
-            {nodes.length >= SYSTEM_MAP_MINIMAP_MIN_NODES && (
-              <MiniMap
-                pannable
-                zoomable
-                bgColor="var(--color-bg-surface)"
-                maskColor="color-mix(in srgb, var(--color-bg-root) 70%, transparent)"
-                nodeColor="var(--color-border-hover)"
-                nodeStrokeColor="var(--color-text-tertiary)"
-                style={{ border: "1px solid var(--color-border-default)" }}
+            ) : (
+              <MapCanvas
+                canvasRef={canvasRef}
+                focus={focus}
+                flow={flow}
+                fitKey={[levelView?.level, view.open.join(","), view.focus, view.between?.a, view.between?.b].join("|")}
+                settled={!layout.loading}
+                onActivate={input.onActivate}
+                onEscape={nav.back}
+                onPaneClick={() => setSelection(null)}
+                empty={empty}
               />
             )}
-            <Viewport fitKey={`${collapsed}:${nodes.length}`} ready={nodes.length > 0} selection={drawnSelection} canvas={canvasRef} />
-          </ReactFlow>
-        </div>
-
-        {graph && viewGraph && <ScopeCaption graph={graph} viewGraph={viewGraph} collapsed={collapsed} lensed={Boolean(overlay)} hidden={hiddenKinds} kindCounts={kindCounts} simplified={simplified} />}
-
-        {graph && viewGraph && (
-          <SystemMapDrawer
-            {...drawer}
-            selection={drawnSelection}
-            graph={viewGraph}
-            rawGraph={graph}
-            collapsed={collapsed}
-            healthByRepo={healthByRepo}
-            roleByNodeId={roleByNodeId}
-            onClose={() => setSelection(null)}
-            onSelect={setSelection}
-          />
-        )}
-      </div>
+            {nav.help && (
+              <GraphShortcutHelp
+                onClose={() => nav.setHelp(false)}
+                shortcuts={shortcutHelpRows(copy)}
+                gestures={[]}
+                label={copy.helpTitle}
+                title={copy.helpOpen}
+              />
+            )}
+            <p role="status" aria-live="polite" className="sr-only">
+              {announcement}
+            </p>
+          </div>
+        </GraphCanvasShell>
+      </SystemMapActionsContext.Provider>
     </SystemMapFocusContext.Provider>
   );
 }
 
-/**
- * Owns the viewport. Fits the drawing once the layout lands and when the canvas
- * resizes (`fitView` on mount alone fit an empty field, because the async
- * layout places nodes after React Flow's first pass). Then, on desktop, where
- * the drawer covers the canvas's right edge, pans the selection into the
- * uncovered part without changing the zoom. A selection from a list below the
- * map, or from the URL, would otherwise open a drawer about something hidden.
- */
-function Viewport({
-  fitKey,
-  ready,
-  selection,
-  canvas,
-}: {
+interface MapCanvasProps {
+  canvasRef: RefObject<HTMLDivElement | null>;
+  focus: SystemMapFocusStore;
+  flow: FlowElements;
+  /** Changes with the level; the canvas refits once its layout has landed. */
   fitKey: string;
-  ready: boolean;
-  selection: SystemMapSelection;
-  canvas: React.RefObject<HTMLDivElement | null>;
-}) {
-  const rf = useReactFlow();
-  // Not useNodesInitialized: controlled nodes that ignore dimension changes
-  // never report it. The layout's node count is the signal instead.
-  const initialized = ready;
-  const width = useStore((s) => s.width);
-  const height = useStore((s) => s.height);
-  const latestSelection = useRef(selection);
-  latestSelection.current = selection;
-
-  const reveal = useCallback(
-    (sel: SystemMapSelection) => {
-      if (!sel || typeof window === "undefined" || window.innerWidth < 768) return;
-      const el = canvas.current;
-      if (!el) return;
-      const ids =
-        sel.type === "node" ? [sel.id] : (() => {
-          const e = rf.getEdge(sel.id);
-          return e ? [e.source, e.target] : [];
-        })();
-      const points = ids
-        .map((id) => rf.getInternalNode(id))
-        .filter((n): n is NonNullable<typeof n> => Boolean(n))
-        .map((n) => ({
-          x: n.internals.positionAbsolute.x + SYSTEM_MAP_NODE_SIZE.width / 2,
-          y: n.internals.positionAbsolute.y + SYSTEM_MAP_NODE_SIZE.height / 2,
-        }));
-      if (points.length === 0) return;
-      const center = {
-        x: points.reduce((a, p) => a + p.x, 0) / points.length,
-        y: points.reduce((a, p) => a + p.y, 0) / points.length,
-      };
-      const rect = el.getBoundingClientRect();
-      const visibleRight = Math.max(Math.min(rect.right, window.innerWidth - DRAWER_WIDTH), rect.left + 240);
-      const screen = rf.flowToScreenPosition(center);
-      const margin = SYSTEM_MAP_NODE_SIZE.width / 2;
-      const inView =
-        screen.x > rect.left + margin &&
-        screen.x < visibleRight - margin &&
-        screen.y > rect.top + 40 &&
-        screen.y < rect.bottom - 40;
-      if (inView) return;
-      const { zoom } = rf.getViewport();
-      // Only move on the axis that hides it, so the map shifts as little as possible.
-      const xInView = screen.x > rect.left + margin && screen.x < visibleRight - margin;
-      const targetX = xInView ? screen.x - rect.left : (visibleRight - rect.left) / 2;
-      const yInView = screen.y > rect.top + 40 && screen.y < rect.bottom - 40;
-      const targetY = yInView ? screen.y - rect.top : rect.height / 2;
-      void rf.setViewport({ x: targetX - center.x * zoom, y: targetY - center.y * zoom, zoom }, { duration: 250 });
-    },
-    [rf, canvas],
-  );
-
-  useEffect(() => {
-    if (!initialized || width === 0 || height === 0) return;
-    // fitView is queued inside React Flow, so the reveal waits a beat for the
-    // fitted viewport rather than reading the one it replaces.
-    let reveal2 = 0;
-    const id = requestAnimationFrame(() => {
-      void rf.fitView(FIT_OPTIONS);
-      reveal2 = window.setTimeout(() => reveal(latestSelection.current), 80);
-    });
-    return () => {
-      cancelAnimationFrame(id);
-      window.clearTimeout(reveal2);
-    };
-  }, [rf, initialized, fitKey, width, height, reveal]);
-
-  const selKey = selection ? `${selection.type}:${selection.id}` : "";
-  useEffect(() => {
-    if (initialized) reveal(latestSelection.current);
-  }, [selKey, initialized, reveal]);
-
-  return null;
+  settled: boolean;
+  onActivate: (id: string, kind: "node" | "edge", trigger: ActivateTrigger) => void;
+  onEscape: () => unknown;
+  onPaneClick: () => void;
+  empty: ReactNode;
 }
 
-/** What is drawn and what is not, stated beside the canvas. */
-function ScopeCaption({
-  graph,
-  viewGraph,
-  collapsed,
-  lensed,
-  hidden,
-  kindCounts,
-  simplified,
-}: {
-  graph: SystemGraph;
-  viewGraph: SystemGraph;
-  collapsed: boolean;
-  lensed: boolean;
-  hidden: ReadonlySet<SystemEdgeKind>;
-  kindCounts: ReadonlyMap<SystemEdgeKind, number>;
-  simplified: boolean;
-}) {
-  const repoOf = new Map(graph.nodes.map((n) => [n.id, n.repo]));
-  const intraRepo = graph.edges.filter((e) => repoOf.get(e.source) === repoOf.get(e.target)).length;
-  const hiddenParts = [...hidden]
-    .filter((k) => (kindCounts.get(k) ?? 0) > 0)
-    .map((k) => `${kindCounts.get(k)} ${edgeKindStyle(k).label}`);
-  const nodes = viewGraph.nodes.length;
-  const edges = viewGraph.edges.length;
-
-  const parts = [
-    collapsed
-      ? `Drawing ${nodes} ${nodes === 1 ? "repository" : "repositories"} and ${edges} ${edges === 1 ? "relationship" : "relationships"}. Edges of one kind between the same two repositories are merged, and ${intraRepo} ${intraRepo === 1 ? "relationship" : "relationships"} inside a repository ${intraRepo === 1 ? "is" : "are"} not drawn.`
-      : `Drawing ${nodes} ${nodes === 1 ? "service" : "services"} and ${edges} ${edges === 1 ? "relationship" : "relationships"}.`,
-    hiddenParts.length > 0 ? `Hidden by the edge filter: ${hiddenParts.join(", ")}.` : null,
-    // Lens results name services, and a merged node is several of them.
-    collapsed && lensed ? "Lens marks are drawn per service, so they are off in this view; switch to Services to see them." : null,
-    "Placement follows structural dependencies; co-change lines do not move services.",
-  ];
-
+function MapCanvas({ canvasRef, focus, flow, fitKey, settled, onActivate, onEscape, onPaneClick, empty }: MapCanvasProps) {
   return (
-    <div className="flex flex-col gap-1">
-      <p className="text-xs text-[var(--color-text-tertiary)]">{parts.filter(Boolean).join(" ")}</p>
-      {simplified && (
-        <p className="text-xs text-[var(--color-warning)]">
-          {`Layout simplified: above ${SYSTEM_MAP_MAX_LAYOUT_NODES} services the map falls back to a grid, so placement no longer reflects dependency direction.`}
-        </p>
-      )}
-    </div>
-  );
-}
-
-/**
- * Empty/error state centred over the canvas box. Deliberately absolute: it is
- * the canvas's own "nothing to draw" copy, not chrome competing with a diagram.
- */
-function Centered({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="pointer-events-none absolute inset-0 z-[3] flex items-center justify-center">
-      {children}
+    <div ref={canvasRef} className={`sm-canvas relative min-w-0 ${SYSTEM_MAP_CANVAS_HEIGHT}`}>
+      <style>{FADE_CSS}</style>
+      <SystemMapCanvas
+        nodes={flow.nodes}
+        edges={flow.edges}
+        focus={focus}
+        fitKey={fitKey}
+        settled={settled}
+        onActivate={onActivate}
+        onPaneClick={onPaneClick}
+        onEscape={onEscape}
+        empty={empty}
+      />
     </div>
   );
 }

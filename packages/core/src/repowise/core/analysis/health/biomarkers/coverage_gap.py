@@ -5,15 +5,15 @@ Fires when a file has coverage data and:
 - line_coverage_pct < 60 **and** uncovered lines ≥ 25, OR
 - line_coverage_pct < 30 **and** total_coverable_lines ≥ 50.
 
-Test files themselves are exempt (we don't care that
-``test_foo.py`` has no coverage). Without coverage data the biomarker
+Test files and code that does not ship (tooling, build, vendored,
+generated, docs examples) are exempt. Without coverage data the biomarker
 does nothing — the absence-of-coverage case is the
 ``untested_hotspot`` biomarker's territory.
 """
 
 from __future__ import annotations
 
-from ....test_paths import is_test_related_path
+from ..coverage_actions import coverage_actions
 from ..models import Severity
 from .base import BiomarkerResult, FileContext
 
@@ -32,14 +32,17 @@ class CoverageGapDetector:
             return []
         if ctx.total_coverable_lines <= 0:
             return []
-        if is_test_related_path(ctx.file_path, ctx.language):
+        if ctx.outside_coverage_scope or ctx.reexport_only:
             return []
 
         cov = ctx.line_coverage_pct
         total = ctx.total_coverable_lines
-        uncovered = total - len(ctx.covered_lines or ())
-        # Some parsers don't emit a per-line set; fall back to math.
-        if uncovered <= 0:
+        if ctx.covered_lines:
+            uncovered = max(0, total - len(ctx.covered_lines))
+        else:
+            # Some parsers pin a file with a percentage and a total but no
+            # per-line set; count from the percentage rather than reading the
+            # absent set as "nothing is covered".
             uncovered = round(total * (100.0 - cov) / 100.0)
 
         deep_gap = cov < _LINE_COVERAGE_DEEP_GAP and total >= _MIN_FILE_SIZE
@@ -54,6 +57,7 @@ class CoverageGapDetector:
         else:
             severity = Severity.LOW
 
+        reason = f"{uncovered}/{total} lines uncovered ({cov:.0f}% line coverage)"
         return [
             BiomarkerResult(
                 biomarker_type=self.name,
@@ -66,8 +70,16 @@ class CoverageGapDetector:
                     "branch_coverage_pct": ctx.branch_coverage_pct,
                     "uncovered_lines": uncovered,
                     "total_coverable_lines": total,
+                    # Measured by construction: the report is what fired it.
+                    "actions": coverage_actions(
+                        self.name,
+                        ctx.file_path,
+                        function=None,
+                        target_test=ctx.file_test,
+                        evidence=reason,
+                    ),
                 },
-                reason=(f"{uncovered}/{total} lines uncovered ({cov:.0f}% line coverage)"),
+                reason=reason,
             )
         ]
 

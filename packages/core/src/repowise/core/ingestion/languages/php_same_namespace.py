@@ -18,7 +18,9 @@ file's ``namespace`` declaration) and the shadowing rule (a name bound by a
 needed: an unqualified name in a namespace never falls back to a global class.
 
 Edges carry ``hint_source="same_namespace"`` (as for C#) or
-``"qualified_name"``.
+``"qualified_name"``. A file reached only through names inside comments
+(``@param \\App\\Foo $x``, ``// see Bar``) is linked with ``"doc_comment"``
+instead, which keeps it reachable but out of cycle detection.
 """
 
 from __future__ import annotations
@@ -26,7 +28,8 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any
 
-from ..cohesion import SAME_NAMESPACE_HINT
+from ..cohesion import DOC_COMMENT_HINT, SAME_NAMESPACE_HINT
+from ..extractors.bindings.php import php_class_name
 from .scope_scan import FileScope, ScopeTier, emit_scope_edges
 
 if TYPE_CHECKING:
@@ -54,6 +57,23 @@ _DECLARATION = r"^[ \t]*(?:(?:final|abstract|readonly)[ \t]+)*"
 PHP_CLASS_DECL_RE = re.compile(_DECLARATION + r"class[ \t]+(?P<cls>[A-Za-z_]\w*)", re.MULTILINE)
 # The first declaration of any kind: every `use` clause comes before it.
 _FIRST_DECL_RE = re.compile(_DECLARATION + r"(?:class|interface|trait|enum|function)\b", re.MULTILINE)
+
+#: A quoted string (kept, so a ``//`` inside one is not a comment) or a comment:
+#: ``/* */`` / ``/** */``, ``//`` or ``#`` to end of line, but not a ``#[``
+#: attribute, which names a class in code. Heredocs are not lexed; a quote in
+#: one can leave a later comment unblanked, which only costs the doc_comment hint.
+_STRING_OR_COMMENT_RE = re.compile(
+    r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"|/\*.*?\*/|(?://|#(?!\[))[^\n]*", re.DOTALL
+)
+_NOT_NEWLINE_RE = re.compile(r"[^\n]")
+
+
+def blank_php_comments(text: str) -> str:
+    """*text* with every comment blanked to spaces, strings and newlines kept."""
+    return _STRING_OR_COMMENT_RE.sub(
+        lambda m: m.group() if m.group()[0] in "'\"" else _NOT_NEWLINE_RE.sub(" ", m.group()),
+        text,
+    )
 
 
 def file_namespace(text: str) -> str | None:
@@ -171,6 +191,30 @@ def resolve_php_same_namespace_refs(
             shadowed=frozenset(bound),
         )
 
-    return emit_scope_edges(
-        graph, sorted(texts.items()), plan, skip_names=frozenset(), ident_re=_NAME_RE
+    def comment_plan(path: str, text: str) -> FileScope:
+        code = plan(path, text)
+        return FileScope(
+            tiers=tuple(ScopeTier(hint=DOC_COMMENT_HINT, lookup=t.lookup) for t in code.tiers),
+            shadowed=code.shadowed,
+        )
+
+    # Code first, so a name used in code gets its real hint. The second pass
+    # reads the raw text, comments included; ``emit_scope_edges`` skips any
+    # pair already linked, so it only adds files no code names.
+    code_texts = sorted((path, blank_php_comments(text)) for path, text in texts.items())
+    added = emit_scope_edges(
+        graph,
+        code_texts,
+        plan,
+        skip_names=frozenset(),
+        ident_re=_NAME_RE,
+        declared_name=php_class_name,
+    )
+    return added + emit_scope_edges(
+        graph,
+        sorted(texts.items()),
+        comment_plan,
+        skip_names=frozenset(),
+        ident_re=_NAME_RE,
+        declared_name=php_class_name,
     )

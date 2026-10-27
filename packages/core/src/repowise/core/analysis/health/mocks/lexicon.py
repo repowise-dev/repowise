@@ -71,6 +71,28 @@ class MockDialect:
     #: Over-inclusive costs time; under-inclusive counts nothing at all.
     file_markers: frozenset[str] = frozenset()
 
+    #: Callee -> how it names the binding it replaces: ``dotted`` as one
+    #: ``"pkg.mod.name"`` string, ``object`` as ``(obj, "name")``,
+    #: ``dotted_or_object`` either way, ``modules`` as ``sys.modules`` keys,
+    #: ``factory`` as a module specifier plus a factory for its stand-in,
+    #: ``restore`` as a specifier whose stand-in it removes. Callees are
+    #: spelled with any :attr:`guard_roots` prefix dropped.
+    binding_patches: dict[str, str] = field(default_factory=dict)
+
+    #: Keywords that leave the original reachable through the double, or may:
+    #: a patch carrying one never counts as replacing the binding.
+    passthrough_keywords: frozenset[str] = frozenset()
+
+    #: Test-runner object -> the modules that export it under that name
+    #: (``vi`` from ``vitest``), for proving a receiver is the runner's.
+    runner_modules: dict[str, frozenset[str]] = field(default_factory=dict)
+
+    #: Runner objects the runner also installs as globals (``jest``).
+    runner_globals: frozenset[str] = frozenset()
+
+    #: Runner methods that return a bare double (``vi.fn()``).
+    double_callees: frozenset[str] = frozenset()
+
 
 _PYTHON = MockDialect(
     # ``unittest.mock`` members with no mock token in their names.
@@ -85,6 +107,14 @@ _PYTHON = MockDialect(
     config_attributes=frozenset({"return_value", "side_effect"}),
     test_name_prefixes=("test",),
     file_markers=frozenset({"patch"}),
+    binding_patches={
+        "patch": "dotted",
+        "patch.object": "object",
+        "patch.dict": "modules",
+        "monkeypatch.setattr": "dotted_or_object",
+        "monkeypatch.setitem": "modules",
+    },
+    passthrough_keywords=frozenset({"wraps", "side_effect", "autospec"}),
 )
 
 
@@ -148,13 +178,25 @@ _JS_TS = MockDialect(
     # ``vi.fn()`` / ``jest.fn()`` carry no test-double token anywhere in the
     # call, so without these a file that mocks only through them is skipped.
     file_markers=frozenset({"vi.fn", "jest.fn", "sinon", "jasmine"}),
+    # ``doMock`` is left out: it applies only to later dynamic imports.
+    binding_patches={
+        "vi.mock": "factory",
+        "jest.mock": "factory",
+        "vi.unmock": "restore",
+        "jest.unmock": "restore",
+        "vi.doUnmock": "restore",
+        "jest.doUnmock": "restore",
+    },
+    runner_modules={"vi": frozenset({"vitest"}), "jest": frozenset({"@jest/globals"})},
+    runner_globals=frozenset({"jest"}),
+    double_callees=frozenset({"fn"}),
 )
 
 
 # Keyed by ``LanguageTag`` (``ingestion/models.py``); one dialect may serve
 # several tags. Go and Java are absent deliberately: neither has a trustworthy
 # assertion count, and that is this marker's denominator. Measurements and
-# reasoning in LANGUAGE_SUPPORT.md#code-health-coverage.
+# reasoning in docs/architecture/language-support.md#test-quality-markers-per-language.
 MOCK_DIALECTS: dict[str, MockDialect] = {
     "python": _PYTHON,
     "javascript": _JS_TS,

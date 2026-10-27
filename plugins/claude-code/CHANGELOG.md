@@ -2,6 +2,138 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## 0.59.0
+
+### Added
+- Agents record the decision a commit made by default: a `git commit` hook
+  asks for one, and `repowise decision add --agent <slug>` records it signed
+  as the agent (#4689, #4672).
+- The architectural-decisions skill and `/repowise:decision` show how an agent
+  records and accepts decisions as itself, each acceptance carrying its
+  decision text (#4688).
+
+### Changed
+- `/repowise:health` and `/repowise:coverage` explain that a `.coverage` file
+  builds only the per-test map, with the export command for per-file numbers
+  (#4320).
+- `/repowise:coverage` reads Apex coverage reports (#4413).
+
+## 0.58.0
+
+### Changed
+- `/repowise:init` follows the CLI's plan screen: one set of mode names (Built
+  from code, Written by a model, Index only), a logged-in Claude Code, Codex or
+  OpenCode offered but never used unasked, `--repos` for a folder of repos,
+  `--progress json` for agents, and an existing `.repowise/` upgraded with
+  `repowise update --full` (#4255).
+- `/repowise:update` maps "full" to `repowise update --full`, and
+  `/repowise:reindex` names `--embedder <name>` (#4255).
+- `/repowise:search` says what to try next when a query returns nothing (#4255).
+- `/repowise:coverage` recommends a per-test coverage command that exists (#3676).
+- Lens reads the folder health map's area filter (#4135, #4157).
+
+## 0.57.0
+
+### Changed
+- `/repowise:risk` and the change-review skill lead with the change's size
+  percentile ("size and spread, not a bug predictor"), then the touched files'
+  bug-fix record (#3664).
+- The codebase-exploration skill reads `confidence` as whether the top hit
+  covers the question, with `retrieval_quality` behind
+  `include=["diagnostics"]` (#3716).
+
+## 0.56.0
+
+### Changed
+- The change-review skill reads the tests a change needs from the same
+  selection `repowise impacted-tests` makes: `tests_to_run_why` gives each
+  test's reason, and `tests_run_all` with `tests_run_all_reasons` says when no
+  smaller set can be vouched for (#3296). `pr_blast_radius` now needs
+  `include=["blast"]` (#3118), and detailed owner metrics leave the default
+  `get_risk` card (#3139).
+- `/repowise:health` and the code-health skill say that bare `repowise health`
+  reads the stored analysis, and point at `repowise health --recompute` for an
+  in-process run (#3280).
+- Lens follows the trimmed `get_risk` and `get_change_risk` replies (#3139,
+  #3152), names the tests a change needs in its review (#3296), and picks up
+  the shared loader and state styling (#3304).
+- Lens no longer approves its own MCP lookups. It registers no `tool.check`
+  hook, so `get_context`, `get_change_risk`, `get_why` and `get_answer` calls
+  from Lens ask Claude Code's permission like any other MCP call. The README's
+  Permissions section lists the four allow rules that let them run without a
+  prompt.
+- Each command's `allowed-tools` now names the exact `repowise` commands it
+  runs (for example `Bash(repowise health:*)`) in place of any Bash command.
+  `/repowise:init` no longer pre-approves `Write`, and asks with
+  `AskUserQuestion`.
+- `/repowise:init` no longer reads provider key variables from the
+  environment; `repowise init` detects a configured key itself.
+- The plugin README lists what Lens runs, reads, fetches and submits, and the
+  manifest carries the directory listing fields and an icon.
+
+## 0.55.0
+
+### Added
+- Lens, a Claude Code mod that ships in the plugin (`hooks/lens/lens.js`,
+  registered through the `modules` entry in `hooks.json`). It shows the index
+  to the person at the keyboard: setup, freshness and savings rows above the
+  prompt, the file's caller and contributor counts in the spinner, margin notes
+  under Edit and Write repeating what the augment hook flagged, a row under
+  Bash output `repowise distill` shortened, a `get_change_risk` review beneath
+  Claude's answer after a turn that edits files (with `Run tests`, `Why` and
+  `Details` buttons), and a `/lens` pane with Flow (a dashboard of each turn
+  with Repowise), a map of the repo lit by Claude's turn with its story under
+  it, an Ask tab (`get_why` or `get_answer`) and a session recap. After a compaction it offers
+  a `Brief Claude` button. In the desktop app the map draws as SVG.
+- Six `userConfig` toggles: `lens_margin`, `lens_squeeze`, `lens_review` and
+  `lens_flow` (on by default), and `lens_pane_autoopen` and `lens_map_health`
+  (off).
+- Lens needs Claude Code 2.1.287 or later. Older versions, and sessions where
+  mods are switched off, load the rest of the plugin unchanged. Lens never
+  denies, holds or rewrites Claude's tool calls. It approves only its own
+  read-only calls to this plugin's MCP server (`get_context`,
+  `get_change_risk`, `get_why`, `get_answer`), and sends Claude nothing
+  without a button press. Ask questions that do not start with "why" go to
+  `get_answer`, which may use the model your repo configures. See
+  [docs/agent/LENS.md](../../docs/agent/LENS.md) and its
+  [footprint](../../docs/agent/LENS.md#footprint).
+
+### Changed
+- The `code-health` skill leads a "what should I refactor?" answer with the
+  `fix_first` queue and opens an item with `get_health(fix_id=...)` for its
+  steps and the tests to run.
+- The `ask` command follows the `candidate_files` that `get_answer` now
+  returns at every confidence. The `context` command and the
+  `codebase-exploration` skill note that a symbol row without a `symbol_id` is
+  addressed as `path::name`.
+- No MCP tool was added, removed or renamed, and `hooks.json` still mirrors the
+  augment matcher in `claude_config.py`.
+
+### Fixed
+- The `security` command passed `--output json` to history scans; the flag is
+  `--format json`.
+
+## 0.54.0
+
+### Changed
+- The `coverage` command documents gating a change in CI with
+  `repowise coverage check`: the report, threshold and output-format options,
+  and the report formats the parser reads (Go cover profiles, JaCoCo and
+  repowise JSON joined LCOV, Cobertura, Clover and coverage.py).
+- The `impacted-tests` command documents `--format args` and `--runner`, and
+  that the selection answers `:all` whenever it is not certain.
+- No MCP tool was added, removed or renamed, and `hooks.json` still mirrors the
+  global augment matcher. The new coverage re-ingest hook is opt-in and
+  repository-local, written by the CLI, so the plugin does not ship it.
+
+## 0.53.0
+
+### Changed
+- Version bump only. No command, skill or hook changed this cycle: the server
+  still lists the same 18 tools, every tool named in a command or skill is one
+  of them, no CLI flag a command documents changed, and `hooks.json` still
+  mirrors the augment matcher in `claude_config.py`.
+
 ## 0.52.0
 
 ### Changed

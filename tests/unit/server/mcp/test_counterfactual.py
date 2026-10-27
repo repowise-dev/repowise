@@ -37,6 +37,19 @@ def test_search_codebase_floors_per_distinct_cited_path() -> None:
     assert cf.replaced_tokens_for("search_codebase", result) == 2 * cf.SEARCH_FLOOR_PER_HIT
 
 
+def test_search_codebase_counts_symbol_rows_by_path() -> None:
+    """A symbol row has no target_path, so it used to earn nothing."""
+    result = {
+        "results": [
+            {"type": "symbol", "path": "src/a.py", "file": "src/a.py"},
+            {"page_type": "file_page", "path": "src/b.py"},
+            {"page_type": "module_page", "target_path": "src"},  # pre-path payload shape
+        ],
+        "_meta": {},
+    }
+    assert cf.replaced_tokens_for("search_codebase", result) == 3 * cf.SEARCH_FLOOR_PER_HIT
+
+
 def test_search_codebase_no_results_returns_zero() -> None:
     assert cf.replaced_tokens_for("search_codebase", {"results": [], "_meta": {}}) == 0
 

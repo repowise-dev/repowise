@@ -36,6 +36,9 @@ _NODE_ATTR_KEYS = (
     "has_error",
     "is_test",
     "is_entry_point",
+    "is_reachability_root",
+    "always_run_reason",
+    "public_api",
     "kind",
     "name",
     "qualified_name",
@@ -47,6 +50,36 @@ _NODE_ATTR_KEYS = (
     "docstring",
     "parent_symbol_id",
 )
+
+# Symbol attributes ``graph_nodes`` has no column for. They come from the parse
+# alone, so a rehydrated graph takes them back from the re-parse
+# (:meth:`RehydrateMixin.restore_parse_only_attrs`); without them the
+# refactoring detectors lose the ``@Override`` / ``override`` exemptions.
+_PARSE_ONLY_SYMBOL_ATTRS = ("decorators", "modifiers")
+
+
+def _restore_spawn_lines(graph: Any, parsed: Any) -> None:
+    """Mark the call lines of *parsed* that hand a coroutine to a task scheduler.
+
+    ``graph_edges`` stores call lines but not which of them spawn, so a
+    rehydrated ``calls`` edge takes them back from the re-parse: the caller's
+    spawned call to the callee's name at a line the edge already records.
+    """
+    module = f"{parsed.file_info.path}::__module__"
+    for call in parsed.calls:
+        caller = call.caller_symbol_id or module
+        if not call.spawned or caller not in graph:
+            continue
+        for callee, data in graph[caller].items():
+            if (
+                data.get("edge_type") == "calls"
+                and call.line in (data.get("call_lines") or ())
+                and graph.nodes[callee].get("name") == call.target_name
+            ):
+                lines = data.setdefault("spawn_lines", [])
+                if call.line not in lines:
+                    lines.append(call.line)
+                    lines.sort()
 
 
 class RehydrateMixin:
@@ -115,6 +148,10 @@ class RehydrateMixin:
             supplied_props = edge.get("supplied_props")
             if supplied_props is not None:
                 edge_attrs["supplied_props"] = frozenset(supplied_props)
+            if edge.get("type_only"):
+                edge_attrs["type_only"] = True
+            if edge.get("deferred"):
+                edge_attrs["deferred"] = True
             graph.add_edge(source, target, **edge_attrs)
             edge_count += 1
 
@@ -129,3 +166,20 @@ class RehydrateMixin:
             metrics=len(metrics) if metrics else 0,
         )
         return builder
+
+    def restore_parse_only_attrs(self, parsed_files: Iterable[Any]) -> None:
+        """Stamp the parse-only symbol attributes back onto rehydrated nodes,
+        and the spawned call lines back onto their edges.
+
+        The first symbol under an id keeps its values, as in ``add_file``,
+        where the first declared overload keeps the node.
+        """
+        graph = self._graph  # type: ignore[attr-defined]
+        for parsed in parsed_files:
+            for sym in parsed.symbols:
+                node = graph.nodes.get(sym.id)
+                if node is None:
+                    continue
+                for key in _PARSE_ONLY_SYMBOL_ATTRS:
+                    node.setdefault(key, getattr(sym, key))
+            _restore_spawn_lines(graph, parsed)

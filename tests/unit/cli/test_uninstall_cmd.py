@@ -18,6 +18,7 @@ redirect, so neither layer is optional.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -37,6 +38,9 @@ def repo(tmp_path_factory, monkeypatch) -> Path:
     monkeypatch.setenv("HOMEPATH", str(home)[len(home.drive) :])
     monkeypatch.setattr(Path, "home", lambda: home)
     monkeypatch.delenv("REPOWISE_SKIP_EDITOR_SETUP", raising=False)
+    # A developer's own database must not change what these tests see.
+    monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+    monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
 
     (repo_path / ".repowise").mkdir()
     (repo_path / ".repowise" / "wiki.db").write_text("not really a database", encoding="utf-8")
@@ -569,6 +573,64 @@ def test_the_package_and_the_plugin_are_named_rather_than_touched(repo: Path) ->
     assert "print-config" in advisories
 
 
+def _store_rows(items: list[dict]) -> list[dict]:
+    return [i for i in items if i["label"].startswith("index in the configured")]
+
+
+def test_a_configured_database_is_listed_as_kept_with_a_reason(repo: Path, monkeypatch) -> None:
+    import shutil
+
+    shutil.rmtree(repo / ".repowise")
+    monkeypatch.setenv("REPOWISE_DB_URL", "postgresql://alice:s3cret@db.example:5432/wiki")
+
+    result = _invoke(["uninstall", str(repo), "--all", "--dry-run", "--format", "json"])
+    payload = json.loads(result.output)
+
+    rows = _store_rows(payload["plan"]["items"])
+    assert len(rows) == 1
+    assert rows[0]["group"] == "index"
+    assert "db.example:5432/wiki" in rows[0]["path"]
+    assert "shared" in rows[0]["blocked"] and "other repositories" in rows[0]["blocked"]
+    assert "s3cret" not in result.output
+    assert "alice" not in result.output
+
+
+def test_a_real_run_keeps_the_database_and_exits_with_leftovers(
+    repo: Path, tmp_path: Path, monkeypatch
+) -> None:
+    db_file = tmp_path / "shared.db"
+    db_file.write_bytes(b"other repositories live here")
+    monkeypatch.setenv("REPOWISE_DB_URL", f"sqlite:///{db_file}")
+
+    result = _invoke(["uninstall", str(repo), "--all", "--format", "json"])
+    payload = json.loads(result.output)
+
+    kept = [r for r in payload["results"] if r["label"].startswith("index in the configured")]
+    assert len(kept) == 1
+    assert kept[0]["action"] == "kept"
+    assert kept[0]["reason"]
+    assert result.exit_code == 3
+    assert db_file.read_bytes() == b"other repositories live here"
+    # The local directory is still removed: only the database is declined.
+    assert not (repo / ".repowise").exists()
+
+
+def test_uninstall_offers_no_flag_to_remove_the_database() -> None:
+    help_text = _invoke(["uninstall", "--help"]).output.lower()
+    assert "database" not in help_text
+    assert "--db" not in help_text
+
+
+def test_no_configured_database_means_no_store_row(repo: Path) -> None:
+    payload = _payload(["uninstall", str(repo), "--all", "--dry-run"])
+
+    assert _store_rows(payload["plan"]["items"]) == []
+    index_rows = [i for i in payload["plan"]["items"] if i["group"] == "index"]
+    assert len(index_rows) == 1
+    assert index_rows[0]["exists"] is True
+    assert index_rows[0]["blocked"] is None
+
+
 # ---------------------------------------------------------------------------
 # the shared file
 # ---------------------------------------------------------------------------
@@ -616,3 +678,105 @@ def test_the_two_agents_md_blocks_are_removed_independently(repo: Path) -> None:
     remaining = agents.read_text(encoding="utf-8") if agents.exists() else ""
     assert "REPOWISE_AGENTS:START" not in remaining
     assert "REPOWISE_DISTILL:START" not in remaining
+
+
+def _git(*args: str, cwd: Path) -> None:
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+
+
+class TestPostCommitHookRemoval:
+    """``repowise uninstall`` must also take the auto-sync hook with it (#2469)."""
+
+    def test_all_removes_the_post_commit_hook(self, repo: Path) -> None:
+        from repowise.cli import hooks
+
+        _git("init", "-q", cwd=repo)
+        assert hooks.install(repo) == "installed"
+
+        result = _invoke(["uninstall", str(repo), "--all"])
+
+        assert result.exit_code == 0
+        assert hooks.status(repo) == "not installed"
+
+    def test_keep_index_also_removes_the_hook(self, repo: Path) -> None:
+        """It is grouped with the generated blocks, not the index (Raghav's call)."""
+        from repowise.cli import hooks
+
+        _git("init", "-q", cwd=repo)
+        assert hooks.install(repo) == "installed"
+
+        _invoke(["uninstall", str(repo), "--keep-index"])
+
+        assert hooks.status(repo) == "not installed"
+        assert (repo / ".repowise" / "wiki.db").exists()
+
+    def test_no_hook_installed_reports_nothing_to_do(self, repo: Path) -> None:
+        _git("init", "-q", cwd=repo)
+
+        payload = _payload(["uninstall", str(repo), "--all"])
+
+        hook_rows = [
+            r for r in payload["results"] if "hook" in r["label"] and r["group"] == "repo-files"
+        ]
+        assert hook_rows and hook_rows[0]["action"] == "not-found"
+
+    def test_a_global_hooks_path_is_blocked_and_named(self, repo: Path) -> None:
+        from repowise.cli import hooks
+
+        _git("init", "-q", cwd=repo)
+        outside = repo.parent / "shared-hooks"
+        outside.mkdir()
+        _git("config", "core.hooksPath", str(outside), cwd=repo)
+        assert hooks.install(repo) == "installed"
+
+        result = _invoke(["uninstall", str(repo), "--all", "--format", "json"])
+        payload = json.loads(result.output)
+
+        assert hooks.status(repo).startswith("installed")
+        hook_row = next(r for r in payload["results"] if "hook" in r["label"])
+        assert hook_row["action"] == "kept"
+        assert "outside this repo" in hook_row["reason"]
+        assert result.exit_code == 3
+
+    def test_a_worktree_hook_is_blocked_and_names_the_main_checkout(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        from repowise.cli import hooks
+
+        _git("init", "-q", cwd=repo)
+        (repo / "seed.txt").write_text("seed\n", encoding="utf-8")
+        _git("add", "seed.txt", cwd=repo)
+        _git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "seed", cwd=repo)
+        assert hooks.install(repo) == "installed"
+
+        wt = tmp_path / "wt"
+        _git("worktree", "add", "-b", "feature", str(wt), cwd=repo)
+
+        payload = _payload(["uninstall", str(wt), "--all"])
+
+        hook_row = next(r for r in payload["results"] if "hook" in r["label"])
+        assert hook_row["action"] == "kept"
+        assert str(repo) in hook_row["reason"]
+        assert hooks.status(repo).startswith("installed")
+
+    def test_an_unreadable_hook_is_named_rather_than_crashing_the_plan(self, repo: Path) -> None:
+        """Regression: binary/non-UTF-8 hook content used to raise while building the plan.
+
+        `hooks.status` decoded the whole file as UTF-8 with no guard, so a
+        valid executable hook holding arbitrary bytes (or one merely unreadable)
+        took the entire `uninstall` inventory down with it instead of being
+        reported and left alone.
+        """
+        from repowise.cli import hooks
+
+        _git("init", "-q", cwd=repo)
+        hooks_dir = hooks._hooks_dir(repo)
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+        (hooks_dir / "post-commit").write_bytes(b"#!/bin/sh\n\xff\xfe\x00binary garbage")
+
+        payload = _payload(["uninstall", str(repo), "--all"])
+
+        hook_row = next(r for r in payload["results"] if "hook" in r["label"])
+        assert hook_row["action"] == "kept"
+        assert "could not be read" in hook_row["reason"]
+        assert (hooks_dir / "post-commit").exists()

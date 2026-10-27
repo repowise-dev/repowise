@@ -31,7 +31,16 @@ def _clause(clause: Node, prefix: str, src: str) -> tuple[str, str] | None:
     if not target:
         return None
     fqn = f"{prefix}\\{target}" if prefix else target
-    return fqn, alias or fqn.rsplit("\\", 1)[-1]
+    return fqn, alias or php_class_name(fqn)
+
+
+def php_class_name(name: str) -> str:
+    """The class a bare, relative or fully qualified name denotes, as declared.
+
+    ``imported_names`` carries names as the target file declares them, so
+    ``use A\\B as C`` imports ``B`` and ``\\A\\B::class`` names ``B``.
+    """
+    return name.rsplit("\\", 1)[-1]
 
 
 def php_use_clauses(stmt_node: Node, src: str) -> list[tuple[str, str]]:
@@ -63,7 +72,7 @@ def php_use_clauses(stmt_node: Node, src: str) -> list[tuple[str, str]]:
 def extract_php_bindings(stmt_node: Node, src: str) -> tuple[list[str], list[NamedBinding]]:
     """Extract bindings from PHP use declarations."""
     clauses = php_use_clauses(stmt_node, src)
-    return [local for _, local in clauses], [
+    return [php_class_name(fqn) for fqn, _ in clauses], [
         NamedBinding(local_name=local, exported_name=fqn, source_file=None)
         for fqn, local in clauses
     ]

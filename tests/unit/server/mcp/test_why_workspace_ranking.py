@@ -13,6 +13,9 @@ import pytest
 from repowise.core.persistence.models import DecisionRecord
 from tests.unit.server.test_mcp_workspace import _make_repo_context, _MockRegistry
 
+# These tests read the accounting the lean envelope leaves out by default.
+pytestmark = pytest.mark.usefixtures("debug_meta")
+
 _MCP_STATE = (
     "_registry",
     "_workspace_root",

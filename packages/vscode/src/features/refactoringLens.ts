@@ -1,13 +1,11 @@
 import * as vscode from "vscode";
-import {
-  buildRefactoringPlanPrompt,
-  type AiPromptFlavor,
-} from "@repowise-dev/ui/health/ai-prompt-builder";
+import type { AiPromptFlavor } from "@repowise-dev/ui/health/ai-prompt-builder";
 import { typeMeta } from "@repowise-dev/ui/refactoring/meta";
 import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
 import { CONFIG_SECTION, InternalCommands } from "../constants";
 import type { RepowiseContext } from "../core/context";
 import { repoRelativePath } from "../core/fileSignals";
+import { planPrompt } from "../core/planPrompt";
 import { getPlansForFile } from "../core/plans";
 import { openViewPanel } from "../core/webviews";
 
@@ -63,7 +61,7 @@ export function registerRefactoringLens(ctx: RepowiseContext): vscode.Disposable
       openRefactoringPlan(ctx, plan),
     ),
     vscode.commands.registerCommand(InternalCommands.copyRefactoringPrompt, (plan: RefactoringPlan) =>
-      copyRefactoringPrompt(plan),
+      copyRefactoringPrompt(ctx, plan),
     ),
     stateSub,
     configSub,
@@ -133,7 +131,7 @@ function openRefactoringPlan(ctx: RepowiseContext, plan: RefactoringPlan): void 
 }
 
 /** Pick a prompt flavor and copy the shared agent prompt for this plan. */
-async function copyRefactoringPrompt(plan: RefactoringPlan): Promise<void> {
+async function copyRefactoringPrompt(ctx: RepowiseContext, plan: RefactoringPlan): Promise<void> {
   if (!plan) return;
   const picked = await vscode.window.showQuickPick(
     FLAVOR_ITEMS.map((item) => item.label),
@@ -142,7 +140,7 @@ async function copyRefactoringPrompt(plan: RefactoringPlan): Promise<void> {
   if (!picked) return;
   const flavor = FLAVOR_ITEMS.find((item) => item.label === picked)?.flavor ?? "generic";
 
-  const prompt = buildRefactoringPlanPrompt({ plan, flavor });
+  const prompt = await planPrompt(ctx, plan, flavor);
   await vscode.env.clipboard.writeText(prompt);
   void vscode.window.showInformationMessage(
     `Copied refactoring prompt (${prompt.length} characters) to the clipboard.`,

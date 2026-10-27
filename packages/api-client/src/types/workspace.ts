@@ -1,3 +1,5 @@
+import type { ContractOriginWire, LinkStrategyWire } from "@repowise-dev/types/workspace";
+
 // ---------------------------------------------------------------------------
 // Workspace
 // ---------------------------------------------------------------------------
@@ -13,6 +15,9 @@ export interface WorkspaceRepoEntry {
   file_count: number;
   symbol_count: number;
   page_count: number;
+  // Pages whose freshness status is fresh, out of `page_count`.
+  fresh_page_count: number;
+  // Mean wiki page confidence, 0-100. Not a share of files documented.
   doc_coverage_pct: number;
   hotspot_count: number;
   // Canonical 0-100 health score. Optional so a frontend ahead of its server
@@ -85,6 +90,8 @@ export interface WorkspaceContractEntry {
    * just cannot be traversed into the call graph.
    */
   symbol_id: string | null;
+  /** What established the contract (`route_registration`, `client_call`, ...). */
+  origin?: ContractOriginWire | null;
   /**
    * Extractor-supplied detail (`extraction_layer`, `framework`, `method`,
    * `path`, `table`, `package`...). Keys vary by contract type.
@@ -96,6 +103,8 @@ export interface WorkspaceContractLinkEntry {
   contract_id: string;
   contract_type: string;
   match_type: string;
+  /** The matching rule that made the link (`exact_id`, `binding_routed`, ...); `match_type` derives from it. */
+  strategy?: LinkStrategyWire | null;
   confidence: number;
   provider_repo: string;
   provider_file: string;
@@ -218,9 +227,10 @@ export interface WorkspaceGraphNode {
   repo_id: string;
   name: string;
   file_count: number;
+  /** Mean wiki page confidence, 0-100. */
   coverage_pct: number;
-  health_score: number;
-  health_score_source: "canonical" | "derived";
+  /** Code health, 0-100; null when health has not scored the repo. */
+  health_score: number | null;
   top_language: string;
 }
 
@@ -249,6 +259,11 @@ export type {
   SystemGraph,
   SystemEdgeKind,
   SystemEdgeMatchType,
+  ServiceLinkDirection,
+  ServiceLinkEntry,
+  ServiceLinkEvidence,
+  ServiceLinksTotal,
+  ServiceLinksBetween,
   ExtractionDiagnostics,
   RepoDiagnostics,
   UnmatchedConsumer,
@@ -283,14 +298,18 @@ export type {
 
 import type {
   SystemGraph,
+  ServiceLinksBetween,
   CrossRepoBlastRadius,
   BreakingChangeReport,
   ConformanceReport,
   ArchitectureMetrics,
 } from "@repowise-dev/types";
 
-/** `GET /api/workspace/system-graph` — the full service-granular system graph. */
+/** `GET /api/workspace/system-graph` — the service-granular system graph (`?view=map`: its lean view). */
 export type WorkspaceSystemGraphResponse = SystemGraph;
+
+/** `GET /api/workspace/system-graph/links` — one page of links between two services. */
+export type WorkspaceLinksBetweenResponse = ServiceLinksBetween;
 
 /** `GET /api/workspace/blast-radius` — cross-repo downstream impact set. */
 export type WorkspaceBlastRadiusResponse = CrossRepoBlastRadius;
@@ -303,3 +322,6 @@ export type WorkspaceConformanceResponse = ConformanceReport;
 
 /** `GET /api/workspace/architecture` — architecture-complexity metrics + roles. */
 export type WorkspaceArchitectureResponse = ArchitectureMetrics;
+
+/** `GET /api/workspace/estate` — the estate report `repowise report estate` prints. */
+export type { EstateReport as WorkspaceEstateResponse } from "@repowise-dev/types";

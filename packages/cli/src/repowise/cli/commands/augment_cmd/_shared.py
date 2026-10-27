@@ -91,7 +91,7 @@ def _ledger_key(surface: str, category: str, text: str) -> str:
     """
     import hashlib
 
-    digest = hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()[:12]
+    digest = hashlib.sha1(text.encode("utf-8", "replace"), usedforsecurity=False).hexdigest()[:12]
     return f"{surface}:{category}:{digest}"
 
 
@@ -139,8 +139,12 @@ def _extract_output_text(tool_output: object) -> str:
 MAX_OUTPUT_CHARS = 10_000
 
 
-def hook_flag_enabled(repo_path: Path, flag: str) -> bool:
+def hook_flag_enabled(repo_path: Path, flag: str, *, default: bool = False) -> bool:
     """True when ``hooks.<flag>`` is on for this repo. Fails closed.
+
+    *default* answers when the config or the key is absent; a surface that is
+    on by default passes ``True`` and is switched off by ``<flag>: false``. A
+    config that cannot be read or parsed still reads as off.
 
     Every hook surface that *replaces* a tool result is opt-in behind one of
     these, and they are all written by the single init consent (see
@@ -158,8 +162,11 @@ def hook_flag_enabled(repo_path: Path, flag: str) -> bool:
     override = os.environ.get(f"REPOWISE_HOOK_{flag.upper()}")
     if override is not None:
         return override.strip().lower() in ("1", "true", "yes", "on")
+    path = repo_path / ".repowise" / "config.yaml"
     try:
-        text = (repo_path / ".repowise" / "config.yaml").read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return default
     except (OSError, ValueError):
         # ValueError covers UnicodeDecodeError: a config with a latin-1 byte in
         # it means "cannot tell", which for an opt-in means no.
@@ -168,13 +175,13 @@ def hook_flag_enabled(repo_path: Path, flag: str) -> bool:
     # not this key is the common case, and it should not pay ~70ms to learn so.
     # The parse below is still what decides; this only rules out.
     if flag not in text:
-        return False
+        return default
     try:
         import yaml
 
         data = yaml.safe_load(text) or {}
         hooks = data.get("hooks")
-        return bool(isinstance(hooks, dict) and hooks.get(flag) is True)
+        return bool(isinstance(hooks, dict) and hooks.get(flag, default) is True)
     except Exception:
         return False
 
@@ -414,15 +421,6 @@ def _record_opportunity(
         )
     except Exception:
         return
-
-
-def _relativize(file_path: str, repo_path: Path) -> str | None:
-    """Repo-relative POSIX path for *file_path*, or None when outside it."""
-    try:
-        rel = Path(file_path).resolve().relative_to(Path(repo_path).resolve())
-    except (ValueError, OSError):
-        return None
-    return rel.as_posix()
 
 
 @lru_cache(maxsize=8)

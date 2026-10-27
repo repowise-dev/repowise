@@ -115,7 +115,13 @@ def _estimate_search_codebase(result: dict[str, Any]) -> int:
     results = result.get("results")
     if not isinstance(results, list):
         return 0
-    paths = {r["target_path"] for r in results if isinstance(r, dict) and r.get("target_path")}
+    # ``path`` is on every row that names a file, symbol rows included, which
+    # the old ``target_path`` read missed. Fallback for pre-``path`` payloads.
+    paths = {
+        r.get("path") or r.get("target_path")
+        for r in results
+        if isinstance(r, dict) and (r.get("path") or r.get("target_path"))
+    }
     return len(paths) * SEARCH_FLOOR_PER_HIT
 
 

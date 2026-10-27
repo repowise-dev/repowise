@@ -1,10 +1,11 @@
 import * as React from "react";
-import { bandForScore, HEALTH_BAND_LABEL } from "@repowise-dev/types/health";
+import { bandForScore, formatScore, HEALTH_BAND_LABEL } from "@repowise-dev/types/health";
 import type { FileDetailResponse } from "@repowise-dev/types/files";
 import { AskAboutThis } from "../chat/ask-about-this";
 import { PageLede } from "../shared/page-lede";
 import { StatRibbon, type RibbonStat } from "../stats/stat-ribbon";
 import { healthBandColor, coverageTextColor } from "../health/tokens";
+import { ScoreSplit } from "../health/score-split";
 import { formatLOC, formatNumber } from "../lib/format";
 import { FileMarks } from "./file-marks";
 
@@ -100,7 +101,7 @@ export function FilePageHeader({
       {score != null ? (
         <PageLede
           label="Code health"
-          value={score.toFixed(1)}
+          value={formatScore(score)}
           valueColor={healthBandColor(bandForScore(score))}
           unit="out of 10"
           band={{
@@ -108,6 +109,12 @@ export function FilePageHeader({
             color: healthBandColor(bandForScore(score)),
           }}
           layout="beside"
+          figureFooter={
+            <ScoreSplit
+              categories={data.health.breakdown?.categories}
+              signals={data.health.signals}
+            />
+          }
         >
           <FileProse data={data} linkPrefix={linkPrefix} LinkComponent={A} />
         </PageLede>
@@ -140,7 +147,14 @@ function FileProse({
   const deduction = data.health.breakdown?.total_deduction;
   const owner = data.git?.primary_owner;
   const ownerPct = data.git?.primary_owner_commit_pct;
+  const ownerLinePct = data.git?.primary_owner_line_pct;
   const commits = data.git?.commit_count_total ?? 0;
+  // Two different shares of the same person: blame lines they hold today, and
+  // the commits they made. Each is labelled, since they often disagree.
+  const ownerShares = [
+    ownerLinePct != null ? `${Math.round(ownerLinePct * 100)}% of current lines` : null,
+    ownerPct != null ? `${Math.round(ownerPct * 100)}% of commits` : null,
+  ].filter(Boolean);
 
   return (
     <>
@@ -162,7 +176,7 @@ function FileProse({
           >
             {owner}
           </A>
-          {ownerPct != null && ` (${Math.round(ownerPct * 100)}% of commits)`}
+          {ownerShares.length > 0 && ` (${ownerShares.join(", ")})`}
           {commits > 0 && `, across ${formatNumber(commits)} commit${commits === 1 ? "" : "s"}`}.
         </p>
       )}

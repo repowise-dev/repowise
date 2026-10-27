@@ -41,7 +41,8 @@ from statistics import median
 from typing import Any
 
 from repowise.core.workspace.cycles import detect_cycles
-from repowise.core.workspace.system_graph import SystemEdge, SystemGraph
+from repowise.core.workspace.graph_evidence import GraphEvidence, graph_evidence
+from repowise.core.workspace.system_graph import SystemGraph
 
 _log = logging.getLogger("repowise.workspace.architecture_metrics")
 
@@ -84,6 +85,8 @@ ROLE_ORDER: tuple[str, ...] = (ROLE_CORE, ROLE_SHARED, ROLE_CONTROL, ROLE_PERIPH
 #: Architecture-type labels.
 ARCH_CORE_PERIPHERY = "core-periphery"
 ARCH_HIERARCHICAL = "hierarchical"
+#: The graph's evidence cannot support either label (see :mod:`.graph_evidence`).
+ARCH_UNDETERMINED = "undetermined"
 
 
 # ---------------------------------------------------------------------------
@@ -142,17 +145,23 @@ class ArchitectureMetrics:
 
     node_count: int
     structural_edge_count: int
-    propagation_cost: float  # 0-1 fraction
-    propagation_cost_pct: float  # percentage, 1 decimal — for display
-    core_size: int
-    core_ratio: float  # core_size / node_count
+    # Each measured figure is None when the graph's evidence is insufficient
+    # (see :mod:`.graph_evidence`): zero edges is "not seen", not "decoupled".
+    propagation_cost: float | None  # 0-1 fraction
+    propagation_cost_pct: float | None  # percentage, 1 decimal — for display
+    core_size: int | None
+    core_ratio: float | None  # core_size / node_count
     core_members: list[str]
-    cycle_count: int
+    cycle_count: int | None
     conformance_violations: int
-    architecture_type: str  # core-periphery | hierarchical
-    score: float  # 1-10
+    architecture_type: str  # core-periphery | hierarchical | undetermined
+    score: float | None  # 1-10
     roles: list[NodeArchitectureRole] = field(default_factory=list)
     generated_at: str = ""
+    evidence: GraphEvidence | None = None
+    #: True when the cycle enumeration budget stopped the count, so
+    #: ``cycle_count`` is "at least" that many.
+    cycle_count_capped: bool = False
 
     def role_breakdown(self) -> dict[str, int]:
         """Count of services per role, in canonical role order."""
@@ -171,31 +180,15 @@ class ArchitectureMetrics:
             "core_ratio": self.core_ratio,
             "core_members": self.core_members,
             "cycle_count": self.cycle_count,
+            "cycle_count_capped": self.cycle_count_capped,
             "conformance_violations": self.conformance_violations,
             "architecture_type": self.architecture_type,
             "score": self.score,
             "role_breakdown": self.role_breakdown(),
             "roles": [r.to_dict() for r in self.roles],
             "generated_at": self.generated_at,
+            "evidence": self.evidence.to_dict() if self.evidence is not None else None,
         }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> ArchitectureMetrics:
-        return cls(
-            node_count=data.get("node_count", 0),
-            structural_edge_count=data.get("structural_edge_count", 0),
-            propagation_cost=data.get("propagation_cost", 0.0),
-            propagation_cost_pct=data.get("propagation_cost_pct", 0.0),
-            core_size=data.get("core_size", 0),
-            core_ratio=data.get("core_ratio", 0.0),
-            core_members=list(data.get("core_members", [])),
-            cycle_count=data.get("cycle_count", 0),
-            conformance_violations=data.get("conformance_violations", 0),
-            architecture_type=data.get("architecture_type", ARCH_HIERARCHICAL),
-            score=data.get("score", SCORE_MAX),
-            roles=[NodeArchitectureRole.from_dict(r) for r in data.get("roles", [])],
-            generated_at=data.get("generated_at", ""),
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -203,19 +196,14 @@ class ArchitectureMetrics:
 # ---------------------------------------------------------------------------
 
 
-def _structural_adjacency(edges: list[SystemEdge]) -> dict[str, set[str]]:
+def _structural_adjacency(graph: SystemGraph) -> dict[str, set[str]]:
     """Forward dependency adjacency over structural edges: ``source -> {targets}``.
 
-    Direction is the system graph's own: ``source`` depends on / calls
-    ``target``. Behavioral co-change edges are excluded — they assert correlated
-    change, not a dependency, so they never contribute to reachability.
+    The graph's own :meth:`SystemGraph.adjacency`, so reachability here and the
+    cycles reported beside it walk the same edges. Behavioral co-change edges
+    are excluded: they assert correlated change, not a dependency.
     """
-    adj: dict[str, set[str]] = {}
-    for edge in edges:
-        if not edge.structural:
-            continue
-        adj.setdefault(edge.source, set()).add(edge.target)
-    return adj
+    return {src: set(targets) for src, targets in graph.adjacency().items()}
 
 
 def _reachable(start: str, adj: dict[str, set[str]], node_ids: set[str]) -> set[str]:
@@ -372,37 +360,28 @@ def compute_architecture_metrics(
     node_ids = [n.id for n in graph.nodes]
     n = len(node_ids)
 
-    adj = _structural_adjacency(graph.edges)
+    adj = _structural_adjacency(graph)
     structural_edge_count = sum(len(t) for t in adj.values())
 
-    # Empty / single-service workspaces are vacuously decoupled — no coupling is
-    # possible, so the score is the maximum and there is no core.
-    if n <= 1:
-        roles = [
-            NodeArchitectureRole(
-                id=node.id,
-                repo=node.repo,
-                name=node.name,
-                visibility_fan_in=1,
-                visibility_fan_out=1,
-                role=ROLE_PERIPHERAL,
-            )
-            for node in graph.nodes
-        ]
+    # Fewer than two services, or none joined by an edge: nothing was seen to
+    # relate, which is not the same as "decoupled". No figure is claimed.
+    evidence = graph_evidence(graph)
+    if not evidence.determined:
         return ArchitectureMetrics(
             node_count=n,
             structural_edge_count=structural_edge_count,
-            propagation_cost=0.0,
-            propagation_cost_pct=0.0,
-            core_size=0,
-            core_ratio=0.0,
+            propagation_cost=None,
+            propagation_cost_pct=None,
+            core_size=None,
+            core_ratio=None,
             core_members=[],
-            cycle_count=0,
+            cycle_count=None,
             conformance_violations=conformance_violations,
-            architecture_type=ARCH_HIERARCHICAL,
-            score=SCORE_MAX,
-            roles=roles,
+            architecture_type=ARCH_UNDETERMINED,
+            score=None,
+            roles=[],
             generated_at=generated_at,
+            evidence=evidence,
         )
 
     visibility = _visibility_matrix(node_ids, adj)
@@ -454,7 +433,7 @@ def compute_architecture_metrics(
 
     # The true count, not the reporting cap: a workspace with 500 cycles must
     # not score the same as one with 50.
-    _, cycle_count = detect_cycles(graph)
+    _, cycle_count, cycle_count_capped = detect_cycles(graph)
     score = architecture_score(propagation_cost, core_ratio, cycle_count, conformance_violations)
     architecture_type = (
         ARCH_CORE_PERIPHERY if core_ratio >= CORE_PERIPHERY_MIN_RATIO else ARCH_HIERARCHICAL
@@ -469,9 +448,11 @@ def compute_architecture_metrics(
         core_ratio=round(core_ratio, 4),
         core_members=core_members,
         cycle_count=cycle_count,
+        cycle_count_capped=cycle_count_capped,
         conformance_violations=conformance_violations,
         architecture_type=architecture_type,
         score=score,
         roles=roles,
         generated_at=generated_at,
+        evidence=evidence,
     )

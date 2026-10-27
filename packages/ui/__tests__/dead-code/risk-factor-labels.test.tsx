@@ -2,11 +2,11 @@
  * Risk factors reach a reader as English, not as API slugs.
  *
  * Both surfaces that render `risk_factors` used to `join(", ")` the raw tags,
- * so the badge tooltip and the agent prompt said "config, asset" where the
+ * so the row marker and the agent prompt said "config, asset" where the
  * engine's own evidence line says "configuration, runtime-loaded web asset".
  *
  * The two were uncovered in different ways, which is worth keeping straight.
- * The tooltip was *executed* with a real factor — `dead-code-view`'s fixture
+ * The marker was *executed* with a real factor — `dead-code-view`'s fixture
  * gives one finding `risk_factors: ["bootstrap"]` and the table renders it —
  * but nothing asserted on the text. The prompt branch was never executed at
  * all: the only prompt test seeds from `safeFindings`, which filters on
@@ -40,11 +40,35 @@ function finding(over: Partial<DeadCodeFinding>): DeadCodeFinding {
 }
 
 describe("risk-factor labels", () => {
-  it("renders the badge tooltip with labels, not slugs", () => {
+  it("names the risk factors as visible text, with labels, not slugs", () => {
     render(<FindingSafety finding={finding({ risk_factors: ["asset", "config"] })} />);
-    const badge = screen.getByTitle(/Runtime-load risk/);
-    expect(badge.getAttribute("title")).toContain("runtime-loaded web asset, configuration");
-    expect(badge.getAttribute("title")).not.toContain("asset, config)");
+    const marker = screen.getByText(/may load at runtime/);
+    expect(marker.textContent).toContain("runtime-loaded web asset, configuration");
+    expect(marker.textContent).not.toContain("asset, config)");
+    expect(screen.getByText("Review first")).toBeInTheDocument();
+  });
+
+  it("marks nothing on a deletion-ready row", () => {
+    const { container } = render(
+      <FindingSafety finding={finding({ safe_to_delete: true, confidence: 0.9 })} />,
+    );
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it("marks only deletion-ready rows when they are the exception", () => {
+    const { rerender, container } = render(
+      <FindingSafety mark="safe" finding={finding({ safe_to_delete: true, confidence: 0.9 })} />,
+    );
+    expect(screen.getByText("Deletion-ready")).toBeInTheDocument();
+    rerender(<FindingSafety mark="safe" finding={finding({})} />);
+    expect(container).toBeEmptyDOMElement();
+    rerender(<FindingSafety mark="safe" finding={finding({ risk_factors: ["config"] })} />);
+    expect(container.textContent).toBe("may load at runtime (configuration)");
+  });
+
+  it("says just Review first when no risk factor is known", () => {
+    const { container } = render(<FindingSafety finding={finding({})} />);
+    expect(container.textContent).toBe("Review first");
   });
 
   it("labels the risk factors in the dead-code agent prompt", () => {
@@ -56,6 +80,6 @@ describe("risk-factor labels", () => {
 
   it("falls back to the raw tag for a factor the label map has not learned", () => {
     render(<FindingSafety finding={finding({ risk_factors: ["telemetry"] })} />);
-    expect(screen.getByTitle(/Runtime-load risk/).getAttribute("title")).toContain("telemetry");
+    expect(screen.getByText(/may load at runtime/).textContent).toContain("telemetry");
   });
 });

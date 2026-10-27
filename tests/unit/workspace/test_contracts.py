@@ -25,6 +25,8 @@ from repowise.core.workspace.extractors.service_boundary import (
 )
 from repowise.core.workspace.extractors.socket import SocketExtractor
 from repowise.core.workspace.matching import annotate_consumer_targets, match_contracts
+from repowise.core.workspace.matching.common import AMBIGUOUS_PROVIDER
+from repowise.core.workspace.origins import LinkStrategy
 
 # ---------------------------------------------------------------------------
 # normalize_http_path
@@ -55,6 +57,11 @@ class TestNormalizeHttpPath:
 
     def test_root_path(self) -> None:
         assert normalize_http_path("/") == "/"
+
+    def test_optional_param_keeps_its_brace_and_the_rest_of_the_path(self) -> None:
+        assert normalize_http_path("/brand/{brandId?}") == "/brand/{param}"
+        assert normalize_http_path("orders/{id:int?}/lines") == "/orders/{param}/lines"
+        assert normalize_http_path("/users/{id}?page={page}") == "/users/{param}"
 
 
 # ---------------------------------------------------------------------------
@@ -453,11 +460,21 @@ class TestHttpExtractor:
         contracts = HttpExtractor().extract(tmp_path, "svc")
         assert contracts == []
 
-    def test_truncated_template_literal_dropped(self, tmp_path: Path) -> None:
-        # A nested quote inside the template expression truncates the capture,
-        # leaving an unbalanced ``${`` — this is noise and must not be emitted.
+    def test_quote_inside_a_template_hole_reads_the_whole_literal(self, tmp_path: Path) -> None:
+        # A quote inside the hole stops the regex capture; the literal is read
+        # to its real end and the query hole is dropped.
         self._write_file(tmp_path, "src/api.ts", """
             fetchJSON(`/repos/explore${qs ? '?' + qs : ''}`);
+        """)
+        consumers = [
+            c for c in HttpExtractor().extract(tmp_path, "frontend") if c.role == "consumer"
+        ]
+        assert [c.contract_id for c in consumers] == ["http::GET::/repos/explore"]
+
+    def test_unclosed_template_literal_dropped(self, tmp_path: Path) -> None:
+        # A template that never closes leaves an unbalanced ``${``: noise, not emitted.
+        self._write_file(tmp_path, "src/api.ts", """
+            fetchJSON(`/repos/explore${qs ? '?' + qs
         """)
         consumers = [
             c for c in HttpExtractor().extract(tmp_path, "frontend") if c.role == "consumer"
@@ -960,6 +977,27 @@ class TestMatchContracts:
         links = match_contracts(contracts)
         assert len(links) == 2
 
+    def test_consumer_served_by_own_service_exact_does_not_fall_through_to_candidate(self) -> None:
+        contracts = [
+            self._contract(repo="web", role="provider", contract_id="http::GET::/api/orders", file_path="server.ts"),
+            self._contract(repo="web", role="consumer", contract_id="http::GET::/api/orders", file_path="client.ts"),
+            self._contract(repo="legacy", role="provider", contract_id="http::GET::/orders", file_path="routes.py"),
+        ]
+        links = match_contracts(contracts)
+        assert len(links) == 0
+
+    def test_consumer_without_internal_provider_still_matches_candidate(self) -> None:
+        contracts = [
+            self._contract(repo="web", role="consumer", contract_id="http::GET::/api/orders", file_path="client.ts"),
+            self._contract(repo="legacy", role="provider", contract_id="http::GET::/orders", file_path="routes.py"),
+        ]
+        links = match_contracts(contracts)
+        assert len(links) == 1
+        assert links[0].provider_repo == "legacy"
+        assert links[0].consumer_repo == "web"
+        assert links[0].match_type == "candidate"
+
+
 
 # ---------------------------------------------------------------------------
 # Candidate matching (mount / version / base-prefix tolerant)
@@ -1051,18 +1089,30 @@ class TestCandidateMatching:
         assert len(links) == 1
         assert links[0].match_type == "exact"
 
-    def test_base_stripped_consumer_ambiguous_is_candidate(self) -> None:
-        # The same stripped path provided by two distinct services is ambiguous —
-        # we can't tell which one the base points at, so both links are candidate.
+    def test_base_stripped_consumer_two_services_of_one_repo_is_candidate(self) -> None:
+        # Two services of one repo serve the stripped path: the repo is known,
+        # the service is not, so both links are candidates.
+        contracts = [
+            self._c(repo="backend", role="provider", contract_id="http::GET::/resource",
+                    service="orders"),
+            self._c(repo="backend", role="provider", contract_id="http::GET::/resource",
+                    service="billing", file_path="g.py"),
+            self._c(repo="frontend", role="consumer", contract_id="http::GET::/resource",
+                    file_path="c.ts", meta={"base_stripped": True}),
+        ]
+        links = match_contracts(contracts)
+        assert [lk.strategy for lk in links] == [LinkStrategy.AMBIGUOUS_PATH] * 2
+
+    def test_base_stripped_consumer_two_repos_links_none(self) -> None:
+        # Two repos serve the stripped path and the base names neither.
         contracts = [
             self._c(repo="backend", role="provider", contract_id="http::GET::/resource"),
             self._c(repo="payments", role="provider", contract_id="http::GET::/resource"),
             self._c(repo="frontend", role="consumer", contract_id="http::GET::/resource",
                     file_path="c.ts", meta={"base_stripped": True}),
         ]
-        links = match_contracts(contracts)
-        assert len(links) == 2
-        assert all(lk.match_type == "candidate" for lk in links)
+        assert match_contracts(contracts) == []
+        assert contracts[2].meta[AMBIGUOUS_PROVIDER] is True
 
     def test_base_stripped_consumer_resolved_by_service_bases(self) -> None:
         # An ambiguous stripped path is promoted to exact (and narrowed to the
@@ -1147,7 +1197,7 @@ class TestCandidateMatching:
         assert len(links) == 1
         assert links[0].provider_repo == "backend"
 
-    def test_base_stripped_stale_service_base_stays_candidate(self) -> None:
+    def test_base_stripped_stale_service_base_stays_ambiguous(self) -> None:
         # A service_bases target that matches no provider must fall back to the
         # ambiguity rule, not emit exact links to every service.
         contracts = [
@@ -1157,9 +1207,8 @@ class TestCandidateMatching:
                     file_path="c.ts", meta={"base_stripped": True, "base_token": "API_BASE"}),
         ]
         annotate_consumer_targets(contracts, {"API_BASE": "typo_repo"})
-        links = match_contracts(contracts)
-        assert len(links) == 2
-        assert all(lk.match_type == "candidate" for lk in links)
+        assert match_contracts(contracts) == []
+        assert contracts[2].meta[AMBIGUOUS_PROVIDER] is True
 
     def test_method_mismatch_no_candidate(self) -> None:
         contracts = [

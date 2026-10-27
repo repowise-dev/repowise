@@ -215,6 +215,7 @@ async def build_structured_prelude(
     section headers):
 
         Top symbols by relevance: ...
+        Calls made by <entry>, in source order: ...
         Recent significant commits: ...
         Decision records: ...
 
@@ -227,6 +228,11 @@ async def build_structured_prelude(
     top_symbols = _top_symbols_summary(hits)
     if top_symbols:
         sections.append(f"Top symbols by relevance: {top_symbols}")
+
+    # Read from the call graph, so the order is a fact, not a guess.
+    sequence = next((h["_call_sequence"] for h in hits if h.get("_call_sequence")), "")
+    if sequence:
+        sections.append(sequence)
 
     commits_line = await _recent_commits_summary(hits, ctx, repo_id)
     if commits_line:

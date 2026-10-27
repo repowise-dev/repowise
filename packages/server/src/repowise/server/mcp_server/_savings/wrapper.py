@@ -3,9 +3,9 @@
 :func:`instrument` wraps a registered MCP tool so that every call, after the
 tool produces its (already budget-trimmed) response, measures the delivered
 token count, derives the counterfactual raw-exploration cost it replaced, and
-records a ``mcp:<tool>`` row in the unified savings ledger. It optionally stamps
-``_meta.tokens_saved`` / ``_meta.replaced_tokens`` onto the response for
-transparency.
+records a ``mcp:<tool>`` row in the unified savings ledger. On the responses that
+keep the full envelope (see ``_meta.full_meta``) it also stamps
+``_meta.tokens_saved`` / ``_meta.replaced_tokens`` for transparency.
 
 Two non-negotiables:
 
@@ -33,6 +33,8 @@ import json
 import logging
 from collections.abc import Callable
 from typing import Any
+
+from repowise.server.mcp_server._meta import full_meta
 
 from . import counterfactual, interaction
 from .recorder import record_mcp_dead_end, record_mcp_saving
@@ -100,6 +102,48 @@ def _results_count_bucket(result: Any) -> str | None:
     return "10+"
 
 
+def _client_label() -> str:
+    """The host making this call, as one fixed label.
+
+    The MCP ``clientInfo`` name, resolved through the agent registry, is the
+    best evidence. Without it, the server's own environment is the fallback,
+    and a stdio server is never a plain terminal, so that answer becomes
+    ``unknown``.
+    """
+    from repowise.core.agents.identity import UNKNOWN_AGENT
+    from repowise.core.platform.telemetry import detect_client
+
+    live = interaction.current()
+    if live is not None and live.agent != UNKNOWN_AGENT:
+        return live.agent
+    label = detect_client()
+    return UNKNOWN_AGENT if label == "terminal" else label
+
+
+def _error_reason() -> str:
+    """Why the call in flight failed, from the note its error payload left.
+
+    ``other`` for an in-band error whose site does not note a reason yet.
+    """
+    live = interaction.current()
+    return (live.error_reason if live is not None else None) or "other"
+
+
+def _result_flags(result: dict[str, Any]) -> dict[str, Any]:
+    """The coarse enums a reply carries at the top level and booleans in its ``_meta``."""
+    flags: dict[str, Any] = {}
+    for key in _RESULT_ENUMS:
+        value = result.get(key)
+        if isinstance(value, str) and value:
+            flags[key] = value
+    meta = result.get("_meta")
+    if isinstance(meta, dict):
+        for key in _META_FLAGS:
+            if isinstance(meta.get(key), bool):
+                flags[key] = meta[key]
+    return flags
+
+
 def _telemetry_properties(tool: str, result: Any, duration_ms: int) -> dict[str, Any]:
     """Build the anonymous ``mcp_tool_call`` properties for *result*.
 
@@ -110,17 +154,12 @@ def _telemetry_properties(tool: str, result: Any, duration_ms: int) -> dict[str,
         "tool": tool,
         "status": "error" if is_error else "ok",
         "duration_ms": duration_ms,
+        "client": _client_label(),
     }
+    if is_error:
+        props["error_reason"] = _error_reason()
     if isinstance(result, dict):
-        for key in _RESULT_ENUMS:
-            value = result.get(key)
-            if isinstance(value, str) and value:
-                props[key] = value
-        meta = result.get("_meta")
-        if isinstance(meta, dict):
-            for key in _META_FLAGS:
-                if isinstance(meta.get(key), bool):
-                    props[key] = meta[key]
+        props.update(_result_flags(result))
         bucket = _results_count_bucket(result)
         if bucket is not None:
             props["results_bucket"] = bucket
@@ -152,8 +191,8 @@ def _emit_telemetry(tool: str, result: Any, duration_ms: int) -> None:
     telemetry.record_event("mcp_tool_call", _telemetry_properties(tool, result, duration_ms))
 
 #: ``_meta`` key a tool sets to declare its own counterfactual (see
-#: :func:`declare_replaced`). The wrapper reads and then leaves it in place as a
-#: transparency annotation.
+#: :func:`declare_replaced`). The wrapper reads it and, on a lean envelope,
+#: removes it, so it never reaches the agent.
 _DECLARED_KEY = "replaced_tokens"
 
 
@@ -172,14 +211,14 @@ def declare_replaced(result: dict[str, Any], tokens: int) -> None:
         meta[_DECLARED_KEY] = tokens
 
 
-def _declared_tokens(result: Any) -> int | None:
+def _declared_tokens(tool: str, result: Any) -> int | None:
     """Return a tool-declared counterfactual from ``_meta``, if present."""
     if not isinstance(result, dict):
         return None
     meta = result.get("_meta")
     if not isinstance(meta, dict):
         return None
-    value = meta.get(_DECLARED_KEY)
+    value = meta.get(_DECLARED_KEY) if full_meta(tool) else meta.pop(_DECLARED_KEY, None)
     return value if isinstance(value, int) and value > 0 else None
 
 
@@ -220,7 +259,7 @@ def _observe_baseline(tool: str, result: Any) -> None:
     right number -- the old one disagreed with the telemetry's size for the
     same call -- but it is a change, not a no-op.
     """
-    declared = _declared_tokens(result)
+    declared = _declared_tokens(tool, result)
     replaced = (
         declared if declared is not None else counterfactual.replaced_tokens_for(tool, result)
     )
@@ -243,7 +282,8 @@ def _observe_baseline(tool: str, result: Any) -> None:
     from repowise.server.mcp_server import _state
 
     repo_root = getattr(_state, "_repo_path", None)
-    if record_mcp_saving(repo_root, tool, replaced, delivered) and isinstance(result, dict):
+    recorded = record_mcp_saving(repo_root, tool, replaced, delivered)
+    if recorded and isinstance(result, dict) and full_meta(tool):
         meta = result.setdefault("_meta", {})
         if isinstance(meta, dict):
             # Stamped before the outer budget runs, so these bytes are budgeted

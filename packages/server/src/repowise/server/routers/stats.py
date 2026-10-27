@@ -2,8 +2,9 @@
 
 A read-only aggregate for the repo Stats page. The derivations live in
 :mod:`repowise.core.stats_highlights` so the hosted backend can build the same
-payload from its artifacts; this module only reads rows. Every read is a narrow
-column select or a capped ordered query, and nothing recomputes analysis.
+payload from its artifacts; this module reads rows plus one threaded size walk
+of ``.repowise/``. Every read is a narrow column select or a capped ordered
+query, and nothing recomputes analysis.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from repowise.core.persistence.models import (
     WikiSymbol,
 )
 from repowise.server.deps import get_db_session, verify_api_key
+from repowise.server.services.index_storage import index_storage_bytes
 
 router = APIRouter(
     prefix="/api/repos",
@@ -164,6 +166,7 @@ async def stats_highlights(
 
     totals = {
         "total_commit_count": repo.total_commit_count,
+        "total_merge_commit_count": repo.total_merge_commit_count,
         "first_commit_at": repo.first_commit_at,
         "total_contributor_count": repo.total_contributor_count,
         "first_commit_author": repo.first_commit_author,
@@ -176,8 +179,6 @@ async def stats_highlights(
         select(
             GraphNode.node_id,
             GraphNode.language,
-            GraphNode.symbol_count,
-            GraphNode.external_system_id,
         ).where(GraphNode.repository_id == repo_id, GraphNode.node_type == "file"),
     )
     metrics = await _rows(
@@ -195,12 +196,13 @@ async def stats_highlights(
         select(
             GitMetadata.file_path,
             GitMetadata.primary_owner_name,
+            GitMetadata.primary_owner_email,
             GitMetadata.bus_factor,
             GitMetadata.commit_count_total,
             GitMetadata.commit_count_capped,
             GitMetadata.first_commit_at,
             GitMetadata.last_commit_at,
-        ).where(GitMetadata.repository_id == repo_id),
+        ).where(crud.code_file_rows(repo_id)),
     )
     commits = await _rows(
         session,
@@ -234,17 +236,20 @@ async def stats_highlights(
     rhythm = activity["rhythm"]
     rhythm["code_half_life_days"] = sh.code_half_life(all_meta, activity["origin"]["last_commit_at"])
     people = {
-        **sh.build_people(all_meta),
+        **sh.build_people(all_meta, commits),
         "contributor_count": activity["origin"]["contributor_count"],
         "chronotypes": activity["chronotypes"],
         "arrivals": activity["arrivals"],
     }
+    # Absent, not zero, where no local index exists to measure.
+    index_size = await index_storage_bytes(repo.local_path)
     return {
         "repo": {"id": repo.id, "name": repo.name},
-        "scale": sh.build_scale(file_nodes, metrics),
+        "scale": sh.build_scale(file_nodes, metrics, await crud.count_symbols(session, repo_id)),
         "origin": activity["origin"],
         "churn": sh.build_churn(totals),
         "rhythm": rhythm,
         "people": people,
         "records": records,
+        **({"index_storage_bytes": index_size} if index_size is not None else {}),
     }

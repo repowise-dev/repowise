@@ -67,7 +67,7 @@ export function ArrivalsTimeline({
         <button
           type="button"
           onClick={() => setExpanded(true)}
-          className="self-start rounded-md px-1 text-xs font-medium text-[var(--color-accent-primary)] underline-offset-4 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-accent-primary)]"
+          className="self-start rounded-md px-1 text-xs font-medium text-[var(--color-accent-primary)] underline-offset-4 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-focus-ring)]"
         >
           Show {formatNumber(hidden)} more
         </button>

@@ -7,9 +7,13 @@ from types import SimpleNamespace
 from repowise.server.routers.code_health import _leads_by_file, _primary_and_magnitude
 
 
-def _f(path, biomarker, impact, reason=""):
+def _f(path, biomarker, impact, reason="", severity="medium"):
     return SimpleNamespace(
-        file_path=path, biomarker_type=biomarker, health_impact=impact, reason=reason
+        file_path=path,
+        biomarker_type=biomarker,
+        health_impact=impact,
+        reason=reason,
+        severity=severity,
     )
 
 
@@ -22,7 +26,7 @@ FINDINGS = [
     _f("b.py", "coverage_gradient", 0.9, "40% uncovered"),
     # Advisory only: no lead, real zero magnitude.
     _f("c.py", "assertion_free_test", 0.0, "no asserts"),
-    # Null impact counts as zero; ties keep the first.
+    # Null impact counts as zero; a tie is decided by name, not input order.
     _f("d.py", "god_object", None, "big"),
     _f("d.py", "long_method", 0.1, "90 lines"),
     _f("d.py", "complex_method", 0.1, "ccn 11"),
@@ -41,8 +45,8 @@ GOLDEN = {
     },
     "c.py": {"primary_biomarker": None, "primary_reason": None, "total_deduction": 0.0},
     "d.py": {
-        "primary_biomarker": "long_method",
-        "primary_reason": "90 lines",
+        "primary_biomarker": "complex_method",
+        "primary_reason": "ccn 11",
         "total_deduction": 0.2,
     },
 }
@@ -76,3 +80,57 @@ def test_plain_dicts_fold_like_rows() -> None:
     from repowise.core.analysis.health.aggregation import primary_and_magnitude_by_file
 
     assert primary_and_magnitude_by_file([vars(f) for f in FINDINGS]) == GOLDEN
+
+
+def test_primary_finding_prefers_code_shape_over_history() -> None:
+    """A history marker names context, not an edit; a code-shape finding leads
+    even when the history one deducts more, and history leads only alone."""
+    from repowise.core.analysis.health.models import primary_finding
+
+    shaped = _f("e.py", "complex_method", 0.4, "ccn 14")
+    history = _f("e.py", "change_entropy", 2.5, "changed with 25 files")
+    assert primary_finding([history, shaped]) is shaped
+    assert primary_finding([history]) is history
+
+
+def test_primary_finding_tie_does_not_depend_on_input_order() -> None:
+    """Equal impacts must not let row order pick the lead: two indexes of one
+    tree read the rows in different orders and disagreed on it."""
+    from repowise.core.analysis.health.models import primary_finding
+
+    cohesion = _f("f.java", "low_cohesion", 0.871, "lcom 0.9")
+    complex_ = _f("f.java", "complex_method", 0.871, "ccn 30")
+    assert primary_finding([cohesion, complex_]) is complex_
+    assert primary_finding([complex_, cohesion]) is complex_
+
+    # Severity breaks the tie before the name does.
+    severe = _f("f.java", "low_cohesion", 0.871, "lcom 0.9", severity="high")
+    assert primary_finding([complex_, severe]) is severe
+    assert primary_finding([severe, complex_]) is severe
+
+
+def test_primary_finding_lets_a_function_worth_breaking_up_lead() -> None:
+    """A file's deduction is shared out, so a CCN 279 method scored less than
+    one long condition inside it. The function worth breaking up leads, the
+    largest first; a short function's size finding still competes on impact."""
+    from repowise.core.analysis.health.models import primary_finding
+
+    def sized(marker, function, impact, **details):
+        row = _f("g.py", marker, impact)
+        row.function_name, row.details = function, details
+        return row
+
+    condition = sized("complex_conditional", "run", 0.98, operator_count=7)
+    brain = sized("large_method", "run", 0.37, ccn=279, nloc=1354, max_nesting=5)
+    medium = sized("complex_method", "helper", 0.5, ccn=45, nloc=120, max_nesting=3)
+    small = sized("complex_method", "tiny", 0.2, ccn=12, nloc=20)
+    assert primary_finding([condition, small, medium, brain]) is brain
+    assert primary_finding([condition, small, medium]) is medium
+    assert primary_finding([condition, small]) is condition
+
+    # One dispatch on one value can wait, so it does not take the lead.
+    dispatch = sized("complex_method", "route", 0.3, ccn=45, nloc=120, dispatch_share=0.9)
+    assert primary_finding([condition, dispatch]) is condition
+    # Nor does a function a constant-false flag switches off.
+    gated = sized("large_method", "off", 0.3, ccn=279, nloc=1354, gated_off=True)
+    assert primary_finding([condition, gated]) is condition

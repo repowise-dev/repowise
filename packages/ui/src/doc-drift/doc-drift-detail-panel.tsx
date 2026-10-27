@@ -19,11 +19,13 @@ import { ExternalLink } from "lucide-react";
 import {
   docDriftConfidenceTier,
   docDriftKindLabel,
+  SUGGESTION_BASIS_LABELS,
   type DocDriftFinding,
 } from "@repowise-dev/types/doc-drift";
 
 import { AdaptivePanel } from "../shared/adaptive-panel";
 import { AiPromptButton } from "../health/ai-prompt-button";
+import { RouterAnchor } from "./router-anchor";
 
 /** The evidence line carrying the enclosing heading trail. */
 const TRAIL_PREFIX = "under: ";
@@ -102,6 +104,20 @@ export function DocDriftDetailPanel({
           </p>
         </Section>
 
+        {/* Evidence, not a verdict: the reader still confirms it. */}
+        {finding.suggestion && (
+          <Section title="Likely now">
+            <p className="font-mono text-xs break-all text-[var(--color-text-primary)]">
+              {finding.suggestion}
+            </p>
+            {finding.suggestion_basis && (
+              <p className="text-xs text-[var(--color-text-tertiary)]">
+                {SUGGESTION_BASIS_LABELS[finding.suggestion_basis] ?? finding.suggestion_basis}
+              </p>
+            )}
+          </Section>
+        )}
+
         {finding.context && (
           <Section title="The line as written">
             <pre className="overflow-x-auto rounded-md bg-[var(--color-bg-inset)] p-3 text-[11px] leading-relaxed text-[var(--color-text-primary)]">
@@ -151,20 +167,14 @@ export function DocDriftDetailPanel({
             onClick={() => onPrompt(finding)}
             label="Fix with an agent"
           />
-          <a
+          <RouterAnchor
             href={documentHref(finding.file_path, finding.line_number)}
-            // Stays a real anchor so it can be opened in a new tab; the router
-            // only takes over a plain left click.
-            onClick={(event) => {
-              if (!navigate || event.metaKey || event.ctrlKey || event.shiftKey) return;
-              event.preventDefault();
-              navigate(documentHref(finding.file_path, finding.line_number));
-            }}
+            navigate={navigate}
             className="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border-default)] px-2.5 py-1 text-xs font-medium text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-border-hover)] hover:text-[var(--color-text-primary)]"
           >
             <ExternalLink className="h-3.5 w-3.5" />
             Open document
-          </a>
+          </RouterAnchor>
         </div>
       </div>
     </AdaptivePanel>

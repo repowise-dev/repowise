@@ -109,6 +109,7 @@ class Cell:
 _PATH_FIELDS = {
     "affected_files",
     "candidate",
+    "candidate_files",
     "candidates",
     "citations",
     "entry_points",
@@ -157,7 +158,7 @@ _REFERENCE_KINDS = (
 )
 _EXPECTED_KINDS = {
     "get_answer": {"file"},
-    "get_change_risk": set(),
+    "get_change_risk": {"file"},
     "get_context": {
         "file",
         "symbol",
@@ -565,7 +566,9 @@ async def test_canonical_emitter_reference_inventory(
     # leads with composed opportunities. The plan reference is still emitted by
     # get_health, so the inventory asks the call that carries it.
     responses["get_health"].append(
-        await get_health(include=["refactoring"], only=["refactoring_plans"])
+        await get_health(
+            include=["refactoring"], only=["refactoring_plans"], refactoring_scope="all"
+        )
     )
     inventory = {
         emitter: [
@@ -721,6 +724,7 @@ async def _seed_plan(session, repository_id: str) -> None:
             }
         ],
     )
+    await crud.finalize_refactoring_opportunities(session, repository_id)
     await session.commit()
 
 
@@ -854,8 +858,8 @@ async def test_finding_and_plan_ids_are_stable_and_resolve_in_one_call(
     health_data,
     session,
 ) -> None:
+    from repowise.core.analysis.dead_code.serving import dead_code_finding_id
     from repowise.server.mcp_server import get_dead_code, get_health
-    from repowise.server.mcp_server.tool_dead_code import _dead_code_finding_id
     from repowise.server.mcp_server.tool_health import (
         _health_finding_id,
         _refactoring_plan_id,
@@ -867,6 +871,7 @@ async def test_finding_and_plan_ids_are_stable_and_resolve_in_one_call(
         include=["biomarkers", "refactoring"],
         only=["top_findings", "refactoring_plans"],
         limit=10,
+        refactoring_scope="all",
     )
     health_finding = health["top_findings"][0]
     health_lookup = await get_health(finding_id=health_finding["id"])
@@ -896,7 +901,7 @@ async def test_finding_and_plan_ids_are_stable_and_resolve_in_one_call(
     plan_row = (await session.execute(select(RefactoringSuggestion))).scalars().first()
     for row, public_id, factory in (
         (health_row, health_finding["id"], _health_finding_id),
-        (dead_row, dead_finding["id"], _dead_code_finding_id),
+        (dead_row, dead_finding["id"], dead_code_finding_id),
         (plan_row, plan["id"], _refactoring_plan_id),
     ):
         replacement = copy(row)

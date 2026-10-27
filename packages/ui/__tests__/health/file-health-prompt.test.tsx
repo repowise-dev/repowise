@@ -12,6 +12,7 @@ import {
   buildFileHealthAiPrompt,
   type FileHealthPromptFinding,
 } from "../../src/health/ai-prompt-builder.js";
+import { FLAVOR_PREAMBLE } from "../../src/health/ai-prompts/shared.js";
 import {
   HealthFileDrawer,
   type HealthDrawerMetric,
@@ -58,7 +59,7 @@ describe("buildFileHealthAiPrompt", () => {
     // The whole point of handing over a static report. A prompt that reads as
     // a work order gets a file edited to satisfy an analyzer.
     const out = buildFileHealthAiPrompt({ file, findings: [finding()] });
-    expect(out).toMatch(/leads/i);
+    expect(out).toMatch(/as a lead, not ground truth/i);
     expect(out).toMatch(/false positive/i);
     expect(out).toMatch(/which findings share a root cause/i);
   });
@@ -143,6 +144,14 @@ describe("buildFileHealthAiPrompt", () => {
   });
 });
 
+// Every single-file prompt opens on this text, so pin each flavor of it.
+describe("FLAVOR_PREAMBLE", () => {
+  it("keeps every flavor's opening", () => {
+    expect(FLAVOR_PREAMBLE).toMatchSnapshot();
+    expect(FLAVOR_PREAMBLE["claude-code-mcp"]).toContain("Fall back to Read / Grep / Glob only");
+  });
+});
+
 describe("the drawer's prompt affordance", () => {
   const m: HealthDrawerMetric = {
     file_path: "packages/cli/doctor_cmd.py",
@@ -155,8 +164,18 @@ describe("the drawer's prompt affordance", () => {
   };
 
   it("opens a prompt built from the file the drawer is showing", () => {
-    render(<HealthFileDrawer open onClose={() => {}} metric={m} findings={[]} />);
-    fireEvent.click(screen.getByRole("button", { name: /AI prompt/i }));
+    const f = {
+      id: "f1",
+      biomarker_type: "brain_method",
+      severity: "high" as const,
+      function_name: "run",
+      line_start: 10,
+      line_end: 90,
+      health_impact: 1.2,
+      reason: "Oversized function.",
+    };
+    render(<HealthFileDrawer open onClose={() => {}} metric={m} findings={[f]} />);
+    fireEvent.click(screen.getByRole("button", { name: "Agent prompt" }));
     expect(screen.getByText(/AI prompt for this file/i)).toBeInTheDocument();
   });
 
@@ -188,9 +207,10 @@ describe("the drawer's prompt affordance", () => {
     );
     const toggle = screen.getByRole("button", { name: /Why this score/i });
     expect(toggle).toHaveAttribute("aria-expanded", "false");
-    // The hint says what is inside, so collapsing costs no information.
-    expect(toggle.textContent).toContain("−9.00");
-    expect(toggle.textContent).toMatch(/1 category/);
+    // The hint says what is inside without restating the total, which is the
+    // body's arithmetic line.
+    expect(toggle.textContent).not.toContain("−9.00");
+    expect(toggle.textContent).toMatch(/1 category, 1 at its limit/);
 
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute("aria-expanded", "true");

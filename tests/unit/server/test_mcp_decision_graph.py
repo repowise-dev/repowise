@@ -326,7 +326,11 @@ async def decision_db(session: AsyncSession, repo_id: str) -> str:
     )
 
     for d in decisions:
+        seeded = d.staleness_score
         await accept_decision(session, d, accepter="test", evidence=[f"seed:{d.id}"])
+        # Accepting rescores from the stored git metadata, which this fixture
+        # has none of; the seeded score is the state under test.
+        d.staleness_score = seeded
     superseded = next(d for d in decisions if d.id == "dec_superseded")
     await record_acceptance(
         session,

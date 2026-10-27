@@ -16,6 +16,10 @@ import type {
 } from "@repowise-dev/types/refactoring";
 
 import { buildRefactoringOpportunityPrompt } from "../../src/health/ai-prompt-builder";
+import {
+  LINE_RULE_TEXT,
+  SCRIPT_RULE_TEXT,
+} from "../../src/health/ai-prompts/refactoring-plan-steps";
 
 function plan(overrides: Partial<RefactoringPlan> = {}): RefactoringPlan {
   return {
@@ -44,7 +48,7 @@ function detail(
   overrides: Partial<RefactoringOpportunityDetailResolved> = {},
 ): RefactoringOpportunityDetailResolved {
   return {
-    resolved: true,
+    found: true,
     opportunity_id: "refop2_abc123",
     refactoring_model_version: 2,
     status: "open",
@@ -222,7 +226,7 @@ describe("buildRefactoringOpportunityPrompt", () => {
 
   it("carries the runnable validation commands", () => {
     const text = buildRefactoringOpportunityPrompt({ opportunity: detail() });
-    expect(text).toContain("## Validation plan");
+    expect(text).toContain("## Verify");
     expect(text).toContain("pytest tests/test_big.py");
     expect(text).toMatch(/3 guarding tests via coverage/);
   });
@@ -234,12 +238,44 @@ describe("buildRefactoringOpportunityPrompt", () => {
     const text = buildRefactoringOpportunityPrompt({
       opportunity: detail({ validation_profiles: profiles }),
     });
-    expect(text).toMatch(/treat this as a validation gap/);
+    expect(text).toMatch(/No guarding tests found: add a test for `[^`]+`.* before changing it\./);
   });
 
   it("tells the agent to keep the co-affected files consistent", () => {
     const text = buildRefactoringOpportunityPrompt({ opportunity: detail() });
     expect(text).toContain("src/other.py");
     expect(text).not.toMatch(/Keep these co-affected files consistent:.*src\/big\.py/);
+  });
+});
+
+describe("Extract Method apply rules", () => {
+  const extract = (anchors?: Record<string, string>) =>
+    plan({
+      id: "refac2_extract",
+      refactoring_type: "extract_method",
+      plan: { span: { start: 400, end: 460 }, params: [], returns: [], ...(anchors ? { anchors } : {}) },
+    });
+
+  it("states neither rule when no step is an Extract Method", () => {
+    const prompt = buildRefactoringOpportunityPrompt({
+      opportunity: detail({ steps: detail().steps.slice(0, 1) }),
+    });
+    expect(prompt).not.toContain(SCRIPT_RULE_TEXT);
+    expect(prompt).not.toContain(LINE_RULE_TEXT);
+  });
+
+  it("says no script for an Extract Method step, and find-by-text only when anchored", () => {
+    const plain = buildRefactoringOpportunityPrompt({
+      opportunity: detail({ plans: [plan(), extract()] }),
+    });
+    expect(plain).toContain(SCRIPT_RULE_TEXT);
+    expect(plain).not.toContain(LINE_RULE_TEXT);
+    const anchored = buildRefactoringOpportunityPrompt({
+      opportunity: detail({
+        plans: [plan(), extract({ first: "    a = 1", last: "    b = 2", unique_in: "file" })],
+      }),
+    });
+    expect(anchored).toContain(SCRIPT_RULE_TEXT);
+    expect(anchored).toContain(LINE_RULE_TEXT);
   });
 });

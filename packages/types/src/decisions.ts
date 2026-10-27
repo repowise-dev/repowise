@@ -82,6 +82,7 @@ export function decisionStatusRank(status: string): number {
  */
 export const DECISION_SOURCES = [
   "adr",
+  "agent",
   "cli",
   "comment",
   "commit",
@@ -122,6 +123,7 @@ export const DECISION_SOURCE_LABELS: Record<
   string
 > = {
   adr: "ADR",
+  agent: "Agent",
   cli: "Manual",
   comment: "Comment",
   commit: "Commit",
@@ -164,6 +166,7 @@ export const DECISION_CURRENCIES = [
   "active",
   "needs_review",
   "uncheckable",
+  "stale",
   "superseded",
   "dismissed",
 ] as const;
@@ -182,6 +185,7 @@ export const DECISION_CURRENCY_LABELS: Record<DecisionCurrency, string> = {
   active: "Active",
   needs_review: "Needs review",
   uncheckable: "Uncheckable",
+  stale: "Stale",
   superseded: "Superseded",
   dismissed: "Dismissed",
 };
@@ -192,6 +196,7 @@ export const DECISION_CURRENCY_DESCRIPTIONS: Record<DecisionCurrency, string> =
     needs_review: "Accepted, but the code it names has moved since.",
     uncheckable:
       "Accepted, but it names no file or module, so nothing checks it against the code.",
+    stale: "Accepted, but nothing it names exists in the code any more.",
     superseded: "Replaced by a later decision.",
     dismissed: "Authority withdrawn. Kept for history.",
   };
@@ -295,6 +300,14 @@ export interface DecisionRecord {
   accepter?: string | null;
   accepter_kind?: AccepterKind | "" | null;
   accepter_session?: string | null;
+  /** Why a record just created stayed a candidate. Create endpoint only. */
+  blockers?: string[] | null;
+  /**
+   * True when the stored decision text is blank and `decision` carries the
+   * title fallback. Acceptance reads the stored text, so this is what predicts
+   * the "no decision text" refusal. Optional for back-compat.
+   */
+  decision_text_missing?: boolean;
   /** Number of evidence rows backing the record. List endpoint only. */
   evidence_count?: number | null;
   /** Top-ranked evidence row, slimmed for list rows. List endpoint only. */
@@ -490,19 +503,27 @@ export const DECISION_PRESETS = [
  * What `record_acceptance` would refuse this record for, mirrored so a review
  * surface can disable a control it knows will be refused instead of finding out
  * from the error toast. Pinned against the Python contract by the vocabulary
- * tests. The fourth check, accepter-or-artifact identity, is not here: the
+ * tests. The accepter-or-artifact identity check is not here: the
  * reviewer supplies that at the moment they act, so it is never something the
  * record is missing. `record_blockers` on the Python side asks the same way.
  *
  * `selfAuthored` is the exemption for a record somebody typed: they wrote the
  * claim rather than reviewing an inference, so the entry is its own provenance.
- * The engine grants it to `source === "cli"` when an accepter is known.
+ * The engine grants it to `source === "cli"` when an accepter is known. It
+ * covers evidence only.
  *
  * The reason reads `rationale` then `context`, never `decision`: `context` is
  * what forced the choice, `decision` is the choice itself, and letting the what
- * stand in for the why is what marked empty records acceptable.
+ * stand in for the why is what marked empty records acceptable. Every record
+ * needs its `decision`, typed or mined: one that never says what was chosen
+ * binds nobody to anything. A server response fills a blank `decision` with the
+ * title for readers, so `decision_text_missing` is what says the stored text is
+ * blank.
  */
 export function decisionAcceptanceBlockers(record: {
+  // Required so a caller cannot leave it out and have every record refused.
+  decision: string;
+  decision_text_missing?: boolean;
   rationale?: string;
   context?: string;
   affected_files?: string[];
@@ -516,6 +537,10 @@ export function decisionAcceptanceBlockers(record: {
   const nonBlank = (values: (string | null | undefined)[]) =>
     values.some((v) => (v ?? "").trim().length > 0);
 
+  const selfAuthored = record.source === "cli";
+  if (record.decision_text_missing || !nonBlank([record.decision])) {
+    blockers.push("no decision text: state what was chosen");
+  }
   if (!nonBlank([record.rationale, record.context])) {
     blockers.push("no rationale or explicit constraint reason");
   }
@@ -529,7 +554,6 @@ export function decisionAcceptanceBlockers(record: {
   ) {
     blockers.push("no scope: name the files or modules it governs");
   }
-  const selfAuthored = record.source === "cli";
   if (
     !selfAuthored &&
     !nonBlank(record.evidence_commits ?? []) &&

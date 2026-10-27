@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import Link from "next/link";
 import { bundledLanguages, getSingletonHighlighter, type BundledLanguage } from "shiki";
 import { getFileContent, getFileDetail } from "@/lib/api/files";
+import { ApiClientError } from "@/lib/api/client";
 import { WikiMarkdown } from "@repowise-dev/ui/wiki/wiki-markdown";
 import {
   docsPagePath,
@@ -17,9 +18,11 @@ import {
   resolveFileTab,
   type FilePageTab,
 } from "@repowise-dev/ui/files";
+import { PageFrame } from "@repowise-dev/ui/shared/page-shell";
 import { FilePageHost } from "@/components/files/file-page-host";
 import { FileTestsPanel } from "@/components/files/file-tests-panel";
 import { FileHealthPanel } from "@/components/files/file-health-panel";
+import { FileDocReferencesPanel } from "@/components/files/file-doc-references-panel";
 import type { FileDetailResponse } from "@repowise-dev/types/files";
 
 /** Matches the sibling routes (`decisions`, the repo root, the four workspace
@@ -66,6 +69,9 @@ async function renderCoverageCode(
 ): Promise<string | undefined> {
   if (!content) return undefined;
   if (!detail.coverage || detail.coverage.covered_lines.length === 0) return undefined;
+  // Line numbers measured on another version of the file would tint the
+  // wrong lines; the tab says why the source is untinted instead.
+  if (detail.coverage.freshness === "stale") return undefined;
   if (content.length > MAX_HIGHLIGHTED_BYTES) return undefined;
 
   // Resolve the grammar before highlighting rather than catching a throw and
@@ -132,8 +138,9 @@ export default async function FileEntityPage({ params, searchParams }: Props) {
         ? getFileContent(id, filePath).catch(() => undefined)
         : Promise.resolve(undefined),
     ]);
-  } catch {
-    notFound();
+  } catch (err) {
+    if (err instanceof ApiClientError && err.status === 404) notFound();
+    throw err;
   }
 
   const coverageCodeHtml = await renderCoverageCode(source, detail);
@@ -157,7 +164,9 @@ export default async function FileEntityPage({ params, searchParams }: Props) {
   }
   const covered = detail.coverage;
   const highlightPossible =
-    !!covered && (covered.covered_line_count ?? covered.covered_lines.length) > 0;
+    !!covered &&
+    covered.freshness !== "stale" &&
+    (covered.covered_line_count ?? covered.covered_lines.length) > 0;
   // Gated on not already being here. Land on `?tab=coverage` for a file over
   // the highlight size cap and `coverageCodeHtml` is undefined for good — so
   // without this, every click on the tab you are already on re-ran the whole
@@ -192,14 +201,14 @@ export default async function FileEntityPage({ params, searchParams }: Props) {
       />
     ),
     testsPanel: <FileTestsPanel repoId={id} filePath={detail.file_path} />,
+    docReferencesPanel: (
+      <FileDocReferencesPanel repoId={id} filePath={detail.file_path} />
+    ),
     LinkComponent: Link,
   });
 
   return (
-    // The Overview's wrapper verbatim: centred, `--page-pad`, 1280. The page
-    // was `max-w-[1200px] p-4 sm:p-6` and left-anchored, so at 2048 it left a
-    // 770px hole down the right while every ported sibling centred.
-    <div className="mx-auto flex w-full max-w-[1280px] flex-col p-[var(--page-pad)]">
+    <PageFrame>
       <FilePageHost
         // Keyed on the path so a soft navigation between two file pages
         // remounts the shell. Without it React preserves the tab state at the
@@ -219,6 +228,6 @@ export default async function FileEntityPage({ params, searchParams }: Props) {
         initialTab={initialTab}
         refetchTabs={refetchTabs}
       />
-    </div>
+    </PageFrame>
   );
 }

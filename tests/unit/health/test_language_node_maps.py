@@ -264,3 +264,317 @@ def test_fsharp_single_expression_body_is_a_known_undercount() -> None:
     """
     _require_language("fsharp")
     assert _rows("fsharp", "let f x =\n  if x > 0 then 1 else 2\n", "fs") == {"f": 1}
+
+
+# --------------------------------------------------------------------------- #
+# Go
+# --------------------------------------------------------------------------- #
+
+_GO_CASES: list[tuple[str, str, dict[str, int]]] = [
+    (
+        "a flat select counts once for the dispatch, at any width",
+        "package main\n\nfunc drain(ch chan int, done chan bool) int {\n"
+        "\ttotal := 0\n"
+        "\tselect {\n"
+        "\tcase v := <-ch:\n\t\ttotal += v\n"
+        "\tcase <-done:\n\t\ttotal += 100\n"
+        "\tcase ch <- 1:\n\t\ttotal += 1\n"
+        "\t}\n"
+        "\treturn total\n}\n",
+        {"drain": 2},
+    ),
+    (
+        "a select with a default arm stays flat",
+        "package main\n\nfunc drain(ch chan int, done chan bool) int {\n"
+        "\ttotal := 0\n"
+        "\tselect {\n"
+        "\tcase v := <-ch:\n\t\ttotal += v\n"
+        "\tcase <-done:\n\t\ttotal += 100\n"
+        "\tdefault:\n\t\ttotal -= 1\n"
+        "\t}\n"
+        "\treturn total\n}\n",
+        {"drain": 2},
+    ),
+    (
+        "control flow inside a select arm counts on top of the dispatch",
+        "package main\n\nfunc pick(ch chan int) int {\n"
+        "\tselect {\n"
+        "\tcase v := <-ch:\n"
+        "\t\tif v > 0 {\n\t\t\treturn v\n\t\t}\n"
+        "\t\treturn 0\n"
+        "\tdefault:\n\t\treturn -1\n"
+        "\t}\n}\n",
+        {"pick": 4},
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [(src, exp) for _, src, exp in _GO_CASES],
+    ids=[label for label, _, _ in _GO_CASES],
+)
+def test_go_complexity(source: str, expected: dict[str, int]) -> None:
+    _require_language("go")
+    assert _rows("go", source, "go") == expected
+
+
+def test_go_select_agrees_with_an_equivalent_switch() -> None:
+    """``select`` is a dispatch, so an arm is worth what a ``switch`` case is.
+
+    tree-sitter-go spells the construct ``select_statement`` with
+    ``communication_case`` arms; neither type appeared in the map, so every arm
+    was invisible and a three-arm select scored CCN 1 (a straight line) while
+    the equivalent three-case switch scored 2. Only ``default`` registered,
+    because ``default_case`` is shared with ``switch``.
+    """
+    _require_language("go")
+    select = (
+        "package main\n\nfunc pick(ch chan int) int {\n"
+        "\tselect {\n"
+        "\tcase v := <-ch:\n"
+        "\t\tif v > 0 {\n\t\t\treturn v\n\t\t}\n"
+        "\t\treturn 0\n"
+        "\tdefault:\n\t\treturn -1\n"
+        "\t}\n}\n"
+    )
+    switch = (
+        "package main\n\nfunc pick(ch chan int) int {\n"
+        "\tswitch {\n"
+        "\tcase ch != nil:\n"
+        "\t\tif ch != nil {\n\t\t\treturn 1\n\t\t}\n"
+        "\t\treturn 0\n"
+        "\tdefault:\n\t\treturn -1\n"
+        "\t}\n}\n"
+    )
+    assert _rows("go", select, "go")["pick"] == _rows("go", switch, "go")["pick"] == 4
+
+
+# --------------------------------------------------------------------------- #
+# TypeScript / JavaScript
+# --------------------------------------------------------------------------- #
+
+_TS_CASES: list[tuple[str, str, dict[str, int]]] = [
+    (
+        "a flat switch counts once for the dispatch, default included",
+        """
+function pick(x: number): number {
+  switch (x) { case 1: return 1; case 2: return 2; default: return 0; }
+}
+""",
+        {"pick": 2},
+    ),
+    (
+        "control flow inside a default arm counts on top of the dispatch",
+        """
+function pick(x: number): number {
+  switch (x) {
+    case 1: return 1;
+    default: { if (x > 0) { return 2; } return 3; }
+  }
+}
+""",
+        {"pick": 4},
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [(src, exp) for _, src, exp in _TS_CASES],
+    ids=[label for label, _, _ in _TS_CASES],
+)
+def test_typescript_complexity(source: str, expected: dict[str, int]) -> None:
+    _require_language("typescript")
+    assert _rows("typescript", source, "ts") == expected
+
+
+def test_typescript_default_arm_agrees_with_java() -> None:
+    """``switch_default`` is a separate node in the JS/TS grammar.
+
+    ``case_kinds`` named only ``switch_case``, so a complex ``default:`` arm
+    never counted while Java / C# / Objective-C / C counted theirs. The same
+    dispatch must score the same in both languages.
+    """
+    _require_language("typescript")
+    _require_language("java")
+    typescript = """
+function pick(x: number): number {
+  switch (x) {
+    case 1: return 1;
+    default: { if (x > 0) { return 2; } return 3; }
+  }
+}
+"""
+    java = """
+public class A {
+  int pick(int x) {
+    switch (x) {
+      case 1: return 1;
+      default: { if (x > 0) { return 2; } return 3; }
+    }
+  }
+}
+"""
+    assert _rows("typescript", typescript, "ts")["pick"] == _rows("java", java, "java")["pick"] == 4
+
+
+# --------------------------------------------------------------------------- #
+# PHP
+# --------------------------------------------------------------------------- #
+
+_PHP_CASES: list[tuple[str, str, dict[str, int]]] = [
+    (
+        "functions and methods are walked with CCN entry 1",
+        """<?php
+function standalone($x) {
+    return $x;
+}
+class Service {
+    public function handle($x) {
+        return $x;
+    }
+}
+""",
+        {"standalone": 1, "handle": 1},
+    ),
+    (
+        "if, elseif, else if and ternaries add branch points",
+        """<?php
+function branches($a, $b) {
+    if ($a > 0) {
+        return 1;
+    } elseif ($a < 0) {
+        return 2;
+    } else if ($b > 0) {
+        return 3;
+    }
+    return $b ? 4 : 5;
+}
+""",
+        {"branches": 5},
+    ),
+    (
+        "boolean operators &&, ||, and, or add to CCN",
+        """<?php
+function booleans($a, $b, $c, $d) {
+    if ($a && $b) {
+        return 1;
+    }
+    if ($c || $d) {
+        return 2;
+    }
+    return ($a and $b) or ($c and $d);
+}
+""",
+        {"booleans": 8},
+    ),
+    (
+        "xor does not short-circuit, so it adds no path; and / or still do",
+        """<?php
+function wordy($a, $b, $c) {
+    if ($a xor $b) {
+        return 1;
+    }
+    return $a and $b or $c;
+}
+""",
+        {"wordy": 4},
+    ),
+    (
+        "loops and try-catch add complexity",
+        """<?php
+function control_flow($items) {
+    try {
+        foreach ($items as $item) {
+            while ($item > 0) {
+                $item--;
+            }
+        }
+    } catch (Exception $e) {
+        echo $e->getMessage();
+    }
+}
+""",
+        {"control_flow": 4},
+    ),
+    (
+        "match and switch expressions count dispatch",
+        """<?php
+function dispatch($x) {
+    switch ($x) {
+        case 1:
+            return 10;
+        case 2:
+            return 20;
+        default:
+            return 0;
+    }
+}
+function matching($x) {
+    return match ($x) {
+        1 => 10,
+        2, 3 => 20,
+        default => 0,
+    };
+}
+""",
+        {"dispatch": 2, "matching": 2},
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [(src, exp) for _, src, exp in _PHP_CASES],
+    ids=[label for label, _, _ in _PHP_CASES],
+)
+def test_php_complexity(source: str, expected: dict[str, int]) -> None:
+    _require_language("php")
+    assert _rows("php", source, "php") == expected
+
+
+def test_php_name_nodes_count_only_in_php_calls() -> None:
+    """The ``name`` identifier match is gated to PHP's call kinds.
+
+    No other mapped grammar has a ``name`` node or PHP's call node kinds, so
+    their assertion counting cannot change through that gate.
+    """
+    from repowise.core.analysis.health.complexity.assertions import _PHP_CALL_KINDS
+    from repowise.core.analysis.health.complexity.languages import LANGUAGE_MAPS
+    from repowise.core.ingestion.parser import _get_language, grammar_tag_for
+
+    php_only = _PHP_CALL_KINDS | {"name"}
+    for language in LANGUAGE_MAPS:
+        if language == "php":
+            continue
+        try:
+            grammar = _get_language(grammar_tag_for(language, "x"))
+        except Exception:
+            continue
+        if grammar is None:
+            continue
+        kinds = {
+            grammar.node_kind_for_id(i)
+            for i in range(grammar.node_kind_count)
+            if grammar.node_kind_is_named(i)
+        }
+        assert not kinds & php_only, language
+
+
+def test_php_argument_named_assert_is_not_an_assertion() -> None:
+    _require_language("php")
+    source = b"""<?php
+class FooTest {
+    public function testIt() {
+        $this->assertSame(1, $x);
+        $this->assertSame(2, $y);
+        $this->assertSame(3, $z);
+        helper($assertion);
+        helper($assertion);
+    }
+}
+"""
+    fc = walk_file("FooTest.php", "php", source)
+    (fn,) = fc.functions
+    assert fn.assertion_count == 3

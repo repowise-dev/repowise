@@ -1,11 +1,11 @@
-"""The concept index has to reach the index, not just the rendered page.
+"""The concept index has to reach the index, not just the page's digest.
 
 The table exists to make an identifier-exact query match the identifier rather
-than the model's description of it. That only happens if the table text lands
-in the full-text row. Nothing raises if it does not: the write path is handed
-``page.content`` verbatim, so a table appended after the row was written, or
-stripped on the way to persistence, would show up as a page that reads well and
-cannot be found by the one token a reader would search for.
+than the model's description of it. It lives in the page's agent digest, off
+the body a reader scrolls, so it only helps if the digest lands in the
+full-text row. Nothing raises if it does not: a digest dropped on the way to
+persistence would show up as a page that reads well and cannot be found by the
+one token a reader would search for.
 
 Module pages are the page type with the least to match on — a real run produced
 89 of them carrying four fenced code blocks between them — so this round trip
@@ -90,7 +90,7 @@ def _file_context(path: str, names: list[str]) -> FilePageContext:
     )
 
 
-async def _index(engine, search, *, page_id, title, target_path, content):
+async def _index(engine, search, *, page_id, title, target_path, content, digest):
     factory = async_sessionmaker(engine, expire_on_commit=False)
     async with factory() as session:
         repo = await upsert_repository(session, name="r", local_path="/tmp/r")
@@ -103,13 +103,16 @@ async def _index(engine, search, *, page_id, title, target_path, content):
             title=title,
             content=content,
             summary="",
+            digest=digest,
             target_path=target_path,
             source_hash="h",
             model_name="mock",
             provider_name="mock",
         )
         await session.commit()
-    await search.index(page_id, title, content, summary="", target_path=target_path)
+    await search.index(
+        page_id, title, content, summary="", target_path=target_path, digest=digest
+    )
 
 
 async def _matches(search: FullTextSearch, query: str) -> list[str]:
@@ -129,9 +132,10 @@ async def test_a_module_page_is_findable_by_a_symbol_it_contains(fts):
         target_path="core/resolvers",
         structural_key="k",
     )
-    # The prose the model wrote does not contain the identifier, so a hit below
-    # can only have come from the appended table.
-    assert "ResolverContext" not in page.content.split("## Concept index")[0]
+    # The body does not contain the identifier, so a hit below can only have
+    # come from the digest's concept index.
+    assert "ResolverContext" not in page.content
+    assert "## Concept index" in page.digest
 
     await _index(
         engine,
@@ -140,6 +144,7 @@ async def test_a_module_page_is_findable_by_a_symbol_it_contains(fts):
         title=page.title,
         target_path=page.target_path,
         content=page.content,
+        digest=page.digest,
     )
 
     assert page.page_id in await _matches(search, "ResolverContext")
@@ -167,6 +172,7 @@ async def test_the_prose_spelling_finds_the_page_too(fts):
         title=page.title,
         target_path=page.target_path,
         content=page.content,
+        digest=page.digest,
     )
 
     assert page.page_id in await _matches(search, "Tsconfig resolver")

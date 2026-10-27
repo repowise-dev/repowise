@@ -183,6 +183,8 @@ LINE_PREFIXES: dict[str, tuple[str, ...]] = {
     "lua": ("--",),
     "hs": ("--",),
     "elm": ("--",),
+    # Tree-sitter query files (and Scheme). Longest prefix first: ";; x" is common.
+    "scm": (";;", ";"),
 }
 
 # Extensions that use C-style /* ... */ block comments.
@@ -312,7 +314,7 @@ def _strip_comment_open(stripped: str, prefixes: tuple[str, ...]) -> str | None:
 
 # A line that is only a divider rule (``# -------`` / ``// =====`` / ``***``).
 # These delimit comment runs and must never be glued into the rationale text.
-_SEPARATOR_CHARS = frozenset("-=*~_#/+.<> ")
+_SEPARATOR_CHARS = frozenset("-=*~_#/+.<>; ")
 
 
 def _is_separator(body: str) -> bool:

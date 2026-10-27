@@ -12,6 +12,7 @@ from pathlib import Path
 from repowise.core.workspace.contracts import normalize_contract_id
 from repowise.core.workspace.extractors.data import DataExtractor
 from repowise.core.workspace.extractors.data.names import (
+    is_system_table,
     normalize_table_name,
     split_qualified,
 )
@@ -63,6 +64,22 @@ class TestNormalizeTableName:
     def test_split_qualified(self) -> None:
         assert split_qualified("a.b") == ("a", "b")
         assert split_qualified("b") == (None, "b")
+
+    def test_is_system_table(self) -> None:
+        for sys_tbl in (
+            "pg_database",
+            "pg_roles",
+            "pg_class",
+            "pg_catalog.pg_tables",
+            "pg_catalog.custom_view",
+            "information_schema.tables",
+            "information_schema.columns",
+            "alembic_version",
+            "core.alembic_version",
+        ):
+            assert is_system_table(sys_tbl), sys_tbl
+        for user_tbl in ("users", "page_views", "pgadmin", "analytics.events"):
+            assert not is_system_table(user_tbl), user_tbl
 
 
 def _write(repo: Path, rel: str, content: str) -> None:
@@ -292,6 +309,22 @@ class TestSqlStringConsumers:
         contracts = DataExtractor().extract(tmp_path, "api", make_exclude_predicate())
         assert contracts == []
 
+    def test_system_catalogs_and_alembic_version_skipped(self, tmp_path: Path) -> None:
+        _write(
+            tmp_path,
+            "scripts/promote.py",
+            'q1 = "SELECT datname FROM pg_database WHERE datistemplate = false"\n'
+            'q2 = "SELECT rolname FROM pg_roles WHERE rolcanlogin = true"\n'
+            'q3 = "SELECT relname FROM pg_class WHERE relkind = \'r\'"\n'
+            'q4 = "SELECT table_name FROM information_schema.tables WHERE table_schema = \'public\'"\n'
+            'q5 = "SELECT version_num FROM alembic_version"\n'
+            'q6 = "SELECT nspname FROM pg_catalog.pg_namespace"\n'
+            'q7 = "SELECT id FROM orders WHERE promoted = true"\n',
+        )
+        contracts = DataExtractor().extract(tmp_path, "api")
+        consumers = [c for c in contracts if c.role == "consumer"]
+        assert [c.contract_id for c in consumers] == ["data::orders"]
+
 
 class TestDataMatching:
     def test_normalize_contract_id_lowercases(self) -> None:
@@ -332,6 +365,106 @@ class TestDataMatching:
         contracts = DataExtractor().extract(backend, "backend")
         contracts += DataExtractor().extract(worker, "worker")
         assert len(match_contracts(contracts)) == 1
+
+    def test_embedded_database_reader_not_linked_across_repos(self, tmp_path: Path) -> None:
+        # A table name shared with another repo's server schema is a second
+        # database when the reader opens a SQLite file of its own.
+        backend = tmp_path / "backend"
+        tool = tmp_path / "tool"
+        _write(backend, "migrations/001.sql", "CREATE TABLE repos (id INT);")
+        _write(
+            tool,
+            "store.py",
+            'import sqlite3\nq = "SELECT id FROM repos WHERE x = 1"\n',
+        )
+        _write(
+            tool,
+            "web/db.ts",
+            "import Database from 'better-sqlite3';\n"
+            "const q = 'SELECT id FROM repos WHERE x = 1';\n",
+        )
+        consumers = DataExtractor().extract(tool, "tool")
+        assert [c.meta.get("embedded") for c in consumers] == ["sqlite", "sqlite"]
+        contracts = DataExtractor().extract(backend, "backend") + consumers
+        assert match_contracts(contracts) == []
+
+    def test_embedded_database_reader_linked_within_its_repo(self, tmp_path: Path) -> None:
+        from repowise.core.workspace.matching.data import accepts
+
+        repo = tmp_path / "app"
+        _write(repo, "schema.sql", "CREATE TABLE repos (id INT);")
+        _write(repo, "store.py", 'import sqlite3\nq = "SELECT id FROM repos WHERE x = 1"\n')
+        contracts = DataExtractor().extract(repo, "app")
+        (consumer,) = [c for c in contracts if c.role == "consumer"]
+        (provider,) = [c for c in contracts if c.role == "provider"]
+        assert consumer.meta.get("embedded") == "sqlite"
+        assert accepts(provider, consumer)
+
+    def test_server_database_reader_still_linked_across_repos(self, tmp_path: Path) -> None:
+        backend = tmp_path / "backend"
+        worker = tmp_path / "worker"
+        _write(backend, "migrations/001.sql", "CREATE TABLE repos (id INT);")
+        _write(
+            worker,
+            "job.py",
+            "import psycopg\n"
+            'URL = "postgresql://db/app"\n'
+            'q = "SELECT id FROM repos WHERE x = 1"\n',
+        )
+        contracts = DataExtractor().extract(backend, "backend")
+        contracts += DataExtractor().extract(worker, "worker")
+        assert len(match_contracts(contracts)) == 1
+
+    def test_repo_that_opens_sqlite_in_one_module_keeps_its_tables(self, tmp_path: Path) -> None:
+        # The Flask tutorial shape: db.py opens SQLite, auth.py queries it,
+        # schema.sql declares it. No other repo reads or owns those tables.
+        app = tmp_path / "app"
+        server = tmp_path / "server"
+        _write(app, "app/db.py", "import sqlite3\n")
+        _write(app, "app/auth.py", 'q = "SELECT id FROM user WHERE x = 1"\n')
+        _write(app, "app/schema.sql", "CREATE TABLE post (id INT);")
+        _write(server, "db/database.sql", "CREATE TABLE user (id INT);")
+        _write(server, "db/db.go", 'import _ "github.com/lib/pq"\n')
+        _write(server, "models/post.go", 'const q = "SELECT id FROM post WHERE x = 1"\n')
+        app_contracts = DataExtractor().extract(app, "app")
+        assert {c.meta.get("embedded") for c in app_contracts} == {"sqlite"}
+        server_contracts = DataExtractor().extract(server, "server")
+        assert len(server_contracts) == 2
+        assert all("embedded" not in c.meta for c in server_contracts)
+        assert match_contracts(app_contracts + server_contracts) == []
+
+    def test_repo_naming_a_server_database_keeps_the_file_tag(self, tmp_path: Path) -> None:
+        # SQLite only as a fallback to DATABASE_URL: the app may run on a shared server.
+        app = tmp_path / "app"
+        backend = tmp_path / "backend"
+        _write(
+            app,
+            "config.py",
+            "URI = os.environ.get('DATABASE_URL', '').replace('postgres://', 'postgresql://')"
+            " or 'sqlite:///app.db'\n",
+        )
+        _write(app, "routes.py", 'q = "SELECT id FROM repos WHERE x = 1"\n')
+        _write(backend, "migrations/001.sql", "CREATE TABLE repos (id INT);")
+        contracts = DataExtractor().extract(app, "app") + DataExtractor().extract(backend, "backend")
+        assert len(match_contracts(contracts)) == 1
+
+    def test_repo_engine_reads_server_tokens_in_any_case(self) -> None:
+        from repowise.core.workspace.extractors.data.dialect import repo_embedded_engine
+
+        db = "import sqlite3\n"
+        assert repo_embedded_engine([db, "x = 1\n"]) == "sqlite"
+        assert repo_embedded_engine([db, "'driver' => 'pgsql',\n"]) is None
+        assert repo_embedded_engine([db, "const { Pool } = require('pg');\n"]) is None
+        assert repo_embedded_engine([db, "# Works with MariaDB too\n"]) is None
+        assert repo_embedded_engine(["x = 1\n"]) is None
+
+    def test_embedded_model_not_shared_with_another_repos_schema(self, tmp_path: Path) -> None:
+        _write(tmp_path / "api", "db/schema.sql", "CREATE TABLE refunds (id INT);")
+        _write(tmp_path / "admin", "config.php", "<?php\n$db = new PDO('sqlite:app.db');\n")
+        _write(tmp_path / "admin", "app/Models/Refund.php", _ELOQUENT_HEAD + "class Refund extends Model {}\n")
+        contracts = DataExtractor().extract(tmp_path / "api", "api")
+        contracts += DataExtractor().extract(tmp_path / "admin", "admin")
+        assert match_contracts(contracts) == []
 
 
 _ELOQUENT_HEAD = "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\n"

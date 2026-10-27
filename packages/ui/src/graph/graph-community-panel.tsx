@@ -10,7 +10,7 @@ import { InfoTip } from "../shared/info-tip";
 import { truncatePath } from "../lib/format";
 // Shared band function, never a local threshold: two surfaces disagreeing
 // about where "Good" starts is worse than the import.
-import { bandForScore, type HealthBand } from "@repowise-dev/types/health";
+import { bandForScore, formatScore, type HealthBand } from "@repowise-dev/types/health";
 import { healthBand } from "../health/tokens";
 import type { CommunityDetail } from "@repowise-dev/types/graph";
 
@@ -115,7 +115,7 @@ export function GraphCommunityPanel({
         <div className="shrink-0 border-b border-[var(--color-border-default)] px-4 py-2">
           <button
             onClick={onEnterCommunity}
-            className="flex w-full items-center justify-center gap-1.5 rounded-md border border-[var(--color-accent-primary)]/30 bg-[var(--color-accent-primary)]/10 px-2 py-1.5 text-xs font-medium text-[var(--color-accent-primary)] transition-colors hover:bg-[var(--color-accent-primary)]/20"
+            className="flex w-full items-center justify-center gap-1.5 rounded-md border border-[var(--color-border-default)] px-2 py-1.5 text-xs font-medium text-[var(--color-text-primary)] transition-colors hover:border-[var(--color-border-hover)] hover:bg-[var(--color-bg-elevated)]"
           >
             <CornerDownRight className="h-3 w-3" />
             Enter this community
@@ -256,7 +256,7 @@ function HealthLede({
           className="text-[32px] font-semibold leading-none tracking-tight tabular-nums"
           style={{ color: band.color }}
         >
-          {score.toFixed(1)}
+          {formatScore(score)}
         </span>
         <span className="text-xs text-[var(--color-text-tertiary)]">out of 10</span>
         <span
@@ -561,7 +561,7 @@ function NeighborRow({
     <button
       type="button"
       onClick={onSelect}
-      className="flex w-full items-center justify-between gap-2 rounded px-1.5 py-1 text-left transition-colors hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+      className="flex w-full items-center justify-between gap-2 rounded px-1.5 py-1 text-left transition-colors hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
     >
       {body}
     </button>

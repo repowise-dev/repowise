@@ -93,3 +93,11 @@ describe("FileHealthTab", () => {
     expect(screen.getByText("No health data")).toBeTruthy();
   });
 });
+
+describe("FileHealthTab verification", () => {
+  it("marks a provisional finding type as unverified", () => {
+    const findings = [{ ...makeFinding(0), verification: "unverified" }, makeFinding(1)];
+    render(<FileHealthTab health={makeHealth(findings)} functionBlame={[]} />);
+    expect(screen.getAllByText("unverified")).toHaveLength(1);
+  });
+});

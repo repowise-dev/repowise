@@ -29,6 +29,9 @@ overrides without static callers, etc.
 
 from __future__ import annotations
 
+import re
+from collections.abc import Iterable
+
 # Method names reserved by COM / IUnknown / IDispatch. Case-sensitive —
 # Windows COM uses PascalCase universally.
 _COM_CONTRACT_METHOD_NAMES: frozenset[str] = frozenset({
@@ -58,6 +61,17 @@ _COM_CONTRACT_METHOD_NAMES: frozenset[str] = frozenset({
 # overwhelming majority; Rust ``windows-rs`` derivations also surface
 # these names in user code via the ``#[implement]`` macro.
 _COM_LANGUAGES: frozenset[str] = frozenset({"cpp", "c", "csharp", "rust"})
+
+#: The macros a C/C++ COM interface method implementation is declared with
+#: (``IFACEMETHODIMP GetTitle(...)``, ``STDMETHODIMP_(ULONG) AddRef()``). The
+#: method fills an interface slot the COM runtime calls through the vtable,
+#: whatever its name.
+_COM_METHOD_MACRO_RE = re.compile(r"\b(?:IFACE|STD)METHOD(?:IMP)?_?\b")
+
+
+def is_com_method_implementation(signature: str | None, language: str | None) -> bool:
+    """Whether a C/C++ signature declares a COM interface method implementation."""
+    return language in _CPP_LANGUAGES and bool(_COM_METHOD_MACRO_RE.search(signature or ""))
 
 
 # Method names reserved by JVM ``Object`` / ``Serializable`` / ``Comparable`` /
@@ -271,7 +285,34 @@ _GODOT_CALLBACK_NAMES: frozenset[str] = frozenset({
 })
 
 
-def is_contract_method(sym_name: str, sym_kind: str | None, language: str | None) -> bool:
+# Apex platform types the org runtime instantiates or calls into (from Setup,
+# an email service, a package install, ``sort()``), so a class extending or
+# implementing one is an entry point. Folded last segment, as heritage records it.
+APEX_PLATFORM_TYPES: frozenset[str] = frozenset({
+    # Async and scheduling
+    "schedulable", "queueable", "batchable", "finalizer",
+    # Collections and dynamic dispatch the runtime calls into
+    "comparable", "comparator", "iterable", "iterator", "callable",
+    # Test doubles the test runner calls
+    "stubprovider", "httpcalloutmock", "webservicemock",
+    # Configuration-registered handlers
+    "inboundemailhandler", "registrationhandler", "samljithandler",
+    "configurableselfreghandler", "logindiscoveryhandler",
+    "mydomainlogindiscoveryhandler", "authproviderpluginclass", "connectedappplugin",
+    "oauth2tokenexchangehandler", "installhandler", "uninstallhandler", "plugin",
+    "urlrewriter", "emailtemplateselector", "milestonetriggertimecalculator",
+    "quickactiondefaultshandler", "canvaslifecyclehandler", "eventcondition",
+    "asynccondition", "policycondition", "deploycallback", "cachebuilder",
+    "dynamicpicklist", "notificationaction",
+})
+
+
+def is_contract_method(
+    sym_name: str,
+    sym_kind: str | None,
+    language: str | None,
+    modifiers: Iterable[str] | None = None,
+) -> bool:
     """Return True if *sym_name* is a reserved contract-method name in *language*.
 
     The check is intentionally narrow: only kind=``method`` symbols in
@@ -294,6 +335,8 @@ def is_contract_method(sym_name: str, sym_kind: str | None, language: str | None
     if language in _COM_LANGUAGES and sym_name in _COM_CONTRACT_METHOD_NAMES:
         return True
     if language in _JVM_LANGUAGES and sym_name in _JVM_CONTRACT_METHOD_NAMES:
+        return True
+    if language == "kotlin" and "operator" in (modifiers or ()):
         return True
     if language == "gdscript" and sym_name in _GODOT_CALLBACK_NAMES:
         return True

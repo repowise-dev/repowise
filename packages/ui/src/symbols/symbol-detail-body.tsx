@@ -15,7 +15,8 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { StatGrid, StatTile } from "../shared/stat-grid";
 import { scoreBadgeClass } from "../health/tokens";
-import { formatRelativeTimeOrNull, formatTopPercentile, truncatePath } from "../lib/format";
+import { formatRelativeTimeOrNull, formatTopPercentile } from "../lib/format";
+import { FilePath } from "../shared/file-path";
 import { cn } from "../lib/cn";
 import { SymbolCallGraph } from "./symbol-call-graph";
 
@@ -119,7 +120,8 @@ export function SymbolDetailBody({
           value={data.complexity_estimate != null ? String(data.complexity_estimate) : "—"}
         />
         <StatTile
-          label="Modifications"
+          label="Commits in current code"
+          title="Distinct commits that wrote this symbol's current lines, by git blame. A commit whose lines were all rewritten since is not counted."
           value={data.blame_mod_count != null ? String(data.blame_mod_count) : "—"}
           {...(data.blame_recent_mod_count != null
             ? { hint: `${data.blame_recent_mod_count} recent` }
@@ -127,7 +129,7 @@ export function SymbolDetailBody({
         />
         <StatTile label="Median age" value={age != null ? `${age}d` : "—"} />
         {data.fix_count != null && data.fix_count > 0 && (
-          // "How often changed" (Modifications) beside "how often broken" is
+          // "How often changed" (commits in current code) beside "how often broken" is
           // the contrast that earns this tile. It appears only for a positive
           // count, since a symbol nobody has had to fix says nothing worth a cell,
           // and the hint hedges, because fixes are matched to symbols by line
@@ -174,7 +176,7 @@ export function SymbolDetailBody({
                 <div className="flex items-center gap-1.5">
                   <div className="h-1.5 w-12 overflow-hidden rounded-full bg-[var(--color-bg-elevated)]">
                     <div
-                      className="h-full rounded-full bg-[var(--color-accent-primary)]"
+                      className="h-full rounded-full bg-[var(--color-progress-fill)]"
                       style={{ width: `${Math.round(graph.entry_point_score * 100)}%` }}
                     />
                   </div>
@@ -315,9 +317,7 @@ export function SymbolDetailBody({
                 key={p.file_path}
                 className="flex items-center justify-between gap-2 font-mono text-xs"
               >
-                <span className="truncate text-[var(--color-text-secondary)]" title={p.file_path}>
-                  {truncatePath(p.file_path, 40)}
-                </span>
+                <FilePath path={p.file_path} fold className="text-[var(--color-text-secondary)]" />
                 <span className="tabular-nums text-[var(--color-text-tertiary)]">
                   {p.co_change_count}×
                 </span>
@@ -345,7 +345,7 @@ export function SymbolDetailBody({
                 <span className="text-[var(--color-text-secondary)]">
                   <span className="font-medium">{f.kind}</span>{" "}
                   <span className="text-[var(--color-text-tertiary)]">
-                    — {f.reason} ({f.lines} lines)
+                    — {f.reason}{f.lines != null && ` (${f.lines} lines)`}
                   </span>
                 </span>
               </li>
@@ -384,11 +384,8 @@ export function SymbolDetailBody({
           <span className="text-[10px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
             Parent file
           </span>
-          <a
-            href={fileTo}
-            className="truncate font-mono text-xs text-[var(--color-accent-primary)] hover:underline"
-          >
-            {data.identity.file_path}
+          <a href={fileTo} className="min-w-0 hover:underline">
+            <FilePath path={data.identity.file_path} mode="full" accent />
           </a>
           {data.file_context?.health_score != null && (
             <span
@@ -410,7 +407,8 @@ export function SymbolDetailBody({
       {onOpenBlastRadius && (
         <Button variant="outline" size="sm" onClick={onOpenBlastRadius}>
           <Radius className="mr-1.5 h-3.5 w-3.5" />
-          View blast radius for {truncatePath(id.file_path, 28)}
+          View blast radius for{" "}
+          <FilePath path={id.file_path} mode="middle-ellipsis" className="max-w-[16rem]" />
         </Button>
       )}
     </div>

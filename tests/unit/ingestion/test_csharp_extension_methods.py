@@ -138,6 +138,23 @@ class TestTiers:
         found = _resolve(tmp_path, files, "src/Consumer.cs")
         assert found["Net"] == ("receiver_extension_global", 0.75)
 
+    def test_an_extension_on_a_base_serves_a_derived_receiver(self, tmp_path: Path) -> None:
+        files = {
+            "src/Base.cs": "namespace Acme;\npublic class BaseOrder { }\n",
+            "src/Order.cs": "namespace Acme;\npublic class Order : BaseOrder { }\n",
+            "src/Ext.cs": (
+                "namespace Acme;\npublic static class Ext {\n"
+                "  public static int Net(this BaseOrder o) { return 1; }\n}\n"
+            ),
+            "src/Consumer.cs": (
+                "namespace Acme;\npublic class Consumer {\n"
+                "  public void Run() { Order o = new Order(); var z = o.Net(); }\n}\n"
+            ),
+        }
+        heritage = {"src/Order.cs::Order": {"src/Base.cs::BaseOrder"}}
+        found = _resolve(tmp_path, files, "src/Consumer.cs", heritage=heritage)
+        assert found["Net"] == ("receiver_extension_global", 0.75)
+
     def test_an_instance_method_outranks_an_extension(self, tmp_path: Path) -> None:
         """C# dispatches to the instance method, so the extension must not answer."""
         files = {
@@ -264,7 +281,8 @@ class TestRefusals:
         assert "Dup" not in _resolve(tmp_path, files, "src/Consumer.cs")
 
     def test_an_overload_set_is_not_ambiguous(self, tmp_path: Path) -> None:
-        """Every overload in one class shares a symbol id, so the pair survives."""
+        """An overload set is indexed once, so the pair survives and the call
+        narrows to the member its arguments admit."""
         files = {
             "src/Order.cs": ORDER,
             "src/Ext.cs": (
@@ -278,4 +296,4 @@ class TestRefusals:
             ),
         }
         found = _resolve(tmp_path, files, "src/Consumer.cs")
-        assert found["Net"] == ("receiver_extension_global", 0.75)
+        assert found["Net#1"] == ("receiver_extension_global", 0.75)

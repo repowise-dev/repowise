@@ -1,0 +1,347 @@
+"""Which open findings one get_health call ranks, emits, and totals."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+from sqlalchemy import select
+
+from repowise.core.analysis.finding_registry import split_held
+from repowise.core.analysis.health.crap import ranked_by_crap
+from repowise.core.analysis.health.worth import LOW_PRIORITY_LABEL, finding_priorities
+from repowise.core.persistence.crud.analysis.plain_rows import plain_rows
+from repowise.core.persistence.crud.analysis.shown import gated_counts, ungated
+from repowise.core.persistence.models import HealthFinding
+from repowise.server.mcp_server.tool_health.population import Population
+from repowise.server.mcp_server.tool_health.request import HealthRequest
+from repowise.server.mcp_server.tool_health.serialize import _rank_emitted, _serialize_finding
+
+UNTESTED_COMPLEXITY = "untested_complexity"
+
+
+def _in_dimensions(row: Any, dimensions: set[str]) -> bool:
+    """True when *row* belongs to one of *dimensions* (empty set -> everything).
+
+    A NULL ``dimension`` means ``defect``: the column was added without a
+    backfill, so older rows stay NULL until the next index.
+    """
+    if not dimensions:
+        return True
+    return (row.dimension or "defect") in dimensions
+
+
+@dataclass
+class FindingSets:
+    """Two row sets, deliberately split.
+
+    ``finding_rows`` are the ones this response will serialize. ``lead_rows``
+    is the wider set the per-file leads and exact totals come from, and needs
+    only a few columns.
+
+    Targeted mode names a handful of files, so one full read serves both.
+    Dashboard mode reads narrow, since hydrating every open finding grows with
+    the repo.
+
+    ``test_finding_rows`` is the dashboard-only test bucket. Targeted mode never
+    fills it: the caller named the files, so partitioning them would answer a
+    different question.
+    """
+
+    finding_rows: list[Any]
+    lead_rows: list[Any]
+    legend_rows: list[Any]
+    # The ranked, dimension-filtered set, before any cap. The first row is the
+    # one ``refactoring_plans_status`` points at when no plan exists.
+    emitted: list[Any]
+    # A total describes the list it sits beside (#1337): the post-exclusion,
+    # dimension-filtered open set, and in dashboard mode its production half.
+    # With ``test_findings_total`` it sums to the whole open set.
+    findings_total: int
+    test_finding_rows: list[Any] = field(default_factory=list)
+    test_findings_total: int = 0
+    #: Row id -> why the finding can wait, for each lower-priority row.
+    lower_priority: dict[Any, str] = field(default_factory=dict)
+    #: Set when the call prints no finding: ``emitted`` is then unranked and
+    #: this is the set :meth:`head` measures shapes over, on demand.
+    unranked_over: list[Any] | None = None
+    #: Targeted mode: rows a file or row hold kept off the list, which the
+    #: score still counts (history markers on a production file, for one).
+    held_rows: list[Any] = field(default_factory=list)
+
+    def head(self) -> Any | None:
+        """The first ranked finding, ranking now if the call skipped it."""
+        if self.unranked_over is None:
+            return next(iter(self.emitted), None)
+        return next(iter(_tiered(self.emitted, self.unranked_over)[0]), None)
+
+
+def _tiered(rows: list[Any], measured_over: list[Any]) -> tuple[list[Any], dict[Any, str]]:
+    """Ranked *rows* with those worth doing first ahead, and each later row's
+    reason. Shapes are measured over *measured_over*, the set before any
+    dimension filter, so a filter never changes a function's tier."""
+    reasons = dict(zip((r.id for r in measured_over), finding_priorities(measured_over), strict=True))
+    ranked = sorted(_rank_emitted(rows), key=lambda r: reasons.get(r.id) is not None)
+    labels = {r.id: LOW_PRIORITY_LABEL[why] for r in ranked if (why := reasons.get(r.id))}
+    return ranked, labels
+
+
+def _open_findings(repository: Any, req: HealthRequest) -> tuple[Any, ...]:
+    """Open findings no language gate holds back. File holds are applied after
+    the read (:func:`_listed`): the leads, worst-file order and KPIs count the
+    file-held rows, as the scores did."""
+    return (
+        *_open_typed(repository, req),
+        ungated(
+            "health",
+            HealthFinding.file_path,
+            HealthFinding.biomarker_type,
+            include_unverified=req.include_unverified,
+            file_holds=False,
+        ),
+    )
+
+
+def _listed(rows: list[Any], pop: Population, req: HealthRequest) -> list[Any]:
+    """*rows* a finding list may show: those no file hold keeps back."""
+    if req.include_unverified:
+        return rows
+    return split_held("health", rows, pop.files, kind="biomarker_type")[0]
+
+
+def _open_typed(repository: Any, req: HealthRequest) -> tuple[Any, ...]:
+    """Open findings of a type the registry shows, before any language gate."""
+    return (
+        HealthFinding.repository_id == repository.id,
+        HealthFinding.status == "open",
+        HealthFinding.biomarker_type.not_in(req.withheld_types),
+    )
+
+
+async def gated_findings(
+    session: Any, repository: Any, pop: Population, req: HealthRequest
+) -> dict[str, dict]:
+    """The open findings a language gate held back from this call, by language."""
+    where = list(_open_typed(repository, req))
+    if pop.scoped:
+        where.append(HealthFinding.file_path.in_(pop.effective_targets))
+    return await gated_counts(
+        session,
+        "health",
+        HealthFinding,
+        *where,
+        kind_col=HealthFinding.biomarker_type,
+        include_unverified=req.include_unverified,
+    )
+
+
+async def load_targeted_findings(
+    session: Any, repository: Any, pop: Population, req: HealthRequest
+) -> FindingSets:
+    """Every open finding on the named files: one full read serves both sets."""
+    finding_rows = pop.in_counts_findings(pop.in_scope_rows(
+        list(
+            (
+                await session.execute(
+                    select(HealthFinding)
+                    .where(*_open_findings(repository, req))
+                    .where(HealthFinding.file_path.in_(pop.effective_targets))
+                    .order_by(HealthFinding.health_impact.desc())
+                )
+            )
+            .scalars()
+            .all()
+        ),
+        "file_path",
+    ))
+    dimensioned = [f for f in finding_rows if _in_dimensions(f, req.ranked_dimensions)]
+    listed = _listed(dimensioned, pop, req)
+    listed_ids = {f.id for f in listed}
+    emitted, labels = _tiered(listed, finding_rows)
+    return FindingSets(
+        finding_rows=emitted,
+        lead_rows=finding_rows,
+        legend_rows=emitted,
+        emitted=emitted,
+        findings_total=len(emitted),
+        lower_priority=labels,
+        held_rows=[f for f in dimensioned if f.id not in listed_ids],
+    )
+
+
+async def load_dashboard_findings(
+    session: Any,
+    repository: Any,
+    pop: Population,
+    req: HealthRequest,
+    test_paths: set[str],
+) -> FindingSets:
+    """A narrow ranked read of every open finding, then the two heads by id."""
+    lead_rows = pop.in_counts_findings(
+        pop.in_scope_rows(await _read_lite_findings(session, repository, req))
+    )
+    # ``lead_rows`` stays unfiltered: the leads and performance KPI must not
+    # change because the caller asked to see one dimension.
+    dimensioned = [
+        r for r in _listed(lead_rows, pop, req) if _in_dimensions(r, req.ranked_dimensions)
+    ]
+    ranked = req.ranks_findings
+    # Tiering measures every open finding; a call that only counts them skips it.
+    emitted, labels = _tiered(dimensioned, lead_rows) if ranked else (dimensioned, {})
+    # Test findings get their own bucket instead of crowding the headline
+    # list. Split before the cap, so each list is the top ``limit`` of its
+    # own population.
+    prod_emitted = [r for r in emitted if r.file_path not in test_paths]
+    test_emitted = [r for r in emitted if r.file_path in test_paths]
+    limit = req.limit
+    # Fetch the head by id: exactly ``limit`` rows whatever the exclusions,
+    # where an over-fetch margin on the ranked query could approach a full read.
+    head_ids = [r.id for r in prod_emitted[:limit]] if ranked and req.wants_findings else []
+    test_head_ids = (
+        [r.id for r in test_emitted[:limit]] if ranked and req.wants_test_findings else []
+    )
+    by_id = await _read_findings_by_id(session, head_ids + test_head_ids)
+    return FindingSets(
+        # Re-imposed from the id lists; ``IN`` does not preserve order.
+        finding_rows=[by_id[i] for i in head_ids if i in by_id],
+        lead_rows=lead_rows,
+        # Decided here so the legend is a pure function of the ranked set,
+        # which no projection can change.
+        legend_rows=prod_emitted[:limit] + test_emitted[:limit],
+        emitted=emitted,
+        findings_total=len(prod_emitted),
+        test_finding_rows=[by_id[i] for i in test_head_ids if i in by_id],
+        test_findings_total=len(test_emitted),
+        lower_priority=labels,
+        unranked_over=None if ranked else lead_rows,
+    )
+
+
+_LITE_COLUMNS = (
+    HealthFinding.id,
+    HealthFinding.file_path,
+    HealthFinding.health_impact,
+    HealthFinding.biomarker_type,
+    HealthFinding.reason,
+    HealthFinding.dimension,
+    HealthFinding.severity,
+    HealthFinding.details_json,
+    HealthFinding.function_name,
+    HealthFinding.line_start,
+    HealthFinding.line_end,
+)
+
+
+async def _read_lite_findings(session: Any, repository: Any, req: HealthRequest) -> list[Any]:
+    """Narrow read over every open finding.
+
+    The columns ``_leads_by_file`` reads, plus ``dimension`` and ``id``, and
+    what the worth tier measures a function by (``function_name``, the span,
+    ``severity``, ``details_json``). The tuple each row is copied into exposes
+    them as attributes, so the reduction and the exclude filter run against it
+    unchanged. Ceiling: ``details_json`` is read for every open finding, for
+    the tier; storing the tier on the row would make this read narrow again.
+    """
+    # Plain tuples: the tier reads every row's fields several times.
+    return plain_rows(
+        await session.execute(
+            select(*_LITE_COLUMNS)
+            .where(*_open_findings(repository, req))
+            .order_by(HealthFinding.health_impact.desc())
+        )
+    )
+
+
+async def _read_findings_by_id(session: Any, ids: list[str]) -> dict[str, Any]:
+    """One read for both heads, which partition the same ranked set."""
+    if not ids:
+        return {}
+    return {
+        f.id: f
+        for f in (
+            await session.execute(select(HealthFinding).where(HealthFinding.id.in_(ids)))
+        )
+        .scalars()
+        .all()
+    }
+
+
+async def read_crap_rows(
+    session: Any, repository: Any, pop: Population, req: HealthRequest, reference: str
+) -> list[dict[str, Any]]:
+    """Open ``untested_complexity`` findings ranked by CRAP, for that include.
+
+    Measured ones only, unless the call also opts into unverified rows: an
+    estimate rests on call-graph reach (``finding_registry.ROW_HOLDS``).
+    """
+    if UNTESTED_COMPLEXITY not in req.include_set or pop.nothing_resolved:
+        return []
+    query = select(HealthFinding).where(
+        HealthFinding.repository_id == repository.id,
+        HealthFinding.status == "open",
+        HealthFinding.biomarker_type == UNTESTED_COMPLEXITY,
+        ungated(
+            "health",
+            HealthFinding.file_path,
+            HealthFinding.biomarker_type,
+            include_unverified=req.include_unverified,
+        ),
+    )
+    if pop.scoped:
+        query = query.where(HealthFinding.file_path.in_(pop.effective_targets))
+    rows = pop.in_scope_rows(list((await session.execute(query)).scalars().all()))
+    return ranked_by_crap(_serialize_finding(f, reference) for f in rows)
+
+
+async def read_withheld_rows(
+    session: Any, repository: Any, pop: Population, req: HealthRequest
+) -> list[Any]:
+    """Open findings of a type the registry withholds from this surface.
+
+    No list or total shows them, but the stored score counted them, so the
+    per-file leads report their deduction and ``_meta.withheld`` names them:
+    a score never drops for a reason the response hides.
+    """
+    if not req.withheld_types:
+        return []
+    query = select(
+        HealthFinding.file_path, HealthFinding.biomarker_type, HealthFinding.health_impact
+    ).where(
+        HealthFinding.repository_id == repository.id,
+        HealthFinding.status == "open",
+        # No language gate: a withheld type is withheld on every language, and
+        # ``gated_findings`` counts only shown types, so no row is named twice.
+        HealthFinding.biomarker_type.in_(req.withheld_types),
+    )
+    if pop.scoped:
+        query = query.where(HealthFinding.file_path.in_(pop.effective_targets))
+    return pop.in_counts_findings(pop.in_scope_rows(plain_rows(await session.execute(query))))
+
+
+async def read_accuracy_rows(
+    session: Any, repository: Any, pop: Population, req: HealthRequest
+) -> list[Any]:
+    """The ``prior_defect`` labels the accuracy block scores the ranking against.
+
+    ``compute_defect_accuracy`` reads only ``prior_defect``, so selecting those
+    directly keeps the whole-repo denominator without a full read.
+
+    Not routed through ``in_counts_findings``: these are the ground truth, not a
+    deduction, and dropping them under ``code_shape`` would leave no labels.
+    """
+    if "accuracy" not in req.include_set or pop.scoped:
+        return []
+    return pop.in_scope_rows(
+        list(
+            (
+                await session.execute(
+                    select(HealthFinding)
+                    .where(*_open_findings(repository, req))
+                    .where(HealthFinding.biomarker_type == "prior_defect")
+                )
+            )
+            .scalars()
+            .all()
+        ),
+        "file_path",
+    )

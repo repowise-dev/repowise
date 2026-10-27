@@ -57,6 +57,26 @@ def test_java_fixture_counts():
 
 _JAVA_CASES = [
     (
+        "class A{void lock(){for(;;){ if(l.tryLock(1,T)) return; l.lock(); }}}",
+        [],
+        "the retry loop inside lock() is the acquisition itself",
+    ),
+    (
+        "class A{void m(java.util.List<String> ks){for(String k:ks){ l.lock(); }}}",
+        [("lock_in_loop", "")],
+        "a lock taken per item in an ordinary method still fires",
+    ),
+    (
+        "class A{void lockAll(java.util.List<Object> ks){for(Object k:ks){ locks.get(k).lock(); }}}",
+        [("lock_in_loop", "")],
+        "a lock() that iterates over items takes a lock per item",
+    ),
+    (
+        "class A{void lock(java.util.List<Object> ks){for(;;){ for(Object k:ks){ locks.get(k).lock(); } return; }}}",
+        [("lock_in_loop", "")],
+        "a per-item loop nested in the spin loop still locks per item",
+    ),
+    (
         "class A{void m(java.util.List<String> ids){"
         "for(String id:ids){ this.repo.findById(id); }}}",
         [("io_in_loop", "db")],
@@ -80,6 +100,80 @@ _JAVA_CASES = [
         "class A{void m(java.util.List<String> ids){for(String id:ids){ helper(id); }}}",
         [],
         "a plain helper call in a loop is not a sink",
+    ),
+    (
+        "class A{void m(java.util.List<String> ks, Settings settings){"
+        "for(String k:ks){ settings.getByPrefix(k); }}}",
+        [],
+        "a ...By[A-Z] name on a non-repository receiver is not a derived query",
+    ),
+    (
+        "class A{void m(java.util.List<byte[]> bs){"
+        "for(byte[] b:bs){ java.net.InetAddress.getByAddress(b); }}}",
+        [],
+        "a static factory named like a derived query is not db",
+    ),
+    (
+        "class A{void m(java.util.List<String> ids, UserRepository userRepository){"
+        "for(String id:ids){ userRepository.findByEmail(id); }}}",
+        [("io_in_loop", "db")],
+        "a derived query on a repository-named receiver is db without an import",
+    ),
+    (
+        "import org.springframework.data.jpa.repository.JpaRepository;\n"
+        "class A{void m(java.util.List<String> ids, Users users){"
+        "for(String id:ids){ users.findByEmail(id); }}}",
+        [("io_in_loop", "db")],
+        "a derived query in a file importing Spring Data is db",
+    ),
+    (
+        "import java.sql.JDBCType;\n"
+        "class A{void m(java.util.List<String> ks, java.util.Map<String,String> m){"
+        "for(String k:ks){ m.get(k); }}}",
+        [],
+        "a type-only java.sql import is not db evidence",
+    ),
+    (
+        "import static java.sql.Types.BIGINT;\n"
+        "class A{void m(java.util.List<String> ks, java.util.Map<String,String> m){"
+        "for(String k:ks){ m.get(k); }}}",
+        [],
+        "a static-imported java.sql constant is not db evidence",
+    ),
+    (
+        "import java.sql.Statement;\n"
+        "class A{void m(java.util.List<String> ks, java.util.Map<String,String> m){"
+        "for(String k:ks){ m.get(k); }}}",
+        [],
+        "JDBC evidence does not license get, which JDBC has no verb for",
+    ),
+    (
+        "import java.sql.Statement;\n"
+        "class A{void m(java.util.List<String> qs, Statement st){"
+        "for(String q:qs){ st.execute(q); }}}",
+        [("io_in_loop", "db")],
+        "JDBC evidence licenses execute",
+    ),
+    (
+        "class A{void m(java.util.List<Ctx> cs){for(Ctx c:cs){ executeQuery(c); }}}",
+        [],
+        "a bare executeQuery is the class's own method, not a JDBC statement",
+    ),
+    (
+        "class A{void m(java.util.List<java.lang.module.ModuleFinder> fs){"
+        "for(java.lang.module.ModuleFinder f:fs){ f.findAll(); }}}",
+        [],
+        "a shared repository verb on a non-repository receiver is not db",
+    ),
+    (
+        "class A{void m(java.util.List<X> xs){for(X x:xs){ synchronized(x){ } x.lock.lock(); }}}",
+        [],
+        "the loop element's own lock is a different lock each pass, nothing to hoist",
+    ),
+    (
+        "class A{void m(java.util.List<X> xs){for(X x:xs){ synchronized(this){ } }}}",
+        [("lock_in_loop", "")],
+        "a shared lock taken per element still fires",
     ),
 ]
 
@@ -133,12 +227,49 @@ _GO_CASES = [
         [("io_in_loop", "network")],
         "net/http Get in a range loop",
     ),
+    (
+        "package p\nfunc f(us []*U) {\n\tfor _, u := range us {\n\t\tu.mu.RLock()\n\t\tu.mu.RUnlock()\n\t}\n}\n",
+        [],
+        "the range element's own mutex is a different lock each pass",
+    ),
+    (
+        "package p\nfunc f(us []*U) {\n\tfor _, u := range us {\n\t\tmu.Lock()\n\t\tmu.Unlock()\n\t}\n}\n",
+        [("lock_in_loop", "")],
+        "a shared mutex locked per element still fires",
+    ),
+    (
+        "package p\nfunc f(s *S) {\n\tfor {\n\t\tselect {\n\t\tcase <-s.t.C:\n"
+        "\t\t\tmu.Lock()\n\t\t\tmu.Unlock()\n\t\t}\n\t}\n}\n",
+        [],
+        "a lock per event in a for-select event loop has nothing to hoist",
+    ),
+    (
+        "package p\nfunc f(xs []int) {\n\tfor _, x := range xs {\n\t\tselect {\n"
+        "\t\tcase ch <- x:\n\t\t\tmu.Lock()\n\t\t}\n\t}\n}\n",
+        [("lock_in_loop", "")],
+        "a select inside a range loop still locks per element",
+    ),
 ]
 
 
 @pytest.mark.parametrize("src,expected,note", _GO_CASES, ids=[c[2] for c in _GO_CASES])
 def test_go_cases(src, expected, note):
     assert _hits("go", src) == sorted(expected), note
+
+
+def test_go_string_concat_reset_per_iteration_not_flagged():
+    reassigned = (
+        'package p\nfunc f(rows []string){ for _, row := range rows { line = row; line += "," } }\n'
+    )
+    short_declared = 'package p\nfunc f(rows []string){ for _, row := range rows { line := row; line += "," } }\n'
+    var_declared = 'package p\nfunc f(rows []string){ for _, row := range rows { var line string; line += "," } }\n'
+    accumulator = (
+        'package p\nfunc f(rows []string){ out := ""; for _, row := range rows { out += "," } }\n'
+    )
+
+    for source in (reassigned, short_declared, var_declared):
+        assert not any(kind == "string_concat_in_loop" for kind, _ in _hits("go", source))
+    assert ("string_concat_in_loop", "") in _hits("go", accumulator)
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +314,23 @@ _CSHARP_CASES = [
         # Awaited EF query in a loop: io_in_loop + the serial_await co-signal.
         [("io_in_loop", "db"), ("serial_await_in_loop", "db")],
         "EF *Async family is unambiguous db (no import gate)",
+    ),
+    (
+        "class A{ void M(System.Collections.Generic.List<int> ids){"
+        "foreach(var id in ids){ _ = SaveChangesAsync(); }}"
+        " System.Threading.Tasks.Task SaveChangesAsync() => null; }",
+        [],
+        "a bare SaveChangesAsync is the class's own method, not a DbContext call",
+    ),
+    (
+        "class A{void M(List<X> xs){foreach(var item in xs){ lock(item){ } }}}",
+        [],
+        "locking the foreach element is a different lock each pass",
+    ),
+    (
+        "class A{void M(List<X> xs){foreach(var item in xs){ lock(gate){ } }}}",
+        [("lock_in_loop", "")],
+        "a shared gate locked per element still fires",
     ),
 ]
 
@@ -297,6 +445,16 @@ def test_rust_fs_in_async_blocks():
     assert not any(k == "blocking_sync_in_async" for k, _ in _hits("rust", awaited))
 
 
+def test_rust_console_io_in_async_is_not_fs():
+    """``std::io::stdin().read(..)`` roots at ``std`` but is console IO, not ``fs::read``."""
+    stdin = "async fn f(){ let _ = std::io::stdin().read(&mut []); }"
+    stderr = 'async fn f(){ let _ = std::io::stderr().write(b"x"); }'
+    assert not any(k == "blocking_sync_in_async" for k, _ in _hits("rust", stdin))
+    assert not any(k == "blocking_sync_in_async" for k, _ in _hits("rust", stderr))
+    sleep = "async fn f(d: Duration){ std::thread::sleep(d); }"
+    assert ("blocking_sync_in_async", "thread::sleep") in _hits("rust", sleep)
+
+
 # ---------------------------------------------------------------------------
 # Phase-7c precision fixes (multi-language corpus FP classes)
 # ---------------------------------------------------------------------------
@@ -349,6 +507,57 @@ def test_csharp_task_result_chained_read_still_blocks():
         "class A{ async System.Threading.Tasks.Task M(){ "
         "var c = itemGetTask.Result.CatalogItem; }}",
     )
+
+
+def _csharp_async(body: str) -> list[tuple[str, str]]:
+    src = (
+        "class A{ async System.Threading.Tasks.Task M(bool c){ "
+        "var t = F(); var u = G(); " + body + " }}"
+    )
+    return [h for h in _hits("csharp", src) if h[0] == "blocking_sync_in_async"]
+
+
+_AWAITED_BEFORE_READ = [
+    ("await t; var r = t.Result;", "direct await"),
+    ("await t.ConfigureAwait(false); var r = t.Result;", "ConfigureAwait"),
+    ("await Task.WhenAll(t, u); var r = t.Result;", "WhenAll args"),
+    ("await Task.WhenAll(t, u); var r = t.Result.Items;", "chained read after WhenAll"),
+    (
+        "var l = new List<Task>(); l.Add(t); l.Add(u); await Task.WhenAll(l); var r = t.Result;",
+        "WhenAll over a list the task was added to",
+    ),
+    ("var a = new[] { t, u }; await Task.WhenAll(a); var r = t.Result;", "array initializer"),
+    ("await Task.WhenAll(new[] { t, u }); var r = u.Result;", "inline array"),
+    ("var d = await Task.WhenAny(t, u); var r = d.Result;", "task returned by WhenAny"),
+    ("await Task.WhenAll(t, u); t.GetAwaiter().GetResult();", "GetAwaiter().GetResult()"),
+    ("await t; if (c) { var r = t.Result; }", "read in a branch after a straight-line await"),
+]
+
+
+@pytest.mark.parametrize(
+    "body", [c[0] for c in _AWAITED_BEFORE_READ], ids=[c[1] for c in _AWAITED_BEFORE_READ]
+)
+def test_csharp_result_after_await_not_blocking(body):
+    """A task awaited earlier in the method is complete: ``.Result`` does not block."""
+    assert _csharp_async(body) == []
+
+
+_NOT_AWAITED_BEFORE_READ = [
+    ("var r = t.Result;", "no await at all"),
+    ("if (c) { await t; } var r = t.Result;", "await inside a branch that may not run"),
+    ("await u; var r = t.Result;", "a different task was awaited"),
+    ("await Task.WhenAll(u); var r = t.Result;", "WhenAll without the task"),
+    ("var r = t.Result; await t;", "await after the read"),
+    ("await Task.WhenAny(t, u); var r = t.Result;", "WhenAny argument may still run"),
+    ("System.Action f = async () => await t; var r = t.Result;", "await inside a lambda"),
+]
+
+
+@pytest.mark.parametrize(
+    "body", [c[0] for c in _NOT_AWAITED_BEFORE_READ], ids=[c[1] for c in _NOT_AWAITED_BEFORE_READ]
+)
+def test_csharp_result_without_prior_await_still_blocks(body):
+    assert _csharp_async(body) == [("blocking_sync_in_async", ".Result")]
 
 
 def test_go_sql_rows_scan_not_io_in_loop():
@@ -423,6 +632,22 @@ def test_python_string_concat_reset_per_iteration_not_flagged():
     assert ("string_concat_in_loop", "") in _hits("python", accum)
 
 
+@pytest.mark.parametrize("lang", ["typescript", "javascript"])
+@pytest.mark.parametrize(
+    "src",
+    [
+        "function f(xs){ let s=''; for (const x of xs){ s += `${x}\\n` } return s }",
+        # hono ``toStringToBuffer``: appends into the string a buffer array holds.
+        "function f(props, buffer){ for (const [k, v] of props){\n"
+        " buffer[0] += ` ${k}=\"`\n escape(v, buffer)\n buffer[0] += '\"' } }",
+    ],
+)
+def test_js_string_concat_is_never_a_marker(lang, src):
+    """JS engines concatenate through ropes, so ``+=`` in a loop is linear."""
+    fc = walk_file("t.ts", lang, src.encode())
+    assert not any(h.kind == "string_concat_in_loop" for h in fc.perf_hits)
+
+
 def test_ts_nested_io_requires_collection_outer_loop():
     """A ``while`` cursor wrapping an inner ``for ... of`` is io_in_loop, not nested.
 
@@ -485,6 +710,54 @@ def test_go_goroutine_in_range_loop_but_not_accept_loop():
     assert not any(k == "goroutine_in_unbounded_loop" for k, _ in _hits("go", count))
 
 
+_GO_SEMAPHORE = (
+    "package p\nfunc f(items []int, n int, cfg Config) {{\n"
+    "\tsem := {make}\n"
+    "\tfor _, it := range items {{\n"
+    "{acquire}"
+    "\t\tgo func() {{ defer func(){{ <-sem }}(); _ = it }}()\n"
+    "\t}}\n}}\n"
+)
+_GO_ACQUIRE = "\t\tsem <- struct{}{}\n"
+
+
+def _go_semaphore_hits(make: str, acquire: str = _GO_ACQUIRE) -> list[tuple[str, str]]:
+    hits = _hits("go", _GO_SEMAPHORE.format(make=make, acquire=acquire))
+    return [hit for hit in hits if hit[0] == "goroutine_in_unbounded_loop"]
+
+
+@pytest.mark.parametrize(
+    "size",
+    ["4", "0x10", "1_000", "n", "nParallel", "cfg.Workers", "runtime.NumCPU()", "n * 2", "int64(n)"],
+)
+def test_go_semaphore_bounds_the_loop_whatever_sizes_it(size):
+    """A semaphore sized from a flag or a config value is the usual form; only
+    an integer literal used to count as a bound (#2966)."""
+    assert _go_semaphore_hits(f"make(chan struct{{}}, {size})") == []
+
+
+@pytest.mark.parametrize(
+    "make",
+    [
+        "make(chan struct{})",
+        "make(chan struct{}, 0)",
+        "make(chan struct{}, 00)",
+        "make(chan struct{}, 0x0)",
+        "make(chan struct{}, 0b0)",
+        "make(chan struct{}, 0o0)",
+        "make(chan struct{}, 0_0)",
+    ],
+)
+def test_go_unbuffered_channel_is_not_a_semaphore(make):
+    assert _go_semaphore_hits(make) == [("goroutine_in_unbounded_loop", "")]
+
+
+def test_go_semaphore_never_acquired_does_not_bound_the_loop():
+    assert _go_semaphore_hits("make(chan struct{}, n)", acquire="") == [
+        ("goroutine_in_unbounded_loop", "")
+    ]
+
+
 def test_python_list_insert_zero_vs_variable_index():
     front = "def f(xs):\n    out = []\n    for x in xs:\n        out.insert(0, x)\n"
     idx = "def f(xs):\n    out = []\n    for i, x in enumerate(xs):\n        out.insert(i, x)\n"
@@ -494,6 +767,39 @@ def test_python_list_insert_zero_vs_variable_index():
     assert ("list_insert_zero_in_loop", "") in _hits("python", front)
     assert not any(k == "list_insert_zero_in_loop" for k, _ in _hits("python", idx))
     assert not any(k == "list_insert_zero_in_loop" for k, _ in _hits("python", reset))
+
+
+_INSERT_ZERO = "def f(xs, out, ok):\n    for x in xs:\n{body}"
+
+
+@pytest.mark.parametrize(
+    "body,fires",
+    [
+        ("        out.insert(0, x)\n        return\n", False),
+        ("        if ok:\n            out.insert(0, x)\n            return\n", False),
+        ("        out.insert(0, x)\n        log(x)\n        break\n", False),
+        ("        out.insert(0, x)\n        raise ValueError(x)\n", False),
+        # A conditional exit, or a ``continue`` that can skip the exit, still repeats.
+        ("        out.insert(0, x)\n        if ok:\n            break\n", True),
+        ("        out.insert(0, x)\n        if ok:\n            continue\n        break\n", True),
+        # The exit comes before the insert, not after it.
+        ("        if ok:\n            break\n        out.insert(0, x)\n", True),
+        # ``break`` leaves only the inner loop of a nest.
+        ("        for y in x:\n            out.insert(0, y)\n            break\n", True),
+        ("        for y in x:\n            out.insert(0, y)\n            return\n", False),
+        # A ``raise`` an ``except`` in the same iteration can catch.
+        (
+            "        try:\n            out.insert(0, x)\n            raise ValueError\n"
+            "        except ValueError:\n            pass\n",
+            True,
+        ),
+        # A flag-driven exit is not followed (click's ``stop = True``).
+        ("        out.insert(0, x)\n        stop = True\n        if stop:\n            break\n", True),
+    ],
+)
+def test_python_list_insert_zero_before_loop_exit(body, fires):
+    kinds = [k for k, _ in _hits("python", _INSERT_ZERO.format(body=body))]
+    assert ("list_insert_zero_in_loop" in kinds) is fires
 
 
 def test_ts_json_parse_only_deep_clone_idiom():
@@ -535,16 +841,59 @@ def test_python_pathlib_round_trips_are_filesystem_sinks():
     Python's filesystem lexicon recognised only the bare ``open(...)`` builtin,
     so the idiom the whole ecosystem actually uses was invisible: a loop full of
     ``Path.read_text()`` scored a perfect 10/10 on the performance dimension.
-    Matched on the method name alone because only a ``pathlib.Path`` spells
-    these — the receiver is usually a plain local (``src_path.read_text()``),
-    so there is no import to classify.
     """
     for method in ("read_text", "read_bytes", "write_text", "write_bytes"):
-        src = f"def f(ps):\n    for p in ps:\n        p.{method}()\n"
+        src = f"def f(d):\n    for p in d.glob('*'):\n        p.{method}()\n"
         assert ("io_in_loop", "filesystem") in _hits("python", src), method
     # The constructor-receiver form resolves the same way.
     ctor = "from pathlib import Path\ndef f(ps):\n    for p in ps:\n        Path(p).read_text()\n"
     assert ("io_in_loop", "filesystem") in _hits("python", ctor)
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        "def f(d, names):\n    for n in names:\n        (d / n).read_text()\n",
+        "def f(d, names):\n    for n in names:\n        t = d / n\n        t.write_text('x')\n",
+        "def f(xs):\n    for x in xs:\n        x.config_file.read_bytes()\n",
+        "from pathlib import Path\ndef f(xs: list[Path]):\n    for x in xs:\n        x.read_text()\n",
+        "def f(d):\n    srcs = [d / 'a.py', d / 'b.py']\n    for s in srcs:\n        s.write_text('x')\n",
+        "def f(d, ns):\n    for s in sorted(d / n for n in ns):\n        s.read_bytes()\n",
+        "def f(d):\n    for p in (q for q in d.glob('*') if q.is_file()):\n        p.read_text()\n",
+        "import pathlib\ndef f(ns):\n    for n in ns:\n        pathlib.Path(n).read_text()\n",
+        "def f(xs):\n    for x in xs:\n        x.srcPath.read_text()\n",
+    ],
+)
+def test_python_path_receivers_stay_filesystem_sinks(src):
+    assert ("io_in_loop", "filesystem") in _hits("python", src)
+
+
+def test_python_awaited_path_read_is_a_serial_filesystem_await():
+    src = (
+        "import anyio\nasync def f(ns):\n    for n in ns:\n"
+        "        await anyio.Path(n).read_text()\n"
+    )
+    assert ("serial_await_in_loop", "filesystem") in _hits("python", src)
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        # tornado ``IOStream.read_bytes``: a socket read, not a file.
+        "class C:\n    async def f(self, n):\n        while n:\n"
+        "            await self.stream.read_bytes(n)\n",
+        # rich's terminal writer.
+        "def f(term, parts):\n    for t in parts:\n        term.write_text(t)\n",
+        # An unknown receiver is no sink: streams and terminals spell these names too.
+        "def f(ps):\n    for p in ps:\n        p.read_text()\n",
+        # A name that only ends in the letters ``file``.
+        "def f(profile, ns):\n    for n in ns:\n        profile.read_bytes(n)\n",
+        # A binding that never settles on a path.
+        "def f(ns):\n    a = a\n    for n in ns:\n        a.read_text()\n",
+    ],
+)
+def test_python_non_path_receivers_are_not_filesystem_sinks(src):
+    assert not any(detail == "filesystem" for _, detail in _hits("python", src))
 
 
 def test_python_metadata_syscalls_are_not_filesystem_sinks():
@@ -668,7 +1017,7 @@ def test_python_point_reads_do_not_become_hot_path_candidates():
     assert [f.bare_sink_kind for f in fc.perf_fn_facts] == ["filesystem"]
     # Still a per-iteration finding when it IS in a loop.
     assert ("io_in_loop", "filesystem") in _hits(
-        "python", "def f(ps):\n    for p in ps:\n        p.write_text('x')\n"
+        "python", "def f(paths):\n    for p in paths:\n        p.write_text('x')\n"
     )
 
 
@@ -1095,6 +1444,18 @@ _KOTLIN_CASES = [
         "a derived query on a repository instance still classifies",
     ),
     (
+        "fun m(ks: List<String>, settings: Settings) {\n"
+        "    for (k in ks) {\n        settings.getByPrefix(k)\n    }\n}\n",
+        [],
+        "a lower-case receiver alone does not make a ...By[A-Z] call a derived query",
+    ),
+    (
+        "fun m(texts: List<String>, re: Regex) {\n"
+        "    for (t in texts) {\n        re.findAll(t)\n    }\n}\n",
+        [],
+        "Regex.findAll is not a repository findAll",
+    ),
+    (
         "fun m(xs: List<String>) {\n"
         '    for (x in xs) {\n        val r = Regex("\\\\b$x\\\\b")\n    }\n}\n',
         [],
@@ -1162,9 +1523,56 @@ _KOTLIN_CASES = [
         "a dynamic pattern may legitimately vary - not hoistable",
     ),
     (
+        'fun m(xs: List<String>) {\n    for (x in xs) {\n        val r = "^a".toRegex()\n    }\n}\n',
+        [("regex_compile_in_loop", "")],
+        "literal.toRegex() recompiled per iteration",
+    ),
+    (
+        "fun m(xs: List<P>) {\n"
+        '    for (x in xs) {\n        val r = "${x.id}.*".toRegex()\n    }\n}\n',
+        [],
+        "an interpolated toRegex() receiver varies per iteration - not hoistable",
+    ),
+    (
+        'fun m(xs: List<String>) {\n    for (x in xs) {\n        val r = "$x.*".toRegex()\n    }\n}\n',
+        [],
+        "a bare $name template receiver is not hoistable either",
+    ),
+    (
         "fun m(xs: List<String>) {\n    for (x in xs) {\n        lock.lock()\n    }\n}\n",
         [("lock_in_loop", "")],
         "a lock taken every iteration is a contention site",
+    ),
+    (
+        "class A {\n    fun lock() {\n        while (true) {\n"
+        "            if (mutex.tryLock()) return\n            mutex.lock()\n        }\n    }\n}\n",
+        [],
+        "the retry loop inside lock() is the acquisition, not a lock taken per item",
+    ),
+    (
+        "class A {\n    fun lock(ks: List<Any>) {\n        for (k in ks) {\n            locks[k].lock()\n        }\n    }\n}\n",
+        [("lock_in_loop", "")],
+        "an iterating lock() is not a retry loop",
+    ),
+    (
+        "fun f(items: List<S>) {\n    items.forEach { it.withLock { } }\n}\n",
+        [],
+        "the forEach element's own lock via implicit it",
+    ),
+    (
+        "fun f(ss: List<S>) {\n    for (s in ss) s.withLock { }\n    ss.forEach { x -> x.lock.lock() }\n}\n",
+        [],
+        "the for element and a named lambda parameter own their locks",
+    ),
+    (
+        "fun f(m: Map<K, S>) {\n    for ((k, s) in m) synchronized(s) { }\n}\n",
+        [],
+        "a destructured element passed to synchronized",
+    ),
+    (
+        "fun f(ss: List<S>) {\n    ss.forEach { lock.withLock { } }\n    for (s in ss) synchronized(this) { }\n}\n",
+        [("lock_in_loop", ""), ("lock_in_loop", "")],
+        "a shared lock taken per element still fires",
     ),
 ]
 
@@ -1312,9 +1720,195 @@ _CPP_CASES = [
         "the explicit acquire form of the same site",
     ),
     (
+        "void m() {\n    while (active_) {\n        std::unique_lock<std::mutex> lock(mu_);\n"
+        "        if (cv_.wait_for(lock, iv_, [this] { return !active_; })) {\n"
+        "            return;\n        }\n        tick();\n    }\n}\n",
+        [],
+        "a guard handed to a condition-variable wait is the wait idiom",
+    ),
+    (
+        "void m() {\n    for (;;) {\n        std::unique_lock<std::mutex> lk{mu};\n"
+        "        while (q.empty()) cv->wait(lk);\n        q.pop();\n    }\n}\n",
+        [],
+        "a wait loop nested under the guard's loop",
+    ),
+    (
+        "void m() {\n    while (active_) {\n        std::unique_lock<std::mutex> lock(mu_);\n"
+        "        cv_.wait(other);\n        tick();\n    }\n}\n",
+        [("lock_in_loop", "")],
+        "a wait on another lock leaves the guard per iteration",
+    ),
+    (
         "void m() {\n    for (auto x : load_all()) {\n        use(x);\n    }\n}\n",
         [],
         "the range-for header runs once",
+    ),
+    (
+        "void m(std::vector<int> v) {\n"
+        "    for (auto x : v) {\n"
+        "        int fd = socket(AF_INET, SOCK_STREAM, 0);\n"
+        "        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));\n"
+        "    }\n}\n",
+        [],
+        "creating and configuring a descriptor puts nothing on the wire",
+    ),
+    (
+        "void m(std::vector<Peer> v) {\n"
+        "    for (auto& p : v) {\n"
+        "        ::sendto(fd, buf, len, 0, p.addr, p.len);\n"
+        "    }\n}\n",
+        [("io_in_loop", "network")],
+        "a datagram per element is still a round-trip each",
+    ),
+    (
+        "void m(int fd) {\n"
+        "    while ((r = ::sendto(fd, buf, len, 0, a, l)) == -1 && errno == EINTR)\n"
+        "        ;\n}\n",
+        [],
+        "an EINTR retry repeats one call, it does not walk data",
+    ),
+    (
+        "void m(int fd) {\n"
+        "    while ((r = ::sendto(fd, buf, len, 0, a, l)) == -1 && A2_EINTR == SOCKET_ERRNO)\n"
+        "        ;\n}\n",
+        [],
+        "a project spelling of EINTR is the same retry",
+    ),
+    (
+        "void m(int fd) {\n"
+        "    while (more || errno == EINTR) {\n"
+        "        ::sendto(fd, buf, len, 0, a, l);\n"
+        "    }\n}\n",
+        [("io_in_loop", "network")],
+        "an || condition can repeat for another reason, so it stays a loop",
+    ),
+    (
+        "void m(addrinfo* res) {\n"
+        "    for (addrinfo* rp = res; rp; rp = rp->ai_next) {\n"
+        "        ::sendto(fd, buf, len, 0, rp->ai_addr, rp->ai_addrlen);\n"
+        "    }\n}\n",
+        [],
+        "trying each address one name resolved to is not a data loop",
+    ),
+    (
+        "void m(Node* head) {\n"
+        "    for (Node* n = head; n; n = n->next) {\n"
+        "        ::sendto(fd, buf, len, 0, n->addr, n->len);\n"
+        "    }\n}\n",
+        [("io_in_loop", "network")],
+        "any other linked list is data",
+    ),
+    (
+        "void m(std::vector<std::string> v) {\n"
+        "    for (auto& h : v) {\n"
+        "        struct addrinfo hints;\n"
+        "        hints.ai_flags = AI_NUMERICHOST;\n"
+        "        getaddrinfo(h.c_str(), nullptr, &hints, &res);\n"
+        "    }\n}\n",
+        [],
+        "a numeric-only getaddrinfo parses an address, no lookup",
+    ),
+    (
+        "void m(std::vector<std::string> v) {\n"
+        "    for (auto& h : v) {\n"
+        "        hints.ai_flags = AI_NUMERICHOST;\n"
+        "        if (getaddrinfo(h.c_str(), nullptr, &hints, &res) == 0) continue;\n"
+        "        hints.ai_flags = 0;\n"
+        "        getaddrinfo(h.c_str(), nullptr, &hints, &res);\n"
+        "    }\n}\n",
+        [("io_in_loop", "network")],
+        "the fallback lookup after the flag is cleared still resolves names",
+    ),
+    (
+        "void m(std::vector<std::string> v) {\n"
+        "    for (auto& h : v) {\n"
+        "        getaddrinfo(h.c_str(), nullptr, &hints, &res);\n"
+        "    }\n}\n",
+        [("io_in_loop", "network")],
+        "a getaddrinfo with no numeric flag is a name lookup",
+    ),
+    (
+        "void m(std::vector<std::string> v) {\n"
+        "    for (auto& h : v) {\n"
+        "        hints.ai_flags |= AI_NUMERICHOST;\n"
+        "        getaddrinfo(h.c_str(), nullptr, &hints, &res);\n"
+        "    }\n}\n",
+        [],
+        "ORing the numeric flag in is the same numeric-only parse",
+    ),
+    (
+        "void m(std::vector<std::string> v) {\n"
+        "    for (auto& h : v) {\n"
+        "        hints.ai_flags = AI_NUMERICHOST;\n"
+        "        hints.ai_flags &= ~AI_NUMERICHOST;\n"
+        "        getaddrinfo(h.c_str(), nullptr, &hints, &res);\n"
+        "    }\n}\n",
+        [("io_in_loop", "network")],
+        "masking the flag off makes it a lookup again",
+    ),
+    (
+        "void m(std::vector<std::string> v, int f) {\n"
+        "    for (auto& h : v) {\n"
+        "        hints.ai_flags = f & ~AI_NUMERICHOST;\n"
+        "        getaddrinfo(h.c_str(), nullptr, &hints, &res);\n"
+        "    }\n}\n",
+        [("io_in_loop", "network")],
+        "a negated flag is not the flag",
+    ),
+    (
+        "void m(std::vector<std::string> v, bool numeric) {\n"
+        "    for (auto& h : v) {\n"
+        "        if (numeric) hints.ai_flags = AI_NUMERICHOST;\n"
+        "        getaddrinfo(h.c_str(), nullptr, &hints, &res);\n"
+        "    }\n}\n",
+        [("io_in_loop", "network")],
+        "a flag set on one branch leaves the other a lookup",
+    ),
+    (
+        "void m(std::vector<std::string> v) {\n"
+        "    for (auto& h : v) {\n"
+        "        hints.ai_flags = AI_NUMERICHOST;\n"
+        "        memset(&hints, 0, sizeof(hints));\n"
+        "        getaddrinfo(h.c_str(), nullptr, &hints, &res);\n"
+        "    }\n}\n",
+        [("io_in_loop", "network")],
+        "a reset of the hints after the flag clears it",
+    ),
+    (
+        "void m(std::vector<Peer> v) {\n"
+        "    for (auto& p : v) {\n"
+        "        int fd = socket(AF_INET, SOCK_STREAM, 0);\n"
+        "        connect(fd, p.addr, p.len);\n"
+        "        send(fd, buf, len, 0);\n"
+        "    }\n}\n",
+        [("io_in_loop", "network")],
+        "a socket that connects and sends is a connection per element",
+    ),
+    (
+        "void m(int fd, int n) {\n"
+        "    while (i < n && errno == EINTR) {\n"
+        "        ::sendto(fd, buf, len, 0, a, l);\n"
+        "        i++;\n"
+        "    }\n}\n",
+        [("io_in_loop", "network")],
+        "a counter beside EINTR can keep the loop going",
+    ),
+    (
+        "void m(int fd) {\n"
+        "    do {\n        n = ::recvfrom(fd, buf, len, 0, a, l);\n"
+        "    } while (n < 0 && errno == EINTR);\n}\n",
+        [],
+        "the do-while spelling of an EINTR retry",
+    ),
+    (
+        "void m(addrinfo* res) {\n"
+        "    addrinfo* rp = res;\n"
+        "    while (rp) {\n"
+        "        ::sendto(fd, buf, len, 0, rp->ai_addr, rp->ai_addrlen);\n"
+        "        rp = rp->ai_next;\n"
+        "    }\n}\n",
+        [],
+        "the while spelling of the address-candidate walk",
     ),
 ]
 
@@ -1375,3 +1969,152 @@ def test_cpp_same_collection_nested_range_for_fact():
     fc = walk_file("t.cpp", "cpp", src.encode())
     assert any(f.nested_loop_line for f in fc.perf_fn_facts)
     assert not any(h.kind == "nested_loop_quadratic" for h in fc.perf_hits)
+
+
+def test_python_acquire_spin_vs_per_item():
+    spin = "def acquire(self):\n    while True:\n        if self.flag.acquire(False):\n            return\n"
+    assert _hits("python", spin) == []
+    each = "def acquire(self, items):\n    for i in items:\n        self.locks[i].acquire()\n"
+    assert _hits("python", each) == [("lock_in_loop", "")]
+
+
+# ---------------------------------------------------------------------------
+# Apex
+# ---------------------------------------------------------------------------
+
+
+def test_apex_fixture_hits():
+    fc = _walk("apex/perf_io_in_loop.cls", "apex")
+    hits = sorted((h.function, h.kind, h.detail) for h in fc.perf_hits)
+    # Every shape under "stay quiet" in the fixture is absent: the bulk idioms,
+    # the query in a loop header, run-once shapes and the ``while`` ceiling.
+    assert hits == sorted(
+        [
+            ("soqlPerRecord", "io_in_loop", "db"),
+            ("dmlPerRecord", "io_in_loop", "db"),
+            ("databaseAndCallout", "io_in_loop", "db"),
+            ("databaseAndCallout", "io_in_loop", "network"),
+            ("asyncPerRecord", "io_in_loop", "db"),
+            ("asyncPerRecord", "io_in_loop", "db"),
+            ("nested", "io_in_loop", "db"),
+            ("nested", "nested_loop_with_io", "db"),
+        ]
+    )
+    sinks = {h.sink_call for h in fc.perf_hits}
+    assert {"SOQL", "update", "Database.delete", "http.send", "System.enqueueJob", "notifyLater"} <= sinks
+
+
+def _apex_loop(body: str, params: str = "List<Id> ids") -> str:
+    return f"public class A {{\n  public void m({params}) {{\n    for (Id i : ids) {{\n{body}\n    }}\n  }}\n}}\n"
+
+
+_APEX_CASES = [
+    (_apex_loop("      Messaging.sendEmail(msgs);"), [("io_in_loop", "network")], "sendEmail"),
+    (_apex_loop("      EventBus.publish(evt);"), [("io_in_loop", "db")], "platform event"),
+    (_apex_loop("      List<List<SObject>> r = [FIND 'x' IN ALL FIELDS RETURNING Account];"),
+     [("io_in_loop", "db")], "inline SOSL"),
+    (_apex_loop("      database.countQuery(q);"), [("io_in_loop", "db")], "case-insensitive receiver"),
+    (_apex_loop("      new Http().send(req);"), [("io_in_loop", "network")], "new Http().send"),
+    (_apex_loop("      mailer.send(req);", "List<Id> ids, Mailer mailer"), [], "send on a non-Http receiver"),
+    (_apex_loop("      helper(i);"), [], "a plain same-class call is no sink"),
+    (_apex_loop("      Database.merge(master, i);"), [], "merge takes at most three records"),
+    (_apex_loop("      Database.query('SELECT Id FROM Thing__mdt');"), [], "custom metadata query"),
+    (_apex_loop("      insert rec;\n      return;"), [], "return after the sink"),
+    (
+        "public class A {\n  public void m(List<Id> ids) {\n    for (Id a : ids) {\n"
+        "      for (Id b : ids) { insert rec; break; }\n    }\n  }\n}\n",
+        [("io_in_loop", "db"), ("nested_loop_with_io", "db")],
+        "an inner break still runs once per outer pass",
+    ),
+    (
+        "public class A {\n  public void m(List<Id> ids) {\n    for (Id i : ids) {\n"
+        "      if (buf.size() > 0) { insert buf; }\n    }\n  }\n}\n",
+        [("io_in_loop", "db")],
+        "an emptiness test is no flush threshold",
+    ),
+    (
+        "public class A {\n  Map<Id, Account> cache;\n  Account get(Id i) {\n"
+        "    if (cache != null) { return cache; }\n    cache = new Map<Id, Account>([SELECT Id FROM Account]);\n"
+        "    return null;\n  }\n  void m(List<Id> ids) {\n    for (Id i : ids) { Account a = [SELECT Id FROM Account]; }\n  }\n}\n",
+        [("io_in_loop", "db")],
+        "a memoized getter's query is no sink; a plain one in a loop is",
+    ),
+    (
+        "public class A {\n  static Map<String, List<Id>> byType = new Map<String, List<Id>>();\n"
+        "  void m(List<String> types) {\n    for (String t : types) {\n"
+        "      if (byType.get(t) == null) { byType.put(t, Database.query('SELECT Id FROM Account')); }\n"
+        "    }\n  }\n}\n",
+        [],
+        "a map-keyed cache filled under its own null test",
+    ),
+    (
+        "public class A {\n  void m(List<List<Account>> chunks) {\n"
+        "    for (Integer i = 0; i < chunks.size(); i++) { update chunks[i]; }\n  }\n}\n",
+        [],
+        "a counted walk over a list of lists handles a chunk per pass",
+    ),
+    (
+        "public class A {\n  void m(List<Account> rows) {\n    try { insert rows; } catch (Exception e) {\n"
+        "      for (Account a : rows) { Database.insert(a, false); }\n    }\n  }\n}\n",
+        [],
+        "a per-record retry after a failed bulk call",
+    ),
+    (_apex_loop("      Database.executeBatch(new Job(i));"), [], "batch submission is left out"),
+    (
+        _apex_loop("      update rec;\n      if (rec.Name == 'z') { break; }"),
+        [("io_in_loop", "db")],
+        "a guard exit on another condition keeps the hit",
+    ),
+    (
+        _apex_loop(
+            "      ok = true;\n      try { Database.convertLead(c); } catch (Exception e) { ok = false; }\n"
+            "      if (ok) { break; }"
+        ),
+        [],
+        "retry until one attempt succeeds",
+    ),
+    (
+        _apex_loop("      buf.add(i);\n      if (buf.size() > 100 || done) { update buf; }"),
+        [("io_in_loop", "db")],
+        "a size test mixed with another condition is no flush",
+    ),
+]
+
+
+@pytest.mark.parametrize("src,expected,note", _APEX_CASES, ids=[c[2] for c in _APEX_CASES])
+def test_apex_cases(src, expected, note):
+    # The cases' bare classes declare no sharing; that marker has its own tests.
+    hits = [h for h in _hits("apex", src) if h[0] != "apex_missing_sharing"]
+    assert hits == sorted(expected), note
+
+
+def test_apex_parameter_switched_sink_is_no_bare_sink():
+    # ``if (doInsert) insert rows;`` outside a loop: the caller's argument
+    # decides, so the function is no cross-function sink target.
+    src = (
+        "public class F {\n  public static List<Account> make(Integer n, Boolean doInsert) {\n"
+        "    List<Account> rows = new List<Account>();\n    if (doInsert) { insert rows; }\n"
+        "    return rows;\n  }\n  public static void save(List<Account> rows) { insert rows; }\n}\n"
+    )
+    fc = walk_file("F.cls", "apex", src.encode())
+    sinks = {f.function: f.bare_sink_kind for f in fc.perf_fn_facts}
+    assert sinks.get("make") is None
+    assert sinks["save"] == "db"
+
+
+def test_apex_field_filled_when_unset_is_no_bare_sink():
+    src = (
+        "public class U {\n  static void config(Settings__c s) {\n    if (s.Mode__c == null) {\n"
+        "      s.Mode__c = 'x';\n      List<RecordType> r = [SELECT Id FROM RecordType];\n    }\n  }\n}\n"
+    )
+    assert walk_file("U.cls", "apex", src.encode()).perf_fn_facts == []
+
+
+def test_apex_helper_call_followed_by_return_is_no_loop_target():
+    src = (
+        "public class F {\n  void m(List<Id> ids) {\n    for (Id i : ids) {\n"
+        "      if (i == null) { notifyAll(); return; }\n      track(i);\n    }\n  }\n}\n"
+    )
+    fc = walk_file("F.cls", "apex", src.encode())
+    targets = {name for f in fc.perf_fn_facts for name, _line in f.loop_call_targets}
+    assert targets == {"track"}

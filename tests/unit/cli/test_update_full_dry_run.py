@@ -127,7 +127,7 @@ def test_full_dry_run_emits_dry_run_machine_outcome(
     repo = tmp_path / "repo"
     _prepare_repo(repo)
     _patch_boundary(monkeypatch, repo)
-    monkeypatch.setattr(update_cmd, "silence_logs_for_machine_output", lambda: None)
+    monkeypatch.setattr(update_cmd, "silence_logs_for_machine_output_until_close", lambda: None)
 
     events: list[tuple[str, dict[str, Any]]] = []
 

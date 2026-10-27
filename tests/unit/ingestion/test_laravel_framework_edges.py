@@ -547,3 +547,75 @@ class TestLaravelRegistrationShapes:
         assert graph.has_edge(
             "routes/web.php", "app/Http/Controllers/Admin/DashboardController.php"
         )
+
+
+class TestLaravelViews:
+    def test_views_named_by_string_or_component_tag(self, tmp_path: Path) -> None:
+        graph = _laravel_app(
+            tmp_path,
+            {
+                "app/Mail/UserInvited.php": _class(
+                    "App\\Mail\\UserInvited",
+                    "public function build() { return $this->markdown('emails.user.invitation'); }",
+                ),
+                "app/Http/Middleware/HandleInertiaRequests.php": _class(
+                    "App\\Http\\Middleware\\HandleInertiaRequests", "protected $rootView = 'app';"
+                ),
+                "resources/views/emails/user/invitation.blade.php": (
+                    "@include('partials/footer')\n<x-alert type=\"info\" />\n"
+                ),
+                "resources/views/app.blade.php": "<html></html>\n",
+                "resources/views/partials/footer.blade.php": "<footer></footer>\n",
+                "resources/views/components/alert.blade.php": "<div></div>\n",
+                "resources/views/emails/unused.blade.php": "<p></p>\n",
+            },
+        )
+        invitation = "resources/views/emails/user/invitation.blade.php"
+        assert graph.has_edge("app/Mail/UserInvited.php", invitation)
+        assert graph.has_edge(
+            "app/Http/Middleware/HandleInertiaRequests.php", "resources/views/app.blade.php"
+        )
+        assert graph.has_edge(invitation, "resources/views/partials/footer.blade.php")
+        assert graph.has_edge(invitation, "resources/views/components/alert.blade.php")
+        assert not any(graph.predecessors("resources/views/emails/unused.blade.php"))
+
+    def test_a_quoted_word_outside_a_view_call_links_no_view(self, tmp_path: Path) -> None:
+        graph = _laravel_app(
+            tmp_path,
+            {
+                "app/Models/Order.php": _class(
+                    "App\\Models\\Order",
+                    "protected $fillable = ['welcome'];\n"
+                    "/** Previously rendered view('dashboard'). */\n"
+                    "public function show() { return response()->json(['orders' => 1]); }",
+                ),
+                "resources/views/welcome.blade.php": "<p></p>\n",
+                "resources/views/dashboard.blade.php": "<p></p>\n",
+                "resources/views/orders.blade.php": '<div class="welcome"></div>\n',
+            },
+        )
+        for view in ("welcome", "dashboard", "orders"):
+            assert not any(graph.predecessors(f"resources/views/{view}.blade.php")), view
+
+    def test_a_test_rendering_a_view_links_nothing(self, tmp_path: Path) -> None:
+        (tmp_path / "composer.json").write_text(
+            json.dumps({"require": {"laravel/framework": "^11"}})
+        )
+        files = {
+            "tests/Feature/WelcomeTest.php": "<?php\n$this->view('welcome');\n",
+            "resources/views/welcome.blade.php": "<p></p>\n",
+        }
+        for rel, text in files.items():
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_text(text)
+        parsed = _build_parsed(tmp_path)
+        parsed["tests/Feature/WelcomeTest.php"].file_info.is_test = True
+        graph = nx.DiGraph()
+        graph.add_nodes_from(parsed)
+        add_framework_edges(graph, parsed, _ctx(tmp_path, parsed), tech_stack=[])
+
+        assert not any(graph.predecessors("resources/views/welcome.blade.php"))
+        # The control: the same call from app code is a use.
+        parsed["tests/Feature/WelcomeTest.php"].file_info.is_test = False
+        add_framework_edges(graph, parsed, _ctx(tmp_path, parsed), tech_stack=[])
+        assert graph.has_edge("tests/Feature/WelcomeTest.php", "resources/views/welcome.blade.php")

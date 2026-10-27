@@ -93,7 +93,7 @@ class BaseEditorFileGenerator(ABC):
             if marker_start in existing:
                 # Replace the managed section in-place
                 pattern = re.escape(marker_start) + r".*?" + re.escape(marker_end)
-                content = re.sub(pattern, wrapped, existing, flags=re.DOTALL)
+                content = re.sub(pattern, lambda _match: wrapped, existing, flags=re.DOTALL)
             else:
                 # Append managed section; preserve all existing content
                 content = existing.rstrip() + "\n\n" + wrapped + "\n"
@@ -113,5 +113,5 @@ class BaseEditorFileGenerator(ABC):
         existing = target.read_text(encoding="utf-8")
         if marker_start in existing:
             pattern = re.escape(marker_start) + r".*?" + re.escape(marker_end)
-            return re.sub(pattern, wrapped, existing, flags=re.DOTALL)
+            return re.sub(pattern, lambda _match: wrapped, existing, flags=re.DOTALL)
         return existing.rstrip() + "\n\n" + wrapped + "\n"
