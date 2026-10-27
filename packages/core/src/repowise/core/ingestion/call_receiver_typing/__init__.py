@@ -41,7 +41,7 @@ from ..languages.receiver_types import (
     types_in_span,
     unwrapped_names_in_span,
 )
-from ..models import CallSite, NamedBinding, ParsedFile, Symbol
+from ..models import STRING_LITERAL_RECEIVER, CallSite, NamedBinding, ParsedFile, Symbol
 from ..resolved_call import ResolvedCall
 from ..return_types import declared_return_type, signature_parameter_count
 from ..symbol_identity import id_segment_name
@@ -335,7 +335,8 @@ class ReceiverTypingMixin(
         # tried it, so only a C# one is read further: C# spells its properties
         # and many fields that way. An underscore one cannot be anything but a name.
         head = receiver_name[:1]
-        if not (head.islower() or head == "_" or language == "csharp"):
+        literal = receiver_name == STRING_LITERAL_RECEIVER
+        if not (head.islower() or head == "_" or literal or language == "csharp"):
             return None
 
         # Refuse before reading the file: nothing resolves unless some class
@@ -551,6 +552,8 @@ class ReceiverTypingMixin(
         neither types nor binds is asked of the function around it, whose
         locals it captures and whose class fields it sees.
         """
+        if receiver_name == STRING_LITERAL_RECEIVER:
+            return "String", "body", file_path
         if line is not None and language == "dart":
             bound, closure_type = self._callback_parameter(
                 file_path, caller_id, language, receiver_name, line

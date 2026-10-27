@@ -9,7 +9,7 @@ from tree_sitter import Node
 
 from ..extractors import node_text
 from ..language_configs import LanguageConfig
-from ..models import CallReceiver, CallSite, FileInfo, Symbol
+from ..models import STRING_LITERAL_RECEIVER, CallReceiver, CallSite, FileInfo, Symbol
 from ..parser_helpers import (
     _argument_literal_types,
     _argument_names,
@@ -91,6 +91,7 @@ def _kotlin_call_receiver(call: Node, src: str) -> CallReceiver | None:
         return None
     count = _count_arguments(arguments)
 
+    callee = _kotlin_operand(callee)
     if callee.type == "identifier":
         return CallReceiver(_node_text(callee, src).strip(), None, count)
     if callee.type != "navigation_expression" or len(callee.named_children) != 2:
@@ -100,9 +101,10 @@ def _kotlin_call_receiver(call: Node, src: str) -> CallReceiver | None:
     if target.type != "identifier":
         return None
 
+    receiver = _kotlin_operand(receiver)
     if receiver.type == "call_expression":
         receiver_name = None
-    elif receiver.type in ("identifier", "this_expression") or (
+    elif receiver.type in ("identifier", "this_expression", *_KOTLIN_STRING_LITERALS) or (
         receiver.type == "navigation_expression"
         and [child.type for child in receiver.named_children]
         == ["this_expression", "identifier"]
@@ -114,6 +116,18 @@ def _kotlin_call_receiver(call: Node, src: str) -> CallReceiver | None:
     if receiver.type != "call_expression" and receiver_name is None:
         return None
     return CallReceiver(_node_text(target, src).strip(), receiver_name, count)
+
+
+def _kotlin_operand(node: Node) -> Node:
+    """The name under a Kotlin prefix or postfix operator, else *node* itself.
+
+    tree-sitter-kotlin binds the operator before the call, so ``!a.f()`` and
+    ``a!!.f()`` put ``!a`` / ``a!!`` where the receiver goes.
+    """
+    named = node.named_children
+    if node.type == "unary_expression" and len(named) == 1 and named[0].type == "identifier":
+        return named[0]
+    return node
 
 
 def _function_target(function: Node) -> tuple[Node | None, Node | None]:
@@ -221,6 +235,7 @@ _PATH_RECEIVERS = frozenset(
         ("java", "field_access"),
     }
 )
+_KOTLIN_STRING_LITERALS = ("string_literal", "multiline_string_literal")
 _DOTTED_PATH = re.compile(r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+")
 
 
@@ -235,6 +250,8 @@ def _receiver_text(language: str, node: Node, src: str) -> str | None:
     if language == "java" and node.type != "super" and getattr(sibling, "type", None) == "super":
         # ``S.super.m()``: ``S`` qualifies the ``super`` its own pattern captures.
         return None
+    if language == "kotlin" and node.type in _KOTLIN_STRING_LITERALS:
+        return STRING_LITERAL_RECEIVER
     text = _node_text(node, src).strip()
     if (language, node.type) not in _PATH_RECEIVERS:
         return text

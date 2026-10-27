@@ -59,8 +59,14 @@
 
 ; Simple call: foo(args), or foo { ... } whose only argument is a trailing
 ; lambda: the grammar gives that form no ``value_arguments`` at all.
+; tree-sitter-kotlin binds a prefix or postfix operator before the call, so
+; ``!f(x)`` arrives as ``(!f)(x)`` and ``a!!.f()`` / ``!a.f()`` as ``(!a).f()``;
+; the operand is still the name called or the receiver.
 (call_expression
-  (identifier) @call.target
+  [
+    (identifier) @call.target
+    (unary_expression (identifier) @call.target)
+  ]
   [
     (value_arguments)
     (annotated_lambda)
@@ -70,13 +76,17 @@
 ; Member call: obj.method(args) — and self-dispatch: this.method(args).
 ; See typescript.scm for why ``this`` rides an alternation in the receiver slot
 ; instead of a second pattern. ``this.field.method()`` captures the field, as
-; java.scm does, so a constructor property types it.
+; java.scm does, so a constructor property types it. A string literal
+; receiver (``"/".encodeUtf8()``) is typed ``String`` by the parser.
 (call_expression
   (navigation_expression
     [
       (identifier) @call.receiver
+      (unary_expression (identifier) @call.receiver)
       (this_expression) @call.receiver
       (navigation_expression (this_expression) (identifier) @call.receiver)
+      (string_literal) @call.receiver
+      (multiline_string_literal) @call.receiver
     ]
     (identifier) @call.target
   )

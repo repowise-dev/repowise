@@ -350,6 +350,10 @@ class CallReceiver:
 #: site may produce.
 CallSiteEdgeType = Literal["calls", "references"]
 
+#: The ``receiver_name`` of a Kotlin call on a string literal (``"/".encodeUtf8()``):
+#: no name can be spelled this way, and receiver typing reads it as ``String``.
+STRING_LITERAL_RECEIVER = '""'
+
 
 @dataclass
 class CallSite:
