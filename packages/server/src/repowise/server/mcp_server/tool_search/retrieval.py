@@ -238,10 +238,14 @@ async def _search_single_repo(
     # over-fetched list so the kind filter below has real headroom. Load
     # precedes the sort/demotion so they see the page metadata they key on
     # (test demotion needs target_path to classify a test file page).
+    test_map: dict[str, bool] = {}
     if output:
         async with get_session(ctx.session_factory) as session:
-            page_info, tombstoned, _ = await _load_page_info(session, output)
-            path_index = await file_path_index(session, (await _get_repo(session)).id)
+            repo_id = (await _get_repo(session)).id
+            page_info, tombstoned, _, test_map = await _load_page_info(
+                session, output, repository_id=repo_id
+            )
+            path_index = await file_path_index(session, repo_id)
         output = [item for item in output if item["page_id"] not in tombstoned]
         _attach_paths(output, page_info)
         output = filter_dicts_by_key(output, "target_path", _pkg._get_exclude_spec(ctx.path))
@@ -249,11 +253,11 @@ async def _search_single_repo(
             output, query, path_index.word_counts, len(path_index.paths), score_key="relevance_score"
         )
 
-    _downweight_test_pages(output, query)
+    _downweight_test_pages(output, query, test_map)
     _sort_demoting_noise(output, query)
     output = _dedup_decisions(output)
 
-    output = _filter_by_kind(output, kind)
+    output = _filter_by_kind(output, kind, test_map)
     return _collapse_by_file(output)[:limit]
 
 

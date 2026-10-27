@@ -20,6 +20,7 @@ from repowise.core.persistence.models import GraphEdge, GraphNode
 from repowise.core.test_paths import is_test_path
 from repowise.server.mcp_server._budget import cap_collection
 from repowise.server.mcp_server._edit_sites import attach_call_text, first_call_line, import_sites
+from repowise.server.mcp_server._graph_files import file_test_map
 from repowise.server.mcp_server._helpers import filter_dicts_by_key
 from repowise.server.mcp_server._wrapper_callers import (
     MIN_CALL_CONFIDENCE,
@@ -101,7 +102,11 @@ async def neighbor_evidence(
     repo_root: str | Path | None = None,
 ) -> list[dict]:
     """Rows for the files that call, import, load or reference *lead*, production first."""
-    if not lead or is_test_path(lead):
+    test_map = await file_test_map(session, repo_id)
+    if not lead:
+        return []
+    lead_is_t = test_map.get(lead)
+    if lead_is_t if lead_is_t is not None else is_test_path(lead):
         return []
     res = await session.execute(
         select(GraphNode).where(
@@ -177,7 +182,8 @@ async def neighbor_evidence(
         candidates.append(row)
 
     for row in candidates:
-        if is_test_path(row["file"]):
+        is_t = test_map.get(row["file"])
+        if is_t if is_t is not None else is_test_path(row["file"]):
             row["test"] = True
     candidates = filter_dicts_by_key(candidates, "file", exclude_spec)
 

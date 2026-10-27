@@ -9,6 +9,7 @@ from sqlalchemy import select
 from repowise.core.generation.structural_labels import is_structural_title
 from repowise.core.persistence.models import (
     GitMetadata,
+    GraphNode,
     Page,
 )
 
@@ -152,13 +153,18 @@ def _drop_internal_ranking_fields(results: list[dict]) -> None:
 
 
 async def _load_page_info(
-    session, output: list[dict], *, with_git: bool = False
-) -> tuple[dict, set, dict]:
-    """Batch-load target paths, tombstones, and git.
+    session,
+    output: list[dict],
+    *,
+    repository_id: str | None = None,
+    with_git: bool = False,
+) -> tuple[dict, set, dict, dict[str, bool]]:
+    """Batch-load target paths, tombstones, git, and stored is_test flags.
 
-    Returns ``(page_info, tombstoned, git_map)`` where ``page_info`` maps
+    Returns ``(page_info, tombstoned, git_map, test_map)`` where ``page_info`` maps
     page_id -> target_path, ``tombstoned`` is the set of tombstoned page_ids,
-    and ``git_map`` maps file_path -> GitMetadata (empty unless ``with_git``).
+    ``git_map`` maps file_path -> GitMetadata (empty unless ``with_git``), and
+    ``test_map`` maps file_path -> is_test.
     """
     page_ids = [item["page_id"] for item in output]
     res = await session.execute(
@@ -168,15 +174,25 @@ async def _load_page_info(
     page_info = {row[0]: row[1] for row in rows}
     tombstoned = {row[0] for row in rows if row[2] == "tombstone"}
 
+    test_map: dict[str, bool] = {}
+    target_paths = [tp for tp in page_info.values() if tp]
+    if target_paths:
+        gn_query = select(GraphNode.node_id, GraphNode.is_test).where(
+            GraphNode.node_id.in_(target_paths),
+            GraphNode.node_type == "file",
+        )
+        if repository_id is not None:
+            gn_query = gn_query.where(GraphNode.repository_id == repository_id)
+        gn_res = await session.execute(gn_query)
+        test_map = {nid: bool(is_t) for nid, is_t in gn_res.all()}
+
     git_map: dict[str, GitMetadata] = {}
-    if with_git:
-        target_paths = [tp for tp in page_info.values() if tp]
-        if target_paths:
-            git_res = await session.execute(
-                select(GitMetadata).where(GitMetadata.file_path.in_(target_paths))
-            )
-            git_map = {g.file_path: g for g in git_res.scalars().all()}
-    return page_info, tombstoned, git_map
+    if with_git and target_paths:
+        git_res = await session.execute(
+            select(GitMetadata).where(GitMetadata.file_path.in_(target_paths))
+        )
+        git_map = {g.file_path: g for g in git_res.scalars().all()}
+    return page_info, tombstoned, git_map, test_map
 
 
 def _apply_freshness_boost(item: dict, gm: GitMetadata | None) -> None:

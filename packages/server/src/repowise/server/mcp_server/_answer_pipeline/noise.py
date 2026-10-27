@@ -14,7 +14,13 @@ _TEST_QUERY_RE = re.compile(
 )
 
 
-def demote_noise_hits(hits: list[dict], question: str, *, is_why: bool) -> list[dict]:
+def demote_noise_hits(
+    hits: list[dict],
+    question: str,
+    *,
+    is_why: bool,
+    test_map: dict[str, bool] | None = None,
+) -> list[dict]:
     """Stable-partition noise below real hits before the top-5 cap; nothing is dropped.
 
     Decision records are noise unless the question is why-shaped, test files
@@ -26,8 +32,10 @@ def demote_noise_hits(hits: list[dict], question: str, *, is_why: bool) -> list[
 
     def _is_noise(h: dict) -> bool:
         pt = h.get("page_type")
+        path = h.get("target_path") or ""
+        is_test = test_map[path] if test_map and path in test_map else is_test_path(path)
         return (pt == "decision_record" and not is_why) or (
-            pt in FILE_ROW_TYPES and not test_focused and is_test_path(h.get("target_path") or "")
+            pt in FILE_ROW_TYPES and not test_focused and is_test
         )
 
     real = [h for h in hits if not _is_noise(h)]

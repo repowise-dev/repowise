@@ -46,7 +46,7 @@ def _is_test_query(query: str) -> bool:
     return bool(_TEST_QUERY_RE.search(query))
 
 
-def _is_test_page(item: dict) -> bool:
+def _is_test_page(item: dict, test_map: dict[str, bool] | None = None) -> bool:
     """True when a hit is a whole-file row for a test file.
 
     Tests only, deliberately not test support: a ``conftest.py`` or a fixture
@@ -54,15 +54,20 @@ def _is_test_page(item: dict) -> bool:
     rank. The ``kind`` filter counts both (see :func:`_classify_hit_kind`) —
     asking for tests and asking to rank tests lower are different questions.
     """
-    return item.get("page_type") in FILE_ROW_TYPES and is_test_path(item.get("target_path") or "")
+    path = item.get("target_path") or ""
+    if test_map is not None and path in test_map:
+        return item.get("page_type") in FILE_ROW_TYPES and test_map[path]
+    return item.get("page_type") in FILE_ROW_TYPES and is_test_path(path)
 
 
-def _downweight_test_pages(output: list[dict], query: str) -> None:
+def _downweight_test_pages(
+    output: list[dict], query: str, test_map: dict[str, bool] | None = None
+) -> None:
     """Scale test file_page relevance in place unless the query is about tests."""
     if _is_test_query(query):
         return
     for item in output:
-        if item.get("relevance_score") and _is_test_page(item):
+        if item.get("relevance_score") and _is_test_page(item, test_map):
             item["relevance_score"] = round(item["relevance_score"] * _TEST_DOWNWEIGHT, 4)
 
 
@@ -236,7 +241,9 @@ _CONFIG_PATH_TOKENS = (
 )
 
 
-def _classify_hit_kind(target_path: str, page_type: str) -> str:
+def _classify_hit_kind(
+    target_path: str, page_type: str, test_map: dict[str, bool] | None = None
+) -> str:
     """Bucket a hit into implementation / test / config / doc.
 
     Pages without a file behind them (decision records, repo overviews,
@@ -262,7 +269,11 @@ def _classify_hit_kind(target_path: str, page_type: str) -> str:
         return "config"
     # Original case, not ``tp``: the camel (FooTest.java) and .NET project-dir
     # (Foo.Tests/) rules are deliberately case-sensitive.
-    if is_test_related_path(target_path):
+    if test_map is not None and target_path in test_map:
+        is_test = test_map[target_path]
+    else:
+        is_test = is_test_related_path(target_path)
+    if is_test:
         return "test"
     return "implementation"
 
@@ -272,7 +283,9 @@ def _classify_hit_kind(target_path: str, page_type: str) -> str:
 _VALID_KINDS = frozenset({"implementation", "test", "config", "doc"})
 
 
-def _filter_by_kind(output: list[dict], kind: str | None) -> list[dict]:
+def _filter_by_kind(
+    output: list[dict], kind: str | None, test_map: dict[str, bool] | None = None
+) -> list[dict]:
     """Keep only hits classified as ``kind`` (no-op when ``kind`` is falsy).
 
     Runs on the over-fetched list BEFORE the limit cut so the caller still
@@ -283,5 +296,8 @@ def _filter_by_kind(output: list[dict], kind: str | None) -> list[dict]:
     return [
         item
         for item in output
-        if _classify_hit_kind(item.get("target_path", ""), item.get("page_type", "")) == kind
+        if _classify_hit_kind(
+            item.get("target_path", ""), item.get("page_type", ""), test_map
+        )
+        == kind
     ]
