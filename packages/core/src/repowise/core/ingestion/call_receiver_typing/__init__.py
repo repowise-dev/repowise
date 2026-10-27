@@ -20,6 +20,7 @@ from ..languages.receiver_types import (
     IMPLICIT_FIELD_LANGUAGES,
     RANGE_LANGUAGES,
     RECEIVER_TYPE_LANGUAGES,
+    STRING_LITERAL_TYPE,
     CallAssignment,
     DartCallback,
     Declaration,
@@ -553,7 +554,7 @@ class ReceiverTypingMixin(
         locals it captures and whose class fields it sees.
         """
         if receiver_name == STRING_LITERAL_RECEIVER:
-            return "String", "body", file_path
+            return STRING_LITERAL_TYPE, "body", file_path
         if line is not None and language == "dart":
             bound, closure_type = self._callback_parameter(
                 file_path, caller_id, language, receiver_name, line

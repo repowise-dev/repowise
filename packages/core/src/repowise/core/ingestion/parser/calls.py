@@ -28,6 +28,8 @@ _node_text = node_text
 # letter, so ``X.CONST`` is not one. Same shape as the java.scm member-type pattern.
 _JAVA_MEMBER_TYPE_PATH = re.compile(r"[A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*[a-z][A-Za-z0-9_]*)+")
 
+_KOTLIN_STRING_LITERALS = ("string_literal", "multiline_string_literal")
+
 def _call_receiver_from_node(node: Node, src: str) -> CallReceiver | None:
     """Describe an inner call captured as another call's receiver.
 
@@ -235,7 +237,6 @@ _PATH_RECEIVERS = frozenset(
         ("java", "field_access"),
     }
 )
-_KOTLIN_STRING_LITERALS = ("string_literal", "multiline_string_literal")
 _DOTTED_PATH = re.compile(r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+")
 
 

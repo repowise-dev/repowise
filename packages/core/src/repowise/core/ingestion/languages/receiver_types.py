@@ -402,6 +402,8 @@ EXTERNAL_TYPE_LANGUAGES = frozenset({"java"})
 # a builtin-typed local still reads as a variable and types overload arguments.
 _MARKED_BUILTIN_LANGUAGES = EXTERNAL_TYPE_LANGUAGES | {"kotlin", "apex"}
 _EXTERNAL_TYPE = "external:"
+#: A Kotlin string literal receiver, typed as a declared ``String`` would be.
+STRING_LITERAL_TYPE = _EXTERNAL_TYPE + "String"
 
 # A decorator that changes what the symbol it wraps *is*: `@shared_task` leaves
 # no function behind, so `add.s(...)` is a method call on `Task`. A table, since
