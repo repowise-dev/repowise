@@ -1172,9 +1172,14 @@ _DART_CALL_ASSIGNMENT = re.compile(
     rf"(?:(?:new|const)\s+)?{_CALL_HEAD}"
 )
 
+_JAVA_CALL_ASSIGNMENT = re.compile(
+    rf"(?<![\w.])(?:final\s+)?var\s+(?P<name>[A-Za-z_$][\w$]*)\s*=\s*{_CALL_HEAD}"
+)
+
 _CALL_ASSIGNMENT_PATTERNS: dict[str, re.Pattern[str]] = {
     "dart": _DART_CALL_ASSIGNMENT,
     "go": _GO_CALL_DECL,
+    "java": _JAVA_CALL_ASSIGNMENT,
     "kotlin": _KT_CALL_ASSIGNMENT,
     "python": _PY_CALL_ASSIGNMENT,
     "swift": _SWIFT_CALL_ASSIGNMENT,

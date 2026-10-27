@@ -422,12 +422,37 @@ def _argument_literal_types(
     return types if any(types) else None
 
 
+def _argument_name(node: Node, src: str) -> str | None:
+    if node.type == "identifier":
+        return node_text(node, src)
+    if node.type == "field_access":
+        obj = node.child_by_field_name("object")
+        field = node.child_by_field_name("field")
+        if obj is not None and node_text(obj, src) == "this" and field is not None:
+            return f"this.{node_text(field, src)}"
+    if node.type == "method_invocation":
+        name_node = node.child_by_field_name("name")
+        if name_node is not None:
+            obj_node = node.child_by_field_name("object")
+            args_node = node.child_by_field_name("arguments")
+            target = node_text(name_node, src)
+            receiver = node_text(obj_node, src) if obj_node is not None else ""
+            skip = {"(", ")", ","}
+            c_args = (
+                [c for c in args_node.children if c.type not in skip and "comment" not in c.type]
+                if args_node is not None
+                else []
+            )
+            return f"call:{receiver}:{target}:{len(c_args)}"
+    return None
+
+
 def _argument_names(arguments: list[Node], src: str) -> tuple[str | None, ...] | None:
-    """Each argument that is a bare name (a local, parameter or field), else None.
+    """Each argument that is a bare name (a local, parameter or field) or ``this.field``, else None.
 
     None overall when no argument is one. The resolver reads their declared types.
     """
-    names = tuple(node_text(a, src) if a.type == "identifier" else None for a in arguments)
+    names = tuple(_argument_name(a, src) for a in arguments)
     return names if any(names) else None
 
 
