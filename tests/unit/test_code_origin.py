@@ -47,6 +47,17 @@ _OWN_HEADER = (
         ("pkg/external/client.go", "production"),  # external/ only at the root
         ("tests/test_app.py", "test"),
         ("src/app.test.ts", "test"),
+        ("packages/codemods/src/v5/remove-overloads/__testfixtures__/default-import.input.tsx", "test"),
+        ("__testfixtures__/default-import.output.tsx", "test"),
+        ("src/transforms/__testfixtures__/nested/input.js", "test"),
+        ("src\\transforms\\__testfixtures__\\input.js", "test"),
+        ("src/testfixtures/transform.ts", "production"),
+        ("src/__testfixtures__extra/transform.ts", "production"),
+        ("src/transforms/__testfixtures__.ts", "production"),
+        ("src/__fixtures__/input.ts", "test"),
+        ("src/__mocks__/api.ts", "test"),
+        ("src/__snapshots__/component.snap", "test"),
+        ("src/fixtures/transform.ts", "production"),
         # a `tests/` folder inside a JS-family `src` tree is a product feature
         ("packages/web/src/app/repos/[id]/tests/page.tsx", "production"),
         ("packages/web/src/components/tests/tests-view.tsx", "production"),

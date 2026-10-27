@@ -155,6 +155,15 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("testdata/golden.json", None, "support"),
     ("pkg/parser/testdata/valid/input.go", None, "support"),
     ("src/__fixtures__/x.ts", None, "support"),
+    # jscodeshift stores codemod input/expected output beside the source tree.
+    ("packages/codemods/src/v5/remove-overloads/__testfixtures__/default-import.input.tsx", None, "support"),
+    ("__testfixtures__/default-import.output.tsx", None, "support"),
+    ("src/transforms/__testfixtures__/nested/input.js", None, "support"),
+    ("src\\transforms\\__testfixtures__\\input.js", None, "support"),
+    ("src/transforms/__testfixtures__/transform.test.ts", None, "test"),
+    ("src/testfixtures/transform.ts", None, ""),
+    ("src/__testfixtures__extra/transform.ts", None, ""),
+    ("src/transforms/__testfixtures__.ts", None, ""),
     # a test-shaped filename still wins over the directory
     ("testdata/build_test.go", None, "test"),
     # and the same finding's third path stays production code on purpose: bare

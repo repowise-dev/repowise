@@ -182,6 +182,8 @@ _SUPPORT_DIR_TOKENS: frozenset[str] = frozenset(
 # and Vitest write the ``.snap`` output a snapshot test compares against; the
 # ``.test.`` infix used to catch those files by accident, and stopped once
 # filename rules became source rules.
+# jscodeshift keeps codemod input and expected output in ``__testfixtures__``
+# beside the transform, so those files are test support wherever they sit too.
 #
 # Support rather than test, deliberately: golden data is what a test reads, not
 # a test. So the union counts it (#1103's reporter asked for exactly that) while
@@ -189,7 +191,7 @@ _SUPPORT_DIR_TOKENS: frozenset[str] = frozenset(
 # Matched on the segment's words run together too, so ``test-data/`` and
 # ``test_data/`` are the same golden data rather than a test tree.
 _SUPPORT_DIR_TOKENS_ANYWHERE: frozenset[str] = frozenset(
-    {"__fixtures__", "__mocks__", "__snapshots__", "testdata"}
+    {"__fixtures__", "__mocks__", "__snapshots__", "__testfixtures__", "testdata"}
 )
 
 # Helper directories named for tests, matched on the segment's words run
