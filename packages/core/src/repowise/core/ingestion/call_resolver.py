@@ -866,12 +866,10 @@ class CallResolver(
                 if call.spawned:
                     resolved = replace(resolved, spawned=True)
 
-                for variant in self._variant_siblings.get(
-                    resolved.callee_id, (resolved.callee_id,)
-                ):
-                    if variant != resolved.caller_id:
-                        results.append(replace(resolved, callee_id=variant))
-
+                results.extend(
+                    replace(resolved, callee_id=variant)
+                    for variant in self._build_variants(resolved)
+                )
 
         return results
 

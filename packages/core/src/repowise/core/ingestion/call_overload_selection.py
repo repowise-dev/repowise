@@ -404,6 +404,15 @@ class OverloadSelectionMixin:
                 for member, (fewest, most) in self._overload_members[defined]
             )
 
+    def _build_variants(self, resolved: ResolvedCall) -> tuple[str, ...]:
+        """The callees an edge fans out to: every build variant of its target.
+
+        A variant calling its own name is recursion inside one build, where no
+        sibling compiles, so it keeps its self edge and reaches no sibling.
+        """
+        variants = self._variant_siblings.get(resolved.callee_id, (resolved.callee_id,))
+        return (resolved.caller_id,) if resolved.caller_id in variants else variants
+
     def _narrow_overload(self, resolved: ResolvedCall, call: CallSite) -> ResolvedCall | None:
         """Move an edge on an overload set onto the member its arguments call.
 
