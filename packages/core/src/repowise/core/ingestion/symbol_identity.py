@@ -10,8 +10,10 @@ gains a discriminator:
   narrows to the member whose parameters admit its argument count. Members
   that share a count also carry their erased parameter types,
   ``StringUtil.java::StringUtil::append#1(String)``, so an inserted overload
-  never renames its siblings. A Kotlin extension's receiver leads its types,
-  as it leads the JVM signature it compiles to: ``Byte.toHexString()`` is
+  never renames its siblings. C# members those types still join spell each
+  generic type with its arity, ``When#2(Func`2)`` beside ``When#2(Func`3)``.
+  A Kotlin extension's receiver leads its types, as it leads the JVM
+  signature it compiles to: ``Byte.toHexString()`` is
   ``Util.kt::toHexString#0(Byte)``, beside ``toHexString#0(Int)``.
 - ``#<tag>(<predicate>)`` on the last segment: one build variant of a symbol
   declared once per configuration, ``lib.rs::f#cfg(not(unix))``. A call may
@@ -28,12 +30,12 @@ below, so a language without an entry is untouched by construction.
 from __future__ import annotations
 
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable
 
 from .models import Symbol
 from .return_types import signature_parameter_count, signature_parameters
-from .type_names import strip_type_arguments
+from .type_names import strip_type_arguments, type_argument_count
 
 # The payload after ``#``: a parameter count with optional parameter types, or
 # a build-variant predicate.
@@ -353,17 +355,52 @@ def disambiguate_colliding_ids(symbols: list[Symbol], language: str) -> None:
 
 
 def _split_same_counts(keyed: list[tuple[Symbol, str | None]]) -> list[tuple[Symbol, str | None]]:
-    """Append parameter types to every count two members share, when they differ."""
+    """Append parameter types to every count two members share, when they differ.
+
+    A C# pair the erased types still join (``Func<T, bool>`` and ``Func<T,
+    Ctx<T>, bool>``) is told apart by each type's generic arity instead.
+    """
     typed: dict[str, dict[int, str]] = defaultdict(dict)
     for index, (symbol, key) in enumerate(keyed):
         if key is not None:
             typed[key][index] = f"{key}{_parameter_types(symbol)}"
     out = list(keyed)
-    for by_index in typed.values():
+    for count, by_index in typed.items():
+        if keyed[next(iter(by_index))][0].language == "csharp":
+            by_index = _split_by_generic_arity(keyed, count, by_index)
         if len(set(by_index.values())) > 1:
             for index, key in by_index.items():
                 out[index] = (keyed[index][0], key)
     return out
+
+
+def _split_by_generic_arity(
+    keyed: list[tuple[Symbol, str | None]], count: str, by_index: dict[int, str]
+) -> dict[int, str]:
+    """*by_index* with each key two members share respelled with CLR arities.
+
+    Only the members that collide change, so a sibling keeps its id.
+    """
+    seen = Counter(by_index.values())
+    return {
+        index: f"{count}{_clr_parameter_types(keyed[index][0])}" if seen[key] > 1 else key
+        for index, key in by_index.items()
+    }
+
+
+# An erased type's name, then its array, pointer and nullable marks.
+_ERASED_MARKS = re.compile(r"([^\[\]*&?]*)(.*)")
+
+
+def _clr_parameter_types(symbol: Symbol) -> str:
+    """``(Func`2,int)``: each erased type with its type argument count, as the CLR names it."""
+    spelled = []
+    for parameter in signature_parameters(symbol.signature or "") or []:
+        written = parameter.partition("=")[0].split()
+        arity = type_argument_count(" ".join(written[:-1]) or parameter)
+        name, marks = _ERASED_MARKS.fullmatch(erased_type(parameter)).groups()  # type: ignore[union-attr]
+        spelled.append(f"{name}`{arity}{marks}" if arity else name + marks)
+    return "(" + ",".join(spelled) + ")"
 
 
 def pair_overloads(declared: list[Symbol], defined: list[Symbol]) -> dict[str, str]:

@@ -434,6 +434,39 @@ class TestCSharpGenericSiblings:
         ids = set(_ids(_parse("P.cs", "csharp", text)))
         assert {"P.cs::P::P#1(string)", "P.cs::P::P#1(TimeSpan?)", "P.cs::P::P#1(int[])", "P.cs::P::P#0"} <= ids
 
+    def test_csharp_overloads_one_erasure_joins_split_by_generic_arity(self) -> None:
+        """``Func<T, bool>`` and ``Func<T, Ctx, bool>`` are two CLR types; only the colliding pair is respelled."""
+        text = (
+            "namespace App;\npublic static class R {\n"
+            "  public static void When(this IRule<T> r, Func<T, bool> p) { }\n"
+            "  public static void When(this IRule<T> r, Func<T, Ctx, bool> p) { }\n"
+            "  public static void When(this IRule<T> r, Action<T>[]? p) { }\n"
+            "  public static void When(this IRule<T> r, Action<T, Ctx>[]? p) { }\n"
+            "  public static void When(this IRule<T> r, string p) { }\n"
+            "}\n"
+        )
+        assert _ids(_parse("R.cs", "csharp", text))[-5:] == [
+            "R.cs::R::When#2(IRule`1,Func`2)",
+            "R.cs::R::When#2(IRule`1,Func`3)",
+            "R.cs::R::When#2(IRule`1,Action`1[]?)",
+            "R.cs::R::When#2(IRule`1,Action`2[]?)",
+            "R.cs::R::When#2(IRule,string)",
+        ]
+
+    def test_csharp_calls_inside_each_split_overload_keep_their_caller(self, tmp_path: Path) -> None:
+        text = (
+            "namespace App;\npublic class R {\n"
+            "  public void A() { }\n"
+            "  public void B() { }\n"
+            "  public void When(Func<int, bool> p) { A(); }\n"
+            "  public void When(Func<int, string, bool> p) { B(); }\n"
+            "}\n"
+        )
+        assert _edges(tmp_path, {"R.cs": ("csharp", text)}) >= {
+            ("R.cs::R::When#1(Func`2)", "R.cs::R::A"),
+            ("R.cs::R::When#1(Func`3)", "R.cs::R::B"),
+        }
+
 
 SHAPES_H = """namespace geo {
 class Shape {
