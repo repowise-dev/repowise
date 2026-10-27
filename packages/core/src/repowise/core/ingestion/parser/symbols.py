@@ -1,4 +1,8 @@
-"""Symbol extraction: one query match to one ``Symbol``, and the parent it belongs to."""
+"""Symbol extraction: one query match to one ``Symbol``, and the parent it belongs to.
+
+Exception: a Python assignment that rebinds a ``def``/``class`` of its name yields
+no symbol (see ``_drop_python_rebindings``).
+"""
 
 from __future__ import annotations
 
