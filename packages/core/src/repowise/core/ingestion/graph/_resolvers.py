@@ -7,6 +7,7 @@ emitting EXTENDS/IMPLEMENTS, ``reads``, and ``calls`` edges respectively.
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Iterable
 from typing import Any
 
 import structlog
@@ -209,6 +210,8 @@ class ResolveMixin:
                 added = resolve_csharp_same_namespace_refs(
                     self._graph, index, cs_texts, repo
                 )
+                if index is not None:
+                    self._csharp_project_usings = _project_usings_by_file(index, cs_texts)
                 log.info("same_namespace_edges", language="csharp", added=added)
             if "vbnet" in languages:
                 vb_texts = collect_source_texts(
@@ -626,6 +629,7 @@ class ResolveMixin:
             import_maps=self._shared_import_maps(),
             heritage_parents=self._heritage_parents(),
             partial_fragments=self._partial_fragments,
+            csharp_project_usings=self._csharp_project_usings,
         )
 
         # Record which C/C++ declarations were paired with a definition. The
@@ -849,3 +853,17 @@ def _decorator_sites(parsed: ParsedFile, registrar_names: set[str]) -> list[Call
                     )
                 )
     return sites
+
+
+def _project_usings_by_file(index: Any, paths: Iterable[str]) -> dict[str, frozenset[str]]:
+    """``{C# file: what its project's global usings bring in}``, one set per project."""
+    per_project: dict[Any, frozenset[str]] = {}
+    out: dict[str, frozenset[str]] = {}
+    for path in paths:
+        csproj = index.file_to_project.get((index.repo_path / path).resolve())
+        if csproj is None:
+            continue
+        if csproj not in per_project:
+            per_project[csproj] = frozenset(index.globals_for_project(csproj))
+        out[path] = per_project[csproj]
+    return out

@@ -316,6 +316,7 @@ class CallResolver(
         heritage_parents: dict[str, set[str]] | None = None,
         return_type_chain_languages: frozenset[str] | None = None,
         partial_fragments: dict[tuple[str, str], tuple[str, ...]] | None = None,
+        csharp_project_usings: dict[str, frozenset[str]] | None = None,
     ) -> None:
         # {type symbol id: parent type symbol ids}, from the caller's already
         # resolved heritage. Absent when the resolver is built standalone, in
@@ -324,6 +325,9 @@ class CallResolver(
         # {(file, partial type name): files declaring a fragment of it}, from
         # the builder's C#/VB.NET partial pass. Empty in every other language.
         self._partial_fragments = partial_fragments or {}
+        # {C# file: the namespaces its project's global usings and MSBuild
+        # ``<Using>`` items bring in}, from the builder's .NET project index.
+        self._csharp_project_usings = csharp_project_usings or {}
         self._return_type_chain_languages = (
             PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES
             if return_type_chain_languages is None
@@ -1619,6 +1623,11 @@ class CallResolver(
         inherited = self._implicit_inherited_call(file_path, call, caller_id)
         if inherited is not None:
             return inherited
+        hit = self._first_strategy_hit(
+            self._strategies_for(file_path).free_fallback, file_path, call, caller_id
+        )
+        if hit is not None:
+            return hit
         # Tier 3: global unique match, only within the same language.
         # Uniqueness is judged before filtering data members, on purpose: filtering
         # them out first would re-uniquify a name a field and a method share. A
