@@ -80,7 +80,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -96,7 +99,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -112,7 +118,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -128,7 +137,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -144,7 +156,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -160,7 +175,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -176,7 +194,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -192,7 +213,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -208,7 +232,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -224,7 +251,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -240,7 +270,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -256,7 +289,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -272,7 +308,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -288,7 +327,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -304,7 +346,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -320,7 +365,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -336,7 +384,10 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -352,8 +403,14 @@
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
-        "argument_names": null
+        "argument_types": [
+          null,
+          "Int"
+        ],
+        "argument_names": [
+          "x",
+          null
+        ]
       }
     ],
     "heritage": [],

@@ -301,6 +301,30 @@ def _exact_apex_fit(
     return None if any(takes(parameters, may_take) for parameters in others) else exact[0]
 
 
+def _exact_kotlin_fit(
+    members: list[tuple[str, list[str]]], argument_types: tuple[str | None, ...]
+) -> str | None:
+    """The one Kotlin member whose parameters are exactly the typed arguments' types.
+
+    Kotlin converts no argument implicitly, and of the members an argument
+    could reach through a supertype the exact one is the most specific, so
+    an exact match decides. Only where the members agree on every untyped
+    argument, which may be one the exact member cannot take. An ``Any``
+    argument is left out: a smart cast may have narrowed it.
+    """
+    if not _untyped_agree(members, argument_types, False):
+        return None
+    typed = [(index, argument.rstrip("?")) for index, argument in enumerate(argument_types) if argument]
+    if any(argument == "Any" for _, argument in typed):
+        return None
+    exact = [
+        member
+        for member, parameters in members
+        if all(index < len(parameters) and parameters[index].rstrip("?") == argument for index, argument in typed)
+    ]
+    return exact[0] if len(exact) == 1 else None
+
+
 def _apex_may_take(parameter: str, argument: str, repo_types: frozenset[str]) -> bool:
     """Could an Apex parameter of type *parameter* take an argument of type *argument*?
 
@@ -701,8 +725,11 @@ class OverloadSelectionMixin:
         if self._symbols_by_id[found[0]].language == "csharp":
             return self._csharp_takers(found, argument_types)
         typed = [(m, erased_parameter_types(self._symbols_by_id[m])) for m in found]
-        if self._symbols_by_id[found[0]].language == "apex":
+        language = self._symbols_by_id[found[0]].language
+        if language == "apex":
             closest = _exact_apex_fit(typed, argument_types, self._folded_type_names())
+        elif language == "kotlin":
+            closest = _exact_kotlin_fit(typed, argument_types)
         else:
             closest = _closest_fit(typed, argument_types, expanded, self._jvm_lambda_type_map())
         return found if closest is None else [closest]

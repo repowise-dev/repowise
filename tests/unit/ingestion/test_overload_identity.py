@@ -28,6 +28,7 @@ from repowise.core.ingestion.call_resolver import CallResolver
 from repowise.core.ingestion.graph.builder import GraphBuilder
 from repowise.core.ingestion.models import FileInfo, ParsedFile
 from repowise.core.ingestion.parser import ASTParser
+from repowise.core.ingestion.parser_helpers import _kotlin_number_type
 from repowise.core.ingestion.return_types import signature_parameter_range, signature_parameters
 from repowise.core.ingestion.symbol_identity import (
     base_symbol_id,
@@ -802,6 +803,38 @@ class TestKotlinOverloads:
         edges = _edges(tmp_path, {"app/U.kt": ("kotlin", text)})
         assert ("app/U.kt::screen", "app/U.kt::item") not in edges
         assert ("app/U.kt::Remote::sync", "app/U.kt::Remote::topics") in edges
+
+    _BUF = (
+        "package app\n\nclass ByteString\n\nclass Buf {\n"
+        "  fun write(b: ByteString): Buf = this\n  fun write(b: ByteArray): Buf = this\n"
+        "  fun put(a: Long, b: Int) { }\n  fun put(a: Int, b: Long) { }\n"
+        "  fun mark(s: String?) { }\n  fun mark(f: Boolean) { }\n}\n\n"
+        "fun use(b: Buf, bytes: ByteArray, text: ByteString, n: Int, maybe: String?) {\n"
+    )
+
+    @pytest.mark.parametrize(
+        ("call", "member"),
+        [
+            ("b.write(bytes)", "write#1(ByteArray)"),
+            ("b.write(text)", "write#1(ByteString)"),
+            ("b.put(1L, n)", "put#2(Long,Int)"),
+            ("b.put(n, 1L)", "put#2(Int,Long)"),
+            ('b.mark("x")', "mark#1(String?)"),
+            ("b.mark(true)", "mark#1(Boolean)"),
+            ("b.mark(maybe)", "mark#1(String?)"),
+            # Nothing decides, so the set's first member answers as before.
+            ("b.write(b = bytes)", "write#1(ByteString)"),
+            ("b.put(1, 2)", "put#2(Long,Int)"),
+            ("b.put(n, n)", "put#2(Long,Int)"),
+        ],
+    )
+    def test_a_typed_argument_picks_the_overload_of_exactly_its_type(
+        self, tmp_path: Path, call: str, member: str
+    ) -> None:
+        """Kotlin converts no argument, so the member whose parameter is the argument's type is it."""
+        text = f"{self._BUF}  {call}\n}}\n"
+        edges = _edges(tmp_path, {"app/B.kt": ("kotlin", text)})
+        assert edges == {("app/B.kt::use", f"app/B.kt::Buf::{member}")}
 
     def test_a_trailing_comma_closes_no_parameter(self) -> None:
         """Compose style, ``modifier: Modifier = Modifier,`` before ``)``."""
@@ -1641,3 +1674,16 @@ class TestJavaNamedArguments:
         )
         edges = _edges(tmp_path, {"app/Node.java": ("java", text)})
         assert edges == {("app/Node.java::Node::use", "app/Node.java::Node::add#2")}
+
+
+@pytest.mark.parametrize(
+    ("literal", "kotlin_type"),
+    [
+        ("1", "Int"), ("0xff", "Int"), ("1_000L", "Long"), ("0b1010L", "Long"), ("1.0", "Double"),
+        ("1e10", "Double"), ("1.0f", "Float"), ("3000000000", None), ("0xffffffff", None), ("1u", None),
+    ],
+)
+def test_a_kotlin_number_literal_types_only_what_no_expected_type_changes(
+    literal: str, kotlin_type: str | None
+) -> None:
+    assert _kotlin_number_type(literal.lower().replace("_", "")) == kotlin_type
