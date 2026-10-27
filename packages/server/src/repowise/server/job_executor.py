@@ -32,6 +32,7 @@ from repowise.core.persistence.crud import (
 from repowise.core.persistence.database import get_session, refresh_planner_stats
 from repowise.core.pipeline import persist_pipeline_result, run_pipeline
 from repowise.core.pipeline.modes import OrchestratorMode
+from repowise.core.update_lock import release_update_lock, try_acquire_update_lock
 from repowise.server.job_events import JobEventBuffer, create_event_buffer
 
 # The ``noqa: F401`` names live in the sibling job modules and are re-exported
@@ -57,7 +58,9 @@ from repowise.server.job_records import (
 from repowise.server.job_state import (
     _load_state,  # noqa: F401
     _persist_initial_index_state,
+    _read_head_sha,
     _stamp_last_sync_commit,
+    newer_health_analyzer,
 )
 from repowise.server.services.areas import warm_area_model
 from repowise.server.services.coupling import warm_coupling_model
@@ -527,12 +530,54 @@ async def _run_scoped_generation(run: _JobRun) -> None:
     )
 
 
+def _refuse_older_analyzer(repo_path: Path) -> None:
+    """Fail the job before it writes health rows older than the stored ones."""
+    from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+
+    stored = newer_health_analyzer(repo_path)
+    if stored is not None:
+        raise RuntimeError(
+            f"The index holds health scores from analyzer version {stored}, newer "
+            f"than this server's {HEALTH_ANALYZER_VERSION}. Restart `repowise serve` "
+            "to load the upgraded package."
+        )
+
+
 async def _run_index_job(run: _JobRun, app_state: Any) -> None:
+    """Index under the CLI's update lock, so the two never write one index at once."""
+    repo_path = Path(run.spec.repo_path)
+    head = await asyncio.to_thread(_read_head_sha, repo_path)
+    # Acquired and released without an await, so a cancel cannot leak the lock.
+    owner = try_acquire_update_lock(repo_path, head)
+    if owner is not None:
+        # The holder's run advances the baseline; nothing failed here.
+        await _finalize_job_status(
+            app_state,
+            run.session_factory,
+            run.progress,
+            run.spec.job_id,
+            status="cancelled",
+            error_message=(
+                f"Another repowise update or sync (pid {owner.get('pid')}) is "
+                "running on this repository, so this job did not run."
+            ),
+        )
+        return
+    try:
+        await asyncio.to_thread(_refuse_older_analyzer, repo_path)
+        await _run_locked_index_job(run, app_state)
+    finally:
+        release_update_lock(repo_path)
+
+
+async def _run_locked_index_job(run: _JobRun, app_state: Any) -> None:
     """Index the repository, persist everything, and record the outcome."""
     spec = run.spec
     docs = _DocsPlan.for_job(spec, run.llm_client)
     result = await _run_index_pipeline(run, docs)
     incremental_pages = await _sync_incremental_pages(run, result)
+    # A CLI init does not take the update lock; check again right before writing.
+    await asyncio.to_thread(_refuse_older_analyzer, Path(spec.repo_path))
     swept_page_ids = await _persist_index_result(run, result, incremental_pages)
 
     all_pages = (result.generated_pages or []) + incremental_pages
@@ -544,7 +589,12 @@ async def _run_index_job(run: _JobRun, app_state: Any) -> None:
 
     elapsed = time.monotonic() - run.start
     pages_generated = await _record_index_completion(run, result, all_pages, elapsed)
-    await _write_index_state(run, docs, total_pages=len(all_pages))
+    await _write_index_state(
+        run,
+        docs,
+        total_pages=len(all_pages),
+        health_rescored=getattr(result, "health_report", None) is not None,
+    )
     await _reload_cross_repo_enricher(app_state, spec.job_id)
     # The area rollup and the coupling fold are read on the first dashboard
     # load after an index; fold them here, in the job's own task, instead.
@@ -711,11 +761,14 @@ async def _record_index_completion(
     return pages_generated
 
 
-async def _write_index_state(run: _JobRun, docs: _DocsPlan, *, total_pages: int) -> None:
+async def _write_index_state(
+    run: _JobRun, docs: _DocsPlan, *, total_pages: int, health_rescored: bool = False
+) -> None:
     """Update state.json so CLI incremental updates know the new baseline.
 
     An initial index also persists the full baseline (docs flags, run
-    mode, config) that `repowise init` would have written.
+    mode, config) that `repowise init` would have written. A run that
+    rescored health stamps the analyzer version its rows came from.
     """
     spec = run.spec
     try:
@@ -729,9 +782,12 @@ async def _write_index_state(run: _JobRun, docs: _DocsPlan, *, total_pages: int)
                 total_pages=total_pages,
                 wiki_style=spec.wiki_style,
                 exclude_patterns=spec.exclude_patterns,
+                health_rescored=health_rescored,
             )
         else:
-            await asyncio.to_thread(_stamp_last_sync_commit, Path(spec.repo_path))
+            await asyncio.to_thread(
+                _stamp_last_sync_commit, Path(spec.repo_path), health_rescored=health_rescored
+            )
     except Exception:
         logger.debug("state_json_update_failed", job_id=spec.job_id, exc_info=True)
 

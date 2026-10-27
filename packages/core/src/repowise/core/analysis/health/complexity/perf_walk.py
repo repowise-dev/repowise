@@ -324,8 +324,80 @@ def _bound_in(part: Node) -> set[bytes]:
 def _loop_bound_names(loop: Node) -> set[bytes]:
     """The element or index names *loop*'s header binds; empty for a ``while`` loop."""
     parts = [loop, *(c for c in loop.children if c.type in _LOOP_CLAUSE_KINDS)]
-    unfielded = [c for c in loop.children if c.type == "variable_declaration"]
+    unfielded = [
+        c for c in loop.children if c.type in ("variable_declaration", "multi_variable_declaration")
+    ]
     return set().union(*(_bound_in(p) for p in parts), *(_identifiers(c) for c in unfielded))
+
+
+def _block_bound_names(block: Node) -> set[bytes]:
+    """The parameters a block loop's lambda binds; Kotlin's implicit ``it`` when it declares none."""
+    node = block
+    for _ in range(2):  # Kotlin: annotated_lambda -> lambda_literal -> lambda_parameters
+        params = next((c for c in node.named_children if c.type.endswith("parameters")), None)
+        if params is not None:
+            return _identifiers(params)
+        if not node.named_children:
+            break
+        node = node.named_children[0]
+    return {b"it"}
+
+
+def _leftmost_name(node: Node | None) -> bytes:
+    """The first identifier down the leftmost path: ``x`` of ``x.mu`` / ``(x.lock)``."""
+    for _ in range(8):
+        if node is None or node.type.endswith("identifier"):
+            break
+        node = next(iter(node.named_children), None)
+    return node.text or b"" if node is not None else b""
+
+
+def _lock_subject(lock: Node, receiver: str | None) -> bytes:
+    """The name a lock is taken on.
+
+    The receiver root of ``u.mu.Lock()`` / ``it.withLock {}``, else the leftmost
+    name of the first operand: ``synchronized (x)``, ``lock (item)``, Kotlin's
+    bare ``synchronized(x) {}``. ``None`` marks a statement-form lock.
+    """
+    if receiver:
+        return receiver.encode()
+    operand = next(iter(lock.named_children), None)
+    if receiver is not None:
+        # A bare call: the lock is its first argument (``call_suffix`` wraps it in Kotlin).
+        operand = next(
+            (
+                d
+                for c in lock.named_children
+                for d in (c, *c.named_children)
+                if d.type.endswith("arguments") or d.type == "argument_list"
+            ),
+            None,
+        )
+        operand = next(iter(operand.named_children), None) if operand is not None else None
+    return _leftmost_name(operand)
+
+
+def _locks_loop_element(
+    lock: Node,
+    receiver: str | None,
+    dialect: BasePerfDialect,
+    loop_kinds: frozenset[str],
+    fn_kinds: frozenset[str],
+    block_loops: bool,
+) -> bool:
+    """The lock belongs to the element the nearest loop yields (``for u in us: u.mu.Lock()``).
+
+    Each pass locks a different object, so there is no shared lock to hoist. A
+    lock reached through a local derived from the element is not matched (recall
+    ceiling).
+    """
+    loops = _enclosing_loops(lock, dialect, loop_kinds, fn_kinds, block_loops)
+    if not loops:
+        return False
+    subject = _lock_subject(lock, receiver)
+    block = dialect.block_loop_body(loops[0]) if block_loops else None
+    bound = _block_bound_names(block) if block is not None else _loop_bound_names(loops[0])
+    return bool(subject) and subject in bound
 
 
 def _loop_key_feeds(call: Node, loop: Node) -> bool:
@@ -966,8 +1038,8 @@ class _PerfWalk:
                 if self.do_loop_call_marker
                 else None
             )
-            if marker == "lock_in_loop" and _is_lock_acquire_spin(
-                call.node, nxt.func, self.dialect, self.loop_kinds, self.fn_kinds
+            if marker == "lock_in_loop" and self._lock_not_hoistable(
+                call.node, call.root_name if self.dialect.callee_is_attribute(call.node) else "", nxt
             ):
                 marker = None
             if marker is not None:
@@ -1060,9 +1132,7 @@ class _PerfWalk:
 
     def _on_loop_statement(self, node: Node, nxt: _Frame) -> None:
         sm = self.dialect.loop_stmt_marker(node, self.list_names)
-        if sm == "lock_in_loop" and _is_lock_acquire_spin(
-            node, nxt.func, self.dialect, self.loop_kinds, self.fn_kinds
-        ):
+        if sm == "lock_in_loop" and self._lock_not_hoistable(node, None, nxt):
             sm = None
         if sm is None:
             return
@@ -1081,6 +1151,15 @@ class _PerfWalk:
                     else ""
                 ),
             )
+        )
+
+    def _lock_not_hoistable(self, node: Node, receiver: str | None, nxt: _Frame) -> bool:
+        """A per-iteration lock with nothing to hoist: a lock-acquire spin, or the loop element's own lock."""
+        dialect = self.dialect
+        return _is_lock_acquire_spin(
+            node, nxt.func, dialect, self.loop_kinds, self.fn_kinds
+        ) or _locks_loop_element(
+            node, receiver, dialect, self.loop_kinds, self.fn_kinds, self.do_block_loop
         )
 
     def _is_lock_entry(self, node: Node) -> bool:

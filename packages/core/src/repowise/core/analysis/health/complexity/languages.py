@@ -386,7 +386,15 @@ _C_SCALARS = frozenset(
 
 _PY = LanguageNodeMap(
     ctor_names=frozenset({"__init__"}),
-    fixed_signature_markers=frozenset({"override"}),
+    # Click and Typer (``@cli.command()``, ``@click.option(...)``): the
+    # parameters mirror the command's CLI options.
+    fixed_signature_markers=frozenset({"override", "command", "group", "option", "argument"}),
+    # FastAPI fills a parameter whose default or ``Annotated`` type calls one
+    # of these. Read by callee name only, so a ``pathlib.Path(...)`` default
+    # counts too; the cost is one missed finding, never a false one.
+    bound_param_markers=frozenset(
+        {"Query", "Depends", "Path", "Header", "Body", "Form", "Cookie", "File", "Security"}
+    ),
     scalar_type_names=frozenset({"str", "int", "float", "bool", "bytes"}),
     function_kinds=frozenset({"function_definition", "async_function_definition"}),
     lambda_kinds=frozenset({"lambda"}),

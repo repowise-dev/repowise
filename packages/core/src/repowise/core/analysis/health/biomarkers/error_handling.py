@@ -33,25 +33,16 @@ _REASONS: dict[str, str] = {
     "go_swallow": "error value is checked then ignored, or discarded via the blank identifier",
 }
 
-# Rust invariant assertions (``complexity.rust_unwrap``): true, idiomatic, low
-# priority. They keep their kind (and so their id) but say what they are and
-# deduct nothing from the score.
+# Rust invariant assertions (``complexity.rust_unwrap``). They keep their kind
+# (and so their id), state what the call asserts and deduct nothing, like the
+# advisory markers.
 _IDIOM_REASONS: dict[str, str] = {
     "lock_poison": (
-        "unwrapping a lock panics only if another thread panicked while holding it "
-        "(idiomatic poison propagation, low priority)"
+        "unwrapping a lock panics only if another thread panicked while holding it"
     ),
-    "thread_join": (
-        "unwrapping a thread join re-raises that thread's panic (idiomatic, low priority)"
-    ),
-    "invariant_expect": (
-        "expect panics with its stated message on failure, the usual form when "
-        "failure is a bug or makes start-up impossible (often idiomatic, low priority)"
-    ),
-    "unreachable": (
-        "unreachable! asserts this branch cannot run and panics only if it does "
-        "(often idiomatic, low priority)"
-    ),
+    "thread_join": "unwrapping a thread join re-raises that thread's panic",
+    "invariant_expect": "expect panics with its stated message on a None or Err",
+    "unreachable": "unreachable! asserts this branch cannot run and panics only if it does",
 }
 
 
