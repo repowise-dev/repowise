@@ -7,6 +7,7 @@ No imports from ``parser``, so there is no import cycle.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import structlog
@@ -93,6 +94,7 @@ __all__ = [
     "_rust_head_type_identifier",
     "_rust_shadowed_by_type_param",
     "_ts_nested_object_method_owner",
+    "cpp_template_type_name",
     "follow_renamed_hosts",
     "import_load_kind",
     "in_anonymous_class",
@@ -292,10 +294,64 @@ def _qualified_cpp_parent(name_node: Node, src: str) -> str | None:
     scope = parent.child_by_field_name("scope")
     if scope is None:
         return None
+    if scope.type == "template_type":
+        return cpp_template_type_name(scope, src)
     text = node_text(scope, src).strip()
     # ``scope`` may itself be a qualified path (``NS::Foo``); take the
     # last component — that's the immediate enclosing type.
     return text.rsplit("::", 1)[-1] or None
+
+
+_CPP_SPACE_RUN = re.compile(r"\s+")
+_CPP_BRACKET_SPACE = re.compile(r"(?<=<) | (?=>)")
+
+
+def cpp_template_type_name(node: Node, src: str) -> str:
+    """The class a C++ ``Name<Args>`` scope or class head names.
+
+    A member of the primary template, defined out of line, spells the
+    template's own parameters (``parse_context<Char>::f``) and belongs to
+    ``parse_context``, where a ``ctx.f()`` receiver lookup finds it. Any other
+    argument list is an explicit or partial specialization, a class of its
+    own: it keeps its arguments, on one line, so its members never merge with
+    the primary's.
+    """
+    name = node.child_by_field_name("name")
+    arguments = node.child_by_field_name("arguments")
+    if name is None or arguments is None:
+        return _CPP_SPACE_RUN.sub(" ", node_text(node, src).strip())
+    if _spells_enclosing_parameters(node, arguments, src):
+        return node_text(name, src)
+    return _CPP_BRACKET_SPACE.sub("", _CPP_SPACE_RUN.sub(" ", node_text(node, src).strip()))
+
+
+def _spells_enclosing_parameters(node: Node, arguments: Node, src: str) -> bool:
+    """Do *arguments* name an enclosing ``template <...>``'s parameters, in order?"""
+    spelled = [
+        node_text(arg, src).replace(" ", "").removesuffix("...") for arg in arguments.named_children
+    ]
+    ancestor = node.parent
+    while ancestor is not None:
+        if ancestor.type == "template_declaration":
+            parameters = ancestor.child_by_field_name("parameters")
+            if parameters is not None and spelled == _template_parameter_names(parameters, src):
+                return True
+        ancestor = ancestor.parent
+    return False
+
+
+def _template_parameter_names(parameters: Node, src: str) -> list[str | None]:
+    """``template <typename T, int N, typename... Ts>`` -> ``["T", "N", "Ts"]``."""
+    names: list[str | None] = []
+    for parameter in parameters.named_children:
+        # ``template <typename> class C`` names C in its trailing ``class C``.
+        if parameter.type == "template_template_parameter_declaration":
+            parameter = parameter.named_children[-1]
+        name = parameter.child_by_field_name("name") or parameter.child_by_field_name("declarator")
+        if name is None:
+            name = next((c for c in parameter.named_children if c.type in ("type_identifier", "identifier")), None)
+        names.append(node_text(name, src).lstrip("*&. ") if name is not None else None)
+    return names
 
 
 def _build_qualified_name(file_path: str, parent_name: str | None, name: str) -> str:

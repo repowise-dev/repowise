@@ -43,6 +43,7 @@ from ..parser_helpers import (
     _qualified_cpp_parent,
     _qualified_pascal_parent,
     _ts_nested_object_method_owner,
+    cpp_template_type_name,
     follow_renamed_hosts,
     in_anonymous_class,
     is_anonymous_member,
@@ -163,6 +164,8 @@ def _parent_type_name(ancestor: Node, src: str) -> str | None:
     )
     if name_node is None:
         return None
+    if name_node.type == "template_type":
+        return cpp_template_type_name(name_node, src)
     # For Rust impl blocks with generic types (e.g. impl<T> Foo<T>),
     # extract only the base type name, not the full generic signature.
     if name_node.type in ("generic_type", "scoped_type_identifier"):
