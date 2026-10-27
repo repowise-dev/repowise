@@ -105,6 +105,11 @@ def _argument_fit(parameter: str, argument: str) -> int | None:
     most-specific rule: a call ``f(true)`` takes ``f(boolean)`` over
     ``f(Object)``, and ``f('c')`` takes ``f(int)`` over it.
     """
+    if argument.startswith("->"):
+        return _lambda_fit(parameter, argument)
+    if argument == "Class" and parameter.rstrip("?") == "Class":
+        # ``Class<?>`` erases to ``Class?``; a class literal fits it exactly.
+        return 0
     levels = _JAVA_LITERAL_LEVELS.get(argument)
     if levels is None:
         return _reference_fit(parameter, argument)
@@ -113,6 +118,40 @@ def _argument_fit(parameter: str, argument: str) -> int | None:
     if parameter not in _JAVA_JUDGED_PARAMETERS:
         return _UNJUDGED_LEVEL[argument]
     return levels.get(parameter)
+
+
+# JDK functional interfaces: (parameter count, whether the function returns a value).
+_JAVA_FUNCTIONAL_SHAPES = {
+    "Runnable": (0, False), "Callable": (0, True), "Supplier": (0, True),
+    "Consumer": (1, False), "Function": (1, True), "Predicate": (1, True),
+    "UnaryOperator": (1, True), "BiConsumer": (2, False), "BiFunction": (2, True),
+    "BiPredicate": (2, True), "BinaryOperator": (2, True), "Comparator": (2, True),
+}
+
+
+def _lambda_fit(parameter: str, argument: str) -> int | None:
+    """How a lambda of shape ``->N:value|void|either`` reaches *parameter*.
+
+    0 for a JDK functional interface of that shape, None for one of another
+    shape or a type no lambda targets, 1 for any other interface, which may
+    be a repository functional interface of the right shape. A body that
+    suits both reaches a void interface at 1, so the value-returning one
+    wins, as the most-specific rule has it.
+    """
+    count, _, result = argument[2:].partition(":")
+    shape = _JAVA_FUNCTIONAL_SHAPES.get(parameter)
+    if shape is not None:
+        takes, returns = shape
+        if takes != int(count):
+            return None
+        if result == "either":
+            return 0 if returns else 1
+        return 0 if returns == (result == "value") else None
+    return None if parameter in _NO_LAMBDA_TARGETS or parameter.endswith("[]") else 1
+
+
+# Parameter types no lambda converts to.
+_NO_LAMBDA_TARGETS = _JAVA_PRIMITIVES | _JAVA_FINAL_PARAMETERS | frozenset({"Object", ""})
 
 
 def _reference_fit(parameter: str, argument: str) -> int | None:

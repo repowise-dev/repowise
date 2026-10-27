@@ -1310,6 +1310,63 @@ class TestJavaLiteralArguments:
         (call,) = _parse("A.java", "java", text).calls
         assert call.argument_types == ("int", "int", "int", "long", "boolean", "float", None, None)
 
+    def test_class_literals_concatenations_and_lambda_shapes_are_read(self) -> None:
+        text = (
+            "class A {\n  void go(int x) {\n"
+            '    f(A.class, "id " + x, x + 1, () -> { run(); }, () -> { return 1; },\n'
+            "      () -> new A(), (a, b) -> a, () -> run(), () -> { throw new E(); });\n"
+            "  }\n}\n"
+        )
+        call = next(c for c in _parse("A.java", "java", text).calls if c.target_name == "f")
+        assert call.argument_types == (
+            "Class", "String", None, "->0:void", "->0:value", "->0:either", "->2:value", None, None
+        )
+
+    _ACCESS = (
+        "package app;\nimport java.util.function.Supplier;\npublic class Access {\n"
+        "  public static void as(String t, Runnable r) { r.run(); }\n"
+        "  public static <T> T as(String t, Supplier<T> s) { return s.get(); }\n"
+        "  void use(String t) {\n    as(t, BODY);\n  }\n}\n"
+    )
+
+    @pytest.mark.parametrize(
+        ("body", "member"),
+        [
+            ("() -> { use(t); }", "as#2(String,Runnable)"),
+            ("() -> { return 1; }", "as#2(String,Supplier)"),
+            ("() -> new Access()", "as#2(String,Supplier)"),
+        ],
+    )
+    def test_a_lambda_takes_the_functional_interface_of_its_shape(
+        self, tmp_path: Path, body: str, member: str
+    ) -> None:
+        text = self._ACCESS.replace("BODY", body)
+        edges = _edges(tmp_path, {"app/Access.java": ("java", text)})
+        assert ("app/Access.java::Access::use", f"app/Access.java::Access::{member}") in edges
+
+    def test_a_class_literal_takes_the_class_parameter(self, tmp_path: Path) -> None:
+        text = (
+            "package app;\npublic class NotFound extends RuntimeException {\n"
+            "  public NotFound(String message, Throwable cause) { }\n"
+            "  public NotFound(Class<?> type, Object id) { }\n"
+            "  static NotFound of(Long id) {\n    return new NotFound(NotFound.class, id);\n  }\n}\n"
+        )
+        edges = _edges(tmp_path, {"app/NotFound.java": ("java", text)})
+        assert (
+            "app/NotFound.java::NotFound::of", "app/NotFound.java::NotFound::NotFound#2(Class?,Object)"
+        ) in edges
+
+    def test_a_body_that_suits_both_still_takes_a_void_interface(self, tmp_path: Path) -> None:
+        """``run(() -> n++, 1)``: the lambda suits Runnable, so the literal decides."""
+        text = (
+            "package app;\npublic class R {\n  int n;\n"
+            "  void run(Runnable r, String s) { }\n"
+            "  void run(Runnable r, int i) { }\n"
+            "  void use() {\n    run(() -> n++, 1);\n  }\n}\n"
+        )
+        edges = _edges(tmp_path, {"app/R.java": ("java", text)})
+        assert edges == {("app/R.java::R::use", "app/R.java::R::run#2(Runnable,int)")}
+
     def test_a_tie_that_differs_on_a_non_literal_argument_is_not_broken(
         self, tmp_path: Path
     ) -> None:
