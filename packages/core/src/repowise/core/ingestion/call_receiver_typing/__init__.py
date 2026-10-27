@@ -373,7 +373,33 @@ class ReceiverTypingMixin(
             promoted = self._go_embedded_method(file_path, bare, call.target_name)
             if promoted is not None and promoted[1] != caller_id:
                 return promoted[1], "import"
+        if found is None and self._language_of(file_path) == "cpp":
+            return self._cpp_base_class_target(call, caller_id, bare)
         return found
+
+    def _cpp_base_class_target(
+        self, call: CallSite, caller_id: str, bare: str
+    ) -> tuple[str, str] | None:
+        """The one base-class method a typed C++ receiver reaches when its class lacks it.
+
+        ``specs.set_align()`` on a ``format_specs&`` names ``basic_specs::set_align``
+        when ``format_specs`` derives from it and declares no ``set_align``. Only
+        for the repository's one type of that name, and refused when any class
+        of that name declares the method anywhere, an out-of-line body in a
+        ``.cc`` included, since that declaration hides the base's. The owner is
+        compared bare: an out-of-line template member keeps its class's
+        arguments (``Foo<T>::bar``).
+        """
+        if (bare, call.target_name) in self._global_methods or any(
+            bare_type_name(self._symbols_by_id[sym_id].parent_name or "") == bare
+            for sym_id in self._global_symbols.get(call.target_name, ())
+        ):
+            return None
+        identities = {identity for _, identity, _ in self._declared_types_named(bare)}
+        if len(identities) != 1:
+            return None
+        hit = self._ancestor_method(next(iter(identities))[0], call.target_name, caller_id)
+        return None if hit is None else (hit, "global")
 
     def _typed_receiver_lookup(
         self,
