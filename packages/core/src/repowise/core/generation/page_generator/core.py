@@ -24,9 +24,7 @@ import structlog
 
 from repowise.core.ingestion.models import ParsedFile, RepoStructure
 from repowise.core.providers.llm.base import BaseProvider, CacheHint, GeneratedResponse
-from repowise.core.providers.llm.template import TEMPLATE_PROVIDER_NAME
 
-from ..agent_digest import rejoin_questions
 from ..context.evidence import (
     EvidenceItem,
     EvidenceSelection,
@@ -42,7 +40,6 @@ from ..models import (
     GeneratedPage,
     GenerationConfig,
     compute_page_id,
-    compute_source_hash,
 )
 from ..report import reset_house_terms
 from ..structural_labels import resolve_structural_labels, structural_page_title
@@ -50,6 +47,7 @@ from ..styles import ONBOARDING_PAGE_TYPE, resolve_style
 from .helpers import _extract_summary, _now_iso, collapse_empty_duplicate_headings
 from .pertype import PerTypeGenerationMixin
 from .prompts import CORRECTIVE_RETRY_DIRECTIVE, SUPPORTED_LANGUAGES, SYSTEM_PROMPTS
+from .reuse import reuse_prior_response
 from .structural import (
     StructuralRenderMixin,
     register_filters,
@@ -65,13 +63,6 @@ if TYPE_CHECKING:
     from pathlib import Path as _Path  # noqa: F401
 
 log = structlog.get_logger(__name__)
-
-# Bumped by hand when a change to the model-page reuse fingerprint must force
-# a one-time regeneration of subject-keyed pages whose renderer bytes did not
-# change: a prompt-template edit is picked up automatically (the template
-# source is hashed), so this only covers the cases hashing cannot see — the
-# same convention as ``STRUCTURAL_GENERATION_VERSION`` next door.
-MODEL_PAGE_GENERATION_VERSION = "1"
 
 
 def _attach_file_provenance(page: GeneratedPage, ctx: FilePageContext) -> None:
@@ -140,7 +131,7 @@ class PriorPage:
     run re-bill every page, issue #1089). Structural pages compute theirs in
     :meth:`StructuralRenderMixin._structural_content_hash`; model pages
     compute it from their subject material (see
-    :meth:`PageGenerator._reuse_content_hash`).
+    :func:`.reuse.model_reuse_key`).
     """
 
     source_hash: str
@@ -391,53 +382,6 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
     # Provider call + page assembly
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _reuse_content_hash(material: str, fingerprint: str) -> str:
-        """Stable reuse key for a model-written page's subject.
-
-        ``material`` is the page's subject in a form that does not drift
-        between runs — the documented file's byte hash, a group's sorted
-        member list, the repo's name. ``fingerprint`` covers the renderer
-        (prompt template source, system prompt, language, style), so a
-        template/style upgrade forces a one-time regen exactly like the
-        structural pages' ``render_key`` (issue #1089).
-
-        An empty *material* yields an empty key, which keeps the page out of
-        subject-keyed reuse and falls back to the prompt-hash gate.
-        """
-        if not material:
-            return ""
-        return hashlib.sha256(f"{material}:{fingerprint}".encode()).hexdigest()
-
-    def _model_page_fingerprint(self, page_type: str, template: str) -> str:
-        """Renderer fingerprint folded into model pages' subject reuse keys.
-
-        Hashes the resolved prompt-template source (through the Jinja loader,
-        so a custom style's override fingerprints itself) together with the
-        system prompt, language and style — the same inputs that shape the
-        model's output, plus the hand-bumped generation version for the
-        changes hashing cannot see. Cached per (page_type, template) because a
-        full index computes it for thousands of pages.
-        """
-        try:
-            loader = getattr(self._jinja_env, "loader", None)
-            source = loader.get_source(self._jinja_env, template)[0] if loader else None
-        except Exception:
-            source = None
-        system_prompt = SYSTEM_PROMPTS.get(page_type, "")
-        raw = "\x00".join(
-            [
-                MODEL_PAGE_GENERATION_VERSION,
-                page_type,
-                template,
-                source or "",
-                system_prompt,
-                self._language or "en",
-                self._style.fingerprint,
-            ]
-        )
-        return hashlib.sha256(raw.encode()).hexdigest()
-
     async def _call_provider(
         self,
         page_type: str,
@@ -470,37 +414,21 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         # produced by the same model, and still matches on its subject, reuse
         # the stored content without an LLM call.
         if self._config.cache_enabled and target_path is not None:
-            page_id = compute_page_id(page_type, target_path)
-            prior = self._prior_pages.get(page_id)
-            if prior is not None and prior.model_name == self._provider.model_name:
-                if reuse_content_hash and prior.content_hash:
-                    subject_match = prior.content_hash == reuse_content_hash
-                else:
-                    # No subject digest on either side (pre-key pages, or a
-                    # caller that could not derive one): fall back to the
-                    # rendered-prompt hash, the gate's historical behaviour.
-                    subject_match = (
-                        prior.source_hash == compute_source_hash(user_prompt + source_salt)
-                    )
-                # A row stamped ``template`` is a stub, never prose. Reusing
-                # it would present a placeholder as the finished page and —
-                # because stubs are kept out of the resume ledger — would let
-                # the run claim the page was written when nothing wrote it.
-                if subject_match and prior.provider_name != TEMPLATE_PROVIDER_NAME:
-                    self._reuse_count += 1
-                    log.debug(
-                        "page_cache.persistent_hit",
-                        page_type=page_type,
-                        target_path=target_path,
-                        key="subject" if reuse_content_hash else "prompt",
-                    )
-                    return GeneratedResponse(
-                        content=rejoin_questions(prior.content, prior.digest),
-                        input_tokens=0,
-                        output_tokens=0,
-                        cached_tokens=0,
-                        usage={"reused_from_prior_run": True},
-                    )
+            reused = reuse_prior_response(
+                self._prior_pages.get(compute_page_id(page_type, target_path)),
+                model_name=self._provider.model_name,
+                reuse_content_hash=reuse_content_hash,
+                prompt=user_prompt + source_salt,
+            )
+            if reused is not None:
+                self._reuse_count += 1
+                log.debug(
+                    "page_cache.persistent_hit",
+                    page_type=page_type,
+                    target_path=target_path,
+                    key="subject" if reuse_content_hash else "prompt",
+                )
+                return reused
 
         key = self._compute_cache_key(page_type, user_prompt)
         if self._config.cache_enabled and key in self._cache:

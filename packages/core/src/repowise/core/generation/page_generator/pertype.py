@@ -52,6 +52,7 @@ from ..overview_tables import (
 )
 from ..page_sources import lint_sources
 from ..structural_labels import structural_page_title
+from .reuse import model_reuse_key
 
 log = structlog.get_logger(__name__)
 
@@ -170,9 +171,8 @@ def _with_capability_table(
 
 class PerTypeGenerationMixin:
     """Per-type ``generate_*`` methods. Requires the host to provide
-    ``_assembler``, ``_render``, ``_call_provider``, ``_build_generated_page``,
-    ``_reuse_content_hash`` and ``_model_page_fingerprint`` (all supplied by
-    :class:`PageGenerator`).
+    ``_assembler``, ``_render``, ``_call_provider`` and ``_build_generated_page``
+    (all supplied by :class:`PageGenerator`).
     """
 
     async def generate_file_page(
@@ -405,9 +405,11 @@ class PerTypeGenerationMixin:
         # survives the next run byte-identically reuses its prose instead of
         # re-billing it (issue #1089). Folded with the renderer fingerprint,
         # so a prompt/template/style upgrade still forces a one-time regen.
-        reuse_key = self._reuse_content_hash(
+        reuse_key = model_reuse_key(
+            self,
             structural_key,
-            self._model_page_fingerprint("module_page", "module_page.j2"),
+            "module_page",
+            "module_page.j2",
         )
         try:
             response = await self._call_provider(
@@ -540,9 +542,11 @@ class PerTypeGenerationMixin:
         # The overview's subject is the repository itself. Its name is stable
         # across runs, so an unchanged repo reuses its overview prose instead
         # of re-billing it on every full run (issue #1089).
-        reuse_key = self._reuse_content_hash(
+        reuse_key = model_reuse_key(
+            self,
             repo_name or "",
-            self._model_page_fingerprint("repo_overview", "repo_overview.j2"),
+            "repo_overview",
+            "repo_overview.j2",
         )
         try:
             response = await self._call_provider(
@@ -708,9 +712,11 @@ class PerTypeGenerationMixin:
             f"{item.path}:{_onboarding_bytes_hash(signals.source_map.get(item.path))}"
             for item in evidence.included
         ]
-        reuse_key = self._reuse_content_hash(
+        reuse_key = model_reuse_key(
+            self,
             spec.slot + "|" + "\x1f".join(sorted(_subject_parts)),
-            self._model_page_fingerprint("onboarding", template_name),
+            "onboarding",
+            template_name,
         )
         try:
             response = await self._call_provider(

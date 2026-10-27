@@ -344,6 +344,9 @@ class GenerationConfig:
     # Page key -> explicit repository-relative files to add. Supported keys are
     # ``repo_overview`` and ``onboarding/<slot>``.
     source_evidence_files: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    # False on ``init --force``: no prior pages are loaded, so the reuse gate
+    # has nothing to carry over and every page is regenerated (issue #1089).
+    reuse_prior_pages: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         """Return the supported plain, rehydratable configuration snapshot."""

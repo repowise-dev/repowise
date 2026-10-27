@@ -311,7 +311,6 @@ def run_repo_generation(
     timings: Any | None = None,
     warnings: list[str] | None = None,
     total_phases: int | None = None,
-    reuse_prior_pages: bool = True,
 ) -> list[Any]:
     """Generate wiki pages for one repo and enrich its knowledge graph.
 
@@ -319,7 +318,7 @@ def run_repo_generation(
     generation wrapper, enriches the KG, and flushes buffered cost rows in one
     transaction (kept out of the contended generation window, issue #326).
 
-    ``reuse_prior_pages=False`` (``repowise init --force``) disables the
+    ``gen_config.reuse_prior_pages=False`` (``repowise init --force``) disables the
     cross-run reuse gate so every page is regenerated, as the flag's help
     text has always promised (issue #1089).
 
@@ -426,7 +425,7 @@ def run_repo_generation(
                 progress=gen_callback,
                 resume=resume,
                 preserved_page_ids=preserved_page_ids,
-                reuse_prior_pages=reuse_prior_pages,
+                reuse_prior_pages=getattr(gen_config, "reuse_prior_pages", True),
                 cost_tracker=cost_tracker,
                 generation_config=gen_config,
                 # In-memory curated modules: on a fresh init the

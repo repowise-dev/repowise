@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from sqlalchemy.exc import OperationalError
 
 from repowise.core.generation.models import GeneratedPage
 from repowise.core.persistence import (
@@ -156,7 +157,7 @@ async def test_scoped_generation_prior_load_failure_does_not_abort(engine_and_sf
         new=fake_run_generation,
     ), patch(
         "repowise.core.persistence.load_prior_pages",
-        side_effect=RuntimeError("db down"),
+        side_effect=OperationalError("SELECT", {}, Exception("db down")),
     ):
         result = await execute_scoped_generation(
             session_factory=sf,

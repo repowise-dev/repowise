@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 import structlog
+from sqlalchemy.exc import SQLAlchemyError
 
 from repowise.core.generation.page_selection import PageRecord
 from repowise.core.generation.scope import (
@@ -235,7 +236,7 @@ async def execute_scoped_generation(
     try:
         async with get_session(session_factory) as session:
             prior_pages = await load_prior_pages(session, repo_id)
-    except Exception:
+    except (SQLAlchemyError, OSError):
         # Without prior pages the subject-hash skip is off and every requested
         # page re-bills; generation itself must not fail over the cache.
         prior_pages = {}

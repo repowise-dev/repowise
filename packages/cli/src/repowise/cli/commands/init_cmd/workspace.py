@@ -134,6 +134,7 @@ def _run_workspace_generation(
         # No question is asked in the workspace flow, so this only picks up a cap
         # already recorded for this repo (by a single-repo init, or by hand).
         max_file_pages=resolve_max_file_pages(config=load_config(repo_path)),
+        reuse_prior_pages=reuse_prior_pages,
     )
     plans, est = estimate_generation(
         result=result,
@@ -187,7 +188,6 @@ def _run_workspace_generation(
         verbose=False,
         test_run=test_run,
         timings=timings,
-        reuse_prior_pages=reuse_prior_pages,
     )
 
 

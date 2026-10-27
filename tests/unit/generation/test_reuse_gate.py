@@ -23,6 +23,7 @@ from repowise.core.generation.context_assembler import ContextAssembler, FilePag
 from repowise.core.generation.models import STUB_FALLBACK_ERROR
 from repowise.core.generation.page_generator import PageGenerator
 from repowise.core.generation.page_generator.core import PriorPage
+from repowise.core.generation.page_generator.reuse import model_reuse_key
 from repowise.core.providers.llm.mock import MockProvider
 
 
@@ -116,10 +117,7 @@ async def test_a_stub_row_is_never_reused_on_a_top_up_run(sample_config):
     gen = PageGenerator(MockProvider(), ContextAssembler(sample_config), sample_config)
     # Compute the exact subject key the generator will look up, so the match
     # would succeed if not for the stub guard.
-    stub_key = gen._reuse_content_hash(
-        "concept-resolvers",
-        gen._model_page_fingerprint("module_page", "module_page.j2"),
-    )
+    stub_key = model_reuse_key(gen, "concept-resolvers", "module_page", "module_page.j2")
     prior = {
         "module_page:pkg/resolvers": PriorPage(
             source_hash="prompt-hash-from-run-1",

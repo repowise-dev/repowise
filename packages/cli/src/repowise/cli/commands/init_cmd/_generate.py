@@ -291,6 +291,7 @@ def _run_generation_phase(
         enable_onboarding=onboarding,
         wiki_style=wiki_style,
         max_file_pages=max_file_pages,
+        reuse_prior_pages=reuse_prior_pages,
         **folder_coverage_override(folder_coverage_rules),
     )
     plans, est = estimate_generation(
@@ -347,7 +348,6 @@ def _run_generation_phase(
         timings=timings,
         warnings=warnings,
         total_phases=total_phases,
-        reuse_prior_pages=reuse_prior_pages,
     )
     return False, False
 
