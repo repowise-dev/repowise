@@ -1044,6 +1044,10 @@ class CallResolver(
             return self._with_props(hit, call)
         if receiver_call is not None and not (bare_fallback and strategies.chain_bare_fallback):
             return None
+        if call.bare_name_fallback:
+            # A call on an object no pattern names: a tier keyed on the
+            # caller's file, class or imports would read the method as theirs.
+            return self._with_props(self._global_unique_call(file_path, call, caller_id), call)
 
         # --- Free function call: function() ---
         return self._with_props(self._resolve_bare_call(file_path, call, caller_id), call)
@@ -1889,7 +1893,6 @@ class CallResolver(
         caller_id: str,
     ) -> ResolvedCall | None:
         """Tier 3 and what follows it: answers not grounded in this file or its imports."""
-        target_name = call.target_name
         # Ahead of tier 3: the caller's own hierarchy is better evidence than
         # repo-wide uniqueness, and a JVM package sibling's member never answers.
         inherited = self._implicit_inherited_call(file_path, call, caller_id)
@@ -1900,7 +1903,16 @@ class CallResolver(
         )
         if hit is not None:
             return hit
-        # Tier 3: global unique match, only within the same language.
+        return self._global_unique_call(file_path, call, caller_id)
+
+    def _global_unique_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """Tier 3: the one declaration of the name repo-wide, only within the same language."""
+        target_name = call.target_name
         # Uniqueness is judged before filtering data members, on purpose: filtering
         # them out first would re-uniquify a name a field and a method share. A
         # symbol the caller cannot name at all is no rival, so that one is dropped.

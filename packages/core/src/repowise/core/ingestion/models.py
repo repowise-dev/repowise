@@ -373,7 +373,9 @@ class CallSite:
     supplied_props: set[str] | None = None  # prop names supplied in JSX element (None if unknown/spread)
     # The grammar's bare-call pattern also matched this member call (Java
     # ``obj.m()``, Ruby ``obj.m(x)``). Its bare-name reading is asked only
-    # when no receiver strategy answers, never beside one.
+    # when no receiver strategy answers, never beside one. Set with no
+    # receiver, it is a Java call on an object no pattern names (``a.b.m()``,
+    # ``arr[0].m()``), which only repo-wide uniqueness binds.
     bare_name_fallback: bool = False
     # Handed straight to a task scheduler (``asyncio.create_task(f())``): it runs
     # later, beside its caller, so the caller neither waits for it nor repeats it.

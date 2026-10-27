@@ -1610,6 +1610,53 @@ class TestInheritedTypedReceiver:
         assert self._targets(tmp_path, files, parents, language="kotlin") == []
 
 
+class TestJavaUnnamedObjectCall:
+    """``a.b.m()`` keeps only a bare site, which repo-wide uniqueness alone may bind."""
+
+    _OTHER = "package p;\npublic class Other {\n    public void m(int x) {}\n}\n"
+
+    def _targets(self, tmp_path: Path, body: str, other: str | None = None) -> list[str]:
+        files = {
+            "p/Use.java": "package p;\nimport p.Other;\nclass Use {\n    Holder a;\n"
+            f"    void m(int x) {{}}\n    void go() {{\n        {body}\n    }}\n}}\n",
+            "p/Other.java": self._OTHER if other is None else other,
+        }
+        parsed = _parse_all(tmp_path, {k: ("java", v) for k, v in files.items()})
+        resolver = CallResolver(
+            parsed, {"p/Use.java": {"p/Other.java"}, "p/Other.java": set()}, repo_path=str(tmp_path)
+        )
+        calls = parsed["p/Use.java"].calls
+        return sorted(rc.callee_id for rc in resolver.resolve_file("p/Use.java", calls))
+
+    @pytest.mark.parametrize("receiver", ["a.b", "X.CONST", "\"s\"", "arr[0]"])
+    def test_a_name_two_classes_declare_is_not_the_callers_own(
+        self, tmp_path: Path, receiver: str
+    ) -> None:
+        assert self._targets(tmp_path, f"{receiver}.m(1);") == []
+
+    def test_a_repo_wide_unique_name_still_binds(self, tmp_path: Path) -> None:
+        other = "package p;\npublic class Other {\n    public void only() {}\n}\n"
+        assert self._targets(tmp_path, "a.b.only();", other) == ["p/Other.java::Other::only"]
+
+    @pytest.mark.parametrize("body", ["m(1); a.b.m(2);", "a.b.m(2); m(1);"], ids=["bare-first", "bare-last"])
+    def test_a_bare_call_beside_it_keeps_every_tier(self, tmp_path: Path, body: str) -> None:
+        assert self._targets(tmp_path, body) == ["p/Use.java::Use::m"]
+
+    @pytest.mark.parametrize(
+        ("body", "flagged"),
+        [("a.b.m(1);", True), ("m(1);", False), ("Use.this.m(1);", False), ("a.m(1);", True)],
+        ids=["field-path", "bare", "qualified-this", "named-receiver"],
+    )
+    def test_only_an_unnamed_object_is_flagged(
+        self, tmp_path: Path, body: str, flagged: bool
+    ) -> None:
+        source = f"class Use {{\n    void go() {{\n        {body}\n    }}\n}}\n"
+        (call,) = _parse_all(tmp_path, {"Use.java": ("java", source)})["Use.java"].calls
+        # A named receiver's copy carries the flag as its member call's fallback.
+        assert call.bare_name_fallback is flagged
+        assert (call.receiver_name is None) is (body != "a.m(1);")
+
+
 class TestJavaReceiverRecall:
     """Java receivers the typed tiers missed: an inherited field, ``super``, a cast."""
 

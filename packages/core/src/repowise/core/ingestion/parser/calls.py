@@ -314,6 +314,11 @@ def _fold_receiverless_twins(calls: list[tuple[tuple[int, int, str], CallSite]])
     return folded
 
 
+def _on_unnamed_object(call: CallSite) -> bool:
+    """A Java call on an object no pattern names, kept only as a fallback reading."""
+    return call.bare_name_fallback and _is_bare(call)
+
+
 def _is_bare(call: CallSite) -> bool:
     return not (call.receiver_name or call.receiver_call)
 
@@ -328,13 +333,19 @@ def _dedupe_calls(calls: list[CallSite]) -> list[CallSite]:
     for call in calls:
         key = (call.line, call.target_name, call.receiver_name)
         existing = deduplicated.get(key)
-        if (
-            existing is None
-            or (existing.receiver_call is None and call.receiver_call is not None)
-            or (existing.scope_name is None and call.scope_name is not None)
-        ):
+        if existing is None or _richer(call, existing):
             deduplicated[key] = call
     return list(deduplicated.values())
+
+
+def _richer(call: CallSite, existing: CallSite) -> bool:
+    """Does *call* carry something the same-keyed *existing* record lacks?"""
+    if existing.receiver_call is None and call.receiver_call is not None:
+        return True
+    if existing.scope_name is None and call.scope_name is not None:
+        return True
+    # A bare ``m()`` beside ``a.b.m()`` on its line keeps every tier.
+    return _on_unnamed_object(existing) and not _on_unnamed_object(call)
 
 
 def _extract_calls(
@@ -409,6 +420,12 @@ def _call_from_match(
         return None
     scope_nodes = capture_dict.get("call.scope", [])
     line = site_node.start_point[0] + 1
+    on_unnamed_object = (
+        language == "java"
+        and receiver_name is None
+        and not receiver_call_nodes
+        and _java_object_is_unnamed(site_node)
+    )
     arguments = _overload_arguments(language, arg_nodes)
     call = CallSite(
         target_name=target_name,
@@ -428,8 +445,24 @@ def _call_from_match(
         # own function only (see ``python_tasks``).
         spawned=language == "python" and is_fire_and_forget(site_node, src),
         program_call=language == "cobol" and site_node.type == "call_statement",
+        bare_name_fallback=on_unnamed_object,
     )
     return (site_node.start_byte, site_node.end_byte, target_name), call
+
+
+def _java_object_is_unnamed(site_node: Node) -> bool:
+    """Does this Java call have an object, other than a qualified ``this``?
+
+    Seen only on the bare pattern's copy, so no receiver pattern named the
+    object. ``Outer.this.m()`` is an implicit receiver, read as bare.
+    """
+    if site_node.type != "method_invocation":
+        return False
+    obj = site_node.child_by_field_name("object")
+    if obj is None:
+        return False
+    field = obj.child_by_field_name("field") if obj.type == "field_access" else None
+    return field is None or field.type != "this"
 
 
 def _call_names(
