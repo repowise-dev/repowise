@@ -122,6 +122,10 @@ log = structlog.get_logger(__name__)
 # bare call there is a free function and this tier would resolve it wrongly.
 _IMPLICIT_RECEIVER_LANGUAGES = frozenset({"java", "csharp", "cpp", "kotlin", "apex"})
 
+# Languages whose interface methods may be bodiless everywhere (a Go method
+# spec, a C++ pure virtual), so a member call is admitted on the method index.
+_BODILESS_INTERFACE_LANGUAGES = frozenset({"go", "cpp"})
+
 # JS/TS (and the single-file components parsed as TypeScript): a member is only
 # reachable as ``this.foo()`` or ``obj.foo()``, so a bare ``foo()`` inside a
 # class method never means a member of that class, whatever the file declares.
@@ -1725,11 +1729,12 @@ class CallResolver(
 
         # Every strategy below ends in a lookup keyed on the method name, so a
         # name the repo declares nowhere cannot resolve.
-        # A Go interface method spec is bodiless, so ``_global_symbols`` leaves it
-        # out; the method index holds it, and it is what an interface-typed
-        # receiver binds to.
+        # A Go interface method spec and a C++ pure virtual are bodiless, so
+        # ``_global_symbols`` leaves them out; the method index holds them, and
+        # they are what an interface-typed receiver binds to.
         if method_name not in self._global_symbols and not (
-            self._language_of(file_path) == "go" and method_name in self._method_names()
+            self._language_of(file_path) in _BODILESS_INTERFACE_LANGUAGES
+            and method_name in self._method_names()
         ):
             return False, None
 

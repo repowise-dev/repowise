@@ -1072,13 +1072,13 @@ class TestCppWrapperUnwrapping:
         assert declared_types("val c: Column<Thing> = x", "kotlin") == {"c": "Column"}
 
 
-def test_cpp_is_not_a_field_language() -> None:
-    """C++ declares its fields in a header, away from the call that reads them.
+def test_cpp_is_a_field_language() -> None:
+    """C++ names a field bare, and declares it in a header away from the call.
 
-    Registering it would promise a scope the scan cannot answer from, which is
-    the condition that disqualified python on the same constant.
+    An out-of-line body reads its fields from the class its includes declare
+    (``CppFieldOwners._field_owner``), so class scope answers for it too.
     """
-    assert "cpp" not in IMPLICIT_FIELD_LANGUAGES
+    assert "cpp" in IMPLICIT_FIELD_LANGUAGES
 
 
 def test_c_has_no_shapes_of_its_own() -> None:

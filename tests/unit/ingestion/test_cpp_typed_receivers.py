@@ -109,3 +109,102 @@ class TestSmartPointerReceivers:
         """``items.sendMessage()`` is not ``Peer::sendMessage`` on a vector."""
         _repo(tmp_path, "  std::vector<Peer> items;\n  return items.sendMessage(1);")
         assert not any(t.endswith("Peer::sendMessage") for t in _call_targets(_build(tmp_path), "lib/caller.cc"))
+
+
+def _field_repo(root: Path, run_body: str) -> None:
+    """``Peer``/``Stranger`` plus a ``Host`` class holding fields, its method out of line."""
+    _repo(root, "  return 0;")
+    (root / "lib" / "sink.h").write_text(
+        "#pragma once\nclass Sink {\n public:\n  virtual ~Sink() {}\n"
+        "  virtual void sendMessage(int n) = 0;\n};\n"
+    )
+    (root / "lib" / "host.h").write_text(
+        '#pragma once\n#include <memory>\n#include "peer.h"\n#include "sink.h"\n'
+        "class Host {\n public:\n  void Run();\n  int Inline() { return peer_.sendMessage(1); }\n"
+        " private:\n  Peer peer_;\n  Peer* peer_ptr_;\n  Sink* sink_;\n"
+        "  std::unique_ptr<Peer> owned_;\n  Host* parent_;\n};\n"
+    )
+    (root / "lib" / "host.cc").write_text(
+        '#include "host.h"\nvoid Host::Run() {\n' + run_body + "\n}\n"
+    )
+
+
+def _callees(graph, caller: str) -> set[str]:
+    return {
+        t for s, t, d in graph.edges(data=True) if d.get("edge_type") == "calls" and s == caller
+    }
+
+
+class TestFieldReceivers:
+    def test_an_out_of_line_body_reads_the_field_its_header_declares(self, tmp_path: Path) -> None:
+        _field_repo(tmp_path, "  peer_.sendMessage(1);\n  peer_ptr_->sendMessage(2);")
+        callees = _callees(_build(tmp_path), "lib/host.cc::Host::Run")
+        assert "lib/peer.cc::Peer::sendMessage" in callees
+        assert not any("Stranger" in t for t in callees)
+
+    def test_an_inline_body_reads_its_own_class_field(self, tmp_path: Path) -> None:
+        _field_repo(tmp_path, "")
+        assert "lib/peer.cc::Peer::sendMessage" in _callees(
+            _build(tmp_path), "lib/host.h::Host::Inline"
+        )
+
+    def test_an_interface_pointer_field_binds_the_pure_virtual(self, tmp_path: Path) -> None:
+        """The interface declares the method and nothing defines it: that is the callee."""
+        _field_repo(tmp_path, "  sink_->sendMessage(1);")
+        callees = _callees(_build(tmp_path), "lib/host.cc::Host::Run")
+        assert callees == {"lib/sink.h::Sink::sendMessage"}
+
+    def test_a_smart_pointer_field_binds_what_it_holds(self, tmp_path: Path) -> None:
+        _field_repo(tmp_path, "  owned_->sendMessage(1);")
+        assert "lib/peer.cc::Peer::sendMessage" in _callees(
+            _build(tmp_path), "lib/host.cc::Host::Run"
+        )
+
+    def test_a_name_the_pointer_field_declares_is_refused(self, tmp_path: Path) -> None:
+        """``owned_.get()`` is ``unique_ptr::get``, though ``Peer`` declares ``get``."""
+        _field_repo(tmp_path, "  owned_.get(1);")
+        assert "lib/peer.cc::Peer::get" not in _callees(_build(tmp_path), "lib/host.cc::Host::Run")
+
+    def test_an_auto_local_hides_the_field(self, tmp_path: Path) -> None:
+        _field_repo(tmp_path, "  auto peer_ = Make();\n  peer_.sendMessage(1);")
+        assert "lib/peer.cc::Peer::sendMessage" not in _callees(
+            _build(tmp_path), "lib/host.cc::Host::Run"
+        )
+
+    def test_two_included_classes_of_the_name_refuse(self, tmp_path: Path) -> None:
+        """Which ``Host`` the body belongs to is unsettled, so no field is read."""
+        _field_repo(tmp_path, "  peer_.sendMessage(1);")
+        (tmp_path / "lib" / "other.h").write_text(
+            "#pragma once\nclass Host {\n Stranger peer_;\n};\n"
+        )
+        (tmp_path / "lib" / "host.cc").write_text(
+            '#include "host.h"\n#include "other.h"\nvoid Host::Run() {\n'
+            "  peer_.sendMessage(1);\n}\n"
+        )
+        callees = _callees(_build(tmp_path), "lib/host.cc::Host::Run")
+        assert not any("sendMessage" in t for t in callees)
+
+    def test_a_declaration_two_bodies_define_is_refused(self, tmp_path: Path) -> None:
+        """Platform variants each define ``Peer::get``: which one runs is unknown."""
+        _field_repo(tmp_path, "  peer_ptr_->get(1);")
+        for name in ("peer-posix.cc", "peer-win32.cc"):
+            (tmp_path / "lib" / name).write_text(
+                '#include "peer.h"\nint Peer::get(int n) { return n; }\n'
+            )
+        (tmp_path / "lib" / "peer.cc").write_text(
+            '#include "peer.h"\nint Peer::sendMessage(int n) { return n; }\n'
+        )
+        callees = _callees(_build(tmp_path), "lib/host.cc::Host::Run")
+        assert not any(t.endswith("::get") for t in callees)
+
+    def test_a_call_into_its_own_body_lands_on_no_declaration(self, tmp_path: Path) -> None:
+        """``parent_->Run()`` inside ``Host::Run`` recurses; the header line is not the callee."""
+        _field_repo(tmp_path, "  parent_->Run();")
+        callees = _callees(_build(tmp_path), "lib/host.cc::Host::Run")
+        assert "lib/host.h::Host::Run" not in callees
+
+    def test_a_typed_local_hides_the_field(self, tmp_path: Path) -> None:
+        _field_repo(tmp_path, "  Stranger peer_;\n  peer_.sendMessage(1);")
+        callees = _callees(_build(tmp_path), "lib/host.cc::Host::Run")
+        assert "lib/peer.cc::Stranger::sendMessage" in callees
+        assert "lib/peer.cc::Peer::sendMessage" not in callees

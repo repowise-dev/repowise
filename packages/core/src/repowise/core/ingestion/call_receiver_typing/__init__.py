@@ -60,6 +60,7 @@ from ._shared import (  # noqa: F401
     _store_capped,
 )
 from .callbacks import CallbackParameterTypes, _TypedCallback
+from .cpp import CppFieldOwners
 from .framework import FrameworkReceiverTypes
 from .go import GoReturnTypes
 from .java import _JAVA_TYPE_PARAMETERS, JavaTypeVisibility, _header_type_parameters  # noqa: F401
@@ -192,6 +193,7 @@ class ReceiverTypingMixin(
     RangeVariableTypes,
     CallbackParameterTypes,
     FrameworkReceiverTypes,
+    CppFieldOwners,
 ):
     """Typed-receiver and C# extension strategies, with the source caches they read."""
 
@@ -225,6 +227,9 @@ class ReceiverTypingMixin(
         self._framework_types: dict[str, dict[str, str]] = {}
         self._external_names: dict[str, frozenset[str]] = {}
         self._method_name_set: frozenset[str] | None = None
+        # C++: {(file, class name): (header, class id) or None}, {declaration id: pure virtual}.
+        self._cpp_declaring_classes: dict[tuple[str, str], tuple[str, str] | None] = {}
+        self._pure_virtuals: dict[str, bool] = {}
         self._framework_name_set: frozenset[str] | None = None
 
     def _merged_extension_methods_for(self, file_path: str) -> dict[tuple[str, str], str]:
@@ -475,14 +480,16 @@ class ReceiverTypingMixin(
         if "::" in type_name:
             # A symbol id, recorded by ``_add_call_typed_locals``.
             return self._call_typed_receiver(file_path, call, caller_id, type_name)
-        if self._means_the_wrapper(file_path, caller_id, language, call, receiver_name):
+        if self._means_the_wrapper(file_path, caller_id, language, call, receiver_name, scope):
             return None
 
         found = self._typed_receiver_target(typing_file, call, caller_id, type_name)
         if found is None:
             # Last, because C# and Kotlin prefer a member to an extension.
             return self._extension_call(file_path, call, caller_id, type_name)[1]
-        sym_id, tier = found
+        sym_id, tier = self._typed_callee(found[0], caller_id), found[1]
+        if sym_id is None:
+            return None
         if scope == "framework":
             return self._framework_typed_call(caller_id, sym_id, tier, call.line)
         if scope == "field":
@@ -552,11 +559,11 @@ class ReceiverTypingMixin(
         """
         if not builtin_local and name in self._bound_names_in(file_path, caller_id, language):
             return None
-        class_id = self._caller_class_id(caller_id)
-        fields = self._field_types_in(file_path, language).get(class_id, {})
+        class_file, class_id = self._field_owner(file_path, caller_id, language)
+        fields = self._field_types_in(class_file, language).get(class_id, {})
         if name in fields:
             field = fields[name]
-            return None if builtin_local and external_type_name(field) else (field, "field", file_path)
+            return None if builtin_local and external_type_name(field) else (field, "field", class_file)
         if builtin_local:
             return None
         inherited = self._inherited_field(file_path, caller_id, class_id, name, language)
@@ -1042,6 +1049,7 @@ class ReceiverTypingMixin(
         language: str,
         call: CallSite,
         receiver_name: str,
+        scope: str = "body",
     ) -> bool:
         """Is this call on the smart pointer itself rather than on what it holds?
 
@@ -1050,15 +1058,19 @@ class ReceiverTypingMixin(
         apart. The names a dot call can reach are closed by the language, so
         refusing exactly those is what keeps ``p.get()`` off a repo's own
         ``Foo::get`` -- at the cost of an arrow call that really did mean one.
-        Asked only of C++, and only of a type that was unwrapped.
+        Asked only of C++, and only of a type that was unwrapped. A field is
+        read in its class's span, which may sit in a header.
         """
         if language != "cpp" or call.target_name not in POINTER_LIKE_MEMBERS:
             return False
-        span = self._spans_for(file_path).get(caller_id)
+        owner_file, owner = file_path, caller_id
+        if scope == "field":
+            owner_file, owner = self._field_owner(file_path, caller_id, language)
+        span = self._spans_for(owner_file).get(owner)
         if span is None:
             return False
         return receiver_name in unwrapped_names_in_span(
-            self._declarations_for(file_path, language), *span
+            self._declarations_for(owner_file, language), *span
         )
 
     def _body_typed_call(self, caller_id: str, sym_id: str, tier: str, line: int) -> ResolvedCall:
