@@ -678,6 +678,82 @@ EXPORT_API const struct S *fn5(int a) { if (a) { return 0; } return 0; }
     assert expected <= {r.name for r in results}
 
 
+def _names_by_line(tmp_path, language: str, source: bytes) -> dict[int, str]:
+    p = tmp_path / ("unit.cpp" if language == "cpp" else "unit.c")
+    p.write_bytes(source)
+    results = walk_file_complexity(str(p), language, source)
+    if not results:
+        pytest.skip(f"tree-sitter language pack missing for {language}")
+    return {r.start_line: r.name for r in results}
+
+
+@pytest.mark.parametrize(
+    ("source", "name"),
+    [
+        (b"const T& A::f() const { return x; }", "A::f"),
+        (b"T& f() { return x; }", "f"),
+        (b"A& operator=(const A& o) { return *this; }", "operator="),
+        (b"bool operator==(const A& o) const { return true; }", "operator=="),
+        (b"struct A { int operator()(int x) { return x; } };", "operator()"),
+        (b"struct A { operator bool() const { return true; } };", "operator bool"),
+        (b"A::operator const char*() const { return 0; }", "A::operator const char*"),
+        (b"struct A { ~A() {} };", "~A"),
+        (b"A::~A() {}", "A::~A"),
+        (b"template <typename T> int Foo<T>::g() { return 1; }", "Foo<T>::g"),
+    ],
+)
+def test_cpp_declarator_names(tmp_path, source, name):
+    assert list(_names_by_line(tmp_path, "cpp", source).values()) == [name]
+
+
+@pytest.mark.parametrize(
+    ("source", "name"),
+    [
+        (b"CLI11_INLINE bool\nApp::_parse_arg(int a) { return true; }", "App::_parse_arg"),
+        (b"CLI11_INLINE std::string App::q() { return s; }", "App::q"),
+        (b"API_ std::string Convert(const char* s) { return s; }", "Convert"),
+        (b"API_ Cardinality AtMost(int n) { return n; }", "AtMost"),
+        (b"API_ W W::Get() { return W(); }", "W::Get"),
+        (b"API_ Reporter* GetReporter() { return 0; }", "GetReporter"),
+    ],
+)
+def test_cpp_macro_prefixed_definition_is_named_by_its_qualified_identifier(
+    tmp_path, source, name
+):
+    assert list(_names_by_line(tmp_path, "cpp", source).values()) == [name]
+
+
+@pytest.mark.parametrize(
+    ("prefix", "scope"),
+    [
+        ("bool ", ""),
+        ("A<B<int>>::", "A<B<int>>::"),
+        ("EXPORT std::vector<int> A<B<int>>::", "A<B<int>>::"),
+        # An unmatched ``>`` ends the scope run there.
+        ("x>::", "::"),
+    ],
+)
+def test_scope_start_keeps_only_the_trailing_scope_run(prefix, scope):
+    from repowise.core.analysis.health.complexity.ast_utils import _scope_start
+
+    assert prefix[_scope_start(prefix) :] == scope
+
+
+def test_c_function_returning_a_function_pointer_is_named(tmp_path):
+    source = b"int (*fp(int a))(int) { return 0; }\n"
+    assert list(_names_by_line(tmp_path, "c", source).values()) == ["fp"]
+
+
+def test_cpp_defaulted_and_deleted_members_are_not_function_units(tmp_path):
+    source = b"""struct A {
+  A() = default;
+  A(const A&) = delete;
+  int get() { return 1; }
+};
+"""
+    assert _names_by_line(tmp_path, "cpp", source) == {4: "get"}
+
+
 def test_cpp_class_body_skips_a_nested_type_read_as_a_function(tmp_path):
     source = b"""class Outer {
  public:
@@ -1167,3 +1243,55 @@ def test_java_switch_arm_comment_does_not_increase_ccn():
 
     assert commented == plain
     assert multiple_statements > plain
+
+
+_BODYLESS_SOURCES = {
+    "java": (
+        "A.java",
+        b"abstract class A {\n  A() { }\n  abstract void f(int x);\n  native void n();\n  void g() { int y = 1; }\n}\n"
+        b"interface I {\n  void h();\n  default int d() { return 1; }\n}\n",
+        {"A", "g", "d"},
+        2,
+    ),
+    "csharp": (
+        "a.cs",
+        b"abstract class A {\n  public A() { }\n  public abstract void F(int x);\n  static extern int E(int a);\n"
+        b"  partial void P();\n  public void G() { var y = 1; }\n  int M() => 1;\n}\n"
+        b"interface I {\n  void H();\n  int D() { return 1; }\n}\n",
+        {"A", "G", "M", "D"},
+        3,
+    ),
+    "php": (
+        "a.php",
+        b"<?php\nabstract class A {\n  abstract public function f($x);\n  public function g() { return 1; }\n}\n"
+        b"interface I {\n  public function h();\n}\n",
+        {"g"},
+        1,
+    ),
+    "kotlin": (
+        "a.kt",
+        b"abstract class A {\n  abstract fun f(x: Int)\n  fun g(): Int { return 1 }\n  fun e() = 2\n}\n"
+        b"interface I {\n  fun h()\n  fun d(): Int { return 1 }\n}\n",
+        {"g", "e", "d"},
+        2,
+    ),
+    "apex": (
+        "A.cls",
+        b"public abstract class A {\n  public abstract void f(Integer x);\n  public void g() { Integer y = 1; }\n}\n"
+        b"public interface I {\n  void h();\n}\n",
+        {"g"},
+        1,
+    ),
+}
+
+
+@pytest.mark.parametrize("language", sorted(_BODYLESS_SOURCES))
+def test_bodyless_methods_are_not_units(language):
+    """Abstract, interface and extern declarations have no code: no function
+    entry and no class method. Members with a body stay units."""
+    _require_language(language)
+    path, source, units, a_methods = _BODYLESS_SOURCES[language]
+    fcx = walk_file(path, language, source)
+    assert {f.name for f in fcx.functions} == units
+    classes = {c.name: c for c in fcx.classes}
+    assert classes["A"].method_count == a_methods

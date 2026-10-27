@@ -69,7 +69,11 @@ from .refactoring import (
     performance_fix_suggestions,
     rank_suggestions,
 )
-from .refactoring.graph_signals import build_file_scc_index, build_methods_by_file
+from .refactoring.graph_signals import (
+    build_file_scc_index,
+    build_methods_by_file,
+    build_split_partial_types,
+)
 from .repo_tests import RepoTestIndex
 from .repo_tests import _has_paired_test_file as _has_paired_test_file
 from .repo_tests import _path_basenames as _path_basenames
@@ -706,6 +710,7 @@ class HealthAnalyzer:
             active_contributors=_compute_repo_active_contributors(self.git_meta_map),
             file_scc_index=build_file_scc_index(self.graph),
             methods_by_file=build_methods_by_file(self.graph),
+            split_partial_types=build_split_partial_types(self.graph),
             dataflow_cache=dataflow_cache,
             function_tests=function_tests,
             paired_test_files=paired_test_index(self.test_index.all_test_files()),

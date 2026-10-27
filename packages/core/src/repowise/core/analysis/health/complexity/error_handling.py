@@ -36,6 +36,25 @@ RUST_PANIC_MACROS = frozenset({"panic", "unreachable", "todo", "unimplemented"})
 #: Python handler types that catch every ordinary exception; only the second
 #: also catches the interpreter's exit signals.
 PY_CATCH_ALL = ("Exception", "BaseException")
+# Cancellation is a stop signal, not an error: dropping it after cancelling a
+# task is deliberate, so a handler catching only these is not swallowing.
+_CANCEL_TYPES = {
+    "python": frozenset({"CancelledError"}),
+    "csharp": frozenset({"OperationCanceledException", "TaskCanceledException"}),
+}
+# A docstring or comment that states the handler's fallback: "best-effort",
+# "never raises", "returns None on failure", "falls back to X if it cannot".
+# The failure condition must follow within one clause, so "returns X if the key
+# exists; raises on error" and "does not raise ValueError" do not match.
+_FALLBACK_DOC_RE = re.compile(
+    r"best[- ]effort"
+    r"|\b(?:never|does\s+not|doesn't|will\s+not|won't)\s+raises?"
+    r"(?=\s*(?:[.;,]|$|(?:an?|any)\s+(?:exception|error)))"
+    r"|\b(?:returns?|returning|fall(?:s|ing)?\s+back)\b[^.;,]{0,60}?"
+    r"(?:\b(?:on|upon)\s+(?:any\s+)?(?:failure|errors?|exceptions?)\b"
+    r"|\b(?:if|when)\s+(?:\w+\s+){0,4}?(?:fails?|failed|cannot|can't|could\s+not|couldn't)\b)",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 
 def _eh_text(node: Node) -> str:
@@ -126,6 +145,88 @@ def _eh_catches_base(clause: Node) -> bool:
     """
     is_catch_all, name = _eh_except_catch_all_name(clause)
     return is_catch_all and name != PY_CATCH_ALL[0]
+
+
+def _eh_csharp_caught_types(clause: Node) -> list[Node]:
+    decl = next((c for c in clause.children if c.type == "catch_declaration"), None)
+    typ = decl.child_by_field_name("type") if decl is not None else None
+    return [typ] if typ is not None else []
+
+
+def _eh_caught_types(clause: Node, language: str) -> list[Node]:
+    """The type nodes a Python ``except`` or C# ``catch`` clause names."""
+    if language == "csharp":
+        return _eh_csharp_caught_types(clause)
+    types: list[Node] = []
+    for node in _eh_named(clause):
+        if node.type in _EH_BLOCK_KINDS or node.type == "comment":
+            continue
+        if node.type == "as_pattern" and _eh_named(node):
+            node = _eh_named(node)[0]
+        # ``(A, B)``, or the parenthesis-free ``except A, B:`` of Python 3.14.
+        if node.type in ("tuple", "parenthesized_expression", "expression_list"):
+            types += _eh_named(node)
+        else:
+            types.append(node)
+    return types
+
+
+def _eh_catches_only_cancellation(clause: Node, language: str) -> bool:
+    """``except asyncio.CancelledError`` / C# ``catch (OperationCanceledException)``."""
+    names = _CANCEL_TYPES.get(language)
+    if names is None:
+        return False
+    types = _eh_caught_types(clause, language)
+    return bool(types) and all(_eh_text(t).rsplit(".", 1)[-1] in names for t in types)
+
+
+def _eh_docstring(func: Node) -> str:
+    body = func.child_by_field_name("body")
+    first = _eh_named(body)[0] if body is not None and _eh_named(body) else None
+    if first is None or first.type != "expression_statement":
+        return ""
+    inner = _eh_named(first)
+    return _eh_text(inner[0]) if inner and inner[0].type == "string" else ""
+
+
+def _eh_comments_above(stmt: Node) -> list[str]:
+    """The run of comments directly above *stmt*."""
+    sib = stmt.prev_sibling
+    if sib is None and stmt.parent is not None:
+        # A comment opening a block parses as a sibling of that block.
+        sib = stmt.parent.prev_sibling
+    texts: list[str] = []
+    while sib is not None and sib.type == "comment":
+        texts.append(_eh_text(sib))
+        sib = sib.prev_sibling
+    return texts
+
+
+def _eh_enclosing_docstring(node: Node) -> str:
+    cur: Node | None = node
+    while cur is not None and cur.type not in ("function_definition", "class_definition"):
+        cur = cur.parent
+    return _eh_docstring(cur) if cur is not None and cur.type == "function_definition" else ""
+
+
+def _eh_fallback_doc_texts(clause: Node, block: Node | None) -> list[str]:
+    """Python text that can document a handler's fallback: comments on the
+    ``except`` line and in its body, comments directly above the ``try``, and
+    the enclosing function's docstring."""
+    nodes = list(clause.children) + (list(block.children) if block is not None else [])
+    texts = [_eh_text(c) for c in nodes if c.type == "comment"]
+    if clause.parent is not None:
+        texts += _eh_comments_above(clause.parent)
+    texts.append(_eh_enclosing_docstring(clause))
+    return texts
+
+
+def _eh_documented_fallback(clause: Node, block: Node | None) -> bool:
+    """The handler ends in ``return`` and its fallback is documented."""
+    real = _eh_real_stmts(block, "python") if block is not None else []
+    if not real or real[-1].type != "return_statement":
+        return False
+    return any(_FALLBACK_DOC_RE.search(t) for t in _eh_fallback_doc_texts(clause, block))
 
 
 def _eh_rust_attr_is_test(attr_text: str) -> bool:
@@ -315,9 +416,12 @@ def _eh_swallow_allowed(noqa_codes: set[str] | None) -> bool:
     return noqa_codes is None or (len(noqa_codes) > 0 and "S110" not in noqa_codes)
 
 
-def _eh_broad_except_hit(node: Node, noqa_codes: set[str] | None) -> ErrorHandlingHit | None:
+def _eh_broad_except_hit(
+    node: Node, block: Node | None, noqa_codes: set[str] | None
+) -> ErrorHandlingHit | None:
     """The bare/broad except hit for a Python clause that does not re-raise,
-    unless its noqa codes suppress that kind."""
+    unless its noqa codes suppress that kind or, for ``except Exception``, the
+    fallback it returns is documented."""
     # ``except:`` / ``except BaseException:`` also swallow
     # KeyboardInterrupt & SystemExit; ``except Exception:`` cannot.
     is_base = _eh_catches_base(node)
@@ -327,7 +431,17 @@ def _eh_broad_except_hit(node: Node, noqa_codes: set[str] | None) -> ErrorHandli
         or (kind == "broad_except" and "BLE001" in noqa_codes)
         or (kind == "bare_except" and bool(noqa_codes & {"BLE001", "E722"}))
     )
-    return None if suppress else ErrorHandlingHit(kind, node.start_point[0] + 1)
+    if suppress or (kind == "broad_except" and _eh_documented_fallback(node, block)):
+        return None
+    return ErrorHandlingHit(kind, node.start_point[0] + 1)
+
+
+def _eh_swallow_expected(node: Node, language: str) -> bool:
+    """An empty handler that is the intended landing spot: a Java/Apex test's
+    expected throw, or a caught cancellation."""
+    if language in ("java", "apex"):
+        return _eh_java_try_ends_in_fail(node, language)
+    return _eh_catches_only_cancellation(node, language)
 
 
 def _eh_catch_visit(node: Node, language: str, hits: list[ErrorHandlingHit]) -> None:
@@ -339,7 +453,7 @@ def _eh_catch_visit(node: Node, language: str, hits: list[ErrorHandlingHit]) -> 
         block is not None
         and _eh_body_is_swallowed(block, language)
         and swallowed_unsuppressed
-        and not (language in ("java", "apex") and _eh_java_try_ends_in_fail(node, language))
+        and not _eh_swallow_expected(node, language)
     ):
         hits.append(ErrorHandlingHit("swallowed_catch", node.start_point[0] + 1))
     if (
@@ -347,7 +461,7 @@ def _eh_catch_visit(node: Node, language: str, hits: list[ErrorHandlingHit]) -> 
         and _eh_is_bare_except(node)
         and not _eh_body_ends_in_raise(block, language)
     ):
-        hit = _eh_broad_except_hit(node, noqa_codes)
+        hit = _eh_broad_except_hit(node, block, noqa_codes)
         if hit is not None:
             hits.append(hit)
 

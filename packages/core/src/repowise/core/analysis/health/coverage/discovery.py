@@ -36,6 +36,7 @@ import pathspec
 
 from repowise.core.fs_walk import PRUNED_DIRS, WalkSnapshot, iter_glob
 
+from .alignment import Alignment, drop_misaligned
 from .contexts import COVERAGE_DATA_FILE_NOTE, is_coverage_data_file, read_report_text
 from .detector import parse as parse_coverage
 from .model import (
@@ -483,6 +484,8 @@ class ResolvedCoverage:
     # ingest against this rather than live HEAD so drift reads forward from the
     # right commit (#3901). ``None`` when nothing was read from disk.
     measured_at: datetime | None = None
+    # Files dropped because the report's lines no longer match the source, and why.
+    alignment: Alignment = field(default_factory=Alignment)
 
     @property
     def matched(self) -> int:
@@ -1320,6 +1323,7 @@ def build_coverage_map(
     report_prefixes: Mapping[Path, str | None] | None = None,
     ignore: Sequence[str] = (),
     allow_partial: bool = False,
+    check_alignment: bool = True,
 ) -> tuple[ResolvedCoverage, list[tuple[Path, str]]]:
     """Read + parse + resolve coverage reports end-to-end.
 
@@ -1335,6 +1339,10 @@ def build_coverage_map(
     A partial mapping (:func:`mostly_unmapped`) keeps no coverage unless
     *allow_partial*; it comes back ``withheld`` so nothing stores or scores a
     fragment as the repository's coverage.
+
+    With *check_alignment*, a file whose report lines no longer match its
+    source on disk is dropped (:func:`.alignment.drop_misaligned`) and listed in
+    ``alignment``; pass ``False`` when the reports describe another commit.
     """
     prefixes = report_prefixes or {}
     parsed: list[CoverageReport] = []
@@ -1375,6 +1383,10 @@ def build_coverage_map(
     )
     if resolved.mapping_partial and not allow_partial:
         resolved.coverage_map, resolved.files, resolved.withheld = {}, [], True
+    if check_alignment and resolved.files:
+        resolved.files, resolved.alignment = drop_misaligned(Path(repo_root), resolved.files)
+        for key in resolved.alignment.reasons:
+            del resolved.coverage_map[key]
     # Only the reports that were actually read: one unreadable or empty
     # artifact must not drag the whole measurement back to its own date. A
     # withheld mapping contributed no rows at all, so it reports no time.

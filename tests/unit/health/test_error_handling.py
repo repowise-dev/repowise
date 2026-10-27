@@ -358,7 +358,9 @@ def test_idiomatic_hit_is_labelled_and_not_scored():
     idiomatic, plain = ErrorHandlingDetector().detect(ctx)
     assert idiomatic.details == {"kind": "unsafe_unwrap", "idiom": "lock_poison", "deduction": 0.0}
     assert idiomatic.deduction == 0.0
-    assert "idiomatic" in idiomatic.reason
+    assert idiomatic.reason == (
+        "unwrapping a lock panics only if another thread panicked while holding it"
+    )
     assert plain.details == {"kind": "unsafe_unwrap"}
     assert plain.deduction is None
     assert plain.reason == "unwrap/expect turns a recoverable error into a crash"
@@ -430,3 +432,113 @@ def test_python_noqa_suppression(source: bytes, expected: dict, note: str):
     for h in hits:
         by_kind[h.kind] = by_kind.get(h.kind, 0) + 1
     assert by_kind == expected, f"{note}: expected {expected}, got {by_kind}"
+
+
+@pytest.mark.parametrize(
+    ("language", "source", "expected", "note"),
+    [
+        ("python", b"try:\n    x()\nexcept asyncio.CancelledError:\n    pass\n", set(), "asyncio"),
+        ("python", b"try:\n    x()\nexcept CancelledError:\n    pass\n", set(), "bare name"),
+        (
+            "python",
+            b"try:\n    x()\n"
+            b"except (asyncio.CancelledError, concurrent.futures.CancelledError) as e:\n"
+            b"    pass\n",
+            set(),
+            "tuple of cancellations",
+        ),
+        (
+            "python",
+            b"try:\n    x()\nexcept (asyncio.CancelledError, ValueError):\n    pass\n",
+            {"swallowed_catch"},
+            "cancellation mixed with an error is still swallowed",
+        ),
+        (
+            "python",
+            b"try:\n    x()\nexcept CancelledError, ValueError:\n    pass\n",
+            {"swallowed_catch"},
+            "parenthesis-free list keeps every type",
+        ),
+        (
+            "csharp",
+            b"class A{ void M(){ try { Go(); } catch (OperationCanceledException) {} } }\n",
+            set(),
+            "C# OperationCanceledException",
+        ),
+        (
+            "csharp",
+            b"class A{ void M(){ try { Go(); } "
+            b"catch (System.Threading.Tasks.TaskCanceledException e) {} } }\n",
+            set(),
+            "C# qualified TaskCanceledException",
+        ),
+    ],
+)
+def test_cancellation_catch_is_not_swallowed(
+    language: str, source: bytes, expected: set, note: str
+):
+    assert {h.kind for h in _hits(language, source)} == expected, note
+
+
+_FALLBACK_BODY = b"    try:\n        return load()\n    except Exception:\n        return None\n"
+
+
+@pytest.mark.parametrize(
+    ("source", "flagged", "note"),
+    [
+        (b'def f():\n    """Return None on failure."""\n' + _FALLBACK_BODY, False, "docstring"),
+        (b'def f():\n    """Best-effort cache read."""\n' + _FALLBACK_BODY, False, "best-effort"),
+        (b'def f():\n    """Load it. Never raises."""\n' + _FALLBACK_BODY, False, "never raises"),
+        (
+            b'def f():\n    """Falls back to an empty dict if the file cannot be read."""\n'
+            + _FALLBACK_BODY,
+            False,
+            "falls back",
+        ),
+        (
+            b"def f():\n    # best-effort: a missing cache is fine\n" + _FALLBACK_BODY,
+            False,
+            "comment above try",
+        ),
+        (
+            b"def f():\n    try:\n        return load()\n    except Exception:  # best-effort\n"
+            b"        return None\n",
+            False,
+            "comment on the except line",
+        ),
+        (b'def f():\n    """Return the loaded config."""\n' + _FALLBACK_BODY, True, "undocumented"),
+        (
+            b'def f():\n    """Returns the value if the key exists; raises on error."""\n'
+            + _FALLBACK_BODY,
+            True,
+            "failure word in another clause",
+        ),
+        (
+            b'def f():\n    """Does not raise ValueError for blanks."""\n' + _FALLBACK_BODY,
+            True,
+            "a named exception it does not raise is no fallback",
+        ),
+        (
+            b'def f():\n    """Best-effort read."""\n    try:\n        load()\n'
+            b"    except Exception:\n        log()\n",
+            True,
+            "documented but the handler does not return",
+        ),
+        (
+            b'def f():\n    """Best-effort read."""\n    try:\n        return load()\n'
+            b"    except:\n        return None\n",
+            True,
+            "bare except still catches KeyboardInterrupt",
+        ),
+        (
+            b'def f():\n    """Return None on failure."""\n    def g():\n        """Return it."""\n'
+            b"        try:\n            return load()\n        except Exception:\n"
+            b"            return None\n",
+            True,
+            "only the nearest function's docstring counts",
+        ),
+    ],
+)
+def test_documented_fallback_is_not_broad_except(source: bytes, flagged: bool, note: str):
+    kinds = {h.kind for h in _hits("python", source)}
+    assert bool(kinds & {"broad_except", "bare_except"}) is flagged, note

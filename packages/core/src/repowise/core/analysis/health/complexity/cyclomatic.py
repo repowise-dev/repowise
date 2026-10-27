@@ -255,7 +255,7 @@ def _enclosing_construct(node: Node, lmap: LanguageNodeMap) -> str:
     return "if"
 
 
-def _condition_subtrees(node: Node) -> list[Node]:
+def _condition_subtrees(node: Node, lmap: LanguageNodeMap) -> list[Node]:
     """Best-effort: pull the *condition* parts out of a branch/loop node.
 
     Prefers the tree-sitter ``condition`` named field where exposed
@@ -266,6 +266,11 @@ def _condition_subtrees(node: Node) -> list[Node]:
     cond = node.child_by_field_name("condition")
     if cond is not None:
         return [cond]
+    # Python's ``X if C else Y`` names no fields: only the middle child is
+    # the condition, so the arms' operators are not counted.
+    named = node.named_children
+    if lmap.ternary_arms_positional and node.type in lmap.flat_ternary_kinds and len(named) == 3:
+        return [named[1]]
     # Switch case value (TS, Java)
     value = node.child_by_field_name("value")
     if value is not None and "case" in node.type:
@@ -397,9 +402,10 @@ def _walk_function_body(
     bumps = 0
     conditions: list[ConditionComplexity] = []
 
-    # Track match_expression nodes identified as "flat" so their arms
-    # are not individually counted as branch points.
-    flat_match_ids: set[int] = set()
+    # Arms of a "flat" match are not counted at all; arms of any other
+    # switch count toward CCN but sit in the level their switch opened.
+    flat_arm_ids: set[int] = set()
+    switch_arm_ids: set[int] = set()
     deepest_depth = 0
     deepest_node: list[Node] = []
 
@@ -418,22 +424,8 @@ def _walk_function_body(
         nesting_increment = 0
         ccn_increment = 0
 
-        # Check if this is a case/arm inside a flat match — skip it.
-        # In Rust the parent chain is match_arm → match_block → match_expression,
-        # so we check both parent and grandparent. ``node.parent`` costs far
-        # more than the rest of this visit, so it is read only for a case node
-        # once a flat match exists for it to belong to.
-        is_flat_match_arm = False
-        if (
-            flat_match_ids
-            and node.type in lmap.case_kinds
-            and (_parent := node.parent) is not None
-            and (
-                _parent.id in flat_match_ids
-                or (_parent.parent is not None and _parent.parent.id in flat_match_ids)
-            )
-        ):
-            is_flat_match_arm = True
+        is_flat_match_arm = node.id in flat_arm_ids
+        is_switch_arm = node.id in switch_arm_ids
 
         # ``node.is_named`` guards grammars (Ruby) whose keyword tokens share
         # the node-type name of their parent node (an ``if`` node contains an
@@ -453,10 +445,11 @@ def _walk_function_body(
             # An ``else if`` / ``elif`` chain arm, a ternary chain arm or
             # markup choice, and a comprehension / case-guard filter are flat:
             # charge the extra branch (ccn) but do not open a new nesting
-            # level for them. This parallels the flat-``switch``/``match``
-            # special-case above.
+            # level for them. So is a switch arm: its switch already opened
+            # the level (Sonar's cognitive complexity spec).
             if not (
-                node.type in _FLAT_BRANCH_KINDS
+                is_switch_arm
+                or node.type in _FLAT_BRANCH_KINDS
                 or _is_elif_continuation(node)
                 or _is_flat_ternary(node, lmap, in_markup)
             ):
@@ -468,7 +461,7 @@ def _walk_function_body(
             op_count = 0
             op_kinds: set[str] = set()
             negated = False
-            for sub in _condition_subtrees(node):
+            for sub in _condition_subtrees(node, lmap):
                 sub_count, sub_kinds, sub_negated = _count_boolean_ops_in_condition(sub, lmap)
                 op_count += sub_count
                 op_kinds |= sub_kinds
@@ -488,13 +481,17 @@ def _walk_function_body(
             # try's depth (Sonar's cognitive complexity spec).
             pass
         elif node.is_named and node.type in lmap.switch_kinds:
+            arm_ids = {c.id for c in _collect_case_children(node, lmap)}
             # Detect flat match: all arms are simple single-expression arms.
             if _is_flat_match(node, lmap):
-                flat_match_ids.add(node.id)
+                flat_arm_ids.update(arm_ids)
                 # Flat match: count 1 CCN point for the match itself,
                 # open a nesting level, but arms won't be counted.
                 ccn_increment = 1
-            # Switch opens nesting; each case contributes its own +1.
+            else:
+                switch_arm_ids.update(arm_ids)
+            # The switch opens one nesting level for its whole body; each
+            # case adds CCN only.
             nesting_increment = 1
         elif _is_boolean_operator(node, lmap):
             ccn_increment = 1
@@ -504,8 +501,9 @@ def _walk_function_body(
         if nesting_increment:
             # Cognitive complexity: each nesting node adds (1 + depth).
             cognitive += 1 + depth
-        elif ccn_increment:
-            # Flat +1 for boolean operators (no nesting impact).
+        elif ccn_increment and not is_switch_arm:
+            # Flat +1 for boolean operators (no nesting impact). A switch arm
+            # adds none: its switch carries the cognitive cost.
             cognitive += 1
 
         if new_depth > max_nesting:

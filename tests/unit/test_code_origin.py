@@ -345,6 +345,165 @@ def test_third_party_header_under_asset_dirs_is_vendored(header: str, folder: st
 
 def test_third_party_header_outside_asset_dirs_stays() -> None:
     assert code_origin("src/lib.js", _JQUERY) == "production"
+    assert code_origin("src/lib.js", _JQUERY, project="app") == "production"
+
+
+_JSON_HPP = (
+    "/*\n"
+    "    __ _____ _____ _____\n"
+    " __|  |   __|     |   | |  JSON for Modern C++\n"
+    "|  |  |__   |  |  | | | |  version 3.11.2\n"
+    "|_____|_____|_____|_|___|  https://github.com/nlohmann/json\n"
+    "*/\n"
+    "// Copyright (c) 2013-2022 Niels Lohmann <https://nlohmann.me>\n"
+    "// SPDX-License-Identifier: MIT\n"
+    "#pragma once\n"
+)
+_JSON_HPP_311 = (
+    "//     __ _____ _____ _____\n"
+    "//  __|  |   __|     |   | |  JSON for Modern C++\n"
+    "// |  |  |__   |  |  | | | |  version 3.11.2\n"
+    "// |_____|_____|_____|_|___|  https://github.com/nlohmann/json\n"
+    "//\n"
+    "// SPDX-FileCopyrightText: 2013-2022 Niels Lohmann <https://nlohmann.me>\n"
+    "// SPDX-License-Identifier: MIT\n"
+    "#pragma once\n"
+)
+_EXPRTK = (
+    "/*\n"
+    " ******************************************************************\n"
+    " *           C++ Mathematical Expression Toolkit Library          *\n"
+    " * Author: Arash Partow (1999-2024)                               *\n"
+    " * URL: https://www.partow.net/programming/exprtk/index.html      *\n"
+    " * Copyright notice:                                              *\n"
+    " * Free use of the C++ Mathematical Expression Toolkit Library is *\n"
+    " * permitted under the guidelines and in accordance with the most *\n"
+    " * current version of the MIT License.                            *\n"
+    " ******************************************************************\n"
+    "*/\n"
+    "#ifndef INCLUDE_EXPRTK_HPP\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("path", "header"),
+    [
+        ("src/json.hpp", _JSON_HPP),
+        ("src/json.hpp", _JSON_HPP_311),
+        ("src/modules/calc/exprtk.hpp", _EXPRTK),
+        ("scripts/jquery.js", _JQUERY),
+    ],
+)
+def test_single_file_library_outside_asset_dirs_is_vendored(path: str, header: str) -> None:
+    assert code_origin(path, header, project="PowerToys") == "vendored"
+    # Without the project name the repository's own banner cannot be told apart.
+    assert code_origin(path, header) != "vendored"
+
+
+def test_own_single_header_banner_is_not_vendored() -> None:
+    for header in (_JSON_HPP, _JSON_HPP_311):
+        assert code_origin("include/nlohmann/json.hpp", header, project="json") == "production"
+    own = (
+        "// Acme Widgets v2.1\n"
+        "// Copyright (c) 2024 Acme Corp. Licensed under the MIT License.\n"
+        "#pragma once\n"
+    )
+    assert code_origin("include/acme/widgets.hpp", own, project="acme-widgets") == "production"
+
+
+@pytest.mark.parametrize(
+    "comment",
+    [
+        "// Implements widgets protocol v1.2, see RFC 7230 section 3.1",
+        "// https://github.com/acme/widgets/blob/main/src/widgets.h",
+        "// Widgets for the engine. https://acme.dev/engine/",
+    ],
+)
+def test_own_header_without_its_project_name_is_not_vendored(comment: str) -> None:
+    head = f"// Copyright 2020 Acme Corp.\n// MIT License\n{comment}\n#pragma once\n"
+    assert code_origin("src/widgets.h", head, project="engine-core") == "production"
+
+
+def test_license_version_is_not_a_release_banner() -> None:
+    apache = (
+        "// Copyright 2017 The Abseil Authors.\n"
+        '// Licensed under the Apache License, Version 2.0 (the "License");\n'
+        "#pragma once\n"
+    )
+    assert code_origin("absl/base/macros.h", apache, project="abseil-cpp") == "production"
+    assert code_origin("static/js/chat.js", apache) == "production"
+    lgpl = "/* Copyright Acme. Under either version 2.1 of the License, or later. */\n"
+    assert code_origin("static/app.js", lgpl) == "production"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "include/spdlog/fmt/bundled/format.h",
+        "extern/agg24-svn/include/agg_basics.h",
+        "src/3rdparty/zlib/inflate.c",
+        "lib/3rd_party/lua/lapi.c",
+    ],
+)
+def test_native_library_shelves_are_vendored(path: str) -> None:
+    assert code_origin(path) == "vendored"
+
+
+def test_bundled_and_extern_count_only_for_c_and_cpp() -> None:
+    assert code_origin("src/main/java/io/javalin/plugin/bundled/CorsPlugin.kt") == "production"
+    assert code_origin("extern/client.go") == "production"
+    # Below the root, ``extern/`` is as often a library's own C API.
+    assert code_origin("include/foo/extern/api.h") == "production"
+
+
+_RAGEL_C = (
+    "\n"
+    '#line 1 "ext/puma_http11/http11_parser.rl"\n'
+    "/**\n * Copyright (c) 2005 Zed A. Shaw\n */\n"
+    '#include "http11_parser.h"\n'
+)
+_BISON_C = (
+    "/* A Bison parser, made by GNU Bison 3.8.2.  */\n\n"
+    "/* Bison implementation for Yacc-like parsers in C */\n"
+    "#define YYBISON 30802\n"
+)
+_FLEX_C = (
+    '#line 2 "lex.yy.c"\n\n'
+    "#define  YY_INT_ALIGNED short int\n\n"
+    "/* A lexical scanner generated by flex */\n\n"
+    "#define FLEX_SCANNER\n"
+)
+_YACC_C = '#include <stdio.h>\n#line 2 "gram.y"\nstatic int yylex(void);\n'
+
+
+@pytest.mark.parametrize(
+    ("path", "text"),
+    [
+        ("ext/puma_http11/http11_parser.c", _RAGEL_C),
+        ("src/parse.c", _BISON_C),
+        ("src/parse.h", _BISON_C),
+        ("src/scan.c", _FLEX_C),
+        ("src/gram.cc", _YACC_C),
+    ],
+)
+def test_parser_generator_output_is_generated(path: str, text: str) -> None:
+    assert code_origin(path, text) == "generated"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '#line 1 "src/parser.c"\nint parse(void) { return 0; }\n',
+        '#line 40 "util.h"\nint helper(void);\n',
+        "int a;\n" * 12 + '#line 1 "late.rl"\n',
+    ],
+)
+def test_line_directive_to_c_source_is_not_generated(text: str) -> None:
+    assert code_origin("src/parser.c", text) == "production"
+
+
+def test_line_directive_rule_is_c_and_cpp_only() -> None:
+    assert code_origin("src/parser.py", '#line 1 "x.rl"\nx = 1\n') == "production"
 
 
 def test_own_license_header_is_not_vendored() -> None:

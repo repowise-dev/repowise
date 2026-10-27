@@ -49,8 +49,9 @@ if TYPE_CHECKING:
 #: decision points is mostly that dispatch. Fitted on the dev labels only:
 #: share >= 0.6 held 9 labelled complexity rows, 8 of them rejected.
 DISPATCH_SHARE = 0.6
-#: Nesting levels a dispatch opens before its arms' own code: a ``switch`` and
-#: its ``case``. A same-subject ``if`` chain opens one, so this is the bound.
+#: Nesting levels taken off a dominated function. A dispatch opens one (a
+#: ``switch`` or a same-subject ``if`` chain); the second covers the loop a
+#: per-case handler usually sits in. At 1, dispatch-in-a-loop parsers re-flag.
 _DISPATCH_LEVELS = 2
 
 # An ``if`` with one ``elif`` is a decision, not a dispatch; the same holds for
@@ -320,7 +321,7 @@ def judged_nesting(fn: FunctionComplexity) -> int:
     """The nesting a marker judges *fn* by: less the dispatch's own levels once it dominates.
 
     The deepest block of a dominated function is almost always in an arm, so
-    this subtracts the most a dispatch opens. A block that deep outside the
+    this subtracts :data:`_DISPATCH_LEVELS`. A block that deep outside the
     dispatch is under-read by the same amount (the ceiling of not tracking
     which side the deepest block is on).
     """
