@@ -69,6 +69,15 @@ class TestCppBaseClassReceiver:
         targets = _call_targets(_build(tmp_path), "lib/parse.cc::parse_align")
         assert "lib/specs.h::basic_specs::set_align" in targets
 
+    def test_base_class_edge_is_stamped_as_a_global_typed_receiver(self, tmp_path: Path) -> None:
+        _repo(tmp_path)
+        graph = _build(tmp_path)
+        edge = graph.get_edge_data(
+            "lib/parse.cc::parse_align", "lib/specs.h::basic_specs::set_align"
+        )
+        assert edge["resolution_origin"] == "receiver_typed_global"
+        assert edge["confidence"] == 0.75
+
     def test_reaches_a_grandparent(self, tmp_path: Path) -> None:
         _repo(tmp_path)
         targets = _call_targets(_build(tmp_path), "lib/parse.cc::parse_fill")
