@@ -86,9 +86,12 @@ def load_kg_context(repo_path: Path) -> Any:
 async def _load_page_rows(session: Any, repo_id: str) -> list[Any]:
     """Every non-tombstoned persisted page, lightweight columns only.
 
-    ``load_page_records`` reads just id/type/target/provider/metadata/freshness,
-    so ``load_only`` keeps the (potentially very large) ``content`` Text column
-    out of this whole-wiki scan.
+    ``load_page_records`` reads just id/type/target/provider/metadata/freshness
+    (plus ``pinned``), so ``load_only`` keeps the (potentially very large)
+    ``content`` Text column out of this whole-wiki scan. Anything
+    ``load_page_records`` reads must be listed here: a deferred column is a
+    lazy load, and this session is gone by the time the stale-page decay pass
+    reads the records back, so the access raises instead of loading.
     """
     from sqlalchemy import select
     from sqlalchemy.orm import load_only
@@ -105,6 +108,7 @@ async def _load_page_rows(session: Any, repo_id: str) -> list[Any]:
                 Page.provider_name,
                 Page.metadata_json,
                 Page.freshness_status,
+                Page.pinned,
             )
         )
         .where(

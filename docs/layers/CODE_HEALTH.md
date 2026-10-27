@@ -77,7 +77,7 @@ not analysed, never scored as a 10.
 
 | Control | Values | Effect |
 |---|---|---|
-| `scope` | `all` (default), `production` | `production` drops test files, which lowers the headline because tests usually score higher |
+| `scope` | `all` (default), `production` | `production` drops test, tooling, vendored and generated files, which lowers the headline because tests usually score higher |
 | `counts` | `everything` (default), `code_shape` | `code_shape` removes the git-history half of each deduction, to see whether code improved after a refactor raised churn |
 
 Every response echoes both. `everything` is the calibrated number every accuracy claim

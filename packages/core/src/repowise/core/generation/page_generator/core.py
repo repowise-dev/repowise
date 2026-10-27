@@ -203,6 +203,9 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         # ``generate_all``: a failed embed leaves semantic search without
         # them, which a run must not report as healthy.
         self.embed_failed_pages: int = 0
+        # The JobSystem checkpoint this run created, so a caller reads this
+        # run's failures rather than guessing from the jobs directory.
+        self.last_job_id: str | None = None
         # Per-template structural fingerprints, lazily computed; every input
         # they fold is fixed for the generator's lifetime. Keyed by template
         # name because each structural page type folds its own template source.
@@ -318,6 +321,7 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         # vocabulary as its own.
         reset_house_terms()
         self.embed_failed_pages = 0
+        self.last_job_id = None
 
         return await run_generate_all(
             self,

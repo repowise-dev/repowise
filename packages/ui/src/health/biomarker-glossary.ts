@@ -254,7 +254,7 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
     label: BIOMARKER_LABELS.stale_governance,
     category: "organizational",
     description:
-      "The architectural decision governing this file has gone stale — the code has moved on since the decision was last confirmed.",
+      "Files governed by this file's architectural decision have changed since the decision was recorded. The decision may still hold, but it is worth a review.",
   },
   contradictory_decision: {
     label: BIOMARKER_LABELS.contradictory_decision,

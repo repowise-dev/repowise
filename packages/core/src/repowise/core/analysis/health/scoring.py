@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from .grading import analysed_share
 from .models import HealthFileMetricData, HealthFindingData, Severity
-from .rows import field, scored_rows, split_tests, split_unscored
+from .rows import field, scored_rows, split_unscored
 from .shape_curve import continuous_base, group_by_function, saturated
 
 if TYPE_CHECKING:
@@ -1051,6 +1051,23 @@ def hotspot_health(
     return round(nloc_weighted_score(rows), 2)
 
 
+def production_average(metrics: Iterable[Any]) -> tuple[float | None, int]:
+    """``(score, file count)`` over the scored production files in *metrics*.
+
+    The only implementation of ``production_average``. Production is the file
+    set ``worst_performer`` is picked from (``ranking.split_in_scope``), so
+    tests, tooling, build scripts, vendored, generated and docs example files
+    are all left out. The score is ``None`` when no production file is scored.
+    """
+    # Imported here: ``ranking`` reads this module's score ceiling.
+    from .ranking import split_in_scope
+
+    production, _ = split_in_scope(scored_rows(metrics))
+    if not production:
+        return None, 0
+    return round(nloc_weighted_score(production), 2), len(production)
+
+
 def _empty_kpis(unanalysed: int) -> dict[str, object]:
     """KPIs with no scored file: the headline is ``None``, never 10.0.
 
@@ -1113,8 +1130,9 @@ def compute_kpis(
       headline's two halves, in deduction points, so a surface can say which
       one is holding the score down. They sum to ``SCORE_MAX`` minus the
       matching headline (``headline_split``). ``None`` until files carry the split.
-    - ``production_average``: ``average_health`` over non-test files, weighted
-      identically, so a narrowed view and a narrowed trend agree.
+    - ``production_average``: ``average_health`` over production code, the
+      files ``worst_performer`` is picked from (``ranking.split_in_scope``):
+      no tests, tooling, build, vendored, generated or docs example files.
     - ``unanalysed_file_count``: files stored with no score because health has
       no dialect for their language. Every KPI above leaves them out; when no
       file is scored at all, the two headline averages are ``None``.
@@ -1133,8 +1151,7 @@ def compute_kpis(
     # Imported here: ``ranking`` reads this module's score ceiling.
     from .ranking import worst_kpis
 
-    # ``production_average`` keeps its own rule: every non-test file.
-    production, _ = split_tests(metrics)
+    production, production_count = production_average(metrics)
     maint_avg = nloc_weighted_attr(metrics, "maintainability_score")
     maint_hotspot = nloc_weighted_attr(hotspots, "maintainability_score")
     perf_avg = nloc_weighted_attr(metrics, "performance_score")
@@ -1152,10 +1169,8 @@ def compute_kpis(
         "performance_average": round(perf_avg, 2) if perf_avg is not None else None,
         "performance_hotspot": round(perf_hotspot, 2) if perf_hotspot is not None else None,
         **{k: round(v, 2) if v is not None else None for k, v in splits.items()},
-        "production_average": (
-            round(nloc_weighted_score(production), 2) if production else None
-        ),
-        "production_file_count": len(production),
+        "production_average": production,
+        "production_file_count": production_count,
         "unanalysed_file_count": unanalysed,
         "analysed_share": analysed_share(len(metrics), unanalysed),
     }

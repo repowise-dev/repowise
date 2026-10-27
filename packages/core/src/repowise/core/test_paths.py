@@ -164,6 +164,14 @@ _SUPPORT_DIR_TOKENS: frozenset[str] = frozenset(
     {"fixtures", "factories", "support", "helpers", "mocks"}
 )
 
+# Filename stems that mark scaffolding/fixtures when sitting inside a test
+# tree (e.g. ``e2e/fixtures.ts``, ``tests/setup_tests.py``). They do not mark
+# files outside a test tree because bare "fixtures" or "fixture" is an ordinary
+# word in production domains (e.g. ``src/fixtures.py``).
+_SUPPORT_STEMS_IN_TEST_TREE: frozenset[str] = frozenset(
+    {"fixture", "fixtures", "setup-tests", "setup_tests", "setuptests"}
+)
+
 # Scaffolding directories whose names mean test material *wherever* they sit,
 # because nothing else is ever called this. Bare ``fixtures`` deliberately stays
 # out of this set and above: it is an ordinary English word that names real
@@ -570,10 +578,18 @@ def _classify(
         return ""
 
     # Inside test material. A test-shaped filename wins; otherwise a
-    # scaffolding directory demotes it to support.
-    if not named_test and any(seg in _SUPPORT_DIR_TOKENS for seg in segments):
+    # scaffolding directory or support stem demotes it to support.
+    if not named_test and _is_support_in_test_tree(segments, filename):
         return "support"
     return "test"
+
+
+def _is_support_in_test_tree(segments: list[str], filename: str) -> bool:
+    """Whether a file already inside a test tree is scaffolding (``e2e/fixtures.ts``)."""
+    return (
+        any(seg in _SUPPORT_DIR_TOKENS for seg in segments)
+        or PurePosixPath(filename.lower()).stem in _SUPPORT_STEMS_IN_TEST_TREE
+    )
 
 
 def _phpunit_skips(path: str, filename: str, roots: PhpunitRoots | None) -> bool:

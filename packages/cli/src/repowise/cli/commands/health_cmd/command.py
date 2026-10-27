@@ -38,7 +38,12 @@ from repowise.core.analysis.health.counts import (
 from repowise.core.analysis.health.models import split_by_origin
 from repowise.core.analysis.health.ranking import deduction_by_path
 from repowise.core.analysis.health.rows import detail_map, split_unscored
-from repowise.core.analysis.health.scope import DEFAULT_SCOPE, SCOPES, parse_scope
+from repowise.core.analysis.health.scope import (
+    DEFAULT_SCOPE,
+    SCOPES,
+    parse_scope,
+    rows_in_scope,
+)
 from repowise.core.analysis.health.scoring import ADVISORY_DIMENSION, compute_kpis
 from repowise.core.analysis.health.signals import HISTORY_MIN_COMMITS
 from repowise.core.persistence.crud.analysis.health import open_finding_count
@@ -178,8 +183,9 @@ class _HealthGroup(click.Group):
     default=DEFAULT_SCOPE,
     type=click.Choice(list(SCOPES)),
     help=(
-        "Which files to report on. Tests score higher than production code, "
-        "so 'production' lowers every figure without a defect being found."
+        "Which files to report on. 'production' leaves out tests, tooling, "
+        "vendored and generated files, which tend to score higher, so it "
+        "lowers every figure without a defect being found."
     ),
 )
 @click.option(
@@ -455,7 +461,7 @@ def _scope_report(
     metrics = [m for m in report.metrics if opts.keeps(m.file_path)]
     narrowed = parse_scope(opts.scope) == "production"
     if narrowed:
-        metrics = [m for m in metrics if not m.is_test]
+        metrics = rows_in_scope(opts.scope, metrics)
     # Taken before the projection, so a row the projection cannot read still
     # keeps its findings rather than reading as a file that left the repo.
     scoped_paths = {m.file_path for m in metrics}
@@ -630,10 +636,11 @@ def _render_headline(kpis: dict[str, Any], code_shape: bool, unanalysed: int) ->
     avg = kpis.get("average_health")
     avg_band = headline_band(avg, share)
     parts = [banded("Code health", avg, avg_band) + (f" {scope}" if scope else "")]
-    # Production code beside the all-files figure, while tests are in it.
+    # Production code beside the all-files figure, while tests, tooling or
+    # other non-shipping code are in it.
     production = kpis.get("production_average")
-    has_tests = (kpis.get("production_file_count") or 0) < (kpis.get("file_count") or 0)
-    if production is not None and has_tests:
+    narrowed = (kpis.get("production_file_count") or 0) < (kpis.get("file_count") or 0)
+    if production is not None and narrowed:
         parts.append(banded("Production code", production, headline_band(production, share)))
     # A repo with no recent churn has no hotspots, so no hotspot figure.
     hotspot = kpis.get("hotspot_health")

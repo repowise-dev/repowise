@@ -31,6 +31,7 @@ from .fastify import FastifyDialect
 from .flask import FlaskDialect
 from .go import GoDialect
 from .go_clients import GoClientsDialect
+from .grape import GrapeDialect
 from .hapi import HapiDialect
 from .java_clients import JavaClientsDialect, MicroProfileClientsDialect, SpringClientsDialect
 from .javalin import JavalinDialect
@@ -47,11 +48,13 @@ from .next_app import NextAppDialect
 from .paths import normalize_http_path
 from .php_clients import PhpClientsDialect
 from .python_clients import PythonClientsDialect
+from .rails_routes import RailsRoutesDialect
 from .refit import RefitDialect
 from .remix import RemixDialect
 from .ruby_clients import RubyClientsDialect
 from .rust_axum import RustAxumDialect
 from .rust_clients import RustClientsDialect
+from .sinatra import SinatraDialect
 from .spring import SpringDialect
 
 if TYPE_CHECKING:
@@ -86,6 +89,9 @@ PROVIDER_DIALECTS: tuple[ContractDialect, ...] = (
     FastifyDialect(),
     HapiDialect(),
     KoaDialect(),
+    RailsRoutesDialect(),
+    SinatraDialect(),
+    GrapeDialect(),
 )
 
 # HTTP-client call recognisers (one client/language each).

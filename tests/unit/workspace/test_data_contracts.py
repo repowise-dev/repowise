@@ -383,6 +383,65 @@ class TestSqlStringConsumers:
         contracts = DataExtractor().extract(tmp_path, "api", make_exclude_predicate())
         assert contracts == []
 
+    def test_jpql_skipped_in_java_and_kotlin(self, tmp_path: Path) -> None:
+        # JPQL queries (@Query without nativeQuery = true, @NamedQuery, and
+        # createQuery) target entity classes rather than database tables. They
+        # must emit no consumers, while native queries (@Query with
+        # nativeQuery = true, and createNativeQuery) still emit table targets.
+        _write(
+            tmp_path,
+            "shipping/CityRepository.java",
+            '@Query("select c from City c where c.active = true")\n'
+            "List<City> findActive();\n"
+            '@NamedQuery(name = "findAll", query = "SELECT c FROM City c")\n'
+            "class CityRepo {\n"
+            "    void find(EntityManager em) {\n"
+            '        em.createQuery("SELECT c FROM City c", City.class);\n'
+            "    }\n"
+            "}\n",
+        )
+        _write(
+            tmp_path,
+            "catalog/ProductRepository.java",
+            '@Query(value = "SELECT * FROM products WHERE sku = ?1", nativeQuery = true)\n'
+            "Product findBySku(String sku);\n"
+            "class ProductRepo {\n"
+            "    void find(EntityManager em) {\n"
+            '        em.createNativeQuery("SELECT * FROM products", Product.class);\n'
+            "    }\n"
+            "}\n",
+        )
+        _write(
+            tmp_path,
+            "shipping/CityRepository.kt",
+            '@Query("SELECT c FROM City c")\nfun findCities(): List<City>\n',
+        )
+        contracts = DataExtractor().extract(tmp_path, "service")
+        consumers = [c for c in contracts if c.role == "consumer"]
+        assert {c.contract_id for c in consumers} == {"data::products"}
+
+    def test_native_query_variations_and_jdbc_preserved(self, tmp_path: Path) -> None:
+        _write(
+            tmp_path,
+            "app/NativeRepo.java",
+            '@Query(nativeQuery = true, value = "SELECT id FROM orders WHERE active = true")\n'
+            "List<Order> findActive();\n"
+            '@Query("SELECT * FROM customers WHERE id = ?1", nativeQuery = true)\n'
+            "Customer findCust(Long id);\n"
+            "class JdbcWork {\n"
+            "    void run(JdbcTemplate jdbc) {\n"
+            '        jdbc.query("SELECT * FROM audit_log", mapper);\n'
+            "    }\n"
+            "}\n",
+        )
+        contracts = DataExtractor().extract(tmp_path, "app")
+        consumers = [c for c in contracts if c.role == "consumer"]
+        assert {c.contract_id for c in consumers} == {
+            "data::orders",
+            "data::customers",
+            "data::audit_log",
+        }
+
     def test_system_catalogs_and_alembic_version_skipped(self, tmp_path: Path) -> None:
         _write(
             tmp_path,

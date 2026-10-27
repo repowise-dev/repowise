@@ -9,12 +9,15 @@ and it is refused only where the repository turned agent acceptance off.
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
 
+from repowise.cli.commands.decision_cmd import _accept_remedy_for_blockers
 from repowise.cli.main import cli
+from repowise.core.analysis.decisions.lifecycle import NO_ACCEPTANCE_IDENTITY_BLOCKER
 
 from .test_decision_cmd import _seed_wiki_db
 
@@ -45,6 +48,14 @@ def _forbid_agents(repo: Path) -> None:
     assert result.exit_code == 0, result.output
 
 
+def test_a_missing_acceptance_identity_explains_how_to_name_the_signer() -> None:
+    remedy = _accept_remedy_for_blockers([NO_ACCEPTANCE_IDENTITY_BLOCKER])
+
+    assert "--as <name>" in remedy
+    assert "--agent <slug>" in remedy
+    assert "Supply the missing parts" not in remedy
+
+
 def test_an_agent_accepts_with_no_config(repo: Path) -> None:
     result = _run(repo, "confirm", "aaaa", "--agent", "claude_code")
 
@@ -59,7 +70,7 @@ def test_an_agent_is_refused_on_a_repository_that_turned_it_off(repo: Path) -> N
 
     assert result.exit_code == 1, result.output
     payload = json.loads(result.output)
-    assert "may not record" in payload["results"][0]["message"]
+    assert "may not accept here" in payload["results"][0]["message"]
     assert "agent-acceptance --on" in payload["remedy"]
 
 
@@ -72,6 +83,7 @@ def test_the_refusal_leads_with_the_switch_it_was_refused_by(repo: Path) -> None
 
     remedy = json.loads(result.output)["remedy"]
     assert remedy.startswith("Agent acceptance is off")
+    assert "Supply the missing parts" not in remedy
 
 
 def test_an_agent_signs_as_itself(repo: Path) -> None:
@@ -98,14 +110,21 @@ def test_a_candidate_reports_no_signer(repo: Path) -> None:
     assert json.loads(_run(repo, "show", "aaaa").output)["decision"]["signature"] is None
 
 
-def test_a_batch_refusal_still_names_the_switch(repo: Path) -> None:
-    """The remedy reached only the one-id path, so a scripted confirm of two
-    ids was refused without ever being told which switch to turn on."""
+def test_a_batch_refusal_includes_each_remedy_needed(repo: Path) -> None:
+    """A policy refusal and an incomplete record need different next steps."""
     _forbid_agents(repo)
+    with sqlite3.connect(repo / ".repowise" / "wiki.db") as conn:
+        conn.execute(
+            "UPDATE decision_records SET affected_files_json = '[]' WHERE id = ?",
+            ("b" * 32,),
+        )
+
     result = _run(repo, "confirm", "aaaa", "bbbb", "--agent", "claude_code")
 
     assert result.exit_code == 1, result.output
-    assert "agent-acceptance --on" in json.loads(result.output)["remedy"]
+    remedy = json.loads(result.output)["remedy"]
+    assert "agent-acceptance --on" in remedy
+    assert "Supply the missing parts" in remedy
 
 
 def test_the_remedy_sends_the_agent_to_a_person(repo: Path) -> None:

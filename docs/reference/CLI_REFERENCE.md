@@ -116,6 +116,7 @@ Workspaces add repo scanning, per-repo indexing, cross-repo analysis (co-changes
 | `--language` | `en`, `ar`, `de`, `es`, `fr`, `hi`, `it`, `ja`, `ko`, `nl`, `pl`, `pt`, `ru`, `tr`, `zh`. Saved for `update`. Code, paths, symbols untranslated. Advanced mode asks. Switch: `init --force`. | `en` |
 | `--onboarding` / `--no-onboarding` | Onboarding collection (up to 8 pages); see notes. | on |
 | `--max-file-pages` | File-page cap by importance; `0`: no cap, a page per eligible file. Saved to `config.yaml`. | size policy (Page volume) |
+| `--folder-coverage` | `GLOB=PCT` file-page floor for a folder, repeatable: `src/core=1.0` gives every eligible file under `src/core` a page whatever the cap. Adds pages, never displaces. Saved as `folder_coverage` in `config.yaml`. | none |
 | `--test-run` | Model docs for top 10 files by PageRank. Not with `--no-prose` or `--mode fast`. | off |
 | `--dry-run` | Plan and cost estimate; no wiki. | off |
 | `--exclude` / `-x` | Gitignore-style pattern. Repeatable. | |

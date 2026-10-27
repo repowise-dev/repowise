@@ -1,5 +1,7 @@
 <!-- mcp-name: dev.repowise/repowise -->
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 <div align="center">
 
 <a href="https://www.repowise.dev/?src=oss_readme_hero"><img src=".github/assets/banner.webp" alt="repowise: codebase intelligence for you and your coding agent" width="100%" /></a>

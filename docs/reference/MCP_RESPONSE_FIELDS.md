@@ -553,7 +553,7 @@ Groups changed files over index edges, co-change pairs and (for a range) shared 
 | `more`, `workspace` | Opt-in block names; workspace footer |
 
 - **`dependencies`:** the ten heaviest package edges (`from`, `to`, `verb`, `weight`), `edges_total` when more; absent in a single-package repo.
-- **`code_health`:** `production_average` when tests are in the reading; `files_scored` when some files have no score.
+- **`code_health`:** `production_average` when tests, tooling, vendored or generated files are in the reading; `files_scored` when some files have no score.
 - **`next_actions`:** `include=["actions"]` serves both horizons with `done_when` and `by_tier`; `get_health(fix_id="act_...")` opens one. `unavailable` names inputs the list was built without and `unavailable_reasons` gives each one's reason; both are absent when every input was read.
 - **`repo="all"`:** each repo has `summary` (essay's first sentence), `code_files` (its `code_health.code_files`, or graph code files before health runs) and `symbol_count`; `total_code_files` sums them.
 
@@ -618,7 +618,7 @@ One ranked queue across refactoring, performance and code-shape work, the same o
 | `top_findings` / `findings`, `test_findings` | Production and test; totals sum to the open set |
 | metric row | One file's scores and deductions |
 
-- **`kpis`:** hotspot health, `average_health` (NLOC-weighted), `average_health_unweighted`, `average_health_weighting`, pillar averages, `production_average` (while tests are in the average), `worst_performer_path`, `worst_test_path`, `performance_causes` (`now`, `production`, `all`, `per_10k_loc`; see [PERFORMANCE.md](../layers/PERFORMANCE.md#the-default-queue)). `get_overview` reports bands the same way.
+- **`kpis`:** hotspot health, `average_health` (NLOC-weighted), `average_health_unweighted`, `average_health_weighting`, pillar averages, `production_average` (the files `worst_performer_path` is picked from, while tests, tooling, vendored or generated files are in the average), `worst_performer_path`, `worst_test_path`, `performance_causes` (`now`, `production`, `all`, `per_10k_loc`; see [PERFORMANCE.md](../layers/PERFORMANCE.md#the-default-queue)). `get_overview` reports bands the same way.
 - **Metric row:** `score` (defect, headline), `maintainability_score`, `performance_score`, `weighted_deficit` = (8 - score) x NLOC, `is_test`, `has_test_file`, `primary_biomarker`, `total_deduction`, `structure_deduction`, `history_deduction`, `withheld_deduction`, `history: "short"` (under 5 commits, so most history markers cannot fire).
 - Score = 10 minus structure and history deductions, floored at 1.0; history is 0.0 under `counts="code_shape"`. Deficit and gap fields share score points x NLOC and compare only with each other.
 - `primary_biomarker` prefers a discrete finding over `coverage_gradient`. `details.actions` (agent prompt, silencing rule) appear only with `finding_id=...`.

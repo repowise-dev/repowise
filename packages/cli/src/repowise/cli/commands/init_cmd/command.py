@@ -20,6 +20,7 @@ from repowise.cli.errors import reasoned_error
 from repowise.cli.exit_codes import EXIT_CODES_HELP
 from repowise.cli.helpers import resolve_repo_path
 from repowise.core.analysis.health.coverage import PARSERS as COVERAGE_PARSERS
+from repowise.core.generation.folder_coverage import parse_folder_coverage
 from repowise.core.generation.languages import SUPPORTED_LANGUAGES
 from repowise.core.generation.styles import list_styles, resolve_style
 from repowise.core.reasoning import REASONING_MODES
@@ -115,6 +116,17 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
         language=opts.language_opt,
         run_mode=opts.run_mode,
     )
+
+
+def _check_folder_coverage(
+    _ctx: click.Context, param: click.Parameter, value: tuple[str, ...]
+) -> tuple[str, ...]:
+    """Reject a malformed ``--folder-coverage`` rule before any indexing starts."""
+    try:
+        parse_folder_coverage(value)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc), param=param) from None
+    return value
 
 
 @click.command("init", epilog=EXIT_CODES_HELP)
@@ -401,6 +413,19 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
         "policy decide: untouched on a normal repo, held to a ceiling on a very "
         "large one. Pass 0 for one page per eligible file however many that is. "
         "Saved to config.yaml so later runs keep it."
+    ),
+)
+@click.option(
+    "--folder-coverage",
+    "folder_coverage_rules",
+    multiple=True,
+    metavar="GLOB=PCT",
+    callback=_check_folder_coverage,
+    help=(
+        "Documentation floor for a folder: 'src/core=1.0' promises every code "
+        "file under src/core gets a file page whatever its importance score; "
+        "'src/legacy=0.5' promises half. Repeatable. Saved to config.yaml so "
+        "later update runs keep the floors."
     ),
 )
 @click.option(

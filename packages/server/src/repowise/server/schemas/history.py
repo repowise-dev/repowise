@@ -3,10 +3,11 @@ headlines and wins. Twins of :mod:`repowise.core.analysis.history`."""
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel
+
+from repowise.server.schemas._datetime import UTCDateTime
 
 DeltaKindLiteral = Literal["improved", "worsened", "mixed", "neutral"]
 
@@ -75,8 +76,8 @@ class PeriodHealthSummaryResponse(BaseModel):
     recent commits refill as updates rescan them.
     """
 
-    since: datetime | None = None
-    until: datetime | None = None
+    since: UTCDateTime | None = None
+    until: UTCDateTime | None = None
     total: int
     improved: int
     mixed: int
@@ -94,7 +95,7 @@ class WinsResolvingCommit(BaseModel):
     sha: str
     subject: str
     author_name: str
-    committed_at: datetime | None = None
+    committed_at: UTCDateTime | None = None
     resolved: int
 
 
@@ -119,8 +120,8 @@ class WinsFilesImproved(BaseModel):
     at ``baseline_at`` and the one at ``current_at``."""
 
     count: int
-    baseline_at: datetime | None = None
-    current_at: datetime | None = None
+    baseline_at: UTCDateTime | None = None
+    current_at: UTCDateTime | None = None
     top: list[WinsFileGain] = []
 
 
@@ -130,7 +131,7 @@ class WinsRefactoring(BaseModel):
     file_path: str
     target_symbol: str
     refactoring_type: str
-    resolved_at: datetime | None = None
+    resolved_at: UTCDateTime | None = None
     before_ccn: int | None = None
     after_ccn: int | None = None
     before_nloc: int | None = None
@@ -150,8 +151,8 @@ class WinsResponse(BaseModel):
     from stored data (no history is kept for them).
     """
 
-    since: datetime
-    until: datetime | None = None
+    since: UTCDateTime
+    until: UTCDateTime | None = None
     author: str | None = None
     findings_resolved: WinsFindingsResolved
     files_improved: WinsFilesImproved

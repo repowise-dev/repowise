@@ -89,6 +89,10 @@ def save_run_config(run: InitRun) -> None:
     if run.max_file_pages is not None and run.max_file_pages != run.config.get("max_file_pages"):
         save_config_partial(repo_path, max_file_pages=run.max_file_pages)
 
+    # Folder floors (#633): an override is recorded, the default stays unwritten.
+    if opts.folder_coverage_rules:
+        save_config_partial(repo_path, folder_coverage=list(opts.folder_coverage_rules))
+
     # Written before the config fingerprint. A template wiki has no style or
     # language, and recording one would make `restyle` skip it.
     if opts.wiki_style != DEFAULT_STYLE and not run.effective_index_only:

@@ -21,6 +21,7 @@ from repowise.core.generation.selection import (
     recommended_file_page_cap,
     select_pages,
 )
+from repowise.core.generation.selection.scoring import score_file
 from repowise.core.test_paths import is_test_related_path
 
 # ---------------------------------------------------------------------------
@@ -141,6 +142,7 @@ def test_importance_floor_excludes_tests_and_reexports():
 
     Test files and pure ``__init__.py`` re-exports were proven to dilute
     retrieval, so they get no page even though nothing is rationed any more.
+    Test support such as ``conftest.py`` is not a test and passes (#1497).
     """
     parsed, pagerank, betweenness, community = _build_synthetic_repo(6)
     extras = (
@@ -149,7 +151,6 @@ def test_importance_floor_excludes_tests_and_reexports():
         "pkg0/__init__.py",
         "e2e-tests/cli/run.ts",
         "web/src/button.spec.ts",
-        "pkg0/conftest.py",
     )
     for extra in extras:
         # Stamped the way ingestion stamps it; symbols so the score floor passes.
@@ -167,6 +168,65 @@ def test_importance_floor_excludes_tests_and_reexports():
         if is_test_related_path(extra):
             assert extra not in spotlit
     assert len(sel.file_page_paths) == 6
+
+
+def test_test_support_files_pass_importance_floor():
+    """Test infrastructure and fixture files pass the floor to receive file pages."""
+    parsed, pagerank, betweenness, community = _build_synthetic_repo(6)
+    extras = [
+        ("tests/conftest.py", "python"),
+        ("tests/fixtures/setup.py", "python"),
+        ("apps/console/e2e/helpers/hydration.ts", "typescript"),
+        ("apps/console/e2e/fixtures.ts", "typescript"),
+    ]
+    for path, lang in extras:
+        parsed.append(
+            FakeParsedFile(
+                file_info=FakeFileInfo(path=path, language=lang, is_test=True),
+                symbols=[FakeSymbol(name="fixture_helper")],
+            )
+        )
+        pagerank[path] = 0.1
+        betweenness[path] = 0.0
+        community[path] = 0
+
+    # Also add pure specs which must be excluded
+    test_specs = [
+        ("tests/unit/test_foo.py", "python"),
+        ("apps/console/e2e/specs/login.spec.ts", "typescript"),
+    ]
+    for path, lang in test_specs:
+        parsed.append(
+            FakeParsedFile(
+                file_info=FakeFileInfo(path=path, language=lang, is_test=True),
+                symbols=[FakeSymbol(name="test_login")],
+            )
+        )
+        pagerank[path] = 0.1
+        betweenness[path] = 0.0
+        community[path] = 0
+
+    sel = select_pages(_inputs(parsed, pagerank, betweenness, community, GenerationConfig()))
+
+    for path, _ in extras:
+        assert path in sel.file_page_paths, f"Expected {path} to receive a file_page"
+
+    for path, _ in test_specs:
+        assert path not in sel.file_page_paths, f"Expected {path} to be excluded"
+
+
+def test_test_penalty_skips_test_support():
+    """A support file scores as code; a test spec keeps the test penalty."""
+    kw = dict(pagerank=0.5, betweenness=0.0, max_pagerank=1.0, max_betweenness=0.0)
+    symbols = [FakeSymbol(name=f"s{i}") for i in range(5)]
+
+    def score(path: str, is_test: bool) -> float:
+        fi = FakeFileInfo(path=path, is_test=is_test)
+        return score_file(FakeParsedFile(file_info=fi, symbols=symbols), is_hotspot=False, **kw)
+
+    production = score("pkg/helpers.py", False)
+    assert score("tests/conftest.py", True) == production
+    assert score("tests/test_helpers.py", True) < production
 
 
 def test_selection_does_not_depend_on_having_a_key():

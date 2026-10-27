@@ -632,6 +632,57 @@ def test_python_string_concat_reset_per_iteration_not_flagged():
     assert ("string_concat_in_loop", "") in _hits("python", accum)
 
 
+# ``+=`` onto a name the loop header rebinds each pass never accumulates. An
+# outer loop's element grown in an inner loop still accumulates across the
+# inner passes, so it stays flagged like an outer accumulator.
+_LOOP_VAR_CONCAT = {
+    "go": (
+        'package p\nfunc f(ps []string){ for _, p := range ps { p += "/32"; use(p) } }\n',
+        'package p\nfunc f(ps []string){ for _, p := range ps { for range ps { p += "/" } } }\n',
+        'package p\nfunc f(ps []string){ out := ""; for _, p := range ps { out += "," } }\n',
+    ),
+    "python": (
+        "def f(items):\n    for ch in items:\n        ch += 'x'\n        use(ch)\n",
+        "def f(rows):\n    for k, v in rows:\n        for c in v:\n            k += '.'\n",
+        "def f(items):\n    out = ''\n    for ch in items:\n        out += 'x'\n",
+    ),
+    "java": (
+        'class A { void f(List<String> ps) { for (String p : ps) { p += "/32"; use(p); } } }\n',
+        'class A { void f(List<String> ps) { for (String p : ps) { for (String q : ps) { p += "/"; } } } }\n',
+        'class A { void f(List<String> ps) { String o = ""; for (String p : ps) { o += ","; } } }\n',
+    ),
+}
+
+
+@pytest.mark.parametrize("lang", sorted(_LOOP_VAR_CONCAT))
+def test_string_concat_onto_loop_variable_not_flagged(lang):
+    own, outer, accumulator = _LOOP_VAR_CONCAT[lang]
+    assert not any(k == "string_concat_in_loop" for k, _ in _hits(lang, own))
+    assert ("string_concat_in_loop", "") in _hits(lang, outer)
+    assert ("string_concat_in_loop", "") in _hits(lang, accumulator)
+
+
+@pytest.mark.parametrize(
+    ("lang", "src", "flagged"),
+    [
+        # Every name a destructuring header binds is rebound each pass.
+        ("python", "def f(rows):\n    for k, v in rows:\n        v += 'x'\n        use(v)\n", False),
+        ("go", 'package p\nfunc f(ps []string){ for i, v := range ps { v += "x"; use(i, v) } }\n', False),
+        # A counted loop's init and a non-name target carry across passes.
+        ("go", 'package p\nfunc f(n int){ for s := ""; len(s) < n; { s += "x" } }\n', True),
+        ("python", "def f(self, items):\n    for ch in items:\n        self.ch += 'x'\n", True),
+    ],
+)
+def test_string_concat_loop_header_shapes(lang, src, flagged):
+    assert (("string_concat_in_loop", "") in _hits(lang, src)) is flagged
+
+
+def test_string_concat_onto_counted_loop_init_still_flagged():
+    """A counted loop's init carries the string across passes."""
+    src = 'class A { void f(int n) { for (String s = ""; s.length() < n; ) { s += "x"; } } }\n'
+    assert ("string_concat_in_loop", "") in _hits("java", src)
+
+
 @pytest.mark.parametrize("lang", ["typescript", "javascript"])
 @pytest.mark.parametrize(
     "src",

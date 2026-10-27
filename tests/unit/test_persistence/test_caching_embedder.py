@@ -18,13 +18,15 @@ class _CountingEmbedder:
         self._dimensions = dimensions
         self._seed = seed
         self.calls: list[list[str]] = []
+        self.kinds: list[str] = []
 
     @property
     def dimensions(self) -> int:
         return self._dimensions
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(self, texts: list[str], *, kind: str = "document") -> list[list[float]]:
         self.calls.append(list(texts))
+        self.kinds.append(kind)
         return [[self._seed * (i + 1)] * self._dimensions for i, _ in enumerate(texts)]
 
 
@@ -126,7 +128,7 @@ async def test_a_short_inner_response_is_not_cached():
     response memoized for the life of the process."""
 
     class _Empty(_CountingEmbedder):
-        async def embed(self, texts):
+        async def embed(self, texts, *, kind="document"):
             self.calls.append(list(texts))
             return []
 
@@ -136,3 +138,15 @@ async def test_a_short_inner_response_is_not_cached():
     assert await embedder.embed(["q"]) == []
     assert await embedder.embed(["q"]) == []
     assert inner.calls == [["q"], ["q"]], "the bad response was cached"
+
+
+async def test_query_and_document_of_one_text_are_cached_apart():
+    """With an asymmetric prefix the same text embeds differently per kind."""
+    inner = _CountingEmbedder()
+    embedder = CachingEmbedder(inner)
+
+    await embedder.embed(["auth"], kind="query")
+    await embedder.embed(["auth"], kind="document")
+    await embedder.embed(["auth"], kind="query")
+
+    assert inner.kinds == ["query", "document"]

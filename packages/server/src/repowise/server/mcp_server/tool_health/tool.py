@@ -190,7 +190,7 @@ async def get_health(
         performance_view/_context/_boundary/_confidence/_actionability/_sort:
             queue filters.
         scope / counts: default ``all``/``everything``. ``production`` drops
-            test files; ``code_shape`` drops git-derived score and findings.
+            non-production code; ``code_shape``, git-based score+findings.
 
     """
     started = perf_counter()

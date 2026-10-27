@@ -330,6 +330,19 @@ def _loop_bound_names(loop: Node) -> set[bytes]:
     return set().union(*(_bound_in(p) for p in parts), *(_identifiers(c) for c in unfielded))
 
 
+def _loop_element_names(loop: Node) -> set[bytes]:
+    """The names a for-each header rebinds each pass. A counted loop's init is
+    left out: ``for (String s = ""; ...; )`` carries ``s`` across passes."""
+    parts = [loop, *(c for c in loop.children if c.type == "range_clause")]
+    nodes = [part.child_by_field_name(field) for part in parts for field in _ELEMENT_FIELDS]
+    nodes += [
+        c
+        for i, c in enumerate(loop.children)
+        if c.type == "variable_declaration" and loop.field_name_for_child(i) is None
+    ]
+    return set().union(*(_identifiers(node) for node in nodes if node is not None))
+
+
 def _block_bound_names(block: Node) -> set[bytes]:
     """The parameters a block loop's lambda binds; Kotlin's implicit ``it`` when it declares none."""
     node = block
@@ -465,6 +478,32 @@ def _concat_target(node: Node) -> str:
     """The string a ``+=`` statement grows: its left side."""
     left = node.child_by_field_name("left")
     return _subject_text(left if left is not None else next(iter(node.named_children), None))
+
+
+def _plain_target_name(node: Node) -> bytes | None:
+    """The bare name an assignment writes (Go wraps it in an ``expression_list``)."""
+    left = node.child_by_field_name("left")
+    if left is not None and left.type == "expression_list" and left.named_child_count == 1:
+        left = left.named_children[0]
+    return left.text if left is not None and left.type == "identifier" and left.text else None
+
+
+def _grows_loop_variable(node: Node, loop_kinds: frozenset[str], fn_kinds: frozenset[str]) -> bool:
+    """*node* is ``x += ...`` onto a name the nearest loop's header binds.
+
+    The header rebinds it each pass, so nothing accumulates across passes. Only
+    the nearest loop counts: an outer loop's element grown in an inner loop
+    still accumulates across the inner passes.
+    """
+    name = _plain_target_name(node)
+    if name is None:
+        return False
+    cur = node.parent
+    while cur is not None and cur.type not in fn_kinds:
+        if cur.type in loop_kinds and cur.is_named:
+            return name in _loop_element_names(cur)
+        cur = cur.parent
+    return False
 
 
 def _quotable(callee: str) -> bool:
@@ -1116,19 +1155,24 @@ class _PerfWalk:
         if cur.loop_depth < 1:
             return
         if self.do_string_concat and dialect.is_string_concat(node):
-            self.hits.append(
-                PerfHit(
-                    "string_concat_in_loop",
-                    node.start_point[0] + 1,
-                    nxt.func,
-                    "",
-                    func_start=nxt.start,
-                    loop=self.loop_facts(node, sink=False),
-                    subject=_concat_target(node),
-                )
-            )
+            self._on_string_concat(node, nxt)
         elif self.do_loop_stmt_marker:
             self._on_loop_statement(node, nxt)
+
+    def _on_string_concat(self, node: Node, nxt: _Frame) -> None:
+        if _grows_loop_variable(node, self.loop_kinds, self.fn_kinds):
+            return
+        self.hits.append(
+            PerfHit(
+                "string_concat_in_loop",
+                node.start_point[0] + 1,
+                nxt.func,
+                "",
+                func_start=nxt.start,
+                loop=self.loop_facts(node, sink=False),
+                subject=_concat_target(node),
+            )
+        )
 
     def _on_loop_statement(self, node: Node, nxt: _Frame) -> None:
         sm = self.dialect.loop_stmt_marker(node, self.list_names)

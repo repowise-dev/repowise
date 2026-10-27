@@ -14,12 +14,11 @@ from repowise.core.analysis.health.grading import (
 from repowise.core.analysis.health.models import primary_finding, split_by_origin
 from repowise.core.analysis.health.perf.coverage import PerfCoverage
 from repowise.core.analysis.health.ranking import worst_kpis
-from repowise.core.analysis.health.rows import split_tests
 from repowise.core.analysis.health.scoring import (
     headline_split,
     hotspot_health,
     nloc_weighted_attr,
-    nloc_weighted_score,
+    production_average,
 )
 from repowise.core.persistence.crud.analysis.performance import PerformanceHeadline
 from repowise.core.persistence.models import HealthFileMetric
@@ -201,15 +200,15 @@ def _compute_kpis(
     total_nloc = sum(max(m.nloc, 1) for m in metrics)
     avg = sum(m.score * max(m.nloc, 1) for m in metrics) / total_nloc
     share = analysed_share(len(metrics), unanalysed)
-    production, tests = split_tests(metrics)
+    production, production_count = production_average(metrics)
     return {
         "file_count": len(metrics),
         "average_health": round(avg, 2),
-        # Production code alone, weighted the same way; only said while tests
-        # are in ``average_health``, so ``scope="production"`` omits it.
+        # Production code alone, weighted the same way; only said while
+        # ``average_health`` also holds tests, tooling or other non-shipping code.
         **(
-            {"production_average": round(nloc_weighted_score(production), 2)}
-            if production and tests
+            {"production_average": production}
+            if production is not None and production_count < len(metrics)
             else {}
         ),
         # ``None`` with no hotspot files, not an empty set averaged to 10.0.
