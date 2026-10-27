@@ -168,6 +168,34 @@ class TestCallAttachesToDefinition:
         assert _callers_of(graph, "walk.c::walk") == set()
 
 
+class TestHeaderDefaultsReachTheDefinition:
+    def test_a_header_default_is_admitted_by_the_definition(self, tmp_path: Path) -> None:
+        (tmp_path / "f.h").write_text("void f(int a, int b = 0);\n")
+        (tmp_path / "f.cc").write_text('#include "f.h"\nvoid f(int a, int b) { }\n')
+        (tmp_path / "use.cc").write_text('#include "f.h"\nvoid run() { f(1); }\n')
+        graph = _build(tmp_path)
+        assert _callers_of(graph, "f.cc::f") == {"use.cc::run"}
+
+    # A same-file call resolves on the definitions' set, whose default-bearing member is not
+    # the representative: only a carried floor reaches it.
+    def test_a_set_whose_first_member_is_undefined_still_lends_its_defaults(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "f.h").write_text(
+            "void f(double d, int b);\n"
+            "void f(int a, int b = 0);\n"
+            "void f(const char* s, int b);\n"
+        )
+        (tmp_path / "f.cc").write_text(
+            '#include "f.h"\nvoid f(const char* s, int b) { }\n'
+            "void f(int a, int b) { }\n"
+            "void run() { f(1); }\n"
+        )
+        graph = _build(tmp_path)
+        assert _callers_of(graph, _id_at(graph, "f.cc", 3)) == {"f.cc::run"}
+        assert _callers_of(graph, _id_at(graph, "f.cc", 2)) == set()
+
+
 def _id_at(graph, path: str, line: int) -> str:
     return next(
         node
