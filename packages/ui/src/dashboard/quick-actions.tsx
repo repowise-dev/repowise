@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { useMemo, useState, type ReactNode, type ComponentType } from "react";
+import { useEffect, useMemo, useState, type ReactNode, type ComponentType } from "react";
 import { RefreshCw, Trash2, AlertTriangle, Zap, MoreHorizontal } from "lucide-react";
 import { Button } from "../ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
@@ -18,55 +18,16 @@ import { formatNumber, formatCost, formatRelativeTime } from "../lib/format";
 const AVG_INPUT_TOKENS_PER_PAGE = 3500;
 const AVG_OUTPUT_TOKENS_PER_PAGE = 2200;
 
-const COST_TABLE_EXACT: Record<string, [number, number]> = {
-  "gpt-5.4": [0.0025, 0.015],
-  "gpt-5.4-mini": [0.00075, 0.0045],
-  "gpt-5.4-nano": [0.0002, 0.00125],
-  "gpt-5.6-luna": [0.0002, 0.0012],
-  "gemini-3.1-pro-preview": [0.002, 0.012],
-  "gemini-3-flash-preview": [0.0005, 0.003],
-  "gemini-3.1-flash-lite-preview": [0.00025, 0.0015],
-  "claude-opus-4-6": [0.005, 0.025],
-  "claude-sonnet-4-6": [0.003, 0.015],
-  "claude-haiku-4-5": [0.001, 0.005],
-  "deepseek-v4-flash": [0.00014, 0.00028],
-  "deepseek-v4-pro": [0.00174, 0.00348],
-};
-
-const COST_TABLE_PREFIX: [string, [number, number]][] = [
-  ["gpt-5.6-luna", [0.0002, 0.0012]],
-  ["gpt-5.4-nano", [0.0002, 0.00125]],
-  ["gpt-5.4-mini", [0.00075, 0.0045]],
-  ["gpt-5.4", [0.0025, 0.015]],
-  ["claude-opus", [0.005, 0.025]],
-  ["claude-sonnet", [0.003, 0.015]],
-  ["claude-haiku", [0.001, 0.005]],
-  ["claude", [0.003, 0.015]],
-  ["deepseek", [0.00014, 0.00028]],
-  ["gemini", [0.00025, 0.0015]],
-  ["llama", [0, 0]],
-  ["mock", [0, 0]],
-];
-
-function lookupCost(modelName: string): [number, number] {
-  const lower = modelName.toLowerCase();
-  if (lower in COST_TABLE_EXACT) return COST_TABLE_EXACT[lower]!;
-  let bestLen = 0;
-  let bestRates: [number, number] = [0, 0];
-  for (const [prefix, rates] of COST_TABLE_PREFIX) {
-    if (lower.startsWith(prefix) && prefix.length > bestLen) {
-      bestLen = prefix.length;
-      bestRates = rates;
-    }
-  }
-  return bestRates;
+/** USD per 1K tokens, as the server prices the active model. */
+export interface CostPer1k {
+  input: number;
+  output: number;
 }
 
-function estimateCost(pageCount: number, modelName: string) {
+function estimateCost(pageCount: number, rates: CostPer1k) {
   const inputTokens = pageCount * AVG_INPUT_TOKENS_PER_PAGE;
   const outputTokens = pageCount * AVG_OUTPUT_TOKENS_PER_PAGE;
-  const [inputRate, outputRate] = lookupCost(modelName);
-  const cost = (inputTokens / 1000) * inputRate + (outputTokens / 1000) * outputRate;
+  const cost = (inputTokens / 1000) * rates.input + (outputTokens / 1000) * rates.output;
   return { inputTokens, outputTokens, cost };
 }
 
@@ -132,6 +93,8 @@ export interface QuickActionsProps {
   /** Inputs for the cost-estimate panel inside the confirm dialog. */
   pageCount?: number;
   modelName?: string;
+  /** The model's rates from the server; without them no estimate is shown. */
+  costPer1k?: CostPer1k | null;
   /** When provided, replaces the buttons with the given node â€” typically a
    *  rendered job-progress widget. Wrapper decides what to pass. */
   activeJobSlot?: ReactNode;
@@ -145,6 +108,11 @@ export interface QuickActionsProps {
    * the same weight made the destructive one as easy to hit as the safe one.
    */
   variant?: "row" | "header";
+  /** Open an action as if its button were clicked, confirm step included (a
+   *  retry after a failure). The shell calls `onConfirmRequestHandled` once
+   *  it has, so the host can clear the request. */
+  confirmRequest?: QuickActionKey | null;
+  onConfirmRequestHandled?: () => void;
 }
 
 export function QuickActions({
@@ -155,20 +123,34 @@ export function QuickActions({
   lastResyncAt,
   pageCount = 0,
   modelName = "",
+  costPer1k,
   activeJobSlot,
   variant = "row",
+  confirmRequest,
+  onConfirmRequestHandled,
 }: QuickActionsProps) {
   const [internalLoading, setInternalLoading] = useState<QuickActionKey | null>(null);
   const [pendingAction, setPendingAction] = useState<QuickActionDef | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const loading = loadingKey !== undefined ? loadingKey : internalLoading;
 
+  useEffect(() => {
+    if (!confirmRequest) return;
+    const action = actions.find((a) => a.key === confirmRequest);
+    onConfirmRequestHandled?.();
+    if (action) handleClick(action);
+    // Fires per request; `handleClick` is recreated every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [confirmRequest]);
+
   const estimate = useMemo(() => {
-    if (!pendingAction || pendingAction.key === "dead-code" || pageCount <= 0) return null;
+    if (!pendingAction || pendingAction.key === "dead-code" || pageCount <= 0 || !costPer1k) {
+      return null;
+    }
     const pages =
       pendingAction.key === "sync" ? Math.max(1, Math.ceil(pageCount * 0.1)) : pageCount;
-    return estimateCost(pages, modelName);
-  }, [pendingAction, pageCount, modelName]);
+    return estimateCost(pages, costPer1k);
+  }, [pendingAction, pageCount, costPer1k]);
 
   async function execute(action: QuickActionDef) {
     if (loadingKey === undefined) setInternalLoading(action.key);

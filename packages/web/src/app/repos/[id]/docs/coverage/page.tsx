@@ -6,8 +6,13 @@ import { ConfidenceVsFreshnessMatrix } from "@repowise-dev/ui/coverage/confidenc
 import { FreshnessTableWithRegenerate } from "@/components/coverage/freshness-table-wrapper";
 import type { DocPage } from "@repowise-dev/types/docs";
 import { MetricCard } from "@repowise-dev/ui/shared/metric-card";
+import { ProportionBar } from "@repowise-dev/ui/shared/proportion-bar";
 import { listAllPages } from "@/lib/api/pages";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
+import { getTranslations } from "next-intl/server";
+import { HostedNudgeSlot } from "@/components/hosted/hosted-nudge-slot";
+import { ApiError } from "@repowise-dev/ui/shared/api-error";
+import { PageFrame } from "@repowise-dev/ui/shared/page-shell";
 
 export const metadata: Metadata = { title: "Doc freshness" };
 
@@ -17,15 +22,17 @@ export default async function CoveragePage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
+  const t = await getTranslations("views.docsFreshness");
 
   let pages: Awaited<ReturnType<typeof listAllPages>> = [];
+  let failed = false;
 
   try {
     // Auto-paginate past the 500-item API cap so the counts, donut, and the
     // freshness table see every page, not just the first page of results.
     pages = await listAllPages(id);
   } catch {
-    // API unavailable
+    failed = true;
   }
 
   const total = pages.length;
@@ -33,42 +40,53 @@ export default async function CoveragePage({
   const fresh = pages.filter((p) => p.freshness_status === "fresh").length;
   const stale = pages.filter((p) => p.freshness_status === "stale").length;
   const outdated = pages.filter((p) => p.freshness_status === "outdated").length;
-  const freshPct = pages.length > 0 ? Math.round((fresh / pages.length) * 100) : 0;
+  /** Share of the indexed pages one bucket holds, rounded to a whole percent. */
+  const pctOf = (count: number) =>
+    pages.length > 0 ? Math.round((count / pages.length) * 100) : 0;
+  const freshPct = pctOf(fresh);
 
   return (
     <div className="flex flex-col h-full">
       <DocsHeader>
-        <span className="text-xs text-[var(--color-text-tertiary)]">
-          Freshness across {formatNumber(total)} pages
-        </span>
+        {!failed && (
+          <span className="text-xs text-[var(--color-text-tertiary)]">
+            {t("header", { count: formatNumber(total) })}
+          </span>
+        )}
       </DocsHeader>
 
-      <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6 max-w-[1600px]">
+      <div className="min-h-0 flex-1 overflow-y-auto">
+      {failed ? (
+        <PageFrame maxWidth="wide">
+          <ApiError title={t("loadErrorTitle")} message={t("loadErrorBody")} />
+        </PageFrame>
+      ) : (
+      <PageFrame maxWidth="wide">
       <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
         {/* Donut */}
         <div className="flex flex-col items-center gap-4 lg:w-56 shrink-0">
           <CoverageDonut fresh={fresh} stale={stale} outdated={outdated} />
           <p className="text-sm text-[var(--color-text-secondary)]">
-            {freshPct}% of pages are fresh
+            {t("freshPct", { pct: freshPct })}
           </p>
         </div>
 
         {/* Stat cards */}
         <div className="flex-1 grid grid-cols-1 gap-3 sm:grid-cols-3">
           <MetricCard
-            label="Fresh"
+            label={t("fresh")}
             value={formatNumber(fresh)}
-            description={`${pages.length > 0 ? Math.round((fresh / pages.length) * 100) : 0}% of pages`}
+            description={t("pctOfPages", { pct: pctOf(fresh) })}
           />
           <MetricCard
-            label="Stale"
+            label={t("stale")}
             value={formatNumber(stale)}
-            description={`${pages.length > 0 ? Math.round((stale / pages.length) * 100) : 0}% of pages`}
+            description={t("pctOfPages", { pct: pctOf(stale) })}
           />
           <MetricCard
-            label="Outdated"
+            label={t("outdated")}
             value={formatNumber(outdated)}
-            description={`${pages.length > 0 ? Math.round((outdated / pages.length) * 100) : 0}% of pages`}
+            description={t("pctOfPages", { pct: pctOf(outdated) })}
           />
         </div>
       </div>
@@ -76,33 +94,31 @@ export default async function CoveragePage({
       {/* Freshness distribution bar */}
       {pages.length > 0 && (
         <div>
-          <p className="text-xs text-[var(--color-text-tertiary)] mb-1.5">Distribution</p>
-          <div className="h-3 rounded-full overflow-hidden flex">
-            <div className="bg-[var(--color-fresh)]" style={{ width: `${(fresh / pages.length) * 100}%` }} />
-            <div className="bg-[var(--color-stale)]" style={{ width: `${(stale / pages.length) * 100}%` }} />
-            <div className="bg-[var(--color-outdated)]" style={{ width: `${(outdated / pages.length) * 100}%` }} />
-          </div>
-          <div className="flex gap-4 mt-1.5 text-xs text-[var(--color-text-tertiary)]">
-            <span className="flex items-center gap-1">
-              <span className="h-2 w-2 rounded-full bg-[var(--color-fresh)]" /> Fresh
-            </span>
-            <span className="flex items-center gap-1">
-              <span className="h-2 w-2 rounded-full bg-[var(--color-stale)]" /> Stale
-            </span>
-            <span className="flex items-center gap-1">
-              <span className="h-2 w-2 rounded-full bg-[var(--color-outdated)]" /> Outdated
-            </span>
-          </div>
+          <p className="text-xs text-[var(--color-text-tertiary)] mb-1.5">
+            {t("distribution")}
+          </p>
+          <ProportionBar
+            label={t("distribution")}
+            sort={false}
+            segments={[
+              { key: "fresh", label: t("fresh"), value: fresh, color: "var(--color-fresh)" },
+              { key: "stale", label: t("stale"), value: stale, color: "var(--color-stale)" },
+              { key: "outdated", label: t("outdated"), value: outdated, color: "var(--color-outdated)" },
+            ]}
+          />
         </div>
       )}
 
       <DriftBanner pages={pages as DocPage[]} />
+      <HostedNudgeSlot candidates={[stale + outdated > 0 && "stale"]} repoId={id} />
 
       {pages.length > 0 && (
         <ConfidenceVsFreshnessMatrix pages={pages as DocPage[]} />
       )}
 
       <FreshnessTableWithRegenerate pages={pages} repoId={id} />
+      </PageFrame>
+      )}
       </div>
     </div>
   );

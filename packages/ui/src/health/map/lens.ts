@@ -9,15 +9,14 @@ import {
   HEALTH_BAND_LABEL,
   HEALTH_BAND_ORDER,
   HEALTH_BAND_RANGE_LABEL,
+  formatScore,
 } from "@repowise-dev/types/health";
-import { healthBandNodeFill, healthNodeFill } from "../tokens";
-import type { CodeHealthMapFile, CodeHealthOverlay, PerformanceActionability } from "./types";
+import { NODE_HEALTHY_FILL, NODE_RAMP_STOP, healthBandMapFill, healthRampFill } from "../tokens";
+import type { AreaIndex, MapArea } from "./areas";
+import type { CodeHealthMapFile, PerformanceActionability } from "./types";
 
-/** Worst-first legend rows, each naming its band and the range it covers. */
-const BAND_LEGEND = HEALTH_BAND_ORDER.map((band) => ({
-  fill: healthBandNodeFill(band),
-  label: `${HEALTH_BAND_LABEL[band]} · ${HEALTH_BAND_RANGE_LABEL[band]}`,
-}));
+/** The one quiet tone every file that needs nothing takes, under every lens. */
+export const QUIET_FILL = NODE_HEALTHY_FILL;
 
 /**
  * Neutral fill for nodes a lens has no signal for.
@@ -28,6 +27,13 @@ const BAND_LEGEND = HEALTH_BAND_ORDER.map((band) => ({
  * against near-black as against cream.
  */
 export const NEUTRAL_FILL = "var(--color-node-neutral)";
+
+/**
+ * A folder a lens checked and found nothing in, where green would overclaim
+ * (performance: no supported pattern is not proven fast). The neutral pulled
+ * toward the page, so "checked, clear" never reads as "not checked".
+ */
+export const CLEAR_NEUTRAL_FILL = "color-mix(in srgb, var(--color-node-neutral) 40%, var(--color-bg-surface))";
 
 export interface LegendRow {
   fill: string;
@@ -40,37 +46,91 @@ export interface LegendRow {
   group?: string;
 }
 
-/** Lens metadata: how to fill a node and what the key reads. */
-export interface OverlaySpec {
+/** Worst-first legend rows on the five canonical bands, as every score pill reads. */
+export const BAND_LEGEND: LegendRow[] = HEALTH_BAND_ORDER.map((band) => ({
+  fill: healthBandMapFill(band),
+  label: `${HEALTH_BAND_LABEL[band]} · ${HEALTH_BAND_RANGE_LABEL[band]}`,
+}));
+
+/**
+ * A lens: how the map colours and names what it draws, and what its key reads.
+ *
+ * This is the extension point other surfaces plug into without touching the
+ * canvas. A lens is plain data plus pure functions, so a host can build one
+ * over data only it holds (an off-boarding scenario, a coupling read) by
+ * closing over that data, and hand it to `CodeHealthMap`'s `lens` prop and to
+ * `MapLegend`. Every method is optional past the key: a lens that only knows
+ * files leaves `areaFill` out and areas fold their loaded files through
+ * `areaFromFiles`; a lens that only knows areas leaves `fill` out and each
+ * file takes the colour of the area it sits in.
+ *
+ * Colours are CSS strings (token `var()`s or `color-mix()`es), never raw hex.
+ */
+export interface MapLens {
+  /** Stable id, for a switcher and the URL. */
+  id: string;
   label: string;
   /** Caption shown under the legend key. */
   caption: string;
-  fill: (f: CodeHealthMapFile) => string;
   legend: LegendRow[];
+  /** A file's fill. Absent: the file takes its area's fill. */
+  fill?: (f: CodeHealthMapFile) => string;
+  /** An area's fill from its rollup; `null` when the rollup lacks the signal. */
+  areaFill?: (a: MapArea) => string | null;
+  /**
+   * Whether a file carries this lens's signal at all. A file that does not is
+   * not analysed: it is drawn grey and left out of every folder's fold, never
+   * read as the worst value. Absent: every file carries it.
+   */
+  analysed?: (f: CodeHealthMapFile) => boolean;
+  /** Whether an analysed file carries something to fix, for "N of M flagged". */
+  flagged?: (f: CodeHealthMapFile) => boolean;
+  /**
+   * An area's fill from its loaded, analysed files, when `areaFill` cannot
+   * say. Never called with an empty list: a folder with no analysed file is
+   * grey. Fold by share, not by count, or every big folder reads as worst.
+   */
+  areaFromFiles?: (files: readonly CodeHealthMapFile[]) => string;
+  /**
+   * The short figure printed on an area's disc ("7.4", "62%"). `files` are
+   * the area's loaded files this lens analysed, when any are loaded.
+   */
+  areaText?: (a: MapArea, files?: readonly CodeHealthMapFile[]) => string | null;
+  /** Whether the data on hand backs this lens; an unbacked lens is not offered. */
+  available?: (ctx: LensContext) => boolean;
 }
 
-/** Score band: the health ramp, quiet grey when the pillar is unscored. */
-function scoreFill(score: number | null | undefined): string {
+/** What a lens's availability is judged against. */
+export interface LensContext {
+  files: readonly CodeHealthMapFile[];
+  areas: AreaIndex;
+}
+
+/** @deprecated The built-in lenses' old name; every lens is a {@link MapLens}. */
+export type OverlaySpec = MapLens;
+
+/** Score: the map ramp, the neutral when the pillar is unscored. */
+export function scoreFill(score: number | null | undefined): string {
   if (score == null) return NEUTRAL_FILL;
-  return healthNodeFill(score);
+  return healthRampFill(score);
 }
 
-/** Coverage band: green = well covered, red = uncovered, grey = no data. */
-function coverageFill(pct: number | null | undefined): string {
+/** Coverage band: quiet when well covered, the ramp's stops below that. */
+export function coverageFill(pct: number | null | undefined): string {
   if (pct == null) return NEUTRAL_FILL;
-  if (pct >= 80) return "var(--color-success)";
-  if (pct >= 50) return "var(--color-caution)";
-  if (pct >= 20) return "var(--color-warning)";
-  return "var(--color-error)";
+  if (pct >= 80) return QUIET_FILL;
+  if (pct >= 50) return NODE_RAMP_STOP.warning;
+  if (pct >= 20) return NODE_RAMP_STOP.serious;
+  return NODE_RAMP_STOP.alert;
 }
 
-/** Churn band: red = top-decile churn, green = quiet. */
-function churnFill(pctile: number | null | undefined): string {
+/** Churn band: quiet below the top 60%, the ramp's stops above it. */
+export function churnFill(pctile: number | null | undefined): string {
   if (pctile == null) return NEUTRAL_FILL;
-  if (pctile >= 90) return "var(--color-error)";
-  if (pctile >= 70) return "var(--color-warning)";
-  if (pctile >= 40) return "var(--color-caution)";
-  return "var(--color-success)";
+  if (pctile >= 90) return NODE_RAMP_STOP.alert;
+  if (pctile >= 70) return NODE_RAMP_STOP.serious;
+  if (pctile >= 40) return NODE_RAMP_STOP.warning;
+  return QUIET_FILL;
 }
 
 /* ------------------------------------------------------------------ *
@@ -120,6 +180,8 @@ const ACTIONABILITY_STATE: Record<PerformanceActionability, PerformanceNodeState
   plan_ready: "actionable",
   advisory: "advisory",
   investigate: "investigate",
+  // Nothing to change; the server already leaves these out of the count.
+  expected: "clear",
 };
 
 /**
@@ -185,16 +247,16 @@ export function burdenBand(count: number): 0 | 1 | 2 | 3 {
 }
 
 /**
- * The three steps, borrowed from the health ramp.
+ * The three steps, borrowed from the map ramp's stops.
  *
- * Same tokens the score pills and the health lens use, so a colour means the
- * same severity wherever it appears on this surface. The two greens are
- * deliberately absent: they are the bands that would claim a file is fine.
+ * The same values the health lens paints at 7, 5 and 2.5, so a colour means
+ * the same severity wherever it appears on this field. The quiet tone is
+ * deliberately absent: it is the one that would claim a file is fine.
  */
-const BURDEN_FILL: Record<1 | 2 | 3, string> = {
-  1: healthBandNodeFill("fair"),
-  2: healthBandNodeFill("needs_work"),
-  3: healthBandNodeFill("at_risk"),
+export const BURDEN_FILL: Record<1 | 2 | 3, string> = {
+  1: NODE_RAMP_STOP.warning,
+  2: NODE_RAMP_STOP.serious,
+  3: NODE_RAMP_STOP.alert,
 };
 
 export const PERFORMANCE_STATE_LABEL: Record<PerformanceNodeState, string> = {
@@ -206,6 +268,27 @@ export const PERFORMANCE_STATE_LABEL: Record<PerformanceNodeState, string> = {
   unknown: "Not analyzed here",
 };
 
+/**
+ * What the health lenses say for a file with no score: the same words the
+ * performance lens uses for a file no detector covers, because it is the same
+ * situation one pillar over. Grey, never green.
+ */
+export const HEALTH_UNSUPPORTED_LABEL = PERFORMANCE_STATE_LABEL.unsupported;
+
+/** The one line a map shows when not one drawn file has a score. */
+export const HEALTH_UNSUPPORTED_NOTICE =
+  "Code health analysis does not support this language yet, so its files are shown grey.";
+
+/** True when the field has files and none of them carries a score. */
+export function noFileScored(files: CodeHealthMapFile[]): boolean {
+  return files.length > 0 && files.every((f) => f.score == null);
+}
+
+/** A file's score at one decimal, or the unsupported label. */
+export function scoreText(f: CodeHealthMapFile): string {
+  return f.score == null ? HEALTH_UNSUPPORTED_LABEL : formatScore(f.score);
+}
+
 /** One sentence a hover card or inspector can print about a file. */
 export function performanceSentence(f: CodeHealthMapFile): string {
   const { state, count, unit } = performanceBurden(f);
@@ -215,89 +298,3 @@ export function performanceSentence(f: CodeHealthMapFile): string {
   }
   return PERFORMANCE_STATE_LABEL[state];
 }
-
-export const OVERLAY_SPECS: Record<CodeHealthOverlay, OverlaySpec> = {
-  health: {
-    label: "Code health",
-    caption: "galaxy = module · size = lines of code",
-    fill: (f) => healthNodeFill(f.score),
-    legend: BAND_LEGEND,
-  },
-  maintainability: {
-    label: "Maintainability",
-    caption: "color = maintainability score · grey = not measured",
-    fill: (f) => scoreFill(f.maintainability_score),
-    legend: [
-      ...BAND_LEGEND,
-      { fill: NEUTRAL_FILL, label: "not measured" },
-    ],
-  },
-  performance: {
-    label: "Performance",
-    caption: "colour = open causes, never a runtime measurement · no green: nothing here is proven fast",
-    fill: performanceFill,
-    legend: [
-      { group: "Open causes", fill: BURDEN_FILL[3], label: "5 or more" },
-      { group: "Open causes", fill: BURDEN_FILL[2], label: "2 to 4" },
-      { group: "Open causes", fill: BURDEN_FILL[1], label: "1" },
-      { group: "No open cause", fill: NEUTRAL_FILL, label: "Nothing surfaced" },
-    ],
-  },
-  coverage: {
-    label: "Coverage",
-    caption: "color = line coverage · grey = no coverage data",
-    fill: (f) => coverageFill(f.line_coverage_pct),
-    legend: [
-      { fill: "var(--color-success)", label: "≥80%" },
-      { fill: "var(--color-caution)", label: "50-80%" },
-      { fill: "var(--color-warning)", label: "20-50%" },
-      { fill: "var(--color-error)", label: "<20%" },
-      { fill: NEUTRAL_FILL, label: "no data" },
-    ],
-  },
-  churn: {
-    label: "Churn",
-    caption: "color = 90-day churn percentile",
-    fill: (f) => churnFill(f.churn_percentile),
-    legend: [
-      { fill: "var(--color-error)", label: "Top 10%" },
-      { fill: "var(--color-warning)", label: "Top 30%" },
-      { fill: "var(--color-caution)", label: "Top 60%" },
-      { fill: "var(--color-success)", label: "Quiet" },
-      { fill: NEUTRAL_FILL, label: "no data" },
-    ],
-  },
-  "dead-code": {
-    label: "Dead code",
-    caption: "red = reclaimable lines · grey = clean",
-    fill: (f) => ((f.dead_code_lines ?? 0) > 0 ? "var(--color-error)" : NEUTRAL_FILL),
-    legend: [
-      { fill: "var(--color-error)", label: "Has dead code" },
-      { fill: NEUTRAL_FILL, label: "Clean" },
-    ],
-  },
-  security: {
-    label: "Security",
-    caption: "red = open findings · grey = clean",
-    fill: (f) => ((f.security_findings ?? 0) > 0 ? "var(--color-error)" : NEUTRAL_FILL),
-    legend: [
-      { fill: "var(--color-error)", label: "Has findings" },
-      { fill: NEUTRAL_FILL, label: "Clean" },
-    ],
-  },
-};
-
-/**
- * Default lenses offered in the switcher: the three co-equal health signals,
- * all backed by a per-file signal that rides on the map payload itself.
- *
- * Churn is deliberately not in the default. It colors by `churn_percentile`,
- * which arrives on a separate request the host has to join in, so offering it
- * where nobody joined it paints an all-neutral field that reads as "no churn"
- * rather than "no data". Hosts that do the join pass their own `lenses`.
- */
-export const OVERLAY_ORDER: CodeHealthOverlay[] = [
-  "health",
-  "maintainability",
-  "performance",
-];

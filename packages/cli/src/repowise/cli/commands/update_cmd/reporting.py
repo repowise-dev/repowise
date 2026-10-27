@@ -14,16 +14,20 @@ import sys
 from typing import Any
 
 import click
-from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
 from repowise.cli.helpers import console
 from repowise.cli.ui import (
-    BRAND_STYLE,
-    OWL_SPINNER,
-    MaybeCountColumn,
     build_completion_panel,
     format_elapsed,
 )
+from repowise.cli.ui.mode_names import (
+    TITLE_INDEX_UPDATED,
+    TITLE_UPDATED_BUILT_FROM_CODE,
+    pages,
+    provider_model,
+)
+from repowise.cli.ui.result_panels import serve_step
+from repowise.core.index_scope import MODEL_COMMAND
 
 # Status -> display color, shared by the changed-file summary.
 _STATUS_COLOR = {"added": "green", "deleted": "red", "modified": "yellow", "renamed": "blue"}
@@ -75,19 +79,37 @@ def render_changed_files(file_diffs: list, *, verbose: bool) -> None:
 # ---------------------------------------------------------------------------
 
 
-def make_generation_progress() -> Progress:
-    """Build the live page-generation progress bar (owl spinner + running cost),
-    matching the columns ``init`` uses for its generation phase.
+def render_cascade_budget_warning(
+    budget: int, skipped_files: int, split: tuple[int, int] | None
+) -> None:
+    """Warn that the cascade budget left pages stale, and how each kind catches up.
+
+    ``split`` is ``(model_pages, structural_pages)``; ``None`` prints the
+    unsplit warning.
     """
-    return Progress(
-        SpinnerColumn(spinner_name=OWL_SPINNER, style=BRAND_STYLE),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        MaybeCountColumn(),
-        TimeElapsedColumn(),
-        TextColumn("[green]${task.fields[cost]:.3f}[/green]"),
-        console=console,
+    full = f"--cascade-budget {budget + skipped_files}"
+    console.print(
+        f"\n[yellow]⚠ Cascade budget of {budget} pages was reached. {skipped_files} "
+        "dependent files were skipped and their pages marked stale.[/yellow]"
     )
+    if split is None:
+        console.print(f"[yellow]  Pass `{full}` to regenerate them all.[/yellow]\n")
+        return
+    model, structural = split
+    if structural:
+        console.print(
+            f"  {structural} structural pages (file / cycle) refresh on the next "
+            "[cyan]repowise update[/cyan], no model needed."
+        )
+    if model:
+        console.print(
+            f"  {model} pages written by a model: run [cyan]repowise generate --stale[/cyan] "
+            f"to rewrite them (it estimates the cost first), or pass `{full}` "
+            "to regenerate everything in this run."
+        )
+    else:
+        console.print(f"  Pass `{full}` to regenerate them in this run.")
+    console.print()
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +268,21 @@ def _dead_code_counts(
     return unreachable, unused
 
 
+def _dead_code_line(dead_code_report: Any, changed_paths: list[str] | None = None) -> str:
+    """The panel's dead-code line, naming its scope beside the repo-wide total.
+
+    The run log prints the report's repo-wide total of every kind, so a
+    scoped count shown bare would contradict it ("findings: 14" against
+    "0 unreachable").
+    """
+    unreachable, unused = _dead_code_counts(dead_code_report, changed_paths)
+    line = f"{unreachable} unreachable · {unused} unused exports"
+    if changed_paths is None:
+        return line
+    total = len(dead_code_report.findings) if dead_code_report else 0
+    return f"{line} in changed files" + (f" · {total} findings repo-wide" if total else "")
+
+
 def show_full_completion(
     *,
     generated_pages: list,
@@ -269,20 +306,21 @@ def show_full_completion(
     if tokens:
         metrics.append(("Total tokens", f"{tokens:,}"))
     if provider is not None:
-        metrics.append(("Provider", f"{provider.provider_name} / {provider.model_name}"))
+        metrics.append(("Provider", provider_model(provider.provider_name, provider.model_name)))
     if cost:
         metrics.append(("Cost", f"${cost:.3f}"))
     metrics.append(("Elapsed", format_elapsed(elapsed)))
 
     next_steps = [
-        ("repowise serve", "browse the updated wiki at localhost:3000"),
-        ("repowise search <query>", "search the wiki"),
+        serve_step("updated documentation"),
+        ("repowise search <query>", "search the documentation"),
     ]
     console.print()
     console.print(
         build_completion_panel("repowise update complete", metrics, next_steps=next_steps)
     )
     console.print()
+    _slow_update_hint(elapsed)
 
 
 def show_index_only_completion(
@@ -296,6 +334,7 @@ def show_index_only_completion(
     pages_rendered: int = 0,
     template_wiki: bool = False,
     changed_paths: list[str] | None = None,
+    upgrade_command: str | None = None,
 ) -> None:
     """Render the completion panel for an index-only update (no LLM regen).
 
@@ -305,15 +344,13 @@ def show_index_only_completion(
     """
     render_degraded(degraded)
     graph = graph_builder.graph()
-    unreachable, unused = _dead_code_counts(dead_code_report, changed_paths)
-
     metrics: list[tuple[str, str]] = [
         ("Files changed", str(changed_count)),
         ("Graph", f"{graph.number_of_nodes():,} nodes · {graph.number_of_edges():,} edges"),
-        ("Dead code", f"{unreachable} unreachable · {unused} unused exports"),
+        ("Dead code", _dead_code_line(dead_code_report, changed_paths)),
     ]
     if pages_rendered:
-        metrics.append(("Wiki pages", f"{pages_rendered} re-rendered from structure"))
+        metrics.append(("Documentation", f"{pages(pages_rendered)} rebuilt from code"))
     if degraded:
         metrics.append(("Degraded", f"{len(degraded)} step(s)"))
     if git_files:
@@ -321,23 +358,31 @@ def show_index_only_completion(
     metrics.append(("Elapsed", format_elapsed(elapsed)))
 
     next_steps = [
-        ("repowise serve", "browse the index at localhost:3000"),
+        serve_step(),
     ]
     if template_wiki:
         # The scoped, cost-gated upgrade path — a coverage, a directory or one
         # page at a time — not the all-or-nothing `update --full`.
         next_steps.append(
-            ("repowise generate", "upgrade the wiki to model-written prose (needs a key)")
+            (MODEL_COMMAND, "write the documentation with a model (needs a key)")
+        )
+    elif upgrade_command:
+        # Index only: there are no docs to regenerate.
+        next_steps.append(
+            (upgrade_command, "build documentation from code and the full git history (no key)")
         )
     else:
         next_steps.append(("repowise update --docs", "regenerate docs for the changed files"))
     console.print()
     console.print(
         build_completion_panel(
-            "repowise index-only update complete", metrics, next_steps=next_steps
+            TITLE_UPDATED_BUILT_FROM_CODE if template_wiki else TITLE_INDEX_UPDATED,
+            metrics,
+            next_steps=next_steps,
         )
     )
     console.print()
+    _slow_update_hint(elapsed)
 
 
 def show_workspace_completion(
@@ -366,14 +411,26 @@ def show_workspace_completion(
     metrics.append(("Elapsed", format_elapsed(elapsed)))
 
     next_steps = [
+        serve_step("workspace dashboard"),
         ("repowise status --workspace", "show workspace status"),
-        ("repowise serve", "browse a repo wiki at localhost:3000"),
     ]
     console.print()
     console.print(
         build_completion_panel("repowise workspace update complete", metrics, next_steps=next_steps)
     )
     console.print()
+    _slow_update_hint(elapsed)
+
+
+#: An update slower than this is one a hosted index would have saved.
+_SLOW_UPDATE_SECONDS = 60
+
+
+def _slow_update_hint(elapsed: float) -> None:
+    if elapsed > _SLOW_UPDATE_SECONDS:
+        from repowise.cli.hints import maybe_hint
+
+        maybe_hint("slow_update")
 
 
 # ---------------------------------------------------------------------------

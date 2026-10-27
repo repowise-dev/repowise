@@ -27,8 +27,8 @@ def _build_update_vector_store(
     upserted decisions *without* a vector store, so semantic dedup, decision
     search visibility, and supersession detection were all off on incremental
     runs. We mirror ``init``'s store construction (LanceDB at
-    ``.repowise/lancedb`` so previously-embedded decisions are matchable; the
-    in-memory store is a degraded fallback that only sees this run's vectors).
+    ``.repowise/lancedb`` so previously-embedded decisions are matchable; a
+    missing or broken lancedb fails on first use, not here).
     Returns ``None`` on any failure — the decision upsert still works without
     it. A failure is recorded in *degraded* (when given) so the run's degraded
     panel says why semantic dedup is off instead of silently skipping it
@@ -218,6 +218,7 @@ def _run_partial_analysis(
     stored_performance_callers: set[str] | None = None,
     repo_function_mod_p80: int | None = None,
     timings: PhaseTimings | None = None,
+    dead_code: bool = True,
 ) -> tuple[Any, Any]:
     """Run partial code-health + repo-wide dead-code analysis.
 
@@ -248,6 +249,7 @@ def _run_partial_analysis(
         coverage_map=coverage_map,
         log=console.print,
         timings=timings,
+        dead_code=dead_code,
     )
 
 
@@ -255,11 +257,19 @@ def _run_doc_drift_partial(
     graph_builder: Any,
     source_map: dict[str, bytes] | None,
     *,
+    repo_path: Any | None = None,
     timings: PhaseTimings | None = None,
+    base_ref: str | None = None,
+    file_diffs: list[Any] = (),
 ) -> Any | None:
     """Re-check the repo's markdown against the tree. Delegates to core."""
-    from repowise.core.pipeline.incremental import run_doc_drift_partial
+    from repowise.core.pipeline.incremental import DocDriftUpdate, run_doc_drift_partial
 
     return run_doc_drift_partial(
-        graph_builder, source_map, log=console.print, timings=timings
+        graph_builder,
+        source_map,
+        repo_path=repo_path,
+        log=console.print,
+        timings=timings,
+        update=DocDriftUpdate.from_file_diffs(base_ref, file_diffs),
     )

@@ -10,14 +10,16 @@ they fit together. Read this before contributing.
 
 ### Package READMEs
 
-For per-package detail (installation, full API reference, all CLI flags, file maps):
+Each Python and web package has a short contributor README that says what the
+package is and where its code lives. The detail is in this document and in
+[`CLI_REFERENCE.md`](../reference/CLI_REFERENCE.md).
 
 | Package | README | What it covers |
 |---------|--------|----------------|
-| `packages/core` | [`packages/core/README.md`](../../packages/core/README.md) | Ingestion, generation, persistence, providers; all key classes with code examples |
-| `packages/cli` | [`packages/cli/README.md`](../../packages/cli/README.md) | CLI entrypoints and flags; full surface in [`CLI_REFERENCE.md`](../reference/CLI_REFERENCE.md) |
-| `packages/server` | [`packages/server/README.md`](../../packages/server/README.md) | All REST API endpoints, 11 MCP tools, webhook setup, scheduler jobs |
-| `packages/web` | [`packages/web/README.md`](../../packages/web/README.md) | Every frontend file with purpose, API client, hooks, components, pages |
+| `packages/core` | [`packages/core/README.md`](../../packages/core/README.md) | Ingestion, analysis, generation, persistence and providers |
+| `packages/cli` | [`packages/cli/README.md`](../../packages/cli/README.md) | The `repowise` command; full surface in [`CLI_REFERENCE.md`](../reference/CLI_REFERENCE.md) |
+| `packages/server` | [`packages/server/README.md`](../../packages/server/README.md) | REST API, the MCP server (18 registered tools, 10 on by default), webhooks, scheduler |
+| `packages/web` | [`packages/web/README.md`](../../packages/web/README.md) | The local dashboard and how to run it in development |
 
 ---
 
@@ -78,12 +80,12 @@ For per-package detail (installation, full API reference, all CLI flags, file ma
 │      Three Stores     │   │              Consumers                  │
 │                      │   │                                         │
 │  SQL (wiki pages,    │   │  Web UI     MCP Server   GitHub Action  │
-│  jobs, symbols,      │   │  (Next.js)  (11 tools)   (CI/CD)        │
+│  jobs, symbols,      │   │  (Next.js)  (18 tools)   (CI/CD)        │
 │  versions)           │   │                                         │
 │                      │   │  repowise CLI                           │
-│  Vector (LanceDB /   │   │  (init, update, watch,                  │
-│  pgvector, semantic  │   │   search, export, serve, mcp)           │
-│  search, RAG ctx)    │   │                                         │
+│  Vector (LanceDB,    │   │  (init, update, watch,                  │
+│  semantic search,    │   │   search, export, serve, mcp)           │
+│  RAG ctx)            │   │                                         │
 │                      │   └─────────────────────────────────────────┘
 │  Graph (NetworkX,    │
 │  dep graph,          │
@@ -111,7 +113,7 @@ repowise/
 │   │   ├── src/repowise/core/
 │   │   │   ├── ingestion/
 │   │   │   │   ├── traverser.py        # file tree walking + gitignore + per-dir .repowiseIgnore + extra exclude patterns
-│   │   │   │   ├── parser.py           # ASTParser: one class, all languages; _extract_calls(), _extract_import_bindings()
+│   │   │   │   ├── parser/             # ASTParser: one class, all languages; one module per pass (symbols, imports, calls, references)
 │   │   │   │   ├── parsers/            # per-language parser helpers
 │   │   │   │   ├── graph.py            # NetworkX dep graph builder; add_file(), _resolve_calls(), file_subgraph()
 │   │   │   │   ├── call_resolver.py    # CallResolver: origin-stamped call resolution
@@ -135,14 +137,14 @@ repowise/
 │   │   │   │       └── claude_md.py    # ClaudeMdGenerator subclass
 │   │   │   ├── pipeline/
 │   │   │   │   ├── orchestrator.py     # run_pipeline(), PipelineResult
-│   │   │   │   ├── persist.py          # persist_pipeline_result(): shared by CLI + server
+│   │   │   │   ├── persist/            # persist_pipeline_result(): shared by CLI + server
 │   │   │   │   └── progress.py         # ProgressCallback protocol + LoggingProgressCallback
 │   │   │   ├── persistence/
 │   │   │   │   ├── models.py           # SQLAlchemy ORM models
 │   │   │   │   ├── crud.py             # async CRUD layer
 │   │   │   │   ├── database.py         # engine factory, session management
 │   │   │   │   ├── search.py           # SQLite FTS5 full-text search
-│   │   │   │   ├── vector_store.py     # VectorStore abstraction (LanceDB / pgvector)
+│   │   │   │   ├── vector_store.py     # VectorStore abstraction (LanceDB)
 │   │   │   │   └── embedder.py         # Embedder base class + MockEmbedder
 │   │   │   ├── providers/              # LLM provider abstraction
 │   │   │   │   ├── base.py             # BaseProvider, GeneratedResponse, ProviderError
@@ -171,7 +173,7 @@ repowise/
 │   │
 │   ├── server/                 # Python: FastAPI REST API + MCP server
 │   │   └── src/repowise/server/
-│   │       ├── routers/         # FastAPI routers (repos, pages, jobs, symbols, graph, git, dead-code, decisions, search, claude-md)
+│   │       ├── routers/         # FastAPI routers (repos, pages, jobs, symbols, graph, git, dead-code, doc-drift, decisions, search, claude-md)
 │   │       ├── mcp_server/      # MCP server package (11 default tools, split into focused modules)
 │   │       ├── webhooks/        # GitHub + GitLab handlers
 │   │       ├── job_executor.py  # Background pipeline executor: bridges REST to core pipeline
@@ -237,26 +239,26 @@ Key tables:
 
 If you delete the SQL store, you lose everything and must re-run `repowise init`.
 
-### 3.2 Vector Store (LanceDB embedded / pgvector)
+### 3.2 Vector Store (LanceDB embedded)
 
 **Answers: what is semantically similar to this query.**
 
-repowise uses a `VectorStore` abstraction with two backends, selected automatically
-based on the configured SQL backend:
+repowise uses a `VectorStore` abstraction. Search and generation use LanceDB with
+every SQL backend, SQLite or PostgreSQL:
 
-**LanceDB (default: SQLite mode)**
+**LanceDB**
 LanceDB runs embedded as a library, no separate server process. Data is stored in
 `.repowise/lancedb/` using the Lance columnar format. This makes self-hosting trivial
 and keeps the Docker setup simple. LanceDB is significantly faster than ChromaDB on
 both write throughput (batch embedding) and ANN query latency, and it requires no
 C++ build tools to install.
 
-**pgvector (PostgreSQL mode)**
-When repowise is configured with a PostgreSQL database, the `wiki_pages` table gains
-an `embedding vector(N)` column via the `pgvector` PostgreSQL extension. Embeddings
-are stored directly in the same SQL database, no second storage system required.
-Vector similarity search uses `<=>` (cosine distance) with an HNSW index. This is
-the preferred backend for multi-worker production deployments.
+**pgvector (not used yet)**
+On PostgreSQL, the Alembic migration adds an `embedding vector(1536)` column to the
+`wiki_pages` table via the `pgvector` extension, and a `PgVectorStore` class exists,
+but no runtime path reads or writes that column yet: search still goes through
+LanceDB. Wiring pgvector in is tracked in
+[#3090](https://github.com/repowise-dev/repowise/issues/3090).
 
 Every generated wiki page is embedded and stored immediately after generation.
 The vector store is used in two distinct ways:
@@ -272,7 +274,7 @@ search page use the vector store to find the most semantically relevant pages fo
 natural language query. This is better than full-text search for questions like
 "how does authentication work?" or "where is rate limiting handled?".
 
-If you delete the vector store (LanceDB directory or pgvector embeddings), search
+If you delete the vector store (the LanceDB directory), search
 quality degrades and generation context becomes shallower; rebuild it by running
 `repowise reindex` which re-embeds all existing SQL pages into LanceDB using
 the configured embedder (Gemini or OpenAI). No LLM calls, only embedding API calls.
@@ -320,26 +322,25 @@ It can be rebuilt from scratch by re-parsing the source files.
 
 ## 4. Provider Abstraction Layer
 
-Every LLM call in the entire system goes through `LLMProvider`. No provider SDK
-is ever imported from business logic packages.
+Every LLM call in the entire system goes through `BaseProvider`
+(`packages/core/src/repowise/core/providers/llm/base.py`). No provider SDK is
+ever imported from business logic packages.
+
+Each provider is described once, by a `ProviderSpec` in
+`providers/llm/specs.py`: its key and endpoint env vars, models, rate limit,
+whether it needs a key, and whether it drives a local agent CLI. The registry
+tables, the server's `/api/providers` catalog, the init picker and the web UI
+are all derived from those records.
 
 ```
-                    ┌─────────────────┐
-                    │   LLMProvider   │  (abstract base class)
-                    │                 │
-                    │  generate()     │
-                    │  generate_stream│
-                    │  embed()        │
-                    │  generate_batch │  (optional, default = sequential)
-                    │  estimate_cost  │  (optional, returns None if unknown)
-                    └────────┬────────┘
-                             │
-          ┌──────────────────┼──────────────────┬──────────────────┐
-          ▼                  ▼                  ▼                  ▼
-  AnthropicProvider   OpenAIProvider     OllamaProvider    LiteLLMProvider
-  (claude-*)          (gpt-*, any        (any local model,  (100+ providers,
-  batch API + prompt   OpenAI-compat      fully offline,     optional dep)
-  caching support)     endpoint)          no API key)
+                         BaseProvider
+                              |
+      +-----------------------+------------------------+
+      |                       |                        |
+ SDK providers         OpenAICompatibleProvider   AgentCliProvider
+ (anthropic, gemini,   (deepseek, kimi, edenai)   (claude_cli, codex_cli,
+  openai, openrouter,                              opencode: the user's
+  ollama, litellm)                                 logged-in agent CLI)
 ```
 
 ### 4.1 Rate Limiter
@@ -351,8 +352,8 @@ Before every API call, the limiter acquires from both buckets. On a 429 response
 it calls `on_rate_limit_error()` which applies exponential backoff and temporarily
 reduces the refill rate. This is transparent to all callers.
 
-Default limits are configured per provider in `.repowise/config.yaml` and can be
-adjusted for users with higher API tiers.
+Default limits come from each provider's `ProviderSpec.rate_limit`. Agent CLI
+providers get no limiter; their own concurrency semaphore bounds them.
 
 ### 4.2 Prompt Caching
 
@@ -367,8 +368,7 @@ on large repos is typically 60–90%.
 
 ### 4.3 Adding a Provider
 
-Implement `LLMProvider`, add an entry to `LANGUAGE_CONFIGS` in `providers/registry.py`,
-and add a section to `.repowise/config.yaml`. See [Section 17](#17-adding-a-new-llm-provider).
+See [Section 17](#17-adding-a-new-llm-provider).
 
 ---
 
@@ -392,10 +392,19 @@ priority order:
    `src/generated/` without affecting other directories with the same name.
 4. **`extra_exclude_patterns`** (constructor param): additional gitignore-style
    patterns passed at runtime from `--exclude/-x` CLI flags or
-   `repo.settings["exclude_patterns"]` (set via Web UI or REST API PATCH). Applied
+   `.repowise/config.yaml exclude_patterns` (also written by the Web UI and REST API
+   PATCH). Applied
    to both directory pruning (entire subtree skipped) and individual file filtering.
-5. Hardcoded blocklist (`node_modules`, `.git`, `__pycache__`, `dist`, `build`,
-   `*.lock`, `*.min.js`, generated protobuf files, etc.)
+5. Hardcoded blocklist (`node_modules`, `.git`, `__pycache__`, `vendor`,
+   `*.lock`, `*.min.js`, generated protobuf files, etc.). `build`, `coverage`,
+   `dist` and `target` are pruned only when the directory itself holds no
+   hand-written source file (JavaScript, C/C++ and data formats do not count,
+   since builds emit them), so a source package with one of those names is
+   indexed and a committed bundle is not. Any directory that would be pruned
+   by the blocklist can be re-included by an explicit `!pattern` in root or
+   per-directory `.repowiseIgnore` or `exclude_patterns` (e.g. `!src/build/`).
+   Only explicitly named directories are re-included; sub-directories in the
+   blocklist (such as a nested `node_modules`) stay pruned unless also named.
 6. Auto-detection of generated files (files with `// Code generated` headers)
 7. Binary files (detected by null bytes in first 8KB)
 8. Files over `max_file_size_kb` (default: 500KB)
@@ -417,8 +426,8 @@ FileTraverser(
 |--------|------------------------------|
 | `repowise init -x vendor/ -x 'src/gen/**'` | Merged with `config.yaml exclude_patterns`, passed directly |
 | `repowise update` | Read from `.repowise/config.yaml exclude_patterns` |
-| Web UI Excluded Paths section | Saved to `repo.settings["exclude_patterns"]` via REST API |
-| Server sync job | Read from `repo.settings.get("exclude_patterns", [])` |
+| Web UI Excluded Paths section | Saved to `.repowise/config.yaml exclude_patterns` via REST API PATCH |
+| Server sync job | Read from `.repowise/config.yaml exclude_patterns`; an older `repo.settings` copy applies only while the file lacks the key |
 
 The traverser also detects monorepo structure by looking for multiple
 `pyproject.toml`, `package.json`, `go.mod`, or `Cargo.toml` files at depth 1–2.
@@ -510,14 +519,14 @@ meaning is easy to get wrong:
 
 **Call resolution** is handled by the `CallResolver` module (`ingestion/call_resolver.py`),
 which runs after the static import graph is built. Every edge it emits is stamped
-with a `ResolutionOrigin`, a closed vocabulary of 29 values in
+with a `ResolutionOrigin`, a closed vocabulary of 39 values in
 `ingestion/models.py`, each carrying exactly one confidence, so the origin
 distribution and the confidence histogram are two views of the same data. The
 span runs from `same_file` and `self_scope` at 0.95, through import- and
 package-scoped origins at 0.88–0.90, down to `global_unique` at 0.50, a
 repo-wide name match, which the source comments label as a guess.
 
-Twelve of the 29 are **receiver-typing** origins: they resolve a call on a
+Twelve of the 39 are **receiver-typing** origins: they resolve a call on a
 variable by reading the variable's declaration (a local, a parameter, an
 enclosing class's field, or a type a framework decorator imposed), then resolving
 the method on that type. Registered for Java, C#, Python, Go, Kotlin and Swift.
@@ -532,15 +541,15 @@ architecture.
 
 **Named binding resolution** (`NamedBinding` dataclass in `ingestion/models.py`) ensures
 that aliased imports, barrel re-exports, and namespace imports resolve to the correct
-definition site. The parser's `_extract_import_bindings()` produces bindings for each
-import statement, and `GraphBuilder.build()` populates `Import.resolved_file` from them.
+definition site. `extract_import_bindings()` in `ingestion/extractors/bindings/` (one extractor
+per language) produces bindings for each import statement, and `GraphBuilder.build()` populates `Import.resolved_file` from them.
 Barrel files (`__init__.py`, `index.ts`) are followed one hop to resolve re-exports.
 
 **Two-tier graph isolation:**
 
 Symbol nodes and their `DEFINES`/`HAS_METHOD`/`CALLS` edges are stored in the same
 `DiGraph` as file nodes, but `file_subgraph()` returns a view containing only `file`
-and `package` nodes. All file-level metrics (PageRank, betweenness, SCCs, Louvain)
+and `package` nodes. All file-level metrics (PageRank, betweenness, SCCs, community detection)
 run on this subgraph so that the large number of symbol nodes does not distort centrality
 scores.
 
@@ -552,7 +561,7 @@ After graph construction, the builder computes:
   Logged as warnings. Require special generation handling (see below).
 - **Betweenness centrality**: identifies "bridge" symbols whose removal would
   disconnect the graph. These are the most critical to document well.
-- **Community detection (Louvain)**: discovers logical modules even when the
+- **Community detection (Leiden when the `graph-extra` extra is installed, Louvain otherwise)**: discovers logical modules even when the
   directory structure doesn't reflect them. These communities become module pages.
 
 **Circular dependency handling:**
@@ -596,7 +605,7 @@ lower-priority items if the token budget is exceeded):
 5. **Import summaries**: for each file this file imports from: the summary of
    that file's already-generated wiki page (if available), or just its public
    API signatures (if not yet generated)
-6. **RAG context**: vector store similarity search (LanceDB or pgvector) using this file's top exported
+6. **RAG context**: vector store similarity search (LanceDB) using this file's top exported
    symbols as the query. Returns the top 3 most relevant already-generated pages.
    This propagates understanding upward: `AuthService`'s page will know what
    `UserRepository` actually does, not just that it imports from it.
@@ -688,13 +697,14 @@ sweep does not mistake "deliberately kept" for "no longer produced".
 `repowise init` is fully idempotent. Running it twice produces the same result.
 Running it after a partial previous run completes only the remaining pages.
 
-### 5.7 Shared Persistence (`pipeline/persist.py`)
+### 5.7 Shared Persistence (`pipeline/persist/`)
 
 The persistence logic for storing a `PipelineResult` into the database (graph nodes,
 edges, symbols, pages, git metadata, dead code findings, decision records) was
-extracted from the CLI's `init_cmd.py` into `core/pipeline/persist.py`. Both the
+extracted from the CLI's `init_cmd.py` into the `core/pipeline/persist/` package. Both the
 CLI and the server's background job executor call `persist_pipeline_result()`, zero
-duplication.
+duplication. The package splits the writers by area (graph, prune, tombstones,
+sweeps, security, git, health, analysis, generation) and re-exports them all.
 
 FTS indexing is intentionally excluded from this function. Callers must run it
 separately after the session closes to avoid SQLite write-lock conflicts.
@@ -865,7 +875,7 @@ The `GitIndexer` runs once during `repowise init` (after graph construction, bef
 generation) and incrementally during `repowise update`. All git features degrade
 gracefully when git metadata is unavailable; they simply skip git-enriched context.
 
-### 7.1 GitIndexer (`packages/core/ingestion/git_indexer.py`)
+### 7.1 GitIndexer (`packages/core/src/repowise/core/ingestion/git_indexer/`)
 
 The `GitIndexer` class mines git history into the `git_metadata` SQL table. For each
 tracked file, it computes:
@@ -948,7 +958,7 @@ The analyzer runs after `GitIndexer` during init (Step 3.6) and optionally durin
 **Finding types:**
 - `unreachable_file`: file with `in_degree == 0`, not an entry point, test, or config
 - `unused_export`: public symbol with no incoming edges (but file IS imported)
-- `unused_internal`: private symbol with no `calls` edges from same file
+- `unused_internal`: private symbol with no `calls` edges from same file; a COBOL paragraph is judged from the program's source text instead
 - `zombie_package`: monorepo package with no incoming `inter_package` edges
 
 **Confidence scoring (conservative: when in doubt, do NOT flag):**
@@ -995,6 +1005,10 @@ repowise dead-code resolve [FINDING_ID]
   --status acknowledged|resolved|false_positive
   --note "reason"
 ```
+
+With an index at HEAD, the command reads the findings `init`/`update` stored,
+the same rows `get_dead_code` serves. A floor below the stored one (0.4), an
+index behind HEAD, or no index at all runs the analyzer over the working tree.
 
 ### 8.4 Integration with Other Components
 
@@ -1047,7 +1061,7 @@ are flagged as stale.
 repowise decision add        # interactive capture
 repowise decision list       # tabular list with filters
 repowise decision show <id>  # full detail
-repowise decision confirm    # proposed → active
+repowise decision confirm <id>  # candidate → accepted
 repowise decision dismiss    # dismiss proposed (sticky tombstone)
 repowise decision deprecate  # active → deprecated
 repowise decision health     # health summary
@@ -1060,7 +1074,7 @@ repowise decision health     # health summary
 | `core/analysis/decision_extractor.py` | All 4 capture sources + staleness computation |
 | `core/persistence/models.py` | `DecisionRecord` ORM model |
 | `core/persistence/crud.py` | 8 decision CRUD functions |
-| `server/mcp_server/tool_why.py` | MCP tool `get_why` (3-mode: search, path, health dashboard) |
+| `server/mcp_server/tool_why/` | MCP tool `get_why` (package: one module per mode, plus shared loading, ranking, projection and caps) |
 | `server/routers/decisions.py` | REST API endpoints |
 | `cli/commands/decision_cmd.py` | CLI command group (7 subcommands) |
 
@@ -1085,9 +1099,10 @@ and supports two transports:
 
 Canonical reference: [`docs/agent/MCP_TOOLS.md`](../agent/MCP_TOOLS.md).
 A single-repo server advertises **10** tools by default (the canonical set).
-Workspace mode adds `list_repos`. Six specialists are registered but opt-in:
+Workspace mode adds `list_repos`. Seven specialists are registered but opt-in:
 `get_architecture`, `get_blast_radius`, `get_dependency_path`,
-`get_execution_flows`, `generate_refactoring_code`, and `get_conformance`.
+`get_execution_flows`, `generate_refactoring_code`, `get_conformance`, and
+`set_finding_status`.
 
 | Tool | What it answers | When to call |
 |------|----------------|-------------|
@@ -1122,20 +1137,23 @@ Served on port `7337` alongside the web UI. All endpoints are prefixed with `/ap
 Key routers:
 - `/api/repos`: register repos, trigger sync, full-resync (now launches background pipeline jobs with concurrent-run prevention)
 - `/api/pages`: read pages, version history, force-regenerate single page
-- `/api/search`: semantic (LanceDB or pgvector) and full-text (SQLite FTS5 / PostgreSQL tsvector) search
+- `/api/search`: semantic (LanceDB) and full-text (SQLite FTS5 / PostgreSQL tsvector) search
 - `/api/jobs`: job status, SSE stream for live progress updates
 - `/api/symbols`: symbol lookup, dependency path queries
 - `/api/graph`: graph export in D3-compatible JSON format
 - `/api/webhooks/github`: GitHub webhook handler with HMAC verification
 - `/api/webhooks/gitlab`: GitLab webhook handler
+- `/api/webhooks/gitea`: Gitea and Forgejo webhook handler with HMAC verification
 - `/api/repos/{id}/git-metadata`: per-file git metadata
-- `/api/repos/{id}/hotspots`: high-churn + high-complexity files
+- `/api/repos/{id}/hotspots`: hotspots ranked by temporal hotspot score; `q`, `filter`, `sort`/`order`, offset paging, `hold`/`include` (map scope) and `facets` counts over the searched set
 - `/api/repos/{id}/ownership`: ownership breakdown (file/module/package granularity)
 - `/api/repos/{id}/co-changes`: co-change partners for a file
 - `/api/repos/{id}/git-summary`: aggregate git health signals for dashboard
 - `/api/repos/{id}/dead-code`: dead code findings (GET list, POST trigger analysis)
 - `/api/repos/{id}/dead-code/summary`: aggregate dead code stats
 - `/api/dead-code/{finding_id}`: PATCH to resolve/acknowledge findings
+- `/api/repos/{id}/doc-drift`: documents whose assertions the repo no longer satisfies, with a server-computed summary
+- `/api/repos/{id}/doc-drift/references`: which documents name one file (the reverse view)
 - `/api/repos/{id}/claude-md`: GET preview of generated CLAUDE.md section (JSON, no disk write)
 - `/api/repos/{id}/claude-md/generate`: POST to regenerate and write CLAUDE.md to disk
 - `/health`: liveness + readiness (checks DB + provider)
@@ -1271,12 +1289,12 @@ JobSystem
        │              └──────────────┬─────────────────────┘
        │                             │
        │                             ▼
-       │                       LLMProvider.generate()
+       │                       BaseProvider.generate()
        │                             │
        │                             ▼
        │                      WikiPage stored:
        │                        → SQL (content, metadata, confidence=1.0)
-       │                        → VectorStore (LanceDB or pgvector: embedding for RAG)
+       │                        → VectorStore (LanceDB: embedding for RAG)
        │                        → Graph (node.page_id linked)
        │
        ├── Level 2: file pages (parallel, RAG pool growing with each completed page)
@@ -1332,7 +1350,7 @@ ChangeDetector.get_affected_pages(cascade_budget=30)
     │
     ▼
 For each page in `regenerate`:
-    ContextAssembler → LLMProvider → update SQL + VectorStore + Graph
+    ContextAssembler → BaseProvider → update SQL + VectorStore + Graph
     │
     ▼
 For each page in `rename_patch`:
@@ -1384,7 +1402,7 @@ Claude Code: "how does the auth module work?"
 MCP client calls repowise tool: search_codebase(query="auth module")
     │
     ▼
-VectorStore similarity search (LanceDB or pgvector) → top 5 page IDs
+VectorStore similarity search (LanceDB) → top 5 page IDs
     │
     ▼
 SQL: fetch page content for those IDs
@@ -1417,9 +1435,9 @@ a different problem:
 
 3. **`extra_exclude_patterns` (runtime)**: patterns injected without touching any
    file on disk: from `--exclude/-x` CLI flags (dev workflow), from
-   `config.yaml exclude_patterns` (persisted per repo), or from
-   `repo.settings["exclude_patterns"]` (Web UI / REST API). This lets teams configure
-   exclusions through the UI without git access to the target repo.
+   `config.yaml exclude_patterns` (persisted per repo, and written by the Web UI /
+   REST API too). This lets teams configure exclusions through the UI, and the CLI
+   and the UI always show the same list.
 
 All three layers use `pathspec` with `gitwildmatch` semantics, the same library used
 for `.gitignore` parsing, so the full gitignore syntax works everywhere.
@@ -1460,8 +1478,9 @@ in the existing `wiki_pages` table, queries are plain SQL with `<=>` cosine dist
 and backup/restore is a single `pg_dump`. The HNSW index (`CREATE INDEX ... USING hnsw`)
 gives query latency on par with LanceDB at typical repowise dataset sizes.
 
-The `VectorStore` abstraction in `packages/core/src/repowise/core/persistence/vector.py`
-selects the backend at startup based on `DATABASE_URL`: SQLite → LanceDB, PostgreSQL → pgvector.
+That is the plan rather than current behaviour: today every SQL backend, PostgreSQL
+included, uses LanceDB for search, and the pgvector column is not read or written
+yet ([#3090](https://github.com/repowise-dev/repowise/issues/3090)).
 
 ### NetworkX + SQLite fallback, not Neo4j
 
@@ -1523,7 +1542,7 @@ humans decide before deleting anything.
 
 All database operations use async SQLAlchemy with `aiosqlite`. The event loop
 is never blocked. This matters during generation: the LLM call, the DB write,
-and the vector store embed (LanceDB or pgvector) can overlap with the next file's context assembly.
+and the vector store embed (LanceDB) can overlap with the next file's context assembly.
 
 ---
 
@@ -1561,7 +1580,7 @@ Key files:
 | `core/generation/editor_files/fetcher.py` | `EditorFileDataFetcher`, queries DB for architecture summary, modules, hotspots, decisions |
 | `core/generation/editor_files/tech_stack.py` | Filesystem scan for languages, frameworks, build commands |
 | `core/generation/editor_files/claude_md.py` | `ClaudeMdGenerator`, 30-line subclass that binds filename + template |
-| `core/generation/templates/claude_md.j2` | Jinja2 template for the Repowise-managed section |
+| `core/generation/templates/_editor_block.j2` | Jinja2 template for the Repowise-managed section |
 | `cli/commands/claude_md_cmd.py` | `repowise generate-claude-md` CLI command |
 | `server/routers/claude_md.py` | `GET/POST /api/repos/{id}/claude-md` REST endpoints |
 
@@ -1576,7 +1595,7 @@ each with the file it registers in and what you lose by skipping it.
 
 Two things worth knowing before you start:
 
-- **You never edit `parser.py` or `registry.py`.** Language identity goes in
+- **You never edit `parser/` or `registry.py`.** Language identity goes in
   `ingestion/languages/specs/<lang>.py` and is slotted into `ALL_SPECS`; parser
   configuration goes in `ingestion/language_configs.py`. The one unavoidable
   core edit is adding your tag to the `LanguageTag` Literal in
@@ -1589,38 +1608,16 @@ Two things worth knowing before you start:
 
 ## 17. Adding a New LLM Provider
 
-1. **Create `packages/core/providers/<name>.py`**
+1. Create `packages/core/src/repowise/core/providers/llm/<name>.py` with a
+   `BaseProvider` subclass (or `OpenAICompatibleProvider` for an
+   OpenAI-compatible API).
+2. Add one `ProviderSpec` to `_SPECS` in `providers/llm/specs.py`. Nothing else
+   lists providers.
+3. Add tests in `tests/unit/test_providers/`.
 
-   Subclass `LLMProvider` and implement:
-   - `generate(request: GenerationRequest) -> GenerationResponse`
-   - `generate_stream(request: GenerationRequest) -> AsyncIterator[str]`
-   - `embed(request: EmbedRequest) -> EmbedResponse`
-   - `name` property
-
-   Optionally override:
-   - `supports_batch` → `True` if the provider has a batch API
-   - `generate_batch(requests) -> list[GenerationResponse]`
-   - `estimate_cost(input_tokens, output_tokens) -> float`
-
-2. **Register in `providers/registry.py`**
-
-   ```python
-   case "myprovider": return MyProvider(config)
-   ```
-
-3. **Add config section to `.repowise/config.yaml` docs**
-
-   ```yaml
-   myprovider:
-     api_key: ${MYPROVIDER_API_KEY}
-     base_url: https://api.myprovider.com/v1
-   ```
-
-4. **Add default rate limits** to `PROVIDER_DEFAULT_LIMITS` in `rate_limiter.py`
-
-5. **Add a `MockProvider` fixture** for tests if the provider has unique response formats
-
-6. **Update `CONTRIBUTING.md`** with the new provider's environment variables
+The recipe, including the frozen picker test, is in
+[CONTRIBUTING.md](../../.github/CONTRIBUTING.md). A backend that drives an agent's
+CLI follows [agent-platform.md](agent-platform.md).
 
 ---
 
@@ -1631,17 +1628,14 @@ Full configuration with defaults (`.repowise/config.yaml`):
 ```yaml
 provider: anthropic          # anthropic | openai | openrouter | gemini | deepseek | kimi | ollama | litellm | codex_cli | opencode | edenai | mock
 model: claude-sonnet-4-5    # passed through to the provider
-embedding_provider: anthropic
-embedding_model: voyage-3
+embedder: gemini             # gemini | openai | openrouter | ollama | edenai | mock
+embedding_model: gemini-embedding-001
 
 prompt_caching: true
 
-anthropic:
-  api_key: ${ANTHROPIC_API_KEY}
-
+# API keys are read from the environment or .repowise/.env, never from here.
 openai:
-  api_key: ${OPENAI_API_KEY}
-  base_url: https://api.openai.com/v1
+  base_url: https://api.openai.com/v1   # any OpenAI-compatible endpoint
 
 ollama:
   base_url: http://localhost:11434

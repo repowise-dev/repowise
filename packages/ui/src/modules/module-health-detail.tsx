@@ -154,7 +154,7 @@ export function ModuleHealthDetailView({
                         "h-full",
                         pct > 80
                           ? "bg-[var(--color-warning)]"
-                          : "bg-[var(--color-accent-primary)]",
+                          : "bg-[var(--color-progress-fill)]",
                       )}
                       style={{ width: `${pct}%` }}
                     />

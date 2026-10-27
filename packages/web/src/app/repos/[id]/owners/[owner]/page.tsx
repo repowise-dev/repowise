@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { getTranslations } from "next-intl/server";
 import { Users } from "lucide-react";
 import { PageShell } from "@repowise-dev/ui/shared/page-shell";
 import { OwnerAvatar } from "@repowise-dev/ui/owners/owner-avatar";
@@ -7,9 +8,15 @@ import { OwnerProfileView } from "@repowise-dev/ui/owners/owner-profile";
 import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import { formatDate, formatRelativeTimeOrNull } from "@repowise-dev/ui/lib/format";
+import { ApiClientError } from "@/lib/api/client";
 import { getOwnerProfile } from "@/lib/api/owners";
+import { WhatDependsOnThem } from "@/components/owners/what-depends-on-them";
+import { buildOwnershipLabels } from "@/components/owners/ownership-labels";
 
-export const metadata: Metadata = { title: "Contributor" };
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getTranslations("views.contributors");
+  return { title: t("profileTitle") };
+}
 
 /**
  * A server component, where this was a client component behind one SWR wave.
@@ -26,27 +33,34 @@ export default async function OwnerProfilePage({
   params: Promise<{ id: string; owner: string }>;
 }) {
   const { id, owner } = await params;
+  const t = await getTranslations("views.contributors");
+  const labels = buildOwnershipLabels(await getTranslations("views.contributors.ui"), t);
   const base = `/repos/${id}`;
   const ownerKey = decodeURIComponent(owner);
 
-  const profile = await getOwnerProfile(id, ownerKey).catch(() => null);
+  // Only a 404 means "no such contributor"; anything else is a failed
+  // request and goes to the route error boundary.
+  const profile = await getOwnerProfile(id, ownerKey).catch((e: unknown) => {
+    if (e instanceof ApiClientError && e.status === 404) return null;
+    throw e;
+  });
 
   if (!profile) {
     return (
       <PageShell
-        icon={<Users className="h-5 w-5 text-[var(--color-accent-primary)]" />}
-        title="Contributor"
+        icon={<Users />}
+        title={t("profileTitle")}
       >
         <EmptyState
-          icon={<Users className="h-6 w-6" />}
-          title="No profile for this contributor"
-          description="Nobody by this name or address appears in the indexed git history. They may have committed under a different address, or the history may not have been synced yet."
+          title={t("profileEmptyTitle")}
+          description={t("profileEmptyDescription")}
+          action={{ label: t("profileBack"), href: `${base}/owners` }}
         />
       </PageShell>
     );
   }
 
-  const displayName = profile.name || profile.email || "unknown";
+  const displayName = profile.name || profile.email || t("unknownName");
   const lastTouched = formatRelativeTimeOrNull(profile.last_commit_at);
 
   // Tenure as a sentence rather than a "new to this repo" badge. That badge
@@ -55,9 +69,9 @@ export default async function OwnerProfilePage({
   // dates says the same thing without dressing it as a verdict.
   const tenure = [
     profile.first_commit_at
-      ? `Committing here since ${formatDate(profile.first_commit_at)}`
+      ? t("tenureSince", { date: formatDate(profile.first_commit_at) })
       : null,
-    lastTouched ? `last touched ${lastTouched}` : null,
+    lastTouched ? t("tenureLastTouched", { time: lastTouched }) : null,
   ]
     .filter(Boolean)
     .join(", ");
@@ -71,6 +85,8 @@ export default async function OwnerProfilePage({
       <OwnerProfileView
         owner={profile}
         base={base}
+        dependsOn={<WhatDependsOnThem repoId={id} ownerKey={profile.key} />}
+        labels={labels}
         hrefForFile={(path) => fileEntityPath(base, path)}
         hrefForModule={(mod) => `${base}/modules/${encodeURIComponent(mod)}`}
         hrefForCoAuthor={(c) =>

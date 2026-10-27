@@ -21,7 +21,11 @@ from repowise.core.persistence.crud import (
 )
 from repowise.core.persistence.database import get_session
 from repowise.core.registry import mcp_tool_registry as mcp
-from repowise.server.mcp_server._helpers import _get_repo, _resolve_repo_context
+from repowise.server.mcp_server._helpers import (
+    _get_repo,
+    _resolve_repo_context,
+    _unsupported_repo_all,
+)
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 
 # One triage vocabulary for every layer (shared with health findings and the
@@ -70,6 +74,8 @@ async def set_finding_status(
             f"unknown finding status: {status!r}; expected one of {ALLOWED_STATUSES}"
         )
 
+    if repo == "all":
+        return _unsupported_repo_all("set_finding_status")
     ctx = await _resolve_repo_context(repo)
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)

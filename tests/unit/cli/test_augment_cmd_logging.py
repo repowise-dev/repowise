@@ -23,7 +23,7 @@ def test_augment_configures_logging_before_hook_work(
     def fake_configure_cli_logging(*, verbose: bool = False) -> None:
         events.append(("logging", verbose))
 
-    def fake_run_augment(*, client: str | None = None) -> None:
+    def fake_run_augment(*, client: str | None = None, coverage_only: bool = False) -> None:
         events.append(("run", client))
 
     monkeypatch.setattr(augment_cmd, "configure_cli_logging", fake_configure_cli_logging)

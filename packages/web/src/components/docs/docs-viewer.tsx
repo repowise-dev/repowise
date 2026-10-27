@@ -19,8 +19,10 @@ import { useGraphMetrics, useCallersCallees } from "@/lib/hooks/use-graph";
 import type { ReaderPersona } from "@repowise-dev/ui/docs/reader-persona";
 import type { DocPage, DocPageSummary } from "@repowise-dev/types/docs";
 import type { PageResponse, PageSummary } from "@/lib/api/types";
+import { useTranslations } from "next-intl";
 
 function PercentileBar({ value, label }: { value: number; label: string }) {
+  const t = useTranslations("docs");
   const pct = 100 - value;
   return (
     <div className="flex items-center justify-between gap-2">
@@ -39,7 +41,7 @@ function PercentileBar({ value, label }: { value: number; label: string }) {
           "text-[10px] font-mono tabular-nums w-10 text-right",
           value >= 75 ? "text-[var(--color-success)]" : value >= 50 ? "text-[var(--color-warning)]" : "text-[var(--color-text-tertiary)]",
         )}>
-          Top {pct}%
+          {t("viewer.topPercent", { pct })}
         </span>
       </div>
     </div>
@@ -47,6 +49,7 @@ function PercentileBar({ value, label }: { value: number; label: string }) {
 }
 
 function DocsSidebar({ repoId, targetPath }: { repoId: string; targetPath: string }) {
+  const t = useTranslations("docs");
   const nodeId = targetPath;
   const { metrics, isLoading: metricsLoading } = useGraphMetrics(repoId, nodeId);
   const symbolNodeId = targetPath.includes("::") ? targetPath : null;
@@ -76,20 +79,34 @@ function DocsSidebar({ repoId, targetPath }: { repoId: string; targetPath: strin
           {metrics.betweenness_scored === false ? (
             // Never measured, so a percentile bar would draw a rank it does not have.
             <div className="flex items-center justify-between">
-              <span className="text-xs text-[var(--color-text-tertiary)]">Centrality</span>
-              <span className="text-xs text-[var(--color-text-tertiary)]">Not scored yet</span>
+              <span className="text-xs text-[var(--color-text-tertiary)]">
+                {t("viewer.centrality")}
+              </span>
+              <span className="text-xs text-[var(--color-text-tertiary)]">
+                {t("viewer.notScored")}
+              </span>
             </div>
           ) : (
-            <PercentileBar value={metrics.betweenness_percentile} label="Centrality" />
+            <PercentileBar
+              value={metrics.betweenness_percentile}
+              label={t("viewer.centrality")}
+            />
           )}
           <div className="flex items-center justify-between">
-            <span className="text-xs text-[var(--color-text-tertiary)]">Degree</span>
+            <span className="text-xs text-[var(--color-text-tertiary)]">
+              {t("viewer.degree")}
+            </span>
             <span className="text-xs font-mono text-[var(--color-text-secondary)]">
-              {metrics.in_degree} in &middot; {metrics.out_degree} out
+              {t("viewer.degreeValue", {
+                inbound: metrics.in_degree,
+                outbound: metrics.out_degree,
+              })}
             </span>
           </div>
           {metrics.is_entry_point && (
-            <Badge variant="accent" className="text-[10px]">Entry Point</Badge>
+            <Badge variant="accent" className="text-[10px]">
+              {t("viewer.entryPoint")}
+            </Badge>
           )}
         </div>
       </div>
@@ -98,7 +115,9 @@ function DocsSidebar({ repoId, targetPath }: { repoId: string; targetPath: strin
           rest rather than as its own titled section. */}
       {metrics.community_label && (
         <div className="flex items-center justify-between gap-2">
-          <span className="text-xs text-[var(--color-text-tertiary)]">Community</span>
+          <span className="text-xs text-[var(--color-text-tertiary)]">
+            {t("viewer.community")}
+          </span>
           <Link
             href={`/repos/${repoId}/architecture?view=communities`}
             className="inline-flex items-center gap-1 truncate text-xs text-[var(--color-accent)] hover:underline"
@@ -114,7 +133,9 @@ function DocsSidebar({ repoId, targetPath }: { repoId: string; targetPath: strin
         <div>
           {callData.caller_count > 0 && (
             <div className="mb-2">
-              <p className="text-[10px] text-[var(--color-text-tertiary)] mb-1">Called by ({callData.caller_count})</p>
+              <p className="text-[10px] text-[var(--color-text-tertiary)] mb-1">
+                {t("viewer.calledBy", { count: callData.caller_count })}
+              </p>
               {callData.callers.slice(0, 5).map((c) => (
                 <p key={c.symbol_id} className="text-xs font-mono text-[var(--color-text-secondary)] truncate pl-2" title={c.symbol_id}>
                   {c.name}
@@ -124,7 +145,9 @@ function DocsSidebar({ repoId, targetPath }: { repoId: string; targetPath: strin
           )}
           {callData.callee_count > 0 && (
             <div>
-              <p className="text-[10px] text-[var(--color-text-tertiary)] mb-1">Calls ({callData.callee_count})</p>
+              <p className="text-[10px] text-[var(--color-text-tertiary)] mb-1">
+                {t("viewer.calls", { count: callData.callee_count })}
+              </p>
               {callData.callees.slice(0, 5).map((c) => (
                 <p key={c.symbol_id} className="text-xs font-mono text-[var(--color-text-secondary)] truncate pl-2" title={c.symbol_id}>
                   {c.name}
@@ -138,6 +161,9 @@ function DocsSidebar({ repoId, targetPath }: { repoId: string; targetPath: strin
   );
 }
 
+/** Page types whose `target_path` is a file or a `file::symbol` id. */
+const SIGNAL_PAGE_TYPES = new Set(["file_page", "symbol_spotlight", "api_contract", "infra_page"]);
+
 /**
  * Consolidated "At a glance" signals for a file page — hotspot, ownership,
  * churn, bus factor — pulled from the git-metadata endpoint so the reader
@@ -145,6 +171,7 @@ function DocsSidebar({ repoId, targetPath }: { repoId: string; targetPath: strin
  * Renders nothing for non-file pages or files without git history.
  */
 function AtAGlance({ repoId, targetPath }: { repoId: string; targetPath: string }) {
+  const t = useTranslations("docs");
   const isFile =
     !!targetPath &&
     !targetPath.includes("::") &&
@@ -172,32 +199,39 @@ function AtAGlance({ repoId, targetPath }: { repoId: string; targetPath: string 
         {data.is_hotspot && (
           <Badge variant="outline" className="text-[10px] border-[var(--color-warning)]/40 text-[var(--color-warning)]">
             <Flame className="h-2.5 w-2.5 mr-1" />
-            Hotspot · top {churnTop}%
+            {t("viewer.hotspot", { pct: churnTop })}
           </Badge>
         )}
         {data.is_stable && !data.is_hotspot && (
-          <Badge variant="outline" className="text-[10px]">Stable</Badge>
+          <Badge variant="outline" className="text-[10px]">
+            {t("viewer.stable")}
+          </Badge>
         )}
         {data.bus_factor === 1 && (
           <Badge variant="outline" className="text-[10px] border-[var(--color-warning)]/40 text-[var(--color-warning)]">
-            Bus factor 1
+            {t("viewer.busFactorOne")}
           </Badge>
         )}
+        {/* Plain outline, like every other chip in this row. It used to carry
+            --color-error, which made it the loudest mark on the panel and put
+            it in the same colour vocabulary the health bands use. */}
         {fix?.magnet && (
           <Badge
             variant="outline"
-            className="text-[10px] border-[var(--color-error)]/40 text-[var(--color-error)]"
-            title={`Repeatedly bug-fixed, most recently ${fix.age}.`}
+            className="text-[10px]"
+            title={t("viewer.bugMagnetTitle", { age: fix.age ?? "" })}
           >
             <Bug className="h-2.5 w-2.5 mr-1" />
-            Bug magnet
+            {t("viewer.bugMagnet")}
           </Badge>
         )}
       </div>
       <div className="mt-2 space-y-1 text-xs text-[var(--color-text-secondary)]">
         {data.primary_owner_name && (
           <div className="flex items-center justify-between gap-2">
-            <span className="text-[var(--color-text-tertiary)]">Owner</span>
+            <span className="text-[var(--color-text-tertiary)]">
+              {t("viewer.owner")}
+            </span>
             <span className="truncate" title={data.primary_owner_name}>
               {data.primary_owner_name}
               {data.primary_owner_commit_pct != null &&
@@ -206,33 +240,50 @@ function AtAGlance({ repoId, targetPath }: { repoId: string; targetPath: string 
           </div>
         )}
         <div className="flex items-center justify-between gap-2">
-          <span className="text-[var(--color-text-tertiary)]">Commits (90d)</span>
+          <span className="text-[var(--color-text-tertiary)]">
+            {t("viewer.commits90d")}
+          </span>
           <span className="font-mono">{data.commit_count_90d}</span>
         </div>
         {fix && (
           <div className="flex items-center justify-between gap-2">
-            <span className="text-[var(--color-text-tertiary)]">Bug fixes</span>
-            <span className="font-mono" title="Bug-fix commits that touched this file in the trailing defect window.">
+            <span className="text-[var(--color-text-tertiary)]">
+              {t("viewer.bugFixes")}
+            </span>
+            <span
+              className="font-mono"
+              title={t("viewer.bugFixesTitle")}
+            >
               {fix.count}
               {fix.age && ` · last ${fix.age}`}
             </span>
           </div>
         )}
         <div className="flex items-center justify-between gap-2">
-          <span className="text-[var(--color-text-tertiary)]">Contributors</span>
+          <span className="text-[var(--color-text-tertiary)]">
+            {t("viewer.contributors")}
+          </span>
           <span className="font-mono">{data.contributor_count}</span>
         </div>
-        {data.agent_authored_pct != null && (data.agent_commit_count ?? 0) > 0 && (
+        {(data.agent_commit_count ?? 0) > 0 && (
+          // Share of commits with a known source, beside that coverage;
+          // withheld below the coverage floor. Unknown is never human.
           <div className="flex items-center justify-between gap-2">
             <span className="text-[var(--color-text-tertiary)]">Agent-authored</span>
             <span className="font-mono">
-              {Math.round(data.agent_authored_pct * 100)}% · {data.agent_commit_count}
+              {data.agent_authored_pct != null
+                ? `≥${Math.round(data.agent_authored_pct * 100)}% of covered · `
+                : ""}
+              {data.agent_commit_count} · coverage{" "}
+              {Math.round((data.attribution_coverage ?? 0) * 100)}%
             </span>
           </div>
         )}
         {data.original_path && (
           <div className="flex items-center justify-between gap-2">
-            <span className="shrink-0 text-[var(--color-text-tertiary)]">Renamed from</span>
+            <span className="shrink-0 text-[var(--color-text-tertiary)]">
+              {t("viewer.renamedFrom")}
+            </span>
             <span className="truncate font-mono" title={data.original_path}>
               {data.original_path}
             </span>
@@ -240,7 +291,7 @@ function AtAGlance({ repoId, targetPath }: { repoId: string; targetPath: string 
         )}
         {data.commit_count_capped && (
           <p className="text-[10px] text-[var(--color-text-tertiary)]">
-            History capped during indexing, so older commits are not counted above.
+            {t("viewer.historyCapped")}
           </p>
         )}
       </div>
@@ -282,6 +333,7 @@ export function DocsViewer({
   onGenerated,
   missingPageId,
 }: DocsViewerProps) {
+  const t = useTranslations("docs");
   const buildPageHref = useCallback(
     (pageId: string) => docsPagePath(`/repos/${repoId}`, pageId),
     [repoId],
@@ -301,11 +353,15 @@ export function DocsViewer({
     [repoId],
   );
 
-  const hasTargetPath = !!page?.target_path;
   const targetPath = page?.target_path ?? "";
+  // Decided by page type, not path shape: only these target a file or a
+  // symbol. Any other target (the repo overview's repo name, a module's
+  // directory, a cycle id) is no file, so every row below asked the API for
+  // it and got a 404; module pages already have their own history card.
+  const showSignals = !!targetPath && SIGNAL_PAGE_TYPES.has(page?.page_type ?? "");
   // Security findings only make sense for real source files.
   const isFilePath =
-    hasTargetPath &&
+    showSignals &&
     !targetPath.includes("::") &&
     !targetPath.startsWith("onboarding/") &&
     !targetPath.startsWith("layer:");
@@ -324,16 +380,23 @@ export function DocsViewer({
       buildFileHref={buildFileHref}
       missingPageId={missingPageId}
       LinkComponent={Link}
-      upgradeSlot={
+      // The page's own model action sits in its metadata row, on the page
+      // types a model writes. Not passed as `upgradeSlot` as well: one action
+      // per page, not a second copy at the foot.
+      pageActionSlot={
         page && isModelWrittenType(page.page_type) ? (
           <PageGenerateButton
             page={page}
             repoId={repoId}
             onGenerated={onGenerated}
-            variant="inline"
           />
         ) : undefined
       }
+      freshnessHref={`/repos/${repoId}/docs/drift`}
+      freshnessLabels={{
+        stale: t("viewer.freshness.stale"),
+        outdated: t("viewer.freshness.outdated"),
+      }}
       versionHistorySlot={
         page ? (
           <VersionHistoryWrapper
@@ -344,7 +407,7 @@ export function DocsViewer({
         ) : undefined
       }
       intelligenceSlot={
-        hasTargetPath ? (
+        showSignals ? (
           // One "Signals" block, not five. At a glance, Importance, Community,
           // Call graph and Security each announced themselves with their own
           // uppercase label over a handful of rows, so the rail was mostly
@@ -352,7 +415,7 @@ export function DocsViewer({
           // about this code before I touch it — so they read as one list.
           <div>
             <p className="mb-2.5 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-              Signals
+              {t("viewer.signals")}
             </p>
             <div className="flex flex-col gap-4">
               <AtAGlance repoId={repoId} targetPath={targetPath} />

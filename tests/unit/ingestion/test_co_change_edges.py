@@ -153,6 +153,88 @@ class TestStructuralLabel:
         assert builder.label_co_change_structure(partners) == 1
         assert "dependency_kind" not in partners["a.py"][0]
 
+    def test_a_chain_through_a_barrel_explains_the_pair(self, builder: GraphBuilder) -> None:
+        """``a -> pkg/__init__.py -> b``: a imports the package whose barrel
+        re-exports b, which is a dependency whichever side is asked."""
+        builder._graph.add_node("pkg/__init__.py", language="python")
+        builder._graph.add_edge("a.py", "pkg/__init__.py", edge_type="imports")
+        builder._graph.add_edge("pkg/__init__.py", "b.py", edge_type="imports")
+        partners = {
+            "a.py": [{"file_path": "b.py", "frequency": 9}],
+            "b.py": [{"file_path": "a.py", "frequency": 9}],
+        }
+        assert builder.label_co_change_structure(partners) == 0
+        for record in (partners["a.py"][0], partners["b.py"][0]):
+            assert record["structural"] == "corroborated"
+            assert record["dependency_kind"] == "barrel"
+
+    def test_a_shared_neighbour_explains_nothing(self, builder: GraphBuilder) -> None:
+        """Two files one barrel re-exports, two consumers of one barrel, and a
+        chain through an ordinary module are not dependencies of each other."""
+        for path in ("pkg/__init__.py", "lib/__init__.py", "c.py", "d.py", "hub.py"):
+            builder._graph.add_node(path)
+        builder._graph.add_edge("pkg/__init__.py", "a.py", edge_type="imports")
+        builder._graph.add_edge("pkg/__init__.py", "b.py", edge_type="imports")
+        builder._graph.add_edge("c.py", "lib/__init__.py", edge_type="imports")
+        builder._graph.add_edge("d.py", "lib/__init__.py", edge_type="imports")
+        builder._graph.add_edge("c.py", "hub.py", edge_type="imports")
+        builder._graph.add_edge("hub.py", "a.py", edge_type="imports")
+        partners = {
+            "a.py": [{"file_path": "b.py", "frequency": 9}],
+            "c.py": [{"file_path": "d.py", "frequency": 9}, {"file_path": "a.py", "frequency": 9}],
+        }
+        assert builder.label_co_change_structure(partners) == 3
+
+    def test_a_co_change_edge_through_a_barrel_is_not_a_chain(self, builder: GraphBuilder) -> None:
+        builder._graph.add_node("pkg/__init__.py", language="python")
+        builder._graph.add_edge("a.py", "pkg/__init__.py", edge_type="co_changes")
+        builder._graph.add_edge("pkg/__init__.py", "b.py", edge_type="imports")
+        partners = {"a.py": [{"file_path": "b.py", "frequency": 9}]}
+        assert builder.label_co_change_structure(partners) == 1
+
+
+class TestInheritanceLabel:
+    """A subclass and its ancestors depend on each other with no file edge."""
+
+    @staticmethod
+    def _java(builder: GraphBuilder, path: str, cls: str, base: str | None = None) -> None:
+        g = builder._graph
+        g.add_node(path, language="java")
+        g.add_node(f"{path}::{cls}", node_type="symbol", file_path=path)
+        g.add_edge(path, f"{path}::{cls}", edge_type="defines")
+        if base:
+            g.add_edge(f"{path}::{cls}", base, edge_type="extends")
+
+    def test_a_transitive_ancestor_explains_the_pair(self, builder: GraphBuilder) -> None:
+        self._java(builder, "BaseEntity.java", "BaseEntity")
+        self._java(builder, "NamedEntity.java", "NamedEntity", "BaseEntity.java::BaseEntity")
+        self._java(builder, "PetType.java", "PetType", "NamedEntity.java::NamedEntity")
+        self._java(builder, "Owner.java", "Owner", "BaseEntity.java::BaseEntity")
+        partners = {
+            "BaseEntity.java": [{"file_path": "PetType.java", "frequency": 9}],
+            "PetType.java": [
+                {"file_path": "BaseEntity.java", "frequency": 9},
+                {"file_path": "Owner.java", "frequency": 9},
+            ],
+        }
+        # Two subclasses of one base share an ancestor and nothing more.
+        assert builder.label_co_change_structure(partners) == 1
+        for record in (partners["BaseEntity.java"][0], partners["PetType.java"][0]):
+            assert record["structural"] == "corroborated"
+            assert record["dependency_kind"] == "inherits"
+        assert partners["PetType.java"][1]["structural"] == "unexplained"
+
+
+    def test_an_external_base_does_not_hide_an_in_repo_one(self, builder: GraphBuilder) -> None:
+        """A base the graph has no file for is skipped, not the whole answer."""
+        self._java(builder, "BaseEntity.java", "BaseEntity")
+        self._java(builder, "Pet.java", "Pet", "BaseEntity.java::BaseEntity")
+        # ``java.io.Serializable`` exists only as an edge target, with no attributes.
+        builder._graph.add_edge("Pet.java::Pet", "java.io.Serializable", edge_type="implements")
+        partners = {"Pet.java": [{"file_path": "BaseEntity.java", "frequency": 9}]}
+        assert builder.label_co_change_structure(partners) == 0
+        assert partners["Pet.java"][0]["dependency_kind"] == "inherits"
+
 
 class TestLabelPersistence:
     """``label_co_change_structure`` writes through the JSON column.

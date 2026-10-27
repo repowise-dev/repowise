@@ -16,6 +16,9 @@ from repowise.server.mcp_server._budget.contracts import (
     _requested_shed_keys,
 )
 
+# These tests read the accounting the lean envelope leaves out by default.
+pytestmark = pytest.mark.usefixtures("debug_meta")
+
 
 def _overview_signature() -> inspect.Signature:
     def get_overview(repo: str | None = None, include: list[str] | None = None): ...
@@ -168,6 +171,46 @@ def test_risk_targets_are_not_trimmed_ahead_of_pr_blocks() -> None:
     # target rows keep their entitlement rather than collapsing to one.
     assert order.index("global_hotspots") < order.index("targets[]")
     assert "targets" in requested
+
+
+def _risk_signature() -> inspect.Signature:
+    def get_risk(
+        targets: list[str] | None = None,
+        repo: str | None = None,
+        changed_files: list[str] | None = None,
+        include: list[str] | None = None,
+    ): ...
+
+    return inspect.signature(get_risk)
+
+
+def test_pr_mode_sheds_the_blast_block_before_changed_file_cards() -> None:
+    """The blast dossier repeats the directive; the cards are the change itself."""
+    requested = _requested_shed_keys(
+        _CONTRACTS["get_risk"], _risk_signature(), (), {"changed_files": ["a.py"]}
+    )
+    order = _prioritised_shed_order(_CONTRACTS["get_risk"].shed_order, requested)
+    assert order.index("pr_blast_radius") < order.index("targets[]")
+
+    cards = {f"src/m{i}.py": {"risk_summary": "c" * 1500} for i in range(25)}
+    cards["CHANGES.rst"] = {"risk_summary": "d" * 1500}
+    result = enforce_response_budget(
+        "get_risk",
+        {
+            "directive": {"may_break": ["src/x.py"]},
+            "targets": cards,
+            "pr_blast_radius": {"transitive_affected": ["e" * 400] * 20},
+            "_meta": {},
+        },
+        signature=_risk_signature(),
+        args=(),
+        kwargs={"changed_files": list(cards), "include": ["blast"]},
+        repo_root=None,
+    )
+    assert "pr_blast_radius" not in result
+    kept = list(result["targets"])
+    assert "src/m0.py" in kept
+    assert "CHANGES.rst" not in kept
 
 
 def test_a_trimmed_then_dropped_block_reports_the_whole_population() -> None:

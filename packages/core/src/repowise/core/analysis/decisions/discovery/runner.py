@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import time
+from collections.abc import Container
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -128,6 +129,7 @@ async def run_update_discovery(
     *,
     provider: Any | None,
     policy: DecisionPolicy,
+    indexed: Container[str] | None = None,
     now: float | None = None,
 ) -> DiscoveryOutcome:
     """Make zero or one broad discovery call over this update's new prose.
@@ -153,7 +155,7 @@ async def run_update_discovery(
     repo_root = Path(repo_path).resolve()
     store = SessionStagingStore.open_default(repo_root)
     try:
-        return await _discover(store, repo_root, provider, policy, report, now)
+        return await _discover(store, repo_root, provider, policy, report, indexed, now)
     finally:
         store.close()
 
@@ -164,6 +166,7 @@ async def _discover(
     provider: Any,
     policy: DecisionPolicy,
     report: DiscoveryReport,
+    indexed: Container[str] | None,
     now: float | None,
 ) -> DiscoveryOutcome:
     queued = store.pending_discovery_spans(_QUEUE_READ_LIMIT)
@@ -239,7 +242,7 @@ async def _discover(
     _persist(store, grounding.grounded, report, now)
     store.commit()
 
-    decisions = _promote(store, repo_root, now)
+    decisions = _promote(store, repo_root, indexed, now)
     store.commit()
 
     logger.info("decision_discovery.done", **report.to_dict())
@@ -282,7 +285,12 @@ def _persist(
         )
 
 
-def _promote(store: SessionStagingStore, repo_root: Path, now: float | None) -> list[Any]:
+def _promote(
+    store: SessionStagingStore,
+    repo_root: Path,
+    indexed: Container[str] | None,
+    now: float | None,
+) -> list[Any]:
     """Emit newly qualified discovery rows through the shared promotion path.
 
     Restricted to this lane's own rows: the deterministic miner runs its own
@@ -298,6 +306,6 @@ def _promote(store: SessionStagingStore, repo_root: Path, now: float | None) -> 
     for row in store.promotable():
         if row["kind"] != DISCOVERY_KIND:
             continue
-        decisions.extend(promotion_decisions(row, repo_root))
+        decisions.extend(promotion_decisions(row, repo_root, indexed=indexed))
         store.mark_emitted(row["key"], observations=row["observations"], now=now)
     return decisions

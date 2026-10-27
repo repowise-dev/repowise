@@ -11,9 +11,9 @@ workspace overlays, MCP responses, and CLI output.
 
 | Area | Main code paths | What gets computed |
 | --- | --- | --- |
-| Traversal and parsing | `packages/core/src/repowise/core/ingestion/traverser.py`, `packages/core/src/repowise/core/ingestion/parser.py`, `packages/core/src/repowise/core/ingestion/models.py` | Files, languages, entry points, symbols, imports, exports, calls, inheritance, parse errors, content hashes |
+| Traversal and parsing | `packages/core/src/repowise/core/ingestion/traverser.py`, `packages/core/src/repowise/core/ingestion/parser/`, `packages/core/src/repowise/core/ingestion/models.py` | Files, languages, entry points, symbols, imports, exports, calls, inheritance, parse errors, content hashes |
 | Graph construction | `packages/core/src/repowise/core/ingestion/graph.py`, `call_resolver.py`, `heritage_resolver.py`, `framework_edges.py`, `dynamic_hints/` | File and symbol nodes, import/call/heritage/framework/dynamic/co-change edges, centrality, SCCs, communities, execution flows |
-| Git intelligence | `packages/core/src/repowise/core/ingestion/git_indexer.py` | Churn, ownership, hotspots, bus factor, co-change partners, significant commits, temporal scores, rename and merge signals |
+| Git intelligence | `packages/core/src/repowise/core/ingestion/git_indexer/` | Churn, ownership, hotspots, bus factor, co-change partners, significant commits, temporal scores, rename and merge signals |
 | Analysis | `packages/core/src/repowise/core/analysis/` | Dead-code findings, decision records, decision staleness, security findings, PR blast radius, execution flows, communities |
 | Generation | `packages/core/src/repowise/core/generation/` | Wiki page contexts, page types, source hashes, summaries, freshness, confidence decay, RAG context, job checkpoints, reports, costs |
 | Workspace intelligence | `packages/core/src/repowise/core/workspace/` | Workspace repo scan, cross-repo co-changes, package dependencies, API contracts, contract links, workspace CLAUDE.md data |
@@ -24,13 +24,13 @@ workspace overlays, MCP responses, and CLI output.
 
 | Term | Definition | Computed by | Example |
 | --- | --- | --- | --- |
-| Includable source file | A file that survives ignore rules, blocked patterns, size limit, binary detection, generated-file detection, and language detection. | `FileTraverser._build_file_info()` | `packages/core/src/repowise/core/ingestion/parser.py` |
+| Includable source file | A file that survives ignore rules, blocked patterns, size limit, binary detection, generated-file detection, and language detection. | `FileTraverser._build_file_info()` | `packages/core/src/repowise/core/ingestion/traverser.py` |
 | `FileInfo` | Per-file metadata used by the parser and graph builder. | `FileTraverser.traverse()` | `{path: "src/app.py", language: "python", is_test: false, is_entry_point: true}` |
 | Language tag | Canonical language value from file extension, special filename, or shebang. | `ingestion/models.py`, `traverser.py`, `languages/registry.py` | `python`, `typescript`, `go`, `terraform`, `openapi`, `unknown` |
 | Test file flag | Whether a file looks like a test/spec/fixture file. | `FileTraverser._build_file_info()` and community/test-gap helpers | `tests/test_auth.py -> is_test=true` |
 | Config file flag | Whether a file is classified as configuration. | `FileTraverser._build_file_info()` | `pyproject.toml -> is_config=true` |
 | API contract flag | Whether a file is an API contract format. | `FileTraverser._build_file_info()` | `openapi.yaml -> is_api_contract=true` |
-| Entry point flag | Whether a file may be where execution starts: a filename, stem or `[project.scripts]` target says so, *and* the shared candidacy rule does not rule it out (a config/markup/infra language, or a re-export glue leaf below the package root). | `traverser._is_entry_point()`, `entry_candidacy.not_an_execution_start()` | `main.py`, `server.ts` yes; `Dockerfile`, `docs/index.md`, `a/b/c/index.ts` no |
+| Entry point flag | Whether a file may be where execution starts: a filename, stem or `[project.scripts]` target says so, *and* the shared candidacy rule does not rule it out (a config/markup/infra language, or a re-export glue leaf below the package root). | `traverser._is_entry_point()`, `entry_candidacy.not_an_execution_start()` | `main.py`, `server.ts` yes; `Dockerfile`, `docs/index.md`, `a/b/c/index.ts` no | <!-- repowise-drift-ignore -->
 | Traversal stats | Counts of included files and skip reasons. | `TraversalStats` in `traverser.py` | `{included: 240, skipped_binary: 3, skipped_generated: 12}` |
 | Package info | A package/workspace detected from manifests near the repo root. | `FileTraverser._detect_monorepo()` | `{name: "core", path: "packages/core", manifest_file: "pyproject.toml"}` |
 | Repo structure | High-level structure summary used by overview generation. | `FileTraverser.get_repo_structure()` | `{is_monorepo: true, total_files: 820, entry_points: ["packages/cli/src/.../main.py"]}` |
@@ -50,7 +50,7 @@ workspace overlays, MCP responses, and CLI output.
 | Signature | Compact declaration text. | `build_signature()` via parser extractors | `def create_app(config: Config) -> FastAPI` |
 | Symbol docstring | Human text attached to a symbol, when extractable. | `extract_symbol_docstring()` | `"Create and configure the API app."` |
 | Module docstring | File-level docstring. | `extract_module_docstring()` | `"Command-line entry points."` |
-| Visibility | Public/private/protected/internal classification. | Language-specific visibility helpers | `_helper -> private`, `UserService -> public` |
+| Visibility | Public/private/protected/internal classification. A Python name listed in a literal module-level `__all__` reads public even when underscore-prefixed; a name the list omits keeps its name-based visibility. | Language-specific visibility helpers | `_helper -> private`, `UserService -> public` |
 | Async flag | Whether a symbol is async. | `_is_async_node()` | `async def fetch() -> is_async=true` |
 | Complexity estimate | Symbol complexity field, persisted to symbols. | Parser/model pipeline; defaults to `1` unless language extraction enriches it | `complexity_estimate: 3` |
 | Decorators | Decorator/modifier strings captured with a symbol. | `ASTParser._extract_symbols()` | `["@router.get('/users')"]` |
@@ -72,6 +72,8 @@ workspace overlays, MCP responses, and CLI output.
 | Symbol node | Graph node for an extracted symbol. | `GraphBuilder.add_file()` | `{node_type: "symbol", kind: "function", name: "main"}` |
 | External node | Node for third-party or unresolvable dependencies. | Import resolution paths | `external:react` |
 | Synthetic module symbol | Symbol node for top-level calls in a file. | `GraphBuilder.add_file()` | `src/app.py::__module__` |
+| File count | The "files" figure on `repowise status`, the dashboard, Stats and workspace views: one per file the index read, in any language. Import-target nodes (third-party packages, and paths an import names that traversal never parsed) are not counted. Health's "code files" is the code-language subset of these, inside the health exclude rules. | `count_files()` | `6,363 files` |
+| Symbol count | The "symbols" figure on `repowise status`, the dashboard, workspace views and `get_overview`: one per distinct symbol id in the symbol index. An overload set counts once, and the synthetic module symbol is not counted. | `count_symbols()` | `76,924 symbols` |
 | `defines` edge | File-to-symbol containment. | `GraphBuilder.add_file()` | `src/app.py -> src/app.py::main` |
 | `imports` edge | File-to-file import relationship. | `GraphBuilder.build()` | `src/app.py -> src/settings.py` |
 | `imported_names` edge payload | Names imported along an import edge. | `GraphBuilder.build()` | `["Settings", "load_config"]` |
@@ -131,14 +133,14 @@ workspace overlays, MCP responses, and CLI output.
 | Lines added/deleted 90d | Recent churn by numstat. | `_index_file()` | `{lines_added_90d: 340, lines_deleted_90d: 87}` |
 | Average commit size | `(lines_added_90d + lines_deleted_90d) / commit_count_90d`. | `_index_file()` | `35.6` |
 | Merge commit count 90d | Number of merge commits touching the file recently. | `_index_file()` | `merge_commit_count_90d: 2` |
-| Original path | Earliest path found through rename-follow history. | `_detect_original_path()` | `legacy/auth/session.py` |
+| Original path | Earliest path found through rename-follow history. | `detect_original_path()` | `legacy/auth/session.py` |
 | Temporal hotspot score | Exponentially decayed churn score with 180-day half-life. | `_index_file()` | `2.43` |
 | Churn percentile | Rank percentile among indexed files by temporal hotspot score, with 90-day commits as tiebreak. | `_compute_percentiles()` | `0.88` |
 | Hotspot flag | Top churn file: percentile >= 0.75 and has recent commits. | `_compute_percentiles()` | `is_hotspot: true` |
 | Stable file flag | File with more than 10 total commits and no recent 90-day commits. | `_index_file()` | `is_stable: true` |
 | Co-change partner | File historically changed in the same commits, with temporal decay. | `compute_co_changes_and_entropy()` | `{file_path: "src/schema.py", co_change_count: 3.72, last_co_change: "2026-04-14"}` |
 | Agent provenance (commit) | Which coding agent (if any) authored a commit, from local-git channels only (identity fields, message footers, co-author trailers); tier 1 = near-autonomous bot account, 2 = human-driven agent, 3 = assisted. | `agent_provenance.AgentProvenanceClassifier.classify()` | `{agent_name: "claude", agent_autonomy_tier: 2, agent_channel: "message_footer", agent_confidence: "high"}` |
-| Agent-authored share (file) | Fraction of a file's indexed commits that are agent-attributed, with per-tier counts. | `_index_file()` | `{agent_authored_pct: 0.42, agent_commit_count: 21, agent_tier_counts: {"2": 18, "3": 3}}` |
+| Agent-authored share (file) | Agent share of a file's commits with a known source (agent or human-attested), shown beside the coverage (known / all commits) and withheld below 30% coverage. Unknown commits are never counted as human. | `_add_agent_rollup()`, `attribution.file_share()` | `{agent_authored_pct: 0.6, attribution_coverage: 0.5, agent_commit_count: 3, agent_tier_counts: {"2": 3}}` |
 | Git index summary | Repo-level indexing result. | `GitIndexSummary` | `{files_indexed: 420, hotspots: 38, stable_files: 71, duration_seconds: 12.4}` |
 
 ## Generated Wiki Pages
@@ -171,11 +173,8 @@ workspace overlays, MCP responses, and CLI output.
 | Module page context | Aggregate context for top-level directory/module. | `assemble_module_page()` | `{module_path: "packages/core", total_symbols: 780}` |
 | SCC page context | Context for a circular dependency cycle. | `assemble_scc_page()` | `cycle_description: "Circular dependency cycle: a.py -> b.py"` |
 | Repo overview context | Whole-repo summary context. | `assemble_repo_overview()` | `language_distribution`, `top_files_by_pagerank`, `circular_dependency_count` |
-| Architecture diagram context | Top PageRank nodes, selected edges, communities, SCC groups. | `assemble_architecture_diagram()` | Mermaid graph inputs for 50 nodes and 200 edges |
 | API contract context | Raw API contract plus endpoint/schema hints. | `assemble_api_contract()` | `endpoints: ["GET /users"]`, `schemas: ["User"]` |
 | Infra page context | Raw infra file plus target names. | `assemble_infra_page()` | `Dockerfile`, `Makefile`, `terraform` files |
-| Diff summary context | Changed files, symbol diffs, affected pages, trigger commit/diff. | `assemble_diff_summary()` | `{added_files: ["src/new.py"], affected_page_ids: [...]}` |
-| Cross-package context | Monorepo boundary summary between packages. | `assemble_cross_package()` | `{source_package: "cli", target_package: "core", coupling_strength: 5}` |
 | Dependency summaries | Summaries of already-generated dependency pages. | `assemble_file_page()` with `page_summaries` | `{ "src/db.py": "Database access layer..." }` |
 | RAG context | Snippets from vector search for related generated pages. | `_generate_file_page_from_ctx()` | `["[file_page:src/schema.py]\nDefines API schema..."]` |
 | Token estimate | `len(text) // 4` heuristic. | `ContextAssembler._estimate_tokens()` | `3200` |
@@ -206,8 +205,7 @@ workspace overlays, MCP responses, and CLI output.
 | Decision record | ADR-like row from code comments, git, docs, or CLI/manual entry. | `DecisionExtractor`, CRUD, CLI | `{title: "Use Redis for sessions", status: "active"}` |
 | Inline marker decision | Decision extracted from comments such as `WHY:`, `DECISION:`, `TRADEOFF:`, `ADR:`. | `scan_inline_markers()` | `# DECISION: cache auth sessions in Redis` |
 | Git archaeology decision | LLM-structured decision inferred from significant commit messages with decision keywords. | `mine_git_archaeology()` | `migrate from REST client to generated OpenAPI client` |
-| README-mined decision | Decision extracted from docs such as README, CLAUDE, ARCHITECTURE, DESIGN. | `mine_readme_docs()` | `"We use SQLite by default because setup should be local-first."` |
-| Decision source | Provenance of a record. | `DecisionRecord.source` | `inline_marker`, `git_archaeology`, `readme_mining`, `cli` |
+| Decision source | Provenance of a record. | `DecisionRecord.source` | `inline_marker`, `git_archaeology`, `adr`, `cli` |
 | Decision confidence | Source-specific extraction confidence. | `DecisionExtractor` | `0.95` inline LLM, `0.70` git signal, `0.60` README mining, `1.0` manual |
 | Affected files | Files linked to a decision from graph neighbors, commit files, or manual input. | `DecisionExtractor` | `["src/auth.py", "src/session.py"]` |
 | Affected modules | Directories the affected files live in, deduped and capped; for records that name no file, the deepest directories mentioned in the decision text. | `resolve_module_nodes()` and `_infer_modules_from_text()` | `["packages/core/src/repowise/core/pipeline", "tests/unit/pipeline"]` |
@@ -242,7 +240,7 @@ workspace overlays, MCP responses, and CLI output.
 | Risk type | Human bucket for the kind of risk. | `tool_risk._classify_risk_type()` | `bug-prone`, `churn-heavy`, `bus-factor-risk`, `high-coupling`, `stable` |
 | Change pattern | Human label from dominant commit category. | `tool_risk._derive_change_pattern()` | `feature-active`, `fix-heavy`, `dependency-churn`, `mixed-activity` |
 | Impact surface | PageRank-ranked structural reverse-dependency reach within two hops. It preserves distance and does not claim runtime breakage. | `tool_risk._compute_impact_surface()` | `[{file_path: "src/api.py", distance: 2, claim: "structural_reach"}]` |
-| Risk summary | One-line synthesized risk sentence for MCP; its dependency count is direct-only. | `tool_risk._assess_one_target()` | `src/auth.py - hotspot score 88% (increasing), 6 direct dependents...` |
+| Risk summary | One-line synthesized risk sentence for MCP; its dependency count is direct-only. | `tool_risk._assess_one_target()` | `src/auth.py - churn hotspot, top 12% (increasing), 6 direct dependents...` |
 | Top hotspots | Highest churn/hotspot files returned for context. | `get_risk()` | `[{file_path: "src/db.py", hotspot_score: 0.94}]` |
 
 ## Code Health And Defect-Score Benchmark Metrics
@@ -267,8 +265,8 @@ workspace overlays, MCP responses, and CLI output.
 | Answer payload | Cached `get_answer` result. | `get_answer()` | `{answer, citations, confidence, fallback_targets, retrieval}` |
 | Retrieval hit | Search hit hydrated with page metadata and summary. | `tool_answer.py` retrieval pipeline | `{target_path: "src/auth.py", score: 3.2, summary: "..."}` |
 | Retrieval dominance | Gating logic comparing top and second search scores. | `tool_answer.py` | Top score high enough to answer from dominant hit |
-| Federated RRF score | Reciprocal rank fusion score for workspace search across repos. | `tool_search.py` | `rrf_score: 0.0164` |
-| Confidence score | Normalized workspace search confidence. | `tool_search.py` | `confidence_score: 0.87` |
+| Federated RRF score | Reciprocal rank fusion score for workspace search across repos. | `tool_search/retrieval.py` | `rrf_score: 0.0164` |
+| Confidence score | Normalized workspace search confidence. | `tool_search/retrieval.py` | `confidence_score: 0.87` |
 
 ## Persistence Tables And Stored Entities
 
@@ -303,7 +301,7 @@ workspace overlays, MCP responses, and CLI output.
 | Session cost | Cumulative USD for one tracker instance. | `CostTracker.session_cost` | `2.37` |
 | Session tokens | Cumulative input plus output tokens. | `CostTracker.session_tokens` | `845000` |
 | Cost totals | DB aggregate grouped by operation, model, or day. | `CostTracker.totals()` | `{group: "file_page", calls: 42, cost_usd: 1.12}` |
-| CLI cost estimate | Pre-generation token/cost plan. | `packages/cli/src/repowise/cli/cost_estimator.py` | `{estimated_pages: 82, estimated_cost_usd: 4.60}` |
+| CLI cost estimate | Pre-generation token/cost plan. | `packages/cli/src/repowise/cli/cost_estimator/` | `{estimated_pages: 82, estimated_cost_usd: 4.60}` |
 
 ## Workspace Intelligence
 

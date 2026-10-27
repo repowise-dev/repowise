@@ -131,7 +131,7 @@ export function registerChangeIntel(ctx: RepowiseContext): vscode.Disposable {
     const fileItems: Item[] = current.map((p) => ({
       label: `$(file) ${baseName(p.partner)}`,
       description: `co-changed ${p.score}×`,
-      detail: `${p.partner} — usually changes with ${p.withChanged}`,
+      detail: `${p.partner} · usually changes with ${p.withChanged}`,
       action: "open",
       partner: p.partner,
     }));

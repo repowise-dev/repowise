@@ -15,11 +15,11 @@ export interface FixHistoryBadgeProps {
 }
 
 const DEFAULT_TITLE =
-  "Bug-fix commits that touched this file in the trailing defect window.";
+  "Bug-fix commits that touched this file in the last 6 months.";
 
 /** Symbol-level counts are matched by line range, so their copy hedges. */
 export const SYMBOL_FIX_TITLE =
-  "Bug fixes that landed in this symbol in the trailing defect window (approximate: matched by line range).";
+  "Bug fixes that landed in this symbol in the last 6 months (approximate: matched by line range).";
 
 /**
  * The headline "N fixes, last X ago" pill. Renders nothing when the file has
@@ -38,11 +38,14 @@ export function FixHistoryBadge({
   if (!fix) return null;
 
   return (
-    <Badge
-      variant={fix.magnet ? "outdated" : "outline"}
-      className={className}
-      title={title ?? DEFAULT_TITLE}
-    >
+    // Always `outline`, never the `outdated` variant it used to take when the
+    // magnet fired. `fresh`/`stale`/`outdated` are the *documentation
+    // confidence* vocabulary — on every other surface that red means "this
+    // page is out of date" — and a file that attracts bug fixes is not an
+    // outdated doc. Two marks on one object must not share a colour
+    // vocabulary, so this one keeps the word and the bug glyph, which name
+    // the thing far better than a hue can.
+    <Badge variant="outline" className={className} title={title ?? DEFAULT_TITLE}>
       <Bug className="h-2.5 w-2.5" />
       {fix.magnet ? `Bug magnet · ${fix.label}` : fix.label}
     </Badge>

@@ -1,0 +1,149 @@
+{
+  "mode": "path",
+  "path": "django/db/models/query.py",
+  "answer_basis": "rationale",
+  "decisions": [],
+  "git_archaeology": {
+    "summary": "No architectural decisions found for django/db/models/query.py, but git archaeology recovered 50 direct commit(s), 1 cross-reference(s), and 29 git log result(s). Review these to understand the intent behind this code.",
+    "git_log": [
+      {
+        "sha": "99672c672a15",
+        "message": "Refs #36593, #37187 -- Avoided spurious select_related() warning in ModelAdmin.",
+        "date": "2026-06-25",
+        "evidence_refs": [
+          {
+            "id": "ev_8bf8eb410e85f4c04c6d"
+          }
+        ]
+      },
+      {
+        "sha": "ca5746b8680a",
+        "message": "Fixed #37143 -- Added missing chunk_size=None check to QuerySet.aiterator().",
+        "date": "2026-06-07",
+        "evidence_refs": [
+          {
+            "id": "ev_bfe153f73c4f51cf2536"
+          }
+        ]
+      },
+      {
+        "sha": "f970a98e4643",
+        "message": "Fixed #37142 -- Moved django_file_prefixes() to django.utils.warnings.",
+        "date": "2026-06-06",
+        "evidence_refs": [
+          {
+            "id": "ev_55f2b2d6bde6df529dc3"
+          }
+        ]
+      },
+      {
+        "sha": "fbe902d4a4b8",
+        "message": "Refs #37097 -- Removed compilation-time order clearing on combined queries on Oracle.",
+        "date": "2026-05-13",
+        "evidence_refs": [
+          {
+            "id": "ev_771a4cbc951420a05e5a"
+          }
+        ]
+      },
+      {
+        "sha": "f386d8ec7cbf",
+        "message": "Fixed #36593 -- Deprecated QuerySet.select_related() with no arguments.",
+        "date": "2025-09-05",
+        "evidence_refs": [
+          {
+            "id": "ev_a26d850458daa53480e1"
+          }
+        ]
+      },
+      {
+        "sha": "5cf9c7fde7cf",
+        "message": "Refs #28586 -- Added DEFAULT_FETCH_MODE module constant.",
+        "date": "2026-04-19",
+        "evidence_refs": [
+          {
+            "id": "ev_eb6161dfad80f269cbb9"
+          }
+        ]
+      },
+      {
+        "sha": "3b161e60964a",
+        "message": "Fixed #37016 -- Avoided propagating invalid arguments from When() to Q().",
+        "date": "2026-04-02",
+        "evidence_refs": [
+          {
+            "id": "ev_4e797f7b925aa6066141"
+          }
+        ]
+      }
+    ]
+  },
+  "code_rationale": [
+    {
+      "path": "django/db/models/query.py",
+      "lines": [
+        81,
+        88
+      ],
+      "comment": "__aiter__() is a *synchronous* method that has to then return an *asynchronous* iterator/generator. Thus, nest an async generator inside it. This is a generic iterable converter for now, and is going to suffer a performance penalty on large sets of items due to the cost of crossing over the sync barrier for each chunk. Custom __aiter__() methods should be added to each Iterable subclass, but that needs some work in the Compiler first.",
+      "evidence_refs": [
+        {
+          "id": "ev_31e393e22918fcab5a3b"
+        }
+      ]
+    },
+    {
+      "path": "django/db/models/query.py",
+      "lines": [
+        153,
+        153
+      ],
+      "comment": "Avoid overwriting objects loaded by, e.g., select_related().",
+      "evidence_refs": [
+        {
+          "id": "ev_d8f7624113dc11517dc1"
+        }
+      ]
+    },
+    {
+      "path": "django/db/models/query.py",
+      "lines": [
+        156,
+        157
+      ],
+      "comment": "Avoid fetching potentially deferred attributes that would result in unexpected queries.",
+      "evidence_refs": [
+        {
+          "id": "ev_2625aa6ea06d5c2189bd"
+        }
+      ]
+    },
+    {
+      "path": "django/db/models/query.py",
+      "lines": [
+        177,
+        177
+      ],
+      "comment": "Cache some things for performance reasons outside the loop.",
+      "evidence_refs": [
+        {
+          "id": "ev_0e6831ae4655faf6121b"
+        }
+      ]
+    },
+    {
+      "path": "django/db/models/query.py",
+      "lines": [
+        240,
+        240
+      ],
+      "comment": "extra(select=...) cols are always at the start of the row.",
+      "evidence_refs": [
+        {
+          "id": "ev_eff2c2b8f0f096f509de"
+        }
+      ]
+    }
+  ],
+  "code_rationale_total": 38
+}

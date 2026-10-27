@@ -5,20 +5,42 @@ import {
   affectedSummary,
   agentHandoffCall,
   boundaryLabel,
+  causeStandingText,
   facetValueLabel,
+  humanizeToken,
+  moduleScopeLabel,
   opportunityEvidenceLine,
   opportunityTitle,
   planPresentation,
+  siblingFixLabel,
   whyRankedLabel,
+  whyRankedPhrase,
 } from "../../src/health/performance/presentation";
-import { contiguousSections } from "../../src/health/performance/queue";
 import { opportunity } from "./fixtures/performance";
 
 describe("performance presentation", () => {
-  it("titles a cause in words and keeps the sink out of the title", () => {
+  it("titles a cause in words, then names where by its short symbol", () => {
     const title = opportunityTitle(opportunity());
-    expect(title).toBe("Database call inside a loop");
+    expect(title).toBe("Database call inside a loop in load");
     expect(title).not.toContain("::");
+    expect(opportunityTitle(opportunity({ intervention_symbol: null }))).toBe(
+      "Database call inside a loop in run",
+    );
+  });
+
+  it("reads rank factors as reasons, not points", () => {
+    expect(whyRankedPhrase({ factor: "affected_call_sites", value: 8, points: 6 })).toBe(
+      "8 call sites",
+    );
+    expect(whyRankedPhrase({ factor: "boundary_kind", value: "db", points: 4 })).toBe(
+      "a database call",
+    );
+    expect(whyRankedPhrase({ factor: "multiplier_shape", value: "io_in_loop", points: 4 })).toBe(
+      "runs once per loop iteration",
+    );
+    expect(whyRankedPhrase({ factor: "entry_reachability", value: true, points: 3 })).toBe(
+      "reachable from an entry point",
+    );
   });
 
   it("gives every performance marker a non-empty title", () => {
@@ -88,6 +110,14 @@ describe("performance presentation", () => {
     expect(none.label).toBe("No safe plan");
   });
 
+  it("names a stored plan apart from the plan-ready actionability state", () => {
+    // The row mark counts with the "With a stored plan" tile; "Plan ready" is
+    // the actionability state its own tile counts.
+    expect(planPresentation(opportunity()).label).toBe("Stored plan");
+    expect(facetValueLabel("plan_state", "available")).toBe("Stored plan");
+    expect(facetValueLabel("actionability", "plan_ready")).toBe("Plan ready");
+  });
+
   it("never calls a plan actionable without an id to fetch it with", () => {
     expect(planPresentation(opportunity({ plan_id: null })).actionable).toBe(false);
   });
@@ -95,38 +125,63 @@ describe("performance presentation", () => {
   it("quotes the opportunity id in the agent drill-down", () => {
     expect(agentHandoffCall("perf2_abc")).toBe('get_health(opportunity_id="perf2_abc")');
   });
+
+  it("prefers a sibling's strategy over its biomarker for the fix label", () => {
+    expect(
+      siblingFixLabel({
+        opportunity_id: "perf2_sib",
+        biomarker_type: "nested_loop_with_io",
+        strategy: "batch_or_prefetch_io",
+        relation: "preferred",
+      }),
+    ).toBe("Batch or prefetch io");
+    expect(
+      siblingFixLabel({
+        opportunity_id: "perf2_sib",
+        biomarker_type: "nested_loop_with_io",
+        strategy: null,
+        relation: "same_site",
+      }),
+    ).toBe("Nested loop with io");
+  });
+
+  it("reads a new actionability reason and prerequisite tokens honestly", () => {
+    expect(humanizeToken("loop_already_chunked")).toBe("Loop already chunked");
+    expect(humanizeToken("bounded_concurrency")).toBe("Bounded concurrency");
+    expect(humanizeToken("query_supports_group_selection")).toBe(
+      "Query supports group selection",
+    );
+  });
 });
 
-describe("queue sections", () => {
-  it("splits the page into runs without moving a single row", () => {
-    const items = [
-      opportunity({ opportunity_id: "a", actionability_state: "plan_ready" }),
-      opportunity({ opportunity_id: "b", actionability_state: "advisory" }),
-      opportunity({ opportunity_id: "c", actionability_state: "advisory" }),
-      opportunity({ opportunity_id: "d", actionability_state: "investigate" }),
-    ];
-    const sections = contiguousSections(items);
-    expect(sections.map((s) => s.state)).toEqual(["plan_ready", "advisory", "investigate"]);
-    expect(sections.flatMap((s) => s.items.map((i) => i.opportunity_id))).toEqual([
-      "a",
-      "b",
-      "c",
-      "d",
-    ]);
+describe("module scope", () => {
+  it("reads `<file>::__module__` as the module scope of that file", () => {
+    expect(moduleScopeLabel("src/jobs.py::__module__")).toBe("module scope of src/jobs.py");
+    expect(moduleScopeLabel("src/jobs.py::__module__", true)).toBe("module scope of jobs.py");
+    expect(moduleScopeLabel("src/jobs.py::run")).toBeNull();
   });
 
-  it("keeps an interleaved order intact rather than regrouping it", () => {
-    const items = [
-      opportunity({ opportunity_id: "a", actionability_state: "advisory" }),
-      opportunity({ opportunity_id: "b", actionability_state: "investigate" }),
-      opportunity({ opportunity_id: "c", actionability_state: "advisory" }),
-    ];
-    const sections = contiguousSections(items);
-    expect(sections).toHaveLength(3);
-    expect(sections.flatMap((s) => s.items.map((i) => i.opportunity_id))).toEqual(["a", "b", "c"]);
+  it("never prints __module__ in a title or an evidence line", () => {
+    const top = opportunity({ intervention_symbol: "src/jobs.py::__module__", terminal_sink: null });
+    expect(opportunityTitle(top)).toBe("Database call inside a loop in module scope of jobs.py");
+    expect(opportunityEvidenceLine(top)).toBe("module scope of src/jobs.py");
   });
 
-  it("returns nothing for an empty page", () => {
-    expect(contiguousSections([])).toEqual([]);
+  it("phrases a row's secondary facts as sentences from the server's values", () => {
+    const text = causeStandingText(
+      opportunity({
+        actionability_state: "advisory",
+        actionability_reason: "strategy_requires_validation",
+        plan_status: "no_safe_plan",
+        plan_id: null,
+        plan_reason: "No stored plan addresses this cause",
+        confidence: "medium",
+      }),
+    );
+    expect(text).toBe(
+      "Advisory: Strategy requires validation. No safe plan: No stored plan addresses this cause. The call path resolved with medium confidence.",
+    );
+    // A reason that already ends a sentence is not given a second stop.
+    expect(causeStandingText(opportunity({ plan_reason: "Stored." }))).toContain("Stored plan: Stored. ");
   });
 });

@@ -100,7 +100,7 @@ def test_a_rename_carries_the_finding_across(make_repo):
     assert delta.unchanged_total >= 1
 
 
-def test_deleting_a_file_surfaces_nothing_and_is_recorded_as_skipped(make_repo):
+def test_deleting_a_file_compares_its_base_side_and_surfaces_nothing(make_repo):
     repo = make_repo()
     repo.commit("seed", {"app.py": python_complex("tangle", 14), "keep.py": "x = 1\n"})
     repo.remove("app.py")
@@ -109,7 +109,19 @@ def test_deleting_a_file_surfaces_nothing_and_is_recorded_as_skipped(make_repo):
     delta = compare(repo)
 
     assert delta.introduced_total == 0
-    assert delta.skipped.get("app.py") == "deleted"
+    assert "app.py" not in delta.skipped
+    assert delta.resolved_total == 0
+    assert delta.status == "available"
+    assert delta.explanation == "No supported new findings surfaced in the analyzed scope."
+
+
+def test_a_deleted_file_with_no_health_dialect_is_still_recorded_as_skipped(make_repo):
+    repo = make_repo()
+    repo.commit("seed", {"page.html": "<p>hi</p>\n", "app.py": python_complex("tangle", 14)})
+    repo.remove("page.html")
+    repo.commit("delete", {"app.py": python_complex("tangle", 14) + "\n"})
+
+    assert compare(repo).skipped.get("page.html") == "deleted"
 
 
 # -- multiplicity -----------------------------------------------------------
@@ -137,6 +149,65 @@ def test_replacing_one_marker_hit_with_another_is_not_a_regression(make_repo):
 
     assert delta.introduced_total == 0
     assert delta.resolved_total == 0
+
+
+# -- symbol identity --------------------------------------------------------
+
+
+@pytest.mark.parametrize("language", sorted(LANGUAGES))
+def test_renaming_a_function_carries_its_finding_across(make_repo, language):
+    path, build = LANGUAGES[language]
+    repo = make_repo()
+    repo.commit("seed", {path: build("tangle", 14)})
+    repo.commit("rename", {path: build("knot", 14)})
+
+    delta = compare(repo)
+
+    assert delta.introduced_total == 0
+    assert delta.resolved_total == 0
+    assert delta.unchanged_total >= 1
+
+
+def test_a_rename_that_also_grows_the_body_is_still_introduced(make_repo):
+    repo = make_repo()
+    repo.commit("seed", {"app.py": python_complex("tangle", 14)})
+    repo.commit("rename", {"app.py": python_complex("knot", 15)})
+
+    delta = compare(repo)
+
+    assert any(f.symbol == "knot" and f.change_kind == "introduced" for f in delta.findings)
+    assert delta.resolved_total >= 1
+
+
+def test_a_copy_beside_the_unchanged_original_is_introduced(make_repo):
+    """Same shape as an existing finding, but the original is still there."""
+    repo = make_repo()
+    repo.commit("seed", {"app.py": python_complex("tangle", 14)})
+    repo.commit("copy", {"app.py": python_complex("tangle", 14) + python_complex("knot", 14)})
+
+    delta = compare(repo)
+
+    assert any(f.symbol == "knot" and f.change_kind == "introduced" for f in delta.findings)
+    assert not any(f.symbol == "tangle" for f in delta.findings)
+    assert delta.resolved_total == 0
+
+
+def test_new_importers_of_a_changed_file_do_not_introduce_its_old_findings(make_repo):
+    """Only the changed files are parsed, so a file's dependents are a slice.
+
+    Adding importers inside the change lifts that slice over a centrality gate
+    (Brain Method) on head only; the function itself did not change.
+    """
+    repo = make_repo()
+    core = python_complex("tangle", 40)
+    repo.commit("seed", {"core.py": core})
+    importers = {f"use_{i}.py": "from core import tangle\n\nprint(tangle(1))\n" for i in range(4)}
+    repo.commit("use", {"core.py": core + "\n# touched\n", **importers})
+
+    delta = compare(repo)
+
+    assert not any(f.symbol == "tangle" for f in delta.findings)
+    assert delta.unchanged_total >= 1
 
 
 # -- attribution ------------------------------------------------------------
@@ -228,10 +299,80 @@ def test_findings_are_ordered_by_severity_not_by_dimension(make_repo):
     assert severities == sorted(severities, key=lambda s: -ranks[s])
 
 
+def _finding(**kw):
+    from repowise.core.analysis.change_health.models import ChangeFinding
+
+    base = dict(
+        change_finding_id="id",
+        change_kind="introduced",
+        dimension="defect",
+        biomarker_type="complexity",
+        severity="low",
+        path="app.py",
+        symbol="f",
+        line_start=1,
+        line_end=2,
+        reason="r",
+        attribution_basis="added_lines",
+        attribution_confidence="high",
+        attribution_detail="d",
+        suggestion="",
+        follow_up="",
+    )
+    base.update(kw)
+    return ChangeFinding(**base)
+
+
+def test_what_the_change_wrote_outranks_what_it_only_touched():
+    """A capped list must not spend its slots on pre-existing problems."""
+    from repowise.core.analysis.change_health.service import _priority
+
+    mine = _finding(severity="low", attribution_basis="added_lines")
+    inherited = _finding(
+        severity="critical", attribution_basis="file_change", change_kind="worsened"
+    )
+    scaffolding = _finding(severity="high", path="tests/test_app.py")
+
+    assert sorted([inherited, mine], key=_priority) == [mine, inherited]
+    assert sorted([scaffolding, mine], key=_priority) == [mine, scaffolding]
+    assert sorted([inherited, scaffolding], key=_priority) == [scaffolding, inherited]
+
+
+def test_a_performance_finding_on_test_code_is_not_reported(make_repo):
+    """Performance findings are about code that serves requests; a test does not."""
+    repo = make_repo()
+    repo.commit("seed", {"tests/test_app.py": python_io_in_loop(in_loop=False)})
+    repo.commit("loop", {"tests/test_app.py": python_io_in_loop(in_loop=True)})
+
+    delta = compare(repo)
+
+    assert not [f for f in delta.findings if f.dimension == "performance"], [
+        (f.path, f.biomarker_type) for f in delta.findings
+    ]
+
+
+def test_test_file_findings_sort_below_source_findings(make_repo):
+    repo = make_repo()
+    repo.commit("seed", {"app.py": "x = 1\n", "tests/test_app.py": "y = 1\n"})
+    repo.commit(
+        "add",
+        {
+            "app.py": python_complex("source", 14),
+            "tests/test_app.py": python_complex("scaffolding", 26),
+        },
+    )
+
+    delta = compare(repo)
+    in_tests = [f.path.startswith("tests/") for f in delta.findings]
+
+    assert any(in_tests) and not all(in_tests), "fixture must produce both kinds"
+    assert in_tests == sorted(in_tests), [(f.path, f.severity) for f in delta.findings]
+
+
 # -- honesty ----------------------------------------------------------------
 
 
-def test_an_unsupported_file_is_skipped_and_never_looks_clean(make_repo):
+def test_a_docs_only_change_says_there_is_no_code_and_never_looks_clean(make_repo):
     repo = make_repo()
     repo.commit("seed", {"README.md": "# hi\n"})
     repo.commit("edit", {"README.md": "# hi there\n"})
@@ -240,8 +381,21 @@ def test_an_unsupported_file_is_skipped_and_never_looks_clean(make_repo):
 
     assert delta.findings == []
     assert delta.status == "unavailable"
-    assert delta.skipped == {"README.md": "not_health_analyzable"}
+    assert delta.skipped == {"README.md": "not_code"}
+    assert "health analysis does not cover them" in delta.explanation
     assert not delta.is_clean
+
+
+def test_an_unsupported_code_file_is_skipped_and_never_looks_clean(make_repo):
+    repo = make_repo()
+    repo.commit("seed", {"lib.ex": "defmodule A do\nend\n"})
+    repo.commit("edit", {"lib.ex": "defmodule B do\nend\n"})
+
+    delta = compare(repo)
+
+    assert delta.status == "unavailable"
+    assert delta.skipped == {"lib.ex": "not_health_analyzable"}
+    assert "nothing was compared" in delta.explanation
 
 
 def test_a_partial_run_is_reported_as_partial(make_repo):
@@ -249,7 +403,7 @@ def test_a_partial_run_is_reported_as_partial(make_repo):
     repo.commit("seed", {"app.py": "x = 1\n"})
     repo.commit(
         "mixed",
-        {"app.py": python_complex("tangle", 16), "notes.md": "text\n"},
+        {"app.py": python_complex("tangle", 16), "lib.ex": "defmodule A do\nend\n"},
     )
 
     delta = compare(repo)
@@ -257,6 +411,43 @@ def test_a_partial_run_is_reported_as_partial(make_repo):
     assert delta.status == "partial"
     assert delta.skipped
     assert not delta.is_clean
+
+
+@pytest.mark.parametrize("path", ["page.html", "api.proto", "q.graphql", "x.xaml"])
+def test_data_and_markup_with_logic_still_make_the_run_partial(make_repo, path):
+    repo = make_repo()
+    repo.commit("seed", {"app.py": "x = 1\n", path: "a\n"})
+    repo.commit("edit", {"app.py": "x = 2\n", path: "b\n"})
+
+    delta = compare(repo)
+
+    assert delta.status == "partial"
+    assert delta.skipped[path] != "not_code"
+
+
+def test_docs_beside_an_unsupported_code_file_are_still_partial(make_repo):
+    repo = make_repo()
+    repo.commit("seed", {"app.py": "x = 1\n", "README.md": "a\n", "lib.ex": "defmodule A do\nend\n"})
+    repo.commit("edit", {"app.py": "x = 2\n", "README.md": "b\n", "lib.ex": "defmodule B do\nend\n"})
+
+    delta = compare(repo)
+
+    assert delta.status == "partial"
+    assert delta.code_skipped == {"lib.ex": "not_health_analyzable"}
+    assert delta.skipped["README.md"] == "not_code"
+
+
+@pytest.mark.parametrize("path", ["CHANGES.rst", "package.json", "docs/guide.md", ".ci.yml"])
+def test_docs_and_config_beside_code_do_not_make_the_run_partial(make_repo, path):
+    repo = make_repo()
+    repo.commit("seed", {"app.py": "x = 1\n", path: "a\n"})
+    repo.commit("edit", {"app.py": "x = 2\n", path: "b\n"})
+
+    delta = compare(repo)
+
+    assert delta.status == "available"
+    assert delta.skipped == {path: "not_code"}
+    assert delta.code_skipped == {}
 
 
 def test_a_generated_file_is_excluded_by_reason(make_repo):
@@ -362,6 +553,36 @@ def test_exclusions_and_extensions_narrow_the_compared_scope(make_repo):
     assert excluded.scope.changed == 1
 
 
+def test_include_paths_keep_only_the_named_paths(make_repo):
+    repo = make_repo()
+    repo.commit("seed", {"app.py": "x = 1\n"})
+    repo.commit(
+        "add",
+        {"app.py": python_complex("a", 16), "vendor/lib.py": python_complex("b", 16)},
+    )
+
+    included = compare(repo, "HEAD", include_paths=("vendor/",))
+
+    assert all(f.path.startswith("vendor/") for f in included.findings)
+    assert included.scope.changed == 1
+
+
+def test_include_paths_match_deleted_and_renamed_files_by_their_path(make_repo):
+    repo = make_repo()
+    repo.commit(
+        "seed",
+        {"app.py": "x = 1\n", "vendor/old.py": "y = 1\n", "lib/moved.py": "z = 1\n"},
+    )
+    repo.remove("vendor/old.py")
+    repo.move("lib/moved.py", "vendor/moved.py")
+    repo.commit("change", {"app.py": "x = 2\n", "vendor/new.py": "w = 1\n"})
+
+    included = compare(repo, "HEAD", include_paths=("vendor/",))
+
+    # A deletion has no head path; it is kept by its base path, a rename by its new path.
+    assert included.scope.changed == 3
+
+
 def test_change_finding_ids_are_deterministic_across_runs(make_repo):
     repo = make_repo()
     repo.commit("seed", {"app.py": "x = 1\n"})
@@ -389,3 +610,63 @@ def test_the_analyzer_fingerprint_is_reported_on_both_sides(make_repo):
     assert delta.fingerprint.analyzer_version > 0
     assert delta.fingerprint.performance_model_version > 0
     assert delta.comparison_basis == "both_sides_analyzed"
+
+
+def test_a_query_file_change_is_data_not_a_gap(make_repo):
+    repo = make_repo()
+    repo.commit("seed", {"queries/java.scm": "(identifier) @name\n"})
+    repo.commit("edit", {"queries/java.scm": "(type_identifier) @name\n"})
+
+    delta = compare(repo)
+
+    assert delta.status == "unavailable"
+    assert delta.skipped == {"queries/java.scm": "not_analyzable_data"}
+    assert delta.code_skipped == {}
+    assert "query" in delta.explanation
+    assert not delta.is_clean
+
+
+def test_a_query_file_beside_code_does_not_make_the_run_partial(make_repo):
+    repo = make_repo()
+    repo.commit("seed", {"app.py": "x = 1\n", "queries/java.scm": "(identifier) @a\n"})
+    repo.commit("edit", {"app.py": "x = 2\n", "queries/java.scm": "(identifier) @b\n"})
+
+    delta = compare(repo)
+
+    assert delta.status == "available"
+    assert delta.code_skipped == {}
+
+
+def test_a_scheme_file_outside_queries_is_still_a_gap(make_repo):
+    repo = make_repo()
+    repo.commit("seed", {"src/main.scm": "(define (f x) x)\n"})
+    repo.commit("edit", {"src/main.scm": "(define (f x) (+ x 1))\n"})
+
+    delta = compare(repo)
+
+    assert delta.skipped == {"src/main.scm": "unsupported_language"}
+    assert delta.code_skipped == {"src/main.scm": "unsupported_language"}
+
+
+@pytest.mark.parametrize("path", ["templates/page.j2", "views/card.hbs", "tpl/email.tmpl"])
+def test_a_template_change_is_data_not_a_gap(make_repo, path):
+    repo = make_repo()
+    repo.commit("seed", {path: "Hello {{ name }}\n"})
+    repo.commit("edit", {path: "Hi {{ name }}\n"})
+
+    delta = compare(repo)
+
+    assert delta.skipped == {path: "not_analyzable_data"}
+    assert delta.code_skipped == {}
+    assert "template" in delta.explanation
+
+
+def test_a_template_beside_code_does_not_make_the_run_partial(make_repo):
+    repo = make_repo()
+    repo.commit("seed", {"app.py": "x = 1\n", "templates/page.j2": "{{ a }}\n"})
+    repo.commit("edit", {"app.py": "x = 2\n", "templates/page.j2": "{{ b }}\n"})
+
+    delta = compare(repo)
+
+    assert delta.status == "available"
+    assert delta.code_skipped == {}

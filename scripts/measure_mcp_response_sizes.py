@@ -49,6 +49,8 @@ CASES: list[tuple[str, str, dict[str, Any]]] = [
     ("get_health", "limit-100", {"limit": 100}),
     ("get_health", "all-includes", {"include": ["files", "refactoring", "performance"], "limit": 100}),
     ("get_risk", "one-target", {"targets": ["{file}"]}),
+    ("get_risk", "pr-mode", {"targets": ["{file}"], "changed_files": ["{file}", "{file2}"]}),
+    ("get_risk", "pr-mode-includes", {"targets": ["{file}"], "changed_files": ["{file}", "{file2}"], "include": ["tests", "blast"]}),
     ("get_change_risk", "head", {"revspec": "HEAD"}),
     ("get_why", "targets", {"targets": ["{file}"]}),
     ("get_dead_code", "default", {}),

@@ -26,7 +26,7 @@ Symbol-level edges (all carry a `confidence` score from 0.0 to 1.0):
 |-----------|--------|---------|
 | `defines` | GraphBuilder `add_file()` | `login.py` defines `validate_token` |
 | `has_method` | GraphBuilder `add_file()` | `AuthService` has_method `login` |
-| `calls` | `CallResolver` (29 named resolution origins, each with a fixed confidence) | `validate_token` calls `hash_password` |
+| `calls` | `CallResolver` (39 named resolution origins, each with a fixed confidence) | `validate_token` calls `hash_password` |
 | `dispatches_to` | Heritage pass | base `Handler.run` dispatches_to `JsonHandler.run` |
 | `references` | `@reference.name` captures | a dispatch table names `on_signal` without calling it |
 | `framework_binds` | Framework handlers | a pytest fixture binds to the test that requests it |
@@ -35,9 +35,101 @@ Framework edges are detected automatically when the tech stack includes Django, 
 
 **`file_subgraph()`: keeping metrics accurate across both tiers**
 
-All centrality algorithms (PageRank, betweenness, SCCs, Louvain) operate on the file-level subgraph, not the full graph. `file_subgraph()` returns a view of the `DiGraph` containing only `file` and `package` nodes. Without this isolation, the large number of symbol nodes would inflate degree counts and distort every metric. Call `file_subgraph()` before running any file-level algorithm; call the full graph when you need symbol-level traversal.
+All centrality algorithms (PageRank, betweenness, SCCs, community detection) operate on the file-level subgraph, not the full graph. `file_subgraph()` returns a view of the `DiGraph` containing only `file` and `package` nodes. Without this isolation, the large number of symbol nodes would inflate degree counts and distort every metric. Call `file_subgraph()` before running any file-level algorithm; call the full graph when you need symbol-level traversal.
 
 This is the raw material. Every algorithm below operates on the file subgraph unless otherwise noted.
+
+---
+
+## Call edges: capture, resolution and measurement
+
+The algorithms below trust the symbol-level edges they walk, so this section
+covers how a call edge is made and how its accuracy is measured. The resolver
+internals (strategy seam, origin table, receiver typing) are in
+[language-support.md](language-support.md#call-resolution).
+
+### Why every edge carries an origin
+
+For `user.save()` a tool has three options: emit nothing (a dead-code pass then
+offers to delete `save`), guess by picking one of the repo's methods named
+`save` (with `User.save`, `Draft.save` and `Session.save` that is a two in three
+chance of the wrong file), or work out what `user` is and resolve `save` on that
+type. A graph that presents a guess the same way as a certainty produces wrong
+arrows that look like answers, and a wrong arrow is worse than a missing one.
+repowise resolves by type where it can, falls back to a name match where it
+must, and labels which one happened on every edge.
+
+### Two stages that fail differently
+
+**Capture** notices that a call was written at all. It is a tree-sitter query
+per language listing the source shapes that count as a call site:
+
+```scheme
+; Go method call: obj.Method(args)
+(call_expression
+  function: (selector_expression
+    operand: (identifier) @call.receiver
+    field: (field_identifier) @call.target
+  )
+  arguments: (argument_list) @call.arguments
+) @call.site
+```
+
+A shape that no query matches is absent from the graph, not low confidence or
+unresolved, and nothing downstream can recover it. Go lists a plain call, a
+method call, a package-qualified call, a chained call, and a function passed as
+an argument; the last is captured as a reference, since passing a handler is
+not invoking it.
+
+**Resolution** turns a captured name and receiver (`save` on `repo` in
+`repo.save(draft)`) into one declaration in one file. This is where the 39
+resolution origins live.
+
+A missed capture is silent, since nothing internal knows the call existed, so
+capture is measured against an outside answer key (a compiler). A bad
+resolution is visible, because the origin names the strategy that produced it,
+so a wrong class of edge is found and fixed once for every call site that
+strategy touched. At the bottom of the ladder the resolver declines to guess,
+trading recall for precision.
+
+### Why `references` and `framework_binds` are separate edge types
+
+A handler in a dispatch table is never called anywhere a parser can see.
+Counting that as "no use" would report whole registration layers as safe to
+delete, so a handle to a function is a `references` edge. `framework_binds`
+separates the opposite case: a fixture nobody calls and a collaborator nobody
+constructs are both used, by the container, but an inferred wiring hop is not
+source, and rendering it as a call would put it into an execution flow as
+though someone had written it.
+
+### How accuracy is measured
+
+- **Against a compiler, Go and TypeScript.** Seven cells over five
+  repositories, 37,853 compiler edges from the Go team's RTA call graph and
+  `tsc`'s own resolution, compared across five tools. Precision is 0.976 to
+  0.995. No tool that finds as much of the call graph gets more of it right in
+  any cell; two tools post higher precision in some cells by drawing much
+  smaller graphs. Recall leads in three of the seven cells. Most misses are
+  dynamic dispatch, which no tool in the comparison resolves without emitting
+  several wrong edges for each right one.
+- **Against compiler indexes for more languages.** Java reads 0.725 to 0.781
+  precision against javac across three repositories (0.781 on jsoup). C on git,
+  a repository held out from all tuning, reads 0.979 precision at 0.83 recall.
+  C#, C++, Rust and Python (against jedi, a static analyser) are in the same
+  table.
+- **Hand-graded across nine languages.** 280 call edges per tool, 560 in all,
+  each read with its imports and enclosing scope open: 240 of 280 correct for
+  repowise (85.7%) against 164 of 280 for CodeGraph 1.5.0 (58.6%), with
+  disjoint intervals. Errors concentrate in Rust, C++ and Java.
+
+Unused methods are not reported for any language because method-level precision
+does not hold up under this measurement, and reporting them would mean
+recommending wrong deletions. `global_unique` stays at 0.50 because a labelled
+guess serves reachability better than a missing edge.
+
+Tables, intervals and pre-registrations are in
+[BENCHMARKS.md](../BENCHMARKS.md#accuracy-by-language) and
+[repowise-bench/graph](https://github.com/repowise-dev/repowise-bench/tree/master/graph).
 
 ---
 
@@ -265,7 +357,12 @@ if n > 30_000:  # _LARGE_REPO_THRESHOLD
 
 Instead of computing exact betweenness using all N×N pairs, it samples 500 random source nodes and approximates. Research shows this gives good results; the ranking of "which files are most bridge-like" stays accurate even with sampling, just the exact scores shift slightly.
 
-For repos under 30,000 nodes, exact computation is used.
+For graphs with at most 30,000 nodes, exact computation is used. Symbol
+betweenness runs the exact kernel only on nodes with call or heritage edges.
+Isolated symbols receive `0.0`, and normalization still uses the full symbol
+node count, so removing isolated nodes from the computation preserves scores.
+The sampling threshold, sampling population and disk-cache signature continue
+to use the full graph.
 
 ### How Repowise uses betweenness
 
@@ -349,7 +446,7 @@ Result: Three SCCs: {A,B,C}, {D}, {E}. Only {A,B,C} has size > 1, meaning it's a
 
 ---
 
-## 4. Louvain Community Detection
+## 4. Community Detection (Leiden, Louvain fallback)
 
 ### What question does it answer?
 
@@ -363,19 +460,25 @@ Community detection finds these clusters automatically. It looks at the density 
 
 Think of it as automated "package detection." Even if your code doesn't use clean package boundaries, community detection reveals the actual subsystem structure from the import graph.
 
+### Which algorithm runs
+
+`detect_file_communities()` in `core/analysis/communities.py` tries three partitioners in order:
+
+1. **Leiden** (`graspologic.partition.leiden`, `random_seed=42`). graspologic ships in the optional `graph-extra` extra (`pip install "repowise[graph-extra]"`), so a default install skips this step.
+2. **Louvain** (`networkx.community.louvain_communities`, `seed=42`, `threshold=1e-4`, `max_level=10`). This is what a default install runs.
+3. **Directory grouping**: if Louvain raises, files are grouped by their first path segment.
+
+The algorithm that ran is returned alongside the partition. Leiden and Louvain optimize the same objective (modularity, below); Leiden adds a refinement step that guarantees each community is internally connected, which Louvain does not.
+
+Only production files are partitioned. Test and example files are assigned afterwards to the community of a production file they link to, and isolated files each get their own community. Any community holding more than 30% of the files (minimum 20) gets a second partition pass to split it.
+
 ### Why undirected?
 
-Repowise converts the directed graph to undirected before running Louvain:
-
-```python
-communities = nx.community.louvain_communities(g.to_undirected(), seed=42)
-```
-
-Why? Import direction doesn't matter for clustering. If `auth.py` imports `crypto.py`, they're related, regardless of which one depends on which. The question isn't "who depends on whom" (that's PageRank's job) but "who belongs with whom."
+Repowise builds an undirected graph from the file dependency edges (`imports`, `framework`, `type_use`, `reads`, and the dynamic import and route edges) before partitioning. Why? Import direction doesn't matter for clustering. If `auth.py` imports `crypto.py`, they're related, regardless of which one depends on which. The question isn't "who depends on whom" (that's PageRank's job) but "who belongs with whom."
 
 ### The math: Modularity
 
-Louvain optimizes a metric called **modularity** (Q). Modularity measures the difference between actual intra-community edges and what you'd expect by random chance.
+Both algorithms optimize a metric called **modularity** (Q). Modularity measures the difference between actual intra-community edges and what you'd expect by random chance.
 
 ```
 Q = (1/2m) × Σ [ A_ij - (k_i × k_j)/(2m) ] × δ(c_i, c_j)
@@ -434,7 +537,7 @@ This repeats until Q stops improving. Each round of aggregation discovers larger
 
 **Time complexity:** Nearly O(N) in practice (each node is moved a small constant number of times). This makes it suitable for large codebases.
 
-**Why `seed=42`?** Louvain is non-deterministic; the order you process nodes affects the result. Fixing the random seed makes results reproducible across runs. 42 is a conventional choice (from The Hitchhiker's Guide).
+**Why `seed=42`?** Both Leiden and Louvain are non-deterministic; the order you process nodes affects the result. Fixing the random seed makes results reproducible across runs. 42 is a conventional choice (from The Hitchhiker's Guide).
 
 ### How Repowise uses communities
 
@@ -612,7 +715,7 @@ These algorithms aren't isolated; they feed into each other to create a complete
 | PageRank | Simple import count | Captures transitive importance, not just direct |
 | Betweenness | Closeness centrality | Betweenness directly identifies bottlenecks; closeness measures average distance which is less actionable |
 | Tarjan's SCC | Brute-force cycle detection | O(N+E) vs O(N³). For large codebases, brute-force is impractical |
-| Louvain | Spectral clustering, Girvan-Newman | Louvain is nearly O(N) and handles large graphs. Girvan-Newman is O(N²E), too slow. Spectral requires matrix decomposition, overkill for this use case |
+| Leiden, Louvain fallback | Spectral clustering, Girvan-Newman | Both are nearly O(N) and handle large graphs; Leiden also guarantees connected communities. Girvan-Newman is O(N²E), too slow. Spectral requires matrix decomposition, overkill for this use case |
 | BFS shortest path | Dijkstra | Edges are unweighted (an import is an import). BFS is optimal for unweighted graphs and simpler than Dijkstra |
 
 ---
@@ -624,7 +727,7 @@ These algorithms aren't isolated; they feed into each other to create a complete
 | PageRank | O(E × iterations) ≈ O(E × 50) | O(N) | Converge fallback to uniform |
 | Betweenness | O(N × E) | O(N + E) | Sample k=500 for repos > 30k nodes |
 | SCCs (Tarjan) | O(N + E) | O(N) | None needed, already linear |
-| Louvain | ~O(N) empirically | O(N + E) | Seed=42 for determinism |
+| Leiden / Louvain | ~O(N) empirically | O(N + E) | Seed=42 for determinism; second pass splits communities over 30% of files |
 | BFS shortest path | O(N + E) | O(N) | Cutoff=3 for entry-point views |
 | In-degree | O(1) per node | O(1) | None needed |
 

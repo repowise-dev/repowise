@@ -18,9 +18,10 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ....test_paths import is_test_related_path
 from ...models import (
     HealthFinding,
     RefactoringOpportunity,
@@ -29,7 +30,8 @@ from ...models import (
     _new_uuid,
     _now_utc,
 )
-from ...sql import LIKE_ESCAPE, escape_like
+from ...sql import order_by, rule_predicate
+from .shown import gated_counts, ungated
 
 if TYPE_CHECKING:
     from ....analysis.health.refactoring.opportunity import (
@@ -46,27 +48,6 @@ _LIVE_PLAN_STATUSES = frozenset({"open", "acknowledged"})
 # again, so the reconciler must not read its absence as "the work disappeared"
 # and restate the decision as its own.
 _DECIDED_STATUSES = frozenset({"resolved", "false_positive"})
-
-# Orders the queue can be read in. Every one ends in a unique column so the
-# total order is deterministic and a deep offset cannot repeat or skip a row.
-_ORDERS: dict[str, tuple[Any, ...]] = {
-    "queue": (RefactoringOpportunity.queue_position.asc(),),
-    "rank": (RefactoringOpportunity.rank_position.asc(),),
-    "health": (
-        RefactoringOpportunity.recoverable_health.desc(),
-        RefactoringOpportunity.rank_position.asc(),
-    ),
-    "effort": (
-        RefactoringOpportunity.step_count.asc(),
-        RefactoringOpportunity.rank_position.asc(),
-    ),
-    "file": (
-        RefactoringOpportunity.file_path.asc(),
-        RefactoringOpportunity.rank_position.asc(),
-    ),
-}
-
-DEFAULT_ORDER = "queue"
 
 
 # ---------------------------------------------------------------------------
@@ -93,20 +74,43 @@ def _diversified_order(opportunities: list[OpportunityModel]) -> list[int]:
 
     Deterministic, and a repository with one cause in one area degrades to
     plain rank order rather than inventing a difference.
+
+    Only opportunities that recover health are interleaved. The rest (rank
+    order already puts them last) follow in rank order, so a zero-credit cycle
+    never takes a head slot from real work. Credited work that leaves a
+    function at the break-up bar follows the interleaved head, in rank order.
+
+    Test files are round-robined apart and queue after every production file,
+    as they rank, so the lead is never a test.
     """
-    groups: dict[tuple[str, str, str], list[int]] = {}
-    for position, item in enumerate(opportunities):
-        parent = item.file_path.rsplit("/", 1)[0] if "/" in item.file_path else ""
-        area = "/".join(parent.split("/")[:2])
-        groups.setdefault(
-            (item.lead_biomarker or "", item.lead_refactoring_type, area), []
-        ).append(position)
-    ordered_groups = sorted(groups.values(), key=lambda members: members[0])
+    from ....analysis.health.refactoring.opportunity_rank import leads_queue
+
     order: list[int] = []
-    for round_index in range(max((len(m) for m in ordered_groups), default=0)):
-        for members in ordered_groups:
-            if round_index < len(members):
-                order.append(members[round_index])
+    for is_test in (False, True):
+        groups: dict[tuple[str, str, str], list[int]] = {}
+        trailing: list[int] = []
+        for position, item in enumerate(opportunities):
+            if is_test_related_path(item.file_path) is not is_test:
+                continue
+            if not leads_queue(item):
+                trailing.append(position)
+                continue
+            parent = item.file_path.rsplit("/", 1)[0] if "/" in item.file_path else ""
+            area = "/".join(parent.split("/")[:2])
+            groups.setdefault(
+                (item.lead_biomarker or "", item.lead_refactoring_type, area), []
+            ).append(position)
+        order.extend(_round_robin(list(groups.values())))
+        order.extend(trailing)
+    return order
+
+
+def _round_robin(groups: list[list[int]]) -> list[int]:
+    """One member per group per round, groups ordered by their best member."""
+    ordered = sorted(groups, key=lambda members: members[0])
+    order: list[int] = []
+    for round_index in range(max((len(m) for m in ordered), default=0)):
+        order.extend(m[round_index] for m in ordered if round_index < len(m))
     return order
 
 
@@ -145,14 +149,6 @@ def _details_payload(
             profile_id = _validation_profile_id(validation)
             profiles.setdefault(profile_id, {"id": profile_id, **validation})
             payload["validation_profile_id"] = profile_id
-        # The findings this step's cause names, so an agent can round-trip from
-        # a step back to the diagnosis that produced it in one call. Emitted
-        # only when this file has addressable findings at all: on a store
-        # written before findings carried public ids there are none, and an
-        # empty list there would claim "this cause produced no finding" when
-        # the truth is "no finding here is addressable by id".
-        if finding_ids:
-            payload["finding_ids"] = finding_ids.get(step.source_biomarker, [])
         steps.append(payload)
     return {
         "steps": steps,
@@ -167,6 +163,12 @@ def _details_payload(
         **(
             {"lead_finding_ids": finding_ids.get(opportunity.lead_biomarker or "", [])}
             if finding_ids
+            else {}
+        ),
+        # Why it ranks after the rest; Fix first reads the same field.
+        **(
+            {"leaves_above_bar": opportunity.leaves_above_bar}
+            if opportunity.leaves_above_bar
             else {}
         ),
     }
@@ -216,7 +218,16 @@ def _summary_payload(
     opportunities: list[OpportunityModel],
     statuses: dict[str, str],
     lead_details: dict[str, Any] | None,
+    plan_ids: set[str],
+    design_plan_ids: set[str],
 ) -> dict[str, Any]:
+    """The rollup of open opportunities; ``by_status`` also counts the ones
+    picked up. ``plans_total`` is the plan inventory behind it, split into
+    steps, evidence and plans in no opportunity, so the plan and opportunity
+    counts reconcile. ``design_total`` names the grouping plans held out of the
+    steps for an unnamed group; they sit in the evidence or unattached share."""
+    from ....analysis.health.refactoring.opportunity import claimed_plan_ids
+
     by_type: dict[str, int] = {}
     by_effort: dict[str, int] = {}
     by_confidence: dict[str, int] = {}
@@ -224,11 +235,13 @@ def _summary_payload(
     mechanical = judgment = 0
     addresses_primary = not_primary = unknown_primary = 0
     for item in opportunities:
+        state = statuses.get(item.opportunity_id, "open")
+        by_status[state] = by_status.get(state, 0) + 1
+    open_items = _open_items(opportunities, statuses)
+    for item in open_items:
         by_type[item.lead_refactoring_type] = by_type.get(item.lead_refactoring_type, 0) + 1
         by_effort[item.effort_bucket] = by_effort.get(item.effort_bucket, 0) + 1
         by_confidence[item.confidence] = by_confidence.get(item.confidence, 0) + 1
-        state = statuses.get(item.opportunity_id, "open")
-        by_status[state] = by_status.get(state, 0) + 1
         mechanical += item.mechanical_steps
         judgment += item.judgment_steps
         if item.addresses_primary_problem is True:
@@ -238,11 +251,15 @@ def _summary_payload(
         else:
             unknown_primary += 1
     return {
-        "opportunities_total": len(opportunities),
-        "files_total": len({item.file_path for item in opportunities}),
+        "opportunities_total": len(open_items),
+        "files_total": len({item.file_path for item in open_items}),
         "steps_total": mechanical + judgment,
         "mechanical_steps_total": mechanical,
         "judgment_steps_total": judgment,
+        "plans_total": len(plan_ids),
+        "evidence_total": sum(len(item.evidence) for item in open_items),
+        "unattached_plans_total": len(plan_ids - claimed_plan_ids(opportunities)),
+        "design_total": len(design_plan_ids & plan_ids),
         "by_lead_type": by_type,
         "by_effort": by_effort,
         "by_confidence": by_confidence,
@@ -254,6 +271,66 @@ def _summary_payload(
         },
         "lead": lead_details,
     }
+
+
+def _open_items(
+    opportunities: list[OpportunityModel], statuses: dict[str, str]
+) -> list[OpportunityModel]:
+    return [o for o in opportunities if statuses.get(o.opportunity_id, "open") == "open"]
+
+
+async def _rank_live_plans(
+    session: AsyncSession, repository_id: str, findings: list[Any]
+) -> list[Any]:
+    """Rank, validate and annotate every live plan the lists can show, and store it.
+
+    Performance plans are not composed here, but they share the plan lists, so
+    their positions come from the same pass. Plans the finding registry
+    withholds are left out: no list shows them, and the file-level test walk
+    is batch-sensitive, so ranking them alongside would change the tests the
+    shown plans list.
+    """
+    import dataclasses
+
+    from ....analysis.health.refactoring.annotations import annotate, load_annotation_facts
+    from .refactoring import shown_plan_predicate, store_plan_ranks
+    from .refactoring_recommendations import hydrate_recommendations, repository_checkout
+
+    rows = (
+        await session.execute(
+            select(RefactoringSuggestion).where(
+                RefactoringSuggestion.repository_id == repository_id,
+                RefactoringSuggestion.status.in_(tuple(_LIVE_PLAN_STATUSES)),
+                # Test-file plans still rank: the hold is a serving rule, and
+                # ranking without them would move the tests the others list.
+                shown_plan_predicate(file_holds=False),
+            )
+        )
+    ).scalars()
+    checkout = await repository_checkout(session, repository_id)
+    ranked = await hydrate_recommendations(
+        session, repository_id, list(rows), step_verify=True, findings=findings, checkout=checkout
+    )
+    facts = await load_annotation_facts(
+        session,
+        repository_id,
+        [item.suggestion for item in ranked],
+        tests=[
+            test
+            for item in ranked
+            if item.suggestion.refactoring_type == "extract_method"
+            for test in item.validation.tests
+        ],
+        root=checkout,
+    )
+    ranked = [
+        dataclasses.replace(
+            item, annotations=annotate(item.suggestion, facts, item.validation.tests)
+        )
+        for item in ranked
+    ]
+    await store_plan_ranks(session, repository_id, ranked)
+    return ranked
 
 
 async def finalize_refactoring_opportunities(
@@ -277,7 +354,7 @@ async def finalize_refactoring_opportunities(
         compose_opportunities,
         opportunity_status,
     )
-    from ....analysis.health.refactoring.recommendations import hydrate_recommendations
+    from ....analysis.health.refactoring_summary import needs_design
 
     plan_rows = list(
         (
@@ -298,33 +375,59 @@ async def finalize_refactoring_opportunities(
     findings = list(
         (
             await session.execute(
-                select(HealthFinding).where(HealthFinding.repository_id == repository_id)
+                # Ordered by the natural key: without it the rows came back in
+                # whichever index the planner chose, and the per-file finding
+                # id lists stored with each opportunity followed that order.
+                select(HealthFinding)
+                .where(HealthFinding.repository_id == repository_id)
+                .order_by(
+                    HealthFinding.file_path,
+                    HealthFinding.biomarker_type,
+                    HealthFinding.line_start,
+                    HealthFinding.function_name,
+                    HealthFinding.public_id,
+                )
             )
         )
         .scalars()
         .all()
     )
 
-    opportunities = compose_opportunities(
-        live_plans, primary_biomarker_by_file=primary_biomarker_by_file(findings)
-    )
+    # Rank and validation are resolved once, here, for every live plan. They
+    # used to be rebuilt on every request for every open plan, which is the
+    # single largest cost the serving path used to carry.
+    ranked = await _rank_live_plans(session, repository_id, findings)
+    # Every ranked non-performance plan is a live plan, so the lookup is total;
+    # a miss raises rather than leaving a governed step mechanical.
+    public_of = {row.id: row.public_id for row in live_plans}
+    governed = {
+        public_of[item.id]
+        for item in ranked
+        if item.suggestion.refactoring_type != _PERF_TYPE
+        and item.annotations is not None
+        and item.annotations.governed_by
+    }
 
-    # Validation is resolved once, here, for exactly the plans that became
-    # steps. It used to be rebuilt on every request for every open plan, which
-    # is the single largest cost the serving path used to carry.
+    # Findings let each step name the diagnosis its own target answers, so an
+    # agent round-trips from a step to it in one call.
+    opportunities = compose_opportunities(
+        live_plans,
+        primary_biomarker_by_file=primary_biomarker_by_file(findings),
+        findings=findings,
+        governed=governed,
+    )
     step_plan_ids = {step.plan_id for item in opportunities for step in item.steps}
     step_rows = [row for row in live_plans if row.public_id in step_plan_ids]
     validations: dict[str, dict[str, Any]] = {}
     file_figures: dict[str, dict[str, int]] = {}
     if step_rows:
         # Keyed by the storage id ``rehydrate_suggestion`` carries through, never
-        # by position: ``hydrate_recommendations`` returns its results in rank
-        # order, so zipping them against the input pairs most steps with another
-        # plan's validation profile.
+        # by position: the ranked list is in rank order, so zipping it against
+        # the rows pairs most steps with another plan's validation profile.
         public_by_storage = {row.id: row.public_id for row in step_rows}
-        for recommendation in await hydrate_recommendations(
-            session, repository_id, step_rows
-        ):
+        for recommendation in ranked:
+            if recommendation.id not in public_by_storage:
+                continue
             public_id = public_by_storage.get(
                 getattr(recommendation.suggestion, "id", None)
             )
@@ -372,8 +475,15 @@ async def finalize_refactoring_opportunities(
         analyzed_commit=analyzed_commit,
     )
 
-    lead_rank = queue_order[0] if queue_order else None
-    lead = opportunities[lead_rank] if lead_rank is not None else None
+    # Never a test file: with only tests left there is no lead to name.
+    lead = next(
+        (
+            opportunities[rank]
+            for rank in queue_order
+            if not is_test_related_path(opportunities[rank].file_path)
+        ),
+        None,
+    )
     lead_details = None
     if lead is not None:
         lead_details = {
@@ -396,6 +506,8 @@ async def finalize_refactoring_opportunities(
         opportunities,
         statuses=statuses,
         lead_details=lead_details,
+        plan_ids={row.public_id for row in live_plans if row.public_id},
+        design_plan_ids={row.public_id for row in live_plans if needs_design(row)},
         analyzed_commit=analyzed_commit,
     )
     return sum(1 for state in statuses.values() if state != "resolved")
@@ -420,10 +532,9 @@ async def _reconcile_opportunities(
             await session.execute(
                 select(RefactoringOpportunity).where(
                     RefactoringOpportunity.repository_id == repository_id,
-                    # Rows an older model minted are left exactly as they are:
-                    # their keys can never be composed again, so reading them
-                    # only to re-resolve them would grow this read for the life
-                    # of the repository.
+                    # Rows an older model minted can never be composed again;
+                    # they are retired below without being read, so this read
+                    # does not grow for the life of the repository.
                     RefactoringOpportunity.refactoring_model_version
                     == REFACTORING_MODEL_VERSION,
                 )
@@ -462,6 +573,18 @@ async def _reconcile_opportunities(
         if key not in seen and row.status not in _DECIDED_STATUSES:
             row.status = "resolved"
             row.updated_at = now
+    # Same rule for every row an older model minted, in one statement. Left
+    # open, they kept serving beside the current model's rows after a model
+    # bump, even though the plans they were folded from were already resolved.
+    await session.execute(
+        update(RefactoringOpportunity)
+        .where(
+            RefactoringOpportunity.repository_id == repository_id,
+            RefactoringOpportunity.refactoring_model_version != REFACTORING_MODEL_VERSION,
+            RefactoringOpportunity.status.not_in(tuple(_DECIDED_STATUSES)),
+        )
+        .values(status="resolved", updated_at=now)
+    )
     await session.flush()
 
 
@@ -472,19 +595,22 @@ async def _write_summary(
     *,
     statuses: dict[str, str],
     lead_details: dict[str, Any] | None,
+    plan_ids: set[str],
+    design_plan_ids: set[str],
     analyzed_commit: str | None,
 ) -> None:
     from ....analysis.health.refactoring.identity import REFACTORING_MODEL_VERSION
 
     payload = json.dumps(
-        _summary_payload(opportunities, statuses, lead_details), separators=(",", ":")
+        _summary_payload(opportunities, statuses, lead_details, plan_ids, design_plan_ids),
+        separators=(",", ":"),
     )
     row = await session.get(RefactoringSummary, repository_id)
     if row is None:
         row = RefactoringSummary(repository_id=repository_id)
         session.add(row)
     row.refactoring_model_version = REFACTORING_MODEL_VERSION
-    row.opportunities_total = len(opportunities)
+    row.opportunities_total = len(_open_items(opportunities, statuses))
     row.summary_json = payload
     row.analyzed_commit = analyzed_commit
     row.updated_at = _now_utc()
@@ -497,53 +623,55 @@ async def _write_summary(
 
 
 def _opportunity_filters(
+    repository_id: str, *, include_unverified: bool = False, **params: Any
+) -> list[Any]:
+    """The ``WHERE`` for *params*, built from the serving layer's filter table.
+
+    Only the current model's rows are served: an older model's ids are never
+    composed again, so a row of one is history, not queue. Opportunities on a
+    file of a language the registry gates for refactoring are left out unless
+    ``include_unverified``.
+    """
+    from ....analysis.health.queue_rules import active_filters
+    from ....analysis.health.refactoring.identity import REFACTORING_MODEL_VERSION
+    from ....analysis.health.refactoring.serving import FILTERS
+
+    return [
+        RefactoringOpportunity.repository_id == repository_id,
+        RefactoringOpportunity.refactoring_model_version == REFACTORING_MODEL_VERSION,
+        ungated(
+            "refactoring",
+            RefactoringOpportunity.file_path,
+            RefactoringOpportunity.lead_refactoring_type,
+            include_unverified=include_unverified,
+        ),
+        *(
+            rule_predicate(RefactoringOpportunity, rule, value)
+            for rule, value in active_filters(FILTERS, params)
+        ),
+    ]
+
+
+async def gated_opportunity_counts(
+    session: AsyncSession,
     repository_id: str,
     *,
-    status: str,
-    lead_types: list[str] | None,
-    confidence: str | None,
-    effort: str | None,
-    file_paths: list[str] | None,
-    path_contains: str | None,
-    mechanical_only: bool,
-    addresses_primary: bool | None,
-) -> list[Any]:
-    predicates: list[Any] = [
+    status: str = "open",
+    include_unverified: bool = False,
+) -> dict[str, dict]:
+    """The current-model opportunities a language gate holds back, by language."""
+    from ....analysis.health.refactoring.identity import REFACTORING_MODEL_VERSION
+
+    return await gated_counts(
+        session,
+        "refactoring",
+        RefactoringOpportunity,
         RefactoringOpportunity.repository_id == repository_id,
+        RefactoringOpportunity.refactoring_model_version == REFACTORING_MODEL_VERSION,
         RefactoringOpportunity.status == status,
-    ]
-    if lead_types:
-        # One value is still one equality; a list is how the board's
-        # "Structural" tab asks for its four types without four round trips.
-        predicates.append(
-            RefactoringOpportunity.lead_refactoring_type == lead_types[0]
-            if len(lead_types) == 1
-            else RefactoringOpportunity.lead_refactoring_type.in_(lead_types)
-        )
-    if confidence is not None:
-        predicates.append(RefactoringOpportunity.confidence == confidence)
-    if effort is not None:
-        predicates.append(RefactoringOpportunity.effort_bucket == effort)
-    if file_paths is not None:
-        predicates.append(RefactoringOpportunity.file_path.in_(file_paths))
-    if path_contains:
-        # A residual filter over the open set, not an index seek: the board's
-        # search box is the one caller, and it is bounded by open row count
-        # rather than by page. Escaping goes through the shared helper so a
-        # path fragment is read as a path fragment here the same way it is
-        # everywhere else that builds a LIKE.
-        predicates.append(
-            RefactoringOpportunity.file_path.ilike(
-                f"%{escape_like(path_contains)}%", escape=LIKE_ESCAPE
-            )
-        )
-    if mechanical_only:
-        predicates.append(RefactoringOpportunity.mechanical_steps > 0)
-    if addresses_primary is not None:
-        predicates.append(
-            RefactoringOpportunity.addresses_primary_problem.is_(addresses_primary)
-        )
-    return predicates
+        kind_col=RefactoringOpportunity.lead_refactoring_type,
+        include_unverified=include_unverified,
+    )
 
 
 async def list_refactoring_opportunities(
@@ -556,23 +684,33 @@ async def list_refactoring_opportunities(
     effort: str | None = None,
     file_paths: list[str] | None = None,
     path_contains: str | None = None,
+    path_prefix: str | None = None,
     mechanical_only: bool = False,
     addresses_primary: bool | None = None,
-    order: str = DEFAULT_ORDER,
+    opportunity_ids: list[str] | None = None,
+    queue_eligible: bool | None = None,
+    order: str | None = None,
     limit: int = 20,
     offset: int = 0,
+    include_unverified: bool = False,
 ) -> tuple[list[RefactoringOpportunity], int]:
     """One page and its total: two statements, whatever the row count."""
+    from ....analysis.health.refactoring.serving import sort_keys
+
     predicates = _opportunity_filters(
         repository_id,
+        include_unverified=include_unverified,
         status=status,
         lead_types=lead_types,
         confidence=confidence,
         effort=effort,
         file_paths=file_paths,
         path_contains=path_contains,
+        path_prefix=path_prefix,
         mechanical_only=mechanical_only,
         addresses_primary=addresses_primary,
+        opportunity_ids=opportunity_ids,
+        queue_eligible=queue_eligible,
     )
     total = int(
         (
@@ -584,12 +722,65 @@ async def list_refactoring_opportunities(
     query: Select[Any] = (
         select(RefactoringOpportunity)
         .where(*predicates)
-        .order_by(*_ORDERS.get(order, _ORDERS[DEFAULT_ORDER]))
+        .order_by(*order_by(RefactoringOpportunity, sort_keys(order)))
         .offset(max(offset, 0))
         .limit(max(limit, 0))
     )
     rows = list((await session.execute(query)).scalars().all())
     return rows, total
+
+
+async def refactoring_step_counts(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    order: str | None = None,
+    **filters: Any,
+) -> list[tuple[str, int]]:
+    """Each matching opportunity's id and step count, in *order*: one narrow read,
+    so a page of plans is located without decoding any details."""
+    from ....analysis.health.refactoring.serving import sort_keys
+
+    rows = await session.execute(
+        select(RefactoringOpportunity.opportunity_id, RefactoringOpportunity.step_count)
+        .where(*_opportunity_filters(repository_id, **filters))
+        .order_by(*order_by(RefactoringOpportunity, sort_keys(order)))
+    )
+    return [(opportunity_id, int(steps or 0)) for opportunity_id, steps in rows.all()]
+
+
+async def refactoring_opportunities_by_id(
+    session: AsyncSession, repository_id: str, opportunity_ids: list[str], *, status: str = "open"
+) -> dict[str, RefactoringOpportunity]:
+    """The named current-model rows in *status*, by id: one read, no count."""
+    if not opportunity_ids:
+        return {}
+    rows = await session.execute(
+        select(RefactoringOpportunity).where(
+            *_opportunity_filters(repository_id, status=status, opportunity_ids=opportunity_ids)
+        )
+    )
+    return {row.opportunity_id: row for row in rows.scalars().all()}
+
+
+async def refactoring_reason_counts(
+    session: AsyncSession, repository_id: str, *, status: str = "open", **filters: Any
+) -> dict[str | None, int]:
+    """How many rows the filters match, by stored queue reason (``None`` for
+    an eligible row): one grouped read, exact at any size."""
+    from ....analysis.health.queue.counts import NOT_JUDGED
+
+    o = RefactoringOpportunity
+    rows = await session.execute(
+        select(o.queue_eligible, o.queue_reason, func.count())
+        .where(*_opportunity_filters(repository_id, status=status, **filters))
+        .group_by(o.queue_eligible, o.queue_reason)
+    )
+    out: dict[str | None, int] = {}
+    for eligible, reason, n in rows.all():
+        key = NOT_JUDGED if eligible is None else None if eligible else reason
+        out[key] = out.get(key, 0) + int(n)
+    return out
 
 
 async def get_refactoring_opportunity(
@@ -690,44 +881,73 @@ async def get_refactoring_summary(
 
 
 async def refactoring_facet_counts(
-    session: AsyncSession, repository_id: str, *, status: str = "open"
+    session: AsyncSession, repository_id: str, *, status: str = "open", **filters: Any
 ) -> dict[str, dict[str, int]]:
-    """Counts for every facet dimension, in one statement.
+    """Counts for every facet dimension, in one statement, under the list's
+    filters: each facet counts under every filter but its own.
 
     Grouped by all three dimensions at once and folded here rather than one
     statement each, so adding a facet never adds a round trip.
     """
-    columns = (
-        RefactoringOpportunity.lead_refactoring_type,
-        RefactoringOpportunity.effort_bucket,
-        RefactoringOpportunity.confidence,
+    from ....analysis.health.refactoring.serving import (
+        FACET_FIELDS,
+        fold_facets,
+        split_facet_params,
     )
+
+    row_filters, selection = split_facet_params({"status": status, **filters})
+    columns = tuple(getattr(RefactoringOpportunity, name) for name in FACET_FIELDS)
     rows = await session.execute(
         select(*columns, func.count())
-        .where(
-            RefactoringOpportunity.repository_id == repository_id,
-            RefactoringOpportunity.status == status,
-        )
+        .where(*_opportunity_filters(repository_id, **row_filters))
         .group_by(*columns)
     )
-    facets: dict[str, dict[str, int]] = {"lead_type": {}, "effort": {}, "confidence": {}}
-    for lead_type, effort, confidence, count in rows.all():
-        for name, key in (
-            ("lead_type", lead_type),
-            ("effort", effort),
-            ("confidence", confidence),
-        ):
-            if key is not None:
-                facets[name][str(key)] = facets[name].get(str(key), 0) + int(count)
-    return facets
+    return fold_facets(rows.all(), selection)
+
+
+async def owning_refactoring_opportunity(
+    session: AsyncSession, repository_id: str, public_id: str | None, file_path: str
+) -> RefactoringOpportunity | None:
+    """The open opportunity holding plan *public_id*, found through its file.
+
+    One indexed lookup on ``(repository_id, status, file_path)``: a plan
+    belongs to at most one file's opportunity, so the file narrows it to a
+    single candidate and the step list confirms it.
+    """
+    from ....analysis.health.refactoring.identity import REFACTORING_MODEL_VERSION
+    from ....analysis.health.rows import detail_map
+
+    if not public_id:
+        return None
+    rows = (
+        await session.execute(
+            select(RefactoringOpportunity)
+            .where(
+                RefactoringOpportunity.repository_id == repository_id,
+                RefactoringOpportunity.status == "open",
+                RefactoringOpportunity.refactoring_model_version == REFACTORING_MODEL_VERSION,
+                RefactoringOpportunity.file_path == file_path,
+            )
+            .limit(5)
+        )
+    ).scalars()
+    for row in rows:
+        steps = detail_map(row).get("steps") or []
+        if any(step.get("plan_id") == public_id for step in steps):
+            return row
+    return None
 
 
 __all__ = [
-    "DEFAULT_ORDER",
     "finalize_refactoring_opportunities",
+    "gated_opportunity_counts",
     "get_refactoring_opportunity",
     "get_refactoring_summary",
     "list_refactoring_opportunities",
+    "owning_refactoring_opportunity",
     "refactoring_facet_counts",
+    "refactoring_opportunities_by_id",
+    "refactoring_reason_counts",
+    "refactoring_step_counts",
     "update_refactoring_opportunity_status",
 ]

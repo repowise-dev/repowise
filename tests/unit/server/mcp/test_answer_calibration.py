@@ -44,6 +44,15 @@ class TestHedgeMarkers:
         long_preamble = "The module handles ingestion. " * 40
         assert _answer_is_hedged(long_preamble + "However, the excerpts do not include the value.")
 
+    def test_evidence_that_names_no_answer_detected(self) -> None:
+        assert _answer_is_hedged("The evidence does not identify which caller sets it.")
+        assert _answer_is_hedged("The material does not show the retry count.")
+        assert _answer_is_hedged("The evidence does not specify which default ports it drops.")
+
+    def test_behaviour_described_with_the_same_verbs_not_hedged(self) -> None:
+        assert not _answer_is_hedged("The validator does not show an error on empty input.")
+        assert not _answer_is_hedged("The caller does not specify a timeout, so 5s applies.")
+
     def test_direct_answer_not_hedged(self) -> None:
         assert not _answer_is_hedged("The default is 2, set in git_indexer/_constants.py.")
 
@@ -300,7 +309,7 @@ def _patch_pipeline(monkeypatch, answer_mod, *, with_symbols: bool, symbol: dict
         for i, h in enumerate(hits):
             h["target_path"] = h["page_id"].removeprefix("file_page:")
             h["title"] = h["target_path"]
-            h["summary"] = "Auth service summary."
+            h["summary"] = "Auth service summary. Callers get a bounded, limited list."
             h["snippet"] = ""
             h["page_type"] = "file_page"
             if with_symbols and i == 0:
@@ -453,6 +462,72 @@ async def test_mechanism_question_skips_fast_path(setup_mcp, monkeypatch):
 
     result = await get_answer("How does MIN_COUNT influence the retry loop?")
     assert "grounding" not in result
+
+
+def _value_hits(name: str, signature: str) -> list[dict]:
+    sym = {"name": name, "kind": "constant", "signature": signature, "start_line": 7}
+    return [{"target_path": "pkg/models.py", "symbols": [dict(sym, _matched=True)]}]
+
+
+class TestValueExtractionRelevance:
+    """A constant that only contains a question identifier is not the answer."""
+
+    def _extract(self, question: str, name: str, signature: str):
+        from repowise.server.mcp_server.tool_answer.symbols import (
+            _extract_question_identifiers,
+            _extract_value_answer,
+        )
+
+        ids = _extract_question_identifiers(question)
+        return _extract_value_answer(_value_hits(name, signature), ids, question)
+
+    def test_exact_name_is_extracted(self) -> None:
+        out = self._extract(
+            "What is the default of _DOMINANCE_RATIO?", "_DOMINANCE_RATIO", "_DOMINANCE_RATIO = 1.2"
+        )
+        assert out is not None and out["exact_name"]
+
+    def test_identifier_inside_an_unrelated_name_is_not_extracted(self) -> None:
+        # `Symbol` sits inside `SymbolKind`; nothing in the question asks about a kind.
+        question = (
+            "How are has_method edges built from Symbol.parent_name; how does a "
+            "method's parent_name map to its class (e.g. enum constant parent 'E::A')?"
+        )
+        assert self._extract(question, "SymbolKind", "SymbolKind = Literal[") is None
+
+    def test_alias_of_the_named_function_is_not_extracted(self) -> None:
+        question = "What is the timeout for the FTS search leg in get_answer retrieval?"
+        assert (
+            self._extract(question, "_get_answer_raw", "_get_answer_raw = get_answer") is None
+        )
+
+    def test_name_the_question_spells_out_is_extracted_but_not_exact(self) -> None:
+        out = self._extract(
+            "What is the DEFAULT_TIMEOUT config value?",
+            "DEFAULT_TIMEOUT_CONFIG",
+            "DEFAULT_TIMEOUT_CONFIG = Timeout(timeout=5.0)",
+        )
+        assert out is not None and not out.get("exact_name")
+
+    def test_short_name_part_must_appear_in_the_question(self) -> None:
+        # The stemmer drops parts under 3 chars, so `V2` is checked as a token.
+        assert self._extract("What is the MAX limit?", "MAX_V2", "MAX_V2 = 8") is None
+        out = self._extract("What is the MAX v2 limit?", "MAX_V2", "MAX_V2 = 8")
+        assert out is not None and not out.get("exact_name")
+
+
+@pytest.mark.asyncio
+async def test_spelled_out_value_is_medium_not_high(setup_mcp, monkeypatch):
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    symbol = dict(_SYMBOL, name="MIN_COUNT_FLOOR", signature="MIN_COUNT_FLOOR = 2")
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=True, symbol=symbol)
+
+    result = await get_answer("What is the floor value of MIN_COUNT?")
+    assert result["grounding"] == "extracted"
+    assert result["confidence"] == "medium"
+    assert "no verification Read needed" not in result["note"]
 
 
 @pytest.mark.asyncio
@@ -740,6 +815,79 @@ async def test_anchor_qualified_miss_records_not_found():
     assert homonyms["qualified_miss"] == ["extract_all"]
     assert not homonyms["union"]  # a qualified miss must NOT fall back to a union
     assert all(not h.get("_symbol_anchored") for h in out)
+
+
+def _spy_repo_reads(monkeypatch) -> list[str]:
+    from repowise.server.mcp_server.tool_answer import symbols
+
+    reads: list[str] = []
+    real = symbols._read_repo_text
+
+    def _spy(repo_root, file_path):
+        reads.append(file_path)
+        return real(repo_root, file_path)
+
+    monkeypatch.setattr(symbols, "_read_repo_text", _spy)
+    return reads
+
+
+@pytest.mark.asyncio
+async def test_anchor_bare_homonym_union_drops_a_pathless_row(monkeypatch, tmp_path):
+    """A pathless def must not reach the bare-homonym union: it would be read
+    at an empty path and named in the reply as a file to open (#2346)."""
+    from repowise.server.mcp_server.tool_answer.symbols import _anchor_symbol_hits
+
+    reads = _spy_repo_reads(monkeypatch)
+    rows = [
+        _Sym("extract_all", "a/x.py", parent_name="A", qualified_name="A.extract_all"),
+        _Sym("extract_all", "b/y.py", parent_name="B", qualified_name="B.extract_all"),
+        _Sym("extract_all", "", parent_name="C", qualified_name="C.extract_all"),
+    ]
+    hits = [{"target_path": "c/z.py", "score": 2.0}]
+    _, homonyms = await _anchor_symbol_hits(
+        _FakeSession(rows), "r", {"extract_all"}, hits, repo_root=tmp_path
+    )
+    assert {d["file_path"] for d in homonyms["union"]["extract_all"]} == {"a/x.py", "b/y.py"}
+    assert "" not in reads
+
+
+@pytest.mark.asyncio
+async def test_anchor_narrowed_union_drops_a_pathless_row(monkeypatch, tmp_path):
+    """Same guard on the narrowed branch: the qualifier matches several defs,
+    one of them pathless."""
+    from repowise.server.mcp_server.tool_answer.symbols import _anchor_symbol_hits
+
+    reads = _spy_repo_reads(monkeypatch)
+    rows = [
+        _Sym("extract_all", "a/x.py", parent_name="Alpha", qualified_name="Alpha.extract_all"),
+        _Sym("extract_all", "a/w.py", parent_name="Alpha", qualified_name="Alpha.extract_all"),
+        _Sym("extract_all", "", parent_name="Alpha", qualified_name="Alpha.extract_all"),
+        _Sym("extract_all", "b/y.py", parent_name="Beta", qualified_name="Beta.extract_all"),
+    ]
+    hits = [{"target_path": "c/z.py", "score": 2.0}]
+    _, homonyms = await _anchor_symbol_hits(
+        _FakeSession(rows), "r", {"extract_all", "Alpha"}, hits, repo_root=tmp_path
+    )
+    assert {d["file_path"] for d in homonyms["union"]["extract_all"]} == {"a/x.py", "a/w.py"}
+    assert "" not in reads
+
+
+@pytest.mark.asyncio
+async def test_anchor_homonym_with_one_pathless_twin_anchors_the_real_def():
+    """Once the pathless row is dropped, the one def left is not a homonym: it
+    anchors like any single def instead of forming a union of one real body
+    and one empty path."""
+    from repowise.server.mcp_server.tool_answer.symbols import _anchor_symbol_hits
+
+    rows = [
+        _Sym("extract_all", "a/x.py", parent_name="A", qualified_name="A.extract_all"),
+        _Sym("extract_all", "", parent_name="B", qualified_name="B.extract_all"),
+    ]
+    hits = [{"target_path": "c/z.py", "score": 2.0}]
+    out, homonyms = await _anchor_symbol_hits(_FakeSession(rows), "r", {"extract_all"}, hits)
+    assert not homonyms["union"]
+    assert out[0]["target_path"] == "a/x.py"
+    assert out[0]["_symbol_anchored"] is True
 
 
 @pytest.mark.asyncio

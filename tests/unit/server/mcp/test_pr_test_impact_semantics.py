@@ -88,7 +88,9 @@ async def test_sealed_pr_payload_is_directive_first_typed_and_count_exact(setup_
     )
     await session.flush()
 
-    payload = await get_risk(["src/measured.py"], changed_files=changed, include=["graph"])
+    payload = await get_risk(
+        ["src/measured.py"], changed_files=changed, include=["graph", "tests", "blast"]
+    )
     external = json.loads(json.dumps(payload))
     directive = external["directive"]
     full = external["pr_blast_radius"]["test_impact"]
@@ -101,11 +103,8 @@ async def test_sealed_pr_payload_is_directive_first_typed_and_count_exact(setup_
     assert directive["test_recommendations_emitted"] == len(directive["test_recommendations"]) == 10
     assert directive["test_recommendations_truncated"] is True
     assert directive["test_recommendations_omitted"] == 6
-    assert directive["tests_to_run"] == [
-        row["test_id"] for row in directive["test_recommendations"]
-    ]
-    assert directive["tests_to_run_total"] == 14
-    assert directive["tests_to_run_basis"] == "measured"
+    # tests_to_run is the selection's run list (test_change_test_selection.py);
+    # the typed rows here are the analyzer's own population.
     assert directive["missing_tests"] == ["src/no_match.py"]
     assert directive["missing_tests_total"] == directive["missing_tests_emitted"] == 1
     assert directive["missing_tests_truncated"] is False
@@ -115,7 +114,12 @@ async def test_sealed_pr_payload_is_directive_first_typed_and_count_exact(setup_
         row["basis"] in {"measured", "inferred"} for row in directive["test_recommendations"]
     )
     assert all(row["evidence"] for row in directive["test_recommendations"])
-    assert all(row["repository_id"] == setup_mcp for row in full["recommendations"])
+    # Named once for the whole population, not on each row, in both the
+    # directive's capped copy and the full one here.
+    assert all("repository_id" not in row for row in full["recommendations"])
+    assert full["recommendations_repository_id"] == setup_mcp
+    assert directive["test_recommendations_repository_id"] == setup_mcp
     assert relation["dependency"]["source"] in directive["may_break"]
     assert relation["co_change"]["source"] not in directive["may_break"]
-    assert external["_meta"]["contract_version"]
+    # A routine response serves the lean envelope.
+    assert "contract_version" not in external["_meta"]

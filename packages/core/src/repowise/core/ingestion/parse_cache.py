@@ -169,7 +169,8 @@ class ParseCache:
             self.misses += 1
             return None
         try:
-            parsed: Any = pickle.loads(blob)
+            # An entry of the cache file load_sealed_pickle verified on load.
+            parsed: Any = pickle.loads(blob)  # repowise-security-ignore: pickle_loads
         except Exception as exc:  # corrupt entry -> re-parse this file
             log.debug("parse_cache_entry_corrupt", path=file_info.path, error=str(exc))
             self.misses += 1
@@ -184,6 +185,8 @@ class ParseCache:
 
     def put(self, parsed: ParsedFile, content_hash: str) -> None:
         """Snapshot *parsed* (call before any graph build mutates it)."""
+        if parsed.grammar_missing:
+            return  # re-parse next run, when the grammar may have loaded
         try:
             blob = pickle.dumps(parsed, protocol=pickle.HIGHEST_PROTOCOL)
         except Exception as exc:

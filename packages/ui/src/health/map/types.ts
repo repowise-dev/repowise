@@ -5,9 +5,13 @@
  * a fill function should not be able to reach the packing algorithm.
  */
 
+import type { PerformanceActionabilityState } from "@repowise-dev/types/health";
+
 export interface CodeHealthMapFile {
   file_path: string;
-  score: number;
+  /** `null` when health has no dialect for the file's language: drawn grey,
+   *  like a file no performance detector covers, never as a score. */
+  score: number | null;
   nloc: number;
   module: string | null;
   line_coverage_pct: number | null;
@@ -33,15 +37,20 @@ export interface CodeHealthMapFile {
   /** Whether a performance detector runs on this file's language at all.
    *  `false` means nothing ever looked, which is not the same as clear. */
   performance_analyzed?: boolean | null;
+  /** Git flags the file a hotspot; drives the hotspot health lens. */
+  is_hotspot?: boolean | null;
   /** 0-100 churn percentile, drives the churn lens. */
   churn_percentile?: number | null;
   /** Reclaimable lines, drives the dead-code lens. */
   dead_code_lines?: number | null;
   /** Open security findings, drives the security lens. */
   security_findings?: number | null;
+  /** Where the file's code comes from (production, test, vendored, ...). */
+  code_origin?: string | null;
 }
 
-export type PerformanceActionability = "plan_ready" | "advisory" | "investigate";
+// The wire vocabulary itself, so a new state cannot drift past the map.
+export type PerformanceActionability = PerformanceActionabilityState;
 
 /**
  * Lens applied to the same field. Recolors every node without re-laying the
@@ -54,31 +63,19 @@ export type CodeHealthOverlay =
   | "coverage"
   | "churn"
   | "dead-code"
-  | "security";
-
-/** One module = one galaxy: its files plus size aggregates. */
-export interface GalaxyAgg {
-  module: string;
-  files: CodeHealthMapFile[]; // NLOC-desc
-  totalNloc: number;
-  maxNloc: number;
-}
+  | "security"
+  /** Hotspot files in their health band, every other file grey. */
+  | "hotspot"
+  /** Area-level: who leads each folder. */
+  | "owner"
+  /** Area-level: share of a folder only one person has changed. */
+  | "knowledge";
 
 export interface FileNode {
   file: CodeHealthMapFile;
   x: number;
   y: number;
   r: number;
-}
-
-export interface Galaxy {
-  module: string;
-  cx: number;
-  cy: number;
-  R: number;
-  fileCount: number;
-  colorId: number;
-  nodes: FileNode[];
 }
 
 /**
@@ -106,4 +103,12 @@ export interface MapScope {
   };
   /** Paths the caller pinned that the index holds no drawable row for. */
   missing?: string[];
+  /**
+   * Vendored and generated files held out of the field, and whether the host
+   * asked for them. Absent when the host does not hold them out.
+   */
+  held?: number;
+  includeHeld?: boolean;
+  /** The search the server pinned matches for, and how many it found. */
+  query?: { text: string; matches: number; shown: number };
 }

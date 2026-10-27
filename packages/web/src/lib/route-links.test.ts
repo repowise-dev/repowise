@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { CODE_HEALTH_TABS, MOVED_TABS, TAB_ALIASES } from "@/app/repos/[id]/code-health/tabs";
 
 /**
  * Drift guard for links into routes that are only redirects.
@@ -56,7 +57,7 @@ function redirectOnlySegments(): Set<string> {
     } catch {
       continue;
     }
-    if (page.includes("redirect") && !page.includes("return (")) out.add(entry);
+    if (page.includes("redirect") && !/return\s*\(?\s*</.test(page)) out.add(entry);
   }
   return out;
 }
@@ -100,23 +101,8 @@ describe("route links", () => {
   });
 
   it("points at no Code Health tab that only survives as a legacy alias", () => {
-    const page = readFileSync(join(ROUTES, "code-health/page.tsx"), "utf8");
-
-    const tabs = new Set(
-      [...(page.match(/const TABS = \[([\s\S]*?)\] as const/)?.[1] ?? "").matchAll(/"([^"]+)"/g)].map(
-        (m) => m[1]!,
-      ),
-    );
-    const aliases = new Set(
-      [
-        ...(page.match(/const TAB_ALIASES[^{]*\{([\s\S]*?)\n\}/)?.[1] ?? "").matchAll(
-          /^\s*"?([a-z-]+)"?:/gm,
-        ),
-      ].map((m) => m[1]!),
-    );
-    // The parse has to have found something, or this passes on a rename.
-    expect(tabs.size).toBeGreaterThan(3);
-    expect(aliases.size).toBeGreaterThan(1);
+    const tabs = new Set<string>(CODE_HEALTH_TABS);
+    const aliases = new Set(Object.keys(TAB_ALIASES));
 
     const offenders: string[] = [];
     for (const file of [...walk(WEB_SRC), ...walk(UI_SRC)]) {
@@ -136,9 +122,28 @@ describe("route links", () => {
     expect(offenders.sort()).toEqual([]);
   });
 
+  it("points web at the new home of a tab that left Code Health", () => {
+    // Web only: the shared ui package keeps `?tab=coverage` and
+    // `?tab=doc-drift` until the hosted app has `/tests` and `/docs/drift`
+    // (the hosted port); the server redirect carries those links meanwhile.
+    const moved = new Set<string>(MOVED_TABS);
+    const offenders: string[] = [];
+    for (const file of walk(WEB_SRC)) {
+      if (/\.test\.tsx?$/.test(file)) continue;
+      readFileSync(file, "utf8")
+        .split("\n")
+        .forEach((line, i) => {
+          for (const m of line.matchAll(/code-health\?tab=([a-z-]+)/g)) {
+            if (moved.has(m[1]!)) offenders.push(`?tab=${m[1]} <- ${file}:${i + 1}`);
+          }
+        });
+    }
+    expect(offenders.sort()).toEqual([]);
+  });
+
   it("still recognises the deep links we keep on purpose", () => {
-    // If `/wiki` stops being a redirect this allowance is dead weight, and the
+    // If one stops being a redirect its allowance is dead weight, and the
     // set should shrink rather than quietly cover a real page.
-    expect(redirectOnlySegments().has("wiki")).toBe(true);
+    for (const seg of DELIBERATE) expect(redirectOnlySegments().has(seg)).toBe(true);
   });
 });

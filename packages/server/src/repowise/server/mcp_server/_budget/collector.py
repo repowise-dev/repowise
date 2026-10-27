@@ -24,12 +24,13 @@ from repowise.server.mcp_server._references import omission_reference
 
 logger = logging.getLogger(__name__)
 
-#: One sentence, repeated verbatim in every ``_meta.omitted`` block, telling
-#: shell-less clients (e.g. Claude Desktop) how to recover without a CLI.
-_RESTORE_HINT = (
-    "Run `repowise expand <ref>` from the repo, or call "
-    'get_symbol("repowise#<ref>", query=...) to retrieve the omitted content.'
-)
+#: Repeated verbatim in every ``_meta.omitted`` block, so it is billed on every
+#: response that omits anything. Both recovery routes survive; the prose around
+#: them does not. The CLI route is already spelled out with a concrete ref in
+#: the omission marker itself (``core/distill/markers.py:18``) — what only this
+#: line carries is the ``get_symbol`` route, which is how a shell-less client
+#: (e.g. Claude Desktop) recovers.
+_RESTORE_HINT = '`repowise expand <ref>`, or get_symbol("repowise#<ref>", query=...)'
 
 _DOC_SECTION_RULE = "==== {label} ===="
 def render_chunk(label: str, value: Any) -> str:

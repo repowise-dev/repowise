@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
+import { EmptyState } from "../shared/empty-state";
 import { InfoTip } from "../shared/info-tip";
 import {
   biomarkerLabel,
@@ -96,9 +97,10 @@ export function BiomarkerList({
 
   if (filtered.length === 0) {
     return (
-      <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-6 text-sm text-[var(--color-text-secondary)]">
-        No marker findings match the current filters.
-      </div>
+      <EmptyState
+        {...(findings.length > 0 ? { tone: "filtered" as const } : {})}
+        title={findings.length > 0 ? "No marker findings match these filters" : "No marker findings"}
+      />
     );
   }
 
@@ -191,7 +193,7 @@ function BiomarkerGroup({
           }
         }}
         aria-expanded={expanded}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left cursor-pointer rounded-t-lg hover:bg-[var(--color-bg-elevated)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+        className="flex w-full items-center gap-2 px-3 py-2 text-left cursor-pointer rounded-t-lg hover:bg-[var(--color-bg-elevated)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
       >
         {expanded ? (
           <ChevronDown className="h-4 w-4 text-[var(--color-text-tertiary)]" />

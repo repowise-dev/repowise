@@ -94,6 +94,23 @@ async def test_block_names_only_the_overlapping_branch_and_states_its_basis(tmp_
     assert "edit files this change also edits" in block["summary"]
 
 
+async def test_a_branch_reviewed_by_its_sha_is_the_change_not_a_rival(tmp_path):
+    """A worktree branch reviewed from the served checkout: the scan is from its head."""
+    repo = _repo(tmp_path, others={"reviewed": {"a.py": "a reviewed\n"}})
+    head = subprocess.run(
+        ["git", "rev-parse", "reviewed"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    block = await _branch_overlap_block(
+        _ctx(repo), {"a.py": {1}}, OmissionCollector("t", repo_root=tmp_path), head
+    )
+
+    assert block is not None
+    assert block["current"] == head
+    # The served checkout's branch edits a.py too, so it is the rival now.
+    assert [entry["branch"] for entry in block["branches"]] == ["work"]
+
+
 async def test_branch_list_is_capped_and_says_by_how_much(tmp_path):
     over = _BRANCH_OVERLAP_LIMIT + 2
     repo = _repo(
@@ -218,9 +235,9 @@ def test_branch_overlap_participates_in_the_response_ceiling(tmp_path):
 
     # Shed after the fix record and before the consumer list: who else is in
     # these files outlives what the diff weighs and is cheaper than what breaks.
-    assert _SHED_ORDER.index("prior_fixes") < _SHED_ORDER.index("branch_overlap")
+    assert _SHED_ORDER.index("fix_history") < _SHED_ORDER.index("branch_overlap")
     assert _SHED_ORDER.index("branch_overlap") < _SHED_ORDER.index("cross_repo")
-    assert _SHED_ORDER.index("change_shape.independent_changes") < _SHED_ORDER.index("change_shape")
+    assert _SHED_ORDER.index("fix_history.overlap") < _SHED_ORDER.index("fix_history")
 
     payload = {
         "score": 7.0,
@@ -248,7 +265,7 @@ async def test_get_change_risk_carries_the_block_end_to_end(tmp_path, monkeypatc
 
     assert [e["branch"] for e in payload["branch_overlap"]["branches"]] == ["overlapping"]
     # No index, so the diff is never split into changes the index cannot see.
-    assert "independent_changes" not in payload["change_shape"]
+    assert "independent_changes" not in payload
 
 
 async def test_reading_other_branches_does_not_widen_the_response_targets(tmp_path, monkeypatch):

@@ -15,27 +15,44 @@ monorepos silently got the top-level-directory fallback. Reading the manifests'
 *paths* off disk needs no parse, no embedding and no ingestion: a package root
 is a directory name, and nothing here opens a manifest.
 
-.NET is **not** among the languages this fixes, and deliberately so: the file
-that declares a .NET package is the ``.csproj``, which is a glob and therefore
-cannot live in a spec's exact-filename ``manifest_files``. Every name C# does
-declare is MSBuild/NuGet configuration and is excluded as such, so C#
-contributes no package roots and a .NET monorepo keeps the top-level fallback.
-Closing that needs glob support in the manifest list, which is its own change.
+A manifest whose name varies per package, the .NET ``.csproj``, is a glob
+(:meth:`LanguageRegistry.package_manifest_globs`) matched in the same walk, and
+the scan records the matching file names (``Shop.csproj``). Exact-name readers
+of the manifest list (monorepo detection among them) never see these names.
 """
 
 from __future__ import annotations
 
+import fnmatch
 import os
-from collections.abc import Callable
+import re
+import subprocess
+from collections.abc import Callable, Collection, Iterable, Mapping
+from collections.abc import Set as AbstractSet
+from functools import cache
 from pathlib import Path
 
-from ..fs_walk import walk_repo
+from ..fs_walk import PRUNED_DIRS, walk_repo
 from .languages.registry import REGISTRY as _LANG_REGISTRY
 
 
 def package_manifest_names() -> frozenset[str]:
     """The manifest filenames that mark a directory as a package root."""
     return _LANG_REGISTRY.package_manifest_filenames()
+
+
+@cache
+def _glob_manifest() -> Callable[[str], re.Match[str] | None]:
+    """Matches a file name against every manifest glob, ignoring case."""
+    globs = sorted(_LANG_REGISTRY.package_manifest_globs())
+    if not globs:
+        return lambda _name: None
+    return re.compile("|".join(map(fnmatch.translate, globs)), re.IGNORECASE).match
+
+
+def _manifests_in(filenames: Collection[str], names: frozenset[str]) -> frozenset[str]:
+    """The package manifests among *filenames*: exact *names* and glob matches."""
+    return names.intersection(filenames).union(filter(_glob_manifest(), filenames))
 
 
 def _default_prune(repo_root: Path) -> Callable[[Path], bool]:
@@ -64,8 +81,24 @@ def scan_package_roots(
     repo_root: str | os.PathLike[str],
     *,
     is_pruned: Callable[[Path], bool] | None = None,
+    prune_nested_git: bool = True,
 ) -> set[str]:
     """Repo-relative POSIX directories holding a package manifest.
+
+    The directory set of :func:`scan_package_manifests`; see it for the walk.
+    """
+    return set(
+        scan_package_manifests(repo_root, is_pruned=is_pruned, prune_nested_git=prune_nested_git)
+    )
+
+
+def scan_package_manifests(
+    repo_root: str | os.PathLike[str],
+    *,
+    is_pruned: Callable[[Path], bool] | None = None,
+    prune_nested_git: bool = True,
+) -> dict[str, frozenset[str]]:
+    """Each package root mapped to the manifest filenames found in it.
 
     A manifest at the repo root is omitted: it would put every file in one
     bucket, which is the degenerate case package attribution exists to avoid.
@@ -77,26 +110,117 @@ def scan_package_roots(
     beneath it. It defaults to a stock :class:`FileTraverser`'s boundary test;
     pass a configured traverser's :meth:`~FileTraverser.dir_chain_skipped` (or
     use :meth:`FileTraverser.package_root_dirs`) when the repo has submodule
-    or exclude settings.
+    or exclude settings. ``prune_nested_git=False`` descends into nested
+    checkouts, for a traverser opted into indexing them.
     """
     root = Path(repo_root)
+    if is_pruned is not None or not prune_nested_git:
+        return _walk_manifests(root, is_pruned, prune_nested_git)
+    key = (str(root.resolve()), _head_commit(root))
+    if key[1] is None:
+        return _walk_manifests(root, None, True)
+    cached = _SCANS.pop(key, None)
+    if cached is None:
+        cached = _walk_manifests(root, None, True)
+    _SCANS[key] = cached
+    while len(_SCANS) > _SCAN_CACHE_SIZE:
+        del _SCANS[next(iter(_SCANS))]
+    return dict(cached)
+
+
+def package_roots_above(repo_root: str | os.PathLike[str], paths: Iterable[str]) -> set[str]:
+    """The roots :func:`scan_package_roots` finds among the directories above *paths*.
+
+    Those are the only roots :func:`module_for` can return for *paths*, so for
+    them the answer is the full scan's. Only those directories are listed,
+    so the cost follows the paths rather than the size of the tree.
+
+    Each directory gets the walk's pruning: a pruned name, the traverser's
+    boundary, a nested checkout (its own ``.git``), and any of these on a
+    parent. Ceiling: link pruning and the walk's depth cap are not repeated,
+    because git tracks no file beneath a linked directory; a path under a
+    link or 64 levels deep could see a root the walk skips.
+    """
+    root = Path(repo_root)
+    prune = _default_prune(root)
+    names = package_manifest_names()
+    dirs: set[str] = set()
+    for path in paths:
+        parts = path.replace("\\", "/").split("/")
+        dirs.update("/".join(parts[:i]) for i in range(1, len(parts)))
+    found: dict[str, frozenset[str] | None] = {}
+    # Shallowest first, so a pruned parent is decided before its children.
+    for rel in sorted(dirs, key=lambda d: d.count("/")):
+        parent = rel.rpartition("/")[0]
+        pruned = bool(parent) and found.get(parent) is None
+        found[rel] = None if pruned else _listed_manifests(root, rel, prune, names)
+    return {rel for rel, manifests in found.items() if manifests}
+
+
+def _listed_manifests(
+    root: Path, rel: str, prune: Callable[[Path], bool], names: frozenset[str]
+) -> frozenset[str] | None:
+    """The manifests in *rel*, or None when the walk would not enter it."""
+    if rel.rpartition("/")[2] in PRUNED_DIRS or prune(Path(rel)):
+        return None
+    try:
+        with os.scandir(root / rel) as listing:
+            entries = [(e.name, e.is_dir()) for e in listing]
+    except OSError:
+        return None
+    if any(name == ".git" for name, _ in entries):
+        return None
+    return _manifests_in([name for name, is_dir in entries if not is_dir], names)
+
+
+#: Stock-settings scans by (checkout, HEAD commit), most recent last: health,
+#: the plan finalizers and Fix first share one walk per update, and another
+#: checkout or commit scans again. Ceiling: a manifest added or removed without
+#: a new commit keeps the cached roots until the next commit; upgrade by
+#: keying on the manifests' mtimes if working-tree updates need it.
+_SCANS: dict[tuple[str, str | None], dict[str, frozenset[str]]] = {}
+_SCAN_CACHE_SIZE = 4
+
+
+def _head_commit(root: Path) -> str | None:
+    """The commit *root* is checked out at, or None outside git."""
+    try:
+        done = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=root,
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            timeout=10,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    sha = done.stdout.strip()
+    return sha if done.returncode == 0 and sha else None
+
+
+def _walk_manifests(
+    root: Path, is_pruned: Callable[[Path], bool] | None, prune_nested_git: bool
+) -> dict[str, frozenset[str]]:
     names = package_manifest_names()
     prune = is_pruned if is_pruned is not None else _default_prune(root)
-    roots: set[str] = set()
+    roots: dict[str, frozenset[str]] = {}
 
-    for dirpath, dirnames, filenames in walk_repo(root):
+    for dirpath, dirnames, filenames in walk_repo(root, prune_nested_git=prune_nested_git):
         rel_dir = Path(dirpath).relative_to(root)
         # Prune in place so the walk never descends — the point of the scan is
         # to be cheap enough to run on every update.
         dirnames[:] = [d for d in dirnames if not prune(rel_dir / d)]
-        if rel_dir == Path() or not names.intersection(filenames):
+        if rel_dir == Path():
             continue
-        roots.add(rel_dir.as_posix())
+        matched = _manifests_in(filenames, names)
+        if matched:
+            roots[rel_dir.as_posix()] = matched
 
     return roots
 
 
-def module_for(rel_path: str, package_roots: set[str]) -> str | None:
+def module_for(rel_path: str, package_roots: AbstractSet[str]) -> str | None:
     """The package boundary *rel_path* belongs to, or its top-level directory.
 
     ``module`` is the directory/package axis and nothing else. It used to be
@@ -130,6 +254,28 @@ def module_for(rel_path: str, package_roots: set[str]) -> str | None:
     return head or None
 
 
+def owning_package(
+    rel_path: str,
+    manifests: Mapping[str, frozenset[str]],
+    manifest_name: str,
+    accepts: Callable[[str], bool],
+) -> str | None:
+    """The deepest package root above *rel_path* holding *manifest_name* that
+    *accepts* takes, else the repository root (``""``) when it does, else None.
+
+    *manifests* is :func:`scan_package_manifests`'s map, which leaves the root
+    out; *accepts* gets a root directory and reads whatever its language needs
+    from that manifest (a JS test script, say). One lookup for any ecosystem.
+    """
+    roots = {root for root, names in manifests.items() if manifest_name in names}
+    current = rel_path.replace("\\", "/")
+    while (owner := module_for(current, roots)) in roots:
+        if accepts(owner):
+            return owner
+        current = owner
+    return "" if accepts("") else None
+
+
 def package_roots_from_paths(all_paths: set[str]) -> set[str]:
     """Package roots inferred from a file list, for callers with no checkout.
 
@@ -144,6 +290,6 @@ def package_roots_from_paths(all_paths: set[str]) -> set[str]:
         if "/" not in norm:
             continue
         head, base = norm.rsplit("/", 1)
-        if base in names:
+        if _manifests_in((base,), names):
             roots.add(head)
     return roots

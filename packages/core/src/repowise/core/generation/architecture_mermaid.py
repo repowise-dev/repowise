@@ -1,230 +1,219 @@
-"""Deterministic architecture-diagram mermaid, built from the knowledge graph.
+"""Name, compile and place the overview's system map.
 
-The overview map and the per-layer diagrams are emitted straight from the KG
-(layers, curated modules, and ``imports`` edges) rather than authored by the
-LLM. Deterministic construction is free (no model call), can never emit a
-diagram that fails to render, and stays perfectly faithful to the graph.
+:mod:`.architecture_map` decides the boxes and arrows. This module turns that
+structure into the page's diagram: an optional model pass renames the boxes and
+verbs through a JSON block the overview call appends to its reply, the diagram
+compiles to mermaid in code, and the section lands under the page's first
+section. Model text is sanitised before it reaches mermaid or markdown, so the
+compiled source is valid by construction.
 
-The output is intentionally style-free: no inline colors or ``classDef``. The
-rendering component (packages/ui MermaidDiagram) owns the palette through design
-tokens and is theme-aware, so a hardcoded fill here would break in dark mode.
-Boundary layers in a layer diagram are distinguished by node *shape*, not color.
-
-``build_overview_mermaid`` / ``build_layer_mermaid`` return ``None`` when the KG
-lacks the data to draw a useful diagram (older or uncurated indexes), so callers
-fall back cleanly to prior behavior.
+The compiled mermaid carries no colors. Each tier gets a ``classDef`` that only
+varies the stroke, so the renderer's theme owns the palette in light and dark.
 """
 
 from __future__ import annotations
 
+import json
 import re
-from collections import defaultdict
-from typing import TYPE_CHECKING
+from dataclasses import replace
+from typing import Any
+from urllib.parse import quote
 
-if TYPE_CHECKING:
-    from .kg_context import KnowledgeGraphContext
+from .architecture_map import TIERS, MapEdge, MapNode, SystemMap
+from .models import compute_page_id
 
-# --- tuning (mirrors the reviewed lab settings) ------------------------------
-_OVERVIEW_MODULES_PER_LAYER = 2  # top-N modules shown per layer in the hero map
-_OVERVIEW_MAX_EDGES = 16  # strongest inter-module edges kept in the hero
-_OVERVIEW_MIN_EDGE = 12  # drop dependencies weaker than this from the hero
-_LAYER_MODULES = 7  # module nodes inside one layer's own diagram
-_LAYER_MAX_INTRA_EDGES = 16
-_LAYER_BOUNDARY = 3  # deps-out / deps-in neighbour layers shown
+HEADING = "## System map"
+# Written by earlier versions at the end of the page; replaced on re-embed.
+_LEGACY_HEADING = "## Architecture map"
 
-_MERMAID_BLOCK_RE = re.compile(r"```mermaid\b.*?```", re.DOTALL)
+_TIER_TITLES = {
+    "actor": "Who uses it",
+    "surface": "Ways in",
+    "shared": "Shared libraries",
+    "service": "Server",
+    "engine": "Engine",
+    "store": "Data store",
+}
+# Stroke only, no color: the renderer's theme tokens own the palette.
+_TIER_STYLE = {
+    "actor": "stroke-dasharray:4 4",
+    "surface": "stroke-width:2px",
+    "shared": "stroke-width:1px",
+    "service": "stroke-width:2px",
+    "engine": "stroke-width:1px",
+    "store": "stroke-width:1px",
+}
+_SHAPES = {"actor": ('(["', '"])'), "store": ('[("', '")]')}
+
+# A fenced JSON object, with or without a language tag. A reply cut off inside
+# the block leaves an unterminated fence at the very end.
+_NAMES_FENCE_RE = re.compile(
+    r"\n?[ \t]*```(?:json)?[ \t]*\n\s*(?P<body>\{.*?\})\s*```[ \t]*",
+    re.DOTALL | re.IGNORECASE,
+)
+_TRUNCATED_FENCE_RE = re.compile(r"\n?[ \t]*```(?:json)?[ \t]*\n\s*\{[^`]*\Z", re.IGNORECASE)
+_NAMES_KEYS = ("nodes", "edges", "caption")
+# Kept out of labels: each is syntax in a mermaid label or an HTML label.
+_UNSAFE_CHARS_RE = re.compile(r"[\"'`<>|\[\]{}#;:\\]")
+# Kept out of the caption, which is markdown: fences and HTML.
+_CAPTION_UNSAFE_RE = re.compile(r"[`<>]")
+_H2_RE = re.compile(r"(?m)^## ")
 
 
-def _slug(text: str) -> str:
-    """mermaid-safe node id."""
-    s = re.sub(r"[^A-Za-z0-9_]", "_", text)
-    if s and s[0].isdigit():
-        s = "n_" + s
-    return s or "n"
+# -- naming -------------------------------------------------------------------
 
 
-def _short_module_label(module: dict) -> str:
-    """Short, readable label for a module node (last 1-2 path segments)."""
-    name = module.get("name") or ""
-    path = module.get("path") or ""
-    base = path or name
-    parts = [p for p in re.split(r"[\\/]", base) if p and p not in ("src", "packages")]
-    if not parts:
-        return name or path or module.get("id", "?")
-    return "/".join(parts[-2:]) if len(parts) >= 2 else parts[-1]
+def naming_payload(system_map: SystemMap) -> str:
+    """The structure a model names, as JSON for the overview prompt."""
+    return json.dumps(
+        {
+            "nodes": [
+                {"id": n.id, "tier": n.tier, "name": n.name, "facts": list(n.facts)}
+                for n in system_map.nodes
+            ],
+            "edges": [
+                {"from": e.source, "to": e.target, "evidence": e.basis} for e in system_map.edges
+            ],
+        },
+        indent=1,
+    )
 
 
-def _esc(text: str) -> str:
-    """Quote-safe mermaid label text."""
-    return text.replace('"', "'").strip()
+def split_names(content: str) -> tuple[str, dict[str, Any] | None]:
+    """Strip the names block from a model reply and parse it.
 
-
-class ArchitectureMermaidBuilder:
-    """Builds overview + per-layer mermaid from a KnowledgeGraphContext.
-
-    Indexes the graph once on construction so a run can draw the overview and
-    every layer diagram without re-aggregating the edge list each time.
+    The last fenced object that names the map is taken wherever it sits, so
+    prose written after it is kept and a JSON example in the prose is left
+    alone. A reply cut off inside the block loses the partial block.
     """
+    for match in reversed(list(_NAMES_FENCE_RE.finditer(content))):
+        try:
+            parsed = json.loads(match.group("body"))
+        except ValueError:
+            continue
+        if isinstance(parsed, dict) and any(k in parsed for k in _NAMES_KEYS):
+            body = (content[: match.start()].rstrip() + "\n" + content[match.end() :]).rstrip()
+            return body + "\n", parsed
+    truncated = _TRUNCATED_FENCE_RE.search(content)
+    if truncated and any(f'"{k}"' in truncated.group(0) for k in _NAMES_KEYS):
+        return content[: truncated.start()].rstrip() + "\n", None
+    return content, None
 
-    def __init__(self, kg_ctx: KnowledgeGraphContext) -> None:
-        self._ok = bool(getattr(kg_ctx, "available", False))
-        self._layers: list[dict] = kg_ctx.get_layers() if self._ok else []
-        modules: list[dict] = kg_ctx.get_modules() if self._ok else []
 
-        self._mod_by_id: dict[str, dict] = {m["id"]: m for m in modules}
-        self._file_to_module: dict[str, str] = {}
-        for m in modules:
-            for nid in m.get("nodeIds", []):
-                if nid.startswith("file:"):
-                    self._file_to_module[nid[5:]] = m["id"]
+def apply_names(system_map: SystemMap, raw: dict[str, Any] | None) -> SystemMap:
+    """Swap in model names, verbs and caption; unknown ids and pairs are ignored."""
+    if not raw:
+        return system_map
+    by_id = {n.id: n for n in system_map.nodes}
+    names: dict[str, tuple[str, str]] = {}
+    for item in raw.get("nodes") or []:
+        if not isinstance(item, dict) or item.get("id") not in by_id:
+            continue
+        label = _clean(item.get("label"), 4)
+        if label:
+            names[item["id"]] = (label, _clean(item.get("role"), 6) or by_id[item["id"]].role)
+    pairs = {(e.source, e.target) for e in system_map.edges}
+    verbs: dict[tuple[str, str], str] = {}
+    for item in raw.get("edges") or []:
+        if not isinstance(item, dict):
+            continue
+        pair = (item.get("from"), item.get("to"))
+        verb = _clean(item.get("verb"), 3)
+        if pair in pairs and verb:
+            verbs[pair] = verb
+    text = " ".join(_CAPTION_UNSAFE_RE.sub("", str(raw.get("caption") or "")).split())
+    caption = " ".join(re.split(r"(?<=[.!?])\s+", text.lstrip("#").strip())[:2])
+    return replace(system_map.with_names(names, verbs), caption=caption)
 
-        # modules per layer, ranked by size (file count)
-        self._modules_by_layer: dict[str, list[dict]] = defaultdict(list)
-        for m in modules:
-            lid = m.get("layerId")
-            if lid:
-                self._modules_by_layer[lid].append(m)
-        for lid in self._modules_by_layer:
-            self._modules_by_layer[lid].sort(key=lambda m: len(m.get("nodeIds", [])), reverse=True)
 
-        # file -> layer id
-        self._file_to_layer: dict[str, str] = {}
-        for ly in self._layers:
-            for nid in ly.get("nodeIds", []):
-                if nid.startswith("file:"):
-                    self._file_to_layer[nid[5:]] = ly["id"]
+def _clean(value: Any, max_words: int) -> str:
+    text = _UNSAFE_CHARS_RE.sub("", str(value or "")).replace("&", "and")
+    return " ".join(text.split()[:max_words])
 
-        # aggregate imports once: module->module and layer->layer counts
-        self._mod_edges: dict[tuple[str, str], int] = defaultdict(int)
-        self._layer_edges: dict[tuple[str, str], int] = defaultdict(int)
-        if self._ok:
-            for sf, tf in kg_ctx.iter_import_edges():
-                ms, mt = self._file_to_module.get(sf), self._file_to_module.get(tf)
-                if ms and mt and ms != mt:
-                    self._mod_edges[(ms, mt)] += 1
-                ls, lt = self._file_to_layer.get(sf), self._file_to_layer.get(tf)
-                if ls and lt and ls != lt:
-                    self._layer_edges[(ls, lt)] += 1
 
-    # -- overview -------------------------------------------------------------
-    def overview(self) -> str | None:
-        if not self._ok or not self._layers:
-            return None
+# -- compile ------------------------------------------------------------------
 
-        selected: dict[str, dict] = {}
-        layer_nodes: dict[str, list[str]] = {}
-        for ly in self._layers:
-            mods = self._modules_by_layer.get(ly["id"], [])[:_OVERVIEW_MODULES_PER_LAYER]
-            layer_nodes[ly["id"]] = [m["id"] for m in mods]
-            for m in mods:
-                selected[m["id"]] = m
-        if not selected:
-            return None
 
-        kept = [
-            (ms, mt, c)
-            for (ms, mt), c in self._mod_edges.items()
-            if ms in selected and mt in selected and c >= _OVERVIEW_MIN_EDGE
-        ]
-        kept.sort(key=lambda x: x[2], reverse=True)
-        kept = kept[:_OVERVIEW_MAX_EDGES]
-
-        lines = ["flowchart LR"]
-        for ly in self._layers:
-            node_ids = layer_nodes.get(ly["id"], [])
-            if not node_ids:
-                continue
-            lines.append(f'  subgraph {_slug(ly["id"])}["{_esc(ly["name"])}"]')
-            lines.append("    direction TB")
-            for mid in node_ids:
-                lines.append(f'    {_slug(mid)}["{_esc(_short_module_label(selected[mid]))}"]')
-            lines.append("  end")
-        lines.append("")
-        mod_layer = {mid: self._mod_by_id[mid].get("layerId") for mid in selected}
-        for ms, mt, c in kept:
-            cross = mod_layer.get(ms) != mod_layer.get(mt)
-            arrow = "-->" if cross else "-.->"
-            lines.append(f'  {_slug(ms)} {arrow}|"{c}"| {_slug(mt)}')
-        return "\n".join(lines)
-
-    # -- one layer ------------------------------------------------------------
-    def layer(self, layer: dict) -> str | None:
-        if not self._ok:
-            return None
-        lid = layer.get("id", "")
-        mods = self._modules_by_layer.get(lid, [])[:_LAYER_MODULES]
-        if not mods:
-            return None
-        sel = {m["id"]: m for m in mods}
-
-        intra = [
-            (ms, mt, c)
-            for (ms, mt), c in self._mod_edges.items()
-            if ms in sel and mt in sel and ms != mt
-        ]
-        intra.sort(key=lambda x: x[2], reverse=True)
-        intra = intra[:_LAYER_MAX_INTRA_EDGES]
-
-        name_by_id = {L["id"]: L["name"] for L in self._layers}
-        deps_out = sorted(
-            ((name_by_id.get(lt, lt), c) for (ls, lt), c in self._layer_edges.items() if ls == lid),
-            key=lambda x: x[1],
-            reverse=True,
-        )[:_LAYER_BOUNDARY]
-        deps_in = sorted(
-            ((name_by_id.get(ls, ls), c) for (ls, lt), c in self._layer_edges.items() if lt == lid),
-            key=lambda x: x[1],
-            reverse=True,
-        )[:_LAYER_BOUNDARY]
-
-        lines = ["flowchart TD"]
-        lines.append(f'  subgraph core["{_esc(layer.get("name", "Layer"))} layer"]')
-        lines.append("    direction TB")
-        for mid in sel:
-            lines.append(f'    {_slug(mid)}["{_esc(_short_module_label(sel[mid]))}"]')
-        for ms, mt, c in intra:
-            lines.append(f'    {_slug(ms)} -->|"{c}"| {_slug(mt)}')
+def compile_mermaid(system_map: SystemMap) -> str:
+    """Mermaid flowchart source for *system_map*: one subgraph per tier."""
+    lines = ["flowchart TB"]
+    for tier in TIERS:
+        members = [n for n in system_map.nodes if n.tier == tier]
+        if not members:
+            continue
+        lines.append(f'  subgraph tier_{tier}["{_TIER_TITLES[tier]}"]')
+        lines.append("    direction LR")
+        lines += [f"    {_node(n)}" for n in members]
         lines.append("  end")
-        # Boundary layers as stadium nodes (shape, not color, so it stays
-        # theme-safe): imported-by above, depends-on below.
-        if deps_in:
-            lines.append("")
-            for i, (name, c) in enumerate(deps_in):
-                nid = f"in_{i}"
-                lines.append(f'  {nid}(["{_esc(name)}"])')
-                lines.append(f'  {nid} ==>|"{c}"| core')
-        if deps_out:
-            lines.append("")
-            for i, (name, c) in enumerate(deps_out):
-                nid = f"out_{i}"
-                lines.append(f'  {nid}(["{_esc(name)}"])')
-                lines.append(f'  core -.->|"{c}"| {nid}')
-        return "\n".join(lines)
+    lines += [f"  {_edge(e)}" for e in system_map.edges]
+    for n in system_map.nodes:
+        if n.page_id:
+            href = "?page=" + quote(compute_page_id("module_page", n.page_id), safe="")
+            lines.append(f'  click {n.id} "{href}" "Open the {_clean(n.name, 6)} page"')
+    used = {n.tier for n in system_map.nodes}
+    lines += [f"  classDef {t} {_TIER_STYLE[t]}" for t in TIERS if t in used]
+    return "\n".join(lines)
 
 
-def build_overview_mermaid(kg_ctx: KnowledgeGraphContext) -> str | None:
-    """Overview architecture map, or None when the KG can't support one."""
-    return ArchitectureMermaidBuilder(kg_ctx).overview()
+def _node(node: MapNode) -> str:
+    opener, closer = _SHAPES.get(node.tier, ('["', '"]'))
+    label = f"<b>{_clean(node.name, 6)}</b>"
+    if node.role:
+        label += f"<br/><small>{_clean(node.role, 8)}</small>"
+    return f"{node.id}{opener}{label}{closer}:::{node.tier}"
 
 
-def build_layer_mermaid(kg_ctx: KnowledgeGraphContext, layer: dict) -> str | None:
-    """Per-layer diagram, or None when the layer has no curated modules."""
-    return ArchitectureMermaidBuilder(kg_ctx).layer(layer)
+def _edge(edge: MapEdge) -> str:
+    arrow = "==>" if edge.heavy else "-->"
+    return f'{edge.source} {arrow}|"{_clean(edge.verb, 4)}"| {edge.target}'
 
 
-def embed_mermaid(content: str, mermaid: str, *, heading: str) -> str:
-    """Return *content* with *mermaid* embedded, idempotently.
+# -- the page section ---------------------------------------------------------
 
-    If the content already has a fenced mermaid block (the LLM's own, or one we
-    embedded on a prior run), its body is replaced. Otherwise the diagram is
-    appended under *heading*. Re-running on already-embedded content is a no-op,
-    so reused/cached pages stay stable across docs updates.
+
+def system_map_section(system_map: SystemMap, repo_name: str) -> str:
+    """The markdown section for *system_map*: heading, caption and diagram.
+
+    The caption says what the map leaves out, since a diagram that silently
+    drops parts or arrows claims more coverage than it has.
     """
-    if not mermaid:
+    caption = system_map.caption or f"The main parts of {repo_name} and how they connect."
+    if system_map.omitted:
+        n = system_map.omitted
+        caption += f" {n} more part{'s are' if n != 1 else ' is'} not shown."
+    if system_map.arrows_cut:
+        caption += " Only the strongest links are drawn."
+    body = compile_mermaid(system_map)
+    return f"{HEADING}\n\n{caption}\n\n```mermaid\n{body}\n```\n"
+
+
+def embed_system_map(content: str, section: str | None) -> str:
+    """Place *section* under the page's first section, replacing any earlier map.
+
+    Idempotent: a page that already carries a map (this one, or the older
+    end-of-page architecture map) has it removed before the new one goes in.
+    """
+    content = _remove_section(_remove_section(content, HEADING), _LEGACY_HEADING)
+    if not section:
         return content
-    block = f"```mermaid\n{mermaid}\n```"
-    if _MERMAID_BLOCK_RE.search(content):
-        # function replacement avoids backslash/group interpretation in mermaid
-        return _MERMAID_BLOCK_RE.sub(lambda _m: block, content, count=1)
-    sep = "" if content.endswith("\n") else "\n"
-    return f"{content}{sep}\n{heading}\n\n{block}\n"
+    h2 = [m.start() for m in _H2_RE.finditer(content) if not _in_fence(content, m.start())]
+    if len(h2) < 2:
+        sep = "" if content.endswith("\n") else "\n"
+        return f"{content}{sep}\n{section}"
+    return f"{content[: h2[1]]}{section}\n{content[h2[1] :]}"
+
+
+def _remove_section(content: str, heading: str) -> str:
+    match = re.search(rf"(?m)^{re.escape(heading)}[ \t]*$", content)
+    if match is None:
+        return content
+    end = len(content)
+    for nxt in _H2_RE.finditer(content, match.end()):
+        if not _in_fence(content, nxt.start()):
+            end = nxt.start()
+            break
+    return content[: match.start()] + content[end:]
+
+
+def _in_fence(content: str, pos: int) -> bool:
+    return content.count("```", 0, pos) % 2 == 1

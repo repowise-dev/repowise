@@ -11,17 +11,8 @@ from __future__ import annotations
 import os
 import platform
 
-# Common CI signals across providers. ``CI`` covers GitHub Actions, GitLab,
-# CircleCI, Travis; the rest catch platforms that don't set a generic ``CI``.
-_CI_ENV_VARS = (
-    "CI",
-    "GITHUB_ACTIONS",
-    "GITLAB_CI",
-    "BUILDKITE",
-    "JENKINS_URL",
-    "TEAMCITY_VERSION",
-    "TF_BUILD",
-)
+from repowise.core.ci.base import CI_ENV_VARS as _CI_ENV_VARS
+from repowise.core.platform.telemetry import pytest_in_env
 
 
 def os_family() -> str:
@@ -44,13 +35,9 @@ def under_pytest() -> bool:
     """Return whether a pytest session is in progress, judged from the env.
 
     Read from the environment rather than ``sys.modules`` so the answer survives
-    a subprocess boundary: the suite drives real ``repowise`` commands, and a
-    child interpreter sees the inherited env vars but has its own module table.
-    ``PYTEST_CURRENT_TEST`` covers the window while a test runs;
-    ``PYTEST_VERSION`` (pytest 8.1+) also covers collection and teardown, when
-    no test is current but an atexit flush can still fire.
+    a subprocess boundary. Shared with the core emitter so the two cannot drift.
     """
-    return bool(os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("PYTEST_VERSION"))
+    return pytest_in_env()
 
 
 def is_ci() -> bool:
@@ -72,3 +59,15 @@ def base_facts() -> dict[str, object]:
         "python_version": python_version(),
         "is_ci": is_ci(),
     }
+
+
+def client() -> str:
+    """Return the host that launched this process, as one fixed label.
+
+    See :func:`repowise.core.platform.telemetry.detect_client` for the labels.
+    A command that knows better (a hook handed ``--client``) overrides it
+    through :func:`..add_command_outcome`.
+    """
+    from repowise.core.platform.telemetry import detect_client
+
+    return detect_client()

@@ -98,6 +98,42 @@ class TestNameAtLine:
     def test_qualified_name_uses_bare_segment(self) -> None:
         assert name_at_line(FRESH_SOURCE.splitlines(), "Service::handle", 9)
 
+    def test_annotation_block_is_read_past(self) -> None:
+        java = [
+            "  @Deprecated",
+            "  @InlineMe(",
+            '      replacement = "this.other()",',
+            '      imports = "a.B")',
+            "  public Builder setLenient() {",
+        ]
+        assert name_at_line(java, "setLenient", 1)
+        assert name_at_line(["#[test]", "fn parses() {}"], "parses", 1)
+        assert name_at_line(["LRESULT", "Window::MessageHandler(HWND h) {"], "MessageHandler", 1)
+        # Code above the definition is not an annotation, so a shift still fails.
+        assert not name_at_line(["  int x = 1;", "  @Override", "  void run() {"], "run", 1)
+
+    def test_an_annotation_argument_does_not_define_the_name(self) -> None:
+        assert not name_at_line(['@Deprecated(since="foo")', "void bar() {"], "foo", 1)
+        assert name_at_line(['@Deprecated(since="foo")', "void foo() {"], "foo", 1)
+        assert name_at_line(["@cache", "def foo():"], "foo", 1)
+        # One line holding the annotation and the definition still passes.
+        assert name_at_line(["@Test fun parsesInput() {"], "parsesInput", 1)
+        assert not name_at_line(['@Named("parsesInput")', "fun other() {"], "parsesInput", 1)
+
+    @pytest.mark.parametrize(
+        "head",
+        ["pass", "return", "x", "int x"],
+    )
+    def test_a_statement_line_is_not_a_type_head(self, head: str) -> None:
+        # A shift that lands one line above a definition must still fail.
+        assert not name_at_line([head, "def foo_bar():"], "foo_bar", 1)
+        assert not name_at_line([head, "    foo_bar()"], "foo_bar", 1)
+
+    def test_type_heads_read_past_at_most_two_lines(self) -> None:
+        cpp = ["template <typename T>", "static int", "Grow(T x) {"]
+        assert name_at_line(cpp, "Grow", 1)
+        assert not name_at_line(["LRESULT", "LRESULT", "LRESULT", "Run() {"], "Run", 1)
+
 
 class TestCheckSymbolBounds:
     def test_fresh_bounds_verified_without_reparse(self) -> None:
@@ -178,6 +214,20 @@ class TestRelocateSymbol:
         located = relocate_symbol(_row(), SHIFTED_SOURCE)
         assert located is not None
         assert located[0] == 10
+
+    def test_relocate_serves_the_implementation_not_an_overload_stub(self) -> None:
+        source = (
+            "from typing import overload\n"
+            "\n"
+            "\n"
+            "@overload\n"
+            "def alpha(x: int) -> int: ...\n"
+            "@overload\n"
+            "def alpha(x: str) -> str: ...\n"
+            "def alpha(x):\n"
+            "    return x\n"
+        )
+        assert relocate_symbol(_row(), source) == (8, 9)
 
     def test_relocate_returns_none_for_missing_symbol(self) -> None:
         row = _row(name="ghost", symbol_id="pkg/mod.py::ghost")

@@ -1,10 +1,9 @@
 """An update's git index covers the same files a full index does.
 
-``index_repo`` skips every path outside the source-extension allowlist.
-``index_changed_files`` did not, so a changed workflow file got a row, and the
-idle-decay refresh minted a row for every tracked config and markup file; the
-health pass then scored them. A store that had taken updates held rows a fresh
-index never writes.
+``index_repo`` gives code files the full pass and other tracked files only the
+history tier. ``index_changed_files`` once applied no allowlist, so a store that
+had taken updates held rows a fresh index never writes. Both now split the
+tiers the same way: a non-code row is ``history_only`` on either path.
 """
 
 from __future__ import annotations
@@ -49,9 +48,14 @@ async def test_changed_files_and_idle_refresh_follow_the_full_index_allowlist(tm
         idle_decay_sink=sink,
     )
 
-    assert {r["file_path"] for r in rows} == {"a.py"}
-    assert not {p for p in sink if p.endswith((".yaml", ".md"))}
+    by_path = {r["file_path"]: r for r in rows}
+    assert set(by_path) == {"a.py", ".github/workflows/ci.yaml"}
+    assert by_path[".github/workflows/ci.yaml"]["history_only"] is True
+    assert by_path["a.py"]["history_only"] is False
 
     _summary, full_rows = await GitIndexer(tmp_path, tier=GitIndexTier.FULL).index_repo("r")
-    full_paths = {r["file_path"] for r in full_rows}
-    assert {r["file_path"] for r in rows} | set(sink) <= full_paths
+    full = {r["file_path"]: r for r in full_rows}
+    assert set(by_path) | set(sink) <= set(full)
+    for path, row in by_path.items():
+        assert row["history_only"] == full[path]["history_only"]
+        assert row["commit_count_total"] == full[path]["commit_count_total"]

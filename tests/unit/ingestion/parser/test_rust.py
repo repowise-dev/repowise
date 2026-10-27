@@ -76,6 +76,46 @@ class TestRustParser:
         add_fn = next(s for s in result.symbols if s.name == "add" and s.kind == "function")
         assert add_fn.visibility == "public"
 
+    def test_trait_default_method_belongs_to_its_trait(
+        self, parser: ASTParser
+    ) -> None:
+        """A defaulted trait method is a method of the trait, not a free fn."""
+        src = (
+            b"pub trait Matcher {\n"
+            b"    fn captures_at(&self, x: u32) -> bool { true }\n"
+            b"}\n"
+        )
+        fi = _make_file_info("rust_pkg/src/lib.rs", "rust")
+        result = parser.parse_file(fi, src)
+        sym = next(s for s in result.symbols if s.name == "captures_at")
+        assert sym.kind == "method"
+        assert sym.parent_name == "Matcher"
+        assert sym.id == "rust_pkg/src/lib.rs::Matcher::captures_at"
+
+    def test_trait_inside_mod_parents_to_the_trait(
+        self, parser: ASTParser
+    ) -> None:
+        """The walk stops at the trait rather than running on to the mod."""
+        src = (
+            b"mod inner {\n"
+            b"    trait Helper {\n"
+            b"        fn help(&self) -> u32 { 1 }\n"
+            b"    }\n"
+            b"}\n"
+        )
+        fi = _make_file_info("rust_pkg/src/lib.rs", "rust")
+        result = parser.parse_file(fi, src)
+        sym = next(s for s in result.symbols if s.name == "help")
+        assert sym.parent_name == "Helper"
+
+    def test_impl_method_parent_is_unchanged(self, parser: ASTParser) -> None:
+        """The impl path already worked and must keep working."""
+        fi = _make_file_info("rust_pkg/src/models.rs", "rust")
+        result = parser.parse_file(fi, RUST_SOURCE)
+        summary = next(s for s in result.symbols if s.name == "summary")
+        assert summary.kind == "method"
+        assert summary.parent_name == "CalculationRecord"
+
     def test_parses_use_declaration(self, parser: ASTParser) -> None:
         fi = _make_file_info("rust_pkg/src/models.rs", "rust")
         result = parser.parse_file(fi, RUST_SOURCE)

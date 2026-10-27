@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from repowise.core.ingestion.external_systems import npm
+from repowise.core.ingestion.external_systems import extract_external_systems, npm
 
 
 def _write(tmp_path: Path, rel: str, data: dict) -> Path:
@@ -95,3 +95,49 @@ def test_declared_in_is_repo_relative_posix(tmp_path):
     )
     records = npm.parse(nested, tmp_path)
     assert records[0].declared_in == "packages/web/package.json"
+
+
+def test_local_protocol_versions_are_not_external(tmp_path):
+    manifest = _write(
+        tmp_path,
+        "package.json",
+        {
+            "dependencies": {
+                "@org/a": "workspace:^",
+                "@org/b": "link:../b",
+                "@org/c": "file:../c",
+                "react": "^18",
+            },
+        },
+    )
+    assert {r.name for r in npm.parse(manifest, tmp_path)} == {"react"}
+
+
+def test_pnpm_workspace_deps_not_external(tmp_path):
+    # A member three levels down depends on a sibling by plain version: only
+    # the root pnpm declaration can tell it is first-party.
+    (tmp_path / "pnpm-workspace.yaml").write_text(
+        "packages:\n  - 'packages/*'\n  - 'packages/providers/*'\n", encoding="utf-8"
+    )
+    _write(tmp_path, "package.json", {"name": "monorepo", "devDependencies": {"vitest": "^1"}})
+    _write(tmp_path, "packages/core/package.json", {"name": "@org/core"})
+    _write(
+        tmp_path,
+        "packages/providers/openai/package.json",
+        {"name": "@org/openai", "dependencies": {"@org/core": "1.0.0", "zod": "^3"}},
+    )
+    names = {r.name for r in extract_external_systems(tmp_path)}
+    assert names == {"vitest", "zod"}
+
+
+
+def test_discovery_skips_manifests_git_ignores(tmp_path):
+    """A manifest git status cannot see declares nothing: local worktrees, scratch dirs."""
+    (tmp_path / ".gitignore").write_text(".claude/\nscratch.json\n", encoding="utf-8")
+    (tmp_path / ".git" / "info").mkdir(parents=True)
+    (tmp_path / ".git" / "info" / "exclude").write_text("local-stash/\n", encoding="utf-8")
+    _write(tmp_path, "package.json", {"dependencies": {"react": "^18"}})
+    _write(tmp_path, ".claude/worktrees/x/package.json", {"dependencies": {"lodash": "^4"}})
+    _write(tmp_path, "local-stash/demo/package.json", {"dependencies": {"remotion": "^4"}})
+    names = {r.name for r in extract_external_systems(tmp_path)}
+    assert names == {"react"}

@@ -23,7 +23,7 @@ const finding = {
 
 const data: RiskReportArtifactData = {
   ref: "HEAD",
-  score: 6.4,
+  diff_shape: "Diff shape: bigger than 82% of this repo's recent commits.",
   risk_percentile: 82,
   review_priority: "Elevated",
   classification: "Higher-risk than most recent commits",
@@ -45,7 +45,7 @@ const data: RiskReportArtifactData = {
     findings_emitted: 1,
     scope: { changed: 3, eligible: 3, analyzed: 3, skipped: 0, failed: 0 },
   },
-  impacted_tests: { tests_to_run: ["tests/test_app.py"], status: "map_present" },
+  impacted_tests: { tests_to_run: ["tests/test_app.py"], status: "selected", run_all: false },
 };
 
 describe("change risk artifact", () => {
@@ -96,15 +96,16 @@ describe("change risk artifact", () => {
     expect(screen.getByText("42 changes")).toBeInTheDocument();
   });
 
-  it("demotes the diff-shape score behind progressive disclosure", () => {
+  it("states the diff shape in words, with no raw score", () => {
     render(<RiskReportRenderer data={data} />);
 
     // The ranked reading stays in the compact context row...
     expect(screen.getByText("p82")).toBeInTheDocument();
-    // ...while the raw model score is inside the collapsed section.
+    // ...and the sentence replaces the raw 0-10 the renderer used to show.
     const disclosure = screen.getByText("More detail");
     expect(disclosure.closest("details")).not.toBeNull();
-    expect(screen.getByText("Diff-shape score")).toBeInTheDocument();
+    expect(screen.getByText(/bigger than 82%/)).toBeInTheDocument();
+    expect(screen.queryByText("Diff-shape score")).toBeNull();
   });
 
   it("announces a partial comparison as a live status, not a clean result", () => {
@@ -136,6 +137,28 @@ describe("change risk artifact", () => {
     expect(screen.queryByText("What this change made worse")).toBeNull();
   });
 
+  it("says every test must run, and why, when no subset is vouched for", () => {
+    const reason = "package.json changed: build or test configuration can change any test.";
+    render(
+      <RiskReportRenderer
+        data={{
+          ...data,
+          impacted_tests: {
+            status: "run_all",
+            run_all: true,
+            reasons: [reason],
+            tests_to_run: ["tests/test_app.py"],
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText("Run every test")).toBeInTheDocument();
+    expect(screen.getByText(`Run every test: ${reason}`)).toBeInTheDocument();
+    expect(screen.getByText("Run these first")).toBeInTheDocument();
+    expect(screen.queryByText("1 to run")).not.toBeInTheDocument();
+  });
+
   it("reports an error with an alert role", () => {
     render(<RiskReportRenderer data={{ error: "Could not read change 'nope'." }} />);
 
@@ -145,7 +168,7 @@ describe("change risk artifact", () => {
   it("still renders a legacy payload that has no delta", () => {
     render(
       <RiskReportRenderer
-        data={{ ref: "HEAD", score: 3.1, risk_percentile: 40, review_priority: "Normal" }}
+        data={{ ref: "HEAD", risk_percentile: 40, review_priority: "Normal" }}
       />,
     );
 

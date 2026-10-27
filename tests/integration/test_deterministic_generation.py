@@ -126,7 +126,7 @@ class TestDeterministicGeneration:
         """
         for p in deterministic_pages:
             assert (
-                "Built from the code itself" in p.content
+                "Generated from parsed code, the import graph and git history" in p.content
                 or "Built from the code's structure" in p.content
             ), p.page_id
 

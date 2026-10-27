@@ -1,16 +1,31 @@
 "use client";
 
 import { useState } from "react";
-import { ArrowUpRight, ChevronDown, ChevronRight, Sparkles } from "lucide-react";
+import { ArrowUpRight, ChevronDown, ChevronRight } from "lucide-react";
 import { InfoTip } from "../shared/info-tip";
-import { biomarkerInfo, biomarkerLabel } from "./biomarker-glossary";
+import { FilePath } from "../shared/file-path";
+import { hairlineCardClass } from "../shared/hairline-card";
+import {
+  biomarkerInfo,
+  biomarkerLabel,
+  HISTORY_EXPLAINER,
+  HISTORY_LABEL,
+  isWatchOnlyBiomarker,
+} from "./biomarker-glossary";
 import type { BiomarkerDetailsRecord } from "./biomarker-details";
-import { EFFORT_TINT, type Severity } from "./tokens";
+import { MICRO, type Severity } from "./tokens";
+import { EFFORT_LABEL } from "./labels";
 import { ImpactFigure } from "./impact-figure";
 import { FindingOpportunityLink } from "./file-opportunity";
 import type { RefactoringOpportunity } from "@repowise-dev/types/refactoring";
 import { AskAboutThis } from "../chat/ask-about-this";
 import { SeverityMark } from "./severity-mark";
+import { VerificationTag } from "./verification-tag";
+import { LowerPriorityTag } from "./lower-priority-tag";
+import { PreviewBadge } from "./preview-badge";
+import { AiPromptButton } from "./ai-prompt-button";
+import { AGENT_PROMPT_LABEL } from "./ai-prompt-action";
+import { cn } from "../lib/cn";
 
 export type EffortBucket = "S" | "M" | "L" | "XL";
 
@@ -25,6 +40,12 @@ export interface HealthWorkItemFinding {
   reason: string;
   status?: string;
   details?: BiomarkerDetailsRecord | null;
+  /** `"unverified"` for a provisional finding type. */
+  verification?: string | null;
+  lower_priority?: string | null;
+  /** The measurement note when the row's language cell is served as a preview;
+   *  null or absent for a validated cell. */
+  preview?: string | null;
 }
 
 export interface HealthWorkItem {
@@ -32,6 +53,8 @@ export interface HealthWorkItem {
   score: number;
   nloc: number;
   module?: string | null;
+  /** A test file; labelled on the card. */
+  is_test?: boolean;
   primary_biomarker: string;
   primary_severity: Severity;
   primary_reason: string;
@@ -47,6 +70,9 @@ export interface HealthWorkItem {
   effort_bucket: EffortBucket;
   impact_per_effort: number;
   all_findings?: HealthWorkItemFinding[];
+  /** The measurement note when the row's language cell is served as a preview;
+   *  null or absent for a validated cell. */
+  preview?: string | null;
 }
 
 export type FindingStatus = "open" | "acknowledged" | "resolved" | "false_positive";
@@ -80,14 +106,14 @@ export interface HealthWorkItemCardProps {
   expandable?: boolean;
   /** Flash-highlight the card (e.g. after a quadrant dot click scrolled to it). */
   highlighted?: boolean;
+  /** Bulk triage: whether this row is in the selection. */
+  selected?: boolean;
+  /**
+   * Toggle this row in the bulk selection. The row stands for the finding it
+   * names (`primary_finding_id`), so a row without one offers no checkbox.
+   */
+  onToggleSelect?: ((target: HealthWorkItem) => void) | undefined;
 }
-
-const effortLabel: Record<EffortBucket, string> = {
-  S: "Small",
-  M: "Medium",
-  L: "Large",
-  XL: "Extra large",
-};
 
 export function HealthWorkItemCard({
   target,
@@ -100,6 +126,8 @@ export function HealthWorkItemCard({
   onLoadFindings,
   expandable = true,
   highlighted = false,
+  selected = false,
+  onToggleSelect,
 }: HealthWorkItemCardProps) {
   const [expanded, setExpanded] = useState(false);
   const [loaded, setLoaded] = useState<HealthWorkItemFinding[] | null>(null);
@@ -113,6 +141,9 @@ export function HealthWorkItemCard({
   // label no longer depend on shipping the findings themselves.
   const findings = target.all_findings ?? loaded;
   const hasFindings = target.finding_count > 0;
+  // Led by a history marker: context for a reviewer, not something an edit
+  // clears, so the card neither rates it as a defect nor offers a fix prompt.
+  const watch = isWatchOnlyBiomarker(target.primary_biomarker);
 
   const toggle = async () => {
     const next = !expanded;
@@ -137,16 +168,26 @@ export function HealthWorkItemCard({
   return (
     <div
       data-health-work-item={target.file_path}
-      className={`rounded-lg border bg-[var(--color-bg-surface)] overflow-hidden transition-colors ${
-        highlighted
-          ? "border-[var(--color-accent-primary)] ring-1 ring-[var(--color-accent-primary)]/40"
-          : "border-[var(--color-border-default)]"
-      }`}
+      data-highlighted={highlighted || undefined}
+      className={cn("overflow-hidden", hairlineCardClass("group", { highlighted }))}
     >
       <div className="p-4 space-y-2">
         <div className="flex items-center gap-2 flex-wrap">
-          <SeverityMark severity={target.primary_severity} />
-          <span className="inline-flex items-center gap-1 text-xs font-semibold text-[var(--color-text-primary)]">
+          {onToggleSelect && target.primary_finding_id ? (
+            <input
+              type="checkbox"
+              checked={selected}
+              onChange={() => onToggleSelect(target)}
+              aria-label={`Select the ${biomarkerLabel(target.primary_biomarker)} finding in ${target.file_path}`}
+              className="h-3.5 w-3.5 rounded border-[var(--color-border-default)] accent-[var(--color-accent-primary)]"
+            />
+          ) : null}
+          {watch ? (
+            <span className={MICRO}>{HISTORY_LABEL}</span>
+          ) : (
+            <SeverityMark severity={target.primary_severity} />
+          )}
+          <span className="inline-flex items-center gap-1 text-xs font-medium text-[var(--color-text-primary)]">
             {biomarkerLabel(target.primary_biomarker)}
             {biomarkerInfo(target.primary_biomarker).description ? (
               <InfoTip
@@ -156,19 +197,10 @@ export function HealthWorkItemCard({
             ) : null}
           </span>
           {target.module ? (
-            <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)] rounded px-1.5 py-0.5 border border-[var(--color-border-default)]">
-              {target.module}
-            </span>
+            <span className="text-xs text-[var(--color-text-tertiary)]">{target.module}</span>
           ) : null}
-          <span
-            className={`inline-block rounded px-1.5 py-0.5 text-[10px] uppercase font-semibold ${EFFORT_TINT[target.effort_bucket]}`}
-            title={`Effort: ${effortLabel[target.effort_bucket]} (NLOC ${target.nloc})`}
-          >
-            {target.effort_bucket}
-          </span>
-          <span className="ml-auto text-xs tabular-nums text-[var(--color-error)]" title="Total health impact across this file's findings">
-            −{target.total_impact.toFixed(2)}
-          </span>
+          {target.is_test ? <span className={MICRO}>test</span> : null}
+          <PreviewBadge note={target.preview} />
           <AskAboutThis
             context={{
               kind: "health",
@@ -176,67 +208,60 @@ export function HealthWorkItemCard({
               target: target.file_path,
               targetKind: "path",
             }}
-            question={`Explain the ${biomarkerLabel(target.primary_biomarker)} finding in ${target.file_path} and propose a safe way to address it.`}
+            question={
+              watch
+                ? `What does the ${biomarkerLabel(target.primary_biomarker)} signal say about ${target.file_path}, and what should a reviewer watch for when it changes?`
+                : `Explain the ${biomarkerLabel(target.primary_biomarker)} finding in ${target.file_path} and propose a safe way to address it.`
+            }
             label={`Ask about the finding in ${target.file_path}`}
-            className="-my-1 h-6 w-6"
+            className="-my-1 ml-auto h-6 w-6"
           />
         </div>
         <button
           type="button"
           data-work-item-header=""
           onClick={onSelect ? () => onSelect(target) : undefined}
-          className="group/file flex w-full items-center gap-1.5 text-left rounded-md -mx-1 px-1 py-0.5 hover:bg-[var(--color-bg-elevated)] disabled:cursor-default disabled:hover:bg-transparent"
+          className="group/file flex w-full items-center gap-1.5 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] disabled:cursor-default"
           disabled={!onSelect}
           title={onSelect ? "Open file health drawer" : undefined}
         >
-          <p className="min-w-0 flex-1 text-sm font-mono text-[var(--color-text-primary)] truncate group-hover/file:text-[var(--color-accent-primary)]">
-            {target.file_path}
+          {/* The path once, name first; the symbol after it in the same mono. */}
+          <p className="flex min-w-0 flex-1 items-baseline font-mono text-sm text-[var(--color-text-primary)]">
+            <FilePath path={target.file_path} fold className="text-sm" />
             {target.primary_function ? (
-              <span className="text-[var(--color-text-secondary)]">
+              <span className="min-w-0 truncate whitespace-pre text-[var(--color-text-secondary)]">
                 {" :: "}
                 {target.primary_function}
               </span>
             ) : null}
           </p>
           {onSelect ? (
-            <ArrowUpRight className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)] group-hover/file:text-[var(--color-accent-primary)] transition-transform group-hover/file:-translate-y-px group-hover/file:translate-x-px" />
+            <ArrowUpRight className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)] transition-transform group-hover/file:-translate-y-px group-hover/file:translate-x-px group-hover/file:text-[var(--color-text-secondary)] group-focus-visible/file:text-[var(--color-text-secondary)]" />
           ) : null}
         </button>
         <p className="text-xs text-[var(--color-text-secondary)] line-clamp-2">{target.primary_reason}</p>
+        {/* The action comes from core, per marker; the card never writes one. */}
         {target.primary_suggestion ? (
-          <p className="text-xs text-[var(--color-text-tertiary)] italic line-clamp-3">
+          <p className="text-xs text-[var(--color-text-secondary)] line-clamp-3">
+            <span className={cn(MICRO, "mr-1.5")}>Action</span>
             {target.primary_suggestion}
           </p>
         ) : null}
-        <div className="flex items-center gap-3 pt-1 text-xs text-[var(--color-text-tertiary)] flex-wrap">
-          <span>Score {target.score.toFixed(1)}/10</span>
-          <span>· {target.nloc} NLOC</span>
-          <span>· {effortLabel[target.effort_bucket]} effort</span>
-          <span>
-            {"· "}
-            {target.open_finding_count != null &&
-            target.open_finding_count !== target.finding_count
-              ? `${target.open_finding_count} open of ${target.finding_count} findings`
-              : `${target.finding_count} findings`}
-          </span>
-          <span className="ml-auto tabular-nums">leverage {target.impact_per_effort.toFixed(2)}</span>
-        </div>
-        {onGeneratePrompt ? (
-          <div className="pt-2">
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                onGeneratePrompt(target);
-              }}
-              className="group/ai inline-flex items-center gap-1.5 rounded-md border border-[var(--color-model)]/40 bg-[var(--color-model-muted)] px-2.5 py-1 text-xs font-semibold text-[var(--color-model)] hover:bg-[var(--color-model)]/20 hover:border-[var(--color-model)]/60 transition-colors"
-              title="Generate a ready-to-paste prompt for an AI coding agent"
-            >
-              <Sparkles className="h-3.5 w-3.5 transition-transform group-hover/ai:rotate-12" />
-              AI fix prompt
-            </button>
-          </div>
+        {watch ? (
+          <p className="text-xs text-[var(--color-text-tertiary)]">{HISTORY_EXPLAINER}</p>
         ) : null}
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 pt-1">
+          <WorkItemMeta target={target} />
+          {onGeneratePrompt && !watch ? (
+            <AiPromptButton
+              variant="ghost"
+              label={AGENT_PROMPT_LABEL}
+              ariaLabel={`${AGENT_PROMPT_LABEL}: ${target.file_path}`}
+              onClick={() => onGeneratePrompt(target)}
+              className="-mr-2"
+            />
+          ) : null}
+        </div>
       </div>
       {expandable && hasFindings ? (
         <>
@@ -244,7 +269,7 @@ export function HealthWorkItemCard({
             type="button"
             onClick={toggle}
             aria-expanded={expanded}
-            className="flex w-full items-center gap-2 px-4 py-2 text-xs text-[var(--color-text-secondary)] border-t border-[var(--color-border-default)] hover:bg-[var(--color-bg-elevated)]"
+            className="flex w-full items-center gap-2 border-t border-[var(--color-border-default)] px-4 py-2 text-xs text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-focus-ring)]"
           >
             {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
             {expanded ? "Hide" : "Show"} all {target.finding_count} findings
@@ -263,6 +288,9 @@ export function HealthWorkItemCard({
                     <span className="text-xs font-medium text-[var(--color-text-primary)]">
                       {biomarkerLabel(f.biomarker_type)}
                     </span>
+                    <VerificationTag verification={f.verification} />
+                    <LowerPriorityTag reason={f.lower_priority} />
+                    <PreviewBadge note={f.preview} />
                     {f.function_name ? (
                       <span className="text-xs font-mono text-[var(--color-text-tertiary)]">{f.function_name}</span>
                     ) : null}
@@ -299,6 +327,31 @@ export type RefactoringCardProps = HealthWorkItemCardProps;
 export const RefactoringCard = HealthWorkItemCard;
 
 /**
+ * The decision facts on one quiet line: score, effort, how many findings.
+ * Impact, leverage and size order the list but do not decide a row, so they
+ * sit behind the tip.
+ */
+function WorkItemMeta({ target }: { target: HealthWorkItem }) {
+  const findings =
+    target.open_finding_count != null && target.open_finding_count !== target.finding_count
+      ? `${target.open_finding_count} open of ${target.finding_count} findings`
+      : `${target.finding_count} findings`;
+  return (
+    <p className="flex flex-wrap items-center gap-x-1.5 font-mono text-[11px] tabular-nums text-[var(--color-text-tertiary)]">
+      <span>Score {target.score.toFixed(1)}/10</span>
+      <span aria-hidden>·</span>
+      <span>{EFFORT_LABEL[target.effort_bucket]} effort</span>
+      <span aria-hidden>·</span>
+      <span>{findings}</span>
+      <InfoTip
+        label="How this file ranks"
+        content={`Health impact −${target.total_impact.toFixed(2)} across its findings, over ${target.nloc} lines of code. Leverage ${target.impact_per_effort.toFixed(2)}: impact per unit of effort, which orders this list.`}
+      />
+    </p>
+  );
+}
+
+/**
  * Where a finding sits. Not a link: no file view renders a line anchor, so a
  * "line 412" href would land at the top of the page every time. Silent
  * without a line, because a marker describing the whole file has none.
@@ -330,7 +383,7 @@ function StatusButton({
       onClick={onClick}
       className={`text-[10px] rounded px-1.5 py-0.5 border transition-colors ${
         isActive
-          ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)] border-[var(--color-accent-primary)]/50"
+          ? "bg-[var(--color-bg-selected)] text-[var(--color-text-primary)] border-[var(--color-border-hover)]"
           : "border-[var(--color-border-default)] text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] hover:border-[var(--color-border-hover)]"
       }`}
     >

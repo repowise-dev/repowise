@@ -1,0 +1,713 @@
+{
+  "scan_source": {
+    "eval_py": {
+      "path": "app/run.py",
+      "findings": [
+        {
+          "kind": "eval_call",
+          "severity": "high",
+          "snippet": "x = eval(user_input)",
+          "line": 1
+        },
+        {
+          "kind": "eval_call",
+          "severity": "high",
+          "snippet": "obj.eval(y)",
+          "line": 2
+        }
+      ]
+    },
+    "eval_py_comment": {
+      "path": "app/run.py",
+      "findings": []
+    },
+    "eval_py_unparsable": {
+      "path": "app/run.py",
+      "findings": [
+        {
+          "kind": "eval_call",
+          "severity": "high",
+          "snippet": "x = eval(data",
+          "line": 1
+        },
+        {
+          "kind": "exec_call",
+          "severity": "high",
+          "snippet": "exec(code) # eval(z)",
+          "line": 2
+        }
+      ]
+    },
+    "exec_py": {
+      "path": "app/run.py",
+      "findings": [
+        {
+          "kind": "exec_call",
+          "severity": "high",
+          "snippet": "exec(code)",
+          "line": 1
+        }
+      ]
+    },
+    "eval_js": {
+      "path": "web/run.js",
+      "findings": [
+        {
+          "kind": "eval_call",
+          "severity": "high",
+          "snippet": "const v = eval(input);",
+          "line": 1
+        }
+      ]
+    },
+    "exec_js_regex": {
+      "path": "web/re.js",
+      "findings": []
+    },
+    "exec_js_namespace": {
+      "path": "web/sh.js",
+      "findings": [
+        {
+          "kind": "exec_call",
+          "severity": "high",
+          "snippet": "cp.exec(cmd);",
+          "line": 2
+        }
+      ]
+    },
+    "exec_js_named_import": {
+      "path": "web/sh.ts",
+      "findings": [
+        {
+          "kind": "exec_call",
+          "severity": "high",
+          "snippet": "run(cmd);",
+          "line": 2
+        }
+      ]
+    },
+    "exec_js_require_call": {
+      "path": "web/sh.js",
+      "findings": [
+        {
+          "kind": "exec_call",
+          "severity": "high",
+          "snippet": "require(\"child_process\").execSync(\"ls\");",
+          "line": 1
+        }
+      ]
+    },
+    "pickle_py": {
+      "path": "app/store.py",
+      "findings": [
+        {
+          "kind": "pickle_loads",
+          "severity": "high",
+          "snippet": "data = pickle.loads(blob)",
+          "line": 1
+        }
+      ]
+    },
+    "subprocess_shell_py": {
+      "path": "app/sh.py",
+      "findings": [
+        {
+          "kind": "subprocess_shell_true",
+          "severity": "high",
+          "snippet": "subprocess.run(cmd, shell=True)",
+          "line": 1
+        },
+        {
+          "kind": "subprocess_shell_true",
+          "severity": "high",
+          "snippet": "subprocess.Popen(",
+          "line": 2,
+          "end_line": 4
+        }
+      ]
+    },
+    "os_system_py": {
+      "path": "app/sh.py",
+      "findings": [
+        {
+          "kind": "os_system",
+          "severity": "high",
+          "snippet": "os.system(cmd)",
+          "line": 1
+        }
+      ]
+    },
+    "password_py": {
+      "path": "app/conf.py",
+      "findings": [
+        {
+          "kind": "hardcoded_password",
+          "severity": "high",
+          "snippet": "DB_PASSWORD = \"Tr0u****\"",
+          "line": 1
+        }
+      ]
+    },
+    "password_js": {
+      "path": "web/conf.js",
+      "findings": [
+        {
+          "kind": "hardcoded_password",
+          "severity": "high",
+          "snippet": "const password = \"Tr0u****\";",
+          "line": 1
+        }
+      ]
+    },
+    "secret_py": {
+      "path": "app/conf.py",
+      "findings": [
+        {
+          "kind": "hardcoded_secret",
+          "severity": "high",
+          "snippet": "API_KEY = \"q8Rk****\"",
+          "line": 1
+        }
+      ]
+    },
+    "aws_py": {
+      "path": "app/aws.py",
+      "findings": [
+        {
+          "kind": "aws_access_key",
+          "severity": "high",
+          "snippet": "client_id = \"AKIA****\"",
+          "line": 1
+        },
+        {
+          "kind": "aws_access_key",
+          "severity": "high",
+          "snippet": "# AKIA****",
+          "line": 2
+        }
+      ]
+    },
+    "aws_test_path": {
+      "path": "tests/fixtures/keys.py",
+      "findings": [
+        {
+          "kind": "aws_access_key",
+          "severity": "low",
+          "snippet": "KEY = \"AKIA****\"",
+          "line": 1
+        }
+      ]
+    },
+    "github_js": {
+      "path": "web/gh.js",
+      "findings": [
+        {
+          "kind": "github_token",
+          "severity": "high",
+          "snippet": "const t = \"ghp_****\";",
+          "line": 1
+        }
+      ]
+    },
+    "slack_py": {
+      "path": "app/slack.py",
+      "findings": [
+        {
+          "kind": "slack_token",
+          "severity": "high",
+          "snippet": "SLACK = \"xoxb****\"",
+          "line": 1
+        }
+      ]
+    },
+    "google_js": {
+      "path": "web/maps.js",
+      "findings": [
+        {
+          "kind": "google_api_key",
+          "severity": "high",
+          "snippet": "const k = \"AIza****\";",
+          "line": 1
+        }
+      ]
+    },
+    "stripe_py": {
+      "path": "app/pay.py",
+      "findings": [
+        {
+          "kind": "stripe_key",
+          "severity": "high",
+          "snippet": "stripe.api_key = \"sk_l****\"",
+          "line": 1
+        }
+      ]
+    },
+    "gitlab_py": {
+      "path": "app/gl.py",
+      "findings": [
+        {
+          "kind": "gitlab_token",
+          "severity": "high",
+          "snippet": "GL = \"glpa****\"",
+          "line": 1
+        }
+      ]
+    },
+    "azure_py": {
+      "path": "app/az.py",
+      "findings": [
+        {
+          "kind": "azure_devops_pat",
+          "severity": "high",
+          "snippet": "auth = (\"\", \"0123****\")",
+          "line": 1
+        }
+      ]
+    },
+    "git_url_py": {
+      "path": "app/remote.py",
+      "findings": [
+        {
+          "kind": "git_url_credentials",
+          "severity": "high",
+          "snippet": "REMOTE = \"https://deploy:Xk9!****@github.com/acme/app.git\"",
+          "line": 1
+        }
+      ]
+    },
+    "pem_multiline": {
+      "path": "deploy/key.py",
+      "findings": [
+        {
+          "kind": "os_system",
+          "severity": "high",
+          "snippet": "os.system(KEY)",
+          "line": 5
+        },
+        {
+          "kind": "private_key_pem",
+          "severity": "high",
+          "snippet": "KEY = \"\"\"-----BEGIN RSA PRIVATE KEY-----",
+          "line": 1,
+          "end_line": 4
+        }
+      ]
+    },
+    "pem_inline_json": {
+      "path": "deploy/creds.json",
+      "findings": [
+        {
+          "kind": "private_key_pem",
+          "severity": "high",
+          "snippet": "{\"private_key\": \"-----BEGIN RSA PRIVATE KEY-----\\nMIIE****-----END RSA PRIVATE KEY-----\"}",
+          "line": 1,
+          "end_line": 1
+        }
+      ]
+    },
+    "pem_header_only": {
+      "path": "app/pem.py",
+      "findings": []
+    },
+    "fstring_sql_py": {
+      "path": "app/db.py",
+      "findings": [
+        {
+          "kind": "fstring_sql",
+          "severity": "med",
+          "snippet": "q = f\"SELECT * FROM users WHERE id = {uid}\"",
+          "line": 1
+        }
+      ]
+    },
+    "concat_sql_py": {
+      "path": "app/db.py",
+      "findings": [
+        {
+          "kind": "concat_sql",
+          "severity": "med",
+          "snippet": "cur.execute(\"SELECT * FROM t WHERE id=\" + uid)",
+          "line": 1
+        }
+      ]
+    },
+    "template_sql_js": {
+      "path": "web/db.ts",
+      "findings": [
+        {
+          "kind": "template_literal_sql",
+          "severity": "med",
+          "snippet": "const q = `SELECT * FROM users WHERE id = ${id}`;",
+          "line": 1
+        },
+        {
+          "kind": "template_literal_sql",
+          "severity": "med",
+          "snippet": "const u = `UPDATE t SET a = ${a}`;",
+          "line": 3
+        }
+      ]
+    },
+    "template_sql_py": {
+      "path": "app/db.py",
+      "findings": []
+    },
+    "tls_requests_py": {
+      "path": "app/http.py",
+      "findings": [
+        {
+          "kind": "tls_verify_false",
+          "severity": "med",
+          "snippet": "requests.get(url, verify=False)",
+          "line": 3
+        },
+        {
+          "kind": "tls_verify_false",
+          "severity": "med",
+          "snippet": "s.post(url, verify=False)",
+          "line": 4
+        },
+        {
+          "kind": "tls_verify_false",
+          "severity": "med",
+          "snippet": "s.verify = False",
+          "line": 5
+        }
+      ]
+    },
+    "tls_no_client_py": {
+      "path": "app/check.py",
+      "findings": []
+    },
+    "tls_unparsable_py": {
+      "path": "app/check.py",
+      "findings": [
+        {
+          "kind": "tls_verify_false",
+          "severity": "med",
+          "snippet": "requests.get(url, verify=False",
+          "line": 1
+        }
+      ]
+    },
+    "tls_js": {
+      "path": "web/agent.js",
+      "findings": [
+        {
+          "kind": "reject_unauthorized_false",
+          "severity": "med",
+          "snippet": "const a = new https.Agent({ rejectUnauthorized: false });",
+          "line": 1
+        }
+      ]
+    },
+    "weak_hash_py": {
+      "path": "app/hash.py",
+      "findings": [
+        {
+          "kind": "weak_hash",
+          "severity": "low",
+          "snippet": "h = hashlib.md5(data)",
+          "line": 1
+        },
+        {
+          "kind": "weak_hash",
+          "severity": "low",
+          "snippet": "mac = hmac.new(k, m, digestmod='sha1')",
+          "line": 5
+        }
+      ]
+    },
+    "weak_hash_js": {
+      "path": "web/hash.js",
+      "findings": [
+        {
+          "kind": "weak_hash",
+          "severity": "low",
+          "snippet": "const h = crypto.createHash(\"md5\");",
+          "line": 1
+        }
+      ]
+    },
+    "inner_html_jsx": {
+      "path": "web/View.tsx",
+      "findings": [
+        {
+          "kind": "unsafe_inner_html",
+          "severity": "med",
+          "snippet": "<div dangerouslySetInnerHTML={{__html: html}} />",
+          "line": 1
+        }
+      ]
+    },
+    "inner_html_py": {
+      "path": "app/view.py",
+      "findings": []
+    },
+    "public_env_js": {
+      "path": "web/env.ts",
+      "findings": [
+        {
+          "kind": "public_env_secret",
+          "severity": "high",
+          "snippet": "const k = process.env.NEXT_PUBLIC_API_KEY;",
+          "line": 1
+        }
+      ]
+    },
+    "public_env_dotenv": {
+      "path": "web/.env.production",
+      "findings": [
+        {
+          "kind": "stripe_key",
+          "severity": "high",
+          "snippet": "NEXT_PUBLIC_STRIPE_SECRET=sk_l****",
+          "line": 1
+        },
+        {
+          "kind": "public_env_secret",
+          "severity": "high",
+          "snippet": "NEXT_PUBLIC_STRIPE_SECRET=sk_l****",
+          "line": 1
+        }
+      ]
+    },
+    "new_function_js": {
+      "path": "web/fn.js",
+      "findings": [
+        {
+          "kind": "new_function_call",
+          "severity": "high",
+          "snippet": "const f = new Function(\"a\", body);",
+          "line": 1
+        }
+      ]
+    },
+    "new_function_py": {
+      "path": "app/fn.py",
+      "findings": []
+    },
+    "prose_readme": {
+      "path": "README.md",
+      "findings": [
+        {
+          "kind": "aws_access_key",
+          "severity": "high",
+          "snippet": "Run `os.system(cmd)` then set `KEY=AKIA****`.",
+          "line": 1
+        }
+      ]
+    },
+    "declaration_dts": {
+      "path": "web/types.d.ts",
+      "findings": [
+        {
+          "kind": "google_api_key",
+          "severity": "high",
+          "snippet": "export const k = \"AIza****\";",
+          "line": 2
+        }
+      ]
+    },
+    "vendored_js": {
+      "path": "vendor/lib.min.js",
+      "findings": [
+        {
+          "kind": "google_api_key",
+          "severity": "high",
+          "snippet": "eval(x);var k=\"AIza****\";",
+          "line": 1
+        }
+      ]
+    },
+    "tooling_script": {
+      "path": "scripts/release.py",
+      "findings": [
+        {
+          "kind": "os_system",
+          "severity": "low",
+          "snippet": "os.system(cmd)",
+          "line": 1
+        },
+        {
+          "kind": "aws_access_key",
+          "severity": "high",
+          "snippet": "KEY = \"AKIA****\"",
+          "line": 2
+        }
+      ]
+    },
+    "test_path_sink": {
+      "path": "tests/test_app.py",
+      "findings": [
+        {
+          "kind": "eval_call",
+          "severity": "low",
+          "snippet": "x = eval(y)",
+          "line": 2
+        },
+        {
+          "kind": "os_system",
+          "severity": "low",
+          "snippet": "os.system(cmd)",
+          "line": 1
+        }
+      ]
+    },
+    "go_raw_backtick": {
+      "path": "svc/main.go",
+      "findings": [
+        {
+          "kind": "weak_hash",
+          "severity": "low",
+          "snippet": "p := `C:\\`; h := md5.Sum(b)",
+          "line": 1
+        }
+      ]
+    },
+    "rust_nested_comment": {
+      "path": "svc/main.rs",
+      "findings": [
+        {
+          "kind": "weak_hash",
+          "severity": "low",
+          "snippet": "let s = md5::compute(b);",
+          "line": 2
+        }
+      ]
+    },
+    "allowlist_markers": {
+      "path": "app/keys.py",
+      "findings": [
+        {
+          "kind": "aws_access_key",
+          "severity": "high",
+          "snippet": "C = \"AKIA**** # nosec\"",
+          "line": 4
+        },
+        {
+          "kind": "os_system",
+          "severity": "high",
+          "snippet": "os.system(cmd)  # nosec",
+          "line": 7
+        }
+      ]
+    },
+    "allowlist_prose": {
+      "path": "docs/keys.md",
+      "findings": [
+        {
+          "kind": "github_token",
+          "severity": "high",
+          "snippet": "key ghp_****",
+          "line": 2
+        }
+      ]
+    },
+    "symbols": {
+      "path": "app/auth.py",
+      "findings": [
+        {
+          "kind": "security_sensitive_symbol",
+          "severity": "low",
+          "snippet": "Password",
+          "line": 8
+        },
+        {
+          "kind": "security_sensitive_symbol",
+          "severity": "low",
+          "snippet": "jwt.verify",
+          "line": 9
+        },
+        {
+          "kind": "security_sensitive_symbol",
+          "severity": "low",
+          "snippet": "app.auth",
+          "line": 0
+        }
+      ]
+    },
+    "clean": {
+      "path": "app/math.py",
+      "findings": []
+    },
+    "crlf_and_formfeed": {
+      "path": "app/run.py",
+      "findings": [
+        {
+          "kind": "os_system",
+          "severity": "high",
+          "snippet": "os.system(c)",
+          "line": 3
+        }
+      ]
+    },
+    "long_snippet": {
+      "path": "app/long.py",
+      "findings": [
+        {
+          "kind": "hardcoded_password",
+          "severity": "high",
+          "snippet": "password = 'Zq8R****'  xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "line": 1
+        }
+      ]
+    }
+  },
+  "scan_source_map": {
+    "findings": {
+      "app/a.py": [
+        {
+          "kind": "os_system",
+          "severity": "high",
+          "snippet": "os.system(cmd)",
+          "line": 1
+        }
+      ],
+      "app/c.py": [
+        {
+          "kind": "os_system",
+          "severity": "high",
+          "snippet": "os.system(c)  # repowise-security-ignore:",
+          "line": 1
+        }
+      ]
+    },
+    "scanned": [
+      "app/a.py",
+      "app/b.py",
+      "app/c.py",
+      "app/missing.py"
+    ]
+  },
+  "masked_snippet": [
+    "k = \"AKIA****\" and AKIAQZ",
+    "MIIE****"
+  ],
+  "persisted": {
+    "inserted": [
+      1,
+      0,
+      1,
+      0
+    ],
+    "rows": [
+      [
+        "app/store.py",
+        "pickle_loads",
+        "high",
+        "data = pickle.loads(blob)",
+        1,
+        "abc123"
+      ],
+      [
+        "app/x.py",
+        "pickle_loads",
+        "high",
+        "data = pickle.loads(blob)",
+        1,
+        ""
+      ]
+    ]
+  }
+}

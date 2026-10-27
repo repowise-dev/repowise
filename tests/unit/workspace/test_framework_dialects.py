@@ -31,7 +31,7 @@ from repowise.core.ingestion.models import FileInfo
 from repowise.core.ingestion.parser import ASTParser
 from repowise.core.ingestion.resolvers.context import ResolverContext
 from repowise.core.workspace.contracts import bind_symbol_ids
-from repowise.core.workspace.extractors.http_extractor import HttpExtractor
+from repowise.core.workspace.extractors.http import HttpExtractor
 
 from ._repo_index import make_repo_index
 
@@ -316,6 +316,23 @@ class TestNextAppRecognition:
     def test_the_verb_comes_from_the_exported_name(self) -> None:
         verbs = [v for v, _off in next_route_verbs(NEXT_ROUTE_TS)]
         assert verbs == ["GET", "POST"]
+
+    def test_a_brace_list_exports_the_verbs_it_binds(self) -> None:
+        # A library hands back the handlers: fumadocs search, Auth.js, NextAuth.
+        def verbs(src: str) -> list[str]:
+            return [v for v, _off in next_route_verbs(src)]
+
+        assert verbs("export const { GET } = createFromSource(source);\n") == ["GET"]
+        assert verbs("export const { GET, POST } = handlers;\n") == ["GET", "POST"]
+        assert verbs("export { handler as GET, handler as POST };\n") == ["GET", "POST"]
+        assert verbs('export { GET, POST } from "@/auth";\n') == ["GET", "POST"]
+
+    def test_a_brace_list_that_renames_the_verb_away_exports_none(self) -> None:
+        assert next_route_verbs("export { GET as handler };\n") == []
+        assert next_route_verbs("export const { GET: get } = h;\n") == []
+        assert next_route_verbs("export type { GET };\n") == []
+        assert [v for v, _ in next_route_verbs('export { type GET, POST } from "./h";\n')] == ["POST"]
+        assert next_route_verbs("// export const { GET } = h;\n") == []
 
 
 class TestNextAppContracts:

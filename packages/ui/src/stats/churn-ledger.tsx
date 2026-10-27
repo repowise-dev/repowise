@@ -23,11 +23,11 @@ export function ChurnLedger({ data }: { data: StatsChurn }) {
 
   const figures = [
     { label: "Written", value: data.lines_added, tone: "var(--color-text-primary)" },
-    { label: "Taken back", value: data.lines_deleted, tone: "var(--color-error)" },
+    { label: "Taken back", value: data.lines_deleted, tone: "var(--color-text-secondary)" },
     // `standing`, not the server's `net`: a repo that has deleted more than it
     // ever added (a big vendored-tree removal) drives net negative, which would
     // read as "-40,000 still standing" beside a bar showing zero.
-    { label: "Still standing", value: standing, tone: "var(--color-success)" },
+    { label: "Still standing", value: standing, tone: "var(--color-text-primary)" },
   ];
 
   return (
@@ -40,10 +40,10 @@ export function ChurnLedger({ data }: { data: StatsChurn }) {
         )} were later deleted`}
       >
         <div
-          className="relative shrink-0 bg-[var(--color-success-muted)]"
+          className="relative shrink-0 bg-[var(--color-bg-elevated)]"
           style={{ width: `${standingPct}%` }}
         >
-          <span className="absolute inset-0 flex items-center truncate px-3 font-mono text-[11px] uppercase tracking-[0.06em] text-[var(--color-success)]">
+          <span className="absolute inset-0 flex items-center truncate px-3 font-mono text-[10px] uppercase tracking-[0.06em] text-[var(--color-text-primary)]">
             {formatNumber(standing)} standing
           </span>
         </div>
@@ -53,10 +53,10 @@ export function ChurnLedger({ data }: { data: StatsChurn }) {
             // Hatching rather than a flat fill: the deleted share is a texture
             // over the same track, not a separate quantity beside it.
             background:
-              "repeating-linear-gradient(-45deg, var(--color-error-muted) 0 6px, transparent 6px 12px)",
+              "repeating-linear-gradient(-45deg, var(--color-border-default) 0 6px, transparent 6px 12px)",
           }}
         >
-          <span className="absolute inset-0 flex items-center truncate px-3 font-mono text-[11px] uppercase tracking-[0.06em] text-[var(--color-error)]">
+          <span className="absolute inset-0 flex items-center truncate px-3 font-mono text-[10px] uppercase tracking-[0.06em] text-[var(--color-text-secondary)]">
             {formatNumber(deleted)} cut
           </span>
         </div>
@@ -69,7 +69,7 @@ export function ChurnLedger({ data }: { data: StatsChurn }) {
               {f.label}
             </p>
             <p
-              className="text-2xl font-semibold tabular-nums leading-tight"
+              className="text-[22px] font-semibold tabular-nums leading-tight"
               style={{ color: f.tone }}
             >
               {formatNumber(f.value)}
@@ -80,7 +80,7 @@ export function ChurnLedger({ data }: { data: StatsChurn }) {
 
       <p className="text-[15px] text-[var(--color-text-primary)]">
         For every 100 lines ever written here,{" "}
-        <strong className="font-semibold text-[var(--color-accent-primary)]">
+        <strong className="font-semibold">
           {Math.round(data.deleted_per_hundred)} were taken back
         </strong>
         .

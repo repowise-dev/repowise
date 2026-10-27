@@ -8,9 +8,9 @@ the indexing hot path:
 1. Gather the real source spans the plan references (the class body, every clone
    occurrence, the method to move, the files on each cut edge) straight off the
    working tree.
-2. Build a behaviour-preservation prompt carrying the structured plan + that
-   source + the graph/co-change context the deterministic layer already
-   computed, and ask the configured provider for the refactored code and a
+2. Build a behaviour-preservation prompt carrying the plan's recipe (the same
+   steps, checks and limits the copy-prompt and plan detail read) + that
+   source, and ask the configured provider for the refactored code and a
    unified diff.
 3. Self-check the result where it is cheap and meaningful: Extract Class with an
    LCOM4 before/after delta (re-walk the generated classes), Split File by
@@ -29,12 +29,14 @@ import hashlib
 import json
 import re
 from collections import defaultdict
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 import structlog
 
+from repowise.core.agent_prompts.refactoring import render_plan_spec
 from repowise.core.providers.llm.base import BaseProvider, CacheHint
 
 log = structlog.get_logger(__name__)
@@ -110,90 +112,22 @@ class EnrichmentResult:
 
 
 # ---------------------------------------------------------------------------
-# Config gate + provider resolution (server / MCP surfaces)
+# Config gate (server / MCP surfaces). The provider itself is resolved by the
+# caller through the same path chat and page generation use.
 # ---------------------------------------------------------------------------
 
 
 def llm_enrichment_enabled(config: dict[str, Any]) -> bool:
     """Whether code generation is enabled for this repo (``refactoring.llm.enabled``).
 
-    Enabled unless the repo explicitly turns it off — an unset key means on.
-    Code generation never runs during indexing and only ever fires on an
-    explicit request (a button click / CLI flag / MCP call), and the web + MCP
-    surfaces both require a local checkout (they 404 without one), so defaulting
-    on simply makes the local-``serve`` experience work without a config trip;
-    a repo can still set ``refactoring.llm.enabled: false`` to disable it.
+    Off unless the repo turns it on: generation sends source to a model, so it
+    waits for an explicit yes in config or from the settings toggle.
     """
     refactoring = config.get("refactoring")
-    if not isinstance(refactoring, dict):
-        return True
-    llm = refactoring.get("llm")
+    llm = refactoring.get("llm") if isinstance(refactoring, dict) else None
     if not isinstance(llm, dict):
-        return True
-    return bool(llm.get("enabled", True))
-
-
-def build_enrichment_provider(
-    repo_path: Path,
-    *,
-    provider_name: str | None = None,
-    model: str | None = None,
-) -> BaseProvider:
-    """Resolve a provider for server/MCP enrichment from repo config + env.
-
-    Mirrors the CLI resolver in spirit (config provider/model, key from env)
-    but lives in core so the server and MCP layers don't depend on the CLI.
-    Reads ``.repowise/config.yaml`` for provider/model and the per-repo
-    ``.repowise/.env`` (without mutating ``os.environ``) plus the process env
-    for the API key. Raises ``ValueError`` when no provider/key can be found.
-    """
-    import os
-
-    from repowise.core.providers import get_provider
-    from repowise.core.repo_config import load_repo_config, load_repo_env
-
-    cfg = load_repo_config(repo_path)
-    repo_env = load_repo_env(repo_path)
-
-    def _env(name: str) -> str | None:
-        return os.environ.get(name) or repo_env.get(name)
-
-    name = provider_name or cfg.get("provider")
-    chosen_model = model or cfg.get("model")
-
-    # Map provider -> the env var carrying its key.
-    key_vars = {
-        "anthropic": "ANTHROPIC_API_KEY",
-        "openai": "OPENAI_API_KEY",
-        "openrouter": "OPENROUTER_API_KEY",
-        "deepseek": "DEEPSEEK_API_KEY",
-        "kimi": "KIMI_API_KEY",
-        "gemini": "GEMINI_API_KEY",
-        "litellm": "LITELLM_API_KEY",
-    }
-
-    # Auto-detect from whichever key is present when the config names none.
-    if name is None:
-        for candidate, var in key_vars.items():
-            if _env(var):
-                name = candidate
-                break
-    if name is None:
-        raise ValueError(
-            "No LLM provider configured for refactoring enrichment. Set "
-            "'provider' in .repowise/config.yaml or an API key env var."
-        )
-
-    kwargs: dict[str, Any] = {}
-    if chosen_model:
-        kwargs["model"] = chosen_model
-    key_var = key_vars.get(name)
-    if key_var and _env(key_var):
-        kwargs["api_key"] = _env(key_var)
-    if name == "gemini" and not kwargs.get("api_key") and _env("GOOGLE_API_KEY"):
-        kwargs["api_key"] = _env("GOOGLE_API_KEY")
-
-    return get_provider(name, **kwargs)
+        return False
+    return bool(llm.get("enabled", False))
 
 
 # ---------------------------------------------------------------------------
@@ -308,6 +242,10 @@ def _gather_spans(suggestion: Any, repo_path: Path) -> list[SourceSpan]:
 # Prompt assembly
 # ---------------------------------------------------------------------------
 
+#: Bumped when the prompt's wording changes, so a draft cached under the old
+#: wording is not served for the new one.
+_PROMPT_VERSION = 2
+
 _SYSTEM_PROMPT = """\
 You are a senior software engineer performing a single, well-scoped refactoring.
 
@@ -331,85 +269,16 @@ language.
 `+++ b/path`, `@@` hunks) covering every file you changed.
 """
 
-_TYPE_INSTRUCTIONS: dict[str, str] = {
-    "extract_class": (
-        "Refactoring: EXTRACT CLASS. Split the class into the cohesive groups in "
-        "the plan — each group becomes a new class owning its listed methods and "
-        "fields. Keep the original class as a thin coordinator that delegates, so "
-        "all existing call sites keep working."
-    ),
-    "extract_helper": (
-        "Refactoring: EXTRACT HELPER. The occurrences are duplicates of the same "
-        "logic. Extract one shared helper (place it at the suggested site) and "
-        "replace every occurrence with a call to it."
-    ),
-    "move_method": (
-        "Refactoring: MOVE METHOD. Move the method from its current class to the "
-        "target class it is more cohesive with, and update the call sites. Leave a "
-        "thin delegating wrapper only if removing the method outright would break "
-        "callers you cannot see."
-    ),
-    "break_cycle": (
-        "Refactoring: BREAK IMPORT CYCLE. Remove the cyclic dependency by "
-        "inverting or abstracting the import on each cut edge (dependency "
-        "inversion, a shared interface/protocol module, or a local import as a "
-        "last resort). Do not merge the files."
-    ),
-    "extract_method": (
-        "Refactoring: EXTRACT METHOD. The target is one long function; the plan's "
-        "'span' gives the line range to lift into a new helper method in the same "
-        "scope. Move exactly those lines into the helper and name it: the plan's "
-        "'suggested_name' is a deterministic starting point derived from the "
-        "slice's single output value, so keep it unless the code clearly warrants a better "
-        "name -- and rename it if it collides with something already in the file, "
-        "which it can. When 'suggested_name' is null no name was anchored in the plan, "
-        "so choose one that describes what the lifted code computes. Pass the plan's 'params' as its arguments "
-        "and return the plan's 'returns' value(s), and replace the original lines "
-        "with a call to it. Preserve behaviour exactly; change nothing outside the "
-        "span and the single call site."
-    ),
-    "split_file": (
-        "Refactoring: SPLIT FILE. The module is too large and partitions into "
-        "the cohesive groups in the plan. Create one new file per group at its "
-        "'suggested_file' path, containing exactly that group's symbols, and "
-        "when a group's 'suggested_file' is null pick a filename that describes "
-        "its symbols, in the same directory as the original, and "
-        "remove them from the original. Keep the residual 'core' symbols in the "
-        "original file. When 'shim_required' is true, leave a back-compat "
-        "re-export shim in the original path (import and re-export the moved "
-        "symbols) so existing imports keep working; when false (same-package "
-        "languages such as Go) no import edits are needed. Never duplicate a "
-        "symbol across files — each moves to exactly one place. Emit one fenced "
-        "code block per file you create or change."
-    ),
-}
 
+def _build_user_prompt(
+    suggestion: Any, spans: list[SourceSpan], detail: Mapping[str, Any] | None = None
+) -> str:
+    """The plan as every surface words it (its recipe), then the source it names.
 
-def _build_user_prompt(suggestion: Any, spans: list[SourceSpan]) -> str:
-    """Render the plan + evidence + blast radius + source into a user prompt."""
-    rtype = suggestion.refactoring_type
-    parts: list[str] = []
-    parts.append(_TYPE_INSTRUCTIONS.get(rtype, f"Refactoring: {rtype}."))
-    parts.append(f"\nTarget: {suggestion.target_symbol} ({suggestion.file_path})")
-
-    parts.append("\n## Structured plan\n")
-    parts.append("```json")
-    parts.append(
-        json.dumps(
-            {
-                "type": rtype,
-                "plan": suggestion.plan or {},
-                "evidence": suggestion.evidence or {},
-                "blast_radius": suggestion.blast_radius or {},
-                "validation": getattr(suggestion, "validation", {}) or {},
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
-    parts.append("```")
-
-    parts.append("\n## Source spans\n")
+    *detail* is the stored plan detail (risks, decisions, per-step checks) when
+    the caller has it; a live suggestion stands in for it otherwise.
+    """
+    parts = [render_plan_spec(detail or asdict(suggestion)), "\n## Source spans\n"]
     if not spans:
         parts.append("_(no source spans were resolvable from the working tree)_")
     for span in spans:
@@ -467,9 +336,13 @@ def _language_for(file_path: str) -> str | None:
     return _EXT_LANGUAGE.get(Path(file_path).suffix.lower())
 
 
-def _cache_key(suggestion: Any, spans: list[SourceSpan], model: str) -> str:
+def _cache_key(suggestion: Any, spans: list[SourceSpan], model: str, prompt: str) -> str:
+    """*prompt* is the rendered user prompt: anything that changes it (the stored
+    detail a caller passes, the recipe's wording) misses the cache."""
     payload = json.dumps(
         {
+            "prompt_version": _PROMPT_VERSION,
+            "prompt": hashlib.sha256(prompt.encode()).hexdigest(),
             "type": suggestion.refactoring_type,
             "target": suggestion.target_symbol,
             "file": suggestion.file_path,
@@ -730,6 +603,7 @@ async def enrich_suggestion(
     provider: BaseProvider,
     repo_path: Path,
     cache_dir: Path | None = None,
+    detail: Mapping[str, Any] | None = None,
     use_cache: bool = True,
     validate: bool = True,
     max_tokens: int = 8000,
@@ -739,6 +613,7 @@ async def enrich_suggestion(
     On-demand only. Gathers the plan's source spans off *repo_path*, prompts
     *provider*, parses the diff, runs the Extract Class self-check, and caches
     the result by a content hash so an unchanged plan never regenerates.
+    *detail* is the stored plan detail, when the caller read one.
     """
     spans = _gather_spans(suggestion, repo_path)
     model = getattr(provider, "model_name", "") or ""
@@ -746,14 +621,14 @@ async def enrich_suggestion(
     suggestion_id = getattr(suggestion, "id", None)
 
     cdir = cache_dir or _cache_dir(repo_path)
-    key = _cache_key(suggestion, spans, model)
+    user = _build_user_prompt(suggestion, spans, detail)
+    key = _cache_key(suggestion, spans, model, user)
     if use_cache:
         cached = _read_cache(cdir, key)
         if cached is not None:
             return cached
 
-    system = _SYSTEM_PROMPT + "\n" + _TYPE_INSTRUCTIONS.get(suggestion.refactoring_type, "")
-    user = _build_user_prompt(suggestion, spans)
+    system = _SYSTEM_PROMPT
     response = await provider.generate(
         system,
         user,

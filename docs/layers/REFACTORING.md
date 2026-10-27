@@ -1,255 +1,306 @@
-# Refactoring intelligence (`repowise health --refactoring-targets`)
+# Refactoring intelligence
 
-A health score tells you a file is in trouble. **Refactoring intelligence names
-the specific fix.** Every other tool stops at the score, or prints the same
-static sentence for every god class in every repo. repowise emits one structured
-plan per opportunity: *split `GraphBuilder` into these three cohesive groups*,
-*move `resolve_call` to the `resolvers` class where its calls actually land*,
-*break the `pipeline ↔ update` import cycle by inverting this one edge*,
-*decompose this 900-line module into these four files and rewrite the imports in
-the six that depend on it*, computed deterministically from the same graph,
-class model, and git data the score is built on.
+A health score tells you a file is in trouble. Refactoring intelligence names the
+fix: split this class into these groups, move this method to the class its calls
+land in, cut this one import edge to break a cycle, lift these lines into a helper
+with this signature. Each plan is structured data computed from the same graph,
+class model and git history the health score uses.
 
-```bash
-repowise health --refactoring-targets            # ranked plans, biggest win for least effort
-repowise health --refactoring-targets --format json
-```
-
-It runs **inside the health pass** (`init` / `update`), reusing data already
-computed with no re-parse, **no LLM, no network**, inside the same <30s budget. The
-LLM layer (code generation) is a separate, strictly opt-in step ([below](#opt-in-code-generation)).
+Plans are built during the health pass of `repowise init` and `repowise update`.
+They need no LLM key, no network and no re-parse. Turning a plan into actual code
+is a separate, on-request step that does use an LLM
+([Code generation](#code-generation)).
 
 <div align="center">
 <img src="../../.github/assets/health-loop.svg" alt="repowise code-health loop: markers fan into three signals, the graph and git history locate risk, and refactoring intelligence emits concrete plans an agent executes" width="100%" />
 </div>
 
-## The seven detectors
+## Plan types
 
-Each detector is a self-contained module registered into a registry (adding a
-refactoring type is a new file + a registry entry, like the marker registry).
-A detector degrades to **"no suggestion" on any missing signal, never a wrong
-one**, and produces stable-sorted, deterministic output.
+| Type | What the plan names |
+|------|---------------------|
+| **Extract Class** | The cohesive groups (methods and fields) an incohesive or god class splits into. |
+| **Extract Method** | A line span to lift out of a long or complex function, with the helper's parameters and return value. |
+| **Extract Helper** | Every occurrence of a duplicated block and where the shared helper belongs. |
+| **Move Method** | A method that uses another class more than its own, and the class it belongs in. |
+| **Break Cycle** | The smallest set of import edges to invert to break a runtime dependency cycle. Advisory: see below. |
+| **Split File** | The files an oversized module splits into, which symbols go where, and the import edits in each dependent. |
+| **Performance Fix** | One shared change for a performance problem, with the affected call sites and caller-to-sink paths. |
 
-| Type | What it names | Detection (deterministic) |
-|------|---------------|---------------------------|
-| **Extract Class** | The cohesion groups an incohesive / god class should split into: the exact methods + fields per group. | LCOM4 union-find components (each disconnected component is a candidate class), with the god-class shape confirmed via Lanza-Marinescu (WMC = Σ McCabe, TCC). |
-| **Extract Helper** | A clone's exact occurrences and where the shared helper belongs. | Rabin–Karp clone pairs (line ranges, token count, co-change). The extraction site is the community centroid of the involved files; transitive clones (A↔B, B↔C) are clustered into one suggestion, not pairwise nags. |
-| **Move Method** | A feature-envy method and the class it actually belongs to. | The method's entity set (fields/methods it touches, class-qualified) is built from the call graph; Jaccard distance to each class. Fires only when a foreign class is clearly nearer than its own. |
-| **Break Cycle** | The minimal set of import edges to invert to break a dependency cycle. | A strongly-connected component in the import graph → greedy minimum feedback arc set (MFAS) over the real edges picks the smallest cut. |
-| **Split File** | The cohesive files an oversized module should decompose into: which top-level symbols move to each new file, plus the import edits in every dependent. | Community detection (Leiden, Louvain fallback) over a weighted intra-file symbol graph (direct calls, shared local helpers, shared foreign modules); emits only when the partition's **modularity** clears a decomposability gate. The file-level analog of Extract Class. |
-| **Extract Method** | The exact line span to lift out of an oversized/complex method, with the helper's inferred signature: the parameters it needs (IN) and the value it must return (OUT). | Intra-procedural dataflow (CFG + def/use + reaching definitions) over methods a `large_method` / `brain_method` / `complex_method` finding already flagged. Only single-exit, statement-boundary spans that remove real complexity qualify, and IN/OUT comes from liveness over the def/use facts. A span is offered only when the gate can prove it behavior-preserving: every returned value must be written on every path through the span, and a span nested in a loop must carry no state between iterations and must not mutate what the loop iterates. What the gate cannot prove is suppressed, not demoted, so the layer under-reports rather than suggest a rewrite that changes behavior. |
-| **Performance Fix** | A safe shared intervention, affected call sites, and caller-to-sink paths for one causal performance opportunity. | The call-graph opportunity service groups raw findings by stable cause, boundary and context, then emits only supported strategies. Findings with no coherent safe intervention remain visible in Code Health without a plan. |
+When one copy of a duplicated block is already a whole function the other copies
+could call, the Extract Helper plan says so instead of asking for a new helper:
+each other site gets the call that replaces it, or is marked as a copy to delete
+and import. Plan detail carries the call text; lists stay the same size.
 
-The algorithms are derived from public academic literature (Fokaefs-Tsantalis
-HAC for class splitting, Bavota feature-envy distance, MFAS for cycle breaking,
-Newman-Girvan modularity for module decomposition), not from any product.
+Each detector reports nothing when a signal it needs is missing, so a gap means
+"no suggestion", never a guessed one. Output is deterministic: the same commit
+gives the same plans and the same ids.
 
-**Split File is the cross-file wedge made concrete.** It is language-agnostic:
-it reads only the already-built graph (`defines` / `calls` edges), so it works
-the same on every language with call resolution, and it covers the gap LCOM4
-leaves for Go (top-level functions, not class methods). Splitting Go files in the
-same package is near-zero blast radius (no import edits); Python/TS get a
-back-compat re-export shim, surfaced as `shim_required` on the plan.
-
-## Anatomy of a suggestion
-
-Every suggestion is **structured data, not a string**: the structure is the
-source of truth; human-readable text is rendered only at the edges (CLI / MCP /
-web).
-
-| Field | Meaning |
-|-------|---------|
-| `refactoring_type` | `extract_class` \| `extract_helper` \| `move_method` \| `break_cycle` \| `split_file` \| `extract_method` \| `performance_fix` |
-| `file_path`, `target_symbol`, `line_start`, `line_end` | What the refactoring acts on. |
-| `plan` | The concrete, type-specific plan: the split `groups` (methods + fields), the move `{method, from_class, to_class}`, the clone `occurrences` + `suggested_site`, the cycle + `cut_edges`, the file-split `groups` (`{name, symbols, suggested_file}`) + `residual` core + `shim_required`, or the method-extraction `span` + `params` + `returns` + `suggested_name`. Names are omitted rather than invented: `suggested_name` and a group's `name` / `suggested_file` are `null` whenever no fact anchors a name, and `suggested_site.directory` is `null` unless an occurrence actually lives in that directory. |
-| `evidence` | The signals that justify it: `lcom4`, `wmc`, clone token/line counts + `co_change_count`, Jaccard distances, cycle size, or the split's `modularity` + `symbol_count` + `group_count` + intra/cut edge counts. |
-| `impact_delta` | The defect-health score the refactoring would recover; `0` for graph-native and performance plans. Their canonical `benefit` comes from detector-native evidence instead. |
-| `effort_bucket` | `S` \| `M` \| `L` \| `XL`, from the target's size. |
-| `blast_radius` | What else must move: the callers, co-change partners, and importing files. Extract Method carries `{"scope": "local"}` instead — extraction adds a private helper and changes no signature, so nothing outside the file moves and there is no count to make. |
-| `confidence` | `low` \| `medium` \| `high` (drives the `min_confidence` surface gate). |
-| `source_biomarker` | The finding this answers (e.g. `low_cohesion`, `god_class`, `dry_violation`). |
-
-The per-type `plan` / `evidence` / `blast_radius` shapes are documented in full in
-`packages/core/src/repowise/core/analysis/health/refactoring/models.py`.
-
-## Ranking: graph-aware, not churn-only
-
-Each detector sorts its own output, but the surfaces show one mixed list, so the
-**global** order is what matters. The shared recommendation service owns four
-named components and one canonical score:
-
-```
-score = (1 + benefit) * (1 + leverage) / (1 + cost + risk)
-```
-
-`benefit` is recoverable health or detector-native structural/performance gain;
-`leverage` is weighted health deficit, dependents, and reliable entry reach;
-`cost` includes effort and change surface; `risk` includes blast radius,
-confidence, provenance, and validation quality. Larger blast radius therefore
-cannot improve rank by masquerading as benefit. Performance plans keep their
-detector-native benefit even with zero health impact. Ties break deterministically.
-
-> **The wedge.** The leading commercial code-health tool ranks refactoring
-> targets by **churn alone**, generates code **within-function only**, and ignores
-> its own coupling signal at generation time. repowise ranks by graph centrality,
-> works **across files** (class splits, method moves, cycle breaks), and feeds the
-> co-change + graph context straight into the plan.
-
-## Opportunities: the unit a surface serves
-
-A **plan** is one detector output. An **opportunity** is one file's composed
-refactoring: the diagnosis it leads with, its plans ordered so that applying
-them in sequence is safe, and the clone groups that support the diagnosis
-without instructing a change. The plan stays the addressable atom; a step names
-one by `plan_id`.
-
-Composition is deterministic and pure
-(`analysis/health/refactoring/opportunity.py`), and it runs at **index time**:
-the finalizer writes `refactoring_opportunities` and a one-row
-`refactoring_summaries` headline in the same transaction that reconciles the
-plans. Folding at read time was measured at 91 ms over 2,283 plans and 787 ms
-at ten times that, plus 1,118 ms to rebuild the validation profiles, so every
-page cost the whole repository.
-
-| Field | Meaning |
-|---|---|
-| `opportunity_id` | `refop<model>_<digest>` over the member plan ids. Evidence is deliberately outside the kernel: a clone appearing or vanishing must not rename work an agent holds an id for. |
-| `lead_biomarker` | The file's dominant finding, from the one owner of that rule (`analysis/health/models.py::primary_finding`). |
-| `addresses_primary_problem` | Tri-state. `null` means no dominant finding was recorded, which is not the same claim as `false`. On the dogfood index it reads 201 true / 380 false / 3 unknown, and the false answers are the honest ones. |
-| `steps[].applicability` | `mechanical` or `judgment`, with the reasons and the facts behind it, and the facts it could not establish under `unknowns`. Extraction is the only mechanical class. |
-| `steps[].relocated_by` | An earlier step that moves this step's symbol to another file. The step's own `file_path` and span describe where the symbol *was*: locate it again before applying. Any surface that renders an ordered step list must say so. |
-| `status` | Rolled up from the member plans' triage. Resolved only when every step is; one step marked a false positive does not resolve the rest. An `acknowledged` step is still outstanding work, so it keeps composing. |
-| `steps[].finding_ids` | The findings this step's cause produced, so a step round-trips to its diagnosis through `get_health(finding_id=...)`. The key is **omitted entirely** when no finding on the file is addressable by id (a store written before findings carried public ids); an empty list means "none for this cause", which is a different answer. `lead_finding_ids` on the opportunity follows the same rule. |
-| `steps[].validation_profile_id` | Points into the opportunity's `validation_profiles`. Resolved once at index time; the test-reachability walk behind it is never repeated per request. |
-
-`performance_fix` plans are excluded by construction: the performance layer
-composes, ranks and owns the lifecycle of its own opportunities.
-
-### Ordering, and `refactoring_view`
-
-The ranked head is honestly flat. On the dogfood index eight of the top ten
-score identically: single high-confidence extractions recovering the same
-quantised `complex_method` deduction, separated only by file path. They really
-are equal under the published factors, so the answer is a queue that spends its
-first rows on distinct problems rather than a tiebreaker invented to hide the
-tie.
-
-| `refactoring_view` | Order |
-|---|---|
-| `diversified` *(default)* | Rank order round-robined over (lead biomarker, lead refactoring type, containing area). Falls back to plain rank order when a repository has one cause in one area. |
-| `canonical` | The published rank order verbatim, ties and all. What the old default produced. |
-| `file_spread` | Asked for one row per file. An opportunity *is* one file's work, so the spread is satisfied by construction; the value resolves onto the diversified order, which is what it was reaching for. |
-
-Both older values keep working. The same parameter also selects the legacy
-`refactoring_plans` list's view, where `diversified` resolves to that list's
-historical `canonical` default.
-
-## Surfaces
+## Quick start
 
 ```bash
-repowise health --refactoring-targets            # ranked table
+repowise health --refactoring-targets                  # the stored queue, in serving order
+repowise health --refactoring-targets --format json
+repowise health --refactoring-targets --recompute      # analyze the working tree instead of the index
+repowise health --refactoring-targets --generate-code 1   # code + diff for the top plan (LLM)
+repowise health --plan refac...                        # one plan as the prompt an agent applies
 ```
+
+From an agent, through MCP:
 
 ```python
-# MCP. A bare call already carries one bounded refactoring_directive.
-get_health()
+get_health(only=["fix_first"])                                      # refactorings ranked beside other fixes
 get_health(include=["refactoring"], only=["refactoring_opportunities"], limit=6)
-get_health(include=["refactoring"], only=["refactoring_summary"])
-get_health(opportunity_id="refop2_...")                      # steps, plans, validation
-get_health(opportunity_id="refop2_...", only=["refactoring_evidence"], cursor=3)
-get_health(plan_id="refac2_...")                             # one plan, and its owner
-get_health(include=["refactoring"], only=["refactoring_plans"])   # the raw list, opt-in
-get_health(targets=["src/api/server.py"])                    # one file
+get_health(targets=["src/api/server.py"], include=["refactoring"])  # one file
+get_health(opportunity_id="refop...")                               # one opportunity's steps
+get_health(plan_id="refac...")                                      # one plan
+get_health(plan_id="refac...", include=["recipe"])                  # ...as a recipe an agent applies
 ```
 
-```text
-# REST. Both surfaces read services/refactoring_health.py, so they cannot
-# answer differently; a parity suite asserts order, filters, totals and detail.
-GET /api/repos/{repo_id}/refactoring/opportunities?view=diversified&limit=20
-GET /api/repos/{repo_id}/refactoring/opportunities?file_path=src/api/server.py
-GET /api/repos/{repo_id}/refactoring/opportunities/{opportunity_id}
-GET /api/repos/{repo_id}/refactoring/summary
-GET /api/repos/{repo_id}/refactoring/targets?refactoring_type=extract_class&min_confidence=high
-GET /api/repos/{repo_id}/refactoring/targets/page?limit=60&offset=0&refactoring_type=performance_fix
-GET /api/repos/{repo_id}/refactoring/{suggestion_id}        # one plan + blast-radius detail
-```
+In the dashboard, the **Refactoring** page lists every type on one board, with
+filters for type, confidence and effort. A plan's drawer explains its rank, shows
+the tests that reach the code and the command to run them, and can export the
+structured plan for an agent. The page never edits code or runs tests on its own.
 
-A file's opportunities are a **separate call** - the queue filtered by
-`file_path` - and deliberately not a field on the file-detail aggregate. That
-aggregate is already the widest read in the server and every one of its callers
-would pay for this whether or not it renders it, while the surface that wants
-it knows it wants it. R2's `(repository_id, status, file_path)` index makes it
-one indexed lookup rather than a scan.
+### Tests and commands
 
-The web **Refactoring** page uses one shared plan board and drawer for every
-type, including a Performance filter. Its initial data path is bounded and
-server-owned: search, type, confidence, effort, canonical sorting, true totals,
-and deterministic offset cursors. The older unpaged endpoint remains available
-during migration. The drawer explains benefit, leverage, cost, risk and rank;
-shows validation basis and provenance, true test totals, capped tests and
-commands; and makes affected paths and intervention points navigable. Each card
-can still export the structured plan for an agent. It never runs tests, creates
-edits, or applies a refactoring automatically.
+A plan lists the tests closest to the change first: measured coverage, then
+tests named for the file, then the call graph. Tests that reach the file only
+through a widely imported hub module are left out. When the plan changes known
+functions, it quotes the few test functions nearest each one as runnable
+selectors (`tests/test_orders.py::test_total`), and its command runs only the
+files they live in.
 
-## Optional code generation
+When no test reaches the change, the plan has no command and asks for a
+characterization test first; it also asks when tests reach the file but none
+reaches the changed function. JavaScript, TypeScript, Go, Rust, Java, Kotlin,
+Ruby and C# tests get a command for the package or project that owns them; a
+test whose build file or runner the repository does not have gets no command. Per-language rules:
+[architecture/refactoring.md](../architecture/refactoring.md#test-commands).
 
-The deterministic plan is the product. The LLM code-generation step is **never
-in the indexing hot path**: it runs only when you ask for code for a specific
-plan, and it is on by default. Configure it in `.repowise/config.yaml`:
+In a plan with several steps, such as a performance fix at several call sites,
+plan detail adds a `verify` to each step whose tests differ from the plan's: the
+tests that reach that step's lines and the command to run them. A step without
+one is checked by the plan's own command.
 
-```yaml
-refactoring:
-  enabled: true
-  detectors:
-    disabled: []              # e.g. [move_method]
-  min_confidence: medium      # low | medium | high
-  llm:
-    enabled: true             # on by default; set false to disable
-    provider: null            # falls back to the repo's configured provider
-    model: null
-```
+### Recipes
 
-When code generation is enabled (the default), the **Generate code** action on a plan card (or the
-endpoint below) gathers the plan's real source spans off the working tree, builds
-a behavior-preservation prompt carrying the structured plan **plus the
-graph/co-change context** a bare codegen tool throws away, and returns the
-refactored code and a unified diff. Where a self-check is cheap and meaningful it
-runs one: Extract Class re-walks the generated classes for an **LCOM4 before/after
-delta**, and Split File re-walks the generated files to assert each is **below the
-size floor** and the symbols are **partitioned with no duplication**. Results are
-cached on disk by a content hash (plan + source + model), so the same plan never
-pays twice.
+Any plan can be read as a recipe: what must hold before the edit (tests that
+pass, a characterization test to add, a decision to read), the edits in order,
+the checks and expected improvement after, and what the edit must not do. The
+dashboard's copy-prompt, `repowise health --plan`, plan detail with
+`include=recipe` and code generation all read that same recipe, so an agent sees
+one set of steps wherever it starts. The recipe and the prompt name the plan by
+the public id `get_health(plan_id=...)` takes; REST plan detail's own `id` field
+is the storage id.
 
-```text
-POST /api/repos/{repo_id}/refactoring/{suggestion_id}/generate-code
-GET  /api/repos/{repo_id}/refactoring/settings        # read llm.enabled + provider/model
-PUT  /api/repos/{repo_id}/refactoring/settings        # toggle it from the dashboard
-```
+## Reading the results
 
-Code generation needs the working tree on disk (it reads the real source spans),
-so it is a local-`serve` capability: it returns `403` when disabled and `404`
-when the repo has no accessible checkout. **Apply is out of scope**: the wedge is
-the plan and the reviewable diff, not auto-applied edits.
+A **plan** is one detector's output for one target. An **opportunity** is one
+file's refactoring work: the finding it leads with, and its plans as ordered steps
+that are safe to apply in sequence. Surfaces list opportunities; a step points to
+its plan by `plan_id`.
+
+| Field | What it tells you |
+|-------|-------------------|
+| `refactoring_type` | Which of the seven plan types this is. |
+| `plan` | The concrete change: groups, span and signature, destination class, cut edges, or file split. |
+| `evidence` | The measurements behind it, such as LCOM4, clone size, co-change count or modularity. |
+| `confidence` | `low`, `medium` or `high`. A `high` Extract Method is mechanical enough to hand to an agent. |
+| `effort_bucket` | `S`, `M`, `L` or `XL`, from the size of the target. |
+| `blast_radius` | What else has to change: callers, importing files, co-change partners. Extract Method is `local`. |
+| `impact_delta` | Health the plan would recover, in proportion to what it removes. `0` for Break Cycle, Split File and Performance Fix, which rank on their own evidence. |
+| `source_biomarker` | The health finding the plan answers, such as `god_class` or `complex_method`. |
+
+On an opportunity, each step carries `applicability`: `mechanical` (only
+extractions qualify) or `judgment`, with the facts behind the call. When an
+earlier step moves a symbol to another file, the later step carries
+`relocated_by`: its stored location is where the symbol was before, so find it
+again before applying. In the plan list a Split File plan stands for the plans
+it relocates in the same file: its row lists them as `relocates`, and they take no
+rows of their own.
+
+Plan detail also lists `risks`, one sentence each, to read before applying the
+plan: an accepted decision that governs the file, callers or importers of what
+the plan moves, a target nothing reaches (delete it instead), recent commits
+on the same lines, and a test the plan runs that asserts on the function's own
+source text. When the plan changes a symbol a package exports to its consumers,
+the risk names the file exporting it. A governed plan's steps are `judgment`, and
+its `blast_radius.co_change_partners` names the files that usually change with
+it. A newly accepted decision shows here after the next index or update.
+
+A plan the index stops detecting is resolved, and its detail then carries a
+`payoff` with the target's size before and after and the commit that resolved
+it. `applied` means the measures are consistent with the plan being applied: the
+target lost at least half the predicted complexity and a function the size of
+the extracted span appeared beside it (computed for Extract Method only). The
+other outcomes are `file_deleted`, `superseded` (the same plan found again under
+a new id), `target_changed` (renamed or rewritten another way) and `unknown`.
+
+Plans and opportunities on Java, C#, C and C++ files are served as a preview:
+they are listed and counted like any other, and each one carries the
+measurement behind it, as `preview` on a REST row, in `_meta.preview` on
+`get_health`, and as a dim line under the CLI list. A language gated instead is
+left out unless the caller passes `include_unverified`, and counted in `gated`.
+
+Plans and opportunities on test files are held back the same way on every plan
+surface, `scope=all` included, as Fix first already leaves them out. They are
+counted in `gated` under `test`.
+
+Break Cycle is advisory. Its plan names edges to cut, not which symbols cross
+them or how to move them, so an opportunity carries it as `evidence` instead of
+as a numbered step: it never leads, and never reaches Fix first. The plan itself
+stays in the plan list. Cycles are found over runtime imports only; type-only and
+deferred imports do not close a cycle
+([rules](../architecture/refactoring.md#break-cycle-imports)). How the rollup
+counts plans: [architecture/refactoring.md](../architecture/refactoring.md#counting).
+
+Names are never invented. A suggested helper or file name is `null` when nothing
+in the code anchors one. A Split File or Extract Class plan with an unnamed group
+is held as `needs_design`, like a cycle: it is not a step and never reaches Fix
+first. A plan led by Move Method or Extract Class stays in the full list but is
+kept out of Fix first and the default scope, counted as not yet audited, until
+that kind passes a per-language review. When such a step follows another lead,
+the Fix first item leaves it out and says how many steps it held back; the full
+plan keeps them. Code only moves within a language family, so Java, Kotlin and
+Scala are separate. A callback is named after the call it is passed to. An
+Extract Method helper gets the placeholder name `extracted_helper`, since the
+code rarely says what a block is for; the plan and its prompt ask you to rename
+it for what it returns or does when you apply it.
+
+An empty list means no detector found work that clears its gates. It does not mean
+the code needs no attention: check the findings in
+[CODE_HEALTH.md](CODE_HEALTH.md).
+
+### Scope and order
+
+By default the open, repository-wide list shows only what
+[Fix first](CODE_HEALTH.md#fix-first) would take: opportunities in shipped code
+that recover real health and name a concrete edit, outside dead code and outside
+functions a constant flag switches off. The response counts the rest and the
+reasons they were held back. Ask for the full inventory with `scope=all`
+(MCP: `refactoring_scope="all"`; dashboard: **Full inventory**). A call that names
+a file, or a triaged status, gets the full inventory automatically.
+
+Many top opportunities score the same. The default order (`diversified`)
+round-robins over the lead finding, plan type and area so the first rows cover
+distinct problems. `canonical` returns the plain rank order. Test files always rank
+after production files.
+
+## Code generation
+
+Code generation is off by default, only runs when you ask for it, and never
+runs during indexing. Turn it on with the code-generation switch on the repo
+Settings page or in an open plan, or with `refactoring.llm.enabled: true`. The
+switch names the provider and model it will use, so there is nothing else to
+configure. The CLI flag is itself an explicit request and does not read that
+setting.
+
+You can ask from three places:
+
+- CLI: `repowise health --refactoring-targets --generate-code <rank-or-symbol>`.
+- Dashboard: the **Generate code** action on a plan, when the server runs on your
+  machine with the checkout on disk.
+- MCP: `generate_refactoring_code(suggestion_id=...)`. This tool is off the default
+  MCP surface; add it with `mcp.tools: ["+generate_refactoring_code"]`.
+
+Generation reads the plan's real source spans from the working tree, sends the
+plan, the source and the graph and co-change context to your configured provider,
+and returns refactored code with a unified diff. Where a check is cheap it runs
+one: Extract Class compares LCOM4 before and after, Split File checks each new file
+is under the size floor with no symbol duplicated, and Extract Method checks the
+remaining function's complexity dropped. Results are cached by a hash of plan,
+source and model, so an unchanged plan is not paid for twice. Nothing is applied
+to your files.
+
+The CLI uses the provider configured for page generation; the web and MCP use the
+chat model. With generation disabled, the MCP tool returns the plan with
+`generation.available: false` and the REST endpoint returns `403`. With no key,
+MCP returns `error: "no_provider"`.
 
 ## Configuration
 
-Per-path disables reuse the existing `.repowise/health-rules.json` glob
-mechanism, so a refactoring type can be silenced for generated or vendored paths
-the same way a marker is:
+In `.repowise/config.yaml`:
 
-```json
-{
-  "rules": [
-    { "path": "src/generated/**", "disabled_biomarkers": ["dry_violation"] }
-  ]
-}
+```yaml
+refactoring:
+  enabled: true              # set false to skip the refactoring layer
+  detectors:
+    disabled: []             # e.g. [move_method, split_file]
+  min_confidence: medium     # low | medium | high; unset keeps every plan
+  llm:
+    enabled: false           # code generation; set true to enable
 ```
+
+Detector names are the snake-case plan types: `extract_class`, `extract_method`,
+`extract_helper`, `move_method`, `break_cycle`, `split_file`, `performance_fix`.
+
+Most plans answer a health finding, so per-path marker rules in
+`.repowise/health-rules.json` also remove the plans for those findings. See
+[CODE_HEALTH.md](CODE_HEALTH.md#configuration).
+
+## Accuracy and limits
+
+- Plans are suggestions for review. Nothing is applied automatically, and
+  generated code comes back as a diff.
+- Extract Method offers a span only when it can show the extraction keeps
+  behavior, so it under-reports by design. Spans that would split a `try` from
+  its handlers, move a Go `defer`, or carry the original finding into the
+  helper are not offered. Full gates:
+  [architecture/refactoring.md](../architecture/refactoring.md#extract-method-gates).
+- A span must remove at least two decision points, hold at least 8 code lines
+  and cover at most 60% of the function's lines. Estimated gain never exceeds
+  the share of decision points removed.
+- When Extract Method declines a function, its finding records why in
+  `details.extract_method_refused`.
+- An Extract Method plan writes out the new helper's header and the line that
+  replaces the span, in the file's language, with parameter types where the
+  code declares them; `<type>` marks a type for you to fill in. It flags an
+  awaiting span with `needs_async: true` and a receiver-bound helper under
+  `new_symbol`.
+- A TypeScript span is not offered when the helper would lose a narrowing the span
+  relies on (`if (!tc.result) continue;` before `tc.result.id`), or would assign an
+  outer name without taking or returning it; the finding records `narrowing_lost` or
+  `outer_declaration` in `details.extract_method_stage_refused`. A narrowed parameter gets a note to type it
+  as narrowed.
+- A step Repowise cannot express mechanically is a judgment call with a reason
+  code: `async_helper_unexpressible`, `receiver_unbound` or
+  `receiver_copy_written`.
+- A Python, TypeScript or JavaScript function too complex for one helper can
+  get a staged plan: several helpers called in order, applied as direct edits
+  one stage at a time, in batches of at most five with tests between batches.
+- A plan that would leave the function or a new helper above the break-up bar
+  says so ("still above the break-up bar; more stages needed") and ranks after
+  work that finishes the job. The mark is set at index time, so a plan ranked
+  live is not marked.
+- Move Method never targets a class the method only instantiates, or an
+  ancestor of its own class.
+- Split File works on any language with call resolution and suggests a split only
+  when the groups are clearly separable. Python and TypeScript splits usually need
+  a re-export shim, flagged as `shim_required`.
+- Plan quality follows graph quality. Where calls are not resolved for a language,
+  Move Method and Split File have less to work with.
+- Generated code depends on the model you configure. The self-checks catch some
+  structural mistakes, not behavior changes; review and test the diff.
+- There is no published accuracy benchmark for refactoring plans yet.
+
+## Reference
+
+- MCP: [`get_health`](../agent/MCP_TOOLS.md#get_health),
+  [`generate_refactoring_code`](../agent/MCP_TOOLS.md#generate_refactoring_code).
+- CLI flags on `repowise health`:
+
+| Flag | Effect |
+|------|--------|
+| `--refactoring-targets` | Print the stored refactoring queue in the order MCP and the dashboard serve it. |
+| `--recompute` | Analyze the working tree in-process instead of reading the index. Slow on large repos. |
+| `--generate-code SELECTOR` | Generate code and a diff for one plan. `SELECTOR` is a 1-based rank or a symbol name. Needs an API key. |
+| `--plan ID` | Print one stored plan as the prompt an agent applies; with `--format json`, its recipe. |
+| `--format json` | Machine-readable output. |
 
 ## See also
 
-- [`docs/layers/CODE_HEALTH.md`](CODE_HEALTH.md): the markers and the three health
-  signals the suggestions are built on.
-- [`docs/layers/INTELLIGENCE_LAYERS.md`](INTELLIGENCE_LAYERS.md): how code health fits
-  the five-layer index.
-- [`docs/agent/MCP_TOOLS.md`](../agent/MCP_TOOLS.md): the `get_health(include=["refactoring"])`
-  response shape.
+- [CODE_HEALTH.md](CODE_HEALTH.md): the findings and health signals plans are built on, and Fix first.
+- [INTELLIGENCE_LAYERS.md](INTELLIGENCE_LAYERS.md): how code health fits the rest of the index.
+- [architecture/refactoring.md](../architecture/refactoring.md): detector algorithms, Extract Method gates, test commands, ranking, plan ids and REST routes.
+- [architecture/code-health.md](../architecture/code-health.md): health pipeline internals.

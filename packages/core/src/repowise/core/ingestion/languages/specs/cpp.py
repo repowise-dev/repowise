@@ -2,6 +2,7 @@
 
 from ..spec import LanguageSpec
 from .c import BUILTIN_TYPES as _C_BUILTIN_TYPES
+from .c import TEST_SUPPORT_STEM_SUFFIXES
 
 #: Include fragments: C++ source that is ``#include``d into a translation unit
 #: rather than compiled as one of its own. The convention carries inline and
@@ -17,18 +18,20 @@ from .c import BUILTIN_TYPES as _C_BUILTIN_TYPES
 #: no symbols, no edges, no error. Reassigned here on the corpus count: 24 of
 #: the 25 code-bearing ``.inc`` files are C++ and none are Pascal, on a corpus
 #: that does contain Pascal. The one PHP ``.inc`` (a Drush plugin) is the known
-#: cost; ``.inc`` is shared by C++, PHP and Pascal in the wild, and a
-#: content- or sibling-aware router is the real answer if a second language's
-#: usage ever shows up in the corpus.
+#: cost of extension-only routing. ``.inc`` is also shared with PL/I, PHP and
+#: Pascal: traverser's content check now keeps this C++ default only when the
+#: file's head contains C/C++ evidence, leaving other members unindexed.
 INCLUDE_FRAGMENT_EXTENSIONS: frozenset[str] = frozenset({".inl", ".ipp", ".tpp", ".inc"})
 
 SPEC = LanguageSpec(
     tag="cpp",
     display_name="C++",
     import_support="full",
-    # GoogleTest conventions: foo_test.cc / foo_unittest.cc / test_foo.cpp.
+    # GoogleTest conventions: foo_test.cc / foo_unittest.cc / test_foo.cpp,
+    # and the helpers tests share (abseil's cord_test_helpers.h,
+    # distribution_test_util.h, log_basic_test_impl.inc).
     test_stem_prefixes=("test_",),
-    test_stem_suffixes=("_test", "_unittest"),
+    test_stem_suffixes=("_test", "_unittest", *TEST_SUPPORT_STEM_SUFFIXES),
     # A top-level include/ holds a C++ library's installed public headers —
     # its API surface (fmt, leveldb, boost layouts). Root-anchored: a
     # vendored include/ deep in another tree must not mint the layer.

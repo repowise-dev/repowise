@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from rich.console import Console
@@ -11,7 +12,7 @@ from rich.table import Table
 from repowise.cli.ui.brand import BRAND_STYLE, OK, WARN
 
 
-def _display_path(repo: Any, root: Any) -> str:
+def display_path(repo: Any, root: Any) -> str:
     """Where this repo sits, relative to the workspace root.
 
     ``repo.path.name`` is the leaf directory, which for almost every repo is
@@ -47,7 +48,8 @@ def interactive_repo_select(
         title="[bold]Discovered Repositories[/bold]",
         title_style="",
     )
-    table.add_column("#", style=BRAND_STYLE, width=4)
+    # Wide enough for the largest "[N]", so a long list never truncates to "[10…".
+    table.add_column("#", style=BRAND_STYLE, width=len(f"[{len(repos)}]"), no_wrap=True)
     table.add_column("Repository", style="bold", min_width=16)
     table.add_column("Path", style="dim", min_width=20)
     table.add_column("Status", min_width=14)
@@ -56,7 +58,7 @@ def interactive_repo_select(
         status = f"[{OK}]indexed[/]" if repo.has_repowise else "[dim]new[/dim]"
         if repo.is_submodule:
             status += " [dim](submodule)[/dim]"
-        table.add_row(f"[{idx}]", repo.name, _display_path(repo, root), status)
+        table.add_row(f"[{idx}]", repo.name, display_path(repo, root), status)
 
     console.print()
     console.print(table)
@@ -134,13 +136,69 @@ def parse_selection(raw: str, count: int) -> list[int] | None:
     return result
 
 
+def match_repo_names(repos: list[Any], names: list[str], root: Any = None) -> list[Any]:
+    """The repos *names* pick, in the order named.
+
+    A name matches a repo's alias, its directory name, or its path relative to
+    *root* (the column the picker shows), case-insensitively. A filesystem path
+    (``./api`` or absolute, relative ones read from *root* first) that resolves
+    to a repo's folder matches it too. A name two repos share is ambiguous: the
+    path tells them apart. Raises ``ValueError`` with a message that names every
+    bad name and what would work instead.
+    """
+    picked: list[Any] = []
+    seen: set[str] = set()
+    unknown: list[str] = []
+    for raw in names:
+        hits = _name_hits(repos, raw, root) or _path_hits(repos, raw, root)
+        if not hits:
+            unknown.append(raw)
+        elif len(hits) > 1:
+            paths = ", ".join(display_path(r, root) for r in hits)
+            raise ValueError(f"'{raw}' matches {len(hits)} repos ({paths}). Name one by its path.")
+        elif hits[0].alias not in seen:
+            seen.add(hits[0].alias)
+            picked.append(hits[0])
+    if unknown:
+        available = ", ".join(display_path(r, root) for r in repos)
+        raise ValueError(f"Unknown repo: {', '.join(unknown)}. Available: {available}.")
+    return picked
+
+
+def _name_hits(repos: list[Any], raw: str, root: Any) -> list[Any]:
+    """Repos whose alias, directory name or root-relative path is *raw*."""
+    name = raw.replace("\\", "/").strip("/").casefold()
+    return [
+        r
+        for r in repos
+        if name in (r.alias.casefold(), r.name.casefold(), display_path(r, root).casefold())
+    ]
+
+
+def _path_hits(repos: list[Any], raw: str, root: Any) -> list[Any]:
+    """Repos whose folder *raw* resolves to, a relative path read from *root* first."""
+    given = Path(raw).expanduser()
+    bases = [Path(root) / given] if root is not None and not given.is_absolute() else []
+    targets = {t for t in map(_resolved, [*bases, given]) if t is not None}
+    return [r for r in repos if _resolved(r.path) in targets]
+
+
+def _resolved(path: Path) -> Path | None:
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError):
+        return None
+
+
 def interactive_primary_select(
     console: Console,
     repos: list[Any],
+    current: str | None = None,
 ) -> str:
     """Ask which repo is the primary/default. Returns the alias.
 
-    *repos* is the list of selected :class:`DiscoveredRepo` objects.
+    *repos* is the list of selected :class:`DiscoveredRepo` objects;
+    *current* is the alias Enter keeps, when it is among them.
     """
     if len(repos) == 1:
         return repos[0].alias
@@ -149,7 +207,7 @@ def interactive_primary_select(
     console.print("  [bold]Primary repository[/bold]")
     console.print(
         "  [dim]The primary repo is what MCP tools and the dashboard open by default.\n"
-        "  You can change it later in repowise.workspace.yaml.[/dim]"
+        "  You can change it later in .repowise-workspace.yaml.[/dim]"
     )
     console.print()
     for idx, repo in enumerate(repos, 1):
@@ -157,10 +215,12 @@ def interactive_primary_select(
     console.print()
 
     choices = [str(i) for i in range(1, len(repos) + 1)]
+    aliases = [repo.alias for repo in repos]
+    default = aliases.index(current) + 1 if current in aliases else 1
     chosen = Prompt.ask(
         "  Which is your primary repo?",
         choices=choices,
-        default="1",
+        default=str(default),
         console=console,
     )
     return repos[int(chosen) - 1].alias

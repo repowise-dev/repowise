@@ -34,10 +34,34 @@ export type { ChangeLineProps, ChangeStat } from "./change-line";
 export { CommitRows, DecisionRows } from "./activity-lists";
 export type { CommitRow, DecisionRow } from "./activity-lists";
 
+export { AttentionAreas } from "./attention-areas";
 export { AttentionRows } from "./attention-rows";
+export { AttentionSources } from "./attention-sources";
 export type { AttentionRowItem } from "./attention-rows";
 
 export { HotspotTable } from "./hotspot-table";
+export { actionHref } from "./action-href";
+export { NextActions, renderActionTitle } from "./next-actions";
+export type { NextActionsProps } from "./next-actions";
 export { ExploreList } from "./explore-list";
+export { ExploreCards } from "./explore-cards";
+export type { ExploreCard, ExploreCardsProps } from "./explore-cards";
 export type { ExploreEntry } from "./explore-list";
 export { LanguageBar } from "./language-bar";
+
+export { OverviewBody } from "./overview-body";
+export { OVERVIEW_BODY_COPY } from "./overview-body";
+export type { OverviewBodyCopy, OverviewBodyProps, OverviewBodySlots } from "./overview-body";
+
+export {
+  buildChangeStats,
+  buildExplore,
+  buildExploreCards,
+  buildLanguageDistribution,
+  buildReads,
+  buildRibbon,
+  docPageCount,
+  previousSnapshotAt,
+  resolveOverviewRoutes,
+} from "./overview-model";
+export type { OverviewRoutes, ResolvedOverviewRoutes } from "./overview-model";

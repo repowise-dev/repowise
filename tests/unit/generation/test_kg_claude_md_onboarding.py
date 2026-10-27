@@ -97,41 +97,45 @@ class TestClaudeMdKGSection:
         tmpl = jinja_env.get_template("claude_md.j2")
         data = self._data(
             key_modules=[
-                KeyModule(name="src/api", purpose="API layer", file_count=4, owner=None),
-                KeyModule(name="src/core", purpose="", file_count=9, owner=None),
+                KeyModule(name="src/api", purpose="API layer", owner=None),
+                KeyModule(name="src/core", purpose="", owner=None),
             ]
         )
         rendered = tmpl.render(data=data)
         assert "### Key modules" in rendered
-        assert "- `src/api` — API layer" in rendered
+        assert "- `src/api`: API layer" in rendered
         # No purpose → no dangling separator.
         assert "- `src/core`\n" in rendered
 
-    def test_workflow_protocol_leads(self, jinja_env):
+    def test_workflow_protocol_follows_the_repo_facts(self, jinja_env):
+        from repowise.core.generation.editor_files.data import HotspotFile
+
         tmpl = jinja_env.get_template("claude_md.j2")
-        rendered = tmpl.render(data=self._data())
+        hot = HotspotFile(path="src/a.py", churn_percentile=99.0, commit_count_90d=3, owner=None)
+        rendered = tmpl.render(data=self._data(entry_points=["src/main.py"], hotspots=[hot]))
         assert "### How to work in this repo" in rendered
-        # The trust rule survives as a bullet rather than its own section. The
-        # separate "### Trust protocol" heading was five bullets of protocol for
-        # a response shape the agent sees rarely, and it was cut for size; the
-        # load-bearing clause is what has to stay reachable.
-        assert "`verified: true`" in rendered
-        assert "never re-read them" in rendered
-        # `confidence` rates the prose; a low grade points at the evidence the
-        # reply already named rather than at a second round-trip.
-        assert "`fallback_targets` or `best_guesses`" in rendered
-        # An empty call-graph list is never served without the basis beside it.
+        # The load-bearing trust and basis clauses stay; the rest of the old
+        # bullets ride in the responses themselves (`_meta` hints, stale warnings).
+        assert "`verified: true` need no re-read" in rendered
+        assert '`bounds: "approximate"`' in rendered
         assert "`*_basis`" in rendered
+        assert "never re-read them" not in rendered
         # Pre-edit framing: the mandatory Read of edit targets is conceded.
         assert "raw Read of any file you will Edit" in rendered
         # The tool table renders from the single-source module.
         assert "| Tool | When and why |" in rendered
         assert "`get_answer(question)`" in rendered
-        # Protocol comes before the repo-facts data blocks. Anchored on the
-        # trust rule rather than on the first heading in the file, which would
-        # be ordered correctly by construction and could not fail.
-        if "Entry points" in rendered:
-            assert rendered.index("`verified: true`") < rendered.index("Entry points")
+        # Repo facts lead: they are what an agent acts on before an edit.
+        protocol = rendered.index("### How to work in this repo")
+        assert rendered.index("### Entry points") < protocol
+        assert rendered.index("### Files that need care") < protocol
+
+    def test_the_full_protocol_is_opt_in(self, jinja_env):
+        tmpl = jinja_env.get_template("claude_md.j2")
+        rendered = tmpl.render(data=self._data(sections=frozenset({"how_to_work_full"})))
+        assert "never re-read them" in rendered
+        assert "`candidate_files` the reply names" in rendered
+        assert "`*_basis`" in rendered
 
 
 # ---------------------------------------------------------------------------

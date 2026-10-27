@@ -1,0 +1,27 @@
+130 entries in 23 directories:
+  ./  (16: .coveragerc, .git-blame-ignore-revs, .gitignore, .pre-commit-config.yaml, +12 more)
+  .github/  (8: AI_POLICY.md, CODEOWNERS, CODE_OF_CONDUCT.md, CONTRIBUTING.md, +4 more)
+  .github/ISSUE_TEMPLATE/  (3: Bug_report.md, Custom.md, Feature_request.md)
+  .github/workflows/  (8: close-issues.yml, codeql-analysis.yml, lint.yml, lock-issues.yml, +4 more)
+  docs/  (7: .nojekyll, Makefile, api.rst, conf.py, +3 more)
+  docs/_static/  (2: custom.css, requests-sidebar.png)
+  docs/_templates/  (1: sidebar.html)
+  docs/_themes/  (3: .gitignore, LICENSE, flask_theme_support.py)
+  docs/community/  (7: faq.rst, out-there.rst, recommended.rst, release-process.rst, +3 more)
+  docs/dev/  (2: authors.rst, contributing.rst)
+  docs/user/  (4: advanced.rst, authentication.rst, install.rst, quickstart.rst)
+  ext/  (7: LICENSE, kr.png, psf.png, requests-logo-compressed.png, +3 more)
+  src/requests/  (20: __init__.py, __version__.py, _internal_utils.py, _types.py, +16 more)
+  tests/  (13: __init__.py, compat.py, conftest.py, test_adapters.py, +9 more)
+  tests/certs/  (1: README.md)
+  tests/certs/expired/  (2: Makefile, README.md)
+  tests/certs/expired/ca/  (5: Makefile, ca-private.key, ca.cnf, ca.crt, +1 more)
+  tests/certs/expired/server/  (5: Makefile, cert.cnf, server.csr, server.key, +1 more)
+  tests/certs/mtls/  (2: Makefile, README.md)
+  tests/certs/mtls/client/  (6: Makefile, ca, cert.cnf, client.csr, +2 more)
+  tests/certs/valid/  (1: ca)
+  tests/certs/valid/server/  (5: Makefile, cert.cnf, server.csr, server.key, +1 more)
+  tests/testserver/  (2: __init__.py, server.py)
+
+[repowise#41d94b327885: 106 lines omitted (~396 tokens); restore: repowise expand 41d94b327885]
+

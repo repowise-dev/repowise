@@ -7,14 +7,12 @@
 const KEYS = {
   apiKey: "repowise_api_key",
   apiUrl: "repowise_api_url",
-  provider: "repowise_default_provider",
-  model: "repowise_default_model",
-  embedder: "repowise_embedder",
   weekend: "repowise_weekend",
   chatDockHidden: "repowise_chat_dock_hidden",
   chatAskControlsHidden: "repowise_chat_ask_controls_hidden",
   chatSelectionAskHidden: "repowise_chat_selection_ask_hidden",
   chatHintSeen: "repowise_chat_hint_seen",
+  hostedTipsHidden: "repowise_hosted_tips_hidden",
 } as const;
 
 function read(key: string): string {
@@ -37,15 +35,6 @@ export const config = {
 
   getApiUrl: () => read(KEYS.apiUrl),
   setApiUrl: (v: string) => write(KEYS.apiUrl, v),
-
-  getProvider: () => read(KEYS.provider) || "litellm",
-  setProvider: (v: string) => write(KEYS.provider, v),
-
-  getModel: () => read(KEYS.model),
-  setModel: (v: string) => write(KEYS.model, v),
-
-  getEmbedder: () => read(KEYS.embedder) || "mock",
-  setEmbedder: (v: string) => write(KEYS.embedder, v),
 
   /** Weekend-days preset id; "" means unset, which resolves to Sat/Sun. */
   getWeekend: () => read(KEYS.weekend),
@@ -72,6 +61,24 @@ export const config = {
   /** Whether the pill has already introduced itself once in this browser. */
   getChatHintSeen: () => read(KEYS.chatHintSeen) === "1",
   setChatHintSeen: () => write(KEYS.chatHintSeen, "1"),
+
+  /** Whether the repowise.dev tips are hidden. Storage can throw (private
+   *  window, blocked site data): a failed read means shown, a failed write
+   *  keeps the choice until reload. */
+  getHostedTipsHidden: () => {
+    try {
+      return read(KEYS.hostedTipsHidden) === "1";
+    } catch {
+      return false;
+    }
+  },
+  setHostedTipsHidden: (v: boolean) => {
+    try {
+      write(KEYS.hostedTipsHidden, v ? "1" : "");
+    } catch {
+      /* Storage unavailable. */
+    }
+  },
 };
 
 /** Fires when any chat affordance's visibility changes in this tab.

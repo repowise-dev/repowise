@@ -24,6 +24,9 @@
 import * as React from "react";
 
 import { formatNumber } from "../lib/format";
+import { splitPath } from "../lib/path-parts";
+import { FilePath } from "../shared/file-path";
+import { EFFORT_LABEL } from "../health/labels";
 import { StructuralMap } from "./structural-map";
 import { typeMeta } from "./meta";
 import { MAP_MIN_POINTS } from "./types";
@@ -46,13 +49,6 @@ export interface StartHereProps {
   highlightedId?: string | null | undefined;
   onHighlight?: ((id: string | null) => void) | undefined;
 }
-
-const EFFORT_WORD: Record<string, string> = {
-  S: "Small",
-  M: "Medium",
-  L: "Large",
-  XL: "Extra large",
-};
 
 export function StartHere({
   opportunities,
@@ -122,7 +118,7 @@ export function StartHere({
       <div>
         {lead.map((item, i) => {
           const meta = typeMeta(item.lead_refactoring_type || "");
-          const effort = EFFORT_WORD[item.effort_bucket] ?? item.effort_bucket;
+          const effort = EFFORT_LABEL[item.effort_bucket] ?? item.effort_bucket;
           const lit = item.opportunity_id === highlighted;
           return (
             <button
@@ -135,22 +131,25 @@ export function StartHere({
               onFocus={() => setHighlighted(item.opportunity_id)}
               onBlur={() => setHighlighted(null)}
               className={`group grid w-full grid-cols-[28px_minmax(0,1fr)] items-start gap-4 border-t border-[var(--color-border-default)] px-3 py-4 text-left transition-colors first:border-t-0 md:grid-cols-[28px_minmax(0,1fr)_170px] md:items-center ${
-                lit ? "bg-[var(--color-accent-muted)]" : "hover:bg-[var(--color-bg-elevated)]"
+                lit ? "bg-[var(--color-bg-selected)]" : "hover:bg-[var(--color-bg-elevated)]"
               }`}
             >
               <span className="pt-0.5 font-mono text-xs tabular-nums text-[var(--color-text-tertiary)]">
                 {String(i + 1).padStart(2, "0")}
               </span>
               <span className="min-w-0">
-                <span className="block text-[15px] font-semibold text-[var(--color-text-primary)] group-hover:text-[var(--color-accent-primary)]">
-                  {meta.label} · {item.file_path.split("/").pop()}
+                <span className="block text-sm font-semibold text-[var(--color-text-primary)] group-hover:text-[var(--color-accent-primary)]">
+                  {meta.label} · {splitPath(item.file_path).name}
                 </span>
-                {/* Full path, no ellipsis: a truncated title reports a layout
-                    decision to the reader as missing content. */}
-                <span className="mt-0.5 block break-all font-mono text-[11px] text-[var(--color-text-tertiary)]">
-                  {item.file_path}
-                </span>
-                <span className="mt-1.5 block max-w-[70ch] text-[13px] text-[var(--color-text-secondary)]">
+                {/* One line under the title, which already names the file:
+                    the directory clips in the middle, the tooltip has it all. */}
+                <FilePath
+                  path={item.file_path}
+                  mode="middle-ellipsis"
+                  fold
+                  className="mt-0.5 flex text-[var(--color-text-tertiary)]"
+                />
+                <span className="mt-1.5 block max-w-[70ch] text-sm text-[var(--color-text-secondary)]">
                   {stepSummary(item)} ·{" "}
                   {addressesPrimaryShort(item.addresses_primary_problem).toLowerCase()}
                 </span>

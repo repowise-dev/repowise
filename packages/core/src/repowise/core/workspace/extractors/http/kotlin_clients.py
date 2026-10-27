@@ -29,16 +29,11 @@ import re
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
+from repowise.core.workspace.origins import ContractOrigin
+
 from ..langs import KOTLIN
-from .client_calls import (
-    KOTLIN_SYNTAX,
-    ClientCallMatch,
-    call_arguments,
-    consumer_contracts,
-    match_paren,
-    method_from_argument,
-    string_constants,
-)
+from ..strings import KOTLIN_SYNTAX, call_arguments, match_paren, string_constants
+from .client_calls import ClientCallMatch, consumer_contracts, method_from_argument
 
 if TYPE_CHECKING:
     from repowise.core.workspace.contracts import Contract
@@ -71,7 +66,7 @@ _NAMED_ARG_RE = re.compile(r"([A-Za-z_]\w*)\s*=(?!=)\s*(.*)", re.DOTALL)
 # The identifier a call hangs off, when the receiver is a plain name.
 _RECEIVER_RE = re.compile(r"[A-Za-z_]\w*$")
 
-_CONFIDENCE = 0.65
+_ORIGIN = ContractOrigin.NAME_HEURISTIC  # the receiver's type is unknown
 
 
 def _block_end(content: str, open_idx: int) -> int:
@@ -156,7 +151,7 @@ def ktor_calls(content: str) -> Iterator[ClientCallMatch]:
             url=args[0],
             offset=m.start(),
             method=m.group(1).upper(),
-            confidence=_CONFIDENCE,
+            origin=_ORIGIN,
         )
 
     for m in _VERB_BLOCK_RE.finditer(content):
@@ -173,7 +168,7 @@ def ktor_calls(content: str) -> Iterator[ClientCallMatch]:
             url=url,
             offset=m.start(),
             method=m.group(1).upper(),
-            confidence=_CONFIDENCE,
+            origin=_ORIGIN,
         )
 
     for m in _REQUEST_RE.finditer(content):
@@ -206,18 +201,17 @@ def ktor_calls(content: str) -> Iterator[ClientCallMatch]:
             url=url,
             offset=m.start(),
             method=method,
-            confidence=_CONFIDENCE,
+            origin=_ORIGIN,
         )
 
 
 class KotlinClientsDialect:
     name = "kotlin-clients"
     extensions = KOTLIN
+    requires = (_KTOR_PACKAGE,)
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content
-        if _KTOR_PACKAGE not in content:
-            return []
         rows = list(ktor_calls(content))
         if not rows:
             return []

@@ -219,6 +219,12 @@ class DiscoveryBudget:
 
 _DEFAULT_DISCOVERY = DiscoveryBudget()
 
+#: Harnesses whose transcripts the session lane reads. One name per registered
+#: transcript adapter. Only Claude Code by default: a harness added to the
+#: registry is a reader this repository has not asked for, and switching one on
+#: makes a machine's whole history for that agent eligible on the next update.
+DEFAULT_HARNESSES: tuple[str, ...] = ("claude_code",)
+
 
 @dataclass(frozen=True, slots=True)
 class SourceSetting:
@@ -337,6 +343,15 @@ class DecisionPolicy:
     llm: bool
     sources: dict[str, SourceSetting]
     discovery: DiscoveryBudget = _DEFAULT_DISCOVERY
+    harnesses: tuple[str, ...] = DEFAULT_HARNESSES
+    #: Whether an agent may grant authority, not merely withdraw it. On by
+    #: default: agents do most of the reviewing, and every grant is signed
+    #: as the agent's, never a person's. ``--off`` restores a person-only gate.
+    agent_acceptance: bool = True
+    #: Whether the commit hook asks the agent to record a decision. On by
+    #: default: it fires at most once a session, only on a commit that states
+    #: a choice, and what it records lands as a candidate, never a rule.
+    capture_prompt: bool = True
 
     # -- queries ---------------------------------------------------------
 
@@ -387,13 +402,19 @@ class DecisionPolicy:
     # -- projections -----------------------------------------------------
 
     def preset_name(self) -> str:
-        """The preset this policy equals, or ``custom``."""
+        """The preset this policy's *capture* equals, or ``custom``.
+
+        ``agent_acceptance`` is not read: it is authority, not membership, and
+        counting it would drop the stored ``preset:`` key and with it the
+        pinning that keeps a later release's new source switched off.
+        """
         for name, spec in PRESETS.items():
             if (
                 self.enabled == spec["enabled"]
                 and self.llm == spec["llm"]
                 and self.sources == spec["sources"]
                 and self.discovery == _DEFAULT_DISCOVERY
+                and self.harnesses == DEFAULT_HARNESSES
             ):
                 return name
         return "custom"
@@ -475,6 +496,12 @@ class DecisionPolicy:
         }
         if self.discovery != _DEFAULT_DISCOVERY:
             block["discovery"] = self.discovery.to_dict()
+        if self.harnesses != DEFAULT_HARNESSES:
+            block["harnesses"] = list(self.harnesses)
+        if not self.agent_acceptance:
+            block["agent_acceptance"] = False
+        if not self.capture_prompt:
+            block["capture_prompt"] = False
         return block
 
     def to_dict(self, *, provider_available: bool = True) -> dict[str, Any]:
@@ -484,6 +511,9 @@ class DecisionPolicy:
             "llm": self.llm,
             "preset": self.preset_name(),
             "discovery": self.discovery.to_dict(),
+            "harnesses": list(self.harnesses),
+            "agent_acceptance": self.agent_acceptance,
+            "capture_prompt": self.capture_prompt,
             "sources": [rt.to_dict() for rt in self.runtime(provider_available=provider_available)],
         }
 
@@ -517,6 +547,12 @@ class DecisionPolicy:
 
     def with_enabled(self, value: bool) -> DecisionPolicy:
         return replace(self, enabled=value)
+
+    def with_agent_acceptance(self, value: bool) -> DecisionPolicy:
+        return replace(self, agent_acceptance=value)
+
+    def with_capture_prompt(self, value: bool) -> DecisionPolicy:
+        return replace(self, capture_prompt=value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -555,6 +591,53 @@ def _resolve_discovery(raw: Any, warnings: list[str]) -> DiscoveryBudget:
     return DiscoveryBudget(**fields)
 
 
+def _resolve_harnesses(raw: Any, warnings: list[str]) -> tuple[str, ...]:
+    """Transcript adapters named by ``decisions.harnesses``, validated.
+
+    Validated against the registry rather than a list here, so adding an
+    adapter stays one registration. An unknown name is dropped with a warning
+    instead of failing the run: a config written against a newer repowise must
+    not stop this one from indexing.
+    """
+    if raw is None:
+        return DEFAULT_HARNESSES
+    if not isinstance(raw, list):
+        warnings.append("`decisions.harnesses:` is not a list; ignoring it.")
+        return DEFAULT_HARNESSES
+    from repowise.core.sessions.adapters.registry import registered_adapters
+
+    known = set(registered_adapters())
+    names: list[str] = []
+    for value in raw:
+        if not isinstance(value, str) or value not in known:
+            warnings.append(f"Unknown harness `{value}` in `decisions.harnesses`; ignoring it.")
+            continue
+        if value not in names:
+            names.append(value)
+    if not names:
+        warnings.append("`decisions.harnesses` named no known harness; using the default.")
+        return DEFAULT_HARNESSES
+    return tuple(names)
+
+
+#: Every key under ``decisions:`` this module owns, live and legacy. A write
+#: replaces all of them: ``to_config_block`` omits a setting that equals its
+#: default, so merging leaves a stale value and switching one off does nothing.
+POLICY_CONFIG_KEYS: frozenset[str] = frozenset(
+    {
+        "preset",
+        "enabled",
+        "llm",
+        "sources",
+        "session_mining",
+        "discovery",
+        "harnesses",
+        "agent_acceptance",
+        "capture_prompt",
+    }
+)
+
+
 def preset_policy(name: str) -> DecisionPolicy:
     """The policy a named preset resolves to."""
     spec = PRESETS.get(name)
@@ -569,6 +652,21 @@ def preset_policy(name: str) -> DecisionPolicy:
 
 def _as_bool(value: Any) -> bool | None:
     return value if isinstance(value, bool) else None
+
+
+def _default_on_switch(raw: dict, key: str, warnings: list[str]) -> bool:
+    """A switch that ships on: absent reads as on, a boolean as itself.
+
+    Present but not a boolean (a quoted "no") was written by someone saying
+    something, so it reads as off, not on.
+    """
+    value = _as_bool(raw.get(key))
+    if value is not None:
+        return value
+    if key not in raw:
+        return True
+    warnings.append(f"`decisions.{key}` is not a boolean; treating it as false.")
+    return False
 
 
 def _states_enabled(raw_source: Any) -> bool:
@@ -698,14 +796,23 @@ def resolve_policy(repo_config: dict[str, Any] | None) -> PolicyResolution:
             warnings.append("`decisions.session_mining` is not a boolean; ignoring it.")
 
     discovery = _resolve_discovery(raw.get("discovery"), warnings)
+    harnesses = _resolve_harnesses(raw.get("harnesses"), warnings)
 
-    known = {"preset", "enabled", "llm", "sources", "session_mining", "discovery"}
-    for field in set(raw) - known:
+    agent_acceptance = _default_on_switch(raw, "agent_acceptance", warnings)
+    capture_prompt = _default_on_switch(raw, "capture_prompt", warnings)
+
+    for field in set(raw) - POLICY_CONFIG_KEYS:
         warnings.append(f"Unknown key `decisions.{field}`; ignoring it.")
 
     return PolicyResolution(
         policy=DecisionPolicy(
-            enabled=enabled, llm=llm, sources=sources, discovery=discovery
+            enabled=enabled,
+            llm=llm,
+            sources=sources,
+            discovery=discovery,
+            harnesses=harnesses,
+            agent_acceptance=agent_acceptance,
+            capture_prompt=capture_prompt,
         ),
         warnings=tuple(warnings),
         legacy_keys=tuple(legacy),

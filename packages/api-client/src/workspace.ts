@@ -1,16 +1,20 @@
-import { apiGet, apiPost } from "./client";
+import { apiDelete, apiGet, apiPost } from "./client";
 import type {
   WorkspaceResponse,
   WorkspaceContractsResponse,
   WorkspaceContractDetail,
   WorkspaceCoChangesResponse,
+  WorkspaceCoChangeStructure,
   WorkspaceGraphResponse,
+  WorkspaceRepoRemovedResponse,
   WorkspaceSyncResponse,
   WorkspaceSystemGraphResponse,
   WorkspaceBlastRadiusResponse,
+  WorkspaceLinksBetweenResponse,
   WorkspaceBreakingChangesResponse,
   WorkspaceConformanceResponse,
   WorkspaceArchitectureResponse,
+  WorkspaceEstateResponse,
   WorkspaceTestImpactResponse,
   ExtractionDiagnostics,
 } from "./types";
@@ -25,6 +29,12 @@ export async function getWorkspaceContracts(opts?: {
   contract_type?: string;
   repo?: string;
   role?: string;
+  /** Every whitespace-separated term must appear in the id, file, symbol, repo or service. */
+  q?: string;
+  /** true: only contracts on a matched link; false: only those on none. */
+  linked?: boolean;
+  /** false omits the link rows; `total_links` is still counted. */
+  include_links?: boolean;
   limit?: number;
   offset?: number;
 }): Promise<WorkspaceContractsResponse> {
@@ -32,6 +42,9 @@ export async function getWorkspaceContracts(opts?: {
   if (opts?.contract_type) params.contract_type = opts.contract_type;
   if (opts?.repo) params.repo = opts.repo;
   if (opts?.role) params.role = opts.role;
+  if (opts?.q) params.q = opts.q;
+  if (opts?.linked != null) params.linked = String(opts.linked);
+  if (opts?.include_links === false) params.include_links = "false";
   if (opts?.limit != null) params.limit = String(opts.limit);
   if (opts?.offset != null) params.offset = String(opts.offset);
   return apiGet<WorkspaceContractsResponse>("/api/workspace/contracts", params);
@@ -67,6 +80,16 @@ export async function getWorkspaceCoChanges(opts?: {
   return apiGet<WorkspaceCoChangesResponse>("/api/workspace/co-changes", params);
 }
 
+/** Contract links behind one co-changing file pair, fetched when its drawer opens. */
+export async function getWorkspaceCoChangeStructure(pair: {
+  source_repo: string;
+  source_file: string;
+  target_repo: string;
+  target_file: string;
+}): Promise<WorkspaceCoChangeStructure> {
+  return apiGet<WorkspaceCoChangeStructure>("/api/workspace/co-changes/structure", pair);
+}
+
 export async function getWorkspaceGraph(): Promise<WorkspaceGraphResponse> {
   return apiGet<WorkspaceGraphResponse>("/api/workspace/graph");
 }
@@ -93,13 +116,49 @@ export async function getWorkspaceDiagnostics(
  * The service-granular system graph (nodes = services, typed directed edges)
  * that the Live System Map renders. Thin pass-through over the persisted
  * `system_graph.json` artifact.
+ *
+ * `view: "map"` asks for the map's lean view: no `diagnostics` (read them from
+ * `getWorkspaceDiagnostics`), no `contract_refs` on structural edges, and a
+ * `ref_count` on every edge. A server without the view returns the full graph,
+ * which has the same shape with those fields filled.
  */
 export async function getWorkspaceSystemGraph(
   fetchOptions?: RequestInit,
+  opts?: { view?: "map" },
 ): Promise<WorkspaceSystemGraphResponse> {
   return apiGet<WorkspaceSystemGraphResponse>(
     "/api/workspace/system-graph",
-    undefined,
+    opts?.view ? { view: opts.view } : undefined,
+    fetchOptions,
+  );
+}
+
+/**
+ * Everything behind the edges between two service nodes (contract links,
+ * package dependencies, co-changes), both directions, one page at a time.
+ * Each end is resolved to its service server-side, the way the graph was built.
+ */
+export async function getWorkspaceLinksBetween(
+  opts: {
+    a: string;
+    b: string;
+    /** One edge kind: `http`, `grpc`, `event`, `db`, `package`, `co_change`... */
+    kind?: string;
+    /** Every whitespace-separated term must match the row's ids, files, symbols or packages. */
+    q?: string;
+    limit?: number;
+    offset?: number;
+  },
+  fetchOptions?: RequestInit,
+): Promise<WorkspaceLinksBetweenResponse> {
+  const params: Record<string, string | number> = { a: opts.a, b: opts.b };
+  if (opts.kind) params.kind = opts.kind;
+  if (opts.q) params.q = opts.q;
+  if (opts.limit != null) params.limit = opts.limit;
+  if (opts.offset != null) params.offset = opts.offset;
+  return apiGet<WorkspaceLinksBetweenResponse>(
+    "/api/workspace/system-graph/links",
+    params,
     fetchOptions,
   );
 }
@@ -153,6 +212,18 @@ export async function getWorkspaceArchitecture(): Promise<WorkspaceArchitectureR
 }
 
 /**
+ * The estate report: repositories and services, the system map and its
+ * evidence, contracts and dangling calls, health and churn per repo, the
+ * riskiest seams and where to start. Built on request from the stored
+ * workspace artifacts and every member index, so it takes about a second.
+ */
+export async function getWorkspaceEstate(
+  fetchOptions?: RequestInit,
+): Promise<WorkspaceEstateResponse> {
+  return apiGet<WorkspaceEstateResponse>("/api/workspace/estate", undefined, fetchOptions);
+}
+
+/**
  * Trigger a re-sync (re-index) of the workspace. Pass ``repoAlias`` to
  * scope to one repo; otherwise the server fans out across every loaded
  * workspace repo. Returns one result per repo (accepted / skipped / error).
@@ -195,3 +266,17 @@ export async function getWorkspaceTestImpact(
     fetchOptions,
   );
 }
+
+/**
+ * Remove a repository entry from `.repowise-workspace.yaml`.
+ */
+export async function removeWorkspaceRepo(
+  alias: string,
+  fetchOptions?: RequestInit,
+): Promise<WorkspaceRepoRemovedResponse> {
+  return apiDelete<WorkspaceRepoRemovedResponse>(
+    `/api/workspace/repos/${encodeURIComponent(alias)}`,
+    fetchOptions,
+  );
+}
+

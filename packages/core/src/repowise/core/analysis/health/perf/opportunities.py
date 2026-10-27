@@ -16,9 +16,12 @@ The orchestration below holds no policy of its own.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from ...execution_roles import ENTRY_ROLES, hottest_role
+from ..worth import dormant
 from .actionability import (
     ActionabilityState,
     FixSafety,
@@ -27,22 +30,24 @@ from .actionability import (
     PerformanceFix,
     actionability,
     assess_fix,
+    expected_reason,
     provenance_confidence,
 )
 from .causal import (
     PERFORMANCE_MODEL_VERSION,
     ExecutionContext,
+    InterventionKind,
     execution_context,
     group_observations,
     key_boundary,
     key_context,
+    key_intervention_kind,
     key_intervention_symbol,
-    key_is_cross_function,
-    key_terminal_sink,
     link_performance_findings,
     model_state,
     opportunity_id_for_finding,
     opportunity_id_model_version,
+    settled_context,
     shared_path_suffix,
     stable_id,
 )
@@ -52,22 +57,26 @@ from .opportunity_rank import (
     change_risk,
     dominant_marker,
     exposure,
+    growth_source,
     leverage,
+    loop_magnitude,
+    may_lead,
     rank_factors,
     rank_sort_key,
     weakest_provenance,
     why_ranked,
 )
+from .siblings import link_siblings
 
 
 @dataclass(frozen=True, slots=True)
 class PerformanceOpportunity:
     """One cause, its evidence, and what can be done about it.
 
-    Seven facets are reported separately and must not be read as one another.
+    Its facets are reported separately and must not be read as one another.
     Two of them keep the names callers already join on: ``confidence`` is
-    evidence confidence, and ``fix.safety`` is fix safety. The remaining five
-    live in ``facets``, so no number or label is published twice.
+    evidence confidence, and ``fix.safety`` is fix safety. The rest live in
+    ``facets``, so no number or label is published twice.
     """
 
     opportunity_id: str
@@ -76,9 +85,13 @@ class PerformanceOpportunity:
     biomarker_types: tuple[str, ...]
     boundary_kind: str | None
     execution_context: ExecutionContext
+    # The one sink every member reaches, else ``None``; all of them are in
+    # ``terminal_sinks``, because one loop can reach several.
     terminal_sink: str | None
     shared_path_suffix: tuple[str, ...]
-    intervention_symbol: str | None
+    intervention_symbol: str
+    intervention_kind: InterventionKind
+    terminal_sinks: tuple[str, ...]
     resource_fingerprints: tuple[str, ...]
     affected_call_sites_total: int
     affected_files_total: int
@@ -96,6 +109,10 @@ class PerformanceOpportunity:
     rank_factors: dict[str, int]
     why_ranked: tuple[dict[str, Any], ...]
     fix: PerformanceFix | None
+    # Whether this group may lead the directive; see ``opportunity_rank.may_lead``.
+    may_lead: bool
+    # Other causes observed on the same lines; see :mod:`.siblings`.
+    siblings: tuple[dict[str, Any], ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -108,6 +125,8 @@ class PerformanceOpportunity:
             "terminal_sink": self.terminal_sink,
             "shared_path_suffix": list(self.shared_path_suffix),
             "intervention_symbol": self.intervention_symbol,
+            "intervention_kind": self.intervention_kind,
+            "terminal_sinks": list(self.terminal_sinks),
             "resource_fingerprints": list(self.resource_fingerprints),
             "affected_call_sites_total": self.affected_call_sites_total,
             "affected_files_total": self.affected_files_total,
@@ -125,6 +144,8 @@ class PerformanceOpportunity:
             "rank_factors": dict(self.rank_factors),
             "why_ranked": [dict(entry) for entry in self.why_ranked],
             "fix": self.fix.as_dict() if self.fix else None,
+            "may_lead": self.may_lead,
+            "siblings": [dict(entry) for entry in self.siblings],
         }
 
 
@@ -135,97 +156,177 @@ def _reachability(values: set[Any]) -> bool | None:
     return False if values == {False} else None
 
 
-def _assemble(key: Any, members: list[Any], cap: int) -> PerformanceOpportunity:
+def _inert(facts: Any) -> bool:
+    """A member that is no cost to fix: switched off by a constant-false flag,
+    or a loop that already walks its keys in chunks."""
+    return dormant(facts.details) or bool(facts.details.get("chunked_iteration"))
+
+
+@dataclass(frozen=True, slots=True)
+class _Reading:
+    """What a group's live members say, read once."""
+
+    live: list[Any]
+    markers: tuple[str, ...]
+    marker: str
+    sites: set[Any]
+    files: set[str]
+    provenance: str
+    reachable: bool | None
+    role: str
+    sinks: tuple[str, ...]
+    magnitude: str
+    growth: str
+
+
+def _read_live(members: list[Any]) -> _Reading:
+    """Read a group's facts off its live members.
+
+    Inert members (:func:`_inert`) decide nothing while a live member exists.
+    The loop size is read only off the members the group's role comes from:
+    a request loop nobody measured never borrows a startup loop's growth, and
+    a group is ``bounded`` only when every loop of its hottest role is.
+    """
+    live = [facts for facts in members if not _inert(facts)] or members
+    markers = tuple(sorted({facts.marker for facts in live}))
+    marker = dominant_marker(markers)
+    sites = {facts.site for facts in live}
+    role = hottest_role(facts.execution_role for facts in live)
+    owners = [f for f in live if hottest_role((f.execution_role,)) == role]
+    return _Reading(
+        live=live,
+        markers=markers,
+        marker=marker,
+        sites=sites,
+        files={site[0] for site in sites},
+        provenance=weakest_provenance({facts.provenance for facts in live}),
+        # A hot role is an entry reaching the group, a handler a framework
+        # registers included, which the entry-file walk does not see.
+        reachable=True
+        if role in ENTRY_ROLES
+        else _reachability({facts.reliable_entry_reachability for facts in live}),
+        role=role,
+        sinks=tuple(sorted({facts.terminal_sink for facts in live if facts.terminal_sink})),
+        magnitude=loop_magnitude(marker, [f.details for f in owners]),
+        growth=growth_source(marker, owners),
+    )
+
+
+def _facets(r: _Reading, confidence: str) -> dict[str, str]:
+    return {
+        "actionability_confidence": confidence,
+        "exposure": exposure(r.reachable),
+        "amplification": amplification(r.marker),
+        "leverage": leverage(len(r.sites)),
+        "change_risk": change_risk(len(r.files)),
+        "loop_magnitude": r.magnitude,
+        "growth_source": r.growth,
+        "execution_role": r.role,
+    }
+
+
+def _assemble(
+    key: Any, members: list[Any], cap: int, origins: Mapping[str, str | None]
+) -> PerformanceOpportunity:
     """Read one group's answers off its owners. Decides nothing itself.
 
-    Context, boundary, intervention symbol, and terminal sink are kernel
-    inputs, so the group already agrees on them by construction. Taking them
-    off the key keeps one owner for each instead of reclassifying a
-    representative row.
+    Context, boundary, and intervention are kernel inputs, so the group
+    already agrees on them by construction. Taking them off the key keeps one
+    owner for each instead of reclassifying a representative row. A stored
+    origin may settle an ``unknown`` context; the id keeps the key's. Sinks
+    are members' facts, so they are listed rather than assumed shared.
+    Everything else comes from :func:`_read_live`; inert members are listed
+    last.
     """
-    context = key_context(key)
+    context = settled_context(key_context(key), {facts.file_path for facts in members}, origins)
     boundary = key_boundary(key)
-    markers = tuple(sorted({facts.marker for facts in members}))
-    marker = dominant_marker(markers)
-    sites = {facts.site for facts in members}
-    files = {site[0] for site in sites}
-    provenance = weakest_provenance({facts.provenance for facts in members})
-    evidence_confidence = provenance_confidence(provenance)
-    reachable = _reachability({facts.reliable_entry_reachability for facts in members})
+    r = _read_live(members)
+    evidence_confidence = provenance_confidence(r.provenance)
     assessment = assess_fix(
-        marker,
-        markers,
+        r.marker,
+        r.markers,
         boundary,
-        [facts.details for facts in members],
-        cross_function=key_is_cross_function(key),
+        [facts.details for facts in r.live],
+        cross_function=any(facts.cross_function for facts in r.live),
     )
-    acted = actionability(assessment, evidence_confidence)
+    acted = actionability(
+        assessment,
+        evidence_confidence,
+        expected_reason=expected_reason(members, r.magnitude),
+    )
+    inputs = {
+        "multiplier_shape": r.marker,
+        "boundary_kind": boundary,
+        "execution_context": context,
+        "execution_role": r.role,
+        "affected_call_sites": len(r.sites),
+        "provenance": r.provenance,
+        "loop_magnitude": r.magnitude,
+    }
     factors = rank_factors(
-        marker=marker,
+        marker=r.marker,
         boundary=boundary,
         context=context,
-        reachable=reachable,
-        site_count=len(sites),
-        provenance=provenance,
+        role=r.role,
+        site_count=len(r.sites),
+        provenance=r.provenance,
+        magnitude=r.magnitude,
     )
+    facets = _facets(r, acted.confidence)
     return PerformanceOpportunity(
         opportunity_id=stable_id(key),
         performance_model_version=PERFORMANCE_MODEL_VERSION,
-        biomarker_type=marker,
-        biomarker_types=markers,
+        biomarker_type=r.marker,
+        biomarker_types=r.markers,
         boundary_kind=boundary,
         execution_context=context,
-        terminal_sink=key_terminal_sink(key),
-        shared_path_suffix=shared_path_suffix([facts.path for facts in members if facts.path]),
+        terminal_sink=r.sinks[0] if len(r.sinks) == 1 else None,
+        shared_path_suffix=shared_path_suffix([facts.path for facts in r.live if facts.path]),
         intervention_symbol=key_intervention_symbol(key),
+        intervention_kind=key_intervention_kind(key),
+        terminal_sinks=r.sinks,
         resource_fingerprints=tuple(
             sorted({facts.resource_fingerprint for facts in members if facts.resource_fingerprint})
         ),
-        affected_call_sites_total=len(sites),
-        affected_files_total=len(files),
+        affected_call_sites_total=len(r.sites),
+        affected_files_total=len(r.files),
         observations_total=len(members),
-        evidence=tuple(evidence_row(facts) for facts in members[:cap]),
+        evidence=tuple(evidence_row(facts) for facts in sorted(members, key=_inert)[:cap]),
         evidence_truncated=len(members) > cap,
-        reliable_entry_reachability=reachable,
-        provenance=provenance,
+        reliable_entry_reachability=r.reachable,
+        provenance=r.provenance,
         confidence=evidence_confidence,
-        facets={
-            "actionability_confidence": acted.confidence,
-            "exposure": exposure(reachable),
-            "amplification": amplification(marker),
-            "leverage": leverage(len(sites)),
-            "change_risk": change_risk(len(files)),
-        },
+        facets=facets,
         actionability_state=acted.state,
         actionability_reason=acted.reason,
         prerequisites=acted.prerequisites,
         rank_score=sum(factors.values()),
         rank_factors=factors,
-        why_ranked=why_ranked(
-            factors,
-            {
-                "multiplier_shape": marker,
-                "boundary_kind": boundary,
-                "execution_context": context,
-                "entry_reachability": reachable,
-                "affected_call_sites": len(sites),
-                "provenance": provenance,
-            },
-        ),
+        why_ranked=why_ranked(factors, inputs),
         fix=acted.fix,
+        may_lead=may_lead(r.marker, {facts.details.get("orm") for facts in r.live}, facets),
     )
 
 
 def build_performance_opportunities(
-    findings: list[Any], *, evidence_limit: int = 8
+    findings: list[Any],
+    *,
+    evidence_limit: int = 8,
+    origins: Mapping[str, str | None] | None = None,
 ) -> list[PerformanceOpportunity]:
-    """Group and rank performance rows in one deterministic pass."""
+    """Group, link, and rank performance rows in one deterministic pass.
+
+    *origins* is each file's stored ``code_origin``, which settles an
+    ``unknown`` context (:func:`.causal.settled_context`).
+    """
     cap = max(0, evidence_limit)
-    opportunities = [
-        _assemble(key, members, cap) for key, members in group_observations(findings).items()
-    ]
-    opportunities.sort(key=rank_sort_key)
-    return opportunities
+    opportunities: list[PerformanceOpportunity] = []
+    sites: dict[str, set[Any]] = {}
+    for key, members in group_observations(findings).items():
+        opportunity = _assemble(key, members, cap, origins or {})
+        opportunities.append(opportunity)
+        sites[opportunity.opportunity_id] = {facts.site for facts in members}
+    return link_siblings(opportunities, sites, rank_sort_key)
 
 
 __all__ = [

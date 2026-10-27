@@ -14,15 +14,21 @@ import bisect
 import json
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.dead_code.serving import is_safe, serve_findings
+from repowise.core.analysis.finding_registry import excluded_types, split_gated
+from repowise.core.analysis.health.aggregation import NLOC_NULL_REASON
 from repowise.core.analysis.health.signals import file_signals
 from repowise.core.analysis.health.trends import file_trend
+from repowise.core.analysis.patch_coverage import file_on_disk_freshness
+from repowise.core.attribution import attribution_enabled
 from repowise.core.ids import is_external
 from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
 from repowise.core.persistence import crud
+from repowise.core.persistence.crud.analysis.shown import ungated
 from repowise.core.persistence.decision_graph import get_governing_decisions
 from repowise.core.persistence.models import (
     DeadCodeFinding,
@@ -30,7 +36,7 @@ from repowise.core.persistence.models import (
     Page,
     WikiSymbol,
 )
-from repowise.server.deps import get_db_session, verify_api_key
+from repowise.server.deps import cross_repo_cut_inputs, get_db_session, verify_api_key
 from repowise.server.mcp_server._graph_utils import parse_community_meta
 from repowise.server.routers.code_health import (
     _file_signals_to_dict,
@@ -41,6 +47,7 @@ from repowise.server.routers.code_health import (
     _score_breakdown_from_findings,
 )
 from repowise.server.routers.git import _hotspot_from_row
+from repowise.server.schemas.git import file_attribution_fields
 
 router = APIRouter(
     prefix="/api/repos",
@@ -163,6 +170,11 @@ async def files_index(
     degrees = await crud.get_graph_metrics(session, repo_id)
     metrics_by_path = {m.file_path: m for m in await crud.get_health_metrics(session, repo_id)}
     git_by_path = await crud.get_all_git_metadata(session, repo_id)
+    # The stored report, not the copy the health pass took of it.
+    coverage_by_path = {
+        c.file_path: c.line_coverage_pct
+        for c in await crud.load_coverage_for_repo(session, repo_id, include_covered_lines=False)
+    }
 
     pagerank_pct = _percentile_map({n.node_id: (n.pagerank or 0.0) for n in nodes})
 
@@ -198,7 +210,9 @@ async def files_index(
                 "last_commit_at": (
                     git.last_commit_at.isoformat() if git and git.last_commit_at else None
                 ),
-                "coverage_pct": metric.line_coverage_pct if metric else None,
+                "line_coverage_pct": coverage_by_path.get(path),
+                # Deprecated alias of ``line_coverage_pct``, kept for older clients.
+                "coverage_pct": coverage_by_path.get(path),
                 "is_test": n.is_test,
                 "is_entry_point": n.is_entry_point,
                 "community_id": n.community_id,
@@ -213,6 +227,8 @@ async def files_index(
         "files": files,
         "total": len(files),
         "languages": languages,
+        "loc_unit": "nloc",
+        "loc_null_reason": NLOC_NULL_REASON,
     }
 
 
@@ -220,6 +236,7 @@ async def files_index(
 async def file_detail(
     repo_id: str,
     file_path: str,
+    request: Request,
     fields: str = Query(
         "full",
         description="How much of each block to return. 'full' (the default) is "
@@ -288,14 +305,31 @@ async def file_detail(
     )
 
     # --- Health -----------------------------------------------------------
-    findings = await crud.get_health_findings(session, repo_id, file_path=file_path)
+    findings = await crud.get_health_findings(
+        session, repo_id, file_path=file_path, include_unverified=True
+    )
+    # The score counts every finding; one a gate or file hold keeps back is left
+    # out of the list and breakdown, and ``gated`` says how many and why.
+    # History markers are held from the list only: the breakdown and the lead
+    # sum what the score counted.
+    held_files = {metric.file_path: metric} if metric is not None else None
+    scored, _ = split_gated(
+        "health", findings, kind="biomarker_type", files=held_files, hold_history=False
+    )
+    findings, gated = split_gated("health", findings, kind="biomarker_type", files=held_files)
     snapshots = await crud.list_health_snapshots(
         session, repo_id, limit=crud.FILE_TREND_SNAPSHOT_WINDOW
     )
     health = {
-        "metric": _metric_to_dict(metric, _primary_and_magnitude(findings)) if metric else None,
-        "breakdown": _score_breakdown_from_findings(findings) if findings else None,
+        "metric": _metric_to_dict(metric, _primary_and_magnitude(scored)) if metric else None,
+        # None for a file with no score: rebuilt from findings it would read 10.0.
+        "breakdown": (
+            _score_breakdown_from_findings(scored)
+            if scored and not (metric is not None and metric.score is None)
+            else None
+        ),
         "findings": [_finding_dict(f, slim=slim) for f in findings],
+        "gated": gated,
         "trend": _file_trend_to_dict(file_trend(snapshots, file_path)),
         "signals": _file_signals_to_dict(file_signals(git_meta, degrees)),
     }
@@ -311,33 +345,33 @@ async def file_detail(
         # onto HotspotResponse so the hotspots list does not carry a per-symbol
         # map on every row; only this page has symbols to spend it on.
         git["fix_symbol_counts"] = _json_or(git_meta.fix_symbol_counts_json, {})
-        git["agent"] = {
-            "agent_commit_count": git_meta.agent_commit_count or 0,
-            "agent_authored_pct": git_meta.agent_authored_pct,
-            "tier_counts": _json_or(git_meta.agent_tier_counts_json, {}),
-        }
+        # The blame owner's share of current lines, next to their commit share.
+        git["primary_owner_line_pct"] = git_meta.primary_owner_line_pct
+        # None when attribution is off for the repository. This view has always
+        # named the tier map ``tier_counts``.
+        agent = file_attribution_fields(git_meta, attribution_enabled(repo.local_path))
+        if agent:
+            agent["tier_counts"] = agent.pop("agent_tier_counts")
+        git["agent"] = agent or None
         git["first_commit_at"] = (
             git_meta.first_commit_at.isoformat() if git_meta.first_commit_at else None
         )
 
     # --- Coverage (incl. line-level set for the heatmap) --------------------
-    coverage_rows = await crud.load_coverage_for_repo(session, repo_id, file_paths=[file_path])
+    # ``covered_line_count`` is sent in both modes so "N of M lines hit" never
+    # has to count the array client-side, which is what forced it to travel.
+    coverage_rows = await crud.load_coverage_for_repo(
+        session, repo_id, file_paths=[file_path], include_covered_lines=not slim
+    )
     coverage: dict | None = None
     if coverage_rows:
-        c = coverage_rows[0]
-        covered_lines = _json_or(c.covered_lines_json, [])
-        coverage = {
-            "line_coverage_pct": c.line_coverage_pct,
-            "branch_coverage_pct": c.branch_coverage_pct,
-            "total_coverable_lines": c.total_coverable_lines,
-            # Sent in both modes so "N of M lines hit" never has to count the
-            # array client-side, which is what forced the array to travel.
-            "covered_line_count": len(covered_lines),
-            "covered_lines": [] if slim else covered_lines,
-            "source_format": c.source_format,
-            "ingested_at": c.ingested_at.isoformat() if c.ingested_at else None,
-            "ingested_commit_sha": c.ingested_commit_sha,
-        }
+        coverage = crud.coverage_row_dict(coverage_rows[0], include_covered_lines=not slim)
+        coverage.setdefault("covered_lines", [])
+        # The file page shows the source on disk; covered line numbers from
+        # another version of it would tint the wrong lines.
+        coverage["freshness"] = await file_on_disk_freshness(
+            repo.local_path, coverage["ingested_commit_sha"], file_path
+        )
 
     # --- Graph context ------------------------------------------------------
     graph: dict | None = None
@@ -449,6 +483,8 @@ async def file_detail(
                     DeadCodeFinding.repository_id == repo_id,
                     DeadCodeFinding.file_path == file_path,
                     DeadCodeFinding.status == "open",
+                    DeadCodeFinding.kind.not_in(excluded_types()),
+                    ungated("dead_code", DeadCodeFinding.file_path, DeadCodeFinding.kind),
                 )
             )
         )
@@ -463,9 +499,9 @@ async def file_detail(
             "confidence": f.confidence,
             "reason": f.reason,
             "lines": f.lines,
-            "safe_to_delete": f.safe_to_delete,
+            "safe_to_delete": is_safe(f),
         }
-        for f in dead_rows
+        for f in serve_findings(dead_rows, **cross_repo_cut_inputs(request, repo_id))
     ]
 
     return {

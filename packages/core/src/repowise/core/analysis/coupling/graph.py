@@ -34,8 +34,9 @@ Honesty rules:
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 from ...co_change import canonical_pair, confidence_ratio, parse_partners
 
@@ -104,6 +105,9 @@ class CouplingEdge:
     confidence_ba: float | None = None
     structural: str | None = None
     dependency_kind: str | None = None
+    #: Whether the two files sit in different areas at the asked depth; set
+    #: by :func:`~.scope.place_edges`, ``None`` until an edge is placed.
+    cross_area: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -146,31 +150,20 @@ class CouplingGraph:
     total_files: int = 0
 
 
-def coupling_graph(
-    metrics: list[MetricLike],
-    git_meta_by_path: dict[str, GitMetaLike],
-    *,
-    limit: int = 200,
-) -> CouplingGraph:
-    """Assemble the repo-wide coupling graph from already-loaded rows.
+def _node_score(metric: Any) -> float | None:
+    """A node's health score; ``None`` without a row or without a score."""
+    score = getattr(metric, "score", None)
+    return round(score, 2) if score is not None else None
 
-    *metrics* are the repo's ``HealthFileMetric`` rows (for module / score /
-    nloc enrichment); *git_meta_by_path* maps ``file_path`` to its
-    ``GitMetadata`` row (from ``get_all_git_metadata``), whose
-    ``co_change_partners_json`` carries the partners. No DB access and no
-    recompute -- a plain join keyed on ``file_path``.
+
+def coupling_edges(git_meta_by_path: Mapping[str, GitMetaLike]) -> list[CouplingEdge]:
+    """Every coupling the stored partner records describe, strongest first.
 
     Partners are stored symmetrically (a->b and b->a), so edges are
     deduplicated on the sorted ``(source, target)`` pair, keeping the strongest
-    observed strength and the most recent date. Edges are sorted by strength
-    descending and capped at *limit* so a caller keeps the most consequential
-    couplings; ``total_edges`` reports the pre-cap count for an honest "showing
-    N of M" line, ``coupled_files`` the distinct files those pairs span, and ``total_files``
-    how many files were considered at all. Only files referenced by a kept edge become nodes.
+    observed strength and the most recent date and carrying both files' commit
+    totals off it. No DB access and no recompute: a plain fold of the column.
     """
-    # Deduplicate symmetric partner records into undirected edges. Each side
-    # records the pair from its own vantage point, so keep whichever is
-    # strongest and carry both files' commit totals off it.
     best: dict[tuple[str, str], _Pair] = {}
     for src, meta in git_meta_by_path.items():
         for partner in parse_partners(meta.co_change_partners_json):
@@ -207,35 +200,62 @@ def coupling_graph(
         for (a, b), pair in best.items()
     ]
     edges.sort(key=lambda e: e.strength, reverse=True)
-    total = len(edges)
-    # Counted over the keys of the pre-cap dict, so it scales `total_edges`
-    # rather than the capped slice below it.
-    coupled_files = len({path for key in best for path in key})
-    edges = edges[:limit]
+    return edges
 
-    # Build nodes only for files referenced by a kept edge.
-    metric_by_path = {m.file_path: m for m in metrics}
-    referenced: set[str] = set()
-    for e in edges:
-        referenced.add(e.source)
-        referenced.add(e.target)
 
-    nodes = [
-        CouplingNode(
-            file_path=path,
-            module=(metric_by_path[path].module if path in metric_by_path else None),
-            score=(round(metric_by_path[path].score, 2) if path in metric_by_path else None),
-            nloc=(metric_by_path[path].nloc or 0 if path in metric_by_path else 0),
+def graph_from_edges(
+    edges: Sequence[CouplingEdge],
+    metric_by_path: Mapping[str, MetricLike],
+    *,
+    total_files: int,
+    limit: int = 200,
+) -> CouplingGraph:
+    """Cap *edges* (strongest first) at *limit* and enrich the files they name.
+
+    ``total_edges`` and ``coupled_files`` count *edges* before the cap, so a
+    filtered list reports its own scope; ``total_files`` is the denominator the
+    caller considered. Only files referenced by a kept edge become nodes.
+    """
+    coupled_files = len({path for e in edges for path in (e.source, e.target)})
+    kept = list(edges[:limit])
+    referenced = sorted({path for e in kept for path in (e.source, e.target)})
+    nodes = []
+    for path in referenced:
+        metric = metric_by_path.get(path)
+        nodes.append(
+            CouplingNode(
+                file_path=path,
+                module=metric.module if metric is not None else None,
+                score=_node_score(metric),
+                nloc=(metric.nloc or 0) if metric is not None else 0,
+            )
         )
-        for path in sorted(referenced)
-    ]
-
     return CouplingGraph(
         nodes=nodes,
-        edges=edges,
-        total_edges=total,
+        edges=kept,
+        total_edges=len(edges),
         coupled_files=coupled_files,
-        # Every file the git walk recorded, coupled or not -- the denominator
-        # the coupled count is a share of.
+        total_files=total_files,
+    )
+
+
+def coupling_graph(
+    metrics: list[MetricLike],
+    git_meta_by_path: dict[str, GitMetaLike],
+    *,
+    limit: int = 200,
+) -> CouplingGraph:
+    """Assemble the repo-wide coupling graph from already-loaded rows.
+
+    *metrics* are the repo's ``HealthFileMetric`` rows (for module / score /
+    nloc enrichment); *git_meta_by_path* maps ``file_path`` to its
+    ``GitMetadata`` row, whose ``co_change_partners_json`` carries the
+    partners. ``total_files`` is every file the git walk recorded, coupled or
+    not: the denominator the coupled count is a share of.
+    """
+    return graph_from_edges(
+        coupling_edges(git_meta_by_path),
+        {m.file_path: m for m in metrics},
         total_files=len(git_meta_by_path),
+        limit=limit,
     )

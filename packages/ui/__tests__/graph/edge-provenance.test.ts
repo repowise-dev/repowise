@@ -54,6 +54,8 @@ const ALL_ORIGINS: ResolutionOrigin[] = [
   "receiver_extension_same_file",
   "receiver_extension_import",
   "receiver_extension_global",
+  "receiver_chain_same_file",
+  "receiver_chain_import",
   "return_type_same_file",
   "return_type_same_package",
   "return_type_import",

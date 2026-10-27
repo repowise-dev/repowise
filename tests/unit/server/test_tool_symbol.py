@@ -166,3 +166,25 @@ def test_order_candidates_prefers_matching_file_path() -> None:
     # No file_path hint: lowest id leads.
     ordered = _order_candidates(rows, None)  # type: ignore[arg-type]
     assert [r.id for r in ordered] == ["aaaa", "zzzz"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_symbol_by_importable_qualified_name(client, app, session_factory) -> None:
+    # Python names are the importable dotted module, not the src-layout path.
+    repo = await create_test_repo(client)
+    path = "packages/core/src/repowise/core/pipeline/persist.py"
+    await _add(
+        session_factory,
+        repo["id"],
+        file_path=path,
+        symbol_id=f"{path}::save",
+        name="save",
+        qualified_name="repowise.core.pipeline.persist.save",
+    )
+
+    async with get_session(session_factory) as session:
+        rows = await _resolve_symbol(
+            session, repo["id"], f"{path}::repowise.core.pipeline.persist.save"
+        )
+
+    assert [r.name for r in rows] == ["save"]

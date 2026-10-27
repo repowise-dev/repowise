@@ -29,11 +29,7 @@ import {
 } from "@repowise-dev/api-client/refactoring";
 import { listDecisions } from "@repowise-dev/api-client/decisions";
 import { getPageById, listAllPages } from "@repowise-dev/api-client/pages";
-import { getRiskRange } from "@repowise-dev/api-client/risk";
-import {
-  buildRefactoringOpportunityPrompt,
-  buildRefactoringPlanPrompt,
-} from "@repowise-dev/ui/health/ai-prompt-builder";
+import { getPatchCoverage, getRiskRange } from "@repowise-dev/api-client/risk";
 import { CONFIG_SECTION } from "../constants";
 import {
   SETTING_KEYS,
@@ -47,6 +43,7 @@ import {
 import type { RepowiseContext } from "./context";
 import { analyzeChange } from "./changeAnalysis";
 import { commitsMatch, getCurrentBranchName, resolveLiveHead } from "./gitApi";
+import { opportunityPrompt, planPrompt } from "./planPrompt";
 
 /** Thrown by the dispatcher when a request arrives while disconnected. */
 class NotReadyError extends Error {
@@ -60,6 +57,8 @@ const SETTING_DEFAULTS: SettingsValues = {
   "diagnostics.enabled": true,
   "diagnostics.minSeverity": "high",
   "diagnostics.dimensions": ["defect", "maintainability", "performance"],
+  "docDrift.diagnostics.enabled": true,
+  "docDrift.diagnostics.minConfidence": 0.7,
   "gutterHeat.enabled": true,
   "fileDecorations.enabled": true,
   "fileDecorations.maxScore": 4,
@@ -77,7 +76,7 @@ const SETTING_DEFAULTS: SettingsValues = {
 };
 
 const SEVERITIES = ["critical", "high", "medium", "low"];
-const DIMENSIONS = ["defect", "maintainability", "performance"];
+const DIMENSIONS = ["defect", "maintainability", "performance", "advisory"];
 
 /**
  * Per-key validator for writes. The webview is untrusted input, so an out-of-
@@ -88,6 +87,8 @@ const SETTING_VALIDATORS: Record<SettingKey, (v: SettingValue) => SettingValue> 
   "diagnostics.enabled": expectBoolean,
   "diagnostics.minSeverity": (v) => expectEnum(v, SEVERITIES),
   "diagnostics.dimensions": (v) => expectStringSubset(v, DIMENSIONS),
+  "docDrift.diagnostics.enabled": expectBoolean,
+  "docDrift.diagnostics.minConfidence": (v) => expectNumberInRange(v, 0, 1),
   "gutterHeat.enabled": expectBoolean,
   "fileDecorations.enabled": expectBoolean,
   "fileDecorations.maxScore": (v) => expectNumberInRange(v, 0, 10),
@@ -305,28 +306,23 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
       cached(`refactor:opp:${opportunityId}`, (id) =>
         getRefactoringOpportunity(id, opportunityId, { stepLimit: 50, evidenceLimit: 20 }),
       ),
-    refactoringOpportunityPrompt: async (opportunityId, flavor) => {
-      const detail = await cached(`refactor:opp:${opportunityId}`, (id) =>
-        getRefactoringOpportunity(id, opportunityId, { stepLimit: 50, evidenceLimit: 20 }),
-      );
-      if (!detail.resolved) {
-        throw new Error(`No refactoring opportunity resolves for ${opportunityId}.`);
-      }
-      const repoName = ctx.repo?.name;
-      return buildRefactoringOpportunityPrompt({
-        opportunity: detail,
-        flavor,
-        ...(repoName ? { repoName } : {}),
-      });
-    },
+    refactoringOpportunityPrompt: (opportunityId, flavor) =>
+      opportunityPrompt(ctx, opportunityId, flavor, async () => {
+        const detail = await cached(`refactor:opp:${opportunityId}`, (id) =>
+          getRefactoringOpportunity(id, opportunityId, { stepLimit: 50, evidenceLimit: 20 }),
+        );
+        if (!detail.found) {
+          throw new Error(`No refactoring opportunity resolves for ${opportunityId}.`);
+        }
+        return detail;
+      }),
     refactoringPlan: (suggestionId) =>
       cached(`refactor:plan:${suggestionId}`, (id) => getRefactoringPlan(id, suggestionId)),
     refactoringPrompt: async (suggestionId, flavor) => {
       const plan = await cached(`refactor:plan:${suggestionId}`, (id) =>
         getRefactoringPlan(id, suggestionId),
       );
-      const repoName = ctx.repo?.name;
-      return buildRefactoringPlanPrompt({ plan, flavor, ...(repoName ? { repoName } : {}) });
+      return planPrompt(ctx, plan, flavor);
     },
 
     // Decisions
@@ -347,9 +343,13 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
         .get<string>("risk.baseBranch", "")
         .trim();
       const base = configured || ctx.repo?.default_branch || "main";
-      const result = await getRiskRange(id, { base, head: "HEAD" });
+      const range = { base, head: "HEAD" };
+      const [result, patchCoverage] = await Promise.all([
+        getRiskRange(id, range),
+        getPatchCoverage(id, range).catch(() => null),
+      ]);
       const branch = await getCurrentBranchName(ctx.workspace.repoRoot ?? "");
-      return { base, branch, result };
+      return { base, branch, result, patchCoverage };
     },
 
     // Change impact: reads the working tree, so it tracks the live change set

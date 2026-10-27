@@ -363,6 +363,21 @@ def test_name_only_in_all_string_is_not_rescued() -> None:
     assert "orphan" in _unused_export_names(graph)
 
 
+def test_all_promoted_name_is_not_rescued_by_the_promotion() -> None:
+    """``__all__`` raises a name to public; it does not mark it reachable.
+
+    ``_bar`` is underscore-prefixed, so the literal ``__all__`` is the only
+    reason it reads public, and nothing imports it. If membership were a
+    rescue the name would vanish from the report; the visibility change alone
+    must leave the unused-export finding standing."""
+    sources = {
+        "pkg/__init__.py": "",
+        "pkg/mod.py": ('__all__ = ["_bar"]\n\n\ndef _bar():\n    return 1\n'),
+    }
+    graph = _graph_from_sources(sources)
+    assert "_bar" in _unused_export_names(graph)
+
+
 def test_dynamic_use_edge_marks_target_file_live() -> None:
     """An incoming ``dynamic_uses`` edge keeps every public export of the
     target file out of the unused-export results (analyzer contract that the
@@ -399,3 +414,70 @@ def test_dynamic_use_edge_marks_target_file_live() -> None:
     g.add_edge("pkg/registry.py", "pkg/ollama.py", edge_type="dynamic_uses")
 
     assert "OllamaProvider" not in _unused_export_names(g)
+
+
+def test_whole_module_hint_folded_into_an_import_marks_target_file_live() -> None:
+    """A whole-module hint on a pair that also has a static import keeps the
+    import edge and its names, and still keeps every public export live."""
+    g = nx.DiGraph()
+    for path in ("pkg/registry.py", "pkg/ollama.py"):
+        g.add_node(path, node_type="file", language="python", is_test=False, is_entry_point=False)
+    for name in ("OllamaProvider", "app"):
+        sym = f"pkg/ollama.py::{name}"
+        g.add_node(
+            sym,
+            node_type="symbol",
+            kind="class",
+            name=name,
+            visibility="public",
+            decorators=[],
+            start_line=1,
+            end_line=20,
+            file_path="pkg/ollama.py",
+            language="python",
+        )
+        g.add_edge("pkg/ollama.py", sym, edge_type="defines")
+    g.add_edge(
+        "pkg/registry.py",
+        "pkg/ollama.py",
+        edge_type="imports",
+        imported_names=["OllamaProvider"],
+        dynamic_hint="python_dynamic_import",
+    )
+
+    assert not {"OllamaProvider", "app"} & _unused_export_names(g)
+
+
+def test_package_importing_its_own_path_listing_keeps_its_modules_reachable(
+    tmp_path: Path,
+) -> None:
+    """``for m in pkgutil.iter_modules(__path__): import_module(f"{__name__}.{m.name}")``
+    loads every module in the package, so none of them is unreachable and
+    their exports stay live; a module outside the package is still flagged."""
+    sources = {
+        "pkg/__init__.py": "",
+        "pkg/main.py": "from pkg import sections\n",
+        "pkg/sections/__init__.py": (
+            "import importlib\nimport pkgutil\n"
+            "for _m in pkgutil.iter_modules(__path__):\n"
+            '    importlib.import_module(f"{__name__}.{_m.name}")\n'
+        ),
+        "pkg/sections/alpha.py": "class AlphaSection:\n    pass\n",
+        "pkg/sections/beta.py": "def register():\n    pass\n",
+        "pkg/orphan.py": "def lonely():\n    pass\n",
+    }
+    for path, src in sources.items():
+        (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / path).write_text(src)
+    builder = GraphBuilder()
+    for path, src in sources.items():
+        builder.add_file(_PARSER.parse_file(_file_info(path), src.encode("utf-8")))
+    builder.build()
+    builder.add_dynamic_edges(PythonDynamicHints().extract(tmp_path))
+    graph = builder.graph()
+
+    unreachable = _unreachable_paths(graph)
+    assert "pkg/sections/alpha.py" not in unreachable
+    assert "pkg/sections/beta.py" not in unreachable
+    assert "pkg/orphan.py" in unreachable
+    assert not {"AlphaSection", "register"} & _unused_export_names(graph)

@@ -9,6 +9,7 @@ from repowise.core.analysis.health.complexity import walk_file
 from repowise.core.analysis.health.complexity.walker import _count_file_nloc
 from repowise.core.analysis.health.duplication import DuplicationReport
 from repowise.core.analysis.health.engine import HealthAnalyzer
+from repowise.core.analysis.health.file_evaluator import FileEvaluator
 from repowise.core.analysis.health.models import HealthFileMetricData
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "lang_samples"
@@ -87,14 +88,12 @@ def test_health_metric_nloc_uses_file_nloc():
         ),
         symbols=[],
     )
-    metric, _, _ = HealthAnalyzer(graph=None)._evaluate_file(
-        pf,
-        fcx,
-        path_basenames={"route.js"},
+    metric, _, _ = FileEvaluator(
+        HealthAnalyzer(graph=None),
+        paired_tests=set(),
         package_roots=set(),
-        disabled=[],
         dup_report=DuplicationReport(),
-    )
+    ).evaluate(pf, fcx)
     assert isinstance(metric, HealthFileMetricData)
     assert metric.nloc == fcx.file_nloc
 

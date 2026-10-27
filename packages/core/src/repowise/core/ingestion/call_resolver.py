@@ -24,45 +24,95 @@ per strategy, and it is what the edge carries.
 
 from __future__ import annotations
 
-from collections import defaultdict
-from dataclasses import dataclass, replace
-from pathlib import Path, PurePosixPath
+from collections import Counter, defaultdict
+from dataclasses import replace
+from pathlib import PurePosixPath
 from typing import Any
 
 import structlog
 
+# Moved helpers stay importable from here.
+from .call_barrel_forwarding import (  # noqa: F401
+    BarrelForwardingMixin,
+    _flattened_wildcard_source,
+    _renames_on_the_way,
+)
+from .call_cobol import CobolCallsMixin
+from .call_inheritance import (  # noqa: F401
+    _EXTERNAL_PREFIX,
+    _MAX_ANCESTOR_EXPAND_DEPTH,
+    InheritanceMixin,
+    _c3_merge,
+    _extract_class_id,
+    _is_super_call,
+)
+
+# Re-exported: the strategy table is asserted on through this module.
+from .call_language_strategies import _LANGUAGE_CALL_STRATEGIES as _LANGUAGE_CALL_STRATEGIES
+from .call_language_strategies import LanguageStrategiesMixin
+from .call_overload_selection import (  # noqa: F401
+    _JAVA_BOXES,
+    _JAVA_FINAL_PARAMETERS,
+    _JAVA_JUDGED_PARAMETERS,
+    _JAVA_LITERAL_LEVELS,
+    _JAVA_PRIMITIVES,
+    _JAVA_UNBOXED,
+    _JAVA_WIDENING,
+    _UNJUDGED_LEVEL,
+    OverloadSelectionMixin,
+    _argument_fit,
+    _ArgumentTypes,
+    _array_fit,
+    _closest_fit,
+    _java_method_refusing,
+    _kotlin_function_refusing,
+    _overload_phase,
+    _parameter_at,
+    _parameter_taking,
+    _reference_fit,
+    _takes,
+    _unboxed_fit,
+    _untyped_agree,
+)
+from .call_receiver_typing import (
+    _FUNCTION_KINDS,
+    _SOURCE_CACHE_FILES,
+    _TYPE_KINDS,
+    ReceiverTypingMixin,
+    _store_capped,
+)
+from .decorator_names import is_property_accessor
+from .lang_helpers.anonymous_classes import is_anonymous_member
 from .language_data import (
     get_builtin_methods,
+    get_builtin_types,
     get_external_receiver_types,
     get_external_return_types,
 )
-from .languages.receiver_types import (
-    FRAMEWORK_DECORATOR_LANGUAGES,
-    IMPLICIT_FIELD_LANGUAGES,
-    RECEIVER_TYPE_LANGUAGES,
-    Declaration,
-    framework_decorated_type,
-    names_in_span,
-    scan_bindings,
-    scan_declarations,
-    types_by_class,
-    types_in_span,
-    unwrapped_names_in_span,
-)
+from .languages.receiver_types import external_type_name, holds_function
 from .models import (
     CallReceiver,
     CallSite,
-    CallSiteEdgeType,
+    Import,
     NamedBinding,
     ParsedFile,
-    ResolutionOrigin,
+    Symbol,
     symbol_id_language,
 )
-from .return_types import declared_return_type, normalize_return_type, signature_parameter_count
+from .resolved_call import ResolvedCall
+from .resolvers.cpp import _SOURCE_TU_EXTS
+from .resolvers.jvm_workspace import classify_jvm_import
+from .return_types import (
+    declared_return_type,
+    normalize_return_type,
+    signature_parameter_count,
+)
+from .symbol_identity import id_segment_name, outer_scope
 from .type_names import (
-    POINTER_LIKE_MEMBERS,
+    bare_type_name,
     csharp_extension_receiver,
     is_resolvable_type_name,
+    strip_type_arguments,
 )
 
 log = structlog.get_logger(__name__)
@@ -70,168 +120,156 @@ log = structlog.get_logger(__name__)
 # Languages with an implicit method receiver, where a bare ``foo()`` binds to
 # the caller's instance. Go, Python, PHP and JS/TS spell the receiver out, so a
 # bare call there is a free function and this tier would resolve it wrongly.
-_IMPLICIT_RECEIVER_LANGUAGES = frozenset({"java", "csharp", "cpp", "kotlin"})
+_IMPLICIT_RECEIVER_LANGUAGES = frozenset({"java", "csharp", "cpp", "kotlin", "apex"})
+
+# JS/TS (and the single-file components parsed as TypeScript): a member is only
+# reachable as ``this.foo()`` or ``obj.foo()``, so a bare ``foo()`` inside a
+# class method never means a member of that class, whatever the file declares.
+_BARE_CALL_SKIPS_MEMBERS_LANGUAGES = frozenset(
+    {"javascript", "typescript", "svelte", "vue", "astro"}
+)
 
 # Languages where a call the caller's own class cannot answer is looked for on
-# its ancestors. Both shapes — an explicit ``self``/``this`` receiver and an
-# implicit one — end in the same walk.
+# its ancestors, for an explicit ``self``/``this`` receiver and an implicit one.
 #
-# C++ is absent because its heritage binds a qualified external
-# parent to a same-named local type, which puts unrelated siblings in one
-# hierarchy before this walk even runs. Java is absent because `java.scm`'s
-# bare-call pattern also matches `this.field.m()`, which no receiver-carrying
-# pattern claims, so such a call arrives here indistinguishable from a real
-# implicit receiver — and its measured population on two Java repos was zero,
-# so the tier could only cost.
+# C++ is absent because its heritage binds a qualified external parent to a
+# same-named local type, putting unrelated siblings in one hierarchy.
 #
-# C# is present, and was once wrongly removed: a name's overloads all share one
-# symbol id, so a declaration line read back out of the graph names an
-# arbitrary overload. That reads as a wrong target and is not one — the id
-# these calls resolve to is the id C# binds.
-_INHERITED_LANGUAGES = frozenset({"kotlin", "python", "typescript", "swift", "csharp"})
+# C# is present: the tier answers with a name's overload set, and
+# ``resolve_file`` narrows it to the member the argument count names.
+_INHERITED_LANGUAGES = frozenset(
+    {"java", "kotlin", "python", "typescript", "swift", "csharp", "apex"}
+)
+
+# VB.NET's own-instance receivers, lowercased: the language is case-insensitive.
+_VBNET_SELF_RECEIVERS = frozenset({"me", "myclass"})
 
 # Languages where a bare name is scoped lexically: it can only mean the
-# caller's own module, an explicit ``import``, or the prelude. Elixir's
-# ``alias`` / ``require`` / ``use`` bind a module name, never a function name,
-# so repo-wide uniqueness is no evidence and only wildcard imports may merge
-# names. F# is the same rule with different spelling: a bare name means the
-# enclosing scope, a module the file has ``open``ed, or FSharp.Core, and
-# nothing else -- a name unique across the repo is not thereby in scope.
-_LEXICAL_BARE_NAME_LANGUAGES = frozenset({"elixir", "fsharp"})
+# caller's own module, an explicit ``import`` or ``open``, or the prelude, so
+# repo-wide uniqueness is no evidence and only wildcard imports may merge names.
+# An Apex bare name is never another class's method, however unique.
+_LEXICAL_BARE_NAME_LANGUAGES = frozenset({"elixir", "fsharp", "apex"})
+
+# Languages whose imports name what they bring into scope, so only wildcard
+# imports may merge an imported file's names: ``use a::{B, C}`` binds B and C,
+# never the rest of ``a``. Rust is not lexical above: its receiver-less call
+# sites are mostly chained method calls, which repo-wide uniqueness still serves.
+_NAMED_IMPORT_SCOPE_LANGUAGES = _LEXICAL_BARE_NAME_LANGUAGES | {"rust"}
+
+# Languages whose module-alias binding always names a module, so a call through
+# it reaches only top-level declarations. C# is absent because ``using A = N.T;``
+# may alias a type, whose members it does reach. C, C++ and Ruby are absent
+# because their "alias" is an included file's stem, which a call can only match
+# by coinciding with a variable's name.
+_MODULE_ONLY_ALIAS_LANGUAGES = frozenset(
+    {"python", "typescript", "javascript", "svelte", "vue", "dart", "go", "rust", "swift"}
+)
 
 # The sentinel an import that binds a whole module's public names carries.
 _WILDCARD_IMPORTED_NAMES = ["*"]
 
-# Ancestors within four hops: ``heritage_ancestors`` bounds expansion, not
-# reach, so 3 reaches 4.
-_MAX_ANCESTOR_EXPAND_DEPTH = 3
 
-
-@dataclass(frozen=True, slots=True)
-class _LanguageCallStrategies:
-    """What a language resolves that the language-neutral tiers cannot.
-
-    ``free`` runs after the same-file tier and before the import tiers;
-    ``member`` runs before every receiver strategy; ``member_fallback`` runs
-    after all of them, so a strategy there only ever sees a call nothing else
-    claimed and can only add an edge. All three stop at the first hit.
-    Strategies are named rather than bound so a probe can substitute one.
-    """
-
-    free: tuple[str, ...] = ()
-    member: tuple[str, ...] = ()
-    member_fallback: tuple[str, ...] = ()
-
-
-_NO_LANGUAGE_STRATEGIES = _LanguageCallStrategies()
-
-_TYPED_RECEIVER = ("_resolve_typed_receiver",)
-
-# Which symbols own a class scope, and which of them swallow one. A class span
-# contains every method body inside it, so both sets are needed to tell a field
-# from a local.
-_TYPE_KINDS = frozenset({"class", "struct", "interface", "enum", "trait", "impl"})
-_FUNCTION_KINDS = frozenset({"function", "method"})
-
-# Kinds that can never be the callee of a call, used to keep the bare-name
-# Tier 3 index from offering a data member as a function.
+# Kinds that can never be the callee of a call, so the bare-name tiers never
+# offer a data member as a function.
 #
-# This is deliberately NOT the complement of ``_FUNCTION_KINDS``. Measured over
-# the corpus, plenty of non-function kinds are legitimately called: ``class``
-# is a constructor in python/java/c#/typescript; ``variable`` is both a rust
-# tuple ``enum_variant`` (309 grounded call edges on goose) and a typescript
-# const whose initialiser is not syntactically a function, such as a factory
-# result or a ``.bind()`` handle (2,173 on zod); ``type_alias`` is a Go
-# conversion. Denying by function-ness would delete thousands of real edges.
-#
-# ``property`` is the one kind in the whole of ``language_configs.py`` that
-# means "data member" and nothing else: it is emitted by exactly one mapping,
-# rust's ``field_declaration``. Every other language spells its fields
-# ``variable``, which is why this fix cannot be extended to them — there a
-# field is indistinguishable from a callable value by kind alone.
+# Deliberately NOT the complement of ``_FUNCTION_KINDS``: a ``class`` is a
+# constructor, a ``variable`` may be a rust tuple enum variant or a typescript
+# const holding a function, and a ``type_alias`` is a Go conversion.
+# ``property`` is the only kind that means "data member" and nothing else; every
+# other language spells its fields ``variable``, indistinguishable by kind.
 _NON_CALLABLE_KINDS = frozenset({"property"})
-
-# A getter and its setter are two declarations under one id, which reads as an
-# overload set and is not one: the name is an attribute, not a callable.
-_PROPERTY_DECORATORS = frozenset({"property", "cached_property"})
-_PROPERTY_ACCESSOR_SUFFIXES = (".setter", ".getter", ".deleter")
+# Languages whose ``variable`` is always a property (`val`/`var`/`let`): a data
+# member. Calling one invokes the value it holds, which is not this symbol.
+_PROPERTY_VARIABLE_LANGUAGES = frozenset({"kotlin", "swift"})
 
 
-def _is_property_accessor(sym: Any) -> bool:
-    for decorator in getattr(sym, "decorators", ()) or ():
-        tail = decorator.lstrip("@").strip()
-        if tail in _PROPERTY_DECORATORS or tail.endswith(_PROPERTY_ACCESSOR_SUFFIXES):
-            return True
-    return False
+# Kotlin's call operator: ``f(x)`` on a value is ``f.invoke(x)`` when its type
+# declares an ``operator fun invoke``.
+_INVOKE_OPERATOR = "invoke"
+_OPERATOR_MODIFIER = "operator"
 
-_JVM_STRATEGIES = _LanguageCallStrategies(
-    free=("_resolve_jvm_same_package",),
-    member=("_resolve_jvm_receiver_same_package",),
+
+def _imports_a_library(imp: Import) -> bool:
+    """Does *imp* name a JVM library namespace the repository does not hold?"""
+    if classify_jvm_import(imp.module_path, kotlin=True) is None:
+        return False
+    return not imp.resolved_file or imp.resolved_file.startswith(_EXTERNAL_PREFIX)
+
+
+def _is_kotlin_alias(sym: Symbol | None) -> bool:
+    return sym is not None and sym.kind == "type_alias" and sym.language == "kotlin"
+
+
+def _is_data_member(sym: Symbol) -> bool:
+    if sym.kind in _NON_CALLABLE_KINDS:
+        return True
+    return sym.kind == "variable" and sym.language in _PROPERTY_VARIABLE_LANGUAGES
+
+
+# A Rust ``impl`` or Swift ``extension`` block is named for the type it adds
+# members to and declares nothing itself, so no bare name means it: ``Text(..)``
+# constructs SwiftUI's ``Text``, not the repo's ``extension Text``. Kept out of
+# the bare-name indices; its members still resolve through the method index.
+_EXTENSION_KINDS = frozenset({"impl"})
+
+# Languages admitted to the full return-type chain lane; each is admitted
+# explicitly, once measured.
+PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES: frozenset[str] = frozenset(
+    {"apex", "cpp", "csharp", "dart", "go", "java", "kotlin", "python"}
 )
 
-# C++ reaches the typed fallback and registers no `member` strategy, so an
-# `obj->m()` is looked for in the caller's own file, in what it includes, and
-# then in the global pair index. `c` shares this object and is excluded a layer
-# up instead: it is absent from `_LANGUAGE_PATTERNS`, and a struct declares no
-# method for the pair index to hold.
-_CPP_STRATEGIES = _LanguageCallStrategies(
-    free=("_resolve_cpp_scoped_call", "_resolve_cpp_same_target"),
-    member_fallback=_TYPED_RECEIVER,
-)
+# Chain languages that type the inner call by the identity of the type it
+# returns (``_returned_type_id``); the rest read its type name.
+_RETURNED_TYPE_ID_LANGUAGES = frozenset({"dart", "go", "kotlin", "python"})
 
-# Rust's crate-root strategy is deliberately absent: it runs for every language
-# today, and gating it here would drop crate-name receivers in mixed repos.
-_LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
-    # Go's package tier runs first and claims ``pkg.Func()`` outright, so a
-    # package qualifier never reaches the typed fallback — 41% of gitleaks'
-    # lowercase-receiver misses are package names, and this is what keeps them
-    # out of it.
-    "go": _LanguageCallStrategies(
-        free=("_resolve_go_same_package",),
-        member=("_resolve_go_package_call",),
-        member_fallback=_TYPED_RECEIVER,
-    ),
-    # Kotlin shares the JVM tiers and, since its declaration shapes landed,
-    # the typed-receiver fallback too. One `name: Type` shape reaches its
-    # typed vals, vars and parameters alike, so the language gate no longer
-    # declines the moment the fallback asks.
-    # Java takes the uniqueness-gated package tier, Kotlin the open one; see
-    # ``_resolve_java_same_package_unique`` for why that is a language rule.
-    "java": replace(
-        _JVM_STRATEGIES,
-        free=("_resolve_java_same_package_unique",),
-        member_fallback=_TYPED_RECEIVER,
-    ),
-    "kotlin": replace(_JVM_STRATEGIES, member_fallback=_TYPED_RECEIVER),
-    "csharp": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
-    "python": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
-    # Swift registers the fallback and nothing else: it has no package
-    # tier of its own, so a typed receiver is looked for in the caller's
-    # file, in what the file imports, and then in the global pair index.
-    "swift": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
-    "cpp": _CPP_STRATEGIES,
-    "c": _CPP_STRATEGIES,
-}
-
-_SOURCE_CACHE_FILES = 4
-_BODY_TYPE_CACHE_ENTRIES = 2048
-
-# Phase admission is intentionally explicit. P16 lands the behavior-preserving
-# substrate with no language enabled; later phases add only measured lanes.
-PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES: frozenset[str] = frozenset({"cpp"})
+# Chain lanes that need a file or import/re-export identity for the head type:
+# a repository-global simple type name is not a language binding.
+_BOUND_CHAIN_LANGUAGES = frozenset({"java", "csharp", "typescript", "go", "apex"})
 
 
-@dataclass(frozen=True, slots=True)
-class ResolvedCall:
-    """A call resolved to concrete symbol IDs with a confidence score."""
+def _overload_return_types(
+    parsed_files: dict[str, ParsedFile],
+) -> dict[tuple[str, str | None, str | None, str, int | None], set[str]]:
+    """``{(path, parent, extension receiver, name, parameter count): normalised return types}``."""
+    found: dict[tuple[str, str | None, str | None, str, int | None], set[str]] = defaultdict(
+        set
+    )
+    for path, parsed in parsed_files.items():
+        for symbol in parsed.symbols:
+            raw_return = declared_return_type(symbol.signature or "")
+            normalized = (
+                normalize_return_type(raw_return, symbol.language) if raw_return else None
+            )
+            if normalized is None:
+                continue
+            key = (
+                path,
+                symbol.parent_name,
+                symbol.extension_receiver,
+                symbol.name,
+                signature_parameter_count(symbol.signature or ""),
+            )
+            found[key].add(normalized)
+    return found
 
-    caller_id: str  # symbol node ID of the calling function/method
-    callee_id: str  # symbol node ID of the called function/method
-    confidence: float  # 0.0–1.0
-    line: int  # call site line number (for diagnostics)
-    origin: ResolutionOrigin  # which strategy below produced it
-    edge_type: CallSiteEdgeType = "calls"  # carried through from the CallSite
-    supplied_props: frozenset[str] | None = None  # prop names supplied in JSX element (None if unknown/spread)
+
+def _admitted_cpp_chain(type_name: str, method_name: str) -> bool:
+    return type_name == "future" and method_name == "get"
+
+
+def _has_internal_linkage(path: str, sym: Symbol) -> bool:
+    """Is *sym* a C/C++ free symbol only its own translation unit can name?
+
+    The parser records ``static`` and anonymous-namespace linkage as
+    ``private``. A header's copy is compiled into every file that includes it,
+    so only a source file keeps the symbol to itself.
+    """
+    return (
+        sym.language in ("c", "cpp", "objectivec")
+        and sym.parent_name is None
+        and sym.visibility == "private"
+        and path.lower().endswith(_SOURCE_TU_EXTS)
+    )
 
 
 def _same_translation_unit(decl_file: str, def_file: str) -> bool:
@@ -248,7 +286,14 @@ def _same_translation_unit(decl_file: str, def_file: str) -> bool:
     )
 
 
-class CallResolver:
+class CallResolver(
+    CobolCallsMixin,
+    LanguageStrategiesMixin,
+    ReceiverTypingMixin,
+    OverloadSelectionMixin,
+    BarrelForwardingMixin,
+    InheritanceMixin,
+):
     """Resolve raw CallSites to symbol-level edges.
 
     Constructed once per ``GraphBuilder.build()`` call with the full set of
@@ -270,19 +315,28 @@ class CallResolver:
         import_maps: Any | None = None,
         heritage_parents: dict[str, set[str]] | None = None,
         return_type_chain_languages: frozenset[str] | None = None,
+        partial_fragments: dict[tuple[str, str], tuple[str, ...]] | None = None,
     ) -> None:
         # {type symbol id: parent type symbol ids}, from the caller's already
         # resolved heritage. Absent when the resolver is built standalone, in
         # which case the inherited tier simply never fires.
         self._heritage_parents: dict[str, set[str]] = heritage_parents or {}
+        # {(file, partial type name): files declaring a fragment of it}, from
+        # the builder's C#/VB.NET partial pass. Empty in every other language.
+        self._partial_fragments = partial_fragments or {}
         self._return_type_chain_languages = (
             PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES
             if return_type_chain_languages is None
             else return_type_chain_languages
         )
         self._ancestors: dict[str, tuple[str, ...]] = {}
+        self._mros: dict[str, tuple[str, ...] | None] = {}
+        # {type name: [(file, identity, arity)]}, filled by ``_declared_types_named``.
+        self._declared_types: dict[str, list[tuple[str, tuple[str, ...], int]]] = {}
         # Per-file symbol index: {file_path: {symbol_name: symbol_id}}
         self._file_symbols: dict[str, dict[str, str]] = {}
+        # The same, top-level symbols only: what a module alias can reach.
+        self._file_top_level: dict[str, dict[str, str]] = {}
 
         # Per-file method index: {file_path: {(class_name, method_name): symbol_id}}
         self._file_methods: dict[str, dict[tuple[str, str], str]] = {}
@@ -292,8 +346,9 @@ class CallResolver:
         # every file's method dict with one short-list lookup.
         self._global_methods: dict[tuple[str, str], list[tuple[str, str]]] = defaultdict(list)
 
-        # C# extension methods, keyed on the type they extend rather than on
-        # their holder class: {(type, method): (file_path, symbol_id)} and the
+        # C# extension methods and Kotlin extension functions, keyed on the
+        # type they extend rather than on their holder: {(type, method):
+        # (file_path, symbol_id)} and the
         # per-file view of the same. Held apart from the method index on
         # purpose — merging them would leak C# keys into the C++ and JVM tiers
         # that read ``_global_methods``, and would let an extension answer a
@@ -304,6 +359,22 @@ class CallResolver:
 
         # Global symbol index: {name: [symbol_ids]} — for Tier 3
         self._global_symbols: dict[str, list[str]] = defaultdict(list)
+
+        # Overload sets whose members have their own ids. Every index above
+        # holds a set by its representative, the first declared member, so the
+        # tiers answer exactly as for one id and ``resolve_file`` narrows the
+        # answer by argument count: {member id: representative} and
+        # {representative: ((member id, (fewest, most) arguments), ...)}.
+        self._overload_rep: dict[str, str] = {}
+        self._overload_members: dict[str, tuple[tuple[str, tuple[int, int | None]], ...]] = {}
+
+        # Representatives of sets with a member whose range is unknown; a count
+        # cannot choose there, since that member may admit it too.
+        self._unranged_overload_sets: set[str] = set()
+
+        # Build variants (``f#cfg(unix)``, ``f#cfg(not(unix))``) are not chosen by
+        # arguments: a call means every one, so an edge fans out to each.
+        self._variant_siblings: dict[str, tuple[str, ...]] = {}
         self._symbols_by_id = {
             symbol.id: symbol for parsed in parsed_files.values() for symbol in parsed.symbols
         }
@@ -312,26 +383,11 @@ class CallResolver:
             for path, parsed in parsed_files.items()
             for symbol in parsed.symbols
         }
-        self._overload_return_types: dict[tuple[str, str | None, str, int | None], set[str]] = (
-            defaultdict(set)
-        )
-        for path, parsed in parsed_files.items():
-            for symbol in parsed.symbols:
-                raw_return = declared_return_type(symbol.signature or "")
-                normalized = (
-                    normalize_return_type(raw_return, symbol.language) if raw_return else None
-                )
-                if normalized is not None:
-                    key = (
-                        path,
-                        symbol.parent_name,
-                        symbol.name,
-                        signature_parameter_count(symbol.signature or ""),
-                    )
-                    self._overload_return_types[key].add(normalized)
+        self._overload_return_types = _overload_return_types(parsed_files)
         self._known_type_names = frozenset(
             symbol.name for symbol in self._symbols_by_id.values() if symbol.kind in _TYPE_KINDS
         )
+        self._folded_types: frozenset[str] | None = None
         # Narrowed to C# for the extension index: the set above is a bare
         # cross-language name match, so a type of that name in any language
         # would admit an extension on the BCL type it shadows.
@@ -345,12 +401,25 @@ class CallResolver:
         # Held as an id set rather than a full id->kind map: it is the only
         # kind question asked of it and the set is small.
         self._non_callable_ids: set[str] = set()
+        self._callable_ids: set[str] = set()
+        # {Kotlin file: names it imports from a library namespace}
+        self._library_names: dict[str, frozenset[str]] = {}
+        # The lines of the file whose declarations are being read; see ``_lines_of``.
+        self._indexed_lines: tuple[str, list[str]] = ("", [])
+        # C/C++ symbols with internal linkage; see ``_reachable_by_name``.
+        self._tu_local_ids: set[str] = set()
         self._property_accessor_ids: set[str] = set()
 
         # C/C++ forward declaration → the definition it declares. Populated by
         # ``_build_indices``; applied to every resolved call so the edge lands
         # on the body rather than the header line that announced it.
         self._decl_to_def: dict[str, str] = {}
+
+        # Plain-name alias → the real symbol it stands for (``s`` in
+        # ``s = widget``), same-file only. Populated by ``_index_file``,
+        # applied alongside ``_decl_to_def`` in ``_redirect_to_definition``
+        # (#2791).
+        self._alias_to_target: dict[str, str] = {}
 
         # Import graph: {file_path: set of imported file paths}
         self._import_targets = import_targets
@@ -368,36 +437,19 @@ class CallResolver:
         # Module alias mapping: {file_path: {alias: source_file}}
         self._module_aliases: dict[str, dict[str, str]] = import_maps.module_aliases
 
-        # Lazy per-file merged views of every imported file's symbol /
-        # method tables — turns the Tier-2b "scan each imported file"
-        # loops into single dict lookups. Built on first miss per file;
-        # merge order is sorted(import paths) with first-wins so shadowed
-        # names resolve deterministically (the old set-iteration order was
-        # hash-randomized per process).
+        # Lazy per-file merged views of every imported file's symbol and
+        # method tables, merged in sorted import order with first-wins so
+        # shadowed names resolve deterministically.
         self._merged_import_symbols: dict[str, dict[str, str]] = {}
         self._merged_import_methods: dict[str, dict[tuple[str, str], str]] = {}
 
-        # Lazy per-file set of (line, target) that also carry a receiver.
-        self._member_shaped: dict[str, set[tuple[int, str]]] = {}
-
-        # Receiver typing reads source text, so both caches are capped rather
-        # than per-repo: files resolve one at a time, so a few slots always
-        # hit, and the cap is what keeps a whole repo's source out of memory.
-        # Scanning is memoised per *function*, not per reference — one scan
-        # answers every unresolved receiver in a body.
-        self._source_text: dict[str, str] = {}
-        self._declarations: dict[str, tuple[Declaration, ...]] = {}
-        self._symbol_spans: dict[str, dict[str, tuple[int, int]]] = {}
-        self._body_types: dict[tuple[str, str], dict[str, str | None]] = {}
-        self._field_types: dict[str, dict[str, dict[str, str | None]]] = {}
-        self._bindings: dict[str, tuple[tuple[int, str], ...]] = {}
-        self._bound_names: dict[tuple[str, str], frozenset[str]] = {}
-        # {file: {name: type}} — module-level defs a framework decorator retyped.
-        self._framework_types: dict[str, dict[str, str]] = {}
-        self._external_names: dict[str, frozenset[str]] = {}
+        self._init_receiver_typing_caches()
         self._repo_rebound_names: dict[str, frozenset[str]] = {}
-        self._method_name_set: frozenset[str] | None = None
-        self._framework_name_set: frozenset[str] | None = None
+        # {file: {(line, receiver, target): the call it is chained onto}}, and
+        # the chain links being typed right now, which a cycle would revisit.
+        self._chained_sites: dict[str, dict[tuple[int, str | None, str], CallReceiver]] = {}
+        self._chain_links_in_flight: set[tuple[str, int, str | None, str]] = set()
+        self._unindexed_extensions: frozenset[str] | None = None
 
         # Barrel re-export origins: {barrel_file: {name: origin_file}}
         self._barrel_origins: dict[str, dict[str, str]] = defaultdict(dict)
@@ -405,443 +457,23 @@ class CallResolver:
         # Keep reference for cross-language checks in Tier 3
         self._parsed_files = parsed_files
 
-        # Rust cross-crate resolution
-        self._repo_path = repo_path
-        self._rust_crate_src: dict[str, str] | None = None  # lazy
-
-        # Go package-scoped resolution (lazy GoPackageIndex). ``_go_index``
-        # holds the built index; ``_go_index_built`` distinguishes "not yet
-        # built" from "built but unavailable" (no repo_path / no go files).
-        self._go_index: Any = None
-        self._go_index_built = False
-
-        # JVM same-package resolution (lazy JvmWorkspaceIndex)
-        self._jvm_index: Any = None
-        self._jvm_index_built = False
-
-        # C/C++ same-target resolution (lazy CppWorkspaceIndex)
-        self._cpp_index: Any = None
-        self._cpp_index_built = False
-
-        self._strategies_by_file: dict[str, _LanguageCallStrategies] = {}
+        self._init_workspace_indexes(repo_path)
 
         self._build_indices(parsed_files)
         self._follow_barrel_exports()
-
-    def _follow_barrel_exports(self) -> None:
-        """Detect barrel/re-export files and record origin mappings.
-
-        A barrel file imports a name and re-exports it without defining it
-        locally (e.g., ``__init__.py`` with ``from .calculator import Calculator``).
-        When downstream code imports from the barrel, we follow chains to
-        find the actual defining file.
-        """
-        # First pass: identify direct barrel origins
-        for path, name_to_file in self._import_names.items():
-            file_syms = self._file_symbols.get(path, {})
-            for name, source_file in name_to_file.items():
-                # An origin outside the repo names no file any reader of this
-                # map can look up, and the wildcard pass below already refuses
-                # one. Holding the invariant in one pass and not its twin is
-                # what makes a later reader look safe when it is not.
-                if name not in file_syms and not source_file.startswith("external:"):
-                    self._barrel_origins[path][name] = source_file
-
-        # Track wildcard re-exports, which forward every symbol of the imported
-        # module under this file's namespace. Two shapes qualify: Rust
-        # `pub use foo::*` (is_reexport) and Python/JS `from foo import *` (a
-        # "*" imported name). The latter is how package ``__init__.py`` barrels
-        # commonly re-export a subpackage — ``build_import_name_maps`` skips the
-        # "*" name (it is not a binding), so without this pass the barrel chain
-        # dead-ends one hop short of the real definition and a call through the
-        # barrel resolves to nothing.
-        wildcard_sources: dict[str, list[str]] = defaultdict(list)
-        for path, parsed in self._parsed_files.items():
-            file_syms = self._file_symbols.get(path, {})
-            for imp in parsed.imports:
-                is_wildcard = imp.is_reexport or "*" in imp.imported_names
-                if not is_wildcard or not imp.resolved_file:
-                    continue
-                if imp.resolved_file.startswith("external:"):
-                    continue
-                # ``export * as ns from "x"`` forwards the module under ``ns``,
-                # so x's names are reachable as ``ns.name`` and are NOT this
-                # file's own exports. Flattening them makes a bare ``name``
-                # resolve into a nested namespace it was never in.
-                if any(b.local_name == "*" and b.exported_name for b in imp.bindings):
-                    continue
-                resolved = imp.resolved_file
-                if resolved != path:
-                    wildcard_sources[path].append(resolved)
-                source_syms = self._file_symbols.get(resolved, {})
-                source_parsed = self._parsed_files.get(resolved)
-                published = (
-                    (*source_syms, *source_parsed.export_aliases)
-                    if source_parsed
-                    else tuple(source_syms)
-                )
-                for sym_name in published:
-                    if sym_name not in file_syms:
-                        self._barrel_origins[path][sym_name] = resolved
-
-        # The pass above forwards only what the source file DECLARES, so a
-        # barrel over a barrel forwards nothing and the chain breaks at its
-        # first link rather than its last. Forward what the source file
-        # re-exports too, to a fixpoint. The multi-hop pass below cannot do
-        # this job — it deepens entries that exist, and here none do.
-        #
-        # Sorted so that a name two of this file's barrels both forward lands on
-        # the same origin whatever order the repository was walked in.
-        for _ in range(4):
-            changed = False
-            for path, sources in sorted(wildcard_sources.items()):
-                file_syms = self._file_symbols.get(path, {})
-                origins = self._barrel_origins[path]
-                for source in sorted(sources):
-                    source_bindings = self._import_bindings.get(source, {})
-                    for name, declaring in sorted(self._barrel_origins.get(source, {}).items()):
-                        if name in file_syms or name in origins or declaring == path:
-                            continue
-                        # The map keys a name as the source file spells it and
-                        # records only the declaring file, never the name the
-                        # symbol has there. A hop that renames therefore hands
-                        # on a key the declaring file may coincidentally
-                        # declare as something unrelated, and the receiving
-                        # file carries no binding to undo it with. Refuse those
-                        # rather than forward a name that means something else
-                        # at the far end; it costs reach, never correctness.
-                        binding = source_bindings.get(name)
-                        if binding is not None and (binding.exported_name or name) != name:
-                            continue
-                        origins[name] = declaring
-                        changed = True
-            if not changed:
-                break
-
-        # Multi-hop: follow chains up to 5 hops
-        for _ in range(4):
-            changed = False
-            for _path, origins in list(self._barrel_origins.items()):
-                for name, source in list(origins.items()):
-                    deeper = self._barrel_origins.get(source, {}).get(name)
-                    if deeper and deeper != source:
-                        origins[name] = deeper
-                        changed = True
-            if not changed:
-                break
-
-    def _get_rust_crate_src(self) -> dict[str, str]:
-        """Lazily build a mapping from normalised crate name to src/ dir."""
-        if self._rust_crate_src is not None:
-            return self._rust_crate_src
-        self._rust_crate_src = {}
-        if not self._repo_path:
-            return self._rust_crate_src
-        from .resolvers.rust_workspace import get_or_build_cargo_workspace_index
-
-        class _Ctx:
-            def __init__(self, rp, pf):
-                self.repo_path = rp
-                self.parsed_files = pf
-
-        ctx = _Ctx(self._repo_path, self._parsed_files)
-        ws = get_or_build_cargo_workspace_index(ctx)
-        if ws:
-            for crate in ws.crates:
-                normalized = crate.name.replace("-", "_")
-                self._rust_crate_src[normalized] = crate.src_dir
-        return self._rust_crate_src
-
-    def _get_go_index(self) -> Any:
-        """Lazily build the GoPackageIndex (or None if unavailable).
-
-        Mirrors ``_get_rust_crate_src``: the resolver runs without a
-        ``ResolverContext``, so it constructs a minimal stand-in and rebuilds
-        the package index. The build is one walk over the ``.go`` files; the
-        result is cached for the lifetime of the resolver.
-        """
-        if self._go_index_built:
-            return self._go_index
-        self._go_index_built = True
-        if not self._repo_path:
-            return None
-        from pathlib import Path
-
-        from .resolvers.go_workspace import build_go_package_index
-
-        class _Ctx:
-            def __init__(self, rp: str, pf: dict[str, ParsedFile]) -> None:
-                self.repo_path = Path(rp)
-                self.path_set = set(pf.keys())
-                self.sorted_paths = tuple(sorted(self.path_set))
-                self.parsed_files = pf
-                self.go_modules: tuple[tuple[str, str], ...] = ()
-                self.go_module_path: str | None = None
-
-        self._go_index = build_go_package_index(_Ctx(self._repo_path, self._parsed_files))
-        return self._go_index
-
-    def _strategies_for(self, file_path: str) -> _LanguageCallStrategies:
-        """The extra strategies this file's language gets."""
-        parsed = self._parsed_files.get(file_path)
-        language = parsed.file_info.language if parsed else ""
-        return _LANGUAGE_CALL_STRATEGIES.get(language, _NO_LANGUAGE_STRATEGIES)
-
-    def _get_cpp_index(self) -> Any:
-        """Lazily build a CppWorkspaceIndex via a minimal stand-in context."""
-        if self._cpp_index_built:
-            return self._cpp_index
-        self._cpp_index_built = True
-        if not self._repo_path:
-            return None
-        from pathlib import Path
-
-        from .resolvers.cpp_workspace import build_cpp_workspace_index
-
-        class _Ctx:
-            def __init__(self, rp: str, pf: dict[str, ParsedFile]) -> None:
-                self.repo_path = Path(rp)
-                self.path_set = set(pf.keys())
-                self.sorted_paths = tuple(sorted(self.path_set))
-                self.parsed_files = pf
-                self.stem_map: dict[str, list[str]] = {}
-
-        self._cpp_index = build_cpp_workspace_index(_Ctx(self._repo_path, self._parsed_files))
-        return self._cpp_index
+        # Only a call to one of these has its named arguments typed.
+        self._overloaded_names = frozenset(self._symbols_by_id[m].name for m in self._overload_rep)
 
     def _collapse_declarations(self, sym_ids: list[str]) -> set[str]:
         """Fold each declaration onto the definition it was paired with.
 
-        Two ids naming one symbol must not read as an ambiguity.
+        Two ids naming one symbol must not read as an ambiguity, and neither
+        must the members of one overload set, which fold to its representative.
         """
-        return {self._decl_to_def.get(sym_id, sym_id) for sym_id in sym_ids}
-
-    def _resolve_cpp_scoped_call(
-        self,
-        file_path: str,
-        call: CallSite,
-        caller_id: str,
-    ) -> ResolvedCall | None:
-        """Resolve ``Qualifier::name()`` against the class the qualifier names.
-
-        The qualifier is written at the call site, so this infers nothing: the
-        repository either declares ``Qualifier::name`` or it does not. Before
-        it existed only the leaf name survived extraction, and `DB::Open()`
-        bound to a test class's `Open`.
-
-        It declines rather than refusing when the pair is unknown, because a
-        qualifier may equally name a NAMESPACE and C++ namespaces are recorded
-        on no symbol -- so absence here is not evidence of anything.
-        """
-        scope = call.scope_name
-        if not scope:
-            return None
-        candidates = self._global_methods.get((scope, call.target_name))
-        if not candidates:
-            return None
-        # A class name is not repository-unique. Prefer a declaration this file
-        # actually includes; failing that accept a repo-wide unique one, and
-        # otherwise leave it, because the qualifier has not settled which.
-        imported = self._import_targets.get(file_path, ())
-        preferred = [
-            sym_id for f, sym_id in candidates if f == file_path or f in imported
-        ]
-        # A header's declaration and the .cc's definition are ONE symbol, and a
-        # translation unit routinely sees both, so count them after the pairing
-        # redirect or every paired method reads as ambiguous.
-        if len(self._collapse_declarations(preferred)) == 1:
-            sym_id = preferred[0]
-        elif len(self._collapse_declarations([c[1] for c in candidates])) == 1:
-            sym_id = candidates[0][1]
-        else:
-            return None
-        if sym_id == caller_id:
-            return None
-        return ResolvedCall(caller_id, sym_id, 0.93, call.line, "scoped_name")
-
-    def _resolve_cpp_same_target(
-        self,
-        file_path: str,
-        call: CallSite,
-        caller_id: str,
-    ) -> ResolvedCall | None:
-        """Resolve a bare call against the workspace target's source list.
-
-        C++ files in the same CMake/Bazel target share a build unit — an
-        unqualified ``Helper(...)`` may be defined in any sibling
-        ``.cc``/``.cpp`` in the same target with no ``#include`` line.
-        """
-        index = self._get_cpp_index()
-        if index is None:
-            return None
-        siblings = index.siblings_in_targets(file_path)
-        for sibling in siblings:
-            syms = self._file_symbols.get(sibling, {})
-            sym_id = syms.get(call.target_name)
-            if sym_id is not None and sym_id != caller_id:
-                return ResolvedCall(caller_id, sym_id, 0.85, call.line, "same_target")
-        return None
-
-    def _get_jvm_index(self) -> Any:
-        """Lazily build the JvmWorkspaceIndex (or None if unavailable)."""
-        if self._jvm_index_built:
-            return self._jvm_index
-        self._jvm_index_built = True
-        if not self._repo_path:
-            return None
-        from pathlib import Path
-
-        from .resolvers.jvm_workspace import build_jvm_workspace_index
-
-        class _Ctx:
-            def __init__(self, rp: str, pf: dict[str, ParsedFile]) -> None:
-                self.repo_path = Path(rp)
-                self.path_set = set(pf.keys())
-                self.sorted_paths = tuple(sorted(self.path_set))
-                self.parsed_files = pf
-
-        self._jvm_index = build_jvm_workspace_index(_Ctx(self._repo_path, self._parsed_files))
-        return self._jvm_index
-
-    def _resolve_jvm_same_package(
-        self,
-        file_path: str,
-        call: CallSite,
-        caller_id: str,
-    ) -> ResolvedCall | None:
-        """Resolve a bare call to a symbol defined in a same-package sibling.
-
-        JVM files in the same package share a namespace — an unqualified
-        identifier ``Helper`` may be a class or method defined in any sibling
-        file of the same package, with no import statement.
-        """
-        return self._jvm_same_package(file_path, call, caller_id, unique_only=False)
-
-    def _resolve_java_same_package_unique(
-        self,
-        file_path: str,
-        call: CallSite,
-        caller_id: str,
-    ) -> ResolvedCall | None:
-        """Same tier as ``_resolve_jvm_same_package``, refusing on ambiguity.
-
-        Java-only because Kotlin has package-scope top-level and extension
-        functions, so a bare name there really is a package lookup; Java has
-        none, so it is a static import, an inherited member, or a member call
-        whose receiver the grammar dropped. Hand-read, the removals agree:
-        20 of 20 wrong on caffeine, 16 of 20 right on exposed and ktor.
-
-        Refusing is not deleting. The chain continues into the import tiers,
-        which answer 14,307 of caffeine's 18,390 refused sites.
-        """
-        return self._jvm_same_package(file_path, call, caller_id, unique_only=True)
-
-    def _jvm_same_package(
-        self,
-        file_path: str,
-        call: CallSite,
-        caller_id: str,
-        *,
-        unique_only: bool,
-    ) -> ResolvedCall | None:
-        index = self._get_jvm_index()
-        if index is None:
-            return None
-        found: str | None = None
-        for sibling in index.same_package_files(file_path):
-            sym_id = self._file_symbols.get(sibling, {}).get(call.target_name)
-            if sym_id is not None and sym_id != caller_id:
-                if not unique_only:
-                    return ResolvedCall(caller_id, sym_id, 0.90, call.line, "same_package")
-                if found is not None:
-                    # Two siblings declare it and nothing here can tell them
-                    # apart; this used to answer with whichever the index
-                    # walked first.
-                    return None
-                found = sym_id
-        if found is None:
-            return None
-        return ResolvedCall(caller_id, found, 0.90, call.line, "same_package")
-
-    def _resolve_jvm_receiver_same_package(
-        self,
-        file_path: str,
-        call: CallSite,
-        caller_id: str,
-    ) -> ResolvedCall | None:
-        """Resolve ``Receiver.method()`` where the receiver is a package sibling.
-
-        JVM files in the same package see each other's types with no import,
-        so the receiver may name a class declared in any sibling file.
-        """
-        key = (call.receiver_name or "", call.target_name)
-        if key not in self._global_methods:
-            return None
-        index = self._get_jvm_index()
-        if index is None:
-            return None
-        for sibling in index.same_package_files(file_path):
-            sym_id = self._file_methods.get(sibling, {}).get(key)
-            if sym_id is not None:
-                return ResolvedCall(caller_id, sym_id, 0.90, call.line, "receiver_same_package")
-        return None
-
-    def _resolve_go_package_call(
-        self,
-        file_path: str,
-        call: CallSite,
-        caller_id: str,
-    ) -> ResolvedCall | None:
-        """Resolve ``pkg.Func()`` against *every* file in the package.
-
-        The legacy module-alias strategy resolves only against the single
-        representative file the import resolved to; a function defined in a
-        sibling file of that package is missed. Look it up across the whole
-        package directory via the GoPackageIndex.
-        """
-        index = self._get_go_index()
-        if index is None:
-            return None
-        module_file = self._module_aliases.get(file_path, {}).get(call.receiver_name)
-        if not module_file:
-            return None
-        pkg = index.package_for_file(module_file)
-        if pkg is None:
-            return None
-        for sibling in pkg.files:
-            syms = self._file_symbols.get(sibling, {})
-            sym_id = syms.get(call.target_name)
-            if sym_id is not None and sym_id != caller_id:
-                return ResolvedCall(caller_id, sym_id, 0.88, call.line, "package_alias")
-        return None
-
-    def _resolve_go_same_package(
-        self,
-        file_path: str,
-        call: CallSite,
-        caller_id: str,
-    ) -> ResolvedCall | None:
-        """Resolve a bare call to a function defined in a sibling file.
-
-        Files in the same Go package share a namespace with no import
-        statement, so a bare ``Helper()`` may be defined in any sibling
-        file. Search the package directory (excluding the caller's own
-        file, already covered by the same-file tier).
-        """
-        index = self._get_go_index()
-        if index is None:
-            return None
-        pkg = index.package_for_file(file_path)
-        if pkg is None:
-            return None
-        for sibling in pkg.files:
-            if sibling == file_path:
-                continue
-            syms = self._file_symbols.get(sibling, {})
-            sym_id = syms.get(call.target_name)
-            if sym_id is not None and sym_id != caller_id:
-                return ResolvedCall(caller_id, sym_id, 0.90, call.line, "same_package")
-        return None
+        return {
+            self._overload_rep.get(target, target)
+            for target in (self._decl_to_def.get(sym_id, sym_id) for sym_id in sym_ids)
+        }
 
     def _build_indices(self, parsed_files: dict[str, ParsedFile]) -> None:
         """Build symbol lookup indices from parsed file data.
@@ -858,61 +490,150 @@ class CallResolver:
         extensions: dict[tuple[str, str], set[tuple[str, str]]] = defaultdict(set)
 
         for path, parsed in parsed_files.items():
-            file_syms: dict[str, str] = {}
-            file_methods: dict[tuple[str, str], str] = {}
-
-            for sym in parsed.symbols:
-                decl_key = (sym.parent_name, sym.name)
-                if sym.is_declaration:
-                    declarations.append((path, sym.id, decl_key))
-                    # A declaration must never displace a definition already
-                    # indexed under this name — a .cpp that forward-declares a
-                    # helper above its own body holds both.
-                    #
-                    # A method declaration stays out: this index answers
-                    # unqualified lookups from importing files, and no bare name
-                    # can legally reach a method. The (class, method) index
-                    # below still takes it.
-                    if sym.parent_name is None:
-                        file_syms.setdefault(sym.name, sym.id)
-                else:
-                    definitions[decl_key].append((path, sym.id))
-                    # File-level symbol index (top-level symbols and methods)
-                    file_syms[sym.name] = sym.id
-
-                # Method index: (class_name, method_name) → symbol_id
-                if sym.parent_name:
-                    key = (sym.parent_name, sym.name)
-                    file_methods[key] = sym.id
-                    self._global_methods[key].append((path, sym.id))
-
-                    extended = (
-                        csharp_extension_receiver(sym.signature)
-                        if sym.language == "csharp"
-                        else None
-                    )
-                    if (
-                        extended is not None
-                        and is_resolvable_type_name(extended, "csharp")
-                        and extended in self._csharp_type_names
-                    ):
-                        extensions[(extended, sym.name)].add((path, sym.id))
-
-                # Global indices
-                if sym.kind in _NON_CALLABLE_KINDS:
-                    self._non_callable_ids.add(sym.id)
-                if _is_property_accessor(sym):
-                    self._property_accessor_ids.add(sym.id)
-                # Same rule as the per-file index above, for the global-unique
-                # tier.
-                if not (sym.is_declaration and sym.parent_name is not None):
-                    self._global_symbols[sym.name].append(sym.id)
-
-            self._file_symbols[path] = file_syms
-            self._file_methods[path] = file_methods
+            self._index_file(path, parsed, definitions, declarations, extensions)
 
         self._decl_to_def = self._link_declarations(declarations, definitions)
+        self._pair_overload_members()
         self._index_extension_methods(extensions)
+
+    def _index_file(
+        self,
+        path: str,
+        parsed: ParsedFile,
+        definitions: dict[tuple[str | None, str], list[tuple[str, str]]],
+        declarations: list[tuple[str, str, tuple[str | None, str]]],
+        extensions: dict[tuple[str, str], set[tuple[str, str]]],
+    ) -> None:
+        """Index one file's symbols, collecting what is settled repo-wide later."""
+        file_syms: dict[str, str] = {}
+        top_level: dict[str, str] = {}
+        file_methods: dict[tuple[str, str], str] = {}
+        representatives = self._index_overload_sets(parsed)
+        binding_counts = Counter(
+            sym.name for sym in parsed.symbols if sym.parent_name is None
+        )
+        # (alias symbol id, the bare name it aliases) — resolved against
+        # ``file_syms`` only once the whole file is indexed, so an alias
+        # written above the name it aliases is not missed by source order.
+        aliases: list[tuple[str, str, str | None]] = []
+
+        for sym in parsed.symbols:
+            # An overload set is indexed once, under its representative.
+            index_id = representatives.get(sym.id, sym.id)
+            decl_key = (sym.parent_name, sym.name)
+            if sym.is_declaration:
+                # A Go interface method spec is not a prototype: its body is
+                # never defined, and the structural implementers that carry one
+                # differ from the interface by name or package. Pairing on
+                # ``(parent, name)`` would redirect the spec onto an unrelated
+                # type's method, so it stays unlinked.
+                if sym.language != "go":
+                    declarations.append((path, index_id, decl_key))
+            else:
+                definitions[decl_key].append((path, index_id))
+            _index_bare_name(sym, index_id, file_syms, top_level)
+
+            if sym.alias_of is not None and (
+                binding_counts[sym.name] == 1 or "::alias@" in sym.id
+            ):
+                aliases.append((sym.id, sym.alias_of, sym.parent_name))
+
+            # Method index: (class_name, method_name) → symbol_id
+            if sym.parent_name:
+                key = (sym.parent_name, sym.name)
+                file_methods[key] = index_id
+                self._global_methods[key].append((path, index_id))
+
+            extended = (
+                self._csharp_extended_type(sym)
+                if sym.parent_name
+                else self._kotlin_extended_type(sym)
+            )
+            if extended is not None:
+                extensions[(extended, sym.name)].add((path, index_id))
+
+            self._index_globally(path, sym, index_id)
+
+        for alias_id, alias_of_name, parent_name in aliases:
+            # Prefer a target in the alias's own scope before falling back
+            # to a file-wide symbol with the same name.
+            target_id = (
+                file_methods.get((parent_name, alias_of_name))
+                if parent_name is not None
+                else None
+            )
+            if target_id is None:
+                target_id = file_syms.get(alias_of_name)
+
+            # No self-redirect: ``s = s`` names nothing beyond itself.
+            if target_id is not None and target_id != alias_id:
+                self._alias_to_target[alias_id] = target_id
+
+        self._file_symbols[path] = file_syms
+        self._file_top_level[path] = top_level
+        self._file_methods[path] = file_methods
+
+    def _csharp_extended_type(self, sym: Symbol) -> str | None:
+        """The repository C# type *sym* extends, when it is an extension method."""
+        if sym.language != "csharp":
+            return None
+        extended = csharp_extension_receiver(sym.signature)
+        if extended is None or not is_resolvable_type_name(extended, "csharp"):
+            return None
+        return extended if extended in self._csharp_type_names else None
+
+    def _kotlin_extended_type(self, sym: Symbol) -> str | None:
+        """The type a top-level Kotlin extension function extends, a library one included.
+
+        Unlike C#, a library receiver is kept: Kotlin types a ``ByteArray`` or
+        ``List`` receiver too, and only an extension can be the repo's callee.
+        A member extension is left out, since only its holder's scope sees it.
+
+        Ceiling: the key is the bare type, so ``List<String>.f`` and
+        ``List<Int>.f`` collide (and refuse as ambiguous), and ``Foo?`` keys as
+        ``Foo``. Keying on type arguments would need the receiver's too.
+        """
+        if sym.language != "kotlin" or sym.kind not in _FUNCTION_KINDS:
+            return None
+        return self._kotlin_receiver(sym)
+
+    def _index_globally(self, path: str, sym: Symbol, index_id: str) -> None:
+        if _has_internal_linkage(path, sym):
+            self._tu_local_ids.add(index_id)
+        self._record_callability(path, sym, index_id)
+        # A getter and its setter are two declarations under one id, which reads
+        # as an overload set and is not one: the name is an attribute.
+        if is_property_accessor(sym.decorators):
+            self._property_accessor_ids.add(index_id)
+        # Same rules as the per-file index, for the global-unique tier.
+        bodiless_method = sym.is_declaration and sym.parent_name is not None
+        if not (bodiless_method or sym.kind in _EXTENSION_KINDS or is_anonymous_member(sym)):
+            self._global_symbols[sym.name].append(index_id)
+
+    def _record_callability(self, path: str, sym: Symbol, index_id: str) -> None:
+        """Mark *index_id* a data member's, unless anything callable shares it.
+
+        A Kotlin `val isDark` and `fun isDark()` in one file are one id.
+        """
+        if _is_data_member(sym) and not self._holds_function(path, sym):
+            if index_id not in self._callable_ids:
+                self._non_callable_ids.add(index_id)
+        else:
+            self._callable_ids.add(index_id)
+            self._non_callable_ids.discard(index_id)
+
+    def _holds_function(self, path: str, sym: Symbol) -> bool:
+        """Is property *sym* declared with a function value (`val f: () -> Unit`)?"""
+        if sym.kind != "variable" or sym.language not in _PROPERTY_VARIABLE_LANGUAGES:
+            return False
+        lines = self._lines_of(path)[sym.start_line - 1 : max(sym.end_line, sym.start_line)]
+        return holds_function("\n".join(lines), sym.name, sym.language)
+
+    def _lines_of(self, path: str) -> list[str]:
+        """*path*'s lines, split once while its symbols are read one by one."""
+        if self._indexed_lines[0] != path:
+            self._indexed_lines = (path, self._text_of(path).splitlines())
+        return self._indexed_lines[1]
 
     def _index_extension_methods(
         self, candidates: dict[tuple[str, str], set[tuple[str, str]]]
@@ -924,8 +645,8 @@ class CallResolver:
         costs an edge; guessing costs correctness.
 
         An overload set is not this case -- every overload of one method in one
-        class shares a symbol id. A ``partial`` class split across files is,
-        and stays refused.
+        class is indexed under one representative id. A ``partial`` class split
+        across files is, and stays refused.
         """
         for key, sites in candidates.items():
             if len({sym_id for _, sym_id in sites}) != 1:
@@ -943,11 +664,9 @@ class CallResolver:
 
         A header declares ``double Area(double)`` and a .cpp defines it, so the
         two land as separate same-named symbols. Every tier below Tier 1 looks
-        the name up in the *header's* symbol table — the header is what the
-        caller includes — so the call edge attached to the declaration and left
-        the definition with no inbound edge at all, which read as dead code
-        (#1601). Resolving the pairing here lets ``resolve_file`` move the edge
-        onto the definition, where it belongs.
+        the name up in the *header's* symbol table, the file the caller
+        includes, so without the pairing the definition gets no inbound edge
+        and reads as dead code. ``resolve_file`` moves the edge onto it.
 
         Pairing prefers a definition whose translation unit includes the
         declaring header, which is the one-definition rule C++ actually means
@@ -965,7 +684,8 @@ class CallResolver:
         redirects: dict[str, str] = {}
         for decl_file, decl_id, key in declarations:
             candidates = definitions.get(key, ())
-            if not candidates:
+            # An overload stub's implementation shares its id: already defined.
+            if not candidates or any(sym_id == decl_id for _f, sym_id in candidates):
                 continue
             # Deduped by symbol id, not by row: an overload set defined in one
             # file is several definitions sharing one id, and counting rows
@@ -995,19 +715,30 @@ class CallResolver:
         return self._decl_to_def
 
     def _redirect_to_definition(self, resolved: ResolvedCall) -> ResolvedCall:
-        """Move a call edge off a forward declaration onto its definition.
+        """Redirect calls through aliases and declarations to the final target."""
+        original = resolved.callee_id
+        target = original
+        visited: set[str] = set()
 
-        No-op for every language but C/C++, and for the tiers that already
-        landed on a definition.
+        while target not in visited:
+            visited.add(target)
+            next_target = self._decl_to_def.get(target)
+            if next_target is None:
+                next_target = self._alias_to_target.get(target)
+            if next_target is None:
+                break
+            target = next_target
 
-        The self-edge guard carries a recursive function whose prototype sits
-        in a header: Tier 1 declines to link the call to the body it is
-        already inside, Tier 2 then finds the header declaration, and the
-        redirect would point the edge straight back at the caller.
-        """
-        target = self._decl_to_def.get(resolved.callee_id)
-        if target is None or target == resolved.caller_id:
+        # A cycle makes the redirect ambiguous; keep the original resolution.
+        if target in visited and (
+            self._decl_to_def.get(target) is not None
+            or self._alias_to_target.get(target) is not None
+        ):
             return resolved
+
+        if target == original or target == resolved.caller_id:
+            return resolved
+
         return ResolvedCall(
             resolved.caller_id,
             target,
@@ -1016,22 +747,38 @@ class CallResolver:
             resolved.origin,
         )
 
-    def _published(self, file_path: str, name: str) -> str | None:
+    def _published(self, file_path: str, name: str, *, top_level: bool = False) -> str | None:
         """The symbol *file_path* publishes under *name*, or None.
 
         A module may declare a symbol under one name and export it under
         another — ``export { stringType as string }`` — and every lookup that
         arrives through a namespace, a barrel or an import asks for the
         published name while the symbol table holds the local one. The table
-        answers first, so the alias can only ever add a hit.
+        answers first, so the alias can only ever add a hit. *top_level*
+        leaves class members out of the lookup.
         """
-        symbols = self._file_symbols.get(file_path, {})
+        table = self._file_top_level if top_level else self._file_symbols
+        symbols = table.get(file_path, {})
         found = symbols.get(name)
         if found is not None:
             return found
         parsed = self._parsed_files.get(file_path)
         local = parsed.export_aliases.get(name) if parsed else None
         return symbols.get(local) if local else None
+
+    def _published_by(self, file_path: str, owner: str, name: str) -> str | None:
+        """What *file_path* publishes under *name*, owned by *owner* where it can be.
+
+        ``_file_symbols`` is flat and last-wins, so a file that declares ``new``
+        on four types answers every ``Type::new()`` lookup with whichever came
+        last: the right file and the wrong owner. ``_file_methods`` carries the
+        owner. A module qualifier owns nothing, so it falls through to the flat
+        lookup unchanged.
+        """
+        owned = self._file_methods.get(file_path, {}).get((owner, name))
+        if owned is not None:
+            return owned
+        return self._published(file_path, name)
 
     def _merged_symbols_for(self, file_path: str) -> dict[str, str]:
         """Merged ``{name → symbol_id}`` across every file *file_path* imports.
@@ -1056,11 +803,11 @@ class CallResolver:
         Every language but the lexically-scoped ones can use its whole import
         set: a name reaching this tier arrived through some import, and which
         directive carried it is not knowable from the resolved file alone. For
-        a language in ``_LEXICAL_BARE_NAME_LANGUAGES`` it is knowable and it
+        a language in ``_NAMED_IMPORT_SCOPE_LANGUAGES`` it is knowable and it
         matters, so only imports that bind a whole module's public names count.
         """
         targets = self._import_targets.get(file_path, set())
-        if self._language_of(file_path) not in _LEXICAL_BARE_NAME_LANGUAGES:
+        if self._language_of(file_path) not in _NAMED_IMPORT_SCOPE_LANGUAGES:
             return targets
         parsed = self._parsed_files.get(file_path)
         if parsed is None:
@@ -1075,17 +822,6 @@ class CallResolver:
     def _merged_methods_for(self, file_path: str) -> dict[tuple[str, str], str]:
         """Merged ``{(class, method) → symbol_id}`` across imports (see above)."""
         return self._merged_over(file_path, self._file_methods, self._merged_import_methods)
-
-    def _merged_extension_methods_for(self, file_path: str) -> dict[tuple[str, str], str]:
-        """Merged ``{(extended type, method) → symbol_id}`` across imports.
-
-        This is the tier C# extensions actually live on: ``using`` is how a
-        holder class is brought into scope, so an imported extension is better
-        evidence here than the repo-wide fallback below it.
-        """
-        return self._merged_over(
-            file_path, self._file_extension_methods, self._merged_import_extensions
-        )
 
     def _merged_over(
         self,
@@ -1108,29 +844,6 @@ class CallResolver:
             cache[file_path] = merged
         return merged
 
-    def _extension_target(self, file_path: str, key: tuple[str, str]) -> tuple[str, str] | None:
-        """The extension method a ``(type, method)`` pair names, and its scope.
-
-        Same three scopes as ``_receiver_pair_match``, over the extension index.
-        """
-        site = self._extension_methods.get(key)
-        if site is None:
-            return None
-        type_name, method_name = key
-        # An import bound the name outside the repo, so a local holder of the
-        # same simple name is not what the call site named.
-        if type_name in self._externally_bound_names(file_path):
-            return None
-        if self._inherits_the_method(type_name, method_name):
-            return None
-        own = self._file_extension_methods.get(file_path, {})
-        if key in own:
-            return own[key], "same_file"
-        merged = self._merged_extension_methods_for(file_path)
-        if key in merged:
-            return merged[key], "import"
-        return site[1], "global"
-
     def resolve_file(self, file_path: str, calls: list[CallSite]) -> list[ResolvedCall]:
         """Resolve all calls in a single file to symbol-level edges."""
         results: list[ResolvedCall] = []
@@ -1139,17 +852,26 @@ class CallResolver:
             if not call.caller_symbol_id:
                 # Module-level call — assign to synthetic __module__ symbol
                 call = replace(call, caller_symbol_id=f"{file_path}::__module__")
+            call = self._typed_arguments(file_path, call)
 
-            resolved = self._resolve_one(file_path, call)
+            resolved = self._overload_sibling_call(call) or self._resolve_one(file_path, call)
             if resolved:
-                resolved = self._redirect_to_definition(resolved)
-                # Stamped once here rather than in each tier: what a site
-                # produces is a property of the syntax, not of the strategy
-                # that answered it. No tier sets it, so this compares against
-                # the default rather than against a tier's opinion.
+                resolved = self._narrow_overload(self._redirect_to_definition(resolved), call)
+            if resolved:
+                # The edge type is a property of the call syntax, not of the
+                # tier that answered, so it is stamped once here.
                 if call.edge_type != "calls":
                     resolved = replace(resolved, edge_type=call.edge_type)
-                results.append(resolved)
+
+                if call.spawned:
+                    resolved = replace(resolved, spawned=True)
+
+                for variant in self._variant_siblings.get(
+                    resolved.callee_id, (resolved.callee_id,)
+                ):
+                    if variant != resolved.caller_id:
+                        results.append(replace(resolved, callee_id=variant))
+
 
         return results
 
@@ -1159,7 +881,11 @@ class CallResolver:
         assert caller_id is not None
 
         language = self._language_of(file_path) or ""
+        if language == "cobol":
+            return self._resolve_cobol_call(file_path, call, caller_id)
         receiver_call = call.receiver_call
+        if _is_super_call(call, language):
+            return self._with_props(self._super_call(call, caller_id), call)
         # A language with an `external_return_types` table reaches the tier for
         # that table alone; only the constant above admits the full lane.
         if receiver_call is not None and (
@@ -1172,12 +898,151 @@ class CallResolver:
             if handled:
                 return resolved
 
+        strategies = self._strategies_for(file_path)
+        bare_fallback = strategies.member_bare_fallback
         # --- Method call with receiver: receiver.method() ---
         if call.receiver_name:
-            return self._with_props(self._resolve_member_call(file_path, call, caller_id), call)
+            handled, hit = self._resolve_member_call(file_path, call, caller_id)
+            if not handled and call.bare_name_fallback and bare_fallback:
+                hit = self._resolve_free_call(file_path, call, caller_id)
+            return self._with_props(hit, call)
+        if receiver_call is not None and not (bare_fallback and strategies.chain_bare_fallback):
+            return None
 
         # --- Free function call: function() ---
-        return self._with_props(self._resolve_free_call(file_path, call, caller_id), call)
+        return self._with_props(self._resolve_bare_call(file_path, call, caller_id), call)
+
+    def _through_kotlin_alias(
+        self, alias: Symbol, call: CallSite, caller_id: str
+    ) -> ResolvedCall | None:
+        """The repo class a Kotlin ``typealias`` names, as a call in its file would reach it."""
+        _, _, target = (alias.signature or "").partition(" = ")
+        head = strip_type_arguments(target).rstrip("? ").strip()
+        alias_file = self._symbol_paths_by_id.get(alias.id)
+        # A function type, a qualified (possibly external) name or the alias's own
+        # name gives no repo class to construct.
+        if alias_file is None or not head.isidentifier() or head == alias.name:
+            return None
+        hit = self._resolve_free_call(alias_file, replace(call, target_name=head), alias.id)
+        target_sym = self._symbols_by_id.get(hit.callee_id) if hit is not None else None
+        if target_sym is None or target_sym.kind != "class" or target_sym.name == alias.name:
+            return None
+        return replace(hit, caller_id=caller_id)
+
+    def _resolve_bare_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """A receiver-less call, refused where it lands on an extension it has no receiver for.
+
+        A Kotlin ``typealias`` is followed to the class it names, resolved from
+        the alias's own file, and refused when that is not a repo class:
+        ``IOException(..)`` through ``actual typealias IOException =
+        java.io.IOException`` constructs the external type, which the alias is
+        not. Ceiling: a qualified target (``= app.data.Repo``) is refused too.
+        """
+        invoked = self._operator_invoke_call(file_path, call, caller_id)
+        if invoked is not None:
+            return invoked
+        hit = self._resolve_free_call(file_path, call, caller_id)
+        alias = self._symbols_by_id.get(hit.callee_id) if hit is not None else None
+        if _is_kotlin_alias(alias):
+            return self._through_kotlin_alias(alias, call, caller_id)
+        if hit is None or call.receiver_call is not None:
+            return hit
+        return None if self._lacks_extension_receiver(file_path, call, hit.callee_id) else hit
+
+    def _operator_invoke_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """``useCase(args)`` on a Kotlin value whose type declares ``operator fun invoke``.
+
+        The name is typed as the receiver of ``useCase.invoke(args)``: a local,
+        a parameter, a property of the caller's class or of its file. A local or
+        parameter outranks every function of the name. A property does not
+        outrank a function its own scope declares (Kotlin prefers the function
+        at one level), so a member or top-level ``fun`` of the name leaves the
+        call to the function tiers. The operator may be inherited. A name no
+        declaration types, or a type with no such operator, falls through to
+        the function tiers too.
+        """
+        if not self._may_invoke(file_path, call):
+            return None
+        typed = self._invoked_value_type(file_path, call, caller_id)
+        if typed is None:
+            return None
+        type_name, scope, typing_file = typed
+        as_member = replace(call, receiver_name=call.target_name, target_name=_INVOKE_OPERATOR)
+        if "::" in type_name:
+            hit = self._call_typed_receiver(file_path, as_member, caller_id, type_name)
+            return hit if hit is not None and self._is_operator_invoke(hit.callee_id) else None
+        found = self._invoke_target(typing_file, as_member, caller_id, type_name)
+        if found is None:
+            return None
+        typed_call = self._field_typed_call if scope == "field" else self._body_typed_call
+        return typed_call(caller_id, found[0], found[1], call.line)
+
+    def _may_invoke(self, file_path: str, call: CallSite) -> bool:
+        """Is *call* a bare Kotlin call in a repo that declares some ``invoke`` method?"""
+        return (
+            call.receiver_call is None
+            and self._language_of(file_path) == "kotlin"
+            and _INVOKE_OPERATOR in self._method_names()
+        )
+
+    def _invoke_target(
+        self, typing_file: str, as_member: CallSite, caller_id: str, type_name: str
+    ) -> tuple[str, str] | None:
+        """``(operator invoke id, tier)`` *type_name* declares or inherits, if any."""
+        found = self._typed_receiver_target(
+            typing_file, as_member, caller_id, type_name
+        ) or self._inherited_typed_target(
+            typing_file, as_member, caller_id, id_segment_name(type_name)
+        )
+        return found if found is not None and self._is_operator_invoke(found[0]) else None
+
+    def _invoked_value_type(
+        self, file_path: str, call: CallSite, caller_id: str
+    ) -> tuple[str, str, str] | None:
+        """``(type, scope, typing file)`` of the value a bare Kotlin call names, if it may invoke.
+
+        None for an untyped or builtin-typed name, and for a property (not a
+        local or parameter) whose scope also declares a function of the name.
+        """
+        name = call.target_name
+        type_name, scope, typing_file = self._receiver_type_and_scope(
+            file_path, caller_id, "kotlin", name
+        )
+        if type_name is None:
+            type_name, scope = self._module_types_in(file_path, "kotlin").get(name), "module"
+        if type_name is None or external_type_name(type_name) is not None:
+            return None
+        if scope != "body" and self._function_in_scope(file_path, call, caller_id):
+            return None
+        return type_name, scope, typing_file
+
+    def _is_operator_invoke(self, sym_id: str) -> bool:
+        symbol = self._symbols_by_id.get(sym_id)
+        return (
+            symbol is not None
+            and symbol.name == _INVOKE_OPERATOR
+            and _OPERATOR_MODIFIER in symbol.modifiers
+        )
+
+    def _function_in_scope(self, file_path: str, call: CallSite, caller_id: str) -> bool:
+        """Does the caller's class, or its file at top level, declare a function *call* names?
+
+        A Kotlin ``val`` and ``fun`` of one name share an id; the id is callable
+        when the function is there.
+        """
+        own = self._enclosing_class_method(file_path, call, caller_id)
+        top = self._file_top_level.get(file_path, {}).get(call.target_name)
+        return any(sym_id in self._callable_ids for sym_id in (own, top) if sym_id is not None)
 
     def _with_props(self, res: ResolvedCall | None, call: CallSite) -> ResolvedCall | None:
         if res is not None and call.supplied_props is not None:
@@ -1195,8 +1060,7 @@ class CallResolver:
 
         ``handled`` distinguishes a proven refusal from missing evidence. A
         known repository type that does not declare the outer method disproves
-        the legacy bare-name fallback; an absent/external type leaves legacy
-        behavior untouched.
+        the bare-name fallback; an absent or external type leaves it to run.
         """
 
         inner = call.receiver_call
@@ -1204,52 +1068,148 @@ class CallResolver:
 
         tabled = self._external_chain_return_type(file_path, inner, language)
         from_table = tabled is not None
-        if tabled is not None:
-            type_name = tabled
-        elif language not in self._return_type_chain_languages:
-            # Admitted by its table alone. Inferring the head's type from the
-            # declared return type of a repository symbol is a separate and much
-            # larger population, and it is unmeasured here.
-            return False, None
-        else:
-            inferred = self._inferred_chain_return_type(
-                file_path, call, inner, caller_id, language
+        inner_callee = (
+            None
+            if tabled is not None
+            else self._chain_inner_callee(file_path, call, inner, caller_id, language)
+        )
+        if language in _RETURNED_TYPE_ID_LANGUAGES and inner_callee is not None:
+            # A go method may sit in any file of its type's package, so the
+            # type is read by identity and the method asked for across it.
+            # Python and Dart read the return type in the callee's file the same way.
+            type_id = self._returned_type_id(inner_callee)
+            hit = (
+                None
+                if type_id is None
+                else self._call_typed_receiver(file_path, call, caller_id, type_id)
             )
-            if inferred is None:
-                return False, None
-            type_name = inferred
+            if hit is not None:
+                tier = hit.origin.removeprefix("receiver_typed_")
+                return True, self._return_typed_call(caller_id, hit.callee_id, tier, call.line)
+            if language == "kotlin" and type_id is not None:
+                # A Kotlin extension function can add the method to the type the
+                # inner call returns; a member of the type still wins over it.
+                _, extension = self._extension_call(
+                    file_path, call, caller_id, self._symbols_by_id[type_id].name
+                )
+                if extension is not None:
+                    return True, extension
+        if language in ("python", "dart", "kotlin"):
+            # A type name read in the caller's file is not evidence, and an
+            # inherited method or an extension is not a refusal: the bare name
+            # keeps the site where the language allows one.
+            return False, None
+        type_name = (
+            tabled
+            if tabled is not None
+            else self._callee_chain_return_type(inner_callee, inner, language)
+        )
+        if type_name is None:
+            return False, None
 
         found = self._typed_receiver_target(file_path, call, caller_id, type_name)
-        if language == "java":
-            # A simple type name is not repository-unique.  Java package and
-            # import binding settle its identity; the global tier does not.
-            #
-            # When the name came from the table it is external *in this file*,
-            # and java has no extension methods, so the repository cannot
-            # declare that type's method either.  That makes the bare-name
-            # answer disproved rather than merely unevidenced, which is the
-            # difference between refusing the site and falling through to it.
-            if found is None or found[1] == "global":
-                return from_table, None
-        elif language == "cpp":
-            # P17 admits only the measured Seastar debt family.  Broader C++
-            # return-name matching remains probe evidence, not production
-            # behaviour.
-            if type_name != "future" or call.target_name != "get":
-                return False, None
-            if found is None:
-                return (type_name in self._known_type_names), None
-        elif language in ("csharp", "typescript"):
-            # These lanes require a file or import/re-export identity.  A
-            # repository-global simple type name is not a language binding.
-            if found is None or found[1] == "global":
-                return False, None
-        elif found is None:
-            return (type_name in self._known_type_names), None
+        if found is None and language == "csharp":
+            return self._csharp_chain_member(file_path, call, caller_id, type_name)
+        if language == "cpp" and not _admitted_cpp_chain(type_name, call.target_name):
+            # C++ admits only ``future.get()``; broader return-name matching
+            # is not admitted.
+            return False, None
+        if found is None or (found[1] == "global" and language in _BOUND_CHAIN_LANGUAGES):
+            return self._chain_refusal_is_proven(language, type_name, from_table), None
 
-        assert found is not None
         sym_id, tier = found
         return True, self._return_typed_call(caller_id, sym_id, tier, call.line)
+
+    def _chain_refusal_is_proven(self, language: str, type_name: str, from_table: bool) -> bool:
+        """Whether a chain with no usable target disproves the bare-name fallback."""
+        if language == "java":
+            # A table type is external in this file and java has no extension
+            # methods, so the repository cannot declare its method: the
+            # bare-name answer is disproved, not merely unevidenced.
+            return from_table
+        if language == "go":
+            # A go method is declared in its receiver type's package and go has
+            # no extension methods, so a head type with no repository method,
+            # declared here or not, leaves nothing for the bare name to find.
+            return True
+        if language in ("csharp", "typescript"):
+            return False
+        return type_name in self._known_type_names
+
+    def _csharp_chain_member(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+        type_name: str,
+    ) -> tuple[bool, ResolvedCall | None]:
+        """The member a C# chain reaches on a head type that does not declare it.
+
+        C# binds an instance method, an inherited one included, before an
+        extension, and an extension on a base type serves every type deriving
+        from it. Ancestors on two branches answering is ambiguous, and refused.
+
+        With no answer the bare-name fallback is disproved for a known type,
+        unless an extension the index leaves out carries the name: one on a
+        type parameter (``this TBuilder b``) or an external type may be it.
+        """
+        type_id = self._unique_type_id(type_name, "csharp")
+        if type_id is not None:
+            inherited = self._ancestor_method(type_id, call.target_name, caller_id)
+            if inherited is not None:
+                same_file = self._symbol_paths_by_id.get(inherited) == file_path
+                tier = "same_file" if same_file else "import"
+                return True, self._return_typed_call(caller_id, inherited, tier, call.line)
+
+        answered, hit = self._extension_call(file_path, call, caller_id, type_name)
+        if answered:
+            return True, hit
+        # Proven only for a type whose members were all asked: one whose every
+        # base is a repository type, or a builtin. A name the repository does
+        # not declare may be a type parameter (``TBuilder``), whose members are
+        # its constraint's.
+        known = (
+            self._lineage_is_in_repo(type_id)
+            if type_id is not None
+            else id_segment_name(type_name) in get_builtin_types("csharp")
+        )
+        return known and call.target_name not in self._unindexed_extension_names(), None
+
+    def _lineage_is_in_repo(self, class_id: str) -> bool:
+        """Does every base of *class_id* and of its ancestors resolve to a repository type?"""
+        for type_id in (class_id, *self._ancestors_of(class_id)):
+            bases = self._declared_bases(type_id)
+            if bases is None or any(base.startswith(_EXTERNAL_PREFIX) for base in bases):
+                return False
+        return True
+
+    def _unique_type_id(self, type_name: str, language: str) -> str | None:
+        """The one *language* type *type_name* (``IFoo`1`` or ``IFoo``) names repo-wide, or None."""
+        bare, _, arity = type_name.partition("`")
+        shape = (language, int(arity or 0))
+        candidates = [
+            symbol
+            for sym_id in self._global_symbols.get(bare, ())
+            if (symbol := self._symbols_by_id[sym_id]).kind in _TYPE_KINDS
+            and (symbol.language, symbol.type_parameter_count or 0) == shape
+        ]
+        return candidates[0].id if len(candidates) == 1 else None
+
+    def _unindexed_extension_names(self) -> frozenset[str]:
+        """Names of C# extension methods the extension index leaves out; built once.
+
+        Those extend a type parameter or an external type, so no typed lookup
+        can reach them and only the bare name still can.
+        """
+        if self._unindexed_extensions is None:
+            self._unindexed_extensions = frozenset(
+                sym.name
+                for sym in self._symbols_by_id.values()
+                if sym.language == "csharp"
+                and csharp_extension_receiver(sym.signature)
+                and self._csharp_extended_type(sym) is None
+            )
+        return self._unindexed_extensions
 
     def _external_chain_return_type(
         self,
@@ -1259,24 +1219,13 @@ class CallResolver:
     ) -> str | None:
         """The table's return type for ``Type.method(..)`` at the head of a chain.
 
-        None when the head is not a table entry, and — the part the rust half of
-        this phase bought — when this file rebinds the name to something the
-        repository owns. Java imports resolve to repository files, so
-        ``_import_names`` answers that directly, where rust needs its raw import
-        text read against the workspace index.
+        None when the head is not a table entry, or when this file binds the
+        name to something the repository owns. The bound value has to be read,
+        not merely tested: an unresolved import is an ``external:`` marker.
 
-        The bound value has to be read, not merely tested: an unresolved import
-        is recorded as an ``external:`` marker, so a truthiness check exempts
-        ``import com.google.common.collect.Maps`` and silently drops 36 of
-        caffeine's 96 measured sites.
-
-        The import list alone is not enough, because java's same-package types
-        need no import. A repository declaring its own ``Duration`` anywhere is
-        exempted outright rather than same-package-checked: the table records
-        the *JDK's* return type, which is the wrong answer for a repository
-        type whose factory returns something else, and refusing on it would
-        drop a correct edge. Costs nothing measured - 0 of the 106 sites has a
-        repo-declared receiver name, by construction of the population.
+        A repository declaring a type of that name anywhere is exempted
+        outright, because java's same-package types need no import and the
+        table records the external type's return type, not the repository's.
         """
         receiver = inner.receiver_name
         if not receiver:
@@ -1291,7 +1240,7 @@ class CallResolver:
             return None
         return methods.get(inner.target_name)
 
-    def _inferred_chain_return_type(
+    def _chain_inner_callee(
         self,
         file_path: str,
         call: CallSite,
@@ -1299,19 +1248,83 @@ class CallResolver:
         caller_id: str,
         language: str,
     ) -> str | None:
-        """The head's type read off the repository symbol the inner call resolves to."""
+        """The repository symbol the inner call of a chain resolves to."""
+        if language not in self._return_type_chain_languages:
+            # Admitted by its table alone; inferring from repository return
+            # types is not admitted for this language.
+            return None
+        link = (file_path, call.line, inner.receiver_name, inner.target_name)
+        if link in self._chain_links_in_flight:
+            return None
         inner_call = CallSite(
             target_name=inner.target_name,
             receiver_name=inner.receiver_name,
             caller_symbol_id=caller_id,
             line=call.line,
             argument_count=inner.argument_count,
+            receiver_call=self._nested_receiver_call(file_path, call.line, inner, language),
         )
-        resolved_inner = self._resolve_one(file_path, inner_call)
+        self._chain_links_in_flight.add(link)
+        try:
+            resolved_inner = self._resolve_one(file_path, inner_call)
+        finally:
+            self._chain_links_in_flight.discard(link)
         if resolved_inner is None:
             return None
+        # The overload the inner call's arguments select is the one whose type it returns.
+        callee_id = resolved_inner.callee_id
+        rep = self._overload_rep.get(callee_id)
+        if rep is not None:
+            tied = self._tied_without_representative(
+                rep, self._deciding_overloads(rep, inner.argument_count)
+            )
+            # A tie names a type only when every tied member returns it.
+            returns = {
+                self._callee_return_type(member, inner.argument_count, language) for member in tied
+            }
+            if len(returns) > 1 or None in returns:
+                return None
+            target = self._overload_target(rep, inner.argument_count)
+            if target != rep:
+                callee_id = target
+        return callee_id
 
-        symbol = self._symbols_by_id.get(resolved_inner.callee_id)
+    def _callee_chain_return_type(
+        self, callee_id: str | None, inner: CallReceiver, language: str
+    ) -> str | None:
+        if callee_id is None:
+            return None
+        return self._callee_return_type(callee_id, inner.argument_count, language)
+
+    def _nested_receiver_call(
+        self, file_path: str, line: int, inner: CallReceiver, language: str
+    ) -> CallReceiver | None:
+        """The call *inner* is itself chained onto: ``a()`` under ``a().b().c()``.
+
+        A receiver records one hop, but the parser keeps every link of a chain
+        as its own site on the chain's first line, so the hop below is read
+        off the site *inner* names. Apex, C#, Dart, Go, Java and Kotlin read it, so a
+        builder chain types each link from the one before; elsewhere an inner call
+        is still typed as if nothing were chained under it.
+        """
+        if language not in ("apex", "csharp", "dart", "go", "java", "kotlin"):
+            return None
+        sites = self._chained_sites.get(file_path)
+        if sites is None:
+            parsed = self._parsed_files.get(file_path)
+            sites = {
+                (c.line, c.receiver_name, c.target_name): c.receiver_call
+                for c in (parsed.calls if parsed else ())
+                if c.receiver_call is not None
+            }
+            _store_capped(self._chained_sites, file_path, sites, _SOURCE_CACHE_FILES)
+        return sites.get((line, inner.receiver_name, inner.target_name))
+
+    def _callee_return_type(
+        self, callee_id: str, argument_count: int | None, language: str
+    ) -> str | None:
+        """The type a call to *callee_id* yields, unless its overloads disagree."""
+        symbol = self._symbols_by_id.get(callee_id)
         if symbol is None:
             return None
         if symbol.kind in _TYPE_KINDS:
@@ -1319,17 +1332,14 @@ class CallResolver:
 
         raw_return = declared_return_type(symbol.signature or "")
         type_name = normalize_return_type(raw_return, language) if raw_return else None
-        symbol_path = self._symbol_paths_by_id.get(resolved_inner.callee_id)
+        symbol_path = self._symbol_paths_by_id.get(callee_id)
         if symbol_path is None:
             return None
-        overload_key = (
-            symbol_path,
-            symbol.parent_name,
-            symbol.name,
-            inner.argument_count,
-        )
-        if len(self._overload_return_types.get(overload_key, ())) > 1:
+        if self._overloads_disagree(symbol, symbol_path, argument_count):
             return None
+        if type_name is not None and language == "java":
+            # Read where the method declares it, with its member types in scope.
+            return self._read_java_type(symbol_path, callee_id, type_name)
         return type_name
 
     def _return_typed_call(self, caller_id: str, sym_id: str, tier: str, line: int) -> ResolvedCall:
@@ -1342,26 +1352,6 @@ class CallResolver:
             return ResolvedCall(caller_id, sym_id, 0.88, line, "return_type_import")
         return ResolvedCall(caller_id, sym_id, 0.75, line, "return_type_global")
 
-    def _member_shaped_sites(self, file_path: str) -> set[tuple[int, str]]:
-        """``(line, target)`` pairs at which this file also records a receiver.
-
-        Several grammars match ``obj.m()`` twice — once with a receiver, once
-        against the bare-call pattern — so a member call also arrives as a
-        receiver-less site.
-
-        Keyed on the line because a ``CallSite`` carries no column, so
-        ``foo(bar.foo())`` suppresses the tier for its own bare ``foo()``. That
-        costs the fix on that site, never a wrong edge; a column would fix it.
-        """
-        sites = self._member_shaped.get(file_path)
-        if sites is None:
-            parsed = self._parsed_files.get(file_path)
-            sites = {
-                (c.line, c.target_name) for c in (parsed.calls if parsed else ()) if c.receiver_name
-            }
-            self._member_shaped[file_path] = sites
-        return sites
-
     def _enclosing_class_method(
         self,
         file_path: str,
@@ -1371,18 +1361,56 @@ class CallResolver:
         """The caller's own class's method of this name, or None.
 
         ``_file_symbols`` is flat and last-wins, so a bare ``foo()`` inside
-        class ``A`` bound to class ``B``'s ``foo`` when ``B`` came later in the
-        file. ``_file_methods`` already carries the class.
+        class ``A`` would bind to class ``B``'s ``foo`` when ``B`` came later in
+        the file. ``_file_methods`` carries the class. A member call on its bare
+        fallback has an explicit receiver, so the caller's class is not it.
+        An anonymous class or enum-constant body (``Gson::FILTER::Filter``)
+        sees its own members first, then those of the class around it.
         """
         parsed = self._parsed_files.get(file_path)
         if parsed is None or parsed.file_info.language not in _IMPLICIT_RECEIVER_LANGUAGES:
             return None
+        if call.receiver_name:
+            return None
+        methods = self._file_methods.get(file_path, {})
+        caller_class = _extract_class_from_symbol_id(caller_id)
+        while caller_class:
+            own = methods.get((caller_class, call.target_name))
+            if own is not None:
+                return own
+            caller_class = outer_scope(caller_class)
+        return None
+
+    def _partial_fragment_member(self, file_path: str, caller_id: str, name: str) -> str | None:
+        """The caller's class member *name* declared in another fragment of it.
+
+        Every fragment of a C#/VB.NET ``partial`` type is one class scope, so a
+        member (nested types included) that any fragment declares is visible by
+        bare name in all of them. The lookup is keyed on the caller's file and
+        class, so a same-named member of an unrelated class never answers.
+        Fragments are asked in path order; an overload set split across them
+        binds to the first. A nested type answers with its constructor when it
+        declares one, as ``new X(..)`` does within a single file.
+        """
         caller_class = _extract_class_from_symbol_id(caller_id)
         if not caller_class:
             return None
-        if (call.line, call.target_name) in self._member_shaped_sites(file_path):
-            return None
-        return self._file_methods.get(file_path, {}).get((caller_class, call.target_name))
+        for fragment in self._partial_fragments.get((file_path, caller_class), ()):
+            if fragment == file_path:
+                continue
+            methods = self._file_methods.get(fragment, {})
+            sym_id = methods.get((caller_class, name))
+            if sym_id is None or sym_id == caller_id:
+                continue
+            if self._symbols_by_id[sym_id].kind in _TYPE_KINDS:
+                return methods.get((name, name), sym_id)
+            # A call site does not record ``new``, so ``new FaultGenerator()``
+            # and a member method ``FaultGenerator()`` look alike. When the
+            # repo also declares a type of that name, the method is a guess.
+            if name in self._csharp_type_names:
+                return None
+            return sym_id
+        return None
 
     def _resolve_free_call(
         self,
@@ -1395,119 +1423,259 @@ class CallResolver:
         # Every tier keys on the target name, so a name the repo declares
         # nowhere can only be matched under an import alias (2a below).
         declared = target_name in self._global_symbols
-
-        # Tier 1: same-file
-        file_syms = self._file_symbols.get(file_path, {})
-        if target_name in file_syms:
-            callee_id = file_syms[target_name]
-            own = self._enclosing_class_method(file_path, call, caller_id)
-            if own is not None and own != callee_id and _rivals_a_class_method(callee_id):
-                if own == caller_id:
-                    # Recursion the flat index handed to a stranger. No edge.
-                    return None
-                return ResolvedCall(caller_id, own, 0.95, call.line, "enclosing_class")
-            if callee_id != caller_id:  # no self-recursion edges for now
-                return ResolvedCall(caller_id, callee_id, 0.95, call.line, "same_file")
-
-        # The caller's language may see names no import statement mentions —
-        # a Go or JVM package sibling, a C/C++ translation unit in the same
-        # build target — and those beat the weaker import/global tiers.
-        if declared:
-            for strategy in self._strategies_for(file_path).free:
-                hit = getattr(self, strategy)(file_path, call, caller_id)
-                if hit is not None:
-                    return hit
-
-        # Tier 2: import-scoped
-        # 2a: Check specific imported name → source file (binding-aware)
-        binding = self._import_bindings.get(file_path, {}).get(target_name)
-        if binding and binding.source_file:
-            source_file = binding.source_file
-            # Follow barrel re-export one hop
-            barrel = self._barrel_origins.get(source_file, {})
-            lookup_name = binding.exported_name or target_name
-            if lookup_name in barrel:
-                source_file = barrel[lookup_name]
-            published = self._published(source_file, lookup_name)
-            if published is not None:
-                return ResolvedCall(caller_id, published, 0.90, call.line, "import_scoped")
-
-        if not declared:
+        # A parameter or local of that name hides every tier below.
+        if self._shadowed_by_local(file_path, call, caller_id):
             return None
 
-        # 2a fallback: plain _import_names (for imports without binding data)
-        name_to_file = self._import_names.get(file_path, {})
-        if target_name in name_to_file and not binding:
-            source_file = name_to_file[target_name]
-            barrel = self._barrel_origins.get(source_file, {})
-            if target_name in barrel:
-                source_file = barrel[target_name]
-            published = self._published(source_file, target_name)
-            if published is not None:
-                return ResolvedCall(caller_id, published, 0.90, call.line, "import_scoped")
+        # Tier 1: same-file
+        handled, resolved = self._same_file_free_call(file_path, call, caller_id)
+        if handled:
+            return resolved
+        # Still the caller's own class, declared in a sibling partial fragment.
+        # Not asked when this file declares the name itself: Tier 1 declines a
+        # call into the caller's own overload set (one id), and a same-named
+        # overload in another fragment is no better evidence than that. Nor for a
+        # member call on its bare fallback: its receiver is not the caller's class.
+        if not call.receiver_name and target_name not in self._file_symbols.get(file_path, {}):
+            sym_id = self._partial_fragment_member(file_path, caller_id, target_name)
+            if sym_id is not None:
+                return ResolvedCall(caller_id, sym_id, 0.95, call.line, "enclosing_class")
 
-        # 2b: Check all imported files for the symbol (pre-merged lookup)
-        merged_syms = self._merged_symbols_for(file_path)
-        # A data member is not callable. Tier 3 already refuses one, but this
-        # rung answered first and at 0.85, above the tier that declines it, so
-        # the refusal only reached whichever sites tier 3 happened to see.
-        if (
-            target_name in merged_syms
-            and merged_syms[target_name] not in self._non_callable_ids
-        ):
-            return ResolvedCall(
-                caller_id, merged_syms[target_name], 0.85, call.line, "import_merged"
+        # A language may see names no import mentions (a package sibling, a
+        # C/C++ build target), and those beat the import and global tiers.
+        if declared:
+            hit = self._first_strategy_hit(
+                self._strategies_for(file_path).free, file_path, call, caller_id
             )
+            if hit is not None:
+                return hit
 
-        # Tier 3: global unique match — only within the same language.
-        # A data member is not callable, so it must not be the unique answer
-        # that mints an edge. Filtered here rather than at index build
-        # so the `declared` gate above and the member gate in
-        # ``_resolve_member_call`` keep seeing the whole repo.
-        # Uniqueness is judged on the unfiltered list on purpose. Filtering the
-        # pool *before* the length test would re-uniquify a name that a field
-        # and a method both declare, firing the tier where it used to refuse —
-        # measured at +916 new 0.50-confidence edges on goose, on the one tier
-        # hand-read at 28.6% precision.
-        #
-        # A std-library name is refused the same way, and for the same reason
-        # one rung up: the name is in scope in every file without an import,
-        # so the repo symbol that happens to share it is not what the call
-        # site named. `Ok(())` and a chained `.unwrap()` are the shape.
-        candidates = self._global_symbols.get(target_name, [])
+        # Tier 2: import-scoped
+        binding = self._import_bindings.get(file_path, {}).get(target_name)
+        hit = self._bound_import_call(call, caller_id, binding)
+        if hit is not None:
+            return hit
+        # A Python name imported from outside the repository is that module's,
+        # not a same-named repo symbol a later tier would find. Python only:
+        # Python resolves a repo's own absolute imports by dotted path, while
+        # another language's import of the repo's own package by its published
+        # name may still be marked external and mean repo code. Ceiling: an
+        # in-repo ``except ImportError:`` fallback definition is not linked.
+        if (
+            binding is not None
+            and (binding.source_file or "").startswith(_EXTERNAL_PREFIX)
+            and self._language_of(file_path) == "python"
+        ):
+            return None
+        # A Kotlin import from a library namespace the repo does not hold
+        # (``import java.io.IOException``) binds the name just as surely.
+        if not declared or target_name in self._library_imported_names(file_path):
+            return None
+        return (
+            self._named_import_call(file_path, call, caller_id, binding)
+            or self._merged_import_call(file_path, call, caller_id)
+            or self._repo_wide_free_call(file_path, call, caller_id)
+        )
+
+    def _first_strategy_hit(
+        self,
+        strategies: tuple[str, ...],
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """The first edge a named strategy resolves, in order."""
+        for strategy in strategies:
+            hit = getattr(self, strategy)(file_path, call, caller_id)
+            if hit is not None:
+                return hit
+        return None
+
+    def _same_file_free_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> tuple[bool, ResolvedCall | None]:
+        """Tier 1, as ``(handled, edge)``: a handled None is a refusal."""
+        own = self._enclosing_class_method(file_path, call, caller_id)
+        if self._is_anonymous_id(own):
+            return True, _own_member_call(caller_id, own, call)
+        # ``_file_symbols`` is flat and holds class members, but a JS/TS bare
+        # call can only name a top-level binding: a same-named method must not
+        # shadow an import (or hide a top-level function declared before it).
+        table = (
+            self._file_top_level
+            if self._language_of(file_path) in _BARE_CALL_SKIPS_MEMBERS_LANGUAGES
+            else self._file_symbols
+        )
+        callee_id = table.get(file_path, {}).get(call.target_name)
+        if callee_id is None:
+            return False, None
+        if own is not None and own != callee_id and _rivals_a_class_method(callee_id):
+            if own == caller_id:
+                # Recursion the flat index handed to a stranger. No edge.
+                return True, None
+            return True, ResolvedCall(caller_id, own, 0.95, call.line, "enclosing_class")
+        if callee_id != caller_id:  # no self-recursion edges for now
+            return True, ResolvedCall(caller_id, callee_id, 0.95, call.line, "same_file")
+        return False, None
+
+    def _is_anonymous_id(self, sym_id: str | None) -> bool:
+        """Does *sym_id* name an anonymous class member?"""
+        return sym_id is not None and is_anonymous_member(self._symbols_by_id[sym_id])
+
+    def _bound_import_call(
+        self,
+        call: CallSite,
+        caller_id: str,
+        binding: NamedBinding | None,
+    ) -> ResolvedCall | None:
+        """2a: the specific imported name, binding-aware."""
+        if not (binding and binding.source_file):
+            return None
+        source_file = binding.source_file
+        # Follow barrel re-export one hop
+        barrel = self._barrel_origins.get(source_file, {})
+        lookup_name = binding.exported_name or call.target_name
+        if lookup_name in barrel:
+            source_file = barrel[lookup_name]
+        published = self._published(source_file, lookup_name)
+        if published is None:
+            return None
+        return ResolvedCall(caller_id, published, 0.90, call.line, "import_scoped")
+
+    def _named_import_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+        binding: NamedBinding | None,
+    ) -> ResolvedCall | None:
+        """2a fallback: plain ``_import_names`` (for imports without binding data)."""
+        target_name = call.target_name
+        name_to_file = self._import_names.get(file_path, {})
+        if target_name not in name_to_file or binding:
+            return None
+        source_file = name_to_file[target_name]
+        barrel = self._barrel_origins.get(source_file, {})
+        if target_name in barrel:
+            source_file = barrel[target_name]
+        published = self._published(source_file, target_name)
+        if published is None:
+            return None
+        return ResolvedCall(caller_id, published, 0.90, call.line, "import_scoped")
+
+    def _merged_import_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """2b: the symbol in any imported file (pre-merged lookup)."""
+        target_name = call.target_name
+        sym_id = self._merged_symbols_for(file_path).get(target_name)
+        # A data member is not callable, here as in tier 3.
+        if sym_id is None or sym_id in self._non_callable_ids:
+            return None
+        # A std-library name is in scope everywhere without an import, so a
+        # repo symbol that merely shares it is not what the call site named.
+        if target_name in get_builtin_methods(self._language_of(file_path) or ""):
+            return None
+        return ResolvedCall(caller_id, sym_id, 0.85, call.line, "import_merged")
+
+    def _library_imported_names(self, file_path: str) -> frozenset[str]:
+        """The names a Kotlin file binds by importing a JVM library namespace.
+
+        A namespace ``classify_jvm_import`` knows (the JDK, the Kotlin stdlib,
+        ``kotlinx``, ``androidx``) counts unless the import resolved into the
+        repo, which may be that library. An aliased import binds the alias only.
+        """
+        names = self._library_names.get(file_path)
+        if names is not None:
+            return names
+        parsed = self._parsed_files.get(file_path)
+        kotlin = parsed is not None and parsed.file_info.language == "kotlin"
+        imports = parsed.imports if kotlin else ()
+        names = frozenset(
+            name
+            for imp in imports
+            if _imports_a_library(imp)
+            for name in imp.local_names or [bare_type_name(imp.module_path)]
+        ) - {"*"}
+        self._library_names[file_path] = names
+        return names
+
+    def _repo_wide_free_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """Tier 3 and what follows it: answers not grounded in this file or its imports."""
+        target_name = call.target_name
+        # Ahead of tier 3: the caller's own hierarchy is better evidence than
+        # repo-wide uniqueness, and a JVM package sibling's member never answers.
+        inherited = self._implicit_inherited_call(file_path, call, caller_id)
+        if inherited is not None:
+            return inherited
+        # Tier 3: global unique match, only within the same language.
+        # Uniqueness is judged before filtering data members, on purpose: filtering
+        # them out first would re-uniquify a name a field and a method share. A
+        # symbol the caller cannot name at all is no rival, so that one is dropped.
+        candidates = [
+            sym_id
+            for sym_id in self._global_symbols.get(target_name, ())
+            if self._reachable_by_name(file_path, sym_id)
+        ]
         if len(candidates) == 1 and candidates[0] != caller_id:
             return self._global_unique_match(
                 file_path, call, caller_id, target_name, candidates[0]
             )
 
-        # Last, so it can only add an edge. The member-shaped refusal is the
-        # one ``_enclosing_class_method`` already applies: several grammars
-        # mint a receiver-less site for ``obj.m()`` too, and reading one as an
-        # implicit receiver would bind the wrong class's hierarchy to the call.
-        lang = self._language_of(file_path)
-        if (
-            lang in _IMPLICIT_RECEIVER_LANGUAGES
-            and lang in _INHERITED_LANGUAGES
-            and (call.line, target_name) not in self._member_shaped_sites(file_path)
-        ):
-            sym_id = self._inherited_method(caller_id, target_name)
-            if sym_id is not None:
-                return ResolvedCall(caller_id, sym_id, 0.90, call.line, "enclosing_inherited")
-
-        # An overload set is several declarations under one id, which the row
-        # count reads as an ambiguity that is not there. Not the filtering
-        # refused above: a field and a method sharing a name stay two ids.
-        # Last on purpose - ahead of the tier above it restated 1,027 edges
-        # the caller's own hierarchy already answered, at half the confidence.
+        # An overload set is several declarations under one id, not an ambiguity.
         collapsed = self._collapse_declarations(candidates)
-        if len(candidates) > 1 and len(collapsed) == 1:
-            only = next(iter(collapsed))
-            if only != caller_id and only not in self._property_accessor_ids:
-                return self._global_unique_match(
-                    file_path, call, caller_id, target_name, only
-                )
+        if len(candidates) <= 1 or len(collapsed) != 1:
+            return None
+        only = next(iter(collapsed))
+        if only == caller_id or only in self._property_accessor_ids:
+            return None
+        return self._global_unique_match(file_path, call, caller_id, target_name, only)
 
-        return None
+    def _reachable_by_name(self, file_path: str, sym_id: str) -> bool:
+        """Can a bare name in *file_path* reach *sym_id* with no include in between?
+
+        Not when *sym_id* has internal linkage in another translation unit: a
+        ``static`` function in one .c file cannot be linked from any other. The
+        include-grounded tiers need no check, since an included file is part of
+        the includer's translation unit. Nor across independent builds
+        (``_in_reach_of_build``).
+        """
+        path = self._symbol_paths_by_id.get(sym_id, "")
+        if sym_id in self._tu_local_ids and path != file_path:
+            return False
+        return self._in_reach_of_build(file_path, path)
+
+    def _implicit_inherited_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """A bare call an ancestor of the caller's class answers.
+
+        A member call on its bare fallback is refused, as in
+        ``_enclosing_class_method``.
+        """
+        lang = self._language_of(file_path)
+        if lang not in _IMPLICIT_RECEIVER_LANGUAGES or lang not in _INHERITED_LANGUAGES:
+            return None
+        if call.receiver_name:
+            return None
+        sym_id = self._inherited_method(caller_id, call.target_name)
+        if sym_id is None:
+            return None
+        return ResolvedCall(caller_id, sym_id, 0.90, call.line, "enclosing_inherited")
 
     def _global_unique_match(
         self,
@@ -1525,9 +1693,8 @@ class CallResolver:
         if target_name in get_builtin_methods(language):
             return None
         if candidate in self._non_callable_ids:
-            # Refused here rather than by falling through, so "this tier can
-            # lose an edge but never gain one" is true of the control flow and
-            # not only of the corpus.
+            # Refused rather than falling through, so this tier can lose an
+            # edge but never gain one.
             return None
         caller_lang = symbol_id_language(self._parsed_files, caller_id)
         callee_lang = symbol_id_language(self._parsed_files, candidate)
@@ -1540,194 +1707,269 @@ class CallResolver:
         file_path: str,
         call: CallSite,
         caller_id: str,
-    ) -> ResolvedCall | None:
-        """Resolve receiver.method() calls."""
+    ) -> tuple[bool, ResolvedCall | None]:
+        """Resolve receiver.method() calls, as ``(handled, edge)``.
+
+        A handled None is a refusal (the receiver's type is foreign), which a
+        bare-name fallback must not overrule.
+        """
         receiver_name = call.receiver_name
         method_name = call.target_name
         assert receiver_name is not None
 
-        # Every strategy below ends in a lookup keyed on the method name, so a
-        # name the repo declares nowhere cannot resolve. That is most member
-        # calls — the callee is usually external — and this is the whole of
-        # what those call sites now cost.
-        if method_name not in self._global_symbols:
-            return None
+        hit = self._first_strategy_hit(
+            self._strategies_for(file_path).constructor, file_path, call, caller_id
+        )
+        if hit is not None:
+            return True, hit
 
-        # The caller's own file first. Every other tier is ordered narrow-first
-        # and this one was not: the language strategies below run before
-        # ``_receiver_pair_match``, so ``_resolve_jvm_receiver_same_package``
-        # claimed ``new Builder<>(...).build()`` for any same-package class of
-        # that name — a test-source-set one included — while the caller's own
-        # file declared a private inner ``Builder`` on the same page. The
-        # narrowest scope that can answer is the one the call actually means.
+        # Every strategy below ends in a lookup keyed on the method name, so a
+        # name the repo declares nowhere cannot resolve.
+        # A Go interface method spec is bodiless, so ``_global_symbols`` leaves it
+        # out; the method index holds it, and it is what an interface-typed
+        # receiver binds to.
+        if method_name not in self._global_symbols and not (
+            self._language_of(file_path) == "go" and method_name in self._method_names()
+        ):
+            return False, None
+
+        # A Go local, parameter or ``var`` the body declares is read through its
+        # declared type, never as a type name: ``reader.Peek()`` on a
+        # ``reader text.Reader`` is the interface's method, not the unexported
+        # struct ``reader``'s. Go has no method call on a type name outside a
+        # method expression, so the variable reading is the right one.
+        if self._go_receiver_is_variable(file_path, call, caller_id):
+            hit = self._first_strategy_hit(
+                self._strategies_for(file_path).member, file_path, call, caller_id
+            )
+            if hit is not None:
+                return True, hit
+            hit = self._unclassed_receiver_call(file_path, call, caller_id)
+            if hit is None and self._receiver_type_is_external(file_path, call, caller_id):
+                return True, None
+            return hit is not None, hit
+
+        # The caller's own file first, ahead of the language strategies: a
+        # private inner class here outranks a same-named package sibling.
         own_file = self._file_methods.get(file_path, {}).get((receiver_name, method_name))
         if own_file is not None and own_file != caller_id:
-            return ResolvedCall(caller_id, own_file, 0.93, call.line, "receiver_same_file")
+            return True, ResolvedCall(caller_id, own_file, 0.93, call.line, "receiver_same_file")
 
         # A language may reach a receiver no import statement mentions: a Go
         # package alias spanning several files, a JVM class in the same package.
-        for strategy in self._strategies_for(file_path).member:
-            hit = getattr(self, strategy)(file_path, call, caller_id)
-            if hit is not None:
-                return hit
+        hit = (
+            self._first_strategy_hit(
+                self._strategies_for(file_path).member, file_path, call, caller_id
+            )
+            or self._module_receiver_call(file_path, call, caller_id)
+            or self._crate_root_call(call, caller_id)
+        )
+        if hit is not None:
+            return True, hit
 
+        handled, hit = self._receiver_class_call(file_path, call, caller_id)
+        if handled:
+            return True, hit
+
+        hit = self._unclassed_receiver_call(file_path, call, caller_id)
+        if hit is None and self._receiver_type_is_external(file_path, call, caller_id):
+            # The method is the external type's: refused, not left to a name match.
+            return True, None
+        return hit is not None, hit
+
+    def _go_receiver_is_variable(self, file_path: str, call: CallSite, caller_id: str) -> bool:
+        """Whether a Go call's receiver is a typed local, parameter or ``var`` of the caller."""
+        receiver_name = call.receiver_name or ""
+        if "." in receiver_name or self._language_of(file_path) != "go":
+            return False
+        return receiver_name in self._declared_types_in(file_path, caller_id, "go")
+
+    def _unclassed_receiver_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """A receiver no class name answers: ``self``/``this``, a local or a parameter.
+
+        The fallback strategies ask only once everything above declined.
+        """
+        return (
+            self._self_scope_call(file_path, call, caller_id)
+            or self._first_strategy_hit(
+                self._strategies_for(file_path).member_fallback, file_path, call, caller_id
+            )
+            or self._self_inherited_call(file_path, call, caller_id)
+        )
+
+    def _module_receiver_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """Strategies 1 and 1b: the receiver names an imported module."""
+        receiver_name = call.receiver_name
         # Strategy 1: receiver is a module alias (e.g. "import models" → "models.User()")
         module_file = self._module_aliases.get(file_path, {}).get(receiver_name)
         if module_file:
-            published = self._published(module_file, method_name)
-            if published is not None:
-                return ResolvedCall(caller_id, published, 0.88, call.line, "module_alias")
-            # A namespace over a barrel names a file that declares nothing of
-            # its own, so the lookup above can only ever miss. Chase the
-            # re-export map, as free calls and typed receivers already do.
-            #
-            # Keyed on the name the declaring file uses, not the one written
-            # here: a member access cannot rename, but the re-export it arrives
-            # through can, and the map records only the file. Without this an
-            # ``export { foo as bar }`` binds any unrelated ``bar`` the
-            # declaring file happens to hold.
-            origin = self._barrel_origins.get(module_file, {}).get(method_name)
-            if origin is not None and origin != module_file:
-                binding = self._import_bindings.get(module_file, {}).get(method_name)
-                declared_name = (binding.exported_name if binding else None) or method_name
-                published = self._published(origin, declared_name)
-                if published is not None:
-                    return ResolvedCall(caller_id, published, 0.88, call.line, "module_alias")
+            return self._module_alias_call(file_path, module_file, call, caller_id)
 
         # Strategy 1b: receiver in import names (non-alias fallback for backward compat)
         name_to_file = self._import_names.get(file_path, {})
-        if receiver_name in name_to_file and not module_file:
-            source_file = name_to_file[receiver_name]
-            published = self._published(source_file, method_name)
-            if published is not None:
-                return ResolvedCall(caller_id, published, 0.88, call.line, "module_alias")
+        if receiver_name not in name_to_file:
+            return None
+        published = self._published_by(name_to_file[receiver_name], receiver_name, call.target_name)
+        if published is None:
+            return None
+        return ResolvedCall(caller_id, published, 0.88, call.line, "module_alias")
 
-        # Strategy 1c: Rust crate-scoped reference (e.g. typst_html::module)
-        # The receiver is a crate name, the target is a symbol in that crate's lib.rs
-        crate_src = self._get_rust_crate_src().get(receiver_name)
-        if crate_src:
-            for root_file in ("lib.rs", "main.rs"):
-                crate_root = f"{crate_src}/{root_file}"
-                root_syms = self._file_symbols.get(crate_root, {})
-                if method_name in root_syms:
-                    return ResolvedCall(
-                        caller_id, root_syms[method_name], 0.88, call.line, "crate_root"
-                    )
+    def _module_alias_call(
+        self,
+        file_path: str,
+        module_file: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        method_name = call.target_name
+        # Where the alias can only name a module, ``log.message()`` reaches the
+        # module's own ``message``, never a same-named method of a class in it.
+        top_level = self._language_of(file_path) in _MODULE_ONLY_ALIAS_LANGUAGES
+        if top_level:
+            published = self._published(module_file, method_name, top_level=True)
+        else:
+            published = self._published_by(module_file, call.receiver_name, method_name)
+        if published is not None:
+            return ResolvedCall(caller_id, published, 0.88, call.line, "module_alias")
+        # A namespace over a barrel declares nothing of its own, so chase the
+        # re-export map, keyed on the name the declaring file uses: the
+        # re-export may rename, and the map records only the file.
+        origin = self._barrel_origins.get(module_file, {}).get(method_name)
+        if origin is None or origin == module_file:
+            return None
+        binding = self._import_bindings.get(module_file, {}).get(method_name)
+        declared_name = (binding.exported_name if binding else None) or method_name
+        published = self._published(origin, declared_name, top_level=top_level)
+        if published is None:
+            return None
+        return ResolvedCall(caller_id, published, 0.88, call.line, "module_alias")
 
-        # Strategies 2 and 2b: the receiver names a class that declares the
-        # method — in this file, in an imported one, or anywhere at all.
-        match = self._receiver_pair_match(file_path, (receiver_name, method_name))
-        if match is not None:
-            sym_id, tier = match
-            if tier == "same_file":
-                return ResolvedCall(caller_id, sym_id, 0.93, call.line, "receiver_same_file")
-            if tier == "import":
-                return ResolvedCall(caller_id, sym_id, 0.88, call.line, "receiver_import")
-            if self._answers_for_a_foreign_type(file_path, receiver_name):
-                return None
-            return ResolvedCall(caller_id, sym_id, 0.75, call.line, "receiver_global")
+    def _crate_root_call(self, call: CallSite, caller_id: str) -> ResolvedCall | None:
+        """Strategy 1c: Rust crate-scoped reference (e.g. ``my_crate::module``).
 
-        # Strategy 3: receiver is "self" or "this" — look in same class.
-        # Only the caller's own file can hold the match, so index straight
-        # into it instead of scanning every file's method dict.
-        if receiver_name in ("self", "this"):
-            caller_class = _extract_class_from_symbol_id(caller_id)
-            if caller_class:
-                sym_id = self._file_methods.get(file_path, {}).get((caller_class, method_name))
-                if sym_id is not None and sym_id != caller_id:
-                    return ResolvedCall(caller_id, sym_id, 0.95, call.line, "self_scope")
-
-        # Last: the receiver may be a local or parameter, which names no class
-        # at all. Everything above has already declined it.
-        for strategy in self._strategies_for(file_path).member_fallback:
-            hit = getattr(self, strategy)(file_path, call, caller_id)
-            if hit is not None:
-                return hit
-
-        # Strategy 3, continued: the method may be inherited, and Strategy 3
-        # can only see the caller's own class in the caller's own file. Asked
-        # last so it can add an edge and never displace one.
-        if receiver_name in ("self", "this") and self._language_of(file_path) in (
-            _INHERITED_LANGUAGES
-        ):
-            sym_id = self._inherited_method(caller_id, method_name)
-            if sym_id is not None:
-                return ResolvedCall(caller_id, sym_id, 0.90, call.line, "self_inherited")
-
+        The receiver is a crate name, the target is a symbol in that crate's lib.rs.
+        """
+        crate_src = self._get_rust_crate_src().get(call.receiver_name)
+        if not crate_src:
+            return None
+        for root_file in ("lib.rs", "main.rs"):
+            crate_root = f"{crate_src}/{root_file}"
+            root_syms = self._file_symbols.get(crate_root, {})
+            if call.target_name in root_syms:
+                return ResolvedCall(
+                    caller_id, root_syms[call.target_name], 0.88, call.line, "crate_root"
+                )
         return None
+
+    def _receiver_class_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> tuple[bool, ResolvedCall | None]:
+        """Strategies 2 and 2b, as ``(handled, edge)``.
+
+        The receiver names a class that declares the method: in this file, in
+        an imported one, or anywhere at all.
+        """
+        receiver_name = call.receiver_name
+        match = self._receiver_pair_match(file_path, (receiver_name, call.target_name))
+        if match is None:
+            return False, None
+        sym_id, tier = match
+        if tier == "same_file":
+            return True, ResolvedCall(caller_id, sym_id, 0.93, call.line, "receiver_same_file")
+        if tier == "import":
+            return True, ResolvedCall(caller_id, sym_id, 0.88, call.line, "receiver_import")
+        if self._answers_for_a_foreign_type(file_path, receiver_name):
+            return True, None
+        return True, ResolvedCall(caller_id, sym_id, 0.75, call.line, "receiver_global")
+
+    def _self_scope_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """Strategy 3: receiver is "self" or "this", so look in the same class.
+
+        Only the caller's own file, or a sibling fragment of a partial class,
+        can hold the match, so index straight into those instead of scanning
+        every file's method dict.
+        """
+        if not self._is_self_receiver(file_path, call.receiver_name):
+            return None
+        caller_class = _extract_class_from_symbol_id(caller_id)
+        if not caller_class:
+            return None
+        sym_id = self._file_methods.get(file_path, {}).get(
+            (caller_class, call.target_name)
+        ) or self._partial_fragment_member(file_path, caller_id, call.target_name)
+        if sym_id is None or sym_id == caller_id:
+            return None
+        return ResolvedCall(caller_id, sym_id, 0.95, call.line, "self_scope")
+
+    def _is_self_receiver(self, file_path: str, receiver_name: str | None) -> bool:
+        """Whether a receiver names the enclosing class's own instance.
+
+        VB.NET spells it ``Me``, and ``MyClass`` for a call that skips an
+        override, in any case since the language is case-insensitive. Asked
+        of VB.NET files only: elsewhere ``Me`` is an ordinary identifier.
+        """
+        if receiver_name in ("self", "this"):
+            return True
+        return (
+            receiver_name is not None
+            and receiver_name.lower() in _VBNET_SELF_RECEIVERS
+            and self._language_of(file_path) == "vbnet"
+        )
+
+    def _self_inherited_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """Strategy 3, continued: the method may be inherited.
+
+        Strategy 3 can only see the caller's own class in the caller's own
+        file. Asked last so it can add an edge and never displace one.
+        """
+        if call.receiver_name not in ("self", "this"):
+            return None
+        if self._language_of(file_path) not in _INHERITED_LANGUAGES:
+            return None
+        sym_id = self._inherited_method(caller_id, call.target_name)
+        if sym_id is None:
+            return None
+        return ResolvedCall(caller_id, sym_id, 0.90, call.line, "self_inherited")
 
     def _language_of(self, file_path: str) -> str | None:
         parsed = self._parsed_files.get(file_path)
         return parsed.file_info.language if parsed else None
 
-    def _inherited_method(self, caller_id: str, method_name: str) -> str | None:
-        """The method of this name an ancestor of the caller's class declares.
-
-        Ambiguity is terminal: when two ancestors on different branches declare
-        the name there is no way to tell which one the call means, and picking
-        either mints an edge to a class the call may never reach. Refusing
-        costs an edge; guessing costs correctness.
-        """
-        if not self._heritage_parents:
-            return None
-        class_id = _extract_class_id(caller_id)
-        if class_id is None:
-            return None
-        # The caller's own class answers, even when the earlier tier declined
-        # it. Recursion is the case: Strategy 3 refuses to point a call at its
-        # own symbol, and without this that refusal fell through to an
-        # ancestor's bodiless declaration of the same name.
-        if self._declares(class_id, method_name) is not None:
-            return None
-        hits = set()
-        for ancestor in self._ancestors_of(class_id):
-            sym_id = self._declares(ancestor, method_name)
-            if sym_id is not None and sym_id != caller_id:
-                hits.add(sym_id)
-        return next(iter(hits)) if len(hits) == 1 else None
-
-    def _declares(self, class_id: str, method_name: str) -> str | None:
-        """The symbol a type node declares under *method_name*, or None.
-
-        Splitting on the *first* separator, not the last: a nested class is
-        ``path::Outer::Inner`` and ``_file_methods`` keys it under ``Inner``
-        in ``path``. Taking the last would look for a file called
-        ``path::Outer``, miss silently, and — worse than a missed edge — hide
-        an ancestor from the ambiguity check above, letting a wrong single
-        candidate through as if it were unopposed.
-        """
-        file_path, _, name = class_id.partition("::")
-        return self._file_methods.get(file_path, {}).get((name.rpartition("::")[2], method_name))
-
-    def _ancestors_of(self, class_id: str) -> tuple[str, ...]:
-        got = self._ancestors.get(class_id)
-        if got is None:
-            from .heritage_resolver import heritage_ancestors
-
-            # Sorted, because the walk stops expanding an anchor after its
-            # first visit: which branch reaches it first decides how much of
-            # its own chain is expanded, and a set's order is not stable
-            # across processes.
-            reached = heritage_ancestors(
-                class_id,
-                lambda t: sorted(self._heritage_parents.get(t, ())),
-                max_expand_depth=_MAX_ANCESTOR_EXPAND_DEPTH,
-            )
-            reached.discard(class_id)
-            got = tuple(sorted(reached))
-            self._ancestors[class_id] = got
-        return got
-
     def _receiver_pair_match(
         self,
         file_path: str,
         key: tuple[str, str],
+        spelled: str | None = None,
     ) -> tuple[str, str] | None:
         """The symbol a ``(class, method)`` pair names, and the scope that held it.
 
         No class declares the pair unless the global method index holds it, and
         that check also keeps the merged-import view from being built for a
-        pair that cannot be in it.
+        pair that cannot be in it. *spelled* is the type as the call site
+        wrote it when that carries a C# arity (``Policy`1``) the key drops.
         """
         if key not in self._global_methods:
             return None
@@ -1740,311 +1982,72 @@ class CallResolver:
         if key in merged_methods:
             return merged_methods[key], "import"
 
-        # Trait method dispatch — the method may be defined on a trait's impl
-        # block in another file. The global index preserves file-insertion
-        # match order; the caller's own file is skipped.
-        for path, sym_id in self._global_methods[key]:
-            if path != file_path:
-                return sym_id, "global"
+        # An Apex type is one its project reaches (a strategy answers that), never repo-wide.
+        if self._language_of(file_path) == "apex":
+            return None
+        return self._repo_wide_method(key, spelled or key[0])
 
-        return None
+    def _repo_wide_method(self, key: tuple[str, str], spelled: str) -> tuple[str, str] | None:
+        """The global tier: the one method *key* can name anywhere, or None.
 
-    def _typed_receiver_language(self, file_path: str, call: CallSite) -> str | None:
-        """The language receiver typing may run in here, or None to decline.
-
-        Shared by both typed strategies so the cheap refusals happen once and
-        in the same order: a receiver that names no local, a language with no
-        declaration shapes, and a method name no class in the repo declares.
+        Nothing at this scope tells two same-named types apart, so it answers
+        only when one repository type can be meant and one method of it
+        matches. Otherwise a call on one project's ``MainWindow`` binds to
+        whichever ``MainWindow`` sorts first, even one that merely inherits
+        the method. A file declaring only a type the call cannot mean (another
+        arity of a C# generic) holds no candidate; any other file, including
+        one with no type of that name (a trait ``impl``, an out-of-line C++
+        body), still does.
         """
-        receiver_name = call.receiver_name or ""
-        # A capitalised receiver already names a type and every tier above has
-        # tried it. An underscore one cannot be anything but a name.
-        head = receiver_name[:1]
-        if not (head.islower() or head == "_") or receiver_name in ("self", "this"):
+        bare, _, arity = spelled.partition("`")
+        declared = self._declared_types_named(bare)
+        meant = {identity for _, identity, count in declared if count == int(arity or 0)}
+        if len(meant) > 1:
             return None
-
-        parsed = self._parsed_files.get(file_path)
-        language = parsed.file_info.language if parsed else ""
-        if language not in RECEIVER_TYPE_LANGUAGES:
-            return None
-
-        # Reading a file is the expensive half, so refuse before it rather than
-        # after. Nothing here can resolve unless some class declares a method of
-        # this name; the gate above only proves some *symbol* does, which a free
-        # function satisfies.
-        if call.target_name not in self._method_names():
-            return None
-        return language
-
-    def _typed_receiver_target(
-        self,
-        file_path: str,
-        call: CallSite,
-        caller_id: str,
-        type_name: str,
-    ) -> tuple[str, str] | None:
-        """The symbol ``type_name.method()`` names, and the scope that held it.
-
-        The scope is returned rather than an edge so that each caller stamps
-        its own origin literal, which is what keeps a field-typed edge separable
-        from a body-typed one after the build.
-        """
-        key = (type_name, call.target_name)
-
-        # An import statement binds the name outright, so it settles which type
-        # this is before any scope search.
-        bound = self._import_names.get(file_path, {}).get(type_name)
-        if bound is not None and not bound.startswith("external:"):
-            sym_id = self._file_methods.get(bound, {}).get(key)
-            if sym_id is None:
-                # An import names the module it was written against, which in
-                # Python is usually a package ``__init__`` that re-exports the
-                # type rather than declaring it. Free calls already chase that
-                # chain; without it the import settles which type this is and
-                # then refuses every method of it.
-                #
-                # Keyed on the *exported* name, as the free-call chase is: the
-                # map holds each file's own local names, so an alias would ask
-                # the bound file about a name that means something else there.
-                # ``!= bound`` because a mutual re-export can leave an entry
-                # naming its own file.
-                binding = self._import_bindings.get(file_path, {}).get(type_name)
-                exported = (binding.exported_name if binding else None) or type_name
-                declaring = self._barrel_origins.get(bound, {}).get(exported)
-                if declaring is not None and declaring != bound:
-                    sym_id = self._file_methods.get(declaring, {}).get((exported, call.target_name))
-            return None if sym_id is None else (sym_id, "import")
-
-        # Bound to something outside the repo and there is no edge to find,
-        # however many local classes share the simple name. A compatibility
-        # test that imports a third-party `Cache` is otherwise read as calling
-        # ours, and it looks right in every sample that does not check imports.
-        if type_name in self._externally_bound_names(file_path):
-            return None
-
-        # The caller's own file first. A nested class here outranks a
-        # same-named one in a package sibling, which is the whole ambiguity in
-        # a repo that keeps near-duplicate implementations side by side.
-        sym_id = self._file_methods.get(file_path, {}).get(key)
-        if sym_id is not None:
-            return sym_id, "same_file"
-
-        # Only the JVM registers both a member strategy and these fallbacks, so
-        # the scope that answers here is its same-package one. A second
-        # language pairing the two needs an origin word of its own.
-        typed_call = replace(call, receiver_name=type_name)
-        for strategy in self._strategies_for(file_path).member:
-            hit = getattr(self, strategy)(file_path, typed_call, caller_id)
-            if hit is not None:
-                return hit.callee_id, "same_package"
-
-        return self._receiver_pair_match(file_path, key)
-
-    def _resolve_typed_receiver(
-        self,
-        file_path: str,
-        call: CallSite,
-        caller_id: str,
-    ) -> ResolvedCall | None:
-        """Resolve ``x.method()`` by typing ``x`` from its declaration.
-
-        The declaration is in the calling body when ``x`` is a local or a
-        parameter, and at the enclosing class's own scope when it is a field —
-        the dependency-injection shape, held on a field and called throughout
-        the class.
-
-        Emits nothing unless the inferred type declares the method, which is
-        what makes a text scan safe: a mis-inference reaches no index and
-        yields no edge.
-        """
-        language = self._typed_receiver_language(file_path, call)
-        if language is None:
-            return None
-
-        receiver_name = call.receiver_name or ""
-        # A local shadows a field, so the body answers first and its answer
-        # stands — including when that answer is "declared twice, no usable
-        # type". Only a name the body never mentions reaches class scope.
-        body_types = self._declared_types_in(file_path, caller_id, language)
-        type_name = body_types.get(receiver_name)
-        unbound = receiver_name not in body_types
-        from_field = unbound and language in IMPLICIT_FIELD_LANGUAGES
-        if from_field:
-            class_id = caller_id.rpartition("::")[0]
-            type_name = (
-                self._field_types_in(file_path, language).get(class_id, {}).get(receiver_name)
-            )
-        # Third scope: a module-level def a framework decorator turned into an
-        # instance. Neither of the two above can see it — it is not in the body
-        # and not a field.
-        from_framework = type_name is None and unbound and language in FRAMEWORK_DECORATOR_LANGUAGES
-        if from_framework:
-            # The type lookup is a dict hit and the shadowing scan reads the
-            # whole file, so the cheap half decides first: only a receiver this
-            # scope would actually answer for is worth scanning a body for.
-            type_name = self._framework_type_of(file_path, receiver_name, language)
-            if type_name is not None and receiver_name in self._bound_names_in(
-                file_path, caller_id, language
-            ):
-                return None
-        if type_name is None:
-            return None
-        if self._means_the_wrapper(file_path, caller_id, language, call, receiver_name):
-            return None
-
-        found = self._typed_receiver_target(file_path, call, caller_id, type_name)
-        if found is None:
-            # Last, because C# prefers an instance method to an extension.
-            if language != "csharp":
-                return None
-            extension = self._extension_target(file_path, (type_name, call.target_name))
-            if extension is None:
-                return None
-            return self._extension_typed_call(caller_id, *extension, call.line)
-        sym_id, tier = found
-        if from_framework:
-            return self._framework_typed_call(caller_id, sym_id, tier, call.line)
-        if from_field:
-            return self._field_typed_call(caller_id, sym_id, tier, call.line)
-        return self._body_typed_call(caller_id, sym_id, tier, call.line)
-
-    def _means_the_wrapper(
-        self,
-        file_path: str,
-        caller_id: str,
-        language: str,
-        call: CallSite,
-        receiver_name: str,
-    ) -> bool:
-        """Is this call on the smart pointer itself rather than on what it holds?
-
-        ``shared_ptr<Foo> p`` gives ``p->m()`` a ``Foo`` and ``p.m()`` a
-        ``shared_ptr``, and the grammar query captures no operator to tell them
-        apart. The names a dot call can reach are closed by the language, so
-        refusing exactly those is what keeps ``p.get()`` off a repo's own
-        ``Foo::get`` -- at the cost of an arrow call that really did mean one.
-        Asked only of C++, and only of a type that was unwrapped.
-        """
-        if language != "cpp" or call.target_name not in POINTER_LIKE_MEMBERS:
-            return False
-        span = self._spans_for(file_path).get(caller_id)
-        if span is None:
-            return False
-        return receiver_name in unwrapped_names_in_span(
-            self._declarations_for(file_path, language), *span
+        owners: dict[str, set[tuple[str, ...]]] = defaultdict(set)
+        for path, identity, _ in declared:
+            owners[path].add(identity)
+        candidates = self._collapse_declarations(
+            [
+                sym_id
+                for path, sym_id in self._global_methods[key]
+                if len(owners.get(path, ())) != 1 or owners[path] <= meant
+            ]
         )
+        if len(candidates) != 1:
+            return None
+        return next(iter(candidates)), "global"
 
-    def _body_typed_call(self, caller_id: str, sym_id: str, tier: str, line: int) -> ResolvedCall:
-        """Stamp an edge whose receiver was typed from the calling body."""
-        if tier == "same_file":
-            return ResolvedCall(caller_id, sym_id, 0.93, line, "receiver_typed_same_file")
-        if tier == "same_package":
-            return ResolvedCall(caller_id, sym_id, 0.90, line, "receiver_typed_same_package")
-        if tier == "import":
-            return ResolvedCall(caller_id, sym_id, 0.88, line, "receiver_typed_import")
-        return ResolvedCall(caller_id, sym_id, 0.75, line, "receiver_typed_global")
+    def _declared_types_named(self, name: str) -> list[tuple[str, tuple[str, ...], int]]:
+        """``(file, identity, arity)`` for each repository type declared as *name*.
 
-    def _field_typed_call(self, caller_id: str, sym_id: str, tier: str, line: int) -> ResolvedCall:
-        """Stamp an edge whose receiver was typed from the enclosing class."""
-        if tier == "same_file":
-            return ResolvedCall(caller_id, sym_id, 0.93, line, "receiver_field_same_file")
-        if tier == "same_package":
-            return ResolvedCall(caller_id, sym_id, 0.90, line, "receiver_field_same_package")
-        if tier == "import":
-            return ResolvedCall(caller_id, sym_id, 0.88, line, "receiver_field_import")
-        return ResolvedCall(caller_id, sym_id, 0.75, line, "receiver_field_global")
-
-    def _framework_typed_call(
-        self, caller_id: str, sym_id: str, tier: str, line: int
-    ) -> ResolvedCall:
-        """Stamp an edge whose receiver was typed by a framework decorator."""
-        if tier == "same_file":
-            return ResolvedCall(caller_id, sym_id, 0.93, line, "receiver_framework_same_file")
-        if tier == "same_package":
-            return ResolvedCall(caller_id, sym_id, 0.90, line, "receiver_framework_same_package")
-        if tier == "import":
-            return ResolvedCall(caller_id, sym_id, 0.88, line, "receiver_framework_import")
-        return ResolvedCall(caller_id, sym_id, 0.75, line, "receiver_framework_global")
-
-    def _inherits_the_method(self, type_name: str, method_name: str) -> bool:
-        """Could a class of this name reach *method_name* through an ancestor?
-
-        C# dispatches to an inherited instance method in preference to an
-        extension, and every tier above asks only for the literal
-        ``(type, method)`` pair, so none of them sees one. Asked of every class
-        sharing the simple name: which is meant is not settled here.
+        The fragments of one ``partial`` type share an identity. A forward
+        declaration and a Rust ``impl`` block declare no type.
         """
-        for sym_id in self._global_symbols.get(type_name, ()):
-            symbol = self._symbols_by_id.get(sym_id)
-            if symbol is None or symbol.kind not in _TYPE_KINDS:
+        found = self._declared_types.get(name)
+        if found is not None:
+            return found
+        found = []
+        for sym_id in self._global_symbols.get(name, ()):
+            symbol = self._symbols_by_id[sym_id]
+            if symbol.kind not in _TYPE_KINDS or symbol.kind == "impl" or symbol.is_declaration:
                 continue
-            if any(self._declares(a, method_name) for a in self._ancestors_of(sym_id)):
-                return True
-        return False
-
-    def _extension_typed_call(
-        self, caller_id: str, sym_id: str, tier: str, line: int
-    ) -> ResolvedCall:
-        """Stamp an edge onto a C# extension method.
-
-        One family whatever scope typed the receiver, unlike the three-way
-        typed/field/framework split above: what an audit needs to separate is
-        the extension binding, whose holder class no call site mentions.
-        """
-        if tier == "same_file":
-            return ResolvedCall(caller_id, sym_id, 0.93, line, "receiver_extension_same_file")
-        if tier == "import":
-            return ResolvedCall(caller_id, sym_id, 0.88, line, "receiver_extension_import")
-        return ResolvedCall(caller_id, sym_id, 0.75, line, "receiver_extension_global")
-
-    def _method_names(self) -> frozenset[str]:
-        """Every name declared as a method of some class, built once."""
-        if self._method_name_set is None:
-            self._method_name_set = frozenset(method for _, method in self._global_methods)
-        return self._method_name_set
-
-    def _externally_bound_names(self, file_path: str) -> frozenset[str]:
-        """Simple names this file imports from outside the repo.
-
-        Read off the raw import statements rather than ``_import_names``, which
-        only carries bindings that resolved to a file — precisely the ones this
-        needs to exclude.
-
-        The names wanted here are the ones *this file writes*, which is what
-        ``Import.local_names`` answers: ``imported_names`` carries the source
-        module's name, and under an alias the two differ.
-        """
-        names = self._external_names.get(file_path)
-        if names is not None:
-            return names
-
-        parsed = self._parsed_files.get(file_path)
-        found: set[str] = set()
-        for imp in parsed.imports if parsed else ():
-            if imp.resolved_file and not imp.resolved_file.startswith("external:"):
-                continue
-            bound = (*imp.local_names, imp.module_path.rsplit(".", 1)[-1])
-            found.update(name for name in bound if name and name != "*")
-
-        names = frozenset(found)
-        if len(self._external_names) >= _SOURCE_CACHE_FILES:
-            self._external_names.clear()
-        self._external_names[file_path] = names
-        return names
+            path = self._symbol_paths_by_id[sym_id]
+            arity = symbol.type_parameter_count or 0
+            identity = self._partial_fragments.get((path, name)) or (sym_id,)
+            found.append((path, (*identity, str(arity)), arity))
+        self._declared_types[name] = found
+        return found
 
     def _answers_for_a_foreign_type(self, file_path: str, receiver_name: str) -> bool:
         """Is the repo-wide tier about to answer a call on a type we do not own?
 
-        Asked only of the ``global`` tier, which takes the first file-order
-        match for a ``(type, method)`` pair with no uniqueness check. A
-        repository that writes ``impl RelationshipSourceCollection for
-        Vec<Entity>`` declares a ``Vec::new``, and without this the tier hands
-        it to every ``Vec::new()`` in the tree whatever the element type is.
-
-        The narrower tiers above are deliberately left alone: both are grounded
-        in the caller's own file or its imports, and a same-file ``impl
-        From<LocalIndex> for usize`` really is what ``usize::from(i)`` means
-        there.
+        Asked only of the ``global`` tier, which answers whenever the
+        repository declares one type of that name with the method. A
+        repository that writes ``impl Trait for Vec<Entity>`` declares a
+        ``Vec::new``, and without this every ``Vec::new()`` in the tree would
+        bind to it. The narrower tiers are grounded in the caller's own file or
+        its imports and are left alone.
         """
         if receiver_name not in get_external_receiver_types(
             self._language_of(file_path) or ""
@@ -2055,17 +2058,14 @@ class CallResolver:
     def _names_rebound_from_a_repo_package(self, file_path: str) -> frozenset[str]:
         """Names this file imports from one of the repository's own packages.
 
-        A file writing ``use bevy_platform::collections::HashMap`` means its own
-        ``HashMap``, so the repo answer is right and the refusal above must not
-        fire. The import list is what separates that from
-        ``use std::collections::HashMap`` two files away; the name cannot.
+        A file writing ``use my_crate::collections::HashMap`` means its own
+        ``HashMap``, so the refusal above must not fire; only the import list
+        separates that from ``use std::collections::HashMap``.
 
         Read off the raw import statements because a rust import resolves to no
-        repository file at all - measured 0 of 843 candidate rows - so
-        ``_import_names`` cannot answer this. The package index is what does,
-        and the exemption is only ever as good as the one the language has: a
-        language given a non-empty ``external_receiver_types`` without a
-        workspace index would refuse where it should exempt.
+        repository file, so ``_import_names`` cannot answer. A language with
+        ``external_receiver_types`` but no workspace index would refuse where
+        it should exempt.
         """
         cached = self._repo_rebound_names.get(file_path)
         if cached is not None:
@@ -2080,182 +2080,46 @@ class CallResolver:
                 found.update(n for n in (imp.local_names or ()) if n)
 
         names = frozenset(found)
-        if len(self._repo_rebound_names) >= _SOURCE_CACHE_FILES:
-            self._repo_rebound_names.clear()
-        self._repo_rebound_names[file_path] = names
+        _store_capped(self._repo_rebound_names, file_path, names, _SOURCE_CACHE_FILES)
         return names
 
-    def _declared_types_in(
-        self,
-        file_path: str,
-        caller_id: str,
-        language: str,
-    ) -> dict[str, str | None]:
-        """``{name: type}`` for the body of one function."""
-        key = (file_path, caller_id)
-        types = self._body_types.get(key)
-        if types is not None:
-            return types
 
-        span = self._spans_for(file_path).get(caller_id)
-        if span is None:
-            types = {}
-        else:
-            types = types_in_span(self._declarations_for(file_path, language), *span)
+def _index_bare_name(
+    sym: Symbol, index_id: str, file_syms: dict[str, str], top_level: dict[str, str]
+) -> None:
+    """Index *sym* under its bare name in one file's flat and top-level tables."""
+    if sym.is_declaration:
+        # A declaration must never displace a definition already
+        # indexed under this name — a .cpp that forward-declares a
+        # helper above its own body holds both.
+        #
+        # A method declaration stays out: this index answers
+        # unqualified lookups from importing files, and no bare name
+        # can legally reach a method. The (class, method) index
+        # still takes it.
+        if sym.parent_name is None:
+            file_syms.setdefault(sym.name, index_id)
+            top_level.setdefault(sym.name, index_id)
+        return
+    if sym.kind in _EXTENSION_KINDS:
+        return
+    # Top-level symbols and methods. An anonymous class member stays out: only
+    # its own class body names it bare, through the (class, method) index. It
+    # is never top-level, so ``top_level`` needs no such check.
+    if not is_anonymous_member(sym):
+        file_syms[sym.name] = index_id
+    if sym.parent_name is None:
+        top_level[sym.name] = index_id
 
-        if len(self._body_types) >= _BODY_TYPE_CACHE_ENTRIES:
-            self._body_types.clear()
-        self._body_types[key] = types
-        return types
 
-    def _field_types_in(
-        self,
-        file_path: str,
-        language: str,
-    ) -> dict[str, dict[str, str | None]]:
-        """``{class_id: {name: type}}`` for the fields one file's classes declare."""
-        by_class = self._field_types.get(file_path)
-        if by_class is not None:
-            return by_class
+def _own_member_call(caller_id: str, own: str, call: CallSite) -> ResolvedCall | None:
+    """An anonymous class body's call to its own member *own*, before any flat name.
 
-        parsed = self._parsed_files.get(file_path)
-        symbols = parsed.symbols if parsed else ()
-        class_spans = {s.id: (s.start_line, s.end_line) for s in symbols if s.kind in _TYPE_KINDS}
-        by_class = types_by_class(
-            self._declarations_for(file_path, language),
-            class_spans,
-            [(s.start_line, s.end_line) for s in symbols if s.kind in _FUNCTION_KINDS],
-        )
-        if len(self._field_types) >= _SOURCE_CACHE_FILES:
-            self._field_types.clear()
-        self._field_types[file_path] = by_class
-        return by_class
-
-    def _bound_names_in(self, file_path: str, caller_id: str, language: str) -> frozenset[str]:
-        """Every name the calling body binds, however it was bound."""
-        key = (file_path, caller_id)
-        names = self._bound_names.get(key)
-        if names is None:
-            span = self._spans_for(file_path).get(caller_id)
-            if span is None:
-                names = frozenset()
-            else:
-                names = names_in_span(self._bindings_for(file_path, language), *span)
-            if len(self._bound_names) >= _BODY_TYPE_CACHE_ENTRIES:
-                self._bound_names.clear()
-            self._bound_names[key] = names
-        return names
-
-    def _bindings_for(self, file_path: str, language: str) -> tuple[tuple[int, str], ...]:
-        """Every name one file binds, scanned once however many bodies ask."""
-        found = self._bindings.get(file_path)
-        if found is None:
-            found = scan_bindings(self._text_of(file_path), language)
-            if len(self._bindings) >= _SOURCE_CACHE_FILES:
-                self._bindings.clear()
-            self._bindings[file_path] = found
-        return found
-
-    def _framework_names(self, language: str) -> frozenset[str]:
-        """Every name a framework decorator retypes anywhere in the repo."""
-        if self._framework_name_set is None:
-            found: set[str] = set()
-            for parsed in self._parsed_files.values():
-                if parsed.file_info.language != language:
-                    continue
-                for symbol in parsed.symbols:
-                    if (
-                        symbol.kind in _FUNCTION_KINDS
-                        and not symbol.parent_name
-                        and framework_decorated_type(symbol.decorators, language)
-                    ):
-                        found.add(symbol.name)
-            self._framework_name_set = frozenset(found)
-        return self._framework_name_set
-
-    def _framework_types_in(self, file_path: str, language: str) -> dict[str, str]:
-        """``{name: type}`` for one file's module-level decorated defs."""
-        types = self._framework_types.get(file_path)
-        if types is None:
-            parsed = self._parsed_files.get(file_path)
-            types = {}
-            for symbol in parsed.symbols if parsed else ():
-                if symbol.kind not in _FUNCTION_KINDS or symbol.parent_name:
-                    continue
-                type_name = framework_decorated_type(symbol.decorators, language)
-                if type_name is not None:
-                    types[symbol.name] = type_name
-            # Uncapped, unlike the source-text caches: this holds names read off
-            # already-resident symbols, and is empty for all but a few files.
-            self._framework_types[file_path] = types
-        return types
-
-    def _framework_type_of(self, file_path: str, receiver_name: str, language: str) -> str | None:
-        """The framework type of *receiver_name*, where this file can see it.
-
-        Declared here, or imported here by name. A decorated def in a file the
-        caller never imports is not this receiver, and reaching for it would be
-        the bare-name match this tier exists to avoid.
-        """
-        # One pass over the repo's symbols answers for every call site that
-        # names nothing decorated, which is all of them in a repo that uses no
-        # framework in the table. Without it every unresolved member call pays
-        # a per-file symbol walk and three dict lookups: 15% of django's build
-        # for a repo that gains no edge at all.
-        if receiver_name not in self._framework_names(language):
-            return None
-
-        own = self._framework_types_in(file_path, language).get(receiver_name)
-        if own is not None:
-            return own
-
-        bound = self._import_names.get(file_path, {}).get(receiver_name)
-        if bound is None or bound.startswith("external:"):
-            return None
-        binding = self._import_bindings.get(file_path, {}).get(receiver_name)
-        exported = (binding.exported_name if binding else None) or receiver_name
-        declaring = self._barrel_origins.get(bound, {}).get(exported) or bound
-        return self._framework_types_in(declaring, language).get(exported)
-
-    def _declarations_for(self, file_path: str, language: str) -> tuple[Declaration, ...]:
-        """Every declaration in one file, scanned once however many bodies ask."""
-        found = self._declarations.get(file_path)
-        if found is None:
-            found = scan_declarations(self._text_of(file_path), language)
-            if len(self._declarations) >= _SOURCE_CACHE_FILES:
-                self._declarations.clear()
-            self._declarations[file_path] = found
-        return found
-
-    def _spans_for(self, file_path: str) -> dict[str, tuple[int, int]]:
-        """``{symbol_id: (start_line, end_line)}`` for one file."""
-        spans = self._symbol_spans.get(file_path)
-        if spans is None:
-            parsed = self._parsed_files.get(file_path)
-            spans = {s.id: (s.start_line, s.end_line) for s in (parsed.symbols if parsed else ())}
-            if len(self._symbol_spans) >= _SOURCE_CACHE_FILES:
-                self._symbol_spans.clear()
-            self._symbol_spans[file_path] = spans
-        return spans
-
-    def _text_of(self, file_path: str) -> str:
-        """One file's source, or empty if it cannot be read."""
-        text = self._source_text.get(file_path)
-        if text is not None:
-            return text
-
-        parsed = self._parsed_files.get(file_path)
-        text = ""
-        if parsed is not None:
-            try:
-                text = Path(parsed.file_info.abs_path).read_text(encoding="utf-8", errors="ignore")
-            except OSError:
-                text = ""
-
-        if len(self._source_text) >= _SOURCE_CACHE_FILES:
-            self._source_text.clear()
-        self._source_text[file_path] = text
-        return text
+    A same-file top-level function of the name included. Recursion: no edge.
+    """
+    if own == caller_id:
+        return None
+    return ResolvedCall(caller_id, own, 0.95, call.line, "same_file")
 
 
 def _rivals_a_class_method(symbol_id: str) -> bool:
@@ -2267,23 +2131,16 @@ def _rivals_a_class_method(symbol_id: str) -> bool:
     its own ``Entry``.
     """
     parts = symbol_id.split("::")
-    return len(parts) >= 3 and parts[-1] != parts[-2]
-
-
-def _extract_class_id(symbol_id: str) -> str | None:
-    """``path::Cls::meth`` -> ``path::Cls``; None when no class encloses it.
-
-    The heritage graph is keyed on the class's own symbol id, so the class
-    *name* alone cannot be looked up in it — that is the name-keyed shortcut
-    the walk exists to avoid.
-    """
-    parts = symbol_id.split("::")
-    return "::".join(parts[:-1]) if len(parts) >= 3 else None
+    return len(parts) >= 3 and id_segment_name(parts[-1]) != id_segment_name(parts[-2])
 
 
 def _extract_class_from_symbol_id(symbol_id: str) -> str | None:
-    """Extract parent class name from a symbol ID like 'path::ClassName::method'."""
+    """The parent from a symbol ID like 'path::ClassName::method'.
+
+    Every segment between path and name, the key ``_file_methods`` uses: an
+    anonymous class or enum-constant body spans several (``Op::PLUS``).
+    """
     parts = symbol_id.split("::")
     if len(parts) >= 3:
-        return parts[-2]
+        return "::".join(parts[1:-1])
     return None

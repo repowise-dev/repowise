@@ -11,6 +11,16 @@ import pytest
 
 from repowise.core.workspace.extractors.base import ScanContext
 from repowise.core.workspace.extractors.http.client_calls import (
+    ClientCallMatch,
+    consumer_contracts,
+    method_from_argument,
+)
+from repowise.core.workspace.extractors.http.paths import (
+    absolute_host,
+    extract_path_from_url,
+    flatten_interpolations,
+)
+from repowise.core.workspace.extractors.strings import (
     CSHARP_SYNTAX,
     GO_SYNTAX,
     JAVA_SYNTAX,
@@ -20,11 +30,8 @@ from repowise.core.workspace.extractors.http.client_calls import (
     PYTHON_SYNTAX,
     RUBY_SYNTAX,
     RUST_SYNTAX,
-    ClientCallMatch,
     call_arguments,
-    consumer_contracts,
-    method_from_argument,
-    resolve_url,
+    resolve_string,
     split_first_arg,
     string_constants,
 )
@@ -36,6 +43,7 @@ class TestLiterals:
         [
             (JS_SYNTAX, "'/api/users'", "/api/users"),
             (JS_SYNTAX, "`${BASE}/users/${id}`", "${BASE}/users/${id}"),
+            (JS_SYNTAX, '`/a/${id}${q ? `?${q}` : ""}`', '/a/${id}${q ? `?${q}` : ""}'),
             (PYTHON_SYNTAX, '"/api/users"', "/api/users"),
             (PYTHON_SYNTAX, 'f"{base}/users/{uid}"', "${base}/users/${uid}"),
             (PYTHON_SYNTAX, 'r"/raw"', "/raw"),
@@ -58,14 +66,15 @@ class TestLiterals:
         ],
     )
     def test_literal_bodies(self, syntax, expr, expected):
-        assert resolve_url(expr, syntax) == expected
+        assert resolve_string(expr, syntax) == expected
 
     @pytest.mark.parametrize(
         ("syntax", "expr"),
         [
             (JS_SYNTAX, "path"),
-            (JS_SYNTAX, '"/a" + id'),
+            (JS_SYNTAX, '"/a" + buildPath(id)'),
             (JS_SYNTAX, "buildPath(id)"),
+            (JS_SYNTAX, "`/a` || `/b`"),
             (PYTHON_SYNTAX, 'b"/bytes"'),
             (PYTHON_SYNTAX, 'f"/x/{{literal}}"'),
             (RUST_SYNTAX, "&url"),
@@ -73,50 +82,73 @@ class TestLiterals:
         ],
     )
     def test_unsettled_expressions_are_refused(self, syntax, expr):
-        assert resolve_url(expr, syntax) is None
+        assert resolve_string(expr, syntax) is None
 
 
 class TestFormatCalls:
     def test_rust_format(self):
         expr = 'format!("{}/systems/{}", base, id)'
-        assert resolve_url(expr, RUST_SYNTAX) == "${x}/systems/${x}"
+        assert resolve_string(expr, RUST_SYNTAX) == "${x}/systems/${x}"
 
     def test_go_sprintf(self):
         expr = 'fmt.Sprintf("%s/%s/@v/%s.zip", proxy, mod, ver)'
-        assert resolve_url(expr, GO_SYNTAX) == "${x}/${x}/@v/${x}.zip"
+        assert resolve_string(expr, GO_SYNTAX) == "${x}/${x}/@v/${x}.zip"
 
     def test_java_string_format(self):
         expr = 'String.format("https://api.example.com/v3/price?ids=%s", ids)'
-        assert resolve_url(expr, JAVA_SYNTAX) == "https://api.example.com/v3/price?ids=${x}"
+        assert resolve_string(expr, JAVA_SYNTAX) == "https://api.example.com/v3/price?ids=${x}"
 
     def test_a_format_call_whose_template_is_not_a_literal_is_refused(self):
-        assert resolve_url("fmt.Sprintf(tmpl, a)", GO_SYNTAX) is None
+        assert resolve_string("fmt.Sprintf(tmpl, a)", GO_SYNTAX) is None
 
 
 class TestUnwrapAndConcat:
     def test_java_uri_create_is_unwrapped(self):
-        assert resolve_url('URI.create(base + "/echo")', JAVA_SYNTAX) == "${base}/echo"
+        assert resolve_string('URI.create(base + "/echo")', JAVA_SYNTAX) == "${base}/echo"
+
+    def test_js_concat_with_a_trailing_name(self):
+        assert resolve_string("'/users/' + id", JS_SYNTAX) == "/users/${id}"
 
     def test_go_concat_with_a_trailing_name(self):
-        assert resolve_url('"/users/" + id', GO_SYNTAX) == "/users/${id}"
+        assert resolve_string('"/users/" + id', GO_SYNTAX) == "/users/${id}"
 
     def test_php_concat(self):
-        assert resolve_url("$this->base . '/contacts/' . $id", PHP_SYNTAX) == (
+        assert resolve_string("$this->base . '/contacts/' . $id", PHP_SYNTAX) == (
             "${$this->base}/contacts/${$id}"
         )
 
     def test_concat_with_a_call_is_refused(self):
-        assert resolve_url('base + "/" + fmt(x)', GO_SYNTAX) is None
+        assert resolve_string('base + "/" + fmt(x)', GO_SYNTAX) is None
+
+    def test_a_converted_name_past_the_base_is_a_parameter(self):
+        expr = 'base + "/catalogue/" + req.body.id.toString()'
+        assert resolve_string(expr, JS_SYNTAX) == "${base}/catalogue/${req.body.id}"
+        assert resolve_string('getBase() + "/x"', JS_SYNTAX) is None
+        assert resolve_string('base.trim() + "/x"', JS_SYNTAX) is None
+        assert resolve_string('"/a/" + cfg.getBasePath()', JS_SYNTAX) is None
+
+    def test_python_concat_and_format_method(self):
+        assert resolve_string('"/product/" + product', PYTHON_SYNTAX) == "/product/${product}"
+        expr = "'/api/rate/{}/{}'.format(item['sku'], randint(1, 5))"
+        assert resolve_string(expr, PYTHON_SYNTAX) == "/api/rate/${x}/${x}"
+        assert resolve_string("'/a/{}'.format(x).strip()", PYTHON_SYNTAX) is None
+        assert resolve_string("tmpl.format(x)", PYTHON_SYNTAX) is None
+        assert resolve_string('"/x/{{y}}".format(a)', PYTHON_SYNTAX) is None
+
+    def test_node_util_format(self):
+        expr = 'util.format("http://carts%s/carts", domain)'
+        assert resolve_string(expr, JS_SYNTAX) == "http://carts${x}/carts"
+        assert resolve_string('util.format("/a%20b/%s", x)', JS_SYNTAX) == "/a%20b/${x}"
 
     def test_a_concat_of_two_names_carries_no_path(self):
-        assert resolve_url("c.InfoAPIURL + id.Name", GO_SYNTAX) == "${c.InfoAPIURL}${id.Name}"
+        assert resolve_string("c.InfoAPIURL + id.Name", GO_SYNTAX) == "${c.InfoAPIURL}${id.Name}"
 
 
 class TestConstantFolding:
     def test_python_single_assignment_folds(self):
         content = 'BASE = "http://svc"\nurl = f"{BASE}/users"\nrequests.get(url)\n'
         constants = string_constants(content, PYTHON_SYNTAX)
-        assert resolve_url("url", PYTHON_SYNTAX, constants) == "http://svc/users"
+        assert resolve_string("url", PYTHON_SYNTAX, constants) == "http://svc/users"
 
     def test_a_reassigned_name_is_retired(self):
         content = 'url = "/a"\nurl = "/b"\n'
@@ -126,18 +158,18 @@ class TestConstantFolding:
         content = 'u := fmt.Sprintf("%s/x", base)\nresp, err := http.Get(u)\n'
         constants = string_constants(content, GO_SYNTAX)
         # A format call bound once folds at the call site like a literal.
-        assert resolve_url("u", GO_SYNTAX, constants) == "${x}/x"
-        assert resolve_url("other", GO_SYNTAX, constants) is None
+        assert resolve_string("u", GO_SYNTAX, constants) == "${x}/x"
+        assert resolve_string("other", GO_SYNTAX, constants) is None
         content = 'const liveReloadSourceURL = "https://example.com/livereload.js"\n'
         constants = string_constants(content, GO_SYNTAX)
-        assert resolve_url("liveReloadSourceURL", GO_SYNTAX, constants) == (
+        assert resolve_string("liveReloadSourceURL", GO_SYNTAX, constants) == (
             "https://example.com/livereload.js"
         )
 
     def test_ruby_frozen_constant(self):
         content = "CLEARBIT_ENDPOINT = 'https://person.clearbit.com/v2/find'.freeze\n"
         constants = string_constants(content, RUBY_SYNTAX)
-        assert resolve_url("CLEARBIT_ENDPOINT", RUBY_SYNTAX, constants) == (
+        assert resolve_string("CLEARBIT_ENDPOINT", RUBY_SYNTAX, constants) == (
             "https://person.clearbit.com/v2/find"
         )
 
@@ -145,26 +177,26 @@ class TestConstantFolding:
         content = "BASE_URL = 'https://api.dyte.io/v2'\n"
         constants = string_constants(content, RUBY_SYNTAX)
         expr = '"#{BASE_URL}/accounts/#{@account_id}/kit"'
-        assert resolve_url(expr, RUBY_SYNTAX, constants) == (
+        assert resolve_string(expr, RUBY_SYNTAX, constants) == (
             "https://api.dyte.io/v2/accounts/${@account_id}/kit"
         )
 
     def test_java_field_initialiser(self):
         content = 'private static final String BASE = "https://svc/api";\n'
         constants = string_constants(content, JAVA_SYNTAX)
-        assert resolve_url('BASE + "/users"', JAVA_SYNTAX, constants) == "https://svc/api/users"
+        assert resolve_string('BASE + "/users"', JAVA_SYNTAX, constants) == "https://svc/api/users"
 
     def test_kotlin_const_val(self):
         content = 'const val TEST_SERVER = "http://127.0.0.1:8080"\n'
         constants = string_constants(content, KOTLIN_SYNTAX)
-        assert resolve_url('"$TEST_SERVER/echo"', KOTLIN_SYNTAX, constants) == (
+        assert resolve_string('"$TEST_SERVER/echo"', KOTLIN_SYNTAX, constants) == (
             "http://127.0.0.1:8080/echo"
         )
 
     def test_php_variable_and_const(self):
         content = "$base = 'https://svc';\nconst PATH = '/x';\n"
         constants = string_constants(content, PHP_SYNTAX)
-        assert resolve_url("$base . PATH", PHP_SYNTAX, constants) == "https://svc/x"
+        assert resolve_string("$base . PATH", PHP_SYNTAX, constants) == "https://svc/x"
 
     def test_a_comparison_is_not_an_assignment(self):
         assert string_constants('if (a == "x") {}\n', JAVA_SYNTAX) == {}
@@ -198,15 +230,15 @@ class TestConstantFolding:
 
     def test_an_unwrap_or_format_call_must_be_the_whole_expression(self):
         constants = {"BASE": '"https://h/root"'}
-        assert resolve_url('URI.create(BASE).resolve("/v2")', JAVA_SYNTAX, constants) is None
-        assert resolve_url('fmt.Sprintf("%s/api", b) + "/v2"', GO_SYNTAX) is None
-        assert resolve_url("URI.parse(BASE) + '/x'", RUBY_SYNTAX, constants) is None
+        assert resolve_string('URI.create(BASE).resolve("/v2")', JAVA_SYNTAX, constants) is None
+        assert resolve_string('fmt.Sprintf("%s/api", b) + "/v2"', GO_SYNTAX) is None
+        assert resolve_string("URI.parse(BASE) + '/x'", RUBY_SYNTAX, constants) is None
 
     def test_a_doubled_percent_is_a_literal(self):
-        assert resolve_url('fmt.Sprintf("/a/100%%/%s", x)', GO_SYNTAX) == "/a/100%/${x}"
+        assert resolve_string('fmt.Sprintf("/a/100%%/%s", x)', GO_SYNTAX) == "/a/100%/${x}"
 
     def test_csharp_escaped_braces_are_refused(self):
-        assert resolve_url('$"/a/{{lit}}/{id}"', CSHARP_SYNTAX) is None
+        assert resolve_string('$"/a/{{lit}}/{id}"', CSHARP_SYNTAX) is None
 
 
 class TestMethodFromArgument:
@@ -251,13 +283,25 @@ class TestArgumentScanning:
 
 
 class TestLiteralSpan:
-    def test_a_capture_cut_at_an_inner_quote_keeps_its_prefix(self):
+    def test_a_capture_cut_at_an_inner_quote_reads_the_whole_template(self):
         from repowise.core.workspace.extractors.http.js_clients import fetch_calls
 
         content = "fetch(`https://h/v1/links?${new URLSearchParams({ a: 'x' })}`)"
         (row,) = fetch_calls(content)
-        assert row.url == "`https://h/v1/links?${new URLSearchParams({ a: `"
-        assert resolve_url(row.url, JS_SYNTAX) == "https://h/v1/links?${new URLSearchParams({ a: "
+        assert row.url == "`https://h/v1/links?${new URLSearchParams({ a: 'x' })}`"
+        assert resolve_string(row.url, JS_SYNTAX) == row.url[1:-1]
+
+    def test_a_nested_template_keeps_the_fetch_method(self):
+        from repowise.core.workspace.extractors.http.js_clients import fetch_calls, wrapper_calls
+
+        content = (
+            'fetch(`${API}/repos${q ? `?${q}` : ""}`, { method: "POST" });\n'
+            'apiCall(`/wins${q ? `?${q}` : ""}`, { method: "DELETE" });\n'
+        )
+        (row,) = fetch_calls(content)
+        assert (row.url, row.method) == ('`${API}/repos${q ? `?${q}` : ""}`', "POST")
+        (row,) = wrapper_calls(content, frozenset())
+        assert (row.url, row.method) == ('`/wins${q ? `?${q}` : ""}`', "DELETE")
 
 
 class TestConsumerContracts:
@@ -289,3 +333,60 @@ class TestConsumerContracts:
         rows = [ClientCallMatch(client="w", url='"database_url"', offset=0, method="GET")]
         assert consumer_contracts(self._ctx("x"), rows, GO_SYNTAX, path_only=True) == []
         assert len(consumer_contracts(self._ctx("x"), rows, GO_SYNTAX)) == 1
+
+
+class TestConsumerUrlShapes:
+    def test_nested_braces_in_an_interpolation_stay_one_segment(self):
+        assert flatten_interpolations("/rate/${format(d, F, { in: utc })}/x") == "/rate/${expr}/x"
+        assert flatten_interpolations("/a/${id}/b") == "/a/${id}/b"
+        assert flatten_interpolations("/a/${broken") == "/a/${broken"
+
+    def test_a_query_hole_ends_the_path(self):
+        assert flatten_interpolations('/a/${id}${q ? `?${q}` : ""}') == "/a/${id}"
+        assert flatten_interpolations("/a/${id}${qs ? '?' + qs : ''}") == "/a/${id}"
+        assert flatten_interpolations("/a/${b ? `/${c}` : ''}/d") == "/a/${expr}/d"
+        assert flatten_interpolations('/a/${k=="x"?id:0}/d') == '/a/${k=="x"?id:0}/d'
+        # Only a last hole is a query suffix; a mid-path one keeps the tail.
+        assert flatten_interpolations('/a/${c ? `?a` : `/b`}/z') == "/a/${c ? `?a` : `/b`}/z"
+
+    def test_a_scheme_inside_an_interpolation_is_not_the_host(self):
+        url = "${prod ? 'https://x.io' : ''}/api/status"
+        assert absolute_host(url) is None
+        assert extract_path_from_url(url) == url
+        assert absolute_host("https://x.io/${p}") == "x.io"
+
+    def test_a_scheme_after_a_leading_interpolation_is_the_urls(self):
+        assert absolute_host("${proto}://h.com/api/u") == "h.com"
+        assert extract_path_from_url("${proto}://h.com/api/u") == "/api/u"
+
+
+class TestLocust:
+    _FILE = (
+        "from locust import HttpUser, task\n"
+        "def browse(l):\n"
+        "    l.client.get('/product/' + product)\n"
+        "class U(HttpUser):\n"
+        "    @task\n"
+        "    def load(self):\n"
+        "        self.client.get('/')\n"
+        "        self.client.put('/api/rate/{}/{}'.format(sku, 5), headers=h)\n"
+        "        self.client.post('/cart', {'id': 1})\n"
+        "        # self.client.get('/api/commented')\n"
+        "        self.client.get('relative')\n"
+    )
+
+    def _ids(self, content: str) -> list[str]:
+        from repowise.core.workspace.extractors.http.python_clients import PythonClientsDialect
+
+        ctx = ScanContext("load", "locustfile.py", ".py", content, {}, None)
+        return sorted(c.contract_id for c in PythonClientsDialect().extract(ctx))
+
+    def test_user_client_calls_are_consumers(self):
+        assert self._ids(self._FILE) == [
+            "http::GET::/product/{param}",
+            "http::POST::/cart",
+            "http::PUT::/api/rate/{param}/{param}",
+        ]
+
+    def test_a_client_attribute_without_locust_is_not_read(self):
+        assert self._ids(self._FILE.replace("from locust import", "from mylib import")) == []

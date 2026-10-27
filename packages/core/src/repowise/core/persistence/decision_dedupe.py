@@ -58,7 +58,15 @@ from dataclasses import dataclass, field
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.decisions.lifecycle import ARCHITECTURAL_KIND
 from repowise.core.analysis.decisions.provenance import rank_for_source
+from repowise.core.analysis.decisions.scope import (
+    SCOPE_BASIS_FOOTPRINT,
+    SCOPE_BASIS_SELECTED,
+    SCOPE_BASIS_STATED,
+    binds_to_paths,
+    commit_scope_basis,
+)
 from repowise.core.analysis.decisions.semantic_match import (
     DECISION_VECTOR_PREFIX,
     DEFAULT_DEDUP_TAU,
@@ -71,8 +79,13 @@ from repowise.core.providers.embedding import store_has_semantic_vectors
 # ``_add_alias`` is private but its chain repointing is the load-bearing part:
 # without it a prior alias of a folded record points at an id this sweep deletes.
 from .crud.authority import _add_alias, accepted_decision_ids
-from .crud.decisions import _rederive_headline, list_decision_evidence
-from .decision_graph import sync_decision_node_links
+from .crud.decisions import (
+    _json_list,
+    _rederive_headline,
+    list_decision_evidence,
+    record_completeness,
+)
+from .decision_graph import sync_links_from_record
 from .models import (
     DecisionCandidateMeta,
     DecisionEdge,
@@ -160,34 +173,18 @@ class DedupePlan:
         }
 
 
-def _json_list(raw: str | None) -> list[str]:
-    try:
-        value = json.loads(raw or "[]")
-    except (TypeError, ValueError):
-        return []
-    return [str(v) for v in value] if isinstance(value, list) else []
-
-
-def _completeness(rec: DecisionRecord) -> int:
-    """How many of a record's five body fields say anything."""
-    filled = sum(
-        1 for text in (rec.decision, rec.rationale, rec.context) if (text or "").strip()
-    )
-    filled += sum(1 for raw in (rec.consequences_json, rec.alternatives_json) if _json_list(raw))
-    return filled
-
-
 def _canonical_key(rec: DecisionRecord) -> tuple:
     """Rank the members of a cluster; the maximum survives.
 
     Source rank first, because that is what the write path promotes a headline
     on. Completeness breaks the rank ties, so a blank record cannot outrank one
-    that says what was decided; confidence does not read completeness, so it
-    cannot stand in for it. The last two only make the pick deterministic.
+    that says what was decided. Confidence reads completeness too, but it
+    blends it with rank and verification, so it cannot stand in for the term
+    above it. The last two only make the pick deterministic.
     """
     return (
         rank_for_source(rec.source),
-        _completeness(rec),
+        record_completeness(rec),
         rec.confidence or 0.0,
         rec.created_at.isoformat() if rec.created_at else "",
         rec.id,
@@ -335,12 +332,23 @@ async def apply_dedupe(
             name: set(_json_list(getattr(canonical, column))) for column, name in _UNION_FIELDS
         }
         done = FoldPlan(canonical_id=canonical.id, canonical_title=canonical.title)
+        # Whether every list going into the union was chosen file by file,
+        # and whether any of them was a list no surface may bind to.
+        all_selected = canonical.scope_basis == SCOPE_BASIS_SELECTED
+        any_unbound = not binds_to_paths(canonical.scope_basis)
         for folded_id, title, score in cluster.folded:
             folded = await session.get(DecisionRecord, folded_id)
             if folded is None or folded_id not in eligible:
                 continue
+            all_selected = all_selected and folded.scope_basis == SCOPE_BASIS_SELECTED
+            any_unbound = any_unbound or not binds_to_paths(folded.scope_basis)
             for column, name in _UNION_FIELDS:
                 union[name] |= set(_json_list(getattr(folded, column)))
+            # The checkable noun wins a fold. An agreement that absorbs a
+            # record about the code is about the code too, and being checked
+            # against files it does name is the recoverable error of the two.
+            if folded.kind == ARCHITECTURAL_KIND:
+                canonical.kind = ARCHITECTURAL_KIND
             await _absorb_evidence(session, canonical.id, folded.id)
             await _repoint_references(session, canonical.id, folded.id)
             await _add_alias(session, folded.id, canonical.id, reason="merged")
@@ -353,14 +361,36 @@ async def apply_dedupe(
 
         for column, name in _UNION_FIELDS:
             setattr(canonical, column, json.dumps(sorted(union[name])))
-        # Sync replaces rather than accretes, so it must see the union.
-        await sync_decision_node_links(
-            session,
-            repository_id,
-            canonical.id,
-            files=sorted(union["files"]),
-            modules=sorted(union["modules"]),
-        )
+        # The union widens the file list, so the basis is recomputed from
+        # it rather than inherited: a footprint folding into a narrow
+        # canonical would otherwise hand it the wide list under a binding
+        # basis, on a record whose source the backfill does not repair.
+        #
+        # A fold of records that each chose their own files is the exception.
+        # Duplicates are restatements of one decision, so the union of their
+        # selections is still a selection, and recomputing it by breadth would
+        # demote a scope no breadth rule ever produced. That holds only while
+        # every member chose.
+        #
+        # Otherwise, a member that could not bind on its own must not bind
+        # through the union. The breadth rule cannot express that any more:
+        # ``backfill_scope_basis`` now marks a legacy commit list a footprint
+        # at any width, so ``commit_scope_basis`` over a small union returns
+        # the binding empty basis and would hand the canonical files nobody
+        # ever chose. Breadth is left to decide only the case it still owns --
+        # two lists that were both binding to begin with.
+        if canonical.scope_basis == SCOPE_BASIS_STATED:
+            pass
+        elif all_selected:
+            canonical.scope_basis = SCOPE_BASIS_SELECTED
+        elif any_unbound:
+            canonical.scope_basis = SCOPE_BASIS_FOOTPRINT
+        else:
+            canonical.scope_basis = commit_scope_basis(sorted(union["files"]))
+        # Through the shared writer, which reads the union just written to the
+        # record: the last path that judged links by its own rule, and so the
+        # last one that could re-create links a withdrawal had removed.
+        await sync_links_from_record(session, canonical)
         _rederive_headline(canonical, await list_decision_evidence(session, canonical.id))
         applied.clusters.append(done)
 

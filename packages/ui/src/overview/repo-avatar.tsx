@@ -1,5 +1,6 @@
 import * as React from "react";
 import { githubAvatarUrl, githubOwnerFromRemote } from "../lib/github";
+import { cn } from "../lib/cn";
 
 // Re-exported because `overview/index.ts` and the existing tests import it
 // from here. The implementation moved to `lib/github` so the owner avatar can
@@ -38,7 +39,10 @@ export function RepoAvatar({ name, remoteUrl, size = 40, className }: RepoAvatar
   return (
     <span
       aria-hidden
-      className={`relative inline-flex shrink-0 items-center justify-center overflow-hidden rounded-xl border border-[var(--color-border-default)] bg-[var(--color-accent-muted)] ${className ?? ""}`}
+      className={cn(
+        "relative inline-flex shrink-0 items-center justify-center overflow-hidden rounded-xl border border-[var(--color-border-default)] bg-[var(--color-accent-muted)]",
+        className,
+      )}
       style={{ width: size, height: size }}
     >
       <span

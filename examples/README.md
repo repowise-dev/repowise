@@ -8,11 +8,13 @@ self-contained README under `examples/<name>/`.
 | Example | What it shows |
 |---------|----------------|
 | [codex/](codex/) | Codex CLI setup: `repowise init --codex`, smoke checks, local plugin install |
+| [components/](components/) | `repowise components check` and `list`: Backstage-shaped components and per-component facts (no LLM key) |
 | [dead-code/](dead-code/) | `repowise dead-code` — unused exports and cleanup candidates (no LLM key) |
 | [decisions/](decisions/) | `repowise decision` list/health/confirm — architectural records (no LLM key) |
 | [distill/](distill/) | `distill` / `expand` / `saved` — compress command output (no LLM key) |
 | [health-coverage/](health-coverage/) | Code health, coverage ingest, and impacted-tests (no LLM key) |
 | [hooks-sync/](hooks-sync/) | `hook install` + `watch` — keep the index fresh (no LLM key) |
+| [plugins/hello/](plugins/hello/) | A minimal installable plugin: a CLI command, an MCP tool, an event sink and a report section |
 | [opencode/](opencode/) | OpenCode as the LLM provider for wiki generation |
 | [risk/](risk/) | `repowise risk` change / PR defect scoring (no LLM key) |
 | [search/](search/) | `repowise search` fulltext / symbol / semantic wiki lookup |

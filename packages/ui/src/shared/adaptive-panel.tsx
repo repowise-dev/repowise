@@ -21,6 +21,9 @@ export interface AdaptivePanelProps {
   onOpenChange: (open: boolean) => void;
   /** Accessible name for the panel; rendered in the header unless `hideHeader`. */
   title: React.ReactNode;
+  /** Replaces the title's default mono 12px treatment, for a header that sets
+   *  its own type (e.g. a file name over its directory). */
+  titleClassName?: string | undefined;
   /** Small uppercase label rendered above the title (e.g. entity kind). */
   eyebrow?: React.ReactNode | undefined;
   children: React.ReactNode;
@@ -34,6 +37,8 @@ export interface AdaptivePanelProps {
    * (no focus trap, overlay only on mobile). Default true.
    */
   modal?: boolean | undefined;
+  /** Radix's outside-interaction hook; `preventDefault()` keeps a non-modal panel open. */
+  onInteractOutside?: ((event: Event) => void) | undefined;
   className?: string | undefined;
 }
 
@@ -43,12 +48,14 @@ export function AdaptivePanel({
   open,
   onOpenChange,
   title,
+  titleClassName,
   eyebrow,
   children,
   widthClassName = "md:max-w-[520px]",
   sheetHeightClassName = "max-h-[85dvh]",
   hideHeader,
   modal = true,
+  onInteractOutside,
   className,
 }: AdaptivePanelProps) {
   const contentRef = React.useRef<HTMLDivElement>(null);
@@ -91,8 +98,18 @@ export function AdaptivePanel({
         <DialogPrimitive.Content
           ref={contentRef}
           aria-describedby={undefined}
+          {...(onInteractOutside ? { onInteractOutside } : {})}
           className={cn(
-            "fixed z-[var(--z-modal)] flex flex-col bg-[var(--color-bg-surface)] shadow-2xl",
+            // The page's own plane, so a drawer reads as part of the page it
+            // opens over; the hairline edge and shadow separate it.
+            // The page's plane, so the drawer reads as more of the page. Two
+            // planes are then too close to root to show inside it: dark inset
+            // wells (about 1.03:1 on root) and light elevated hovers (about
+            // 1.02:1). Inside the panel, wells take the overlay ground in dark
+            // and hovers take the translucent selection wash, which shows on
+            // root in both themes.
+            "dark:[--color-bg-inset:var(--color-bg-overlay)] [--color-bg-elevated:var(--color-bg-selected)]",
+            "fixed z-[var(--z-modal)] flex flex-col bg-[var(--color-bg-root)] shadow-2xl",
             "data-[state=open]:animate-in data-[state=closed]:animate-out",
             // Mobile: bottom sheet.
             "inset-x-0 bottom-0 rounded-t-2xl border-t border-[var(--color-border-default)]",
@@ -124,7 +141,12 @@ export function AdaptivePanel({
                     {eyebrow}
                   </p>
                 )}
-                <DialogPrimitive.Title className="mt-0.5 break-all font-mono text-[12px] leading-snug text-[var(--color-text-primary)]">
+                <DialogPrimitive.Title
+                  className={
+                    titleClassName ??
+                    "mt-0.5 break-all font-mono text-[12px] leading-snug text-[var(--color-text-primary)]"
+                  }
+                >
                   {title}
                 </DialogPrimitive.Title>
               </div>

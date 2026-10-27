@@ -60,7 +60,7 @@ def test_risk_uses_root_riskignore_and_repeatable_excludes(tmp_path: Path) -> No
     assert payload["features"]["nf"] == 1
     assert payload["features"]["la"] == 1
     assert payload["exclude_patterns"] == ["tests/", "*.spec.ts"]
-    assert payload["risk_authority"]["primary_fields"] == ["risk_percentile", "classification"]
+    assert payload["risk_authority"]["primary_fields"] == ["risk_percentile"]
     assert payload["risk_authority"]["score_role"] == "supporting_diff_shape_signal"
     assert {scale["unit"] for scale in payload["risk_scales"]} >= {
         "normalized_points",
@@ -89,12 +89,12 @@ def test_risk_human_output_labels_absolute_fallback_when_baseline_is_disabled(
     )
 
     assert result.exit_code == 0, result.output
-    assert "Absolute fallback band:" in result.output
-    assert "Benchmarked review priority:" not in result.output
+    assert "Size and spread: unranked" in result.output
+    assert "Absolute per-commit diff-size band:" in result.output
     assert "probability" not in result.output.lower()
 
 
-def test_risk_human_output_leads_with_benchmarked_review_priority(tmp_path: Path) -> None:
+def test_risk_human_output_leads_with_the_size_percentile(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(["init", "-q"], repo)
@@ -105,9 +105,13 @@ def test_risk_human_output_leads_with_benchmarked_review_priority(tmp_path: Path
     result = CliRunner().invoke(risk_command, ["HEAD", "--path", str(repo)])
 
     assert result.exit_code == 0, result.output
-    assert "Benchmarked review priority:" in result.output
-    assert "percentile of recent commits by size and spread" in result.output
-    assert "Absolute fallback band:" not in result.output
+    lead = result.output.split("Size and spread: ", 1)[1].splitlines()[0]
+    assert lead.endswith("percentile of recent commits (diff size, not a bug predictor)")
+    # One percentile on screen: the fix record is files and counts, never a rank.
+    assert result.output.count("percentile") == 1
+    assert "priority" not in result.output.lower()
+    assert "cannot rank danger" in result.output
+    assert "diff-size band" not in result.output
 
 
 def test_risk_help_describes_repeatable_exclude() -> None:
@@ -116,3 +120,241 @@ def test_risk_help_describes_repeatable_exclude() -> None:
     assert result.exit_code == 0
     assert "-x, --exclude PATTERN" in result.output
     assert "Repeatable" in result.output
+
+
+# ---------------------------------------------------------------------------
+# --fail-above-percentile: the CI gate on risk_percentile
+# ---------------------------------------------------------------------------
+
+
+def _ranked_repo(tmp_path: Path) -> Path:
+    """Enough history to rank HEAD against: a seed and nine one-file commits."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q", "-b", "main"], repo)
+    _commit(repo, {"README.md": "# seed\n"}, "chore: seed")
+    for index in range(9):
+        _commit(repo, {f"src/f{index}.py": f"value = {index}\n"}, f"feat: add {index}")
+    return repo
+
+
+def _gate(repo: Path, *args: str, env: dict[str, str] | None = None):
+    from repowise.core.ci.base import CI_BASE_VARS
+
+    return CliRunner(env={**dict.fromkeys(CI_BASE_VARS, ""), **(env or {})}).invoke(
+        risk_command, ["--path", str(repo), *args]
+    )
+
+
+def test_gate_passes_at_or_below_the_percentile_and_fails_above(tmp_path: Path) -> None:
+    repo = _ranked_repo(tmp_path)
+
+    passed = _gate(repo, "HEAD", "--fail-above-percentile", "100", "--format", "json")
+    assert passed.exit_code == 0, passed.output
+    payload = json.loads(passed.stdout)
+    gate = payload["gate"]
+    assert (gate["fail_above_percentile"], gate["status"]) == (100.0, "pass")
+    # Unrounded, beside the rounded risk_percentile.
+    assert round(gate["percentile"], 1) == payload["risk_percentile"]
+
+    failed = _gate(repo, "HEAD", "--fail-above-percentile", "0", "--format", "json")
+    assert failed.exit_code == 1, failed.output
+    assert json.loads(failed.stdout)["gate"]["status"] == "fail"
+
+
+def test_json_has_no_gate_block_without_the_flag(tmp_path: Path) -> None:
+    result = _gate(_ranked_repo(tmp_path), "HEAD", "--format", "json")
+
+    assert result.exit_code == 0, result.output
+    assert "gate" not in json.loads(result.stdout)
+
+
+def test_an_unranked_change_cannot_be_gated(tmp_path: Path) -> None:
+    repo = _ranked_repo(tmp_path)
+
+    disabled = _gate(repo, "HEAD", "--baseline", "0", "--fail-above-percentile", "90")
+    assert disabled.exit_code == 2
+    assert "--baseline 0" in disabled.output
+
+    young = tmp_path / "young"
+    young.mkdir()
+    _git(["init", "-q"], young)
+    _commit(young, {"a.py": "a = 1\n"}, "feat: a")
+    _commit(young, {"b.py": "b = 1\n"}, "feat: b")
+    few = _gate(young, "HEAD", "--fail-above-percentile", "90", "--format", "json")
+    assert few.exit_code == 2
+    assert json.loads(few.stdout)["error"] == "no_baseline"
+
+
+def test_an_unreadable_change_is_exit_2_for_every_revspec_run(tmp_path: Path) -> None:
+    repo = _ranked_repo(tmp_path)
+
+    for args in (["no-such-ref"], ["no-such-ref", "--fail-above-percentile", "90"]):
+        result = _gate(repo, *args, "--baseline", "0")
+        assert result.exit_code == 2, result.output
+        assert "Could not read change" in result.output
+
+
+def test_the_gate_scores_the_ci_change_when_revspec_is_omitted(tmp_path: Path) -> None:
+    repo = _ranked_repo(tmp_path)
+    _git(["update-ref", "refs/remotes/origin/main", "HEAD~1"], repo)
+    # A dirty tree would be the subject without the flag; the gate ignores it.
+    (repo / "src" / "f0.py").write_text("value = 100\n", encoding="utf-8")
+
+    gated = _gate(
+        repo, "--fail-above-percentile", "100", "--format", "json",
+        env={"GITHUB_BASE_REF": "main"},
+    )
+    assert gated.exit_code == 0, gated.output
+    assert json.loads(gated.stdout)["ref"] == "origin/main...HEAD"
+
+    ungated = _gate(repo, "--baseline", "0", "--format", "json")
+    assert json.loads(ungated.stdout)["working_tree"] is True
+
+
+def test_the_gate_without_a_target_branch_exits_2(tmp_path: Path) -> None:
+    repo = _ranked_repo(tmp_path)
+    _git(["checkout", "-q", "--detach"], repo)
+    _git(["branch", "-D", "main"], repo)
+
+    result = _gate(repo, "--fail-above-percentile", "90")
+    assert result.exit_code == 2
+    assert "Pass REVSPEC" in result.output
+
+
+def test_markdown_and_github_lead_with_the_verdict(tmp_path: Path) -> None:
+    repo = _ranked_repo(tmp_path)
+    summary = tmp_path / "summary.md"
+
+    md = _gate(repo, "HEAD", "--fail-above-percentile", "0", "--format", "markdown")
+    assert md.exit_code == 1
+    first, _, scope = md.stdout.splitlines()[:3]
+    assert first.startswith(
+        "**Above the 0th percentile size gate**: larger and more spread out than "
+    )
+    assert first.endswith("% of recent commits")
+    assert "absolute" not in md.stdout
+    assert "across 1 directory" in scope
+    assert md.stdout.rstrip().endswith("cannot rank danger.")
+
+    gh = _gate(
+        repo, "HEAD", "--fail-above-percentile", "0", "--format", "github",
+        env={"GITHUB_STEP_SUMMARY": str(summary)},
+    )
+    assert gh.exit_code == 1
+    assert gh.stdout.startswith("::error::Above the 0th percentile size gate: ")
+    assert summary.read_text(encoding="utf-8").startswith("**Above the 0th percentile size gate**")
+
+
+def test_ci_formats_score_the_ci_change_without_the_gate(tmp_path: Path) -> None:
+    repo = _ranked_repo(tmp_path)
+    _git(["update-ref", "refs/remotes/origin/main", "HEAD~1"], repo)
+
+    md = _gate(repo, "--format", "markdown", env={"GITHUB_BASE_REF": "main"})
+    assert md.exit_code == 0, md.output
+    assert md.stdout.startswith("**Size and spread**: larger and more spread out than ")
+    assert "`origin/main...HEAD`" in md.stdout
+
+
+def _scored(percentile: float | None):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(percentile=percentile)
+
+
+def test_size_text_never_hides_which_side_of_the_gate() -> None:
+    from repowise.core.analysis.change_risk.render import (
+        _rank_text,
+        headline,
+        percentile_gate,
+        size_text,
+    )
+
+    def rank(pct: float | None, gate: float | None = None) -> str:
+        text = size_text(pct, gate).removeprefix("Size and spread: ")
+        return text.split(" percentile")[0].split(" (")[0]
+
+    assert _rank_text(95.0) == "95th"
+    assert _rank_text(95.4) == "95.4th"
+    assert _rank_text(95.001) == "95.001th"
+    assert "." not in _rank_text(95.0).removesuffix("th")
+    # Rounds as usual when rounding agrees with the gate.
+    assert rank(96.7, 95) == "97th"
+    assert rank(21.0) == "21st"
+    # Just above an integer gate: rounding to 95 would read as "not above".
+    assert rank(95.4, 95) == "95.4th"
+    assert rank(95.0004, 95) == "95.0004th"
+    assert percentile_gate(_scored(95.0004), 95) == "fail"
+    assert rank(None) == "unranked"
+    # --baseline 0 turns ranking off on purpose, so the line blames no history.
+    assert size_text(None) == "Size and spread: unranked (no baseline to rank it against)"
+    assert size_text(21.0) == (
+        "Size and spread: 21st percentile of recent commits (diff size, not a bug predictor)"
+    )
+    unranked = headline(_scored(None), 95, markdown=False)
+    assert unranked == "Size and spread: unranked · no baseline to rank it against"
+    assert headline(_scored(40.0), 95, markdown=False) == (
+        "Within the 95th percentile size gate: larger and more spread out than 40% of recent commits"
+    )
+
+
+def test_headline_never_claims_more_than_was_measured() -> None:
+    from repowise.core.analysis.change_risk.render import headline
+
+    # 99.5 and 100.0 read 99%: "larger than 100%" cannot be true.
+    for pct in (99.5, 100.0):
+        assert "than 99%" in headline(_scored(pct), None, markdown=False)
+        assert "than 99%" in headline(_scored(pct), 95, markdown=False)
+    assert "than 42%" in headline(_scored(42.9), None, markdown=False)
+    # The gate-aware decimals are already below the next whole number.
+    assert headline(_scored(95.4), 95, markdown=False).endswith("than 95.4% of recent commits")
+
+
+def test_target_mode_refuses_ci_formats_and_the_gate(tmp_path: Path) -> None:
+    repo = _ranked_repo(tmp_path)
+
+    fmt = _gate(repo, "--target", "src/f0.py", "--format", "markdown")
+    assert fmt.exit_code == 2
+    assert "--target supports --format table or json" in fmt.output
+    gate = _gate(repo, "--target", "src/f0.py", "--fail-above-percentile", "90")
+    assert gate.exit_code == 2
+    assert "gates a change" in gate.output
+
+
+def test_an_unknown_ref_reports_gits_message_not_the_exception(tmp_path: Path) -> None:
+    repo = _ranked_repo(tmp_path)
+
+    table = _gate(repo, "nosuchref")
+    assert table.exit_code == 2, table.output
+    assert "unknown revision" in table.output
+    assert "returned non-zero exit status" not in table.output
+    assert "Sampling" not in table.output
+
+    machine = _gate(repo, "nosuchref", "--format", "json")
+    assert machine.exit_code == 2, machine.output
+    assert json.loads(machine.stdout)["error"] == "change_unreadable"
+    assert "unknown revision" in machine.output
+
+
+def test_a_valid_ref_is_unaffected_by_the_ref_check(tmp_path: Path) -> None:
+    repo = _ranked_repo(tmp_path)
+
+    result = _gate(repo, "HEAD", "--format", "json")
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["ref"] == "HEAD"
+
+
+def test_fix_counts_print_their_window() -> None:
+    # A bare fix count beside 90-day churn reads as a 90-day figure.
+    from repowise.cli.commands.risk_cmd.card import _print_defects
+    from repowise.cli.commands.risk_cmd.target import _print_global_hotspots
+    from repowise.cli.helpers import console
+
+    with console.capture() as cap:
+        _print_defects({"fix_count": 4, "window": "6 months", "last_fix_days_ago": 2})
+        _print_global_hotspots(
+            [{"file_path": "a.py", "hotspot_score": 0.9, "fix_count": 4, "window": "6 months"}]
+        )
+    out = cap.get()
+    assert "4 bug fix(es) in 6 months, last 2 day(s) ago" in out
+    assert "Fixes (6 months)" in out

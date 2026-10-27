@@ -2,12 +2,18 @@
 
 import { useMemo, useState } from "react";
 import { Search } from "lucide-react";
-import { Badge } from "../ui/badge";
 import { Input } from "../ui/input";
 import { EmptyState } from "../shared/empty-state";
+import { CiHint } from "../shared/ci-hint";
+import { Segmented } from "../shared/segmented";
 import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-table";
-import { AiPromptButton } from "../health/ai-prompt-button";
+import { PromptForRowsButton, RowPromptAction } from "../health/row-prompt-action";
+import { AGENT_PROMPT_LABEL } from "../health/ai-prompt-action";
+import { SeverityMark } from "../health/severity-mark";
+import type { Severity } from "../health/tokens";
 import { formatDate, formatDateTime, formatRelativeTimeOrNull } from "../lib/format";
+import { FilePath } from "../shared/file-path";
+import { securityLevel, type SecurityLevel } from "./posture";
 import type { SecurityFinding } from "@repowise-dev/types";
 
 // One declaration of the wire shape, not a third hand-kept copy: this file's
@@ -15,11 +21,19 @@ import type { SecurityFinding } from "@repowise-dev/types";
 // line number went unrendered.
 export type { SecurityFinding };
 
-const SEVERITY_VARIANT: Record<string, "outdated" | "stale" | "outline"> = {
-  high: "outdated",
-  med: "stale",
-  low: "outline",
-};
+// The scanner's `med` is the shared scale's `medium`. No level maps to
+// critical: a pattern match is a lead to confirm, not a proven path to harm.
+const MARK: Record<SecurityLevel, Severity> = { high: "high", med: "medium", low: "low" };
+const LEVEL_RANK: Record<SecurityLevel, number> = { high: 0, med: 1, low: 2 };
+const CLASS_RANK = { source: 0, test: 1, docs: 2 } as const;
+
+type SeverityFilter = "all" | SecurityLevel;
+const FILTERS: { value: SeverityFilter; label: string }[] = [
+  { value: "all", label: "All" },
+  { value: "high", label: "High" },
+  { value: "med", label: "Medium" },
+  { value: "low", label: "Low" },
+];
 
 /**
  * `path:line` for a finding, degrading honestly.
@@ -29,47 +43,38 @@ const SEVERITY_VARIANT: Record<string, "outdated" | "stale" | "outline"> = {
  * confirm (prefixed `~`, never presented as fact), and no line at all when the
  * flagged code has moved away entirely. A wrong line here sends the reader to
  * innocent code looking authoritative, which is worse than showing none.
+ *
+ * The path is the row's name: its file name never clips.
  */
 function FindingLocation({ finding }: { finding: SecurityFinding }) {
   const line = finding.line_number;
   const verified = finding.line_verified;
-
-  // Every state carries words, not just a colour and a tooltip: `title` is
-  // invisible to touch and to assistive tech, which is why VerificationBadge
-  // keeps an sr-only label beside its icon. Same convention here.
-  if (line == null) {
-    return (
-      <span
-        className="block max-w-[280px] truncate font-mono text-xs text-[var(--color-text-primary)]"
-        title={`${finding.file_path} — the flagged code is no longer at the recorded line`}
-      >
-        {finding.file_path}
-        <span className="ml-1.5 not-italic text-2xs text-[var(--color-text-tertiary)]">
-          (line moved)
-        </span>
-      </span>
+  // Tests and docs are labelled, never headlined: shipped code ranks first.
+  const where = finding.path_class ?? "source";
+  const tag =
+    where === "source" ? null : (
+      <span className="ml-1.5 font-sans text-2xs text-[var(--color-text-tertiary)]">{where}</span>
     );
-  }
 
+  // Every state carries words, not just a colour: a line the server could
+  // not confirm is marked `~` and named, and a line that moved away is named.
+  // The file name leads; the directory clips before it, and the tooltip and
+  // accessible name keep the whole `path:line`.
+  const note = line == null ? "line moved" : verified ? null : "unconfirmed";
   return (
-    <span
-      className="block max-w-[280px] truncate font-mono text-xs text-[var(--color-text-primary)]"
-      title={
-        verified
-          ? `${finding.file_path}:${line}`
-          : `${finding.file_path}:${line} — could not be confirmed against the current file`
-      }
-    >
-      {finding.file_path}
-      <span
-        className={
-          verified ? "text-[var(--color-text-secondary)]" : "text-[var(--color-text-tertiary)]"
-        }
-      >
-        :{verified ? "" : "~"}
-        {line}
-      </span>
-      {!verified && <span className="sr-only"> (line unconfirmed)</span>}
+    <span className="flex min-w-[14rem] max-w-[28rem] items-baseline text-[var(--color-text-primary)]">
+      <FilePath
+        path={finding.file_path}
+        line={line == null ? null : verified ? line : `~${line}`}
+        fold
+        className="min-w-0"
+      />
+      {note ? (
+        <span className="ml-1.5 shrink-0 font-sans text-2xs text-[var(--color-text-tertiary)]">
+          ({note})
+        </span>
+      ) : null}
+      {tag ? <span className="shrink-0">{tag}</span> : null}
     </span>
   );
 }
@@ -77,17 +82,41 @@ function FindingLocation({ finding }: { finding: SecurityFinding }) {
 export interface SecurityFindingsTableProps {
   findings: SecurityFinding[];
   onSelect?: (finding: SecurityFinding) => void;
-  /** When set, each row shows an "AI fix prompt" action that calls this. */
+  /**
+   * When set, each row leads with an agent-prompt action that calls this:
+   * the row's primary verb, since fixes happen through the reader's agent.
+   */
   onGeneratePrompt?: (finding: SecurityFinding) => void;
+  /** The prompt action's label. */
+  promptLabel?: string;
+  /** One prompt over every finding the current filters show. */
+  onGenerateBatchPrompt?: (findings: SecurityFinding[]) => void;
+  /** The batch action's label for `n` findings. */
+  batchPromptLabel?: (count: number) => string;
 }
 
-export function SecurityFindingsTable({ findings, onSelect, onGeneratePrompt }: SecurityFindingsTableProps) {
+export function SecurityFindingsTable({
+  findings,
+  onSelect,
+  onGeneratePrompt,
+  promptLabel = AGENT_PROMPT_LABEL,
+  onGenerateBatchPrompt,
+  batchPromptLabel,
+}: SecurityFindingsTableProps) {
   const [q, setQ] = useState("");
-  const [sev, setSev] = useState<"all" | "high" | "med" | "low">("all");
+  const [sev, setSev] = useState<SeverityFilter>("all");
+
+  // Options and counts come from the unfiltered list, so picking one level
+  // never hides the others.
+  const options = useMemo(() => {
+    const c: Record<SeverityFilter, number> = { all: findings.length, high: 0, med: 0, low: 0 };
+    for (const f of findings) c[securityLevel(f.severity)] += 1;
+    return FILTERS.map((o) => ({ ...o, count: c[o.value].toLocaleString() }));
+  }, [findings]);
 
   const filtered = useMemo(() => {
     let items = findings;
-    if (sev !== "all") items = items.filter((f) => f.severity === sev);
+    if (sev !== "all") items = items.filter((f) => securityLevel(f.severity) === sev);
     if (q) {
       const needle = q.toLowerCase();
       items = items.filter(
@@ -97,7 +126,12 @@ export function SecurityFindingsTable({ findings, onSelect, onGeneratePrompt }: 
           (f.snippet ?? "").toLowerCase().includes(needle),
       );
     }
-    return items;
+    // What to do first: shipped source before tests before docs, then severity.
+    return [...items].sort(
+      (a, b) =>
+        CLASS_RANK[a.path_class ?? "source"] - CLASS_RANK[b.path_class ?? "source"] ||
+        LEVEL_RANK[securityLevel(a.severity)] - LEVEL_RANK[securityLevel(b.severity)],
+    );
   }, [findings, q, sev]);
 
   const columns = useMemo(() => {
@@ -105,12 +139,8 @@ export function SecurityFindingsTable({ findings, onSelect, onGeneratePrompt }: 
       {
         key: "severity",
         header: "Severity",
-        headerClassName: "w-20",
-        render: (f) => (
-          <Badge variant={SEVERITY_VARIANT[f.severity] ?? "outline"} className="capitalize">
-            {f.severity}
-          </Badge>
-        ),
+        headerClassName: "w-24",
+        render: (f) => <SeverityMark severity={MARK[securityLevel(f.severity)]} />,
       },
       {
         key: "file_path",
@@ -129,10 +159,10 @@ export function SecurityFindingsTable({ findings, onSelect, onGeneratePrompt }: 
         priority: 2,
         render: (f) => (
           <span
-            className="block max-w-[320px] truncate font-mono text-xs text-[var(--color-text-tertiary)]"
+            className="block max-w-[240px] truncate font-mono text-xs text-[var(--color-text-tertiary)]"
             title={f.snippet ?? ""}
           >
-            {f.snippet ?? "—"}
+            {f.snippet || "—"}
           </span>
         ),
       },
@@ -168,75 +198,74 @@ export function SecurityFindingsTable({ findings, onSelect, onGeneratePrompt }: 
       cols.push({
         key: "actions",
         header: "",
-        headerClassName: "w-10",
-        hideInCard: true,
         render: (f) => (
-          <span onClick={(e) => e.stopPropagation()}>
-            <AiPromptButton
-              variant="icon"
-              label="AI fix prompt"
-              onClick={() => onGeneratePrompt(f)}
-            />
-          </span>
+          <RowPromptAction label={promptLabel} subject={f.file_path} onClick={() => onGeneratePrompt(f)} />
         ),
       });
     }
     return cols;
-  }, [onGeneratePrompt]);
+  }, [onGeneratePrompt, promptLabel]);
 
   if (findings.length === 0) {
     return (
-      <EmptyState
-        title="No findings"
-        description="No security findings detected on this repo. Re-run analysis to refresh."
-      />
+      <div className="flex flex-col items-center gap-2">
+        <EmptyState
+          title="No findings"
+          description="The pattern scan has no security findings to show for this repository."
+        />
+        <CiHint command="repowise security check" checks="what each change adds" />
+      </div>
     );
   }
+
+  const clear = () => {
+    setQ("");
+    setSev("all");
+  };
 
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
-        <div className="relative">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />
+        <div className="relative w-full sm:w-72">
+          <Search
+            aria-hidden
+            className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--color-text-tertiary)]"
+          />
           <Input
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="Search file, kind, or snippet…"
-            className="pl-8 h-8 w-full sm:w-72 text-xs"
+            aria-label="Search findings"
+            className="h-8 w-full pl-8 text-xs"
           />
         </div>
-        <div className="flex rounded-md border border-[var(--color-border-default)] overflow-hidden text-xs">
-          {(["all", "high", "med", "low"] as const).map((s) => (
-            <button
-              key={s}
-              type="button"
-              onClick={() => setSev(s)}
-              className={
-                sev === s
-                  ? "px-2.5 py-1.5 bg-[var(--color-accent-primary)] text-[var(--color-text-inverse)]"
-                  : "px-2.5 py-1.5 bg-transparent text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)]"
-              }
-            >
-              {s}
-              {s !== "all" && (
-                <span className="ml-1 text-[10px] opacity-70">
-                  ({findings.filter((f) => f.severity === s).length})
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
+        <Segmented label="Severity" value={sev} onChange={setSev} options={options} />
+        {onGenerateBatchPrompt && (
+          <PromptForRowsButton
+            count={filtered.length}
+            onClick={() => onGenerateBatchPrompt(filtered)}
+            {...(batchPromptLabel ? { label: batchPromptLabel } : {})}
+            className="sm:ml-auto"
+          />
+        )}
       </div>
 
+      {/* Scrolls sideways inside its own frame on a phone rather than
+          stacking: the path column keeps a readable minimum width. Windowed,
+          because the list is open by default and can hold 500 rows. */}
       <ResponsiveTable
         columns={columns}
         rows={filtered}
         rowKey={(f) => String(f.id)}
         caption="Security findings"
         {...(onSelect ? { onRowClick: onSelect } : {})}
-        stacked="sm"
+        virtualize={{}}
         empty={
-          <p className="text-sm text-[var(--color-text-tertiary)] py-6 text-center">No matches.</p>
+          <EmptyState
+            tone="filtered"
+            title="No findings match these filters"
+            action={{ label: "Clear filters", onClick: clear }}
+          />
         }
       />
     </div>

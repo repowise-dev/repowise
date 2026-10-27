@@ -32,7 +32,7 @@ class GoroutineInUnboundedLoopDetector:
                     function_name=hit.function,
                     line_start=hit.line,
                     line_end=hit.line,
-                    details={},
+                    details=hit.loop_facts(),
                     reason=(
                         "a goroutine is spawned per loop element with no concurrency "
                         "bound; use a worker pool or a bounded errgroup/semaphore"

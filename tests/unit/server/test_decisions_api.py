@@ -6,16 +6,22 @@ Covers:
 - GET /api/repos/{repo_id}/decisions/graph
 - 404 behaviour on bad decision_id / wrong repo
 - verification field on DecisionRecordResponse
+- decision_text_missing beside the title fallback
 """
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from types import SimpleNamespace
+
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import delete
 
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import DecisionEvidence, DecisionNodeLink
+from repowise.server.schemas.decisions import DecisionRecordResponse
 from tests.unit.server.conftest import create_test_repo
 
 # ---------------------------------------------------------------------------
@@ -39,7 +45,9 @@ async def _seed_decision(
             title=title,
             status=status,
             context="Need zero-config storage for CI.",
-            decision="Use aiosqlite in-memory DBs.",
+            # Varies with the title: identity is the evidence, so two
+            # titles over one body and one file are one decision.
+            decision=f"Use aiosqlite in-memory DBs, for {title}.",
             rationale="Fast, no external deps.",
             affected_modules=["packages/core"],
             affected_files=["packages/core/src/repowise/core/persistence/database.py"],
@@ -86,8 +94,16 @@ async def _seed_lineage(session_factory, repo_id: str, old_id: str, new_id: str)
 
 
 async def _seed_code_link(session_factory, repo_id: str, decision_id: str) -> None:
-    """Insert a DecisionNodeLink row directly."""
+    """State this repository's whole code graph as one link.
+
+    Creating a decision now mirrors its scope into the graph, so every seeded
+    decision brings links of its own. Clearing first is what lets the caller
+    assert on an exact edge count.
+    """
     async with get_session(session_factory) as session:
+        await session.execute(
+            delete(DecisionNodeLink).where(DecisionNodeLink.repository_id == repo_id)
+        )
         session.add(
             DecisionNodeLink(
                 repository_id=repo_id,
@@ -320,3 +336,53 @@ async def test_decision_record_response_includes_verification(client: AsyncClien
     assert resp.status_code == 200
     body = resp.json()
     assert body["verification"] == "fuzzy"
+
+
+# ---------------------------------------------------------------------------
+# decision_text_missing beside the title fallback
+# ---------------------------------------------------------------------------
+
+
+def _orm_row(decision: str | None) -> SimpleNamespace:
+    now = datetime.now(UTC)
+    return SimpleNamespace(
+        id="d1",
+        repository_id="r1",
+        title="Keep sessions in Redis",
+        status="active",
+        kind="architectural",
+        context="",
+        decision=decision,
+        rationale="sessions did not survive a restart",
+        alternatives_json="[]",
+        consequences_json="[]",
+        affected_files_json='["src/auth/service.py"]',
+        affected_modules_json="[]",
+        tags_json="[]",
+        source="pr",
+        evidence_commits_json='["abc1234"]',
+        evidence_file=None,
+        evidence_line=None,
+        confidence=0.8,
+        staleness_score=0.0,
+        verification="exact",
+        superseded_by=None,
+        last_code_change=None,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+@pytest.mark.parametrize("stored", ["", "   ", None])
+def test_blank_decision_reads_as_title_and_says_text_is_missing(stored) -> None:
+    # Readers keep the title fallback; the flag is what lets a review surface
+    # predict the acceptance refusal that the stored blank text will draw.
+    resp = DecisionRecordResponse.from_orm(_orm_row(stored))
+    assert resp.decision == "Keep sessions in Redis"
+    assert resp.decision_text_missing is True
+
+
+def test_stored_decision_text_is_not_missing() -> None:
+    resp = DecisionRecordResponse.from_orm(_orm_row("Keep sessions in Redis."))
+    assert resp.decision == "Keep sessions in Redis."
+    assert resp.decision_text_missing is False

@@ -1,6 +1,8 @@
 """JavaScript / TypeScript HTTP consumer dialect.
 
-Covers direct ``fetch`` / ``axios`` calls plus wrapper calls whose first
+Covers direct ``fetch`` calls, the client libraries of :mod:`.node_clients`
+(axios, ky, got, ofetch, request, superagent, needle, AngularJS ``$http``
+and their instances), plus wrapper calls whose first
 argument is a concrete URL literal, e.g. ``fetchJSON(`${BASE}/path`, { method:
 "POST" })``. Wrapper detection is signal-gated (the callee name looks HTTP-ish,
 or the call carries a ``method:`` option) so ordinary `/`-prefixed string
@@ -13,9 +15,15 @@ import re
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
+from repowise.core.workspace.origins import ContractOrigin
+
+from ..calls import receiver_name
 from ..langs import JS_TS
-from .client_calls import JS_SYNTAX, ClientCallMatch, consumer_contracts, literal_span, matches_in
-from .dialect import METHODS
+from ..strings import JS_SYNTAX, literal_span, string_constants
+from .angular import environment_mounts
+from .client_calls import ClientCallMatch, consumer_contracts, matches_in
+from .commonjs import exports_mounts
+from .node_clients import client_calls, client_mounts
 
 if TYPE_CHECKING:
     from repowise.core.workspace.contracts import Contract
@@ -26,22 +34,19 @@ if TYPE_CHECKING:
 _FETCH_RE = re.compile(
     r"""fetch\s*\(\s*['"`]([^'"`]+)['"`]""",
 )
-_FETCH_METHOD_RE = re.compile(
-    r"""fetch\s*\(\s*['"`]([^'"`]+)['"`]\s*,\s*\{[^}]*method\s*:\s*['"](\w+)['"]""",
-    re.DOTALL,
-)
-
-# axios.get('/api/users')
-_AXIOS_RE = re.compile(
-    rf"""axios\.({METHODS})\s*\(\s*['"]([^'"]+)['"]""",
-    re.IGNORECASE,
-)
+_OPTIONS_METHOD = r"""\s*,\s*\{[^}]*method\s*:\s*['"](\w+)['"]"""
+_FETCH_METHOD_RE = re.compile(r"""fetch\s*\(\s*['"`]([^'"`]+)['"`]""" + _OPTIONS_METHOD, re.DOTALL)
+# The options after a URL literal the capture above stopped short of: a nested
+# template in a hole (`` fetch(`/a${q ? `?${q}` : ""}`, { method }) ``).
+_OPTIONS_METHOD_RE = re.compile(_OPTIONS_METHOD, re.DOTALL)
 
 # Wrapper call: IDENT("<url>" | `<url>`, ...) where the URL literal is concrete,
-# i.e. starts with `/`, a `${...}` base placeholder, or a scheme.
-_WRAPPER_CALL_RE = re.compile(
-    r"""\b(\w+)\s*\(\s*['"`]((?:/|\$\{|https?:)[^'"`]*)['"`]""",
-)
+# i.e. starts with `/`, a `${...}` base placeholder, or a scheme. The scan is
+# led by the `(` and reads the identifier back from it: led by the identifier,
+# the regex was tried at every word of every file.
+_WRAPPER_ARG_RE = re.compile(r"""\(\s*['"`]((?:/|\$\{|https?:)[^'"`]*)['"`]""")
+_CALLEE_BEFORE_RE = re.compile(r"\b(\w+)\s*$")
+_CALLEE_WINDOW = 200
 
 # The callee names that read as an HTTP wrapper rather than navigation/util.
 _HTTP_NAME_RE = re.compile(r"(?i)fetch|request|http|api|ajax|rest|rpc")
@@ -49,8 +54,8 @@ _HTTP_NAME_RE = re.compile(r"(?i)fetch|request|http|api|ajax|rest|rpc")
 # A `method: "POST"` option inside the call's argument list.
 _METHOD_OPT_RE = re.compile(r"""method\s*:\s*['"](\w+)['"]""")
 
-# Callees already handled elsewhere, or never an HTTP wrapper.
-_WRAPPER_SKIP = frozenset({"fetch", "if", "for", "while", "switch", "catch", "return"})
+# Callees already handled elsewhere (`ofetch(` is a fetch call), or never an HTTP wrapper.
+_WRAPPER_SKIP = frozenset({"fetch", "ofetch", "if", "for", "while", "switch", "catch", "return"})
 
 
 def fetch_calls(content: str) -> Iterator[ClientCallMatch]:
@@ -64,23 +69,52 @@ def fetch_calls(content: str) -> Iterator[ClientCallMatch]:
     for m in _FETCH_RE.finditer(content):
         if m.group(1) in method_urls:
             continue
+        url = literal_span(content, m, 1)
+        opt = None
+        if len(url) - 2 > len(m.group(1)):
+            opt = _OPTIONS_METHOD_RE.match(content, m.start(1) + len(url) - 1)
         yield ClientCallMatch(
-            client="fetch", url=literal_span(content, m, 1), offset=m.start(), callee="fetch"
+            client="fetch",
+            url=url,
+            offset=m.start(),
+            callee="fetch",
+            method=opt.group(1).upper() if opt else None,
         )
 
 
-def axios_calls(content: str) -> Iterator[ClientCallMatch]:
-    yield from matches_in(content, _AXIOS_RE, client="axios", url_group=2, method_group=1)
+def _callee(content: str, start: int, end: int) -> str:
+    """The whole identifier around ``content[start:end]``, a leading ``$`` included."""
+    while start > 0 and (content[start - 1].isalnum() or content[start - 1] in "_$"):
+        start -= 1
+    return content[start:end]
 
 
-def wrapper_calls(content: str) -> Iterator[ClientCallMatch]:
-    """``fetchJSON(`${BASE}/path`, { method: "POST" })`` and its relatives."""
-    for m in _WRAPPER_CALL_RE.finditer(content):
-        callee = m.group(1)
-        if callee in _WRAPPER_SKIP:
+def _receiver(content: str, start: int) -> str | None:
+    """The name a member call at *start* is made on (``http`` in ``this.http.get``)."""
+    dot = start - 1
+    while dot >= 0 and content[dot] in " \t\n":
+        dot -= 1
+    return receiver_name(content, dot) if dot >= 0 and content[dot] == "." else None
+
+
+def wrapper_calls(content: str, clients: frozenset[str]) -> Iterator[ClientCallMatch]:
+    """``fetchJSON(`${BASE}/path`, { method: "POST" })`` and its relatives.
+
+    *clients* are the client names the file calls, read with their base elsewhere.
+    """
+    for m in _WRAPPER_ARG_RE.finditer(content):
+        head = _CALLEE_BEFORE_RE.search(content, max(0, m.start() - _CALLEE_WINDOW), m.start())
+        if head is None:
             continue
-        nl = content.find("\n", m.end())
-        window = content[m.end() :] if nl == -1 else content[m.end() : nl]
+        callee = head.group(1)
+        if callee in _WRAPPER_SKIP or _callee(content, head.start(1), head.end(1)) in clients:
+            continue
+        if clients and _receiver(content, head.start(1)) in clients:
+            continue  # `http.post(url, { method })`, a client's own verb
+        url = literal_span(content, m, 1)
+        after = m.start(1) + len(url) - 1  # past the literal, nested templates included
+        nl = content.find("\n", after)
+        window = content[after:] if nl == -1 else content[after:nl]
         method_opt = _METHOD_OPT_RE.search(window)
         # Require an HTTP signal: an HTTP-ish callee name or a method option.
         if not (_HTTP_NAME_RE.search(callee) or method_opt):
@@ -89,19 +123,32 @@ def wrapper_calls(content: str) -> Iterator[ClientCallMatch]:
         # is, and `apiPost`/`apiDelete` carry it.
         yield ClientCallMatch(
             client="wrapper",
-            url=literal_span(content, m, 2),
-            offset=m.start(),
+            url=url,
+            offset=head.start(),
             callee=callee,
             method=method_opt.group(1).upper() if method_opt else None,
-            confidence=0.65,
+            origin=ContractOrigin.NAME_HEURISTIC,
         )
 
 
 class JsClientsDialect:
     name = "js-clients"
     extensions = JS_TS
+    # Next to no JS file lacks one of these: the URL literal a fetch or a
+    # wrapper reads, the import a client library or an imported instance needs,
+    # or the export an environment module is. Recorded as the dialect's
+    # ceiling: this gate is the extension, near enough.
+    requires = ("fetch", "'/", '"/', "`/", "${", "http", "axios", "import", "require", "export")
+
+    def collect_mounts(self, ctx: ScanContext) -> dict[str, str]:
+        return client_mounts(ctx) | environment_mounts(ctx) | exports_mounts(ctx)
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content
-        matches = [*fetch_calls(content), *axios_calls(content), *wrapper_calls(content)]
-        return consumer_contracts(ctx, matches, JS_SYNTAX)
+        from_clients, clients = client_calls(ctx)
+        # A client named like `apifetch` is read with its base above, not as `fetch`.
+        fetches = [m for m in fetch_calls(content) if _callee(content, m.offset, m.offset + 5) not in clients]
+        matches = [*fetches, *wrapper_calls(content, clients)]
+        # A `${BASE}` interpolation folds when the file binds BASE to a constant.
+        constants = string_constants(content, JS_SYNTAX) if any("${" in m.url for m in matches) else {}
+        return from_clients + consumer_contracts(ctx, matches, JS_SYNTAX, constants=constants)

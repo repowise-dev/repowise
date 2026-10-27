@@ -211,3 +211,31 @@ def test_summarize_confidence_buckets_are_exhaustive():
     summary = summarize_confidence(findings)
     assert summary == {"high": 2, "medium": 1, "low": 1}
     assert sum(summary.values()) == len(findings)
+
+
+# ---------------------------------------------------------------------------
+# Working-tree probe and opaque directories
+# ---------------------------------------------------------------------------
+
+
+def test_disk_probe_is_case_exact(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "fixture.json").write_text("{}")
+    doc = "See `src/fixture.json` and `src/Fixture.json`.\n"
+    source_map = {"docs/a.md": doc.encode(), "src/app.json": b""}
+    report = DocDriftAnalyzer(
+        "repo", source_map=source_map, repo_root=tmp_path, rename_lookup=lambda _p: {}
+    ).analyze()
+    # A case-insensitive filesystem would call the second uncheckable locally
+    # and CI on Linux would call it missing; the probe answers as Linux does.
+    assert [f.target for f in report.findings] == ["src/Fixture.json"]
+
+
+def test_reference_inside_a_submodule_is_uncheckable():
+    files = {"docs/a.md": "See `libs/sub/x.py` and `libs/gone.py`.\n", "libs/other.py": ""}
+    source_map = {k: v.encode() for k, v in files.items()}
+    report = DocDriftAnalyzer(
+        "repo", source_map=source_map, opaque_dirs=frozenset({"libs/sub"})
+    ).analyze()
+    assert [f.target for f in report.findings] == ["libs/gone.py"]
+    assert report.verdict_summary[DriftVerdict.UNCHECKABLE.value] == 1

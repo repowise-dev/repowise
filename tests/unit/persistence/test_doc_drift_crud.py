@@ -8,10 +8,13 @@ from __future__ import annotations
 
 from sqlalchemy import select
 
-from repowise.core.analysis.doc_drift.models import DocDriftFindingData, DriftKind
+from repowise.core.analysis.doc_drift.models import DocDriftFindingData, DriftKind, SymbolScope
 from repowise.core.persistence.crud import (
+    doc_drift_last_written,
     get_doc_drift_findings,
+    is_new_doc_drift_row,
     replace_doc_drift_findings,
+    save_health_snapshot,
 )
 from repowise.core.persistence.crud.analysis.doc_drift import summarize_confidence_rows
 from repowise.core.persistence.models import DocDriftFinding
@@ -56,6 +59,21 @@ async def test_findings_round_trip(async_session):
     assert rows[0].line_number == 10
     assert rows[0].origin == "path_no_candidate"
     assert rows[0].evidence_json.startswith("[")
+
+
+async def test_a_suggestion_persists_and_its_absence_is_null(async_session):
+    repo = await insert_repo(async_session)
+    suggested = _finding(line=1)
+    suggested.suggestion = "src/gone/"
+    suggested.suggestion_basis = "package_split"
+    await replace_doc_drift_findings(
+        async_session, repo.id, [suggested, _finding(line=2)]
+    )
+    await async_session.commit()
+
+    rows = {r.line_number: r for r in await _rows(async_session, repo.id)}
+    assert (rows[1].suggestion, rows[1].suggestion_basis) == ("src/gone/", "package_split")
+    assert (rows[2].suggestion, rows[2].suggestion_basis) == (None, None)
 
 
 async def test_rerunning_the_same_pass_changes_no_rows(async_session):
@@ -249,8 +267,130 @@ async def test_unreadable_evidence_degrades_to_none_rather_than_raising():
         return types.SimpleNamespace(
             file_path="docs/a.md", line_number=1, kind="path", target="src/gone.py",
             confidence=0.9, origin="path_no_candidate", reason="r", raw="x", context="c",
-            evidence_json=blob,
+            evidence_json=blob, suggestion=None, suggestion_basis=None,
         )
 
     for blob in ("{not json", '{"a": 1}', "", None):
         assert serialize_doc_drift_row(_row(blob))["evidence"] == []
+
+
+async def test_the_first_check_marks_nothing_new(async_session):
+    repo = await insert_repo(async_session)
+    await replace_doc_drift_findings(async_session, repo.id, [_finding()])
+    await async_session.commit()
+
+    (row,) = await _rows(async_session, repo.id)
+    assert row.first_seen_at is None
+    last = await doc_drift_last_written(async_session, repo.id)
+    assert not is_new_doc_drift_row(row, last)
+
+
+async def test_a_finding_keeps_its_age_when_its_line_moves(async_session):
+    repo = await insert_repo(async_session)
+    await replace_doc_drift_findings(async_session, repo.id, [_finding(target="src/x.py")])
+    await replace_doc_drift_findings(
+        async_session, repo.id, [_finding(target="src/x.py"), _finding(line=20)]
+    )
+    (first,) = [r for r in await _rows(async_session, repo.id) if r.line_number == 20]
+    seen = first.first_seen_at
+    assert seen is not None
+
+    # The same finding, pushed down by an edit above it: same age, no longer new.
+    await replace_doc_drift_findings(
+        async_session, repo.id, [_finding(target="src/x.py"), _finding(line=25)]
+    )
+    await async_session.commit()
+    rows = {r.line_number: r for r in await _rows(async_session, repo.id)}
+    assert rows[25].first_seen_at == seen
+    last = await doc_drift_last_written(async_session, repo.id)
+    assert not is_new_doc_drift_row(rows[25], last)
+    assert rows[10].first_seen_at is None
+
+
+async def test_only_the_latest_writes_arrivals_read_as_new(async_session):
+    repo = await insert_repo(async_session)
+    await replace_doc_drift_findings(async_session, repo.id, [_finding(target="src/a.py")])
+    await replace_doc_drift_findings(
+        async_session, repo.id, [_finding(target="src/a.py"), _finding(target="src/b.py")]
+    )
+    await async_session.commit()
+
+    last = await doc_drift_last_written(async_session, repo.id)
+    new = {r.target: is_new_doc_drift_row(r, last) for r in await _rows(async_session, repo.id)}
+    assert new == {"src/a.py": False, "src/b.py": True}
+
+
+async def test_a_snapshot_records_the_stored_drift_count(async_session):
+    repo = await insert_repo(async_session)
+    kwargs = dict(
+        hotspot_health=8.0,
+        average_health=8.0,
+        worst_performer_path=None,
+        worst_performer_score=None,
+    )
+    never = await save_health_snapshot(async_session, repo.id, **kwargs)
+    assert never.doc_drift_count is None
+
+    await replace_doc_drift_findings(async_session, repo.id, [_finding(), _finding(line=2)])
+    counted = await save_health_snapshot(async_session, repo.id, **kwargs)
+    assert counted.doc_drift_count == 2
+
+
+async def test_symbol_findings_of_untouched_documents_carry_forward(async_session):
+    """An update re-resolves symbols in some documents; the rest keep theirs."""
+    repo = await insert_repo(async_session)
+    kept = _finding("docs/a.md", 3, "old_helper", DriftKind.SYMBOL)
+    fixed = _finding("docs/b.md", 4, "gone_helper", DriftKind.SYMBOL)
+    await replace_doc_drift_findings(
+        async_session, repo.id, [kept, fixed, _finding("docs/a.md", 9)]
+    )
+    await async_session.commit()
+
+    # Both documents re-read (cheap kinds re-derived); symbols only in b.md.
+    await replace_doc_drift_findings(
+        async_session,
+        repo.id,
+        [_finding("docs/a.md", 9)],
+        scope={"docs/a.md", "docs/b.md"},
+        symbol_scope=SymbolScope(documents=frozenset({"docs/b.md"})),
+    )
+    await async_session.commit()
+    rows = {(r.file_path, r.kind, r.target) for r in await _rows(async_session, repo.id)}
+    assert rows == {("docs/a.md", "symbol", "old_helper"), ("docs/a.md", "path", "src/gone.py")}
+
+
+async def test_a_rechecked_reference_is_replaced_and_its_neighbours_kept(async_session):
+    repo = await insert_repo(async_session)
+    await replace_doc_drift_findings(
+        async_session,
+        repo.id,
+        [
+            _finding("docs/a.md", 3, "old_helper", DriftKind.SYMBOL),
+            _finding("docs/a.md", 5, "other_helper", DriftKind.SYMBOL),
+        ],
+    )
+    await async_session.commit()
+
+    # Only ``old_helper`` was re-resolved, and it now resolves.
+    await replace_doc_drift_findings(
+        async_session,
+        repo.id,
+        [],
+        scope={"docs/a.md"},
+        symbol_scope=SymbolScope(references=frozenset({("docs/a.md", "old_helper")})),
+    )
+    await async_session.commit()
+    rows = {r.target for r in await _rows(async_session, repo.id)}
+    assert rows == {"other_helper"}
+
+
+async def test_a_symbol_finding_outside_the_symbol_scope_is_not_inserted(async_session):
+    repo = await insert_repo(async_session)
+    await replace_doc_drift_findings(
+        async_session,
+        repo.id,
+        [_finding("docs/a.md", 3, "old_helper", DriftKind.SYMBOL)],
+        symbol_scope=SymbolScope(),
+    )
+    await async_session.commit()
+    assert await _rows(async_session, repo.id) == []

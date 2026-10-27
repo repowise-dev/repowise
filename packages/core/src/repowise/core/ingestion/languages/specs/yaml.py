@@ -9,4 +9,7 @@ SPEC = LanguageSpec(
     is_code=False,
     is_passthrough=True,
     color_hex="#CB171E",
+    # Ansible playbook/role wiring via the lightweight tier: real edges
+    # inside Ansible projects, nothing claimed for plain YAML configs.
+    import_support="partial",
 )

@@ -160,6 +160,10 @@ class TestErrorCases:
         result = runner.invoke(cli, ["init", str(tmp_path)])
         assert result.exit_code == 0, result.output
         assert "No model configured" in result.output
+        # Built from code: `generate` is the model step, not the fast-to-full one.
+        out = " ".join(result.output.split())
+        assert "run repowise generate to have a model write it" in out
+        assert "update --full" not in out
 
     def test_init_explicit_provider_still_errors(self, runner, tmp_path, monkeypatch):
         """A named --provider that cannot resolve is a real error, not a fallback.
@@ -305,23 +309,23 @@ class TestInitYesFlag:
                 return_value=fake_scan,
             ),
             patch(
-                "repowise.cli.commands.init_cmd.command.prompt_wiki_style",
+                "repowise.cli.ui.mode_selection.prompt_wiki_style",
                 side_effect=_fake_prompt_wiki_style,
             ),
             patch(
-                "repowise.cli.commands.init_cmd.command.resolve_provider",
+                "repowise.cli.commands.init_cmd._prepare._resolve_provider_stage",
                 side_effect=Exception("stop early"),
             ),
         ):
             runner.invoke(cli, ["init", "-y", "--index-only", str(tmp_path)])
             assert not prompt_called, "-y should bypass the wiki-style interactive prompt"
 
-    def test_yes_skips_mode_select_on_tty(self, runner, tmp_path):
-        """With -y on a TTY, the interactive mode-selection menu is never shown.
+    def test_yes_skips_plan_screen_on_tty(self, runner, tmp_path):
+        """With -y on a TTY, the plan screen is never shown.
 
         Without the ``and not yes`` guard on ``is_interactive`` a scripted
-        ``init -y`` would still block on ``interactive_mode_select`` whenever
-        stdin happens to be a TTY.
+        ``init -y`` would still block on the plan screen whenever stdin
+        happens to be a TTY.
         """
         from unittest.mock import MagicMock, patch
 
@@ -339,18 +343,18 @@ class TestInitYesFlag:
             ),
             patch("sys.stdin.isatty", return_value=True),
             patch(
-                "repowise.cli.commands.init_cmd.command.interactive_mode_select",
+                "repowise.cli.commands.init_cmd._plan.run_plan_screen",
                 side_effect=lambda *_a, **_kw: mode_select_called.append(True),
             ),
             # Stop before the real pipeline runs.
             patch(
-                "repowise.cli.commands.init_cmd.command.resolve_provider",
+                "repowise.cli.commands.init_cmd._prepare._resolve_provider_stage",
                 side_effect=Exception("stop early"),
             ),
         ):
             runner.invoke(cli, ["init", "-y", str(tmp_path)])
             assert not mode_select_called, (
-                "-y must bypass the interactive mode-selection menu even on a TTY"
+                "-y must bypass the plan screen even on a TTY"
             )
 
 
@@ -376,59 +380,6 @@ class TestBuildFilteredChangedPaths:
         fds = [MagicMock(path="src/main.py"), MagicMock(path=".claude/config.yml")]
         result = _build_filtered_changed_paths(fds, [])
         assert result == ["src/main.py", ".claude/config.yml"]
-
-
-class TestGitMetadataToDict:
-    def test_converts_orm_row_to_dict(self):
-        from types import SimpleNamespace
-
-        from repowise.cli.commands.update_cmd import _git_metadata_to_dict
-
-        gm = SimpleNamespace(
-            file_path="src/main.py",
-            commit_count_total=42,
-            commit_count_90d=10,
-            commit_count_30d=3,
-            first_commit_at=None,
-            last_commit_at=None,
-            primary_owner_name="alice",
-            primary_owner_email="alice@example.com",
-            primary_owner_commit_pct=0.7,
-            top_authors_json="[]",
-            significant_commits_json="[]",
-            co_change_partners_json="[]",
-            commit_categories_json="{}",
-            is_hotspot=True,
-            is_stable=False,
-            churn_percentile=0.9,
-            age_days=100,
-            commit_count_capped=False,
-            lines_added_90d=120,
-            lines_deleted_90d=30,
-            avg_commit_size=15.0,
-            recent_owner_name="alice",
-            recent_owner_commit_pct=0.8,
-            bus_factor=2,
-            contributor_count=4,
-            original_path=None,
-            merge_commit_count_90d=1,
-            temporal_hotspot_score=0.8,
-            prior_defect_count=5,
-            prior_defect_raw_count=9,
-            change_entropy=0.42,
-            change_entropy_pct=0.6,
-        )
-
-        d = _git_metadata_to_dict(gm)
-        assert d["file_path"] == "src/main.py"
-        assert d["commit_count_total"] == 42
-        assert d["is_hotspot"] is True
-        assert d["bus_factor"] == 2
-        # Columns added by the newer health biomarkers must flow through too.
-        assert d["prior_defect_count"] == 5
-        assert d["prior_defect_raw_count"] == 9
-        assert d["change_entropy"] == 0.42
-        assert d["change_entropy_pct"] == 0.6
 
 
 class TestRescoreFailureFingerprint:
@@ -490,6 +441,14 @@ class TestBuildRepoGraph:
             return real_parse(self, fi, source)
 
         monkeypatch.setattr(ASTParser, "parse_file", _maybe_raise)
+        # The patch above cannot reach a spawned parse worker, so run the
+        # pool's in-process fallback, where it applies.
+        from repowise.core.pipeline.phases import ingestion as ing
+
+        def _no_pool(*_args, **_kwargs):
+            raise OSError("no pool in this test")
+
+        monkeypatch.setattr(ing, "run_with_deadline", _no_pool)
 
         printed: list[str] = []
 

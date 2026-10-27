@@ -202,6 +202,28 @@ async def test_needs_split_survives_a_capture_that_does_not_claim_it(async_sessi
     assert meta.needs_split is True
 
 
+async def test_a_split_flag_from_any_contributor_reaches_the_record(async_session):
+    """The headline is the highest-ranked source; the flag is rarely on it.
+
+    ``cli`` outranks ``session``, so a manually authored record sharing a
+    title with a session-mined bundled one is the headline, and reading the
+    flag off the headline alone drops what the mining lane noticed.
+    """
+    repo = await insert_repo(async_session)
+    await bulk_upsert_decisions(
+        async_session,
+        repo.id,
+        [
+            _decision("Two choices", source="cli", confidence=0.9),
+            _decision("Two choices", source="session", needs_split=True),
+        ],
+    )
+
+    rec = await _record(async_session, "Two choices")
+    meta = await async_session.get(DecisionCandidateMeta, rec.id)
+    assert meta is not None and meta.needs_split is True
+
+
 async def test_the_scope_flag_agrees_with_the_contract_on_blank_entries(async_session):
     """A scope list of one empty string is no scope, and both readers say so."""
     repo = await insert_repo(async_session)

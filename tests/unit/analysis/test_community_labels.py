@@ -117,6 +117,38 @@ class TestDetectFileCommunitiesLabels:
         assert "ingestion" in joined and "web" in joined
 
 
+class TestExternalNodesNeverName:
+    def test_third_party_stem_does_not_label_a_community(self):
+        # One production file per folder (no dominant segment, no keyword),
+        # all importing four `external:rich.*` nodes. Those share the stem
+        # "external:rich", so the stem fallback used to pick it.
+        prod = [f"pkg/area{i}/f{i}.py" for i in range(12)]
+        rich = [f"external:rich.{m}" for m in ("console", "panel", "table", "text")]
+        edges = list(itertools.pairwise(prod)) + [(p, r) for p in prod for r in rich]
+        assignment, info, _ = detect_file_communities(_graph(prod + rich, edges))
+        ci = info[assignment["pkg/area0/f0.py"]]
+        assert not ci.label.startswith("external:")
+
+
+class TestExternalNodesAreNotMembers:
+    def test_no_member_is_external_and_size_counts_repo_files_only(self):
+        prod = [f"pkg/area{i}/f{i}.py" for i in range(6)]
+        ext = ["external:os", "external:rich.console", "framework:django"]
+        edges = list(itertools.pairwise(prod)) + [(p, e) for p in prod for e in ext]
+        assignment, info, _ = detect_file_communities(_graph(prod + ext, edges))
+        assert not any(e in assignment for e in ext)
+        members = [m for ci in info.values() for m in ci.members]
+        assert sorted(members) == sorted(prod)
+        assert sum(ci.size for ci in info.values()) == len(prod)
+
+    def test_shared_external_import_does_not_join_unrelated_files(self):
+        # Two files with no edge between them, both importing external:os.
+        paths = ["a/one.py", "b/two.py", "external:os"]
+        edges = [("a/one.py", "external:os"), ("b/two.py", "external:os")]
+        assignment, _info, _ = detect_file_communities(_graph(paths, edges))
+        assert assignment["a/one.py"] != assignment["b/two.py"]
+
+
 class TestRootFirstLabels:
     def test_sub_label_follows_path_order(self):
         # Frequency picks "ingestion" (in every path) as primary and "engine"

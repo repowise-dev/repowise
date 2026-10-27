@@ -1,7 +1,7 @@
 """End-to-end: ``severity_overrides`` flows config -> engine -> score.
 
 Proves the wiring between ``HealthConfig.to_analyzer_config`` and the engine's
-per-file remap (``_evaluate_file(severity_overrides=...)``), not just the two
+per-file remap (``FileEvaluator.evaluate``), not just the two
 ends in isolation.
 """
 
@@ -14,6 +14,7 @@ import pytest
 from repowise.core.analysis.health.complexity import walk_file
 from repowise.core.analysis.health.duplication import DuplicationReport
 from repowise.core.analysis.health.engine import HealthAnalyzer
+from repowise.core.analysis.health.file_evaluator import FileEvaluator, _RunConfig
 from repowise.core.analysis.health.models import Severity
 
 # A single high-CCN function: many independent branches drive ccn >= 9, which
@@ -57,15 +58,13 @@ def _evaluate(severity_overrides):
         ),
         symbols=[],
     )
-    metric, findings, _ = HealthAnalyzer(graph=None)._evaluate_file(
-        pf,
-        fcx,
-        path_basenames=set(),
+    metric, findings, _ = FileEvaluator(
+        HealthAnalyzer(graph=None),
+        paired_tests=set(),
         package_roots=set(),
-        disabled=[],
         dup_report=DuplicationReport(),
-        severity_overrides=severity_overrides,
-    )
+        run=_RunConfig.read({"severity_overrides": severity_overrides or {}}),
+    ).evaluate(pf, fcx)
     return metric, findings
 
 

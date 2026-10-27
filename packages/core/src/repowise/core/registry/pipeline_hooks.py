@@ -36,6 +36,8 @@ import enum
 from collections.abc import Callable
 from typing import Any
 
+from .plugins import note_registration
+
 HookCallback = Callable[[str], None]
 
 
@@ -62,6 +64,7 @@ class PipelineHookRegistry:
         """Register *callback* to fire ``pre`` or ``post`` *phase*."""
         when_enum = when if isinstance(when, HookPhase) else HookPhase(when)
         self._hooks.setdefault((phase, when_enum), []).append(callback)
+        note_registration("pipeline-hook", f"{phase}.{when_enum.value}")
 
     def fire(self, phase: str, when: HookPhase) -> None:
         """Invoke every registered hook for ``(phase, when)``.

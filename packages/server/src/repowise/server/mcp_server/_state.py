@@ -18,9 +18,16 @@ _vector_store: Any = None
 _decision_store: Any = None
 _fts: Any = None
 _repo_path: str | None = None
+# Id of the row the served checkout's own store holds for it, when that store
+# holds exactly one (set by _lifespan). Only that row's live reads follow
+# ``_repo_path`` when its stored local_path differs; see _meta.served_root.
+_served_repo_id: str | None = None
 # When set, the server skips workspace auto-detection even if the path is
 # inside a workspace root. This backs the CLI's `--no-workspace` escape hatch.
 _force_single_repo: bool = False
+# Set by _lifespan when the directory has no .repowise/ and the server is
+# serving the empty in-memory store. Read by the mcp command for telemetry.
+_serving_no_index: bool = False
 # Set to an asyncio.Event by _lifespan; signals that vector stores are loaded.
 # tool_search awaits this before searching to avoid racing a background load.
 _vector_store_ready: asyncio.Event | None = None
@@ -58,6 +65,12 @@ _test_impact_lock: tuple[Any, asyncio.Lock] | None = None
 # "degraded": bool, "reason": str (only when degraded)}.
 _embedder_status: dict[str, Any] | None = None
 
+# Semantic indexes that exist on disk but would not open, keyed by repo alias
+# ("" for the single-repo server), valued with the reason. Kept apart from
+# ``_embedder_status`` because resolving the embedder again (every workspace
+# repo load) rewrites that, and must not clear a store failure.
+_vector_store_errors: dict[str, str] = {}
+
 # Release currency. The stdio server is the longest-lived process the product
 # runs and was the one path that never checked PyPI, so a client could sit on
 # an old release for weeks with no signal. ``_release_check`` is the latest
@@ -66,3 +79,8 @@ _embedder_status: dict[str, Any] | None = None
 # each newer release is surfaced once per process rather than on every call.
 _release_check: Any = None
 _release_announced: str | None = None
+
+# Whether ``get_answer``'s ``no-llm-provider`` degraded path has already named
+# what a key or local model would add in this process. Same once-per-process
+# shape as ``_release_announced``: a fact the caller only needs the first time.
+_keyless_note_announced: bool = False

@@ -1,6 +1,10 @@
 "use client";
 
 import { ArrowRight, CornerDownRight, FilePlus2, Layers, Scissors } from "lucide-react";
+import { getLanguageFromPath } from "../c4/panels/CodeViewer";
+import { HighlightedCodeBlock } from "../shared/code-block";
+import { FilePath, type FilePathMode } from "../shared/file-path";
+import { PlaceholderHint } from "./placeholder-hint";
 import { ProvenancePathList } from "../shared/provenance-path-list";
 import {
   blastFiles,
@@ -9,16 +13,23 @@ import {
   extractClassGroups,
   extractHelperDetail,
   extractHelperOccurrences,
+  extractHelperReuse,
   extractMethodPlan,
+  extractMethodSignature,
+  extractMethodStages,
+  extractOrchestrator,
+  extractParameterObject,
   helperSite,
   moveTarget,
   performancePlanDetail,
+  slotLabel,
   splitBlast,
   splitGroups,
   splitResidual,
   splitShimRequired,
 } from "./types";
-import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
+import type { ExtractStage } from "./types";
+import type { ExtractHelperReuse, RefactoringPlan } from "@repowise-dev/types/refactoring";
 
 export interface PlanDetailProps {
   plan: RefactoringPlan;
@@ -39,25 +50,32 @@ function FileRef({
   line,
   fileHref,
   label,
+  mode = "name-first",
   className = "",
 }: {
   path: string;
   line?: number | null;
   fileHref?: PlanDetailProps["fileHref"];
+  /** A symbol to print instead of the path, which then rides on `title`. */
   label?: string;
-  /** Extra classes, e.g. `block truncate` inside a `min-w-0` flex item. */
+  mode?: FilePathMode;
+  /** Extra classes, e.g. `flex` to let a name-first path clip in its column. */
   className?: string;
 }) {
-  const inner = (
+  const inner = label ? (
     <>
-      {label ?? shortFile(path)}
+      {label}
       {line ? <span className="text-[var(--color-text-tertiary)]">:{line}</span> : null}
     </>
+  ) : (
+    <FilePath path={path} line={line} mode={mode} />
   );
+  const base = `min-w-0 font-mono text-xs text-[var(--color-text-secondary)] ${className}`;
+  const title = label ? path : undefined;
   const href = fileHref?.(path, line ?? null);
   if (!href) {
     return (
-      <span className={`font-mono text-xs text-[var(--color-text-secondary)] ${className}`} title={path}>
+      <span className={base} title={title}>
         {inner}
       </span>
     );
@@ -65,8 +83,8 @@ function FileRef({
   return (
     <a
       href={href}
-      className={`font-mono text-xs text-[var(--color-text-secondary)] underline-offset-2 hover:text-[var(--color-accent-primary)] hover:underline ${className}`}
-      title={path}
+      className={`${base} underline-offset-2 hover:text-[var(--color-accent-primary)] hover:underline`}
+      title={title}
     >
       {inner}
     </a>
@@ -76,7 +94,7 @@ function FileRef({
 /** A read-only source block with a line-number gutter. Scrolls horizontally on
  *  its own so a long line never widens the page. The gutter counts up from
  *  `startLine` so the numbers match the file the block came from. */
-function CodeBlock({ code, startLine }: { code: string; startLine: number | null }) {
+export function CodeBlock({ code, startLine }: { code: string; startLine: number | null }) {
   const lines = code.split("\n");
   const base = startLine ?? 1;
   const gutterWidth = `${String(base + lines.length - 1).length}ch`;
@@ -102,6 +120,120 @@ function CodeBlock({ code, startLine }: { code: string; startLine: number | null
   );
 }
 
+/** A staged Extract Method plan: the shared object once, then each helper the
+ *  function will call, in order. Each stage folds to one line; the first is
+ *  open. Every text has the code block's own copy button. */
+function StagedExtract({
+  plan,
+  fileHref,
+  hideIntro,
+  stages,
+}: {
+  plan: RefactoringPlan;
+  fileHref: PlanDetailProps["fileHref"];
+  hideIntro: boolean;
+  stages: ExtractStage[];
+}) {
+  const language = getLanguageFromPath(plan.file_path);
+  const shared = extractParameterObject(plan);
+  const ccn = extractOrchestrator(plan);
+  return (
+    <div className="space-y-3">
+      {hideIntro ? null : (
+        <p className="text-xs text-[var(--color-text-tertiary)]">
+          Split <span className="font-mono">{plan.target_symbol}</span> into {stages.length} helpers
+          it calls in order
+          {ccn ? `, taking its complexity from ${ccn.before} to about ${ccn.after}` : ""}.
+        </p>
+      )}
+      {shared ? (
+        <div className="rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3.5">
+          {shared.declaration_text ? (
+            <HighlightedCodeBlock
+              code={shared.declaration_text}
+              language={language}
+              label={`Shared values: ${shared.name}`}
+              compact
+              className="my-0"
+            />
+          ) : null}
+          <HighlightedCodeBlock
+            code={shared.construct_text}
+            language={language}
+            label={shared.construct_before ? `Build it above line ${shared.construct_before}` : "Build it"}
+            compact
+            className="mb-0 mt-2"
+          />
+        </div>
+      ) : null}
+      <ol className="space-y-2">
+        {stages.map((stage, i) => (
+          <li
+            key={stage.span.start}
+            className="rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3.5"
+          >
+            <details open={i === 0} className="group">
+              {/* Wraps: in the drawer's half-width column a one-line summary
+                  clipped the line range and CCN off the right edge. */}
+              <summary className="flex cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                <Scissors className="h-4 w-4 shrink-0" style={{ color: ACCENT }} aria-hidden />
+                <span className="whitespace-nowrap font-mono text-[var(--color-text-primary)]">
+                  {stage.name ?? `Stage ${i + 1}`}
+                </span>
+                <FileRef
+                  path={plan.file_path}
+                  line={stage.span.start}
+                  fileHref={fileHref}
+                  mode="full"
+                />
+                <span className="ml-auto whitespace-nowrap font-mono text-[var(--color-text-secondary)]">
+                  lines {stage.span.start}–{stage.span.end}
+                  {stage.ccn ? ` · CCN ${stage.ccn}` : ""}
+                </span>
+              </summary>
+              <div className="mt-2">
+                {stage.signature_text ? (
+                  <HighlightedCodeBlock
+                    code={stage.signature_text}
+                    language={language}
+                    label="New helper"
+                    compact
+                    className="my-0"
+                  />
+                ) : null}
+                {stage.return_text ? (
+                  <HighlightedCodeBlock
+                    code={stage.return_text}
+                    language={language}
+                    label="Ends with"
+                    compact
+                    className="mb-0 mt-2"
+                  />
+                ) : null}
+                {stage.call_text ? (
+                  <HighlightedCodeBlock
+                    code={stage.call_text}
+                    language={language}
+                    label={`Replaces lines ${stage.span.start}–${stage.span.end}`}
+                    compact
+                    className="mb-0 mt-2"
+                  />
+                ) : null}
+                <PlaceholderHint texts={[stage.signature_text ?? "", stage.call_text ?? ""]} />
+                {stage.notes.map((note) => (
+                  <p key={note} className="mt-2 text-2xs text-[var(--color-text-tertiary)]">
+                    {note}
+                  </p>
+                ))}
+              </div>
+            </details>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
 /**
  * The concrete, type-specific body of a refactoring plan: split groups as a
  * tree, the move as an arrow, clone occurrences as a list, the cycle as cut
@@ -109,6 +241,73 @@ function CodeBlock({ code, startLine }: { code: string; startLine: number | null
  */
 /** One accent for every type. See the note in `plan-before.tsx`. */
 const ACCENT = "var(--color-accent-fill)";
+
+/** Extract Helper when one site already is a function: name it, and say what
+ *  each other site does (call it, or delete a copy of it). */
+function ReuseDetail({
+  reuse,
+  fileHref,
+  hideIntro,
+}: {
+  reuse: ExtractHelperReuse;
+  fileHref: PlanDetailProps["fileHref"];
+  hideIntro: boolean;
+}) {
+  const name = reuse.existing_symbol.split("::").pop() ?? reuse.existing_symbol;
+  return (
+    <div className="space-y-3">
+      {hideIntro ? null : (
+        <p className="text-xs text-[var(--color-text-tertiary)]">{reuse.reason}</p>
+      )}
+      <div className="rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3.5">
+        <div className="text-caption uppercase tracking-wide text-[var(--color-text-tertiary)]">
+          Existing function
+        </div>
+        <FileRef
+          path={reuse.file}
+          line={reuse.span.start || null}
+          fileHref={fileHref}
+          label={`${name}()`}
+          className="mt-1 block break-all font-semibold"
+        />
+      </div>
+      <div className="space-y-1.5">
+        <div className="text-caption uppercase tracking-wide text-[var(--color-text-tertiary)]">
+          Change at {reuse.sites.length} site{reuse.sites.length === 1 ? "" : "s"}
+        </div>
+        <ul className="divide-y divide-[var(--color-border-default)] overflow-hidden rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)]">
+          {reuse.sites.map((s, i) => (
+            <li key={i} className="space-y-1.5 px-3.5 py-2.5">
+              <div className="flex items-center justify-between gap-3">
+                <span className="min-w-0 flex-1">
+                  <FileRef
+                    path={s.file}
+                    line={s.span.start || null}
+                    fileHref={fileHref}
+                    className="flex"
+                  />
+                </span>
+                <span className="shrink-0 text-2xs tabular-nums text-[var(--color-text-tertiary)]">
+                  {s.action === "delete" ? "Delete copy" : "Replace"}, lines {s.span.start}–
+                  {s.span.end}
+                </span>
+              </div>
+              {s.action === "delete" ? (
+                <p className="text-2xs text-[var(--color-text-secondary)]">
+                  Import <code>{name}</code> from <code>{reuse.file}</code> in its place.
+                </p>
+              ) : s.new_text ? (
+                <code className="block whitespace-pre-wrap break-all rounded bg-[var(--color-bg-elevated)] px-1.5 py-0.5 text-2xs text-[var(--color-text-secondary)]">
+                  {s.new_text}
+                </code>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
 
 export function PlanDetail({ plan, fileHref, hideIntro = false }: PlanDetailProps) {
   const accent = ACCENT;
@@ -164,7 +363,7 @@ export function PlanDetail({ plan, fileHref, hideIntro = false }: PlanDetailProp
                   path={location.file_path}
                   line={location.line_start ?? null}
                   fileHref={fileHref}
-                  className="break-all"
+                  mode="full"
                 />
               </li>
             ))}
@@ -249,6 +448,8 @@ export function PlanDetail({ plan, fileHref, hideIntro = false }: PlanDetailProp
   }
 
   if (plan.refactoring_type === "extract_helper") {
+    const reuse = extractHelperReuse(plan);
+    if (reuse) return <ReuseDetail reuse={reuse} fileHref={fileHref} hideIntro={hideIntro} />;
     const occ = extractHelperOccurrences(plan);
     const site = helperSite(plan);
     const detail = extractHelperDetail(plan);
@@ -325,7 +526,7 @@ export function PlanDetail({ plan, fileHref, hideIntro = false }: PlanDetailProp
                     path={o.file}
                     line={o.line_start}
                     fileHref={fileHref}
-                    className="block truncate"
+                    className="flex"
                   />
                 </span>
                 <span className="flex shrink-0 items-center gap-2">
@@ -409,9 +610,9 @@ export function PlanDetail({ plan, fileHref, hideIntro = false }: PlanDetailProp
           {edges.map((e, i) => (
             <div key={i} className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
               <Scissors className="h-3.5 w-3.5 shrink-0" style={{ color: accent }} />
-              <FileRef path={e.from} fileHref={fileHref} className="min-w-0 truncate" />
+              <FileRef path={e.from} fileHref={fileHref} className="flex" />
               <ArrowRight className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)]" />
-              <FileRef path={e.to} fileHref={fileHref} className="min-w-0 truncate" />
+              <FileRef path={e.to} fileHref={fileHref} className="flex" />
             </div>
           ))}
           {members.length > 0 ? (
@@ -425,19 +626,27 @@ export function PlanDetail({ plan, fileHref, hideIntro = false }: PlanDetailProp
   }
 
   if (plan.refactoring_type === "extract_method") {
+    const stages = extractMethodStages(plan);
+    // Two or more valid stages, as Fix first counts them; else the single span.
+    if (stages.length >= 2) {
+      return <StagedExtract plan={plan} fileHref={fileHref} hideIntro={hideIntro} stages={stages} />;
+    }
     const em = extractMethodPlan(plan);
     const lines = em.span ? em.span.end - em.span.start + 1 : 0;
     const ccn = Number(plan.evidence?.ccn_removed ?? 0);
-    const helperName = em.suggested_name ?? "helper";
-    const sig = `${helperName}(${em.params.join(", ")})${
-      em.returns.length ? ` -> ${em.returns.join(", ")}` : ""
-    }`;
+    const sig = extractMethodSignature(em);
+    // The one extension-to-language map in the UI lives in the code viewer.
+    const codeLanguage = getLanguageFromPath(plan.file_path);
+    // Typed where the plan has them; a method's receiver is not a parameter.
+    const inLabels = em.typed_params.length ? em.typed_params.map(slotLabel) : em.params;
+    const outLabels = em.typed_returns.length ? em.typed_returns.map(slotLabel) : em.returns;
     return (
       <div className="space-y-3">
         {hideIntro ? null : (
           <p className="text-xs text-[var(--color-text-tertiary)]">
             Lift {lines} line{lines === 1 ? "" : "s"} out of{" "}
-            <span className="font-mono">{plan.target_symbol}</span> into a focused helper
+            <span className="font-mono">{plan.target_symbol}</span> into a focused{" "}
+            {em.needs_async ? "async helper whose call is awaited" : "helper"}
             {ccn ? `, shedding ${ccn} decision point${ccn === 1 ? "" : "s"}` : ""}.
           </p>
         )}
@@ -453,7 +662,7 @@ export function PlanDetail({ plan, fileHref, hideIntro = false }: PlanDetailProp
                 path={plan.file_path}
                 line={em.span.start}
                 fileHref={fileHref}
-                className="block truncate"
+                className="flex"
               />
             </div>
             <span className="ml-auto shrink-0 font-mono text-xs text-[var(--color-text-secondary)]">
@@ -463,26 +672,68 @@ export function PlanDetail({ plan, fileHref, hideIntro = false }: PlanDetailProp
         ) : null}
 
         <div className="rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3.5">
-          <div className="mb-1.5 text-caption uppercase tracking-wide text-[var(--color-text-tertiary)]">
-            Inferred signature
-          </div>
-          <code className="block break-all font-mono text-xs text-[var(--color-text-primary)]">
-            {sig}
-          </code>
+          {em.signature_text ? (
+            <>
+              <HighlightedCodeBlock
+                code={em.signature_text}
+                language={codeLanguage}
+                label="New helper"
+                compact
+                className="my-0"
+              />
+              {em.call_site ? (
+                <HighlightedCodeBlock
+                  code={em.call_site.new_text}
+                  language={codeLanguage}
+                  label={`Replaces lines ${em.call_site.replace_span.start}–${em.call_site.replace_span.end}`}
+                  compact
+                  className="mb-0 mt-2"
+                />
+              ) : null}
+              <PlaceholderHint texts={[em.signature_text, em.call_site?.new_text ?? ""]} />
+              {em.notes.map((note) => (
+                <p key={note} className="mt-2 text-2xs text-[var(--color-text-tertiary)]">
+                  {note}
+                </p>
+              ))}
+            </>
+          ) : (
+            <>
+              <div className="mb-1.5 text-caption uppercase tracking-wide text-[var(--color-text-tertiary)]">
+                Inferred signature
+              </div>
+              <code className="block break-all font-mono text-xs text-[var(--color-text-primary)]">
+                {sig}
+              </code>
+            </>
+          )}
           <div className="mt-2 flex flex-wrap gap-3 text-2xs text-[var(--color-text-tertiary)]">
             <span>
               In (params):{" "}
               <span className="text-[var(--color-text-secondary)]">
-                {em.params.length ? em.params.join(", ") : "none"}
+                {inLabels.length ? inLabels.join(", ") : "none"}
               </span>
             </span>
             <span>
               Out (return):{" "}
               <span className="text-[var(--color-text-secondary)]">
-                {em.returns.length ? em.returns.join(", ") : "none"}
+                {outLabels.length ? outLabels.join(", ") : "none"}
               </span>
             </span>
           </div>
+          {em.async_host === false ? (
+            <p className="mt-2 text-2xs text-[var(--color-text-tertiary)]">
+              Judgment call: the span awaits, but the function holding it is not declared
+              async, so an async helper cannot be written in its place.
+            </p>
+          ) : null}
+          {em.receiver_hazard ? (
+            <p className="mt-2 text-2xs text-[var(--color-text-tertiary)]">
+              {em.receiver_hazard === "receiver_unbound"
+                ? "Judgment call: the span uses this outside a class, so no helper method can share it."
+                : "Judgment call: the span writes fields of a value receiver (a copy), so a helper with its own copy would lose those writes."}
+            </p>
+          ) : null}
         </div>
       </div>
     );
@@ -523,7 +774,7 @@ export function PlanDetail({ plan, fileHref, hideIntro = false }: PlanDetailProp
               {g.suggested_file ? (
                 <div className="mb-2 flex items-center gap-1.5">
                   <FilePlus2 className="h-3 w-3 shrink-0 text-[var(--color-text-tertiary)]" />
-                  <FileRef path={g.suggested_file} fileHref={fileHref} className="min-w-0 truncate" />
+                  <FileRef path={g.suggested_file} fileHref={fileHref} className="flex" />
                 </div>
               ) : null}
               <ul className="space-y-0.5">
@@ -575,7 +826,7 @@ export function PlanDetail({ plan, fileHref, hideIntro = false }: PlanDetailProp
               <ul className="space-y-1">
                 {shownDeps.map((f) => (
                   <li key={f}>
-                    <FileRef path={f} fileHref={fileHref} className="block truncate" />
+                    <FileRef path={f} fileHref={fileHref} className="flex" />
                   </li>
                 ))}
                 {blast.dependent_files.length > shownDeps.length ? (

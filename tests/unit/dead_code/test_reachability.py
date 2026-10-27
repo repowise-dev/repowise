@@ -63,6 +63,27 @@ def test_entry_point_not_flagged():
     assert all(f.file_path != "pkg/main.py" for f in report.findings)
 
 
+def test_reachability_root_not_flagged():
+    """A root that is not an entry point is still exempt from dead code."""
+    g = _build_graph(
+        nodes={
+            "pkg/loaded_by_runner.py": {
+                "is_entry_point": False,
+                "is_reachability_root": True,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": 10,
+                "symbols": [],
+            },
+        },
+    )
+
+    analyzer = DeadCodeAnalyzer(g, git_meta_map={})
+    report = analyzer.analyze({"detect_unused_exports": False, "detect_zombie_packages": False})
+
+    assert all(f.file_path != "pkg/loaded_by_runner.py" for f in report.findings)
+
+
 def test_test_files_excluded():
     """A test file (is_test=True) with in_degree=0 should NOT be flagged."""
     g = _build_graph(

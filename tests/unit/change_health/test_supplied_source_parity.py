@@ -93,6 +93,27 @@ def test_health_delta_is_identical_across_sources(make_repo, revspec):
     ]
 
 
+def test_supplied_source_needs_no_repo_path(make_repo):
+    """A caller with no checkout has content and SHAs, never a path."""
+    repo: Repo = make_repo("parity")
+    repo.commit("base", {"app/a.py": python_complex("run", 2)})
+    repo.commit("head", {"app/a.py": python_complex("run", 9)})
+
+    from_git = ChangeHealthDeltaService(repo_path=str(repo.path)).compare(
+        DeltaRequest(repo_path=str(repo.path), revspec="HEAD")
+    )
+
+    supplied = _mirror(GitRevisionSource(str(repo.path)), "HEAD")
+    from_supplied = ChangeHealthDeltaService(supplied).compare(
+        DeltaRequest(repo_path=None, revspec="HEAD")
+    )
+
+    assert from_git.findings, "the fixture must surface findings to compare"
+    assert from_supplied.status == from_git.status
+    assert from_supplied.scope == from_git.scope
+    assert from_supplied.findings == from_git.findings
+
+
 # ---------------------------------------------------------------------------
 # Change shapes that must survive the round trip
 # ---------------------------------------------------------------------------
@@ -255,11 +276,18 @@ def test_directive_without_a_test_block_asks_for_nothing():
         assert directive(_clean_delta(), absent)["next_actions"] == []
 
 
-def test_directive_still_names_a_missing_coverage_map():
+def test_directive_still_names_a_missing_index():
     from repowise.server.mcp_server._change_health import directive
 
-    actions = directive(_clean_delta(), {"status": "no_map"})["next_actions"]
+    actions = directive(_clean_delta(), {"status": "no_index"})["next_actions"]
     assert actions == ["No measured test map; run the suite covering the changed files."]
+
+
+def test_directive_says_to_run_every_test_and_why():
+    from repowise.server.mcp_server._change_health import directive
+
+    tests = {"run_all": True, "reasons": ["uv.lock changed."], "tests_to_run": ["t0"]}
+    assert directive(_clean_delta(), tests)["next_actions"] == ["Run every test: uv.lock changed."]
 
 
 def test_directive_renders_at_most_three_tests_in_one_run_command():

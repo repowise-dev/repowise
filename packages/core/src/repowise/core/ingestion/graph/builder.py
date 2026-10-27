@@ -14,10 +14,21 @@ from typing import Any
 import networkx as nx
 import structlog
 
-from ..cohesion import SAME_PACKAGE_HINT, UNIT_FANOUT_LANGUAGES
-from ..models import ParsedFile
+from ...analysis.public_api import stamp_public_api
+from ..cohesion import (
+    MODULE_DECLARATION_HINT,
+    SAME_PACKAGE_HINT,
+    UNIT_FANOUT_LANGUAGES,
+    withdraw_declaration_hint,
+)
+from ..languages.apex_namespace import spell_apex_names
+from ..languages.python_modules import dotted_module_for
+from ..models import Import, ParsedFile, Symbol, combine_load_kinds
 from ..resolvers import ResolverContext, resolve_import
 from ..resolvers.go import read_go_module_path, read_go_modules
+from ..resolvers.go_workspace import cached_go_index, go_package_files
+from ..resolvers.typescript import detect_platform_files
+from ..symbol_identity import has_overload_identity
 from ..type_ref_resolution import resolve_type_refs
 from ._edges import EdgesMixin
 from ._metrics import MetricsMixin
@@ -27,6 +38,36 @@ from ._serialize import SerializeMixin
 from ._stem import build_stem_map
 
 log = structlog.get_logger(__name__)
+
+_CALLABLE_KINDS = frozenset({"function", "method"})
+
+
+def _first_definition_keeps_node(existing: dict[str, Any] | None, sym: Symbol) -> bool:
+    """Does the definition already holding *sym*'s id keep its node?
+
+    Where overloads get their own ids, two definitions still sharing one erase
+    to one signature: the first declared keeps the node, so its span does not
+    depend on how many follow it. A function sharing its id with a Kotlin
+    property takes the node: calls name it.
+    """
+    if existing is None or existing.get("is_declaration") is not False:
+        return False
+    if not has_overload_identity(sym.language):
+        return False
+    return not (sym.kind in _CALLABLE_KINDS and existing.get("kind") not in _CALLABLE_KINDS)
+
+
+def _merge_load_kind(data: dict[str, Any], imp: Import) -> None:
+    """Fold one more import into an edge's ``type_only`` / ``deferred`` marks,
+    by :func:`~repowise.core.ingestion.models.combine_load_kinds` (one
+    load-time import makes the edge a runtime one). ``deferred`` is stored
+    only when true."""
+    edge = (bool(data.get("type_only")), bool(data.get("deferred")))
+    data["type_only"], deferred = combine_load_kinds(edge, (imp.type_only, imp.deferred))
+    if deferred:
+        data["deferred"] = True
+    else:
+        data.pop("deferred", None)
 
 
 class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, RehydrateMixin):
@@ -58,10 +99,18 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         # warmups that scan file text read it instead of re-opening every
         # file. Empty means "not supplied": every reader falls back to disk.
         self._source_map: dict[str, bytes] = {}
+        # Launcher names the traverser read from pyproject.toml; set by the
+        # pipelines that walk the repo, empty for a builder fed files directly.
+        self.console_scripts: frozenset[str] = frozenset()
+        self._pytest_roots: Any | None = None
         self._built = False
         # Resolver-built DotNetProjectIndex, stashed by build() for the
         # dynamic-hints phase to reuse (see build()).
         self.dotnet_index: Any | None = None
+        # {(file, partial type's bare name): every file declaring a fragment
+        # of that type}, filled by ``_resolve_dotnet_partials`` so the call
+        # resolver can treat the fragments as the one class scope they are.
+        self._partial_fragments: dict[tuple[str, str], tuple[str, ...]] = {}
         # ``TraversalStats`` for the walk that produced this graph, stashed by
         # the caller. Carried here rather than widened into the return tuples
         # of ``build_repo_graph``/``rebuild_graph_and_git`` (ten unpack sites
@@ -119,6 +168,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         self._file_subgraph_cache: nx.DiGraph | None = None
         self._symbol_subgraph_cache: nx.DiGraph | None = None
         self._cycle_subgraph_cache: nx.DiGraph | None = None
+        self._centrality_subgraph_cache: nx.DiGraph | None = None
         # Shared import-name maps (built once per build(), injected into the
         # call + heritage resolvers; reset whenever files change).
         self._import_name_maps: Any | None = None
@@ -133,6 +183,9 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         # ``__setstate__`` recreates the lock.
         state = self.__dict__.copy()
         state["_subgraph_lock"] = None
+        # restricted_view holds lambdas, which don't pickle; they rebuild lazily.
+        state["_cycle_subgraph_cache"] = None
+        state["_centrality_subgraph_cache"] = None
         return state
 
     def __setstate__(self, state: dict) -> None:
@@ -144,6 +197,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         # this is an explicit cross-version process boundary — default it rather
         # than let the first cycle_subgraph() call raise AttributeError.
         self.__dict__.setdefault("_cycle_subgraph_cache", None)
+        self.__dict__.setdefault("_centrality_subgraph_cache", None)
 
     def set_tsconfig_resolver(self, resolver: Any) -> None:
         """Attach a :class:`TsconfigResolver` for TS/JS path-alias resolution."""
@@ -165,6 +219,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         self._file_subgraph_cache = None
         self._symbol_subgraph_cache = None
         self._cycle_subgraph_cache = None
+        self._centrality_subgraph_cache = None
         self._import_name_maps = None
 
     def _invalidate_subgraph_caches(self) -> None:
@@ -178,6 +233,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         self._file_subgraph_cache = None
         self._symbol_subgraph_cache = None
         self._cycle_subgraph_cache = None
+        self._centrality_subgraph_cache = None
 
     def release_graph(self) -> None:
         """Drop the in-memory NetworkX object after metrics are materialized.
@@ -208,6 +264,10 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         """
         self._source_map = source_map or {}
 
+    def set_pytest_roots(self, roots: Any) -> None:
+        """Hand the builder where pytest collects (the traverser's ``pytest_roots``)."""
+        self._pytest_roots = roots
+
     def add_file(self, parsed: ParsedFile) -> None:
         """Register one parsed file and its symbols in the graph."""
         path = parsed.file_info.path
@@ -219,10 +279,11 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
             path,
             node_type="file",
             language=parsed.file_info.language,
-            symbol_count=len(parsed.symbols),
+            symbol_count=parsed.symbol_count,
             has_error=bool(parsed.parse_errors),
             is_test=parsed.file_info.is_test,
             is_entry_point=parsed.file_info.is_entry_point,
+            is_reachability_root=parsed.file_info.is_reachability_root,
             docstring=parsed.docstring,
             # Same-file references (Python): names used intra-module in a
             # non-call/non-import position. Rescues them in the unused-export
@@ -243,11 +304,14 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
             # the one-line declaration overwrites a definition's span, kind and
             # ``is_declaration``, and every consumer that tells the two apart
             # then reads the header line as the whole symbol.
+            existing = self._graph.nodes.get(sym.id)
             if sym.is_declaration:
-                existing = self._graph.nodes.get(sym.id)
                 if existing is not None and existing.get("is_declaration") is False:
                     self._graph.add_edge(path, sym.id, edge_type="defines")
                     continue
+            elif _first_definition_keeps_node(existing, sym):
+                self._graph.add_edge(path, sym.id, edge_type="defines")
+                continue
 
             self._graph.add_node(
                 sym.id,
@@ -264,6 +328,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
                 parent_name=sym.parent_name,
                 signature=sym.signature,
                 decorators=sym.decorators,
+                modifiers=sym.modifiers,
                 is_exported_symbol=sym.is_exported_symbol,
                 is_declaration=sym.is_declaration,
                 docstring=sym.docstring,
@@ -302,6 +367,30 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         )
         self._graph.add_edge(path, module_sym_id, edge_type="defines")
 
+    def _qualify_python_symbols(self) -> None:
+        """Rename Python symbols to their importable dotted module.
+
+        The parser sees one file, so it dots the raw repository path and a
+        src-layout symbol carries the layout prefix
+        (``packages.core.src.pkg.mod.f``). The importable name needs every
+        repository path, which only exists here. A file with no derivable
+        module keeps the path form. Derived from the path each time, so
+        re-running it, or running it on a cached parse, gives the same names.
+        ``Symbol.id`` is untouched.
+        """
+        path_set = set(self._parsed_files)
+        for path, parsed in self._parsed_files.items():
+            if parsed.file_info.language != "python":
+                continue
+            module = dotted_module_for(path, path_set)
+            if module is None:
+                module = PurePosixPath(path).with_suffix("").as_posix().replace("/", ".")
+            for sym in parsed.symbols:
+                prefix = f"{module}.{sym.parent_name}" if sym.parent_name else module
+                sym.qualified_name = f"{prefix}.{sym.name}"
+                if sym.id in self._graph:
+                    self._graph.nodes[sym.id]["qualified_name"] = sym.qualified_name
+
     def build(self, progress: Any | None = None) -> nx.DiGraph:
         """Resolve imports and calls, add edges. Returns the finalized graph.
 
@@ -311,6 +400,9 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         instead of a single opaque "0/1" bar over the whole build.
         """
         self._invalidate_metric_caches()
+        self._qualify_python_symbols()
+        # Apex names are case-insensitive; every resolver keys on the declared spelling.
+        spell_apex_names(self._parsed_files.values())
 
         # Clear import/call edges but keep structural edges (defines, has_method)
         edges_to_remove = [
@@ -338,6 +430,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
             ),
             go_modules=go_modules,
             has_sfc_files=any(p.endswith((".vue", ".svelte", ".astro")) for p in path_set),
+            has_platform_files=detect_platform_files(path_set),
             parsed_files=self._parsed_files,
             source_map=self._source_map,
         )
@@ -350,6 +443,17 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         from ..graph_warmups import run_warmups
 
         run_warmups(self._parsed_files, ctx, progress=progress)
+
+        # Tests the import graph cannot see into, from the bytes already held,
+        # so selection reads a stored fact and never re-reads test files.
+        from ..always_run import stamp_always_run
+
+        try:
+            stamp_always_run(
+                self._graph, self._parsed_files, self._source_map, self.console_scripts
+            )
+        except Exception as exc:  # a detector bug must not fail the index
+            log.warning("always_run_detection_failed", error=str(exc))
 
         # --- Phase 1: Resolve file-level imports ---
         import_targets: dict[str, set[str]] = {}  # file → set of imported files
@@ -408,6 +512,13 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
                     from ..resolvers.python import resolve_python_import_all
 
                     targets = resolve_python_import_all(imp, path, ctx)
+                elif _lang in ("typescript", "javascript"):
+                    # React Native: ``./Button`` also means ``Button.ios.tsx`` /
+                    # ``Button.android.tsx`` (Metro platform extensions). A repo
+                    # with no such files resolves exactly as before (#3603).
+                    from ..resolvers.typescript import resolve_ts_js_import_all
+
+                    targets = resolve_ts_js_import_all(imp.module_path, path, ctx)
                 else:
                     single = resolve_import(imp.module_path, path, _lang, ctx)
                     targets = (single,) if single else ()
@@ -415,30 +526,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
                     imp.resolved_file = targets[0]
                 for target in targets:
                     file_imports.add(target)
-                    # Aggregate imported_names on parallel edges
-                    if self._graph.has_edge(path, target):
-                        existing = self._graph[path][target].get("imported_names", [])
-                        merged = list(set(existing + imp.imported_names))
-                        self._graph[path][target]["imported_names"] = merged
-                    else:
-                        edge_attrs: dict[str, Any] = {
-                            "edge_type": "imports",
-                            "imported_names": list(imp.imported_names),
-                        }
-                        # ``external:`` targets are excluded before the
-                        # directory test, not after: an external node id has no
-                        # directory, and a single-segment one such as
-                        # ``external:strings`` yields parent ``"."`` — which is
-                        # exactly _own_dir for any root-level file, so every
-                        # dot-free stdlib import from the repo root would
-                        # otherwise be stamped a same-package sibling.
-                        if (
-                            _unit_fanout
-                            and not target.startswith("external:")
-                            and PurePosixPath(target).parent.as_posix() == _own_dir
-                        ):
-                            edge_attrs["hint_source"] = SAME_PACKAGE_HINT
-                        self._graph.add_edge(path, target, **edge_attrs)
+                    self._add_import_edge(path, target, imp, _unit_fanout, _own_dir)
             import_targets[path] = file_imports
             lang_import_time[_lang] = lang_import_time.get(_lang, 0.0) + (_t.monotonic() - _t0)
             if progress:
@@ -458,36 +546,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         # edges feed into heritage's import_targets propagation if a
         # future language emits them, and so dead-code reachability
         # sees every edge before any analysis pass runs.
-        if progress:
-            progress.on_phase_start("graph.type_refs", len(self._parsed_files))
-        type_use_counts = resolve_type_refs(self._parsed_files, ctx, self._graph)
-        for path in self._parsed_files:
-            for _, target, data in self._graph.out_edges(path, data=True):
-                # Treat both real ``using`` imports and synthesised
-                # type-use edges as import-like for downstream heritage
-                # / call resolution. Without this, type-use edges would
-                # only contribute to file-reachability — not to
-                # ``import_targets`` which gates cross-file call /
-                # heritage lookups.
-                # ``no_scope_widening`` marks a type-use edge whose target was
-                # inferred (the repo declares that type name in exactly one
-                # file) rather than read off an import the file actually
-                # writes. Such an edge is real evidence the target is used, so
-                # it still counts for file reachability and the unused-export
-                # pass, but it is not evidence that this file's bare names
-                # resolve into the target — feeding it to ``import_targets``
-                # let unrelated same-named symbols match and minted false call
-                # edges (measured on goose: 25% precision on the edges it
-                # gained).
-                if data.get("edge_type") in ("imports", "type_use") and not data.get(
-                    "no_scope_widening"
-                ):
-                    import_targets.setdefault(path, set()).add(target)
-        if progress:
-            _phase_done = getattr(progress, "on_phase_done", None)
-            if _phase_done is not None:
-                _phase_done("graph.type_refs")
-        del type_use_counts  # used only for logging inside resolve_type_refs
+        self._resolve_type_ref_edges(ctx, import_targets, progress=progress)
 
         # --- Phase 1c: Resolve C# member-access reads ---
         # Bind `var x = new T(...); ... x.Prop` style property reads
@@ -522,6 +581,11 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         # at all. Emit conservative sibling edges so neither reads as orphaned.
         self._resolve_dotnet_same_namespace(ctx, progress=progress)
 
+        # --- PHP same-namespace implicit references ---
+        # An unqualified class name resolves in the file's own namespace with
+        # no ``use``; emit conservative sibling edges for those references.
+        self._resolve_php_same_namespace(progress=progress)
+
         # --- Swift intra-module type references ---
         # Swift files see same-target siblings with no import statement;
         # emit conservative type-reference edges per SPM target.
@@ -545,9 +609,23 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         # --- Phase 3: Resolve symbol-level calls ---
         self._resolve_calls(import_targets, progress=progress)
 
+        # --- Salesforce objects and fields named by Apex and lookup fields ---
+        self._resolve_salesforce_schema()
+
         # --- Phase 4: Base method → the implementations that answer for it ---
         # Post-pass: needs heritage resolved and reads only the graph.
         self._resolve_override_dispatch(progress=progress)
+
+        # Which symbols a package exports, read off the imports just resolved.
+        try:
+            go_index = cached_go_index(ctx)
+            stamp_public_api(
+                self._graph,
+                self._parsed_files,
+                go_package_files(go_index) if go_index is not None else None,
+            )
+        except Exception as exc:  # a reader bug must not fail the index
+            log.warning("public_api_stamp_failed", error=str(exc))
 
         self._built = True
 
@@ -579,6 +657,88 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
             edge_types=edge_counts,
         )
         return self._graph
+
+    def _add_import_edge(
+        self, path: str, target: str, imp: Any, unit_fanout: bool, own_dir: str
+    ) -> None:
+        """Add or merge the ``imports`` edge ``path -> target`` for *imp*."""
+        # Aggregate imported_names on parallel edges
+        if self._graph.has_edge(path, target):
+            existing = self._graph[path][target].get("imported_names", [])
+            merged = list(set(existing + imp.imported_names))
+            self._graph[path][target]["imported_names"] = merged
+            if not imp.is_module_declaration:
+                withdraw_declaration_hint(self._graph[path][target])
+            _merge_load_kind(self._graph[path][target], imp)
+            return
+        edge_attrs: dict[str, Any] = {
+            "edge_type": "imports",
+            "imported_names": list(imp.imported_names),
+            "type_only": imp.type_only,
+        }
+        if imp.deferred:
+            edge_attrs["deferred"] = True
+        # ``external:`` targets are excluded before the
+        # directory test, not after: an external node id has no
+        # directory, and a single-segment one such as
+        # ``external:strings`` yields parent ``"."`` — which is
+        # exactly own_dir for any root-level file, so every
+        # dot-free stdlib import from the repo root would
+        # otherwise be stamped a same-package sibling.
+        if (
+            unit_fanout
+            and not target.startswith("external:")
+            and PurePosixPath(target).parent.as_posix() == own_dir
+        ):
+            edge_attrs["hint_source"] = SAME_PACKAGE_HINT
+        elif imp.is_module_declaration:
+            edge_attrs["hint_source"] = MODULE_DECLARATION_HINT
+        self._graph.add_edge(path, target, **edge_attrs)
+
+    def _resolve_type_ref_edges(
+        self,
+        ctx: ResolverContext,
+        import_targets: dict[str, set[str]],
+        progress: Any | None = None,
+    ) -> None:
+        """Add type-use edges and widen ``import_targets`` with import-like out-edges."""
+        if progress:
+            progress.on_phase_start("graph.type_refs", len(self._parsed_files))
+        type_use_counts = resolve_type_refs(self._parsed_files, ctx, self._graph)
+        for path in self._parsed_files:
+            for _, target, data in self._graph.out_edges(path, data=True):
+                # Treat both real ``using`` imports and synthesised
+                # type-use edges as import-like for downstream heritage
+                # / call resolution. Without this, type-use edges would
+                # only contribute to file-reachability — not to
+                # ``import_targets`` which gates cross-file call /
+                # heritage lookups.
+                # ``no_scope_widening`` marks a type-use edge whose target was
+                # inferred (the repo declares that type name in exactly one
+                # file) rather than read off an import the file actually
+                # writes. Such an edge is real evidence the target is used, so
+                # it still counts for file reachability and the unused-export
+                # pass, but it is not evidence that this file's bare names
+                # resolve into the target — feeding it to ``import_targets``
+                # let unrelated same-named symbols match and minted false call
+                # edges (measured on goose: 25% precision on the edges it
+                # gained).
+                if data.get("edge_type") in ("imports", "type_use") and not data.get(
+                    "no_scope_widening"
+                ):
+                    import_targets.setdefault(path, set()).add(target)
+        if progress:
+            _phase_done = getattr(progress, "on_phase_done", None)
+            if _phase_done is not None:
+                _phase_done("graph.type_refs")
+        del type_use_counts  # used only for logging inside resolve_type_refs
+
+    def _resolve_salesforce_schema(self) -> None:
+        """SOQL/DML/trigger objects and lookup fields, bound to schema symbols."""
+        from ..salesforce_schema import add_schema_edges
+
+        added = add_schema_edges(self._graph, self._parsed_files, self._repo_path)
+        log.info("Salesforce schema edges resolved", total=added)
 
     def graph(self) -> nx.DiGraph:
         """Return the graph (building it first if necessary)."""

@@ -25,7 +25,32 @@ export {
 export { Toaster, toast, type ToasterProps } from "./toast";
 export * from "./breadcrumb";
 export * from "./empty-state";
+export * from "./clean-state";
+export { Callout, type CalloutProps, type CalloutTone } from "./callout";
+export {
+  RouteError,
+  RouteNotFound,
+  type RouteErrorProps,
+  type RouteNotFoundProps,
+  type RouteLinkElement,
+} from "./route-states";
+export * from "./ci-hint";
+export {
+  DismissibleNotice,
+  type DismissibleNoticeProps,
+  type NoticeTone,
+} from "./dismissible-notice";
+export { HostedNudge, type HostedNudgeProps } from "./hosted-nudge";
 export { InfoTip, type InfoTipProps } from "./info-tip";
+export {
+  OrbLoader,
+  ORB_STATE,
+  type OrbLoaderProps,
+  type OrbIntent,
+  type OrbSize,
+  type OrbState,
+} from "./orb-loader";
+/** @deprecated Use `OrbLoader`. */
 export { OwlLoader, type OwlLoaderProps } from "./owl-loader";
 export {
   TableSkeleton,
@@ -39,7 +64,14 @@ export {
   type StatGridSkeletonProps,
   type ChartSkeletonProps,
 } from "./loading-skeletons";
-export { PageShell, type PageShellProps } from "./page-shell";
+export {
+  PageShell,
+  PageFrame,
+  type PageShellProps,
+  type PageFrameProps,
+  type PageMaxWidth,
+} from "./page-shell";
+export { ReleaseNotice, type ReleaseNoticeProps } from "./release-notice";
 export { ViewTabs, type ViewTab, type ViewTabsProps } from "./view-tabs";
 export { MetricCard, type MetricCardProps } from "./metric-card";
 export {
@@ -57,3 +89,13 @@ export { RowActions, type RowAction } from "./row-actions";
 export * from "./entity";
 export { ThemeToggle, type ThemeToggleProps } from "./theme-toggle";
 export { resolveToken, resolveTokens, useThemeVersion } from "./use-theme-tokens";
+export {
+  ProportionBar,
+  SHARE_STEPS,
+  shareColor,
+  type ProportionBarProps,
+  type ProportionSegment,
+} from "./proportion-bar";
+export { SERIES, SERIES_TAIL, seriesColor, commitCategoryColor } from "./series";
+export { MoreFilters, ActiveFilterChips, type ActiveFilterChip } from "./more-filters";
+export { FilePath, SlashBreaks, type FilePathMode, type FilePathProps } from "./file-path";

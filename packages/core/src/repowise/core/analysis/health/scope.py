@@ -37,6 +37,10 @@ def scores_language(language: str | None) -> bool:
     code shape to measure, while the history markers fire on them hard: a
     changelog every fix commit touches reads as a bug magnet. They get no
     score, no findings and no metric row.
+
+    A wider question than ``complexity.languages.has_health_dialect``: a code
+    file in a language with no dialect still gets a metric row (its history
+    findings stand), but no score.
     """
     return bool(language) and language in _scored_languages()
 

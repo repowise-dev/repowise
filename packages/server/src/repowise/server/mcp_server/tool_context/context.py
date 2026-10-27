@@ -10,16 +10,35 @@ The split keeps the cached prompt prefix small on multi-turn agent sessions:
 ``get_context`` stays under ~2k tokens for common targets.
 
 Optional ``include`` parameter widens the response:
-  - include=["full_doc"]  → full wiki markdown content
+  - include=["full_doc"]  -> full wiki markdown content, plus the page's agent
+                            digest (questions, identifiers, git signals)
   - include=["callers"]   → who calls this symbol (symbol targets only)
   - include=["callees"]   → what this symbol calls (symbol targets only)
-  - include=["ownership"] → primary owner, bus factor, contributor count
+  - include=["references"]→ every live edit site of a symbol (definition,
+                            imports, calls, other mentions) and whether
+                            the list is complete (symbol targets only)
+  - include=["ownership"] → primary owner, bus factor, contributor count; on a
+                            component target, declared owners against recent
+                            activity, with findings
   - include=["last_change"]→ last commit date and author
   - include=["metrics"]   → PageRank, betweenness, percentile ranks
   - include=["community"] → community membership + neighbors
-  - include=["decisions"] → full decision records (default returns titles only)
+  - include=["decisions"] → decisions governing the target, in three labelled
+                            lanes: ``decisions`` (accepted and binding),
+                            ``candidates`` (proposed, nobody has agreed),
+                            ``history`` (accepted then withdrawn). The last
+                            two appear only when non-empty, and are capped.
+                            A dismissed record is in none of them.
   - include=["skeleton"]  → body-elided file rendering (signatures + top-PageRank bodies)
+  - include=["skeleton+"] → all non-function code kept, every function/method body elided
   - include=["health"]    → code-health scores and biomarkers for the target
+  - include=["doc_drift"] → documents that name this file, and their drift
+  - include=["symbols"]   → every symbol in a file card, not the ranked top 15
+  - include=["changes"]   → recent Change Records touching a file target
+  - include=["suspects"]  → changes merged in the last 14 days ranked against the
+                            targets as a symptom, each with the signals that fired
+  - include=["provenance"]→ a file's commits by source (agent, human-attested,
+                            unknown) with coverage and the honest agent share
 
 An unrecognised key is dropped and named in ``ignored_arguments`` rather than
 silently ignored: an unknown key otherwise produces exactly the response the
@@ -35,11 +54,16 @@ import asyncio
 import logging
 from typing import Any
 
+from sqlalchemy import func, select
+
 from repowise.core.persistence.database import get_session
+from repowise.core.persistence.models import GitMetadata
 from repowise.core.registry import ToolRecipe
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._budget import OmissionCollector
+from repowise.server.mcp_server._changes import change_cards, is_change_target, suspects_block
+from repowise.server.mcp_server._components import component_cards, is_component_target
 from repowise.server.mcp_server._episodes import enrich_episode_counts as _enrich_episodes
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
@@ -47,20 +71,26 @@ from repowise.server.mcp_server._helpers import (
     _resolve_repo_context,
     _unsupported_repo_all,
     attach_ignored_arguments,
+    drop_echoed_target,
     resolve_enum_argument,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import completeness_line as _completeness_line
-from repowise.server.mcp_server._meta import context_hint as _context_hint
+from repowise.server.mcp_server._packages import is_package_target, package_cards
+from repowise.server.mcp_server._workspace_routing import (
+    needs_routing,
+    route_targets,
+    run_grouped,
+)
+from repowise.server.mcp_server.tool_context.enrichment import attach_doc_references
 from repowise.server.mcp_server.tool_context.targets import _resolve_one_target
 
 _log = logging.getLogger("repowise.mcp.context")
 
 # Every value ``include_set`` is tested against downstream, in ``targets.py``.
 # ``docs`` and ``freshness`` are always on but remain legal to pass explicitly.
-# ``source`` is tested in ``_meta.context_hint`` and left out deliberately: both
-# branches there return None, so accepting it would promise a block that does
-# nothing.
+# ``source`` is omitted: get_context serves triage cards and structural metadata,
+# not raw source bodies (which are served via include=["skeleton"] or the Read tool).
 _INCLUDE_BLOCKS = frozenset(
     {
         "docs",
@@ -68,36 +98,22 @@ _INCLUDE_BLOCKS = frozenset(
         "full_doc",
         "callers",
         "callees",
+        "references",
         "ownership",
         "last_change",
         "metrics",
         "community",
         "decisions",
         "skeleton",
+        "skeleton+",
         "health",
+        "doc_drift",
+        "symbols",
+        "changes",
+        "provenance",
+        "suspects",
     }
 )
-
-
-async def _scope_hint(session: Any, repository: Any, raw_results: list[Any]) -> str | None:
-    """One sentence naming index layers that hold none of the files served here."""
-    try:
-        from repowise.server.mcp_server._basis import basis_cache_key
-        from repowise.server.mcp_server._scope import unrelated_scope_hint
-
-        served = [
-            r.get("path") or str(r.get("target") or "").split("::", 1)[0]
-            for r in raw_results
-            if isinstance(r, dict)
-        ]
-        return await unrelated_scope_hint(
-            session,
-            repository.id,
-            served,
-            cache_key=f"{repository.id}:{basis_cache_key(repository)}",
-        )
-    except Exception:
-        return None
 
 
 @mcp.tool(
@@ -117,57 +133,56 @@ async def get_context(
     include: list[str] | None = None,
     compact: bool = True,
     repo: str | None = None,
+    symptom: str | None = None,
 ) -> dict:
     """Triage card for files / modules / symbols — relationships, not source bytes.
 
-    Returns title, summary, signatures with line numbers, hotspot bit, and
-    decision_record titles. fix_history appears only on files with counted bug
-    fixes (count, age, bug_magnet); hotspot is churn. Either one is a cue to
-    call get_risk. episodes counts the dated records bound to a target — what
-    happened here and why — and appears only when there is at least one;
-    get_why serves the bodies. A symbol target is counted as its file, and a
-    module aggregates everything beneath it.
-    Batch targets in one call. No source bytes by default: pass
-    include=["skeleton"] for the whole file body-elided and line-verified in
+    Returns title, summary, signatures with lines, hotspot bit and
+    decision_record titles. A symbol row without symbol_id is path::name.
+    fix_history (count, age, bug_magnet) appears only on files with counted
+    bug fixes; hotspot is churn. Either is a cue to call get_risk. episodes
+    counts the dated records bound to a target (absent at zero); get_why serves
+    the bodies. A symbol target counts as its file; a module aggregates all
+    beneath it. Batch targets in one call. No source bytes by default:
+    include=["skeleton"] gives the whole file body-elided and line-verified in
     ONE call, or Read it. Do not call get_symbol per signature.
+    For a rename or update-all-callers task, include=["references"] is the
+    whole edit set when complete.
 
-    Default responses fit 24,000 serialized chars; nonempty ``include`` uses
+    Defaults fit 24,000 serialized chars; nonempty ``include`` uses
     32,000. Reductions carry counts and ``_meta.omitted`` recovery refs;
     ``_meta.recovery_unavailable`` names a storage failure.
     Include-gated blocks are projections, not omissions.
 
     Args:
-        targets: file paths, module paths, or "path::Symbol" ids.
+        targets: paths, "path::Symbol" ids, "component:<name>",
+            "change:<id>" (pr-123 or a sha), "package:<name>".
         include: opt-in blocks: full_doc | ownership | last_change | callers
-            | callees | metrics | community | decisions | skeleton | health.
-            An unrecognised key is named in ignored_arguments.
-        compact: default True; False adds structure+imports+docstrings.
+            | callees | references | metrics | community | decisions | skeleton
+            | skeleton+ | health | doc_drift (docs naming it) | symbols
+            (all, not top 15) | changes | provenance | suspects.
+        compact: False adds structure+imports+docstrings.
         repo: usually omitted.
+        symptom: issue text, error or stack trace suspects ranks on.
     """
     if repo == "all":
         return _unsupported_repo_all("get_context")
+    routes = await route_targets(targets) if repo is None else None
+    if needs_routing(routes):
+        return await run_grouped(
+            routes,
+            lambda alias, local: get_context(
+                local, include=include, compact=compact, repo=alias, symptom=symptom
+            ),
+        )
     ctx = await _resolve_repo_context(repo)
     collector = OmissionCollector("get_context", repo_root=ctx.path)
-
-    # docs + freshness are ALWAYS returned (the tool contract says
-    # "defaults are always returned"); ``include`` only adds blocks on top.
-    # Freshness is critical for the agent to detect stale index data. The
-    # other blocks (ownership/last_change/decisions) are 200-500 bytes each
-    # and bloat every subsequent agent turn via cache replay. Callers that
-    # want them must pass include explicitly. Building the set this way
-    # also fixes include=["skeleton"] silently dropping the file summary
-    # and freshness card that every other call shape carries.
-    # An unknown key adds no block, so without this the response is identical
-    # to one that never asked — and for callers/callees a genuine empty list is
-    # a *present* key, which makes the typo the quieter of the two (#1496).
     ignored: list[dict[str, Any]] = []
-    known = [
-        k
-        for k in (include or [])
-        if resolve_enum_argument(k, _INCLUDE_BLOCKS, argument="include", ignored=ignored)
-    ]
-    include_set = {"docs", "freshness"} | set(known)
-
+    include_set = _include_set(include, ignored)
+    if symptom and "suspects" not in include_set:
+        ignored.append(
+            {"argument": "symptom", "values": [symptom[:80]], "valid": ['include=["suspects"]']}
+        )
     exclude_spec = _get_exclude_spec(ctx.path)
 
     import time as _time
@@ -175,39 +190,128 @@ async def get_context(
     _t0 = _time.perf_counter()
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
-
-        # return_exceptions=True isolates a single target's failure: one
-        # target raising (e.g. a malformed lookup) must not sink the whole
-        # batch. Any exception is converted below into a per-target error
-        # entry that carries "target", so the comprehension keyed on target
-        # below never KeyErrors.
-        raw_results = await asyncio.gather(
-            *[
-                _resolve_one_target(
-                    session,
-                    repository,
-                    t,
-                    include_set,
-                    compact,
-                    exclude_spec=exclude_spec,
-                    repo_root=ctx.path,
-                    collector=collector,
-                )
-                for t in targets
-            ],
-            return_exceptions=True,
+        raw_results = await _resolve_cards(
+            session, repository, targets, include_set, compact, ctx, exclude_spec, collector
+        )
+        # One batched read on the shared session, not one per target inside the
+        # gather: savepoints opened concurrently on one session close each other.
+        await attach_doc_references(
+            session,
+            repository,
+            {r["target"]: r for r in raw_results if isinstance(r, dict)},
+            exclude_spec=exclude_spec,
+            collector=collector,
+        )
+        suspects = (
+            await suspects_block(session, repository, targets, symptom)
+            if "suspects" in include_set
+            else None
         )
 
-        # repo="all" already returned above, so ctx here is always one repo.
-        # Computed on the open session: never open a second one for this.
-        scope_hint = await _scope_hint(session, repository, raw_results)
+    results = _per_target_results(targets, raw_results)
+    # One integer per target: how many dated episodes are bound here. Absent at zero.
+    await asyncio.to_thread(_enrich_episodes, results, ctx.path)
 
+    response: dict[str, Any] = {
+        "targets": {r["target"]: r for r in results},
+        "_meta": _build_meta(
+            timing_ms=(_time.perf_counter() - _t0) * 1000,
+            repository=repository,
+            targets=targets,
+        ),
+    }
+    if suspects is not None:
+        response["suspects"] = suspects
+    _attach_whole_files(response, results)
+    _attach_cross_repo(response, ctx.alias)
+    drop_echoed_target(response.get("targets"))
+    attach_ignored_arguments(response, ignored)
+    collector.attach(response)
+    return response
+
+
+def _include_set(include: list[str] | None, ignored: list[dict[str, Any]]) -> set[str]:
+    """``docs`` and ``freshness`` plus every known ``include`` key.
+
+    The two defaults are always returned (freshness is how an agent spots a
+    stale index); every other block costs bytes on each cached turn, so
+    ``include`` only adds. An unknown key is recorded in *ignored* so a typo
+    is not read as an answer.
+    """
+    known = [
+        k
+        for k in (include or [])
+        if resolve_enum_argument(k, _INCLUDE_BLOCKS, argument="include", ignored=ignored)
+    ]
+    return {"docs", "freshness"} | set(known)
+
+
+async def _resolve_cards(
+    session: Any,
+    repository: Any,
+    targets: list[str],
+    include_set: set[str],
+    compact: bool,
+    ctx: Any,
+    exclude_spec: Any,
+    collector: OmissionCollector,
+) -> list[Any]:
+    """One card or exception per target, in target order.
+
+    Component, change and package targets resolve first, in turn, so they never
+    share the session with the gather. ``return_exceptions=True`` keeps one
+    target's failure from sinking the batch.
+    """
+    as_of_ts = (
+        await session.execute(
+            select(func.max(GitMetadata.last_commit_at)).where(
+                GitMetadata.repository_id == repository.id
+            )
+        )
+    ).scalar()
+    cards = await _component_cards(
+        session,
+        repository,
+        [t for t in targets if is_component_target(t)],
+        ctx,
+        exclude_spec,
+        ownership="ownership" in include_set,
+    )
+    cards |= await _change_cards(
+        session, repository, [t for t in targets if is_change_target(t)], collector
+    )
+    cards |= await _package_cards(
+        session, repository, [t for t in targets if is_package_target(t)], ctx, collector
+    )
+    gathered = await asyncio.gather(
+        *[
+            _resolve_one_target(
+                session,
+                repository,
+                t,
+                include_set,
+                compact,
+                exclude_spec=exclude_spec,
+                repo_root=ctx.path,
+                collector=collector,
+                as_of_ts=as_of_ts,
+            )
+            for t in targets
+            if t not in cards
+        ],
+        return_exceptions=True,
+    )
+    rest = iter(gathered)
+    return [cards[t] if t in cards else next(rest) for t in targets]
+
+
+def _per_target_results(targets: list[str], raw_results: list[Any]) -> list[dict[str, Any]]:
+    """Cards with each failed target turned into an error entry carrying ``target``."""
     results: list[dict[str, Any]] = []
     for t, r in zip(targets, raw_results, strict=True):
         if isinstance(r, BaseException) and not isinstance(r, Exception):
-            # CancelledError / KeyboardInterrupt / SystemExit must propagate:
-            # converting them to per-target errors would break cooperative
-            # cancellation (a cancelled request would run to completion).
+            # CancelledError / KeyboardInterrupt / SystemExit must propagate, or a
+            # cancelled request would run to completion.
             raise r
         if isinstance(r, BaseException):
             _log.exception("get_context: resolving target %r failed", t, exc_info=r)
@@ -219,25 +323,15 @@ async def get_context(
             )
         else:
             results.append(r)
+    return results
 
-    # One integer per target: how many dated episodes are bound here. A number
-    # invites a follow-up get_why; a paragraph would spend the budget of every
-    # caller that only wanted the triage card. Absent rather than zero.
-    await asyncio.to_thread(_enrich_episodes, results, ctx.path)
 
-    response: dict[str, Any] = {
-        "targets": {r["target"]: r for r in results},
-        "_meta": _build_meta(
-            timing_ms=(_time.perf_counter() - _t0) * 1000,
-            hint=_context_hint(targets, compact, include_set),
-            repository=repository,
-            targets=targets,
-        ),
-    }
-    if scope_hint:
-        response["_meta"]["scope_hint"] = scope_hint
-    # A "raw" skeleton is the file's own source served untouched; the
-    # signatures and smart modes elide bodies, so they are not whole files.
+def _attach_whole_files(response: dict[str, Any], results: list[dict[str, Any]]) -> None:
+    """Mark the response complete for files served whole.
+
+    A "raw" skeleton is the file's own source untouched; the other modes elide
+    bodies, so they are not whole files.
+    """
     whole_files = sum(
         1
         for r in results
@@ -246,50 +340,103 @@ async def get_context(
     if whole_files:
         response["_meta"]["complete"] = _completeness_line(files=whole_files)
 
-    # Cross-repo enrichment (Phase 3 + 4)
+
+def _attach_cross_repo(response: dict[str, Any], alias: Any) -> None:
+    """Workspace mode: co-change partners and contract links in other repos."""
     from repowise.server.mcp_server._helpers import _is_workspace_mode
 
     enricher = _state._cross_repo_enricher
-    if enricher is not None and enricher.has_data and _is_workspace_mode():
-        for target_key, target_data in response["targets"].items():
-            cross_repo: dict[str, Any] = {}
+    if not (enricher is not None and enricher.has_data and _is_workspace_mode()):
+        return
+    for target_key, target_data in response["targets"].items():
+        cross_repo: dict[str, Any] = {}
+        partners = enricher.get_cross_repo_partners(alias, target_key)
+        if partners:
+            cross_repo["co_changes_with"] = [
+                {"repo": p["repo"], "file": p["file"], "strength": p["strength"]}
+                for p in partners[:5]
+            ]
+        if enricher.has_contract_data:
+            contracts = _contract_links(enricher, alias, target_key)
+            if contracts:
+                cross_repo["contracts"] = contracts
+        if cross_repo:
+            target_data["cross_repo"] = cross_repo
 
-            partners = enricher.get_cross_repo_partners(ctx.alias, target_key)
-            if partners:
-                cross_repo["co_changes_with"] = [
-                    {"repo": p["repo"], "file": p["file"], "strength": p["strength"]}
-                    for p in partners[:5]
-                ]
 
-            # Contract links (Phase 4)
-            if enricher.has_contract_data:
-                provider_links = enricher.get_contract_links_as_provider(ctx.alias, target_key)
-                consumer_links = enricher.get_contract_links_as_consumer(ctx.alias, target_key)
-                if provider_links or consumer_links:
-                    contracts: dict[str, Any] = {}
-                    if provider_links:
-                        contracts["consumers"] = [
-                            {
-                                "consumer_repo": lk["consumer_repo"],
-                                "contract_id": lk["contract_id"],
-                                "type": lk["contract_type"],
-                            }
-                            for lk in provider_links[:5]
-                        ]
-                    if consumer_links:
-                        contracts["providers"] = [
-                            {
-                                "provider_repo": lk["provider_repo"],
-                                "contract_id": lk["contract_id"],
-                                "type": lk["contract_type"],
-                            }
-                            for lk in consumer_links[:5]
-                        ]
-                    cross_repo["contracts"] = contracts
+def _contract_links(enricher: Any, alias: Any, target_key: str) -> dict[str, Any]:
+    """Consumers and providers of the contracts *target_key* takes part in."""
+    provider_links = enricher.get_contract_links_as_provider(alias, target_key)
+    consumer_links = enricher.get_contract_links_as_consumer(alias, target_key)
+    contracts: dict[str, Any] = {}
+    if provider_links:
+        contracts["consumers"] = [
+            {
+                "consumer_repo": lk["consumer_repo"],
+                "contract_id": lk["contract_id"],
+                "type": lk["contract_type"],
+            }
+            for lk in provider_links[:5]
+        ]
+    if consumer_links:
+        contracts["providers"] = [
+            {
+                "provider_repo": lk["provider_repo"],
+                "contract_id": lk["contract_id"],
+                "type": lk["contract_type"],
+            }
+            for lk in consumer_links[:5]
+        ]
+    return contracts
 
-            if cross_repo:
-                target_data["cross_repo"] = cross_repo
 
-    attach_ignored_arguments(response, ignored)
-    collector.attach(response)
-    return response
+async def _component_cards(
+    session: Any,
+    repository: Any,
+    targets: list[str],
+    ctx: Any,
+    exclude_spec: Any,
+    *,
+    ownership: bool = False,
+) -> dict[str, Any]:
+    """Cards for the batch's component targets; a failure becomes each one's error."""
+    if not targets:
+        return {}
+    try:
+        return await component_cards(
+            session,
+            repository,
+            targets,
+            repo_root=ctx.path,
+            alias=ctx.alias,
+            exclude_spec=exclude_spec,
+            ownership=ownership,
+        )
+    except Exception as exc:
+        return {t: exc for t in targets}
+
+
+async def _package_cards(
+    session: Any, repository: Any, targets: list[str], ctx: Any, collector: OmissionCollector
+) -> dict[str, Any]:
+    """Cards for the batch's ``package:`` targets; a failure becomes each one's error."""
+    if not targets:
+        return {}
+    try:
+        return await package_cards(
+            session, repository, targets, repo_root=ctx.path, collector=collector
+        )
+    except Exception as exc:
+        return {t: exc for t in targets}
+
+
+async def _change_cards(
+    session: Any, repository: Any, targets: list[str], collector: OmissionCollector
+) -> dict[str, Any]:
+    """Cards for the batch's ``change:`` targets; a failure becomes each one's error."""
+    if not targets:
+        return {}
+    try:
+        return await change_cards(session, repository, targets, collector)
+    except Exception as exc:
+        return {t: exc for t in targets}

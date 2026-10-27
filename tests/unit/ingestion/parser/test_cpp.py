@@ -784,6 +784,59 @@ class TestCppParser:
         assert symbols[("PlainOptions", "PlainOptions")].kind == "method"
         assert not any(symbol.name == "MYLIB_EXPORT" for symbol in result.symbols)
 
+    def test_keeps_definitions_inside_a_namespace_opened_after_a_macro(
+        self, parser: ASTParser
+    ) -> None:
+        # tree-sitter reads the macro line as a return type and the namespace
+        # as a function, which used to drop everything inside it as nested.
+        source = b"""namespace absl {
+ABSL_NAMESPACE_BEGIN
+namespace base_internal {
+int GetCpuType() { return 1; }
+class Reader {
+ public:
+  int Read() { return 2; }
+};
+}  // namespace base_internal
+ABSL_NAMESPACE_END
+}  // namespace absl
+FMT_END_EXPORT
+namespace detail {
+int helper() { return 3; }
+}
+"""
+        fi = _make_file_info("cpp_pkg/cpu_detect.cc", "cpp")
+        result = parser.parse_file(fi, source)
+        symbols = {(symbol.parent_name, symbol.name): symbol.kind for symbol in result.symbols}
+
+        assert symbols[(None, "GetCpuType")] == "function"
+        assert symbols[(None, "Reader")] == "class"
+        assert symbols[("Reader", "Read")] == "method"
+        assert symbols[(None, "helper")] == "function"
+
+    def test_keeps_a_macro_function_with_an_aggregate_return_type(self, parser: ASTParser) -> None:
+        source = b"""namespace api {
+MYAPI struct S make_s() { return S(); }
+EXPORT_API const struct S *find_s(int a) { return nullptr; }
+}
+"""
+        fi = _make_file_info("cpp_pkg/api.cc", "cpp")
+        result = parser.parse_file(fi, source)
+        names = {symbol.name for symbol in result.symbols}
+
+        assert {"make_s", "find_s"} <= names
+
+    def test_still_drops_a_function_nested_in_a_real_function(self, parser: ASTParser) -> None:
+        source = b"""MYLIB_API int outer() {
+  struct Local { int f() { return 1; } };
+  return Local().f();
+}
+"""
+        fi = _make_file_info("cpp_pkg/outer.cc", "cpp")
+        result = parser.parse_file(fi, source)
+
+        assert [symbol.name for symbol in result.symbols if symbol.name == "f"] == []
+
     def test_preserves_conditional_export_macro_body_recovery(self, parser: ASTParser) -> None:
         fi = _make_file_info("cpp_pkg/conditional_options.hpp", "cpp")
         result = parser.parse_file(fi, CPP_CONDITIONAL_EXPORT_MACRO_TYPE)

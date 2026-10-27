@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from ....ingestion.git_indexer.function_blame import BlameIndex
+from ....test_paths import is_test_related_path
 from ...graph_view import HasEdge
 from ..complexity import ClassComplexity, ErrorHandlingHit, FunctionComplexity, PerfHit
 from ..duplication import ClonePair
@@ -26,9 +27,19 @@ class FileContext:
     nloc: int
     has_test_file: bool
     module: str | None
-    # Map symbol-name → complexity metrics for functions/methods in this
-    # file. Symbols without a complexity row default to CCN=1, nesting=0.
-    function_metrics: dict[str, FunctionComplexity] = field(default_factory=dict)
+    # The ``is_test`` flag ingestion stamped (path, language and pytest config).
+    # ``None`` for a context built without it, which falls back to the path
+    # rules; read it through :attr:`is_test_material`.
+    is_test: bool | None = None
+    # ``code_origin.code_origin`` for the file; ``None`` when not computed.
+    code_origin: str | None = None
+    # Every walked function in this file, in document order. Not keyed by
+    # name: a name key drops all but one of a file's anonymous ``it``
+    # callbacks, and every same-named method on a second class beside it.
+    # This replaced the name-keyed ``function_metrics`` map every marker used
+    # to read. Empty for SQL, whose routine metrics are text-counted and
+    # defect-uncalibrated.
+    all_functions: tuple[FunctionComplexity, ...] = ()
     # Per-class aggregate metrics (LCOM4, method count, size). Empty for
     # languages whose walker map doesn't opt into class-level analysis
     # (see ``complexity.languages``). Consumed by ``low_cohesion`` /
@@ -39,8 +50,8 @@ class FileContext:
     # Graph-derived signals.
     # True when a test file can execute into this one along the call graph,
     # within ``test_reachability.DEFAULT_CALL_DEPTH`` hops. Distinct from
-    # ``has_test_file``, which is a filename convention: this is a recorded
-    # edge, so it finds behaviour-named tests the convention cannot, and it
+    # ``has_test_file``, which is test *pairing* (a test importing the file, or
+    # named for it): this is an execution edge, and it
     # over-claims, since control reaching a file is not a run exercising it.
     # Sound as a floor ("something tests this"), never as a coverage quantity.
     # ``False`` when no graph was available - the documented "no signal"
@@ -61,15 +72,28 @@ class FileContext:
     branch_coverage_pct: float | None = None
     covered_lines: set[int] = field(default_factory=set)
     total_coverable_lines: int = 0
+    # The lines the report calls executable, hit or not. Empty when the report
+    # did not say, which leaves per-function coverage unmeasured.
+    coverable_lines: set[int] = field(default_factory=set)
+    # Only a docstring, imports and export lists: no code for coverage to measure.
+    reexport_only: bool = False
+    # Declares only types (``test_reach.is_type_only``): nothing for a test to run.
+    # Read only for a hotspot, the one file a missing test is claimed for.
+    type_only: bool = False
     # Duplication signals (populated when the engine ran the
     # duplication detector for this analyze() call). ``clones`` is the
     # list of clone pairs this file participates in; ``duplication_pct``
     # is the percent of NLOC covered by clones.
     clones: list[ClonePair] = field(default_factory=list)
     duplication_pct: float | None = None
+    # Source lines of this file and its clone partners, by repo path. Filled
+    # only for a test file with clones; a missing path means "not read".
+    clone_sources: dict[str, list[str]] = field(default_factory=dict)
     # Thin graph view exposing only ``has_edge``. ``None`` on test fixtures
     # that never construct a graph.
     graph_view: HasEdge | None = None
+    # Names of this file's ``partial`` types that have parts in other files.
+    split_partial_types: frozenset[str] = frozenset()
     # Per-line blame index produced by the FULL git tier (see
     # ``ingestion.git_indexer.function_blame``). ``None`` on ESSENTIAL
     # tier until the FULL-tier backfill (``backfill_full_tier()``) runs;
@@ -109,6 +133,33 @@ class FileContext:
     # cross-function reachability; the same-function perf biomarkers read the
     # already-resolved ``perf_hits`` instead.
     io_boundary_names: set[str] = field(default_factory=set)
+    # Start lines of the test cases in this file that hand their oracle to an
+    # asserting function in ANOTHER file, resolved on a call edge by
+    # ``asserts.oracle_reach``. Lines rather than names: a name would collapse
+    # a file's same-named functions, which is the collision #2408 removed.
+    # Empty without a call graph, which leaves the marker as it was.
+    cross_file_oracle_lines: frozenset[int] = frozenset()
+    # Start line of each function a test reaches on the call graph, to the call
+    # hops of the nearest such test (1: a test calls it). Empty without a graph.
+    function_test_hops: dict[int, int] = field(default_factory=dict)
+    # The same functions' nearest test file, and the file's own: the nearest
+    # test any of its functions has, else a test file named for it. ``None``
+    # when nothing names one.
+    function_test_files: dict[int, str] = field(default_factory=dict)
+    file_test: str | None = None
+
+    @property
+    def is_test_material(self) -> bool:
+        """The stored ``is_test`` flag, or the path rules when none was given."""
+        if self.is_test is not None:
+            return self.is_test
+        return is_test_related_path(self.file_path, self.language)
+
+    @property
+    def outside_coverage_scope(self) -> bool:
+        """Test material, or code that does not ship (tooling, build, vendored,
+        generated, docs examples): no test is owed for its coverage."""
+        return self.is_test_material or self.code_origin not in (None, "production")
 
 
 # A repo whose trailing-90-day window has at most this many active human
@@ -138,6 +189,15 @@ class BiomarkerResult:
     # carried for display/filtering. Stays fully per-finding attributable, so
     # the linear ``health_impact`` contract holds.
     deduction: float | None = None
+
+
+def shape_details(fn: FunctionComplexity) -> dict[str, Any]:
+    """The shape facts every function-size marker stores beside its numbers:
+    the dispatch share always, the terminal share only when there is one."""
+    out: dict[str, Any] = {"dispatch_share": fn.dispatch_share}
+    if fn.terminal_share:
+        out["terminal_share"] = fn.terminal_share
+    return out
 
 
 class Biomarker(Protocol):

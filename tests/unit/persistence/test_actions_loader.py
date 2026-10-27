@@ -1,0 +1,427 @@
+"""The next-actions loader over a real (in-memory) store.
+
+Seeds one small repository across the stores the rules read, then checks the
+composed view, a missing store degrading to ``unavailable``, and the
+per-person state round trip.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import UTC, datetime, timedelta
+
+from sqlalchemy import select, text
+
+from repowise.core.persistence.crud.analysis.actions import (
+    get_action_states,
+    load_actions_view,
+    set_action_state,
+)
+from repowise.core.persistence.models import (
+    ActionState,
+    DeadCodeFinding,
+    DocDriftFinding,
+    FixEvent,
+    GitCommit,
+    GitCommitFile,
+    GitCommitHealthFinding,
+    GitMetadata,
+    HealthFileMetric,
+    HealthFinding,
+    PerformanceOpportunity,
+    SecurityFinding,
+)
+from tests.unit.persistence.helpers import insert_repo
+
+ANCHOR = datetime(2026, 9, 28, 12, 0, tzinfo=UTC)
+#: A size finding's deepest nested block: Fix first's first concrete step.
+DEEP = json.dumps({"deepest_block": {"start": 20, "end": 30}, "ccn": 44, "max_nesting": 4})
+NOW = ANCHOR + timedelta(days=1)
+
+
+async def _seed(session) -> str:
+    repo = await insert_repo(session)
+    rid = repo.id
+    add = session.add_all
+
+    # Three active authors, the newest commit is the anchor.
+    add(
+        [
+            GitCommit(repository_id=rid, sha="head", author_name="Ada", author_email="ada@x.io",
+                      committed_at=ANCHOR, subject="chore: head"),
+            GitCommit(repository_id=rid, sha="recent", author_name="Bob", author_email="bob@x.io",
+                      committed_at=ANCHOR - timedelta(days=2), subject="feat: build step"),
+            GitCommit(repository_id=rid, sha="older", author_name="Cy", author_email="cy@x.io",
+                      committed_at=ANCHOR - timedelta(days=20), subject="fix: things"),
+            # Older history, outside every window: enough commits to rank by.
+            *(
+                GitCommit(repository_id=rid, sha=f"old{i}", author_name="Ada",
+                          author_email="ada@x.io", committed_at=ANCHOR - timedelta(days=200 + i),
+                          subject="chore: old")
+                for i in range(2)
+            ),
+        ]
+    )
+    add([GitCommitFile(repository_id=rid, sha="older", file_path="src/old.py")])
+
+    # A busy bug magnet with four fixes and a code-shape lead beside a
+    # higher-impact history marker.
+    add(
+        [
+            GitMetadata(repository_id=rid, file_path="src/core.py", commit_count_90d=12,
+                        last_commit_at=ANCHOR - timedelta(days=1), bug_magnet=True),
+            HealthFileMetric(repository_id=rid, file_path="src/core.py", score=10.0, max_ccn=12,
+                             nloc=300, is_test=False),
+            HealthFinding(repository_id=rid, file_path="src/core.py", biomarker_type="change_entropy",
+                          severity="high", health_impact=3.0),
+            HealthFinding(repository_id=rid, file_path="src/core.py", biomarker_type="complex_method",
+                          severity="high", function_name="run", health_impact=1.0,
+                          line_start=10, line_end=60, details_json=DEEP),
+        ]
+    )
+    add(
+        [
+            FixEvent(repository_id=rid, fix_sha=f"fix{i}", file_path="src/core.py",
+                     shape_kind="code_fix", attribution="exact",
+                     committed_at=ANCHOR - timedelta(days=10 + i))
+            for i in range(4)
+        ]
+    )
+
+    # This week's commit wrote an open finding; two siblings must not count.
+    add(
+        [
+            GitCommitHealthFinding(repository_id=rid, sha="recent", change_finding_id="c1",
+                                   change_kind="introduced", dimension="defect",
+                                   biomarker_type="complex_method", severity="high",
+                                   file_path="src/new.py", symbol="build",
+                                   attribution_basis="added_lines"),
+            GitCommitHealthFinding(repository_id=rid, sha="recent", change_finding_id="c2",
+                                   change_kind="introduced", dimension="defect",
+                                   biomarker_type="long_method", severity="high",
+                                   file_path="src/touched.py", symbol="x",
+                                   attribution_basis="file_change"),
+            GitCommitHealthFinding(repository_id=rid, sha="recent", change_finding_id="c3",
+                                   change_kind="introduced", dimension="defect",
+                                   biomarker_type="change_entropy", severity="high",
+                                   file_path="src/hist.py", symbol=None,
+                                   attribution_basis="added_lines"),
+            GitCommitHealthFinding(repository_id=rid, sha="recent", change_finding_id="c4",
+                                   change_kind="introduced", dimension="performance",
+                                   biomarker_type="n_plus_one", severity="medium",
+                                   file_path="src/repo.py", symbol="load",
+                                   attribution_basis="added_lines"),
+            GitCommitHealthFinding(repository_id=rid, sha="recent", change_finding_id="c5",
+                                   change_kind="introduced", dimension="performance",
+                                   biomarker_type="n_plus_one", severity="medium",
+                                   file_path="src/other.py", symbol="f",
+                                   attribution_basis="added_lines"),
+            HealthFinding(repository_id=rid, file_path="src/new.py", biomarker_type="complex_method",
+                          severity="high", function_name="build", health_impact=1.0,
+                          line_start=10, line_end=60, details_json=DEEP),
+            HealthFinding(repository_id=rid, file_path="src/touched.py", biomarker_type="long_method",
+                          severity="high", function_name="x", health_impact=1.0),
+        ]
+    )
+
+    add(
+        [
+            PerformanceOpportunity(
+                repository_id=rid, opportunity_id="perf1", status="open",
+                execution_context="production", actionability_state="plan_ready",
+                plan_state="available", fix_strategy="batch_or_prefetch_io",
+                boundary_kind="db", biomarker_type="n_plus_one", file_path="src/repo.py",
+                intervention_symbol="src/repo.py::Repo.load", affected_call_sites_total=4,
+                affected_files_total=2, queue_eligible=True,
+                details_json=json.dumps(
+                    {"facets": {"exposure": "entry_reachable", "loop_magnitude": "grows_with_data",
+                                "growth_source": "loop",
+                                "actionability_confidence": "medium"},
+                     "plan": {"effort_bucket": "S"}}
+                ),
+            ),
+            PerformanceOpportunity(
+                repository_id=rid, opportunity_id="perf2", status="open",
+                execution_context="production", actionability_state="plan_ready",
+                boundary_kind="db", file_path="src/other.py", affected_call_sites_total=9,
+                details_json=json.dumps({"facets": {"exposure": "internal"}}),
+            ),
+        ]
+    )
+
+    add(
+        [
+            SecurityFinding(repository_id=rid, file_path="src/settings.py", kind="hardcoded_secret",
+                            severity="high", snippet='TOKEN = "sk_live_123"', line_number=4,
+                            commit_sha=""),
+            SecurityFinding(repository_id=rid, file_path="tests/test_x.py", kind="hardcoded_secret",
+                            severity="high", snippet='TOKEN = "fake"', line_number=4, commit_sha=""),
+        ]
+    )
+
+    add(
+        [
+            DocDriftFinding(repository_id=rid, file_path="README.md", kind="anchor", line_number=3,
+                            target="README.md#setup", raw="#setup", confidence=0.9),
+            DocDriftFinding(repository_id=rid, file_path="docs/guide.md", kind="path", line_number=5,
+                            target="src/old.py", raw="src/old.py", confidence=0.9),
+            DocDriftFinding(repository_id=rid, file_path="docs/other.md", kind="path", line_number=5,
+                            target="elsewhere/never.py", raw="elsewhere/never.py", confidence=0.9),
+        ]
+    )
+
+    add(
+        [
+            DeadCodeFinding(repository_id=rid, kind="unused_export", file_path="src/dead.py",
+                            symbol_name=f"f{i}", lines=10, confidence=0.9, safe_to_delete=True)
+            for i in range(3)
+        ]
+    )
+    await session.commit()
+    return rid
+
+
+def _quarter(view) -> list[dict]:
+    return view["horizons"]["quarter"]["actions"]
+
+
+def _by_rule(view, horizon: str = "quarter") -> dict[str, list[dict]]:
+    out: dict[str, list[dict]] = {}
+    for a in view["horizons"][horizon]["actions"]:
+        out.setdefault(a["rule"], []).append(a)
+    return out
+
+
+async def test_load_actions_view_composes_every_store(async_session) -> None:
+    rid = await _seed(async_session)
+    view = await load_actions_view(async_session, rid, now=NOW)
+
+    assert view["unavailable"] == {}
+    assert view["context"]["active_authors_90d"] == 3
+    assert view["context"]["fix_commits_90d"] == 4
+    rules = _by_rule(view)
+
+    # Fix first names the busy bug magnet by its code-shape finding, not the
+    # higher-impact history marker; the fragile-file rule does not repeat the
+    # file it already names. The plan-ready loop this week's commit added is a
+    # fresh regression (below), so Fix first does not list it again.
+    fixes = {a["target"]["path"]: a for a in rules["fix_first"]}
+    assert fixes["src/core.py"]["title"] == "Break up run (CCN 44)"
+    assert "src/repo.py" not in fixes
+    assert "fragile_file" not in rules
+
+    (secret,) = rules["live_secret"]
+    assert secret["target"]["path"] == "src/settings.py"
+
+    assert {a["target"]["path"] for a in rules["broken_doc_refs"]} == {"README.md", "docs/guide.md"}
+    (dead,) = rules["dead_code_batch"]
+    assert dead["evidence_total"] == 3
+
+    week = _by_rule(view, "week")
+    # The proven performance cause acts now; the unproven one is left out, and
+    # the code-shape finding is one item to plan.
+    perf, shape = sorted(week["fresh_regressions"], key=lambda a: a["tier"])
+    assert (perf["tier"], perf["target"]["path"]) == ("act_now", "src/repo.py")
+    assert perf["title"] == "Fix the performance regression in `load` in `src/repo.py`"
+    # Planned, at its finding's severity.
+    assert (shape["tier"], shape["severity"], shape["target"]["path"]) == (
+        "plan", "high", "src/new.py"
+    )
+    assert shape["evidence_ids"] == ["recent"]
+
+
+async def test_a_missing_store_is_reported_and_the_rest_still_load(async_session) -> None:
+    rid = await _seed(async_session)
+    await async_session.execute(text("DROP TABLE performance_opportunities"))
+    await async_session.commit()
+
+    view = await load_actions_view(async_session, rid, now=NOW)
+    assert set(view["unavailable"]) == {"fix_first"}
+    status = {r["rule"]: r["status"] for r in view["rules"]}
+    assert status["fix_first"] == "unavailable"
+    assert status["live_secret"] == "evaluated"
+    rules = _by_rule(view)
+    assert "fix_first" not in rules
+    assert {"fragile_file", "live_secret", "broken_doc_refs"} <= set(rules)
+
+
+async def test_action_state_round_trip(async_session) -> None:
+    rid = await _seed(async_session)
+
+    await set_action_state(async_session, rid, "act_x", state="dismissed", fingerprint="fp1")
+    await async_session.commit()
+    assert (await get_action_states(async_session, rid))["act_x"].state == "dismissed"
+
+    until = NOW + timedelta(days=7)
+    await set_action_state(async_session, rid, "act_x", state="snoozed", until=until)
+    await async_session.commit()
+    rec = (await get_action_states(async_session, rid))["act_x"]
+    assert (rec.state, rec.fingerprint) == ("snoozed", "")
+    assert rec.until.replace(tzinfo=None) == until.replace(tzinfo=None)
+    rows = (await async_session.execute(select(ActionState))).scalars().all()
+    assert len(rows) == 1
+
+    await set_action_state(async_session, rid, "act_x", state=None)
+    await async_session.commit()
+    assert await get_action_states(async_session, rid) == {}
+
+
+async def test_dismissed_action_returns_when_its_fingerprint_changes(async_session) -> None:
+    rid = await _seed(async_session)
+    view = await load_actions_view(async_session, rid, now=NOW)
+    (secret,) = _by_rule(view)["live_secret"]
+
+    await set_action_state(
+        async_session, rid, secret["id"], state="dismissed", fingerprint=secret["fingerprint"]
+    )
+    await async_session.commit()
+    view = await load_actions_view(async_session, rid, now=NOW)
+    assert "live_secret" not in _by_rule(view)
+    assert view["horizons"]["quarter"]["hidden"] == 1
+
+    # A second secret in the same file changes the facts behind the action.
+    async_session.add(
+        SecurityFinding(repository_id=rid, file_path="src/settings.py", kind="hardcoded_secret",
+                        severity="high", snippet='OTHER = "sk_live_456"', line_number=9,
+                        commit_sha="")
+    )
+    await async_session.commit()
+    view = await load_actions_view(async_session, rid, now=NOW)
+    (back,) = _by_rule(view)["live_secret"]
+    assert back["id"] == secret["id"]
+    assert back["fingerprint"] != secret["fingerprint"]
+
+
+async def test_coverage_state_reads_the_ingest_record(async_session) -> None:
+    from repowise.core.persistence.crud.analysis.actions import _coverage
+    from repowise.core.persistence.models import CoverageFile, CoverageIngest
+
+    rid = await _seed(async_session)
+    async_session.add(
+        CoverageFile(
+            repository_id=rid,
+            file_path="src/core.py",
+            source_format="lcov",
+            line_coverage_pct=50.0,
+            covered_lines_json="[]",
+            total_coverable_lines=10,
+            ingested_commit_sha="zzzz-row",
+        )
+    )
+    async_session.add(
+        CoverageIngest(repository_id=rid, ingested_commit_sha="head", mapping_partial=True)
+    )
+    await async_session.flush()
+
+    state = (await _coverage(async_session, rid, "head"))["coverage"]
+    # The row's sha sorts after "head", which `max()` over rows would have picked.
+    assert (state.status, state.partial, state.files_measured) == ("measured", True, 1)
+    assert (await _coverage(async_session, rid, "newer"))["coverage"].status == "stale"
+
+
+async def test_a_test_reaching_through_a_helper_turns_add_tests_into_simplify(async_session) -> None:
+    """openclaw's attempt.ts: tests load it through a support module two imports away."""
+    from repowise.core.analysis.test_reachability import clear_test_map_cache
+    from repowise.core.persistence.crud.analysis.actions import load_repo_facts
+    from repowise.core.persistence.models import GraphEdge, GraphNode
+
+    rid = await _seed(async_session)
+    facts = await load_repo_facts(async_session, rid)
+    assert facts.history_commits == 5
+    assert facts.files["src/core.py"].tests_reaching == 0
+    # The lead is measured from its stored details: CCN 44 is worth breaking up.
+    lead = facts.files["src/core.py"].lead
+    assert (lead.function, lead.worth) == ("run", True)
+
+    for path, is_test in (
+        ("src/core.py", False),
+        ("src/core.test-support.py", False),
+        ("tests/test_core.py", True),
+    ):
+        async_session.add(
+            GraphNode(repository_id=rid, node_id=path, node_type="file", is_test=is_test)
+        )
+    for src, dst in (
+        ("tests/test_core.py", "src/core.test-support.py"),
+        ("src/core.test-support.py", "src/core.py"),
+    ):
+        async_session.add(
+            GraphEdge(repository_id=rid, source_node_id=src, target_node_id=dst, edge_type="imports")
+        )
+    await async_session.commit()
+    # The graph changed without an index run, which is what moves the cache stamp.
+    clear_test_map_cache()
+
+    facts = await load_repo_facts(async_session, rid)
+    core = facts.files["src/core.py"]
+    assert (core.tests_reaching, core.tests_reaching_via) == (1, "import-graph")
+
+    # Once production code imports the middle file it is a hub, not test
+    # support, and the second hop no longer counts; the import closure still
+    # does, so the file is not claimed untested.
+    async_session.add(GraphNode(repository_id=rid, node_id="src/app.py", node_type="file"))
+    async_session.add(
+        GraphEdge(repository_id=rid, source_node_id="src/app.py",
+                  target_node_id="src/core.test-support.py", edge_type="imports")
+    )
+    await async_session.commit()
+    clear_test_map_cache()
+    facts = await load_repo_facts(async_session, rid)
+    assert facts.files["src/core.py"].tests_reaching == 1
+
+
+async def test_a_file_only_replacing_tests_reach_reads_mocked_only(async_session, monkeypatch) -> None:
+    from repowise.core.analysis.test_reachability import ReachRow
+    from repowise.core.persistence.crud.analysis import actions as loader
+
+    rid = await _seed(async_session)
+
+    async def mocked(_session, _repo_id, paths):
+        return {p: ReachRow("mocked_only", mocked_by=("tests/test_core.py",)) for p in paths}
+
+    monkeypatch.setattr(loader, "any_tests_reaching", mocked)
+    core = (await loader.load_repo_facts(async_session, rid)).files["src/core.py"]
+    assert (core.tests_reaching, core.tests_reaching_via) == (0, "mocked-only")
+
+
+async def test_a_failed_test_map_walk_is_unknown_not_zero(async_session, monkeypatch) -> None:
+    from repowise.core.persistence.crud.analysis import actions as loader
+
+    rid = await _seed(async_session)
+
+    async def broken(*_a, **_k):
+        raise RuntimeError("graph_edges unreadable")
+
+    monkeypatch.setattr(loader, "any_tests_reaching", broken)
+    facts = await loader.load_repo_facts(async_session, rid)
+    assert "test_map" in facts.unavailable
+    assert facts.files["src/core.py"].tests_reaching is None
+
+
+async def test_an_index_without_git_has_no_history_count(async_session) -> None:
+    from repowise.core.persistence.crud.analysis.actions import load_repo_facts
+
+    rid = await _seed(async_session)
+    await async_session.execute(text("DELETE FROM git_commits"))
+    await async_session.commit()
+    assert (await load_repo_facts(async_session, rid)).history_commits == 0
+
+    await async_session.execute(text("DELETE FROM git_metadata"))
+    await async_session.commit()
+    facts = await load_repo_facts(async_session, rid)
+    assert facts.history_commits is None
+
+
+async def test_a_one_commit_index_is_flagged_and_history_rules_stand_down(async_session) -> None:
+    rid = await _seed(async_session)
+    await async_session.execute(text("DELETE FROM git_commits WHERE sha != 'head'"))
+    await async_session.commit()
+
+    view = await load_actions_view(async_session, rid, now=NOW)
+    assert view["context"]["history_too_short"] is True
+    status = {r["rule"]: (r["status"], r["reason"]) for r in view["rules"]}
+    for rule in ("fragile_file", "fix_concentration", "knowledge_loss"):
+        assert status[rule][0] == "not_applicable"
+        assert "too few commits" in status[rule][1]
+    # Rules that do not rank by history still run.
+    assert status["live_secret"][0] == "evaluated"

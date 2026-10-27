@@ -66,7 +66,7 @@ async def test_fresh_and_cached_answers_share_one_external_contract(setup_mcp, m
     provider = _Provider("Authentication is implemented in src/auth/service.py.")
     monkeypatch.setattr(answer_mod, "_resolve_provider_for_answer", lambda _path: provider)
 
-    def freshness(_repository, targets=None):
+    def freshness(_repository, targets=None, root=None):
         result = {"index_behind": True}
         if "src/auth/middleware.py" in (targets or []):
             result["stale_warning"] = "dropped evidence changed"
@@ -80,6 +80,8 @@ async def test_fresh_and_cached_answers_share_one_external_contract(setup_mcp, m
 
     assert fresh["confidence"] == "high"
     assert cached["_meta"]["cached"] is True
+    assert "src/auth/middleware.py" in fresh["candidate_files"]
+    assert "src/auth/service.py" not in fresh["candidate_files"]  # cited
     assert _without_meta(fresh) == _without_meta(cached)
     assert "stale_warning" not in fresh["_meta"]
     assert "stale_warning" not in cached["_meta"]
@@ -192,12 +194,10 @@ def test_adversarial_duplicate_evidence_survives_once_with_exact_recovery():
     assert compact["retrieval_reduced_reason"] == "confidence_projection_and_deduplication"
     assert compact["_meta"]["projection"]["recovery"] == {
         "tool": "get_answer",
-        "arguments": {
-            "question": "how does auth work",
-            "include": ["evidence"],
-            "scope": "src/auth",
-        },
+        "same_arguments": True,
+        "arguments": {"include": ["evidence"], "scope": "src/auth"},
     }
+    assert "how does auth work" not in json.dumps(compact["_meta"])
     assert expanded["retrieval"], "the advertised one-call expansion must recover evidence"
 
 
@@ -270,6 +270,43 @@ def test_expanded_degraded_answer_names_only_retained_blocks():
     assert "candidates" not in expanded["answer"]
 
 
+@pytest.mark.parametrize("confidence", ["high", "medium", "low"])
+def test_retrieval_quality_is_served_only_under_diagnostics(confidence):
+    """One trust signal by default; the retrieval rating is an opt-in diagnostic."""
+    default = project_answer_payload(_raw(confidence), question="how does auth work")
+    diagnostics = project_answer_payload(
+        _raw(confidence), question="how does auth work", include=["diagnostics"]
+    )
+
+    assert "retrieval_quality" not in default
+    assert diagnostics["retrieval_quality"] == _raw(confidence)["retrieval_quality"]
+    assert "ignored_arguments" not in diagnostics.get("_meta", {})
+
+
+def test_a_rationale_matching_one_question_word_does_not_lead():
+    raw = {
+        "answer": "generic fallback",
+        "citations": ["cobra.go"],
+        "confidence": "medium",
+        "degraded": "no-llm-provider",
+        "code_rationale": [
+            {
+                "path": "cobra.go",
+                "lines": [4, 5],
+                "comment": "FIXME Gt is unused by cobra and should be removed.",
+                "matched_terms": ["cobra"],
+            }
+        ],
+        "best_guesses": [{"file": "cobra.go", "why_relevant": "ranked first"}],
+        "_meta": {"contract_version": 1},
+    }
+
+    result = project_answer_payload(raw, question="how does cobra choose a subcommand")
+
+    assert "FIXME" not in result["answer"]
+    assert "points first to cobra.go" in result["answer"]
+
+
 def test_rationale_only_degraded_answer_leads_with_the_local_conclusion():
     raw = {
         "answer": "generic fallback",
@@ -281,6 +318,7 @@ def test_rationale_only_degraded_answer_leads_with_the_local_conclusion():
                 "path": "src/cache.py",
                 "lines": [4, 5],
                 "comment": "The TTL matches the upstream feed's five-minute refresh.",
+                "matched_terms": ["ttl", "five", "minutes"],
             }
         ],
         "_meta": {"contract_version": 1},
@@ -318,7 +356,8 @@ async def test_no_llm_and_failed_legs_remain_compact_and_actionable(
     )
 
     result = await tool_middleware(get_answer)(
-        f"how does auth work in {expected_degraded} {legs['vector']} mode"
+        "how does auth middleware work",
+        include=["diagnostics"],
     )
 
     assert result["degraded"] == expected_degraded
@@ -334,6 +373,8 @@ async def test_no_llm_and_failed_legs_remain_compact_and_actionable(
     assert result["answer"]
     assert result["next_action_hint"]
     assert result.get("best_guesses") or result.get("symbol_bodies") or result.get("retrieval")
+    assert result["candidate_files"]
+    assert not set(result["candidate_files"]) & set(result.get("citations") or [])
     assert len(json.dumps(result, separators=(",", ":"), default=str)) < 24_000
     if legs["vector"] == "error":
         assert result["_meta"]["retrieval_degraded"] == ["vector"]
@@ -671,3 +712,120 @@ def test_the_expanded_projection_dedupes_key_symbols_too():
     entry = expanded["retrieval"][0]["key_symbols"][0]
     assert "source_excerpt" not in entry and "docstring" not in entry
     assert entry["name"] == "check"
+
+
+_POOL = [f"src/auth/f{i}.py" for i in range(12)]
+
+
+def _with_pool(confidence: str, **extra) -> dict:
+    raw = _raw(confidence)
+    raw["candidate_files"] = ["src/auth/service.py", *_POOL[:9]]
+    raw.update(extra)
+    return raw
+
+
+@pytest.mark.parametrize(
+    ("confidence", "extra", "cap"),
+    [
+        ("high", {}, 3),
+        ("medium", {}, 5),
+        ("low", {}, 5),
+        ("medium", {"degraded": "no-llm-provider"}, 5),
+    ],
+)
+def test_candidate_files_serve_ranked_uncited_paths_at_every_confidence(
+    confidence, extra, cap
+):
+    out = project_answer_payload(_with_pool(confidence, **extra), question="how does auth work")
+
+    # Ranked, minus the cited file, capped by grade: 3 at high, 5 otherwise.
+    assert out["candidate_files"] == _POOL[:cap]
+    assert "candidates" not in out
+    assert not any(key.startswith("candidates_") for key in out)
+
+
+def test_candidate_files_cap_at_five_and_dedupe_only_against_citations():
+    raw = _with_pool("low")
+    raw["candidate_files"] = ["src/auth/service.py", "src/auth/middleware.py", *_POOL]
+
+    out = project_answer_payload(raw, question="how does auth work")
+
+    # middleware.py is a fallback target and a retrieval row, not a citation.
+    assert out["candidate_files"] == ["src/auth/middleware.py", *_POOL[:4]]
+
+
+def test_candidate_files_absent_when_retrieval_resolved_no_file():
+    out = project_answer_payload(_raw("low"), question="how does auth work")
+    assert "candidate_files" not in out
+
+    raw = _raw("low")
+    raw["candidate_files"] = ["src/auth/service.py"]
+    assert "candidate_files" not in project_answer_payload(raw, question="how does auth work")
+
+
+def test_evidence_projection_only_gains_candidate_files():
+    raw = _raw("medium")
+    before = project_answer_payload(copy.deepcopy(raw), question="q", include=["evidence"])
+    raw["candidate_files"] = ["src/auth/service.py", *_POOL]
+
+    after = project_answer_payload(raw, question="q", include=["evidence"])
+
+    assert after.pop("candidate_files") == _POOL[:5]
+    assert after == before
+
+
+def test_degraded_low_confidence_retains_trimmed_fallback_targets():
+    paths = [f"pkg/f{i}.py" for i in range(1, 6)]
+    raw = {
+        "answer": "...",
+        "citations": ["pkg/f1.py"],
+        "confidence": "low",
+        "retrieval_quality": "high",
+        "degraded": "synthesis-failed",
+        "fallback_targets": paths,
+        "retrieval": [{"path": p, "excerpt": "x" + p} for p in paths],
+        "code_rationale": [
+            {"path": "pkg/f1.py", "lines": [4, 5], "comment": "TCC rationale text"}
+        ],
+        "note": "model used its entire budget",
+        "_meta": {"degraded": "synthesis-failed"},
+    }
+    out = project_answer_payload(raw, question="where is LCOM4 computed")
+
+    assert [r["path"] for r in out["retrieval"]] == ["pkg/f1.py", "pkg/f2.py", "pkg/f3.py"]
+    assert out["fallback_targets"] == ["pkg/f4.py", "pkg/f5.py"]
+    assert out["fallback_targets_total"] == 5
+    assert out["fallback_targets_emitted"] == 2
+    assert out["retrieval_total"] == 5
+    assert out["retrieval_emitted"] == 3
+
+
+def test_high_confidence_drops_fallback_targets_with_overflow():
+    paths = [f"pkg/f{i}.py" for i in range(1, 6)]
+    raw = {
+        "answer": "Computed in pkg/f1.py.",
+        "citations": ["pkg/f1.py"],
+        "confidence": "high",
+        "retrieval_quality": "high",
+        "fallback_targets": paths,
+        "retrieval": [{"path": p, "excerpt": "x" + p} for p in paths],
+    }
+    out = project_answer_payload(raw, question="where is LCOM4 computed")
+    assert "fallback_targets" not in out
+    assert "retrieval" not in out
+
+
+def test_degraded_empty_retrieval_retains_full_fallback_targets():
+    paths = [f"pkg/f{i}.py" for i in range(1, 6)]
+    raw = {
+        "answer": "",
+        "citations": [],
+        "confidence": "low",
+        "degraded": "synthesis-failed",
+        "fallback_targets": paths,
+        "retrieval": [],
+        "note": "no local evidence matched",
+    }
+    out = project_answer_payload(raw, question="where is LCOM4 computed")
+    assert out["fallback_targets"] == paths
+    assert "retrieval" not in out

@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import math
+import os
 import re
+from collections import Counter
+from collections.abc import Mapping
 
-from repowise.server.mcp_server._query_terms import content_terms
+from repowise.server.mcp_server._page_paths import PAGELESS_FILE
+from repowise.server.mcp_server._query_terms import content_terms, split_humps
+
+_IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 _INFLECTIONS = {
     "changed": "change",
@@ -17,9 +23,48 @@ _INFLECTIONS = {
 }
 
 
+def window_term_weight(df: int, n: int) -> float:
+    """Weight of a term that *df* of *n* retrieved hits carry: 1 when every hit
+    carries it, more the fewer do, so the word that tells hits apart leads."""
+    return 1.0 + math.log((n + 1) / (df + 1))
+
+
 def _ranking_terms(text: str, *, max_terms: int = 8) -> set[str]:
     """Content terms with a tiny retrieval-only inflection normalisation."""
     return {_INFLECTIONS.get(term, term) for term in content_terms(text, max_terms=max_terms)}
+
+
+def _identifier_words(token: str) -> list[str]:
+    """``generateModulePage`` / ``generate_module_page`` -> ``[generate, module, page]``."""
+    return [w for w in re.split(r"[^a-z0-9]+", split_humps(token).lower()) if w]
+
+
+def _typed_compounds(query: str, terms: set[str]) -> dict[str, list[str]]:
+    """Ranking terms the query typed as one identifier, with their words.
+
+    A typed compound (``module_page``, ``modulePage``) also counts inside a
+    longer name (``generate_module_page``), which word-level tokens never produce.
+    """
+    compounds: dict[str, list[str]] = {}
+    for raw in _IDENTIFIER_RE.findall(query):
+        words = _identifier_words(raw)
+        if len(words) >= 2 and raw.lower() in terms:
+            compounds[raw.lower()] = words
+    return compounds
+
+
+def _names_compound(text: str, words: list[str]) -> bool:
+    """Whether an identifier in *text* holds *words* as consecutive whole words.
+
+    Prose never matches: ``module page`` is two identifiers, and ``this_test``
+    does not hold ``is_test``.
+    """
+    n = len(words)
+    for raw in _IDENTIFIER_RE.findall(text):
+        parts = _identifier_words(raw)
+        if any(parts[i : i + n] == words for i in range(len(parts) - n + 1)):
+            return True
+    return False
 
 
 def rerank_by_context_coverage(
@@ -48,17 +93,23 @@ def rerank_by_context_coverage(
                 hit.get("snippet", "") or "",
                 hit.get("summary", "") or "",
                 hit.get("target_path", "") or "",
+                # A page the symbol leg reached is about the names it matched.
+                " ".join(hit.get("_symbol_names") or ()),
             ]
         )
         for hit in hits
     ]
-    tokens_by_hit = [_ranking_terms(text, max_terms=128) for text in texts_by_hit]
+    compounds = _typed_compounds(query, terms)
+    tokens_by_hit = [
+        _ranking_terms(text, max_terms=128)
+        | {term for term, words in compounds.items() if _names_compound(text, words)}
+        for text in texts_by_hit
+    ]
     document_frequency = {
         term: sum(1 for tokens in tokens_by_hit if term in tokens) for term in terms
     }
     weights = {
-        term: 1.0 + math.log((len(hits) + 1) / (document_frequency[term] + 1))
-        for term in terms
+        term: window_term_weight(document_frequency[term], len(hits)) for term in terms
     }
     total_weight = sum(weights.values())
 
@@ -105,3 +156,97 @@ def rerank_by_context_coverage(
         hit[score_key] = raw * ranking_multiplier
     hits.sort(key=lambda hit: hit.get(score_key, 0.0), reverse=True)
     return hits
+
+
+def rerank_pages_first(
+    hits: list[dict],
+    query: str,
+    *,
+    score_key: str,
+    floor: float,
+    absolute_stopwords: set[str] | None = None,
+) -> list[dict]:
+    """:func:`rerank_by_context_coverage` whose page order comes from the pages alone.
+
+    The weights are relative to the window, so rows for files without a page
+    would reorder the pages among themselves. Pages are reranked on their own;
+    each pageless row takes the place the whole window gives it among them, with
+    its score kept in the same ratio to the nearest page.
+    """
+    kwargs = {"score_key": score_key, "floor": floor, "absolute_stopwords": absolute_stopwords}
+    pageless = [hit for hit in hits if hit.get("page_type") == PAGELESS_FILE]
+    if not pageless:
+        return rerank_by_context_coverage(hits, query, **kwargs)
+    pages = [hit for hit in hits if hit.get("page_type") != PAGELESS_FILE]
+    copies = {id(copy): copy for copy in (dict(hit) for hit in pages)}
+    copy_of = dict(zip((id(hit) for hit in pages), copies.values(), strict=True))
+    window = rerank_by_context_coverage([*copies.values(), *pageless], query, **kwargs)
+    pages = rerank_by_context_coverage(pages, query, **kwargs)
+
+    above = 0  # pages the whole window ranks above the current row
+    slots: dict[int, list[dict]] = {}
+    for row in window:
+        if id(row) in copies:
+            above += 1
+        else:
+            slots.setdefault(above, []).append(row)
+    out: list[dict] = []
+    for i in range(len(pages) + 1):
+        for row in slots.get(i, ()):
+            # Same ratio to the nearest page as in the whole window, kept between
+            # that page and the one above so the pages keep their order.
+            anchor = pages[min(i, len(pages) - 1)] if pages else None
+            if anchor is not None:
+                base = copy_of[id(anchor)].get(score_key) or 0.0
+                score = anchor.get(score_key, 0.0) * (row.get(score_key, 0.0) / base if base else 1.0)
+                if i < len(pages):
+                    score = max(score, anchor.get(score_key, 0.0))
+                if i > 0:
+                    score = min(score, pages[i - 1].get(score_key, 0.0))
+                row[score_key] = score
+            out.append(row)
+        if i < len(pages):
+            out.append(pages[i])
+    return out
+
+
+# A query word naming a file lifts it by the word's squared rarity among indexed
+# paths (1.0 when one path carries it), capped so content relevance still leads.
+_PATH_NAME_LIFT_CAP = 1.0
+# Below this many files nearly every word is rare, so a path match says nothing.
+_MIN_INDEXED_PATHS = 30
+
+
+def path_words(path: str, *, min_len: int = 3) -> set[str]:
+    """``services/_hotkey_pynput.py`` -> ``{services, hotkey, pynput}``; the
+    extension is not a word."""
+    return {w for w in _identifier_words(os.path.splitext(path)[0]) if len(w) >= min_len}
+
+
+def path_word_counts(paths: list[str]) -> Counter[str]:
+    """How many of ``paths`` carry each path word."""
+    return Counter(word for path in paths for word in path_words(path))
+
+
+def boost_named_paths(
+    hits: list[dict], query: str, df: Mapping[str, int], total: int, *, score_key: str
+) -> None:
+    """Lift hits whose path names a query word, by how rare that word is among
+    the ``total`` indexed paths (``df`` per word). In place, unsorted."""
+    if total < _MIN_INDEXED_PATHS:
+        return
+    log_total = math.log(total)
+    weights = {
+        t: (math.log(total / df[t]) / log_total) ** 2 for t in content_terms(query) if df.get(t)
+    }
+    if not any(weights.values()):
+        return
+    for hit in hits:
+        path = hit.get("target_path") or ""
+        score = hit.get(score_key)
+        if not path or not score:
+            continue
+        words = path_words(path)
+        lift = sum(w for t, w in weights.items() if t in words)
+        if lift:
+            hit[score_key] = round(score * (1.0 + min(_PATH_NAME_LIFT_CAP, lift)), 4)

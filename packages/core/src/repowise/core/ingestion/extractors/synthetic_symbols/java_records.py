@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 
 from ...models import FileInfo, Symbol
 from ..helpers import node_text
+from ..visibility import refine_java_visibility
 from ._helpers import build_synthetic_symbol
 
 if TYPE_CHECKING:
@@ -72,14 +73,23 @@ def java_record_synthetic_symbols(
         line = node.start_point[0] + 1
         components = _record_components(node, src)
 
-        # Canonical constructor (same name as the record).
+        # Canonical constructor (same name as the record). Per JLS 8.10.4
+        # it takes the record's own access level, for both the implicit and
+        # the explicit compact form — reuse the shared visibility helper.
+        ctor_visibility = refine_java_visibility(node)
+        ctor_keyword = {
+            "public": "public ",
+            "private": "private ",
+            "protected": "protected ",
+        }.get(ctor_visibility, "")  # "internal" = package-private: no keyword
         out.append(build_synthetic_symbol(
             name=record_name, kind="function",
-            signature=f"public {record_name}("
+            signature=f"{ctor_keyword}{record_name}("
                       + ", ".join(f"{t} {n}" for n, t in components)
                       + ")",
             start_line=line, end_line=line,
             file_info=file_info, parent_name=record_name,
+            visibility=ctor_visibility,
         ))
 
         # Component accessors — same name as the component, zero args.

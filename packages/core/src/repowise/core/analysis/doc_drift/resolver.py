@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from repowise.core.ingestion.special_handlers import iter_make_targets
@@ -18,6 +19,16 @@ from .models import DocReference, DriftKind, DriftVerdict
 from .renderer import RendererMap, github_slug
 
 _HEADING_RE = re.compile(r"^#{1,6}\s+(.+?)\s*$")
+
+# A narrow, explicit phrase set, not a fuzzy heuristic: "you can find it in
+# `src/index.ts`" must still be checked, so a bare "your" is not enough on its
+# own. Each phrase names the reader's own project, never this one.
+_READER_PROJECT_RE = re.compile(
+    r"\byour\s+(?:project|app|repo|own|codebase)\b"
+    r"|\b(?:in|to)\s+your\b"
+    r"|\byour\b[^.!?]{0,40}'s\b",
+    re.I,
+)
 
 # Setext headings. ``Title`` over ``=====`` or ``-----`` is a heading, and
 # GitHub gives it an anchor exactly as it does an ATX one; recognising only
@@ -37,8 +48,6 @@ _HTML_ANCHOR_RE = re.compile(
     re.I,
 )
 
-_PARENT_SEGMENT_RE = re.compile(r"[^/]+/\.\./")
-
 
 @dataclass
 class Resolution:
@@ -50,6 +59,12 @@ class Resolution:
     origin: str = ""
     """Set only on ``MISSING``; names the strategy that concluded it, which is
     what carries the confidence."""
+    resolved_target: str = ""
+    """Set only on ``RESOLVED``, and only when the reference names a concrete
+    repository file: the path it resolved to. Not the same as ``ref.target``,
+    which is what the document wrote --- a link joined relative to its own
+    document resolves elsewhere. The reverse view needs the resolved path, and
+    this is where it was already computed."""
 
     @property
     def confidence(self) -> float:
@@ -83,6 +98,13 @@ class RepoIndex:
     make_targets: frozenset[str] = frozenset()
     npm_scripts: frozenset[str] = frozenset()
     renderers: RendererMap = field(default_factory=lambda: RendererMap([]))
+    on_disk: Callable[[str], bool] | None = field(default=None, repr=False)
+    """Whether a repo-relative path exists in the working tree. Asked only on a
+    would-be ``MISSING`` path, so a file the index left out is uncheckable
+    and not drift. ``None`` when the caller has no checkout."""
+    opaque_dirs: frozenset[str] = frozenset()
+    """Directories whose contents the tree cannot list, such as submodules; a
+    path under one is uncheckable, never drift."""
     _doc_anchors: dict[str, frozenset[str]] = field(default_factory=dict, repr=False)
     _doc_text: dict[str, str] = field(default_factory=dict, repr=False)
 
@@ -92,6 +114,9 @@ class RepoIndex:
         tracked_paths: frozenset[str] | set[str],
         doc_text: dict[str, str],
         manifest_text: dict[str, str] | None = None,
+        *,
+        on_disk: Callable[[str], bool] | None = None,
+        opaque_dirs: frozenset[str] | None = None,
     ) -> RepoIndex:
         """Compose the lookup tables.
 
@@ -102,6 +127,8 @@ class RepoIndex:
                 uncheckable rather than missing.
             manifest_text: decoded ``Makefile`` / ``package.json`` contents,
                 keyed by path. Absent means the command class stands down.
+            on_disk: working-tree probe; see :attr:`on_disk`.
+            opaque_dirs: see :attr:`opaque_dirs`.
         """
         files = frozenset(tracked_paths)
         dirs: set[str] = set()
@@ -122,6 +149,8 @@ class RepoIndex:
             make_targets=make_targets,
             npm_scripts=npm_scripts,
             renderers=RendererMap.detect(files),
+            on_disk=on_disk,
+            opaque_dirs=frozenset(opaque_dirs or ()),
             _doc_text=doc_text,
         )
 
@@ -142,13 +171,19 @@ class RepoIndex:
         from .extractor import prose_lines
 
         found: set[str] = set()
+        # GitHub suffixes repeated headings: the second ``## Usage`` is
+        # ``#usage-1``, the third ``#usage-2``. Same bookkeeping as
+        # github-slugger, so a suffixed slug that collides with a literal
+        # heading (``## Usage 1`` already took ``usage-1``) skips to the next
+        # free number rather than registering a slug GitHub never renders.
+        occurrences: dict[str, int] = {}
         previous = ""
         for _lineno, line in prose_lines(self._doc_text.get(rel, "")):
             m = _HEADING_RE.match(line)
             if m:
-                found.add(github_slug(m.group(1)))
+                found.add(_unique_slug(github_slug(m.group(1)), occurrences))
             elif previous.strip() and _SETEXT_UNDERLINE_RE.match(line):
-                found.add(github_slug(previous))
+                found.add(_unique_slug(github_slug(previous), occurrences))
             for groups in _HTML_ANCHOR_RE.findall(line):
                 value = next((g for g in groups if g), "")
                 found.add(value.strip().lower())
@@ -158,6 +193,21 @@ class RepoIndex:
         frozen = frozenset(found)
         self._doc_anchors[rel] = frozen
         return frozen
+
+
+def _unique_slug(slug: str, occurrences: dict[str, int]) -> str:
+    """The anchor GitHub gives a heading slugged *slug*, given the earlier ones.
+
+    *occurrences* holds every slug already handed out in the document and is
+    updated in place. Mirrors github-slugger: on a clash, bump the base slug's
+    counter and try ``f"{slug}-{n}"`` until one is free.
+    """
+    result = slug
+    while result in occurrences:
+        occurrences[slug] += 1
+        result = f"{slug}-{occurrences[slug]}"
+    occurrences[result] = 0
+    return result
 
 
 def _suffix(path: str) -> str:
@@ -193,19 +243,31 @@ def _scan_manifests(manifest_text: dict[str, str]) -> tuple[frozenset[str], froz
 # ---------------------------------------------------------------------------
 
 
-def _join_relative(doc: str, target: str) -> str:
-    """Resolve *target* as written relative to the document that names it."""
+def join_relative(doc: str, target: str) -> str:
+    """Resolve *target* as written relative to the document that names it.
+
+    Segments are normalized, not character-stripped: ``lstrip("./")`` removed
+    the leading dot of ``.github/workflows/ci.yml`` (a real repository path)
+    and rewrote ``../../other-repo/README.md`` into an internal path. A
+    ``..`` that survives normalization escapes the repository root and is kept
+    as written, so the caller reads the target as external rather than as a
+    file this repository must hold.
+    """
     doc_dir = doc.rsplit("/", 1)[0] if "/" in doc else ""
     if not doc_dir:
         return target
-    joined = f"{doc_dir}/{target}"
-    # Collapse "a/b/../c" without touching the filesystem.
-    while True:
-        collapsed = _PARENT_SEGMENT_RE.sub("", joined, count=1)
-        if collapsed == joined:
-            break
-        joined = collapsed
-    return joined.lstrip("./")
+    parts: list[str] = []
+    for segment in f"{doc_dir}/{target}".split("/"):
+        if segment == ".":
+            continue
+        if segment == "..":
+            if parts and parts[-1] != "..":
+                parts.pop()
+            else:
+                parts.append("..")
+            continue
+        parts.append(segment)
+    return "/".join(parts)
 
 
 def _exists(idx: RepoIndex, target: str) -> bool:
@@ -223,14 +285,50 @@ def _exists(idx: RepoIndex, target: str) -> bool:
     return bool(trimmed) and (trimmed in idx.files or trimmed in idx.dirs)
 
 
+def _under_opaque(idx: RepoIndex, path: str) -> bool:
+    path = path.rstrip("/")
+    return any(path == d or path.startswith(f"{d}/") for d in idx.opaque_dirs)
+
+
+def _is_reader_project_reference(ref: DocReference) -> bool:
+    """Whether *ref*'s own sentence places the path in the reader's project, not this one.
+
+    ``s = ref.context.find(ref.raw)`` rather than ``ref.column``: ``context``
+    is the source line stripped of leading whitespace, while ``column`` indexes
+    the unstripped one, so slicing ``context`` by ``column`` directly would be
+    off by exactly the amount of indentation a list item or a blockquote adds.
+    A plain substring search sidesteps the mismatch, since ``context`` already
+    strips consistently from both.
+
+    Scoped to the current sentence (back to the nearest ``.``/``!``/``?``) so
+    "This mirrors your project's layout. See ``src/gone.ts`` for details."
+    still reports the real miss in its own, unrelated sentence.
+    """
+    idx = ref.context.find(ref.raw)
+    preceding = ref.context[:idx] if idx != -1 else ref.context
+    sentence_start = max(preceding.rfind("."), preceding.rfind("!"), preceding.rfind("?")) + 1
+    return bool(_READER_PROJECT_RE.search(preceding[sentence_start:]))
+
+
 def _resolve_path(idx: RepoIndex, ref: DocReference, is_guide: bool) -> Resolution:
     target = ref.target
     if _exists(idx, target):
-        return Resolution(ref, DriftVerdict.RESOLVED, "exact")
+        return Resolution(ref, DriftVerdict.RESOLVED, "exact", resolved_target=target)
 
-    relative = _join_relative(ref.doc_path, target)
+    relative = join_relative(ref.doc_path, target)
     if relative != target and _exists(idx, relative):
-        return Resolution(ref, DriftVerdict.RESOLVED, "relative-to-doc")
+        return Resolution(ref, DriftVerdict.RESOLVED, "relative-to-doc", resolved_target=relative)
+
+    if _under_opaque(idx, target) or _under_opaque(idx, relative):
+        return Resolution(ref, DriftVerdict.UNCHECKABLE, "inside-submodule")
+
+    # A path the prose itself places in the reader's own project ("add this to
+    # your project's `src/setupTests.ts`") is not a claim about this repository
+    # at all, and must not even reach the anchoring rule below: `src`, `config`,
+    # `app` and the like are exactly the top-level directories most repos have,
+    # so such a path passes anchoring and falls through to a false MISSING.
+    if _is_reader_project_reference(ref):
+        return Resolution(ref, DriftVerdict.UNCHECKABLE, "reader-project")
 
     # Anchoring. A reference is evidence about THIS repository only when it
     # carries a separator and its first segment names a directory the
@@ -262,13 +360,20 @@ def _resolve_path(idx: RepoIndex, ref: DocReference, is_guide: bool) -> Resoluti
     if suffix and suffix not in idx.indexed_suffixes:
         return Resolution(ref, DriftVerdict.UNCHECKABLE, f"unindexed-kind:{suffix}")
 
+    # Present in the working tree but not the index (a fixture, an ignored
+    # file): the index cannot speak to it, and the document is not wrong.
+    if idx.on_disk is not None and (
+        idx.on_disk(target) or (relative != target and idx.on_disk(relative))
+    ):
+        return Resolution(ref, DriftVerdict.UNCHECKABLE, "outside-index")
+
     origin = "path_no_candidate_in_guide" if is_guide else "path_no_candidate"
     return Resolution(ref, DriftVerdict.MISSING, "no-candidate", origin)
 
 
-def _resolve_anchor(idx: RepoIndex, ref: DocReference) -> Resolution:
-    target, _, frag = ref.target.partition("#")
-
+def anchor_host(idx: RepoIndex, ref: DocReference) -> str:
+    """The document an ``ANCHOR`` reference's fragment must be declared in."""
+    target = ref.target.partition("#")[0]
     # Joined relative to the referring document FIRST, because that is what a
     # markdown link means: every renderer resolves ``[g](guide.md#setup)`` in
     # ``docs/a.md`` as ``docs/guide.md``. Preferring a verbatim root-relative
@@ -276,9 +381,15 @@ def _resolve_anchor(idx: RepoIndex, ref: DocReference) -> Resolution:
     # then reported the correct link as a renamed heading at 0.95 --- the
     # highest confidence this detector issues.
     if target:
-        relative = _join_relative(ref.doc_path, target)
+        relative = join_relative(ref.doc_path, target)
         if relative in idx.files:
-            target = relative
+            return relative
+    return target
+
+
+def _resolve_anchor(idx: RepoIndex, ref: DocReference) -> Resolution:
+    frag = ref.target.partition("#")[2]
+    target = anchor_host(idx, ref)
 
     # Gated on the renderer of the document that DECLARES the anchors, because
     # that is what decides the slug. Never guess an unimplemented renderer's
@@ -294,7 +405,7 @@ def _resolve_anchor(idx: RepoIndex, ref: DocReference) -> Resolution:
     if target not in idx._doc_text:
         return Resolution(ref, DriftVerdict.UNCHECKABLE, "host-doc-unread")
     if github_slug(frag) in idx.doc_anchors(target):
-        return Resolution(ref, DriftVerdict.RESOLVED, "heading")
+        return Resolution(ref, DriftVerdict.RESOLVED, "heading", resolved_target=target)
     return Resolution(ref, DriftVerdict.MISSING, "no-heading", "anchor_no_heading")
 
 

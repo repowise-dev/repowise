@@ -25,50 +25,29 @@ export function isReaderPersona(value: string | null | undefined): value is Read
   return value === "overview" || value === "contributor" || value === "deep";
 }
 
-// Heading keywords (lowercased, matched as a prefix of the heading text) that
-// each persona hides. Matching is intentionally generous so it works across
-// the file/module/layer page templates without an exhaustive list.
+// Whole section headings (lowercased) that each persona hides. Exact matches
+// only: a model-written page names its sections after what the code does, and
+// a prefix such as "source" or "symbol" would delete a section called
+// "Source files become symbols". Each entry is a heading a structural template
+// emits (see ``structural_labels.py`` and the stub templates).
 
-// Contributor keeps almost everything; only the rawest machine-oriented dumps
-// are hidden so the page stays readable.
-//
-// The last three are retrieval scaffolding rather than reference material. A
-// deterministic page carries them so the index has the words a question is
-// asked in — the vocabulary bag and the question block are the only parts of
-// a file page written in a reader's words rather than in paths, and the third
-// is the importer list a symbol page keeps once its resolved callers have
-// answered the question. They earn their place in `content`, which is one
-// string that FTS indexes, the vector store embeds and `get_context` returns
-// verbatim; they do not earn a reader's scroll. Hidden here rather than
-// dropped upstream so the index keeps them.
-const CONTRIBUTOR_HIDE = [
-  "raw metrics",
-  "parse errors",
-  "source snippet",
-  "in the code",
-  "questions this page answers",
-  "files importing this module",
-];
+// Contributor hides only retrieval scaffolding a file or symbol page still
+// carries in `content`: the question block, written so the index has the words
+// a question is asked in, and the importer list a symbol page keeps once its
+// resolved callers have answered the question. Pages with an agent digest
+// carry that material outside `content`, and the reader offers it as the
+// Reference view instead.
+const CONTRIBUTOR_HIDE = ["questions this page answers", "files importing this module"];
 
-// Overview is contributor plus the reference dumps. Spread rather than
-// restated: a section the balanced lens hides must never reappear in the
-// narrower one.
+// Overview is contributor plus the reference dumps. Spread, not restated: a
+// section the balanced lens hides must never reappear in the narrower one.
 const OVERVIEW_HIDE = [
   ...CONTRIBUTOR_HIDE,
-  "symbols",
-  "symbol",
   "public api",
-  "imports",
-  "exports",
-  "dependencies",
-  "dependents",
-  "call graph",
-  "class hierarchy",
-  "community",
-  "neighbors",
-  "dead code",
   "source",
-  "metrics",
+  "symbols defined in the cycle",
+  "dependencies (modules this imports)",
+  "dependents (modules that import this)",
 ];
 
 const HIDE_BY_PERSONA: Record<ReaderPersona, string[]> = {
@@ -78,8 +57,7 @@ const HIDE_BY_PERSONA: Record<ReaderPersona, string[]> = {
 };
 
 function headingHidden(headingText: string, hideList: string[]): boolean {
-  const h = headingText.trim().toLowerCase();
-  return hideList.some((kw) => h === kw || h.startsWith(kw));
+  return hideList.includes(headingText.trim().toLowerCase());
 }
 
 /**

@@ -22,7 +22,7 @@ _CORPUS = Path(__file__).parents[2] / "fixtures" / "risk_scale_corpus.json"
 
 
 def _direct(*scores: float) -> list[dict]:
-    # Mirrors _score_files: the alias ships beside the typed field.
+    # Only the two keys _compute_overall_risk reads; _score_files emits five.
     return [{"structural_score": s, "risk_score": s} for s in scores]
 
 
@@ -177,3 +177,103 @@ def test_structural_contract_is_typed_and_legacy_alias_cannot_contradict() -> No
     assert contract["overall_risk_score_compatibility"]["replacement"] == (
         "structural_impact_score"
     )
+
+
+def test_raw_churn_and_its_repo_relative_rank_are_both_published() -> None:
+    """The velocity-coupled multiplier must ship its normalised form beside it.
+
+    Folding the percentile into ``structural_score`` was measured and rejected
+    (it collapses the 0-10 output), so the rank is published as its own field
+    and the contract has to say which one travels across repositories.
+    """
+    fields = structural_impact_contract(6.25, full_scale=True)["structural_impact_scale"][
+        "component_fields"
+    ]
+
+    raw = fields["direct_risks.temporal_hotspot"]
+    assert raw["kind"] == "raw_decayed_churn"
+    assert raw["range"]["maximum"] is None
+    assert "churn_percentile" in raw["note"]
+
+    rank = fields["direct_risks.churn_percentile"]
+    assert rank["kind"] == "repo_relative_rank"
+    assert rank["range"] == {"minimum": 0.0, "maximum": 1.0}
+
+    # The score itself keeps the raw multiplier; the rank sits beside it.
+    assert fields["direct_risks.structural_score"]["formula"] == (
+        "pagerank * (1 + temporal_hotspot)"
+    )
+
+
+def test_score_file_keeps_the_unbounded_multiplier() -> None:
+    # (1 + churn_percentile) would cap this term at 2x; (1 + temporal) does not.
+    assert PRBlastRadiusAnalyzer._score_file(0.0, 0.01) == 0.01
+    assert PRBlastRadiusAnalyzer._score_file(9.0, 0.01) == 0.1
+
+
+class _Meta:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+class _Result:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return self._rows
+
+
+class _FakeSession:
+    """Answers _score_files' two SELECTs in the order it issues them."""
+
+    def __init__(self, metas, nodes):
+        self._answers = [list(metas.values()), list(nodes.values())]
+
+    async def execute(self, _stmt):
+        return _Result(self._answers.pop(0))
+
+
+class _Node:
+    def __init__(self, node_id, pagerank):
+        self.node_id = node_id
+        self.pagerank = pagerank
+
+
+async def test_score_files_emits_the_rank_and_the_index_verdict() -> None:
+    """A row carries the raw churn sum, its repo-relative rank, and is_hotspot.
+
+    A consumer that had only the raw sum was re-deriving a hotspot from it with
+    an absolute cutoff, which is the velocity artifact this change removes.
+    """
+    analyzer = PRBlastRadiusAnalyzer.__new__(PRBlastRadiusAnalyzer)
+    analyzer._repo_id = "r"
+    metas = {
+        "hot.py": _Meta(
+            file_path="hot.py",
+            temporal_hotspot_score=8.4,
+            churn_percentile=0.93,
+            is_hotspot=True,
+        ),
+    }
+    nodes = {"hot.py": _Node("hot.py", 0.01), "unknown.py": _Node("unknown.py", 0.02)}
+    analyzer._session = _FakeSession(metas, nodes)
+
+    rows = {r["path"]: r for r in await analyzer._score_files(["hot.py", "unknown.py"])}
+
+    hot = rows["hot.py"]
+    assert hot["temporal_hotspot"] == 8.4
+    assert hot["churn_percentile"] == 0.93
+    assert hot["is_hotspot"] is True
+    assert hot["structural_score"] == hot["risk_score"] == round(0.01 * 9.4, 4)
+
+    # No git_metadata row: every history field degrades to a measured zero
+    # rather than to None, so the marker stays off instead of rendering NaN.
+    missing = rows["unknown.py"]
+    assert missing["temporal_hotspot"] == 0.0
+    assert missing["churn_percentile"] == 0.0
+    assert missing["is_hotspot"] is False
+    assert missing["centrality"] == 0.02

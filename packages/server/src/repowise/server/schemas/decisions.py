@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from repowise.core.analysis.decisions.lifecycle import DECISION_KINDS
 from repowise.core.analysis.decisions.policy import DISCOVERY_BOUNDS
 from repowise.core.analysis.decisions.scope import derive_decision_scope
 
@@ -41,6 +43,9 @@ class DecisionRecordResponse(BaseModel):
     confidence: float
     staleness_score: float
     verification: str = "unverified"
+    # Which noun this is. Defaulted so a payload from a store written before
+    # the split reads as the checkable kind rather than as an unknown one.
+    kind: str = "architectural"
     # Derived granularity: file | module | cross-module, or None when the
     # record has no code linkage at all. Computed at serialization time from
     # the linkage fields, so old records get it too.
@@ -60,16 +65,31 @@ class DecisionRecordResponse(BaseModel):
     # readers that predate the split. A record can be stored ``active`` and
     # carry no currency at all, which is precisely what a candidate is.
     currency: str | None = None
+    # Who signed the current authority record: person | agent | import, or ""
+    # on a row written before provenance. Null on a candidate, with
+    # ``currency``.
+    accepter: str | None = None
+    accepter_kind: str | None = None
+    accepter_session: str | None = None
+    # Why a record just created stayed a candidate, in the acceptance
+    # contract's words. Set by the create route only.
+    blockers: list[str] | None = None
+    # True when the stored ``decision`` is blank and ``decision`` carries the
+    # title fallback. Acceptance reads the stored text, so a review surface
+    # needs this to predict the "no decision text" refusal.
+    decision_text_missing: bool = False
 
     @classmethod
     def from_orm(cls, obj: object) -> DecisionRecordResponse:
         affected_files = json.loads(obj.affected_files_json)  # type: ignore[attr-defined]
         affected_modules = json.loads(obj.affected_modules_json)  # type: ignore[attr-defined]
+        decision_text = (obj.decision or "").strip()  # type: ignore[attr-defined]
         return cls(
             id=obj.id,  # type: ignore[attr-defined]
             repository_id=obj.repository_id,  # type: ignore[attr-defined]
             title=obj.title,  # type: ignore[attr-defined]
             status=obj.status,  # type: ignore[attr-defined]
+            kind=getattr(obj, "kind", None) or "architectural",
             context=obj.context,  # type: ignore[attr-defined]
             # Body fallback: the substring gate can clear a paraphrased
             # ``decision`` while an evidence quote keeps the record alive,
@@ -77,7 +97,8 @@ class DecisionRecordResponse(BaseModel):
             # (the model's canonical one-line summary, always present) so no read
             # surface emits a body-less decision. New records get this at write
             # time in the harvest path; this covers pre-fix stored records.
-            decision=(obj.decision or "").strip() or obj.title,  # type: ignore[attr-defined]
+            decision=decision_text or obj.title,  # type: ignore[attr-defined]
+            decision_text_missing=not decision_text,
             rationale=obj.rationale,  # type: ignore[attr-defined]
             alternatives=json.loads(obj.alternatives_json),  # type: ignore[attr-defined]
             consequences=json.loads(obj.consequences_json),  # type: ignore[attr-defined]
@@ -137,6 +158,10 @@ class DecisionLaneCountsResponse(BaseModel):
 
 class DecisionCreate(BaseModel):
     title: str
+    # Without this the route could only create the checkable noun, and an
+    # agreement names no file. ``None`` states no opinion, so a client that
+    # predates the split cannot un-agree a stored agreement.
+    kind: Literal[DECISION_KINDS] | None = None
     context: str = ""
     decision: str = ""
     rationale: str = ""
@@ -332,6 +357,10 @@ class DecisionSettings(BaseModel):
     llm: bool = True
     #: default | off | local_only | balanced | full | custom
     preset: str = "default"
+    #: Whether an agent may grant a decision authority, as against withdrawing
+    #: it. True is the shipped posture; every agent grant is signed as the
+    #: agent's, so a person-only gate is the opt-out.
+    agent_acceptance: bool = True
     discovery: DecisionDiscoveryBudget = DecisionDiscoveryBudget()
     sources: list[DecisionSourceState] = []
     provider_available: bool = True
@@ -368,6 +397,7 @@ class DecisionSettingsUpdate(BaseModel):
     llm: bool | None = None
     #: Applied first, so a preset plus per-source overrides works in one call.
     preset: str | None = None
+    agent_acceptance: bool | None = None
     sources: dict[str, DecisionSourcePatch] | None = None
     #: Budget for broad session discovery. Omitted fields keep their value.
     discovery: DecisionDiscoveryPatch | None = None

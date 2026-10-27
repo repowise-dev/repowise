@@ -27,11 +27,14 @@ def build_synthetic_symbol(
     file_info: FileInfo,
     parent_name: str | None,
     decorators: list[str] | None = None,
+    visibility: str = "public",
 ) -> Symbol:
     """Construct a ``Symbol`` instance for a generator-synthesised name.
 
     The synthesised symbol carries no docstring (the user never wrote it)
-    and defaults to public visibility — generators emit public surfaces.
+    and defaults to public visibility — generators emit public surfaces
+    (callers whose language computes a declaration's real access can pass
+    ``visibility`` explicitly).
     Symbol IDs follow the same ``<path>::[<parent>::]<name>`` shape the
     real symbol pass uses, so the existing graph / dead-code passes
     treat them identically.
@@ -56,7 +59,7 @@ def build_synthetic_symbol(
         end_line=end_line,
         docstring=None,
         decorators=decorators or [],
-        visibility="public",
+        visibility=visibility,
         is_async=False,
         language=file_info.language,
         parent_name=parent_name,

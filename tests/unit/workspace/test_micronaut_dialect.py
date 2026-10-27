@@ -28,10 +28,10 @@ from repowise.core.ingestion.framework_routes import (
 from repowise.core.ingestion.models import FileInfo
 from repowise.core.ingestion.parser import ASTParser
 from repowise.core.ingestion.resolvers.context import ResolverContext
+from repowise.core.workspace.extractors.http import HttpExtractor
 from repowise.core.workspace.extractors.http.jaxrs import JaxRsDialect
 from repowise.core.workspace.extractors.http.micronaut import MicronautDialect
 from repowise.core.workspace.extractors.http.spring import SpringDialect
-from repowise.core.workspace.extractors.http_extractor import HttpExtractor
 
 USER_CONTROLLER_JAVA = """\
 package com.example;

@@ -47,3 +47,41 @@ class TestCppHeaderSourcePairing:
         # Conservative: same-dir only (recorded cut — include/ vs src/
         # layouts pair through the target fan-out instead).
         assert not graph.has_edge("include/util.h", "src/util.c")
+
+
+class TestObjectiveCHeaderSourcePairing:
+    def test_header_pairs_with_objc_implementation(self, tmp_path: Path) -> None:
+        (tmp_path / "Foo.h").write_text(
+            '#import <Foundation/Foundation.h>\n'
+            "@interface Foo : NSObject\n"
+            "- (void)bar;\n"
+            "@end\n"
+        )
+        (tmp_path / "Foo.m").write_text(
+            '#import "Foo.h"\n'
+            "@implementation Foo\n"
+            "- (void)bar {}\n"
+            "@end\n"
+        )
+        (tmp_path / "main.m").write_text('#import "Foo.h"\nint main(void) { return 0; }\n')
+        graph = _build(tmp_path)
+        # Foo.m -> Foo.h (import), Foo.h -> Foo.m (pairing). Objective-C
+        # carries its own language tag, and the pairing producer must admit
+        # it: a consumer of the header has to reach the implementation.
+        pair = graph.get_edge_data("Foo.h", "Foo.m")
+        assert pair is not None
+        assert pair.get("hint_source") == "header_source_pair"
+        assert nx.has_path(graph, "main.m", "Foo.m")
+
+    def test_header_pairs_with_objcpp_implementation(self, tmp_path: Path) -> None:
+        (tmp_path / "Foo.h").write_text(
+            '#import <Foundation/Foundation.h>\n'
+            "@interface Foo : NSObject\n"
+            "@end\n"
+        )
+        # .mm is Objective-C++ and routes as the `objectivec` tag, not `cpp`.
+        (tmp_path / "Foo.mm").write_text('#import "Foo.h"\n@implementation Foo\n@end\n')
+        graph = _build(tmp_path)
+        pair = graph.get_edge_data("Foo.h", "Foo.mm")
+        assert pair is not None
+        assert pair.get("hint_source") == "header_source_pair"

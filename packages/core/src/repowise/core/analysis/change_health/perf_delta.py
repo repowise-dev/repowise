@@ -12,7 +12,6 @@ from typing import Any
 
 from ..health import HealthFindingData
 from ..health.perf.opportunities import build_performance_opportunities
-from ..health.perf.opportunity_rank import rank_sort_key
 
 #: Supporting evidence rows kept per surfaced opportunity.
 EVIDENCE_CAP = 3
@@ -35,10 +34,9 @@ class PerfOpportunityView:
     affected_call_sites_total: int
     observations_total: int
     evidence: list[dict[str, Any]]
-
-    @property
-    def is_cross_function(self) -> bool:
-        return self.intervention_symbol is not None
+    # A member reached its sink through a call: every group names an
+    # intervention, so the symbol alone no longer says this.
+    is_cross_function: bool = False
 
     def summary(self) -> str:
         if self.is_cross_function:
@@ -55,7 +53,7 @@ def opportunities_for(findings: list[HealthFindingData]) -> list[PerfOpportunity
     if not rows:
         return []
     built = build_performance_opportunities(rows, evidence_limit=max(len(rows), EVIDENCE_CAP))
-    return [_view(o) for o in sorted(built, key=rank_sort_key)]
+    return [_view(o) for o in built]
 
 
 def index_by_finding(
@@ -96,4 +94,5 @@ def _view(opportunity: Any) -> PerfOpportunityView:
         affected_call_sites_total=opportunity.affected_call_sites_total,
         observations_total=opportunity.observations_total,
         evidence=evidence[:EVIDENCE_CAP],
+        is_cross_function=any(len(row.get("path") or ()) >= 2 for row in evidence),
     )

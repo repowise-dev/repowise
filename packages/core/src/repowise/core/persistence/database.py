@@ -11,14 +11,19 @@ Call init_db() once at startup to create all tables and the FTS index.
 
 from __future__ import annotations
 
+import functools
+import hashlib
 import os
 import sqlite3
+import warnings
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 import structlog
-from sqlalchemy import event, inspect, literal
+from sqlalchemy import String, event, inspect, literal
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -26,9 +31,10 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.pool import NullPool, StaticPool
-from sqlalchemy.schema import CreateIndex
+from sqlalchemy.schema import CreateIndex, CreateTable
 from sqlalchemy.sql import text
 
+from . import read_snapshots  # noqa: F401  (a write to a view's input drops the stored view)
 from .models import Base
 
 log = structlog.get_logger(__name__)
@@ -44,6 +50,13 @@ log = structlog.get_logger(__name__)
 # for large repos. SQLite blocks (doesn't busy-loop) so this is cheap.
 _SQLITE_BUSY_TIMEOUT_MS = 30000
 
+# Page cache per connection, in KiB (negative = size, not pages). The 2 MiB
+# default makes every insert into a large index miss: writing 1.8M graph edges
+# (random-uuid primary key plus the unique edge key) took 77s at the default
+# and 44s at 64 MiB in raw sqlite3. The cache fills only as pages are touched,
+# so a small store pays nothing for the ceiling.
+_SQLITE_CACHE_KIB = 65536
+
 
 def _sqlite_pragmas(busy_timeout_ms: int) -> tuple[tuple[str, str], ...]:
     """Return the pragma list to apply to a SQLite connection.
@@ -57,6 +70,7 @@ def _sqlite_pragmas(busy_timeout_ms: int) -> tuple[tuple[str, str], ...]:
         ("journal_mode", "WAL"),
         ("synchronous", "NORMAL"),
         ("foreign_keys", "ON"),
+        ("cache_size", str(-_SQLITE_CACHE_KIB)),
     )
 
 
@@ -156,7 +170,9 @@ __all__ = [
     "get_repo_db_path",
     "get_session",
     "init_db",
+    "refresh_planner_stats",
     "resolve_db_url",
+    "schema_behind",
 ]
 
 DB_FILENAME = "wiki.db"
@@ -229,6 +245,23 @@ def resolve_db_url(repo_path: str | Path | None = None) -> str:
     return _default_db_url(repo_path)
 
 
+def has_db_store(repo_path: str | Path | None = None) -> bool:
+    """Whether :func:`resolve_db_url` has a store that already exists.
+
+    A configured database counts as existing. It is shared, it is migrated on
+    its own schedule, and the repo-local file it replaces is absent by design,
+    so a caller that gates on the file alone skips every write under one.
+
+    The filesystem defaults count only when the file is really there, which is
+    what keeps a caller from conjuring an empty database where none existed.
+    """
+    if get_configured_db_url() is not None:
+        return True
+    if repo_path is None:
+        return False
+    return (Path(repo_path) / ".repowise" / "wiki.db").is_file()
+
+
 def create_engine(
     url: str | None = None,
     *,
@@ -237,6 +270,7 @@ def create_engine(
     # Pass use_static_pool=True explicitly when creating in-memory test engines.
     use_static_pool: bool = False,
     busy_timeout_ms: int | None = None,
+    short_lived: bool = True,
 ) -> AsyncEngine:
     """Create an AsyncEngine for the given database URL.
 
@@ -249,6 +283,25 @@ def create_engine(
                          small value for best-effort secondary writers that must
                          never stall the primary writer (issue #326). Ignored
                          for non-SQLite backends.
+        short_lived:     Whether this engine is created, used, and disposed
+                         within a single call (the pattern almost every caller
+                         follows: one CLI command, one workspace update, one
+                         background task). Defaults to True, which uses
+                         NullPool for PostgreSQL — one connection per checkout,
+                         closed on dispose, so a short-lived engine can never
+                         hold more than a single Postgres server slot, and an
+                         engine that outlives its creating event loop can never
+                         hand back a dead pooled connection to a later one
+                         (issue #2062's failure class). Pass False only for an
+                         engine stored for a process's lifetime and reused
+                         across many requests — currently just the FastAPI app
+                         and the MCP server — where SQLAlchemy's pooled
+                         AsyncAdaptedQueuePool is the correct choice and
+                         NullPool would open a fresh connection per request.
+                         Ignored for SQLite, which already always uses
+                         NullPool (or StaticPool for :memory:) regardless of
+                         this flag — SQLite has no equivalent long-lived-pool
+                         need since ``aiosqlite`` connections are cheap.
     """
     db_url = get_db_url(url)
     is_sqlite = db_url.startswith("sqlite")
@@ -265,8 +318,21 @@ def create_engine(
         else:
             kwargs["poolclass"] = NullPool
     else:
-        # PostgreSQL — asyncpg handles its own connection pool
+        # PostgreSQL. SQLAlchemy pools these connections with
+        # AsyncAdaptedQueuePool by default — asyncpg does NOT provide its own
+        # pool here (that only happens if something calls asyncpg.create_pool,
+        # which nothing in this codebase does). Every create_engine() call in
+        # this codebase except the long-lived server/MCP engines is
+        # short-lived (create, use, dispose within one async function), so
+        # there's no reuse to gain from pooling and every pooled-but-idle
+        # connection is a Postgres server slot held for no benefit — or,
+        # worse, one that survives past a closed event loop and gets handed
+        # to a later, unrelated caller (#2062's failure class). NullPool caps
+        # a short-lived engine's footprint at exactly one connection instead
+        # of up to 15 (pool_size=5 + max_overflow=10) sitting idle.
         kwargs["pool_pre_ping"] = True
+        if short_lived:
+            kwargs["poolclass"] = NullPool
 
     engine = create_async_engine(db_url, **kwargs)
     if is_sqlite:
@@ -363,6 +429,138 @@ def _add_column_ddl(column: object, dialect: object) -> str:
     return " ".join(parts)
 
 
+def _split_blame_line_shares(connection: object) -> int:
+    from repowise.core.persistence.crud.git import split_blame_line_shares
+
+    return split_blame_line_shares(connection)  # type: ignore[arg-type]
+
+
+#: One-time data fixes that must run when the reconciler adds a column, for
+#: rows the new column changes the meaning of. Alembic runs the same step in
+#: the column's migration for managed Postgres. Keyed ``table.column``.
+_DATA_STEPS_ON_ADD: dict[str, Callable[[object], object]] = {
+    "git_metadata.primary_owner_line_pct": _split_blame_line_shares,
+}
+
+
+def _run_data_step(step: Callable[[object], object], connection: object) -> None:
+    """Run a data step for its effect. Its return value (a row count, often 0)
+    is not a statement, so it must never reach ``connection.execute``."""
+    step(connection)
+
+
+#: Tables a SQLite store rebuilds when a column the model now allows NULL in is
+#: still NOT NULL on disk: SQLite cannot relax a constraint in place, and the
+#: additive reconciler below never does. Leaf tables only, since nothing may
+#: reference a table that is copied, dropped and renamed. Each holds derived
+#: rows, so an interrupted rebuild costs a recompute, never source data.
+#: ``health_snapshots`` is history rather than derived, but small, and an
+#: interrupted rebuild leaves its rows in the staging table.
+_SQLITE_REBUILD_FOR_NULLABLE: frozenset[str] = frozenset(
+    {"health_file_metrics", "health_snapshots"}
+)
+
+
+def _relax_not_null(connection: object, table: object) -> None:
+    """Rebuild *table* from the model if a now-nullable column is NOT NULL.
+
+    SQLite's documented procedure: create the new shape under a staging name,
+    copy the shared columns, drop the old table, rename, recreate indexes.
+    """
+    live = {c["name"]: c for c in inspect(connection).get_columns(table.name)}  # type: ignore[attr-defined]
+    columns = [c for c in table.columns if c.name in live]  # type: ignore[attr-defined]
+    if not any(c.nullable and not live[c.name]["nullable"] for c in columns):
+        return
+    name = table.name  # type: ignore[attr-defined]
+    staging = f"_rebuild_{name}"
+    dialect = connection.dialect  # type: ignore[attr-defined]
+    ddl = str(CreateTable(table).compile(dialect=dialect))  # type: ignore[arg-type]
+    quoted = dialect.identifier_preparer.quote(name)
+    ddl = ddl.replace(f"CREATE TABLE {quoted} ", f'CREATE TABLE "{staging}" ', 1)
+    shared = ", ".join(f'"{c.name}"' for c in columns)
+    run = connection.execute  # type: ignore[attr-defined]
+    run(text(f'DROP TABLE IF EXISTS "{staging}"'))
+    run(text(ddl))
+    run(text(f'INSERT INTO "{staging}" ({shared}) SELECT {shared} FROM "{name}"'))
+    run(text(f'DROP TABLE "{name}"'))
+    run(text(f'ALTER TABLE "{staging}" RENAME TO "{name}"'))
+    # Indexes went with the old table. Not a per-row loop: one per declared index.
+    for index in table.indexes:  # type: ignore[attr-defined]
+        run(CreateIndex(index))
+    log.info("schema_table_rebuilt_for_nullable", table=name)
+
+
+def _is_widened(model_type: object, live_type: object) -> bool:
+    """True when the model's string column is longer than the live one."""
+    if not isinstance(model_type, String) or not isinstance(live_type, String):
+        return False
+    live_length = live_type.length
+    if live_length is None:
+        return False
+    return model_type.length is None or model_type.length > live_length
+
+
+def _loosen_postgres_columns(table: object, live: dict[str, dict], dialect: object) -> list:
+    """``(label, ALTER)`` pairs bringing live PostgreSQL columns up to the model.
+
+    Only ever loosens: drops a NOT NULL the model no longer declares and widens
+    a VARCHAR the model made longer or unbounded. Both are catalog-only changes
+    on PostgreSQL and match what migrations 0062, 0064, 0086, 0094 and 0108 do,
+    so a database that never ran Alembic (the Docker image's path) still accepts
+    what the current code writes. Tightening stays an explicit migration.
+    """
+    statements = []
+    for column in table.columns:  # type: ignore[attr-defined]
+        found = live.get(column.name)
+        if found is None:
+            continue
+        what = f"{table.name}.{column.name}:loosen"  # type: ignore[attr-defined]
+        target = f'ALTER TABLE "{table.name}" ALTER COLUMN "{column.name}"'  # type: ignore[attr-defined]
+        if _is_widened(column.type, found["type"]):
+            kind = column.type.compile(dialect=dialect)
+            statements.append((what, text(f"{target} TYPE {kind}")))
+        if column.nullable and not found["nullable"]:
+            statements.append((what, text(f"{target} DROP NOT NULL")))
+    return statements
+
+
+def _reconcile_columns(
+    connection: object,
+    inspector: Any,
+    table: Any,
+    run: Callable[[str, Callable[[], object]], None],
+    failures: list[tuple[str, Exception]],
+) -> None:
+    """Loosen and add one existing table's columns (see :func:`_reconcile_schema`)."""
+    dialect = connection.dialect  # type: ignore[attr-defined]
+    # Render the column DDL fragment exactly as SQLAlchemy would emit
+    # it inside CREATE TABLE — preserves type, server_default, and
+    # nullability. We deliberately do NOT enforce FK constraints on
+    # back-filled columns: SQLite can't add an enforced FK after the
+    # fact, and write-time enforcement is sufficient for our purposes.
+    # The Alembic-only pgvector column triggers an unknown-type warning.
+    with warnings.catch_warnings():
+        if dialect.name == "postgresql":  # type: ignore[attr-defined]
+            warnings.filterwarnings("ignore", message="Did not recognize type 'vector'")
+        db_cols = {c["name"]: c for c in inspector.get_columns(table.name)}
+    if dialect.name == "postgresql":  # type: ignore[attr-defined]
+        for what, statement in _loosen_postgres_columns(table, db_cols, dialect):
+            run(what, lambda statement=statement: statement)
+    for column in table.columns:
+        if column.name in db_cols:
+            continue
+        what = f"{table.name}.{column.name}"
+        run(
+            what,
+            lambda table=table, column=column: text(
+                f'ALTER TABLE "{table.name}" ADD COLUMN {_add_column_ddl(column, dialect)}'
+            ),
+        )
+        data_step = _DATA_STEPS_ON_ADD.get(what)
+        if data_step is not None and not any(name == what for name, _ in failures):
+            run(f"{what}:data", lambda data_step=data_step: _run_data_step(data_step, connection))
+
+
 def _reconcile_schema(connection: object) -> None:
     """Bring an existing database up to ``Base.metadata`` (additive only).
 
@@ -380,11 +578,16 @@ def _reconcile_schema(connection: object) -> None:
     that follows the additive-only convention is picked up automatically
     on the next ``init_db`` call — no per-migration code required here.
 
+    Existing columns are only ever loosened: on PostgreSQL a NOT NULL the
+    model dropped is dropped and a VARCHAR the model widened is widened in
+    place; on SQLite the tables in ``_SQLITE_REBUILD_FOR_NULLABLE`` are rebuilt
+    for nullability, and VARCHAR length is not enforced there.
+
     Limitations (intentional — these need explicit migrations):
-      * column **removals**, **renames**, or **type changes** are NOT
-        reconciled (SQLite can't ALTER COLUMN safely anyway);
-      * **constraint changes** (UNIQUE, CHECK, FK) on existing columns
-        are NOT reconciled;
+      * column **removals**, **renames**, and narrowing or cross-kind **type
+        changes** are NOT reconciled (SQLite can't ALTER COLUMN safely anyway);
+      * **constraint changes** (UNIQUE, CHECK, FK) and new NOT NULLs on
+        existing columns are NOT reconciled;
       * Postgres extensions / functions (e.g. pgvector) are NOT created
         here — those still belong in Alembic migrations.
 
@@ -423,9 +626,11 @@ def _reconcile_schema(connection: object) -> None:
         # ``build`` renders the statement as well as running it, because
         # compiling a column's type can fail on its own and that failure has
         # to strand no more than compiling it successfully and failing to
-        # execute it would.
+        # execute it would. A data step runs itself and returns None.
         try:
-            connection.execute(build())  # type: ignore[attr-defined]
+            statement = build()
+            if statement is not None:
+                connection.execute(statement)  # type: ignore[attr-defined]
         except Exception as exc:  # re-raised below, once the walk is done
             if not continue_past_failure:
                 raise
@@ -443,21 +648,15 @@ def _reconcile_schema(connection: object) -> None:
             # reconcile a brand-new table column-by-column.
             continue
 
-        # --- Columns ---------------------------------------------------
-        # Render the column DDL fragment exactly as SQLAlchemy would emit
-        # it inside CREATE TABLE — preserves type, server_default, and
-        # nullability. We deliberately do NOT enforce FK constraints on
-        # back-filled columns: SQLite can't add an enforced FK after the
-        # fact, and write-time enforcement is sufficient for our purposes.
-        db_cols = {c["name"] for c in inspector.get_columns(table.name)}
-        for column in table.columns:
-            if column.name in db_cols:
-                continue
+        _reconcile_columns(connection, inspector, table, _run, failures)
+
+        # --- Nullability (SQLite only) -----------------------------------
+        # After the columns, so the copy carries every one of them, and before
+        # the indexes, which the rebuild recreates itself.
+        if continue_past_failure and table.name in _SQLITE_REBUILD_FOR_NULLABLE:
             _run(
-                f"{table.name}.{column.name}",
-                lambda table=table, column=column: text(
-                    f'ALTER TABLE "{table.name}" ADD COLUMN {_add_column_ddl(column, dialect)}'
-                ),
+                f"{table.name}:nullable",
+                lambda table=table: _relax_not_null(connection, table),
             )
 
         # --- Indexes ---------------------------------------------------
@@ -484,6 +683,49 @@ def _reconcile_schema(connection: object) -> None:
         raise failures[0][1]
 
 
+#: Bump when ``_reconcile_schema`` learns a repair the model shape alone does
+#: not reveal, so stores stamped by the old code reconcile again.
+_RECONCILE_LOGIC_VERSION = 1
+
+
+@functools.cache
+def _model_signature() -> str:
+    """What ``create_all`` and ``_reconcile_schema`` act on, as text.
+
+    Tables, column names, types, lengths and nullability, and index names.
+    """
+    parts = [f"logic={_RECONCILE_LOGIC_VERSION}"]
+    for name in sorted(Base.metadata.tables):
+        table = Base.metadata.tables[name]
+        columns = sorted(
+            (c.name, type(c.type).__name__, str(getattr(c.type, "length", None)), str(c.nullable))
+            for c in table.columns
+        )
+        indexes = sorted(str(i.name) for i in table.indexes)
+        parts.append(f"{name}|{columns}|{indexes}")
+    return "\n".join(parts)
+
+
+def schema_stamp(schema_cookie: int) -> int:
+    """The ``PRAGMA user_version`` a store reconciled by these models carries.
+
+    Folds in SQLite's ``schema_version`` cookie, which SQLite itself bumps on
+    every DDL statement, so any schema change made after the stamp (an older
+    repowise, a ``VACUUM``, a hand edit) reads as unstamped and reconciles.
+    A positive 31-bit int: 0 is what every unstamped store reads.
+    """
+    signature = f"{_model_signature()}\ncookie={schema_cookie}"
+    digest = hashlib.sha256(signature.encode()).digest()
+    return int.from_bytes(digest[:4], "big") % (2**31 - 1) + 1
+
+
+async def _sqlite_stamp_state(conn: Any) -> tuple[int, int]:
+    """``(user_version, schema_version)`` of the store behind *conn*."""
+    user_version = (await conn.execute(text("PRAGMA user_version"))).scalar()
+    cookie = (await conn.execute(text("PRAGMA schema_version"))).scalar()
+    return int(user_version or 0), int(cookie or 0)
+
+
 async def init_db(engine: AsyncEngine) -> None:
     """Create all SQLAlchemy tables and the FTS index for the given engine.
 
@@ -492,10 +734,23 @@ async def init_db(engine: AsyncEngine) -> None:
     missing columns/indexes back-filled in place rather than hitting a
     cryptic ``no such column`` error from the ORM.
 
+    On SQLite a complete pass records :func:`schema_stamp` in
+    ``PRAGMA user_version``, and a store still carrying it skips the table
+    walk: two header reads in place of reflecting every table, which cost
+    about 150ms per open of an unchanged store. Another repowise's models, or
+    any schema change since the stamp, reads as unstamped and reconciles as
+    before. Other backends reconcile on every call.
+
     Safe to call on an already-initialised database (idempotent).
     """
+    sqlite = engine.dialect.name == "sqlite"
     async with engine.begin() as conn:
+        if sqlite:
+            stamped, cookie = await _sqlite_stamp_state(conn)
+            if stamped == schema_stamp(cookie):
+                return
         await conn.run_sync(Base.metadata.create_all)
+        # Raises when the walk is incomplete, so a partial reconcile is never stamped.
         await conn.run_sync(_reconcile_schema)
 
         # SQLite-only: create FTS5 virtual table for full-text search.
@@ -509,3 +764,110 @@ async def init_db(engine: AsyncEngine) -> None:
             from repowise.core.persistence.search import PAGE_FTS_DDL
 
             await conn.execute(text(PAGE_FTS_DDL))
+            # Last, so the cookie read covers every statement above.
+            _, cookie = await _sqlite_stamp_state(conn)
+            await _write_stamp(conn, schema_stamp(cookie))
+
+
+async def _write_stamp(conn: Any, stamp: int) -> None:
+    """Record *stamp*, giving up at once on a read-only or locked store.
+
+    A store already on the current schema was opened without any write before
+    the stamp existed, so the stamp must not make such an open wait on another
+    writer's lock or fail on a read-only file. Unstamped, the next open simply
+    reconciles again.
+    """
+    timeout = (await conn.execute(text("PRAGMA busy_timeout"))).scalar()
+    await conn.execute(text("PRAGMA busy_timeout = 0"))
+    try:
+        await conn.execute(text(f"PRAGMA user_version = {stamp}"))
+    except DBAPIError as exc:
+        log.debug("schema_stamp_not_written", error=str(exc))
+    finally:
+        await conn.execute(text(f"PRAGMA busy_timeout = {int(timeout or 0)}"))
+
+
+# A table whose row count moved past this factor of the count ANALYZE recorded
+# has statistics too old to plan by.
+_STATS_DRIFT = 2
+
+
+def _planner_stats_stale(conn: Any) -> bool:
+    """Whether a table with rows has no statistics, or its count left the band."""
+    # ANALYZE skips virtual tables (the full-text index), so they never count.
+    names = [
+        r[0]
+        for r in conn.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "AND sql NOT LIKE 'CREATE VIRTUAL TABLE%'"
+        )
+    ]
+    if "sqlite_stat1" not in names:
+        return True
+    recorded = dict(
+        conn.exec_driver_sql(
+            "SELECT tbl, MAX(CAST(stat AS INTEGER)) FROM sqlite_stat1 GROUP BY tbl"
+        ).all()
+    )
+    for name in names:
+        if name.startswith("sqlite_"):
+            continue
+        # One statement per table on purpose: SQLite answers a bare COUNT(*)
+        # from the b-tree, but scans the rows when the count sits inside a
+        # subquery, which made one UNION ALL about 25x slower.
+        rows = conn.exec_driver_sql(f'SELECT COUNT(*) FROM "{name}"').scalar() or 0
+        before = recorded.get(name)
+        if before is None:
+            if rows:
+                return True
+        elif not before / _STATS_DRIFT <= rows <= before * _STATS_DRIFT:
+            return True
+    return False
+
+
+async def refresh_planner_stats(engine: AsyncEngine) -> None:
+    """Refresh SQLite's planner statistics at the end of a write to the index.
+
+    Without ``sqlite_stat1`` the planner guesses, and on a large store it picks
+    a wide covering index over the selective one (a full edge-table scan in
+    place of an index lookup). A full ``ANALYZE``, not a sampled one: every
+    index leads with ``repository_id``, which a sample (``analysis_limit``, and
+    ``PRAGMA optimize`` since SQLite 3.46) reads as selective, so the planner
+    keeps the wrong index. It runs only when the statistics are missing or a
+    table's size has drifted, since a full pass reads the whole store. Other
+    backends keep their own statistics. A failure costs only a slower plan, so
+    it never fails the write.
+    """
+    if engine.dialect.name != "sqlite":
+        return
+    try:
+        async with engine.begin() as conn:
+            if await conn.run_sync(_planner_stats_stale):
+                await conn.execute(text("ANALYZE"))
+    except DBAPIError as exc:  # a locked or read-only store
+        log.warning("sqlite.analyze_failed", error=str(exc))
+
+
+async def schema_behind(engine: AsyncEngine) -> bool:
+    """Whether a table or column the models declare is missing from the store.
+
+    One catalogue read, so a reader can skip the reconcile ``init_db`` runs and
+    pay for it only on a store an older repowise wrote. SQLite only; another
+    backend is migrated by Alembic and reads as current.
+    """
+    if engine.dialect.name != "sqlite":
+        return False
+    async with engine.connect() as conn:
+        rows = await conn.execute(
+            text(
+                "SELECT m.name, p.name FROM sqlite_master AS m "
+                "JOIN pragma_table_info(m.name) AS p WHERE m.type = 'table'"
+            )
+        )
+        live: dict[str, set[str]] = {}
+        for table, column in rows:
+            live.setdefault(table, set()).add(column)
+    return any(
+        not {c.name for c in table.columns} <= live.get(name, set())
+        for name, table in Base.metadata.tables.items()
+    )

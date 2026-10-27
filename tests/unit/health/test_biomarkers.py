@@ -20,7 +20,7 @@ def _ctx(
         nloc=sum(f.nloc for f in fns),
         has_test_file=False,
         module=None,
-        function_metrics={f.name: f for f in fns},
+        all_functions=tuple(fns),
         git_meta={},
         dependents_count=dependents,
         repo_dependents_p80=repo_dependents_p80,

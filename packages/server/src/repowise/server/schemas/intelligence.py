@@ -91,7 +91,7 @@ SYMBOL_RELATION_GROUPS: dict[str, frozenset[str]] = {
     "call": frozenset({"calls"}),
     "heritage": frozenset({"extends", "implements", "method_implements", "dispatches_to"}),
     "wiring": frozenset({"framework_binds"}),
-    "reference": frozenset({"reads", "references"}),
+    "reference": frozenset({"references"}),
 }
 
 #: Reverse index, so a fetched edge can name its own group without a scan.

@@ -14,7 +14,6 @@ from __future__ import annotations
 
 from .context import (
     ApiContractContext,
-    ArchitectureDiagramContext,
     ContextAssembler,
     FilePageContext,
     InfraPageContext,
@@ -28,7 +27,6 @@ from .context import (
 
 __all__ = [
     "ApiContractContext",
-    "ArchitectureDiagramContext",
     "ContextAssembler",
     "FilePageContext",
     "InfraPageContext",

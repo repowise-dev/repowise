@@ -98,13 +98,25 @@ Key entry points and their execution paths:
 {% endfor %}
 {% endif %}
 
+{% if system_map_payload is defined and system_map_payload %}
+### System map to name
+A diagram of the parts below is inserted under the Project Summary after you
+write. Which boxes and arrows it shows is fixed; you only name them, from the
+facts given and the project's own vocabulary.
+
+```json
+{{ system_map_payload }}
+```
+{% endif %}
+
 ---
 
 ## What to write
 
-Exactly these three sections, in this order, and nothing else. Two tables and a
-diagram are inserted after you write — what this repository calls its own
-capabilities, the package table, and the architecture map — so leave room for
+Exactly these three sections, in this order, and nothing else{% if system_map_payload is defined and system_map_payload %} but the
+closing `json` block described at the end{% endif %}. Two tables and a
+diagram are inserted after you write: what this repository calls its own
+capabilities, the package table, and the system map. Leave room for
 them by not writing them yourself.
 
 **## Project Summary** — two short paragraphs. What this is, what it is for, and who
@@ -140,3 +152,19 @@ LENGTH: aim for 650–850 words of prose across the whole page when the supplied
 evidence supports that depth. Say each thing once: the reader has per-module
 pages for implementation detail, but this page must still leave them able to
 explain the product, its evidence layers, its lifecycle, and its main surfaces.
+
+{% if system_map_payload is defined and system_map_payload %}
+REQUIRED: after the three sections, end the reply with one fenced `json` block naming the
+system map, and nothing after it:
+
+```json
+{"caption": "one sentence on how work flows through these parts",
+ "nodes": [{"id": "<node id>", "label": "2-4 plain words", "role": "what it does, at most 6 words"}],
+ "edges": [{"from": "<node id>", "to": "<node id>", "verb": "1-3 word verb, e.g. starts, asks, reads and writes"}]}
+```
+
+Give every node and every edge listed above exactly one entry, using its id.
+A label names what the part is to a newcomer, not its directory. A verb says
+what the source does to the target at run time.
+
+{% endif %}

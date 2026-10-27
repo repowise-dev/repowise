@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 
 from repowise.core.ingestion.call_resolver import _NON_CALLABLE_KINDS, CallResolver
+from repowise.core.ingestion.language_data import get_builtin_methods
 from repowise.core.ingestion.models import FileInfo, ParsedFile
 from repowise.core.ingestion.parser import parse_file
 
@@ -172,6 +173,74 @@ class TestThePredicateStaysNarrow:
         assert [e for e in _edges(parsed, tmp_path) if e[1] == "util.ts::doThing"]
 
 
+class TestKotlinAndSwiftPropertiesAreNotCallable:
+    """A Kotlin or Swift ``variable`` is a property: ``url("...")`` in a Ktor
+    DSL block is not the repo's ``private var url``."""
+
+    def test_a_kotlin_property_does_not_answer_a_bare_name(self, tmp_path: Path) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "Builder.kt": (
+                    "kotlin",
+                    "class Builder {\n    private var url: String = \"\"\n}\n",
+                ),
+                "Client.kt": ("kotlin", "fun main() {\n    url(\"https://x\")\n}\n"),
+            },
+        )
+        assert _kinds(parsed, "url") == {"variable"}
+        assert not [e for e in _edges(parsed, tmp_path) if e[1].endswith("::url")]
+
+    def test_a_swift_property_does_not_answer_a_bare_name(self, tmp_path: Path) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "model.swift": ("swift", "struct Model {\n    var title: String = \"\"\n}\n"),
+                "view.swift": ("swift", "func render() {\n    title(\"x\")\n}\n"),
+            },
+        )
+        assert _kinds(parsed, "title") == {"variable"}
+        assert not [e for e in _edges(parsed, tmp_path) if e[1].endswith("::title")]
+
+    def test_a_function_shares_its_id_with_a_property(self, tmp_path: Path) -> None:
+        """``val isDark`` and ``fun isDark()`` in one file are one id, still callable."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "Theme.kt": (
+                    "kotlin",
+                    "package a\n\nval isDark: Boolean = false\nfun isDark(): Boolean = true\n",
+                ),
+                "Use.kt": ("kotlin", "package b\n\nfun use() {\n    isDark()\n}\n"),
+            },
+        )
+        assert [e for e in _edges(parsed, tmp_path) if e[1] == "Theme.kt::isDark"]
+
+    def test_a_property_holding_a_function_stays_callable(self, tmp_path: Path) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "Handlers.kt": ("kotlin", "package a\n\nval handler: () -> Unit = {}\n"),
+                "Use.kt": ("kotlin", "package b\n\nfun use() {\n    handler()\n}\n"),
+            },
+        )
+        assert [e for e in _edges(parsed, tmp_path) if e[1] == "Handlers.kt::handler"]
+
+    def test_function_text_in_a_string_or_comment_is_no_function(self, tmp_path: Path) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "Labels.kt": (
+                    "kotlin",
+                    'package a\n\nval label: String = "x"\n// val label: () -> Unit\n'
+                    'val title = "val title = { }"\n',
+                ),
+                "Use.kt": ("kotlin", "package b\n\nfun use() {\n    label()\n    title()\n}\n"),
+            },
+        )
+        assert not [e for e in _edges(parsed, tmp_path) if e[1].startswith("Labels.kt::")]
+
+
 def _edges_with_imports(
     parsed: dict[str, ParsedFile],
     tmp_path: Path,
@@ -228,10 +297,174 @@ class TestTheImportMergedTierRefusesTheSame:
             {
                 "util.rs": ("rust", "pub fn render() -> u8 {\n    1\n}\n"),
                 "other.rs": ("rust", "pub fn render() -> u8 {\n    2\n}\n"),
-                "caller.rs": ("rust", "pub fn run() -> u8 {\n    render()\n}\n"),
+                "caller.rs": (
+                    "rust",
+                    "use crate::util::*;\npub fn run() -> u8 {\n    render()\n}\n",
+                ),
             },
         )
+        # A Rust bare name reaches an imported file through a glob import only.
+        parsed["caller.rs"].imports[0].resolved_file = "util.rs"
         edges = _edges_with_imports(
             parsed, tmp_path, {"caller.rs": {"util.rs"}, "util.rs": set(), "other.rs": set()}
         )
         assert [e for e in edges if e[1] == "util.rs::render" and e[2] == "import_merged"]
+
+
+class TestTheImportMergedTierRefusesAStdName:
+    """A std-library name is refused on this rung too, for tier 3's reason.
+
+    ``get_builtin_methods`` names what is in scope in every file of that
+    language without an import, so a repo symbol that merely shares the name is
+    not what the call site meant. ``_global_unique_match`` consulted the list
+    and this rung did not, so the same guess was refused on one tier and
+    answered at 0.85 on the other.
+
+    Every case here declares the name TWICE, because that is the only shape
+    where the two rungs could disagree: tier 3 refuses an ambiguous name
+    outright, so a single declaration proves nothing about which rung answered.
+    """
+
+    def test_an_imported_std_name_does_not_answer_a_bare_name(
+        self, tmp_path: Path
+    ) -> None:
+        """``unwrap`` is on Rust's list, so no repo symbol may answer it."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "parser.rs": ("rust", "pub fn unwrap() -> u8 {\n    1\n}\n"),
+                "other.rs": ("rust", "pub fn unwrap() -> u8 {\n    2\n}\n"),
+                "caller.rs": ("rust", "pub fn run() -> u8 {\n    unwrap()\n}\n"),
+            },
+        )
+        assert "unwrap" in get_builtin_methods("rust")
+        edges = _edges_with_imports(
+            parsed,
+            tmp_path,
+            {"caller.rs": {"parser.rs"}, "parser.rs": set(), "other.rs": set()},
+        )
+        assert not [e for e in edges if e[1] == "parser.rs::unwrap"]
+
+    def test_a_name_left_off_the_list_still_answers(self, tmp_path: Path) -> None:
+        """The narrowness is the point, not an accident.
+
+        ``next`` is a std method and is deliberately absent from Rust's list,
+        because a repo plausibly declares one. Widening the list to every std
+        name would delete that edge, so pin the name that stays answerable.
+        """
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "cursor.rs": ("rust", "pub fn next() -> u8 {\n    1\n}\n"),
+                "other.rs": ("rust", "pub fn next() -> u8 {\n    2\n}\n"),
+                "caller.rs": (
+                    "rust",
+                    "use crate::cursor::*;\npub fn run() -> u8 {\n    next()\n}\n",
+                ),
+            },
+        )
+        parsed["caller.rs"].imports[0].resolved_file = "cursor.rs"
+        assert "next" not in get_builtin_methods("rust")
+        edges = _edges_with_imports(
+            parsed,
+            tmp_path,
+            {"caller.rs": {"cursor.rs"}, "cursor.rs": set(), "other.rs": set()},
+        )
+        assert [
+            e for e in edges if e[1] == "cursor.rs::next" and e[2] == "import_merged"
+        ]
+
+    def test_a_language_with_no_list_is_untouched(self, tmp_path: Path) -> None:
+        """The refusal is the language spec's, not a hardcoded set of names.
+
+        Python declares no ``builtin_methods``, so the very name Rust refuses
+        must still resolve there.
+        """
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "parser.py": ("python", "def unwrap():\n    return 1\n"),
+                "other.py": ("python", "def unwrap():\n    return 2\n"),
+                "caller.py": ("python", "def run():\n    return unwrap()\n"),
+            },
+        )
+        assert get_builtin_methods("python") == frozenset()
+        edges = _edges_with_imports(
+            parsed,
+            tmp_path,
+            {"caller.py": {"parser.py"}, "parser.py": set(), "other.py": set()},
+        )
+        assert [
+            e for e in edges if e[1] == "parser.py::unwrap" and e[2] == "import_merged"
+        ]
+
+
+class TestSwiftExtensionsAreNotConstructors:
+    """``extension Text {}`` adds members to a type; it declares no ``Text``.
+
+    Stored as a ``class`` it answered every ``Text(..)``, ``Label(..)`` and
+    ``Color(..)`` call: 363 of 1,952 Swift call edges on IceCubesApp.
+    """
+
+    _EXT = "extension Text {\n    func styled() -> Text { self }\n}\n"
+
+    def test_an_extension_of_an_external_type_takes_no_constructor_call(
+        self, tmp_path: Path
+    ) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "Ext.swift": ("swift", self._EXT + "func local() { _ = Text(\"a\") }\n"),
+                "Use.swift": ("swift", "func use() { _ = Text(\"hi\") }\n"),
+            },
+        )
+        assert _kinds(parsed, "Text") == {"impl"}
+        assert not [e for e in _edges(parsed, tmp_path) if e[1] == "Ext.swift::Text"]
+
+    def test_an_extension_of_a_repo_type_leaves_its_constructor_to_the_type(
+        self, tmp_path: Path
+    ) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "Foo.swift": ("swift", "struct Foo {\n    init(x: Int) {}\n}\n"),
+                "Ext.swift": ("swift", "extension Foo {\n    func bar() {}\n}\n"),
+                "Use.swift": ("swift", "func use() { _ = Foo(x: 1) }\n"),
+            },
+        )
+        assert ("Use.swift::use", "Foo.swift::Foo", "global_unique") in _edges(
+            parsed, tmp_path
+        )
+
+    def test_extension_methods_still_resolve(self, tmp_path: Path) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "Ext.swift": ("swift", self._EXT),
+                "Use.swift": (
+                    "swift",
+                    "func use() {\n    let t = Text(\"hi\")\n    t.styled()\n}\n",
+                ),
+            },
+        )
+        callees = {e[1] for e in _edges(parsed, tmp_path)}
+        assert callees == {"Ext.swift::Text::styled"}
+
+    def test_an_extension_in_its_types_own_file_leaves_the_type_alone(
+        self, tmp_path: Path
+    ) -> None:
+        """Both share ``Foo.swift::Foo``; the type keeps the symbol and its kind."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "Foo.swift": (
+                    "swift",
+                    "struct Foo {}\nextension Foo {\n    func bar() {}\n}\n",
+                ),
+                "Use.swift": ("swift", "func use() { _ = Foo() }\n"),
+            },
+        )
+        assert _kinds(parsed, "Foo") == {"class"}
+        assert ("Use.swift::use", "Foo.swift::Foo", "global_unique") in _edges(
+            parsed, tmp_path
+        )

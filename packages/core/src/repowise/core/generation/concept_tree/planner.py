@@ -70,6 +70,8 @@ class PlannerInputs:
     entry_points: set[str] = field(default_factory=set)
     #: Test files, kept only so the validator can prove none leaked in.
     test_files: set[str] = field(default_factory=set)
+    #: Package roots that wall the grouping, as selection computes them.
+    package_roots: set[str] = field(default_factory=set)
 
 
 def _reasoning_kwargs(reasoning: str | None) -> dict[str, str]:
@@ -193,6 +195,16 @@ def name_deterministically(groups: list[ConceptGroup], inputs: PlannerInputs) ->
     return outline
 
 
+def _group(inputs: PlannerInputs, params: GroupingParams | None) -> list[ConceptGroup]:
+    """The one grouping call both planner entry points share."""
+    return group_files(
+        inputs.production_files,
+        layer_of_file=inputs.layer_of_file,
+        params=params,
+        package_roots=inputs.package_roots,
+    )
+
+
 def plan_deterministic(
     inputs: PlannerInputs, *, params: GroupingParams | None = None
 ) -> tuple[ConceptOutline, list[ConceptGroup]]:
@@ -208,7 +220,7 @@ def plan_deterministic(
     bounds were dropped here and the two paths produced different page counts
     for the same repository.
     """
-    groups = group_files(inputs.production_files, layer_of_file=inputs.layer_of_file, params=params)
+    groups = _group(inputs, params)
     return name_deterministically(groups, inputs), groups
 
 
@@ -293,7 +305,8 @@ def _repair_targets(outline: ConceptOutline, report: OutlineReport) -> set[str]:
     targets |= set(report.bare_directory_titles)
     targets |= {t.rsplit(" (", 1)[0] for t in report.bad_length_titles}
     targets |= {p.title for p in outline.pages if not p.named_by_model}
-    return targets
+    # A package roll-up keeps its deterministic title; see ``decode_response``.
+    return targets - {p.title for p in outline.pages if p.group.packages}
 
 
 async def plan_outline(
@@ -306,7 +319,7 @@ async def plan_outline(
     reasoning: str | None = None,
 ) -> tuple[ConceptOutline, OutlineReport]:
     """Group *inputs* and produce a validated outline over that grouping."""
-    groups = group_files(inputs.production_files, layer_of_file=inputs.layer_of_file, params=params)
+    groups = _group(inputs, params)
     return await name_groups(
         groups,
         inputs,

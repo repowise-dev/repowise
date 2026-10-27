@@ -10,16 +10,16 @@ from repowise.core.cost_estimator import (
     CostEstimate,
     CostRange,
     PageTypePlan,
-    _lookup_cost,
     build_generation_plan,
     estimate_cost,
+    lookup_cost,
 )
 
 __all__ = [
     "CostEstimate",
     "CostRange",
     "PageTypePlan",
-    "_lookup_cost",
     "build_generation_plan",
     "estimate_cost",
+    "lookup_cost",
 ]

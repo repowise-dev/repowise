@@ -19,21 +19,33 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from repowise.core.analysis.test_collection import narrow_scopes
 from repowise.core.analysis.test_reachability import (
     DEFAULT_CALL_DEPTH,
     DEFAULT_MAX_DEPTH,
     MAX_TESTS_PER_TARGET,
+    load_test_files,
     tests_reaching_by_tier,
 )
+from repowise.core.analysis.test_selection import expand_test_scopes, scope_kind
+from repowise.core.fsutils import comparable_path as _norm
 from repowise.core.persistence.crud.analysis.coverage_map import tests_covering_files
 from repowise.core.workspace.config import WorkspaceConfig
-from repowise.core.workspace.contracts import ContractLink, load_contract_store
+from repowise.core.workspace.contracts import ContractLink, load_contract_store, same_service
 from repowise.core.workspace.repo_index import WorkspaceIndex, open_workspace_index
 
 if TYPE_CHECKING:
-    from collections.abc import Collection, Mapping, Sequence
+    from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 
     from repowise.core.workspace.repo_index import RepoIndex
+
+    #: The measured read: ``(session, repo_id, files) -> {file: [coverage rows]}``,
+    #: the shape of :func:`tests_covering_files`.
+    CoveringReads = Callable[
+        [Any, str, set[str]], Awaitable[Mapping[str, Sequence[Mapping[str, Any]]]]
+    ]
+    #: The inferred read, the signature of :func:`tests_reaching_by_tier`.
+    ReachingReads = Callable[..., Awaitable[Mapping[str, Any]]]
 
 _BASIS_ORDER = {"measured": 0, "inferred": 1}
 
@@ -109,22 +121,10 @@ class WorkspaceTestImpactResult:
     summary: dict[str, Any] = field(default_factory=dict)
 
 
-def _norm(path: str) -> str:
-    """One comparable spelling of a repo-relative path."""
-    cleaned = (path or "").replace("\\", "/")
-    while cleaned.startswith("./"):
-        cleaned = cleaned[2:]
-    return cleaned
-
-
 def _internal_call(link: ContractLink) -> bool:
-    """Mirror of ``contracts._same_repo_same_service``, which takes Contracts.
-
-    A provider and consumer in the same repo and the same service boundary are
-    one program calling itself, not a cross-repo contract.
-    """
-    return link.provider_repo == link.consumer_repo and (
-        link.provider_service == link.consumer_service
+    """A link whose two ends are one program calling itself, as the matcher defines it."""
+    return same_service(
+        link.provider_repo, link.provider_service, link.consumer_repo, link.consumer_service
     )
 
 
@@ -223,6 +223,8 @@ async def _analyze_consumer(
     import_depth: int,
     include_measured: bool,
     include_inferred: bool,
+    covering: CoveringReads,
+    reaching: ReachingReads,
 ) -> _ConsumerOutcome:
     """Resolve one consumer repo, sequentially on the one session it holds."""
     out = _ConsumerOutcome()
@@ -254,6 +256,8 @@ async def _analyze_consumer(
     files = sorted(bound)
     measured: dict[str, list[dict[str, Any]]] = {}
     reached: dict[str, Any] = {}
+    test_files: set[str] = set()
+    narrowed: dict[str, list[str]] = {}
     # A pass that fails takes down only its own signal; whatever the other pass
     # found, and the links already classified, still reach the caller.
     failures: list[str] = []
@@ -261,7 +265,7 @@ async def _analyze_consumer(
         session = repo_index.session
         if include_measured:
             try:
-                rows = await tests_covering_files(session, repo_index.repo_id, set(files))
+                rows = await covering(session, repo_index.repo_id, set(files))
                 for path, covering in rows.items():
                     measured[path] = [
                         {
@@ -281,7 +285,7 @@ async def _analyze_consumer(
                 # own symbol: the call tier is keyed by symbol id, and the import
                 # tier, which only knows files, runs for the files no symbol answered.
                 symbol_ids = sorted({sid for path in files for sid in seeds[path]})
-                by_symbol = await tests_reaching_by_tier(
+                by_symbol = await reaching(
                     session,
                     repo_index.repo_id,
                     symbol_ids,
@@ -292,7 +296,7 @@ async def _analyze_consumer(
                 unanswered = [
                     path for path in files if not any(sid in by_symbol for sid in seeds[path])
                 ]
-                by_file_reached = await tests_reaching_by_tier(
+                by_file_reached = await reaching(
                     session,
                     repo_index.repo_id,
                     unanswered,
@@ -300,6 +304,18 @@ async def _analyze_consumer(
                     import_depth=import_depth,
                 )
                 reached = {**by_file_reached, **by_symbol}
+                # Read only when the walk stopped at a conftest or test package,
+                # which stands for the tests under its directory.
+                if any(
+                    scope_kind(t) for hit in reached.values() for t in hit.all_tests or hit.tests
+                ):
+                    test_files = await load_test_files(session, repo_index.repo_id)
+                    narrowed = await narrow_scopes(
+                        session,
+                        repo_index.repo_id,
+                        {k: hit.all_tests or hit.tests for k, hit in reached.items()},
+                        test_files,
+                    )
             except Exception as exc:
                 failures.append(f"inferred: {type(exc).__name__}")
 
@@ -351,7 +367,14 @@ async def _analyze_consumer(
                 continue
             # The walk trims its own list per target; the join caps per consumer
             # and provider pair below and reports the cut, so start from all of them.
-            reached_tests = list(hit.all_tests or hit.tests)
+            key = link.consumer_symbol_id if link.consumer_symbol_id in reached else path
+            reached_tests = (
+                narrowed[key]
+                if key in narrowed
+                else expand_test_scopes(hit.all_tests or hit.tests, test_files)
+            )
+            if not reached_tests:
+                continue
             file_tests.update(reached_tests)
             if file_via is None or _TIER_PRIORITY.get(hit.via, 99) < _TIER_PRIORITY.get(file_via, 99):
                 file_via = hit.via
@@ -416,12 +439,19 @@ async def analyze_workspace_test_impact(
     min_confidence: float = 0.0,
     target_repos: Collection[str] | None = None,
     max_tests_per_pair: int | None = MAX_TESTS_PER_TARGET,
+    covering: CoveringReads | None = None,
+    reaching: ReachingReads | None = None,
 ) -> WorkspaceTestImpactResult:
     """Tests in consumer repos that guard *changed_files* in provider repos.
 
     *index* and *links* are supplied by the caller, so a request handler that
     already holds both opens nothing here. ``max_tests_per_pair=None`` turns
     the per-pair cap off, for a caller that caps and banks the tail itself.
+
+    *covering* and *reaching* are the two consumer reads, defaulting to
+    :func:`tests_covering_files` and :func:`tests_reaching_by_tier`. Each is
+    handed the consumer's :attr:`RepoIndex.session`, so a caller whose indexes
+    hold something other than a database session passes reads that take it.
     """
     changed_by_provider: dict[str, set[str]] = defaultdict(set)
     for entry in changed_files:
@@ -467,7 +497,10 @@ async def analyze_workspace_test_impact(
     }
 
     if not kept:
-        summary["reason"] = "no_matching_links"
+        # An empty link map cannot say whether the files have consumers; only
+        # a map that links something can say these files have none.
+        linked = any(not _internal_call(link) for link in links)
+        summary["reason"] = "no_matching_links" if linked else "no_contract_links"
         return WorkspaceTestImpactResult(summary=summary)
 
     by_consumer: dict[str, list[ContractLink]] = defaultdict(list)
@@ -487,6 +520,9 @@ async def analyze_workspace_test_impact(
                 import_depth=import_depth,
                 include_measured=include_measured,
                 include_inferred=include_inferred,
+                # Resolved per call, so a default is always the module's current one.
+                covering=covering or tests_covering_files,
+                reaching=reaching or tests_reaching_by_tier,
             )
             for alias in aliases
         )

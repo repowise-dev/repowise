@@ -2,28 +2,53 @@
 
 Detector suggestions and persisted ORM rows are deliberately small write-side
 facts.  This module is the one read-side owner that turns either shape into the
-recommendation contract consumed by REST, MCP, and CLI.  Every database read is
-batched across the complete plan set; adding plans never adds SQL statements.
+recommendation contract consumed by REST, MCP, and CLI.  The reads that feed it
+run in ``persistence/crud/analysis/refactoring_recommendations.py``.
 """
 
 from __future__ import annotations
 
+import dataclasses
+import functools
 import json
 import math
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
+from repowise.core.analysis.function_test_map import MappedTest
 from repowise.core.analysis.health.grading import TARGET_SCORE
-from repowise.core.analysis.test_reachability import ReachedBy, tests_reaching_by_tier
+from repowise.core.analysis.health.queue_rules import FilterRule
+from repowise.core.analysis.health.refactoring_summary import STRUCTURAL_TYPES
+from repowise.core.analysis.health.rows import field as row_field
+from repowise.core.analysis.health.worth import (
+    SIZE_MARKERS,
+    above_bar_after,
+    by_function,
+    measure,
+    worst_after,
+)
+from repowise.core.analysis.pr_blast import rank_tests_by_reach
+from repowise.core.analysis.test_reach.hubs import hub_files
+from repowise.core.analysis.test_reachability import (
+    DEFAULT_CALL_DEPTH,
+    MAX_TESTS_PER_TARGET,
+    ReachDistance,
+    ReachedBy,
+    rank_reaching,
+)
+from repowise.core.code_origin import ship_rank
+from repowise.core.test_paths import is_test_support_path, names_test_for, paired_test_names
 
+from .annotations import PlanAnnotations, partner_rows
+from .commands import TestRuns, commands_for_tests, keeps_runs, plan_runs
 from .models import RefactoringSuggestion
+from .render import list_plan
 
 RecommendationView = Literal["canonical", "file_spread"]
 ValidationBasis = Literal["measured", "inferred", "mixed", "unknown"]
-ValidationVia = Literal["coverage", "call-graph", "import-graph", "mixed"]
+ValidationVia = Literal["coverage", "call-graph", "import-graph", "name-match", "mixed"]
+VerifyCoverage = Literal["measured", "inferred", "none"]
 
 DEFAULT_TEST_LIMIT = 12
 # Public because the opportunity rank charges the same work and the same
@@ -276,6 +301,17 @@ class ValidationPlan:
     affected_symbols: list[str]
     commands: list[str]
     targets: list[ValidationTarget] = field(default_factory=list)
+    # Why each shown test is listed where it is, keyed by test id.
+    reasons: dict[str, str] = field(default_factory=dict)
+    # What to do before the edit when no test reaches the change.
+    prerequisite: str | None = None
+    # Per ``plan["steps"]`` entry of a multi-step plan, its ``verify`` where it
+    # differs from the plan's, else ``None``; empty when none differs. Kept out
+    # of :meth:`as_dict`, which every list serves; plan detail reads it.
+    step_verify: list[dict[str, Any] | None] = field(default_factory=list)
+    # How each shown JS/TS, Go, Rust, JVM, Ruby or C# test runs (``commands.TestRuns``),
+    # so a later read builds the same commands without a checkout.
+    test_runs: dict[str, list[str | None]] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -288,35 +324,363 @@ class ValidationPlan:
             "affected_symbols": self.affected_symbols,
             "commands": self.commands,
             "targets": [target.as_dict() for target in self.targets],
+            "reasons": self.reasons,
+            "prerequisite": self.prerequisite,
+            **({"test_runs": self.test_runs} if keeps_runs(self.tests, self.test_runs) else {}),
         }
 
 
-def _commands(tests: list[str], files: list[str], *, total: int | None = None) -> list[str]:
-    """A command that runs at least everything the plan says validates it.
+SymbolSpan = tuple[str, int, int]
 
-    When the displayed list is capped, enumerating only the shown tests would
-    read as a complete validation run while silently skipping the rest, so the
-    selection widens to the files those tests live in: bounded by file count
-    rather than test count, and never narrower than the evidence.
+
+@dataclass(frozen=True, slots=True)
+class ValidationEvidence:
+    """Graph facts that order a plan's tests, read once for the whole plan set.
+
+    ``symbols`` is each file's symbol ids with their line spans, ``symbol_reach``
+    how close each test gets to a symbol, and ``imports`` the names each test
+    imports from a file. Empty, the order falls back to name and directory.
+    ``function_tests`` is each mapped function's nearest test functions
+    (``function_facts.tests_json``); an absent id was never mapped.
+    ``hubs`` are the files no reach walk passes through (:func:`hub_files`), and
+    ``siblings`` each directory's files, which decide whose test a name is.
+    ``test_runs`` is how each JS/TS, Go, Rust, JVM, Ruby or C# test runs; absent,
+    it gets no command.
     """
-    if total is not None and total > len(tests):
-        tests = sorted({test.split("::", 1)[0] for test in tests})
-    python_tests = sorted(test for test in tests if ".py" in test)
-    js_tests = sorted(
-        test for test in tests if any(ext in test for ext in (".ts", ".tsx", ".js", ".jsx"))
+
+    symbols: Mapping[str, Sequence[SymbolSpan]] = field(default_factory=dict)
+    symbol_reach: Mapping[str, Mapping[str, ReachDistance]] = field(default_factory=dict)
+    imports: Mapping[str, Mapping[str, frozenset[str]]] = field(default_factory=dict)
+    function_tests: Mapping[str, tuple[MappedTest, ...]] = field(default_factory=dict)
+    hubs: frozenset[str] = frozenset()
+    siblings: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    test_runs: TestRuns | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ValidationInputs:
+    """The coverage rows and reachability walk one hydration read.
+
+    ``evidence`` holds the hubs and the symbol facts for hub files only: every
+    pass narrows a hub target the same way, detailed or not.
+    """
+
+    measured: Mapping[str, list[dict[str, Any]]]
+    inferred: Mapping[str, ReachedBy]
+    test_files: set[str]
+    evidence: ValidationEvidence = field(default_factory=ValidationEvidence)
+
+
+def _siblings(paths: Collection[str]) -> dict[str, tuple[str, ...]]:
+    by_dir: dict[str, list[str]] = {}
+    for path in paths:
+        if not path.startswith("external:"):
+            by_dir.setdefault(path.rsplit("/", 1)[0] if "/" in path else "", []).append(path)
+    return {directory: tuple(sorted(files)) for directory, files in by_dir.items()}
+
+
+def target_symbol_ids(
+    suggestion: RefactoringSuggestion,
+    file_path: str,
+    lines: set[int] | None,
+    spans: Sequence[SymbolSpan],
+) -> list[str]:
+    """Graph ids of the symbols in *file_path* the plan changes.
+
+    Named symbols first: a full id, a bare name, or ``Class.method``. When none
+    name a symbol here, the innermost symbol enclosing the plan's lines, which
+    is how a line-range target (``extract_helper``) finds its function.
+    """
+    ids = {span[0] for span in spans}
+    found: set[str] = set()
+    for name in affected_symbols(suggestion):
+        candidates = (
+            (name,)
+            if "::" in name
+            else (f"{file_path}::{name}", f"{file_path}::{name.replace('.', '::')}")
+        )
+        found.update(candidate for candidate in candidates if candidate in ids)
+    if found or not lines:
+        return sorted(found)
+    first, last = min(lines), max(lines)
+    enclosing = [
+        (end - start, symbol)
+        for symbol, start, end in spans
+        if start <= first and last <= end and not symbol.endswith("::__module__")
+    ]
+    return [min(enclosing)[1]] if enclosing else []
+
+
+def _symbol_label(symbol_id: str) -> str:
+    return symbol_id.split("::", 1)[-1].replace("::", ".")
+
+
+def _line_span(lines: set[int]) -> str:
+    first, last = min(lines), max(lines)
+    return f"line {first}" if first == last else f"lines {first}-{last}"
+
+
+# Sort keys put a test with no call path behind every test with one: past the
+# deepest call hop, an import of the file, then nothing but a name.
+_IMPORT_ONLY = 2 * DEFAULT_CALL_DEPTH + 1
+_NO_PATH = 2 * DEFAULT_CALL_DEPTH + 2
+
+# The same few hundred test paths are classified once per plan they guard;
+# the classifier is the hot spot of a whole-repository hydration.
+_is_support = functools.lru_cache(maxsize=8192)(is_test_support_path)
+
+RankedTest = tuple[tuple[int, ...], str]
+
+
+# Test names are compared once per plan they guard, like the support check.
+_names_test_for = functools.lru_cache(maxsize=65536)(names_test_for)
+
+
+@dataclass(frozen=True, slots=True)
+class _Target:
+    """What a test's path is compared against: the file's name and directories."""
+
+    path: str
+    name: str
+    dirs: list[str]
+    siblings: tuple[str, ...]
+
+    @classmethod
+    def of(cls, file_path: str, evidence: ValidationEvidence) -> _Target:
+        directory = file_path.rsplit("/", 1)[0] if "/" in file_path else ""
+        return cls(
+            file_path,
+            file_path.rsplit("/", 1)[-1],
+            file_path.split("/")[:-1],
+            evidence.siblings.get(directory, ()),
+        )
+
+    def named(self, path: str) -> bool:
+        """A test named for the file (:func:`names_test_for`)."""
+        return _names_test_for(path, self.path, self.siblings)
+
+    def shared(self, path: str) -> list[str]:
+        test_dirs = set(path.split("/")[:-1])
+        return [segment for segment in self.dirs if segment in test_dirs]
+
+
+def _near_key(path: str, hits: set[int], named: bool, shared: list[str]) -> tuple[int, ...]:
+    """Measured coverage of the changed lines, then a test named for the file,
+    then one mirroring its directories. Graph distance only breaks ties after."""
+    return (
+        int(_is_support(path)),
+        0 if hits else 1,
+        -len(hits),
+        0 if named else 1,
+        -len(shared),
     )
-    commands: list[str] = []
-    if python_tests:
-        commands.append("pytest " + " ".join(python_tests))
-    if js_tests:
-        commands.append("npm test -- " + " ".join(js_tests))
-    if commands:
-        return commands
-    if any(path.endswith(".py") for path in files):
-        return ["pytest"]
-    if any(path.endswith((".ts", ".tsx", ".js", ".jsx")) for path in files):
-        return ["npm test", "npm run type-check"]
-    return ["npm run test"]
+
+
+def _rank_by_name(
+    file_path: str, labels: set[str], covered: Mapping[str, set[int]], evidence: ValidationEvidence
+) -> dict[str, RankedTest]:
+    """:func:`_rank_target_tests` without the graph evidence a rank-only pass skips."""
+    target = _Target.of(file_path, evidence)
+    out: dict[str, RankedTest] = {}
+    for label in labels:
+        path = label.split("::", 1)[0]
+        hits = covered.get(label) or set()
+        out[label] = (_near_key(path, hits, target.named(path), target.shared(path)), "")
+    return out
+
+
+def _test_reason(
+    *,
+    name: str,
+    lines: set[int] | None,
+    hits: set[int],
+    edited: bool,
+    nearest: tuple[int, int, str] | None,
+    named_import: str | None,
+    reach: ReachDistance | None,
+    imported: frozenset[str] | None,
+    named: bool,
+    shared: list[str],
+) -> str:
+    """The strongest single piece of evidence, in the order the key ranks it."""
+    if hits:
+        return f"covers {_line_span(hits)}" if lines is not None else f"covers {name}"
+    if edited:
+        return "edited by this plan"
+    if nearest is not None and nearest[0] == 1:
+        callers = -nearest[1]
+        suffix = f" from {callers} test functions" if callers > 1 else ""
+        return f"calls {_symbol_label(nearest[2])}{suffix}"
+    if named_import is not None:
+        return f"imports {_symbol_label(named_import)}"
+    if nearest is not None:
+        return f"reaches {_symbol_label(nearest[2])} in {nearest[0]} calls"
+    if reach is not None:
+        return f"calls into {name}" if reach.hops == 1 else f"reaches {name} in {reach.hops} calls"
+    if imported is not None:
+        return f"imports {name.rsplit('.', 1)[0]}"
+    if named:
+        return f"named for {name}"
+    if shared:
+        return f"shares {'/'.join(shared)}"
+    return f"reaches {name}"
+
+
+def _rank_target_tests(
+    file_path: str,
+    lines: set[int] | None,
+    labels: set[str],
+    covered: Mapping[str, set[int]],
+    reached: ReachedBy | None,
+    symbol_ids: Sequence[str],
+    evidence: ValidationEvidence,
+    *,
+    plan_has_symbols: bool,
+) -> dict[str, RankedTest]:
+    """Each test's sort key and reason for one target file.
+
+    Measured coverage of the changed lines first, then a test named for the
+    file, then directory overlap (:func:`_near_key`); within those, a test
+    naming the changed symbol (a direct call or an import of it), then fewer
+    call hops to it, then more of the test's functions at that distance. Test
+    support (a helper module) runs nothing on its own, so it goes last; a
+    ``conftest.py`` was already replaced by the tests under it
+    (:func:`_expand_scopes`).
+    """
+    target = _Target.of(file_path, evidence)
+    name = target.name
+    file_reach = reached.reach if reached is not None and reached.reach else {}
+    imports = evidence.imports.get(file_path, {})
+    out: dict[str, RankedTest] = {}
+    for label in labels:
+        path = label.split("::", 1)[0]
+        hits = covered.get(label) or set()
+        nearest = min(
+            (
+                (reach.hops, -reach.callers, symbol)
+                for symbol in symbol_ids
+                if (reach := evidence.symbol_reach.get(symbol, {}).get(path)) is not None
+            ),
+            default=None,
+        )
+        imported = imports.get(path)
+        named_import = next(
+            (
+                symbol
+                for symbol in symbol_ids
+                if _symbol_label(symbol).split(".", 1)[0] in (imported or ())
+            ),
+            None,
+        )
+        reach = file_reach.get(path)
+        # A test the plan itself edits (an importer a split rewrites) runs the
+        # change by definition.
+        edited = path == file_path
+        if edited:
+            distance, callers = 0, 0
+        elif nearest is not None:
+            distance, callers = nearest[0], -nearest[1]
+        elif reach is not None:
+            # A test that reaches the file but not the changed symbol ranks
+            # behind every test that reaches the symbol.
+            distance = reach.hops + (DEFAULT_CALL_DEPTH if plan_has_symbols else 0)
+            callers = reach.callers
+        else:
+            distance, callers = (_IMPORT_ONLY if imported is not None else _NO_PATH), 0
+        shared = target.shared(path)
+        named = target.named(path)
+        references = (
+            edited or named_import is not None or (nearest is not None and nearest[0] == 1)
+        )
+        key = (
+            *_near_key(path, hits, named, shared),
+            0 if references else 1,
+            distance,
+            -callers,
+        )
+        out[label] = (
+            key,
+            _test_reason(
+                name=name,
+                lines=lines,
+                hits=hits,
+                edited=edited,
+                nearest=nearest,
+                named_import=named_import,
+                reach=reach,
+                imported=imported,
+                named=named,
+                shared=shared,
+            ),
+        )
+    return out
+
+
+# Quoted only at one hop: per-test coverage confirmed 99% there, 82% at two, 59% at three.
+QUOTED_HOPS = 1
+
+
+def _nearest_function_tests(
+    ranges: Sequence[tuple[str, set[int] | None]],
+    symbols: Mapping[str, Sequence[str]],
+    evidence: ValidationEvidence,
+) -> list[tuple[MappedTest, str]] | None:
+    """The nearest test functions of the functions the plan changes, nearest first,
+    each with the function it runs. ``None`` unless every file the plan changes
+    names its functions and every one is mapped; ``[]`` when no test reaches any."""
+    picked: dict[str, tuple[MappedTest, str]] = {}
+    for path, _lines in ranges:
+        ids = symbols[path]
+        if not ids or any(symbol not in evidence.function_tests for symbol in ids):
+            return None
+        for symbol in ids:
+            _merge_nearest(picked, evidence.function_tests[symbol], symbol)
+    # Stable, so each function's own order holds among tests the same hops away.
+    return sorted(picked.values(), key=lambda pair: pair[0].hops)
+
+
+def _merge_nearest(
+    picked: dict[str, tuple[MappedTest, str]], tests: Sequence[MappedTest], symbol: str
+) -> None:
+    """Add *symbol*'s tests to *picked*, a test shared by two functions keeping its nearer."""
+    for test in tests:
+        held = picked.get(test.selector)
+        if held is None or test.hops < held[0].hops:
+            picked[test.selector] = (test, symbol)
+
+
+def _runs_reason(test: MappedTest, symbol: str) -> str:
+    label = _symbol_label(symbol)
+    return f"calls {label}" if test.hops == 1 else f"reaches {label} in {test.hops} calls"
+
+
+def _characterization_step(suggestion: RefactoringSuggestion, file_tests: int = 0) -> str:
+    """The step before an edit no test reaches: pin today's behaviour first.
+
+    *file_tests* counts the listed tests that reach the file but not the
+    changed function, so the step and the list state the same fact.
+    """
+    symbol = (suggestion.target_symbol or "").rsplit("::", 1)[-1]
+    if not symbol or not symbol.replace(".", "_").isidentifier():
+        symbol = suggestion.file_path.rsplit("/", 1)[-1]
+    if file_tests:
+        files = "its files" if len(affected_files(suggestion)) > 1 else "its file"
+        reach = f"{file_tests} reach {files}" if file_tests > 1 else f"1 reaches {files}"
+        return f"No test reaches `{symbol}` ({reach}); add a characterization test first."
+    return f"No test reaches `{symbol}`; add a characterization test before the edit."
+
+
+def _prerequisite(
+    suggestion: RefactoringSuggestion,
+    basis: ValidationBasis,
+    nearest: list[tuple[MappedTest, str]] | None,
+    file_tests: int,
+) -> str | None:
+    """The characterization step when no test reaches the change, also when
+    tests reach the file (*file_tests* of them) but none a function it changes."""
+    if nearest == []:
+        return _characterization_step(suggestion, file_tests)
+    return _characterization_step(suggestion) if basis == "unknown" else None
 
 
 def _line_ranges(suggestion: RefactoringSuggestion) -> dict[str, set[int] | None]:
@@ -341,16 +705,74 @@ def _line_ranges(suggestion: RefactoringSuggestion) -> dict[str, set[int] | None
     return ranges
 
 
-def _measured_labels(rows: list[dict[str, Any]], lines: set[int] | None) -> set[str]:
-    labels: set[str] = set()
+def _measured_hits(rows: list[dict[str, Any]], lines: set[int] | None) -> dict[str, set[int]]:
+    """Measured tests and the lines of the target each one ran."""
+    hits: dict[str, set[int]] = {}
     for row in rows:
         covered = set(row.get("covered_lines") or [])
-        if lines is not None and not lines.intersection(covered):
+        ran = covered if lines is None else lines & covered
+        if not ran:
             continue
         label = row.get("test_id") or row.get("test_file")
         if isinstance(label, str) and label:
-            labels.add(label)
-    return labels
+            hits.setdefault(label, set()).update(ran)
+    return hits
+
+
+def _measured_labels(rows: list[dict[str, Any]], lines: set[int] | None) -> set[str]:
+    return set(_measured_hits(rows, lines))
+
+
+def _hub_tests(
+    file_path: str, symbol_ids: Sequence[str], evidence: ValidationEvidence
+) -> set[str] | None:
+    """For a hub file, the tests that may exercise the symbols the plan changes.
+
+    Most of the suite reaches a hub through some other symbol of it, so its
+    file-level reach says nothing about this change. A test counts when it
+    reaches a changed symbol, imports one by name, or imports the module whole
+    (``import utils``, ``import * as u``), whose calls the graph may not have
+    resolved; only a test proven to import other names is left out. ``None``
+    keeps the file's reach: it is no hub, or the plan names no symbol in it.
+    """
+    if file_path not in evidence.hubs or not symbol_ids:
+        return None
+    module = file_path.rsplit("/", 1)[-1].split(".", 1)[0]
+    names = {_symbol_label(symbol).split(".", 1)[0] for symbol in symbol_ids} | {module, "*"}
+    imported = evidence.imports.get(file_path, {})
+    return {
+        test for symbol in symbol_ids for test in evidence.symbol_reach.get(symbol, {})
+    } | {test for test, imports in imported.items() if not imports or imports & names}
+
+
+def _drop_hub_only(file_path: str, labels: set[str], keep: set[str]) -> set[str]:
+    """A hub target's tests: :func:`_hub_tests`, which may name an importer the
+    file walk never reached, and any of *labels* with the file's exact paired
+    name. A qualified name (``test_utils_extra.py``) earns no exemption."""
+    paired = paired_test_names(file_path)
+    return set(keep) | {
+        label for label in labels if label.split("::", 1)[0].rsplit("/", 1)[-1] in paired
+    }
+
+
+def _inferred_target(
+    file_path: str, reached: ReachedBy | None, keep: set[str] | None
+) -> tuple[set[str], ValidationBasis, ValidationVia | None, int, bool]:
+    """Labels, basis, via, total and identity completeness from the inferred map."""
+    if reached is None:
+        return set(), "unknown", None, 0, True
+    labels = set(reached.all_tests or reached.tests)
+    basis: ValidationBasis = "inferred" if reached.total else "unknown"
+    via = reached.via if reached.total else None
+    total = reached.total
+    identities_complete = reached.all_tests is not None or total == len(labels)
+    if keep is not None:
+        labels = _drop_hub_only(file_path, labels, keep)
+        if identities_complete:
+            # The whole list was filtered, so what is left is the answer.
+            basis, via = ("inferred", via) if labels else ("unknown", None)
+            total = len(labels)
+    return labels, basis, via, total, identities_complete
 
 
 def _validation_target(
@@ -359,8 +781,12 @@ def _validation_target(
     measured: Mapping[str, list[dict[str, Any]]],
     inferred: Mapping[str, ReachedBy],
     cap: int,
-) -> tuple[ValidationTarget, set[str], bool]:
-    labels = _measured_labels(measured.get(file_path, []), lines)
+    rank: Callable[[set[str], Mapping[str, set[int]], ReachedBy | None], dict[str, RankedTest]],
+    keep: set[str] | None = None,
+) -> tuple[ValidationTarget, set[str], bool, dict[str, RankedTest]]:
+    covered = _measured_hits(measured.get(file_path, []), lines)
+    labels = set(covered)
+    reached = None
     if labels:
         basis: ValidationBasis = "measured"
         via: ValidationVia | None = "coverage"
@@ -368,14 +794,11 @@ def _validation_target(
         identities_complete = True
     else:
         reached = inferred.get(file_path)
-        labels = set(reached.all_tests or reached.tests) if reached is not None else set()
-        basis = "inferred" if reached is not None and reached.total else "unknown"
-        via = reached.via if reached is not None and reached.total else None
-        total = reached.total if reached is not None else 0
-        identities_complete = (
-            reached is None or reached.all_tests is not None or total == len(labels)
+        labels, basis, via, total, identities_complete = _inferred_target(
+            file_path, reached, keep
         )
-    ordered = sorted(labels)
+    ranked = rank(labels, covered, reached)
+    ordered = sorted(labels, key=lambda label: (ranked[label][0], label))
     return (
         ValidationTarget(
             file_path=file_path,
@@ -383,10 +806,11 @@ def _validation_target(
             via=via,
             total=total,
             tests=ordered[:cap],
-            truncated=total > cap,
+            truncated=total > cap or not identities_complete,
         ),
         labels,
         identities_complete,
+        ranked,
     )
 
 
@@ -396,17 +820,63 @@ def build_validation_plan(
     inferred: Mapping[str, ReachedBy],
     *,
     test_limit: int = DEFAULT_TEST_LIMIT,
+    evidence: ValidationEvidence | None = None,
+    order_tests: bool = True,
 ) -> ValidationPlan:
-    """Resolve target evidence in strict measured/call/import precedence."""
+    """Resolve target evidence in strict measured/call/import precedence.
+
+    Tests are ordered by how directly they exercise what the plan changes
+    (:func:`_rank_target_tests`). A test reaching several of the plan's files
+    keeps its best evidence, and ties go to the one reaching more of them.
+    """
     cap = max(0, test_limit)
+    facts = evidence or ValidationEvidence()
+    ranges = sorted(_line_ranges(suggestion).items())
+    symbols = {
+        path: target_symbol_ids(suggestion, path, lines, facts.symbols.get(path, ()))
+        for path, lines in ranges
+    }
+    plan_has_symbols = any(symbols.values())
     target_rows: list[ValidationTarget] = []
-    union: set[str] = set()
+    best: dict[str, RankedTest] = {}
+    by_file: dict[str, set[str]] = {}
     identities_complete = True
-    for file_path, lines in sorted(_line_ranges(suggestion).items()):
-        target, labels, target_complete = _validation_target(
-            file_path, lines, measured, inferred, cap
+    for file_path, lines in ranges:
+
+        def rank(
+            labels: set[str],
+            covered: Mapping[str, set[int]],
+            reached: ReachedBy | None,
+            path: str = file_path,
+            span: set[int] | None = lines,
+        ) -> dict[str, RankedTest]:
+            if not order_tests:
+                # A rank-only pass reads no graph evidence; name and directory still order.
+                return _rank_by_name(path, labels, covered, facts)
+            return _rank_target_tests(
+                path,
+                span,
+                labels,
+                covered,
+                reached,
+                symbols[path],
+                facts,
+                plan_has_symbols=plan_has_symbols,
+            )
+
+        target, labels, target_complete, ranked = _validation_target(
+            file_path,
+            lines,
+            measured,
+            inferred,
+            cap,
+            rank,
+            _hub_tests(file_path, symbols[file_path], facts),
         )
-        union.update(labels)
+        by_file[file_path] = labels
+        for test, scored in ranked.items():
+            if test not in best or scored[0] < best[test][0]:
+                best[test] = scored
         identities_complete = identities_complete and target_complete
         target_rows.append(target)
 
@@ -419,7 +889,8 @@ def build_validation_plan(
     aggregate_via: ValidationVia | None = (
         None if not vias else next(iter(vias)) if len(vias) == 1 else "mixed"
     )
-    ordered_tests = sorted(union)
+    reach_order = {test: index for index, test in enumerate(rank_tests_by_reach(by_file))}
+    ordered_tests = sorted(best, key=lambda test: (best[test][0], reach_order[test]))
     aggregate_total = (
         len(ordered_tests)
         if identities_complete
@@ -427,18 +898,165 @@ def build_validation_plan(
         if len(target_rows) == 1
         else sum(target.total for target in target_rows)
     )
+    # Measured coverage outranks the graph; otherwise the plan quotes the test
+    # functions that call the functions it changes, as runnable selectors.
+    nearest = (
+        _nearest_function_tests(ranges, symbols, facts) if aggregate_basis != "measured" else None
+    )
+    direct = [pair for pair in nearest or () if pair[0].hops <= QUOTED_HOPS]
+    if direct:
+        aggregate_basis, aggregate_via, aggregate_total = "inferred", "call-graph", len(direct)
+        shown = [test.selector for test, _ in direct[:cap]]
+        reasons = {test.selector: _runs_reason(test, symbol) for test, symbol in direct[:cap]}
+        # Each quoted test's file, whole: shorter than naming every function,
+        # and it runs at least the tests the plan quotes.
+        commands = commands_for_tests(
+            sorted({test.split("::", 1)[0] for test in shown}),
+            runs=facts.test_runs,
+        )
+    else:
+        shown = ordered_tests[:cap]
+        reasons = {test: best[test][1] for test in shown}
+        commands = commands_for_tests(
+            shown, total=aggregate_total, runs=facts.test_runs
+        )
     files = affected_files(suggestion)
     return ValidationPlan(
         basis=aggregate_basis,
         via=aggregate_via,
         total=aggregate_total,
-        tests=ordered_tests[:cap],
-        truncated=aggregate_total > len(ordered_tests[:cap]),
+        tests=shown,
+        truncated=aggregate_total > len(shown),
         affected_files=files,
         affected_symbols=affected_symbols(suggestion),
-        commands=_commands(ordered_tests[:cap], files, total=aggregate_total),
+        commands=commands,
         targets=target_rows,
+        reasons=reasons if order_tests else {},
+        test_runs=plan_runs(shown, facts.test_runs),
+        prerequisite=_prerequisite(
+            suggestion,
+            aggregate_basis,
+            nearest,
+            # Summed per file, a test reaching two files counts twice: no count then.
+            aggregate_total if identities_complete or len(target_rows) == 1 else 0,
+        ),
     )
+
+
+def with_step_verify(
+    plan: ValidationPlan,
+    suggestion: RefactoringSuggestion,
+    measured: Mapping[str, list[dict[str, Any]]],
+    inferred: Mapping[str, ReachedBy],
+    *,
+    test_limit: int = DEFAULT_TEST_LIMIT,
+    evidence: ValidationEvidence | None = None,
+) -> ValidationPlan:
+    """*plan* with the ``verify`` of each step of a multi-step plan that differs.
+
+    Each step is validated as a plan of its own file and span, over the same
+    batch facts, so it picks its tests the way the plan does. Most steps get
+    the plan's own answer, which detail already shows once, so only the rest
+    are kept.
+    """
+    steps = _dict_list((suggestion.plan or {}).get("steps"))
+    if len(steps) < 2:
+        return plan
+    facts = evidence or ValidationEvidence()
+    own = verify_of(plan)
+    verify: list[dict[str, Any] | None] = []
+    for step in steps:
+        scoped = _step_scope(suggestion, step, facts)
+        check = (
+            own
+            if scoped is None
+            else verify_of(
+                build_validation_plan(
+                    scoped, measured, inferred, test_limit=test_limit, evidence=facts
+                )
+            )
+        )
+        verify.append(None if check == own else check)
+    if not any(verify):
+        return plan
+    return dataclasses.replace(plan, step_verify=verify)
+
+
+_COVERAGE: dict[str, VerifyCoverage] = {
+    "measured": "measured",
+    "inferred": "inferred",
+    # Some files measured, some only inferred: not every line is proven run.
+    "mixed": "inferred",
+    "unknown": "none",
+}
+
+
+_VERIFY_KEYS = frozenset({"commands", "tests", "coverage"})
+
+
+def verify_of(validation: ValidationPlan) -> dict[str, Any]:
+    """*validation* in the per-step ``verify`` shape."""
+    return {
+        "commands": validation.commands,
+        "tests": validation.tests,
+        "coverage": _COVERAGE[validation.basis],
+    }
+
+
+def _step_scope(
+    suggestion: RefactoringSuggestion, step: Mapping[str, Any], facts: ValidationEvidence
+) -> RefactoringSuggestion | None:
+    """*suggestion* narrowed to the one file and span *step* edits.
+
+    A step with no line (an edit to a whole symbol) takes that symbol's span
+    from the graph, else the whole file. ``None`` when the step names no file.
+    """
+    path = step.get("file_path")
+    if not isinstance(path, str) or not path:
+        return None
+    line = step.get("line") if isinstance(step.get("line"), int) else None
+    symbol = step.get("symbol") if isinstance(step.get("symbol"), str) else ""
+    scoped = dataclasses.replace(
+        suggestion,
+        file_path=path,
+        target_symbol=symbol,
+        line_start=line,
+        line_end=line,
+        # No steps, locations or blast files: the step's own file and lines only.
+        plan={},
+        blast_radius={},
+        validation={},
+    )
+    if line is None and symbol:
+        span = _symbol_span(scoped, facts)
+        if span is not None:
+            scoped.line_start, scoped.line_end = span
+    return scoped
+
+
+def _symbol_span(
+    scoped: RefactoringSuggestion, facts: ValidationEvidence
+) -> tuple[int, int] | None:
+    """The graph span of the symbol *scoped* names in its file, if the graph has it."""
+    spans = facts.symbols.get(scoped.file_path, ())
+    named = set(target_symbol_ids(scoped, scoped.file_path, None, spans))
+    return next(((start, end) for symbol_id, start, end in spans if symbol_id in named), None)
+
+
+def steps_with_verify(steps: Sequence[Any], validation: ValidationPlan) -> list[dict[str, Any]]:
+    """*steps*, those whose checks differ from the plan's carrying ``verify``.
+
+    A step without one is checked by the plan-level validation: every step of
+    a single-step plan, and of a row stored before steps had their own.
+    """
+    rows = _dict_list(list(steps))
+    verify = validation.step_verify
+    if len(verify) != len(rows):
+        return rows
+    return [
+        {**step, "verify": check} if check else step
+        for step, check in zip(rows, verify, strict=True)
+    ]
 
 
 @dataclass(frozen=True, slots=True)
@@ -453,6 +1071,12 @@ class Recommendation:
     file_nloc: int
     file_weighted_deficit: int
     validation: ValidationPlan
+    # What other layers say about the target (:mod:`.annotations`), stored at
+    # finalize and served on plan detail only; ``None`` when never checked.
+    annotations: PlanAnnotations | None = field(default=None, repr=False, compare=False)
+    # Set when the plan leaves a function at the break-up bar
+    # (:func:`leaves_above_bar`): it ranks after the plans that do not.
+    leaves_above_bar: str | None = None
 
     @property
     def id(self) -> str:
@@ -467,7 +1091,8 @@ class Recommendation:
             "target_symbol": suggestion.target_symbol,
             "line_start": suggestion.line_start,
             "line_end": suggestion.line_end,
-            "plan": suggestion.plan or {},
+            # Rendered texts stay on detail (:meth:`detail_dict`).
+            "plan": list_plan(suggestion.plan or {}),
             "evidence": suggestion.evidence or {},
             "impact_delta": round(float(suggestion.impact_delta or 0.0), 3),
             "effort_bucket": suggestion.effort_bucket,
@@ -483,7 +1108,117 @@ class Recommendation:
             "file_nloc": self.file_nloc,
             "file_weighted_deficit": self.file_weighted_deficit,
             "validation": self.validation.as_dict(),
+            **({"leaves_above_bar": self.leaves_above_bar} if self.leaves_above_bar else {}),
         }
+
+    def detail_dict(self) -> dict[str, Any]:
+        """:meth:`as_dict` for one plan read alone: the whole stored plan,
+        rendered texts included, a step whose checks differ from the plan's
+        carrying its ``verify``, and the plan's ``governed_by``, ``risks`` and
+        co-change partners."""
+        payload = self.as_dict()
+        payload["plan"] = self.suggestion.plan or {}
+        steps = payload["plan"].get("steps")
+        if isinstance(steps, list) and self.validation.step_verify:
+            payload["plan"] = {
+                **payload["plan"],
+                "steps": steps_with_verify(steps, self.validation),
+            }
+        notes = self.annotations
+        if notes is None:
+            # Never checked (an older or unfinalized row): absent, not "none found".
+            return payload
+        payload["governed_by"] = list(notes.governed_by)
+        payload["risks"] = [risk.as_dict() for risk in notes.risks]
+        if notes.co_change_partners:
+            payload["blast_radius"] = {
+                **payload["blast_radius"],
+                "co_change_partners": partner_rows(notes.co_change_partners),
+            }
+        return payload
+
+    def rank_facts(self) -> dict[str, Any]:
+        """What ranking added to the stored plan, persisted once at finalize."""
+        return {
+            "benefit": self.benefit,
+            "leverage": self.leverage,
+            "cost": self.cost,
+            "risk": self.risk,
+            "rank_score": self.rank_score,
+            "dependents": self.dependents,
+            "file_nloc": self.file_nloc,
+            "file_weighted_deficit": self.file_weighted_deficit,
+            # Enriched with the caller rollup, which the stored column lacks.
+            "blast_radius": self.suggestion.blast_radius or {},
+            "validation": self.validation.as_dict(),
+            **({"step_verify": self.validation.step_verify} if self.validation.step_verify else {}),
+            **(
+                {"annotations": self.annotations.as_dict()}
+                if self.annotations is not None
+                else {}
+            ),
+            **({"leaves_above_bar": self.leaves_above_bar} if self.leaves_above_bar else {}),
+        }
+
+
+_RANK_FACTS = (
+    "benefit",
+    "leverage",
+    "cost",
+    "risk",
+    "rank_score",
+    "dependents",
+    "file_nloc",
+    "file_weighted_deficit",
+)
+
+
+def stored_recommendation(row: Any) -> Recommendation | None:
+    """The recommendation finalize persisted on *row*, or ``None`` when it has
+    none or an incomplete one, so the caller rebuilds it instead."""
+    from .serving import validation_from_profile
+
+    facts = _loads_dict(_attr(row, "rank_json", None))
+    if not isinstance(facts.get("validation"), dict) or any(k not in facts for k in _RANK_FACTS):
+        return None
+    try:
+        validation = validation_from_profile(facts["validation"])
+    except TypeError:
+        return None
+    stored_steps = facts.get("step_verify")
+    validation = dataclasses.replace(
+        validation,
+        step_verify=[
+            check if isinstance(check, dict) and check.keys() >= _VERIFY_KEYS else None
+            for check in (stored_steps if isinstance(stored_steps, list) else [])
+        ],
+    )
+    suggestion = rehydrate_suggestion(row)
+    suggestion.blast_radius = dict(facts.get("blast_radius") or {})
+    suggestion.validation = validation.as_dict()
+    return Recommendation(
+        suggestion=suggestion,
+        validation=validation,
+        annotations=PlanAnnotations.from_dict(facts.get("annotations")),
+        leaves_above_bar=facts.get("leaves_above_bar"),
+        **{name: facts[name] for name in _RANK_FACTS},
+    )
+
+
+#: The plan list's filters, read in SQL on a ranked store
+#: (``persistence.sql.rule_predicate``) and in memory on the live path
+#: (``queue_rules.keep``), so the two cannot disagree.
+PLAN_FILTERS = (
+    FilterRule("refactoring_types", "refactoring_type", "in", "set"),
+    FilterRule("file_path", "file_path", "eq", "set"),
+)
+
+
+def plan_types(refactoring_type: str | None) -> tuple[str, ...] | None:
+    """The plan types a list's ``refactoring_type`` names; ``structural`` is a lens."""
+    if refactoring_type == "structural":
+        return tuple(sorted(STRUCTURAL_TYPES))
+    return (refactoring_type,) if refactoring_type else None
 
 
 def _priority_components(
@@ -503,12 +1238,13 @@ def _priority_components(
     cost = EFFORT_COST.get(suggestion.effort_bucket, 3.0)
     provenance = str((suggestion.evidence or {}).get("provenance") or "")
     weak_graph = 1.0 if provenance in _WEAK_PROVENANCE else 0.0
-    validation_risk = {
-        "measured": 0.0,
-        "mixed": 0.5,
-        "inferred": 0.75,
-        "unknown": 1.5,
-    }[validation.basis]
+    # A test named for the file, with no edge proving it runs it, is weaker
+    # evidence than a graph walk; price it between inferred and unknown.
+    validation_risk = (
+        1.0
+        if validation.via == "name-match"
+        else {"measured": 0.0, "mixed": 0.5, "inferred": 0.75, "unknown": 1.5}[validation.basis]
+    )
     risk = surface_confidence_risk(surface, suggestion.confidence) + weak_graph + validation_risk
     # Benefit multiplies rather than offsets: leverage (the host file's
     # deficit and dependents) scales a real gain, and scales nothing when
@@ -531,11 +1267,17 @@ def build_recommendations(
     metric_by_path: Mapping[str, Any] | None = None,
     centrality: Mapping[str, float] | None = None,
     validations: Mapping[int, ValidationPlan] | None = None,
+    findings: Sequence[Any] | None = None,
 ) -> list[Recommendation]:
-    """Pure recommendation construction used by every surface and tests."""
+    """Pure recommendation construction used by every surface and tests.
+
+    *findings* (the repository's health findings) give each Extract Method
+    target its measured size, which :func:`leaves_above_bar` reads; without
+    them no plan is marked."""
     metrics = metric_by_path or {}
     centrality = centrality or {}
     validations = validations or {}
+    findings_by_function = by_function(findings or ())
     out: list[Recommendation] = []
     for index, row in enumerate(rows):
         suggestion = rehydrate_suggestion(row)
@@ -566,15 +1308,64 @@ def build_recommendations(
                 file_nloc=nloc,
                 file_weighted_deficit=deficit,
                 validation=validation,
+                leaves_above_bar=leaves_above_bar(
+                    suggestion,
+                    findings_by_function.get((suggestion.file_path, suggestion.target_symbol), ()),
+                ),
             )
         )
     return canonical_order(out)
 
 
+def leaves_above_bar(suggestion: RefactoringSuggestion, findings: Sequence[Any]) -> str | None:
+    """Why an Extract Method plan, applied as written, still leaves a function
+    at the break-up bar (:func:`..worth.above_bar_after`), or ``None``.
+
+    *findings* are the file's or the target's; the size findings on the
+    target give its measured CCN and lines before the plan."""
+    if suggestion.refactoring_type != "extract_method":
+        return None
+    named = [
+        f
+        for f in findings
+        if row_field(f, "biomarker_type") in SIZE_MARKERS
+        and row_field(f, "function_name") == suggestion.target_symbol
+    ]
+    own = _on_target(suggestion, named)
+    after = worst_after(
+        suggestion.evidence or {}, suggestion.plan or {}, suggestion.target_symbol, measure(own)
+    )
+    return above_bar_after(after)
+
+
+def _on_target(suggestion: RefactoringSuggestion, named: Sequence[Any]) -> list[Any]:
+    """The same-named findings on the target: those whose lines overlap it,
+    and those without lines unless a finding elsewhere in the file shows a
+    second function of that name. A plan without lines keeps them all."""
+    first, last = suggestion.line_start, suggestion.line_end
+    if not (first and last):
+        return list(named)
+    inside, unlined, elsewhere = [], [], False
+    for f in named:
+        start = row_field(f, "line_start")
+        if not start:
+            unlined.append(f)
+        elif start <= last and (row_field(f, "line_end") or start) >= first:
+            inside.append(f)
+        else:
+            elsewhere = True
+    return inside if elsewhere else inside + unlined
+
+
 def canonical_order(recommendations: Sequence[Recommendation]) -> list[Recommendation]:
+    """Rank order, production files first: a plan on a build script, a tool or
+    copied code comes after them, and a test plan last. Within each, a plan
+    that leaves a function at the break-up bar ranks after those that do not."""
     return sorted(
         recommendations,
         key=lambda recommendation: (
+            ship_rank(recommendation.suggestion.file_path),
+            bool(recommendation.leaves_above_bar),
             -recommendation.rank_score,
             recommendation.suggestion.refactoring_type,
             recommendation.suggestion.file_path,
@@ -604,65 +1395,59 @@ def apply_view(
     return spread
 
 
-async def hydrate_recommendations(
-    session: AsyncSession,
-    repository_id: str,
-    rows: Sequence[Any],
-    *,
-    metric_rows: Sequence[Any] | None = None,
-    view: RecommendationView = "canonical",
-    test_limit: int = DEFAULT_TEST_LIMIT,
-) -> list[Recommendation]:
-    """Hydrate, enrich, validate, rank, and serialize-ready all *rows*.
+def listed_steps(steps: Sequence[Mapping[str, Any]], start: int, stop: int) -> list[dict[str, Any]]:
+    """Steps ``[start, stop)`` of one opportunity as the plan list shows them.
 
-    Query shape is constant in plan/test count: health metrics and graph metrics
-    are bulk reads, measured coverage is one ``IN`` query, and inferred walks
-    use their existing bounded level queries over the complete unanswered set.
+    A step whose ``relocated_by`` is a ``split_file`` step works on code that
+    split moves, so the split stands for it: the split's row lists its plan id
+    as ``relocates`` and it gets no row of its own. Listed one by one, a single
+    file filled the top of the list. Every other step keeps its row.
     """
-    from repowise.core.persistence import crud
-    from repowise.core.persistence.crud.analysis.coverage_map import tests_covering_files
-
-    if not rows:
-        return []
-    suggestions = [rehydrate_suggestion(row) for row in rows]
-    metrics = (
-        list(metric_rows)
-        if metric_rows is not None
-        else await crud.get_health_metrics(session, repository_id)
-    )
-    graph_metrics = await crud.get_graph_metrics(session, repository_id)
-    centrality = {
-        node_id: float(metric.get("in_degree") or 0.0) for node_id, metric in graph_metrics.items()
+    splits = {
+        str(step.get("plan_id"))
+        for step in steps
+        if step.get("refactoring_type") == "split_file"
     }
-    target_files = sorted(
-        {path for suggestion in suggestions for path in affected_files(suggestion)}
-    )
-    measured = await tests_covering_files(session, repository_id, set(target_files))
+    folded: dict[str, list[str]] = {}
+    for step in steps:
+        if step.get("relocated_by") in splits:
+            folded.setdefault(str(step["relocated_by"]), []).append(str(step.get("plan_id")))
+    rows: list[dict[str, Any]] = []
+    for step in steps[start:stop]:
+        if step.get("relocated_by") in splits:
+            continue
+        relocates = folded.get(str(step.get("plan_id")))
+        rows.append({**step, "relocates": relocates} if relocates else dict(step))
+    return rows
 
-    # A measured row only answers a target when it intersects the plan's line
-    # range (if one exists).  Seed inference once with every file that remains
-    # unanswered for at least one plan.
-    unanswered: set[str] = set()
-    for suggestion in suggestions:
-        for file_path, lines in _line_ranges(suggestion).items():
-            if not _measured_labels(measured.get(file_path, []), lines):
-                unanswered.add(file_path)
-    inferred = (
-        await tests_reaching_by_tier(session, repository_id, sorted(unanswered))
-        if unanswered
-        else {}
+
+def _expand_scopes(path: str, reached: ReachedBy, expanded: list[str]) -> ReachedBy:
+    """*reached* with a conftest or test package it stopped at replaced by *expanded*.
+
+    *expanded* is :func:`~repowise.core.analysis.test_collection.narrow_scopes`'
+    answer: a conftest reached only through its imports stands for the tests
+    the selection narrows it to, any other scope for the tests under it.
+
+    A validation command must name tests a runner collects; ``pytest
+    tests/conftest.py`` runs nothing. A scope with no runnable test under it
+    drops out, so a target reached only through one can end up unknown.
+
+    A root conftest stands for every test in the repository, so the expansion
+    is ranked nearest-first and capped like the walk's own list. ``all_tests``
+    is cleared rather than left uncapped: plan ranking then scores at most the
+    cap per target, and ``total`` keeps the true count, so a capped target
+    reads as incomplete instead of as the whole answer.
+    """
+    found = reached.all_tests or tuple(reached.tests)
+    if tuple(expanded) == tuple(found):
+        return reached
+    ranked = rank_reaching(path, expanded, reach=reached.reach)
+    return dataclasses.replace(
+        reached,
+        tests=ranked[:MAX_TESTS_PER_TARGET],
+        total=len(ranked),
+        all_tests=None,
     )
-    validations = {
-        index: build_validation_plan(suggestion, measured, inferred, test_limit=test_limit)
-        for index, suggestion in enumerate(suggestions)
-    }
-    recommendations = build_recommendations(
-        suggestions,
-        metric_by_path={metric.file_path: metric for metric in metrics},
-        centrality=centrality,
-        validations=validations,
-    )
-    return apply_view(recommendations, view)
 
 
 def serialize_recommendations(
@@ -675,10 +1460,13 @@ __all__ = [
     "CONFIDENCE_RISK",
     "DEFAULT_TEST_LIMIT",
     "EFFORT_COST",
+    "PLAN_FILTERS",
     "Recommendation",
     "RecommendationView",
+    "ValidationEvidence",
     "ValidationPlan",
     "ValidationTarget",
+    "VerifyCoverage",
     "affected_files",
     "affected_symbols",
     "apply_view",
@@ -688,9 +1476,17 @@ __all__ = [
     "canonical_order",
     "detector_native_benefit",
     "enrich_blast_radius",
-    "hydrate_recommendations",
+    "hub_files",
+    "leaves_above_bar",
+    "listed_steps",
+    "plan_types",
     "priority_score",
     "rehydrate_suggestion",
     "serialize_recommendations",
+    "steps_with_verify",
+    "stored_recommendation",
     "surface_confidence_risk",
+    "target_symbol_ids",
+    "verify_of",
+    "with_step_verify",
 ]

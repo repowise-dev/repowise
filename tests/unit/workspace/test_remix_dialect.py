@@ -27,10 +27,10 @@ from repowise.core.ingestion.framework_routes import (
 from repowise.core.ingestion.models import FileInfo
 from repowise.core.ingestion.parser import ASTParser
 from repowise.core.ingestion.resolvers.context import ResolverContext
+from repowise.core.workspace.extractors.http import HttpExtractor
 from repowise.core.workspace.extractors.http.express import ExpressDialect
 from repowise.core.workspace.extractors.http.next_app import NextAppDialect
 from repowise.core.workspace.extractors.http.remix import RemixDialect
-from repowise.core.workspace.extractors.http_extractor import HttpExtractor
 
 NOTE_ROUTE_TSX = """\
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
@@ -253,11 +253,10 @@ class TestRemixRefusals:
         )
         assert _providers(tmp_path) == {}
 
-    def test_the_root_route_is_not_a_contract(self, tmp_path: Path) -> None:
-        # A stated ceiling: a path that normalises to bare `/` carries nothing
-        # to match on, and the shared builder drops it for every framework.
+    def test_the_root_route_is_a_contract(self, tmp_path: Path) -> None:
+        # The index route serves `/`, which a gateway or a resolved host can reach.
         _write(tmp_path, "app/routes/_index.tsx", HEALTHCHECK_TSX)
-        assert _providers(tmp_path) == {}
+        assert set(_providers(tmp_path)) == {"http::GET::/"}
 
 
 # ---------------------------------------------------------------------------

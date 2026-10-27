@@ -40,16 +40,22 @@ function resolveToken(): string | null {
   return token ?? null;
 }
 
-function buildHeaders(extra?: Record<string, string>): Headers {
-  const headers = new Headers({
+// A plain object rather than `Headers`, so requests also work in runtimes
+// that have no `Headers` global (see createAdapterFetch).
+function requestHeaders(extra?: Record<string, string>): Record<string, string> {
+  const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...extra,
-  });
+  };
   const token = resolveToken();
   if (token) {
-    headers.set("Authorization", `Bearer ${token}`);
+    headers["Authorization"] = `Bearer ${token}`;
   }
   return headers;
+}
+
+function buildHeaders(extra?: Record<string, string>): Headers {
+  return new Headers(requestHeaders(extra));
 }
 
 export class ApiClientError extends Error {
@@ -99,6 +105,71 @@ export function doFetch(url: string, init: RequestInit): Promise<Response> {
   return (config.fetch ?? fetch)(url, init);
 }
 
+/** Request a bare HTTP primitive accepts: plain-object headers, string body. */
+export interface MinimalRequestInit {
+  method?: string;
+  headers?: Record<string, string>;
+  body?: string;
+  signal?: AbortSignal;
+}
+
+/** Response a bare HTTP primitive returns: plain-object headers, text body. */
+export interface MinimalResponse {
+  status: number;
+  ok: boolean;
+  headers: Record<string, string>;
+  text: string;
+}
+
+export type MinimalFetch = (url: string, init: MinimalRequestInit) => Promise<MinimalResponse>;
+
+function headersToRecord(headers: HeadersInit | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!headers) return out;
+  if (Array.isArray(headers)) {
+    for (const [name, value] of headers) out[name] = value;
+  } else if (typeof (headers as Headers).forEach === "function") {
+    (headers as Headers).forEach((value, name) => {
+      out[name] = value;
+    });
+  } else {
+    Object.assign(out, headers);
+  }
+  return out;
+}
+
+/**
+ * Wraps a minimal HTTP primitive as a `fetch` for `configureApiClient`. Pure:
+ * it never constructs `Headers` or `Response`, so it runs where those globals
+ * do not exist. The returned object carries what this client reads (`ok`,
+ * `status`, `statusText`, `json()`, `text()`). The primitive reports no
+ * status text, so `statusText` is `HTTP <status>`, which is what an error
+ * with a non-JSON body shows as its detail.
+ */
+export function createAdapterFetch(minimal: MinimalFetch): typeof fetch {
+  const adapted = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url =
+      typeof input === "string" ? input : "href" in input ? input.href : input.url;
+    const body = init?.body;
+    if (body != null && typeof body !== "string") {
+      throw new TypeError("createAdapterFetch only sends string bodies");
+    }
+    const request: MinimalRequestInit = { headers: headersToRecord(init?.headers) };
+    if (init?.method) request.method = init.method;
+    if (body != null) request.body = body;
+    if (init?.signal) request.signal = init.signal;
+    const res = await minimal(url, request);
+    return {
+      ok: res.ok,
+      status: res.status,
+      statusText: `HTTP ${res.status}`,
+      json: async () => JSON.parse(res.text) as unknown,
+      text: async () => res.text,
+    } as unknown as Response;
+  };
+  return adapted as typeof fetch;
+}
+
 export async function apiGet<T>(
   path: string,
   params?: Record<string, string | number | boolean | undefined>,
@@ -114,7 +185,7 @@ export async function apiGet<T>(
   }
   const res = await doFetch(url.toString(), {
     method: "GET",
-    headers: buildHeaders(),
+    headers: requestHeaders(),
     ...fetchOptions,
   });
   return handleResponse<T>(res);
@@ -136,7 +207,7 @@ export async function apiPost<T>(
   }
   const res = await doFetch(url.toString(), {
     method: "POST",
-    headers: buildHeaders(),
+    headers: requestHeaders(),
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     ...fetchOptions,
   });
@@ -151,7 +222,7 @@ export async function apiPut<T>(
   const url = `${BASE_URL}${path}`;
   const res = await doFetch(url, {
     method: "PUT",
-    headers: buildHeaders(),
+    headers: requestHeaders(),
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     ...fetchOptions,
   });
@@ -166,7 +237,7 @@ export async function apiPatch<T>(
   const url = `${BASE_URL}${path}`;
   const res = await doFetch(url, {
     method: "PATCH",
-    headers: buildHeaders(),
+    headers: requestHeaders(),
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     ...fetchOptions,
   });
@@ -180,7 +251,7 @@ export async function apiDelete<T>(
   const url = `${BASE_URL}${path}`;
   const res = await doFetch(url, {
     method: "DELETE",
-    headers: buildHeaders(),
+    headers: requestHeaders(),
     ...fetchOptions,
   });
   return handleResponse<T>(res);

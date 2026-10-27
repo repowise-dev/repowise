@@ -48,7 +48,7 @@ SYMBOL_HIT = {
     "symbol_id": "packages/cli/src/repowise/cli/output.py::resolve_console_width",
     "name": "resolve_console_width",
     "kind": "function",
-    "file": "packages/cli/src/repowise/cli/output.py",
+    "path": "packages/cli/src/repowise/cli/output.py",
     "start_line": 44,
     "end_line": 72,
     "signature": "def resolve_console_width(stream) -> int | None",
@@ -62,7 +62,7 @@ FILE_HIT = {
     "type": "file",
     "page_id": "file:packages/cli/src/repowise/cli/helpers.py",
     "title": "File: packages/cli/src/repowise/cli/helpers.py",
-    "file": "packages/cli/src/repowise/cli/helpers.py",
+    "path": "packages/cli/src/repowise/cli/helpers.py",
     "score": 140.0,
     "next": "get_context",
 }
@@ -144,7 +144,7 @@ RISK_PAYLOAD = {
                                "top_symbols": {"_prune_stale_file_rows": 9,
                                                "mark_tombstone_pages": 4}},
             "health_score": 3.2,
-            "coverage_pct": 61.0,
+            "line_coverage_pct": 61.0,
             "top_biomarkers": [
                 {"biomarker_type": "nested_complexity", "severity": "high",
                  "function_name": "persist_analysis", "impact": 0.71},
@@ -157,7 +157,7 @@ RISK_PAYLOAD = {
             "commit_count_capped": False,
             "episodes": 22,
             "_base_dep_count": 52,
-            "risk_summary": "persist.py — 22 bug fixes in 6mo, hotspot score 100% (increasing)",
+            "risk_summary": "persist.py — 22 bug fixes in 6mo, churn hotspot, top 1% (increasing)",
         }
     },
     "global_hotspots": [
@@ -171,7 +171,6 @@ PR_RISK_PAYLOAD = {
     "targets": RISK_PAYLOAD["targets"],
     "directive": {
         "may_break": ["packages/core/src/repowise/core/pipeline/orchestrator.py"],
-        "may_break_tests": ["tests/unit/persistence/test_models.py"],
         "missing_cochanges": ["packages/core/src/repowise/core/persistence/models.py"],
         "missing_tests": ["packages/core/src/repowise/core/pipeline/persist.py"],
         "tests_to_run": ["tests/unit/pipeline/test_persist.py::test_tombstone"],
@@ -198,12 +197,12 @@ PR_RISK_PAYLOAD = {
             {"file": "persist.py", "decision_id": "dr-7", "title": "persist tombstones",
              "status": "accepted", "reason": "stale_governance"}
         ],
+        "recommended_reviewers": [{"name": "Raghav Chamadiya", "commits": 40}],
         "overall_risk_score": 7.4,
         "summary": "PR touches 1 file(s). ~1 downstream file(s) may be affected.",
     },
     "pr_blast_radius": {
         "transitive_affected": ["packages/core/src/repowise/core/pipeline/orchestrator.py"],
-        "recommended_reviewers": [{"name": "Raghav Chamadiya", "commits": 40}],
         "test_gaps": ["packages/core/src/repowise/core/pipeline/persist.py"],
         "overall_risk_score": 7.4,
     },
@@ -281,16 +280,29 @@ def test_page_results_keep_exactly_the_payload_this_command_always_emitted():
         assert dropped not in json.dumps(out["results"]), f"{dropped} survived the trim"
 
 
-def test_a_symbol_spotlight_hit_carries_the_openable_file_beside_its_page_id():
-    """``target_path`` on a symbol_spotlight is ``a.py::Foo`` — a page id, not
-    something a reader can open — which is why the tool attaches ``file``."""
-    hit = {**PAGE_HIT, "page_type": "symbol_spotlight",
-           "target_path": "packages/cli/src/repowise/cli/output.py::resolve_console_width",
-           "file": "packages/cli/src/repowise/cli/output.py"}
-    row = project({"results": [hit]}, "q", multi=False)["results"][0]
+def test_a_slimmed_row_still_gets_a_title_from_its_location():
+    """The server drops a structural title; the table still shows one."""
+    page = {"page_type": "file_page", "path": "a/b.py", "relevance_score": 1.0, "snippet": ""}
+    spotlight = {**page, "page_type": "symbol_spotlight", "symbol_id": "a/b.py::f"}
+    rows = project({"results": [page, spotlight]}, "q", multi=False)["results"]
 
-    assert row["path"].endswith("::resolve_console_width"), "the payload changed shape"
-    assert row["file"] == "packages/cli/src/repowise/cli/output.py"
+    assert [(r["title"], r["path"]) for r in rows] == [("a/b.py", "a/b.py"), ("a/b.py::f", "a/b.py")]
+    assert not any("file" in r for r in rows)
+
+
+@pytest.mark.parametrize(
+    "hit",
+    [
+        {**SYMBOL_HIT, "path": "served/sym.py"},
+        {**FILE_HIT, "path": "served/file.py"},
+        {**PAGE_HIT, "path": "served/page.py", "target_path": "old/page.py"},
+    ],
+    ids=["symbol", "file", "page"],
+)
+def test_every_row_kind_prefers_the_served_path(hit):
+    """``target_path`` is a transition alias of ``path``."""
+    row = project({"results": [hit]}, "q", multi=False)["results"][0]
+    assert row["path"].startswith("served/")
 
 
 def test_a_plain_file_hit_does_not_carry_a_redundant_file_key():
@@ -669,7 +681,7 @@ def test_risk_without_a_target_still_scores_a_revspec(monkeypatch, repo):
     """The collapse must not move the command's default subject."""
     called: list = []
     monkeypatch.setattr(
-        "repowise.cli.commands.risk_cmd.score_live_change",
+        "repowise.cli.commands.risk_cmd.change.score_live_change",
         lambda *a, **k: called.append(a) or (_ for _ in ()).throw(RuntimeError("boom")),
     )
     result = CliRunner(mix_stderr=False).invoke(risk_command, ["HEAD", "--path", str(repo)])
@@ -761,13 +773,13 @@ def test_risk_target_error_exits_one(monkeypatch, repo):
     assert json.loads(result.output)["error"] == "no index yet"
 
 
-def test_risk_projection_keeps_the_reviewers_nothing_else_names():
-    """``pr_blast_radius`` is the only carrier of ``recommended_reviewers``,
-    and the tool has already capped its noisy lists before the CLI sees it."""
+def test_risk_projection_keeps_the_reviewers_and_the_blast_block():
+    """The directive carries the reviewers; the capped blast block rides whole."""
     out = project_risk(PR_RISK_PAYLOAD)
-    assert out["pr_blast_radius"]["recommended_reviewers"] == [
+    assert out["directive"]["recommended_reviewers"] == [
         {"name": "Raghav Chamadiya", "commits": 40}
     ]
+    assert out["pr_blast_radius"] == PR_RISK_PAYLOAD["pr_blast_radius"]
 
 
 def test_risk_table_renders_the_health_and_coverage_it_keeps(monkeypatch, repo):
@@ -792,11 +804,11 @@ def test_risk_full_on_a_revspec_is_json_not_a_table(monkeypatch, repo):
     from repowise.core.analysis.change_risk import ChangeRiskResult
 
     monkeypatch.setattr(
-        "repowise.cli.commands.risk_cmd.change_risk_payload",
+        "repowise.cli.commands.risk_cmd.change_render.change_risk_payload",
         lambda r, **kw: {"risk": 4.2},
     )
     monkeypatch.setattr(
-        "repowise.cli.commands.risk_cmd.score_live_change",
+        "repowise.cli.commands.risk_cmd.change.score_live_change",
         lambda *a, **k: _FakeChangeResult(),
     )
     result = CliRunner(mix_stderr=False).invoke(

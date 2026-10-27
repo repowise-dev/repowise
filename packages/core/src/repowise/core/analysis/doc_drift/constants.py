@@ -71,6 +71,30 @@ DETECTION_BASIS: str = (
 )
 
 
+#: :data:`DETECTION_BASIS`'s job for the reverse view, which makes a weaker
+#: claim: a row says a document names a file that exists, not that it explains
+#: it. Separate sentences, because the finding one applied to a reference count
+#: describes a number nobody took.
+REFERENCE_BASIS: str = (
+    "Lists documents that name this file and still resolve to it. It does not "
+    "claim they describe it, or that their prose is current. References this "
+    "detector cannot resolve are not listed, so absence is not proof that no "
+    "document mentions the file. A document reported as carrying drift has "
+    "some assertion that no longer holds, which need not be about this file."
+)
+
+
+#: Why a drift surface could not answer. Shared because a client keys on these
+#: strings, and a literal in two packages is how one gets renamed alone.
+#: ``NO_TABLE`` is an index older than the table; ``NOT_COMPUTED`` is a table
+#: that exists and was never filled, which must not render as a clean tree;
+#: ``READ_FAILED`` is anything else, since "your index is old" is wrong advice
+#: for a transient failure.
+UNAVAILABLE_NO_TABLE: str = "index_predates_doc_drift"
+UNAVAILABLE_NOT_COMPUTED: str = "not_computed"
+UNAVAILABLE_READ_FAILED: str = "drift_read_failed"
+
+
 #: Default ``--min-confidence`` cutoff. Matches the lowest shipping origin's
 #: tier so nothing is hidden by default; a caller that wants only the
 #: near-certain findings raises it to ``HIGH_CONFIDENCE_THRESHOLD``.
@@ -97,6 +121,7 @@ DriftOrigin = Literal[
     "path_no_candidate_in_guide",
     "anchor_no_heading",
     "command_no_target",
+    "symbol_no_definition",
 ]
 
 ORIGIN_CONFIDENCE: dict[str, float] = {
@@ -118,10 +143,25 @@ ORIGIN_CONFIDENCE: dict[str, float] = {
     # A ``make``/``npm run`` target, written inside an inline code span, that
     # the manifest in the tree does not declare.
     "command_no_target": 0.85,
+    # A backticked identifier that git proves was a symbol definition when the
+    # line was written, and that no non-document file mentions at all now.
+    "symbol_no_definition": 0.85,
 }
 
 #: Every origin in the ``DriftOrigin`` vocabulary, for parity checks.
 DRIFT_ORIGIN_VALUES: frozenset[str] = frozenset(get_args(DriftOrigin))
+
+#: How a finding's suggested replacement was found. A suggestion is evidence,
+#: never a verdict: it does not move a finding's confidence.
+SuggestionBasis = Literal[
+    "package_split",
+    "git_rename",
+    "similar_heading",
+    "similar_target",
+    "symbol_rename",
+]
+
+SUGGESTION_BASIS_VALUES: frozenset[str] = frozenset(get_args(SuggestionBasis))
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +221,9 @@ GUIDE_STEM_RE = re.compile(
     r"quickstart|walkthrough|cookbook|recipes|example|examples|template)",
     re.I,
 )
+
+#: Basenames the analyzer reads command targets from.
+MANIFEST_NAMES: frozenset[str] = frozenset({"Makefile", "makefile", "GNUmakefile", "package.json"})
 
 #: Ceiling for a single document, mirroring the 500KB ``max_file_size_kb``
 #: that already applies to non-AST files. A document larger than this is not

@@ -17,13 +17,13 @@ from textwrap import dedent
 import pytest
 
 from repowise.core import fs_walk
-from repowise.core.workspace.cross_repo import (
-    _index_csproj_files,
+from repowise.core.workspace.extractors.grpc import GrpcExtractor
+from repowise.core.workspace.extractors.http import HttpExtractor
+from repowise.core.workspace.manifests import (
+    _index_manifests,
     _scan_csproj,
     detect_package_dependencies,
 )
-from repowise.core.workspace.extractors.grpc_extractor import GrpcExtractor
-from repowise.core.workspace.extractors.http_extractor import HttpExtractor
 
 # ---------------------------------------------------------------------------
 # HTTP — ASP.NET
@@ -95,6 +95,77 @@ class TestAspNetHttpExtraction:
             and c.meta["path"] == "/api/orders/123"
             for c in consumers
         )
+
+
+class TestAzureFunctionsHttpTriggers:
+    def _providers(self, tmp_path: Path, source: str) -> set[tuple[str, str]]:
+        (tmp_path / "Orders.cs").write_text(dedent(source))
+        contracts = HttpExtractor().extract(tmp_path, repo_alias="fn")
+        return {
+            (c.meta["method"], c.meta["path"])
+            for c in contracts
+            if c.role == "provider" and c.meta.get("framework") == "azure-functions"
+        }
+
+    def test_route_and_methods_are_served_under_the_api_prefix(self, tmp_path: Path) -> None:
+        found = self._providers(
+            tmp_path,
+            """\
+            public static class Orders {
+                [FunctionName("GetOrder")]
+                public static Task<IActionResult> Run(
+                    [HttpTrigger(AuthorizationLevel.Function, "get", "post", Route = "orders/{id:int?}")] HttpRequest req) => null;
+            }
+            """,
+        )
+        assert found == {("GET", "/api/orders/{param}"), ("POST", "/api/orders/{param}")}
+
+    def test_without_a_route_the_function_name_is_the_route(self, tmp_path: Path) -> None:
+        found = self._providers(
+            tmp_path,
+            """\
+            public class Orders {
+                [Function(nameof(ListOrders))]
+                public HttpResponseData ListOrders([HttpTrigger(AuthorizationLevel.Anonymous, "get")] HttpRequestData req) => null;
+
+                [Function("Ping")]
+                public HttpResponseData Ping([HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = null)] HttpRequestData req) => null;
+            }
+            """,
+        )
+        assert found == {("GET", "/api/listorders"), ("GET", "/api/ping")}
+
+    def test_a_trigger_that_cannot_be_spelled_is_skipped(self, tmp_path: Path) -> None:
+        found = self._providers(
+            tmp_path,
+            """\
+            public class Orders {
+                [Function("Any")]
+                public HttpResponseData AnyVerb([HttpTrigger(AuthorizationLevel.Anonymous, Route = "any")] HttpRequestData req) => null;
+
+                [Function(Names.Hidden)]
+                public HttpResponseData Hidden([HttpTrigger(AuthorizationLevel.Anonymous, "delete")] HttpRequestData req) => null;
+
+                // [HttpTrigger(AuthorizationLevel.Anonymous, "put", Route = "commented")]
+
+                [Function("Nightly")]
+                public void Nightly([TimerTrigger("0 0 * * *")] TimerInfo t) { }
+                public HttpResponseData Unnamed([HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "")] HttpRequestData req) => null;
+            }
+            """,
+        )
+        # No method: every verb, no single route. A trigger whose own name is
+        # unreadable or missing never borrows another member's.
+        assert found == set()
+
+    def test_an_optional_minimal_api_parameter_keeps_the_path(self, tmp_path: Path) -> None:
+        (tmp_path / "Program.cs").write_text(
+            'app.MapGet("/items/type/{typeId}/brand/{brandId?}", GetItems);\n'
+        )
+        contracts = HttpExtractor().extract(tmp_path, repo_alias="api")
+        assert [c.meta["path"] for c in contracts if c.role == "provider"] == [
+            "/items/type/{param}/brand/{param}"
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -271,7 +342,7 @@ class TestScanCsproj:
             _csproj(assembly_name="Acme.Cached", packages=["Acme.Common"])
         )
 
-        index = _index_csproj_files(repos)
+        index = _index_manifests(repos)
         deps = detect_package_dependencies(repos)
 
         assert all("packages" not in path.parts for path in index.by_repo["api"])
@@ -289,7 +360,7 @@ class TestScanCsproj:
 
         standalone = _scan_csproj(repos["api"], repos, alias="api")
         shared = _scan_csproj(
-            repos["api"], repos, alias="api", csproj_index=_index_csproj_files(repos)
+            repos["api"], repos, alias="api", csproj_index=_index_manifests(repos)
         )
 
         assert standalone == shared
@@ -325,6 +396,6 @@ class TestScanCsproj:
         (other / "src" / "Api").mkdir(parents=True)
         (other / "src" / "Api" / "Other.csproj").write_text(_csproj(packages=["Acme.Common"]))
         # repo_paths["api"] holds no .csproj at all; the scanned tree does.
-        deps = _scan_csproj(other, repos, alias="api", csproj_index=_index_csproj_files(repos))
+        deps = _scan_csproj(other, repos, alias="api", csproj_index=_index_manifests(repos))
         assert [d.target_repo for d in deps] == ["shared"]
         assert deps[0].source_manifest == "src/Api/Other.csproj"

@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { listDeadCode } from "@repowise-dev/api-client/dead-code";
+import { getDeadCodeSummary, listDeadCode } from "@repowise-dev/api-client/dead-code";
 import type { DeadCodeFindingResponse } from "@repowise-dev/api-client/types";
 import {
   baseName,
@@ -9,6 +9,7 @@ import {
 } from "./shared";
 
 const FINDINGS_KEY = "deadcode:findings";
+const SUMMARY_KEY = "deadcode:summary";
 
 /** Confidence tiers, most-confident first, with their inclusive lower bounds. */
 const TIERS: Array<{ key: string; label: string; min: number }> = [
@@ -31,7 +32,19 @@ export class DeadCodeTreeProvider extends RepowiseTreeProvider {
     const findings = await this.cached(FINDINGS_KEY, () =>
       listDeadCode(repoId, { limit: 500 }),
     );
-    if (findings.length === 0) return [this.messageNode("No dead code")];
+    if (findings.length === 0) {
+      // A failed summary throws to the tree's error row, never to "clean".
+      const summary = await this.cached(SUMMARY_KEY, () => getDeadCodeSummary(repoId));
+      // No findings only means "clean" once an analysis has actually run.
+      return [
+        summary.analyzed_at
+          ? this.messageNode(
+              "No dead code",
+              new vscode.ThemeIcon("pass", new vscode.ThemeColor("testing.iconPassed")),
+            )
+          : this.messageNode("Not analysed yet"),
+      ];
+    }
 
     const roots: RepoTreeNode[] = [];
     for (const tier of TIERS) {
@@ -57,7 +70,7 @@ export class DeadCodeTreeProvider extends RepowiseTreeProvider {
     return {
       key: `dead:${row.id}`,
       label: row.symbol_name ?? baseName(row.file_path),
-      description: `${row.kind} · ${row.lines} lines`,
+      description: row.lines === null ? row.kind : `${row.kind} · ${row.lines} lines`,
       tooltip,
       collapsibleState: vscode.TreeItemCollapsibleState.None,
       command: openFileCommand(this.ctx, row.file_path, row.start_line),

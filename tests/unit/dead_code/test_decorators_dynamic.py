@@ -394,8 +394,10 @@ def test_renamed_receiver_and_registry_decorators_excluded(decorator):
         "@registered_only",
         "@registry_cache",
         # The receiver being called ``register`` says nothing about the
-        # decorator, which is what the final path segment is read for.
-        "@register.unwrap",
+        # decorator, which is what the final path segment is read for. The
+        # attribute has to be a pure wrapper here: any other ``recv.attr`` is
+        # now read as a registration in its own right.
+        "@register.setter",
     ],
 )
 def test_register_lookalike_decorators_still_flagged(decorator):

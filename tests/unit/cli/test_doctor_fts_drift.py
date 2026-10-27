@@ -20,6 +20,7 @@ import sqlite3
 from pathlib import Path
 
 from repowise.cli.commands.doctor_cmd import repo_checks
+from repowise.core.persistence.search import PAGE_FTS_COLUMNS
 
 LIVE_PAGES = 24
 ORPHANS = 89
@@ -128,13 +129,7 @@ def test_repair_leaves_the_index_on_the_current_column_set(tmp_path: Path) -> No
 
     repo_checks._run_repo_checks(repo_path, repair=True)
 
-    assert _fts_columns(repo_path) == [
-        "page_id",
-        "title",
-        "content",
-        "summary",
-        "target_path",
-    ]
+    assert _fts_columns(repo_path) == list(PAGE_FTS_COLUMNS)
 
 
 def test_a_plain_run_heals_the_drift_on_its_own(tmp_path: Path) -> None:
@@ -155,4 +150,4 @@ def test_a_plain_run_heals_the_drift_on_its_own(tmp_path: Path) -> None:
     asyncio.run(_open())
 
     assert _indexed_ids(repo_path) == {f"file_page:src/mod_{i}.py" for i in range(LIVE_PAGES)}
-    assert _fts_columns(repo_path)[-1] == "target_path"
+    assert _fts_columns(repo_path) == list(PAGE_FTS_COLUMNS)

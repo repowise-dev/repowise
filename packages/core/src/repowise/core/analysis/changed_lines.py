@@ -21,13 +21,28 @@ feature extractor (no new dependency, deterministic).
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+import subprocess
+from collections.abc import Iterable
+from dataclasses import dataclass, field, replace
+from pathlib import Path
 
-from .change_risk.features import _git
+from .git_cli import _git, checkout_relative, path_filter, split_revspec, untracked_paths
 
 # ``@@ -a,b +c,d @@`` - both sides. ``b``/``d`` default to 1 when omitted; a
 # count of 0 means "nothing on that side" (pure insertion / pure deletion).
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+
+#: Pinned diff output: ``diff.noprefix`` or a custom prefix in the user's
+#: config would otherwise make :func:`_header_path` strip a real ``a/`` or
+#: ``b/`` directory, and an external diff, a textconv or ``color.diff=always``
+#: would print something the parser reads as no change at all.
+DIFF_ARGS = (
+    "--src-prefix=a/",
+    "--dst-prefix=b/",
+    "--no-ext-diff",
+    "--no-color",
+    "--no-textconv",
+)
 
 
 @dataclass
@@ -41,6 +56,8 @@ class FileDiff:
     nothing it replaced); it records its *insert_anchors* instead - the old-side
     line the new lines went in after, which is the only handle SZZ has on code
     that was added rather than rewritten. 0 means "inserted at the top".
+    *hunks* keeps each hunk's ``(old_start, old_count, new_start, new_count)``,
+    what :func:`map_old_line` needs to move an old line number to the new side.
     """
 
     path: str
@@ -49,16 +66,68 @@ class FileDiff:
     insert_anchors: list[int] = field(default_factory=list)
     removed: list[str] = field(default_factory=list)
     added: list[str] = field(default_factory=list)
+    hunks: list[tuple[int, int, int, int]] = field(default_factory=list)
+
+
+def map_old_line(hunks: Iterable[tuple[int, int, int, int]], line: int, *, end: bool = False) -> int:
+    """Where old-side *line* sits on the new side of a diff with these *hunks*.
+
+    A line outside every hunk moves by what the hunks above it added or
+    removed. A line inside a rewritten hunk maps to the hunk's new first line,
+    or its new last line with *end*, so a span keeps covering its rewrite.
+    """
+    delta = 0
+    for old_start, old_count, new_start, new_count in sorted(hunks):
+        if not old_count:
+            # A pure insertion after ``old_start``: moves only the lines below it.
+            delta += new_count if line > old_start else 0
+        elif line >= old_start + old_count:
+            delta += new_count - old_count
+        elif line >= old_start:
+            return _inside_hunk(new_start, new_count, end=end)
+        else:
+            break  # hunks are sorted, so none further up can move this line
+    return line + delta
+
+
+def _inside_hunk(new_start: int, new_count: int, *, end: bool) -> int:
+    """Where a line a hunk rewrote lands: its new first line, or last with *end*."""
+    if new_count == 0:
+        # Deleted outright: git names the new-side line the block sat after.
+        return new_start if end else new_start + 1
+    return new_start + new_count - 1 if end else new_start
+
+
+_C_ESCAPES = {"a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13}
+
+
+def _c_unquote(text: str) -> str:
+    """Undo git's C-style path quoting: ``caf\\303\\251.py`` -> ``café.py``."""
+    out = bytearray()
+    i = 0
+    while i < len(text):
+        if text[i] == "\\" and i + 1 < len(text):
+            nxt = text[i + 1]
+            if nxt in "01234567":
+                out.append(int(text[i + 1 : i + 4], 8) & 0xFF)
+                i += 4
+                continue
+            out += bytes([_C_ESCAPES[nxt]]) if nxt in _C_ESCAPES else nxt.encode("utf-8")
+            i += 2
+            continue
+        out += text[i].encode("utf-8")
+        i += 1
+    return out.decode("utf-8", errors="replace")
 
 
 def _header_path(raw: str) -> str | None:
     """Normalize a ``--- a/x`` / ``+++ b/x`` header path. ``None`` for /dev/null."""
     path = raw.strip()
-    # git quotes paths with special chars ("b/pa\tth"); strip the quotes so the
-    # common (unquoted) key still resolves. Rare enough to accept the imperfect
-    # unescaping.
+    # git quotes a path holding a non-ASCII byte, a tab, a quote or a backslash
+    # ("b/caf\303\251.py"); left escaped it names no file, and a reader that
+    # looks the file up would skip it.
     if len(path) >= 2 and path[0] == '"' and path[-1] == '"':
-        path = path[1:-1]
+        path = _c_unquote(path[1:-1])
     if path == "/dev/null":
         return None
     return path[2:] if path[:2] in ("a/", "b/") else path
@@ -98,6 +167,7 @@ def parse_unified_diff(diff: str) -> dict[str, FileDiff]:
                 old_count = int(m.group(2)) if m.group(2) is not None else 1
                 new_start = int(m.group(3))
                 new_count = int(m.group(4)) if m.group(4) is not None else 1
+                current.hunks.append((old_start, old_count, new_start, new_count))
                 if old_count > 0:
                     current.old_ranges.append((old_start, old_start + old_count - 1))
                 elif new_count > 0:
@@ -114,6 +184,17 @@ def parse_unified_diff(diff: str) -> dict[str, FileDiff]:
                 current.added.append(line[1:])
         i += 1
     return result
+
+
+def line_ranges(lines: Iterable[int]) -> tuple[tuple[int, int], ...]:
+    """Adjacent line numbers as inclusive spans: ``{1,2,3,7}`` -> ``((1,3),(7,7))``."""
+    spans: list[tuple[int, int]] = []
+    for line in sorted(lines):
+        if spans and line == spans[-1][1] + 1:
+            spans[-1] = (spans[-1][0], line)
+        else:
+            spans.append((line, line))
+    return tuple(spans)
 
 
 def _parse_unified_diff(diff: str) -> dict[str, set[int]]:
@@ -134,45 +215,310 @@ def _verify_ref(repo_path: str, ref: str) -> None:
         raise ValueError(f"unknown revision {ref!r}")
 
 
+def working_tree_label(base: str | None = None) -> str:
+    """How :func:`changed_lines` names a working-tree diff from *base*."""
+    return f"{base}...working tree" if base and base != "HEAD" else "working tree"
+
+
 def changed_lines(
     repo_path: str,
     revspec: str | None = None,
     *,
     staged: bool = False,
     working_tree: bool = False,
+    base: str | None = None,
+    skip_untracked: tuple[str, ...] = (),
 ) -> tuple[dict[str, set[int]], str]:
     """Return ``({file: changed_lines}, label)`` for a change.
 
-    *revspec* mirrors ``repowise risk``: ``base..head`` is a range, a bare ref
-    is a single commit. With no *revspec* (or *staged*), the staged diff
+    *revspec* mirrors ``repowise risk``: ``base..head`` is a range,
+    ``base...head`` the change since the two forked, a bare ref a single commit. With no *revspec* (or *staged*), the staged diff
     (``git diff --cached``) is used - the "what will I commit" case.
     *working_tree* widens that to everything ``HEAD`` does not have, staged or
-    not, matching what change risk counts for an uncommitted change. *label*
-    is a human string naming what was diffed. Raises ``ValueError`` on an
-    unknown revision so the caller can fail loudly rather than silently
-    reporting "no changes".
+    not, untracked files included (every line changed), matching what change
+    risk counts for an uncommitted change. With *base* as well, it diffs the
+    working tree from the merge-base of *base* and ``HEAD``: everything a push
+    of this branch would bring. A *base* that does not resolve, or shares
+    no merge-base, falls back to the plain working-tree diff and its label.
+    *skip_untracked* (gitignore-style) names untracked files not to read; the
+    caller still filters tracked paths. Paths are relative to *repo_path*, as
+    the index names them (see :func:`~.git_cli.checkout_relative`).
+    *label* is a human string naming what was diffed.
+    Raises ``ValueError`` on an unknown revision so the caller can fail loudly
+    rather than silently reporting "no changes".
     """
     if working_tree:
-        # Untracked files are absent by design: they are new, so neither caller
-        # (prior fixes, per-test coverage) has a row to find for them anyway.
-        diff = _git(["diff", "--unified=0", "HEAD"], repo_path)
-        return _parse_unified_diff(diff), "working tree"
+        changed, label = _working_tree_lines(repo_path, base, skip_untracked)
+    else:
+        command, revisions, label = _change_command(repo_path, revspec, staged=staged)
+        diff = _diff(repo_path, [*command, "--unified=0", *DIFF_ARGS, *revisions])
+        changed = _parse_unified_diff(diff)
+    return checkout_relative(repo_path, changed), label
 
+
+def _change_command(
+    repo_path: str, revspec: str | None, *, staged: bool
+) -> tuple[list[str], list[str], str]:
+    """``(git command, revisions, label)`` that diff a change, its refs verified."""
     if staged or not revspec:
-        diff = _git(["diff", "--cached", "--unified=0"], repo_path)
-        return _parse_unified_diff(diff), "staged changes"
+        return ["diff", "--cached"], [], "staged changes"
 
-    if ".." in revspec:
-        base, _, head = revspec.partition("..")
-        head = head or "HEAD"
+    if (parts := split_revspec(revspec)) is not None:
+        # ``base...head`` is what a pull request changed: git diffs from the
+        # merge-base, so commits that landed on base meanwhile stay out.
+        base, sep, head = parts
         _verify_ref(repo_path, base)
         _verify_ref(repo_path, head)
-        diff = _git(["diff", "--unified=0", f"{base}..{head}"], repo_path)
-        return _parse_unified_diff(diff), f"{base}..{head}"
+        label = f"{base}{sep}{head}"
+        return ["diff"], [label], label
 
     _verify_ref(repo_path, revspec)
+    if is_shallow_root(repo_path, revspec):
+        # A shallow clone's oldest commit has its parents cut off, so git would
+        # diff it against the empty tree and every line would read as changed.
+        raise ValueError(f"{revspec!r} has no parent in this shallow clone; fetch more history")
     # --format= drops the commit message so only the diff body is parsed.
     # -m --first-parent matches what change risk counts on a merge; without it
     # git's combined diff emits nothing at all and a merged PR reads as empty.
-    diff = _git(["show", "--unified=0", "--format=", "-m", "--first-parent", revspec], repo_path)
-    return _parse_unified_diff(diff), revspec
+    return ["show", "--format=", "-m", "--first-parent"], [revspec], revspec
+
+
+@dataclass
+class ChangeSet:
+    """Every path a change touched, for a reader that must not miss one.
+
+    *files* holds each path present after the change, including those
+    :func:`changed_lines` drops (a removal-only edit, a binary or mode-only
+    change, which have no new-side lines); *deleted* the paths it removed. A
+    rename reads as a deletion plus an addition. *base* and *head* are the
+    commits either side; *head* is ``None`` for staged changes, and either is
+    ``None`` when git cannot name it.
+    """
+
+    files: dict[str, FileDiff]
+    deleted: set[str]
+    label: str
+    base: str | None
+    head: str | None
+
+
+def change_set(
+    repo_path: str,
+    revspec: str | None = None,
+    *,
+    staged: bool = False,
+    working_tree: bool = False,
+    exclude_patterns: tuple[str, ...] = (),
+) -> ChangeSet:
+    """The change :func:`changed_lines` reads, with every touched path and its ends.
+
+    *working_tree* reads what ``HEAD`` does not have, staged or not, untracked
+    files included; its base is ``HEAD``. *exclude_patterns* (gitignore-style)
+    drops paths that are not part of the change at all, such as repowise's own
+    output. Paths are relative to *repo_path*, as :func:`changed_lines` names
+    them. Raises ``ValueError`` on an unknown revision, as :func:`changed_lines` does.
+    """
+    if working_tree:
+        command, revisions, label = ["diff"], ["HEAD"], working_tree_label()
+    else:
+        command, revisions, label = _change_command(repo_path, revspec, staged=staged)
+    tail = ["--no-renames", *revisions]
+    diffs = parse_unified_diff(_diff(repo_path, [*command, "--unified=0", *DIFF_ARGS, *tail]))
+    listing = _diff(repo_path, [*command, "--name-status", "-z", *tail])
+    fields = [f.strip("\n") for f in listing.split("\0")]
+    files: dict[str, FileDiff] = {}
+    deleted: set[str] = set()
+    counts = path_filter(exclude_patterns=exclude_patterns)
+    for status, path in zip(fields[0::2], fields[1::2], strict=False):
+        if not path or not counts(path):
+            continue
+        if status.startswith("D"):
+            deleted.add(path)
+        else:
+            files[path] = diffs.get(path) or FileDiff(path=path)
+    if working_tree:
+        files.update(untracked_diffs(repo_path, exclude_patterns))
+    # One re-keying for both sides: each relative path maps back to git's.
+    named = checkout_relative(repo_path, {p: p for p in [*files, *deleted]})
+    deleted = {rel for rel, top in named.items() if top in deleted}
+    files = {rel: replace(files[top], path=rel) for rel, top in named.items() if top in files}
+    base, head = _change_ends(repo_path, revspec, staged=staged or working_tree)
+    return ChangeSet(files, deleted, label, base, head)
+
+
+def _change_ends(
+    repo_path: str, revspec: str | None, *, staged: bool
+) -> tuple[str | None, str | None]:
+    """The commits a change goes from and to; ``None`` where git names none."""
+
+    def sha(rev: str) -> str | None:
+        args = ["rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}"]
+        return _git(args, repo_path, check=False).strip() or None
+
+    if staged or not revspec:
+        return sha("HEAD"), None
+    if (parts := split_revspec(revspec)) is not None:
+        base, sep, head = parts
+        if sep == "...":
+            fork = _git(["merge-base", base, head], repo_path, check=False).strip()
+            return fork or None, sha(head)
+        return sha(base), sha(head)
+    return sha(f"{revspec}^"), sha(revspec)
+
+
+def _working_tree_lines(
+    repo_path: str, base: str | None, skip_untracked: tuple[str, ...]
+) -> tuple[dict[str, set[int]], str]:
+    """The working-tree half of :func:`changed_lines`: from *base*'s merge-base, else ``HEAD``."""
+    start = _merge_base_or_empty(repo_path, base) if base and base != "HEAD" else ""
+    diff = _git(["diff", "--unified=0", *DIFF_ARGS, start or "HEAD"], repo_path)
+    changed = _parse_unified_diff(diff)
+    # New files are part of the work whether or not they are staged yet.
+    untracked = untracked_diffs(repo_path, skip_untracked)
+    changed.update({p: d.new_lines for p, d in untracked.items() if d.new_lines})
+    return changed, working_tree_label(base if start else None)
+
+
+def _merge_base_or_empty(repo_path: str, base: str) -> str:
+    """The merge-base of *base* and ``HEAD``; ``""`` when *base* is unknown or unrelated."""
+    try:
+        _verify_ref(repo_path, base)
+        return _diff(repo_path, ["merge-base", base, "HEAD"]).strip()
+    except ValueError:
+        return ""
+
+
+#: Untracked files above this count as touched with no lines rather than being
+#: read into memory. A multi-megabyte untracked blob is a build artifact, not
+#: authored code, and its exact line count would not change the risk band.
+_UNTRACKED_READ_LIMIT = 2_000_000
+
+
+def untracked_diffs(repo_path: str, exclude_patterns: tuple[str, ...] = ()) -> dict[str, FileDiff]:
+    """Each untracked, not-ignored file as the diff ``git add`` would make of it.
+
+    Every line is new, as git counts additions; a binary or oversized file has
+    none, as a tracked one would in ``--numstat``. One reader for every
+    working-tree surface, so they count the same files. A path matching
+    *exclude_patterns* is never read.
+    """
+    out: dict[str, FileDiff] = {}
+    # Listed from the git top level, so read from there too.
+    root = _git(["rev-parse", "--show-toplevel"], repo_path, check=False).strip() or repo_path
+    for path in untracked_paths(repo_path, exclude_patterns):
+        target = Path(root) / path
+        try:
+            data = b"" if target.stat().st_size > _UNTRACKED_READ_LIMIT else target.read_bytes()
+        except OSError:
+            continue
+        out[path] = _new_file_diff(path, data)
+    return out
+
+
+def _new_file_diff(path: str, data: bytes) -> FileDiff:
+    """*data* as an added file's diff; a binary file adds no lines."""
+    # Split on "\n" alone, as git counts lines; a final newline ends a line.
+    added = [] if b"\x00" in data else data.decode("utf-8", errors="replace").split("\n")
+    if added and added[-1] == "":
+        added.pop()
+    if not added:
+        return FileDiff(path=path)
+    count = len(added)
+    return FileDiff(
+        path=path,
+        new_lines=set(range(1, count + 1)),
+        insert_anchors=[0],
+        added=added,
+        hunks=[(0, 0, 1, count)],
+    )
+
+
+def diff_since(
+    repo_path: str, since: str, until: str | None, paths: Iterable[str]
+) -> dict[str, FileDiff]:
+    """Per-file diff of *paths* from *since* to *until* (the working tree when ``None``).
+
+    What moves a line number read at one commit (an index's symbol spans) to
+    the code being asked about (:func:`map_old_line` over ``FileDiff.hunks``).
+    *paths* and the keys are relative to *repo_path*, as the index names them.
+    """
+    tail = [until] if until else []
+    args = ["diff", "--unified=0", *DIFF_ARGS, since, *tail, "--", *paths]
+    diffs = checkout_relative(repo_path, parse_unified_diff(_diff(repo_path, args)))
+    return {p: replace(d, path=p) for p, d in diffs.items()}
+
+
+def change_diff(
+    repo_path: str, base: str, head: str
+) -> tuple[dict[str, FileDiff], dict[str, str], set[str]]:
+    """``(diffs, renames, deleted)`` for the change from commit *base* to *head*.
+
+    *diffs* is :func:`parse_unified_diff`'s, keyed by new-side path;
+    *renames* maps each renamed file's old path to its new one; *deleted*
+    holds the old paths of deleted files. Rename detection is on for both
+    reads, whatever the user's ``diff.renames``.
+    """
+    diffs = parse_unified_diff(
+        _diff(repo_path, ["diff", "--unified=0", "-M", *DIFF_ARGS, base, head])
+    )
+    fields = _diff(repo_path, ["diff", "--name-status", "-z", "-M", base, head]).split("\0")
+    renames: dict[str, str] = {}
+    deleted: set[str] = set()
+    i = 0
+    while i < len(fields) - 1:
+        status = fields[i]
+        if status[:1] in ("R", "C"):
+            if status[0] == "R":
+                renames[fields[i + 1]] = fields[i + 2]
+            i += 3
+            continue
+        if status == "D":
+            deleted.add(fields[i + 1])
+        i += 2
+    return diffs, renames, deleted
+
+
+def _diff(repo_path: str, args: list[str]) -> str:
+    """Run a diff, turning git's refusal (e.g. no merge-base) into ``ValueError``."""
+    try:
+        return _git(args, repo_path)
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or "").strip().splitlines()
+        raise ValueError(detail[-1] if detail else f"git {args[0]} failed") from exc
+
+
+def is_shallow_root(repo_path: str, rev: str) -> bool:
+    """Whether *rev* is a boundary a shallow clone cut its parents from.
+
+    Read from git's own list of grafted commits, so a genuine root commit is
+    never mistaken for a cut one.
+    """
+    shallow = _git(["rev-parse", "--git-path", "shallow"], repo_path, check=False).strip()
+    path = Path(repo_path, shallow)
+    if not shallow or not path.is_file():
+        return False
+    sha = _git(["rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}"], repo_path, check=False)
+    return bool(sha.strip()) and sha.strip() in path.read_text(encoding="utf-8").split()
+
+
+def index_gap(repo_path: str, indexed_commit: str | None, change: ChangeSet) -> list[str] | None:
+    """Files outside *change* that its base changed and *indexed_commit* lacks.
+
+    What an index built at another commit cannot see. Only the base's side
+    counts (``indexed...base``, from their merge-base), so an index built after
+    the base is never said to predate it. Empty when the index was built at
+    either end of the change or later; ``None`` when that cannot be told (no
+    recorded commit, no base, a commit this clone lacks, or no merge-base).
+    """
+    if indexed_commit and indexed_commit in (change.base, change.head):
+        return []
+    if not indexed_commit or not change.base:
+        return None
+    args = ["diff", "--name-only", "-z", "--no-renames", f"{indexed_commit}...{change.base}"]
+    try:
+        listing = _git(args, repo_path)
+    except (subprocess.SubprocessError, OSError):
+        return None
+    touched = set(change.files) | change.deleted
+    gap = checkout_relative(repo_path, dict.fromkeys(p for p in listing.split("\0") if p.strip()))
+    return [p for p in gap if p not in touched]

@@ -61,10 +61,18 @@ export function ViewTabs({
   const panelId = ownsPanel ? `${baseId}-panel` : externalPanelId;
   const tabRefs = React.useRef<Record<string, HTMLButtonElement | null>>({});
 
-  // Keep the active tab in view even though the scrollbar is hidden — it can
-  // otherwise scroll off-screen with no way to reveal it.
+  // Keep the active tab in view, since the row's scrollbar is hidden. Only the
+  // row scrolls: moving the page here would pull a tab row below the fold into
+  // view on load.
   React.useEffect(() => {
-    tabRefs.current[value]?.scrollIntoView({ inline: "nearest", block: "nearest" });
+    const tab = tabRefs.current[value];
+    const row = tab?.parentElement;
+    if (!tab || !row) return;
+    const left = tab.offsetLeft - row.offsetLeft;
+    if (left < row.scrollLeft) row.scrollLeft = left;
+    else if (left + tab.offsetWidth > row.scrollLeft + row.clientWidth) {
+      row.scrollLeft = left + tab.offsetWidth - row.clientWidth;
+    }
   }, [value]);
 
   // Left/right arrow keys move selection (and focus) between tabs; Home/End
@@ -109,9 +117,9 @@ export function ViewTabs({
               tabIndex={active ? 0 : -1}
               onClick={() => onValueChange(tab.id)}
               className={cn(
-                "inline-flex items-center gap-1.5 whitespace-nowrap border-b-2 border-transparent px-1 pb-2 -mb-px text-sm font-medium ring-offset-[var(--color-bg-root)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] focus-visible:ring-offset-2",
+                "inline-flex items-center gap-1.5 whitespace-nowrap border-b-2 border-transparent px-1 pb-2 -mb-px text-sm font-medium ring-offset-[var(--color-bg-root)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] focus-visible:ring-offset-2",
                 active
-                  ? "border-[var(--color-accent-primary)] text-[var(--color-text-primary)]"
+                  ? "border-[var(--color-tab-active)] text-[var(--color-text-primary)]"
                   : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]",
               )}
             >

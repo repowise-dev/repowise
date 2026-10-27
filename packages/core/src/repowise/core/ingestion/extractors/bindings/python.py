@@ -133,6 +133,8 @@ def expand_bare_relative_imports(imports: list[Import]) -> list[Import]:
                     is_relative=True,
                     resolved_file=None,
                     bindings=[binding],
+                    type_only=imp.type_only,
+                    deferred=imp.deferred,
                 )
             )
     return out

@@ -16,6 +16,10 @@ from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 from repowise.core.ingestion.languages.vbnet_same_namespace import (
     resolve_vbnet_same_namespace_refs,
 )
+from repowise.core.ingestion.resolvers.dotnet.namespace_map import (
+    build_vb_namespace_map,
+    scan_vb_declarations,
+)
 
 
 def _graph_for(texts: dict[str, str]) -> nx.DiGraph:
@@ -220,6 +224,90 @@ class TestPartialClasses:
         back = g.get_edge_data("App/MainForm.Designer.vb", "App/MainForm.vb")
         assert forward is not None and forward.get("hint_source") == "partial_class"
         assert back is not None and back.get("hint_source") == "partial_class"
+
+    def test_designer_member_called_from_the_form_resolves(self, tmp_path: Path) -> None:
+        # The designer fragment's private members are in the form's scope. A
+        # second InitializeComponent keeps the repo-wide unique tier out of it.
+        repo = _write(
+            tmp_path,
+            {
+                "App/App.vbproj": (
+                    '<Project Sdk="Microsoft.NET.Sdk">\n  <PropertyGroup>\n'
+                    "    <RootNamespace>Acme</RootNamespace>\n"
+                    "  </PropertyGroup>\n</Project>\n"
+                ),
+                "App/MainForm.vb": (
+                    "Partial Public Class MainForm\n"
+                    "    Public Sub Load()\n        InitializeComponent()\n    End Sub\n"
+                    "End Class\n"
+                ),
+                "App/MainForm.Designer.vb": (
+                    "Partial Class MainForm\n"
+                    "    Private Sub InitializeComponent()\n    End Sub\n"
+                    "End Class\n"
+                ),
+                "App/Other.vb": (
+                    "Public Class Other\n"
+                    "    Private Sub InitializeComponent()\n    End Sub\n"
+                    "End Class\n"
+                ),
+            },
+        )
+        edge = _build(repo).get_edge_data(
+            "App/MainForm.vb::MainForm::Load",
+            "App/MainForm.Designer.vb::MainForm::InitializeComponent",
+        )
+        assert edge is not None and edge["edge_type"] == "calls"
+        assert edge["resolution_origin"] == "enclosing_class"
+
+    def test_generic_arity_is_part_of_the_partial_key(self) -> None:
+        _ns, decls = scan_vb_declarations(
+            "Partial Class Cache\nEnd Class\n"
+            "Partial Class Cache(Of TKey, TValue)\nEnd Class\n"
+        )
+        assert [d.fqn for d in decls] == ["Cache", "Cache`2"]
+
+    def test_generic_twin_is_not_a_fragment(self, tmp_path: Path) -> None:
+        # Cache and Cache(Of TKey, TValue) are two types: neither the partial
+        # map nor call resolution may merge their fragments.
+        files = {
+            "App/App.vbproj": (
+                '<Project Sdk="Microsoft.NET.Sdk">\n  <PropertyGroup>\n'
+                "    <RootNamespace>Acme</RootNamespace>\n"
+                "  </PropertyGroup>\n</Project>\n"
+            ),
+            "App/Cache.vb": (
+                "Partial Class Cache\n"
+                "    Public Sub Run()\n        Evict()\n    End Sub\n"
+                "End Class\n"
+            ),
+            "App/Cache.Evict.vb": (
+                "Partial Class Cache\n"
+                "    Private Sub Evict()\n    End Sub\n"
+                "End Class\n"
+            ),
+            "App/CacheT.vb": (
+                "Partial Class Cache(Of TKey, TValue)\n"
+                "    Private Sub Evict()\n    End Sub\n"
+                "End Class\n"
+            ),
+        }
+        repo = _write(tmp_path, files)
+        vb = [repo / p for p in files if p.endswith(".vb")]
+        texts = {p: p.read_text() for p in vb}
+        _ns, _types, partials = build_vb_namespace_map(
+            vb, texts=texts, root_namespaces=dict.fromkeys(vb, "Acme")
+        )
+        assert {k: sorted(p.name for p in v) for k, v in partials.items()} == {
+            "Acme.Cache": ["Cache.Evict.vb", "Cache.vb"],
+            "Acme.Cache`2": ["CacheT.vb"],
+        }
+        calls = {
+            callee
+            for _, callee, data in _build(repo).out_edges("App/Cache.vb::Cache::Run", data=True)
+            if data.get("edge_type") == "calls"
+        }
+        assert calls == {"App/Cache.Evict.vb::Cache::Evict"}
 
     def test_non_partial_same_name_types_are_not_linked(self, tmp_path: Path) -> None:
         repo = _write(

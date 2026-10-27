@@ -6,10 +6,14 @@ Extracted from the former decision_extractor.py; imported back into
 
 from __future__ import annotations
 
+# Every lane behind the substring gate asks for ``decision`` and ``rationale``
+# as verbatim quotes: the gate drops any field the source does not contain, so
+# a reworded decision or reason is stored blank.
 _SYSTEM_PROMPT = (
     "You are an architectural decision extractor. "
     "You extract structured decision records from code context. "
-    "Return only valid JSON. Never invent rationale not present in the source."
+    "Return only valid JSON. Never invent rationale not present in the source. "
+    "Copy the decision and rationale fields word for word from the source; never reword them."
 )
 
 INLINE_MARKER_PROMPT = """\
@@ -25,8 +29,8 @@ For each marker, return a JSON object:
   "marker_line": the line number of the marker this decision came from,
   "title": "short title of the decision",
   "context": "what situation forced this",
-  "decision": "what was chosen",
-  "rationale": "why",
+  "decision": "the words from the marker that state what was chosen, copied verbatim",
+  "rationale": "the words from the marker that state why, copied verbatim, or empty if none",
   "alternatives": ["rejected alternatives if mentioned"],
   "consequences": ["tradeoffs if mentioned"],
   "tags": ["relevant tags from: auth, database, api, performance, security, infra, testing"]
@@ -36,7 +40,30 @@ Return a JSON array of decision objects. If a marker is not an architectural \
 decision, skip it. Return [] if none qualify.
 """
 
-GIT_ARCHAEOLOGY_PROMPT = """\
+#: How the two commit miners ask for ``affected_files``. Shared so the wording
+#: cannot drift between them, and concatenated into each prompt rather than
+#: interpolated, because both templates are ``.format()``-ed later with their
+#: own block and an extra field would be a second placeholder to thread.
+#:
+#: The instruction is written so that returning nothing feels correct, because
+#: it is: measured out of sample, the empty answer is what holds noise at zero
+#: on the roughly one record in six whose subject never reached the commit's
+#: file list at all.
+_FILE_SELECTION_RULE = """\
+For "affected_files", copy paths verbatim from that commit's "Files changed" \
+line and keep only the files the decision is *about* -- the ones whose own \
+content it is a rule or a choice about. A file the change merely passed \
+through, a caller updated to match, a re-export or barrel, a lockfile, a \
+changelog, or a test that happens to exercise the subject does not belong. \
+Where one commit yields several decisions, divide its files between them \
+rather than giving each of them all. Return [] when the file the decision is \
+about is not in that commit's list; that is a correct answer and a common \
+one. Never write a path the commit does not list.\
+"""
+
+
+GIT_ARCHAEOLOGY_PROMPT = (
+    """\
 Analyze these git commits to determine if they represent architectural decisions.
 
 {commits_block}
@@ -47,16 +74,22 @@ system structure, patterns, migrations, or technology), return a JSON object:
   "commit_sha": "the sha",
   "title": "short title",
   "context": "what situation forced this",
-  "decision": "what was chosen or changed",
-  "rationale": "why this approach (infer from message and files only)",
+  "decision": "the sentence or clause from the commit message that states what was chosen, copied verbatim",
+  "rationale": "the sentence or clause from the commit message that states why, copied verbatim, or empty if none",
+  "affected_files": ["which of that commit's files this decision is about"],
   "alternatives": [],
   "consequences": [],
   "tags": ["relevant tags"]
 }}
 
+"""
+    + _FILE_SELECTION_RULE
+    + """
+
 Return a JSON array. Skip commits that are just bug fixes or minor changes. \
 Return [] if none qualify. Do not hallucinate rationale.
 """
+)
 
 README_MINING_PROMPT = """\
 Analyze this documentation file and extract any architectural decisions.
@@ -75,8 +108,8 @@ Return a JSON array of decisions:
 {{
   "title": "short title",
   "context": "situation that forced it",
-  "decision": "what was chosen",
-  "rationale": "why",
+  "decision": "the sentence or clause from the document that states what was chosen, copied verbatim",
+  "rationale": "the sentence or clause from the document that states why, copied verbatim, or empty if none",
   "alternatives": [],
   "consequences": [],
   "tags": [],
@@ -86,7 +119,8 @@ Return a JSON array of decisions:
 Only extract explicit decisions. Return [] if none found.
 """
 
-PR_BODY_MINING_PROMPT = """\
+PR_BODY_MINING_PROMPT = (
+    """\
 These are squash-merge / PR commit bodies. Extract any architectural decision \
 described in them (technology choices, migrations, structural changes, things \
 deliberately rejected).
@@ -98,17 +132,23 @@ For each decision return a JSON object:
   "commit_sha": "the sha shown",
   "title": "short title",
   "context": "what situation forced this (only if stated)",
-  "decision": "what was chosen or changed",
-  "rationale": "why (quote/paraphrase the body — never invent)",
+  "decision": "the sentence or clause from the body that states what was chosen, copied verbatim",
+  "rationale": "the sentence or clause from the body that states why, copied verbatim, or empty if none",
+  "affected_files": ["which of that commit's files this decision is about"],
   "alternatives": ["rejected alternatives if mentioned"],
   "consequences": [],
   "tags": [],
   "source_quote": "the exact sentence from the body this came from"
 }}
 
+"""
+    + _FILE_SELECTION_RULE
+    + """
+
 Return a JSON array. Skip bodies that are just checklists or release noise. \
 Return [] if none qualify.
 """
+)
 
 COMMENT_ARCHAEOLOGY_PROMPT = """\
 These are block comments / docstrings from high-centrality code (the files \
@@ -121,8 +161,8 @@ For each decision return a JSON object:
 {{
   "title": "short title",
   "context": "what situation forced this (only if stated)",
-  "decision": "what was chosen",
-  "rationale": "why (quote/paraphrase the comment — never invent)",
+  "decision": "the sentence or clause from the comment that states what was chosen, copied verbatim",
+  "rationale": "the sentence or clause from the comment that states why, copied verbatim, or empty if none",
   "alternatives": [],
   "consequences": [],
   "tags": [],

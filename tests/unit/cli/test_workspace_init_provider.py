@@ -136,6 +136,22 @@ def test_workspace_member_persists_the_shared_git_coverage(
     }
 
 
+def test_workspace_member_state_carries_the_fresh_index_stamps(
+    tmp_path: Path, captured: dict[str, Any]
+) -> None:
+    """Unstamped, the first update re-renders and re-scores the repo init just built."""
+    from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+    from repowise.core.analysis.security_scan import SECURITY_SCANNER_VERSION
+
+    _run(tmp_path, SimpleNamespace(provider_name="omp", model_name="omp/default"))
+
+    state = captured["saved_state"]
+    assert state["config_fingerprint"]
+    assert state["renderer_fingerprint"]
+    assert state["health_analyzer_version"] == HEALTH_ANALYZER_VERSION
+    assert state["security_scanner_version"] == SECURITY_SCANNER_VERSION
+
+
 def test_unavailable_git_history_clears_stale_coverage() -> None:
     from repowise.cli.commands.init_cmd.persistence import (
         apply_git_history_coverage_state,

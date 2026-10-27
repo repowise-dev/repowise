@@ -1,4 +1,4 @@
-"""Module constants, regexes, and the GitPython noise patch for git indexing.
+"""Module constants and regexes for git indexing.
 
 Kept in one place so the per-tier modules share a single source of truth for
 the commit-depth defaults, decay half-lives, and skip heuristics.
@@ -6,33 +6,18 @@ the commit-depth defaults, decay half-lives, and skip heuristics.
 
 from __future__ import annotations
 
-import contextlib
+import math
+import os
 import re
 from typing import Any
 
 from ...co_change import (
+    CO_CHANGE_COMMIT_DECAY_TAU,
     CO_CHANGE_DECAY_TAU,
     MAX_PARTNERS_PER_FILE,
     MIN_CO_CHANGE_SUPPORT,
 )
 from ..languages.registry import REGISTRY as _LANG_REGISTRY
-
-# Silence GitPython's _CatFileContentStream.__del__ ValueError spam.
-# When git cat-file streams are GC'd after the subprocess pipe is closed,
-# their __del__ tries to drain remaining bytes and hits a closed file.
-# This is harmless but floods stderr with tracebacks.
-try:
-    from git.cmd import _CatFileContentStream
-
-    _orig_del = _CatFileContentStream.__del__
-
-    def _quiet_del(self: Any) -> None:
-        with contextlib.suppress(ValueError, OSError):
-            _orig_del(self)
-
-    _CatFileContentStream.__del__ = _quiet_del  # type: ignore[assignment]
-except Exception:
-    pass  # git not installed — nothing to patch
 
 # Commit message prefixes that are ALWAYS skipped (no signal value).
 _HARD_SKIP_PREFIXES = ("Merge ",)
@@ -62,11 +47,11 @@ _DECISION_SIGNAL_WORDS: frozenset[str] = frozenset(
     }
 )
 
-_SKIP_AUTHORS = ("dependabot", "renovate", "github-actions")
 _MIN_MESSAGE_LEN = 12
 
-# Default per-file commit history depth.
-_DEFAULT_COMMIT_LIMIT: int = 500
+# Default history window: the newest commits walked for per-file history and
+# stored as commit rows. Every default ``commit_limit`` reads this one value.
+_DEFAULT_COMMIT_LIMIT: int = 5000
 
 # Depth of the second, deeper repo-wide log walk that serves files absent
 # from the recent-window commit index. On repos whose history is much
@@ -118,23 +103,6 @@ def _truncate_body(body: str) -> str:
     return encoded[:_MAX_COMMIT_BODY_BYTES].decode("utf-8", errors="ignore")
 
 
-# PR/squash-description markers — a body containing one of these reads like a
-# real PR write-up worth retaining for decision mining (mirrors the extractor's
-# ``_PR_BODY_MARKERS``; kept here to avoid a cross-package import at index time).
-_PR_BODY_MARKERS: tuple[str, ...] = (
-    "## why",
-    "## motivation",
-    "## what",
-    "## changes",
-    "## context",
-    "## summary",
-    "closes #",
-    "fixes #",
-    "resolves #",
-    "before:",
-    "after:",
-)
-
 # Co-change pair extraction widens the window because individual files
 # may only co-change a handful of times in 500 commits. On low-churn repos
 # the 500-commit window produced 0 co-change pairs every run; 2000 commits
@@ -163,10 +131,12 @@ _MAX_FILES_PER_COMMIT_FOR_COCHANGE: int = 200
 # excludes very wide commits from the History Complexity Metric because a
 # sweeping edit spreads its "change probability" so thinly that it adds noise
 # rather than signal. 30 follows the commonly cited Hassan filter; commits
-# above it are dropped from the entropy accumulation entirely.
+# above it are dropped from the entropy accumulation entirely, and from the
+# focused co-change count hidden coupling reads as evidence.
 _MAX_FILES_PER_COMMIT_FOR_ENTROPY: int = 30
 
-# Commit message classification regexes (Phase 2.2).
+# Commit message classification regexes. "fix" is not here: a
+# commit is a fix exactly when ``is_fix_commit`` says so, on every surface.
 _COMMIT_CATEGORIES: dict[str, re.Pattern[str]] = {
     "feature": re.compile(
         r"\b(add|implement|introduce|create|new|feat)\b",
@@ -176,34 +146,28 @@ _COMMIT_CATEGORIES: dict[str, re.Pattern[str]] = {
         r"\b(refactor|restructure|cleanup|clean.up|rename|reorganize|extract|simplify|move)\b",
         re.IGNORECASE,
     ),
-    "fix": re.compile(
-        r"\b(fix|bug|patch|hotfix|revert|regression|broken|crash|error)\b",
-        re.IGNORECASE,
-    ),
     "dependency": re.compile(
         r"\b(upgrade|bump|update.dep|migrate.to|switch.to|dependency|dependencies)\b",
         re.IGNORECASE,
     ),
 }
 
-# Bug-fix commit classifier — mirrors the defect benchmark's
-# ``lib/defect_counter.find_fix_commits`` (keyword strategy) so the product's
-# ``prior_defect`` signal counts exactly the commits the benchmark labels as
-# fixes (product == benchmark). A commit subject is a fix iff it matches an
-# INCLUDE pattern and NO EXCLUDE pattern; merge commits are excluded upstream
-# (the per-file walk skips ``is_merge``), mirroring the bench's ``--no-merges``.
+# Bug-fix commit classifier: the defect benchmark's
+# ``lib/defect_counter.find_fix_commits`` keyword strategy, byte for byte. A
+# subject is a fix iff it matches an INCLUDE pattern and NO EXCLUDE pattern;
+# merge commits are excluded upstream, mirroring the bench's ``--no-merges``.
+# Accepts verb forms, compounds ("hotfix") and issue references ("fixes #12").
 #
-# Deliberately NOT reusing ``_COMMIT_CATEGORIES["fix"]`` — that is a broader
-# classifier tuned for commit-category *ratios* (it catches "refactor to fix
-# crash", "error handling"), whereas the defect label wants high-precision
-# fix-only matches and must stay byte-identical to the benchmark's regex set.
+# Commit rows, the per-file category counts and the evolution timeline label a
+# commit "fix" exactly when this rule does. ``prior_defect`` and the change-risk
+# ``is_fix`` flag read the type first instead (``fix_rule.py``).
 _FIX_COMMIT_INCLUDE: tuple[re.Pattern[str], ...] = (
-    re.compile(r"\bfix\b", re.IGNORECASE),
+    re.compile(r"\b(?:hot|bug)?fix(?:e[sd]|ing)?\b", re.IGNORECASE),
     re.compile(r"\bbug\b", re.IGNORECASE),
     re.compile(r"\bpatch\b", re.IGNORECASE),
     re.compile(r"\bresolves?\b", re.IGNORECASE),
-    re.compile(r"closes?\s+#\d+", re.IGNORECASE),
-    re.compile(r"fixes?\s+#\d+", re.IGNORECASE),
+    re.compile(r"\bcloses?\s+#\d+", re.IGNORECASE),
+    re.compile(r"\bfix(?:e[sd])?\s+#\d+", re.IGNORECASE),
 )
 _FIX_COMMIT_EXCLUDE: tuple[re.Pattern[str], ...] = (
     re.compile(r"^Merge ", re.IGNORECASE),
@@ -222,6 +186,9 @@ _FIX_COMMIT_EXCLUDE: tuple[re.Pattern[str], ...] = (
 # prior-defects baseline — a wider window than the 90d activity signals because
 # defect history is a slower-moving cluster than recent churn.
 PRIOR_DEFECT_WINDOW_DAYS: int = 180
+# The window as a surface prints it beside a count: a bare fix total next to a
+# 90-day commit count reads as a 90-day figure.
+PRIOR_DEFECT_WINDOW_LABEL: str = f"{PRIOR_DEFECT_WINDOW_DAYS // 30} months"
 
 
 def is_fix_commit(subject: str) -> bool:
@@ -268,9 +235,6 @@ _CONVENTIONAL_PREFIX = re.compile(
 _CONVENTIONAL_MAP: dict[str, str] = {
     "feat": "feature",
     "feature": "feature",
-    "fix": "fix",
-    "bugfix": "fix",
-    "hotfix": "fix",
     "perf": "refactor",
     "refactor": "refactor",
     "style": "refactor",
@@ -282,7 +246,6 @@ _CONVENTIONAL_MAP: dict[str, str] = {
     "deps": "deps",
     "ci": "chore",
     "chore": "chore",
-    "revert": "fix",
 }
 
 # Keyword fallback, tried in this exact order; first hit wins.
@@ -297,7 +260,6 @@ _EVOLUTION_KEYWORDS: tuple[tuple[str, re.Pattern[str]], ...] = (
             re.IGNORECASE,
         ),
     ),
-    ("fix", re.compile(r"\b(fix|fixes|fixed|bug|patch|hotfix|regression|crash|revert)\b", re.IGNORECASE)),
     (
         "refactor",
         re.compile(
@@ -323,11 +285,15 @@ _EVOLUTION_KEYWORDS: tuple[tuple[str, re.Pattern[str]], ...] = (
 def classify_commit_category(subject: str) -> str:
     """Assign a commit *subject* exactly one :data:`EVOLUTION_CATEGORIES` label.
 
-    A leading conventional-commit prefix is authoritative; otherwise the first
+    "fix" is exactly :func:`is_fix_commit`, checked first, so the timeline's
+    fix band counts the same commits as every other fix count. Otherwise a
+    leading conventional-commit prefix is authoritative, then the first
     matching keyword pattern (in priority order) wins. Unmatched -> ``"other"``.
     """
     if not subject:
         return "other"
+    if is_fix_commit(subject):
+        return "fix"
     m = _CONVENTIONAL_PREFIX.match(subject)
     if m:
         mapped = _CONVENTIONAL_MAP.get(m.group("type").lower())
@@ -339,11 +305,46 @@ def classify_commit_category(subject: str) -> str:
     return "other"
 
 
-# Co-change temporal decay: half-life ~125 days (lambda for exp(-t/tau)).
+# Change-entropy temporal decay: half-life ~125 days (lambda for exp(-t/tau)).
+# Keeps the co-change name; the pair weight uses the commit clock below.
 _CO_CHANGE_DECAY_TAU: float = CO_CHANGE_DECAY_TAU
+
+# Co-change pair decay, measured in commits rather than days.
+_CO_CHANGE_COMMIT_DECAY_TAU: float = CO_CHANGE_COMMIT_DECAY_TAU
 
 # Hotspot temporal decay: half-life for exponentially weighted churn score.
 HOTSPOT_HALFLIFE_DAYS: float = 180.0
+
+#: The rules that turn git history into stored per-file rows (change numbers,
+#: author identity). Stamped into state.json as ``git_history_version`` by every
+#: full git walk; an update that finds another value, or none, walks the whole
+#: history once instead of only the changed files, since a changed file's row is
+#: the only one an incremental walk rewrites. Bump it when such a rule changes.
+#:
+#: v1: change numbers and author identity read through ``repowise.core.forges``
+#: (GitLab ``!N`` merge requests, Azure and Bitbucket PRs, GitLab noreply and
+#: forge bot accounts).
+#: v2: co-change records carry focused_frequency, the shared commits no wider
+#: than the change-entropy sweep cap.
+#: v3: commits carry their category, and changes are rebuilt from history; the
+#: default history window grew from 500 to 5,000 commits.
+GIT_HISTORY_VERSION: int = 3
+GIT_HISTORY_VERSION_KEY = "git_history_version"
+#: Stored under :data:`GIT_HISTORY_VERSION_KEY` by ``repowise attribution
+#: backfill`` so the next update re-walks history to label the newly bound
+#: commits, and can say so instead of reporting a rules change.
+GIT_HISTORY_BACKFILL_REWALK = "attribution-backfill"
+
+
+def git_history_stale(state: dict[str, Any]) -> bool:
+    """Whether the stored git rows predate :data:`GIT_HISTORY_VERSION`.
+
+    Unlike the health analyzer stamp, a missing stamp counts as stale: the
+    rows of an index written before it carry the change-number and identity
+    defects v1 fixes, and only a full walk rewrites the rows of files that
+    do not change.
+    """
+    return state.get(GIT_HISTORY_VERSION_KEY) != GIT_HISTORY_VERSION
 
 # Absolute activity floors for hotspot classification (issue #361). The
 # churn percentile is repo-relative, so on a quiet repo "top quartile"
@@ -367,10 +368,6 @@ HOTSPOT_MIN_COMMITS_90D: int = 3
 HOTSPOT_MIN_TEMPORAL_SCORE: float = 0.5
 HOTSPOT_HIGH_COMMITS_90D: int = 8
 
-# Regex to extract PR/MR numbers from commit messages.
-# Matches: "#123", "Merge pull request #456", "(#789)", "!42" (GitLab MR)
-_PR_NUMBER_RE = re.compile(r"(?:pull request |)\#(\d+)|\(#(\d+)\)|!(\d+)")
-
 # Allowlist of extensions for which per-file git indexing (blame, commit
 # history, hotspot/stable classification) is worth running.  Anything NOT in
 # this set is skipped — data, config, markup, dotfiles, and binaries add no
@@ -387,4 +384,36 @@ _MAX_BLAME_SIZE_BYTES: int = 100 * 1024  # 100 KB
 # Maximum seconds to wait for a single file's git indexing.  If exceeded the
 # file is recorded with whatever data was collected before the timeout and the
 # semaphore slot is released so other files can proceed.
-_FILE_INDEX_TIMEOUT_SECS: float = 45.0
+#
+# The default is deliberately generous: a first full index of a large
+# repository can run several slow git subprocesses per file (log, blame,
+# renames), and a premature fire here would silently record partial data for
+# files that were simply still working. Override per-repo or per-machine
+# with ``REPOWISE_GIT_INDEX_TIMEOUT_S`` (a positive float, seconds).
+_FILE_INDEX_TIMEOUT_SECS_ENV = "REPOWISE_GIT_INDEX_TIMEOUT_S"
+_FILE_INDEX_TIMEOUT_SECS_DEFAULT: float = 120.0
+
+
+def _resolve_file_index_timeout() -> float:
+    """Seconds one file's git indexing may take, from env or the default.
+
+    An unparseable or non-positive value keeps the default rather than
+    silently dropping the budget (matching the other ``REPOWISE_*_TIMEOUT_S``
+    resolvers in the codebase).
+    """
+    raw = os.environ.get(_FILE_INDEX_TIMEOUT_SECS_ENV, "").strip()
+    if not raw:
+        return _FILE_INDEX_TIMEOUT_SECS_DEFAULT
+    try:
+        seconds = float(raw)
+    except ValueError:
+        seconds = float("nan")
+    # NaN and inf both fail ``isfinite``/``> 0``, so they land on the default
+    # rather than on a budget asyncio.wait_for would treat as already expired
+    # (or one it would never fire at all).
+    if not math.isfinite(seconds) or not seconds > 0:
+        return _FILE_INDEX_TIMEOUT_SECS_DEFAULT
+    return seconds
+
+
+_FILE_INDEX_TIMEOUT_SECS: float = _resolve_file_index_timeout()

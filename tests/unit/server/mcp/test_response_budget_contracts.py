@@ -18,6 +18,9 @@ from repowise.server.mcp_server._budget import (
     resolve_response_budget_repo_root,
 )
 
+# These tests read the accounting the lean envelope leaves out by default.
+pytestmark = pytest.mark.usefixtures("debug_meta")
+
 
 def _payload(tool: str, pad: int) -> dict[str, Any]:
     if tool == "get_health":
@@ -263,43 +266,6 @@ def test_adversarial_payload_goldens_fit_and_recover_in_one_lookup(
             assert f'"id": {row_id}' not in joined
 
 
-def test_health_budget_prunes_profiles_for_removed_plans(
-    setup_mcp: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import repowise.server.mcp_server as mcp_mod
-
-    (tmp_path / ".repowise").mkdir()
-    monkeypatch.setattr(mcp_mod, "_repo_path", str(tmp_path))
-    plans = [
-        {"id": f"plan-{index}", "validation_profile_id": f"profile-{index}"}
-        for index in range(8)
-    ]
-    profiles = [
-        {
-            "id": f"profile-{index}",
-            "commands": [f"pytest tests/test_{index}.py " + "x" * 6_000],
-        }
-        for index in range(8)
-    ]
-    payload = {
-        "mode": "targets",
-        "targets": ["src/large.py"],
-        "refactoring_plans": plans,
-        "refactoring_plans_total": len(plans),
-        "validation_profiles": profiles,
-        "validation_profiles_total": len(profiles),
-        "_meta": {"contract_version": 1},
-    }
-
-    result = _enforce("get_health", payload, ["refactoring"])
-    referenced = {plan["validation_profile_id"] for plan in result["refactoring_plans"]}
-    retained = {profile["id"] for profile in result["validation_profiles"]}
-    assert retained == referenced
-    assert result["validation_profiles_emitted"] == len(retained)
-    assert result["validation_profiles_reduced_reason"] == "response_budget"
-    assert result["_meta"]["response_budget"]["serialized_chars"] <= EXPANDED_RESPONSE_CHARS
-
-
 def test_explicit_include_uses_the_expansion_tier(
     setup_mcp: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -322,7 +288,7 @@ def test_oversized_protected_answer_is_reduced_and_recoverable(
     (tmp_path / ".repowise").mkdir()
     monkeypatch.setattr(mcp_mod, "_repo_path", str(tmp_path))
     payload = _payload("get_answer", 0)
-    payload["answer"] = "PROTECTED_ANSWER_" + "z" * 50_000
+    answer = payload["answer"] = "PROTECTED_ANSWER_" + "z" * 50_000
     result = _enforce("get_answer", payload)
 
     accounting = result["_meta"]["response_budget"]
@@ -333,9 +299,44 @@ def test_oversized_protected_answer_is_reduced_and_recoverable(
     refs = result["_meta"]["omitted"]["refs"]
     store = OmissionStore(default_store_path(tmp_path))
     try:
-        assert any("PROTECTED_ANSWER_" in (store.get(ref) or "") for ref in refs)
+        stored = [store.get(ref) or "" for ref in refs]
     finally:
         store.close()
+    # A ref holds the cut tail, never the head the response already serves.
+    assert any(tail and answer.endswith(tail) for tail in stored)
+    assert not any(tail.startswith("PROTECTED_ANSWER_") for tail in stored)
+
+
+def test_an_oversized_omission_restore_serves_its_head_and_stores_only_the_tail(
+    setup_mcp: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Restoring a ref bigger than the budget must make progress, not loop."""
+    import repowise.server.mcp_server as mcp_mod
+
+    (tmp_path / ".repowise").mkdir()
+    monkeypatch.setattr(mcp_mod, "_repo_path", str(tmp_path))
+    lines = [f"line {i:05d} " + "x" * 40 for i in range(1500)]
+    payload = {
+        "symbol_id": "repowise#0123456789ab",
+        "ref": "repowise#0123456789ab",
+        "kind": "omission",
+        "source": "mcp:get_symbol",
+        "content": "\n".join(lines),
+        "_meta": {"contract_version": 1},
+    }
+
+    result = _enforce("get_symbol", payload)
+
+    head, marker = result["content"].rsplit("\n", 1)
+    shown = head.count("\n") + 1
+    assert head.startswith("line 00000") and shown > 200
+    assert f"{len(lines) - shown} lines omitted" in marker
+    store = OmissionStore(default_store_path(tmp_path))
+    try:
+        tails = [store.get(ref) or "" for ref in result["_meta"]["omitted"]["refs"]]
+    finally:
+        store.close()
+    assert "\n".join(lines[shown:]) in tails
 
 
 @pytest.mark.asyncio
@@ -527,6 +528,22 @@ def _resolve_shed_path(shape: dict[str, Any], key: str) -> str | None:
     on arguments the recording did not pass. A block whose *parent* is present
     while the leaf is not is a typo, and a silent no-op in ``fit_to_budget``.
     """
+    if key.count("[].") > 1:
+        return "only one list level ([].) is supported"
+    if "[]." in key:
+        rows_path, _, row_key = key.partition("[].")
+        rows: Any = shape
+        for part in rows_path.split("."):
+            if not isinstance(rows, dict) or part not in rows:
+                return None
+            rows = rows[part]
+        if not isinstance(rows, list):
+            return f"{rows_path} is not a list of rows"
+        row = next((r for r in rows if isinstance(r, dict)), None)
+        if row is None:
+            return None
+        # A row that is present must carry the field, top-level or not.
+        return _resolve_shed_path({"row": row}, f"row.{row_key}")
     leaf, tail = (key[:-2], True) if key.endswith("[]") else (key, False)
     *parents, name = leaf.split(".")
     node: Any = shape
@@ -684,3 +701,144 @@ def test_a_tool_with_no_graph_counts_claims_no_floor() -> None:
     result = _enforce("get_overview", _payload("get_overview", 0))
 
     assert "floor" not in result["_meta"]
+
+
+def _enforce_health(payload: dict[str, Any], **kwargs: Any) -> dict:
+    """Budget *payload* as a ``get_health`` call with *kwargs*, hooks and all."""
+    from repowise.server.mcp_server import ensure_full_surface, get_health
+
+    ensure_full_surface()
+    return enforce_response_budget(
+        "get_health",
+        payload,
+        signature=inspect.signature(get_health),
+        args=(),
+        kwargs=kwargs,
+    )
+
+
+def _fix_first_page(total: int, cursor: int = 0) -> dict[str, Any]:
+    items = [{"id": f"fix1_{index}", "why": "w" * 2_000} for index in range(25)]
+    return {
+        "mode": "dashboard",
+        "fix_first": {
+            "items": items,
+            "lead": items[0],
+            "counts": {"inventory": total, "in_scope": total, "eligible": total, "due": 0,
+                       "shown": len(items), "excluded": {}},
+            "items_total": total,
+            "cursor": cursor,
+        },
+        "recovery": {"fix_first": {"remaining": total - cursor - 25, "call": "stale"}}
+        if cursor + 25 < total
+        else {},
+        "_meta": {"contract_version": 1},
+    }
+
+
+@pytest.mark.parametrize(("total", "cursor"), [(100, 25), (50, 25)])
+def test_a_trimmed_fix_first_page_restates_its_next_cursor(
+    setup_mcp: str, total: int, cursor: int
+) -> None:
+    """The budget trims a 25-item page's tail; the next page must start at the
+    first row the caller did not get, including on the last page, which had no
+    next call before the trim."""
+    result = _enforce_health(
+        _fix_first_page(total, cursor), only=["fix_first"], limit=25, cursor=cursor
+    )
+    block = result["fix_first"]
+    shown = len(block["items"])
+    assert 0 < shown < 25
+    assert block["counts"]["shown"] == shown
+    recovery = result["recovery"]["fix_first"]
+    assert recovery["remaining"] == total - cursor - shown
+    assert recovery["call"].endswith(f"cursor={cursor + shown})")
+    assert "only=['fix_first']" in recovery["call"]
+
+
+def test_a_trimmed_plan_page_restates_its_next_cursor(setup_mcp: str) -> None:
+    plans = [{"id": f"refac4_{index}", "target_symbol": "s" * 2_000} for index in range(25)]
+    payload = {
+        "mode": "dashboard",
+        "refactoring_plans": plans,
+        "refactoring_plans_total": 25,
+        "refactoring_plans_status": {"state": "available", "reason": None},
+        "_meta": {"contract_version": 1},
+    }
+    result = _enforce_health(
+        payload,
+        include=["refactoring"],
+        only=["refactoring_plans"],
+        limit=25,
+        refactoring_scope="all",
+    )
+    shown = len(result["refactoring_plans"])
+    assert 0 < shown < 25
+    recovery = result["recovery"]["refactoring_plans"]
+    assert recovery["remaining"] == 25 - shown
+    assert recovery["call"].endswith(f"cursor={shown})")
+    assert "refactoring_scope='all'" in recovery["call"]
+
+
+def test_an_untrimmed_last_page_names_no_next_call(setup_mcp: str) -> None:
+    payload = _fix_first_page(total=25)
+    for item in payload["fix_first"]["items"]:
+        item["why"] = "w"
+    result = _enforce_health(payload, only=["fix_first"], limit=25)
+    assert len(result["fix_first"]["items"]) == 25
+    assert "fix_first" not in (result.get("recovery") or {})
+
+
+def _evidence_row(kind: str, details: int) -> dict[str, Any]:
+    return {
+        "kind": kind,
+        "label": kind.replace("_", " "),
+        "status": "ok",
+        "basis": "measured",
+        "value": 1,
+        "details": [{"path": f"src/{kind}/file_{i}.py", "note": "x" * 400} for i in range(details)],
+    }
+
+
+def test_a_row_shed_path_is_checked_inside_its_rows() -> None:
+    shape = {"evidence": {"items": [{"kind": "owners", "details": []}]}}
+
+    assert _resolve_shed_path(shape, "evidence.items[].details[]") is None
+    assert _resolve_shed_path(shape, "evidence.items[].detials") is not None
+    assert _resolve_shed_path(shape, "evidence[].items[].details") is not None
+
+
+def test_requested_evidence_is_trimmed_not_dropped(setup_mcp: str) -> None:
+    rows = [_evidence_row("reaching_tests", 60), _evidence_row("owners", 20)]
+    rows += [_evidence_row(f"small_{i}", 1) for i in range(9)]
+    payload = {
+        "directive": {"status": "review", "action": "Read the evidence."},
+        "health_delta": {"status": "available"},
+        "evidence": {"schema_version": 1, "items": rows},
+    }
+
+    result = _enforce("get_change_risk", payload, include=["evidence"])
+
+    items = result["evidence"]["items"]
+    assert [row["kind"] for row in items] == [row["kind"] for row in rows]
+    assert all({"kind", "label", "status", "basis", "value"} <= set(row) for row in items)
+    # The heaviest row lost its tail first; the light rows kept every detail.
+    assert items[0]["details_omitted"] > 0 and items[0]["details"]
+    assert all(len(row["details"]) == 1 for row in items[2:])
+    assert result["truncated"] is True and "repowise#" in json.dumps(result)
+    budget = result["_meta"]["response_budget"]
+    assert budget["serialized_chars"] <= budget["limit_chars"] == EXPANDED_RESPONSE_CHARS
+
+
+def test_a_small_requested_evidence_block_is_untouched(setup_mcp: str) -> None:
+    rows = [_evidence_row("owners", 2), _evidence_row("decisions_crossed", 1)]
+    payload = {
+        "directive": {"status": "ok"},
+        "health_delta": {"status": "available"},
+        "evidence": {"schema_version": 1, "items": rows},
+    }
+
+    result = _enforce("get_change_risk", payload, include=["evidence"])
+
+    assert result["evidence"]["items"] == rows
+    assert "truncated" not in result

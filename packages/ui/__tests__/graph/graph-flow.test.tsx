@@ -66,49 +66,46 @@ describe("GraphFlow shell", () => {
   });
 
   // Uses "language" as the controlled value because it is the one that is not
-  // the default. Rendered in the file scope: the constellation colours hubs by
-  // family whatever colorMode says, so the control is not offered there.
+  // the default. There is no colour control in the header any more, but the
+  // mode still arrives from the URL and the 1/2 keys, and the key row reports
+  // it. Rendered in the dead-code reading: the Files overview pins community.
   it("reflects a controlled colorMode and reports changes without self-updating", () => {
     const onColorModeChange = vi.fn();
     render(
       <GraphFlow
         {...baseProps}
-        initialViewMode="full"
+        initialViewMode="dead"
         colorMode="language"
         onColorModeChange={onColorModeChange}
       />,
     );
 
-    // Controlled value wins: Language is active, Community (the default) is not.
-    expect(screen.getByRole("button", { name: "Language" }).getAttribute("aria-pressed")).toBe("true");
-    expect(
-      screen.getByRole("button", { name: "Community" }).getAttribute("aria-pressed"),
-    ).toBe("false");
-
-    // Clicking another mode reports out but does NOT change the displayed mode —
-    // the host owns the value and hasn't pushed a new prop yet.
-    fireEvent.click(screen.getByRole("button", { name: "Community" }));
+    expect(screen.getByText("Python")).toBeTruthy();
+    fireEvent.keyDown(window, { key: "2" });
     expect(onColorModeChange).toHaveBeenCalledWith("community");
-    expect(screen.getByRole("button", { name: "Language" }).getAttribute("aria-pressed")).toBe("true");
-    expect(
-      screen.getByRole("button", { name: "Community" }).getAttribute("aria-pressed"),
-    ).toBe("false");
+    // The host owns the value and has not pushed a new one yet.
+    expect(screen.getByText("Python")).toBeTruthy();
   });
 
   it("tracks its own colorMode when uncontrolled (seeded by initialColorMode)", () => {
     render(
-      <GraphFlow {...baseProps} initialViewMode="full" initialColorMode="language" />,
+      <GraphFlow {...baseProps} initialViewMode="dead" initialColorMode="language" />,
     );
 
-    expect(
-      screen.getByRole("button", { name: "Language" }).getAttribute("aria-pressed"),
-    ).toBe("true");
+    expect(screen.getByText("Python")).toBeTruthy();
+    fireEvent.keyDown(window, { key: "2" });
+    expect(screen.queryByText("Python")).toBeNull();
+  });
 
-    fireEvent.click(screen.getByRole("button", { name: "Community" }));
-    expect(screen.getByRole("button", { name: "Community" }).getAttribute("aria-pressed")).toBe("true");
-    expect(
-      screen.getByRole("button", { name: "Language" }).getAttribute("aria-pressed"),
-    ).toBe("false");
+  it("keeps the header row to Trace and Search: no layout, colour or fit glyphs", () => {
+    render(<GraphFlow {...baseProps} initialViewMode="full" />);
+    expect(screen.getByRole("button", { name: "Trace" })).toBeTruthy();
+    expect(screen.getByRole("textbox", { name: "Search graph nodes" })).toBeTruthy();
+    for (const gone of ["Hierarchical", "Force (FA2)", "Language", "Community", "Fit view"]) {
+      expect(screen.queryByRole("button", { name: gone })).toBeNull();
+    }
+    // Shortcuts moved to the key row; `?` still opens them.
+    expect(screen.getByRole("button", { name: "Keyboard shortcuts" })).toBeTruthy();
   });
 
   it("offers an exclusive All / Hot / Dead node filter", () => {
@@ -165,7 +162,7 @@ describe("GraphFlow shell", () => {
         initialViewMode="full"
         fullGraph={{
           nodes: [fileNode("app.py", "python"), fileNode("core.py", "python")],
-          links: [],
+          links: [{ source: "app.py", target: "core.py", imported_names: ["run"] }],
         }}
         executionFlows={{
           total_entry_points: 1,
@@ -232,12 +229,13 @@ describe("GraphFlow shell", () => {
     const nodes = flows.flows[0]!.trace.map((id) =>
       fileNode(id.split("::")[0]!, "python"),
     );
+    const links = [{ source: "app.py", target: "core.py", imported_names: ["run"] }];
     rerender(
       <GraphFlow
         {...baseProps}
         initialViewMode="full"
         executionFlows={flows}
-        fullGraph={{ nodes, links: [] }}
+        fullGraph={{ nodes, links }}
       />,
     );
     expect(focusNodeSpy).toHaveBeenCalledWith("app.py");
@@ -249,64 +247,87 @@ describe("GraphFlow shell", () => {
         {...baseProps}
         initialViewMode="full"
         executionFlows={flows}
-        fullGraph={{ nodes: [...nodes], links: [] }}
+        fullGraph={{ nodes: [...nodes], links }}
       />,
     );
     expect(focusNodeSpy).toHaveBeenCalledTimes(1);
   });
 
-  it("shows hierarchical layout as unavailable above the ELK cap, with the reason", () => {
-    const nodes = Array.from({ length: 501 }, (_, i) =>
-      fileNode(`f${i}.ts`, "typescript"),
-    );
+});
+
+describe("GraphFlow Files overview", () => {
+  const nodes = [
+    fileNode("src/a.py", "python"),
+    fileNode("src/b.py", "python"),
+    fileNode("src/lonely.py", "python"),
+    fileNode("external:rich.console", "python"),
+  ];
+  const links = [
+    { source: "src/a.py", target: "src/b.py", imported_names: ["b"] },
+    { source: "src/a.py", target: "external:rich.console", imported_names: ["Console"] },
+    // Co-change is not a dependency: it holds nothing on the map.
+    { source: "src/lonely.py", target: "src/a.py", imported_names: [], edge_type: "co_changes" },
+  ];
+
+  it("hides third-party modules and unlinked files by default, and says how many", () => {
+    const onShowExternalChange = vi.fn();
     render(
       <GraphFlow
         {...baseProps}
         initialViewMode="full"
-        fullGraph={{ nodes, links: [] }}
+        fullGraph={{ nodes, links }}
+        onShowExternalChange={onShowExternalChange}
       />,
     );
-
-    const button = screen.getByRole("button", { name: "Hierarchical" });
-
-    // Unavailable up front rather than live-then-refusing. ELK's 500-node cap
-    // sits below the graph loader's 1,500-node floor, and "load more" only
-    // raises it — so on any repo past the cap this control could never act,
-    // and used to say so only after you pressed it.
-    expect(button.hasAttribute("disabled")).toBe(true);
-    expect(button.getAttribute("title")).toContain(
-      "Hierarchical layout needs 500 nodes or fewer",
-    );
-
-    // The reason must not offer a remedy that cannot work. The module filter,
-    // the community filter and search all dim rather than remove, so none of
-    // them changes `graph.order`, which is the number this cap is measured
-    // against — an earlier version told the reader to use exactly those.
-    expect(button.getAttribute("title")).not.toMatch(
-      /module filter|Modules scope|narrow the view/i,
-    );
-
-    // Clicking a disabled control changes nothing.
-    fireEvent.click(button);
-    expect(button.getAttribute("aria-pressed")).toBe("false");
+    expect(screen.getByText(/^2 files/)).toBeTruthy();
+    expect(screen.getByText(/1 third-party modules hidden/)).toBeTruthy();
+    expect(screen.getByText("1 unlinked files not drawn")).toBeTruthy();
+    const toggle = screen.getByRole("button", { name: "Show third-party modules" });
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(toggle);
+    expect(onShowExternalChange).toHaveBeenCalledWith(true);
   });
 
-  it("leaves hierarchical layout available when the graph fits under the cap", () => {
-    const nodes = Array.from({ length: 40 }, (_, i) =>
-      fileNode(`f${i}.ts`, "typescript"),
-    );
+  it("keeps a pinned file the overview would leave out, with its edges", () => {
     render(
       <GraphFlow
         {...baseProps}
         initialViewMode="full"
-        fullGraph={{ nodes, links: [] }}
+        fullGraph={{ nodes, links }}
+        initialSelectedNode="src/lonely.py"
       />,
     );
+    // lonely.py (held only by a co-change) and a.py, which it reaches.
+    expect(screen.queryByText("1 unlinked files not drawn")).toBeNull();
+    expect(screen.getByText(/^3 files/)).toBeTruthy();
+  });
 
-    const button = screen.getByRole("button", { name: "Hierarchical" });
-    expect(button.hasAttribute("disabled")).toBe(false);
-    fireEvent.click(button);
-    expect(button.getAttribute("aria-pressed")).toBe("true");
+  it("draws the Files overview in community colours whatever colorMode says", () => {
+    render(
+      <GraphFlow {...baseProps} initialViewMode="full" colorMode="language" fullGraph={{ nodes, links }} />,
+    );
+    expect(screen.queryByText("Python")).toBeNull();
+  });
+
+  it("draws them when the host asks", () => {
+    render(
+      <GraphFlow
+        {...baseProps}
+        initialViewMode="full"
+        fullGraph={{ nodes, links }}
+        showExternal
+      />,
+    );
+    // Counted apart from the repo's own files, and co-change is no dependency.
+    expect(screen.getByText("2 files · 1 third-party · 2 dependencies")).toBeTruthy();
+    expect(screen.getByText("Third-party modules shown")).toBeTruthy();
+  });
+
+  it("keys the direction a hovered file's edges point", () => {
+    render(<GraphFlow {...baseProps} initialViewMode="full" fullGraph={{ nodes, links }} />);
+    expect(screen.getByText("imports")).toBeTruthy();
+    expect(screen.getByText("imported by")).toBeTruthy();
+    expect(screen.getByText("Co-change")).toBeTruthy();
   });
 });
 

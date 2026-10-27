@@ -12,7 +12,7 @@ cleanup candidates ranked by confidence. No LLM key required.
 
 ```bash
 cd /path/to/your-repo
-repowise init --index-only --yes
+repowise init --yes --no-prose
 ```
 
 ## 1. Scan the repo

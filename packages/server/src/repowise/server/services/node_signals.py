@@ -16,6 +16,9 @@ from typing import Any, TypeVar
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.dead_code.serving import CrossRepoLookup, serve_findings
+from repowise.core.analysis.decisions.scope import SCOPE_BASIS_FOOTPRINT
+from repowise.core.persistence.crud.analysis.shown import ungated
 from repowise.core.persistence.models import (
     DeadCodeFinding,
     DecisionRecord,
@@ -56,8 +59,16 @@ async def collect_node_signals(
     session: AsyncSession,
     repo_id: str,
     node_ids: list[str] | None = None,
+    *,
+    lookup: CrossRepoLookup | None = None,
+    alias: str | None = None,
 ) -> dict[str, NodeSignals]:
     """Join git metadata, dead-code findings, decisions, and docs into one map.
+
+    Dead-code confidence is served (:func:`serve_findings`): in a workspace,
+    *lookup* and *alias* apply the cross-repo cut. It never drops a finding,
+    so ``is_dead`` is the same without it: a caller that only counts dead
+    files needs no cut.
 
     When *node_ids* is provided, queries are scoped to that subset; otherwise
     we fetch repo-wide. Returns ``{node_id: NodeSignals}``. Missing keys imply
@@ -86,11 +97,12 @@ async def collect_node_signals(
     dead_q = select(DeadCodeFinding).where(
         DeadCodeFinding.repository_id == repo_id,
         DeadCodeFinding.status == "open",
+        ungated("dead_code", DeadCodeFinding.file_path, DeadCodeFinding.kind),
         DeadCodeFinding.kind == "unreachable_file",
     )
     if node_ids is not None:
         dead_q = dead_q.where(DeadCodeFinding.file_path.in_(node_ids))
-    for f in (await session.execute(dead_q)).scalars():
+    for f in serve_findings(list((await session.execute(dead_q)).scalars()), lookup, alias):
         s = _entry(f.file_path)
         s.is_dead = True
         s.dead_confidence = f.confidence
@@ -99,6 +111,9 @@ async def collect_node_signals(
     dec_q = select(DecisionRecord.affected_files_json).where(
         DecisionRecord.repository_id == repo_id,
         DecisionRecord.status.in_(("active", "proposed")),
+        # A commit footprint does not make each file it touched a file
+        # with a decision.
+        DecisionRecord.scope_basis != SCOPE_BASIS_FOOTPRINT,
     )
     decision_paths: set[str] = set()
     for (raw,) in (await session.execute(dec_q)).all():

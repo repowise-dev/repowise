@@ -21,11 +21,11 @@ import json
 import logging
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import Collection
-    from pathlib import Path
+    from collections.abc import Collection, Iterable, Mapping, Sequence
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -79,16 +79,17 @@ _QUALIFIER_RE = re.compile(r"::|\.")
 class RepoIndex:
     """Read-only accessor over one repo's ``wiki.db``.
 
-    Built by :func:`open_workspace_index`; the caller owns :meth:`close`. Every
-    accessor is a pure in-memory read of what :meth:`_load` fetched, so a
-    dialect may call one from the worker thread it runs in.
+    Built by :func:`open_workspace_index`, or by :meth:`from_symbols` from rows
+    the caller already holds; the caller owns :meth:`close`. Every accessor is a
+    pure in-memory read of what was loaded, so a dialect may call one from the
+    worker thread it runs in.
     """
 
     def __init__(
         self,
         alias: str,
         repo_path: Path,
-        session: AsyncSession,
+        session: AsyncSession | Any,
         engine: Any,
         *,
         # Required: an empty id makes every repository-scoped query return nothing.
@@ -103,7 +104,40 @@ class RepoIndex:
         self._by_name: dict[str, list[IndexedSymbol]] = {}
         self._externals: list[ExternalImport] = []
 
+    @classmethod
+    def from_symbols(
+        cls,
+        alias: str,
+        symbols: Iterable[IndexedSymbol],
+        *,
+        repo_id: str,
+        session: Any = None,
+        names: Mapping[str, Sequence[IndexedSymbol]] | None = None,
+    ) -> RepoIndex:
+        """An index over *symbols* the caller already holds, with no database.
+
+        *session* is whatever the caller's test-impact reads take (see
+        :func:`.test_impact.analyze_workspace_test_impact`); :meth:`close` leaves
+        it alone. *names* replaces the name lookup built from *symbols*, for a
+        caller that loads only some files but resolves names across the repo.
+        """
+        index = cls(alias, Path(), session, None, repo_id=repo_id)
+        index._index(symbols)
+        if names is not None:
+            index._by_name = names  # type: ignore[assignment]
+        return index
+
     # -- Loading -----------------------------------------------------------
+
+    def _index(self, symbols: Iterable[IndexedSymbol]) -> None:
+        for sym in symbols:
+            self._by_file.setdefault(sym.file_path, []).append(sym)
+        # Outermost first, so the first span containing a line is the class and
+        # the last is the method.
+        for file_symbols in self._by_file.values():
+            file_symbols.sort(key=lambda s: (s.start_line, -s.end_line))
+            for sym in file_symbols:
+                self._by_name.setdefault(sym.name, []).append(sym)
 
     async def _load(self, repo_id: str) -> None:
         from sqlalchemy import select
@@ -124,29 +158,23 @@ class RepoIndex:
                 WikiSymbol.language,
             ).where(WikiSymbol.repository_id == repo_id)
         )
-        for row in rows:
-            # By keyword: eight of the ten fields are strings, so a reordered
-            # or inserted column would swap values positionally without error.
-            self._by_file.setdefault(row.file_path, []).append(
-                IndexedSymbol(
-                    symbol_id=row.symbol_id,
-                    name=row.name,
-                    qualified_name=row.qualified_name,
-                    kind=row.kind,
-                    signature=row.signature,
-                    file_path=row.file_path,
-                    start_line=row.start_line,
-                    end_line=row.end_line,
-                    visibility=row.visibility,
-                    language=row.language or "",
-                )
+        # By keyword: eight of the ten fields are strings, so a reordered or
+        # inserted column would swap values positionally without error.
+        self._index(
+            IndexedSymbol(
+                symbol_id=row.symbol_id,
+                name=row.name,
+                qualified_name=row.qualified_name,
+                kind=row.kind,
+                signature=row.signature,
+                file_path=row.file_path,
+                start_line=row.start_line,
+                end_line=row.end_line,
+                visibility=row.visibility,
+                language=row.language or "",
             )
-        # Outermost first, so the first span containing a line is the class and
-        # the last is the method.
-        for symbols in self._by_file.values():
-            symbols.sort(key=lambda s: (s.start_line, -s.end_line))
-            for sym in symbols:
-                self._by_name.setdefault(sym.name, []).append(sym)
+            for row in rows
+        )
 
         edges = await self._session.execute(
             select(
@@ -177,7 +205,7 @@ class RepoIndex:
     # -- Public API --------------------------------------------------------
 
     @property
-    def session(self) -> AsyncSession:
+    def session(self) -> AsyncSession | Any:
         """The connection the index holds; reachability queries run on it too."""
         return self._session
 
@@ -257,18 +285,39 @@ class RepoIndex:
         return [s for syms in self._by_file.values() for s in syms if s.visibility == "public"]
 
     async def close(self) -> None:
+        # No engine means the caller built this over its own handle and owns it.
+        if self._engine is None:
+            return
         await self._session.close()
         await self._engine.dispose()
 
 
 class WorkspaceIndex:
-    """The open :class:`RepoIndex` for each workspace repo that has one."""
+    """The open :class:`RepoIndex` for each workspace repo that has one.
 
-    def __init__(self, repos: dict[str, RepoIndex]) -> None:
+    *openable* names repos not opened yet (alias to checkout path);
+    :meth:`ensure` opens the ones a caller turns out to need, so a run that
+    reads two repos does not load the symbols of two hundred.
+    """
+
+    def __init__(self, repos: dict[str, RepoIndex], openable: dict[str, Path] | None = None) -> None:
         self._repos = repos
+        self._openable = dict(openable or {})
 
     def get(self, alias: str) -> RepoIndex | None:
         return self._repos.get(alias)
+
+    async def ensure(self, aliases: Collection[str]) -> None:
+        """Open the index of each alias in *aliases* not opened yet. A repo that fails is skipped."""
+        todo = [(a, self._openable.pop(a)) for a in sorted(aliases) if a in self._openable]
+        opened = await asyncio.gather(
+            *(open_repo_index(alias, path) for alias, path in todo), return_exceptions=True
+        )
+        for (alias, _path), index in zip(todo, opened, strict=True):
+            if isinstance(index, BaseException):
+                _log.warning("Could not open the index for '%s'", alias, exc_info=index)
+            elif index is not None:
+                self._repos[alias] = index
 
     async def close(self) -> None:
         for repo in self._repos.values():
@@ -279,13 +328,31 @@ class WorkspaceIndex:
         self._repos.clear()
 
 
-async def open_repo_index(alias: str, repo_path: Path) -> RepoIndex | None:
-    """Open *repo_path*'s ``wiki.db`` read side, or None when it has no index."""
+async def checkout_repository(session: AsyncSession, repo_path: Path) -> Any:
+    """The ``repositories`` row describing *repo_path*, or None in an empty index.
+
+    A wiki.db normally holds one repository row; prefer the one recorded at
+    this checkout when it holds more, since test runs and moved checkouts leave
+    others behind. Newest first so the fallback is a decision rather than
+    whatever order the scan returns.
+    """
     from sqlalchemy import select
 
     from repowise.core.persistence.crud.repository import get_repository_by_path
     from repowise.core.persistence.models import Repository
 
+    repo = await get_repository_by_path(session, str(repo_path))
+    if repo is None:
+        repo = (
+            await session.execute(
+                select(Repository).order_by(Repository.updated_at.desc()).limit(1)
+            )
+        ).scalar_one_or_none()
+    return repo
+
+
+async def open_repo_index(alias: str, repo_path: Path) -> RepoIndex | None:
+    """Open *repo_path*'s ``wiki.db`` read side, or None when it has no index."""
     from .registry import open_repo_db, repo_db_path
 
     if not repo_db_path(repo_path).is_file():
@@ -295,17 +362,7 @@ async def open_repo_index(alias: str, repo_path: Path) -> RepoIndex | None:
     session = session_factory()
     ok = False
     try:
-        # A wiki.db normally holds one repository row; prefer the one recorded
-        # at this checkout when it holds more, since test runs and moved
-        # checkouts leave others behind. Newest first so the fallback is a
-        # decision rather than whatever order the scan returns.
-        repo = await get_repository_by_path(session, str(repo_path))
-        if repo is None:
-            repo = (
-                await session.execute(
-                    select(Repository).order_by(Repository.updated_at.desc()).limit(1)
-                )
-            ).scalar_one_or_none()
+        repo = await checkout_repository(session, repo_path)
         if repo is None:
             raise LookupError(f"No repository row in {repo_path}")
         index = RepoIndex(alias, repo_path, session, engine, repo_id=repo.id)
@@ -325,23 +382,20 @@ async def open_workspace_index(
     workspace_root: Path,
     *,
     aliases: Collection[str] | None = None,
+    deferred: bool = False,
 ) -> WorkspaceIndex:
     """Open every indexed repo in the workspace. A repo that fails is skipped.
 
-    *aliases*, when given, restricts the open to those repos.
+    *aliases*, when given, restricts the open to those repos. *deferred* opens
+    none of them yet: the caller opens what it needs with
+    :meth:`WorkspaceIndex.ensure`.
     """
-    entries = [e for e in ws_config.repos if aliases is None or e.alias in aliases]
-    opened = await asyncio.gather(
-        *(
-            open_repo_index(e.alias, (workspace_root / e.path).resolve())
-            for e in entries
-        ),
-        return_exceptions=True,
-    )
-    repos: dict[str, RepoIndex] = {}
-    for entry, index in zip(entries, opened, strict=True):
-        if isinstance(index, BaseException):
-            _log.warning("Could not open the index for '%s'", entry.alias, exc_info=index)
-        elif index is not None:
-            repos[entry.alias] = index
-    return WorkspaceIndex(repos)
+    openable = {
+        e.alias: (workspace_root / e.path).resolve()
+        for e in ws_config.repos
+        if aliases is None or e.alias in aliases
+    }
+    index = WorkspaceIndex({}, openable)
+    if not deferred:
+        await index.ensure(list(openable))
+    return index

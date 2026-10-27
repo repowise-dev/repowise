@@ -196,3 +196,73 @@ async def test_covered_lines_are_withheld_from_the_list_response(
 
     assert all("covered_lines" not in f for f in listed["files"])
     assert detail["files"][0]["covered_lines"] == [1, 2, 3]
+
+
+async def test_summary_says_whether_coverage_was_measured_at_the_indexed_commit(
+    client, session, tmp_path
+) -> None:
+    from repowise.core.persistence.models import Repository
+
+    repo = await create_test_repo(client, tmp_path)
+    await save_coverage_files(
+        session, repo["id"], _FILES, source_format="lcov", ingested_commit_sha="aaa"
+    )
+    row = await session.get(Repository, repo["id"])
+    row.head_commit = "bbb"
+    await session.commit()
+
+    summary = (await _get(client, repo["id"], include_inferred="false"))["summary"]
+
+    assert summary["freshness"] == {"status": "stale", "indexed_commit": "bbb"}
+    # Written without provenance: the counts are unknown, not zero.
+    assert summary["report_paths"] is None
+    assert summary["source_formats"] == ["lcov"]
+
+
+async def test_history_carries_one_point_per_report_oldest_first(
+    client, session, tmp_path
+) -> None:
+    from datetime import UTC, datetime
+
+    repo = await create_test_repo(client, tmp_path)
+    for minute, commit in enumerate(("aaa", "bbb")):
+        files = _FILES if commit == "aaa" else _FILES[1:]
+        await save_coverage_files(
+            session,
+            repo["id"],
+            files,
+            source_format="lcov",
+            ingested_commit_sha=commit,
+            ingested_at=datetime(2026, 9, 1, 12, minute, tzinfo=UTC),
+        )
+    await session.commit()
+
+    body = await _get(client, repo["id"], include_inferred="false")
+
+    # SQLite drops the offset, as it does for ``summary.ingested_at``.
+    assert body["history"] == [
+        {
+            "ingested_at": "2026-09-01T12:00:00",
+            "ingested_commit_sha": "aaa",
+            "line_coverage_pct": 63.33,
+            "branch_coverage_pct": 54.17,
+        },
+        {
+            "ingested_at": "2026-09-01T12:01:00",
+            "ingested_commit_sha": "bbb",
+            "line_coverage_pct": 74.0,
+            "branch_coverage_pct": 64.0,
+        },
+    ]
+    assert body["history"][-1]["line_coverage_pct"] == body["summary"]["line_coverage_pct"]
+
+
+@pytest.mark.parametrize(
+    "params", [{"file_path": "src/a.py"}, {"limit": 1, "module_limit": 0}]
+)
+async def test_the_badge_reads_carry_no_history(client, seeded, params) -> None:
+    """The one-file and no-module reads never draw a trend, so they skip its read."""
+    body = await _get(client, seeded["id"], include_inferred="false", **params)
+
+    assert body["basis"] == "measured"
+    assert "history" not in body

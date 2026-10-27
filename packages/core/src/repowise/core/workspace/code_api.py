@@ -38,8 +38,12 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from repowise.core.fsutils import repo_relative
+from repowise.core.pyparse import parse_python
+from repowise.core.workspace.origins import ContractOrigin, origin_confidence
+
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Collection
     from pathlib import Path
 
     from repowise.core.workspace.repo_index import IndexedSymbol, RepoIndex, WorkspaceIndex
@@ -51,7 +55,7 @@ CODE_CONTRACT_TYPE = "code"
 
 #: Both sides are index-resolved, not regex-matched — the manifest and the
 #: import edge each name their half outright.
-_CONFIDENCE = 0.9
+_ORIGIN = ContractOrigin.PACKAGE_EXPORT
 
 #: Manifest basenames handled here, mapped to the ecosystem they declare.
 _MANIFESTS: dict[str, str] = {
@@ -99,13 +103,6 @@ class PublishedPackage:
 # ---------------------------------------------------------------------------
 # Manifest reading — one small function per ecosystem
 # ---------------------------------------------------------------------------
-
-
-def _rel(path: Path, repo_path: Path) -> str | None:
-    try:
-        return path.relative_to(repo_path).as_posix()
-    except ValueError:
-        return None
 
 
 def _npm(data: dict[str, Any], root: str) -> tuple[str, frozenset[str]] | None:
@@ -200,36 +197,42 @@ def _pypi_package_dirs(data: dict[str, Any]) -> list[str]:
     return [d.strip("/") for d in dirs if isinstance(d, str) and d.strip("/")]
 
 
-def _dunder_all(repo_path: Path, entry_files: frozenset[str]) -> frozenset[str]:
-    """Names an entry ``__init__.py`` re-exports via ``__all__``.
+def dunder_all(path: Path) -> frozenset[str] | None:
+    """The string literals a module's ``__all__`` lists; None when it has none.
 
-    Python's entry file usually *declares* nothing — it is a wall of
-    ``from .x import Y`` — so without this a distribution's surface reads as
-    empty. Only plain string literals count; a computed ``__all__`` is refused
+    Only plain string literals count; a computed ``__all__`` is refused
     whole rather than half-read, per the same rule the signature mapper follows.
     """
     import ast
 
-    names: set[str] = set()
-    for rel in entry_files:
-        path = repo_path / rel
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
-        except (OSError, SyntaxError, ValueError):
+    try:
+        tree = parse_python(path.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, SyntaxError, ValueError):
+        return None
+    names: set[str] | None = None
+    for node in tree.body:
+        if not isinstance(node, ast.Assign) or not any(
+            isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets
+        ):
             continue
-        for node in tree.body:
-            if not isinstance(node, ast.Assign) or not any(
-                isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets
-            ):
-                continue
-            if not isinstance(node.value, ast.List | ast.Tuple):
-                continue
-            names.update(
-                el.value
-                for el in node.value.elts
-                if isinstance(el, ast.Constant) and isinstance(el.value, str)
-            )
-    return frozenset(names)
+        if not isinstance(node.value, ast.List | ast.Tuple):
+            continue
+        names = (names or set()) | {
+            el.value
+            for el in node.value.elts
+            if isinstance(el, ast.Constant) and isinstance(el.value, str)
+        }
+    return None if names is None else frozenset(names)
+
+
+def _dunder_all(repo_path: Path, entry_files: frozenset[str]) -> frozenset[str]:
+    """Names an entry ``__init__.py`` re-exports via ``__all__``.
+
+    Python's entry file usually *declares* nothing (it is a wall of
+    ``from .x import Y``), so without this a distribution's surface reads as
+    empty.
+    """
+    return frozenset(name for rel in entry_files for name in dunder_all(repo_path / rel) or ())
 
 
 def _cargo(text: str, root: str) -> tuple[str, frozenset[str]] | None:
@@ -248,24 +251,6 @@ def _cargo(text: str, root: str) -> tuple[str, frozenset[str]] | None:
     path = lib.get("path") if isinstance(lib, dict) else None
     entry = path if isinstance(path, str) else "src/lib.rs"
     return name, frozenset({f"{root}/{entry}" if root else entry})
-
-
-def _nuget(project: Any, repo_path: Path, root: str) -> str | None:
-    """The id a packable project publishes under, or None when it is not packable.
-
-    Packability is opt-in, never assumed: an SDK-style project is packable by
-    default, so treating silence as yes would make every internal project in a
-    solution a published library.
-    """
-    if project.is_packable is False:
-        return None
-    if not (
-        project.is_packable
-        or project.generate_package_on_build
-        or project.package_id is not None
-    ):
-        return None
-    return project.package_id or project.assembly_name or project.path.stem
 
 
 # ---------------------------------------------------------------------------
@@ -287,7 +272,7 @@ def find_published_packages(
     for dirpath, dirnames, filenames in walk_repo(repo_path, prune_dirs=prune):
         if len(dirpath.relative_to(repo_path).parts) >= _MANIFEST_DEPTH:
             dirnames[:] = []
-        rel_dir = _rel(dirpath, repo_path)
+        rel_dir = repo_relative(dirpath, repo_path)
         if rel_dir is None:
             continue
         root = "" if rel_dir == "." else rel_dir
@@ -301,7 +286,7 @@ def find_published_packages(
             if ecosystem is None:
                 continue
             manifest = dirpath / fname
-            rel_manifest = _rel(manifest, repo_path)
+            rel_manifest = repo_relative(manifest, repo_path)
             if rel_manifest is None:
                 continue
             try:
@@ -332,11 +317,11 @@ def find_published_packages(
 
     for csproj in find_csproj_files(repo_path):
         project = parse_csproj(csproj)
-        rel_manifest = _rel(csproj, repo_path) if project is not None else None
+        rel_manifest = repo_relative(csproj, repo_path) if project is not None else None
         if project is None or rel_manifest is None:
             continue
         root = rel_manifest.rsplit("/", 1)[0] if "/" in rel_manifest else ""
-        package_id = _nuget(project, repo_path, root)
+        package_id = project.published_id
         if package_id is None:
             counts["code_unpublished_manifest"] = counts.get("code_unpublished_manifest", 0) + 1
             continue
@@ -446,16 +431,40 @@ class CodeSurface:
         return self.by_repo.get(alias, [])
 
 
+def find_workspace_packages(
+    repo_paths: dict[str, Path],
+) -> tuple[list[PublishedPackage], dict[str, dict[str, int]]]:
+    """Every package the workspace repos publish, plus per-repo skip counters.
+
+    Read from manifests alone, so it needs no repo's index open.
+    """
+    published: list[PublishedPackage] = []
+    stats: dict[str, dict[str, int]] = {}
+    for alias, repo_path in repo_paths.items():
+        packages, counts = find_published_packages(alias, repo_path)
+        published.extend(packages)
+        if counts:
+            stats.setdefault(alias, {}).update(counts)
+    return published, stats
+
+
 def build_code_surface(
     repo_paths: dict[str, Path],
     workspace_index: WorkspaceIndex | None,
     exclude: Callable[[str], bool],
+    *,
+    packages: tuple[list[PublishedPackage], dict[str, dict[str, int]]] | None = None,
+    consumers: Collection[str] | None = None,
 ) -> CodeSurface:
     """Build every ``code`` contract in the workspace, providers before consumers.
 
     Workspace-wide by necessity, not by preference: a consumer contract only
     exists when the package it imports is published by *some* repo, so neither
     half can be decided inside a single repo's extraction.
+
+    *packages* is :func:`find_workspace_packages` already run. *consumers*
+    limits the consumer rows to those repos (every repo by default): a caller
+    reusing a repo's stored rows needs none built for it.
     """
     from repowise.core.workspace.contracts import Contract
     from repowise.core.workspace.extractors.from_index import EXTRACTION_LAYER_KEY, LAYER_INDEX
@@ -464,12 +473,9 @@ def build_code_surface(
     if workspace_index is None:
         return surface
 
-    published: list[PublishedPackage] = []
-    for alias, repo_path in repo_paths.items():
-        packages, counts = find_published_packages(alias, repo_path)
-        published.extend(packages)
-        if counts:
-            surface.stats.setdefault(alias, {}).update(counts)
+    published, manifest_stats = packages or find_workspace_packages(repo_paths)
+    for alias, counts in manifest_stats.items():
+        surface.stats.setdefault(alias, {}).update(counts)
 
     # -- providers ---------------------------------------------------------
     by_name: dict[str, PublishedPackage] = {}
@@ -509,7 +515,8 @@ def build_code_surface(
                     role="provider",
                     file_path=symbol.file_path,
                     symbol_name=exported,
-                    confidence=_CONFIDENCE,
+                    confidence=origin_confidence(_ORIGIN),
+                    origin=_ORIGIN,
                     line=symbol.start_line,
                     # Known at emission, so bind_symbol_ids is a no-op here and
                     # attach_signature_schemas reaches the parameter list.
@@ -526,7 +533,7 @@ def build_code_surface(
         stats["code_provider_symbols"] = stats.get("code_provider_symbols", 0) + len(seen)
 
     # -- consumers ---------------------------------------------------------
-    for alias in repo_paths:
+    for alias in repo_paths if consumers is None else [a for a in repo_paths if a in consumers]:
         index = workspace_index.get(alias)
         if index is None:
             continue
@@ -553,7 +560,8 @@ def build_code_surface(
                             role="consumer",
                             file_path=edge.source_file,
                             symbol_name=f"{package.name}:{exported}",
-                            confidence=_CONFIDENCE,
+                            confidence=origin_confidence(_ORIGIN),
+                            origin=_ORIGIN,
                             meta={
                         "package": package.name,
                         "ecosystem": package.ecosystem,

@@ -2,7 +2,8 @@
 //
 // Kotlin accesses instance members WITHOUT a receiver idiomatically; these
 // fixtures use an explicit `this.` so the member-access node type is
-// exercised. The implicit-receiver case is the documented "no signal" path.
+// exercised. The implicit-receiver case is covered in
+// tests/unit/health/test_implicit_member_cohesion.py.
 
 class Cohesive {
     var total = 0

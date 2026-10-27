@@ -18,6 +18,7 @@ Three things have to hold and each has tests below.
 
 from __future__ import annotations
 
+import contextlib
 import json
 
 import pytest
@@ -368,6 +369,26 @@ def test_context_projection_keeps_every_include_block():
     assert card["metrics"] == {"pagerank": 0.4}
 
 
+def test_cli_include_choices_match_the_tools_own_blocks():
+    """The CLI keeps its own copy of the block names, so pin the two together.
+
+    ``click.Choice`` is built at import time and the tool lives in the server
+    package, which the command imports lazily to keep CLI startup cheap --- so
+    the names are duplicated on purpose. Without this, a block added to the
+    tool is simply unreachable from the terminal, rejected by the parser with
+    a usage error naming every block but the new one. ``docs`` and
+    ``freshness`` are excluded because they are always returned, so offering
+    them as choices would advertise a flag that does nothing.
+    """
+    from repowise.cli.commands import context_cmd
+    from repowise.server.mcp_server.tool_context import context as tool_context
+
+    assert set(context_cmd._INCLUDE_BLOCKS) == set(tool_context._INCLUDE_BLOCKS) - {
+        "docs",
+        "freshness",
+    }
+
+
 def test_context_projection_keeps_a_tombstones_redirect():
     """The successor path is the whole point of a tombstone card."""
     payload = {
@@ -406,6 +427,20 @@ def test_context_projection_reports_a_target_the_tool_never_mentioned():
     # b.py is in dropped_targets, so it is accounted for; typo.py is not.
     assert out["dropped_targets"] == ["b.py"]
     assert out["not_found"] == ["typo.py"]
+
+
+def test_context_projection_keeps_per_target_reductions_and_recovery():
+    """A block dropped from one target must be as visible as a dropped target."""
+    recovery = {"tool": "get_context", "arguments": {"targets": ["b.py"]}}
+    payload = {
+        **CONTEXT_PAYLOAD,
+        "truncated": True,
+        "dropped_blocks": {"a.py": ["callers"]},
+        "recovery": recovery,
+    }
+    out = project_context(payload, ("a.py", "b.py"))
+    assert out["dropped_blocks"] == {"a.py": ["callers"]}
+    assert out["recovery"] == recovery
 
 
 def test_symbol_projection_keeps_the_body_and_the_continuation():
@@ -744,9 +779,15 @@ def test_logs_are_silenced_at_every_format_not_only_the_machine_ones(
     answer — and inside anything reading it through ``repowise distill``.
     """
     silenced: list = []
+
+    @contextlib.contextmanager
+    def _fake_silence():
+        silenced.append(True)
+        yield
+
     monkeypatch.setattr(
         "repowise.cli.helpers.silence_logs_for_machine_output",
-        lambda: silenced.append(True),
+        _fake_silence,
     )
     monkeypatch.setattr("repowise.cli.tool_bridge.call_tool", lambda p, f, t: {"_meta": {}})
     result = CliRunner(mix_stderr=False).invoke(
@@ -838,6 +879,88 @@ def test_why_renders_the_archaeology_it_falls_back_to(monkeypatch, repo):
     assert "Git archaeology" in result.stdout
     assert "mentions a.py" in result.stdout
     assert "5 of 7" in result.stdout, "the cap was applied but never disclosed"
+
+
+def test_why_table_prints_each_commit_once_before_showing_new_git_log_rows(monkeypatch, repo):
+    shared = "a123456789abcdef"
+    second = "b123456789abcdef"
+    new = "c123456789abcdef"
+    payload = {
+        "mode": "path", "path": "a.py",
+        "origin_story": {"available": True, "key_commits": [
+            {"sha": shared, "date": "2026-01-01", "message": "origin"},
+        ]},
+        "git_archaeology": {
+            "file_commits": [
+                {"sha": shared[:8], "date": "2026-01-02", "message": "origin"},
+                {"sha": second, "date": "2026-01-03", "message": "indexed"},
+            ],
+            "git_log": [
+                {"sha": shared[:12], "date": "2026-01-04", "message": "origin"},
+                {"sha": second, "date": "2026-01-04", "message": "indexed"},
+                {"sha": new, "date": "2026-01-05", "message": "new live"},
+                *[
+                    {"sha": f"{letter}123456789abcdef", "message": "another live"}
+                    for letter in "defgh"
+                ],
+            ],
+            "cross_references": [{"sha": second, "source_file": "b.py", "message": "other file"}],
+        }, "_meta": {},
+    }
+    result = _invoke(monkeypatch, why_command, ["a.py"], repo, payload)
+    assert result.stdout.count(shared[:8]) == 1
+    assert result.stdout.count(second[:8]) == 2  # cross-references stay independent
+    assert result.stdout.count(new[:8]) == 1
+    assert "git log: c1234567" in result.stdout
+    assert "5 of 8 git log inspected" in result.stdout  # duplicate slots still consume the cap
+    assert "2026-01-02" not in result.stdout
+    json_result = _invoke(monkeypatch, why_command, ["a.py", "--format", "json"], repo, payload)
+    assert json.loads(json_result.stdout)["git_archaeology"]["git_log"][0]["sha"] == shared[:12]
+
+
+def test_why_nested_target_deduplicates_its_own_history(monkeypatch, repo):
+    payload = {
+        "mode": "search", "target_context": {
+            "b.py": {"git_archaeology": {
+                "file_commits": [{"sha": "a123456789", "message": "first"}],
+                "git_log": [{"sha": "a123456789", "message": "repeat"},
+                            {"sha": "b123456789", "message": "fresh"}],
+            }},
+            "c.py": {"git_archaeology": {
+                "git_log": [{"sha": "a123456789", "message": "other target"}],
+            }},
+        }, "_meta": {},
+    }
+    result = _invoke(
+        monkeypatch, why_command, ["q", "--target", "b.py", "--target", "c.py"], repo, payload
+    )
+    assert result.stdout.count("a1234567") == 2
+    assert result.stdout.count("b1234567") == 1
+    assert "git log: a1234567" in result.stdout  # independent target
+
+
+def test_why_help_names_the_actual_repeatable_target_option():
+    result = CliRunner().invoke(why_command, ["--help"])
+    assert result.exit_code == 0
+    assert "--target TEXT" in result.stdout
+    assert "--targets" not in result.stdout
+
+
+def test_why_table_keeps_distinct_commits_with_the_same_display_prefix(monkeypatch, repo):
+    payload = {
+        "mode": "path", "path": "a.py",
+        "origin_story": {"available": True, "key_commits": [
+            {"sha": "abcdef0011111111", "message": "first commit"},
+        ]},
+        "git_archaeology": {"git_log": [
+            {"sha": "abcdef0022222222", "message": "distinct commit"},
+        ]},
+        "_meta": {},
+    }
+    result = _invoke(monkeypatch, why_command, ["a.py"], repo, payload)
+    assert "first commit" in result.stdout
+    assert "git log: abcdef00" in result.stdout
+    assert "distinct commit" in result.stdout
 
 
 def test_why_renders_a_targets_own_history(monkeypatch, repo):
@@ -935,3 +1058,35 @@ def test_why_renders_a_dominant_author_as_a_percentage_not_a_fraction():
     assert _owner_share(0.9956) == "100%"
     assert _owner_share(80.0) == "80%"
     assert _owner_share(None) == "?"
+
+
+def test_why_dashboard_projection_keeps_the_newly_named_lanes():
+    """``project_why`` keeps dashboard keys by a hardcoded tuple, so a new lane
+    is dropped here until it is added.
+    """
+    payload = {
+        "mode": "health",
+        "summary": "1 active",
+        "counts": {"active": 1, "superseded": 2, "unscoped": 1},
+        "retired_decisions": [
+            {"id": "r1", "title": "Retired one", "lane": "superseded"},
+            {"id": "r2", "title": "Retired two", "lane": "dismissed"},
+        ],
+        "unscoped_decisions": [{"id": "u1", "title": "Scopeless", "confidence": 0.4}],
+    }
+
+    out = project_why(payload)
+
+    assert [row["id"] for row in out["retired_decisions"]] == ["r1", "r2"]
+    assert out["retired_decisions"][1]["lane"] == "dismissed"
+    assert [row["id"] for row in out["unscoped_decisions"]] == ["u1"]
+
+
+def test_context_fix_signal_names_its_window() -> None:
+    from repowise.cli.commands.context_cmd import _fix_signal
+
+    assert _fix_signal({}) == ""
+    assert (
+        _fix_signal({"fix_count": 3, "window": "6 months", "last_fix_days_ago": 2})
+        == "3 bug fixes in 6 months, last 2d ago"
+    )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .apex import parse_apex, parse_apex_contexts
 from .clover import parse_clover
 from .cobertura import parse_cobertura
 from .contexts import (
@@ -10,61 +11,93 @@ from .contexts import (
     parse_lcov_contexts,
 )
 from .decay import (
-    STALE_DRIFT_PCT,
-    STALE_MIN_MEASURED,
+    DRIFT_MIN_MEASURED,
+    DRIFT_PCT,
     CoverageDecay,
     decay_for_file,
     decay_since,
     measurement_ref,
 )
-from .detector import detect_format, is_test_file, paired_test_file, parse
+from .detector import PARSERS, detect_format, is_test_file, parse
 from .discovery import (
     CoverageConfig,
+    CoverageProvenance,
+    CoverageScope,
+    PathGate,
     ResolvedCoverage,
     ResolvedTestCoverage,
     build_coverage_map,
+    configured_coverage,
     discover_artifacts,
+    expand_report_args,
+    expand_report_patterns,
     normalize_report_path,
+    oldest_report_time,
+    prefix_hint,
+    report_origin_dir,
     resolve_reports,
     resolve_test_reports,
+    suggest_prefixes,
 )
+from .freshness import FreshnessStatus, coverage_freshness, measurement_commit
+from .goprofile import parse_go_coverprofile
+from .jacoco import parse_jacoco
 from .lcov import parse_lcov
 from .model import (
     ContextCoverageReport,
     CoverageReport,
     FileCoverage,
     TestCoverage,
+    file_coverage,
 )
 from .repowise_json import parse_repowise_json
 
 __all__ = [
-    "STALE_DRIFT_PCT",
-    "STALE_MIN_MEASURED",
+    "DRIFT_MIN_MEASURED",
+    "DRIFT_PCT",
+    "PARSERS",
     "ContextCoverageReport",
     "CoverageConfig",
     "CoverageDecay",
+    "CoverageProvenance",
     "CoverageReport",
+    "CoverageScope",
     "FileCoverage",
+    "FreshnessStatus",
+    "PathGate",
     "ResolvedCoverage",
     "ResolvedTestCoverage",
     "TestCoverage",
     "build_coverage_map",
+    "configured_coverage",
+    "coverage_freshness",
     "decay_for_file",
     "decay_since",
     "detect_format",
     "discover_artifacts",
+    "expand_report_args",
+    "expand_report_patterns",
+    "file_coverage",
     "is_test_file",
+    "measurement_commit",
     "measurement_ref",
     "normalize_report_path",
-    "paired_test_file",
+    "oldest_report_time",
     "parse",
+    "parse_apex",
+    "parse_apex_contexts",
     "parse_clover",
     "parse_cobertura",
     "parse_contexts_file",
     "parse_coverage_sqlite",
+    "parse_go_coverprofile",
+    "parse_jacoco",
     "parse_lcov",
     "parse_lcov_contexts",
     "parse_repowise_json",
+    "prefix_hint",
+    "report_origin_dir",
     "resolve_reports",
     "resolve_test_reports",
+    "suggest_prefixes",
 ]

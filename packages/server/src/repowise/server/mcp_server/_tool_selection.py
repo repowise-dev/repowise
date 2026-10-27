@@ -1,24 +1,17 @@
-"""Selection of which MCP tools a server advertises.
+"""Server side of MCP tool selection: gather inputs, apply the result.
+
+The pure rules live in :mod:`repowise.core.registry.tool_selection`. This
+module reads their inputs from disk (the ``mcp.tools`` config override,
+workspace mode, :class:`AvailabilityFacts`) and applies the resolved set to
+the FastMCP instance.
 
 The registry attaches *every* tool to the FastMCP instance the first time a
-caller asks for the full surface (``mcp_server.ensure_full_surface``). This
-module trims that full set down to the surface a given server should expose,
-based on three inputs:
-
-1. each tool's metadata (``default`` / ``requires_workspace`` from
-   :class:`~repowise.core.registry.ToolEntry`),
-2. whether the server is running in workspace mode, and
-3. an optional user override (a CLI ``--tools`` flag or a ``mcp.tools`` block in
-   ``.repowise/config.yaml``).
-
-The default surface is the curated set: every ``default`` tool, minus the
-workspace-only ones when not in a workspace. The override can either replace
-that set entirely (an explicit allowlist) or adjust it (``+name`` / ``-name``
-deltas), so "expose the default plus one more" stays a one-line config edit.
-
-Filtering happens once, after registration, by removing the deselected tools
-from the FastMCP tool manager. There is no per-call cost and tool schemas are
-untouched.
+caller asks for the full surface (``mcp_server.ensure_full_surface``).
+:func:`apply_tool_selection` then trims that set once, at boot, by removing the
+deselected tools from the FastMCP tool manager, so raw MCP clients see the
+surface as it stood when the server started. Chat calls
+:func:`selected_tool_entries` instead, which re-resolves on every turn. There
+is no per-call cost and tool schemas are untouched.
 """
 
 from __future__ import annotations
@@ -30,26 +23,9 @@ from pathlib import Path
 from typing import Any
 
 from repowise.core.registry import ToolEntry, mcp_tool_registry
+from repowise.core.registry.tool_selection import ALL, AvailabilityFacts, resolve_enabled_tools
 
 _log = logging.getLogger("repowise.mcp")
-
-# A value (CLI flag or config) of "all" enables every registered tool that is
-# usable in the current mode, including opt-in and workspace-only tools.
-ALL = "all"
-
-# A value of "lean" enables the agent-lean profile: the pre-edit tools a
-# coding agent actually reaches for, small enough that every schema can stay
-# always-loaded instead of deferred behind a tool-search round trip. list_repos
-# joins it in workspace mode only, where repo aliases must be discoverable.
-# get_why belongs in the lean set: why/history questions are the category no
-# graph- or search-shaped tool can answer, and a comparative benchmark run
-# with a lean surface that omitted it scored repowise BELOW a bare agent on
-# history-why questions — the differentiator was configured out, not absent.
-LEAN = "lean"
-LEAN_TOOLS = frozenset(
-    {"get_answer", "get_context", "get_symbol", "search_codebase", "get_risk", "get_why"}
-)
-_LEAN_WORKSPACE_EXTRAS = frozenset({"list_repos"})
 
 # Snapshot of every tool registered on the server, captured once after the
 # registry applies them and before any selection trims the live set. Selection
@@ -90,87 +66,6 @@ def snapshot_full_surface(mcp: Any) -> None:
         _full_surface = dict(registered)
 
 
-def _normalize_override(override: str | Sequence[str] | None) -> list[str] | None:
-    """Coerce a raw override (CLI/config) into a clean list of tokens.
-
-    Accepts ``None`` (no override), a comma- or whitespace-separated string, or
-    a sequence of strings. Returns ``None`` when nothing meaningful was given so
-    callers fall through to the default surface.
-    """
-    if override is None:
-        return None
-    if isinstance(override, str):
-        tokens = [t.strip() for t in override.replace(",", " ").split()]
-    else:
-        tokens = [str(t).strip() for t in override]
-    tokens = [t for t in tokens if t]
-    return tokens or None
-
-
-def resolve_enabled_tools(
-    entries: Iterable[ToolEntry],
-    *,
-    is_workspace: bool,
-    override: str | Sequence[str] | None = None,
-) -> set[str]:
-    """Return the set of tool names a server should expose.
-
-    ``override`` semantics:
-
-    - ``None`` / empty: the curated default surface.
-    - ``"all"`` (or ``["all"]``): every tool usable in the current mode.
-    - ``"lean"``: the agent-lean profile (see :data:`LEAN_TOOLS`).
-    - all tokens prefixed ``+``/``-``: deltas applied to the default surface.
-    - otherwise: an explicit allowlist (only the named tools).
-
-    Workspace-only tools are never enabled outside a workspace, even when named
-    explicitly, because they cannot do useful work there.
-    """
-    catalog = {e.name: e for e in entries}
-
-    def usable(entry: ToolEntry) -> bool:
-        return is_workspace or not entry.requires_workspace
-
-    default_surface = {name for name, e in catalog.items() if e.default and usable(e)}
-
-    tokens = _normalize_override(override)
-    if tokens is None:
-        return default_surface
-
-    if len(tokens) == 1 and tokens[0].lower() == ALL:
-        return {name for name, e in catalog.items() if usable(e)}
-
-    if len(tokens) == 1 and tokens[0].lower() == LEAN:
-        names = LEAN_TOOLS | (_LEAN_WORKSPACE_EXTRAS if is_workspace else frozenset())
-        return {n for n in names if n in catalog and usable(catalog[n])}
-
-    def resolve_name(raw: str) -> str | None:
-        entry = catalog.get(raw)
-        if entry is None:
-            _log.warning("Ignoring unknown MCP tool in selection: %r", raw)
-            return None
-        if not usable(entry):
-            _log.warning("Ignoring workspace-only MCP tool %r outside workspace mode", raw)
-            return None
-        return raw
-
-    is_delta = all(t[0] in "+-" for t in tokens)
-    if is_delta:
-        enabled = set(default_surface)
-        for token in tokens:
-            op, raw = token[0], token[1:].strip()
-            if op == "-":
-                enabled.discard(raw)
-                continue
-            name = resolve_name(raw)
-            if name is not None:
-                enabled.add(name)
-        return enabled
-
-    # Explicit allowlist.
-    return {name for name in (resolve_name(t) for t in tokens) if name is not None}
-
-
 def _read_config_override(repo_path: str | None) -> str | Sequence[str] | None:
     """Read ``mcp.tools`` from ``.repowise/config.yaml`` if present."""
     if not repo_path:
@@ -198,6 +93,17 @@ def _is_workspace(repo_path: str | None) -> bool:
         return False
 
 
+def _availability_facts(repo_path: str | None) -> AvailabilityFacts:
+    """Facts that ``available_when`` predicates read for *repo_path*.
+
+    Chat calls this every turn, so it must stay cheap: no database queries.
+    No registered tool gates on a fact yet, so there is nothing to compute;
+    when one does, add its fact here from a cheap source (config, a file on
+    disk) and extend :class:`AvailabilityFacts` to carry it.
+    """
+    return AvailabilityFacts()
+
+
 def apply_tool_selection(
     mcp: Any,
     *,
@@ -221,6 +127,7 @@ def apply_tool_selection(
         mcp_tool_registry.entries(),
         is_workspace=is_workspace,
         override=override,
+        facts=_availability_facts(repo_path),
     )
     global _selected_surface
     _selected_surface = (is_workspace, frozenset(enabled))
@@ -263,7 +170,8 @@ def selected_tool_entries(repo_path: str | None) -> list[ToolEntry]:
 
     This is the shared selection seam for external MCP clients and in-product
     chat. It deliberately resolves from the live registry on every request so
-    neither surface can grow a second catalog or retain a stale config view.
+    neither surface can grow a second catalog or retain a stale config view,
+    and so ``available_when`` predicates are re-evaluated every chat turn.
     """
     _ensure_registered()
     entries = mcp_tool_registry.entries()
@@ -271,6 +179,7 @@ def selected_tool_entries(repo_path: str | None) -> list[ToolEntry]:
         entries,
         is_workspace=_is_workspace(repo_path),
         override=_read_config_override(repo_path),
+        facts=_availability_facts(repo_path),
     )
     return [
         entry
@@ -333,24 +242,32 @@ def describe_tool_surface(repo_path: str | None) -> dict[str, Any]:
     Returns ``is_workspace``, the raw ``override`` currently in config, and one
     row per registered tool with its name, one-line description, and the flags a
     UI needs to render and edit the selection: ``default`` (in the curated
-    default set for this mode), ``requires_workspace``, and ``enabled`` (in the
-    currently-resolved surface).
+    default set for this mode), ``requires_workspace``, ``eligible`` (usable in
+    this mode for this repo), and ``enabled`` (in the currently-resolved surface).
     """
     _ensure_registered()
 
     entries = mcp_tool_registry.entries()
     is_workspace = _is_workspace(repo_path)
     override = _read_config_override(repo_path)
+    facts = _availability_facts(repo_path)
 
-    default_surface = resolve_enabled_tools(entries, is_workspace=is_workspace, override=None)
-    enabled = resolve_enabled_tools(entries, is_workspace=is_workspace, override=override)
+    def resolve(value: str | Sequence[str] | None) -> set[str]:
+        return resolve_enabled_tools(
+            entries, is_workspace=is_workspace, override=value, facts=facts
+        )
+
+    default_surface = resolve(None)
+    enabled = resolve(override)
+    # "all" is exactly the usable set: right mode and predicate satisfied.
+    eligible = resolve(ALL)
 
     rows = registry_tool_rows(entries)
     tools = [
         {
             **row,
             "default": row["name"] in default_surface,
-            "eligible": row["eligible_workspace"] if is_workspace else row["eligible_single_repo"],
+            "eligible": row["name"] in eligible,
             "enabled": row["name"] in enabled,
         }
         for row in rows

@@ -701,3 +701,97 @@ class TestPubUseReexportFollowing:
         }
         got = resolve_rust_import("crate::Ghost", "src/app.rs", ctx)
         assert got is None
+
+    def test_submodule_of_reexported_module(self, tmp_path: Path) -> None:
+        # THE control for carrying the path tail. lib.rs re-exports the module
+        # `domain`; the import names a SUBMODULE of it. Matching only the first
+        # segment resolves to domain.rs -- the parent -- and every symbol the
+        # importer then calls binds against the wrong file.
+        paths = [
+            "src/lib.rs",
+            "src/outer.rs",
+            "src/outer/domain.rs",
+            "src/outer/domain/inner.rs",
+            "src/app.rs",
+        ]
+        ctx = _ctx(tmp_path, paths)
+        ctx.parsed_files = {
+            "src/lib.rs": _parsed_with_imports(
+                [("crate::outer::{domain}", True, ["domain"])]
+            ),
+            "src/outer.rs": _parsed_with_imports([]),
+            "src/outer/domain.rs": _parsed_with_imports([]),
+            "src/outer/domain/inner.rs": _parsed_with_imports([]),
+            "src/app.rs": _parsed_with_imports([]),
+        }
+        got = resolve_rust_import("crate::domain::inner::Thing", "src/app.rs", ctx)
+        assert got == "src/outer/domain/inner.rs"
+
+    def test_type_under_reexported_module_falls_back_to_module(
+        self, tmp_path: Path
+    ) -> None:
+        # Same shape, but the tail names a TYPE rather than a submodule. There
+        # is no inner file to find, so probing must walk back down to the
+        # module file. This is what makes carrying the tail safe.
+        paths = ["src/lib.rs", "src/outer.rs", "src/outer/domain.rs", "src/app.rs"]
+        ctx = _ctx(tmp_path, paths)
+        ctx.parsed_files = {
+            "src/lib.rs": _parsed_with_imports(
+                [("crate::outer::{domain}", True, ["domain"])]
+            ),
+            "src/outer.rs": _parsed_with_imports([]),
+            "src/outer/domain.rs": _parsed_with_imports([]),
+            "src/app.rs": _parsed_with_imports([]),
+        }
+        got = resolve_rust_import("crate::domain::Thing", "src/app.rs", ctx)
+        assert got == "src/outer/domain.rs"
+
+    def test_direct_reexport_carries_submodule_tail(self, tmp_path: Path) -> None:
+        # The single-name branch, not the brace group: `pub use crate::a::b`
+        # re-exports module `b`, and the import reaches through it.
+        paths = ["src/lib.rs", "src/a.rs", "src/a/b.rs", "src/a/b/c.rs", "src/app.rs"]
+        ctx = _ctx(tmp_path, paths)
+        ctx.parsed_files = {
+            "src/lib.rs": _parsed_with_imports([("crate::a::b", True, ["b"])]),
+            "src/a.rs": _parsed_with_imports([]),
+            "src/a/b.rs": _parsed_with_imports([]),
+            "src/a/b/c.rs": _parsed_with_imports([]),
+            "src/app.rs": _parsed_with_imports([]),
+        }
+        got = resolve_rust_import("crate::b::c::Thing", "src/app.rs", ctx)
+        assert got == "src/a/b/c.rs"
+
+    def test_glob_reexport_still_resolves_to_the_globbed_module(
+        self, tmp_path: Path
+    ) -> None:
+        # A glob re-export names no member, so the matched segment is a member
+        # of the globbed module rather than a path segment. Neither it nor the
+        # tail is appended, and a multi-segment import still lands on the
+        # module itself.
+        paths = ["src/lib.rs", "src/prelude.rs", "src/app.rs"]
+        ctx = _ctx(tmp_path, paths)
+        ctx.parsed_files = {
+            "src/lib.rs": _parsed_with_imports([("crate::prelude::*", True, ["*"])]),
+            "src/prelude.rs": _parsed_with_imports([]),
+            "src/app.rs": _parsed_with_imports([]),
+        }
+        got = resolve_rust_import("crate::Anything::deeper", "src/app.rs", ctx)
+        assert got == "src/prelude.rs"
+
+    def test_renamed_reexport_carries_tail_without_the_alias(
+        self, tmp_path: Path
+    ) -> None:
+        # `pub use crate::a::b as c` puts the ALIAS in imported_names, and an
+        # alias is another name for the module rather than a segment beneath
+        # it. Appending it would probe a path nobody wrote.
+        paths = ["src/lib.rs", "src/a.rs", "src/a/b.rs", "src/a/b/inner.rs", "src/app.rs"]
+        ctx = _ctx(tmp_path, paths)
+        ctx.parsed_files = {
+            "src/lib.rs": _parsed_with_imports([("crate::a::b as c", True, ["c"])]),
+            "src/a.rs": _parsed_with_imports([]),
+            "src/a/b.rs": _parsed_with_imports([]),
+            "src/a/b/inner.rs": _parsed_with_imports([]),
+            "src/app.rs": _parsed_with_imports([]),
+        }
+        got = resolve_rust_import("crate::c::inner::Thing", "src/app.rs", ctx)
+        assert got == "src/a/b/inner.rs"

@@ -1,78 +1,116 @@
 "use client";
 
-import { useState } from "react";
-import useSWR from "swr";
+import { useState, useTransition } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useQueryState } from "nuqs";
+import { useTranslations } from "next-intl";
 import {
-  CommitTable,
-  type CommitAuthorship,
-  type CommitSort,
+  CommitKindControl,
+  CommitList,
+  CommitSearch,
+  CommitSortControl,
 } from "@repowise-dev/ui/commits/commit-table";
-import { getCommitsPage } from "@/lib/api/git";
+import {
+  HistoryFilters,
+  type HealthImpact,
+  type HistoryFilterValue,
+} from "@repowise-dev/ui/commits/history-filters";
+import type { HistoryFilters as ApiHistoryFilters } from "@repowise-dev/types/history";
 import type { CommitResponse, Paginated } from "@/lib/api/types";
-
-const PAGE_SIZE = 50;
-const MAX_ROWS = 200;
+import { commitFiltersQuery } from "@/lib/commit-filters";
+import { useHealthDeltaLabels, useHistoryFilterLabels } from "./history-labels";
+import { useCommitFilterChips } from "./commit-filter-chips";
+import { useCommitPages, type CommitListQuery } from "./use-commit-pages";
 
 /**
- * The review queue: the one part of this page that genuinely needs client
- * state. Sort, authorship filter and paging all refetch, and selecting a row
- * writes `?commit=` so the detail sheet can be a separate island that shares
- * state through the URL rather than through a common parent — which is what
- * kept the whole page a client component before.
+ * The commit list: impact, hotspots and window in one row; author, area,
+ * search, review priority and sort behind "More filters", each active one a
+ * removable chip; then every commit led by what it did to code health.
  *
- * The first page is server-rendered and handed in as `initial`, so the table
- * is in the initial HTML and SWR only takes over once the reader changes
- * something.
+ * The history filters are URL state and server-driven: a change writes the
+ * query string and the page re-renders on the server, so the headline, the
+ * wins and this list's first page arrive together. `apiFilters` is that
+ * server's reading of the URL, passed down so later pages ask for the same
+ * range. Search, review priority and sort stay local refinements. Selecting a
+ * row writes `?commit=` for the detail sheet, a separate island.
  */
 export function CommitQueue({
   repoId,
   initial,
-  total,
+  counts,
+  filters,
+  apiFilters,
+  impactCounts,
+  narrowed,
+  impactPending,
 }: {
   repoId: string;
   initial: Paginated<CommitResponse>;
-  total: number;
+  /** Repo-wide review-priority counts; only meaningful when nothing narrows the list. */
+  counts?: { all: number; high: number; fixes: number } | undefined;
+  filters: HistoryFilterValue;
+  apiFilters: ApiHistoryFilters;
+  /** Per-impact counts under the other filters, from the period summary. */
+  impactCounts?: Record<HealthImpact, number> | undefined;
+  narrowed: boolean;
+  /** Most of the window is not analysed yet; the impact options wait. */
+  impactPending?: boolean | undefined;
 }) {
-  const [sort, setSort] = useState<CommitSort>("risk");
-  const [authorship, setAuthorship] = useState<CommitAuthorship>("all");
-  const [limit, setLimit] = useState(PAGE_SIZE);
+  const [query, setQuery] = useState<CommitListQuery>({ sort: "date", kind: "all" });
+  const [search, setSearch] = useState("");
   const [, setSelectedSha] = useQueryState("commit");
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const [pending, startTransition] = useTransition();
+  const t = useTranslations("views.commits");
+  const healthLabels = useHealthDeltaLabels();
+  const filterLabels = useHistoryFilterLabels();
+  const pages = useCommitPages(repoId, apiFilters, query, initial);
 
-  const pristine = sort === "risk" && authorship === "all" && limit === PAGE_SIZE;
-
-  const { data, isLoading, isValidating } = useSWR<Paginated<CommitResponse>>(
-    `commits:${repoId}:${sort}:${authorship}:${limit}`,
-    () => getCommitsPage(repoId, { sort, authorship, limit }),
-    {
-      revalidateOnFocus: false,
-      keepPreviousData: true,
-      // Nothing to fetch until the reader moves off the server-rendered view.
-      fallbackData: pristine ? initial : undefined,
-      revalidateOnMount: !pristine,
-    },
-  );
-
-  const list = data?.items ?? initial.items;
+  const refine = (patch: Partial<CommitListQuery>) => {
+    setQuery((q) => ({ ...q, ...patch }));
+    pages.reset();
+  };
+  const applyFilters = (patch: Partial<HistoryFilterValue>) => {
+    const next = commitFiltersQuery(new URLSearchParams(searchParams.toString()), patch);
+    pages.reset();
+    startTransition(() => router.replace(next ? `${pathname}?${next}` : pathname, { scroll: false }));
+  };
+  const { chips, clearAll } = useCommitFilterChips({ filters, search, query, applyFilters, setSearch, refine });
 
   return (
-    <CommitTable
-      commits={list}
-      sort={sort}
-      onSortChange={(s) => {
-        setSort(s);
-        setLimit(PAGE_SIZE);
-      }}
-      authorship={authorship}
-      onAuthorshipChange={(a) => {
-        setAuthorship(a);
-        setLimit(PAGE_SIZE);
-      }}
-      onSelect={(c) => void setSelectedSha(c.sha)}
-      total={total}
-      hasMore={data?.has_more ?? initial.has_more}
-      loadingMore={isValidating && !isLoading}
-      onLoadMore={() => setLimit((n) => Math.min(n + PAGE_SIZE, MAX_ROWS))}
-    />
+    <div className="space-y-4">
+      <HistoryFilters
+        value={filters}
+        onChange={applyFilters}
+        counts={impactCounts}
+        labels={filterLabels}
+        chips={chips}
+        onClearAll={clearAll}
+        impactPending={impactPending}
+        more={
+          <>
+            <CommitSearch value={search} onChange={setSearch} />
+            <CommitKindControl value={query.kind} onChange={(kind) => refine({ kind })} counts={counts} />
+            <CommitSortControl value={query.sort} onChange={(sort) => refine({ sort })} />
+          </>
+        }
+      />
+      <div aria-busy={pending} className={pending ? "opacity-60 transition-opacity" : undefined}>
+        <CommitList
+          commits={pages.commits}
+          search={search}
+          narrowed={narrowed || query.kind !== "all"}
+          onSelect={(c) => void setSelectedSha(c.sha)}
+          total={pages.total}
+          hasMore={pages.hasMore}
+          loadingMore={pages.loadingMore}
+          onLoadMore={pages.loadMore}
+          healthLabels={healthLabels}
+          hotspotLabel={t("hotspotMark")}
+        />
+      </div>
+    </div>
   );
 }

@@ -16,13 +16,19 @@ Fires when:
 - the pair is not a test ↔ production pairing (those are expected to
   co-change)
 
+Shared commits are the pair's focused count: commits wider than the sweep cap
+change entropy uses (a license header pass, a package rename) touch every file
+at once and are no evidence that two of them belong together. Each file's own
+commit total still counts them, since they are still its commits.
+
 Counts come from the co-change walk itself. ``commit_count_total`` looks like
 the denominator but is not one: it is collected over a shorter window and
 only for files with a code extension, so dividing by it mixes two
 populations and understates every ratio it does not simply zero.
 
-An index written before the walk recorded those counts carries neither them
-nor the structural label, and yields no findings until it is rebuilt. Silence
+An index written before the walk recorded those counts (or the focused count)
+carries neither them nor the structural label, and yields no findings until
+the full history rewalk ``GIT_HISTORY_VERSION`` triggers on the next update. Silence
 is the honest answer there: without the label the detector cannot tell a pair
 the graph explains from one it does not.
 
@@ -34,7 +40,7 @@ short-circuit is explicit so backfill behavior is testable.
 from __future__ import annotations
 
 from ....co_change import STRUCTURAL_UNEXPLAINED, parse_partners
-from ....test_paths import is_test_related_path, is_test_to_production_pair
+from ....test_paths import is_test_to_production_pair
 from ..models import Severity
 from .base import BiomarkerResult, FileContext
 
@@ -64,6 +70,23 @@ def _severity_for(correlation: float, co_count: int) -> Severity:
     return Severity.MEDIUM
 
 
+def _reason(partner_path: str, support: int, self_commits: int, partner_commits: int) -> str:
+    """The sentence a finding prints, over the denominator the ratio used.
+
+    The ratio divides by the smaller commit count, so the sentence names that
+    count and whose it is; quoting the other file's total beside the ratio
+    printed impossible pairs like "6 of its 54 commits (50%)".
+    """
+    if self_commits <= partner_commits:
+        denom, whose = self_commits, "this file's"
+    else:
+        denom, whose = partner_commits, "its"
+    return (
+        f"{partner_path} changed with this file in {support} of {whose} "
+        f"{denom} commits ({support / denom:.0%}) but no static dependency exists"
+    )
+
+
 class HiddenCouplingDetector:
     name = "hidden_coupling"
     category = "organizational"
@@ -72,7 +95,7 @@ class HiddenCouplingDetector:
         # A test file has no undeclared coupling worth reporting: its
         # production partners are expected to co-change, and two tests moving
         # together is the suite tracking the code, not a hidden dependency.
-        if is_test_related_path(ctx.file_path, ctx.language):
+        if ctx.is_test_material:
             return []
         meta = ctx.git_meta or {}
         partners = parse_partners(meta.get("co_change_partners_json"))
@@ -88,14 +111,19 @@ class HiddenCouplingDetector:
             # Only a pair the graph could have explained and did not.
             if partner.structural != STRUCTURAL_UNEXPLAINED:
                 continue
+            support = partner.focused_support
+            if support is None:
+                continue
             total_self = partner.self_commits
             partner_total = partner.partner_commits
             if total_self < _MIN_COMMITS or partner_total < _MIN_COMMITS:
                 continue
             denom = min(total_self, partner_total)
-            if denom <= 0:
+            # More shared commits than the smaller file has commits is a
+            # record the walk could not have written; there is no ratio to show.
+            if denom <= 0 or support > denom:
                 continue
-            correlation = partner.support / denom
+            correlation = support / denom
             if correlation < _MIN_CORRELATION:
                 continue
             # Test ↔ production pairs are expected to co-change, so they carry
@@ -104,9 +132,7 @@ class HiddenCouplingDetector:
                 ctx.file_path, partner_path, code_language=ctx.language
             ):
                 continue
-            candidates.append(
-                (correlation, partner_path, partner.support, total_self, partner_total)
-            )
+            candidates.append((correlation, partner_path, support, total_self, partner_total))
 
         if not candidates:
             return []
@@ -130,11 +156,7 @@ class HiddenCouplingDetector:
                         "self_commits": total_self,
                         "partner_commits": partner_total,
                     },
-                    reason=(
-                        f"{partner_path} changed with this file in {support} of its "
-                        f"{total_self} commits ({correlation:.0%}) but no static "
-                        "dependency exists"
-                    ),
+                    reason=_reason(partner_path, support, total_self, partner_total),
                 )
             )
         return findings

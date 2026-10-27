@@ -4,7 +4,9 @@ An adapter knows two things about its agent: where transcripts for a given
 repo live (:meth:`HarnessAdapter.discover`) and how one raw transcript line
 becomes a normalized :class:`~repowise.core.sessions.events.Event`
 (:meth:`HarnessAdapter.normalize`). Iteration, cursoring, and mining are
-shared code built on those two primitives.
+shared code built on those two primitives. Three optional hooks scope the
+rest: :meth:`HarnessAdapter.prefilter` and the per-file
+:meth:`HarnessAdapter.begin_file` / :meth:`HarnessAdapter.end_file`.
 
 Best-effort contract, matching the distill miners this layer was extracted
 from: ``normalize`` returns None for anything it cannot parse rather than
@@ -17,9 +19,12 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
-from repowise.core.sessions.events import Event
+from repowise.core.sessions.events import Event, ToolResult, ToolUse
+
+if TYPE_CHECKING:
+    from repowise.core.edit_capture.edits import FileEdit
 
 #: Cheap gate on the raw line, applied before paying for JSON parsing.
 #: Transcript lines routinely run to hundreds of kilobytes; a substring
@@ -38,6 +43,10 @@ INTENT_TOOL_CALLS = "tool_calls"
 #: Conversation turns: user prose, assistant prose, and the tool traffic
 #: carried on them.
 INTENT_TURNS = "turns"
+#: Tool calls that may change a file, plus the lines that scope them (cwd,
+#: model). Results are not included: a consumer pairing them admits a result
+#: line by its call id, which only it knows.
+INTENT_EDIT_CALLS = "edit_calls"
 
 
 class HarnessAdapter(ABC):
@@ -46,6 +55,29 @@ class HarnessAdapter(ABC):
     #: Stable identifier, e.g. ``"claude_code"``.
     name: ClassVar[str]
 
+    #: Tool names, in this harness's own vocabulary, whose calls change a file
+    #: rather than only look at one. A consumer ranking what a session did to a
+    #: path reads it from the adapter, never from a shared list: one harness
+    #: normalizes every edit to a single token and has no read tool at all, so
+    #: a flat set would be wrong rather than merely duplicated. Empty means the
+    #: adapter has not declared one, and nothing is treated as an edit.
+    #:
+    #: Namesake, not sibling: ``cli.agent_adapters.AgentAdapter`` declares the
+    #: same attribute for the editor hooks, and answers it for the live tool
+    #: call rather than for a recorded transcript. The two deliberately hold
+    #: different names for the same harness, and core cannot import cli, so
+    #: neither is the other's source of truth.
+    edit_tool_names: ClassVar[frozenset[str]] = frozenset()
+
+    #: Tool names whose result is a shell command's output, in this harness's
+    #: vocabulary. Per adapter for the same reason ``edit_tool_names`` is: one
+    #: harness spells it ``Bash``, another splits one interactive shell across
+    #: ``exec_command``, ``write_stdin`` and ``wait``. Consumers use it to tell
+    #: command output from a tool call's structured response. Empty means the
+    #: adapter declared none, and such a consumer sees no shell results rather
+    #: than guessing.
+    shell_tool_names: ClassVar[frozenset[str]] = frozenset()
+
     @abstractmethod
     def discover(self, repo_root: Path, *, projects_root: Path | None = None) -> list[Path]:
         """Transcript files for sessions rooted at *repo_root*, sorted.
@@ -53,6 +85,15 @@ class HarnessAdapter(ABC):
         *projects_root* overrides the harness's real transcript root (for
         tests). An absent directory yields an empty list, never an error.
         """
+
+    def discover_all(self, *, projects_root: Path | None = None) -> list[Path]:
+        """Every transcript this harness keeps on this machine, sorted.
+
+        For a pass that scopes each edit by its own path rather than by where
+        the session started: worktree sessions and subagent transcripts sit
+        outside :meth:`discover`'s directory. Empty unless an adapter says.
+        """
+        return []
 
     @abstractmethod
     def normalize(self, raw_line: str) -> Event | None:
@@ -70,6 +111,12 @@ class HarnessAdapter(ABC):
         None means "no cheap gate for this intent", so every line is parsed.
         Correct but slow, which is the right default for an intent an
         adapter has not thought about.
+
+        Not purely a speed knob for a harness that states its ``cwd`` once
+        per file rather than once per line: dropping that line leaves every
+        event unscoped, and the miners read a blank ``cwd`` as "no opinion"
+        rather than as a miss. A gate for such a harness admits the line
+        carrying it, however narrow the rest of the gate is.
         """
         return None
 
@@ -124,6 +171,23 @@ class HarnessAdapter(ABC):
                     yield event
         finally:
             self.end_file()
+
+    def file_edits(self, use: ToolUse, result: ToolResult | None = None) -> list[FileEdit]:
+        """Lines a recorded tool call added, per file; empty for a non-edit call.
+
+        The same extractor the live capture hook runs (keyed by this adapter's
+        ``name`` in :data:`repowise.core.edit_capture.edits.EXTRACTORS`), so a
+        transcript and a hook payload of one call can never disagree. A result
+        marked as an error wrote nothing.
+        """
+        from repowise.core.edit_capture.edits import EXTRACTORS
+
+        extractor = EXTRACTORS.get(self.name)
+        if extractor is None or use.name not in self.edit_tool_names:
+            return []
+        if result is not None and result.is_error:
+            return []
+        return extractor(use.name, use.input, result.payload if result is not None else None)
 
     def iter_events(self, path: Path, *, prefilter: RawPrefilter | None = None) -> Iterator[Event]:
         """Events from one transcript file, in order.

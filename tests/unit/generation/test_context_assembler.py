@@ -158,11 +158,8 @@ def test_assemble_file_page_dependencies_from_graph(
     assert "python_pkg/utils.py" in ctx.dependencies
 
 
-def test_assemble_file_page_filters_dependency_edges_by_semantics(
-    sample_config, sample_parsed_file, graph_metrics, sample_source_bytes
-):
-    """Only structural file-to-file edges become dependencies or dependents."""
-    path = sample_parsed_file.file_info.path
+def _semantic_edge_graph(path: str) -> nx.DiGraph:
+    """Every kind of edge a file node carries, structural or not."""
     graph = nx.DiGraph()
     file_nodes = (
         path,
@@ -188,6 +185,14 @@ def test_assemble_file_page_filters_dependency_edges_by_semantics(
     graph.add_edge("historical_dependent.py", path, edge_type="co_changes")
     graph.add_edge(path, "external:third-party", edge_type="imports")
     graph.add_edge(path, "external_file.py", edge_type="imports")
+    return graph
+
+
+def test_assemble_file_page_filters_dependency_edges_by_semantics(
+    sample_config, sample_parsed_file, graph_metrics, sample_source_bytes
+):
+    """Only structural file-to-file edges become dependencies or dependents."""
+    graph = _semantic_edge_graph(sample_parsed_file.file_info.path)
 
     ctx = ContextAssembler(sample_config).assemble_file_page(
         sample_parsed_file,
@@ -260,6 +265,27 @@ def test_assemble_symbol_spotlight_callers(
         symbol, sample_parsed_file, graph_metrics["pagerank"], graph
     )
     assert "caller.py" in ctx.callers
+
+
+def test_spotlight_importers_match_the_file_page(
+    sample_config, sample_parsed_file, graph_metrics, sample_source_bytes
+):
+    """One importer count per file: co-change and containment edges count on neither."""
+    graph = _semantic_edge_graph(sample_parsed_file.file_info.path)
+    assembler = ContextAssembler(sample_config)
+    file_ctx = assembler.assemble_file_page(
+        sample_parsed_file,
+        graph,
+        graph_metrics["pagerank"],
+        graph_metrics["betweenness"],
+        graph_metrics["community"],
+        sample_source_bytes,
+    )
+    spot_ctx = assembler.assemble_symbol_spotlight(
+        sample_parsed_file.symbols[0], sample_parsed_file, graph_metrics["pagerank"], graph
+    )
+
+    assert spot_ctx.callers == file_ctx.dependents == ["importer.py", "framework_entrypoint.py"]
 
 
 def test_assemble_symbol_spotlight_no_callers(

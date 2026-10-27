@@ -11,7 +11,9 @@ from typing import Any
 
 import structlog
 
+from ..decorator_names import decorator_base
 from ..languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
+from ..models import REGISTRATION_HINT, CallSite, ParsedFile
 
 log = structlog.get_logger(__name__)
 
@@ -23,9 +25,11 @@ log = structlog.get_logger(__name__)
 _MIN_REFERENCE_CONFIDENCE = 0.85
 
 #: Symbol kinds a resolved reference may land on, by how the name was spelled.
-#: See ``_add_reference_edges`` for why a bare name is restricted to functions.
-_BARE_REFERENCE_KINDS = frozenset({"function"})
-_QUALIFIED_REFERENCE_KINDS = frozenset({"function", "method"})
+#: See ``_add_reference_edges`` for why a bare name never reaches a method. A
+#: class is admitted: handing one over (``[FooService]``, ``isinstance(x, Foo)``)
+#: is a use, and no grammar lets a bare class name stand for a local.
+_BARE_REFERENCE_KINDS = frozenset({"function", "class"})
+_QUALIFIED_REFERENCE_KINDS = frozenset({"function", "method", "class"})
 
 #: Languages that share the MSBuild project graph, so the namespace and
 #: partial-class passes below serve both. Call resolution and receiver typing
@@ -281,7 +285,8 @@ class ResolveMixin:
                     done(phase)
 
     def _resolve_cpp_header_pairs(self, progress: Any | None = None) -> None:
-        """Pair C/C++ headers with their same-stem same-dir implementations.
+        """Pair C/C++/Objective-C headers with their same-stem same-dir
+        implementations.
 
         ``foo.c`` → ``foo.h`` exists via the #include, but nothing ever
         points ``foo.h`` → ``foo.c`` — so a consumer that includes the
@@ -301,13 +306,19 @@ class ResolveMixin:
             ".cpp",
             ".cxx",
             ".c++",
+            # Objective-C and Objective-C++. Both carry ``language ==
+            # "objectivec"`` (``specs/objectivec.py`` claims ``.m`` and
+            # ``.mm``; nothing maps ``.mm`` to cpp), so without them the
+            # language gate below has nothing to admit for an ObjC repo.
+            ".m",
+            ".mm",
             *sorted(INCLUDE_FRAGMENT_EXTENSIONS),
         )
 
         cpp_files = [
             p
             for p, pf in self._parsed_files.items()
-            if pf.file_info.language in ("c", "cpp")
+            if pf.file_info.language in ("c", "cpp", "objectivec")
         ]
         if not cpp_files:
             return
@@ -394,9 +405,21 @@ class ResolveMixin:
                             continue
                         if self._graph.has_node(rel):
                             rels.append(rel)
+                    # ``Policy`1`` is the generic ``Policy<T>``; symbol ids and
+                    # imported names spell it ``Policy``.
+                    local_name = fqn.rsplit(".", 1)[-1].split("`", 1)[0]
+                    fragments = tuple(sorted(rels))
+                    for rel in rels:
+                        # Two partial types sharing a bare name in one file
+                        # (``Policy`` and ``Policy<T>``, or two namespaces) are
+                        # told apart by nothing the call resolver sees, so
+                        # neither lends that file its fragments.
+                        key = (rel, local_name)
+                        self._partial_fragments[key] = (
+                            () if key in self._partial_fragments else fragments
+                        )
                     if len(rels) < 2:
                         continue
-                    local_name = fqn.rsplit(".", 1)[-1]
                     for a in rels:
                         for b in rels:
                             if a == b or self._graph.has_edge(a, b):
@@ -448,6 +471,34 @@ class ResolveMixin:
             log.info("same_module_edges", language="swift", added=added)
         except Exception as exc:
             log.warning("swift_same_module_failed", error=str(exc))
+        finally:
+            if progress:
+                done = getattr(progress, "on_phase_done", None)
+                if callable(done):
+                    done(phase)
+
+    def _resolve_php_same_namespace(self, progress: Any | None = None) -> None:
+        """Emit same-namespace ``imports`` edges for PHP files.
+
+        An unqualified class name resolves against the file's own namespace
+        with no ``use``, so a subclass never imported its base class (the
+        Laravel ``Controller`` every controller extends read as unreachable).
+        """
+        from ..languages.php_same_namespace import resolve_php_same_namespace_refs
+        from ..languages.scope_scan import collect_source_texts
+
+        if not any(pf.file_info.language == "php" for pf in self._parsed_files.values()):
+            return
+
+        phase = "graph.same_namespace_php"
+        if progress:
+            progress.on_phase_start(phase, None)
+        try:
+            texts = collect_source_texts(self._parsed_files, ("php",), self._source_map)
+            added = resolve_php_same_namespace_refs(self._graph, self._parsed_files, texts)
+            log.info("same_namespace_edges", language="php", added=added)
+        except Exception as exc:
+            log.warning("php_same_namespace_failed", error=str(exc))
         finally:
             if progress:
                 done = getattr(progress, "on_phase_done", None)
@@ -574,6 +625,7 @@ class ResolveMixin:
             repo_path=str(self._repo_path) if self._repo_path else None,
             import_maps=self._shared_import_maps(),
             heritage_parents=self._heritage_parents(),
+            partial_fragments=self._partial_fragments,
         )
 
         # Record which C/C++ declarations were paired with a definition. The
@@ -603,6 +655,7 @@ class ResolveMixin:
                             "edge_type": "calls",
                             "call_lines": [rc.line],
                             "supplied_props": rc.supplied_props,
+                            **({"spawn_lines": [rc.line]} if rc.spawned else {}),
                         }
                         if rc.edge_type == "calls"
                         else {"edge_type": "references"}
@@ -636,6 +689,10 @@ class ResolveMixin:
                 if rc.line not in lines:
                     lines.append(rc.line)
                     lines.sort()
+                spawned = existing.setdefault("spawn_lines", []) if rc.spawned else None
+                if spawned is not None and rc.line not in spawned:
+                    spawned.append(rc.line)
+                    spawned.sort()
                 if rc.confidence > existing.get("confidence", 0):
                     existing["confidence"] = rc.confidence
                     existing["resolution_origin"] = rc.origin
@@ -658,6 +715,7 @@ class ResolveMixin:
         )
 
         self._add_reference_edges(resolver)
+        self._add_registration_edges(resolver)
 
     def _add_reference_edges(self, resolver: Any) -> None:
         """Emit ``references`` edges for functions named but never called.
@@ -669,7 +727,7 @@ class ResolveMixin:
 
         **What may be named depends on how it was written, not on the
         language.** A receiver-less name produces an edge only to a free
-        function: a bare identifier cannot name a member in the languages that
+        function or a class: a bare identifier cannot name a member in the languages that
         spell a reference that way, so a plain name resolving to a method is a
         collision rather than a reference, and C++ names its getters exactly
         like the locals that feed them. Measured on leveldb, admitting methods
@@ -712,14 +770,82 @@ class ResolveMixin:
                         continue
                     if self._graph.nodes[rc.callee_id].get("kind") not in allowed_kinds:
                         continue
-                    if self._graph.has_edge(rc.caller_id, rc.callee_id):
-                        continue
-                    self._graph.add_edge(
-                        rc.caller_id,
-                        rc.callee_id,
-                        edge_type="references",
-                        confidence=rc.confidence,
-                        resolution_origin=rc.origin,
-                    )
-                    total += 1
+                    total += self._add_reference_edge(rc.caller_id, rc.callee_id, rc)
         log.info("Reference edges resolved", total=total)
+
+    def _add_reference_edge(
+        self, source: str, target: str, rc: Any, hint_source: str | None = None
+    ) -> int:
+        """Add a ``references`` edge between two graph nodes unless the pair has one."""
+        if source not in self._graph or target not in self._graph:
+            return 0
+        if self._graph.has_edge(source, target):
+            return 0
+        self._graph.add_edge(
+            source,
+            target,
+            edge_type="references",
+            confidence=rc.confidence,
+            resolution_origin=rc.origin,
+            **({"hint_source": hint_source} if hint_source else {}),
+        )
+        return 1
+
+    def _add_registration_edges(self, resolver: Any) -> None:
+        """Link each registering decorator to the functions it decorates.
+
+        The decorated function is reached through the registry, never by name.
+        A mention, not a call: running the decorator does not run the function.
+        """
+        registrar_ids = {
+            f"{path}::{name}"
+            for path, parsed in self._parsed_files.items()
+            for name in parsed.registrars
+        }
+        if not registrar_ids:
+            return
+        names = {node_id.rsplit("::", 1)[1] for node_id in registrar_ids}
+        total = 0
+        for path, parsed in self._parsed_files.items():
+            sites = _decorator_sites(parsed, names)
+            if not sites:
+                continue
+            for rc in resolver.resolve_file(path, sites):
+                if rc.confidence < _MIN_REFERENCE_CONFIDENCE or rc.callee_id not in registrar_ids:
+                    continue
+                total += self._add_reference_edge(
+                    rc.callee_id, rc.caller_id, rc, hint_source=REGISTRATION_HINT
+                )
+        log.info("Registration edges resolved", total=total)
+
+
+def _decorator_sites(parsed: ParsedFile, registrar_names: set[str]) -> list[CallSite]:
+    """One site per Python decorator that may name a registrar, called from the decorated symbol.
+
+    A name imported under an alias (``import rule as r``) is matched by its alias;
+    the resolver then binds it back through the same import.
+    """
+    if parsed.file_info.language != "python":
+        return []
+    names = registrar_names | {
+        b.local_name
+        for imp in parsed.imports
+        for b in imp.bindings
+        if b.exported_name in registrar_names
+    }
+    sites: list[CallSite] = []
+    for sym in parsed.symbols:
+        for text in sym.decorators:
+            receiver, _, name = decorator_base(text).rpartition(".")
+            if name in names:
+                sites.append(
+                    CallSite(
+                        target_name=name,
+                        receiver_name=receiver or None,
+                        caller_symbol_id=sym.id,
+                        line=sym.start_line,
+                        argument_count=None,
+                        edge_type="references",
+                    )
+                )
+    return sites

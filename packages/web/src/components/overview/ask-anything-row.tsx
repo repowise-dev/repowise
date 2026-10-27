@@ -3,16 +3,18 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowRight, Sparkles } from "lucide-react";
+import { useTranslations } from "next-intl";
 
-const PLACEHOLDER = "How does the incremental pipeline decide what to re-index?";
+/** Copy keys, resolved inside the component so the row follows the locale. */
+const PLACEHOLDER_KEY = "ask.placeholder";
 
 /** Openers that show what this is good at: tracing behaviour, locating a
  *  concern, and asking for rationale. Concrete beats "Ask me anything" — most
  *  people stall at a blank box because they cannot tell what it can answer. */
-const SUGGESTIONS = [
-  "How does authentication work?",
-  "Where is the retry logic?",
-  "Why is this module structured this way?",
+const SUGGESTION_KEYS = [
+  "ask.suggestion1",
+  "ask.suggestion2",
+  "ask.suggestion3",
 ];
 
 /**
@@ -27,7 +29,16 @@ const SUGGESTIONS = [
  * purpose: this is the one row that does something rather than reporting
  * something, and it needs to look different enough to be found.
  */
-export function AskAnythingRow({ repoId }: { repoId: string }) {
+export function AskAnythingRow({
+  repoId,
+  suggestions: given,
+}: {
+  repoId: string;
+  /** Openers built from this repo's data; the generic ones when omitted. */
+  suggestions?: string[];
+}) {
+  const t = useTranslations("overview");
+  const suggestions = given ?? SUGGESTION_KEYS.map((key) => t(key));
   const router = useRouter();
   const [question, setQuestion] = useState("");
 
@@ -61,13 +72,13 @@ export function AskAnythingRow({ repoId }: { repoId: string }) {
           className="h-3.5 w-3.5 shrink-0 text-[var(--color-model)] transition-transform group-focus-within:scale-110"
         />
         <label htmlFor="overview-ask" className="sr-only">
-          Ask a question about this codebase
+          {t("ask.label")}
         </label>
         <input
           id="overview-ask"
           value={question}
           onChange={(e) => setQuestion(e.target.value)}
-          placeholder={PLACEHOLDER}
+          placeholder={t(PLACEHOLDER_KEY)}
           className="min-w-0 flex-1 bg-transparent text-xs text-[var(--color-text-primary)] placeholder:text-[var(--color-text-tertiary)] focus:outline-none"
         />
         <button
@@ -75,18 +86,18 @@ export function AskAnythingRow({ repoId }: { repoId: string }) {
           disabled={!question.trim()}
           className="inline-flex shrink-0 items-center gap-1 rounded-md bg-[var(--color-model)] px-2.5 py-1 text-xs font-medium text-[var(--color-text-on-model)] transition hover:bg-[var(--color-model-hover)] disabled:opacity-40"
         >
-          Ask
+          {t("ask.submit")}
           <ArrowRight className="h-3 w-3" />
         </button>
       </form>
 
       <div className="flex flex-wrap gap-1.5">
-        {SUGGESTIONS.map((s) => (
+        {suggestions.map((s) => (
           <button
             key={s}
             type="button"
             onClick={() => ask(s)}
-            className="rounded-full border border-[var(--color-border-default)] px-2.5 py-1 text-[11px] text-[var(--color-text-tertiary)] transition-colors hover:border-[var(--color-model)] hover:text-[var(--color-model)]"
+            className="max-w-full rounded-full border border-[var(--color-border-default)] px-2.5 py-1 text-left text-[11px] [overflow-wrap:anywhere] text-[var(--color-text-tertiary)] transition-colors hover:border-[var(--color-model)] hover:text-[var(--color-model)]"
           >
             {s}
           </button>

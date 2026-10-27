@@ -158,6 +158,9 @@ class PageSummaryResponse(BaseModel):
 
 class PageResponse(PageSummaryResponse):
     content: str
+    # Agent material kept off the page body (questions, identifiers, public
+    # API, git signals). The reader shows it on request. Empty when none.
+    digest: str = ""
     metadata: dict
 
     @classmethod
@@ -168,6 +171,7 @@ class PageResponse(PageSummaryResponse):
         return cls(
             **_summary_fields(obj, metadata),
             content=obj.content,  # type: ignore[attr-defined]
+            digest=obj.digest or "",  # type: ignore[attr-defined]
             metadata=metadata,
         )
 

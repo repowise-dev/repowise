@@ -10,16 +10,19 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from repowise.core.workspace.contracts import match_contracts
 from repowise.core.workspace.extractors.base import ScanContext
 from repowise.core.workspace.extractors.http import HttpExtractor
 from repowise.core.workspace.extractors.http.fastapi import FastApiDialect
 from repowise.core.workspace.extractors.http.java_clients import (
     JavaClientsDialect,
+    MicroProfileClientsDialect,
     feign_calls,
     java_net_http_calls,
     resttemplate_calls,
 )
+from repowise.core.workspace.extractors.http.jaxrs import JaxRsDialect
+from repowise.core.workspace.matching import match_contracts
+from repowise.core.workspace.origins import ContractOrigin
 
 FEIGN_CLIENT = """package com.example.client;
 
@@ -433,8 +436,8 @@ class TestJavaClientsRefusals:
     def test_an_okhttp_request_builder_emits_nothing(self) -> None:
         assert contracts(OKHTTP_BUILDER) == []
 
-    def test_an_exchange_whose_verb_lives_in_a_request_entity_emits_nothing(self) -> None:
-        assert contracts(REST_TEMPLATE_REQUEST_ENTITY) == []
+    def test_an_exchange_reads_verb_and_url_from_an_inline_request_entity(self) -> None:
+        assert ids(REST_TEMPLATE_REQUEST_ENTITY) == {"http::GET::/owners/1"}
 
     def test_an_instance_formatted_call_is_not_a_format_head(self) -> None:
         assert contracts(BUILDER_INSTANCE_FORMATTED) == []
@@ -477,3 +480,319 @@ class TestJavaClientsCrossRepoLink:
         assert len(links) == 1
         assert links[0].provider_repo == "api"
         assert links[0].consumer_repo == "client"
+
+
+# spring-petclinic api-gateway: a WebClient call to a named service.
+WEBCLIENT_LITERAL = """package org.springframework.samples.petclinic.api.application;
+
+import org.springframework.web.reactive.function.client.WebClient;
+
+public class CustomersServiceClient {
+    public Mono<OwnerDetails> getOwner(final int ownerId) {
+        return webClientBuilder.build().get()
+            .uri("http://customers-service/owners/{ownerId}", ownerId)
+            .retrieve()
+            .bodyToMono(OwnerDetails.class);
+    }
+}
+"""
+
+# spring-petclinic api-gateway: the host held in a field a setter also writes
+# through `this.`, which leaves the field's own initialiser the one assignment.
+WEBCLIENT_FIELD_BASE = """import org.springframework.web.reactive.function.client.WebClient;
+
+public class VisitsServiceClient {
+    private String hostname = "http://visits-service/";
+
+    public Mono<Visits> getVisitsForPets(final List<Integer> petIds) {
+        return webClientBuilder.build()
+            .get()
+            .uri(hostname + "pets/visits?petId={petId}", joinIds(petIds))
+            .retrieve()
+            .bodyToMono(Visits.class);
+    }
+}
+"""
+
+RESTCLIENT_SHAPES = """import org.springframework.web.client.RestClient;
+
+class Client {
+    void run(RestClient restClient) {
+        restClient.post().uri("/orders").body(order).retrieve();
+        restClient.method(HttpMethod.PATCH).uri("/orders/{id}", id).retrieve();
+        restClient.get().uri(b -> b.path("/orders").build()).retrieve();
+        restClient.get().uri(discovery() + "/owners").retrieve();
+        restClient.method(verb).uri("/orders").retrieve();
+    }
+}
+"""
+
+KOTLIN_WEBCLIENT = """import org.springframework.web.reactive.function.client.WebClient
+
+class InventoryClient(private val webClient: WebClient) {
+    private val base = "http://inventory"
+    fun stock(sku: String) = webClient.get().uri("$base/stock/$sku").retrieve()
+}
+"""
+
+# A map lookup beside a WebClient, and a chain with no `.uri` step.
+WEBCLIENT_LOOKALIKE = """import org.springframework.web.reactive.function.client.WebClient;
+
+class Client {
+    void run(Map<String, String> routes) {
+        routes.get("/orders");
+        webClient.get().retrieve();
+    }
+}
+"""
+
+APACHE_REQUESTS = """import org.apache.http.client.methods.HttpPost;
+import org.apache.http.client.methods.HttpGet;
+
+class Client {
+    void run(String id) {
+        HttpPost post = new HttpPost("http://cart:8080/shipping/" + id);
+        HttpGet get = new HttpGet(URI.create("http://cart:8080/cart/" + id));
+        HttpPost opaque = new HttpPost(url);
+    }
+}
+"""
+
+APACHE_WITHOUT_IMPORT = """class Client {
+    void run() {
+        new HttpPost("/shipping/1");
+    }
+}
+"""
+
+REST_TEMPLATE_GETTER = """import org.springframework.web.client.RestTemplate;
+
+class Client {
+    void run(String id) {
+        RequestEntity<Order> request = RequestEntity.post(URI.create("http://payment/paymentAuth")).body(order);
+        proxy.getRestTemplate().exchange(request, Payment.class);
+        proxy.getRestTemplate().getForObject("/carts/" + id, Cart.class);
+        RequestEntity<Void> twice = RequestEntity.post("/a").build();
+        twice = RequestEntity.post("/b").build();
+        proxy.getRestTemplate().exchange(twice, Payment.class);
+    }
+}
+"""
+
+# robot-shop shipping: the base URL reaches a helper through its constructor.
+SHIPPING_CONTROLLER = """public class Controller {
+    private String CART_URL = String.format("http://%s/shipping/", getenv("CART_ENDPOINT", "cart"));
+
+    public String addToCart(@PathVariable String id, @RequestBody String body) {
+        CartHelper helper = new CartHelper(CART_URL);
+        return helper.addToCart(id, body);
+    }
+}
+"""
+
+CART_HELPER = """import org.apache.http.client.methods.HttpPost;
+
+public class CartHelper {
+    private String baseUrl;
+
+    public CartHelper(String baseUrl) {
+        this.baseUrl = baseUrl;
+    }
+
+    public String addToCart(String id, String data) {
+        HttpPost postRequest = new HttpPost(baseUrl + id);
+        return null;
+    }
+}
+"""
+
+
+def file_rows(content: str, rel_path: str = "Client.java") -> list[tuple[str, str | None]]:
+    suffix = "." + rel_path.rsplit(".", 1)[1]
+    ctx = ScanContext("svc", rel_path, suffix, content, {}, None)
+    return [(c.contract_id, c.meta.get("host")) for c in JavaClientsDialect().extract(ctx)]
+
+
+def consumers(files: list[tuple[str, str]]) -> list:
+    found = HttpExtractor().extract(
+        Path("."), "shipping", files=[(name, ".java", text) for name, text in files]
+    )
+    return [c for c in found if c.role == "consumer"]
+
+
+class TestSpringRequestClients:
+    def test_a_webclient_call_keeps_the_service_host(self) -> None:
+        (c,) = contracts(WEBCLIENT_LITERAL)
+        assert (c.contract_id, c.meta["host"], c.meta["client"]) == (
+            "http::GET::/owners/{param}",
+            "customers-service",
+            "webclient",
+        )
+        assert c.origin == ContractOrigin.CLIENT_CALL
+
+    def test_a_field_base_folds_and_the_query_drops(self) -> None:
+        assert file_rows(WEBCLIENT_FIELD_BASE) == [("http::GET::/pets/visits", "visits-service")]
+
+    def test_restclient_verb_steps_and_refusals(self) -> None:
+        # A builder function, a URL built by a call and a variable verb emit nothing.
+        assert file_rows(RESTCLIENT_SHAPES) == [
+            ("http::POST::/orders", None),
+            ("http::PATCH::/orders/{param}", None),
+        ]
+
+    def test_kotlin_templates_resolve(self) -> None:
+        assert file_rows(KOTLIN_WEBCLIENT, "InventoryClient.kt") == [
+            ("http::GET::/stock/{param}", "inventory")
+        ]
+
+    def test_a_chain_with_no_uri_step_emits_nothing(self) -> None:
+        assert contracts(WEBCLIENT_LOOKALIKE) == []
+
+
+class TestApacheHttpClient:
+    def test_the_request_class_names_the_verb(self) -> None:
+        assert file_rows(APACHE_REQUESTS) == [
+            ("http::POST::/shipping/{param}", "cart"),
+            ("http::GET::/cart/{param}", "cart"),
+        ]
+
+    def test_a_file_without_the_apache_import_is_not_read(self) -> None:
+        assert contracts(APACHE_WITHOUT_IMPORT) == []
+
+
+class TestRestTemplateReach:
+    def test_a_getter_receiver_and_a_request_entity_variable(self) -> None:
+        # The entity assigned twice is not settled, so its exchange is refused.
+        assert file_rows(REST_TEMPLATE_GETTER) == [
+            ("http::POST::/paymentauth", "payment"),
+            ("http::GET::/carts/{param}", None),
+        ]
+
+
+class TestConstructorBase:
+    def test_a_base_passed_to_a_helper_constructor_folds_in(self) -> None:
+        (c,) = consumers([("Controller.java", SHIPPING_CONTROLLER), ("CartHelper.java", CART_HELPER)])
+        assert (c.file_path, c.contract_id, c.origin) == (
+            "CartHelper.java",
+            "http::POST::/shipping/{param}",
+            ContractOrigin.DATAFLOW,
+        )
+
+    def test_without_the_constructor_call_the_helper_emits_nothing(self) -> None:
+        assert consumers([("CartHelper.java", CART_HELPER)]) == []
+
+    def test_two_call_sites_passing_different_urls_settle_nothing(self) -> None:
+        other = SHIPPING_CONTROLLER.replace("Controller", "Other").replace(
+            "http://%s/shipping/", "http://%s/other/"
+        )
+        files = [
+            ("Controller.java", SHIPPING_CONTROLLER),
+            ("Other.java", other),
+            ("CartHelper.java", CART_HELPER),
+        ]
+        assert consumers(files) == []
+
+    def test_a_field_written_outside_the_constructor_is_not_settled(self) -> None:
+        helper = CART_HELPER.replace(
+            "    public String addToCart", "    void reset() { baseUrl = other; }\n\n    public String addToCart"
+        )
+        assert consumers([("Controller.java", SHIPPING_CONTROLLER), ("CartHelper.java", helper)]) == []
+
+    def test_a_generic_parameter_does_not_shift_the_positions(self) -> None:
+        helper = """import org.apache.http.client.methods.HttpPost;
+
+public class Helper {
+    private String base;
+
+    public Helper(Map<String, String> headers, String token, String base) {
+        this.base = base;
+    }
+
+    void send(String id) { new HttpPost(base + id); }
+}
+"""
+        caller = """class Caller {
+    void run() { new Helper(headers, "tok", "http://cart/shipping/"); }
+}
+"""
+        (c,) = consumers([("Caller.java", caller), ("Helper.java", helper)])
+        assert c.contract_id == "http::POST::/shipping/{param}"
+
+    def test_a_parameter_shadowing_the_field_is_not_settled(self) -> None:
+        helper = CART_HELPER.replace(
+            "    public String addToCart",
+            "    void other(String baseUrl) { new HttpPost(baseUrl + \"x\"); }\n\n    public String addToCart",
+        )
+        found = consumers([("Controller.java", SHIPPING_CONTROLLER), ("CartHelper.java", helper)])
+        assert [c for c in found if c.origin == ContractOrigin.DATAFLOW] == []
+        assert "http::POST::/shipping/{param}" not in {c.contract_id for c in found}
+
+    def test_another_overload_s_arguments_are_not_read(self) -> None:
+        caller = SHIPPING_CONTROLLER.replace("new CartHelper(CART_URL)", "new CartHelper(CART_URL, 5)")
+        assert consumers([("Controller.java", caller), ("CartHelper.java", CART_HELPER)]) == []
+
+
+# A Quarkus caller: the interface declares calls to the stock service.
+MICROPROFILE_CLIENT = """package com.example;
+
+@Path("/api/stock")
+@RegisterRestClient(configKey = "stock-api")
+public interface StockService {
+    @GET
+    @Path("/{id}")
+    Stock get(@PathParam("id") String id);
+
+    @POST
+    void reserve(Reservation r);
+
+    @GET
+    @Path(Paths.HISTORY)
+    List<Stock> history();
+}
+"""
+
+MICROPROFILE_BASE_URI = """@RegisterRestClient(baseUri = "http://stock-service:8080/")
+@Path("/api/stock")
+interface StockService {
+    @DELETE
+    @Path("/{id}")
+    void drop(@PathParam("id") String id);
+}
+"""
+
+JAXRS_RESOURCE = """@Path("/api/stock")
+public class StockResource {
+    @GET
+    @Path("/{id}")
+    public Stock get(@PathParam("id") String id) { return null; }
+}
+"""
+
+
+def microprofile(content: str) -> list[tuple[str, str | None]]:
+    ctx = ScanContext("svc", "StockService.java", ".java", content, {}, None)
+    return [(c.contract_id, c.meta.get("host")) for c in MicroProfileClientsDialect().extract(ctx)]
+
+
+def served(content: str) -> list[str]:
+    ctx = ScanContext("svc", "S.java", ".java", content, {}, None)
+    return [c.contract_id for c in JaxRsDialect().extract(ctx)]
+
+
+class TestMicroProfileClients:
+    def test_a_rest_client_interface_is_a_consumer(self) -> None:
+        # The constant @Path is not read, so that method is refused.
+        assert microprofile(MICROPROFILE_CLIENT) == [
+            ("http::GET::/api/stock/{param}", None),
+            ("http::POST::/api/stock", None),
+        ]
+
+    def test_a_literal_base_uri_is_the_host(self) -> None:
+        assert microprofile(MICROPROFILE_BASE_URI) == [
+            ("http::DELETE::/api/stock/{param}", "stock-service")
+        ]
+
+    def test_the_client_is_no_provider_and_a_resource_still_is(self) -> None:
+        assert served(MICROPROFILE_CLIENT) == []
+        assert served(JAXRS_RESOURCE) == ["http::GET::/api/stock/{param}"]
+        assert microprofile(JAXRS_RESOURCE) == []

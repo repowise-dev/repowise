@@ -66,6 +66,13 @@
   )
 ) @import.statement
 
+; Grouped form: use App\Models\{User, Post as P}; the parser expands the
+; group into one import per clause.
+(namespace_use_declaration
+  (namespace_name) @import.module
+  (namespace_use_group)
+) @import.statement
+
 ; require/include file imports — double-quoted strings are
 ; encapsed_string nodes, single-quoted (the common form) are plain
 ; string nodes, and the __DIR__ . '<path>' idiom nests either inside a

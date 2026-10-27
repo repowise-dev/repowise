@@ -8,13 +8,15 @@ central command wrapper recording exactly one event without breaking commands.
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
 
 from repowise.cli.platform import identity, settings, store
-from repowise.cli.platform.telemetry import emitter, spool
+from repowise.cli.platform.telemetry import emitter, environment, spool
 from repowise.cli.platform.telemetry.events import CommandRunEvent
 
 
@@ -28,9 +30,16 @@ def isolated_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(store, "_path", lambda: tmp_path / "platform.json")
     monkeypatch.setattr(spool, "_path", lambda: tmp_path / spool.SPOOL_FILENAME)
     # Clear any inherited telemetry env so each test controls precedence.
-    for var in ("DO_NOT_TRACK", "REPOWISE_TELEMETRY_DISABLED", "REPOWISE_TELEMETRY_DEBUG"):
+    for var in (
+        "DO_NOT_TRACK",
+        "REPOWISE_TELEMETRY_DISABLED",
+        "REPOWISE_TELEMETRY_DEBUG",
+        "REPOWISE_OFFLINE",
+    ):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(emitter, "_flush_thread", None, raising=False)
+    # These tests exercise delivery itself, so they opt back in to it.
+    monkeypatch.setenv("REPOWISE_TELEMETRY_IN_TESTS", "1")
 
 
 class TestConsentPrecedence:
@@ -46,6 +55,11 @@ class TestConsentPrecedence:
     def test_tool_specific_env_disables(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("REPOWISE_TELEMETRY_DISABLED", "true")
         assert settings.is_enabled() is False
+
+    def test_offline_env_disables(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("REPOWISE_OFFLINE", "1")
+        assert settings.is_enabled() is False
+        assert settings.disabled_reason() == "REPOWISE_OFFLINE is set"
 
     def test_stored_disable_then_enable(self):
         settings.set_enabled(False)
@@ -212,14 +226,35 @@ class TestSpooledDelivery:
         emitter._flush()
         assert spawned == [True]
 
-    def test_exit_spawns_nothing_under_pytest(self, monkeypatch: pytest.MonkeyPatch):
+    def test_nothing_is_queued_or_spawned_under_pytest(self, monkeypatch: pytest.MonkeyPatch):
         spawned: list = []
         monkeypatch.setattr(emitter, "_spawn_flusher", lambda: spawned.append(True) or True)
+        monkeypatch.delenv("REPOWISE_TELEMETRY_IN_TESTS")
 
         emitter.record(CommandRunEvent(command="health"))
         emitter._flush()
 
+        assert spool.claim() == []
         assert spawned == []
+
+    def test_debug_still_prints_under_pytest(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ):
+        monkeypatch.delenv("REPOWISE_TELEMETRY_IN_TESTS")
+        monkeypatch.setenv("REPOWISE_TELEMETRY_DEBUG", "1")
+        emitter.record(CommandRunEvent(command="health"))
+        assert "would send" in capsys.readouterr().err
+
+    def test_envelope_carries_a_client_label(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(environment, "client", lambda: "codex")
+        envelope = emitter.build_envelope(CommandRunEvent(command="health"))
+        assert envelope["properties"]["client"] == "codex"
+        assert "client" not in envelope  # a property, not a top-level field
+
+    def test_a_command_outcome_client_wins(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(environment, "client", lambda: "terminal")
+        event = CommandRunEvent(command="augment", extra={"client": "cursor"})
+        assert emitter.build_envelope(event)["properties"]["client"] == "cursor"
 
     def test_flusher_posts_and_drains(self, monkeypatch: pytest.MonkeyPatch):
         from repowise.cli.platform import client
@@ -483,3 +518,117 @@ class TestBucketCount:
         assert telemetry.drain_command_outcome() == {"a": 1}
         # A second drain is empty — the field belongs to one invocation only.
         assert telemetry.drain_command_outcome() == {}
+
+
+class TestFlusherExecutable:
+    """Tests for _flusher_executable() executable selection logic."""
+
+    def test_windows_prefers_pythonw_when_sibling_exists(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        """On Windows, prefer pythonw.exe next to sys.executable when it exists."""
+        monkeypatch.setattr("os.name", "nt")
+        fake_python = tmp_path / "python.exe"
+        fake_pythonw = tmp_path / "pythonw.exe"
+        fake_python.write_text("")
+        fake_pythonw.write_text("")
+        monkeypatch.setattr(sys, "executable", str(fake_python))
+
+        assert emitter._flusher_executable() == str(fake_pythonw)
+
+    def test_windows_falls_back_without_pythonw_sibling(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        """On Windows, fall back to sys.executable when no pythonw.exe sibling exists."""
+        monkeypatch.setattr("os.name", "nt")
+        fake_python = tmp_path / "python.exe"
+        fake_python.write_text("")
+        monkeypatch.setattr(sys, "executable", str(fake_python))
+
+        assert emitter._flusher_executable() == str(fake_python)
+
+    def test_posix_returns_sys_executable(self, monkeypatch: pytest.MonkeyPatch):
+        """On POSIX, always return sys.executable."""
+        monkeypatch.setattr("os.name", "posix")
+        monkeypatch.setattr(sys, "executable", "/usr/bin/python3")
+
+        assert emitter._flusher_executable() == "/usr/bin/python3"
+
+    def test_posix_ignores_pythonw_sibling(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        """On POSIX, even if pythonw.exe exists, return sys.executable."""
+        monkeypatch.setattr("os.name", "posix")
+        fake_python = tmp_path / "python3"
+        fake_python.write_text("")
+        fake_pythonw = tmp_path / "pythonw.exe"
+        fake_pythonw.write_text("")
+        monkeypatch.setattr(sys, "executable", str(fake_python))
+
+        assert emitter._flusher_executable() == str(fake_python)
+
+
+class TestSpawnFlusherFlags:
+    """Tests for _spawn_flusher() subprocess creation flags."""
+
+    def test_windows_spawns_pythonw_with_create_no_window_alone(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        """On Windows, the flusher gets CREATE_NO_WINDOW without DETACHED_PROCESS."""
+        monkeypatch.setattr("os.name", "nt")
+        fake_python = tmp_path / "python.exe"
+        fake_pythonw = tmp_path / "pythonw.exe"
+        fake_python.write_text("")
+        fake_pythonw.write_text("")
+        monkeypatch.setattr(sys, "executable", str(fake_python))
+
+        calls: list[tuple[list[str], dict]] = []
+        monkeypatch.setattr(subprocess, "Popen", lambda args, **kw: calls.append((args, kw)))
+
+        assert emitter._spawn_flusher() is True
+        (args, kwargs), = calls
+        assert args[0] == str(fake_pythonw)
+        # CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB; DETACHED_PROCESS (0x8) would disable it.
+        assert kwargs["creationflags"] == 0x08000000 | 0x01000000
+        assert not kwargs["creationflags"] & 0x00000008
+
+    def test_posix_uses_start_new_session(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        """On POSIX, subprocess.Popen receives start_new_session=True."""
+        monkeypatch.setattr("os.name", "posix")
+        monkeypatch.setattr(sys, "executable", "/usr/bin/python3")
+
+        captured_kwargs: dict = {}
+
+        class FakePopen:
+            def __init__(self, args, **kwargs):
+                captured_kwargs.update(kwargs)
+
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+
+        result = emitter._spawn_flusher()
+
+        assert result is True
+        assert captured_kwargs.get("start_new_session") is True
+        assert "creationflags" not in captured_kwargs
+        assert "startupinfo" not in captured_kwargs
+
+    def test_popen_failure_returns_false(self, monkeypatch: pytest.MonkeyPatch):
+        """If subprocess.Popen raises, _spawn_flusher returns False silently."""
+        monkeypatch.setattr("os.name", "posix")
+        monkeypatch.setattr(sys, "executable", "/usr/bin/python3")
+
+        def raise_popen(*args, **kwargs):
+            raise OSError("spawn failed")
+
+        monkeypatch.setattr(subprocess, "Popen", raise_popen)
+
+        result = emitter._spawn_flusher()
+        assert result is False
+
+    def test_empty_executable_returns_false(self, monkeypatch: pytest.MonkeyPatch):
+        """If sys.executable is empty, _spawn_flusher returns False."""
+        monkeypatch.setattr(sys, "executable", "")
+        result = emitter._spawn_flusher()
+        assert result is False

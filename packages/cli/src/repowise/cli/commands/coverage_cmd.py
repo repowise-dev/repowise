@@ -1,10 +1,10 @@
 """``repowise coverage`` — ingest and inspect test-coverage reports.
 
 The single entry point for coverage. ``coverage add`` populates per-file
-line/branch coverage (which clears ``untested_hotspot`` for tested files) and,
-when a report carries contexts (a coverage.py ``.coverage`` or a per-test
-lcov), also builds the per-test "test-to-code" map. ``repowise health`` then
-folds in whatever was ingested here - it no longer takes a coverage flag of
+line/branch coverage from a text report (which clears ``untested_hotspot`` for
+tested files) and, when a report carries contexts (a coverage.py ``.coverage``
+or a per-test lcov), also builds the per-test "test-to-code" map. ``repowise health
+--recompute`` (or the next ``repowise update``) then folds in whatever was ingested here - it no longer takes a coverage flag of
 its own.
 """
 
@@ -13,30 +13,32 @@ from __future__ import annotations
 from pathlib import Path
 
 import click
+from rich.markup import escape
 
 from repowise.cli._setup import configure_cli_logging
+from repowise.cli.commands.coverage_check_cmd import coverage_check
+from repowise.cli.commands.coverage_suggest_gates_cmd import coverage_suggest_gates
 from repowise.cli.helpers import (
     console,
     ensure_repowise_dir,
     get_db_url_for_repo,
+    reconcile_schema_best_effort,
     resolve_command_target,
     run_async,
 )
 from repowise.cli.output import emit_json, format_option, notice_console
+from repowise.core.analysis.health.coverage import PARSERS as COVERAGE_PARSERS
+from repowise.core.analysis.health.coverage.contexts import (
+    PER_TEST_COVERAGE_COMMAND,
+    is_coverage_data_file,
+)
 from repowise.core.workspace.update import get_head_commit
 
 
 def _resolve_coverage_repo(path: str | None, fmt: str = "table") -> Path:
     """Resolve the repo path for coverage subcommands (workspace-aware)."""
     target = resolve_command_target(path=path)
-    target.notice(notice_console(fmt), command="coverage")
-    if target.is_workspace:
-        primary = target.primary_path()
-        if primary is None:
-            raise click.ClickException("Workspace has no primary repo configured.")
-        return primary
-    assert target.repo_path is not None
-    return target.repo_path
+    return target.narrow(notice_console(fmt), command="coverage", repo_option=False)
 
 
 async def _repo_file_keys(session, repo_id: str) -> set[str]:
@@ -53,18 +55,22 @@ async def _repo_file_keys(session, repo_id: str) -> set[str]:
 
 @click.group("coverage")
 def coverage_group() -> None:
-    """Ingest and inspect test-coverage reports."""
+    """Ingest and inspect test-coverage reports, and gate changes on them in CI."""
+
+
+coverage_group.add_command(coverage_check)
+coverage_group.add_command(coverage_suggest_gates)
 
 
 @coverage_group.command("add")
-@click.argument("paths", nargs=-1, type=click.Path(exists=True, dir_okay=False))
+@click.argument("paths", nargs=-1)
 @click.option(
     "--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary)."
 )
 @click.option(
     "--format",
     "coverage_format",
-    type=click.Choice(["lcov", "cobertura", "clover", "repowise-json"]),
+    type=click.Choice(list(COVERAGE_PARSERS)),
     default=None,
     help="Force a parser instead of auto-detecting from content.",
 )
@@ -73,6 +79,13 @@ def coverage_group() -> None:
     is_flag=True,
     default=False,
     help="Also fail when some report files did not map to the repo tree.",
+)
+@click.option(
+    "--allow-partial",
+    is_flag=True,
+    default=False,
+    help="Store the coverage even when more than half the report did not map to the "
+    "repo tree (flagged partial).",
 )
 @click.option(
     "--verbose",
@@ -86,15 +99,27 @@ def coverage_add(
     repo: str | None,
     coverage_format: str | None,
     strict: bool,
+    allow_partial: bool,
     verbose: bool,
 ) -> None:
     """Ingest coverage (auto-discovers reports when none are given).
 
-    Stores per-file line/branch coverage, and additionally the per-test
+    Each PATH is a report path or a glob (quote it, e.g. 'artifacts/**/lcov.info'),
+    relative to cwd. PATH=PREFIX prepends PREFIX to the paths inside every report
+    it matches, like a {path, path_prefix} entry in coverage.paths. A PATH that
+    matches no file is an error.
+
+    With hooks.coverage_reingest: true and the Claude Code repowise hooks
+    installed, a successful ingest also adds this repository's coverage
+    re-ingest hook to .claude/settings.local.json (removed again when the flag
+    is not true).
+
+    Stores per-file line/branch coverage from text reports, and the per-test
     "test-to-code" map when a report carries contexts - a coverage.py
-    ``.coverage`` written with ``coverage run --contexts=test``, or a per-test
-    lcov. The map is what answers "which tests exercise this change"; reports
-    without contexts ingest per-file coverage only.
+    ``.coverage`` recorded with ``pytest --cov --cov-context=test``, or a per-test
+    lcov. The map is what answers "which tests exercise this change". A
+    ``.coverage`` gives the map only: it does not record which lines are
+    executable, so export it with ``coverage lcov`` for per-file coverage.
 
     Examples:
 
@@ -102,10 +127,14 @@ def coverage_add(
         repowise coverage add coverage/lcov.info
         repowise coverage add .coverage            # per-test map from coverage.py
         repowise coverage add web.lcov api.lcov    # merged hit-wins
+        repowise coverage add 'artifacts/**/lcov.info'
+        repowise coverage add web/coverage/lcov.info=web
 
     Exits non-zero when nothing was stored, so `coverage add ... || exit 1`
-    tells a complete ingest from a no-op. With --strict it also exits
-    non-zero when some report files did not map to the repo tree.
+    tells a complete ingest from a no-op. When more than half the report did
+    not map to the repo tree it stores nothing and suggests a strip_prefix /
+    path_prefix, unless --allow-partial. With --strict it also exits non-zero
+    when some report files did not map to the repo tree.
     """
     configure_cli_logging(verbose=verbose)
 
@@ -116,15 +145,26 @@ def coverage_add(
         CoverageConfig,
         build_coverage_map,
         discover_artifacts,
+        expand_report_args,
+        measurement_commit,
+        oldest_report_time,
         parse_contexts_file,
+        prefix_hint,
+        report_origin_dir,
         resolve_test_reports,
+        suggest_prefixes,
     )
     from repowise.core.repo_config import load_repo_config
 
     cfg = CoverageConfig.from_repo_config(load_repo_config(repo_path))
 
+    report_prefixes: dict[Path, str | None] = {}
     if paths:
-        report_paths = [Path(p) for p in paths]
+        try:
+            report_prefixes = expand_report_args(paths, Path())
+        except FileNotFoundError as exc:
+            raise click.BadParameter(str(exc), param_hint="PATHS") from None
+        report_paths = list(report_prefixes)
     else:
         report_paths = discover_artifacts(repo_path, globs=cfg.artifacts or None)
         report_paths += _discover_context_reports(repo_path)
@@ -132,7 +172,8 @@ def coverage_add(
             console.print(
                 "[yellow]No coverage report found.[/yellow] Looked for "
                 "coverage/lcov.info, .coverage, **/cobertura.xml, and similar.\n"
-                "Generate one (e.g. [cyan]coverage run --contexts=test -m pytest[/cyan] "
+                f"Generate one (e.g. [cyan]{PER_TEST_COVERAGE_COMMAND}[/cyan], "
+                "which needs pytest-cov, "
                 "or [cyan]cargo llvm-cov --lcov --output-path coverage/lcov.info[/cyan]) "
                 "then re-run, or pass a path:\n"
                 "  [cyan]repowise coverage add path/to/report[/cyan]"
@@ -142,11 +183,6 @@ def coverage_add(
             f"Discovered {len(report_paths)} report(s): "
             + ", ".join(p.name for p in report_paths[:5])
         )
-
-    # The aggregate parsers read text (lcov/xml/json); the coverage.py
-    # ``.coverage`` sqlite only feeds the per-test map, so keep it out of the
-    # text-parsing path (its binary bytes would not decode as UTF-8).
-    agg_paths = [p for p in report_paths if not _is_sqlite(p)]
 
     async def _do() -> bool:
         from repowise.core.persistence import (
@@ -160,21 +196,22 @@ def coverage_add(
             save_test_coverage,
         )
 
-        engine = create_engine(get_db_url_for_repo(repo_path))
+        url = get_db_url_for_repo(repo_path)
+        # An index from an older repowise lacks newer columns; back-fill them.
+        await reconcile_schema_best_effort(url)
+        engine = create_engine(url)
         sf = create_session_factory(engine)
         async with get_session(sf) as session:
             repo_row = await get_repository_by_path(session, str(repo_path))
             if repo_row is None:
                 console.print(
-                    "[yellow]No index yet — run `repowise init` once before "
+                    "[yellow]No index yet. Run `repowise init` once before "
                     "adding coverage.[/yellow]"
                 )
                 return False
             repo_keys = await _repo_file_keys(session, repo_row.id)
             if not repo_keys:
-                console.print(
-                    "[yellow]No indexed files found — run `repowise init` first.[/yellow]"
-                )
+                console.print("[yellow]No indexed files found. Run `repowise init` first.[/yellow]")
                 return False
 
             # Stamp the *live* HEAD, not ``repo_row.head_commit``. The stored
@@ -182,109 +219,165 @@ def coverage_add(
             # working tree. They diverge when you commit, run your tests, then
             # ``coverage add`` without an intervening ``repowise update`` — the
             # report would be labelled with the older indexed commit (issue
-            # #1747). Live HEAD is the right answer for a provenance field:
-            # it is the tree the coverage was measured against. Resolve it
-            # from disk — the same source the health pass uses.
+            # #1747). HEAD is the right answer for a report written since the
+            # last commit; one left over from earlier measures the tree as of
+            # its own date, so the stamp moves back to the commit that was HEAD
+            # then (issue #3901). Resolve both from disk — the same source the
+            # health pass uses.
             head_sha = (
                 get_head_commit(Path(repo_path))
                 or getattr(repo_row, "head_commit", None)
             )
 
-            # --- Per-file aggregate coverage (lcov / cobertura / clover / json).
-            agg_matched = 0
-            unmapped = 0
-            mapping_partial = False
-            if agg_paths:
-                resolved, errors = build_coverage_map(
-                    repo_path,
-                    agg_paths,
-                    repo_keys,
-                    coverage_format=coverage_format or cfg.format,
-                    strip_prefix=cfg.strip_prefix,
-                    path_prefix=cfg.path_prefix,
-                )
-                for path, err in errors:
-                    console.print(f"[yellow]  {path.name}: {err}[/yellow]")
-                # Counted from `resolved`, not from inside the `resolved.files`
-                # branch below: total mapping loss leaves `files` empty, so
-                # reading the count in there reported 0 report files unmapped
-                # for the one run where every single one of them was.
-                skipped = resolved.unmatched + resolved.ambiguous
-                unmapped = len(skipped)
-                mapping_partial = resolved.mapping_partial
-                if resolved.files:
-                    await save_coverage_files(
-                        session,
-                        repo_row.id,
-                        resolved.files,
-                        source_format=resolved.source_format or "lcov",
-                        ingested_commit_sha=head_sha,
-                        mapping_partial=mapping_partial,
-                    )
-                    agg_matched = resolved.matched
-                    console.print(
-                        f"[green]Ingested coverage for {resolved.matched} file(s)[/green] "
-                        f"({resolved.matched_exact} exact, {resolved.matched_suffix} resolved)."
-                    )
-                    if skipped:
-                        sample = ", ".join(skipped[:5])
-                        console.print(
-                            f"[yellow]{len(skipped)} report file(s) did not map to the "
-                            f"repo tree[/yellow] (e.g. {sample})."
-                        )
-                    if mapping_partial:
-                        console.print(
-                            "[red]More than half the report did not map to the repo "
-                            "tree.[/red] The stored coverage describes only a fragment "
-                            "of the repository — fix [cyan]coverage.strip_prefix[/cyan] "
-                            "or [cyan]coverage.path_prefix[/cyan] in "
-                            ".repowise/config.yaml and re-run."
-                        )
+            # --- Per-file aggregate coverage (any format in COVERAGE_PARSERS).
+            # The same read init runs; a ``.coverage`` comes back in *errors*
+            # with why it has no per-file coverage, then feeds the map below.
+            resolved, errors = build_coverage_map(
+                repo_path,
+                report_paths,
+                repo_keys,
+                coverage_format=coverage_format or cfg.format,
+                strip_prefix=cfg.strip_prefix,
+                path_prefix=cfg.path_prefix,
+                report_prefixes=report_prefixes,
+                ignore=cfg.ignore,
+                allow_partial=allow_partial,
+            )
+            for path, err in errors:
+                console.print(f"[yellow]  {path.name}: {err}[/yellow]")
+            if stale := resolved.alignment.warning():
+                console.print(f"[yellow]{escape(stale)}[/yellow]")
+            # Counted from `resolved`, not from inside the `resolved.files`
+            # branch below: total mapping loss leaves `files` empty, so
+            # reading the count in there reported 0 report files unmapped
+            # for the one run where every single one of them was.
+            skipped = resolved.unmatched + resolved.ambiguous
+            unmapped = len(skipped)
 
             # --- Per-test map, from any report that carries contexts.
             map_records: list = []
             map_format: str | None = None
+            map_readable = False
+            # Reports that gave the map rows, for the stamp below: a leftover
+            # artifact with no contexts (or none that mapped) is not a
+            # measurement this ingest describes.
+            map_paths: list[Path] = []
+            map_skipped: list[str] = []
             for report_path in report_paths:
                 creport = parse_contexts_file(report_path)
                 if not creport.has_contexts:
                     # A plain lcov without TN is normal (handled as aggregate
                     # above); a .coverage without contexts is worth calling out
                     # so the user knows why no map was built.
-                    if _is_sqlite(report_path):
+                    if is_coverage_data_file(report_path):
                         console.print(
                             f"[yellow]{report_path.name}: no per-test contexts "
-                            f"(ran without --contexts=test); per-test map "
+                            f"(recorded without per-test contexts); per-test map "
                             f"skipped.[/yellow]"
                         )
                     continue
+                map_readable = True
+                creport.origin_dir = report_origin_dir(report_path, repo_path)
                 rtc = resolve_test_reports(
                     creport,
                     repo_keys,
                     strip_prefix=cfg.strip_prefix,
-                    path_prefix=cfg.path_prefix,
+                    path_prefix=report_prefixes.get(report_path) or cfg.path_prefix,
+                    ignore=cfg.ignore,
                 )
+                if rtc.mapping_partial:
+                    map_skipped.extend(rtc.unmatched + rtc.ambiguous)
+                if rtc.records:
+                    map_paths.append(report_path)
                 map_records.extend(rtc.records)
                 map_format = map_format or creport.source_format
+
+            # A fragment is stored only with --allow-partial: of the per-file
+            # coverage or of the map, either one withholds both.
+            partial = resolved.mapping_partial or bool(map_skipped)
+            if partial and not allow_partial:
+                suggested = (
+                    resolved.suggested_prefixes
+                    if resolved.mapping_partial
+                    else suggest_prefixes(
+                        map_skipped, repo_keys, mapped={r.file_path for r in map_records}
+                    )
+                )
+                hint = prefix_hint(suggested)
+                part = "report" if resolved.mapping_partial else "per-test map"
+                console.print(
+                    f"[red]More than half the {part} did not map to the repo tree, so "
+                    f"nothing was stored.[/red] To fix it, {escape(hint)} and re-run, "
+                    "or pass [cyan]--allow-partial[/cyan] to store the fragment."
+                )
+                return False
+
+            agg_matched = 0
+            # Both writes stamp the commit that was HEAD when their own reports
+            # were written (#3901), and each asks only about the files that
+            # actually gave it rows: an unreadable or context-free artifact left
+            # beside a fresh report must not pull a valid ingest back to the
+            # stale one's date. *resolved* carries the aggregate's parsed set,
+            # ``map_paths`` the per-test one; an empty set answers ``None`` and
+            # keeps HEAD, which is what a report written just now is.
+            agg_sha = measurement_commit(repo_path, resolved.measured_at, head_sha)
+            map_sha = measurement_commit(repo_path, oldest_report_time(map_paths), head_sha)
+            if resolved.files:
+                await save_coverage_files(
+                    session,
+                    repo_row.id,
+                    resolved.files,
+                    source_format=resolved.source_format or "lcov",
+                    ingested_commit_sha=agg_sha,
+                    provenance=resolved.provenance,
+                )
+                agg_matched = resolved.matched
+                console.print(
+                    f"[green]Ingested coverage for {resolved.matched} file(s)[/green] "
+                    f"({resolved.matched_exact} exact, {resolved.matched_suffix} resolved)."
+                )
+                if skipped:
+                    sample = ", ".join(skipped[:5])
+                    console.print(
+                        f"[yellow]{len(skipped)} report file(s) did not map to the "
+                        f"repo tree[/yellow] (e.g. {escape(sample)})."
+                    )
             if map_records:
-                written = await save_test_coverage(
+                saved = await save_test_coverage(
                     session,
                     repo_row.id,
                     map_records,
                     source_format=map_format or "coverage.py",
-                    ingested_commit_sha=head_sha,
+                    ingested_commit_sha=map_sha,
                 )
-                dropped = len(map_records) - written
-                extra = (
-                    f" [yellow]({dropped} dropped: duplicate or over cap)[/yellow]"
-                    if dropped
-                    else ""
-                )
+                extra = f" ({saved.merged} repeated record(s) merged)" if saved.merged else ""
                 console.print(
-                    f"[green]Built the test-to-code map: {written} test->file "
+                    f"[green]Built the test-to-code map: {saved.written} test->file "
                     f"record(s).[/green]{extra}"
+                )
+                if saved.truncated:
+                    sample = ", ".join(saved.dropped_sample)
+                    console.print(
+                        f"[yellow]The map is at its row cap: {len(saved.dropped_tests)} "
+                        f"test(s) left out whole (e.g. {escape(sample)}). Test selection "
+                        "runs every test while the map is truncated.[/yellow]"
+                    )
+            if partial:
+                console.print(
+                    "[yellow]Stored a fragment (--allow-partial): more than half the "
+                    "report did not map to the repo tree, and the stored coverage is "
+                    "flagged partial.[/yellow]"
                 )
 
             if not agg_matched and not map_records:
+                if resolved.alignment.reasons:
+                    # Every mapped file was dropped as misaligned; the warning above says why.
+                    console.print("[red]Nothing was stored.[/red]")
+                    return False
+                if len(errors) == len(report_paths) and not map_readable:
+                    # No report was readable as coverage; the lines above say why.
+                    console.print("[red]Nothing was stored.[/red]")
+                    return False
                 console.print(
                     "[red]No report files mapped to indexed source files.[/red] "
                     "If paths look prefixed (e.g. build/…), set "
@@ -296,18 +389,8 @@ def coverage_add(
                     f"[red]--strict: {unmapped} report file(s) did not map to the repo tree.[/red]"
                 )
                 return False
-            if mapping_partial:
-                console.print(
-                    "[red]Coverage ingest was partial: more than half the report did "
-                    "not map to the repo tree.[/red] The stored numbers describe only "
-                    "the mapped fragment, not the repository. Fix "
-                    "[cyan]coverage.strip_prefix[/cyan] / [cyan]coverage.path_prefix[/cyan] "
-                    "in .repowise/config.yaml and re-run — this run exits non-zero so "
-                    "scripts cannot mistake a fragment for complete coverage."
-                )
-                return False
             console.print(
-                "Run [cyan]repowise health[/cyan] to fold coverage into the defect "
+                "Run [cyan]repowise health --recompute[/cyan] to fold coverage into the defect "
                 "scores, or [cyan]repowise coverage status[/cyan] to review it."
             )
             return True
@@ -317,18 +400,9 @@ def coverage_add(
     # exit status alone.
     if not run_async(_do()):
         raise click.exceptions.Exit(1)
+    from repowise.cli.commands.augment_cmd.coverage_reingest import sync_repo_hook
 
-
-_SQLITE_MAGIC = b"SQLite format 3\x00"
-
-
-def _is_sqlite(path: Path) -> bool:
-    """True when *path* is a coverage.py ``.coverage`` sqlite (binary magic)."""
-    try:
-        with path.open("rb") as fh:
-            return fh.read(len(_SQLITE_MAGIC)) == _SQLITE_MAGIC
-    except OSError:
-        return False
+    sync_repo_hook(repo_path, console)
 
 
 def _discover_context_reports(repo_path: Path) -> list[Path]:
@@ -348,7 +422,7 @@ def _discover_context_reports(repo_path: Path) -> list[Path]:
     "--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary)."
 )
 # Safe to spell this ``--format`` here: the ``--format`` that names an *input*
-# parser (lcov / cobertura / clover) lives on ``coverage add``, not on the
+# parser (a COVERAGE_PARSERS key) lives on ``coverage add``, not on the
 # group, so the two never meet on one command line.
 @format_option()
 def coverage_status(repo: str | None, fmt: str) -> None:
@@ -368,16 +442,21 @@ def coverage_status(repo: str | None, fmt: str) -> None:
             get_test_coverage_summary,
         )
 
-        engine = create_engine(get_db_url_for_repo(repo_path))
+        url = get_db_url_for_repo(repo_path)
+        # An index from an older repowise lacks newer columns; back-fill them.
+        await reconcile_schema_best_effort(url)
+        engine = create_engine(url)
         sf = create_session_factory(engine)
         async with get_session(sf) as session:
             repo_row = await get_repository_by_path(session, str(repo_path))
             if repo_row is None:
-                notices.print("[yellow]No index yet — run `repowise init`.[/yellow]")
+                notices.print("[yellow]No index yet. Run `repowise init`.[/yellow]")
                 if fmt == "json":
                     emit_json({"repo": str(repo_path), "indexed": False})
                 return
-            summary = await get_coverage_summary(session, repo_row.id)
+            summary = await get_coverage_summary(
+                session, repo_row.id, reference_commit=repo_row.head_commit
+            )
             map_summary = await get_test_coverage_summary(session, repo_row.id)
 
             if fmt == "json":
@@ -395,8 +474,8 @@ def coverage_status(repo: str | None, fmt: str) -> None:
                 console.print(
                     "[yellow]No coverage ingested.[/yellow] Run "
                     "[cyan]repowise coverage add <report>[/cyan]. A .coverage file "
-                    "recorded with [cyan]--contexts=test[/cyan] also builds the "
-                    "per-test map."
+                    f"recorded with [cyan]{PER_TEST_COVERAGE_COMMAND}[/cyan] (needs pytest-cov) "
+                    "also builds the per-test map."
                 )
                 return
 
@@ -407,7 +486,7 @@ def coverage_status(repo: str | None, fmt: str) -> None:
                 partial = summary.get("mapping_partial")
                 partial_suffix = (
                     " [red](partial: stored numbers cover a fragment of the repo "
-                    "— fix coverage.strip_prefix and re-ingest)[/red]"
+                    "; fix coverage.strip_prefix and re-ingest)[/red]"
                     if partial
                     else ""
                 )
@@ -418,6 +497,16 @@ def coverage_status(repo: str | None, fmt: str) -> None:
                 )
                 if branch_pct is not None:
                     console.print(f"  Branch: {branch_pct:.1f}%")
+                paths = summary.get("report_paths")
+                if paths:
+                    console.print(
+                        f"  Report paths matched: {paths['matched']} of {paths['total']}"
+                    )
+                if (summary.get("freshness") or {}).get("status") == "stale":
+                    console.print(
+                        f"  [yellow]Measured at {(summary['ingested_commit_sha'] or '')[:8]}, "
+                        "not the indexed commit; re-run the tests and ingest again.[/yellow]"
+                    )
 
             if map_summary.get("pair_count"):
                 console.print(
@@ -426,10 +515,19 @@ def coverage_status(repo: str | None, fmt: str) -> None:
                     f"  Files:   {map_summary['source_file_count']}\n"
                     f"  Records: {map_summary['pair_count']}"
                 )
+            elif summary.get("source_format") == "apex":
+                # test-result-codecoverage.json is per class only; the run's
+                # own result file carries the per-test records.
+                console.print(
+                    "[dim]No test-to-code map yet - add the run's "
+                    "[cyan]test-result-<run id>.json[/cyan] from "
+                    "[cyan]sf apex run test --code-coverage --output-dir <dir>[/cyan] with "
+                    "[cyan]repowise coverage add[/cyan].[/dim]"
+                )
             else:
                 console.print(
                     "[dim]No test-to-code map yet - record one with "
-                    "[cyan]coverage run --contexts=test -m pytest[/cyan], then "
+                    f"[cyan]{PER_TEST_COVERAGE_COMMAND}[/cyan] (needs pytest-cov), then "
                     "[cyan]repowise coverage add .coverage[/cyan].[/dim]"
                 )
 

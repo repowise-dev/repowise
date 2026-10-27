@@ -12,7 +12,7 @@ from datetime import datetime
 
 from repowise.core.ingestion.graph import GraphBuilder
 from repowise.core.ingestion.graph._rehydrate import _NODE_ATTR_KEYS
-from repowise.core.ingestion.models import FileInfo, Import, ParsedFile
+from repowise.core.ingestion.models import FileInfo, Import, ParsedFile, Symbol
 
 
 def _fi(path: str) -> FileInfo:
@@ -91,6 +91,7 @@ def _serialize(builder: GraphBuilder) -> tuple[list[dict], list[dict]]:
                 "hint_source": data.get("hint_source"),
                 "resolution_origin": data.get("resolution_origin"),
                 "call_lines": data.get("call_lines", []),
+                "type_only": bool(data.get("type_only", False)),
             }
         )
     return nodes, edges
@@ -189,4 +190,59 @@ def test_supplied_props_survives_rehydration():
     assert stamped["supplied_props"] == frozenset(["showBanner", "isLoaded"])
     for e in edges[1:]:
         assert "supplied_props" not in graph[e["source_node_id"]][e["target_node_id"]]
+
+
+
+def test_reachability_root_survives_rehydration():
+    original = _build_sample()
+    original.graph().nodes["c.py"]["is_reachability_root"] = True
+    nodes, edges = _serialize(original)
+    hydrated = GraphBuilder.from_persisted(nodes, edges, original.file_metrics_snapshot())
+    assert hydrated.graph().nodes["c.py"]["is_reachability_root"] is True
+    assert not hydrated.graph().nodes["a.py"].get("is_reachability_root")
+
+
+def test_parse_only_symbol_attrs_come_back_from_the_reparse():
+    sym = Symbol(
+        id="a.py::A::f",
+        name="f",
+        qualified_name="a.A.f",
+        kind="method",
+        signature="f()",
+        start_line=1,
+        end_line=2,
+        docstring=None,
+        decorators=["@override"],
+        parent_name="A",
+        modifiers=("override",),
+    )
+    parsed = _parsed("a.py")
+    parsed.symbols.append(sym)
+    original = GraphBuilder()
+    original.add_file(parsed)
+    original.build()
+    nodes, edges = _serialize(original)
+    hydrated = GraphBuilder.from_persisted(nodes, edges, original.file_metrics_snapshot())
+    assert "modifiers" not in hydrated.graph().nodes[sym.id]
+    hydrated.restore_parse_only_attrs([parsed])
+    node = hydrated.graph().nodes[sym.id]
+    assert node["modifiers"] == ("override",)
+    assert node["decorators"] == ["@override"]
+
+
+def test_type_only_edges_survive_rehydration_and_suppress_cycles():
+    builder = GraphBuilder()
+    builder.add_file(_parsed("a.py", [_imp("b")]))
+    builder.add_file(_parsed("b.py", [_imp("a")]))
+    builder.build()
+    builder.graph()["a.py"]["b.py"]["type_only"] = True
+    builder.graph()["b.py"]["a.py"]["type_only"] = True
+
+    nodes, edges = _serialize(builder)
+    assert any(e.get("type_only") for e in edges)
+
+    hydrated = GraphBuilder.from_persisted(nodes, edges, builder.file_metrics_snapshot())
+    assert hydrated.graph()["a.py"]["b.py"]["type_only"] is True
+    assert hydrated.graph()["b.py"]["a.py"]["type_only"] is True
+    assert hydrated.cycle_subgraph().number_of_edges() == 0
 

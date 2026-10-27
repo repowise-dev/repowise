@@ -16,11 +16,13 @@ import sys
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import PurePosixPath
+from typing import Any
 
 import networkx as nx
 import structlog
 
 from repowise.core.analysis.kg_curation import GENERIC_ORG_SEGMENTS, dominant_segments
+from repowise.core.ids import is_external
 from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES, SYMBOL_USE_EDGE_TYPES
 from repowise.core.support_paths import is_example_path
 from repowise.core.test_paths import is_test_related_path
@@ -33,6 +35,29 @@ log = structlog.get_logger(__name__)
 
 _MAX_COMMUNITY_FRACTION = 0.30
 _MIN_SPLIT_SIZE = 20
+
+# Stored community id for a node the partition leaves out. Persisted rows carry
+# a NOT NULL id defaulting to 0, which is the largest real community, so an
+# external node must not fall through to it.
+NO_COMMUNITY = -1
+
+
+def stored_community_id(assignment: dict[str, int], node_id: str) -> int:
+    """Community id to persist for *node_id*: its own, else 0, or ``NO_COMMUNITY`` for external code."""
+    if node_id in assignment:
+        return assignment[node_id]
+    return NO_COMMUNITY if is_external(node_id) else 0
+
+
+def has_community(community_id: int | None) -> bool:
+    """True when *community_id* names a real community.
+
+    ``None`` (never assigned) and ``NO_COMMUNITY`` (external code, left out of
+    the partition) both mean no community, so readers must not treat them as a
+    cluster.
+    """
+    return community_id is not None and community_id >= 0
+
 
 # Edge types to include when building file-level community subgraph.
 # Was {imports, framework, dynamic, extends, implements}: "dynamic" matched no
@@ -528,12 +553,14 @@ def detect_file_communities(
         - communities_info: {community_id: CommunityInfo}
         - algorithm_used: "leiden" or "louvain"
     """
-    # Extract file nodes (exclude external nodes — they're structural noise)
+    # Extract file nodes. External and framework nodes are stored as files but
+    # are code we do not own: left in, they join the partition (two files that
+    # both import `os` get pulled together through it) and inflate members/size.
     # Sorted: node order seeds the undirected graph's insertion order, and
     # Louvain/Leiden partitions depend on iteration order even when seeded.
     file_nodes = sorted(
         n for n, d in graph.nodes(data=True)
-        if d.get("node_type", "file") == "file"
+        if d.get("node_type", "file") == "file" and not is_external(n)
     )
 
     if not file_nodes:
@@ -669,6 +696,28 @@ def detect_file_communities(
     )
 
     return file_assignment, communities_info, algorithm
+
+
+def file_community_labels(graph_builder: Any) -> dict[str, str]:
+    """``{file path: community label}`` off *graph_builder*'s cached file communities.
+
+    The refactoring detectors key foreign modules by this label, so every path
+    that writes refactoring plans (init, update, re-score, ``repowise health``)
+    must pass the same map or the same file gets a different plan. Empty when
+    community detection fails.
+    """
+    try:
+        assignment = graph_builder.community_detection()
+        info = graph_builder.community_info()
+    except Exception as exc:
+        log.debug("file_community_labels_failed", error=str(exc))
+        return {}
+    labels: dict[str, str] = {}
+    for node_id, community_id in assignment.items():
+        label = getattr(info.get(community_id), "label", None)
+        if label:
+            labels[node_id] = label
+    return labels
 
 
 # ---------------------------------------------------------------------------

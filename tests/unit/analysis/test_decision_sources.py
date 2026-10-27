@@ -97,6 +97,55 @@ async def test_discover_adrs_maps_superseded_status_from_frontmatter(tmp_path):
     assert "Adopt gRPC" in d.decision
 
 
+async def test_discover_adrs_in_nested_directories(tmp_path):
+    breeze_adr = tmp_path / "dev" / "breeze" / "doc" / "adr"
+    breeze_adr.mkdir(parents=True)
+    (breeze_adr / "0001-record-architecture-decisions.md").write_text(_NYGARD_ADR, encoding="utf-8")
+
+    sdk_adr = tmp_path / "go-sdk" / "adr"
+    sdk_adr.mkdir(parents=True)
+    (sdk_adr / "0002-use-grpc.md").write_text(_MADR_ADR, encoding="utf-8")
+
+    ex = DecisionExtractor(repo_path=tmp_path)
+    decisions = await ex.discover_adrs()
+
+    assert len(decisions) == 2
+    titles = {d.title for d in decisions}
+    assert "1. Use PostgreSQL for primary storage" in titles
+    assert "Adopt gRPC for service-to-service calls" in titles
+
+
+async def test_nested_architecture_notes_folder_is_not_treated_as_adr(tmp_path):
+    arch_dir = tmp_path / "packages" / "core" / "architecture"
+    arch_dir.mkdir(parents=True)
+    (arch_dir / "overview.md").write_text("# Overview\n\nSome notes.\n", encoding="utf-8")
+
+    ex = DecisionExtractor(repo_path=tmp_path)
+    decisions = await ex.discover_adrs()
+
+    assert decisions == []
+
+
+def test_conventional_adrs_win_the_cap_over_earlier_loose_matches(tmp_path, monkeypatch):
+    """Loose name matches walked first must not fill the cap before an ADR dir."""
+    from repowise.core.analysis.decisions import adr
+
+    monkeypatch.setattr(adr, "_MAX_ADR_FILES", 3)
+    for i in range(3):
+        (tmp_path / f"adr-note-{i}.md").write_text("# note\n", encoding="utf-8")
+    adr_dir = tmp_path / "docs" / "adr"
+    adr_dir.mkdir(parents=True)
+    for i in range(3):
+        (adr_dir / f"000{i}-choice.md").write_text("# choice\n", encoding="utf-8")
+
+    found = adr.find_adr_files(tmp_path)
+
+    assert sorted(p.relative_to(tmp_path).as_posix() for p in found) == [
+        "docs/adr/0000-choice.md",
+        "docs/adr/0001-choice.md",
+        "docs/adr/0002-choice.md",
+    ]
+
 
 class TestAdrDiscoveryHonorsIgnoreFiles:
     """A path git cannot see must not become a decision record.
@@ -156,6 +205,17 @@ class TestAdrDiscoveryHonorsIgnoreFiles:
 
         assert len(decisions) == 1
         assert "Use PostgreSQL" in decisions[0].title
+
+    async def test_nested_adr_in_ignored_folder_is_skipped(self, tmp_path):
+        """Ignored nested ADR directory tree must not contribute records."""
+        (tmp_path / ".gitignore").write_text("dev/breeze/\n", encoding="utf-8")
+        breeze_adr = tmp_path / "dev" / "breeze" / "doc" / "adr"
+        breeze_adr.mkdir(parents=True)
+        (breeze_adr / "0001-record-architecture-decisions.md").write_text(_NYGARD_ADR, encoding="utf-8")
+
+        decisions = await DecisionExtractor(repo_path=tmp_path).discover_adrs()
+
+        assert decisions == []
 
 
 async def test_extract_all_runs_deterministic_sources_and_gates(tmp_path):

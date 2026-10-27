@@ -122,6 +122,29 @@ def test_status_lanes_agree_with_acceptance_not_the_status_column(status_repo: P
     assert by_key["pr"]["accepted"] == 1
 
 
+def test_a_candidate_with_no_decision_text_counts_as_blocked(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    (repo / ".repowise").mkdir(parents=True)
+    _seed_wiki_db(
+        repo,
+        [
+            {"id": "a" * 32, "title": "Use JWT", "status": "proposed", "source": "pr"},
+            {"id": "b" * 32, "title": "Empty", "status": "proposed", "source": "pr", "decision": ""},
+        ],
+    )
+
+    review = _status(repo)["review"]
+    assert (review["acceptable"], review["blocked"]) == (1, 1)
+
+    candidates = CliRunner().invoke(
+        cli, ["decision", "candidates", str(repo), "--format", "json"]
+    )
+    assert candidates.exit_code == 0, candidates.output
+    rows = json.loads(candidates.output)["candidates"]
+    blockers = {row["title"]: row["blockers"] for row in rows}
+    assert blockers == {"Use JWT": [], "Empty": ["no decision text: state what was chosen"]}
+
+
 def test_status_reports_capture_spend_and_the_last_call(status_repo: Path) -> None:
     _add_cost_rows(
         status_repo,

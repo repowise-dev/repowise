@@ -8,14 +8,12 @@ from pathlib import Path
 import pytest
 
 from repowise.core.ingestion.external_systems.maven_model import load_maven_reactor
-from repowise.core.workspace.cross_repo import (
-    CrossRepoOverlay,
+from repowise.core.workspace.cross_repo import CrossRepoOverlay, load_overlay, save_overlay
+from repowise.core.workspace.manifests import (
     CrossRepoPackageDep,
     CrossRepoPackageDiagnostic,
     detect_package_dependencies,
     detect_package_dependencies_with_diagnostics,
-    load_overlay,
-    save_overlay,
 )
 
 

@@ -37,6 +37,7 @@ from datetime import datetime
 from functools import lru_cache
 from typing import Any, TypeAlias
 
+from .rows import scored_rows
 from .scoring import SCORE_FLOOR, SCORE_MAX
 
 DECLINE_THRESHOLD: float = 0.5
@@ -85,7 +86,8 @@ class TrendAlert:
 class TrendSummary:
     """Lightweight diff between the newest snapshot and the prior window."""
 
-    current_hotspot_health: float
+    # ``None`` on a snapshot whose repo had no scored hotspot file.
+    current_hotspot_health: float | None
     current_average_health: float
     previous_hotspot_health: float | None
     previous_average_health: float | None
@@ -156,12 +158,18 @@ class _ScopedSnapshot:
 
     taken_at: Any
     average_health: float
-    per_file_scores_json: str
-    hotspot_health: float = 0.0
+    #: The stored row, so the per-file map is read only by a caller that asks
+    #: for it: a route that deferred the maps loads just the rows it reads.
+    source: Any = field(default=None, repr=False)
+    hotspot_health: float | None = None
     worst_performer_path: str | None = None
     worst_performer_score: float | None = None
     structure_average: float | None = None
     history_average: float | None = None
+
+    @property
+    def per_file_scores_json(self) -> str:
+        return self.source.per_file_scores_json
 
 
 def project_scope(history: list[Any], scope: str) -> list[Any]:
@@ -185,7 +193,7 @@ def project_scope(history: list[Any], scope: str) -> list[Any]:
             _ScopedSnapshot(
                 taken_at=snap.taken_at,
                 average_health=float(value),
-                per_file_scores_json=snap.per_file_scores_json,
+                source=snap,
             )
         )
     return out
@@ -195,12 +203,13 @@ def diff_snapshots(history: list[Any]) -> TrendSummary:
     """Compare the newest snapshot against the window behind it.
 
     *history* is expected oldest-first (the natural insertion order in
-    ``HealthSnapshot``). Empty history yields a summary with neutral
-    fields and no alerts.
+    ``HealthSnapshot``). Empty history yields a summary with no alerts and a
+    null hotspot figure, since nothing was measured. ``current_average_health``
+    stays at the neutral 10.0 because the response schema requires a number.
     """
     if not history:
         return TrendSummary(
-            current_hotspot_health=10.0,
+            current_hotspot_health=None,
             current_average_health=10.0,
             previous_hotspot_health=None,
             previous_average_health=None,
@@ -210,14 +219,15 @@ def diff_snapshots(history: list[Any]) -> TrendSummary:
 
     current = history[-1]
     prior = history[-2] if len(history) >= 2 else None
+    current_hotspot = _metric_value(current, "hotspot_health")
+    previous_hotspot = _metric_value(prior, "hotspot_health") if prior else None
     summary = TrendSummary(
-        current_hotspot_health=float(current.hotspot_health),
+        current_hotspot_health=current_hotspot,
         current_average_health=float(current.average_health),
-        previous_hotspot_health=float(prior.hotspot_health) if prior else None,
+        previous_hotspot_health=previous_hotspot,
         previous_average_health=float(prior.average_health) if prior else None,
-        hotspot_delta=_delta(
-            float(current.hotspot_health),
-            float(prior.hotspot_health) if prior else None,
+        hotspot_delta=(
+            _delta(current_hotspot, previous_hotspot) if current_hotspot is not None else None
         ),
         average_delta=_delta(
             float(current.average_health),
@@ -237,12 +247,17 @@ def hotspot_trend(history: list[Any]) -> str | None:
 
     Compared over the same window the declining alert uses, so the two never
     disagree. ``None`` with fewer than two snapshots: one reading is not a
-    trend, and a surface should say nothing rather than print "stable".
+    trend, and a surface should say nothing rather than print "stable". Also
+    ``None`` when either end recorded no hotspot figure.
     """
     if len(history) < 2:
         return None
     baseline = history[max(0, len(history) - 1 - DECLINE_LOOKBACK)]
-    delta = float(history[-1].hotspot_health) - float(baseline.hotspot_health)
+    current = _metric_value(history[-1], "hotspot_health")
+    base = _metric_value(baseline, "hotspot_health")
+    if current is None or base is None:
+        return None
+    delta = current - base
     if delta <= -DECLINE_THRESHOLD:
         return "declining"
     if delta >= DECLINE_THRESHOLD:
@@ -396,6 +411,7 @@ def drop_unscoped_fields(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "structure_average": None,
             "history_average": None,
             "maintainability_average": None,
+            **({"doc_drift_count": None} if "doc_drift_count" in row else {}),
         }
         for row in rows
     ]
@@ -407,12 +423,20 @@ def _point(snap: Any, attr: str) -> float | None:
     return round(float(value), 2) if value is not None else None
 
 
-def recent_kpis(history: list[Any], limit: int = 10) -> list[dict[str, Any]]:
+def recent_kpis(
+    history: list[Any],
+    limit: int = 10,
+    *,
+    doc_drift: bool = False,
+    analyzer_version: bool = False,
+) -> list[dict[str, Any]]:
     """Serialize the most-recent *limit* snapshots for CLI / API consumers.
 
     Newest first (so the CLI table reads top-down chronologically when
     flipped, which matches user expectation for "recent runs"). Each row
-    is a plain dict — no ORM leakage.
+    is a plain dict — no ORM leakage. *doc_drift* adds ``doc_drift_count`` and
+    *analyzer_version* the row's ``analyzer_version``; both off by default so
+    agent-facing trend rows stay as they were.
     """
     if not history:
         return []
@@ -422,7 +446,7 @@ def recent_kpis(history: list[Any], limit: int = 10) -> list[dict[str, Any]]:
         rows.append(
             {
                 "taken_at": snap.taken_at.isoformat() if snap.taken_at else None,
-                "hotspot_health": round(float(snap.hotspot_health), 2),
+                "hotspot_health": _point(snap, "hotspot_health"),
                 "average_health": round(float(snap.average_health), 2),
                 "worst_performer_path": snap.worst_performer_path,
                 "worst_performer_score": (
@@ -439,6 +463,10 @@ def recent_kpis(history: list[Any], limit: int = 10) -> list[dict[str, Any]]:
                 "maintainability_average": _point(snap, "maintainability_average"),
             }
         )
+        if doc_drift:
+            rows[-1]["doc_drift_count"] = getattr(snap, "doc_drift_count", None)
+        if analyzer_version:
+            rows[-1]["analyzer_version"] = getattr(snap, "analyzer_version", None)
     return rows
 
 
@@ -487,6 +515,7 @@ def snapshot_file_maps(
     (deepest is 12.91 of a possible 13.5), and recording the pre-cap sum
     instead would be recording a number the score was never computed from.
     """
+    metrics = scored_rows(metrics)
     per_file_scores = {m.file_path: round(float(m.score), 2) for m in metrics}
 
     totals: dict[str, float] = {}
@@ -502,6 +531,33 @@ def snapshot_file_maps(
         if float(m.score) <= SCORE_FLOOR and m.file_path in totals
     }
     return per_file_scores, per_file_deductions
+
+
+def snapshot_fields(
+    kpis: dict[str, Any], metrics: list[Any], findings: list[Any]
+) -> dict[str, Any] | None:
+    """``save_health_snapshot``'s keyword arguments for one health report.
+
+    ``None`` when no file carries a score (every file is in a language health
+    has no dialect for): a trend point would chart a 10.0 nobody measured.
+    Shared by the three snapshot writers for the reason
+    :func:`snapshot_file_maps` gives.
+    """
+    if "average_health" in kpis and kpis["average_health"] is None:
+        return None
+    scores_map, deductions_map = snapshot_file_maps(metrics, findings)
+    return {
+        "hotspot_health": kpis.get("hotspot_health"),
+        "average_health": float(kpis.get("average_health", SCORE_MAX)),
+        "worst_performer_path": kpis.get("worst_performer_path"),
+        "worst_performer_score": kpis.get("worst_performer_score"),
+        "per_file_scores": scores_map,
+        "per_file_deductions": deductions_map,
+        "structure_average": kpis.get("structure_average"),
+        "history_average": kpis.get("history_average"),
+        "production_average": kpis.get("production_average"),
+        "maintainability_average": kpis.get("maintainability_average"),
+    }
 
 
 #: One normalized snapshot reading for a single file: when it was taken, the

@@ -84,6 +84,13 @@ export interface DocPageSummary {
 
 export interface DocPage extends DocPageSummary {
   content: string;
+  /**
+   * The page's agent digest: the questions it answers, its identifiers,
+   * public API and git signals. Indexed and served to agents beside
+   * `content`, kept off the body, shown by the reader on request. Absent or
+   * empty on pages that carry none.
+   */
+  digest?: string;
   metadata: Record<string, unknown>;
 }
 

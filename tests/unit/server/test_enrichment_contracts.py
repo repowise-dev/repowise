@@ -193,3 +193,46 @@ class TestEnricherContractLoading:
         enricher = CrossRepoEnricher(missing_path, contracts_path=contracts_json)
         assert enricher.has_data is True
         assert enricher.has_contract_data is True
+
+
+class TestEnricherFromData:
+    """Parsed payloads get the same validation and indexes a file load does."""
+
+    def test_payloads_build_the_indexes_a_file_load_builds(
+        self, contracts_json: Path, empty_cross_repo: Path
+    ) -> None:
+        payload = json.loads(contracts_json.read_text(encoding="utf-8"))
+        from_file = CrossRepoEnricher(empty_cross_repo, contracts_path=contracts_json)
+        from_data = CrossRepoEnricher.from_data(
+            overlay={"version": 2, "co_changes": [], "package_deps": []}, contracts=payload
+        )
+
+        assert from_data.contracts == from_file.contracts
+        assert from_data.contract_links == from_file.contract_links
+        assert from_data.contract_analysis == from_file.contract_analysis
+        assert from_data.cross_repo_analysis == from_file.cross_repo_analysis
+        assert from_data.get_contract_links_as_provider(
+            "backend", "routes.py"
+        ) == from_file.get_contract_links_as_provider("backend", "routes.py")
+        assert from_data.get_affected_repos("backend", "routes.py") == ["frontend"]
+
+    def test_a_stale_overlay_payload_is_refused_like_a_stale_file(self) -> None:
+        pair = {
+            "source_repo": "a",
+            "source_file": "x",
+            "target_repo": "b",
+            "target_file": "y",
+            "strength": 0.5,
+        }
+        enricher = CrossRepoEnricher.from_data(overlay={"version": 1, "co_changes": [pair]})
+        assert enricher.co_changes == []
+        assert enricher.cross_repo_analysis["reason"] == "unsupported_contract_version"
+
+    def test_absent_payloads_are_absent_artifacts(self) -> None:
+        enricher = CrossRepoEnricher.from_data(
+            conformance={"generated_at": "t", "violations": [], "cycles": []}
+        )
+        assert enricher.has_data is False
+        assert enricher.get_system_graph() is None
+        assert enricher.has_conformance is True
+        assert enricher.contract_analysis["status"] == "unavailable"

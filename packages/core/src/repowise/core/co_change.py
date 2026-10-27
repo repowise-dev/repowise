@@ -28,6 +28,7 @@ import json
 from dataclasses import dataclass, field
 
 __all__ = [
+    "CO_CHANGE_COMMIT_DECAY_TAU",
     "CO_CHANGE_DECAY_TAU",
     "MAX_PARTNERS_PER_FILE",
     "MIN_CO_CHANGE_SUPPORT",
@@ -45,7 +46,17 @@ __all__ = [
 # Defined here rather than in the indexer because two independent producers
 # apply it (per-repo history and the cross-repo session miner), and a drift
 # between them would silently change what a weight means.
+# Two consumers now: change entropy, and the cross-repo session miner, whose
+# output is a self-normalising share in which the decay largely cancels.
 CO_CHANGE_DECAY_TAU: float = 180.0
+
+# Tau in ``exp(-commits_ago / tau)`` for the per-repo co-change PAIR weight,
+# where ``commits_ago`` is the commit's position in the newest-first walk.
+# Calendar time is the wrong clock for a mass the health score reads directly:
+# on a fast repo nothing in the indexed history is older than a 180-day tau, so
+# the decay retires nothing and partners only accumulate. Counting in commits
+# makes the clock the repo's own rate of change.
+CO_CHANGE_COMMIT_DECAY_TAU: float = 500.0
 
 # Minimum number of shared commits for a pair to be worth recording. Counted
 # raw, so it keeps its meaning if the weighting changes.
@@ -73,10 +84,13 @@ class CoChangePartner:
     commits; ``support`` is that plain count. ``self_commits`` and
     ``partner_commits`` are each file's commit total over the same walk, so
     ``support / self_commits`` is an honest directional confidence. They are
-    zero on an index written before they were recorded.
+    zero on an index written before they were recorded. ``focused_support`` is
+    ``support`` counted over commits narrow enough to be evidence (the sweep cap
+    change entropy uses), ``None`` before it was recorded.
 
     ``dependency_kind`` is the ``edge_type`` behind a ``corroborated``
-    verdict, and is ``None`` for every other verdict.
+    verdict, or ``"barrel"`` when the pair is joined through a re-export
+    barrel, and is ``None`` for every other verdict.
 
     ``record`` is the verbatim source record, for callers that put it back on
     the wire or read a field this module does not model; it is excluded from
@@ -89,6 +103,7 @@ class CoChangePartner:
     support: int = 0
     self_commits: int = 0
     partner_commits: int = 0
+    focused_support: int | None = None
     structural: str | None = None
     dependency_kind: str | None = None
     record: dict = field(default_factory=dict, compare=False, repr=False)
@@ -146,6 +161,11 @@ def parse_partners(raw: object) -> list[CoChangePartner]:
                 support=_as_count(record.get("frequency")),
                 self_commits=_as_count(record.get("self_commits")),
                 partner_commits=_as_count(record.get("partner_commits")),
+                focused_support=(
+                    _as_count(record["focused_frequency"])
+                    if "focused_frequency" in record
+                    else None
+                ),
                 structural=structural if isinstance(structural, str) else None,
                 dependency_kind=kind if isinstance(kind, str) else None,
                 record=record,

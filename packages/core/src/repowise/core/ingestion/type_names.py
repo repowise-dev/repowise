@@ -94,6 +94,74 @@ def bare_type_name(raw: str) -> str:
     return text.strip()
 
 
+def written_type_key(name: str, raw: str, language: str) -> str:
+    """*name*, the bare type *raw* spells, as receiver lookups key it.
+
+    A C# head keeps its arity (``IFoo`1``), since a same-file ``IFoo`` may be
+    another type; a Java or Apex member type keeps its outer type
+    (``Token.Tag``), which picks among same-named member types.
+    """
+    if language == "csharp" and (arity := type_argument_count(raw)):
+        return f"{name}`{arity}"
+    if language in ("java", "apex"):
+        return java_type_path(raw) or name
+    return name
+
+
+def java_type_path(raw: str) -> str | None:
+    """``p.Token.Tag<X>[]`` -> ``p.Token.Tag``: a type spelled through its qualifiers.
+
+    Kept whole because the qualifier picks which same-named type is meant: an
+    outer type a member type, a package (lowercase) a top-level type. None for
+    an undotted spelling or one that names no type.
+    """
+    text = strip_type_arguments(raw.strip()).replace(" ", "")
+    parts = text.split(".")
+    if len(parts) < 2 or not any(part[:1].isupper() for part in parts):
+        return None
+    return text if all(part.isidentifier() for part in parts) else None
+
+
+def type_argument_count(raw: str) -> int:
+    """How many type arguments the named type in *raw* is given.
+
+    ``Gen<A, B<C>>`` → 2; ``Gen<A>?`` → 1; ``Outer<A>.Inner`` and ``Plain`` → 0,
+    since only arguments on the last segment belong to the type named.
+    """
+    text = raw.strip().rstrip("?").rstrip()
+    while text.endswith("[]"):
+        text = text[:-2].rstrip()
+    if not text.endswith(">"):
+        return 0
+    depth = 0
+    commas = 0
+    for char in reversed(text):
+        if char == ">":
+            depth += 1
+        elif char == "<":
+            depth -= 1
+            if depth == 0:
+                return commas + 1
+        elif char == "," and depth == 1:
+            commas += 1
+    return 0
+
+
+def type_qualifier(raw: str) -> str:
+    """Return what ``bare_type_name`` drops from the front of *raw*, or ``""``.
+
+    ``os.FileInfo`` → ``os``; ``Plain`` → ``""``.
+    """
+    text = strip_type_arguments(raw.strip())
+    head = text[: len(text) - len(bare_type_name(text))]
+    return head.rstrip("".join(_QUALIFIER_SEPARATORS))
+
+
+def dotted_type_segments(raw: str) -> list[str]:
+    """``ns.Outer.Inner<T>`` -> ``["ns", "Outer", "Inner"]``: a dotted type path, segment by segment."""
+    return [segment.strip() for segment in strip_type_arguments(raw.strip()).split(".")]
+
+
 # C++ template heads whose ``operator->`` forwards to their argument, so
 # ``shared_ptr<Foo> p`` makes ``p->m()`` a call on ``Foo``. Only these: a
 # container holds a ``T`` without being one, and unwrapping ``vector<Foo>``
@@ -182,6 +250,34 @@ _CSHARP_EXTENSION_RECEIVER = re.compile(
     r"\s*this\s+(?:(?:ref|in|scoped|readonly)\s+)*"
     r"(?P<type>[\w.]+(?:<[^>]*>)?(?:\s*\[[,\s]*\])*\??)"
 )
+
+
+def kotlin_extension_receiver(header: str, name: str) -> tuple[str, str | None] | None:
+    """``(written, extended)`` for Kotlin's ``fun Type.name(`` in *header*, or None.
+
+    *written* is the receiver as a symbol id spells it, nullable mark and type
+    parameter kept (``Int?``, ``T``), which tells ``Int.f()`` from
+    ``Int?.f()``. *extended* is the bare type the extension dispatches on,
+    None for a receiver that is the function's own type parameter
+    (``fun <T> T.name()``): any implicit receiver fits it.
+    """
+    # Read at the header's first `fun` only: a same-named function below it is
+    # another declaration.
+    first = re.search(r"\bfun\s", header)
+    match = first and re.compile(
+        rf"fun\s+(?:<(?P<params>(?:[^<>]|<[^<>]*>)*)>\s*)?"
+        rf"(?P<type>[^()=]+?)\.\s*`?{re.escape(name)}`?\s*[(<]"
+    ).match(header, first.start())
+    if not match:
+        return None
+    written = match.group("type").strip()
+    bare = bare_type_name(written.rstrip("?").strip())
+    if not bare:
+        return None
+    params = (match.group("params") or "").split(",")
+    declared = {p.split(":")[0].split()[-1] for p in params if p.strip()}
+    nullable = "?" if written.endswith("?") else ""
+    return bare + nullable, None if bare in declared else bare
 
 
 def csharp_extension_receiver(signature: str) -> str | None:

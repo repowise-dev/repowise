@@ -1,22 +1,24 @@
-"""HTTP dialect protocol and the shared contract builders.
+"""The shared HTTP contract builders.
 
-A *dialect* is one framework's or client library's view of a source file. It
-declares the file extensions it understands and turns raw regex matches into
-:class:`Contract` instances via the two builders here, so every dialect emits
-identically-shaped providers/consumers and the normalization rules live in one
-place.
+Every HTTP dialect (see :mod:`..dialect` for the protocol) turns raw matches
+into :class:`Contract` instances via the two builders here, so every dialect
+emits identically-shaped providers/consumers and the normalization rules live
+in one place.
 """
 
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING
 
-from ..base import ScanContext
+from repowise.core.workspace.origins import ContractOrigin
+
+from ..dialect import build_contract
 from .paths import (
     absolute_host,
     consumer_meta,
     extract_path_from_url,
+    flatten_interpolations,
     is_unusable_consumer_path,
     normalize_http_path,
     strip_leading_base_expr,
@@ -25,6 +27,8 @@ from .paths import (
 
 if TYPE_CHECKING:
     from repowise.core.workspace.contracts import Contract
+
+    from ..base import ScanContext
 
 # Regex fragments for the HTTP method verbs, shared by every dialect's patterns.
 METHODS = r"get|post|put|delete|patch"
@@ -51,18 +55,6 @@ def method_from_callee(callee: str, default: str = "GET") -> str:
     return verbs[0].upper() if len(verbs) == 1 else default
 
 
-@runtime_checkable
-class HttpDialect(Protocol):
-    """A framework/client recogniser for a set of file extensions."""
-
-    name: str
-    extensions: frozenset[str]
-
-    def extract(self, ctx: ScanContext) -> list[Contract]:
-        """Return the contracts found in *ctx* (may be empty)."""
-        ...
-
-
 def nearest_prefix(mappings: list[tuple[int, str]], pos: int) -> str:
     """Return the prefix of the nearest class mapping declared before *pos*.
 
@@ -87,35 +79,32 @@ def build_provider_contract(
     path_raw: str,
     framework: str,
     line: int | None = None,
-    confidence: float = 0.85,
+    origin: ContractOrigin = ContractOrigin.ROUTE_REGISTRATION,
     handler: str | None = None,
 ) -> Contract | None:
     """Build a provider contract, or ``None`` if the path is unusable.
 
-    A match whose path normalizes to bare ``/`` only counts when the raw text
-    actually carried a path — a template-variable-only or empty route is
-    dropped, matching the legacy extractor's skip rule.
+    An empty path is dropped: with no prefix to stitch onto, nothing was
+    declared. A root route spelled ``/`` is kept; a service whose whole API is
+    ``POST /`` serves it there, and a base path applied later (a Spring
+    context-path) turns it into ``/accounts``.
 
     *handler* is the expression the registration names, for frameworks that
     declare a route away from its handler (an ASP.NET minimal API). It is what
     lets :func:`.contracts.bind_symbol_ids` reach the handler rather than the
     registration site; without it the line lookup binds to ``Program.cs``.
     """
-    from repowise.core.workspace.contracts import Contract
-
-    norm_path = normalize_http_path(path_raw)
-    if (not norm_path or norm_path == "/") and not path_raw.strip("/"):
+    if not path_raw.strip():
         return None
+    norm_path = normalize_http_path(path_raw)
 
-    return Contract(
-        repo=ctx.repo_alias,
+    return build_contract(
+        ctx,
         contract_id=f"http::{method}::{norm_path}",
         contract_type="http",
         role="provider",
-        file_path=ctx.rel_path,
         symbol_name=f"{framework}:{method} {path_raw}",
-        confidence=confidence,
-        service=None,
+        origin=origin,
         line=line,
         meta={
             "method": method,
@@ -133,7 +122,7 @@ def build_consumer_contract(
     url: str,
     client: str,
     line: int | None = None,
-    confidence: float = 0.75,
+    origin: ContractOrigin = ContractOrigin.CLIENT_CALL,
 ) -> Contract | None:
     """Build a consumer contract from a raw client-call URL.
 
@@ -141,24 +130,22 @@ def build_consumer_contract(
     truncated template literal or a path with no concrete segment (see
     :func:`is_unusable_consumer_path`).
     """
-    from repowise.core.workspace.contracts import Contract
-
     host = absolute_host(url)
     path = extract_path_from_url(url)
     path, base_token = strip_leading_base_expr(path)
+    if "${" in path:
+        path = flatten_interpolations(path)
     path = strip_trailing_query_expr(path)
     norm_path = normalize_http_path(path)
     if is_unusable_consumer_path(norm_path):
         return None
-    return Contract(
-        repo=ctx.repo_alias,
+    return build_contract(
+        ctx,
         contract_id=f"http::{method}::{norm_path}",
         contract_type="http",
         role="consumer",
-        file_path=ctx.rel_path,
         symbol_name=f"{client}:{method} {url}",
-        confidence=confidence,
-        service=None,
+        origin=origin,
         line=line,
         meta=consumer_meta(method, norm_path, client, base_token, host),
     )

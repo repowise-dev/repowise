@@ -19,7 +19,7 @@
  */
 
 import { useMemo, useState } from "react";
-import { ArrowUpRight, Sparkles } from "lucide-react";
+import { ArrowUpRight } from "lucide-react";
 import useSWR from "swr";
 import { GOOD_MIN } from "@repowise-dev/types/health";
 import type {
@@ -32,11 +32,17 @@ import type {
 
 import { Skeleton } from "../ui/skeleton";
 import { EmptyState } from "../shared/empty-state";
+import { CleanState } from "../shared/clean-state";
+import { formatNumber } from "../lib/format";
+import { ApiError } from "../shared/api-error";
+import { toFriendlyMessage } from "../lib/errors";
 import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-table";
 import { ResultsFooter } from "../shared/results-footer";
 import { OverviewSection } from "../overview/section";
 
-import { AiPromptModal } from "./ai-prompt-modal";
+import { fileChatContext } from "./ai-prompt-modal";
+import { AGENT_PROMPT_LABEL, useAiPromptAction } from "./ai-prompt-action";
+import { PromptForRowsButton, RowPromptAction } from "./row-prompt-action";
 import { CoverageLede } from "./coverage-lede";
 import { CoverageBar } from "./coverage-bar";
 import { ModuleCoverageList } from "./module-coverage-list";
@@ -47,16 +53,74 @@ import {
 import { RiskCoverageScatter } from "./risk-coverage-scatter";
 import { InferredTestsView } from "./inferred-tests-view";
 import {
-  buildCoverageAiPrompt,
+  buildCoverageBatchAiPrompt,
   type CoverageFilePromptInput,
 } from "./ai-prompt-builder";
-import { scoreBadgeClass } from "./tokens";
+import { bandForScore, isWeakHealthBand } from "@repowise-dev/types/health";
+import { scoreTextColor } from "./tokens";
+
+/** Plain figure; the band colour appears only where health is actually weak. */
+function quietScoreText(score: number): string {
+  return isWeakHealthBand(bandForScore(score))
+    ? scoreTextColor(score)
+    : "text-[var(--color-text-secondary)]";
+}
+import { COVERAGE_REPORT_FORMATS_LABEL } from "./coverage-formats";
+import { CiHint } from "../shared/ci-hint";
 import type { CodeHealthAdapter } from "./code-health-adapter";
 
-export function CoverageView({ adapter }: { adapter: CodeHealthAdapter }) {
-  const [promptRow, setPromptRow] = useState<CoverageFilePromptInput | null>(null);
+/** Copy a host can override: the agent-prompt action and the clean state. */
+export interface CoverageViewCopy {
+  /** The primary row action, handing the file's gaps to an agent. */
+  promptLabel?: string;
+  /** The header action over every row a list shows, for `n` files. */
+  batchPromptLabel?: (count: number) => string;
+  /** "No untested hotspots across N measured files". */
+  cleanTitle?: (measuredFiles: number) => string;
+  cleanDescription?: string;
+  /** "No test reaches these through the graph": the inferred hero and list. */
+  unreachedTitle?: string;
+  /** Shown when the server could not compute which files tests reach. */
+  unavailableTitle?: string;
+  unavailableBody?: string;
+}
 
-  const { data, isLoading, error } = useSWR<HealthCoverageResponse>(
+/** The prompt input for one file row. */
+function promptInputFor(f: CoverageFileRow): CoverageFilePromptInput {
+  return {
+    file_path: f.file_path,
+    line_coverage_pct: f.line_coverage_pct,
+    branch_coverage_pct: f.branch_coverage_pct,
+    total_coverable_lines: f.total_coverable_lines,
+    ...(f.covered_lines && { covered_lines: f.covered_lines }),
+    source_format: f.source_format,
+    health_score: f.health_score ?? null,
+    nloc: f.nloc ?? null,
+  };
+}
+
+export function CoverageView({
+  adapter,
+  copy,
+}: {
+  adapter: CodeHealthAdapter;
+  copy?: CoverageViewCopy | undefined;
+}) {
+  const { openPrompt, promptModal } = useAiPromptAction();
+  // One file from a row, or every file a list shows, through the shared modal.
+  const promptFor = (rows: CoverageFilePromptInput[]) => {
+    const one = rows.length === 1 ? rows[0]!.file_path : undefined;
+    openPrompt({
+      title: "AI test prompt",
+      description:
+        "A ready-to-paste prompt that asks your AI coding agent to add tests for the uncovered lines and branches.",
+      filePath: one ?? null,
+      ...(one ? { chatContext: fileChatContext(one)! } : {}),
+      getPrompt: (flavor) => buildCoverageBatchAiPrompt({ rows, flavor }),
+    });
+  };
+
+  const { data, isLoading, error, mutate } = useSWR<HealthCoverageResponse>(
     `code-health-coverage:${adapter.cacheKey}`,
     () => adapter.getCoverage({ limit: 5000 }),
     { revalidateOnFocus: false },
@@ -81,9 +145,21 @@ export function CoverageView({ adapter }: { adapter: CodeHealthAdapter }) {
       {isLoading ? (
         <CoverageSkeleton />
       ) : error ? (
-        <EmptyState
+        <ApiError
           title="Couldn't load coverage data"
-          description="The coverage endpoint returned an error. Try refreshing, or re-run the health pass."
+          message={toFriendlyMessage(error)}
+          onRetry={() => void mutate()}
+        />
+      ) : data?.basis === "unavailable" ? (
+        // The graph walk failed server-side. Unknown, so never the "no tests
+        // found" state below.
+        <ApiError
+          title={copy?.unavailableTitle ?? "Couldn't work out which files tests reach"}
+          message={
+            copy?.unavailableBody ??
+            "The dependency graph walk failed on the server, so this page cannot say either way. The server log has the error."
+          }
+          onRetry={() => void mutate()}
         />
       ) : data?.basis === "inferred" && data.inferred ? (
         // No report was ever ingested, and the graph can answer anyway. This
@@ -94,6 +170,7 @@ export function CoverageView({ adapter }: { adapter: CodeHealthAdapter }) {
           data={data}
           untestedFindings={untestedFindings ?? []}
           onOpenFile={openFilePage}
+          unreachedTitle={copy?.unreachedTitle}
         />
       ) : !data || data.summary.file_count === 0 ? (
         <NoCoverageState />
@@ -107,24 +184,12 @@ export function CoverageView({ adapter }: { adapter: CodeHealthAdapter }) {
           data={data}
           untestedFindings={untestedFindings ?? []}
           onOpenFile={openFilePage}
-          onGeneratePrompt={(r) => setPromptRow(r)}
+          onGeneratePrompt={promptFor}
+          copy={copy}
         />
       )}
 
-      <AiPromptModal
-        open={promptRow !== null}
-        onOpenChange={(open) => {
-          if (!open) setPromptRow(null);
-        }}
-        filePath={promptRow?.file_path ?? null}
-        title="AI test prompt"
-        description="A ready-to-paste prompt that asks your AI coding agent to add tests for this file's uncovered lines and branches."
-        getPrompt={
-          promptRow
-            ? (flavor) => buildCoverageAiPrompt({ row: promptRow, flavor })
-            : null
-        }
-      />
+      {promptModal}
     </div>
   );
 }
@@ -134,12 +199,16 @@ function CoverageBody({
   untestedFindings,
   onOpenFile,
   onGeneratePrompt,
+  copy,
 }: {
   data: HealthCoverageResponse;
   untestedFindings: HealthFinding[];
   onOpenFile: (path: string) => void;
-  onGeneratePrompt: (row: CoverageFilePromptInput) => void;
+  /** One file or several; the modal builds a single or a batch prompt. */
+  onGeneratePrompt: (rows: CoverageFilePromptInput[]) => void;
+  copy?: CoverageViewCopy | undefined;
 }) {
+  const promptLabel = copy?.promptLabel ?? AGENT_PROMPT_LABEL;
   const { summary, files, modules } = data;
   // The true count, not the length of what came back. They differ only if the
   // rollup was capped, but the lede claims to describe the repo.
@@ -167,8 +236,9 @@ function CoverageBody({
   // Untested hotspots: prefer the real biomarker findings (which carry
   // dependents/commit context); fall back to the low-coverage × low-score
   // heuristic when the biomarker never fired (e.g. coverage just ingested).
+  const filesByPath = useMemo(() => new Map(files.map((f) => [f.file_path, f])), [files]);
   const untested = useMemo<UntestedHotspotEntry[]>(() => {
-    const covByPath = new Map(files.map((f) => [f.file_path, f]));
+    const covByPath = filesByPath;
     if (untestedFindings.length > 0) {
       return untestedFindings.slice(0, 10).map((f) => {
         const cov = covByPath.get(f.file_path);
@@ -202,7 +272,12 @@ function CoverageBody({
         if (f.health_score != null) entry.health_score = f.health_score;
         return entry;
       });
-  }, [files, untestedFindings]);
+  }, [files, filesByPath, untestedFindings]);
+  // The untested entries that have a measured row, which is what a prompt needs.
+  const untestedRows = useMemo(
+    () => untested.flatMap((e) => filesByPath.get(e.file_path) ?? []),
+    [untested, filesByPath],
+  );
 
   const scatterPoints = useMemo(
     () =>
@@ -337,9 +412,7 @@ function CoverageBody({
         f.health_score == null ? (
           <span className="text-[var(--color-text-tertiary)]">—</span>
         ) : (
-          <span
-            className={`inline-block rounded px-1.5 py-0.5 text-xs font-semibold ${scoreBadgeClass(f.health_score)}`}
-          >
+          <span className={`text-xs font-medium tabular-nums ${quietScoreText(f.health_score)}`}>
             {f.health_score.toFixed(1)}
           </span>
         ),
@@ -350,26 +423,11 @@ function CoverageBody({
       priority: 1,
       align: "right",
       render: (f) => (
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            onGeneratePrompt({
-              file_path: f.file_path,
-              line_coverage_pct: f.line_coverage_pct,
-              branch_coverage_pct: f.branch_coverage_pct,
-              total_coverable_lines: f.total_coverable_lines,
-              ...(f.covered_lines && { covered_lines: f.covered_lines }),
-              source_format: f.source_format,
-              health_score: f.health_score ?? null,
-              nloc: f.nloc ?? null,
-            });
-          }}
-          title="Generate AI test prompt for this file"
-          className="inline-flex items-center justify-center rounded-md p-1 text-[var(--color-text-tertiary)] hover:text-[var(--color-model)] hover:bg-[var(--color-model-muted)] transition-colors"
-        >
-          <Sparkles className="h-3.5 w-3.5" />
-        </button>
+        <RowPromptAction
+          label={promptLabel}
+          subject={f.file_path}
+          onClick={() => onGeneratePrompt([promptInputFor(f)])}
+        />
       ),
     },
   ];
@@ -381,7 +439,12 @@ function CoverageBody({
 
   return (
     <div className="flex flex-col gap-6 sm:gap-8">
-      <CoverageLede summary={summary} files={files} moduleCount={moduleCount} />
+      <CoverageLede
+        summary={summary}
+        files={files}
+        moduleCount={moduleCount}
+        history={data.history}
+      />
 
       <OverviewSection
         title="Health against coverage"
@@ -393,14 +456,41 @@ function CoverageBody({
         />
       </OverviewSection>
 
-      {untested.length > 0 ? (
-        <OverviewSection
-          title="Untested hotspots"
-          description="Files that change often or that much of the codebase depends on, with little or no coverage. A gap here is worth more than the same gap in code nobody touches."
-        >
-          <UntestedHotspotWarning entries={untested} onSelect={onOpenFile} />
-        </OverviewSection>
-      ) : null}
+      <OverviewSection
+        title="Untested hotspots"
+        description="Files that change often or that much of the codebase depends on, with little or no coverage. A gap here is worth more than the same gap in code nobody touches."
+        action={
+          <PromptForRowsButton
+            count={untestedRows.length}
+            onClick={() => onGeneratePrompt(untestedRows.map(promptInputFor))}
+            {...(copy?.batchPromptLabel ? { label: copy.batchPromptLabel } : {})}
+          />
+        }
+      >
+        {untested.length > 0 ? (
+          <UntestedHotspotWarning
+            entries={untested}
+            onSelect={onOpenFile}
+            onGeneratePrompt={(path) => {
+              const row = filesByPath.get(path);
+              if (row) onGeneratePrompt([promptInputFor(row)]);
+            }}
+            promptLabel={promptLabel}
+          />
+        ) : (
+          <CleanState
+            align="start"
+            title={
+              copy?.cleanTitle?.(summary.file_count) ??
+              `No untested hotspots across ${formatNumber(summary.file_count)} measured files`
+            }
+            description={
+              copy?.cleanDescription ??
+              "Every file that changes often or that much of the code depends on has tests watching it."
+            }
+          />
+        )}
+      </OverviewSection>
 
       <OverviewSection
         title="Module coverage"
@@ -411,8 +501,14 @@ function CoverageBody({
 
       <OverviewSection
         title="Every file"
-        description="Sorted worst first. Click a row for the line-level heatmap, or the prompt icon to draft a brief that has your AI agent write the missing tests."
+        description="Sorted worst first. Click a row for the line-level heatmap, or copy a prompt that has your agent write the missing tests."
         action={
+          <div className="flex flex-wrap items-center gap-2">
+          <PromptForRowsButton
+            count={sortedFiles.length}
+            onClick={() => onGeneratePrompt(sortedFiles.map(promptInputFor))}
+            {...(copy?.batchPromptLabel ? { label: copy.batchPromptLabel } : {})}
+          />
           <input
             value={search}
             onChange={(e) => {
@@ -423,6 +519,7 @@ function CoverageBody({
             aria-label="Filter files by path"
             className="w-48 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2 py-1.5 text-xs focus:border-[var(--color-border-hover)] focus:outline-none sm:w-56"
           />
+          </div>
         }
       >
         <div className="border-t border-[var(--color-border-default)]">
@@ -437,10 +534,22 @@ function CoverageBody({
             stacked="sm"
             bare
             empty={
-              <EmptyState
-                title="No files match"
-                description="Adjust the path filter to see coverage rows."
-              />
+              search ? (
+                <EmptyState
+                  tone="filtered"
+                  title="No files match"
+                  description="Adjust the path filter to see coverage rows."
+                  action={{
+                    label: "Clear filters",
+                    onClick: () => {
+                      setSearch("");
+                      setVisible(PAGE);
+                    },
+                  }}
+                />
+              ) : (
+                <EmptyState size="compact" title="No files to list" />
+              )
             }
           />
           {sortedFiles.length > 0 ? (
@@ -491,16 +600,43 @@ function CoverageGap({
   const map = data.inferred as InferredTestMap;
   const measured = map.measured_file_count ?? 0;
   const unreached = map.files.filter((f) => !f.reached);
+  const paths = data.summary.report_paths;
+  const missed = paths ? paths.unmatched + paths.ambiguous : 0;
 
   return (
     <OverviewSection
       title="Files the report didn't cover"
       description={
         map.files_total > 0
-          ? `Your coverage report named ${measured.toLocaleString()} files. The dependency graph answers for the other ${map.files_total.toLocaleString()}: ${map.files_reached.toLocaleString()} are reached by a test, ${map.files_not_reached.toLocaleString()} are not. Reaching is not executing, so treat it as a floor, not a measurement.`
+          ? `Your coverage report named ${measured.toLocaleString()} files. The dependency graph answers for the other ${map.files_total.toLocaleString()}: ${map.files_reached.toLocaleString()} are reached by a test, and it finds no test for ${map.files_not_reached.toLocaleString()}. Treat that as a floor, not a measurement: it misses code a framework invokes, such as routes, CLI commands and plugin registries.`
           : "The dependency graph could not answer for the files the coverage report left out."
       }
     >
+      {/* Why a file can be missing here: the report named it under a path
+          that did not map to this repository. */}
+      {paths && paths.total > 0 ? (
+        <p className="text-xs text-[var(--color-text-tertiary)]">
+          <span className="tabular-nums">
+            {paths.matched.toLocaleString()} of {paths.total.toLocaleString()}
+          </span>{" "}
+          report paths matched a file in this repository
+          {missed > 0 ? (
+            <>
+              ; {missed.toLocaleString()} did not
+              {paths.unmatched_sample[0] ? (
+                <>
+                  {" "}(for example{" "}
+                  <span className="font-mono">{paths.unmatched_sample[0]}</span>). Set{" "}
+                  <span className="font-mono">coverage.strip_prefix</span> or{" "}
+                  <span className="font-mono">coverage.path_prefix</span> if the
+                  paths are off
+                </>
+              ) : null}
+            </>
+          ) : null}
+          .
+        </p>
+      ) : null}
       <div className="border-t border-[var(--color-border-default)]">
         <ResponsiveTable
           columns={gapColumns}
@@ -510,10 +646,15 @@ function CoverageGap({
           stacked="sm"
           bare
           empty={
-            <EmptyState
-              title="Every file is reached"
-              description="The graph found a test that reaches every file the coverage report didn't name."
-            />
+            map.files_total > 0 ? (
+              <EmptyState
+                tone="positive"
+                title="Every file is reached"
+                description="The graph found a test that reaches every file the coverage report didn't name."
+              />
+            ) : (
+              <EmptyState size="compact" title="No other files to check" />
+            )
           }
         />
       </div>
@@ -565,9 +706,7 @@ const gapColumns: ResponsiveColumn<ReachedFileRow>[] = [
       f.health_score == null ? (
         <span className="text-[var(--color-text-tertiary)]">—</span>
       ) : (
-        <span
-          className={`inline-block rounded px-1.5 py-0.5 text-xs font-semibold ${scoreBadgeClass(f.health_score)}`}
-        >
+        <span className={`text-xs font-medium tabular-nums ${quietScoreText(f.health_score)}`}>
           {f.health_score.toFixed(1)}
         </span>
       ),
@@ -591,9 +730,9 @@ function NoCoverageState() {
       <h2 className="text-base font-semibold text-[var(--color-text-primary)]">
         Nothing here can say whether your code is tested
       </h2>
-      <p className="text-[13px] leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
+      <p className="text-[15px] leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
         No coverage report has been ingested, and the dependency graph found no
-        test files to trace either. Either would fill this tab: a report gives the
+        test files to trace either. Either would fill this page: a report gives the
         lines your tests executed, and the graph alone can name which tests reach
         which files with no setup at all. Run your suite with coverage on and hand
         us the report.
@@ -603,8 +742,9 @@ function NoCoverageState() {
         repowise coverage add coverage.lcov
       </pre>
       <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-        LCOV · Cobertura · Clover
+        {COVERAGE_REPORT_FORMATS_LABEL}
       </p>
+      <CiHint command="repowise coverage check" checks="the lines each change touched" />
     </div>
   );
 }

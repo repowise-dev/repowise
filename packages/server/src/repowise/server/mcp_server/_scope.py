@@ -48,10 +48,15 @@ async def _load_layers(
     cached = _CACHE.get(cache_key)
     if cached is not None:
         return cached
+    from repowise.core.generation.layers import is_adjacent_layer
     from repowise.core.persistence.crud.knowledge_graph import get_kg_layers
 
     rows = await get_kg_layers(session, repo_id)
-    layers = [(row.name, _layer_paths(row.node_ids_json)) for row in rows]
+    layers = [
+        (row.name, _layer_paths(row.node_ids_json))
+        for row in rows
+        if not is_adjacent_layer(row.layer_id)
+    ]
     if len(_CACHE) >= _CACHE_LIMIT:
         _CACHE.clear()
     _CACHE[cache_key] = layers

@@ -241,3 +241,53 @@ def test_the_batched_and_per_container_paths_agree_on_a_nested_container() -> No
             siblings = tuple(r + "/" for r in roots if r != root)
             per_container = _owned_by(node_id, root, siblings)
             assert per_container is (batched == [root]), (node_id, root)
+
+
+async def test_l3_relations_with_root_container(client: AsyncClient, app) -> None:
+    """A root manifest adds a catch-all ``""`` container. Its file mapping must
+    not overwrite the focused container's component mapping, or every L3 edge
+    inside a nested container is lost."""
+    repo = await create_test_repo(client)
+    repo_id = repo["id"]
+    async with app.state.session_factory() as session:
+        files = [
+            "pyproject.toml",
+            "scripts/run.py",
+            "packages/core/pyproject.toml",
+            "packages/core/parser/lex.py",
+            "packages/core/graph/build.py",
+        ]
+        await batch_upsert_graph_nodes(
+            session,
+            repo_id,
+            [
+                {"node_id": f, "node_type": "file", "language": "python", "symbol_count": 1}
+                for f in files
+            ],
+        )
+        await batch_upsert_graph_edges(session, repo_id, [
+            {"source_node_id": "packages/core/graph/build.py", "target_node_id": "packages/core/parser/lex.py", "edge_type": "imports"},
+            {"source_node_id": "scripts/run.py", "target_node_id": "packages/core/graph/build.py", "edge_type": "imports"},
+        ])
+        await session.commit()
+
+    l2 = (await client.get(f"/api/graph/{repo_id}/c4/l2")).json()
+    assert {c["path"] for c in l2["containers"]} == {"", "packages/core"}
+
+    body = (
+        await client.get(
+            f"/api/graph/{repo_id}/c4/l3", params={"container_id": "pkg:packages/core"}
+        )
+    ).json()
+    comp_ids = {c["id"] for c in body["components"]}
+    edges = {(r["source_id"], r["target_id"]) for r in body["relations"]}
+    # The in-container edge survives as component → component.
+    assert any(s in comp_ids and t in comp_ids and s != t for s, t in edges)
+    # The root container's file still shows as an inbound container edge.
+    assert any(s == "pkg:." and t in comp_ids for s, t in edges)
+
+    # And the root container's own L3 sees the outbound edge to packages/core.
+    root = (
+        await client.get(f"/api/graph/{repo_id}/c4/l3", params={"container_id": "pkg:."})
+    ).json()
+    assert ("pkg:packages/core" in {r["target_id"] for r in root["relations"]})

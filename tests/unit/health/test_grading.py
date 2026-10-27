@@ -18,8 +18,14 @@ from repowise.core.analysis.health.grading import (
     GOOD_MIN,
     NEEDS_WORK_MIN,
     TARGET_SCORE,
+    analysed_note,
+    analysed_share,
     band_for,
     distribution,
+    format_score,
+    headline_band,
+    headline_scope,
+    mark_for,
 )
 
 
@@ -50,6 +56,16 @@ def test_band_for_boundaries() -> None:
     assert band_for(4.0) == "needs_work"
     assert band_for(3.99) == "at_risk"
     assert band_for(1.0) == "at_risk"
+
+
+def test_format_score_never_rounds_across_a_band_edge() -> None:
+    # 6.98 rounds to "7.0" but bands Fair; the shown figure must band the same.
+    for score in (6.98, 6.95, 8.49, 5.46, 3.999, 6.9999999):
+        assert band_for(float(format_score(score))) == band_for(score), score
+    assert format_score(6.98) == "6.9"
+    assert format_score(7.0) == "7.0"
+    assert format_score(5.6) == "5.6"
+    assert format_score(10.0) == "10.0"
 
 
 def test_every_band_has_a_label_a_range_and_a_colour() -> None:
@@ -148,3 +164,43 @@ def test_distribution_accepts_objects() -> None:
     dist = distribution([_M("a.py", 9.0, 100), _M("b.py", 2.0, 100)])
     assert dist["bands"]["excellent"]["pct"] == 50.0
     assert dist["bands"]["at_risk"]["pct"] == 50.0
+
+
+def test_headline_band_is_withheld_when_few_files_were_analysed() -> None:
+    # 4 scored Swift files beside 431 the dialect cannot read.
+    share = analysed_share(4, 431)
+    assert share is not None and share < 0.5
+    assert headline_band(10.0, share) is None
+    # The per-file band is untouched.
+    assert band_for(10.0) == "excellent"
+
+
+def test_headline_band_matches_band_for_when_fully_analysed() -> None:
+    assert analysed_share(435, 0) == 1.0
+    for score in (9.0, 7.5, 6.0, 4.5, 2.0):
+        assert headline_band(score, 1.0) == band_for(score)
+    # Half is enough; an unknown share keeps the band; no score has none.
+    assert headline_band(9.0, analysed_share(1, 1)) == "excellent"
+    assert headline_band(9.0, None) == "excellent"
+    assert headline_band(None, 1.0) is None
+
+
+def test_analysed_note_only_when_files_were_left_out() -> None:
+    assert analysed_note(4, 431) == "analysed 4 of 435 code files"
+    assert analysed_note(435, 0) is None
+    assert analysed_share(0, 0) is None
+
+
+def test_headline_scope_only_when_a_minority_was_analysed() -> None:
+    assert headline_scope(9, 106) == "across 9 of 115 code files"
+    assert headline_scope(60, 40) is None
+    assert headline_scope(115, 0) is None
+    assert headline_scope(0, 0) is None
+
+
+def test_mark_reads_the_canonical_three_bands() -> None:
+    # Mirror of ``healthMark`` in packages/ui: Healthy from 8, Warning from 4.
+    assert mark_for(8.0) == "healthy"
+    assert mark_for(7.99) == "warning"
+    assert mark_for(NEEDS_WORK_MIN) == "warning"
+    assert mark_for(3.99) == "alert"

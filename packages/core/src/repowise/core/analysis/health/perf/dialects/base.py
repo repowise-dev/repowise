@@ -46,6 +46,10 @@ byte unchanged:
                                   ``x in big_list`` membership test).
 ``async_blocking_member(node)``   a non-call member read that blocks in async
                                   (C# ``task.Result``).
+``task_already_complete(node)``   the blocking read/call targets a task already
+                                  awaited earlier in the method (C# ``.Result``
+                                  after ``await Task.WhenAll(t)``), so it does
+                                  not block.
 ``list_bound_names(root)``        names provably bound to a list literal /
                                   comprehension in this file — the gate for the
                                   ``membership_test_against_list_in_loop`` marker.
@@ -66,10 +70,15 @@ pillar depends on.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import re
+from typing import TYPE_CHECKING, ClassVar
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
+
     from tree_sitter import Node
+
+    from ..loop_facts import BatchForm, LoopMagnitude, LoopSource, NotBatchable, SinkProbe
 
 # Node types whose callee is a member access (``x.foo()``) rather than a bare
 # identifier call. Covers Python ``attribute``, TS ``member_expression``, C++/
@@ -80,6 +89,11 @@ if TYPE_CHECKING:
 _ATTRIBUTE_CALLEE_KINDS: frozenset[str] = frozenset(
     {"attribute", "member_expression", "field_expression", "selector_expression"}
 )
+
+
+# A result name that holds an error (``err``, ``fetch_error``): a loop that
+# exits on it stops at the first failure, which is no first match.
+_ERROR_NAME = re.compile(rb"(?:^|_)(?:err|error|exc|exception)$|(?:Err|Error)$")
 
 
 class BasePerfDialect:
@@ -146,6 +160,11 @@ class BasePerfDialect:
         txt = (node.text or b"").decode("utf-8", "replace")
         return txt.split(".")[0] if txt else None
 
+    def callee_text(self, call_node: Node) -> str:
+        """The callee as written, arguments included (``session.get``); empty if unknown."""
+        fn = call_node.child_by_field_name("function")
+        return (fn.text or b"").decode("utf-8", "replace") if fn is not None else ""
+
     def callee_method_name(self, call_node: Node) -> str | None:
         """Rightmost member of the callee (``x.execute`` -> 'execute')."""
         fn = call_node.child_by_field_name("function")
@@ -172,6 +191,14 @@ class BasePerfDialect:
             return False
         return fn.type in self.attribute_callee_kinds
 
+    @staticmethod
+    def is_awaited(node: Node) -> bool:
+        """*node* is the operand of an ``await``, through parentheses (``await (foo())``)."""
+        parent = node.parent
+        while parent is not None and parent.type == "parenthesized_expression":
+            parent = parent.parent
+        return parent is not None and "await" in parent.type
+
     # -- sink classification (the lexicon) ------------------------------------
 
     def sink_kind(
@@ -187,6 +214,42 @@ class BasePerfDialect:
         """Boundary kind (db / network / filesystem / subprocess) if this call
         is an *execution sink*, else ``None`` ("not an I/O round-trip")."""
         return None
+
+    def shows_a_query(self, call: Node) -> bool:
+        """The call's own shape is db evidence (a SQL argument, a query chain).
+
+        Counted alongside a db import by the dialects whose DB verbs need
+        evidence; ``False`` for a dialect that recognises no such shape.
+        """
+        return False
+
+    def call_sink_kind(
+        self, call: Node, *, awaited: bool, io_names: dict[str, str], has_db_import: bool
+    ) -> str | None:
+        """:meth:`sink_kind` of a call node; override when the arguments decide it."""
+        return self.sink_kind(
+            self.callee_root_name(call) or "",
+            self.callee_method_name(call) or "",
+            awaited=awaited,
+            is_attribute=self.callee_is_attribute(call),
+            io_names=io_names,
+            has_db_import=has_db_import,
+        )
+
+    def runs_once_in_loop(self, call: Node) -> bool:
+        """*call* sits in a loop it ends (a ``return`` or ``break`` follows), so it
+        is no per-iteration call to a helper."""
+        return False
+
+    def defers_body(self, fn: Node) -> bool:
+        """*fn*'s body runs when its result is iterated, not when it is called
+        (a generator, or an iterator closure that takes a ``yield`` callback)."""
+        return False
+
+    def runs_in_place(self, closure: Node) -> bool:
+        """*closure* runs to completion where it is written, like the loop body
+        around it (``await limit(() => call())``), rather than being stored for later."""
+        return False
 
     # -- loop / string / async predicates -------------------------------------
 
@@ -270,6 +333,312 @@ class BasePerfDialect:
         marker. Precision-first by construction.
         """
         return None
+
+    def is_chunked_loop(self, node: Node) -> bool:
+        """True when this loop walks its data a chunk at a time (already batched)."""
+        return False
+
+    def iterable_node(self, node: Node) -> Node | None:
+        """The expression a for-each loop evaluates once before its first pass, or
+        ``None`` (the default, and any loop whose header runs every pass).
+
+        A call inside it runs once per *enclosing* loop pass, not once per pass of
+        this loop, so loop facts attribute it to the loop around this one.
+        """
+        return None
+
+    @staticmethod
+    def _steps_by_chunk(update: Node | None) -> bool:
+        """``i += 100`` / ``i += BATCH``: a counter that advances more than one at a time."""
+        if update is None or not any(c.type == "+=" for c in update.children):
+            return False
+        step = update.child_by_field_name("right")
+        if step is not None and step.type == "expression_list":  # Go wraps the right side
+            step = step.named_children[0] if step.named_child_count == 1 else None
+        if step is None:
+            return False
+        if step.type == "identifier":
+            return True
+        try:
+            return step.type in ("number", "int_literal", "decimal_integer_literal") and float(
+                (step.text or b"").decode().replace("_", "")
+            ) != 1
+        except ValueError:
+            return False
+
+    # -- promotion facts (perf/loop_facts.py); ``None`` means "not settled" ----
+
+    # The grammar's ``await <expr>`` node, and the key-hop node kinds with the
+    # field naming their receiver (``r.id`` / ``r["id"]``).
+    await_kind: str = ""
+    key_hops: ClassVar[dict[str, str]] = {}
+    # Statements that bind a name (kind -> field holding the target), nodes that
+    # run their child conditionally, statements that leave an iteration early,
+    # and scopes whose body does not run as part of the loop.
+    binding_fields: ClassVar[dict[str, str]] = {}
+    branch_kinds: frozenset[str] = frozenset()
+    exit_kinds: frozenset[str] = frozenset()
+    scope_kinds: frozenset[str] = frozenset()
+    # Statements a ``break`` leaves without leaving the loop around them.
+    switch_kinds: frozenset[str] = frozenset()
+    # Methods that grow a sequence in call order (``append`` / ``push``).
+    sequence_appends: frozenset[str] = frozenset()
+
+    def loop_source(self, loop: Node, probe: SinkProbe) -> LoopSource | None:
+        """What the loop's iterable is and whether it grows with data or has a
+        fixed small bound, or ``None`` when the syntax settles neither."""
+        return None
+
+    def loop_magnitude(self, loop: Node, probe: SinkProbe) -> LoopMagnitude | None:
+        source = self.loop_source(loop, probe)
+        return source.magnitude if source is not None else None
+
+    # The exits that end the loop early (``continue`` and a raise do not stop at a hit).
+    _STOPPING_EXITS = frozenset({"break_statement", "return_statement"})
+
+    def not_batchable(
+        self, call: Node, loop: Node, loop_kinds: frozenset[str]
+    ) -> NotBatchable | None:
+        """Why *call*, made once per pass of *loop*, cannot become one batch.
+
+        ``first_match``: an exit that ends the loop reads the call's result, so
+        later iterations run only while earlier calls miss. ``turn_loop``: the
+        call (or the loop's condition) reads a name the body binds from an
+        earlier call's result. ``None`` when neither is shown; a dialect that
+        names no binding statements never claims either.
+        """
+        if not self.binding_fields:
+            return None
+        body = self.loop_body(loop) or loop
+        # Only the call's own result says it answered; a local derived from it
+        # (``ok = check(r)``) may test something else, and an error it returned
+        # (``if err != nil { return err }``) stops at a failure, not a match.
+        answered = {n for n in self._result_names(call, body) if not _ERROR_NAME.search(n)}
+        if self._stops_at_hit(call, loop, body, answered, loop_kinds):
+            return "first_match"
+        results = self._result_names(call, body, hops=2)
+        # A sequence the results are appended to carries them into the next turn
+        # (``messages.append(reply)``); capping it (``len(out) >= n``) is no hit.
+        results |= self._appended_to(call, body, results)
+        condition = loop.child_by_field_name("condition")
+        carried = self._reads(call, results) or (
+            condition is not None and self._reads(condition, results)
+        )
+        return "turn_loop" if carried else None
+
+    def _bound_by(self, node: Node) -> tuple[Node | None, Node | None]:
+        """``(target, value)`` of a binding statement that is not a loop header."""
+        field = self.binding_fields.get(node.type)
+        if field is None or "for" in node.type:
+            return None, None
+        value = node.child_by_field_name("right") or node.child_by_field_name("value")
+        return node.child_by_field_name(field), value
+
+    def _texts(self, target: Node) -> set[bytes]:
+        """Names a binding target stores to: ``rec.x`` as a whole, else its identifiers."""
+        if target.type in self.key_hops:
+            return {target.text or b""}
+        if target.child_by_field_name("function") is not None:
+            # ``groups.setdefault(k, []).append(x)`` grows what the call returns, not ``k``.
+            return set()
+        return {n.text for n in self._walk(target) if n.type == "identifier" and n.text}
+
+    def _reads(self, node: Node, names: set[bytes]) -> bool:
+        """*node* reads one of *names*: a bare name, or a whole ``rec.x``."""
+        return bool(names) and any(
+            n.text in names
+            for n in self._walk(node)
+            if n.type == "identifier" or n.type in self.key_hops
+        )
+
+    def _result_names(self, call: Node, body: Node, hops: int = 0) -> set[bytes]:
+        """Names the body binds from *call*'s result, then *hops* steps through
+        locals that read them (``cursor = page.next`` carries a page to the next turn)."""
+        bindings = [
+            (target, value)
+            for node in self._walk(body, prune=self.scope_kinds)
+            for target, value in (self._bound_by(node),)
+            if target is not None and value is not None
+        ]
+        names = {
+            t for target, value in bindings if self._within(value, call) for t in self._texts(target)
+        }
+        for _ in range(hops):
+            names |= {
+                t
+                for target, value in bindings
+                if self._reads(value, names)
+                for t in self._texts(target)
+            }
+        return names
+
+    def _appended_to(self, call: Node, body: Node, results: set[bytes]) -> set[bytes]:
+        """Sequences the body appends *call* or its results to."""
+        names: set[bytes] = set()
+        for node in self._walk(body, prune=self.scope_kinds):
+            if self.callee_method_name(node) not in self.sequence_appends:
+                continue
+            fn = node.child_by_field_name("function")
+            receiver = fn.child_by_field_name("object") if fn is not None else None
+            args = node.child_by_field_name("arguments")
+            if receiver is None or args is None:
+                continue
+            if self._within(args, call) or self._reads(args, results):
+                names |= self._texts(receiver)
+        return names
+
+    def _stops_at_hit(
+        self, call: Node, loop: Node, body: Node, results: set[bytes], loop_kinds: frozenset[str]
+    ) -> bool:
+        """An exit that ends *loop* returns the call's result, or the branch it
+        sits in directly tests it; a test further out guards more than the exit."""
+        for exit_node in self._walk(body, prune=self.scope_kinds):
+            if exit_node.type not in self._STOPPING_EXITS:
+                continue
+            if exit_node.type == "break_statement" and not self._breaks(
+                exit_node, loop, loop_kinds
+            ):
+                continue
+            if self._within(exit_node, call) or self._reads(exit_node, results):
+                return True
+            condition = self._exit_condition(exit_node, body)
+            if condition is not None and (
+                self._within(condition, call) or self._reads(condition, results)
+            ):
+                return True
+        return False
+
+    def _exit_condition(self, exit_node: Node, body: Node) -> Node | None:
+        """The condition of the nearest branch around *exit_node* inside *body*."""
+        cur = exit_node.parent
+        while cur is not None and cur != body:
+            # Python's ``elif`` tests its own condition, not the ``if``'s.
+            if cur.type in self.branch_kinds or cur.type == "elif_clause":
+                return cur.child_by_field_name("condition")
+            cur = cur.parent
+        return None
+
+    def _breaks(self, exit_node: Node, loop: Node, loop_kinds: frozenset[str]) -> bool:
+        """A ``break`` that leaves *loop* itself, not a nested loop or ``switch``."""
+        cur = exit_node.parent
+        while cur is not None and cur != loop:
+            if cur.type in loop_kinds or cur.type in self.switch_kinds:
+                return False
+            cur = cur.parent
+        return cur is not None
+
+    def batch_form(self, sink: Node, loop: Node, probe: SinkProbe) -> BatchForm | None:
+        """The bulk counterpart of *sink* when its only varying key is the loop's element."""
+        return None
+
+    def concurrency_bound(self, sink: Node, loop: Node) -> str | None:
+        """The semaphore or limiter *sink* already runs under inside the loop body."""
+        return None
+
+    @staticmethod
+    def _walk(node: Node, prune: frozenset[str] = frozenset()) -> Iterator[Node]:
+        """*node*'s subtree, not descending below node kinds in *prune*."""
+        stack = [node]
+        while stack:
+            cur = stack.pop()
+            yield cur
+            if cur.type not in prune or cur == node:
+                stack.extend(cur.children)
+
+    @classmethod
+    def _exit_follows(
+        cls, stmt: Node, is_exit: Callable[[Node], bool], jumps: frozenset[str]
+    ) -> bool:
+        """A later statement in *stmt*'s block ends the loop (*is_exit*), and no
+        statement before it holds a jump (*jumps*, e.g. ``continue``) that could
+        loop back first. Then *stmt* runs at most once per loop entry."""
+        nxt = stmt.next_named_sibling
+        while nxt is not None:
+            if is_exit(nxt):
+                return True
+            if any(n.type in jumps for n in cls._walk(nxt)):
+                return False
+            nxt = nxt.next_named_sibling
+        return False
+
+    @staticmethod
+    def _grows(magnitude: LoopMagnitude | None) -> LoopMagnitude | None:
+        """A projection of a growing source grows; nothing else carries through it."""
+        return magnitude if magnitude == "grows_with_data" else None
+
+    @staticmethod
+    def _within(container: Node, node: Node) -> bool:
+        return container.start_byte <= node.start_byte and node.end_byte <= container.end_byte
+
+    def _is_key_of(self, node: Node, ref: Node) -> bool:
+        """*node* is the loop element *ref* itself, or one hop into it (``r.id``, ``r["id"]``)."""
+        if node == ref:
+            return True
+        field = self.key_hops.get(node.type)
+        return field is not None and node.child_by_field_name(field) == ref
+
+    def _reads_loop_local(self, sink: Node, body: Node) -> bool:
+        """*sink* reads a name the loop body binds, so its key is not the element alone."""
+        bound: set[bytes | None] = set()
+        for node in self._walk(body, prune=self.scope_kinds):
+            field = self.binding_fields.get(node.type)
+            target = node.child_by_field_name(field) if field else None
+            # ``rec.x = ...`` / ``seen[k] = ...`` mutate a value; they bind no name.
+            if target is not None and target.type not in self.key_hops:
+                bound.update(n.text for n in (target, *target.children) if n.type == "identifier")
+        return any(n.type == "identifier" and n.text in bound for n in self._walk(sink))
+
+    def _unconditional(self, sink: Node, body: Node) -> bool:
+        """*sink* runs on every iteration: no branch around it, no early exit in the body."""
+        cur = sink.parent
+        while cur is not None and cur != body:
+            if cur.type in self.branch_kinds:
+                return False
+            cur = cur.parent
+        return not any(n.type in self.exit_kinds for n in self._walk(body, prune=self.scope_kinds))
+
+    def _exits_early(self, body: Node) -> bool:
+        """An iteration can end the loop, so fanned out, the iterations it skips would run."""
+        return any(
+            n.type in self.exit_kinds and n.type != "continue_statement"
+            for n in self._walk(body, prune=self.scope_kinds)
+        )
+
+    def _builds_in_order(self, body: Node) -> bool:
+        """The body appends to a sequence or yields, so what it builds follows the
+        loop's key order, which one bulk read does not keep."""
+        stack = [body]
+        while stack:
+            node = stack.pop()
+            if "yield" in node.type or (
+                node.child_by_field_name("function") is not None
+                and self.callee_method_name(node) in self.sequence_appends
+            ):
+                return True
+            # A closure that runs in place is part of the body; any other one runs later.
+            if node == body or node.type not in self.scope_kinds or self.runs_in_place(node):
+                stack.extend(node.children)
+        return False
+
+    def _only_io_in_body(self, sink: Node, body: Node, probe: SinkProbe) -> bool:
+        """*sink* is the loop body's only I/O sink and its only await.
+
+        Any other one could write what the batched read would have read first.
+        Ceiling: a helper call that does I/O out of sight is not seen.
+        """
+        own = sink
+        while own.parent is not None and own.parent.type == "parenthesized_expression":
+            own = own.parent
+        if own.parent is not None and own.parent.type == self.await_kind:
+            own = own.parent
+        for node in self._walk(body):
+            if self._within(own, node):
+                continue
+            if node.type == self.await_kind and node.is_named:
+                return False
+            if node.child_by_field_name("function") is not None and probe(node) is not None:
+                return False
+        return True
 
     def is_string_concat(self, node: Node) -> bool:
         """True if *node* is a ``+=`` accumulation onto a string."""
@@ -428,6 +797,11 @@ class BasePerfDialect:
         """
         return frozenset()
 
+    def awaits_in_loop_allowed(self, source: bytes) -> frozenset[int]:
+        """1-indexed lines where the source states that awaiting inside a loop is
+        intended (a lint suppression naming that rule). Default: none."""
+        return frozenset()
+
     def async_blocking_member(self, node: Node) -> str | None:
         """The offending name if *node* is a non-call member read that blocks
         the event loop inside an async function (C# ``task.Result``), else
@@ -435,6 +809,42 @@ class BasePerfDialect:
         :meth:`blocking_sync_api` instead. Default ``None``.
         """
         return None
+
+    def task_already_complete(self, node: Node) -> bool:
+        """True if the blocking ``node`` (a ``blocking_sync_api`` call or an
+        ``async_blocking_member`` read) targets a task that is provably complete
+        because it was awaited earlier in the same method. Default ``False``.
+        """
+        return False
+
+    def unbounded_read_bound_methods(self) -> frozenset[str]:
+        """Method names anywhere in a chain that prove a DB read is bounded.
+
+        Default empty: a language that does not override this never scans
+        for ``unbounded_read_reduced_in_memory`` (v1 is Python-only).
+        """
+        return frozenset()
+
+    def read_key_column(self, call: Node, anchor: Node) -> str | None:
+        """The column *call* filters a read to a set of input keys on
+        (``Model.col.in_(ids)``), so the read scales with the keys, not the
+        table. Values a name holds are read as bound before *anchor*.
+        Default ``None``: a language that names no key filter."""
+        return None
+
+    # Functions that ARE a lock acquisition, and the header of an unbounded
+    # retry loop in this language. A spin loop inside such a function is how the
+    # lock gets taken (tryLock retry, CAS spin): there is nothing to hoist. Both
+    # default empty, so a language that sets neither changes nothing.
+    lock_acquire_functions: frozenset[str] = frozenset()
+    spin_loop_header: re.Pattern[str] | None = None
+
+    def is_lock_acquire_spin(self, func: str | None, loop: Node) -> bool:
+        """True when *loop* is an unbounded spin loop inside a lock-acquiring *func*."""
+        if self.spin_loop_header is None or (func or "").lower() not in self.lock_acquire_functions:
+            return False
+        head = (loop.text or b"")[:64].decode("utf-8", "replace")
+        return bool(self.spin_loop_header.match(head))
 
     def is_lock_scope(self, node: Node) -> bool:
         """True if *node* opens a block-scoped held-lock region.
@@ -450,6 +860,25 @@ class BasePerfDialect:
         no lock-scope signal. Precision-first by construction.
         """
         return False
+
+    def bare_statement_call(self, node: Node) -> Node | None:
+        """The call site inside *node*, a ``LanguageNodeMap.bare_call_wrapper_kinds``
+        statement wrapper, if this particular statement is a parenless call --
+        else ``None``.
+
+        Only relevant to a grammar where a call with no arguments can omit its
+        parentheses (Pascal's ``Q.Open;``), so the call site is not any
+        ``call_kinds`` node at all but a bare identifier/member-access sitting
+        directly in statement position. The SAME wrapper shape holds other
+        non-call statements too (Pascal's bare ``Exit;`` / ``inherited;``), so
+        this has to tell them apart, not just unwrap unconditionally.
+
+        Default ``None`` -- a language with no such wrapper in
+        ``bare_call_wrapper_kinds`` never reaches this hook, and one that maps
+        the field but returns ``None`` here for a given node just means "this
+        statement is not a call."
+        """
+        return None
 
 
 # The registry, populated by ``dialects/__init__.py`` from each language module.

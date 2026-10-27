@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
 from pathlib import Path
@@ -127,52 +128,6 @@ def _entry_repo_target(entry: dict) -> str | None:
     return str(args[1])
 
 
-def describe_mcp_registration_change(repo_path: Path) -> str | None:
-    """Warn when registering would repoint an existing ``repowise`` MCP entry.
-
-    Both Claude configs hold a single ``repowise`` key, so an ``init`` from a
-    second repo *replaces* the entry rather than adding one alongside it. That
-    write is silent, and only surfaces later when the binary or repo it points
-    at is gone and the MCP server stops loading. This is a read-only probe run
-    before registration; it returns a one-line notice when the stored command
-    or repo target differs from what is about to be written, else None.
-    """
-    new_entry = generate_mcp_config(
-        _resolve_mcp_target(repo_path), command=resolve_repowise_command()
-    )["mcpServers"]["repowise"]
-    new_command = new_entry.get("command")
-    new_target = _entry_repo_target(new_entry)
-
-    for config_path in (_claude_code_settings_path(), _claude_desktop_config_path()):
-        stored = _stored_repowise_entry(config_path)
-        if stored is None:
-            continue
-        # Both fields are reported when both move, which is the usual shape of
-        # the mistake: a second repo indexed by a second install. Naming only
-        # one would hide half of what is about to change.
-        changes = [
-            (label, was, now)
-            for label, was, now in (
-                ("repo", _entry_repo_target(stored), new_target),
-                ("command", stored.get("command"), new_command),
-            )
-            if was != now
-        ]
-        if not changes:
-            continue
-        fields = " and ".join(label for label, _was, _now in changes)
-        lines = [f"Replacing the existing repowise MCP {fields} in {config_path}:"]
-        for label, was, now in changes:
-            # A hand-edited entry can be missing either field outright.
-            lines.append(f"    {label} was: {was if was is not None else '(not set)'}")
-            lines.append(f"    {label} now: {now}")
-        lines.append(
-            "  There is one 'repowise' entry per config; pass --no-editor-setup to leave it alone."
-        )
-        return "\n".join(lines)
-    return None
-
-
 def enable_tool_search_in_claude_code() -> Path | None:
     """Set ``env.ENABLE_TOOL_SEARCH=true`` in ~/.claude/settings.json.
 
@@ -220,8 +175,8 @@ def enable_tool_search_in_claude_code() -> Path | None:
 # paid before repowise reads the payload, so no gate inside the handler can
 # avoid it — the only lever is the matcher. Shell commands were also paying it
 # twice, here and again for the ``repowise-rewrite`` PreToolUse hook.
-# SessionStart already carries the freshness line, so what is given up is a
-# mid-session commit going unflagged until the next session.
+# SessionStart already carries the freshness line. A commit still reaches the
+# handler through :data:`_CAPTURE_MATCHER`'s entry, which gates in the shell.
 #
 # Claude Code only. ``_handle_bash_post`` stays in the augment dispatcher:
 # Codex has no Read/Grep/Glob tools and no SessionStart block, so the shell is
@@ -258,6 +213,167 @@ _AUGMENT_HOOK_COMMAND = (
 # fail in the way this surface answers, and a Bash failure is a command line
 # rather than a path, so matching it would wake the hook for nothing.
 _FAILURE_MATCHER = "Read|Edit|Write|Grep|Glob|NotebookEdit"
+
+
+#: The shell tools, as their own PostToolUse entry rather than widened into
+#: :data:`_AUGMENT_MATCHER`. The capture prompt is the only thing that needs
+#: them, and the narrowing of the shared matcher is a measured decision this
+#: must not quietly reverse: 51% of hook invocations for 0.7% of emissions.
+#: That cost was a Python start on every shell call; :data:`_CAPTURE_HOOK_COMMAND`
+#: gates in the shell instead, so a call that is not a commit costs only the
+#: shell the host already spawns for the hook.
+#:
+#: **Never add this to :data:`_LEGACY_AUGMENT_MATCHERS`.** That list is what
+#: the self-heal rewrites to the narrow matcher, and this entry exists
+#: precisely to survive it.
+_CAPTURE_MATCHER = "Bash|PowerShell"
+
+#: Starts ``repowise-augment`` only when the payload mentions ``git commit``,
+#: the one command the capture prompt answers. ``$(cat)`` rather than a
+#: builtin read: bash's ``read`` takes a pipe one byte at a time, and
+#: ``/dev/stdin`` does not resolve for a Windows pipe under Git Bash. The
+#: plugin's ``hooks.json`` ships this exact string.
+_CAPTURE_HOOK_COMMAND = (
+    'input=$(cat); case "$input" in *"git commit"*) '
+    "if command -v repowise-augment >/dev/null 2>&1; then "
+    'printf "%s" "$input" | repowise-augment; fi;; esac'
+)
+
+
+def _capture_entry() -> dict:
+    return {
+        "matcher": _CAPTURE_MATCHER,
+        "hooks": [
+            {
+                "type": "command",
+                "command": _CAPTURE_HOOK_COMMAND,
+                "timeout": 10,
+                "statusMessage": "Checking for a decision to record...",
+            }
+        ],
+    }
+
+
+def _is_capture_entry(entry: object) -> bool:
+    if not isinstance(entry, dict) or entry.get("matcher") != _CAPTURE_MATCHER:
+        return False
+    entry_hooks = _hooks_of(entry)
+    # The coverage and health-gate entries share the shell matcher; they are
+    # repo-local today, but a sync here must never take one for this.
+    return bool(entry_hooks) and all(
+        _is_repowise_hook(h) and not _is_coverage_hook(h) and not _is_health_gate_hook(h)
+        for h in entry_hooks
+    )
+
+
+def _repowise_plugin_paths() -> list[Path]:
+    """Install paths of every enabled repowise Claude Code plugin."""
+    try:
+        settings_path = _claude_code_settings_path()
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        index_path = settings_path.parent / "plugins" / "installed_plugins.json"
+        installed = json.loads(index_path.read_text(encoding="utf-8")).get("plugins") or {}
+        enabled = settings.get("enabledPlugins") or {}
+        keys = [k for k, on in enabled.items() if on and str(k).startswith("repowise@")]
+        return [Path(i["installPath"]) for k in keys for i in installed.get(k) or []]
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return []
+
+
+def _plugin_ships_capture_hook() -> bool:
+    """Whether an enabled repowise plugin already carries the shell entry.
+
+    Claude Code runs a plugin's hook and the same hook in settings.json
+    separately, so installing ours beside the plugin's would start the shell
+    twice on every shell call. Unreadable plugin state reads as "no": being
+    wrong that way costs one extra shell start, never a missing prompt.
+    """
+    for path in _repowise_plugin_paths():
+        try:
+            hooks = json.loads((path / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+            entries = hooks["hooks"]["PostToolUse"]
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        if isinstance(entries, list) and any(_is_capture_entry(e) for e in entries):
+            return True
+    return False
+
+
+def set_claude_code_capture_hook(enabled: bool) -> Path | None:
+    """Add, refresh or remove the shell PostToolUse entry the capture prompt needs.
+
+    The switch owns its own prerequisite: `decisions.capture_prompt` is a
+    per-repository policy, but the hook it fires from is a per-install
+    matcher, so turning the policy on without this writes a flag nothing
+    reads. Where the repowise plugin already ships the entry, ours is left
+    out (and removed), so the hook runs once. Returns the settings file when
+    it changed, else ``None``.
+
+    The entry is per *install* and ships on with the prompt: ``init``, the
+    self-heal and the plugin all put it in place. Every repository on this
+    machine pays a shell start on shell calls and nothing else, since the
+    entry starts Python only for a commit, so a repository that turns the
+    prompt off keeps the entry and stays silent.
+    """
+    settings_path = _claude_code_settings_path()
+    if not settings_path.exists():
+        return None
+    try:
+        existing = load_existing_config(settings_path)
+    except Exception:
+        return None
+
+    want = enabled and not _plugin_ships_capture_hook()
+    hooks = existing.setdefault("hooks", {}) if want else existing.get("hooks")
+    if not isinstance(hooks, dict):
+        return None
+    entries = hooks.get("PostToolUse")
+    if not isinstance(entries, list):
+        if not want:
+            return None
+        entries = []
+        hooks["PostToolUse"] = entries
+
+    if not _sync_capture_entry(entries, want):
+        return None
+    if not entries:
+        hooks.pop("PostToolUse", None)
+    if not hooks:
+        existing.pop("hooks", None)
+    return settings_path if _write_settings(settings_path, existing) else None
+
+
+def _sync_capture_entry(entries: list, want: bool) -> bool:
+    """Leave exactly the current capture entry in *entries* when *want*, else none.
+
+    An entry from an older release starts Python on every shell call, so it is
+    replaced rather than kept. Returns whether *entries* changed.
+    """
+    ours = [e for e in entries if _is_capture_entry(e)]
+    if ours == ([_capture_entry()] if want else []):
+        return False
+    entries[:] = [e for e in entries if not _is_capture_entry(e)]
+    if want:
+        entries.append(_capture_entry())
+    return True
+
+
+def claude_code_capture_hook_installed() -> bool:
+    """Whether the shell PostToolUse entry is present, ours or the plugin's."""
+    if _plugin_ships_capture_hook():
+        return True
+    settings_path = _claude_code_settings_path()
+    if not settings_path.exists():
+        return False
+    try:
+        existing = load_existing_config(settings_path)
+    except Exception:
+        return False
+    hooks = existing.get("hooks")
+    if not isinstance(hooks, dict):
+        return False
+    entries = hooks.get("PostToolUse")
+    return isinstance(entries, list) and any(_is_capture_entry(e) for e in entries)
 
 
 def _session_start_entry() -> dict:
@@ -305,11 +421,180 @@ def _failure_entry() -> dict:
     }
 
 
+#: The repo-local coverage re-ingest entry (shell tools). ``--coverage-only``
+#: runs that one surface, so it never revives the shell notices the narrowed
+#: :data:`_AUGMENT_MATCHER` dropped. Its command is defined in core, which
+#: tells it from a user's hook in a working-tree score.
+_COVERAGE_HOOK_EVENTS = ("PostToolUse", "PostToolUseFailure")
+
+
+def claude_code_local_settings_path(repo_path: Path) -> Path:
+    """The repo's own, uncommitted Claude Code settings file."""
+    return Path(repo_path) / ".claude" / "settings.local.json"
+
+
+def _coverage_entry() -> dict:
+    # Imported here: the hook's self-heal loads this module and must stay light.
+    from repowise.core.owned_paths import COVERAGE_HOOK_COMMAND
+
+    return {
+        "matcher": SHELL_TOOL_MATCHER,
+        "hooks": [
+            {
+                "type": "command",
+                "command": COVERAGE_HOOK_COMMAND,
+                "timeout": 10,
+            }
+        ],
+    }
+
+
+def _is_coverage_hook(hook: object) -> bool:
+    return "--coverage-only" in _hook_command(hook) and _is_repowise_hook(hook)
+
+
+def _health_gate_entry() -> dict:
+    from repowise.core.owned_paths import HEALTH_GATE_HOOK_COMMAND
+
+    return {
+        "matcher": SHELL_TOOL_MATCHER,
+        "hooks": [
+            {
+                "type": "command",
+                "command": HEALTH_GATE_HOOK_COMMAND,
+                # Above the gate's own 20 s budget, so the gate times out first and fails open.
+                "timeout": 30,
+            }
+        ],
+    }
+
+
+def _is_health_gate_hook(hook: object) -> bool:
+    return "--health-gate" in _hook_command(hook) and _is_repowise_hook(hook)
+
+
+def claude_code_augment_installed() -> bool:
+    """Whether ``~/.claude/settings.json`` carries the repowise augment hooks."""
+    path = _claude_code_settings_path()
+    try:
+        hooks = load_existing_config(path).get("hooks") if path.exists() else None
+    except Exception:
+        return False
+    post = hooks.get("PostToolUse") if isinstance(hooks, dict) else None
+    return isinstance(post, list) and _has_repowise_hook(post)
+
+
+def set_repo_coverage_hook(repo_path: Path, enabled: bool) -> Path | None:
+    """Add or remove the coverage re-ingest entries in the repo's ``settings.local.json``.
+
+    Claude Code delivers a shell command that exits non-zero, as a failing
+    test run does, as ``PostToolUseFailure``, so the entry sits under both
+    events. Repo-local because the per-shell-call process start is then paid
+    only in a repository that ingests coverage; Claude Code merges hooks across
+    settings files. Returns the file when it changed, else ``None``. A file
+    this leaves empty is removed.
+    """
+    return _set_repo_local_hook(
+        repo_path, enabled, _COVERAGE_HOOK_EVENTS, _coverage_entry, _is_coverage_hook
+    )
+
+
+def set_repo_health_gate_hook(repo_path: Path, enabled: bool) -> Path | None:
+    """Add or remove the opt-in health-gate PreToolUse entry, as :func:`set_repo_coverage_hook`.
+
+    Repo-local for the same reason: only a repository that turned the gate on
+    pays a process start per shell call.
+    """
+    return _set_repo_local_hook(
+        repo_path, enabled, ("PreToolUse",), _health_gate_entry, _is_health_gate_hook
+    )
+
+
+def repo_health_gate_hook_installed(repo_path: Path) -> bool:
+    """Whether the repo's ``settings.local.json`` carries the health-gate entry."""
+    settings = _read_local_settings(claude_code_local_settings_path(repo_path), False)
+    hooks = settings.get("hooks") if isinstance(settings, dict) else None
+    entries = hooks.get("PreToolUse") if isinstance(hooks, dict) else None
+    if not isinstance(entries, list):
+        return False
+    return any(_is_health_gate_hook(h) for e in _own_entries(entries) for h in _hooks_of(e))
+
+
+def _set_repo_local_hook(
+    repo_path: Path, enabled: bool, events: tuple[str, ...], entry, is_ours
+) -> Path | None:
+    path = claude_code_local_settings_path(repo_path)
+    settings = _read_local_settings(path, enabled)
+    if settings is None or not _apply_local_entries(settings, enabled, events, entry, is_ours):
+        return None
+    return _write_or_remove(path, settings)
+
+
+def _read_local_settings(path: Path, enabled: bool) -> dict | None:
+    """The file's object, ``{}`` when absent and adding, ``None`` when there is nothing to read."""
+    if not path.exists():
+        return {} if enabled else None
+    try:
+        return load_existing_config(path)
+    except Exception:
+        return None
+
+
+def _apply_local_entries(
+    settings: dict, enabled: bool, events: tuple[str, ...], entry, is_ours
+) -> bool:
+    """Add or remove our entry under each event of *settings*, in place; whether it changed."""
+    hooks = settings.setdefault("hooks", {}) if enabled else settings.get("hooks")
+    if not isinstance(hooks, dict):
+        return False
+    changed = False
+    for event in events:
+        changed = _apply_local_entry(hooks, event, enabled, entry, is_ours) or changed
+    if not hooks:
+        settings.pop("hooks", None)
+    return changed
+
+
+def _own_entries(entries: list) -> list:
+    """Ours only inside a shell-matcher entry: the same command elsewhere is someone else's."""
+    return [e for e in entries if isinstance(e, dict) and e.get("matcher") == SHELL_TOOL_MATCHER]
+
+
+def _apply_local_entry(hooks: dict, event: str, enabled: bool, entry, is_ours) -> bool:
+    entries = hooks.setdefault(event, []) if enabled else hooks.get(event)
+    if not isinstance(entries, list):
+        return False
+    own = _own_entries(entries)
+    present = any(is_ours(h) for e in own for h in _hooks_of(e))
+    changed = enabled != present
+    if changed and enabled:
+        entries.append(entry())
+    elif changed:
+        kept = list(own)
+        _strip_hooks(kept, is_ours)
+        dropped = [e for e in own if not any(e is k for k in kept)]
+        entries[:] = [e for e in entries if not any(e is d for d in dropped)]
+    if not entries:
+        hooks.pop(event, None)
+    return changed
+
+
+def _write_or_remove(path: Path, settings: dict) -> Path | None:
+    """Write *settings*, or remove the file when nothing is left in it."""
+    if not settings:
+        with contextlib.suppress(OSError):
+            path.unlink()
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path if _write_settings(path, settings) else None
+
+
 def install_claude_code_hooks() -> Path | None:
     """Register the augment hooks in ~/.claude/settings.json.
 
-    PostToolUse detects git staleness, enriches Grep/Glob results, and emits
-    Read-intelligence notices; SessionStart injects the live index-freshness
+    PostToolUse enriches Grep/Glob results and emits
+    Read-intelligence notices, and a shell entry asks for a decision after a
+    commit; SessionStart injects the live index-freshness
     context block; PostToolUseFailure carries the wrong-path rescue. Existing
     user hooks are preserved.
     """
@@ -358,6 +643,9 @@ def install_claude_code_hooks() -> Path | None:
         # AttributeError the OSError handler below would not catch.
         _backfill_event(hooks, "SessionStart", _session_start_entry)
         _backfill_event(hooks, "PostToolUseFailure", _failure_entry)
+        # The capture prompt ships on, so its shell entry is part of the
+        # install, unless the plugin already runs the same one.
+        _sync_capture_entry(post_hooks, not _plugin_ships_capture_hook())
 
         settings_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
         return settings_path
@@ -458,6 +746,41 @@ def add_claude_code_distill_allow_rules() -> Path | None:
         except OSError:
             return None
     return settings_path
+
+
+def uninstall_claude_code_distill_allow_rules() -> bool:
+    """Remove the distill allow rules from ``permissions.allow`` in settings.json.
+
+    Returns True when at least one rule was removed and saved, False otherwise.
+    Strictly removes only rules matching DISTILL_ALLOW_RULES; user rules survive.
+    """
+    settings_path = _claude_code_settings_path()
+    if not settings_path.exists():
+        return False
+    try:
+        existing = load_existing_config(settings_path)
+    except Exception:
+        return False
+
+    permissions = existing.get("permissions")
+    if not isinstance(permissions, dict):
+        return False
+    allow = permissions.get("allow")
+    if not isinstance(allow, list):
+        return False
+
+    initial_len = len(allow)
+    allow[:] = [rule for rule in allow if rule not in DISTILL_ALLOW_RULES]
+    if len(allow) == initial_len:
+        return False
+
+    if not allow:
+        permissions.pop("allow", None)
+    if not permissions:
+        existing.pop("permissions", None)
+
+    return _write_settings(settings_path, existing)
+
 
 
 def _migrate_legacy_rewrite_matcher(hook_list: list) -> bool:
@@ -652,6 +975,12 @@ def claude_code_leftover_reason() -> str | None:
                         _is_repowise_hook(hook) or _is_rewrite_hook(hook)
                     ):
                         return "one of our hooks was still present after the write"
+
+    permissions = existing.get("permissions")
+    if isinstance(permissions, dict):
+        allow = permissions.get("allow")
+        if isinstance(allow, list) and any(r in DISTILL_ALLOW_RULES for r in allow):
+            return "our distill permission rules were still present after the write"
     return None
 
 
@@ -898,6 +1227,10 @@ def migrate_claude_code_hooks() -> bool:
         if _backfill_event(hooks, "SessionStart", _session_start_entry):
             changed = True
         if _backfill_event(hooks, "PostToolUseFailure", _failure_entry):
+            changed = True
+        # The capture prompt ships on: add its shell entry, or refresh one an
+        # older release wrote, unless the plugin already runs it.
+        if _sync_capture_entry(post, not _plugin_ships_capture_hook()):
             changed = True
 
     if not changed:

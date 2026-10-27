@@ -1,13 +1,21 @@
 "use client";
 
 import type { FileSignals } from "@repowise-dev/types/health";
-import { formatRelativeTimeOrNull } from "../lib/format";
+import { formatRelativeTimeOrNull, ordinal } from "../lib/format";
+import { SHORT_HISTORY_DETAIL, SHORT_HISTORY_LABEL } from "./score-split";
 
 export interface FileSignalsPanelProps {
   signals: FileSignals | null | undefined;
   /** Hide the section heading (e.g. when the host supplies its own). */
   hideHeading?: boolean;
+  /** The groups to draw, for a host that files them under separate headings.
+   *  Default all three. */
+  groups?: readonly SignalGroup[];
 }
+
+export type SignalGroup = "process" | "people" | "topology";
+
+const ALL_GROUPS: readonly SignalGroup[] = ["process", "people", "topology"];
 
 /**
  * The per-file process / people / topology signals, grouped and captioned.
@@ -18,8 +26,12 @@ export interface FileSignalsPanelProps {
  * history nor a graph node. Shared by the dashboard drawer and the file-page
  * Health tab so both render identically.
  */
-export function FileSignalsPanel({ signals, hideHeading = false }: FileSignalsPanelProps) {
-  if (!signals || !hasAnySignal(signals)) return null;
+export function FileSignalsPanel({
+  signals,
+  hideHeading = false,
+  groups = ALL_GROUPS,
+}: FileSignalsPanelProps) {
+  if (!signals || !hasAnySignal(signals, groups)) return null;
 
   const ownerHandoff =
     signals.recent_owner_name != null &&
@@ -33,7 +45,12 @@ export function FileSignalsPanel({ signals, hideHeading = false }: FileSignalsPa
           Signals
         </h3>
       )}
-      <div className="grid gap-3 sm:grid-cols-3">
+      <div
+        className={`grid gap-3 ${
+          groups.length >= 3 ? "sm:grid-cols-3" : groups.length === 2 ? "sm:grid-cols-2" : ""
+        }`}
+      >
+        {groups.includes("process") ? (
         <Group label="Process">
           <Row
             value={priorDefectValue(signals.prior_defect_count)}
@@ -45,7 +62,7 @@ export function FileSignalsPanel({ signals, hideHeading = false }: FileSignalsPa
             value={
               signals.change_entropy_pct == null
                 ? null
-                : `${Math.round(signals.change_entropy_pct)}th pct`
+                : `${ordinal(Math.round(signals.change_entropy_pct))} pct`
             }
             caption="change scatter: how spread out its edits are"
             present={signals.change_entropy_pct != null}
@@ -60,8 +77,13 @@ export function FileSignalsPanel({ signals, hideHeading = false }: FileSignalsPa
             caption="first seen in git history"
             present={signals.age_days != null}
           />
+          {signals.history === "short" ? (
+            <Row value={SHORT_HISTORY_LABEL} caption={SHORT_HISTORY_DETAIL} present />
+          ) : null}
         </Group>
+        ) : null}
 
+        {groups.includes("people") ? (
         <Group label="People">
           <Row
             value={ownerValue(signals.primary_owner_name, signals.primary_owner_commit_pct)}
@@ -81,7 +103,9 @@ export function FileSignalsPanel({ signals, hideHeading = false }: FileSignalsPa
             emphasize={ownerHandoff}
           />
         </Group>
+        ) : null}
 
+        {groups.includes("topology") ? (
         <Group label="Topology">
           <Row
             value={
@@ -102,21 +126,26 @@ export function FileSignalsPanel({ signals, hideHeading = false }: FileSignalsPa
             present={signals.out_degree != null}
           />
         </Group>
+        ) : null}
       </div>
     </section>
   );
 }
 
-function hasAnySignal(s: FileSignals): boolean {
+export function hasAnySignal(
+  s: FileSignals,
+  groups: readonly SignalGroup[] = ALL_GROUPS,
+): boolean {
   return (
-    s.prior_defect_count != null ||
-    s.change_entropy_pct != null ||
-    s.commit_count_90d != null ||
-    s.age_days != null ||
-    s.primary_owner_name != null ||
-    s.recent_owner_name != null ||
-    s.in_degree != null ||
-    s.out_degree != null
+    (groups.includes("process") &&
+      (s.prior_defect_count != null ||
+        s.change_entropy_pct != null ||
+        s.commit_count_90d != null ||
+        s.age_days != null ||
+        s.history === "short")) ||
+    (groups.includes("people") &&
+      (s.primary_owner_name != null || s.recent_owner_name != null)) ||
+    (groups.includes("topology") && (s.in_degree != null || s.out_degree != null))
   );
 }
 
@@ -207,14 +236,14 @@ function Row({
         className={`flex items-center gap-1.5 text-xs font-semibold tabular-nums ${
           present
             ? emphasize
-              ? "text-[var(--color-accent-primary)]"
+              ? "text-[var(--color-text-primary)] underline decoration-dotted underline-offset-2"
               : "text-[var(--color-text-primary)]"
             : "text-[var(--color-text-tertiary)]"
         }`}
       >
         {present ? value : "No signal"}
         {present && badge != null && (
-          <span className="rounded-full border border-[var(--color-accent-muted)] bg-[var(--color-accent-muted)] px-1.5 py-px text-[9px] font-medium uppercase tracking-wide text-[var(--color-accent-primary)]">
+          <span className="rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-1.5 py-px font-mono text-[10px] font-medium uppercase tracking-wide text-[var(--color-text-secondary)]">
             {badge}
           </span>
         )}

@@ -44,18 +44,26 @@ import { formatNumber } from "../lib/format";
 
 import { RiskCoverageScatter } from "./risk-coverage-scatter";
 import { scoreBadgeClass } from "./tokens";
+import { COVERAGE_REPORT_FORMATS_LABEL } from "./coverage-formats";
+import { CiHint } from "../shared/ci-hint";
 
-/** Below this, a file nothing reaches is worth leading with. */
+/** Below this, a file no test reaches is worth leading with. */
 const AT_RISK_SCORE = 6;
+
+/** The floor statement the hero and the list share. */
+export const UNREACHED_TITLE = "No test reaches these through the graph";
 
 export function InferredTestsView({
   data,
   untestedFindings,
   onOpenFile,
+  unreachedTitle = UNREACHED_TITLE,
 }: {
   data: HealthCoverageResponse;
   untestedFindings: HealthFinding[];
   onOpenFile: (path: string) => void;
+  /** Localised {@link UNREACHED_TITLE}. */
+  unreachedTitle?: string | undefined;
 }) {
   const map = data.inferred as InferredTestMap;
   const PAGE = 25;
@@ -76,26 +84,20 @@ export function InferredTestsView({
   );
 
   // The hero. Scoped to what is actionable rather than to the whole repo: a
-  // small integer cannot be misread as coverage, and "files nothing tests" on
-  // its own would be a number nobody can act on in one sitting.
-  //
-  // Prefers the biomarker, which weighs churn and dependents, and falls back to
-  // the plain score cut when the health pass has not run.
-  const atRisk = useMemo(() => {
-    const unreached = new Set(
-      map.files.filter((f) => !f.reached).map((f) => f.file_path),
-    );
-    const flagged = untestedFindings.filter((f) => unreached.has(f.file_path));
-    if (flagged.length > 0) return flagged.map((f) => f.file_path);
-    return map.files
-      .filter(
+  // small integer cannot be misread as coverage. Counted from the same rows as
+  // the list below, so the two can never describe different sets.
+  const atRisk = useMemo(
+    () =>
+      map.files.filter(
         (f) => !f.reached && f.health_score != null && f.health_score < AT_RISK_SCORE,
-      )
-      .map((f) => f.file_path);
-  }, [map.files, untestedFindings]);
+      ).length,
+    [map.files],
+  );
 
+  // The untested-hotspot findings only order the list (churn and dependents
+  // make a gap there cost more); they never add or remove a row.
   const ranked = useMemo(() => {
-    const rank = new Map(atRisk.map((p, i) => [p, i]));
+    const rank = new Map(untestedFindings.map((f, i) => [f.file_path, i]));
     return map.files
       .filter((f) => !f.reached)
       .sort((a, b) => {
@@ -106,7 +108,7 @@ export function InferredTestsView({
         if (rb != null) return 1;
         return (a.health_score ?? 10) - (b.health_score ?? 10);
       });
-  }, [map.files, atRisk]);
+  }, [map.files, untestedFindings]);
 
   const trimmed = map.files_total > map.files.length;
 
@@ -156,35 +158,37 @@ export function InferredTestsView({
   return (
     <div className="flex flex-col gap-6 sm:gap-8">
       <PageLede
-        label="Files nothing tests"
-        value={formatNumber(atRisk.length)}
-        unit={atRisk.length === 1 ? "risky file" : "risky files"}
+        label={unreachedTitle}
+        value={formatNumber(atRisk)}
+        unit={atRisk === 1 ? "weak file" : "weak files"}
         layout="beside"
       >
         <p>
           No coverage report has been ingested, so this reads the dependency
           graph instead: a file is <strong className="font-semibold text-[var(--color-text-primary)]">reached</strong>{" "}
-          when some test&apos;s calls run into code defined in it. Your{" "}
+          when a test calls into it or imports it, directly or through a chain
+          of imports. Your{" "}
           {formatNumber(map.test_file_count)} test files reach{" "}
           <strong className="font-semibold text-[var(--color-text-primary)]">
             {formatNumber(map.files_reached)} of {formatNumber(map.files_total)} files
           </strong>
-          . Nothing reaches the other {formatNumber(map.files_not_reached)}.
+          . The graph finds no test for the other{" "}
+          {formatNumber(map.files_not_reached)}.
         </p>
 
         <p className="mt-2.5">
-          The figure beside this is the part worth acting on: files nothing
-          reaches that we also score as weak. Reaching is not executing, so treat
-          it as a floor rather than a measurement. A call edge says control{" "}
-          <em>can</em> flow into the file, which makes &ldquo;something tests
-          this&rdquo; safe to trust and &ldquo;this much is tested&rdquo;
-          something it cannot tell you.
+          The figure beside this counts those files that also score as weak.
+          Treat the list as a floor: it misses code a framework invokes rather
+          than your code calling it, such as route handlers, CLI commands and
+          plugin registries. Reaching is not executing either, so &ldquo;a test
+          reaches this&rdquo; is safe to trust and &ldquo;this much is
+          tested&rdquo; is something it cannot tell you.
         </p>
       </PageLede>
 
       <OverviewSection
         title="Health against tests"
-        description="Every file placed by its 0–10 defect-health score (higher is healthier), split by whether any test reaches it, sized by lines of code. There is no percentage axis here because there is no line-level evidence to build one from. The left column is the page: weak code nothing runs. Click a file to open it."
+        description="Every file placed by its 0–10 defect-health score (higher is healthier), split by whether any test reaches it, sized by lines of code. There is no percentage axis here because there is no line-level evidence to build one from. The left column is the page: weak code no test reaches through the graph. Click a file to open it."
       >
         <RiskCoverageScatter
           basis="inferred"
@@ -194,8 +198,8 @@ export function InferredTestsView({
       </OverviewSection>
 
       <OverviewSection
-        title="Nothing reaches these"
-        description="Worst health first, and the files the untested-hotspot marker flagged lead the list because churn and dependents make a gap there cost more. Open a file to see what the graph does and does not know about it."
+        title={unreachedTitle}
+        description="Worst health first, and the files the untested-hotspot marker flagged lead the list because churn and dependents make a gap there cost more. Code a framework invokes (routes, CLI commands, plugin registries) can land here with tests behind it, so open a file to check before writing tests for it."
       >
         <div className="border-t border-[var(--color-border-default)]">
           <ResponsiveTable
@@ -246,19 +250,20 @@ function AddResolutionSection() {
       description="Everything above is read from the dependency graph and needs no setup. A report adds what the graph structurally cannot see: which lines actually ran."
     >
       <div className="flex max-w-[62ch] flex-col gap-3 border-t border-[var(--color-border-default)] pt-4">
-        <p className="text-[13px] leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
+        <p className="text-xs leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
           Hand us a report and the two columns above become a continuous axis,
           every file moves to its own coverage figure, and the untested-hotspot
-          list narrows from &ldquo;nothing calls this&rdquo; to the exact lines no
-          test executed. Reaching becomes measuring.
+          list narrows from &ldquo;no test reaches this&rdquo; to the lines no test
+          executed. Reaching becomes measuring.
         </p>
         <pre className="w-fit overflow-x-auto rounded-md bg-[var(--color-bg-inset)] px-3 py-2 font-mono text-xs text-[var(--color-text-primary)]">
           pytest --cov --cov-report=lcov{"\n"}
           repowise coverage add coverage.lcov
         </pre>
         <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-          LCOV · Cobertura · Clover
+          {COVERAGE_REPORT_FORMATS_LABEL}
         </p>
+        <CiHint command="repowise coverage check" checks="the lines each change touched" />
       </div>
     </OverviewSection>
   );

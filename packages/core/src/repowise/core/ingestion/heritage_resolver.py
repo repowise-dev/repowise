@@ -29,6 +29,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, TypeVar
 
 import structlog
@@ -120,6 +121,13 @@ class HeritageResolver:
         # Per-file class/interface/trait index: {file: {name: symbol_id}}
         self._file_types: dict[str, dict[str, str]] = {}
 
+        # Type ids each file declares, for files carrying heritage relations.
+        # Used only to tell whether a composed child id already names a type.
+        self._file_type_ids: dict[str, set[str]] = {}
+
+        # Type names a file declares more than once, in whatever scopes.
+        self._file_ambiguous_types: dict[str, set[str]] = {}
+
         # Global class/interface/trait index: {name: [symbol_ids]}
         self._global_types: dict[str, list[str]] = defaultdict(list)
 
@@ -142,6 +150,10 @@ class HeritageResolver:
 
         # Keep reference for cross-language checks in Tier 3
         self._parsed_files = parsed_files
+        # Built on the first Apex relation (see ``_apex_namespaces_index``).
+        self._apex_namespaces: Any = None
+        # The one Apex file whose heritage clauses are being read.
+        self._apex_texts: dict[str, str] = {}
 
         self._build_indices(parsed_files)
 
@@ -149,13 +161,25 @@ class HeritageResolver:
         """Build type-level lookup indices from parsed file data."""
         for path, parsed in parsed_files.items():
             file_types: dict[str, str] = {}
+            ambiguous: set[str] = set()
 
             for sym in parsed.symbols:
                 if sym.kind in _PARENT_KINDS:
+                    # Distinct ids, not repeat sightings: a type and the `impl`
+                    # block on it are two symbols under one name and one id.
+                    prior = file_types.get(sym.name)
+                    if prior is not None and prior != sym.id:
+                        ambiguous.add(sym.name)
                     file_types[sym.name] = sym.id
                     self._global_types[sym.name].append(sym.id)
 
             self._file_types[path] = file_types
+            # Only the file that owns a relation asks these two, so a file
+            # declaring no heritage never needs them. _file_types stays global:
+            # tiers 2a, 2b and 3 read it for OTHER files.
+            if parsed.heritage:
+                self._file_type_ids[path] = set(file_types.values())
+                self._file_ambiguous_types[path] = ambiguous
 
     def _merged_types_for(self, file_path: str) -> dict[str, str]:
         """Merged ``{type_name → symbol_id}`` across every imported file."""
@@ -185,12 +209,66 @@ class HeritageResolver:
 
     def _resolve_one(self, file_path: str, rel: HeritageRelation) -> ResolvedHeritage | None:
         """Resolve a single HeritageRelation through three-tier fallback."""
-        child_id = f"{file_path}::{rel.child_name}"
+        # Tier 1: same-file
+        file_types = self._file_types.get(file_path, {})
+
+        # The declaring file already knows what the child's symbol id is, and
+        # it is not always two segments: a type declared inside a `mod` carries
+        # the module in its id, so composing one from the file and the bare
+        # name anchors the edge to a node that was never emitted.
+        #
+        # A composed id that already names a real symbol is kept, and so is a
+        # name the file declares more than once. The type table is keyed by
+        # bare name and is last-wins, so for an ambiguous name it answers with
+        # whichever declaration came last: an associated `type X = ...` in an
+        # unrelated impl, or a same-named type from a different `mod`. That
+        # would swap an anchor that dangles for one that points confidently at
+        # the wrong node, which is the worse of the two. A child the table
+        # does not carry at all, such as a `where` bound whose child is a
+        # function, also keeps the composed form.
+        #
+        # The first test asks for a TYPE of that id, not any symbol: a file
+        # whose top-level function shares a nested type's bare name would
+        # otherwise capture the anchor and wire the edge to the function.
+        #
+        # Ceiling: it proves the composed id is not dangling, not that it is
+        # the right symbol. A file declaring `Speaker` at top level and another
+        # inside a `mod` anchors the mod's impl to the top-level one, as it did
+        # before this change. Telling those apart needs the relation to carry
+        # the scope it was declared in, which it does not.
+        composed = f"{file_path}::{rel.child_name}"
+        if (
+            composed in self._file_type_ids.get(file_path, ())
+            or rel.child_name in self._file_ambiguous_types.get(file_path, ())
+        ):
+            child_id = composed
+        else:
+            child_id = file_types.get(rel.child_name) or composed
         parent_name = rel.parent_name
         edge_type = _heritage_kind_to_edge_type(rel.kind)
 
-        # Tier 1: same-file
-        file_types = self._file_types.get(file_path, {})
+        # Apex has no imports: the parent is a type its project reaches, or none.
+        if self._is_apex(file_path):
+            index = self._apex_namespaces_index()
+            # Two parents may share a last segment (``Database.Batchable`` and
+            # ``Plugin.Batchable``); the one the repository declares is the edge.
+            found = {
+                file_types[parent_name]
+                if "." not in written and parent_name in file_types
+                else index.type_path(file_path, written)
+                for written in self._apex_written_parents(file_path, rel)
+            } - {None}
+            if len(found) != 1:
+                return None
+            apex_parent = found.pop()
+            return ResolvedHeritage(
+                child_id=child_id,
+                parent_id=apex_parent,
+                edge_type=edge_type,
+                confidence=0.95 if apex_parent.startswith(f"{file_path}::") else 0.90,
+                line=rel.line,
+            )
+
         if parent_name in file_types:
             return ResolvedHeritage(
                 child_id=child_id,
@@ -242,12 +320,44 @@ class HeritageResolver:
 
         return None
 
+    def _is_apex(self, file_path: str) -> bool:
+        parsed = self._parsed_files.get(file_path)
+        return parsed is not None and parsed.file_info.language == "apex"
+
+    def _apex_written_parents(self, file_path: str, rel: HeritageRelation) -> list[str]:
+        """The parent's paths as the Apex clause writes them (``Outer.Inner``)."""
+        from .languages.apex_namespace import written_parents
+
+        text = self._apex_texts.get(file_path)
+        if text is None:
+            abs_path = self._parsed_files[file_path].file_info.abs_path
+            try:
+                text = Path(abs_path).read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                text = ""
+            self._apex_texts = {file_path: text}
+        return written_parents(text, rel.line, rel.parent_name)
+
+    def _apex_namespaces_index(self) -> Any:
+        if self._apex_namespaces is None:
+            from .languages.apex_namespace import build_apex_namespaces
+
+            self._apex_namespaces = build_apex_namespaces(self._parsed_files)
+        return self._apex_namespaces
+
 
 def _heritage_kind_to_edge_type(kind: str) -> str:
-    """Map HeritageKind to graph edge_type string."""
+    """Map HeritageKind to graph edge_type string.
+
+    ``derive`` is named rather than left to the default: ``#[derive(Clone)]``
+    really does implement the trait, and falling through would call it
+    inheritance.
+    """
     if kind == "implements":
         return "implements"
     if kind == "trait_impl":
+        return "implements"
+    if kind == "derive":
         return "implements"
     # extends, mixin → extends
     return "extends"

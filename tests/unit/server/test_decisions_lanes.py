@@ -35,7 +35,9 @@ async def _seed(
             title=title,
             status=status,
             context="ctx",
-            decision="dec",
+            # Distinct per seed: identity is the evidence, so ten records
+            # sharing one body over one file are one decision, not ten.
+            decision=f"dec for {title}",
             rationale="why",
             source="inline_marker",
             affected_files=["src/app.py"] if scope is None else scope,
@@ -225,6 +227,7 @@ async def test_the_governing_lane_pages_over_its_own_rows(
                 action="superseded",
                 currency="superseded",
                 accepter="tester",
+                kind="person",
                 evidence=["seed"],
             )
             await session.flush()

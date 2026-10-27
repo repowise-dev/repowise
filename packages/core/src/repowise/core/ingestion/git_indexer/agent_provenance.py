@@ -30,9 +30,17 @@ Three cross-cutting channels ride the same rule set:
     Tier 2 (``agent_trace`` channel).
   * a ``Generated-by:`` trailer (Apache's AI-attribution footer) naming a
     recognized agent — Tier 2 (``generated_by_trailer`` channel).
+  * an **edit-capture binding** (opt-in ``attribution.capture``): this
+    machine's hook recorded the agent's edits and :mod:`repowise.core.edit_capture`
+    matched them to the commit by content hash. Passed in like a git-ai note
+    with ``source="edit_capture"``; Tier 2 (``edit_capture`` channel), below a
+    note actually attached to the commit.
 
-Precedence is tier order (1 > 2 > 3); first match wins. A commit with no
-match is human (``None``). Every pattern is anchored to a *service identity*
+Precedence is tier order (1 > 2 > 3); first match wins. Every commit gets a
+three-state label (:mod:`repowise.core.attribution`): ``agent`` on a match,
+``human_attested`` only when a git-ai note's attestation names nothing but
+``h_`` human keys or an agent-trace record says ``human``, and ``unknown``
+otherwise. No marker is never read as human. Every pattern is anchored to a *service identity*
 (bot login, service e-mail, exact footer phrase) — never a bare name. A loose
 name pattern is how a human contributor named "Devin" gets misclassified as
 the Devin agent; a false "agent-authored" label on a human commit is worse
@@ -71,23 +79,30 @@ from pathlib import Path
 
 import structlog
 
+from repowise.core import forges
+
 logger = structlog.get_logger(__name__)
 
 __all__ = [
     "AgentProvenance",
     "AgentProvenanceClassifier",
     "AgentTraceIndex",
+    "GitAiNote",
     "_agent_from_git_ai_note",
     "agent_from_identity",
     "classifier_from_repo_config",
+    "parse_git_ai_note",
 ]
 
 
 # ------------------------------------------------------------------ registry --
 
-# Bot login (lowercase, without the ``[bot]`` suffix) → agent name, for
-# ``<login>[bot]@users.noreply.github.com`` author/committer e-mails (GitHub's
-# canonical bot identity, also re-injected on squash merges).
+# GitHub bot login (lowercase, without the ``[bot]`` suffix) → agent name, for
+# the GitHub noreply address of ``<login>[bot]`` (its canonical bot identity,
+# also re-injected on squash merges). ``[bot]`` is optional: squash merges by
+# the Copilot coding agent use ``<id>+Copilot@users.noreply.github.com``. Safe
+# because each login is a unique, vendor-owned GitHub account no human can
+# register; the same login on another forge is nobody's.
 _BOT_LOGINS: dict[str, str] = {
     "copilot-swe-agent": "copilot",
     "copilot": "copilot",
@@ -126,7 +141,6 @@ _AGENT_ALIASES: list[tuple[str, str]] = [
 # Exact service e-mails → (agent, tier) for commit identity fields.
 _SERVICE_EMAILS: dict[str, tuple[str, int]] = {
     "cursoragent@cursor.com": ("cursor", 1),
-    "devin-ai-integration[bot]@users.noreply.github.com": ("devin", 1),
     # Primarily Claude's co-author identity; as AUTHOR it is tier 1 like every
     # other service e-mail here.
     "noreply@anthropic.com": ("claude", 1),
@@ -172,7 +186,6 @@ _COAUTHOR_PATTERNS: list[tuple[str, str]] = [
         r"^co-authored-by:\s*claude(?:\s+(?:opus|sonnet|haiku)[^<]*)?\s*<[^>]*@anthropic\.com>",
         "claude",
     ),
-    (r"^co-authored-by:\s*copilot\s*<\d+\+copilot@users\.noreply\.github\.com>", "copilot"),
     (
         r"^co-authored-by:\s*cursor(?:\s*agent)?\s*<(?:cursoragent@cursor\.com|[^>]*cursor[^>]*)>",
         "cursor",
@@ -214,38 +227,97 @@ def _normalize_agent_token(value: str, *, allow_slug: bool) -> str | None:
     return slug or None
 
 
-def _agent_from_git_ai_note(note: str) -> str | None:
-    """Resolve the dominant agent from a git-ai authorship note.
+@dataclass(frozen=True)
+class GitAiNote:
+    """What one git-ai authorship note attests: its dominant agent, or that only
+    known humans wrote the attested lines."""
 
-    A note (``refs/notes/ai``, git-ai standard v3.0.0) is
-    ``<attestation>\\n---\\n<json metadata>``. We read
-    ``sessions.<id>.agent_id.tool`` from the JSON metadata and return the tool
-    owning the most sessions, normalized to our agent label. A tie between
-    distinct tools returns ``None`` (ambiguous — precision-first; per-line
-    dominance from the attestation section is the upgrade path). Any parse
-    failure returns ``None``: a malformed note is never a signal.
+    agent: str | None = None
+    human: bool = False
+    # Files the attestation names; a human attestation counts only when it
+    # covers every path the commit changed.
+    paths: frozenset[str] = frozenset()
+    # The channel the agent label is stored under: ``edit_capture`` for a
+    # commit bound from this machine's own capture sidecar.
+    source: str = "git_ai_note"
+    # The agent's most common recorded model, ``None`` when unrecorded or tied.
+    model: str | None = None
+
+
+# A note is a few KB; past this it is not read (a hostile or broken ref must
+# not stall the walk).
+_GIT_AI_NOTE_MAX_CHARS = 1_000_000
+
+# Attestation keys (git-ai standard v3.0.0): ``s_<hex>::t_<hex>`` is an AI
+# session and trace, ``h_<hex>`` a known human, a bare 16-hex key a legacy AI
+# prompt. Anything else is ignored.
+_GIT_AI_HUMAN_KEY = re.compile(r"h_[0-9a-f]+")
+_GIT_AI_AI_KEY = re.compile(r"s_[0-9a-f]+(?:::t_[0-9a-f]+)?|[0-9a-f]{16}")
+
+
+def parse_git_ai_note(note: str) -> GitAiNote:
+    """Read a git-ai authorship note (``refs/notes/ai``, standard v3.0.0).
+
+    A note is ``<attestation>\\n---\\n<json metadata>``. The attestation has a
+    file path at column 0 and indented ``<key> <ranges>`` lines below it. The
+    agent is the tool owning the most ``sessions`` (``prompts`` for notes that
+    predate sessions), read from ``agent_id.tool``; a tie between tools is
+    ambiguous and yields no agent (precision first). ``human`` is set only when
+    the attestation carries ``h_`` keys and no AI key, and the metadata names no
+    agent. Identities in ``humans`` / ``human_author`` are never read. A
+    malformed or oversized note yields the empty result: it is never a signal.
+    The divider is the first column-0 ``---`` line, which ends the attestation.
     """
-    if not note:
-        return None
+    if not note or len(note) > _GIT_AI_NOTE_MAX_CHARS:
+        return GitAiNote()
     try:
         lines = note.splitlines()
-        div = max((i for i, ln in enumerate(lines) if ln.strip() == "---"), default=-1)
+        div = next((i for i, ln in enumerate(lines) if ln.rstrip() == "---"), -1)
         if div < 0:
-            return None
-        data = json.loads("\n".join(lines[div + 1 :]))
+            return GitAiNote()
+        # raw_decode: the metadata object ends the note; anything after it is ignored.
+        data, _ = json.JSONDecoder().raw_decode("\n".join(lines[div + 1 :]).lstrip())
+        if not isinstance(data, dict):
+            return GitAiNote()
+        entries = data.get("sessions") or data.get("prompts") or {}
         counts: dict[str, int] = {}
-        for sess in (data.get("sessions") or {}).values():
-            tool = ((sess or {}).get("agent_id") or {}).get("tool")
+        models: dict[str, Counter[str]] = {}
+        for entry in entries.values() if isinstance(entries, dict) else []:
+            agent_id = (entry or {}).get("agent_id") or {}
+            tool = agent_id.get("tool")
             agent = _normalize_agent_token(str(tool), allow_slug=True) if tool else None
             if agent:
                 counts[agent] = counts.get(agent, 0) + 1
-        if not counts:
-            return None
-        top = max(counts.values())
-        leaders = [a for a, c in counts.items() if c == top]
-        return leaders[0] if len(leaders) == 1 else None
+                model = str(agent_id.get("model") or "").strip()
+                if model and model != "unknown":
+                    models.setdefault(agent, Counter())[model[:_MODEL_ID_MAXLEN]] += 1
+        if counts:
+            top = max(counts.values())
+            leaders = [a for a, c in counts.items() if c == top]
+            if len(leaders) != 1:
+                return GitAiNote()
+            return GitAiNote(agent=leaders[0], model=_dominant(models.get(leaders[0])))
+        human_keys = ai_keys = 0
+        paths: set[str] = set()
+        for line in lines[:div]:
+            if not line.strip():
+                continue
+            if not line[:1].isspace():
+                paths.add(line.strip().strip('"').lstrip("/"))
+                continue
+            key = line.split()[0].lower()
+            if _GIT_AI_HUMAN_KEY.fullmatch(key):
+                human_keys += 1
+            elif _GIT_AI_AI_KEY.fullmatch(key):
+                ai_keys += 1
+        return GitAiNote(human=human_keys > 0 and ai_keys == 0, paths=frozenset(paths))
     except Exception:
-        return None
+        return GitAiNote()
+
+
+def _agent_from_git_ai_note(note: str) -> str | None:
+    """The dominant agent of a git-ai note, or ``None`` (see :func:`parse_git_ai_note`)."""
+    return parse_git_ai_note(note).agent
 
 
 # Agent-trace records (the vendor-neutral agent-trace standard, v0.1.x): JSONL
@@ -386,6 +458,34 @@ def _agent_from_trace_record(rec: object) -> tuple[str, str, frozenset[str], str
         return None
 
 
+def _human_trace_record(rec: dict) -> tuple[str, frozenset[str]] | None:
+    """``(revision, paths)`` when every conversation in *rec* is ``human``.
+
+    A record mixing in any other contributor type is not a human attestation;
+    ``unknown`` contributors in particular never become human.
+    """
+    try:
+        revision = str((rec.get("vcs") or {}).get("revision") or "").strip().lower()
+        if not revision:
+            return None
+        paths: set[str] = set()
+        for f in rec.get("files") or []:
+            if not isinstance(f, dict):
+                continue
+            path = str(f.get("path") or "").strip().lstrip("/")
+            for conv in f.get("conversations") or []:
+                if not isinstance(conv, dict):
+                    continue
+                kind = str((conv.get("contributor") or {}).get("type") or "").lower()
+                if kind != "human":
+                    return None
+                if path:
+                    paths.add(path)
+        return (revision, frozenset(paths)) if paths else None
+    except Exception:
+        return None
+
+
 def _dominant(votes: Counter[str] | None) -> str | None:
     """The single most-common key in *votes*, or ``None`` on empty / a tie."""
     if not votes:
@@ -418,10 +518,14 @@ class AgentTraceIndex:
         records: list[tuple[str, str, frozenset[str], str | None]] | None = None,
         line_intervals: dict[str, list[tuple[int, int]]] | None = None,
         line_intervals_by_model: dict[str, dict[str, list[tuple[int, int]]]] | None = None,
+        human_records: list[tuple[str, frozenset[str]]] | None = None,
     ) -> None:
         self._by_revision: dict[str, list[tuple[str, frozenset[str], str | None]]] = {}
         for revision, agent, paths, model_id in records or []:
             self._by_revision.setdefault(revision, []).append((agent, paths, model_id))
+        self._human_by_revision: dict[str, set[str]] = {}
+        for revision, paths in human_records or []:
+            self._human_by_revision.setdefault(revision, set()).update(paths)
         # Collapse the accumulated intervals to counts once, up front.
         self._line_shares: dict[str, tuple[int, dict[str, int]]] = {}
         for path, intervals in (line_intervals or {}).items():
@@ -435,7 +539,7 @@ class AgentTraceIndex:
             self._line_shares[path] = (total, {m: c for m, c in models.items() if c > 0})
 
     def __bool__(self) -> bool:
-        return bool(self._by_revision) or bool(self._line_shares)
+        return bool(self._by_revision or self._line_shares or self._human_by_revision)
 
     def line_shares(self) -> dict[str, tuple[int, dict[str, int]]]:
         """``{path: (agent_line_count, {model_id: line_count})}`` — empty when
@@ -450,11 +554,16 @@ class AgentTraceIndex:
         A missing file (the common case) returns an empty index after a single
         stat call, so repos without traces pay nothing. Oversized files are
         skipped whole and malformed lines individually: a broken trace log
-        must never take down the git index.
+        must never take down the git index. With ``attribution.enabled: false``
+        the file is not read at all.
         """
         try:
             root = getattr(repo, "working_tree_dir", None)
             if not root or not isinstance(root, (str, Path)):
+                return cls()
+            from repowise.core.attribution import attribution_enabled
+
+            if not attribution_enabled(root):
                 return cls()
             path = Path(root) / _TRACE_FILE
             if not path.is_file():
@@ -467,6 +576,7 @@ class AgentTraceIndex:
             logger.warning("agent_trace_read_failed", error=str(exc))
             return cls()
         records: list[tuple[str, str, frozenset[str], str | None]] = []
+        human_records: list[tuple[str, frozenset[str]]] = []
         line_intervals: dict[str, list[tuple[int, int]]] = {}
         line_intervals_by_model: dict[str, dict[str, list[tuple[int, int]]]] = {}
         for line in text.splitlines():
@@ -481,6 +591,8 @@ class AgentTraceIndex:
             parsed = _agent_from_trace_record(rec)
             if parsed:
                 records.append(parsed)
+            elif human := _human_trace_record(rec):
+                human_records.append(human)
             # Line share is agent-agnostic (AI vs human at line granularity) and
             # revision-independent — accumulate regardless of whether the record
             # resolved to a single dominant agent above.
@@ -492,7 +604,7 @@ class AgentTraceIndex:
                     line_intervals_by_model.setdefault(path, {}).setdefault(raw_model, []).extend(
                         intervals
                     )
-        return cls(records, line_intervals, line_intervals_by_model)
+        return cls(records, line_intervals, line_intervals_by_model, human_records)
 
     def resolve(
         self, sha: str, parents: tuple[str, ...], changed_paths: set[str]
@@ -506,6 +618,17 @@ class AgentTraceIndex:
             if hit:
                 return hit[0], "medium", hit[1]
         return None
+
+    def resolve_human(self, sha: str, parents: tuple[str, ...], changed_paths: set[str]) -> bool:
+        """Whether human-only records cover this commit: the same revision rule
+        as :meth:`resolve`, but every changed path must be attested human.
+        Partial overlap stays unknown; a false human is the worse error."""
+        if not changed_paths:
+            return False
+        return any(
+            changed_paths <= self._human_by_revision.get((rev or "").lower(), set())
+            for rev in (sha, *parents)
+        )
 
     def _match(self, revision: str, changed_paths: set[str]) -> tuple[str, str | None] | None:
         candidates = self._by_revision.get((revision or "").lower())
@@ -531,15 +654,22 @@ class AgentTraceIndex:
 
 @dataclass(frozen=True)
 class AgentProvenance:
-    """One commit's agent attribution. ``agent is None`` means human."""
+    """One commit's attribution. ``agent is None`` is not human: read ``attribution``
+    (``agent`` / ``human_attested`` / ``unknown``; ``None`` when attribution is off)."""
 
     agent: str | None = None
     autonomy_tier: int | None = None  # 1 near-autonomous · 2 human-driven · 3 assisted
     channel: str | None = None
     confidence: str | None = None  # "high" | "medium" (local channels: always high)
+    attribution: str | None = "unknown"
 
 
-_HUMAN = AgentProvenance()
+_UNKNOWN = AgentProvenance()
+_DISABLED = AgentProvenance(attribution=None)
+
+
+def _agent(agent: str, tier: int, channel: str, confidence: str = "high") -> AgentProvenance:
+    return AgentProvenance(agent, tier, channel, confidence, "agent")
 
 
 class AgentProvenanceClassifier:
@@ -549,6 +679,8 @@ class AgentProvenanceClassifier:
     :meth:`classify` is then a handful of anchored regex searches per commit.
     Extra patterns merge on top of the built-in registry; they never replace
     it (precision of the defaults is validated, user patterns are additive).
+    With ``enabled=False`` (``attribution.enabled: false``) every commit is
+    left unlabelled and nothing about AI is stored.
     """
 
     def __init__(
@@ -557,18 +689,10 @@ class AgentProvenanceClassifier:
         extra_service_emails: dict[str, tuple[str, int]] | None = None,
         extra_footer_patterns: list[tuple[str, str]] | None = None,
         extra_coauthor_patterns: list[tuple[str, str]] | None = None,
+        enabled: bool = True,
     ) -> None:
+        self.enabled = enabled
         self._service_emails = {**_SERVICE_EMAILS, **(extra_service_emails or {})}
-        # ``[bot]`` is optional: GitHub squash-merges authored by the Copilot
-        # coding agent use ``<id>+Copilot@users.noreply.github.com`` (no
-        # suffix). Safe because each login is a unique, vendor-owned GitHub
-        # account — no human can register them.
-        self._bot_email_re = re.compile(
-            r"^(?:\d+\+)?("
-            + "|".join(re.escape(b) for b in _BOT_LOGINS)
-            + r")(?:\[bot\])?@users\.noreply\.github\.com$",
-            re.IGNORECASE,
-        )
         self._footers = [
             (re.compile(p, re.IGNORECASE | re.MULTILINE), agent)
             for p, agent in [*_FOOTER_PATTERNS, *(extra_footer_patterns or [])]
@@ -585,9 +709,11 @@ class AgentProvenanceClassifier:
         hit = self._service_emails.get(e)
         if hit:
             return hit
-        m = self._bot_email_re.match(e)
-        if m:
-            return (_BOT_LOGINS[m.group(1).lower()], 1)
+        noreply = forges.noreply_login(e)
+        if noreply and noreply[0] is forges.ForgeKind.GITHUB:
+            agent = _BOT_LOGINS.get(noreply[1].removesuffix("[bot]"))
+            if agent:
+                return (agent, 1)
         local, _, domain = e.partition("@")
         vendor = _VENDOR_DOMAIN_LOCALS.get(domain)
         if vendor and vendor[0].fullmatch(local):
@@ -604,6 +730,9 @@ class AgentProvenanceClassifier:
         note_agent: str | None = None,
         trace_agent: str | None = None,
         trace_confidence: str = "high",
+        note_human: bool = False,
+        trace_human: bool = False,
+        note_channel: str = "git_ai_note",
     ) -> AgentProvenance:
         """Classify one commit from local metadata. *message* is the full
         commit message (subject + body) — trailers and footers live in the
@@ -612,54 +741,118 @@ class AgentProvenanceClassifier:
         authorship note (``refs/notes/ai``), or ``None`` when absent — read out
         of band by the caller so classification stays a pure function.
         *trace_agent* / *trace_confidence* are the pre-resolved result of
-        :meth:`AgentTraceIndex.resolve` for this commit, same contract."""
+        :meth:`AgentTraceIndex.resolve` for this commit, same contract.
+        *note_human* / *trace_human* say an explicit human record covers the
+        commit; they apply only when no agent channel matched."""
+        if not self.enabled:
+            return _DISABLED
+        prov = self._classify_agent(
+            author_name,
+            author_email,
+            committer_email,
+            message,
+            note_agent,
+            trace_agent,
+            trace_confidence,
+            note_channel,
+        )
+        if prov is not None:
+            return prov
+        if note_human:
+            return AgentProvenance(None, None, "git_ai_note", "high", "human_attested")
+        if trace_human:
+            return AgentProvenance(None, None, "agent_trace", "high", "human_attested")
+        return _UNKNOWN
+
+    def _classify_agent(
+        self,
+        author_name: str,
+        author_email: str,
+        committer_email: str,
+        message: str,
+        note_agent: str | None,
+        trace_agent: str | None,
+        trace_confidence: str,
+        note_channel: str = "git_ai_note",
+    ) -> AgentProvenance | None:
         # T1 — agent service identity AUTHORED the commit.
         hit = self._identity_match(author_email)
         if hit:
-            return AgentProvenance(hit[0], hit[1], "service_email", "high")
+            return _agent(hit[0], hit[1], "service_email")
         # T2 — git-ai authorship note: an explicit line-level attestation on
         # this commit. Below T1 (a bot service account is more autonomous) but
         # above the message-derived channels.
         if note_agent:
-            return AgentProvenance(note_agent, 2, "git_ai_note", "high")
+            return _agent(note_agent, 2, note_channel)
         # T2 — agent-trace record resolved to this commit. Below the git-ai
         # note (a commit-attached attestation beats heuristic revision
         # mapping), above the message-derived channels.
         if trace_agent:
-            return AgentProvenance(trace_agent, 2, "agent_trace", trace_confidence)
+            return _agent(trace_agent, 2, "agent_trace", trace_confidence)
         # T2 — message footer / aider author-name suffix.
         for pat, agent in self._footers:
             if pat.search(message):
-                return AgentProvenance(agent, 2, "message_footer", "high")
+                return _agent(agent, 2, "message_footer")
         if _AIDER_NAME_RE.search(author_name or ""):
-            return AgentProvenance("aider", 2, "author_name_aider", "high")
+            return _agent("aider", 2, "author_name_aider")
         # T2 — ``Generated-by:`` AI-attribution trailer (agent generated it).
         m = _GENERATED_BY_RE.search(message)
         if m:
             agent = _normalize_agent_token(m.group(1), allow_slug=False)
             if agent:
-                return AgentProvenance(agent, 2, "generated_by_trailer", "high")
+                return _agent(agent, 2, "generated_by_trailer")
         # T2 — service identity as COMMITTER over a human author: the agent
         # pushed/amended a human-driven change. Deliberately tier 2, not 1.
         hit = self._identity_match(committer_email)
         if hit:
-            return AgentProvenance(hit[0], max(hit[1], 2), "service_committer", "high")
+            return _agent(hit[0], max(hit[1], 2), "service_committer")
         # T3 — ``Assisted-by:`` AI-attribution trailer (human wrote it, agent
         # helped). Below the committer channel to keep tier order intact.
         m = _ASSISTED_BY_RE.search(message)
         if m:
             agent = _normalize_agent_token(m.group(1), allow_slug=False)
             if agent:
-                return AgentProvenance(agent, 3, "assisted_by_trailer", "high")
+                return _agent(agent, 3, "assisted_by_trailer")
         # T3 — co-author trailer naming an agent service identity.
         for pat, agent in self._coauthors:
             if pat.search(message):
-                return AgentProvenance(agent, 3, "coauthor_trailer", "high")
+                return _agent(agent, 3, "coauthor_trailer")
         for m in _COAUTHOR_EMAIL_RE.finditer(message):
             hit = self._identity_match(m.group(1))
             if hit:
-                return AgentProvenance(hit[0], 3, "coauthor_trailer", "high")
-        return _HUMAN
+                return _agent(hit[0], 3, "coauthor_trailer")
+        return None
+
+
+def classify_commit(
+    classifier: AgentProvenanceClassifier,
+    header: dict,
+    changed_paths: set[str],
+    notes: dict[str, GitAiNote] | None,
+    trace_index: AgentTraceIndex | None,
+) -> tuple[AgentProvenance, tuple[str, str, str | None] | None]:
+    """Label one parsed commit header; also returns the agent-trace hit, if any.
+
+    The one place the walks join notes and trace records to the classifier, so
+    the repo-wide and per-file walks cannot label the same commit differently.
+    """
+    sha, parents = header["sha"], header["parents"]
+    trace_hit = trace_index.resolve(sha, parents, changed_paths) if trace_index else None
+    note = (notes or {}).get(sha) or GitAiNote()
+    prov = classifier.classify(
+        header["author_name"],
+        header["author_email"],
+        header["committer_name"],
+        header["committer_email"],
+        f"{header['subject']}\n{header['body']}",
+        note_agent=note.agent,
+        trace_agent=trace_hit[0] if trace_hit else None,
+        trace_confidence=trace_hit[1] if trace_hit else "high",
+        note_human=note.human and bool(changed_paths) and changed_paths <= note.paths,
+        trace_human=bool(trace_index) and trace_index.resolve_human(sha, parents, changed_paths),
+        note_channel=note.source,
+    )
+    return prov, trace_hit
 
 
 @lru_cache(maxsize=1)
@@ -699,8 +892,13 @@ def classifier_from_repo_config(repo_path: object) -> AgentProvenanceClassifier:
 
     Reads the optional ``agent_provenance`` block of ``.repowise/config.yaml``
     (see module docstring for the shape). Malformed entries are skipped with a
-    warning — a broken user pattern must never take down the git index.
+    warning — a broken user pattern must never take down the git index. With
+    ``attribution.enabled: false`` the classifier labels nothing.
     """
+    from repowise.core.attribution import attribution_enabled
+
+    if not attribution_enabled(repo_path):  # type: ignore[arg-type]
+        return AgentProvenanceClassifier(enabled=False)
     extra_emails: dict[str, tuple[str, int]] = {}
     extra_footers: list[tuple[str, str]] = []
     extra_coauthors: list[tuple[str, str]] = []

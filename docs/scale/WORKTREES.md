@@ -11,10 +11,12 @@ repowise init        # seeds from the base checkout, then runs an incremental up
 repowise update      # same: an unindexed worktree seeds itself first, then updates
 ```
 
-repowise detects that the directory is a linked worktree, derives the base checkout from git's own metadata (no path needed from you), copies the base's `.repowise/` index, and delegates to the incremental update so only the files that differ on your branch are re-processed. You'll see a one-line notice:
+repowise detects that the directory is a linked worktree, derives the base checkout from git's own metadata (no path needed from you), copies the base's `.repowise/` index, and delegates to the incremental update so only the files that differ on your branch are re-processed. init says so before it hands over:
 
 ```
-[worktree] Linked worktree of /path/to/base detected; seeding its index.
+This is a linked worktree of /path/to/base, which is already indexed. init copies that index
+and catches it up with repowise update instead of indexing from scratch.
+Pass --no-seed for a full init here.
 ```
 
 Agents and git hooks benefit without any setup: a post-commit hook or a coding agent running `repowise update` inside an unindexed worktree gets the seed-then-update path instead of an error.
@@ -29,6 +31,7 @@ Auto-seeding only fires when all of these hold; otherwise repowise falls back to
 - The worktree has no `.repowise/state.json` yet (an already-indexed worktree is left alone).
 - The base checkout has a healthy index (`state.json` + `wiki.db`).
 - Base and worktree share the same initial commit, and the base's last synced commit is an ancestor of the worktree's HEAD.
+- `--force` was not passed.
 
 ## Overrides
 
@@ -36,6 +39,7 @@ Auto-seeding only fires when all of these hold; otherwise repowise falls back to
 |------|--------|
 | `--no-seed` | Force a cold full init inside a worktree; skip auto-detection entirely. |
 | `--seed-from <path>` | Seed from an explicit checkout instead of the auto-detected base. Useful for unusual layouts, e.g. seeding one full clone from another. All the same validations apply. |
+| `--force` | Re-index this checkout from scratch, in the mode you invoked. Seeding is skipped, because a re-index is the work seeding exists to avoid. Still free: `--force --no-prose` renders the whole wiki from templates with no model. `repowise update --full` remains the only path that regenerates with a model. |
 
 `--seed-from` also works outside worktrees: any two checkouts of the same repository qualify, as long as they share history.
 

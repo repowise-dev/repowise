@@ -12,7 +12,7 @@ export interface DeadCodeFindingResponse {
   symbol_kind: string | null;
   confidence: number;
   reason: string;
-  lines: number;
+  lines: number | null;
   start_line: number | null;
   end_line: number | null;
   /** Effective deletion-readiness — re-derived from confidence + risk factors. */
@@ -39,6 +39,10 @@ export interface DeadCodeSummaryResponse {
   total_findings: number;
   confidence_summary: Record<string, number>;
   deletable_lines: number;
+  /** Deletion-ready findings, the ones `deletable_lines` sums. */
+  safe_to_delete_count?: number | null;
   total_lines: number;
   by_kind: Record<string, number>;
+  /** ISO 8601 UTC; `null`/absent = never ran or unknown (not an all-clear). */
+  analyzed_at?: string | null;
 }

@@ -12,6 +12,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import ClassVar
 
+import pytest
+
 from repowise.core.analysis.health.engine import (
     _has_paired_test_file,
     _path_basenames,
@@ -150,3 +152,69 @@ class TestPascalPairing:
         assert _has_paired_test_file("src/user.cr", _path_basenames(crystal))
         # Same stem, dot form, must NOT count for Ruby's underscore layout.
         assert not _has_paired_test_file("lib/user.rb", _path_basenames({"spec/user.spec.rb"}))
+
+
+def test_name_match_tier_finds_tests_named_for_a_target_anywhere():
+    from repowise.core.analysis.test_reachability import tests_matching_by_name
+
+    tests = {"tests/unit/test_jira_links.py", "tests/app/test_jira_links.py", "web/a.test.ts"}
+    found = tests_matching_by_name(["app/jira_links.py", "web/a.ts", "app/none.py"], tests)
+
+    # Same name twice: the one whose directories mirror the target's leads.
+    assert found["app/jira_links.py"].tests == [
+        "tests/app/test_jira_links.py",
+        "tests/unit/test_jira_links.py",
+    ]
+    assert found["app/jira_links.py"].via == "name-match"
+    assert found["web/a.ts"].total == 1
+    assert "app/none.py" not in found
+
+
+def test_unnamed_tests_rank_by_the_directories_they_share_with_the_target():
+    from repowise.core.analysis.test_reachability import rank_reaching
+
+    ranked = rank_reaching("pkg/a/b/mod.py", ["pkg/x/test_other.py", "pkg/a/b/test_sibling.py"])
+    assert ranked == ["pkg/a/b/test_sibling.py", "pkg/x/test_other.py"]
+
+
+class TestClassNamedPairing:
+    """JVM and .NET tests are a class named ``<Stem>Test``/``<Stem>Tests``/``<Stem>Spec``."""
+
+    @pytest.mark.parametrize(
+        ("source", "test"),
+        [
+            ("src/main/java/a/Foo.java", "src/test/java/a/FooTest.java"),
+            ("src/main/java/a/Foo.java", "src/test/java/a/FooTests.java"),
+            ("src/App/Foo.cs", "tests/App.Tests/FooTest.cs"),
+            ("src/App/Foo.cs", "tests/App.Tests/FooTests.cs"),
+            ("src/main/kotlin/Foo.kt", "src/test/kotlin/FooTest.kt"),
+            ("src/main/kotlin/Foo.kt", "src/test/kotlin/FooSpec.kt"),
+            ("src/main/scala/Foo.scala", "src/test/scala/FooSpec.scala"),
+            ("src/main/scala/Foo.scala", "src/test/scala/FooSuite.scala"),
+            ("src/main/scala/Foo.scala", "src/test/scala/FooTest.scala"),
+        ],
+    )
+    def test_pairs(self, source: str, test: str) -> None:
+        assert _has_paired_test_file(source, _path_basenames({source, test}))
+
+    @pytest.mark.parametrize(
+        ("source", "test"),
+        [
+            # Suffix belongs to the language: a C# test does not pair a Java class.
+            ("src/Foo.java", "tests/FooTests.cs"),
+            ("src/Foo.cs", "tests/FooSpec.cs"),
+            ("src/Foo.java", "tests/FooSuite.java"),
+            # Case matters: ``Footest`` is not a test class for ``Foo``.
+            ("src/Foo.java", "tests/Footest.java"),
+        ],
+    )
+    def test_near_misses(self, source: str, test: str) -> None:
+        assert not _has_paired_test_file(source, _path_basenames({source, test}))
+
+    def test_name_match_tier_finds_a_java_test(self) -> None:
+        from repowise.core.analysis.test_reachability import tests_matching_by_name
+
+        found = tests_matching_by_name(
+            ["src/main/java/a/Foo.java"], {"src/test/java/a/FooTest.java"}
+        )
+        assert found["src/main/java/a/Foo.java"].tests == ["src/test/java/a/FooTest.java"]

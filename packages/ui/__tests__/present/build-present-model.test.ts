@@ -2,12 +2,16 @@ import { describe, it, expect } from "vitest";
 import { buildPresentModel, canPresent } from "../../src/present/build-present-model.js";
 import {
   splitOnH2,
-  extractMermaidBlocks,
+  splitBlocks,
   stripLeadingH1,
-  countWords,
-  clampProse,
+  extractMermaidBlocks,
+  isProse,
+  isDrawable,
+  diagramKind,
+  wholeSentences,
 } from "../../src/present/split-markdown.js";
 import type { DocPage } from "@repowise-dev/types/docs";
+import type { PresentSource } from "../../src/present/types.js";
 
 function makePage(overrides: Partial<DocPage> = {}): DocPage {
   return {
@@ -35,173 +39,341 @@ function makePage(overrides: Partial<DocPage> = {}): DocPage {
   };
 }
 
+function source(overrides: Partial<PresentSource> = {}): PresentSource {
+  return {
+    overview: makePage({
+      id: "ov",
+      page_type: "repo_overview",
+      title: "Repository Overview: acme",
+      target_path: "acme",
+      content: "## Summary\n\nAcme turns orders into shipments through a queue of workers.",
+    }),
+    parts: [],
+    totalParts: 0,
+    pageIdByPath: new Map(),
+    ...overrides,
+  };
+}
+
+const FLOW = 'flowchart TB\n  api["API"] -->|queues| worker["Worker"]';
+const SEQUENCE = "sequenceDiagram\n  participant A\n  participant B\n  A->>B: request";
+
+// The current module-page contract: plain opening, a diagram, step-named
+// sections that close on a Sources line, and a reading list.
+const CONTRACT_PART = [
+  "# Order Intake",
+  "",
+  "This part accepts orders over HTTP and hands them to the queue. Everything downstream reads what it writes.",
+  "",
+  "```mermaid",
+  SEQUENCE,
+  "```",
+  "",
+  "## From request to queued job",
+  "",
+  "The handler validates the payload before anything is stored.",
+  "",
+  "Sources: `handler.py`, `schema.py`",
+  "",
+  "## How retries are bounded",
+  "",
+  "Each job carries an attempt counter.",
+  "",
+  "Sources: `retry.py`",
+  "",
+  "## Where to start reading",
+  "",
+  "- `handler.py` - The request entry point.",
+  "- `retry.py` - The retry policy.",
+  "",
+  "## How it connects",
+  "",
+  "Workers consume the queue this part fills.",
+].join("\n");
+
 describe("split-markdown", () => {
   it("splits on H2 and keeps the lead", () => {
     const { lead, sections } = splitOnH2("Intro line.\n\n## First\nbody a\n\n## Second\nbody b");
     expect(lead).toBe("Intro line.");
     expect(sections.map((s) => s.heading)).toEqual(["First", "Second"]);
-    expect(sections[0]!.body).toContain("body a");
   });
 
-  it("ignores ## inside a code fence", () => {
-    const { sections } = splitOnH2("lead\n\n```\n## not a heading\n```\n\n## Real\nx");
-    expect(sections.map((s) => s.heading)).toEqual(["Real"]);
+  it("ignores headings and blank lines inside code fences", () => {
+    expect(splitOnH2("lead\n\n```\n## not a heading\n```\n\n## Real\nx").sections).toHaveLength(1);
+    expect(splitBlocks("a\n\n```\nx\n\ny\n```\n\nb")).toEqual(["a", "```\nx\n\ny\n```", "b"]);
   });
 
-  it("strips a single leading H1", () => {
+  it("strips a leading H1 and extracts mermaid blocks", () => {
     expect(stripLeadingH1("# Title\n\nbody")).toBe("body");
     expect(stripLeadingH1("no heading")).toBe("no heading");
+    expect(extractMermaidBlocks("text\n\n```mermaid\ngraph TD\nA-->B\n```\n\nmore")).toEqual([
+      "graph TD\nA-->B",
+    ]);
   });
 
-  it("extracts mermaid blocks", () => {
-    const blocks = extractMermaidBlocks("text\n\n```mermaid\ngraph TD\nA-->B\n```\n\nmore");
-    expect(blocks).toEqual(["graph TD\nA-->B"]);
+  it("tells prose from tables, lists, stat lines and footnotes", () => {
+    expect(isProse("The service accepts orders and hands them to a queue.")).toBe(true);
+    expect(isProse("The subsystem has three distinct ways in, listed below:")).toBe(true);
+    expect(isProse("| a | b |\n|---|---|\n| 1 | 2 |")).toBe(false);
+    expect(isProse("- one item that is long enough to pass the length floor.")).toBe(false);
+    expect(isProse("**Files:** 130 | **Lines:** 16167 | **Packages:** 3 and more.")).toBe(false);
+    expect(isProse("*Built from the code's structure. It states what is there.*")).toBe(false);
+    expect(isProse("A paragraph that stops without finishing its")).toBe(false);
   });
 
-  it("counts words ignoring fences and markdown punctuation", () => {
-    expect(countWords("## Heading\n\none two three\n\n```\nignored code here\n```")).toBe(4);
+  it("keeps whole sentences and never cuts one", () => {
+    const text = "First sentence is here. Second one, e.g. with an aside, follows. Third.";
+    expect(wholeSentences(text, 30)).toBe("First sentence is here.");
+    expect(wholeSentences(text, 70)).toBe(
+      "First sentence is here. Second one, e.g. with an aside, follows.",
+    );
+    const long = `${"word ".repeat(100).trim()}.`;
+    expect(wholeSentences(long, 20)).toBe(long);
   });
 
-  it("clamps prose on paragraph boundaries but always returns the first", () => {
-    const long = "a".repeat(600);
-    expect(clampProse(`${long}\n\nsecond`, 300)).toBe(long);
+  it("treats an edgeless flowchart as not worth drawing", () => {
+    expect(isDrawable('flowchart LR\n  subgraph a["A"]\n    x["X -- label"]\n  end')).toBe(false);
+    expect(isDrawable(FLOW)).toBe(true);
+    expect(isDrawable("graph TD\n  a -.-> b")).toBe(true);
+    expect(isDrawable(SEQUENCE)).toBe(true);
+  });
+
+  it("reads the diagram type past front matter and init directives", () => {
+    expect(diagramKind("%%{init: {'theme': 'base'}}%%\nsequenceDiagram\n  A->>B: x")).toBe(
+      "sequencediagram",
+    );
+    expect(diagramKind("---\ntitle: Flow\n---\n%% note\nflowchart LR\n  a --> b")).toBe(
+      "flowchart",
+    );
+    expect(isDrawable('%%{init: {}}%%\nflowchart LR\n  a["A"]')).toBe(false);
   });
 });
 
 describe("canPresent", () => {
-  it("requires a repo_overview page", () => {
-    expect(canPresent([makePage({ page_type: "file_page" })])).toBe(false);
+  it("requires an overview page", () => {
+    expect(canPresent([makePage()])).toBe(false);
     expect(canPresent([makePage({ page_type: "repo_overview" })])).toBe(true);
   });
 });
 
 describe("buildPresentModel", () => {
-  const overview = makePage({
-    id: "ov",
-    page_type: "repo_overview",
-    title: "Acme Overview",
-    target_path: "repo",
-    content: "# Acme\n\nA build tool.\n\n## Details\nmore",
-    metadata: {
-      layer_order: ["layer:api", "layer:core"],
-      guided_tour: [
-        { order: 1, title: "main.py", target_path: "src/main.py", reason: "entry point" },
-        { order: 2, title: "core.py", target_path: "src/core.py", reason: "the engine" },
-      ],
-    },
-  });
-  const arch = makePage({
-    id: "arch",
-    page_type: "architecture_diagram",
-    title: "System architecture",
-    content: "Intro\n\n```mermaid\ngraph TD\nA-->B\n```",
-  });
-  const layerCore = makePage({
-    id: "lc",
-    page_type: "layer_page",
-    title: "Core layer",
-    target_path: "layer:core",
-    content: "# Core\n\nThe core does the work and holds the pipeline together nicely.",
-    // Display name deliberately unlike the id: the enrichment pass rewrites
-    // layer_name, so ordering must not depend on it.
-    metadata: { layer_name: "Engine and Pipeline Core" },
-  });
-  const layerApi = makePage({
-    id: "la",
-    page_type: "layer_page",
-    title: "API layer",
-    target_path: "layer:api",
-    content: "# API\n\nThe API exposes endpoints to callers over HTTP with care.",
-    metadata: { layer_name: "Typed RPC Interfaces" },
-  });
-  const mainFile = makePage({ id: "mf", target_path: "src/main.py", title: "main.py", content: "# main\n\nStarts the program and wires everything up on boot." });
-
-  it("derives a clean repo name from a 'Repository Overview: name' title", () => {
-    const colonOverview = makePage({
+  it("tells the story in order on the current page contract", () => {
+    const overview = makePage({
+      id: "ov",
       page_type: "repo_overview",
-      title: "Repository Overview: repowise",
-      content: "## Project Summary\n\nRepowise is a codebase documentation engine.",
-      metadata: {},
+      title: "Repository Overview: acme",
+      target_path: "acme",
+      content: [
+        "**Files:** 40 | **Lines:** 5000",
+        "",
+        "## Summary",
+        "",
+        "Acme turns orders into shipments. It runs as an API in front of a pool of workers.",
+        "",
+        "## Architecture",
+        "",
+        "Requests enter through the API and wait on a queue until a worker takes them.",
+        "",
+        "```mermaid",
+        FLOW,
+        "```",
+      ].join("\n"),
     });
-    const model = buildPresentModel([colonOverview]);
-    expect(model.repoName).toBe("repowise");
-    // Title tagline is the real summary sentence, not the "Project Summary" heading.
-    expect(model.deck[0]!.bodyMarkdown).toContain("codebase documentation engine");
-    expect(model.deck[0]!.bodyMarkdown).not.toContain("Project Summary");
-  });
-
-  it("builds a title slide, diagram slide, ordered layers, and a closing", () => {
-    const model = buildPresentModel([overview, arch, layerCore, layerApi, mainFile]);
-    expect(model.repoName).toBe("Acme");
-    expect(model.deck[0]!.kind).toBe("title");
-    expect(model.deck.some((s) => s.kind === "diagram" && s.mermaid?.includes("graph TD"))).toBe(true);
-    // Layers ordered by layer_order: API before Core.
-    const layerTitles = model.deck.filter((s) => s.eyebrow === "Layer").map((s) => s.title);
-    expect(layerTitles).toEqual(["API layer", "Core layer"]);
-    expect(model.deck[model.deck.length - 1]!.kind).toBe("closing");
-  });
-
-  it("builds a split slide for a layer page that embeds a diagram", () => {
-    const layerWithDiagram = makePage({
-      id: "ld",
-      page_type: "layer_page",
-      title: "Data layer",
-      target_path: "layer:data",
-      content:
-        "# Data\n\nThe data layer persists and indexes everything the pipeline produces, and it is the durable backbone every other layer leans on.\n\n## Architecture\n\n```mermaid\nflowchart TD\nX-->Y\n```",
-      metadata: { layer_name: "Data" },
+    const part = makePage({
+      id: "m1",
+      page_type: "module_page",
+      title: "Order Intake",
+      target_path: "src/intake",
+      content: CONTRACT_PART,
     });
-    const model = buildPresentModel([overview, layerWithDiagram]);
-    const slide = model.deck.find((s) => s.eyebrow === "Layer");
-    expect(slide!.kind).toBe("split");
-    expect(slide!.mermaid).toContain("flowchart TD");
-    expect(slide!.bodyMarkdown).toBeTruthy();
-    // Prose column must not carry the diagram fence — it renders separately.
-    expect(slide!.bodyMarkdown).not.toContain("```mermaid");
+    const model = buildPresentModel(
+      source({
+        overview,
+        parts: [part],
+        totalParts: 1,
+        pageIdByPath: new Map([["src/intake/handler.py", "f1"]]),
+      }),
+    );
+
+    expect(model.repoName).toBe("acme");
+    expect(model.slides.map((s) => s.kind)).toEqual(["title", "architecture", "part", "start"]);
+
+    const [title, arch, partSlide, start] = model.slides;
+    expect(title!.body).toBe(
+      "Acme turns orders into shipments. It runs as an API in front of a pool of workers.",
+    );
+    expect(arch!.mermaid).toBe(FLOW);
+    expect(arch!.body).toBe(
+      "Requests enter through the API and wait on a queue until a worker takes them.",
+    );
+    expect(partSlide!.eyebrow).toBe("Part 1 of 1");
+    expect(partSlide!.body).toBe(
+      "This part accepts orders over HTTP and hands them to the queue. Everything downstream reads what it writes.",
+    );
+    expect(partSlide!.mermaid).toBe(SEQUENCE);
+    expect(partSlide!.steps).toEqual(["From request to queued job", "How retries are bounded"]);
+    // The part's reading list resolves relative to its directory.
+    expect(start!.start?.[0]).toEqual({
+      label: "Order Intake",
+      note: "The request entry point.",
+      files: [{ path: "src/intake/handler.py", pageId: "f1" }],
+    });
+    // Every part was presented, so no scope note.
+    expect(start!.body).toBeUndefined();
   });
 
-  it("keeps a plain section slide for a layer page without a diagram", () => {
-    const model = buildPresentModel([overview, layerCore]);
-    const slide = model.deck.find((s) => s.eyebrow === "Layer");
-    expect(slide!.kind).toBe("section");
-    expect(slide!.mermaid).toBeUndefined();
+  it("adds one flow slide for a sequence diagram no part slide shows", () => {
+    const part = makePage({
+      id: "m1",
+      page_type: "module_page",
+      title: "Workers",
+      target_path: "src/workers",
+      content: [
+        "Workers drain the queue and write shipments to the store.",
+        "",
+        "```mermaid",
+        FLOW,
+        "```",
+        "",
+        "## How a job runs",
+        "",
+        "A worker claims a job, runs it, then acknowledges it.",
+        "",
+        "```mermaid",
+        SEQUENCE,
+        "```",
+      ].join("\n"),
+    });
+    const model = buildPresentModel(source({ parts: [part], totalParts: 1 }));
+    const flow = model.slides.find((s) => s.kind === "flow");
+    expect(flow?.title).toBe("How a job runs");
+    expect(flow?.mermaid).toBe(SEQUENCE);
+    expect(flow?.body).toBe("A worker claims a job, runs it, then acknowledges it.");
+    expect(model.slides.find((s) => s.kind === "part")?.mermaid).toBe(FLOW);
   });
 
-  it("builds a walkthrough from the guided tour with time estimates", () => {
-    const model = buildPresentModel([overview, mainFile]);
-    expect(model.walkthrough).toHaveLength(2);
-    expect(model.walkthrough[0]!.title).toBe("main.py");
-    expect(model.walkthrough[0]!.reason).toBe("entry point");
-    expect(model.walkthrough[0]!.sourcePageId).toBe("mf");
-    expect(model.walkthrough[0]!.estMinutes).toBeGreaterThanOrEqual(2);
-    expect(model.totalMinutes).toBe(
-      model.walkthrough.reduce((s, w) => s + w.estMinutes, 0),
+  it("degrades on older pages: no diagrams, list lead-ins, reference sections", () => {
+    const part = makePage({
+      id: "m1",
+      page_type: "module_page",
+      title: "Storage",
+      target_path: "src/storage",
+      content: [
+        "## How storage is divided",
+        "",
+        "Storage is split into two layers with separate jobs:",
+        "",
+        "| Layer | Role |",
+        "|---|---|",
+        "| cache | reads |",
+        "",
+        "Both layers share one connection pool and never open their own.",
+        "",
+        "## Questions this page answers",
+        "",
+        "- Where is data cached?",
+      ].join("\n"),
+    });
+    const model = buildPresentModel(source({ parts: [part], totalParts: 4 }));
+    const partSlide = model.slides.find((s) => s.kind === "part")!;
+    expect(partSlide.body).toBe(
+      "Storage is split into two layers with separate jobs. Both layers share one connection pool and never open their own.",
+    );
+    expect(partSlide.mermaid).toBeUndefined();
+    expect(partSlide.steps).toEqual([]);
+    expect(model.slides.some((s) => s.kind === "architecture")).toBe(false);
+    // Three parts were left out, and the deck says so.
+    expect(model.slides.at(-1)?.body).toBe(
+      "This deck covers 1 of the 4 top-level sections. The rest are in the documentation.",
     );
   });
 
-  it("falls back to deck sections when there is no guided tour", () => {
-    const bareOverview = makePage({ id: "ov2", page_type: "repo_overview", title: "Bare", content: "# Bare\n\nx", metadata: {} });
-    const model = buildPresentModel([bareOverview, layerCore]);
-    expect(model.walkthrough.length).toBeGreaterThan(0);
+  it("skips an edgeless architecture map", () => {
+    const overview = makePage({
+      id: "ov",
+      page_type: "repo_overview",
+      title: "Overview",
+      content:
+        'Acme is a small service that ships orders.\n\n## Map\n\n```mermaid\nflowchart LR\n  a["A"]\n  b["B"]\n```',
+    });
+    const model = buildPresentModel(source({ overview }));
+    expect(model.slides.map((s) => s.kind)).toEqual(["title"]);
   });
 
-  // The assumption the Guided Tour page's retirement rests on. The page is
-  // gone; the ordered stops it used to narrate are still computed and still
-  // written to the overview's metadata, and every consumer outside that page
-  // read the metadata rather than the page. If that were ever untrue, this is
-  // where it would show: a deck built from an index that has no onboarding
-  // page at all must still walk the tour.
-  it("builds a full deck and walkthrough with no onboarding page in the index", () => {
-    const pages = [overview, arch, layerApi, layerCore, mainFile];
-    expect(pages.some((p) => p.page_type === "onboarding")).toBe(false);
+  it("fills the reading list from the guided tour, deduped and grouped by reason", () => {
+    const overview = makePage({
+      id: "ov",
+      page_type: "repo_overview",
+      title: "Overview",
+      content: "Acme is a small service that ships orders.",
+      metadata: {
+        guided_tour: [
+          { target_path: "README.md", reason: "Start here." },
+          { target_path: "src/app.py", reason: "An entry point." },
+          { target_path: "src/cli.py", reason: "An entry point." },
+          { target_path: "src/db.py", reason: "Widely imported." },
+          { target_path: "src/app.py", reason: "An entry point." },
+          { title: "no path" },
+        ],
+      },
+    });
+    const model = buildPresentModel(
+      source({ overview, pageIdByPath: new Map([["src/app.py", "f-app"]]) }),
+    );
+    const start = model.slides.find((s) => s.kind === "start");
+    expect(start?.start).toEqual([
+      { note: "Start here.", files: [{ path: "README.md", pageId: undefined }] },
+      {
+        note: "An entry point.",
+        files: [
+          { path: "src/app.py", pageId: "f-app" },
+          { path: "src/cli.py", pageId: undefined },
+        ],
+      },
+      { note: "Widely imported.", files: [{ path: "src/db.py", pageId: undefined }] },
+    ]);
+  });
 
-    const model = buildPresentModel(pages);
+  it("does not repeat a tour stop a part already recommends", () => {
+    const overview = makePage({
+      id: "ov",
+      page_type: "repo_overview",
+      title: "Overview",
+      metadata: {
+        guided_tour: [
+          { target_path: "src/intake/handler.py", reason: "An entry point." },
+          { target_path: "src/db.py", reason: "Widely imported." },
+        ],
+      },
+    });
+    const part = makePage({
+      id: "m1",
+      page_type: "module_page",
+      title: "Order Intake",
+      target_path: "src/intake",
+      content: CONTRACT_PART,
+    });
+    const model = buildPresentModel(
+      source({
+        overview,
+        parts: [part],
+        totalParts: 1,
+        pageIdByPath: new Map([["src/intake/handler.py", "f1"]]),
+      }),
+    );
+    const paths = model.slides
+      .find((s) => s.kind === "start")
+      ?.start?.flatMap((g) => g.files.map((f) => f.path));
+    expect(paths).toEqual(["src/intake/handler.py", "src/db.py"]);
+  });
 
-    expect(model.deck.some((s) => s.kind === "title")).toBe(true);
-    expect(model.deck.some((s) => s.kind === "diagram")).toBe(true);
-    expect(model.deck.length).toBeGreaterThan(3);
-    expect(model.walkthrough).toHaveLength(2);
-    expect(model.walkthrough.map((w) => w.title)).toEqual(["main.py", "core.py"]);
-    expect(model.totalMinutes).toBeGreaterThan(0);
+  it("always yields a title slide, even for a bare overview", () => {
+    const model = buildPresentModel(
+      source({
+        overview: makePage({ id: "ov", page_type: "repo_overview", title: "Overview", content: "" }),
+      }),
+    );
+    expect(model.slides).toHaveLength(1);
+    expect(model.slides[0]).toMatchObject({ kind: "title", title: "Overview", body: undefined });
   });
 });

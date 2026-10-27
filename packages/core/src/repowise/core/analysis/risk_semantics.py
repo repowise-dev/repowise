@@ -77,11 +77,16 @@ def structural_impact_band(score: float) -> str:
 
 
 def change_risk_authority() -> dict[str, Any]:
-    """Authority and scalar metadata shared by live-diff public surfaces."""
+    """What the live-diff fields rank, shared by every public surface.
+
+    The rank is of diff size and spread, not of defect risk: against churn
+    alone it barely moves, and it cannot rank danger (docs/layers/CHANGE_RISK.md).
+    The key names are wire contract; the values say what is ranked.
+    """
     return {
-        "authoritative_for": "live_change_review",
-        "primary_fields": ["risk_percentile", "classification"],
-        "primary_basis": "benchmarked_population_relative",
+        "authoritative_for": "diff_size_rank",
+        "primary_fields": ["risk_percentile"],
+        "primary_basis": "population_relative_diff_size",
         "fallback_field": "fallback_band",
         "fallback_basis": "absolute_model_score_band",
         "score_role": "supporting_diff_shape_signal",
@@ -115,7 +120,7 @@ def change_risk_scales() -> list[dict[str, Any]]:
             "measures": "rank of the diff-shape score among sampled recent commits",
             "deterministic": True,
             "calibration": {
-                "status": "benchmarked",
+                "status": "not_applicable",
                 "source": "live repository baseline",
                 "population": "sampled recent commits after the same filters",
             },
@@ -126,22 +131,22 @@ def change_risk_scales() -> list[dict[str, Any]]:
             "kind": "classification",
             "unit": "category",
             "range": None,
-            "measures": "repo-relative review-priority tercile",
+            "measures": "repo-relative tercile of diff size and spread, not a verdict",
             "deterministic": True,
             "thresholds": {
                 "moderate_percentile": REVIEW_PRIORITY_MODERATE_PERCENTILE,
                 "high_percentile": REVIEW_PRIORITY_HIGH_PERCENTILE,
             },
-            "authoritative": True,
+            "authoritative": False,
         },
         {
             "field": "classification",
             "kind": "classification_label",
             "unit": "category",
             "range": None,
-            "measures": "human-facing label for review_priority",
+            "measures": "human-facing label for review_priority: a diff-size tercile",
             "deterministic": True,
-            "authoritative": True,
+            "authoritative": False,
         },
         {
             "field": "fallback_band",
@@ -179,7 +184,7 @@ def change_risk_scales() -> list[dict[str, Any]]:
             "measures": "rank of fix-history density among sampled recent commits",
             "deterministic": True,
             "calibration": {
-                "status": "benchmarked",
+                "status": "not_applicable",
                 "source": "live repository baseline",
                 "population": "sampled recent commits after the same filters",
             },
@@ -283,7 +288,22 @@ def structural_impact_contract(score: float, *, full_scale: bool = False) -> dic
                     "note": (
                         "Unbounded exponentially-decayed sum of per-commit churn "
                         "(halflife 180 d); each commit contributes up to 3.0. "
-                        "Use churn_percentile for a normalised 0-1 rank."
+                        "Grows with commit velocity, so it ranks files within one "
+                        "repository and does not compare across repositories. "
+                        "Use direct_risks.churn_percentile for a normalised 0-1 rank."
+                    ),
+                },
+                "direct_risks.churn_percentile": {
+                    "kind": "repo_relative_rank",
+                    "unit": "percentile",
+                    "range": {"minimum": 0.0, "maximum": 1.0},
+                    "note": (
+                        "The rank of direct_risks.temporal_hotspot among this "
+                        "repository's files. Comparable across repositories as a "
+                        "rank and not as activity: 0.9 in a dormant repository and "
+                        "0.9 in a fast one describe very different absolute churn. "
+                        "Reported beside the score, not folded into it -- "
+                        "structural_score keeps the raw multiplier."
                     ),
                 },
                 "direct_risks.centrality": {

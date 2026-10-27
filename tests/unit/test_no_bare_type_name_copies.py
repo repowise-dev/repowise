@@ -15,7 +15,7 @@ over the whole tree it would match hundreds of legitimate uses and mean nothing.
 
 Ceiling: string shape only. A copy that reaches for ``re``, splits on a
 separator held in a variable, or navigates the syntax tree instead of the text
-stays invisible — the per-language head extractors in ``parser_helpers.py`` are
+stays invisible — the per-language head extractors in ``lang_helpers/type_heads.py`` are
 node walks and are deliberately out of reach. It catches the shape that
 actually recurred here.
 
@@ -54,8 +54,13 @@ _SCOPE = (
     _INGESTION / "framework_edges",
     _INGESTION / "languages",
     _INGESTION / "parser_helpers.py",
+    _INGESTION / "lang_helpers",
     _INGESTION / "type_ref_resolution.py",
     _INGESTION / "call_resolver.py",
+    _INGESTION / "call_overload_selection.py",
+    _INGESTION / "call_barrel_forwarding.py",
+    _INGESTION / "call_inheritance.py",
+    _INGESTION / "call_receiver_typing",
     _INGESTION / "heritage_resolver.py",
     # Holds the shared symbol-ID splitter both resolvers used to keep a copy
     # of; in scope so moving it did not move it out of reach.
@@ -71,11 +76,20 @@ _KNOWN: dict[str, int] = {
     # Splits our own `path::Class::method` symbol IDs, which we mint. The
     # separator is ours rather than the language's, so the shared helper would
     # be answering about a type where these ask about an ID. `models.py` holds
-    # the one both resolvers used to duplicate. Six of `call_resolver.py`'s
-    # eight are symbol IDs; the other two are both an import's module path,
-    # which is a module name and not a type: one takes its tail and one takes
-    # its head, to ask whether the package it names is one of ours.
-    _PREFIX + "call_resolver.py": 8,
+    # the one both resolvers used to duplicate. In each call resolver module
+    # one site is an import's module path, which is a module name and not a
+    # type: `call_receiver_typing/__init__.py` takes its tail and `call_resolver.py`
+    # its head, to ask whether the package it names is one of ours. The rest
+    # are symbol IDs, except one `call_receiver_typing/__init__.py` site that walks a
+    # dotted receiver (`this.a.b`) hop by hop: an instance path, where every
+    # segment is a variable or a field and none is discarded, and the `go.py` one that
+    # reads the head of a go return type (`pkg.T`) to find the package the
+    # callee's file imports as `pkg`; its tail comes from the shared helper.
+    _PREFIX + "call_resolver.py": 3,
+    # Symbol IDs: a type node's file and name, and a method's enclosing class.
+    _PREFIX + "call_inheritance.py": 3,
+    _PREFIX + "call_receiver_typing/__init__.py": 3,
+    _PREFIX + "call_receiver_typing/go.py": 1,
     _PREFIX + "models.py": 1,
     # Reads the head to decide whether taking a bare name is safe at all: a
     # qualifier that is a type rather than a package must not be discarded.
@@ -87,6 +101,13 @@ _KNOWN: dict[str, int] = {
     _PREFIX + "dynamic_hints/swift.py": 1,
     # Splits an import statement's package path, not a type reference.
     _PREFIX + "languages/jvm_same_package.py": 1,
+    # Splits a module-path string (`"pkg.mod.Name"`) into the module it loads
+    # and the attribute it reads; the head is a module path, not a qualifier.
+    _PREFIX + "dynamic_hints/python_imports.py": 1,
+    # Qualifies a PHP name against its `use` alias (the HEAD segment) and
+    # splits an FQN into the namespace it indexes by and the class: it asks
+    # which namespace, the opposite end from the shared helper.
+    _PREFIX + "languages/php_same_namespace.py": 2,
     # Takes the head of a URLconf's `views.detail` to reach the Python module
     # declaring the view. The trailing segment is the view function and the
     # head is a module path, so neither end is a type.
@@ -99,6 +120,10 @@ _KNOWN: dict[str, int] = {
     _PREFIX + "framework_edges/rust.py": 1,
     _PREFIX + "framework_edges/go.py": 1,
     _PREFIX + "framework_edges/flask.py": 1,
+    # Takes the head of an `import a.b` path (twice: the module's bound names and
+    # a test body rebinding a parameter): the name the import binds, a module
+    # name, not a type.
+    _PREFIX + "framework_edges/pytest_edges.py": 2,
     # Takes the qualifier HEAD of `OrderHandlers.GetOrder` to reach the
     # declaring type. It does want a type, but the shared helper returns the
     # trailing segment, which is the member — the opposite end, the same reason
@@ -110,9 +135,7 @@ _KNOWN: dict[str, int] = {
     _PREFIX + "framework_edges/jakarta.py": 2,
     _PREFIX + "framework_edges/micronaut.py": 2,
     _PREFIX + "framework_edges/spring.py": 4,
-    _PREFIX + "framework_edges/laravel.py": 1,
     _PREFIX + "parser_helpers.py": 1,
-    _PREFIX + "languages/go_interface_satisfaction.py": 1,
 }
 
 # Builtin-type lists are language identity data and belong on the spec beside

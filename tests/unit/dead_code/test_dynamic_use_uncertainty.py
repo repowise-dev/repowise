@@ -35,7 +35,10 @@ from repowise.core.analysis.dead_code import (
     DeadCodeAnalyzer,
     DeadCodeKind,
 )
-from repowise.core.analysis.dead_code.risk_factors import RISK_CAP_CONFIDENCE
+from repowise.core.analysis.dead_code.risk_factors import (
+    RISK_CAP_CONFIDENCE,
+    UNPROVEN_EXPORT_CONFIDENCE,
+)
 from tests.unit.dead_code._helpers import _build_graph, _old_date
 
 _EXPORT_ONLY = {
@@ -160,8 +163,8 @@ def test_registry_target_in_dynamic_package_is_downgraded_not_deletion_ready():
 
 
 def test_control_without_dynamic_machinery_keeps_high_confidence():
-    """Same-named symbol in a clean package: the clamp is per-package, and a
-    genuinely unused export still reads as deletion-ready."""
+    """Same-named symbol in a clean package: the clamp is per-package, so a
+    genuinely unused export keeps its own verdict."""
     graph = _registry_graph()
     source_map = {
         "pkg/loader.py": _LOADER_SRC.encode(),
@@ -171,8 +174,8 @@ def test_control_without_dynamic_machinery_keeps_high_confidence():
     report = _analyzer(graph, source_map=source_map).analyze(dict(_EXPORT_ONLY))
 
     control = _export(report, "XmlSerializer", file_path="other/serializers.py")
-    assert control.confidence == pytest.approx(0.7)
-    assert control.safe_to_delete
+    # No importer names its symbols, so it keeps the unproven tier, uncapped.
+    assert control.confidence == pytest.approx(UNPROVEN_EXPORT_CONFIDENCE)
 
 
 def test_callback_registration_is_downgraded():
@@ -228,8 +231,8 @@ def test_callback_registration_is_downgraded():
     assert not dynamic.safe_to_delete
 
     control = _export(report, "flush_cache", file_path="plain/helpers.py")
-    assert control.confidence == pytest.approx(0.7)
-    assert control.safe_to_delete
+    # No importer names its symbols, so it keeps the unproven tier, uncapped.
+    assert control.confidence == pytest.approx(UNPROVEN_EXPORT_CONFIDENCE)
 
 
 def test_resolved_dynamic_edge_still_skips_the_symbol():
@@ -320,8 +323,8 @@ def test_refutation_is_identity_aware_across_same_named_symbols():
     assert "JsonSerializer" in names  # only the unpinned sibling remains
     finding = _export(report, "JsonSerializer", file_path="other/serializers.py")
     # ...and the sibling keeps its ordinary verdict (stale-commit promotion).
-    assert finding.confidence == pytest.approx(0.7)
-    assert finding.safe_to_delete
+    # No importer names its symbols, so it keeps the unproven tier, uncapped.
+    assert finding.confidence == pytest.approx(UNPROVEN_EXPORT_CONFIDENCE)
 
 
 def test_marker_only_downgrades_and_edge_only_skips():

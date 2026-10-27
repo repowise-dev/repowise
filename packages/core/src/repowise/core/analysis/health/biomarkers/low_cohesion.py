@@ -17,6 +17,7 @@ signal), so this biomarker simply doesn't fire there — never falsely.
 
 from __future__ import annotations
 
+from ..complexity.class_analysis import cohesion_applies
 from ..models import Severity
 from .base import BiomarkerResult, FileContext
 
@@ -31,21 +32,15 @@ class LowCohesionDetector:
 
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
         out: list[BiomarkerResult] = []
+        if not cohesion_applies(ctx.file_path, ctx.language):
+            return out
         for cls in ctx.class_metrics:
             if cls.lcom4 < 2 or cls.method_count < self._MIN_METHODS:
                 continue
-
-            if cls.lcom4 >= 4 and cls.method_count >= 15:
-                severity = Severity.CRITICAL
-            elif cls.lcom4 >= 3 or cls.method_count >= 20:
-                severity = Severity.HIGH
-            else:
-                severity = Severity.MEDIUM
-
             out.append(
                 BiomarkerResult(
                     biomarker_type=self.name,
-                    severity=severity,
+                    severity=_severity(cls.lcom4, cls.method_count),
                     function_name=cls.name,
                     line_start=cls.start_line,
                     line_end=cls.end_line,
@@ -63,6 +58,14 @@ class LowCohesionDetector:
                 )
             )
         return out
+
+
+def _severity(lcom4: int, method_count: int) -> Severity:
+    if lcom4 >= 4 and method_count >= 15:
+        return Severity.CRITICAL
+    if lcom4 >= 3 or method_count >= 20:
+        return Severity.HIGH
+    return Severity.MEDIUM
 
 
 BIOMARKER = LowCohesionDetector()

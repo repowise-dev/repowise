@@ -27,17 +27,11 @@ import re
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
+from repowise.core.workspace.origins import ContractOrigin
+
 from ..langs import RUBY
-from .client_calls import (
-    RUBY_SYNTAX,
-    ClientCallMatch,
-    call_arguments,
-    consumer_contracts,
-    match_paren,
-    method_from_argument,
-    split_first_arg,
-    string_constants,
-)
+from ..strings import RUBY_SYNTAX, call_arguments, match_paren, split_first_arg, string_constants
+from .client_calls import ClientCallMatch, consumer_contracts, method_from_argument
 
 if TYPE_CHECKING:
     from repowise.core.workspace.contracts import Contract
@@ -58,8 +52,6 @@ _NET_HTTP_RE = re.compile(rf"\bNet::HTTP\.(get_response|{_VERBS})\b")
 _REQUEST_OBJECT_RE = re.compile(r"\.request\s*\(\s*(Net::HTTP::\w+)\.new\s*\(")
 
 _FARADAY_NEW_RE = re.compile(r"(?<![.\w])(@?[a-z_]\w*)\s*=\s*Faraday\.new\b")
-
-_CONNECTION_CONFIDENCE = 0.65
 
 
 def _first_argument(content: str, end: int) -> str | None:
@@ -143,13 +135,14 @@ def faraday_connection_calls(content: str) -> Iterator[ClientCallMatch]:
             url=args[0],
             offset=m.start(),
             method=m.group(2).upper(),
-            confidence=_CONNECTION_CONFIDENCE,
+            origin=ContractOrigin.NAME_HEURISTIC,  # read off a connection whose base is unread
         )
 
 
 class RubyClientsDialect:
     name = "ruby-clients"
     extensions = RUBY
+    requires = ("HTTParty", "RestClient", "Faraday", "Net::HTTP")
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content

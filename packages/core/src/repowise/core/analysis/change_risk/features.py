@@ -17,14 +17,14 @@ offline calibration. Two entry points:
 from __future__ import annotations
 
 import math
-import subprocess
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from pathlib import Path
 
-import pathspec
+from ...ingestion.git_indexer.fix_rule import is_typed_fix_commit
+from ..changed_lines import untracked_diffs
 
-from ...ingestion.git_indexer._constants import is_fix_commit
+# All but path_filter are re-exported: callers across the package import them from here.
+from ..git_cli import GIT_TIMEOUT_SECONDS, _git, path_filter, split_revspec  # noqa: F401
 
 #: ``ChangeFeatures.ref`` for a score of the uncommitted change. Not a revspec —
 #: it names the unit scored, in the same slot a sha or ``base..head`` occupies.
@@ -56,43 +56,20 @@ class ChangeFeatures:
     file_churn: tuple[tuple[str, int], ...] = ()
 
 
-# Generous ceiling: even a 200-commit numstat walk finishes in seconds. The
-# point is that a stuck git (lock contention, network filesystem) must fail
-# loud instead of hanging the caller's thread forever.
-GIT_TIMEOUT_SECONDS = 60
-
-
-def _git(args: list[str], cwd: str, *, check: bool = True) -> str:
-    # stdin=DEVNULL: on MCP stdio transport a child that inherits the JSON-RPC
-    # pipe handles can wedge the session (same failure mode _meta.py guards
-    # against). check=True so a bad revspec raises instead of yielding empty
-    # stdout, which used to score as a zero-feature "low risk" change.
-    proc = subprocess.run(
-        ["git", *args],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        stdin=subprocess.DEVNULL,
-        timeout=GIT_TIMEOUT_SECONDS,
-    )
-    if check and proc.returncode != 0:
-        raise subprocess.CalledProcessError(
-            proc.returncode, proc.args, output=proc.stdout, stderr=proc.stderr
-        )
-    return proc.stdout
+def revspec_head(revspec: str | None) -> str:
+    """The revision a change ends at: a range's head, else the revision itself."""
+    parts = split_revspec(revspec) if revspec else None
+    return parts[2] if parts else revspec or "HEAD"
 
 
 def _accumulate_numstat(
-    numstat: str, extensions: tuple[str, ...], exclude_patterns: tuple[str, ...]
+    numstat: str, counts: Callable[[str], bool]
 ) -> tuple[int, int, int, set[str], set[str], list[int], list[tuple[str, int]]]:
     la = ld = nf = 0
     dirs: set[str] = set()
     subs: set[str] = set()
     per_file: list[int] = []
     files: list[tuple[str, int]] = []
-    exclude_spec = pathspec.PathSpec.from_lines("gitwildmatch", exclude_patterns)
     for row in numstat.strip().split("\n"):
         if not row:
             continue
@@ -100,9 +77,7 @@ def _accumulate_numstat(
         if len(parts) != 3:
             continue
         a_raw, d_raw, path = parts
-        if extensions and not path.endswith(extensions):
-            continue
-        if exclude_spec.match_file(path):
+        if not counts(path):
             continue
         a = int(a_raw) if a_raw.isdigit() else 0
         d = int(d_raw) if d_raw.isdigit() else 0
@@ -240,34 +215,18 @@ def change_features_from_stored(
 
 
 def working_tree_is_dirty(repo_path: str) -> bool:
-    """Whether the checkout holds staged, unstaged or untracked changes."""
+    """Whether the checkout holds staged, unstaged or untracked changes.
+
+    The repo's own ``.repowise/`` does not count: it is repowise's state, never
+    a change to the code, and a fresh ``init`` leaves it untracked.
+    """
     # check=False so a non-repo path answers "not dirty" rather than raising:
     # the caller falls back to scoring a committed ref, which then reports the
     # real git error with its own revspec in the message.
-    return bool(_git(["status", "--porcelain"], repo_path, check=False).strip())
-
-
-#: Untracked files above this are counted as a touched file with zero added
-#: lines rather than read into memory to be counted. A multi-megabyte untracked
-#: blob is a build artifact, not authored code, and its exact line count would
-#: not change the risk band.
-_UNTRACKED_READ_LIMIT = 2_000_000
-
-
-def _untracked_additions(repo_path: str, path: str) -> int:
-    """Line count of an untracked file, matching what git would call additions."""
-    target = Path(repo_path) / path
-    try:
-        if target.stat().st_size > _UNTRACKED_READ_LIMIT:
-            return 0
-        data = target.read_bytes()
-    except OSError:
-        return 0
-    if b"\x00" in data:
-        return 0  # binary: git reports "-" in numstat, which we count as 0
-    if not data:
-        return 0
-    return data.count(b"\n") + (0 if data.endswith(b"\n") else 1)
+    # The exclude pathspec is relative to repo_path, so a package's .repowise/
+    # inside a larger git repo is the one left out.
+    status = _git(["status", "--porcelain", "--", ":(exclude).repowise"], repo_path, check=False)
+    return bool(status.strip())
 
 
 def extract_worktree_features(
@@ -275,31 +234,28 @@ def extract_worktree_features(
     *,
     extensions: tuple[str, ...] = (),
     exclude_patterns: tuple[str, ...] = (),
+    include_paths: tuple[str, ...] = (),
 ) -> ChangeFeatures:
     """Extract features for the uncommitted change: the diff against ``HEAD``.
 
     Covers staged and unstaged edits to tracked files plus untracked files,
     which is what a caller who just wrote code and asked "how risky is this?"
     means by "this". Untracked files are invisible to ``git diff HEAD``, so they
-    are folded in as pure additions.
+    are folded in as pure additions, from the same listing the changed lines
+    and the health delta read.
 
     Experience is the configured author's prior commit count at ``HEAD``, and
     ``is_fix`` is always false — an uncommitted change has no subject to read.
     """
-    # Both walks run from the repo root: ``git diff`` reports root-relative
-    # paths whatever the cwd, but ``ls-files --others`` is scoped to the cwd and
-    # reports relative to it, so from a subdirectory the two halves would use
-    # different path roots and only half would match a root-anchored exclude.
+    # Both walks run from the repo root, where untracked paths are read from.
     root = _git(["rev-parse", "--show-toplevel"], repo_path, check=False).strip() or repo_path
     numstat = _git(["diff", "--numstat", "HEAD"], root, check=False)
-    untracked = _git(["ls-files", "--others", "--exclude-standard"], root, check=False)
-    rows = [
-        f"{_untracked_additions(root, path)}\t0\t{path}" for path in untracked.splitlines() if path
-    ]
+    untracked = untracked_diffs(root, exclude_patterns)
+    rows = [f"{len(diff.new_lines)}\t0\t{path}" for path, diff in untracked.items()]
     if rows:
         numstat = numstat.rstrip("\n") + "\n" + "\n".join(rows)
     la, ld, nf, dirs, subs, per_file, files = _accumulate_numstat(
-        numstat, extensions, exclude_patterns
+        numstat, path_filter(extensions, exclude_patterns, include_paths)
     )
     author = _git(["config", "user.name"], root, check=False).strip()
     return ChangeFeatures(
@@ -324,12 +280,13 @@ def extract_commit_features(
     *,
     extensions: tuple[str, ...] = (),
     exclude_patterns: tuple[str, ...] = (),
+    include_paths: tuple[str, ...] = (),
 ) -> ChangeFeatures:
     """Extract change features for a single commit.
 
     *extensions* optionally restricts the counted files to a set of suffixes
-    (e.g. ``(".py",)``); *exclude_patterns* uses gitignore syntax to omit
-    changed paths. Empty filters count every changed file.
+    (e.g. ``(".py",)``); *exclude_patterns* and *include_paths* use gitignore
+    syntax to omit or keep changed paths. Empty filters count every changed file.
     """
     meta = _git(["show", "-s", "--format=%an%x00%s", sha], repo_path).strip("\n")
     author, _, subject = meta.partition("\x00")
@@ -339,7 +296,7 @@ def extract_commit_features(
     # No effect on a non-merge commit.
     numstat = _git(["show", sha, "--numstat", "--format=", "-m", "--first-parent"], repo_path)
     la, ld, nf, dirs, subs, per_file, files = _accumulate_numstat(
-        numstat, extensions, exclude_patterns
+        numstat, path_filter(extensions, exclude_patterns, include_paths)
     )
     # check=False: a root commit has no parent and that is not an error.
     parent = _git(["rev-parse", "--verify", "--quiet", f"{sha}^"], repo_path, check=False).strip()
@@ -352,7 +309,7 @@ def extract_commit_features(
         ns=len(subs),
         entropy=_entropy(per_file),
         exp=exp,
-        is_fix=is_fix_commit(subject),
+        is_fix=is_typed_fix_commit(subject),
         author=author,
         subject=subject,
         ref=sha,
@@ -367,22 +324,24 @@ def extract_range_features(
     *,
     extensions: tuple[str, ...] = (),
     exclude_patterns: tuple[str, ...] = (),
+    include_paths: tuple[str, ...] = (),
+    sep: str = "..",
 ) -> ChangeFeatures:
     """Extract features for a ``base..head`` range scored as one change.
 
-    Diff size/diffusion come from the cumulative ``base..head`` diff; author and
-    fix-flag come from the head commit; experience is the head author's prior
-    commit count at *base*.
+    Diff size/diffusion come from the cumulative ``base{sep}head`` diff (``...``
+    diffs from the merge-base); author and fix-flag come from the head commit;
+    experience is the head author's prior commit count at *base*.
     """
-    numstat = _git(["diff", "--numstat", f"{base}..{head}"], repo_path)
+    numstat = _git(["diff", "--numstat", f"{base}{sep}{head}"], repo_path)
     la, ld, nf, dirs, subs, per_file, files = _accumulate_numstat(
-        numstat, extensions, exclude_patterns
+        numstat, path_filter(extensions, exclude_patterns, include_paths)
     )
     meta = _git(["show", "-s", "--format=%an%x00%s", head], repo_path).strip("\n")
     author, _, subject = meta.partition("\x00")
     # Any fix commit in the range marks the change as a fix (informational).
     range_subjects = _git(["log", "--format=%s", f"{base}..{head}"], repo_path)
-    is_fix = any(is_fix_commit(s) for s in range_subjects.split("\n") if s)
+    is_fix = any(is_typed_fix_commit(s) for s in range_subjects.split("\n") if s)
     exp = _author_experience(repo_path, author, base)
     return ChangeFeatures(
         la=la,
@@ -395,6 +354,6 @@ def extract_range_features(
         is_fix=is_fix,
         author=author,
         subject=subject,
-        ref=f"{base}..{head}",
+        ref=f"{base}{sep}{head}",
         file_churn=tuple(files),
     )

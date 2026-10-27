@@ -21,9 +21,22 @@ export function parseDate(date: Timestamp): Date {
   return new Date(date);
 }
 
-/** Format a number with commas: 1234567 → "1,234,567" */
+const NUMBER_FORMAT = new Intl.NumberFormat("en-US");
+
+/** Format a number with commas: 1234567 → "1,234,567".
+ *  Pinned to en-US like `formatDate`: the runtime default differs between the
+ *  server and the browser (en-IN groups 1261599 as 12,61,599), which broke
+ *  hydration on every server-rendered figure over 99,999. */
 export function formatNumber(n: number): string {
-  return new Intl.NumberFormat().format(n);
+  return NUMBER_FORMAT.format(n);
+}
+
+/** English ordinal of an integer: 1 → "1st", 2 → "2nd", 3 → "3rd", 11 → "11th", 93 → "93rd". */
+export function ordinal(n: number): string {
+  const tens = Math.abs(n) % 100;
+  const suffix =
+    tens >= 11 && tens <= 13 ? "th" : (["th", "st", "nd", "rd"][Math.abs(n) % 10] ?? "th");
+  return `${n}${suffix}`;
 }
 
 /** Format large counts compactly: 1234567 → "1.2M", 98432 → "98.4K", 999 → "999" */
@@ -119,7 +132,14 @@ export function formatLOC(n: number): string {
   return String(n);
 }
 
-/** Truncate a file path keeping as many trailing components as fit: src/very/long/path/file.py → …/long/path/file.py */
+/**
+ * Truncate a file path keeping as many trailing components as fit:
+ * src/very/long/path/file.py → …/long/path/file.py
+ *
+ * @deprecated Render paths with `<FilePath>` (`shared/file-path`), which clips
+ * by the box width and keeps the full path in the tooltip and accessible name.
+ * Kept for plain-string contexts and existing callers.
+ */
 export function truncatePath(path: string, maxChars = 60): string {
   if (path.length <= maxChars) return path;
   const parts = path.split("/");
@@ -140,7 +160,7 @@ export function truncatePath(path: string, maxChars = 60): string {
  * basename is already unique keeps it. Each path grows by one trailing segment
  * per round until it is unique or has no segments left.
  *
- * Prefer {@link truncatePath} for a path shown on its own; this is for many
+ * Prefer `<FilePath>` for a path shown on its own; this is for many
  * paths displayed side by side, where a bare basename can be ambiguous.
  */
 export function disambiguateBasenames(paths: Iterable<string>): Map<string, string> {

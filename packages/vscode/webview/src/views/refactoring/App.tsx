@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { ArrowLeft, Layers, Sparkles } from "lucide-react";
+import { ApiError, EmptyState, OrbLoader, ORB_STATE } from "@repowise-dev/ui/shared";
 import {
   CONFIDENCE_DOT,
   CONFIDENCE_LABEL,
@@ -99,18 +100,23 @@ function OpportunityDetailView({
     [opportunityId, refreshToken],
   );
 
-  if (state.status === "loading") return <CenteredNote>Loading opportunity…</CenteredNote>;
+  if (state.status === "loading") return <LoadingNote label="Loading opportunity" />;
   if (state.status === "error") {
     return <ErrorNote title="Could not load the opportunity.">{state.message}</ErrorNote>;
   }
   const detail = state.data;
-  if (!detail.resolved) {
+  if (!detail.found) {
     return (
-      <ErrorNote title="Opportunity unavailable.">
-        {detail.model_state?.state === "stale_model"
-          ? "It was written by an older analysis model. Re-index and open it again."
-          : "It may have been resolved by a later analysis."}
-      </ErrorNote>
+      <div className="p-6">
+        <EmptyState
+          title="Opportunity unavailable"
+          description={
+            detail.model_state?.state === "stale_model"
+              ? "It was written by an older analysis model. Re-index and open it again."
+              : "It may have been resolved by a later analysis."
+          }
+        />
+      </div>
     );
   }
 
@@ -134,7 +140,7 @@ function OpportunityDetailView({
         {CONFIDENCE_LABEL[detail.confidence]} confidence
       </p>
       {anyRelocated ? (
-        <p className="mt-3 rounded-md border border-[var(--color-caution)]/40 bg-[var(--color-caution)]/10 px-3 py-2 text-[12.5px] text-[var(--color-text-secondary)]">
+        <p className="mt-3 rounded-md border border-[var(--color-caution)]/40 bg-[var(--color-caution)]/10 px-3 py-2 text-xs text-[var(--color-text-secondary)]">
           {detail.ordering_note ??
             "A step below is moved by an earlier one, so its file and lines say where the symbol was. Find it again before applying it."}
         </p>
@@ -147,15 +153,15 @@ function OpportunityDetailView({
               onClick={() => onOpenStep(step.plan_id)}
               className="w-full rounded-lg border border-[var(--color-border-default)] px-3.5 py-3 text-left hover:border-[var(--color-border-hover)]"
             >
-              <span className="text-[12.5px] text-[var(--color-text-secondary)]">
+              <span className="text-xs text-[var(--color-text-secondary)]">
                 {String(i + 1).padStart(2, "0")} · {typeMeta(step.refactoring_type).label} ·{" "}
                 {step.applicability.classification === "mechanical" ? "Mechanical" : "Judgment"}
                 {step.relocated_by ? " · moved by an earlier step" : ""}
               </span>
-              <span className="mt-1 block break-all font-mono text-[13px] font-medium text-[var(--color-text-primary)]">
+              <span className="mt-1 block break-all font-mono text-xs font-medium text-[var(--color-text-primary)]">
                 {step.target_symbol || typeMeta(step.refactoring_type).label}
               </span>
-              <span className="mt-0.5 block break-all font-mono text-[11px] text-[var(--color-text-tertiary)]">
+              <span className="mt-0.5 block break-all font-mono text-xs text-[var(--color-text-tertiary)]">
                 {step.file_path}
                 {step.line_start ? `:${step.line_start}` : ""}
               </span>
@@ -250,7 +256,7 @@ function PlanDetailView({ host, planId, refreshToken, onBack }: PlanDetailViewPr
   const state = useAsync(() => host.api.refactoringPlan(planId), [planId, refreshToken]);
   const onFileClick = useFileClickHandler(host);
 
-  if (state.status === "loading") return <CenteredNote>Loading plan…</CenteredNote>;
+  if (state.status === "loading") return <LoadingNote label="Loading plan" />;
   if (state.status === "error") {
     return <ErrorNote title="Could not load this refactoring plan.">{state.message}</ErrorNote>;
   }
@@ -476,7 +482,7 @@ function PlanListView({ host, filePath, refreshToken, onOpen }: PlanListViewProp
   );
 
   if (state.status === "loading") {
-    return <CenteredNote>Loading refactoring opportunities…</CenteredNote>;
+    return <LoadingNote label="Loading refactoring opportunities" />;
   }
   if (state.status === "error") {
     return <ErrorNote title="Could not load refactoring opportunities.">{state.message}</ErrorNote>;
@@ -485,11 +491,15 @@ function PlanListView({ host, filePath, refreshToken, onOpen }: PlanListViewProp
   const page = state.data;
   if (page.items.length === 0) {
     return (
-      <CenteredNote>
-        {filePath
-          ? `No refactoring opportunities for ${filePath}.`
-          : "No refactoring opportunities found."}
-      </CenteredNote>
+      <div className="p-6">
+        <EmptyState
+          title={
+            filePath
+              ? `No refactoring opportunities for ${filePath}`
+              : "No refactoring opportunities found"
+          }
+        />
+      </div>
     );
   }
 
@@ -567,19 +577,14 @@ function Badge({
   );
 }
 
-function CenteredNote({ children }: { children: ReactNode }) {
+function LoadingNote({ label }: { label: string }) {
   return (
-    <div className="flex h-full items-center justify-center px-6 text-center text-[15px] text-[var(--color-text-tertiary)]">
-      {children}
+    <div className="flex h-full items-center justify-center">
+      <OrbLoader state={ORB_STATE.analysing} size={64} label={label} />
     </div>
   );
 }
 
-function ErrorNote({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <div className="m-6 rounded-lg border border-[var(--color-error)] p-4 text-[15px]">
-      <p className="font-medium text-[var(--color-error)]">{title}</p>
-      <p className="mt-2 text-[var(--color-text-secondary)]">{children}</p>
-    </div>
-  );
+function ErrorNote({ title, children }: { title: string; children: string }) {
+  return <ApiError className="m-6" title={title} message={children} />;
 }
