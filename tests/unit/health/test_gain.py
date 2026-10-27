@@ -135,3 +135,23 @@ def test_opportunity_without_shares_sums_its_steps():
     rows = [(_plan("a", None, 0.4), "p0")]
     assert _recoverable(rows, {"p0"}, findings) == 0.4
     assert _recoverable(rows, {"p0"}, None) == 0.4
+
+
+def test_opportunity_prices_only_credited_steps_with_a_share():
+    findings, _ = _scored(
+        *(_result("complex_method", Severity.CRITICAL, f"f{i}", ccn=60) for i in range(3))
+    )
+    rows = [(_plan("f0", 1.0, 0.3), "p0"), (_plan("f1", 0.0, 0.3), "p1"), (_plan("f2", 1.0, 0.3), "p2")]
+    only_f0 = removal_gain(findings, [(findings[0], 1.0)])
+    # p2 is not credited and p1 frees nothing.
+    assert _recoverable(rows, {"p0", "p1"}, findings) == only_f0 > 0
+    # No findings to rescore: the credited steps' own gains are summed.
+    assert _recoverable(rows, {"p0", "p1"}, None) == pytest.approx(0.6)
+
+
+def test_one_step_without_a_share_sums_the_whole_opportunity():
+    findings, _ = _scored(
+        *(_result("complex_method", Severity.CRITICAL, f"f{i}", ccn=60) for i in range(2))
+    )
+    rows = [(_plan("f0", 1.0, 0.3), "p0"), (_plan("f1", None, 0.5), "p1")]
+    assert _recoverable(rows, {"p0", "p1"}, findings) == pytest.approx(0.8)
