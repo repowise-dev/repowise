@@ -111,10 +111,11 @@ def kotlin_synthetic_symbols(
                         start_line=line, end_line=line,
                         file_info=file_info, parent_name=class_name,
                     ))
-                # copy(...): the primary ctor's params, each defaulting to its
-                # current value, so ``copy(x = 1)`` passes any subset.
+                # copy(...): the primary ctor's params. Their implicit defaults
+                # are left out: a bare ``copy(..)`` in a receiver lambda would
+                # then reach any imported data class's copy by name.
                 copy_params = ", ".join(
-                    f"{n}: {t or 'Any'} = this.{n}" for n, t in components
+                    f"{n}: {t or 'Any'}" for n, t in components
                 )
                 out.append(build_synthetic_symbol(
                     name="copy", kind="method",

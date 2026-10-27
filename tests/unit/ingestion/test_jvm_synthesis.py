@@ -91,7 +91,7 @@ class TestKotlinDataClass:
         pf = parse_file(_fi("P.kt", f, "kotlin"), src.encode("utf-8"))
         sigs = {s.name: s.signature for s in pf.symbols}
         assert sigs["component2"] == "function component2() -> Norm?"
-        assert sigs["copy"] == "function copy(x: Int = this.x, n: Norm? = this.n) -> P"
+        assert sigs["copy"] == "function copy(x: Int, n: Norm?) -> P"
         assert sigs["equals"] == "function equals(other: Any?) -> Boolean"
         assert sigs["valueOf"] == "function valueOf(value: String) -> Color"
 
@@ -105,7 +105,7 @@ class TestKotlinDataClass:
             "    fun size(): Int = 1\n"
             "}\n\n"
             "fun use(point: Point) {\n"
-            "    point.copy(x = 1).len()\n"
+            "    point.copy(x = 1, norm = Norm()).len()\n"
             "    point.component2().size()\n"
             "}\n"
         )
