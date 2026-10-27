@@ -444,7 +444,7 @@ def _homepage_names(stem: str, comments: str) -> bool:
     """Whether a URL in the comments is the file's home page (exprtk.hpp's
     ``partow.net/programming/exprtk/``)."""
     for url in _URL_RE.findall(comments):
-        segments = [_squash(s) for s in url.split("/")[3:]]
+        segments = {_squash(s) for s in url.split("/")[3:]}
         if stem in segments and _SOURCE_LINK_SEGMENTS.isdisjoint(segments):
             return True
     return False
@@ -484,18 +484,22 @@ def _third_party_header(
     stem = _squash(PurePosixPath(name).stem)
     if names_file and (len(stem) < _MIN_SELF_NAME or stem not in _squash(comments)):
         return False
+    if not comments or not _LICENSE_RE.search(comments):
+        return False
+    if not _has_banner(header, comments, stem, names_file):
+        return False
+    return not (project and _squash(project) in _squash(comments))
+
+
+def _has_banner(header: str, comments: str, stem: str, names_file: bool) -> bool:
     # The comment prefix is stripped from *comments*, so a preserved ``/*!``
     # opener is read from the raw head.
     if header.lstrip().startswith("/*!"):
-        banner = True
-    elif names_file:
+        return True
+    if names_file:
         # "protocol v1.2" in a first-party header is not a release banner.
-        banner = _homepage_names(stem, comments)
-    else:
-        banner = bool(_BANNER_RE.search(_LICENSE_VERSION_RE.sub(" ", comments)))
-    if not comments or not _LICENSE_RE.search(comments) or not banner:
-        return False
-    return not (project and _squash(project) in _squash(comments))
+        return _homepage_names(stem, comments)
+    return bool(_BANNER_RE.search(_LICENSE_VERSION_RE.sub(" ", comments)))
 
 
 # --------------------------------------------------------------------------
