@@ -5,8 +5,11 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass
 
+import click
+
 from repowise.cli.ci import CannotEvaluateError, cannot_evaluate, ci_notices, ci_revspec, repo_root
 from repowise.core.analysis.change_risk import ChangeRiskResult, score_live_change
+from repowise.core.git_refs import branch_change_range
 
 
 @dataclass(frozen=True)
@@ -30,6 +33,12 @@ def _resolve_subject(
             revspec = ci_revspec(str(repo_root(repo_path)), None)
         except CannotEvaluateError as exc:
             cannot_evaluate(fmt, exc.code, str(exc))
+    if revspec:
+        # ``main..feature`` after main moved would diff the two tips; read the
+        # branch's own change instead.
+        revspec, note = branch_change_range(str(repo_root(repo_path)), revspec)
+        if note and fmt == "table":
+            click.echo(note, err=True)
     return _Subject(repo_path, revspec, fmt, fail_above)
 
 

@@ -21,6 +21,7 @@ __all__ = [
     "PathRemoval",
     "ahead_behind",
     "ahead_behind_many",
+    "branch_change_range",
     "branch_with_path",
     "change_base",
     "changed_files",
@@ -327,6 +328,46 @@ def is_ancestor(repo_path: str, older: str, newer: str) -> bool | None:
     except (subprocess.TimeoutExpired, OSError):
         return None
     return True
+
+
+def branch_change_range(repo_path: str, revspec: str) -> tuple[str, str | None]:
+    """``(revspec to read, note)``: a two-dot range read as the branch's own change.
+
+    Rewrite ``A..B`` to ``A...B`` only when Git can establish that the
+    repository has complete history and ``A`` is not an ancestor of ``B``.
+    Preserve the original range for shallow clones or when Git cannot answer.
+    """
+    parts = split_revspec(revspec)
+    if parts is None or parts[1] != "..":
+        return revspec, None
+
+    base, _, head = parts
+
+    try:
+        shallow = _read(repo_path, ["rev-parse", "--is-shallow-repository"])
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+        return revspec, None
+
+    if shallow.strip() != "false":
+        return revspec, None
+
+    if is_ancestor(repo_path, base, head) is not False:
+        return revspec, None
+
+    try:
+        fork = _read(repo_path, ["merge-base", base, head])
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+        return revspec, None
+
+    if not fork:
+        return revspec, None
+
+    note = (
+        f"{base!r} has moved past the point {head!r} forked from ({fork[:12]}), so "
+        f"{revspec!r} was read as {base}...{head}: the branch's own change, not a "
+        "comparison of the two tips."
+    )
+    return f"{base}...{head}", note
 
 
 @dataclass(frozen=True)

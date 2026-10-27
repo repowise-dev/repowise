@@ -800,3 +800,116 @@ def test_top_driver_is_the_argmax_of_the_shown_contributions(features) -> None:
     assert risk.top_driver is not None
     assert risk.top_driver.contribution == max(d.contribution for d in shown)
     assert risk.top_driver in shown
+
+
+@pytest.fixture
+def diverged_repo(git_repo: Path) -> Path:
+    """``feature`` forks from main and adds one file, then main moves on."""
+    _git(["branch", "-M", "main"], git_repo)
+    _commit(git_repo, {"app.py": "def run():\n    return 1\n"}, "init app")
+    _git(["switch", "-qc", "feature"], git_repo)
+    _commit(git_repo, {"feature.py": "def feature():\n    return 2\n"}, "add feature")
+    _git(["switch", "-q", "main"], git_repo)
+    _commit(git_repo, {"app.py": "def run():\n    return 1\n\ndef stop():\n    return 0\n"}, "m1")
+    _commit(git_repo, {"billing.py": "def charge():\n    return 3\n"}, "m2")
+    return git_repo
+
+
+def test_branch_change_range_reads_a_moved_base_as_three_dots(diverged_repo: Path) -> None:
+    from repowise.core.git_refs import branch_change_range
+
+    spec, note = branch_change_range(str(diverged_repo), "main..feature")
+    assert spec == "main...feature"
+    assert note is not None and "main" in note and "feature" in note
+
+
+def test_branch_change_range_keeps_an_ancestor_base(diverged_repo: Path) -> None:
+    from repowise.core.git_refs import branch_change_range
+
+    _git(["switch", "-q", "feature"], diverged_repo)
+    _git(["rebase", "-q", "main"], diverged_repo)
+    assert branch_change_range(str(diverged_repo), "main..feature") == ("main..feature", None)
+
+
+@pytest.mark.parametrize("spec", ["main...feature", "feature", "main..nope", "nope..feature"])
+def test_branch_change_range_leaves_other_specs_alone(diverged_repo: Path, spec: str) -> None:
+    from repowise.core.git_refs import branch_change_range
+
+    assert branch_change_range(str(diverged_repo), spec) == (spec, None)
+
+
+def test_the_branchs_own_change_is_scored_once_main_moved(diverged_repo: Path) -> None:
+    from repowise.core.git_refs import branch_change_range
+
+    spec, _ = branch_change_range(str(diverged_repo), "main..feature")
+    features = score_live_change(str(diverged_repo), spec, baseline=0).features
+    assert features.nf == 1
+    assert [p for p, _ in features.file_churn] == ["feature.py"]
+
+
+def test_branch_change_range_preserves_two_dot_range_in_shallow_repo(
+    tmp_path: Path,
+) -> None:
+    import subprocess
+
+    from repowise.core.git_refs import branch_change_range
+
+    source = tmp_path / "source"
+    shallow = tmp_path / "shallow"
+    source.mkdir()
+
+    def git(cwd: Path, *args: str) -> None:
+        subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    git(source, "init", "-q", "-b", "main")
+    git(source, "config", "user.email", "test@example.com")
+    git(source, "config", "user.name", "test")
+
+    (source / "base.txt").write_text("base\n", encoding="utf-8")
+    git(source, "add", ".")
+    git(source, "commit", "-qm", "base")
+
+    git(source, "switch", "-qc", "feature")
+    (source / "feature.txt").write_text("feature\n", encoding="utf-8")
+    git(source, "add", ".")
+    git(source, "commit", "-qm", "feature")
+
+    git(source, "switch", "-q", "main")
+    (source / "main.txt").write_text("main change\n", encoding="utf-8")
+    git(source, "add", ".")
+    git(source, "commit", "-qm", "main moves")
+
+    git(
+        tmp_path,
+        "clone",
+        "-q",
+        "--depth=1",
+        "--no-local",
+        "--branch",
+        "feature",
+        str(source),
+        str(shallow),
+    )
+
+    git(shallow, "fetch", "-q", "--depth=1", "origin", "main:refs/heads/main")
+    assert (
+        subprocess.run(
+            ["git", "rev-parse", "--is-shallow-repository"],
+            cwd=shallow,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        == "true"
+    )
+
+    assert (
+        branch_change_range(str(shallow), "main..feature")
+        == ("main..feature", None)
+    )

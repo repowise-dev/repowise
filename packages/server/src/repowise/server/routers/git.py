@@ -38,6 +38,7 @@ from repowise.core.attribution import (
     commit_label,
 )
 from repowise.core.co_change import MIN_CO_CHANGE_SUPPORT, parse_partners
+from repowise.core.git_refs import branch_change_range
 from repowise.core.ingestion.git_indexer._constants import (
     EVOLUTION_CATEGORIES,
     classify_commit_category,
@@ -873,8 +874,12 @@ def get_risk_range(
     if not revision_exists(local_path, base) or not revision_exists(local_path, head):
         raise HTTPException(status_code=400, detail=f"Unknown revision in range {base!r}..{head!r}")
 
+    # A base that moved past the fork point would diff the two tips; read the branch's change.
+    _, range_note = branch_change_range(local_path, f"{base}..{head}")
     try:
-        features = extract_range_features(local_path, base, head)
+        features = extract_range_features(
+            local_path, base, head, sep="..." if range_note else ".."
+        )
     except Exception as exc:
         raise HTTPException(
             status_code=400, detail=f"Could not read range {base!r}..{head!r}: {exc}"
