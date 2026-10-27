@@ -385,7 +385,8 @@ class LanguageStrategiesMixin:
             sym_id = candidates[0][1]
         else:
             return None
-        if sym_id == caller_id:
+        # The qualifier names the caller's own class: recursion, when nothing else answers to the id.
+        if self._refuses_recursion(sym_id, caller_id, call):
             return None
         return ResolvedCall(caller_id, sym_id, 0.93, call.line, "scoped_name")
 

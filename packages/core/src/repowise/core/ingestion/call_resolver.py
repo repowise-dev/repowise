@@ -24,6 +24,7 @@ per strategy, and it is what the edge carries.
 
 from __future__ import annotations
 
+import re
 from collections import Counter, defaultdict
 from dataclasses import replace
 from pathlib import PurePosixPath
@@ -64,6 +65,7 @@ from .call_overload_selection import (  # noqa: F401
     _ArgumentTypes,
     _array_fit,
     _closest_fit,
+    _could_recurse,
     _java_method_refusing,
     _kotlin_function_refusing,
     _overload_phase,
@@ -387,6 +389,8 @@ class CallResolver(
             for path, parsed in parsed_files.items()
             for symbol in parsed.symbols
         }
+        # Ids two definitions answer to; a call landing on one proves no recursion.
+        self._shared_ids = _shared_definition_ids(parsed_files)
         self._overload_return_types = _overload_return_types(parsed_files)
         self._known_type_names = frozenset(
             symbol.name for symbol in self._symbols_by_id.values() if symbol.kind in _TYPE_KINDS
@@ -1515,8 +1519,10 @@ class CallResolver(
     ) -> tuple[bool, ResolvedCall | None]:
         """Tier 1, as ``(handled, edge)``: a handled None is a refusal."""
         own = self._enclosing_class_method(file_path, call, caller_id)
+        # Own scope answers recursion, where the site proves it is recursion.
+        own_refused = own == caller_id and not self._is_bare_recursion(file_path, call, caller_id)
         if self._is_anonymous_id(own):
-            return True, _own_member_call(caller_id, own, call)
+            return True, None if own_refused else _own_member_call(caller_id, own, call)
         # ``_file_symbols`` is flat and holds class members, but a JS/TS bare
         # call can only name a top-level binding: a same-named method must not
         # shadow an import (or hide a top-level function declared before it).
@@ -1529,13 +1535,92 @@ class CallResolver(
         if callee_id is None:
             return False, None
         if own is not None and own != callee_id and _rivals_a_class_method(callee_id):
-            if own == caller_id:
-                # Recursion the flat index handed to a stranger. No edge.
+            # Own class first: the flat hit is a stranger.
+            if own_refused:
                 return True, None
             return True, ResolvedCall(caller_id, own, 0.95, call.line, "enclosing_class")
-        if callee_id != caller_id:  # no self-recursion edges for now
+        if callee_id != caller_id or self._bare_name_reaches_caller(file_path, call, own):
             return True, ResolvedCall(caller_id, callee_id, 0.95, call.line, "same_file")
+        # A method no bare name reaches here (Python, Go, Rust) is not this call's target.
         return False, None
+
+    def _bare_name_reaches_caller(self, file_path: str, call: CallSite, own: str | None) -> bool:
+        """Is a bare call the flat index answers with its own caller recursion?
+
+        From the caller's own class scope, or when the caller is a top-level
+        function. Answered here, at the caller's own scope, so recursion never
+        falls through to an import, an ancestor or a repo-wide match.
+        """
+        caller_id = call.caller_symbol_id or ""
+        in_scope = own == caller_id or self._symbols_by_id[caller_id].parent_name is None
+        return in_scope and self._is_bare_recursion(file_path, call, caller_id)
+
+    def _is_bare_recursion(self, file_path: str, call: CallSite, caller_id: str) -> bool:
+        """Is a receiver-less call to the caller's own name recursion?
+
+        Only where the site is written bare: the parser can lose a receiver or
+        qualifier (``Outer.this.f()``, ``::f()``, ``a().f()``) that the source
+        line still shows. Not in Kotlin, where a lambda with a receiver
+        (``apply { f() }``) rebinds a bare name, nor past a Python import of the
+        name inside the caller. Ceiling: a bare site on a line that also
+        writes the name qualified is taken as written bare.
+        """
+        if self._refuses_recursion(caller_id, caller_id, call):
+            return False
+        if call.receiver_name or call.receiver_call is not None or call.scope_name:
+            return False
+        language = self._language_of(file_path) or ""
+        caller = self._symbols_by_id[caller_id]
+        lines = self._lines_of(file_path)
+        if self._language_rebinds(language, lines, caller, call):
+            return False
+        return _written_bare(lines, caller, call)
+
+    def _language_rebinds(
+        self, language: str, lines: list[str], caller: Symbol, call: CallSite
+    ) -> bool:
+        """Does *language* let the caller's own bare name mean something else here?
+
+        A Kotlin lambda with a receiver, a Python import inside the caller, a
+        C++ free function of the name in another namespace, a C# explicit
+        interface member (``IValidator.Validate(..)``), which has no bare name.
+        """
+        if language == "kotlin":
+            return True
+        if language == "python":
+            return _imports_name(lines, caller, call.target_name)
+        if language == "cpp":
+            return self._namespace_rival(caller, call)
+        if language == "csharp":
+            return _declared_explicitly(lines, caller, call.target_name)
+        return False
+
+    def _site_shows_recursion(self, call: CallSite) -> bool:
+        """Does a call whose arguments pick its own caller read as a call to itself?
+
+        Not on a chained receiver, and a receiver-less site only when written bare.
+        """
+        if call.receiver_call is not None:
+            return False
+        if call.receiver_name is not None:
+            return True
+        caller_id = call.caller_symbol_id or ""
+        file_path = self._symbol_paths_by_id.get(caller_id, "")
+        return self._is_bare_recursion(file_path, call, caller_id)
+
+    def _namespace_rival(self, caller: Symbol, call: CallSite) -> bool:
+        """Does another C++ free function of the caller's name take the call's arguments?
+
+        Namespaces are on no symbol, so ``detail::f`` and ``fmt::f`` look alike
+        and argument lookup may pick either: the call is no proof of recursion.
+        """
+        if caller.parent_name is not None:
+            return False
+        return any(
+            self._decl_to_def.get(sym_id, sym_id) != caller.id
+            and _free_function_taking(self._symbols_by_id.get(sym_id), call)
+            for sym_id in self._global_symbols.get(call.target_name, ())
+        )
 
     def _is_anonymous_id(self, sym_id: str | None) -> bool:
         """Does *sym_id* name an anonymous class member?"""
@@ -1965,8 +2050,9 @@ class CallResolver(
         sym_id = self._file_methods.get(file_path, {}).get(
             (caller_class, call.target_name)
         ) or self._partial_fragment_member(file_path, caller_id, call.target_name)
-        if sym_id is None or sym_id == caller_id:
+        if sym_id is None or self._refuses_recursion(sym_id, caller_id, call):
             return None
+        # The caller itself is recursion, answered here so it never reaches an ancestor.
         return ResolvedCall(caller_id, sym_id, 0.95, call.line, "self_scope")
 
     def _is_self_receiver(self, file_path: str, receiver_name: str | None) -> bool:
@@ -2162,14 +2248,84 @@ def _index_bare_name(
         top_level[sym.name] = index_id
 
 
-def _own_member_call(caller_id: str, own: str, call: CallSite) -> ResolvedCall | None:
+def _free_function_taking(symbol: Symbol | None, call: CallSite) -> bool:
+    """Is *symbol* a free function that can take *call*'s arguments?"""
+    if symbol is None or symbol.kind not in _FUNCTION_KINDS or symbol.parent_name is not None:
+        return False
+    return _could_recurse(symbol, call.argument_count)
+
+
+def _shared_definition_ids(parsed_files: dict[str, ParsedFile]) -> frozenset[str]:
+    """Ids more than one definition answers to (twins, generic or trait overloads)."""
+    defined = Counter(
+        symbol.id
+        for parsed in parsed_files.values()
+        for symbol in parsed.symbols
+        if not symbol.is_declaration
+    )
+    return frozenset(sym_id for sym_id, count in defined.items() if count > 1)
+
+
+def _own_member_call(caller_id: str, own: str, call: CallSite) -> ResolvedCall:
     """An anonymous class body's call to its own member *own*, before any flat name.
 
-    A same-file top-level function of the name included. Recursion: no edge.
+    A same-file top-level function of the name included. *own* may be the
+    caller itself: recursion.
     """
-    if own == caller_id:
-        return None
     return ResolvedCall(caller_id, own, 0.95, call.line, "same_file")
+
+
+def _name_pattern(name: str, *, call: bool) -> re.Pattern[str]:
+    """*name* as a word, followed by its argument list (generics allowed) when *call*."""
+    tail = r"\s*(?:<[^<>()]*>\s*)?\(" if call else ""
+    return re.compile(rf"\b{re.escape(name)}\b{tail}")
+
+
+def _written_bare(lines: list[str], caller: Symbol, call: CallSite) -> bool:
+    """Does *call*'s line call its name with no receiver or qualifier before it?
+
+    The caller's own declaration names it too and is not a call: the first
+    line from the caller's start that names it holds the declaration.
+    """
+    if not 0 < call.line <= len(lines):
+        return False
+    pattern = _name_pattern(call.target_name, call=True)
+    text = lines[call.line - 1]
+    found = list(pattern.finditer(text))
+    declaration_line = next(
+        (i + 1 for i in range(caller.start_line - 1, call.line) if pattern.search(lines[i])),
+        None,
+    )
+    if declaration_line == call.line:
+        found = found[1:]
+    return any(_unqualified(text[: m.start()]) for m in found)
+
+
+# An all-caps macro around a call (``FMT_POSIX_CALL(dup(fd))``) may rewrite it,
+# typically into ``::dup``.
+_MACRO_OPENING = re.compile(r"\b[A-Z][A-Z0-9_]+\s*\([^()]*$")
+
+
+def _unqualified(before: str) -> bool:
+    """Is a name preceded by *before* written with no receiver, qualifier or macro around it?"""
+    return not before.rstrip().endswith((".", "::", "->")) and not _MACRO_OPENING.search(before)
+
+
+def _declared_explicitly(lines: list[str], caller: Symbol, name: str) -> bool:
+    """Is the caller declared under a qualified name, ``Owner.name(``?"""
+    pattern = _name_pattern(name, call=True)
+    for line in lines[caller.start_line - 1 : caller.end_line]:
+        found = pattern.search(line)
+        if found is not None:
+            return line[: found.start()].rstrip().endswith(".")
+    return False
+
+
+def _imports_name(lines: list[str], caller: Symbol, name: str) -> bool:
+    """Does the caller's body import *name* (``from m import name``), shadowing itself?"""
+    pattern = _name_pattern(name, call=False)
+    body = lines[caller.start_line : caller.end_line]
+    return any("import" in line.split() and pattern.search(line) for line in body)
 
 
 def _rivals_a_class_method(symbol_id: str) -> bool:

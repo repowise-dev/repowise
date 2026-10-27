@@ -170,7 +170,8 @@ def _build_call_degree_maps(
     out_deg: dict[str, int] = defaultdict(int)
     in_deg: dict[str, int] = defaultdict(int)
     for u, v, d in graph.edges(data=True):
-        if is_walkable_execution_edge(
+        # A recursive call is no caller: it must not lower an entry point's score.
+        if u != v and is_walkable_execution_edge(
             d.get("edge_type"), d.get("resolution_origin"), d.get("confidence")
         ):
             out_deg[u] += 1

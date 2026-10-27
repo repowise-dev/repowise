@@ -853,7 +853,7 @@ class ReceiverTypingMixin(
 
         _, class_id, tier = found
         sym_id = self._declares(class_id, call.target_name)
-        if sym_id is None or sym_id == caller_id:
+        if sym_id is None or self._refuses_recursion(sym_id, caller_id, call):
             return None
         if tier == "same_file":
             return ResolvedCall(caller_id, sym_id, 0.93, call.line, "receiver_chain_same_file")
@@ -1468,8 +1468,9 @@ class ReceiverTypingMixin(
         """
         if self._symbols_by_id[type_id].language != "go":
             return self._class_typed_call(file_path, call, caller_id, type_id)
+        # The type's own method is the target even when it is the caller (recursion).
         hit = self._package_method(type_id, call.target_name)
-        if hit is None or hit[1] == caller_id:
+        if hit is None or self._refuses_recursion(hit[1], caller_id, call):
             return None
         method_file, sym_id = hit
         package = posixpath.dirname(self._symbol_paths_by_id[type_id])
@@ -1486,7 +1487,7 @@ class ReceiverTypingMixin(
     ) -> ResolvedCall | None:
         """``_call_typed_receiver`` for a class: no package tier."""
         hit = self._located(file_path, self._declares(type_id, call.target_name))
-        if hit is None or hit[1] == caller_id:
+        if hit is None or self._refuses_recursion(hit[1], caller_id, call):
             return None
         return self._body_typed_call(caller_id, hit[1], hit[2], call.line)
 

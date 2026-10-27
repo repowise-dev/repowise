@@ -315,6 +315,19 @@ def _kotlin_function_refusing(symbol: Symbol | None, argument_count: int | None)
     return not _takes(symbol, argument_count)
 
 
+def _could_recurse(symbol: Symbol | None, argument_count: int | None) -> bool:
+    """Whether a call of *argument_count* arguments to *symbol*'s own name may be *symbol*.
+
+    Not where arity binds (Java, C#, C++, Kotlin) and *symbol* cannot take the
+    count: the call means another overload of the name, an inherited one.
+    """
+    if symbol is None or argument_count is None:
+        return True
+    if symbol.language == "kotlin":
+        return not _kotlin_function_refusing(symbol, argument_count)
+    return symbol.language not in ("java", "csharp", "cpp") or _takes(symbol, argument_count)
+
+
 def _takes(symbol: Symbol, argument_count: int) -> bool:
     """Whether *symbol*'s parameters admit *argument_count*; an unread signature does."""
     admitted = signature_parameter_range(symbol.signature or "", symbol.language)
@@ -497,20 +510,47 @@ class OverloadSelectionMixin:
         variants = self._variant_siblings.get(resolved.callee_id, (resolved.callee_id,))
         return (resolved.caller_id,) if resolved.caller_id in variants else variants
 
+    def _refuses_recursion(self, sym_id: str | None, caller_id: str, call: CallSite) -> bool:
+        """Is *sym_id* the caller itself, with nothing to prove the call recursion?
+
+        Proof is a function that alone answers to its id and can take the
+        arguments. Otherwise the call may mean a twin of the id (an explicit
+        interface member, a generic or trait overload) or an inherited
+        overload, so an own-scope tier declines it as it always has.
+        """
+        if sym_id != caller_id:
+            return False
+        caller = self._symbols_by_id.get(caller_id)
+        return (
+            caller is None
+            or caller.kind not in _FUNCTION_KINDS
+            or caller_id in self._shared_ids
+            or not _could_recurse(caller, call.argument_count)
+        )
+
     def _narrow_overload(self, resolved: ResolvedCall, call: CallSite) -> ResolvedCall | None:
         """Move an edge on an overload set onto the member its arguments call.
 
         Every tier answers with the set's representative; this is the one place
-        a member is chosen (``_overload_target``). An overload calling itself is
-        recursion, which draws no edge.
+        a member is chosen (``_overload_target``). Landing on the caller is
+        recursion only when the arguments pick it and the site reads as a call
+        to itself; a fallback onto it is no edge.
         """
         rep = self._overload_rep.get(resolved.callee_id)
         if rep is None:
             return self._inherited_overload(resolved, call)
         target = self._overload_target(rep, call.argument_count, call.argument_types)
-        if target == resolved.caller_id:
+        if target == resolved.caller_id and not self._picks_itself(rep, target, call):
             return None
         return resolved if target == resolved.callee_id else replace(resolved, callee_id=target)
+
+    def _picks_itself(self, rep: str, caller_id: str, call: CallSite) -> bool:
+        """Do the arguments pick the caller from its own set, at a site that reads as recursion?"""
+        if caller_id != self._pick_overload(rep, call.argument_count, call.argument_types):
+            return False
+        if self._refuses_recursion(caller_id, caller_id, call):
+            return False
+        return self._site_shows_recursion(call)
 
     def _inherited_overload(self, resolved: ResolvedCall, call: CallSite) -> ResolvedCall | None:
         """A Java callee that cannot take the call's arguments yields to an inherited overload.
@@ -858,6 +898,7 @@ class OverloadSelectionMixin:
 
         The tiers answer such a call with the set's representative, which is
         refused as recursion when the caller is that representative itself.
+        The caller itself is left to the tiers, which judge its site.
         """
         caller_id = call.caller_symbol_id or ""
         rep = self._overload_rep.get(caller_id)

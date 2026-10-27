@@ -300,7 +300,8 @@ class ExecutionGraphIndex:
         if edge_type == "defines":
             _append_unique(declares, source, target, declaration_seen)
             return
-        if not is_reliable_execution_edge(edge_type, origin):
+        # Recursion reaches nothing new and must not count as a caller.
+        if source == target or not is_reliable_execution_edge(edge_type, origin):
             return
         _append_unique(forward, source, target, forward_seen)
         _append_unique(reverse, target, source, reverse_seen)
