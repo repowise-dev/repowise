@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  getPageLabel,
   getPageTypeLabel,
   isModelWrittenType,
   isStubPage,
@@ -70,5 +71,37 @@ describe("getPageTypeLabel", () => {
 
   it("humanises an unknown type rather than rendering nothing", () => {
     expect(getPageTypeLabel("not_a_page_type")).toBe("not a page type");
+  });
+});
+
+describe("getPageLabel", () => {
+  // A chapter shares `page_type` with the module pages nested under it, so the
+  // type alone calls both "Module" and the reader cannot tell a subsystem's
+  // landing page from one of its members.
+  it("calls a chapter a chapter", () => {
+    expect(getPageLabel({ page_type: "module_page", is_chapter: true })).toBe("Chapter");
+  });
+
+  it("calls an ordinary module a module", () => {
+    expect(getPageLabel({ page_type: "module_page" })).toBe("Module");
+    expect(getPageLabel({ page_type: "module_page", is_chapter: false })).toBe("Module");
+  });
+
+  it("ignores the flag on a type that cannot be a chapter", () => {
+    // Only the concept tree mints chapters. A stray flag on anything else is
+    // bad data, and labelling it "Chapter" would propagate the error.
+    expect(getPageLabel({ page_type: "file_page", is_chapter: true })).toBe("File");
+  });
+
+  it("agrees with getPageTypeLabel for every non-chapter page", () => {
+    for (const t of [...STRUCTURAL_TYPES, "repo_overview", "onboarding"]) {
+      expect(getPageLabel({ page_type: t })).toBe(getPageTypeLabel(t));
+    }
+  });
+
+  it("renders nothing rather than 'undefined' for a page with no type", () => {
+    expect(getPageLabel(null)).toBe("");
+    expect(getPageLabel(undefined)).toBe("");
+    expect(getPageLabel({})).toBe("");
   });
 });

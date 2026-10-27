@@ -20,7 +20,6 @@ from typing import Any
 # don't pull the heavy assembler/generator stack via this ``__init__``.
 _EXPORTS = {
     "ApiContractContext": ".context_assembler",
-    "ArchitectureDiagramContext": ".context_assembler",
     "ContextAssembler": ".context_assembler",
     "FilePageContext": ".context_assembler",
     "InfraPageContext": ".context_assembler",

@@ -191,6 +191,14 @@ function svgNaturalSize(container: HTMLDivElement | null): { w: number; h: numbe
   return null;
 }
 
+/** Scale that fits `size` inside a box. Never above 1: magnifying a small
+ *  diagram to fill the column blurs it and says nothing extra. */
+function fitScale(size: { w: number; h: number } | null, boxW: number, boxH: number): number {
+  if (!size) return 1;
+  const s = Math.min(1, boxW / size.w, boxH / size.h);
+  return s > 0 && Number.isFinite(s) ? s : 1;
+}
+
 const GRID_BACKGROUND: React.CSSProperties = {
   backgroundImage:
     "linear-gradient(var(--color-diagram-grid) 1px, transparent 1px), " +
@@ -252,8 +260,7 @@ function MaximizedDialog({
     const size = svgNaturalSize(container);
     const vp = viewportRef.current;
     if (!size || !vp) return;
-    const fit = Math.min(1, (vp.clientWidth - 64) / size.w, (vp.clientHeight - 64) / size.h);
-    setZoom(fit > 0 ? fit : 1);
+    setZoom(fitScale(size, vp.clientWidth - 64, vp.clientHeight - 64));
     setPan({ x: 0, y: 0 });
   }, [renderTick, container]);
 
@@ -272,14 +279,8 @@ function MaximizedDialog({
   };
 
   const reset = () => {
-    const size = svgNaturalSize(container);
     const vp = viewportRef.current;
-    if (size && vp) {
-      const fit = Math.min(1, (vp.clientWidth - 64) / size.w, (vp.clientHeight - 64) / size.h);
-      setZoom(fit > 0 ? fit : 1);
-    } else {
-      setZoom(1);
-    }
+    setZoom(vp ? fitScale(svgNaturalSize(container), vp.clientWidth - 64, vp.clientHeight - 64) : 1);
     setPan({ x: 0, y: 0 });
   };
 
@@ -360,10 +361,40 @@ function MaximizedDialog({
   );
 }
 
+/** `p-4` on the frame, both sides — the width a diagram cannot use. */
+const FRAME_PADDING = 32;
+
 export function MermaidDiagram({ chart, securityLevel = "strict" }: MermaidDiagramProps) {
   const [container, setContainer] = useState<HTMLDivElement | null>(null);
   const [maximized, setMaximized] = useState(false);
-  const { error } = useMermaidRender(chart, container, securityLevel);
+  const frameRef = useRef<HTMLDivElement | null>(null);
+  const [fit, setFit] = useState<{ scale: number; height: number } | null>(null);
+  const { error, renderTick } = useMermaidRender(chart, container, securityLevel);
+
+  // Fit the rendered SVG to the column it is read in. Width only: a wide
+  // diagram clipped mid-subgraph is the failure this exists to stop, whereas a
+  // tall one still reads by scrolling the way the prose around it does.
+  //
+  // Reserving the *scaled* height is the other half — a transform does not
+  // change layout, so without it the frame keeps the natural height and a
+  // scaled-down diagram sits in a pool of empty space.
+  useEffect(() => {
+    const frame = frameRef.current;
+    if (!frame || renderTick === 0) return;
+    const refit = () => {
+      const size = svgNaturalSize(container);
+      if (!size) return;
+      const scale = fitScale(size, frame.clientWidth - FRAME_PADDING, Infinity);
+      setFit({ scale, height: size.h * scale });
+    };
+    refit();
+    // Re-fit when the column resizes — the sidebar collapsing is a resize, and
+    // a diagram fitted to the narrow column would otherwise stay small in the
+    // wide one.
+    const observer = new ResizeObserver(refit);
+    observer.observe(frame);
+    return () => observer.disconnect();
+  }, [renderTick, container]);
 
   if (error) {
     return (
@@ -376,6 +407,7 @@ export function MermaidDiagram({ chart, securityLevel = "strict" }: MermaidDiagr
   return (
     <>
       <figure
+        ref={frameRef}
         role="img"
         aria-label="Mermaid diagram"
         className="group relative my-4 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]"
@@ -390,10 +422,18 @@ export function MermaidDiagram({ chart, securityLevel = "strict" }: MermaidDiagr
         >
           <Maximize2 className="h-3.5 w-3.5" />
         </button>
-        {/* Natural size, centered when narrow, scrollable when wide/tall —
-            never scaled down (that's what made dense diagrams unreadable). */}
-        <div className="overflow-auto max-h-[75vh] p-4">
-          <div ref={setContainer} className="w-max mx-auto" />
+        {/* Scaled to the column and centred, so the whole diagram is on screen
+            at once. Dense ones do come out small; the maximize button above is
+            the way into those, and it pans and zooms. */}
+        <div
+          className="flex justify-center overflow-y-auto overflow-x-hidden p-4"
+          style={{ maxHeight: "75vh", ...(fit ? { height: fit.height + FRAME_PADDING } : {}) }}
+        >
+          <div
+            ref={setContainer}
+            className="w-max shrink-0"
+            style={fit ? { transform: `scale(${fit.scale})`, transformOrigin: "top center" } : {}}
+          />
         </div>
       </figure>
 

@@ -87,10 +87,18 @@ def resolve_scala_import_all(
     if build_match is not None:
         return (build_match,)
 
-    # Stem lookup on the type/object name
-    result = ctx.stem_lookup(local.lower())
-    if result and result.endswith(".scala"):
-        return (result,)
+    # Match on the type/object name alone, but only among the files of the
+    # package the import actually names: a repo-wide match discards the
+    # package, so a third-party type binds to any same-named repo class.
+    if len(parts) > 1:
+        scoped = jvm_index.file_in_package_by_stem(".".join(parts[:-1]), local)
+        if scoped and scoped.endswith(".scala"):
+            return (scoped,)
+    else:
+        # A single-segment import carries no package to check against.
+        result = ctx.stem_lookup(local.lower())
+        if result and result.endswith(".scala"):
+            return (result,)
 
     # Package path as directory structure
     if len(parts) > 1:

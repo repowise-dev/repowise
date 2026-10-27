@@ -35,10 +35,12 @@ import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any
 
+from repowise.core.fsutils import atomic_write_text
 from repowise.core.workspace.config import (
     WORKSPACE_DATA_DIR,
     ConformanceRule,
@@ -46,6 +48,7 @@ from repowise.core.workspace.config import (
     ensure_workspace_data_dir,
 )
 from repowise.core.workspace.cycles import DependencyCycle, detect_cycles
+from repowise.core.workspace.graph_evidence import graph_evidence
 from repowise.core.workspace.system_graph import SystemGraph, SystemNode
 
 _log = logging.getLogger("repowise.workspace.conformance")
@@ -185,17 +188,43 @@ class ConformanceViolation:
 
 @dataclass
 class ConformanceReport:
-    """The workspace's architecture governance result: violations + cycles."""
+    """The workspace's architecture governance result: violations + cycles.
+
+    ``generated_at`` is ``None`` until the check actually runs. That is the
+    difference between "no violations were found" and "nothing looked", and a
+    report with zero violations means nothing without it.
+    """
 
     version: int = 1
-    generated_at: str = ""
+    generated_at: str | None = None
     rules_evaluated: int = 0
     violations: list[ConformanceViolation] = field(default_factory=list)
     cycles: list[DependencyCycle] = field(default_factory=list)
+    #: True cycle count before :data:`cycles.MAX_CYCLES` capped ``cycles``.
+    total_cycles: int = 0
+    #: True when the enumeration budget stopped the count: ``total_cycles`` is
+    #: then a lower bound ("at least N"), not the exact total.
+    total_capped: bool = False
+    #: :func:`.graph_evidence.graph_evidence` of the checked graph, as a dict.
+    #: None on a report written before evidence was recorded.
+    evidence: dict[str, Any] | None = None
+
+    @property
+    def cycles_determined(self) -> bool | None:
+        """False when the graph had too little evidence for "no cycles" to mean anything.
+
+        None when the report predates the evidence record, so it cannot say.
+        """
+        return None if self.evidence is None else bool(self.evidence.get("determined"))
 
     @property
     def has_findings(self) -> bool:
         return bool(self.violations or self.cycles)
+
+    @property
+    def ran(self) -> bool:
+        """Whether this report is the result of an actual check."""
+        return bool(self.generated_at)
 
     @property
     def violating_repos(self) -> list[str]:
@@ -213,18 +242,31 @@ class ConformanceReport:
             "violations": [v.to_dict() for v in self.violations],
             "cycles": [c.to_dict() for c in self.cycles],
             "violation_count": len(self.violations),
+            # ``cycle_count`` is what the report lists; ``total_cycles`` is how
+            # many exist. They differ only when MAX_CYCLES truncated the list.
             "cycle_count": len(self.cycles),
+            "total_cycles": self.total_cycles or len(self.cycles),
+            "total_capped": self.total_capped,
             "violating_repos": self.violating_repos,
+            "cycles_determined": self.cycles_determined,
+            "evidence": self.evidence,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ConformanceReport:
+        cycles = [DependencyCycle.from_dict(c) for c in data.get("cycles", [])]
+        # Artifacts written before the check was clocked carry ``""``. There is
+        # no way to tell those from never-ran, so they read as never-ran — the
+        # next update rewrites them with a real stamp.
         return cls(
             version=data.get("version", 1),
-            generated_at=data.get("generated_at", ""),
+            generated_at=data.get("generated_at") or None,
             rules_evaluated=data.get("rules_evaluated", 0),
             violations=[ConformanceViolation.from_dict(v) for v in data.get("violations", [])],
-            cycles=[DependencyCycle.from_dict(c) for c in data.get("cycles", [])],
+            cycles=cycles,
+            total_cycles=data.get("total_cycles", len(cycles)),
+            total_capped=bool(data.get("total_capped", False)),
+            evidence=data.get("evidence"),
         )
 
 
@@ -311,16 +353,23 @@ def build_conformance_report(
     rules: list[ConformanceRule],
     tags_by_repo: dict[str, list[str]] | None = None,
     *,
-    generated_at: str = "",
+    generated_at: str | None = None,
 ) -> ConformanceReport:
-    """Assemble the full governance report: rule violations + dependency cycles."""
+    """Assemble the full governance report: rule violations + dependency cycles.
+
+    Building a report *is* running the check, so ``generated_at`` defaults to
+    now rather than to empty. Only a report nobody built is unstamped.
+    """
     violations = check_conformance(graph, rules, tags_by_repo)
-    cycles = detect_cycles(graph)
+    cycles, total_cycles, total_capped = detect_cycles(graph)
     return ConformanceReport(
-        generated_at=generated_at,
+        generated_at=generated_at or datetime.now(UTC).isoformat(),
         rules_evaluated=len(rules),
         violations=violations,
         cycles=cycles,
+        total_cycles=total_cycles,
+        total_capped=total_capped,
+        evidence=graph_evidence(graph).to_dict(),
     )
 
 
@@ -338,9 +387,10 @@ def save_conformance_report(report: ConformanceReport, workspace_root: Path) -> 
     """Write the report to ``.repowise-workspace/conformance.json``."""
     data_dir = ensure_workspace_data_dir(workspace_root)
     out_path = data_dir / CONFORMANCE_FILENAME
-    out_path.write_text(
-        json.dumps(report.to_dict(), indent=2, ensure_ascii=False),
-        encoding="utf-8",
+    # Atomic: the MCP enricher reads these artifacts from a separate
+    # process and must never observe a half-written file.
+    atomic_write_text(
+        out_path, json.dumps(report.to_dict(), indent=2, ensure_ascii=False)
     )
     return out_path
 
@@ -368,7 +418,7 @@ def run_conformance_check(
     workspace_root: Path,
     graph: SystemGraph,
     *,
-    generated_at: str = "",
+    generated_at: str | None = None,
 ) -> ConformanceReport:
     """Build and persist the conformance report from the latest system graph.
 

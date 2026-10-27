@@ -13,10 +13,10 @@ from starlette.responses import StreamingResponse
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GenerationJob, LlmCost
+from repowise.server.auth import get_authenticator
 from repowise.server.deps import (
     _header_scheme,
     auth_is_open,
-    bearer_is_valid,
     resolve_session_factory,
     verify_api_key,
 )
@@ -31,6 +31,7 @@ router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
 
 async def authorize_job_stream(
+    request: Request,
     job_id: str,
     token: str | None = Query(None),
     auth: str | None = Security(_header_scheme),
@@ -41,10 +42,13 @@ async def authorize_job_stream(
     embeds and is signed over that id), so it can't be replayed against another
     job. A bearer key still works, so non-browser clients are unaffected.
     """
-    if auth_is_open():
+    if auth_is_open(request):
         return
-    if bearer_is_valid(auth):
-        return
+    if auth and auth.startswith("Bearer "):
+        principal = await get_authenticator().verify_token(auth[7:])
+        # Jobs name no repo, so only an unrestricted principal may use the bearer path.
+        if principal is not None and principal.repo_scope is None and principal.tool_scope is None:
+            return
     if verify_stream_token(token, job_id):
         return
     raise HTTPException(status_code=401, detail="Missing or invalid job stream credentials")

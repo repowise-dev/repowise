@@ -7,9 +7,14 @@ Colours come from the resolved tokens in docs/design/theme-tokens.md; keep the t
 in sync when those change. The README picks a variant with <picture> +
 prefers-color-scheme.
 
-Companion recipe for the dashboard GIFs under .github/assets/dashboard/ (ffmpeg
-only, no extra dependency). README media is kept under ~2MB per asset because the
-repo has no git-lfs, so every byte is permanent clone weight:
+The dashboard stills under .github/assets/dashboard/ are PNGs, not video: GitHub
+strips <video> from rendered markdown unless the source is its own attachment
+host, so an <img> is the only form that reliably renders. Same reason
+.github/assets/hero.webp is an animated image rather than an mp4.
+
+Companion recipe for that GIF (ffmpeg only, no extra dependency). README media is
+kept under ~2MB per asset because the repo has no git-lfs, so every byte is
+permanent clone weight:
 
     ffmpeg -i in.gif -vf "fps=11,scale=1100:-1:flags=lanczos,split[a][b];      [a]palettegen=max_colors=112[p];[b][p]paletteuse=dither=bayer:bayer_scale=3"       -loop 0 out.gif
 """
@@ -85,7 +90,7 @@ add(f'<text x="{PAD}" y="{80}" class="sub">Index once, in seconds, no LLM requir
 TOP = 104
 # ============ A: Code Health (large) ======================================
 ax, ay, aw, ah = PAD, TOP, 748, 352
-card(ax, ay, aw, ah, "CODE HEALTH", "25 markers · zero LLM · <30s")
+card(ax, ay, aw, ah, "CODE HEALTH", "49 detectors · zero LLM · <30s")
 
 # KPI chips
 kpis = [("Defect risk", "7.5", "/10", WARNING), ("Maintainability", "8.6", "/10", SUCCESS), ("Perf risks", "268", "", PLUM)]
@@ -249,6 +254,8 @@ add(f'<text x="{ex+22}" y="{ey+RH-25}" class="outsub">Captured nowhere else.</te
 fx0, fy0 = ex + ew + GAP, ROW2
 fw = W - PAD - fx0
 card(fx0, fy0, fw, RH, "SERVED TO YOUR AGENT", "10 MCP tools")
+# All eleven of the single-repo default surface. The card headline counts them,
+# so a chip missing here is a picture that contradicts its own title.
 tools = ["get_overview", "get_answer", "get_context", "get_symbol", "search_codebase",
          "get_risk", "get_change_risk", "get_why", "get_dead_code", "get_health"]
 tx, ty = fx0 + 20, fy0 + 54

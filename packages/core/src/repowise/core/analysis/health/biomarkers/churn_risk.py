@@ -25,6 +25,7 @@ absent/zero and the detector emits nothing.
 from __future__ import annotations
 
 from ..models import Severity
+from ..semantics import format_top_percentile
 from .base import BiomarkerResult, FileContext
 
 _MIN_COMMITS_90D = 5
@@ -92,7 +93,11 @@ class ChurnRiskDetector:
                 line_end=None,
                 details={
                     "relative_churn": round(relative_churn, 2),
-                    "churn_percentile": round(churn_pct, 3),
+                    # 0-100, matching churn_complexity._churn_pct and every
+                    # other emitted copy. The stored column is 0-1; emitting it
+                    # raw here put two scales under one key in a single
+                    # get_health response.
+                    "churn_percentile": round(churn_pct * 100.0, 1),
                     "lines_added_90d": added,
                     "lines_deleted_90d": deleted,
                     "commit_count_90d": commits_90d,
@@ -101,7 +106,7 @@ class ChurnRiskDetector:
                 reason=(
                     f"90-day churn rewrote {churn_text} "
                     f"({added + deleted} lines over {ctx.nloc} NLOC, "
-                    f"top {(1 - churn_pct):.0%} of repo churn)"
+                    f"{format_top_percentile(churn_pct, 'repository files eligible for churn ranking')})"
                 ),
             )
         ]

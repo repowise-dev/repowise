@@ -1,269 +1,350 @@
 # Language Support
 
-repowise parses **16 languages to a full AST**, resolves imports and call
-graphs across them, and scores **11 at the Full tier** with code-health markers.
-Everything else in your repo is still tracked through git history and appears in
-the wiki. This page is the "what works for my language today" reference.
+**28 languages parsed to a full AST, 42 on the five-rung support ladder, and
+framework-aware edges where an ecosystem handler exists.** Every language lands
+on one rung, and the rung tells you which parts of the pipeline produce real
+output for it. Files in any other language still appear in the wiki and are
+tracked through git history. No LLM key is needed for any of this: parsing,
+resolution and health markers are all static.
 
-> **How to add a language, and how the pipeline works internally:** see
-> [architecture/language-support.md](../architecture/language-support.md). Adding
-> a language needs one `.scm` query file and one config entry, with no changes
-> to the parser core.
+<p>
+  <strong>Full tier &nbsp;</strong>
+  <img src="https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python" /> <img src="https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript" /> <img src="https://img.shields.io/badge/JavaScript-F7DF1E?style=flat-square&logo=javascript&logoColor=black" alt="JavaScript" /> <img src="https://img.shields.io/badge/Svelte-FF3E00?style=flat-square&logo=svelte&logoColor=white" alt="Svelte" />
+  <img src="https://img.shields.io/badge/Vue-42B883?style=flat-square&logo=vuedotjs&logoColor=white" alt="Vue" /> <img src="https://img.shields.io/badge/Astro-BC52EE?style=flat-square&logo=astro&logoColor=white" alt="Astro" /> <img src="https://img.shields.io/badge/Java-ED8B00?style=flat-square&logo=openjdk&logoColor=white" alt="Java" /> <img src="https://img.shields.io/badge/Kotlin-7F52FF?style=flat-square&logo=kotlin&logoColor=white" alt="Kotlin" /> <img src="https://img.shields.io/badge/Go-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go" />
+  <img src="https://img.shields.io/badge/Rust-000000?style=flat-square&logo=rust&logoColor=white" alt="Rust" /> <img src="https://img.shields.io/badge/C++-00599C?style=flat-square&logo=cplusplus&logoColor=white" alt="C++" /> <img src="https://img.shields.io/badge/C%23-512BD4?style=flat-square&logo=csharp&logoColor=white" alt="C#" /> <img src="https://img.shields.io/badge/Scala-DC322F?style=flat-square&logo=scala&logoColor=white" alt="Scala" />
+  <img src="https://img.shields.io/badge/Ruby-CC342D?style=flat-square&logo=ruby&logoColor=white" alt="Ruby" /> <img src="https://img.shields.io/badge/Apex-00A1E0?style=flat-square&logo=salesforce&logoColor=white" alt="Apex (Salesforce)" />
+</p>
+<p>
+  <strong>Good tier &nbsp;</strong>
+  <img src="https://img.shields.io/badge/C-A8B9CC?style=flat-square&logo=c&logoColor=black" alt="C" /> <img src="https://img.shields.io/badge/Swift-F05138?style=flat-square&logo=swift&logoColor=white" alt="Swift" /> <img src="https://img.shields.io/badge/PHP-777BB4?style=flat-square&logo=php&logoColor=white" alt="PHP" /> <img src="https://img.shields.io/badge/Dart-0175C2?style=flat-square&logo=dart&logoColor=white" alt="Dart" />
+  <img src="https://img.shields.io/badge/Delphi-EE1F35?style=flat-square&logo=delphi&logoColor=white" alt="Object Pascal / Delphi" /> <img src="https://img.shields.io/badge/COBOL-005CA5?style=flat-square" alt="COBOL" /> <img src="https://img.shields.io/badge/GDScript-478CBF?style=flat-square&logo=godotengine&logoColor=white" alt="GDScript / Godot" /> <img src="https://img.shields.io/badge/VB.NET-945DB7?style=flat-square&logo=dotnet&logoColor=white" alt="VB.NET" />
+  <img src="https://img.shields.io/badge/Elixir-6E4A7E?style=flat-square&logo=elixir&logoColor=white" alt="Elixir" /> <img src="https://img.shields.io/badge/F%23-378BBA?style=flat-square&logo=fsharp&logoColor=white" alt="F#" /> <img src="https://img.shields.io/badge/Objective--C-438EFF?style=flat-square&logo=apple&logoColor=white" alt="Objective-C" />
+</p>
+<p>
+  <strong>Partial tier &nbsp;</strong>
+  <img src="https://img.shields.io/badge/Luau-00A2FF?style=flat-square&logo=lua&logoColor=white" alt="Luau" /> <img src="https://img.shields.io/badge/Razor-512BD4?style=flat-square&logo=blazor&logoColor=white" alt="Razor / Blazor" />
+</p>
 
----
+**Contents:** [Tiers](#tiers), [What the pipeline gives each tier](#what-the-pipeline-gives-each-tier),
+[How accurate is the graph per language](#how-accurate-is-the-graph-per-language),
+[Extensions and imports](#extensions-and-imports), [Framework-aware edges](#framework-aware-edges),
+[Beyond code files](#beyond-code-files), [Code-health coverage](#code-health-coverage),
+[Limits](#limits), [Roadmap](#roadmap), [Requesting or adding a language](#requesting-or-adding-a-language)
 
-## Tiers at a glance
+## Tiers
 
-Every language falls into one tier. The tier determines which pipeline stages
-produce meaningful output.
+| Tier | Languages | What you get |
+|------|-----------|--------------|
+| **Full** (15) | Python, TypeScript, JavaScript, Svelte, Vue, Astro, Java, Kotlin, Go, Rust, C++, C#, Scala, Ruby, Apex (Salesforce) | The whole pipeline: AST symbols, import resolution, a resolved call graph, heritage, docstrings, framework edges and code-health markers |
+| **Good** (11) | C, Swift, PHP, Dart, Object Pascal, COBOL, GDScript, VB.NET, Elixir, F#, Objective-C | Everything above except the full health suite. Dart, Object Pascal and PHP get health markers; C, Swift, COBOL, F# and Objective-C get the complexity-derived ones; the rest get none yet |
+| **Partial** (2) | Luau / Roblox, Razor / Blazor | Luau: AST symbols and `require()` resolution (Rojo and `.luaurc` aware), no health markers. Razor: a component symbol per file, call edges from `@code` blocks and component tags, C# health markers, no import edges yet |
+| **Lightweight** (6) | Clojure, Haskell, Lean 4, Erlang, HTML, QML | A real file-to-file import graph, no symbol-level claims |
+| **Structural** (8) | R, Zig, Julia, Elm, OCaml, Crystal, Nim, D | Git history only: blame, hotspots, co-change. No AST parsing |
 
-| Tier | Languages | What works |
-|------|-----------|------------|
-| **Full** | Python · TypeScript · JavaScript · Java · Kotlin · Go · Rust · C++ · C# · Scala · Ruby | AST parsing, import resolution, named bindings, call resolution, heritage, docstrings, framework-aware edges, dynamic-hint extractors, and **code-health markers** |
-| **Good** | C · Swift · PHP · Dart | Everything above except code-health markers (C, Swift, PHP; Dart *does* get health markers). Dedicated workspace resolvers and framework edges per language |
-| **SQL / dbt** | `.sql` via sqlglot | Tables / views / functions / procedures as symbols with wiki pages; dbt projects get real `ref()` / `source()` lineage |
-| **Shell** | `.sh` `.bash` `.zsh` | Function definitions as symbols, `source` / `.` import edges (incl. `$SCRIPT_DIR` / `dirname` / `$BATS_ROOT` idioms), and function-level code-health complexity (CCN, nesting, cognitive). No class metrics, heritage, bindings, or dead-code flagging |
-| **Config / data** | OpenAPI · Protobuf · GraphQL · Dockerfile · Makefile · YAML · JSON · TOML · Terraform · Markdown | In the file tree and wiki; special handlers extract endpoints / targets where applicable |
-| **Lightweight** | Elixir · Clojure · Haskell · Lean 4 · Erlang · F# | Regex-tier file-level import graph (no symbols/calls). Honest file-to-file dependencies, no symbol-level claims |
-| **Partial** | Luau / Roblox | AST symbols + `require()` resolution (Rojo / `.luaurc` aware); no health markers yet |
-| **Structural** | Objective-C · R · Zig · Julia · Elm · OCaml · Crystal · Nim · D | Git history only (blame, hotspots, co-change). No AST parsing |
+Tree-sitter parsing covers the first three rungs: those are the **28 languages
+parsed to a full AST**. The bottom two rungs come from git history and import
+extraction, and all five together make the **42** on the ladder.
 
-**Pipeline stage coverage:**
+[SQL / dbt](#sql--dbt) and [shell](#shell) sit outside the ladder, because
+neither fits a rung: SQL gets symbols and health markers but no call graph, and
+shell gets symbols, `source` edges and complexity but no dead-code claims.
+Cross-repo contracts (HTTP routes, gRPC, queues, sockets, database tables) are
+listed per language and framework in
+[WORKSPACES.md](../scale/WORKSPACES.md#api-contract-extraction).
 
-| Stage | Full | Good | Lightweight | Structural | Config / Data |
-|-------|:----:|:----:|:-----------:|:----------:|:-------------:|
-| File discovery & git history | ✅ | ✅ | ✅ | ✅ | ✅ |
-| AST symbol extraction | ✅ | ✅ | - | - | - |
-| Import resolution | ✅¹ | ✅ | regex | - | - |
-| Call graph edges | ✅ | ✅ | - | - | - |
-| Heritage (extends/implements) | ✅ | ✅ | - | - | - |
-| Named bindings | ✅ | ✅ | - | - | - |
-| Code-health markers | ✅² | Dart only | - | - | - |
-| Dead code detection | ✅ | ✅ | ✅ | ✅ | - |
-| Semantic search & wiki pages | ✅ | ✅ | ✅ | ✅ | ✅ |
+## What the pipeline gives each tier
 
-¹ Scala's import resolution is partial (shared JVM index with SBT/Mill
-build-file fallback); every other Full and Good language resolves imports
-fully.
-² See [code-health coverage](#code-health-coverage), a language is only "Full"
-once it clears the health checklist.
+| Stage | Full | Good | Partial | Lightweight | Structural |
+|-------|:----:|:----:|:-------:|:-----------:|:----------:|
+| File discovery and git history | ✅ | ✅ | ✅ | ✅ | ✅ |
+| AST symbol extraction | ✅ | ✅ | ✅ | no | no |
+| Import resolution | ✅ | ✅ | Luau | file-level | no |
+| Call graph edges | ✅ | ✅ | ✅ | no | no |
+| Heritage (extends / implements) | ✅ | ✅ | no | no | no |
+| Named bindings | ✅ | ✅ | no | no | no |
+| Code-health markers | ✅ | partial, see [coverage](#code-health-coverage) | Razor | no | no |
+| Dead code detection | ✅ | ✅* | ✅ | ✅ | ✅ |
+| Semantic search and wiki pages | ✅ | ✅ | ✅ | ✅ | ✅ |
 
----
+Every Full and Good language has a dedicated import resolver except Object
+Pascal and Objective-C, which resolve through a generic unit-name or header-stem
+match, and Apex, which has no imports and resolves names case-insensitively
+within each sfdx project's namespace.
+Scala, Elixir and F# have dedicated import resolvers with known gaps; see
+[Limits](#limits).
 
-## Full tier
+\* COBOL files and programs get no dead-code claims: schedulers, region
+definitions outside the repo and dynamic program calls are entry paths the
+repository graph cannot observe. The one COBOL claim is a paragraph that
+nothing names and nothing falls through into, at low confidence and never
+deletion-ready.
+The COBOL and Apex grammars download on first use; offline, set
+`REPOWISE_GRAMMAR_DIR` to a pre-staged grammar cache. `repowise grammars fetch
+<dir>` stages that cache on a machine with network access; copy `<dir>` to the
+offline machine. `repowise doctor` reports whether each grammar is cached.
+COBOL is read in fixed reference format, with `EXEC SQL/CICS/DLI` blocks and
+`COPY` statements masked before parsing; a copybook parses as a data or
+procedure fragment. `COPY` and `EXEC SQL INCLUDE` members resolve to the
+nearest copybook with that name; system copybooks such as `DFHAID` stay external.
+A program with no `PROCEDURE DIVISION` text, whose header comes from a copybook
+(the CICS `COPY CENTRY.` idiom), takes the first `COPY` followed by a statement
+or paragraph header as that header, so its paragraphs, `PERFORM`s and `CALL`s
+are read.
+A DB2 DCLGEN member (`.dcl`) is a copybook when it holds an
+`EXEC SQL DECLARE ... TABLE` and level-numbered data entries. PL/I DCLGEN
+output and OpenVMS DCL procedures share the extension and are not indexed.
+`EXEC CICS LINK` and `XCTL` link to their program when it is a literal or a
+constant moved into the program variable; any other target shows as a
+`cics-dynamic:` reference rather than a guess. A `PERFORM` binds only within
+its program and the copybooks it copies; `CALL`, `LINK` and `XCTL` bind to a
+unique PROGRAM-ID. JCL (`.jcl`, `.prc`, `.proc`) links each job step to the
+program or PROC it runs, which makes that program an entry point, and BMS
+mapsets (`.bms`) are linked from the programs that send or receive their maps.
+CICS CSD definitions, in a `.csd` file or a DFHCSDUP step's in-stream input,
+link each defined program and each transaction's program, which makes it an
+entry point. `EXEC CICS RETURN` and `START` with a `TRANSID` link to the
+program that transaction runs when every definition of it agrees.
+Health measures each paragraph and section as a function: `IF`, `WHEN` arms,
+`PERFORM UNTIL/VARYING` loops and `AND`/`OR` add to its complexity, and data-only
+copybooks have no functions to flag.
+A level-88 condition name is a child of the data item it tests, with an id such
+as `PROG.cbl::WS-RETURN-FLAG::APPL-AOK`, and stays findable by symbol search.
+These children do not count toward the 500-symbol warning for generated files.
+The advisory `cobol_unstructured_flow` marker lists each paragraph with an `ALTER`,
+a `GO TO ... DEPENDING ON`, or a `GO TO` that does not jump forward to an `...EXIT`
+paragraph of its own `PERFORM THRU` range; it never deducts from a score.
+A paragraph whose performer is in another file (a copybook's) is judged by the
+target's name alone.
+Apex dead-code findings are review-only, since the platform also reaches classes
+by name. A third-party library in a static resource counts as vendored.
 
-Complete pipeline coverage: AST parsing, import resolution, call resolution,
-named bindings, heritage, docstrings, framework-aware edges, dynamic-hint
-extractors, and code-health markers.
+## How accurate is the graph per language
 
-| Language | Extensions | Import style |
-|----------|-----------|--------------|
-| **Python** | `.py` `.pyi` | `import x` / `from x import y`; source-root-aware module index (src/, monorepo `packages/*/src`, PEP 420), `__init__.py` re-export barrels |
-| **TypeScript** | `.ts` `.tsx` | ESM / `require()` with tsconfig path aliases, npm/yarn/pnpm workspaces, `export * from` barrels, optional `.vue`/`.svelte`/`.astro` probing |
-| **JavaScript** | `.js` `.jsx` `.mjs` `.cjs` | `import` / `require()` including CommonJS re-export shapes and member picks |
-| **Java** | `.java` | `import pkg.Class` / `.*` / `import static` with Maven + Gradle reactor discovery, JPMS recognition, package fan-out |
-| **Kotlin** | `.kt` `.kts` | Shares the JVM workspace index with Java (cross-language resolution); `.kt` under `src/main/java` recognised |
-| **Go** | `.go` | `import "path"` with multi-module `go.mod` discovery; a package import fans out to every file in the package |
-| **Rust** | `.rs` | `use crate::` / `super::` / `self::` with `Cargo.toml` |
-| **C++** | `.cpp` `.cc` `.cxx` `.h` `.hpp` `.hxx` | `#include` via `compile_commands.json` + CMake / Bazel workspace header maps, header↔implementation pairing |
-| **C#** | `.cs` | `using` / `global using` / `using static` / aliases with `.csproj` / `.sln` resolution; MSBuild project graph; `partial` class linking |
-| **Scala** | `.scala` | `import pkg.Foo`, brace/wildcard/package imports via the shared JVM index (cross-language with Java/Kotlin); SBT / Mill build parsing as fallback (partial import resolution¹) |
-| **Ruby** | `.rb` | `require` / `require_relative` with `$LOAD_PATH` probing, Gemfile externals, RSpec mirror edges, Rails / Zeitwerk autoloading |
+Precision and recall differ by language, because resolution depends on what the
+grammar and the type system expose. Measured figures per language, with corpus
+and method, are in [BENCHMARKS.md](../BENCHMARKS.md#accuracy-by-language).
 
-All eleven also support three-tier call resolution (same-file, cross-file,
-global stem match) and docstring extraction (Python, Ruby comments, JSDoc,
-GoDoc, Rustdoc, Javadoc, Scaladoc, Doxygen, XML doc).
+### Every call edge says how it was resolved, and how much to trust it
 
-**Framework-aware edges** connect routes to handlers, DI registrations to
-implementations, and ORM entities to relationships:
+Every `calls` edge repowise emits carries a **resolution origin** from a closed
+vocabulary, and every origin has exactly one confidence:
+
+| Origin | Confidence | What it means |
+|--------|:---:|---|
+| `same_file` | 0.95 | Defined in the calling file. A certainty |
+| `self_scope` | 0.95 | `self` / `this`, a method on the caller's own class |
+| `enclosing_class` | 0.95 | A bare call bound to the caller's own class |
+| `receiver_same_file` | 0.93 | The receiver names a class in the calling file |
+| `receiver_typed_same_file` | 0.93 | The receiver's declared type is a class in this file |
+| `receiver_field_same_file` | 0.93 | The receiver is a field whose type is a class in this file |
+| `receiver_framework_same_file` | 0.93 | A framework decorator retyped the receiver to a class in this file |
+| `scoped_name` | 0.93 | The call names its class directly, and that class declares the method |
+| `receiver_extension_same_file` | 0.93 | An extension method in this file extends the receiver's type |
+| `receiver_chain_same_file` | 0.93 | Every hop of a chained field receiver resolves within this file |
+| `return_type_same_file` | 0.93 | The inner call's declared return type is a class in this file |
+| `same_package` | 0.90 | The target is in a sibling file that needs no import |
+| `import_scoped` | 0.90 | The name was imported from the file that defines it |
+| `receiver_same_package` | 0.90 | The receiver is a class in the same package |
+| `receiver_typed_same_package` | 0.90 | The receiver's declared type is a class in the same package |
+| `receiver_field_same_package` | 0.90 | The receiver is a field whose type is a class in the same package |
+| `receiver_framework_same_package` | 0.90 | A framework decorator retyped the receiver to a class in the same package |
+| `return_type_same_package` | 0.90 | The inner call's declared return type is a class in the same package |
+| `self_inherited` | 0.90 | `self` / `this` names a method declared by one ancestor |
+| `enclosing_inherited` | 0.90 | A bare call names a method declared by one ancestor |
+| `package_alias` | 0.88 | The call is qualified by a package the repo declares |
+| `module_alias` | 0.88 | The receiver is an imported module |
+| `crate_root` | 0.88 | The reference is scoped to its Rust crate |
+| `receiver_import` | 0.88 | The receiver's class was found in an imported file |
+| `receiver_typed_import` | 0.88 | The receiver's type was read off its declaration, then found in an imported file |
+| `receiver_field_import` | 0.88 | The receiver is a field whose type was found in an imported file |
+| `receiver_framework_import` | 0.88 | A framework decorator retyped the receiver to a class in an imported file |
+| `receiver_extension_import` | 0.88 | An imported file extends the receiver's type with this method |
+| `receiver_chain_import` | 0.88 | A chained field receiver resolves through an imported type at its weakest hop |
+| `return_type_import` | 0.88 | The inner call's declared return type was found in an imported file |
+| `import_merged` | 0.85 | The name is in one of the imported files, but the file is unattributed |
+| `same_target` | 0.85 | The target is a sibling translation unit in the same build target |
+| `receiver_global` | 0.75 | The `(class, method)` pair exists *somewhere* in the repo |
+| `receiver_typed_global` | 0.75 | The inferred type and method pair exists somewhere in the repo |
+| `receiver_field_global` | 0.75 | The field's type and method pair exists somewhere in the repo |
+| `receiver_framework_global` | 0.75 | The framework type and method pair exists somewhere in the repo |
+| `receiver_extension_global` | 0.75 | One extension method in the repo extends this type with this name |
+| `return_type_global` | 0.75 | The returned type and method pair exists somewhere in the repo |
+| `global_unique` | 0.50 | The name is unique repo-wide. **A guess, and labelled as one** |
+
+That is the complete vocabulary of 39. You can filter a graph by confidence, and
+both the MCP tools and the web UI surface which origin produced an edge, so an
+agent reading an execution flow can tell a fact from an inference. Receiver
+typing, execution-flow terminations and the edge types are in
+[GRAPH.md](GRAPH.md).
+
+## Extensions and imports
+
+Each Full and Good language claims its usual file extensions (C++ also claims
+headers such as `.hpp`, `.inl` and `.tpp`) and resolves imports through its own
+build files: tsconfig path aliases and workspaces, Maven and Gradle reactors,
+`go.mod`, `Cargo.toml`, `compile_commands.json`, `.csproj` / `.sln`, PSR-4,
+`pubspec.yaml`, `project.godot` and so on. The table per language is in
+[architecture/language-support.md](../architecture/language-support.md#extensions-and-import-resolution).
+
+`.svelte`, `.vue`, `.astro` and Razor files are projected into TypeScript or C# at the
+same byte offsets, so they get that language's queries and health markers and
+every line number points at the real source. How the projection works:
+[architecture/language-support.md](../architecture/language-support.md#multi-language-files-the-sfc-pattern).
+
+## Framework-aware edges
+
+Routes connect to handlers, DI registrations to implementations, and test
+fixtures to the tests that use them. The dead-code analyzer also knows each
+ecosystem's entry points and generated files, so framework-invoked code is not
+reported as unreachable.
 
 | Language | Frameworks |
 |----------|-----------|
-| Python | Django, FastAPI, Flask, pytest fixtures |
-| Ruby | Rails (routes → controller actions, Zeitwerk autoloading), RSpec mirror edges |
-| Java / Kotlin | Spring (stereotypes, `@RequestMapping`, Spring Data, `@Bean`), Jakarta / JPA, Quarkus, Micronaut, Android manifest |
-| C# | ASP.NET (attribute + minimal API), EF Core, gRPC-dotnet, host-builder extension methods, CommunityToolkit MVVM |
-| Go | net/http, gin, echo, chi, gRPC server registration |
-| Rust | Axum, Actix route → handler |
-| JS / TS | Next.js App Router, Hono / Fastify / Koa / Elysia, Remix / SvelteKit / Astro, tRPC, Express / NestJS |
+| Python | Django, FastAPI, Flask, Celery, pytest fixtures |
+| Ruby | Rails (routes to controller actions, Zeitwerk), RSpec mirror edges |
+| Java / Kotlin | Spring, Jakarta / JPA, Quarkus, Micronaut, Android manifest |
+| C# | ASP.NET (attribute and minimal API), EF Core, gRPC-dotnet, host-builder extensions, CommunityToolkit MVVM |
+| Go | net/http, gin, echo, chi, fiber, gorilla/mux, gRPC server registration |
+| Rust | Axum, Actix |
+| JS / TS / Svelte | Next.js App Router, Hono / Fastify / Koa / Elysia, Remix / SvelteKit / Astro, tRPC, Express / NestJS, Angular |
 | C++ | GoogleTest, Catch2, Boost.Test, doctest, Google Benchmark, libFuzzer |
+| PHP | Laravel, TYPO3 |
+| Dart | Flutter route tables, `runApp()` and widget trees |
+| GDScript | Godot scenes, autoloads, signal connections, `class_name` |
+| Apex (Salesforce) | Lightning Web Components, Aura, Visualforce, flows, Lightning pages and quick actions as entry points, object and field metadata, Apex REST resources |
 
-The dead-code analyzer understands each ecosystem's entry points, generated-file
-conventions, and never-flag globs so build products and framework-invoked code
-aren't reported as unreachable. (Full per-language detail:
-[architecture/language-support.md](../architecture/language-support.md).)
+## Beyond code files
 
----
+### SQL / dbt
 
-## Good tier
+- Parsed by sqlglot (multi-dialect, error-tolerant), not tree-sitter. Set
+  `sql_dialect` in config for dialect-specific syntax. A file that fails to
+  parse is kept as plain text.
+- `CREATE TABLE` / `VIEW` become class-kind symbols with columns in the
+  signature; `CREATE FUNCTION` / `PROCEDURE` become functions.
+- dbt `{{ ref('model') }}` and `{{ source(...) }}` become import edges, so model
+  lineage, hotspots, co-change and ownership work on dbt projects. Outside dbt,
+  `.sql` files get symbols and pages but no import edges.
+- In workspace mode, tables defined by DDL, migrations or ORM models pair with
+  the SQL in app code that reads them. See [WORKSPACES.md](../scale/WORKSPACES.md).
+- Stored routines get cyclomatic complexity, plus `sql_select_star`,
+  `sql_update_delete_without_where` and `sql_cartesian_join`. These are
+  uncalibrated, so they appear as findings and never move the defect score.
 
-AST parsing, symbol extraction, import resolution, call resolution, named
-bindings, and heritage (Swift extension conformance, PHP trait use, Dart
-mixins). Dedicated workspace resolvers per language.
+### Shell
 
-| Language | Extensions | Import style |
-|----------|-----------|--------------|
-| **C** | `.c` | `#include` via `compile_commands.json` (shares C++ grammar) |
-| **Swift** | `.swift` | `import` with SPM `Package.swift` target → directory mapping; intra-module type references; `@main` entry points |
-| **PHP** | `.php` | `use Foo\Bar\Baz` with composer.json PSR-4 longest-prefix resolution; Laravel, TYPO3 edges |
-| **Dart** | `.dart` | `import` / `export` / `part` URIs; `package:` via every `pubspec.yaml`; Flutter route tables and `runApp()` edges; **code-health markers** |
+`.sh` / `.bash` / `.zsh`: functions become symbols, `source` / `.` statements
+become import edges (including the `$SCRIPT_DIR/x.sh` and `$(dirname "$0")/x.sh`
+idioms), and calls to functions in the same or a sourced file resolve. Shell
+gets function-level complexity and no dead-code flagging, because scripts are
+invoked by name.
 
----
+### Lightweight and config files
 
-## SQL + dbt
-
-SQL is parsed by a dedicated sqlglot handler (multi-dialect, error-tolerant)
-rather than tree-sitter, plus the lightweight import tier for dbt lineage.
-
-- **DDL symbols** (any `.sql` file), `CREATE TABLE` / `VIEW` /
-  `MATERIALIZED VIEW` become class-kind symbols with columns in the signature;
-  `CREATE FUNCTION` / `PROCEDURE` become function-kind symbols, with wiki pages
-  and `get_symbol` lookups. Set `sql_dialect` in config for dialect-specific
-  syntax (`postgres`, `mysql`, `tsql`, `clickhouse`, …). Any parse problem
-  degrades the file to passthrough, never a crash, never a guess.
-- **dbt lineage** (gated on `dbt_project.yml`), `{{ ref('model') }}` and
-  `{{ source('schema', 'table') }}` become real import edges resolved against a
-  per-project model-name index, so model-level lineage, hotspots, co-change,
-  ownership, and communities all fall out free.
-- **App-to-database contracts** (workspace mode), pairs table *providers* (DDL,
-  Alembic, ORM entities) with table *consumers* (SQL string literals in app
-  code) into `data` contracts on the Live System Map. See
-  [WORKSPACES.md](../scale/WORKSPACES.md).
-- **Health markers**, stored routines get cyclomatic complexity;
-  `sql_select_star`, `sql_update_delete_without_where`, and `sql_cartesian_join`
-  ride the sqlglot AST. All uncalibrated by construction and never move the
-  defect headline. See [CODE_HEALTH.md](CODE_HEALTH.md).
-
----
-
-## Lightweight, Partial, and Structural tiers
-
-**Lightweight** (Elixir, Clojure, Haskell, Lean 4, Erlang, F#), no AST parsing,
-but a real file-level import graph from a regex tier: import statements are
-extracted per-language and resolved against a declared module-name index. The
-knowledge graph runs in flow/sparse mode on the result: honest file-to-file
-dependencies, no symbol-level claims. F# additionally honours the fsproj
-`<Compile Include>` compile-order spine.
-
-**Partial** (Luau / Roblox), AST symbols, Luau type aliases, and `require(...)`
-capture are wired. Import resolution handles string literals, `script` relative
-instance paths (including `:WaitForChild` idioms), absolute Roblox paths via
-Rojo's `default.project.json`, and `@alias` requires via `.luaurc`. No health
-markers yet.
-
-**Shell** (`.sh` / `.bash` / `.zsh`), function definitions (both `foo()` and
-`function foo` forms) become symbols, `source` / `.` statements become import
-edges, and calls to functions defined in the same or a sourced file resolve to
-call edges (external binaries like `grep` mint no edge). Import resolution
-covers literal relative paths plus the common directory-anchor idioms
-(`$SCRIPT_DIR/x.sh`, `$(dirname "$0")/x.sh`, `${BASH_SOURCE%/*}/x.sh`) and
-project-root anchors (`$BATS_ROOT/$LIBDIR/lib/x.sh`) via a unique path-suffix
-match; genuinely dynamic paths (`source "$1"`) stay external. Shell also gets
-**function-level complexity** markers (CCN / nesting / cognitive, with `&&` /
-`||` command lists counted). tree-sitter-bash parses the bash/POSIX subset, so
-zsh mostly works and fish does not; any parse error degrades that file to
-passthrough. No class metrics, heritage, bindings, or dead-code flagging (shell
-scripts are invoked by name, so static reachability is meaningless).
-
-**Structural** (Objective-C, R, Zig, Julia, Elm, OCaml, Crystal, Nim, D) -
-tracked in git history (blame, hotspots, co-change) but no AST parsing. Files
-appear in the wiki as traversal-level entries, and the knowledge graph runs in
-structural mode: it orients by directory structure, naming, and git evidence,
-and never claims an execution flow it cannot see.
-
----
+- Lightweight languages resolve imports against a declared module-name index.
+- OpenAPI, Protobuf, GraphQL, Dockerfile, Makefile, YAML, JSON, TOML, Terraform
+  and Markdown appear in the file tree and the wiki.
+- HTML contributes `<script src>` and `<link href>` edges, so `index.html`
+  reaches `src/main.ts` in a Vite or webpack app.
+- HTML and QML files are never flagged as dead code, since whether a page or a
+  Qt component is reachable is decided at runtime.
+- OpenAPI and Protobuf also feed workspace contracts, and Terraform feeds AWS
+  Lambda handler edges.
+- Godot resource files (`.tscn`, `.tres`, `.escn`, `project.godot`,
+  `plugin.cfg`) carry no symbols but are read for the script paths they name.
+- Salesforce flows and object and field metadata become symbols; Aura and
+  Visualforce markup carries none. All of them link the Apex, components and
+  objects they name.
 
 ## Code-health coverage
 
-Code-health markers run off a per-language complexity-walker map that is
-**independent** of `.scm` parsing, a language can parse perfectly for the graph
-yet still need this map before health markers fire. This table is why a language
-is "Full" vs "Good".
+Health markers need a per-language walker map that is separate from parsing, so
+a language can parse fully for the graph and still produce no health findings.
+This table is why a language is Full and not Good.
 
-| Language | Complexity / nesting | Class metrics (LCOM4, god-class) | Assertion smells | Extract Method (dataflow) | Performance risk |
-|----------|:---:|:---:|:---:|:---:|:---:|
-| Python | ✅ | ✅ | ✅ | ✅ | ✅ |
-| TypeScript / JavaScript | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Java | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Go | ✅ | n/a¹ | ✅ | ✅ | ✅ |
-| Rust | ✅ | ✅ | ✅ | ✅ | ✅² |
-| C# | ✅ | ✅ | ✅ | later | ✅ |
-| Kotlin | ✅ | ✅ | ✅ | later | later |
-| C++ | ✅ | ✅ | ✅ | later | later |
-| Dart | ✅ | n/a³ | ✅ | later | ✅ |
-| Scala | ✅ | ✅ | ✅⁴ | later | ✅⁵ |
-| Ruby | ✅ | ✅⁶ | ✅⁷ | later | ✅⁸ |
-| Shell | ✅⁹ | n/a | n/a | n/a | n/a |
+| Language | Complexity / nesting | Class metrics | Assertion smells | Mock saturation | Assertion-free test | Extract Method | Performance risk |
+|----------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| Python | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| TypeScript / JavaScript | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Svelte, Vue, Astro | ✅ | ✅ | ✅ | no | no | ✅ | ✅ |
+| Java | ✅ | ✅ | ✅ | no | no | ✅ | ✅ |
+| Go | ✅ | n/a | ✅ | no | no | ✅ | ✅ |
+| Rust, C++, C# | ✅ | ✅ | ✅ | no | no | ✅ | ✅ |
+| Scala | ✅ | ✅ | ✅ | no | no | ✅ | ✅ |
+| Ruby | ✅ | ✅ | ✅ | no | no | no | ✅ |
+| Kotlin | ✅ | ✅ | ✅ | no | no | no | ✅ |
+| Dart | ✅ | ✅ | ✅ | no | no | no | ✅ |
+| Object Pascal | ✅ | n/a | ✅ | n/a | n/a | no | ✅ |
+| Razor | ✅ | n/a | n/a | n/a | n/a | no | ✅ |
+| PHP | ✅ | ✅ | ✅ | no | no | ✅ | no |
+| C | ✅ | no | no | no | no | ✅ | no |
+| F#, Objective-C | ✅ | ✅ | no | no | no | no | no |
+| Apex | ✅ | ✅ | ✅ | no | no | ✅ | ✅ |
+| Shell | ✅ | n/a | n/a | n/a | n/a | n/a | n/a |
 
-¹ Go methods attach to a type via an external receiver rather than nesting in a
-class body, so class-level metrics aren't computable; Go gets the function- and
-assertion-level markers.
-² Rust omits `string_concat_in_loop` by design (`String::push_str` is amortized
-O(1), so it would be a guaranteed false positive).
-³ Dart assertion smells cover `assert` statements only; `expect()` calls have no
-call-node type to key on.
-⁴ Plain `assert(...)` and munit/JUnit-style `assert*` calls are counted;
-ScalaTest's infix DSL (`x shouldBe y`) has no assert-prefixed callee and is not.
-⁵ Rides the JVM sink lexicon (JDBC / JPA / Spring-Data interop) plus
-Scala-native boundaries (`scala.io.Source`, os-lib, sttp / http4s, Slick /
-doobie). Scala-specific markers: `"...".r` regex recompile in a loop and
-`Await.result` / `Thread.sleep` inside a `Future`-returning def
-(`blocking_sync_in_async`). Combinator iteration (`.map` / `.foreach`) is not
-loop-tracked yet; loops are `while` / `do-while` / for-comprehensions.
-⁶ Class size / method-count / god-class facts only. LCOM4 deliberately sits at
-its "no signal" valve: idiomatic Ruby reaches state via receiver-less `@ivar`
-reads and bare sibling-method calls, so the only mappable shape (`self.member`)
-is too sparse to build an honest cohesion graph on. `@ivar` text grouping is a
-possible follow-up.
-⁷ Bare `assert` and minitest `assert_*` calls plus RSpec `expect(...)` chains
-are counted; minitest's `refute_*` family is not (no assert/expect prefix), and
-RSpec examples (`it ... do` blocks) are not methods, so assertion-run smells
-fire on minitest-style test methods only.
-⁸ **Loops include Ruby's real iteration idiom**: a combinator call with an
-inline block (`.each` / `.map` / `.times` / `find_each` …) counts as a loop
-scope — the block body is per-iteration, the receiver runs once, and
-literal-receiver bounds (`3.times`, `[1, 2].each`, `ALL_CAPS.each`) are
-constant-suppressed. ActiveRecord sinks are stratified: distinctive verbs
-(`find_by` / `pluck` / `update_all` / bang persistence `create!`…) fire
-ungated, `where` needs a constant-rooted receiver, and collision-prone verbs
-(`find` / `first` / `count` / `save`…) need a classified db `require` — which
-Zeitwerk-autoloaded Rails files rarely carry, a deliberate recall ceiling that
-keeps in-memory `Registry.find(name)` lookups silent. Backticks / `system` /
-`Open3` are subprocess sinks; `s += "…"` in a loop is flagged while `s << x`
-(amortized append) never is.
+✅ supported, "no" not available yet, n/a the language cannot carry that metric.
 
-⁹ Shell gets function-level complexity only (CCN / nesting / cognitive / NLOC).
-`&&` / `||` command lists count toward CCN (`cmd || exit 1` is +1), which is
-honest: shell branching is chained command lists. There are no classes,
-assertions, dataflow, or perf dialect for shell.
+- Dart, F# and Objective-C report class size, method count and CCN (supporting
+  detectors like God Class), but do not compute cohesion metrics (LCOM4).
+- An unmapped language produces no findings, never guessed ones.
+- Apex also gets four advisory markers: SOQL injection, a class with queries and
+  no sharing keyword, hardcoded record Ids and `SeeAllData=true` tests.
+- The two test-quality markers (mock saturation, assertion-free test) are
+  advisory and never deduct from a score.
 
-The **performance** signal (`io_in_loop`, `string_concat_in_loop`,
-`resource_construction_in_loop`, language-specific markers like Go
-`defer_in_loop` and C# sync-over-async) and the **dataflow** layer (powering
-Extract Method) each roll out per language in value order, degrading to silence
-where a dialect isn't wired yet. Per-marker mechanics and precision hazards:
-[CODE_HEALTH.md](CODE_HEALTH.md).
+Why Go and Java are held back from the test-quality markers, and why Kotlin's
+Extract Method waits on its grammar:
+[architecture/language-support.md](../architecture/language-support.md#test-quality-markers-per-language).
+Per-marker detail: [CODE_HEALTH.md](CODE_HEALTH.md).
 
----
+## Limits
+
+- Template dialects (Django/Jinja, Go templates, ERB, Handlebars, Blade,
+  Thymeleaf) parse as HTML and yield nothing.
+- Svelte and Vue binding forms (`{#each}`, `v-for`) are not resolved, and the
+  unused-export pass is off for both.
+- Razor has no import edges.
+- Scala import resolution is partial, and the Elixir and F# import resolvers
+  have known gaps.
+- COBOL dynamic `CALL` targets and free-format source produce no edges.
+- C has no performance risk support.
+- Salesforce references are followed when the name is literal: runtime-built
+  names and objects with no metadata file in the repository get no edge.
+
+The full list per language, with the mechanics behind each gap, is in
+[architecture/language-support.md](../architecture/language-support.md#known-gaps-per-language).
 
 ## Roadmap
 
-| Language | Target tier | Status |
-|----------|------------|--------|
-| Dart | Good | Shipped: AST, health control-flow + class facts, perf dialect, Flutter edges. Next: riverpod/get_it dynamic hints, dataflow dialect |
-| Scala | Full (health) | Shipped: complexity/class/assertion markers + perf dialect (JVM lexicon, `.r` recompile, sync-over-Future). Next: dataflow dialect, combinator (`.map`/`.foreach`) loop tracking via the shared `block_loop_body` hook Ruby established |
-| Ruby | Full (health) | Shipped: complexity/class/assertion markers + perf dialect with block-iteration loops (`.each`/`.map` blocks) and the stratified ActiveRecord N+1 lexicon. Next: dataflow dialect, LCOM4 via `@ivar` grouping |
-| Kotlin / C++ | Full (health) | Perf + dataflow dialects pending; everything else shipped |
-| C# | Full (health) | Dataflow dialect pending; perf shipped |
-| Elixir | Good | Lightweight tier shipped; AST upgrade planned (`tree-sitter-elixir` available) |
-| F# | Good | Lightweight tier shipped; AST upgrade planned (`tree-sitter-f-sharp` available) |
-| SQL / dbt | - | DDL symbols, dbt lineage, app-to-database contracts, health markers shipped. Next: column-level blast radius |
-| Shell | - | Function symbols, `source` import edges, function-level complexity shipped. Next: shebang-based detection of extensionless executables (a traverser capability) |
+| Language | Next |
+|----------|------|
+| Vue, Svelte | Template binding forms (`v-for`, `{#each}`) |
+| Kotlin | Extract Method, which needs a grammar that labels control flow |
+| Ruby | Extract Method (dataflow dialect) |
+| GDScript | Health markers (complexity, performance, dataflow) |
+| Object Pascal | A dedicated `uses` resolver |
+| COBOL | Dialect coverage, health markers beyond complexity |
+| VB.NET, Elixir | Health markers |
+| F#, Objective-C | Health markers beyond complexity |
+| SQL / dbt | Column-level blast radius |
+| Shell | Shebang detection for extensionless executables |
 
----
+## Requesting or adding a language
+
+To ask for a language, open an issue on
+[GitHub](https://github.com/repowise-dev/repowise/issues) with a public repo
+that uses it. To add one yourself, the contributor recipe (a `LanguageSpec`, a
+tag, a tree-sitter query, a config entry and the grammar dependency) is in
+[architecture/language-support.md](../architecture/language-support.md#adding-a-new-language),
+and the general contribution flow is in
+[CONTRIBUTING.md](../../.github/CONTRIBUTING.md). A new language starts on the
+Good or Partial rung; health markers come from separate registries described in
+the same architecture page.
 
 ## See also
 
-- [architecture/language-support.md](../architecture/language-support.md), pipeline internals + how to add a language
-- [CODE_HEALTH.md](CODE_HEALTH.md), code-health markers and per-language precision
-- [WORKSPACES.md](../scale/WORKSPACES.md), cross-repo contracts and co-change
+- [GRAPH.md](GRAPH.md): edge vocabulary, resolution origins, execution flows
+- [architecture/language-support.md](../architecture/language-support.md): pipeline internals and per-language mechanics
+- [CODE_HEALTH.md](CODE_HEALTH.md): health markers
+- [BENCHMARKS.md](../BENCHMARKS.md#accuracy-by-language): measured accuracy per language
+- [WORKSPACES.md](../scale/WORKSPACES.md): cross-repo contracts

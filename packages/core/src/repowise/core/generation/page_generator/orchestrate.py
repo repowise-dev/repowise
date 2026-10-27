@@ -12,13 +12,17 @@ purely a structural split to satisfy the project's 400-line ceiling.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from ...persistence.vector_store import embed_item
+from ...pipeline.phase_timing import timed
 from ..context_assembler import FilePageContext
+from ..mermaid_safety import sanitize_pages
 from ..models import (
     STRUCTURALLY_KEYED_PAGE_TYPES,
     STUB_FALLBACK_ERROR,
@@ -40,6 +44,43 @@ if TYPE_CHECKING:
     from .core import PageGenerator
 
 log = structlog.get_logger(__name__)
+
+
+def _free_page_types() -> frozenset[str]:
+    """Page types rendered from a template, with no provider call.
+
+    Deferred import on purpose: ``cost_estimator`` reaches back into
+    ``generation.selection``, so importing it at module scope from inside the
+    generation package risks a partially-initialised cycle. Reused rather than
+    restated because that set is already the repo's answer to "does this page
+    cost tokens", and a second copy here is what would drift the first time a
+    page type changes tier.
+    """
+    from repowise.core.cost_estimator import STRUCTURAL_PAGE_TYPES
+
+    return frozenset(STRUCTURAL_PAGE_TYPES)
+
+
+def _count_free_ids(page_ids: Any) -> int:
+    """How many of *page_ids* are free-tier, read off the id's type prefix.
+
+    Page ids are ``"<page_type>:<target>"``, so the prefix is the tier without
+    needing the pages themselves — which matters here because these are
+    completed ids recovered from a prior run, not objects in hand.
+    """
+    free = _free_page_types()
+    return sum(1 for page_id in page_ids if str(page_id).split(":", 1)[0] in free)
+
+
+def _announce_paid(on_subphase: Any, total: int) -> None:
+    """Start the model-backed bar, or leave it off a run that has none.
+
+    A deterministic run makes no model calls at all, and a bar sitting at 0/0
+    for its whole duration is an unanswered question rather than an answer.
+    """
+    if total > 0 and on_subphase is not None:
+        with contextlib.suppress(Exception):
+            on_subphase("generation.llm", total)
 
 
 class _GenerationRun:
@@ -69,6 +110,10 @@ class _GenerationRun:
         kg_data: dict | None = None,
         only_page_ids: set[str] | None = None,
         preserved_page_ids: set[str] | None = None,
+        timings: Any | None = None,
+        on_warning: Callable[[str], None] | None = None,
+        persisted_page_ids: set[str] | None = None,
+        on_embed: Callable[[int, bool], None] | None = None,
     ) -> None:
         self.gen = gen
         self.config = gen._config
@@ -86,6 +131,9 @@ class _GenerationRun:
         # wiki the resumed run was there to protect. None when the caller does
         # not care (every non-resume path).
         self.preserved_page_ids = preserved_page_ids
+        # Resume: the ids that already have a stored page row, or None when the
+        # caller cannot tell. See ``_seed_resume``.
+        self.persisted_page_ids = persisted_page_ids
         self.parsed_files = parsed_files
         self.source_map = source_map
         self.graph_builder = graph_builder
@@ -101,6 +149,8 @@ class _GenerationRun:
         self.on_page_ready = on_page_ready
         self.on_total_known = on_total_known
         self.on_subphase = on_subphase
+        self.on_warning = on_warning
+        self.on_embed = on_embed
         self.git_meta_map = git_meta_map
         self.resume = resume
         self.repo_path = repo_path
@@ -148,6 +198,10 @@ class _GenerationRun:
             self.kg_ctx = KnowledgeGraphContext(kg_path)
 
         # ---- Run bookkeeping ----
+        # Shared PhaseTimings table, or None outside a timed run. Generation is
+        # one opaque phase without it, and its levels differ by orders of
+        # magnitude in cost, so a regression in one hides inside the total.
+        self.timings = timings
         self.semaphore = asyncio.Semaphore(self.config.max_concurrency)
         self.completed_page_summaries: dict[str, str] = {}
         self.completed_ids: set[str] = set()
@@ -185,7 +239,8 @@ class _GenerationRun:
             if self.repo_path
             else str(getattr(self.repo_structure, "root_path", "."))
         )
-        # On resume, query the vector store directly — it is the ground truth.
+        # On resume, completed ids come from the vector store (narrowed to
+        # pages with a stored row when the caller knows them).
         if self.resume and self.vector_store is not None:
             # Note: caller drives this synchronously enough; resume seeding is
             # awaited in execute() to keep __init__ side-effect free.
@@ -196,7 +251,7 @@ class _GenerationRun:
             self.gen._provider.provider_name,
             self.gen._provider.model_name,
         )
-        self.gen._last_job_id = self.job_id
+        self.gen.last_job_id = self.job_id
 
     def _emit(self, page_id: str) -> bool:
         """Whether this run should generate ``page_id``.
@@ -220,6 +275,12 @@ class _GenerationRun:
     async def _seed_resume(self) -> None:
         if self.job_system is not None and self.resume and self.vector_store is not None:
             self.completed_ids = await self.vector_store.list_page_ids()
+            # The vector and the page row are written separately, so a run
+            # killed between the two leaves a vector with no page. Counting it
+            # as done would skip it forever, so a page is done only when both
+            # landed.
+            if self.persisted_page_ids is not None:
+                self.completed_ids &= self.persisted_page_ids
             if self.completed_ids:
                 log.info(
                     "Resuming generation from vector store",
@@ -408,6 +469,12 @@ class _GenerationRun:
                     scope=scope_of.get(mg.structural_key, mg.scope),
                 )
             )
+        # A chapter is named from the leaves under it, and those leaves have
+        # just been renamed, so the names it was given at selection are stale.
+        # Same rule, same function; the model never names a chapter directly.
+        from ..selection.selector import retitle_chapters
+
+        groups_out = retitle_chapters(groups_out)
         # Generation order is left alone: it is summed PageRank, so the most
         # central subsystem is written first and lands in the store earliest.
         # Where the reader meets each page is ``order``, applied by the tree.
@@ -429,9 +496,12 @@ class _GenerationRun:
         # still an upper bound (a page may gate-skip at build time), matching
         # the contract the caller reconciles against the real completed count.
         if self.only_page_ids is not None:
-            remaining = len(self.only_page_ids - self.completed_ids)
+            remaining_ids = self.only_page_ids - self.completed_ids
+            remaining = len(remaining_ids)
+            free_remaining = _count_free_ids(remaining_ids)
             if self.on_total_known is not None:
-                self.on_total_known(remaining)
+                self.on_total_known(free_remaining)
+            _announce_paid(self.on_subphase, remaining - free_remaining)
             if self.job_system is not None and self.job_id is not None:
                 self.job_system.start_job(self.job_id, remaining)
             return
@@ -460,9 +530,21 @@ class _GenerationRun:
             + counts["infra_page"]
             + onboarding_page_count
         )
-        remaining_total = max(0, estimated_total - len(self.completed_ids))
+        # Split the total across the two progress bars. One bar counting both
+        # tiers reads as frozen: the free levels run first, so it reaches ~97%
+        # in minutes and then crawls for the rest of the run while the ~95
+        # model-backed pages finish. The paid count is the remainder rather
+        # than a second sum, so the two always add back to the total this
+        # already reported and the job system still books the whole run.
+        free_total = sum(counts.get(page_type, 0) for page_type in _free_page_types())
+        done_free = _count_free_ids(self.completed_ids)
+        remaining_free = max(0, free_total - done_free)
+        remaining_paid = max(
+            0, (estimated_total - free_total) - (len(self.completed_ids) - done_free)
+        )
         if self.on_total_known is not None:
-            self.on_total_known(remaining_total)
+            self.on_total_known(remaining_free)
+        _announce_paid(self.on_subphase, remaining_paid)
         if self.job_system is not None and self.job_id is not None:
             self.job_system.start_job(self.job_id, estimated_total)
 
@@ -484,7 +566,7 @@ class _GenerationRun:
         the import graph) and reference only pages that will exist, so neither
         spawns new LLM work.
         """
-        from ..layers import compute_layer_order, infer_layer, layer_key
+        from ..layers import compute_layer_order, infer_layer, is_adjacent_layer, layer_key
         from ..tour import build_tour
 
         import_edges = self._file_import_edges()
@@ -541,7 +623,12 @@ class _GenerationRun:
             file_layers[path] = layer_id
             display_of.setdefault(layer_id, display)
         self.layer_order_ids = compute_layer_order(file_layers, import_edges)
-        self.layer_order = [display_of.get(lid, lid) for lid in self.layer_order_ids]
+        # Tests keep their place in the tree but are not a layer of the stack.
+        self.layer_order = [
+            display_of.get(lid, lid)
+            for lid in self.layer_order_ids
+            if not is_adjacent_layer(lid)
+        ]
 
     # ------------------------------------------------------------------
     # Level runner
@@ -551,130 +638,179 @@ class _GenerationRun:
         self, named_coros: list[tuple[str, Any]], level: int
     ) -> list[GeneratedPage]:
         """Run one level's coroutines under the shared semaphore + embed batch."""
-        if self.job_system is not None and self.job_id is not None:
-            self.job_system.update_level(self.job_id, level)
+        try:
+            with timed(self.timings, f"generation.level{level}"):
+                with timed(self.timings, "generation.checkpoint"):
+                    if self.job_system is not None and self.job_id is not None:
+                        self.job_system.update_level(self.job_id, level)
 
-        # Pages finished during this level, collected for a single batched
-        # embed at the end. Embedding the whole wave in one call amortises the
-        # embedder round-trip and the level drains before the next level's RAG
-        # search runs, so there is no freshness regression.
-        embed_items: list[tuple[str, str, dict]] = []
+                # Pages finished during this level, collected for a single batched
+                # embed at the end. Embedding the whole wave in one call amortises the
+                # embedder round-trip and the level drains before the next level's RAG
+                # search runs, so there is no freshness regression.
+                embed_items: list[tuple[str, str, dict]] = []
 
-        async def guarded_named(page_id: str, coro: Any) -> Any:
-            try:
-                async with self.semaphore:
-                    result = await coro
+                async def guarded_named(page_id: str, coro: Any) -> Any:
+                    try:
+                        async with self.semaphore:
+                            result = await coro
 
-                if isinstance(result, GeneratedPage):
-                    # A page whose provider call raised comes back as its
-                    # structural stub rather than being dropped (issue #1089),
-                    # so the row exists and `repowise generate` can refill it.
-                    # It is still a failure: the job checkpoint has to say so,
-                    # or a run that lost half its pages reports a clean sweep.
-                    stub_error = result.metadata.get(STUB_FALLBACK_ERROR)
-                    if (
-                        stub_error is not None
-                        and self.job_system is not None
-                        and self.job_id is not None
-                    ):
-                        self.job_system.fail_page(self.job_id, page_id, stub_error)
-                    # Summary capture is cheap (string ops) — keep inline so
-                    # the next page's context assembly sees it immediately.
-                    self.completed_page_summaries[result.target_path] = overview_summary(
-                        result.content
-                    )
-                    # Progress tick fires the moment the page is ready.
-                    if self.on_page_done is not None:
-                        self.on_page_done(result.page_type)
-                    # Hand the full page to a streaming sink (incremental
-                    # persistence). Best-effort: a sink error must not drop the
-                    # page or abort the level.
-                    if self.on_page_ready is not None:
-                        try:
-                            self.on_page_ready(result)
-                        except Exception as exc:
-                            log.debug("on_page_ready.failed", error=str(exc))
-                    # A page reused verbatim from the prior run already has an
-                    # identical vector in any store that survives across runs;
-                    # re-embedding it re-bills the embedder for every unchanged
-                    # page on every update. Ephemeral stores start empty each
-                    # run and still need it.
-                    #
-                    # A stub standing in for a failed page is held back. Not to
-                    # save the embedding call: ``_seed_resume`` reads the store
-                    # back as the list of pages already done, so embedding the
-                    # stub is what would tell the next ``--resume`` there is
-                    # nothing left to write here. The page is still persisted
-                    # and full-text indexed; only the resume ledger is spared.
-                    if (
-                        self.vector_store is not None
-                        and stub_error is None
-                        and not (
-                            result.metadata.get("reused_from_prior_run")
-                            and getattr(self.vector_store, "persists_across_runs", False)
+                        if isinstance(result, GeneratedPage):
+                            # Sanitized before the streaming sink sees it, so the
+                            # first stored version is the final text. Left to the
+                            # post-generation pass alone, any page it changes was
+                            # written twice and archived a spurious version.
+                            try:
+                                sanitize_pages([result])
+                            except Exception as exc:
+                                log.debug("mermaid_safety.failed", error=str(exc))
+                            # A page whose provider call raised comes back as its
+                            # structural stub rather than being dropped (issue #1089),
+                            # so the row exists and `repowise generate` can refill it.
+                            # It is still a failure: the job checkpoint has to say so,
+                            # or a run that lost half its pages reports a clean sweep.
+                            stub_error = result.metadata.get(STUB_FALLBACK_ERROR)
+                            if (
+                                stub_error is not None
+                                and self.job_system is not None
+                                and self.job_id is not None
+                            ):
+                                with timed(self.timings, "generation.checkpoint"):
+                                    self.job_system.fail_page(self.job_id, page_id, stub_error)
+                            # Summary capture is cheap (string ops) — keep inline so
+                            # the next page's context assembly sees it immediately.
+                            self.completed_page_summaries[result.target_path] = overview_summary(
+                                result.content
+                            )
+                            # Progress tick fires the moment the page is ready.
+                            if self.on_page_done is not None:
+                                self.on_page_done(result.page_type)
+                            # Hand the full page to a streaming sink (incremental
+                            # persistence). Best-effort: a sink error must not drop the
+                            # page or abort the level.
+                            if self.on_page_ready is not None:
+                                try:
+                                    self.on_page_ready(result)
+                                except Exception as exc:
+                                    log.debug("on_page_ready.failed", error=str(exc))
+                            # A page reused verbatim from the prior run already has an
+                            # identical vector in any store that survives across runs;
+                            # re-embedding it re-bills the embedder for every unchanged
+                            # page on every update. Ephemeral stores start empty each
+                            # run and still need it.
+                            #
+                            # A stub standing in for a failed page is held back. Not to
+                            # save the embedding call: ``_seed_resume`` reads the store
+                            # back as the list of pages already done, so embedding the
+                            # stub is what would tell the next ``--resume`` there is
+                            # nothing left to write here. The page is still persisted
+                            # and full-text indexed; only the resume ledger is spared.
+                            if (
+                                self.vector_store is not None
+                                and stub_error is None
+                                and not (
+                                    result.metadata.get("reused_from_prior_run")
+                                    and getattr(self.vector_store, "persists_across_runs", False)
+                                )
+                            ):
+                                # None below the information floor: the page is kept and
+                                # still resolves as a link target, it just gets no
+                                # vector. ``embed_item`` tallies those itself, so the
+                                # run can report how much it held back instead of
+                                # leaving the index quietly smaller than the wiki.
+                                item = _embed_item(result)
+                                if item is not None:
+                                    embed_items.append(item)
+                        return result
+                    except Exception as exc:
+                        if self.job_system is not None and self.job_id is not None:
+                            with timed(self.timings, "generation.checkpoint"):
+                                self.job_system.fail_page(self.job_id, page_id, str(exc))
+                        log.error(
+                            "page_generation_failed",
+                            page_id=page_id,
+                            level=level,
+                            error=str(exc),
                         )
-                    ):
-                        embed_items.append(_embed_item(result))
-                return result
-            except Exception as exc:
-                if self.job_system is not None and self.job_id is not None:
-                    self.job_system.fail_page(self.job_id, page_id, str(exc))
-                log.error(
-                    "page_generation_failed",
-                    page_id=page_id,
-                    level=level,
-                    error=str(exc),
-                )
-                return exc  # return as value so gather works
-            except BaseException:
-                # Cancellation (Ctrl+C teardown): CancelledError is a
-                # BaseException, so it skips the handler above. If the cancel
-                # landed while this page was still queued on the semaphore,
-                # ``coro`` was never started — close it so interpreter
-                # shutdown doesn't spray one "coroutine ... was never
-                # awaited" RuntimeWarning per pending page (issue #358).
-                # close() is a no-op on a coroutine that already ran.
-                coro.close()
-                raise
+                        return exc  # return as value so gather works
+                    except BaseException:
+                        # Cancellation (Ctrl+C teardown): CancelledError is a
+                        # BaseException, so it skips the handler above. If the cancel
+                        # landed while this page was still queued on the semaphore,
+                        # ``coro`` was never started — close it so interpreter
+                        # shutdown doesn't spray one "coroutine ... was never
+                        # awaited" RuntimeWarning per pending page (issue #358).
+                        # close() is a no-op on a coroutine that already ran.
+                        coro.close()
+                        raise
 
-        tasks = [guarded_named(pid, c) for pid, c in named_coros]
-        results = await asyncio.gather(*tasks)
-        # Embed the whole level in one batch before declaring it done — the
-        # next level's RAG search depends on these landing in the store.
-        # Embedding is a RAG enhancement, not load-bearing, so a failure must
-        # not abort generation — but it MUST be visible: a debug-level
-        # swallow here hid a 300k-token request rejection that silently lost
-        # every file-page embedding on init (`repowise reindex` repairs).
-        if embed_items and self.vector_store is not None:
-            try:
-                await self.vector_store.embed_batch(embed_items)
-            except Exception as e:
-                log.warning(
-                    "rag.embed_batch_failed",
-                    level=level,
-                    count=len(embed_items),
-                    error=str(e),
-                    hint="semantic search will miss these pages; run `repowise reindex` to repair",
-                )
-        pages = [r for r in results if isinstance(r, GeneratedPage)]
-        if self.job_system is not None and self.job_id is not None:
-            for r in pages:
-                # Already recorded as failed above. A page cannot be both, and
-                # "completed" is the half a reader would believe.
-                if r.metadata.get(STUB_FALLBACK_ERROR) is None:
-                    self.job_system.complete_page(self.job_id, r.page_id)
-        return pages
+                tasks = [guarded_named(pid, c) for pid, c in named_coros]
+                results = await asyncio.gather(*tasks)
+                # Embed the whole level in one batch before declaring it done — the
+                # next level's RAG search depends on these landing in the store.
+                # Embedding is a RAG enhancement, not load-bearing, so a failure must
+                # not abort generation — but it MUST be visible: a debug-level
+                # swallow here hid a 300k-token request rejection that silently lost
+                # every file-page embedding on init (`repowise reindex` repairs).
+                if embed_items and self.vector_store is not None:
+                    if self.on_embed is not None:
+                        self.on_embed(len(embed_items), False)
+                    with timed(self.timings, "generation.embed"):
+                        try:
+                            await self.vector_store.embed_batch(embed_items)
+                            if self.on_embed is not None:
+                                self.on_embed(len(embed_items), True)
+                        except Exception as e:
+                            self.gen.embed_failed_pages += len(embed_items)
+                            log.warning(
+                                "rag.embed_batch_failed",
+                                level=level,
+                                count=len(embed_items),
+                                error=str(e),
+                                hint="semantic search will miss these pages; run `repowise reindex` to repair",
+                            )
+                            if self.on_warning is not None:
+                                self.on_warning(
+                                    f"Embedding failed for {len(embed_items)} page(s) "
+                                    f"({type(e).__name__}: {e}) — semantic search will "
+                                    "miss them; run `repowise reindex` to repair."
+                                )
+                pages = [r for r in results if isinstance(r, GeneratedPage)]
+                with timed(self.timings, "generation.checkpoint"):
+                    if self.job_system is not None and self.job_id is not None:
+                        for r in pages:
+                            # Already recorded as failed above. A page cannot be both,
+                            # and "completed" is the half a reader would believe.
+                            if r.metadata.get(STUB_FALLBACK_ERROR) is None:
+                                self.job_system.complete_page(self.job_id, r.page_id)
+                return pages
+        finally:
+            # Level completion is the durability boundary for page
+            # completions, and a cancelled level flushes what it did finish
+            # rather than discarding it.
+            #
+            # Swallowed because this runs in a finally: a raise here would
+            # replace the level's result, or the CancelledError being
+            # delivered, with a disk error. The checkpoint is a progress
+            # record and nothing resumes from it, so losing one is worth
+            # strictly less than the outcome it would mask.
+            if self.job_system is not None and self.job_id is not None:
+                try:
+                    self.job_system.flush(self.job_id)
+                except Exception as exc:
+                    log.warning("job.checkpoint_flush_failed", level=level, error=str(exc))
 
     # ------------------------------------------------------------------
     # Orchestration
     # ------------------------------------------------------------------
 
     async def execute(self) -> list[GeneratedPage]:
-        self._setup_job()
-        await self._seed_resume()
-        await self._compute_selection()
-        self._announce_total()
-        self._compute_ia()
+        with timed(self.timings, "generation.setup"):
+            self._setup_job()
+            await self._seed_resume()
+            await self._compute_selection()
+            self._announce_total()
+            self._compute_ia()
 
         all_pages: list[GeneratedPage] = []
 
@@ -692,6 +828,7 @@ class _GenerationRun:
         # would rewrite a whole-repo page from a one-commit view. They stay as
         # the last full run left them.
         if getattr(self.config, "file_pages_only", False):
+            self.file_page_contexts.clear()
             return self._finalize(all_pages)
 
         # Level 3 (scc_page).
@@ -700,6 +837,14 @@ class _GenerationRun:
         # Level 4 (module_page).
         all_pages.extend(await self.run_level(_levels.build_level4_coros(self), 4))
 
+        # Level 4 is the last reader of the per-file contexts, and there is one
+        # per code file. Dropping them here rather than at the end of the run
+        # keeps them out of levels 6-8 and out of _finalize, whose interlinking
+        # and related-pages passes are themselves the memory-heaviest part of a
+        # large run (issue #1394). Every later level works off pages, the graph
+        # and the selection groups, none of which live in this map.
+        self.file_page_contexts.clear()
+
         # Level 5 was one page per KG layer. Those pages retired: the layer a
         # page belongs to is stamped on the page itself, so the docs tree can
         # group by it without a page to hang the group off.
@@ -707,9 +852,9 @@ class _GenerationRun:
         # Levels 6 (repo_overview), 7 (infra_page), and 8 (onboarding) share
         # no data dependencies — run merged.
         final = (
-            _levels.build_level6_coros(self)
+            await _levels.build_level6_coros(self)
             + _levels.build_level7_coros(self)
-            + _levels.build_level8_coros(self)
+            + await _levels.build_level8_coros(self)
         )
         final_pages = await self.run_level(final, 8)
         # Tag promoted onboarding slots (repo_overview / architecture_diagram).
@@ -738,98 +883,97 @@ class _GenerationRun:
         deterministic run still gets mermaid repair, interlinking, related
         pages and tour links over the pages it did produce.
         """
-        _stamp_structural_keys(all_pages)
+        with timed(self.timings, "generation.finalize"):
+            _stamp_structural_keys(all_pages)
 
-        # Place every page in the tree that MCP, the web app and the editor
-        # extension all read, instead of each deriving its own from paths.
-        #
-        # Skipped whenever this run holds only part of the wiki. Placement
-        # depends on the pages that are NOT in hand (which module a file sits
-        # under, who its siblings are), so a partial answer here would
-        # overwrite a correct stored one. Both partial shapes have to be
-        # named: a scoped run sets only_page_ids, and an incremental docs
-        # update stops the ladder after level 2 with file_pages_only, which
-        # leaves no overview, no modules and no layers to resolve against.
-        # Those runs are placed by the post-persist rebuild instead.
-        partial_run = bool(self.only_page_ids) or bool(
-            getattr(self.config, "file_pages_only", False)
-        )
-        if not partial_run:
+            # Place every page in the tree that MCP, the web app and the editor
+            # extension all read, instead of each deriving its own from paths.
+            #
+            # Skipped whenever this run holds only part of the wiki. Placement
+            # depends on the pages that are NOT in hand (which module a file sits
+            # under, who its siblings are), so a partial answer here would
+            # overwrite a correct stored one. Both partial shapes have to be
+            # named: a scoped run sets only_page_ids, and an incremental docs
+            # update stops the ladder after level 2 with file_pages_only, which
+            # leaves no overview, no modules and no layers to resolve against.
+            # Those runs are placed by the post-persist rebuild instead.
+            partial_run = bool(self.only_page_ids) or bool(
+                getattr(self.config, "file_pages_only", False)
+            )
+            if not partial_run:
+                try:
+                    from ..page_tree import assign_page_tree
+
+                    assign_page_tree(all_pages, self.layer_order_ids)
+                except Exception as exc:
+                    log.debug("page_tree.failed", error=str(exc))
+
+            # Post-generation: repair mermaid diagrams so illegal node IDs / unquoted
+            # labels in LLM output don't break the whole diagram in the renderer.
             try:
-                from ..page_tree import assign_page_tree
-
-                assign_page_tree(all_pages, self.layer_order_ids)
+                fixed = sanitize_pages(all_pages)
+                if fixed:
+                    log.info("mermaid_safety.applied", pages_changed=fixed)
             except Exception as exc:
-                log.debug("page_tree.failed", error=str(exc))
+                log.debug("mermaid_safety.failed", error=str(exc))
 
-        # Post-generation: repair mermaid diagrams so illegal node IDs / unquoted
-        # labels in LLM output don't break the whole diagram in the renderer.
-        try:
-            from ..mermaid_safety import sanitize_pages
-
-            fixed = sanitize_pages(all_pages)
-            if fixed:
-                log.info("mermaid_safety.applied", pages_changed=fixed)
-        except Exception as exc:
-            log.debug("mermaid_safety.failed", error=str(exc))
-
-        # Post-generation: resolve backtick refs into wiki links + backlinks.
-        try:
-            from ..interlinking import attach_wiki_links_and_backlinks
-
-            attach_wiki_links_and_backlinks(
-                all_pages,
-                self.parsed_files,
-                # On incremental updates only the affected pages are in
-                # all_pages; the persisted ids keep resolution repo-wide.
-                prior_page_ids=list(self.gen._prior_pages or {}),
-            )
-        except Exception as exc:
-            log.debug("interlinking.failed", error=str(exc))
-
-        # Post-generation: graph-derived related pages. Runs AFTER
-        # interlinking so prose-derived wiki_links win dedup and related
-        # entries only fill the gaps.
-        try:
-            from ..related_pages import attach_related_pages
-
-            attach_related_pages(
-                all_pages,
-                import_edges=self._file_import_edges(),
-                git_meta_map=self.git_meta_map,
-                module_groups=self.sel_module_groups,
-                pagerank=self.pagerank,
-                # On incremental updates only the affected pages are in
-                # all_pages; the persisted ids keep resolution repo-wide.
-                prior_page_ids=list(self.gen._prior_pages or {}),
-            )
-        except Exception as exc:
-            log.debug("related_pages.failed", error=str(exc))
-
-        # Post-generation: link KG tour steps to wiki page IDs.
-        if self.kg_ctx.available and self.repo_path:
+            # Post-generation: resolve backtick refs into wiki links + backlinks.
             try:
-                from ..kg_enrichment import enrich_tour_with_wiki_links
+                from ..interlinking import attach_wiki_links_and_backlinks
 
-                rp = (
-                    Path(self.repo_path) if not isinstance(self.repo_path, Path) else self.repo_path
+                attach_wiki_links_and_backlinks(
+                    all_pages,
+                    self.parsed_files,
+                    # On incremental updates only the affected pages are in
+                    # all_pages; the persisted ids keep resolution repo-wide.
+                    prior_page_ids=list(self.gen._prior_pages or {}),
                 )
-                kg_path = rp / ".repowise" / "knowledge-graph.json"
-                if kg_path.exists():
-                    enrich_tour_with_wiki_links(kg_path, all_pages)
             except Exception as exc:
-                log.debug("kg_enrichment.failed", error=str(exc))
+                log.debug("interlinking.failed", error=str(exc))
 
-        if self.job_system is not None and self.job_id is not None:
-            self.job_system.complete_job(self.job_id)
+            # Post-generation: graph-derived related pages. Runs AFTER
+            # interlinking so prose-derived wiki_links win dedup and related
+            # entries only fill the gaps.
+            try:
+                from ..related_pages import attach_related_pages
 
-        log.info(
-            "Generation complete",
-            total_pages=len(all_pages),
-            provider=self.gen._provider.provider_name,
-            model=self.gen._provider.model_name,
-        )
-        return all_pages
+                attach_related_pages(
+                    all_pages,
+                    import_edges=self._file_import_edges(),
+                    git_meta_map=self.git_meta_map,
+                    module_groups=self.sel_module_groups,
+                    pagerank=self.pagerank,
+                    # On incremental updates only the affected pages are in
+                    # all_pages; the persisted ids keep resolution repo-wide.
+                    prior_page_ids=list(self.gen._prior_pages or {}),
+                )
+            except Exception as exc:
+                log.debug("related_pages.failed", error=str(exc))
+
+            # Post-generation: link KG tour steps to wiki page IDs.
+            if self.kg_ctx.available and self.repo_path:
+                try:
+                    from ..kg_enrichment import enrich_tour_with_wiki_links
+
+                    rp = (
+                        Path(self.repo_path) if not isinstance(self.repo_path, Path) else self.repo_path
+                    )
+                    kg_path = rp / ".repowise" / "knowledge-graph.json"
+                    if kg_path.exists():
+                        enrich_tour_with_wiki_links(kg_path, all_pages)
+                except Exception as exc:
+                    log.debug("kg_enrichment.failed", error=str(exc))
+
+            if self.job_system is not None and self.job_id is not None:
+                self.job_system.complete_job(self.job_id)
+
+            log.info(
+                "Generation complete",
+                total_pages=len(all_pages),
+                provider=self.gen._provider.provider_name,
+                model=self.gen._provider.model_name,
+            )
+            return all_pages
 
 
 # How each structurally-keyed type derives its identity. Member-keyed types
@@ -874,6 +1018,20 @@ def _stamp_structural_keys(pages: list[GeneratedPage]) -> None:
             # curated id is the best identity available and is stable for a
             # layer; for the others this is a fallback, not the design.
             page.structural_key = page.target_path
+        if not page.structural_key:
+            # The fallback above is a target_path, and a page whose members are
+            # unknown *and* whose target_path is empty comes out of it with no
+            # identity at all. That page is not merely unkeyed: the stale-page
+            # sweep matches these three types by structural key, so an empty one
+            # is a page the sweep can neither find nor retire, and it strands as
+            # a duplicate on every later run. Nothing downstream can tell that
+            # from a type that is not keyed on purpose, which is why this raises
+            # here rather than being logged and carried.
+            raise ValueError(
+                f"structural key missing for {page.page_id!r} (type "
+                f"{page.page_type!r}): it has no member list and no target "
+                f"path, so there is nothing to identify it by."
+            )
 
 
 def _compute_kg_file_scores(kg_ctx: Any) -> dict[str, float]:
@@ -897,26 +1055,35 @@ def _compute_kg_file_scores(kg_ctx: Any) -> dict[str, float]:
     return scores
 
 
-def _embed_item(page: GeneratedPage) -> tuple[str, str, dict]:
+def _embed_item(page: GeneratedPage) -> tuple[str, str, dict] | None:
     """Build the ``(page_id, text, metadata)`` tuple for embedding.
+
+    ``None`` when the page falls below the information floor and should get no
+    vector; the caller counts those rather than embedding them.
 
     ``title`` is load-bearing, not decoration: it feeds the coverage rerank
     haystack and the grounding corpus on the serving side. Omitting it here
     (as this did until 2026-07) left every page embedded at generation time
     with a blank title, while ``reindex`` and ``doctor --repair`` set it, so
     the store disagreed with itself depending on how a page got there.
+
+    The recipe itself is shared with those two commands rather than repeated
+    here, which is what stops that class of disagreement recurring.
+
+    ``page.summary`` and not a summary derived here: it is the same field the
+    full-text index is given, so both arms describe a page the same way. The
+    two used to differ, and a page's summary then depended on which arm you
+    asked.
     """
-    summary = overview_summary(page.content)
-    return (
+    return embed_item(
         page.page_id,
-        page.content,
-        {
-            "title": page.title,
-            "page_type": page.page_type,
-            "target_path": page.target_path,
-            "content": page.content[:600],
-            "summary": summary,
-        },
+        title=page.title,
+        page_type=page.page_type,
+        target_path=page.target_path,
+        summary=page.summary,
+        content=page.content,
+        page_metadata=page.metadata,
+        digest=page.digest,
     )
 
 

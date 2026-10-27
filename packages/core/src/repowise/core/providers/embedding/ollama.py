@@ -12,13 +12,34 @@ from typing import Any
 
 import httpx
 
+from repowise.core.providers.embedding.base import resolve_embedding_timeout
+
 _DEFAULT_BASE_URL = "http://localhost:11434"
 _DEFAULT_MODEL = "embeddinggemma"
 _DEFAULT_TIMEOUT = 30.0
+# Extra seconds per input character when no timeout is configured. A CPU-only
+# Ollama measured ~0.8 ms/char on a full 16-page chunk (171.6s for ~210k chars),
+# so a flat 30s dropped every such chunk. 2 ms/char leaves room for slower boxes.
+_SECONDS_PER_CHAR = 0.002
+_TIMEOUT_ENV_VARS = ("OLLAMA_EMBEDDING_TIMEOUT", "REPOWISE_EMBEDDING_TIMEOUT")
 
 
 def _normalize_base_url(url: str) -> str:
     return url.rstrip("/")
+
+
+def _timeout_env_is_set() -> bool:
+    for name in _TIMEOUT_ENV_VARS:
+        raw = os.environ.get(name)
+        if not raw:
+            continue
+        try:
+            value = float(raw)
+        except ValueError:
+            continue
+        if math.isfinite(value) and value > 0:
+            return True
+    return False
 
 
 def _infer_dimensions(model: str) -> int:
@@ -49,8 +70,9 @@ class OllamaEmbedder:
             ``dimensions`` when provided.
         timeout: Per-request timeout in seconds. Falls back to the
             ``OLLAMA_EMBEDDING_TIMEOUT`` / ``REPOWISE_EMBEDDING_TIMEOUT`` env
-            vars, then ``30.0``. Raise it when embedding long pages on a slow
-            local model that would otherwise exceed the default and be dropped.
+            vars. With neither set, each request gets ``30.0`` seconds plus time
+            for the size of the batch, so a full chunk of long pages on a
+            CPU-only model is not cancelled and dropped.
     """
 
     def __init__(
@@ -72,20 +94,34 @@ class OllamaEmbedder:
         env_dimensions = os.environ.get("OLLAMA_EMBEDDING_DIMS") or os.environ.get(
             "REPOWISE_EMBEDDING_DIMS"
         )
-        self._requested_dimensions = dimensions or (int(env_dimensions) if env_dimensions else None)
+        resolved_dims: int | None = None
+        if dimensions is not None:
+            if dimensions <= 0:
+                raise ValueError("dimensions must be a positive integer")
+            resolved_dims = dimensions
+        elif env_dimensions:
+            try:
+                parsed = int(env_dimensions)
+            except (ValueError, OverflowError):
+                parsed = 0
+            if parsed > 0:
+                resolved_dims = parsed
+            # else: silently fall through to model inference, matching timeout behaviour
+        self._requested_dimensions = resolved_dims
         self._dimensions = self._requested_dimensions or _infer_dimensions(self._model)
-        env_timeout = os.environ.get("OLLAMA_EMBEDDING_TIMEOUT") or os.environ.get(
-            "REPOWISE_EMBEDDING_TIMEOUT"
+        self._timeout = resolve_embedding_timeout(
+            timeout, _DEFAULT_TIMEOUT, provider_env="OLLAMA_EMBEDDING_TIMEOUT"
         )
-        self._timeout = (
-            timeout
-            if timeout is not None
-            else (float(env_timeout) if env_timeout else _DEFAULT_TIMEOUT)
-        )
+        self._scale_timeout = timeout is None and not _timeout_env_is_set()
 
     @property
     def dimensions(self) -> int:
         return self._dimensions
+
+    def _request_timeout(self, texts: list[str]) -> float:
+        if not self._scale_timeout:
+            return self._timeout
+        return self._timeout + sum(len(text) for text in texts) * _SECONDS_PER_CHAR
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed a batch of texts using Ollama's native API."""
@@ -99,7 +135,7 @@ class OllamaEmbedder:
         if self._requested_dimensions is not None:
             payload["dimensions"] = self._requested_dimensions
 
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
+        async with httpx.AsyncClient(timeout=self._request_timeout(texts)) as client:
             response = await client.post(f"{self._base_url}/api/embed", json=payload)
             response.raise_for_status()
             data = response.json()
@@ -112,6 +148,24 @@ class OllamaEmbedder:
         if len(raw_vectors) != len(texts):
             raise ValueError(
                 f"Ollama returned {len(raw_vectors)} embeddings for {len(texts)} inputs."
+            )
+        widths = {len(v) for v in raw_vectors}
+        if widths and widths != {self._dimensions}:
+            actual = min(widths - {self._dimensions})
+            if self._requested_dimensions is not None:
+                hint = (
+                    f"Set OLLAMA_EMBEDDING_DIMS={actual} (or REPOWISE_EMBEDDING_DIMS={actual})"
+                    f" to match the server's native output."
+                )
+            else:
+                hint = (
+                    f"The dimension was inferred from the model name ({self._model!r})."
+                    f" Set OLLAMA_EMBEDDING_DIMS={actual} to override the inferred value."
+                )
+            raise ValueError(
+                f"OllamaEmbedder declared {self._dimensions}-dimensional vectors but the "
+                f"server returned {actual} (model={self._model!r}). "
+                f"The server likely ignored the 'dimensions' parameter. {hint}"
             )
 
         return [_l2_normalize([float(value) for value in vector]) for vector in raw_vectors]

@@ -407,16 +407,14 @@ describe("DocsTree", () => {
     // this cannot pass on an alphabetical grouping.
     expect(indexOfRow("Zebra Runtime")).toBeLessThan(indexOfRow("Alpha API"));
     expect("Zebra Runtime".localeCompare("Alpha API")).toBeGreaterThan(0);
-    // Each module reads under its own layer, not beside it. The layers start
-    // closed, so open them to see where their members land.
-    fireEvent.click(screen.getByText("Zebra Runtime"));
-    fireEvent.click(screen.getByText("Alpha API"));
+    // Each module reads under its own layer, not beside it. The layers open on
+    // load, so their members are there without a click.
     expect(indexOfRow("Zebra Runtime")).toBeLessThan(indexOfRow("runtime/engine"));
     expect(indexOfRow("runtime/engine")).toBeLessThan(indexOfRow("Alpha API"));
     expect(indexOfRow("Alpha API")).toBeLessThan(indexOfRow("api/routes"));
   });
 
-  it("starts every layer row closed, and opens one on a click", () => {
+  it("opens every layer row on load, and closes one on a click", () => {
     render(
       <DocsTree
         pages={[
@@ -434,21 +432,21 @@ describe("DocsTree", () => {
         onSelectPage={() => {}}
       />,
     );
-    // The layers themselves are the first screen: a reader meets the shape of
-    // the repository, not every module in it.
+    // The first screen is a table of contents: every layer named, and what each
+    // one holds listed under it, with no click spent to get there.
     expect(screen.getByText("Zebra Runtime")).toBeInTheDocument();
     expect(screen.getByText("Alpha API")).toBeInTheDocument();
-    expect(screen.queryByText("runtime/engine")).not.toBeInTheDocument();
-    expect(screen.queryByText("api/routes")).not.toBeInTheDocument();
-
-    // One click opens one layer and leaves the other shut — so this cannot
-    // pass on a tree that simply failed to render its modules at all.
-    fireEvent.click(screen.getByText("Zebra Runtime"));
     expect(screen.getByText("runtime/engine")).toBeInTheDocument();
-    expect(screen.queryByText("api/routes")).not.toBeInTheDocument();
+    expect(screen.getByText("api/routes")).toBeInTheDocument();
+
+    // One click shuts one layer and leaves the other open — so this cannot
+    // pass on a tree that merely ignores the expansion state.
+    fireEvent.click(screen.getByText("Zebra Runtime"));
+    expect(screen.queryByText("runtime/engine")).not.toBeInTheDocument();
+    expect(screen.getByText("api/routes")).toBeInTheDocument();
   });
 
-  it("puts the file corpus above the layers, so it never sinks under the outline", () => {
+  it("puts the file corpus below the layers, so it never fronts the outline", () => {
     render(
       <DocsTree
         pages={[
@@ -475,14 +473,14 @@ describe("DocsTree", () => {
         onSelectPage={() => {}}
       />,
     );
-    // Orientation first, then the way into the files, then the layer outline.
-    // The corpus is the largest thing in the wiki and the thing most readers
-    // came for; it cannot sit below a list that grows with the repository.
+    // Orientation, then the layer outline, then the way into the files. The
+    // corpus is a reference rather than a section, and a row whose count runs
+    // to four digits sitting mid-outline reads as the point of the sidebar.
     const corpus = indexOfRow("Auto-documented files (1)");
     expect(indexOfRow("Repository Overview: demo")).toBeLessThan(indexOfRow("Getting Started"));
-    expect(indexOfRow("Getting Started")).toBeLessThan(corpus);
-    expect(corpus).toBeLessThan(indexOfRow("Zebra Runtime"));
-    // The layers keep their own order behind it, so this cannot pass on a
+    expect(indexOfRow("Getting Started")).toBeLessThan(indexOfRow("Zebra Runtime"));
+    expect(indexOfRow("Alpha API")).toBeLessThan(corpus);
+    // The layers keep their own order ahead of it, so this cannot pass on a
     // build that merely shuffled the top-level rows.
     expect(indexOfRow("Zebra Runtime")).toBeLessThan(indexOfRow("Alpha API"));
     // Still a deliberate drill-in, not opened on load.
@@ -696,9 +694,8 @@ describe("DocsTree", () => {
         onSelectPage={() => {}}
       />,
     );
-    // Both grouping rows start closed, so open them to see where their members
-    // landed.
-    fireEvent.click(screen.getByText("Zebra Runtime"));
+    // The layer opens on load; the leftovers bucket is one of the two rows that
+    // does not, so open it to see where its member landed.
     fireEvent.click(screen.getByText("Modules with no layer (1)"));
     // The stamped module reads under its layer; the unstamped one reads under
     // the trailing group, which sits below every layer.
@@ -777,26 +774,48 @@ describe("DocsTree", () => {
     warn.mockRestore();
   });
 
-  it("points a layer row at the knowledge graph, where its diagram lives", () => {
-    render(
-      <DocsTree
-        pages={[
-          layeredRoot({ layer_order_ids: ["layer:api"] }),
-          stampedModule("module_page:api/routes", "Module: api/routes", {
-            layer_id: "layer:api",
-            layer_name: "Alpha API",
-          }),
-        ]}
-        selectedPageId={null}
-        onSelectPage={() => {}}
-        knowledgeGraphHref="/repos/r1/knowledge-graph"
-      />,
-    );
-    const link = screen.getByRole("link", { name: /Alpha API.*knowledge graph/i });
-    expect(link).toHaveAttribute("href", "/repos/r1/knowledge-graph");
+  // A chapter with chapters of its own — the rung below the one that opens.
+  const SUB_MODULE = makePage({
+    id: "module_page:runtime/engine/codecs",
+    page_type: "module_page",
+    title: "Module: runtime/engine/codecs",
+    target_path: "runtime/engine/codecs",
+    parent_page_id: MODULE.id,
+    display_order: 1,
+    section_number: "2.1.1",
   });
 
-  it("omits the graph link when the host has no route to offer", () => {
+  it("opens the top rung only, leaving a chapter's own chapters shut", () => {
+    render(
+      <DocsTree
+        pages={[...SPINE, SUB_MODULE]}
+        selectedPageId={null}
+        onSelectPage={() => {}}
+      />,
+    );
+    // The layer is open, so its chapter is on the first screen...
+    expect(screen.getByText("runtime/engine")).toBeInTheDocument();
+    // ...but the rung below it is not. Without this the outline came out four
+    // deep on load and the indentation stopped carrying rank.
+    expect(screen.queryByText("runtime/engine/codecs")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("runtime/engine"));
+    expect(screen.getByText("runtime/engine/codecs")).toBeInTheDocument();
+  });
+
+  it("reveals the selected page by opening the chapters above it", () => {
+    render(
+      <DocsTree
+        pages={[...SPINE, SUB_MODULE]}
+        selectedPageId={SUB_MODULE.id}
+        onSelectPage={() => {}}
+      />,
+    );
+    // Reached by a deep link rather than a click, so nothing opened its parent.
+    // A selected row inside a shut chapter is a highlight a reader cannot see.
+    expect(screen.getByText("runtime/engine/codecs")).toBeInTheDocument();
+  });
+
+  it("carries no link on a layer row — the outline is rows of text", () => {
     render(
       <DocsTree
         pages={[
@@ -811,7 +830,8 @@ describe("DocsTree", () => {
       />,
     );
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
-    // Selecting the layer row still works — the link is an extra, not the row.
+    // The row itself is untouched — this cannot pass on a tree that dropped the
+    // layer along with its trailing button.
     expect(screen.getByText("Alpha API")).toBeInTheDocument();
   });
 
@@ -838,5 +858,45 @@ describe("DocsTree", () => {
     expect(screen.queryByText("a.py")).not.toBeInTheDocument();
     // Both files are in the single bottom folder.
     expect(screen.getByText("Auto-documented files (2)")).toBeInTheDocument();
+  });
+
+  // Three orientation slots were retired, and their rows survive in every
+  // index built before the sweep that removes them. `ONBOARDING_SLOT_TITLES`
+  // still lists all three on purpose, and this is the reason: in *folder*
+  // view a dedicated onboarding page whose slot is not in that map does not
+  // disappear, it falls through to path-based grouping and surfaces as a stray
+  // top-level `onboarding/` directory beside the Onboarding folder. That reads
+  // as a bug rather than a retirement.
+  //
+  // The default domain view is unaffected either way — it places pages by the
+  // stamped parent_page_id and labels them from page.title — so folder view is
+  // what this has to assert on.
+  it("keeps a retired onboarding slot in the Onboarding folder rather than a stray directory", () => {
+    const retired = makePage({
+      id: "onboarding:onboarding/codebase_map",
+      page_type: "onboarding",
+      title: "Codebase Map",
+      target_path: "onboarding/codebase_map",
+      metadata: { subkind: "codebase_map" },
+      parent_page_id: ROOT.id,
+      display_order: 3,
+    });
+    render(
+      <DocsTree
+        pages={[ROOT, ONBOARDING, retired]}
+        selectedPageId={null}
+        onSelectPage={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText("Switch to folder view"));
+
+    // Both slots are in the one Onboarding folder, the retired one labelled
+    // from the map, which is exactly what keeping its entry buys.
+    const onboardingRow = rowLabels().find((l) => l.includes("Onboarding")) ?? "";
+    expect(onboardingRow).not.toBe("");
+    expect(screen.getByText("Codebase Map")).toBeInTheDocument();
+    expect(screen.getByText("Getting Started")).toBeInTheDocument();
+    // The failure mode if the entry were dropped: a bare `onboarding` row.
+    expect(rowLabels().some((l) => l.trim() === "onboarding")).toBe(false);
   });
 });

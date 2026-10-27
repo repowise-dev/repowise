@@ -62,6 +62,27 @@ def test_lift_none_when_no_baseline_is_handled() -> None:
     assert stat["lift"] is not None
 
 
+def test_non_prior_defect_findings_are_ignored() -> None:
+    """Only ``prior_defect`` rows carry the label, so callers may pre-filter.
+
+    The overview route hands over just those rows rather than converting all
+    ~10k findings (each a ``json.loads`` of its details blob) for this function
+    to discard 90% of them. That is only safe while feeding the other
+    biomarkers in changes nothing — including ones carrying a details key that
+    looks like a label.
+    """
+    metrics = _metrics(30)
+    labels = [_fix(f"f{i}.py") for i in range(6)]
+    noise = [
+        {"biomarker_type": b, "file_path": f"f{i}.py", "details": {"prior_defect_count": 99}}
+        for i, b in enumerate(("complex_method", "io_in_loop", "coverage_gradient"))
+    ]
+
+    assert compute_defect_accuracy(metrics, labels) == compute_defect_accuracy(
+        metrics, labels + noise
+    )
+
+
 def test_window_days_from_finding_details() -> None:
     metrics = _metrics(30)
     findings = [_fix(f"f{i}.py", window_days=90) for i in range(6)]

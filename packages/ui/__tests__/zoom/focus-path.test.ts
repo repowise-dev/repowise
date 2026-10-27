@@ -23,7 +23,7 @@ function node(id: string, children: string[]): ZoomNode {
       entry_point_count: 0,
       on_flow_count: 0,
     },
-    layout: null,
+    page_id: "",
     summary: "",
     language: null,
     is_entry_point: false,

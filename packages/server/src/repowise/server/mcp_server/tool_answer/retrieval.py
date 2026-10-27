@@ -10,16 +10,23 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any
 
 from sqlalchemy import select
 
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import Page
+from repowise.core.persistence.search import strip_leading_headings
+from repowise.server.mcp_server._page_paths import PAGELESS_FILE, hit_file_path
+from repowise.server.mcp_server._query_terms import content_terms
+from repowise.server.mcp_server._retrieval_rank import rerank_pages_first
 from repowise.server.mcp_server.tool_answer.config import (
     _BACKEND_PATH_PREFIXES,
     _BACKEND_QUESTION_TOKENS,
+    _CANDIDATE_FILES_POOL,
     _COVERAGE_FLOOR,
+    _DEFINES_CHAR_BUDGET,
     _DOMAIN_PENALTY,
     _GATED_EXCERPT_CHARS,
     _PAGE_EXCERPT_HITS,
@@ -32,6 +39,109 @@ from repowise.server.mcp_server.tool_answer.config import (
 _log = logging.getLogger("repowise.mcp.answer")
 
 
+# How many files ``candidates`` names. Rows with ``defines`` are long, so a large
+# cap made this block a big share of the payload. Five, not zero: it is often the
+# only block naming files beyond the top ``citations``, and without it the agent
+# runs a Grep that costs more than the rows.
+_CANDIDATE_LIMIT = 5
+
+
+def serialize_candidates(hits: list[dict], *, limit: int = _CANDIDATE_LIMIT) -> list[dict]:
+    """The files retrieval ranked, one line each, ordered best first.
+
+    Deliberately not confidence-gated: ``retrieval`` is *evidence* and shrinks
+    as the prose gets trustworthy, while this block is *navigation*, the files
+    worth opening next, and a confident answer is best placed to name them.
+
+    One entry per distinct **file** path (via ``hit_file_path``), ``{path,
+    lines?}``; line bounds come only from already-hydrated symbols. Pages that
+    name no file (module group keys, onboarding slots) are skipped, since they
+    look like paths but cannot be opened.
+
+    ``defines`` lists what the file declares as ``name:line`` pairs, turning a
+    path to Grep into a line to read. **Line numbers are as indexed, not
+    verified** against the live file: navigation, not a citation. The
+    ``defines`` budget never adds, drops or reorders a path.
+    """
+    out: list[dict] = []
+    seen: set[str] = set()
+    # Spent in rank order, so the best-ranked file is the one always described.
+    budget = _DEFINES_CHAR_BUDGET
+    for h in hits:
+        path = hit_file_path(h)
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        entry: dict[str, Any] = {"path": path}
+        symbols = h.get("symbols") or []
+        starts = [s["start_line"] for s in symbols if s.get("start_line")]
+        ends = [s["end_line"] for s in symbols if s.get("end_line")]
+        if starts and ends:
+            entry["lines"] = f"{min(starts)}-{max(ends)}"
+        if budget > 0 and h.get("_defines"):
+            defines = ", ".join(f"{name}:{line}" for name, line in h["_defines"])
+            if len(defines) <= budget:
+                entry["defines"] = defines
+                budget -= len(defines)
+        out.append(entry)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def serialize_candidate_files(hits: list[dict]) -> list[str]:
+    """Distinct openable file paths in rank order, paths only, no hydration."""
+    paths: list[str] = []
+    for h in hits:
+        path = hit_file_path(h)
+        if path and path not in paths:
+            paths.append(path)
+            if len(paths) >= _CANDIDATE_FILES_POOL:
+                break
+    return paths
+
+
+# Symbol names a shortlist row carries: enough to point at a line, not an outline.
+_SHORTLIST_FUNCTIONS = 3
+
+
+def serialize_candidate_file_facts(hits: list[dict]) -> dict[str, dict[str, Any]]:
+    """Per-path ``why`` and ``functions`` for the ``candidate_files`` pool.
+
+    Built from what retrieval already resolved, no extra query: the first hit
+    naming a file supplies the reason, and ``functions`` takes the
+    question-matched hydrated symbols first, then the indexed ``_defines``.
+    Paths with nothing to say get no entry.
+    """
+    facts: dict[str, dict[str, Any]] = {}
+    seen: set[str] = set()
+    for h in hits:
+        path = hit_file_path(h)
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        row: dict[str, Any] = {}
+        why = _candidate_justification(h)
+        if why:
+            row["why"] = why
+        named: dict[str, int] = {}
+        for s in h.get("symbols") or []:
+            if s.get("_matched") and s.get("name") and s.get("start_line"):
+                named.setdefault(s["name"], s["start_line"])
+        for name, line in h.get("_defines") or ():
+            named.setdefault(name, line)
+        if named:
+            row["functions"] = [
+                {"name": name, "line": line}
+                for name, line in list(named.items())[:_SHORTLIST_FUNCTIONS]
+            ]
+        if row:
+            facts[path] = row
+        if len(seen) >= _CANDIDATE_FILES_POOL:
+            break
+    return facts
+
+
 def serialize_hits(
     hits: list[dict],
     *,
@@ -39,27 +149,30 @@ def serialize_hits(
     summary_chars: int | None = None,
     symbols_for_expanded: bool = True,
     lean_symbols: bool = False,
+    excerpt_rows: int | None = None,
 ) -> list[dict]:
     """Agent-facing view of retrieval hits — content only, no plumbing.
 
-    Internal scoring fields (``_coverage``, ``_raw_score``, ``_sources``,
-    ``_pagerank``, …) and ``page_id`` are ranking debug an agent can do
-    nothing with; they were ~70% of a get_answer response by volume. Zero
-    information loss for the consumer: path, title, summary, snippet,
-    excerpt, score, and hydrated symbols all survive.
+    Internal scoring fields (``_coverage``, ``_raw_score``, ...) and
+    ``page_id`` are ranking debug an agent cannot use, so they are dropped.
 
-    ``summary_chars`` truncates summaries (medium-confidence diet);
-    ``symbols_for_expanded=False`` drops symbol enrichment from hits that
-    only entered via 1-hop graph expansion (they are routing material, not
-    answer material). ``lean_symbols=True`` keeps each symbol pipeable
-    (name/kind/signature/lines) but drops docstrings and excerpts — for the
-    gated low-confidence path, where the hits are candidates to pick between,
-    not answer material, and ``best_guesses`` + ``code_rationale`` already
-    carry the choosing signal.
+    ``summary_chars`` truncates summaries; ``symbols_for_expanded=False`` drops
+    symbols from hits that only entered via graph expansion (routing material);
+    ``lean_symbols=True`` keeps symbols pipeable but drops docstrings and
+    excerpts, for the low-confidence path where hits are candidates to pick.
+
+    ``excerpt_rows`` serves the page excerpt on the first N rows only: the
+    excerpt is most of a row's cost. A *field* cut, not a row cut, because
+    dropping rows takes paths out and a named path costs almost nothing.
     """
     out: list[dict] = []
-    for h in hits[: limit if limit is not None else len(hits)]:
-        entry: dict[str, Any] = {"path": h.get("target_path")}
+    for idx, h in enumerate(hits[: limit if limit is not None else len(hits)]):
+        target = h.get("target_path")
+        entry: dict[str, Any] = {"path": target}
+        # ``file.py::Symbol`` is a page id callers pipe into get_symbol; name
+        # the openable file beside it.
+        if target and "::" in target:
+            entry["file"] = target.split("::", 1)[0]
         if h.get("title"):
             entry["title"] = h["title"]
         summary = h.get("summary") or ""
@@ -67,9 +180,12 @@ def serialize_hits(
             summary = summary[: summary_chars - 1].rstrip() + "…"
         if summary:
             entry["summary"] = summary
+        serve_excerpt = excerpt_rows is None or idx < excerpt_rows
         for key in ("snippet", "excerpt"):
-            if h.get(key):
+            if h.get(key) and (key != "excerpt" or serve_excerpt):
                 entry[key] = h[key]
+        if entry.get("snippet"):
+            entry["snippet"] = strip_leading_headings(entry["snippet"])
         if h.get("score") is not None:
             entry["score"] = round(h["score"], 3)
         expanded = "graph_expand" in (h.get("_sources") or ())
@@ -88,12 +204,8 @@ def serialize_hits(
 
 
 def _question_terms(question: str) -> list[str]:
-    """Extract content terms from a question. Lowercase, alnum-tokenized,
-    stopwords + length<3 dropped. Used by the term-coverage re-ranker."""
-    import re
-
-    raw = re.findall(r"[a-zA-Z0-9_]+", question.lower())
-    return [t for t in raw if len(t) >= 3 and t not in _STOPWORDS]
+    """Extract shared snake/camel-aware content terms for retrieval ranking."""
+    return content_terms(question)
 
 
 def _split_relational(question: str) -> list[str] | None:
@@ -153,19 +265,16 @@ async def _intersection_boost(question: str, hits: list[dict], ctx: Any = None) 
 async def _attach_page_excerpts(hits: list[dict], ctx: Any = None) -> int:
     """Attach each top hit's real page content as ``excerpt``. Mutates `hits`.
 
-    Every consumer of a hit — the synthesis prompt and the pointer payload
-    alike — otherwise sees only the page's one-line LLM summary or a 200-char
-    opener, next to a symbol block carrying docstrings and source bodies. A
-    consumer given names but no prose reconstructs rationale from the names,
-    which is a confident wrong answer rather than a thin one.
+    Without it a consumer sees only a one-line summary beside symbol names, and
+    reconstructs rationale from the names: a confident wrong answer.
 
-    Returns the number of top hits left without page content. That count is
-    the point: a hit reaching synthesis with no body used to be invisible,
-    which is how this went unnoticed for as long as it did.
+    Returns the number of top hits left without page content, so a hit
+    reaching synthesis with no body is visible rather than silent.
     """
-    if not hits:
+    # A file with no page has no content to miss; its symbols carry its code.
+    top = [h for h in hits[:_PAGE_EXCERPT_HITS] if h.get("page_type") != PAGELESS_FILE]
+    if not top:
         return 0
-    top = hits[:_PAGE_EXCERPT_HITS]
     page_ids = [h["page_id"] for h in top if h.get("page_id")]
     if not page_ids:
         _log.warning(
@@ -176,12 +285,16 @@ async def _attach_page_excerpts(hits: list[dict], ctx: Any = None) -> int:
         return len(top)
     try:
         async with get_session(ctx.session_factory) as session:
-            res = await session.execute(select(Page.id, Page.content).where(Page.id.in_(page_ids)))
-            content_by_id = {row[0]: (row[1] or "") for row in res.all()}
+            res = await session.execute(
+                select(Page.id, Page.content, Page.digest).where(Page.id.in_(page_ids))
+            )
+            # The digest carries what the page answers in an agent's words.
+            content_by_id = {
+                row[0]: "\n\n".join(part for part in (row[1], row[2]) if part)
+                for row in res.all()
+            }
     except Exception:
-        # Never fail the answer over an excerpt fetch — but never lose the
-        # fact either. Without this line the whole prompt silently degrades
-        # to summaries and the answer still looks confident.
+        # Never fail the answer over an excerpt fetch, but never hide it either.
         _log.warning(
             "get_answer: page-content fetch failed for %d hits; synthesis "
             "will read one-line summaries instead of page prose",
@@ -199,19 +312,34 @@ async def _attach_page_excerpts(hits: list[dict], ctx: Any = None) -> int:
     return missing
 
 
+_DOMAIN_WORD_SUFFIXES = ("", "s", "es", "er", "ers")
+
+
+def _names_domain_word(token: str, words: set[str], text: str) -> bool:
+    """*token* as a word or with a common suffix, or (6+ chars) a word it begins.
+
+    A hyphenated token (``client-side``) is matched as a phrase in *text*.
+    """
+    if "-" in token:
+        return re.search(rf"\b{re.escape(token)}\b", text) is not None
+    if any(f"{token}{suffix}" in words for suffix in _DOMAIN_WORD_SUFFIXES):
+        return True
+    return len(token) >= 6 and any(word.startswith(token) for word in words)
+
+
 def _detect_question_domain(question: str) -> str | None:
     """Return ``"ui"``, ``"backend"``, or ``None`` when the question is ambiguous.
 
-    Used to break ties on retrievals where vocabulary overlaps across domains
-    (e.g. "how does indexing work" could plausibly retrieve a UI status-pill
-    component or the actual ingestion pipeline). The classifier is intentionally
-    conservative: if both domain token sets fire, or neither does, we return
-    ``None`` and apply no penalty — better to leave ranking alone than to
-    miscategorise a cross-cutting question.
+    Breaks ties where vocabulary overlaps across domains. Conservative: if both
+    token sets fire, or neither, no penalty applies rather than miscategorise a
+    cross-cutting question.
     """
-    qlow = question.lower()
-    has_ui = any(tok in qlow for tok in _UI_QUESTION_TOKENS)
-    has_backend = any(tok in qlow for tok in _BACKEND_QUESTION_TOKENS)
+    # Whole words, identifiers kept intact: ``module_page`` names a symbol, not
+    # a UI page, and ``client`` is not ``cli``. Hyphens split (``settings-page``).
+    text = question.lower()
+    words = set(re.findall(r"[a-z0-9_]+", text))
+    has_ui = any(_names_domain_word(tok, words, text) for tok in _UI_QUESTION_TOKENS)
+    has_backend = any(_names_domain_word(tok, words, text) for tok in _BACKEND_QUESTION_TOKENS)
     if has_ui and not has_backend:
         return "ui"
     if has_backend and not has_ui:
@@ -245,11 +373,8 @@ def _apply_domain_penalty(hits: list[dict], question: str) -> None:
 def _candidate_justification(h: dict) -> str:
     """One-line reason this hit might answer the question.
 
-    Used on the low-confidence return path so the agent sees something
-    decision-shaped ("Read file X because it implements Y") instead of a
-    flat list of paths it has to scan into. Prefers the matched-symbol name
-    over the file summary because the matched symbol is what tied this hit
-    to the question in the first place.
+    Decision-shaped ("implements Y") rather than a bare path. Prefers the
+    matched symbol, which is what tied this hit to the question.
     """
     syms = h.get("symbols") or []
     matched = next((s for s in syms if s.get("_matched")), None)
@@ -259,8 +384,7 @@ def _candidate_justification(h: dict) -> str:
         return f"Implements {kind} {name}."
     summary = (h.get("summary") or h.get("snippet") or "").strip()
     if summary:
-        # First sentence only; trailing prose is mostly cache-write cost on
-        # the consumer side.
+        # First sentence only; the rest is mostly cache-write cost.
         first = summary.split(". ")[0]
         return (first[:160].rstrip() + ".") if first else ""
     title = h.get("title") or ""
@@ -268,38 +392,20 @@ def _candidate_justification(h: dict) -> str:
 
 
 def _rerank_by_coverage(hits: list[dict], question: str) -> list[dict]:
-    """Re-rank FTS hits by term-coverage boost on top of BM25.
+    """Re-rank hybrid hits by intent-bearing term coverage.
 
-    For each hit, compute the fraction of distinct query terms present in
-    (title + snippet + summary), then multiply the raw BM25 score by
-    (FLOOR + (1-FLOOR)*coverage). Single-concept questions (coverage≈1.0
-    across all hits) are unaffected; multi-constraint questions push hits
-    that cover all the terms above hits that repeat just one term.
-
-    This addresses a common BM25 failure mode where a hit that matches one
-    constraint very strongly can outrank a hit that matches all constraints
-    moderately — the latter is usually the better answer for multi-constraint
-    questions.
+    Coverage includes the path/module identity as well as title and prose.
+    Terms every candidate repeats carry less weight than discriminating terms,
+    so a generic lexical overlap such as ``coverage`` cannot beat a page that
+    also agrees on ``PR``, ``test impact``, and ``changed files``. Raw fused
+    retrieval remains the base signal; this is a bounded multiplier, not a
+    replacement score. Counters BM25 ranking one strongly-matched constraint
+    above a hit that matches every constraint moderately.
     """
-    terms = set(_question_terms(question))
-    if not terms or not hits:
-        return hits
-    n_terms = len(terms)
-    for h in hits:
-        haystack = " ".join(
-            [
-                h.get("title", "") or "",
-                h.get("snippet", "") or "",
-                h.get("summary", "") or "",
-            ]
-        ).lower()
-        # Count distinct terms present (substring match — FTS5 already handles
-        # stemming upstream, so we keep this simple).
-        present = sum(1 for t in terms if t in haystack)
-        coverage = present / n_terms
-        raw = h.get("score", 0.0)
-        h["_coverage"] = coverage
-        h["_raw_score"] = raw
-        h["score"] = raw * (_COVERAGE_FLOOR + (1.0 - _COVERAGE_FLOOR) * coverage)
-    hits.sort(key=lambda h: h["score"], reverse=True)
-    return hits
+    return rerank_pages_first(
+        hits,
+        question,
+        score_key="score",
+        floor=_COVERAGE_FLOOR,
+        absolute_stopwords=_STOPWORDS,
+    )

@@ -18,6 +18,7 @@ class _FI:
     path: str
     is_entry_point: bool = False
     language: str = "python"
+    is_application_main: bool = False
 
 
 @dataclass
@@ -42,6 +43,19 @@ def test_score_entry_points_rewards_entry_flag_and_filename():
     assert ranked[0] == "src/main.py"  # entry flag + main filename + shallow
 
 
+def test_score_entry_points_puts_a_declared_entry_above_every_guess():
+    # Fineract: a sample's shallow, central ``Main.java`` scores every guess
+    # (flag, stem, depth, PageRank) and still follows the Spring Boot main.
+    main = "lib/Main.java"
+    app = "provider/src/main/java/org/acme/ServerApplication.java"
+    files = [
+        _PF(_FI(path=main, is_entry_point=True, language="java")),
+        _PF(_FI(path=app, is_entry_point=True, language="java", is_application_main=True)),
+    ]
+    scored = score_entry_points(files, {main: 0.9, app: 0.0})
+    assert [p for _, p in scored] == [app, main]
+
+
 def test_score_entry_points_excludes_zero_score():
     files = _repo({"deep/nested/pkg/thing.py": False})
     pr = {"deep/nested/pkg/thing.py": 0.0}
@@ -50,7 +64,10 @@ def test_score_entry_points_excludes_zero_score():
 
 def test_score_entry_points_withholds_stem_bonus_from_docs():
     # docs/index.md has an entry-style stem but is markdown — it must never
-    # outrank a real main.py, even when ingestion's stem rule flagged it.
+    # outrank a real main.py. Ingestion stopped flagging it once candidacy
+    # moved there, so ``is_entry_point=True`` below is what an older index
+    # hands over, which is exactly the input the scorer still has to defend
+    # against.
     files = [
         _PF(_FI(path="docs/index.md", language="markdown", is_entry_point=True)),
         _PF(_FI(path="src/main.py")),
@@ -64,7 +81,8 @@ def test_score_entry_points_withholds_stem_bonus_from_docs():
 def test_score_entry_points_withholds_bonus_from_deep_glue_leaf():
     # A deeply-nested resolver index.py defines real symbols (not a barrel) but
     # dispatches; it must not earn the entry bonuses that would seed the walk
-    # and label it "an entry point".
+    # and label it "an entry point". Flagged by hand: ingestion no longer sets
+    # the flag here either, so this pins the scorer against an older index.
     files = [
         _PF(_FI(path="core/ingestion/resolvers/dotnet/index.py", is_entry_point=True)),
         _PF(_FI(path="src/main.py")),
@@ -238,7 +256,9 @@ def test_build_tour_respects_max_stops():
 def test_score_entry_points_withholds_bonuses_from_api_contracts_and_infra():
     # Schema/data languages (graphql, proto, sql, openapi) and
     # infra wiring (shell, terraform, dockerfile) never earn entry bonuses,
-    # however entry-like their stems are.
+    # however entry-like their stems are. Ingestion withholds the flag from
+    # all four now; these fixtures set it by hand, so the scorer stays correct
+    # on rows written before that landed.
     files = [
         _PF(_FI(path="index.graphql", language="graphql", is_entry_point=True)),
         _PF(_FI(path="main.sql", language="sql", is_entry_point=True)),

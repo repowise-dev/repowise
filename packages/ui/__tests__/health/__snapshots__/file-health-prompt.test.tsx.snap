@@ -1,0 +1,10 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`FLAVOR_PREAMBLE > keeps every flavor's opening 1`] = `
+{
+  "claude-code": "You are Claude Code working in this repository. The findings below were detected by repowise's static analyzer. Treat each item as a lead, not ground truth. Use Read, Grep and Glob on the file, its callers, its tests and its neighbors before planning edits, and flag any false positive. Use TodoWrite for non-trivial steps.",
+  "claude-code-mcp": "You are Claude Code working in this repository, which is indexed by repowise and exposes its MCP tools. The findings below were detected by repowise's static analyzer. Treat each item as a lead, not ground truth. Before re-reading files by hand, pull the context repowise already computed: call \`get_context([...])\` for the file skeleton (every signature + the bodies of the most central symbols, ~37% of a full Read), \`get_symbol("file::Name")\` for the exact bytes of one function, \`get_risk([...])\` before editing to see blast radius, co-change partners, and test gaps, and \`get_why(...)\` for the decision behind the current shape. Fall back to Read / Grep / Glob only for what the index cannot serve, and flag any false positive. Use TodoWrite for non-trivial steps.",
+  "cursor": "Work on the file referenced below. The findings below were detected by repowise's static analyzer. Treat each item as a lead, not ground truth. Use @file and @codebase to read the file, its callers, its tests and its neighbors before editing, and call out any false positive.",
+  "generic": "You are a senior engineer working on one file in this repository. The findings below were detected by repowise's static analyzer. Treat each item as a lead, not ground truth. Open the file, its callers, its tests and its neighbors, then confirm each item in the code before you act. If one is a false positive, say so and skip it.",
+}
+`;

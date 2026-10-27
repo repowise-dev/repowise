@@ -6,15 +6,21 @@ export async function getFilesIndex(repoId: string): Promise<FilesIndexResponse>
   return apiGet<FilesIndexResponse>(`/api/repos/${repoId}/files`);
 }
 
-/** Canonical file-detail aggregate for the file entity page. */
+/** Canonical file-detail aggregate for the file entity page.
+ *
+ *  `fields: "slim"` drops the four unbounded payloads (wiki body, coverage
+ *  line array, per-function blame, per-finding `details`) for a caller that
+ *  only renders the summary numbers. */
 export async function getFileDetail(
   repoId: string,
   filePath: string,
+  opts?: { fields?: "full" | "slim" },
 ): Promise<FileDetailResponse> {
   // Encode each segment but keep the slashes — the server route uses a
   // catch-all path converter.
   const encoded = filePath.split("/").map(encodeURIComponent).join("/");
-  return apiGet<FileDetailResponse>(`/api/repos/${repoId}/files/${encoded}`);
+  const qs = opts?.fields ? `?fields=${opts.fields}` : "";
+  return apiGet<FileDetailResponse>(`/api/repos/${repoId}/files/${encoded}${qs}`);
 }
 
 /** Raw file content from the repo checkout (plain text, not JSON). */

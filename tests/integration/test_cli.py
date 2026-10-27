@@ -134,7 +134,7 @@ class TestWorkspaceInitIndexOnly:
             catch_exceptions=False,
         )
         assert result.exit_code == 0, result.output
-        assert "workspace init complete" in result.output
+        assert "Workspace ready" in result.output
         # Each sub-repo got its own index + state, and a workspace config exists.
         for name in ("alpha", "beta"):
             assert (workspace_root / name / ".repowise" / "wiki.db").exists()
@@ -155,6 +155,103 @@ class TestInitDryRun:
         # No DB should be created
         assert not (work_repo / ".repowise" / "wiki.db").exists()
 
+    def test_no_prose_dry_run_writes_no_wiki(self, runner, work_repo):
+        """The branch above prices a model and returns; this one never did.
+
+        ``--no-prose`` and a keyless run both reach the deterministic
+        generation phase, which takes no ``dry_run`` argument at all.
+        """
+        result = runner.invoke(
+            cli,
+            ["init", str(work_repo), "--no-prose", "--dry-run", "--yes"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert "Dry run" in result.output
+        assert not (work_repo / ".repowise" / "wiki.db").exists()
+        assert not (work_repo / ".repowise" / "state.json").exists()
+
+    def test_no_provider_dry_run_writes_no_wiki(self, runner, work_repo, monkeypatch):
+        """The other half of the predicate, and the worse one.
+
+        A keyless run sets ``no_provider`` rather than ``index_only``, so it
+        walked past the downgrade guard at the top of the command even
+        interactively.
+        """
+        for key in (
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+            "OPENROUTER_API_KEY",
+            "DEEPSEEK_API_KEY",
+            "REPOWISE_PROVIDER",
+        ):
+            monkeypatch.delenv(key, raising=False)
+
+        result = runner.invoke(
+            cli,
+            ["init", str(work_repo), "--prose", "--dry-run", "--yes"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert "Dry run" in result.output
+        assert not (work_repo / ".repowise" / "wiki.db").exists()
+        assert not (work_repo / ".repowise" / "state.json").exists()
+
+    def test_fast_dry_run_promises_no_wiki(self, runner, work_repo):
+        """Fast skips generation, so the preview must not promise a wiki."""
+        result = runner.invoke(
+            cli,
+            ["init", str(work_repo), "--mode", "fast", "--dry-run", "--yes"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert "No documentation written" in result.output
+        assert "Generation Plan" not in result.output
+        assert not (work_repo / ".repowise" / "wiki.db").exists()
+
+    def test_dry_run_does_not_replace_a_model_written_wiki(self, runner, work_repo):
+        """Rendering templates over an existing wiki rewrote every page and
+        downgraded ``docs_mode``, on the one command that promises not to act.
+        Recoverable through page history, but every reader served templates
+        afterwards and the spend behind the originals was wasted.
+        """
+        import json
+        import sqlite3
+        from contextlib import closing
+
+        seed = runner.invoke(
+            cli,
+            ["init", str(work_repo), "--provider", "mock", "--yes"],
+            catch_exceptions=False,
+        )
+        assert seed.exit_code == 0, seed.output
+
+        db_path = work_repo / ".repowise" / "wiki.db"
+        state_path = work_repo / ".repowise" / "state.json"
+        with closing(sqlite3.connect(db_path)) as db:
+            db.execute("UPDATE wiki_pages SET provider_name='gemini', content='WRITTEN'")
+            db.commit()
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["docs_mode"] = "llm"
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+
+        result = runner.invoke(
+            cli,
+            ["init", str(work_repo), "--no-prose", "--dry-run", "--yes"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+
+        written = _db_scalar(db_path, "SELECT COUNT(*) FROM wiki_pages WHERE content='WRITTEN'")
+        templated = _db_scalar(
+            db_path, "SELECT COUNT(*) FROM wiki_pages WHERE provider_name='template'"
+        )
+        assert templated == 0
+        assert written > 0
+        assert json.loads(state_path.read_text(encoding="utf-8"))["docs_mode"] == "llm"
+
 
 class TestInitFullMock:
     def test_creates_db_and_state(self, runner, work_repo):
@@ -166,7 +263,7 @@ class TestInitFullMock:
         assert result.exit_code == 0, result.output
         assert (work_repo / ".repowise" / "wiki.db").exists()
         assert (work_repo / ".repowise" / "state.json").exists()
-        assert "init complete" in result.output
+        assert "Repowise is ready" in result.output
 
 
 class TestInitIndexOnly:
@@ -180,7 +277,7 @@ class TestInitIndexOnly:
         db_path = work_repo / ".repowise" / "wiki.db"
         assert db_path.exists()
         assert (work_repo / ".repowise" / "state.json").exists()
-        assert "index complete" in result.output
+        assert "Index ready, documentation built from code" in result.output
 
         import json
 
@@ -272,6 +369,8 @@ class TestStatusAfterInit:
 
 class TestDoctorAfterInit:
     def test_passes_checks(self, runner, work_repo):
+        # Doctor exits 1 on any FAIL row, so the copy must be a real git repo.
+        _git(["init", "-q"], work_repo)
         runner.invoke(
             cli,
             ["init", str(work_repo), "--provider", "mock", "--yes"],
@@ -284,6 +383,315 @@ class TestDoctorAfterInit:
         )
         assert result.exit_code == 0, result.output
         assert "repowise Doctor" in result.output
+
+
+class TestStatusDoctorWithEnvDb:
+    """Regression guard for #1274: with REPOWISE_DB_URL set, status and doctor
+    must query the configured DB even when no repo-local wiki.db exists.
+
+    The env DB lives outside the repo (like a Postgres container), so the
+    pre-fix file-existence guards bailed out before ever resolving the URL.
+    """
+
+    @pytest.fixture
+    def env_db_repo(self, tmp_path, sample_repo_path, monkeypatch):
+        """sample_repo copy with REPOWISE_DB_URL pointing at an external DB."""
+        dest = tmp_path / "repo"
+        shutil.copytree(sample_repo_path, dest)
+        db_path = tmp_path / "external.db"
+        monkeypatch.setenv("REPOWISE_DB_URL", f"sqlite+aiosqlite:///{db_path}")
+        return dest
+
+    def test_status_queries_env_db_without_local_wiki_db(self, runner, env_db_repo):
+        result = runner.invoke(
+            cli,
+            ["init", str(env_db_repo), "--provider", "mock", "--yes"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        # The scenario that used to fail: data in the env DB, no local wiki.db.
+        assert not (env_db_repo / ".repowise" / "wiki.db").exists()
+
+        result = runner.invoke(
+            cli,
+            ["status", str(env_db_repo)],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert "Sync State" in result.output
+        assert "Database not found" not in result.output
+        assert "Pages by Type" in result.output
+
+    def test_doctor_reports_db_ok_with_env_db(self, runner, env_db_repo):
+        # Doctor exits 1 on any FAIL row, so the copy must be a real git repo.
+        _git(["init", "-q"], env_db_repo)
+        runner.invoke(
+            cli,
+            ["init", str(env_db_repo), "--provider", "mock", "--yes"],
+            catch_exceptions=False,
+        )
+        assert not (env_db_repo / ".repowise" / "wiki.db").exists()
+
+        result = runner.invoke(
+            cli,
+            ["doctor", str(env_db_repo)],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert "wiki.db not found" not in result.output
+
+    def test_status_still_reports_not_found_with_no_db_configured(
+        self, runner, tmp_path, sample_repo_path, monkeypatch
+    ):
+        monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+        monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
+        dest = tmp_path / "repo"
+        shutil.copytree(sample_repo_path, dest)
+        # A .repowise/ dir with state but no DB — the "Database not found"
+        # branch requires an initialized repo to get past the earlier guard.
+        (dest / ".repowise").mkdir()
+        (dest / ".repowise" / "state.json").write_text("{}", encoding="utf-8")
+
+        result = runner.invoke(cli, ["status", str(dest)], catch_exceptions=False)
+        assert result.exit_code == 0, result.output
+        assert "Database not found" in result.output
+
+    def test_doctor_still_reports_fail_with_no_db_configured(
+        self, runner, tmp_path, sample_repo_path, monkeypatch
+    ):
+        monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+        monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
+        dest = tmp_path / "repo"
+        shutil.copytree(sample_repo_path, dest)
+
+        result = runner.invoke(cli, ["doctor", str(dest)], catch_exceptions=False)
+        assert result.exit_code == 1, result.output
+        assert "wiki.db not found" in result.output
+
+    def test_doctor_corrupt_local_db_shows_one_fail_row(
+        self, runner, tmp_path, sample_repo_path, monkeypatch
+    ):
+        """A local wiki.db that exists but cannot be opened must report the real
+        connection error — not an extra, contradictory "wiki.db not found" row
+        (regression guard for the reviewer finding on #1274)."""
+        monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+        monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
+        dest = tmp_path / "repo"
+        shutil.copytree(sample_repo_path, dest)
+        (dest / ".repowise").mkdir()
+        (dest / ".repowise" / "state.json").write_text("{}", encoding="utf-8")
+        # Corrupt: not a valid SQLite file.
+        (dest / ".repowise" / "wiki.db").write_text("this is not a database", encoding="utf-8")
+
+        result = runner.invoke(cli, ["doctor", str(dest)], catch_exceptions=False)
+        assert result.exit_code == 1, result.output
+        # Exactly one Database row — the real connection error, not a second
+        # contradictory "wiki.db not found" row.
+        assert "file is not a" in result.output
+        assert "wiki.db not found" not in result.output
+
+
+class TestDeleteWithConfiguredDb:
+    """Regression guard for #2320: ``repowise delete`` must reach the configured
+    database, and ``--path`` must select the repository at that path.
+
+    The command checked for a repo-local ``.repowise/wiki.db`` before it
+    resolved the configured URL, so a repository indexed into a shared
+    PostgreSQL store (which has no local file at all) could not be deleted.
+    """
+
+    @pytest.fixture
+    def shared_db(self, tmp_path, monkeypatch):
+        """An external DB holding one indexed repo that has no local store.
+
+        ``REPOWISE_DB_URL`` points outside the repo, the way a PostgreSQL
+        container does. Nothing in the repo is created: the whole scenario is
+        "the rows live in the shared database, the checkout has no wiki.db".
+        """
+        from repowise.core.persistence import (
+            create_engine,
+            create_session_factory,
+            get_session,
+            init_db,
+            upsert_page,
+            upsert_repository,
+        )
+
+        repo_path = tmp_path / "example-repository"
+        repo_path.mkdir()
+        db_path = tmp_path / "shared" / "wiki.db"
+        db_path.parent.mkdir()
+        url = f"sqlite+aiosqlite:///{db_path}"
+        monkeypatch.setenv("REPOWISE_DB_URL", url)
+
+        async def seed(*, pages: int = 1) -> str:
+            engine = create_engine(url)
+            await init_db(engine)
+            sf = create_session_factory(engine)
+            async with get_session(sf) as session:
+                repo = await upsert_repository(
+                    session, name=repo_path.name, local_path=str(repo_path.resolve())
+                )
+                for i in range(pages):
+                    await upsert_page(
+                        session,
+                        page_id=f"file_page:src/module_{i}.py",
+                        repository_id=repo.id,
+                        page_type="file_page",
+                        title=f"module_{i}.py",
+                        content=f"# module {i}\n\nBody text for module {i}.",
+                        target_path=f"src/module_{i}.py",
+                        source_hash=f"hash-{i}",
+                        model_name="mock",
+                        provider_name="mock",
+                    )
+            await engine.dispose()
+            return repo.id
+
+        return {"repo_path": repo_path, "db_path": db_path, "seed": seed}
+
+    def test_deletes_from_configured_db_without_local_wiki_db(self, runner, shared_db, monkeypatch):
+        """The reported bug: no ``.repowise/`` at all, rows in the shared DB."""
+        import asyncio
+
+        repo_path = shared_db["repo_path"]
+        repo_id = asyncio.run(shared_db["seed"]())
+        assert not (repo_path / ".repowise").exists()
+
+        result = runner.invoke(
+            cli,
+            ["delete", "--path", str(repo_path), "--force"],
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "Database not found" not in result.output
+        assert "No .repowise/ directory found" not in result.output
+        assert "Deleted" in result.output
+        # The rows really went: the repository is gone from the shared store.
+        assert _db_scalar(shared_db["db_path"], "SELECT COUNT(*) FROM repositories") == 0
+        assert _db_scalar(shared_db["db_path"], "SELECT COUNT(*) FROM wiki_pages") == 0
+        assert repo_id  # the seed returned a real primary key
+
+    def test_path_selects_the_matching_repo_instead_of_prompting(self, runner, shared_db, tmp_path):
+        """``--path`` names the repository; a second row must not be offered.
+
+        The command listed every repository and prompted for a number even
+        when a path was supplied, so in a shared database the deletion target
+        came from the prompt rather than from the argument.
+        """
+        import asyncio
+
+        from repowise.core.persistence import (
+            create_engine,
+            create_session_factory,
+            get_session,
+            upsert_repository,
+        )
+
+        repo_path = shared_db["repo_path"]
+        asyncio.run(shared_db["seed"]())
+        other_path = tmp_path / "other-repository"
+        other_path.mkdir()
+
+        async def add_other() -> None:
+            engine = create_engine(f"sqlite+aiosqlite:///{shared_db['db_path']}")
+            sf = create_session_factory(engine)
+            async with get_session(sf) as session:
+                await upsert_repository(
+                    session, name=other_path.name, local_path=str(other_path.resolve())
+                )
+            await engine.dispose()
+
+        asyncio.run(add_other())
+
+        result = runner.invoke(
+            cli,
+            ["delete", "--path", str(repo_path), "--force"],
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "Deleted" in result.output
+        assert "Enter number to delete" not in result.output
+        remaining = _db_column(shared_db["db_path"], "SELECT local_path FROM repositories")
+        assert remaining == [str(other_path.resolve())]
+
+    def test_path_with_no_matching_row_does_not_delete_anything(self, runner, shared_db, tmp_path):
+        """A path the database does not know must not fall back to the prompt."""
+        import asyncio
+
+        asyncio.run(shared_db["seed"]())
+        unknown = tmp_path / "never-indexed"
+        unknown.mkdir()
+
+        result = runner.invoke(
+            cli,
+            ["delete", "--path", str(unknown), "--force"],
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0, result.output
+        assert f"No repository in the database matches {unknown.resolve()}" in result.output
+        assert "Deleted" not in result.output
+        assert _db_scalar(shared_db["db_path"], "SELECT COUNT(*) FROM repositories") == 1
+
+    def test_local_sqlite_missing_messages_are_unchanged(
+        self, runner, tmp_path, sample_repo_path, monkeypatch
+    ):
+        """With no configured URL the pre-existing messages still fire."""
+        monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+        monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
+        dest = tmp_path / "repo"
+        shutil.copytree(sample_repo_path, dest)
+
+        result = runner.invoke(cli, ["delete", "--path", str(dest), "--force"])
+        assert result.exit_code == 0, result.output
+        assert "No .repowise/ directory found. Run 'repowise init' first." in result.output
+
+        (dest / ".repowise").mkdir()
+        result = runner.invoke(cli, ["delete", "--path", str(dest), "--force"])
+        assert result.exit_code == 0, result.output
+        assert "Database not found." in result.output
+
+    def test_deletes_from_local_wiki_db_when_configured(
+        self, runner, tmp_path, sample_repo_path, monkeypatch
+    ):
+        """The SQLite path still works: local wiki.db, no configured URL."""
+        import asyncio
+
+        from repowise.core.persistence import (
+            create_engine,
+            create_session_factory,
+            get_session,
+            init_db,
+            upsert_repository,
+        )
+
+        monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+        monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
+        dest = tmp_path / "repo"
+        shutil.copytree(sample_repo_path, dest)
+        db_path = dest / ".repowise" / "wiki.db"
+        db_path.parent.mkdir()
+        url = f"sqlite+aiosqlite:///{db_path}"
+
+        async def seed() -> None:
+            engine = create_engine(url)
+            await init_db(engine)
+            sf = create_session_factory(engine)
+            async with get_session(sf) as session:
+                await upsert_repository(session, name="repo", local_path=str(dest.resolve()))
+            await engine.dispose()
+
+        asyncio.run(seed())
+
+        result = runner.invoke(
+            cli, ["delete", "--path", str(dest), "--force"], catch_exceptions=False
+        )
+        assert result.exit_code == 0, result.output
+        assert "Deleted" in result.output
+        assert _db_scalar(db_path, "SELECT COUNT(*) FROM repositories") == 0
 
 
 class TestSearchFulltext:
@@ -346,12 +754,262 @@ class TestUpdateIndexOnly:
             cli, ["update", str(git_work_repo), "--index-only"], catch_exceptions=False
         )
         assert r1.exit_code == 0, r1.output
-        assert "index-only update complete" in r1.output
+        assert "Index updated" in r1.output
 
         state1 = json.loads(
             (git_work_repo / ".repowise" / "state.json").read_text(encoding="utf-8")
         )
         assert state1["last_sync_commit"] != base_commit
+
+
+class TestUpdateWorkingTree:
+    """``repowise watch``'s change source: work that is on disk, not in git.
+
+    Without this the watcher was decorative — it fired an update on every save
+    and the update diffed commit-to-commit, which on a repo with no new commits
+    is empty by definition, so it printed "Already up to date" and returned.
+    """
+
+    def _symbol_names(self, repo):
+        import sqlite3
+
+        con = sqlite3.connect(repo / ".repowise" / "wiki.db")
+        try:
+            return {row[0] for row in con.execute("select name from wiki_symbols")}
+        finally:
+            con.close()
+
+    def _dirty(self, repo):
+        (repo / "new_module.py").write_text(
+            "def uncommitted_addition():\n    return 1\n", encoding="utf-8"
+        )
+
+    def test_uncommitted_work_is_indexed(self, runner, git_work_repo):
+        from repowise.cli.commands.update_cmd.command import UpdateOutcome, run_update
+
+        r0 = runner.invoke(
+            cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert r0.exit_code == 0, r0.output
+        assert "uncommitted_addition" not in self._symbol_names(git_work_repo)
+
+        self._dirty(git_work_repo)
+
+        outcome = run_update(
+            path=str(git_work_repo),
+            provider_name=None,
+            model=None,
+            since=None,
+            reasoning=None,
+            cascade_budget=None,
+            dry_run=False,
+            workspace=False,
+            no_workspace=True,
+            repo_alias=None,
+            index_only=True,
+            include_working_tree=True,
+        )
+
+        assert outcome is UpdateOutcome.REGENERATED
+        assert "uncommitted_addition" in self._symbol_names(git_work_repo)
+
+    def _wt_update(self, repo, *, release_lock=True):
+        """One watcher-style update. Mirrors ``_watch_single_repo``'s trigger,
+        lock release included — in-process repeat runs need it."""
+        from repowise.cli.commands.update_cmd.command import run_update
+        from repowise.cli.commands.watch_cmd import _release_own_update_lock
+
+        try:
+            return run_update(
+                path=str(repo),
+                provider_name=None,
+                model=None,
+                since=None,
+                reasoning=None,
+                cascade_budget=None,
+                dry_run=False,
+                workspace=False,
+                no_workspace=True,
+                repo_alias=None,
+                index_only=True,
+                include_working_tree=True,
+            )
+        finally:
+            if release_lock:
+                _release_own_update_lock(repo)
+
+    def _page_status(self, repo, path):
+        import sqlite3
+
+        con = sqlite3.connect(repo / ".repowise" / "wiki.db")
+        try:
+            row = con.execute(
+                "select freshness_status from wiki_pages where id = ?", (f"file_page:{path}",)
+            ).fetchone()
+            return row[0] if row else None
+        finally:
+            con.close()
+
+    def test_deleted_uncommitted_work_is_tombstoned(self, runner, git_work_repo):
+        """Working-tree state has no ``last_sync_commit`` to diff against: a
+        path stops being reported the moment it stops diverging from HEAD, so
+        without explicit tracking nothing would ever mention a deleted
+        untracked file again and its page would be served forever."""
+        r0 = runner.invoke(
+            cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert r0.exit_code == 0, r0.output
+
+        self._dirty(git_work_repo)
+        self._wt_update(git_work_repo)
+        assert "uncommitted_addition" in self._symbol_names(git_work_repo)
+        assert self._page_status(git_work_repo, "new_module.py") != "tombstone"
+
+        (git_work_repo / "new_module.py").unlink()
+        self._wt_update(git_work_repo)
+
+        assert self._page_status(git_work_repo, "new_module.py") == "tombstone"
+
+    def test_the_lock_is_not_left_held_between_runs(self, runner, git_work_repo):
+        """The watcher is one long-lived process. ``run_update`` only drops
+        the single-flight lock at process exit, so without the watcher's own
+        release every save after the first would defer."""
+        from repowise.cli.commands.update_cmd.command import UpdateOutcome
+
+        r0 = runner.invoke(
+            cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert r0.exit_code == 0, r0.output
+
+        self._dirty(git_work_repo)
+        assert self._wt_update(git_work_repo) is UpdateOutcome.REGENERATED
+
+        (git_work_repo / "second_module.py").write_text(
+            "def second_addition():\n    return 2\n", encoding="utf-8"
+        )
+        # Without the release this is DEFERRED — the lock is held by this very
+        # process — and nothing after the first save is ever indexed.
+        assert self._wt_update(git_work_repo) is UpdateOutcome.REGENERATED
+        assert "second_addition" in self._symbol_names(git_work_repo)
+
+    def test_without_the_release_a_repeat_run_defers(self, runner, git_work_repo):
+        """Pins the failure mode the release exists for."""
+        from repowise.cli.commands.update_cmd.command import UpdateOutcome
+
+        runner.invoke(cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False)
+        self._dirty(git_work_repo)
+        self._wt_update(git_work_repo, release_lock=False)
+
+        assert self._wt_update(git_work_repo) is UpdateOutcome.DEFERRED
+
+    def test_commit_anchored_update_is_unchanged(self, runner, git_work_repo):
+        """The default stays commit-to-commit: hooks and webhooks must not
+        start indexing whatever half-finished edit happens to be on disk."""
+        r0 = runner.invoke(
+            cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert r0.exit_code == 0, r0.output
+
+        self._dirty(git_work_repo)
+
+        r1 = runner.invoke(
+            cli, ["update", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+
+        assert r1.exit_code == 0, r1.output
+        assert "Already up to date" in r1.output
+        assert "uncommitted_addition" not in self._symbol_names(git_work_repo)
+
+
+class TestModuleAttributionRepair:
+    """A wrong ``module`` corrects itself on a plain update, quiet repo included.
+
+    ``module`` is persisted, so changing how it is derived only reaches stored
+    rows when something rewrites them. The alternative trigger — bumping
+    ``HEALTH_ANALYZER_VERSION`` — buys that at the price of a full health
+    re-score, and its gate is only consulted once an update reaches the
+    incremental path, so a repo with no new commits never picks it up at all.
+    """
+
+    def _modules(self, repo):
+        import sqlite3
+        from contextlib import closing
+
+        db = repo / ".repowise" / "wiki.db"
+        with closing(sqlite3.connect(db)) as conn:
+            return dict(conn.execute("SELECT file_path, module FROM health_file_metrics"))
+
+    def _corrupt(self, repo):
+        """Write the labels the old community-map path produced."""
+        import sqlite3
+        from contextlib import closing
+
+        db = repo / ".repowise" / "wiki.db"
+        with closing(sqlite3.connect(db)) as conn:
+            conn.execute("UPDATE health_file_metrics SET module = 'tests/unit (3)'")
+            conn.commit()
+
+    def test_a_quiet_update_repairs_stale_module_labels(self, runner, git_work_repo):
+        r0 = runner.invoke(
+            cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert r0.exit_code == 0, r0.output
+        indexed = self._modules(git_work_repo)
+        assert indexed, "no health rows to test against"
+
+        self._corrupt(git_work_repo)
+        assert set(self._modules(git_work_repo).values()) == {"tests/unit (3)"}
+
+        # No new commits and no config change: update takes the early return.
+        r1 = runner.invoke(
+            cli, ["update", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert r1.exit_code == 0, r1.output
+        assert "Already up to date" in r1.output
+
+        # Repaired anyway, and back to exactly what the indexer wrote.
+        assert self._modules(git_work_repo) == indexed
+
+    def test_dry_run_writes_nothing(self, runner, git_work_repo):
+        """``--dry-run`` means nothing written, and the repair is a write.
+
+        It runs before the early return so a quiet repo is still corrected,
+        which puts it upstream of every other write in the command — and
+        therefore upstream of the guard they all sit behind.
+        """
+        r0 = runner.invoke(
+            cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert r0.exit_code == 0, r0.output
+
+        self._corrupt(git_work_repo)
+        corrupted = self._modules(git_work_repo)
+
+        r1 = runner.invoke(
+            cli,
+            ["update", str(git_work_repo), "--index-only", "--dry-run"],
+            catch_exceptions=False,
+        )
+        assert r1.exit_code == 0, r1.output
+        assert "Module attribution" not in r1.output
+        assert self._modules(git_work_repo) == corrupted
+
+    def test_a_second_update_changes_nothing(self, runner, git_work_repo):
+        """Idempotent, and silent when there is nothing to do.
+
+        If the repair and the indexer disagreed about the repo layout, the two
+        would alternate and every update would report work.
+        """
+        r0 = runner.invoke(
+            cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert r0.exit_code == 0, r0.output
+
+        r1 = runner.invoke(
+            cli, ["update", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert r1.exit_code == 0, r1.output
+        assert "Module attribution" not in r1.output
 
 
 class TestUpdateConfigChangeDetection:
@@ -388,6 +1046,93 @@ class TestUpdateConfigChangeDetection:
         assert "Config files changed" in r2.output
         assert "health re-score complete" in r2.output.lower()
 
+    _HEADLESS_INIT = (
+        "--no-prose",
+        "--embedder",
+        "mock",
+        "--no-editor-setup",
+        "--no-hook",
+        "--no-agents",
+        "--no-codex",
+        "--no-claude-md",
+        "--no-workspace",
+        "--no-distill-hook",
+        "-y",
+    )
+
+    def test_first_update_after_headless_init_rebuilds_nothing(self, runner, git_work_repo):
+        """The opt-outs init records after fingerprinting are not index inputs.
+
+        ``--no-distill-hook`` and the editor-file opt-outs land in config.yaml
+        after init stamps the fingerprint. Their ``hooks`` / ``editor_files``
+        keys used to fall in the unknown-key bucket, so the first update read
+        them as a traversal change and re-rendered and re-embedded every page.
+        """
+        r0 = runner.invoke(
+            cli, ["init", str(git_work_repo), *self._HEADLESS_INIT], catch_exceptions=False
+        )
+        assert r0.exit_code == 0, r0.output
+        import yaml
+
+        cfg = yaml.safe_load((git_work_repo / ".repowise" / "config.yaml").read_text("utf-8"))
+        assert "hooks" in cfg and "editor_files" in cfg
+
+        from repowise.cli.helpers import release_update_lock
+
+        args = ["update", str(git_work_repo), "--index-only", "--no-workspace", "--no-agents"]
+        r1 = runner.invoke(cli, args, catch_exceptions=False)
+        # A real run drops its lock at exit; these share one process.
+        release_update_lock(git_work_repo)
+        assert r1.exit_code == 0, r1.output
+        assert "Config files changed" not in r1.output
+        assert "Pages to regenerate" not in r1.output
+        assert "Rebuilt" not in r1.output
+        assert not (git_work_repo / ".vscode").exists()
+
+        r2 = runner.invoke(cli, args, catch_exceptions=False)
+        release_update_lock(git_work_repo)
+        assert "Already up to date" in r2.output
+
+        # A setting the index does depend on still triggers the rebuild.
+        cfg["exclude_patterns"] = ["tests/**"]
+        (git_work_repo / ".repowise" / "config.yaml").write_text(
+            yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8"
+        )
+        r3 = runner.invoke(cli, args, catch_exceptions=False)
+        assert r3.exit_code == 0, r3.output
+        assert "Config files changed" in r3.output
+
+    def test_init_stamps_the_rescore_cadence_so_the_next_update_skips_it(
+        self, runner, git_work_repo
+    ):
+        """A fresh index must not be re-scored by the update right after it.
+
+        ``init`` scores every file. Until it stamped ``last_full_rescore_at``,
+        the first update read the missing stamp as "never re-scored" and scored
+        every file again — about 30s on a 2k-file repo, on every fresh install.
+        Asserted against HEAD's committer timestamp rather than "is present",
+        because the gate compares it to exactly that and a wall-clock value
+        would drift under ``REPOWISE_GIT_WINDOW_ANCHOR``.
+        """
+        r0 = runner.invoke(
+            cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert r0.exit_code == 0, r0.output
+
+        import subprocess
+
+        head_ts = float(
+            subprocess.check_output(
+                ["git", "log", "-1", "--format=%ct"], cwd=git_work_repo, text=True
+            ).strip()
+        )
+        assert self._state(git_work_repo)["last_full_rescore_at"] == head_ts
+
+        # And the gate agrees, which is the behaviour the stamp exists for.
+        from repowise.cli.commands.update_cmd.persistence import full_rescore_due
+
+        assert full_rescore_due(self._state(git_work_repo), head_ts) is False
+
     def test_dry_run_does_not_rescore_or_advance_fingerprint(self, runner, git_work_repo):
         """`update --dry-run` after a config change must not mutate state/DB."""
 
@@ -408,10 +1153,45 @@ class TestUpdateConfigChangeDetection:
         # Fingerprint must NOT advance, so a real update still re-scores later.
         assert self._state(git_work_repo)["config_fingerprint"] == fp_before
 
-    def test_config_change_with_source_diffs_runs_full_rescore(self, runner, git_work_repo):
-        """A config change must take the full re-score path even when there are
-        also source-file commits (not the partial update)."""
+    # The no-diffs half of the branch — which keeps its early return — is
+    # already covered by test_init_stores_fingerprint_and_update_detects_config_change
+    # above, which asserts exactly the same three things.
+
+    @pytest.mark.parametrize("mode", ["index-only", "docs"])
+    def test_config_change_with_source_diffs_still_indexes_the_commits(
+        self, runner, git_work_repo, mode
+    ):
+        """A config change must never advance the sync pointer past commits it
+        did not index.
+
+        The config branch used to re-score health and return early, skipping the
+        graph rebuild, git re-index, dead-code and page regeneration — and then
+        ``_run_full_health_rescore`` saved ``last_sync_commit=head`` anyway. In
+        index-only mode ``base_ref`` *is* ``last_sync_commit``, so the very next
+        update saw ``base_ref == head``, said "Already up to date", and the
+        commit's files stayed out of the index until a manual ``--full``.
+
+        Parameterized because the two modes lose different amounts: index-only
+        loses the commits permanently, while docs mode self-heals on the next
+        update via its separate ``last_docs_commit`` pointer — but skips the git
+        re-index on the run itself either way, which is what this asserts.
+        """
+        import json
+
+        # Docs mode regenerates pages, so it needs a provider; ``mock`` is the
+        # registered test one and keeps this a CLI test, not a provider test.
+        args = ["--index-only"] if mode == "index-only" else ["--docs", "--provider", "mock"]
         runner.invoke(cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False)
+
+        # Switch the *periodic* re-score gate off, so a passing run can only be
+        # the config-forced re-score. ``init`` now stamps ``last_full_rescore_at``
+        # itself, which already suppresses the #728 time gate here; this seeding
+        # stays because "far future" is the stronger statement of the two and it
+        # is what makes the assertion below about the *config* trigger alone.
+        state_file = git_work_repo / ".repowise" / "state.json"
+        seeded = json.loads(state_file.read_text(encoding="utf-8"))
+        seeded["last_full_rescore_at"] = 9e18  # far future: never "due"
+        state_file.write_text(json.dumps(seeded), encoding="utf-8")
 
         # New source commit AND a config change in the same update window.
         (git_work_repo / "new_module.py").write_text("def f():\n    return 1\n", encoding="utf-8")
@@ -421,12 +1201,31 @@ class TestUpdateConfigChangeDetection:
             '{"disabled_biomarkers": ["ungoverned_hotspot"]}', encoding="utf-8"
         )
 
-        result = runner.invoke(
-            cli, ["update", str(git_work_repo), "--index-only"], catch_exceptions=False
-        )
+        result = runner.invoke(cli, ["update", str(git_work_repo), *args], catch_exceptions=False)
         assert result.exit_code == 0, result.output
         assert "Config files changed" in result.output
-        assert "health re-score complete" in result.output.lower()
+        # The re-score still happens — it just runs off the graph the
+        # incremental path already built instead of a second traverse. With the
+        # time gate seeded off above, this line can only come from the
+        # config-forced re-score, so it pins that the force is wired to the
+        # path this mode actually takes (they are different code).
+        assert "Health re-score:" in result.output
+
+        # git_metadata is the decisive table: the standalone re-score rebuilds
+        # and persists the graph itself, so graph_nodes / health_file_metrics
+        # carry the new file either way and prove nothing. Only the git
+        # re-index — churn, ownership, co-change — is genuinely skipped by the
+        # early return, and it is 0 rows there.
+        db = git_work_repo / ".repowise" / "wiki.db"
+        assert (
+            _db_scalar(db, "SELECT COUNT(*) FROM git_metadata WHERE file_path = 'new_module.py'")
+            == 1
+        ), "the config branch returned before the git re-index reached the commit's files"
+
+        # And nothing is left pending: a second update has no work to find.
+        r2 = runner.invoke(cli, ["update", str(git_work_repo), *args], catch_exceptions=False)
+        assert r2.exit_code == 0, r2.output
+        assert "Already up to date" in r2.output
 
 
 class TestUpdatePreservesDeadCode:
@@ -557,8 +1356,8 @@ class TestInitSeedFrom:
                 catch_exceptions=False,
             )
             assert r1.exit_code == 0, r1.output
-            assert "Worktree index seeded successfully" in r1.output
-            assert "Delegating to update..." in r1.output
+            assert "Index copied from" in r1.output
+            assert "to catch it up" in r1.output
 
             assert (worktree_dir / ".repowise" / "state.json").exists()
             assert (worktree_dir / ".repowise" / "wiki.db").exists()
@@ -653,6 +1452,53 @@ class TestInitSeedFrom:
         finally:
             _remove_worktree(git_work_repo, worktree_dir)
 
+    def test_update_seeds_worktree_behind_its_base(self, git_work_repo, monkeypatch):
+        """The base synced past the worktree's fork point: update still seeds.
+
+        Its catch-up diffs two trees, so the base's last sync need not be an
+        ancestor. This used to exit 1 with "No previous sync found".
+        """
+        import json
+
+        from click.testing import CliRunner
+
+        monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+
+        r0 = CliRunner().invoke(
+            cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert r0.exit_code == 0, r0.output
+
+        worktree_dir = git_work_repo.parent / "behind-worktree"
+        _git(["worktree", "add", "-b", "behind", str(worktree_dir), "HEAD"], git_work_repo)
+        try:
+            (git_work_repo / "base_only.py").write_text("x = 1\n", encoding="utf-8")
+            _git(["add", "base_only.py"], git_work_repo)
+            _git(["commit", "-m", "base moves on"], git_work_repo)
+            r1 = CliRunner().invoke(
+                cli, ["update", str(git_work_repo), "--index-only"], catch_exceptions=False
+            )
+            assert r1.exit_code == 0, r1.output
+
+            (worktree_dir / "wt_only.py").write_text("y = 2\n", encoding="utf-8")
+            _git(["add", "wt_only.py"], worktree_dir)
+            _git(["commit", "-m", "worktree work"], worktree_dir)
+
+            r2 = CliRunner().invoke(
+                cli, ["update", str(worktree_dir), "--index-only"], catch_exceptions=False
+            )
+            assert r2.exit_code == 0, r2.output
+            state = json.loads(
+                (worktree_dir / ".repowise" / "state.json").read_text(encoding="utf-8")
+            )
+            assert state["last_sync_commit"] == _rev_parse(worktree_dir, "HEAD")
+            db = worktree_dir / ".repowise" / "wiki.db"
+            nodes = "SELECT COUNT(*) FROM graph_nodes WHERE node_id = '{}'"
+            assert _db_scalar(db, nodes.format("wt_only.py")) == 1
+            assert _db_scalar(db, nodes.format("base_only.py")) == 0
+        finally:
+            _remove_worktree(git_work_repo, worktree_dir)
+
     def test_seed_from_self_fails(self, git_work_repo):
         from click.testing import CliRunner
 
@@ -665,7 +1511,8 @@ class TestInitSeedFrom:
 
         from click.testing import CliRunner
 
-        monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+        # Leave REPOWISE_DB_URL pinned (as git_work_repo sets it) to verify
+        # that the delegated update does not leak worktree pages into the base DB.
 
         # Every file gets a structural page now, so no coverage knob is needed
         # to keep the new file from being tier-gated out.
@@ -677,7 +1524,7 @@ class TestInitSeedFrom:
         assert r0.exit_code == 0, r0.output
 
         _git(["checkout", "-b", "feature"], git_work_repo)
-        (git_work_repo / "new_file.py").write_text("print('hello')\n", encoding="utf-8")
+        (git_work_repo / "new_file.py").write_text("def my_func(): pass\n", encoding="utf-8")
         _git(["add", "new_file.py"], git_work_repo)
         _git(["commit", "-m", "feature commit"], git_work_repo)
 
@@ -691,7 +1538,7 @@ class TestInitSeedFrom:
                 catch_exceptions=False,
             )
             assert r1.exit_code == 0, r1.output
-            assert "Delegating to update" in r1.output
+            assert "to catch it up" in r1.output
 
             # Copied config.yaml and the vector db directory (lancedb).
             assert (worktree_dir / ".repowise" / "config.yaml").exists()
@@ -712,11 +1559,9 @@ class TestInitSeedFrom:
                 "SELECT target_path FROM wiki_pages",
             )
             assert len(paths) > 0, "Seeded pages should have survived"
-            # Note: no assertion that new_file.py gets its own file page. The
-            # update-time selection budget is computed over the affected-file
-            # subset (not the whole repo), so a small update batch rarely
-            # selects a brand-new file for a page. Tracked as #746;
-            # independent of seeding.
+
+            # Since the file has a symbol and we have 1.0 coverage, it must be selected
+            assert "new_file.py" in paths, f"Expected 'new_file.py' in {paths}"
             state = json.loads(
                 (worktree_dir / ".repowise" / "state.json").read_text(encoding="utf-8")
             )
@@ -745,8 +1590,8 @@ class TestWorktreeAutoSeed:
                 cli, ["init", str(worktree_dir), "--index-only"], catch_exceptions=False
             )
             assert r1.exit_code == 0, r1.output
-            assert "[worktree]" in r1.output
-            assert "Worktree index seeded successfully" in r1.output
+            assert "This is a linked worktree of" in r1.output
+            assert "Index copied from" in r1.output
             assert (worktree_dir / ".repowise" / "state.json").exists()
             assert (worktree_dir / ".repowise" / "wiki.db").exists()
         finally:
@@ -771,7 +1616,7 @@ class TestWorktreeAutoSeed:
                 catch_exceptions=False,
             )
             assert r1.exit_code == 0, r1.output
-            assert "[worktree]" not in r1.output
+            assert "linked worktree of" not in r1.output
             # Cold init still produces a working index.
             assert (worktree_dir / ".repowise" / "state.json").exists()
         finally:
@@ -823,7 +1668,225 @@ class TestWorktreeAutoSeed:
                 cli, ["init", str(worktree_dir), "--index-only"], catch_exceptions=False
             )
             assert r1.exit_code == 0, r1.output
-            assert "[worktree]" not in r1.output
+            assert "linked worktree of" not in r1.output
             assert (worktree_dir / ".repowise" / "state.json").exists()
+        finally:
+            _remove_worktree(git_work_repo, worktree_dir)
+
+
+_TEST_PROVIDER_ENV_VARS = (
+    "REPOWISE_PROVIDER",
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "OPENROUTER_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "KIMI_API_KEY",
+    "EDENAI_API_KEY",
+    "LITELLM_API_KEY",
+    "OLLAMA_BASE_URL",
+)
+
+
+def _no_model_configured(monkeypatch) -> None:
+    """Strip every provider key so a run resolves to no provider at all."""
+    for var in _TEST_PROVIDER_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+
+
+class TestWorktreeInitForce:
+    """``init --force`` inside a seedable worktree (#1482).
+
+    ``--force`` is documented as "Regenerate all pages, ignoring existing" and
+    is the free re-index escape hatch. The worktree seed path forwarded it to
+    the delegated ``run_update`` as ``full=``, and ``full`` is ``update --full``:
+    the fast -> full upgrade that resolves a provider and regenerates the whole
+    wiki with a model. So ``init --force`` in a worktree died with "No provider
+    configured" when no key was set, and silently billed a whole-repo model
+    regeneration when one was. The fix drops the seed for a ``--force`` run, so
+    the ordinary init path re-indexes in the mode the user invoked.
+    """
+
+    @staticmethod
+    def _spy_on_upgrade(monkeypatch) -> list:
+        """Record any ``upgrade_to_full`` call; the paid path must never run."""
+        import repowise.cli.commands.upgrade_flow as upgrade_flow
+
+        calls: list = []
+        monkeypatch.setattr(
+            upgrade_flow, "upgrade_to_full", lambda *a, **k: calls.append((a, k))
+        )
+        return calls
+
+    def test_init_force_without_provider_reindexes_instead_of_dying(
+        self, git_work_repo, monkeypatch
+    ):
+        """No key configured: ``init --force`` must still produce a wiki.
+
+        Pre-fix this exited non-zero with "No provider configured", because the
+        seed path routed the run into ``upgrade_to_full`` -> ``resolve_provider``.
+        """
+        import json
+
+        from click.testing import CliRunner
+
+        monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+        _no_model_configured(monkeypatch)
+
+        r0 = CliRunner().invoke(
+            cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert r0.exit_code == 0, r0.output
+
+        upgrade_calls = self._spy_on_upgrade(monkeypatch)
+
+        worktree_dir = git_work_repo.parent / "force-no-provider"
+        _git(["worktree", "add", "-b", "force-no-provider", str(worktree_dir)], git_work_repo)
+        try:
+            r1 = CliRunner().invoke(
+                cli, ["init", str(worktree_dir), "--force"], catch_exceptions=False
+            )
+            assert r1.exit_code == 0, r1.output
+            flat = " ".join(r1.output.split())
+            assert "No provider configured" not in flat
+            assert upgrade_calls == [], "init --force must not enter the paid upgrade path"
+            # The seed is deliberately skipped: --force asks for the re-index
+            # seeding exists to avoid, so no delegation line and no seeded index.
+            assert "to catch it up" not in flat
+            assert "--force re-indexes this checkout from scratch" in flat
+
+            state = json.loads(
+                (worktree_dir / ".repowise" / "state.json").read_text(encoding="utf-8")
+            )
+            assert state["last_sync_commit"] == _rev_parse(worktree_dir, "HEAD")
+            # The worktree gets its own store, and the fresh init wrote a wiki.
+            assert (worktree_dir / ".repowise" / "wiki.db").exists()
+            assert _db_scalar(worktree_dir / ".repowise" / "wiki.db", "SELECT COUNT(*) FROM wiki_pages") > 0
+            repos = _db_column(
+                worktree_dir / ".repowise" / "wiki.db",
+                "SELECT local_path FROM repositories",
+            )
+            assert repos == [str(worktree_dir)], repos
+        finally:
+            _remove_worktree(git_work_repo, worktree_dir)
+
+    def test_index_only_force_in_worktree_stays_free(self, git_work_repo, monkeypatch):
+        """``--index-only --force`` is a template re-index, not a model run.
+
+        The issue calls this out separately: the flag was swallowed the same way,
+        so a run sold as free could reach ``resolve_provider``.
+        """
+        import json
+
+        from click.testing import CliRunner
+
+        monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+        _no_model_configured(monkeypatch)
+
+        r0 = CliRunner().invoke(
+            cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert r0.exit_code == 0, r0.output
+
+        upgrade_calls = self._spy_on_upgrade(monkeypatch)
+
+        worktree_dir = git_work_repo.parent / "force-index-only"
+        _git(["worktree", "add", "-b", "force-index-only", str(worktree_dir)], git_work_repo)
+        try:
+            r1 = CliRunner().invoke(
+                cli,
+                ["init", str(worktree_dir), "--index-only", "--force"],
+                catch_exceptions=False,
+            )
+            assert r1.exit_code == 0, r1.output
+            flat = " ".join(r1.output.split())
+            assert upgrade_calls == []
+            assert "No provider configured" not in flat
+            assert "Building documentation from code" in flat
+            assert "no model, no spend" in flat
+
+            state = json.loads(
+                (worktree_dir / ".repowise" / "state.json").read_text(encoding="utf-8")
+            )
+            assert state["docs_mode"] == "deterministic"
+        finally:
+            _remove_worktree(git_work_repo, worktree_dir)
+
+    def test_force_with_provider_does_not_run_the_paid_upgrade(self, git_work_repo, monkeypatch):
+        """With a provider configured, ``init --force`` must not bill a full regen.
+
+        This is the other half of the bug: pre-fix the run printed the
+        ``repowise update --full`` upgrade banner and regenerated the whole wiki
+        through ``upgrade_to_full``.
+        """
+        from click.testing import CliRunner
+
+        monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+
+        r0 = CliRunner().invoke(
+            cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert r0.exit_code == 0, r0.output
+
+        upgrade_calls = self._spy_on_upgrade(monkeypatch)
+
+        worktree_dir = git_work_repo.parent / "force-with-provider"
+        _git(["worktree", "add", "-b", "force-with-provider", str(worktree_dir)], git_work_repo)
+        try:
+            r1 = CliRunner().invoke(
+                cli,
+                ["init", str(worktree_dir), "--force", "--provider", "mock"],
+                catch_exceptions=False,
+            )
+            assert r1.exit_code == 0, r1.output
+            flat = " ".join(r1.output.split())
+            assert upgrade_calls == [], "init --force delegated to the paid full upgrade"
+            # The paid upgrade prints its own banner and upgrades the git tier
+            # to FULL. Pre-fix both of these appeared on this exact command.
+            assert "repowise update --full" not in flat
+            assert "Git tier upgraded to FULL" not in flat
+            assert "--force re-indexes this checkout from scratch" in flat
+        finally:
+            _remove_worktree(git_work_repo, worktree_dir)
+
+    def test_plain_init_still_seeds_and_never_asks_for_full(self, git_work_repo, monkeypatch):
+        """Control: without --force the seed delegate still runs, and as free catch-up.
+
+        The seed path must never hand ``run_update`` a ``full=True``, whatever
+        the flag combination: that mapping was the whole bug.
+        """
+        from click.testing import CliRunner
+
+        monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+
+        r0 = CliRunner().invoke(
+            cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert r0.exit_code == 0, r0.output
+
+        seen: list[dict] = []
+        import repowise.cli.commands.update_cmd.command as update_command
+
+        real_run_update = update_command.run_update
+
+        def _recording_run_update(**kwargs):
+            seen.append(kwargs)
+            return real_run_update(**kwargs)
+
+        monkeypatch.setattr(update_command, "run_update", _recording_run_update)
+
+        worktree_dir = git_work_repo.parent / "plain-init-seed"
+        _git(["worktree", "add", "-b", "plain-init-seed", str(worktree_dir)], git_work_repo)
+        try:
+            r1 = CliRunner().invoke(
+                cli, ["init", str(worktree_dir), "--index-only"], catch_exceptions=False
+            )
+            assert r1.exit_code == 0, r1.output
+            flat = " ".join(r1.output.split())
+            assert "Index copied from" in flat
+            assert "to catch it up" in flat
+            assert seen, "the seed path should still delegate to update"
+            assert all(call["full"] is False for call in seen), seen
         finally:
             _remove_worktree(git_work_repo, worktree_dir)

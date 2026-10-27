@@ -149,6 +149,46 @@ class TestSelectStar:
         sql = "CREATE VIEW v AS SELECT * FROM (SELECT * FROM t) sub"
         assert _smell_kinds(sql) == ["sql_select_star"]
 
+    def test_fires_on_plain_table_in_view(self) -> None:
+        assert _smell_kinds("CREATE VIEW v AS SELECT * FROM users") == ["sql_select_star"]
+
+    def test_silent_inside_exists(self) -> None:
+        sql = (
+            "CREATE VIEW v AS SELECT id FROM users u "
+            "WHERE EXISTS (SELECT * FROM orders o WHERE o.user_id = u.id)"
+        )
+        assert _smell_kinds(sql) == []
+
+    def test_silent_inside_not_exists(self) -> None:
+        sql = (
+            "CREATE VIEW v AS SELECT id FROM users u "
+            "WHERE NOT EXISTS (SELECT * FROM orders o WHERE o.user_id = u.id)"
+        )
+        assert _smell_kinds(sql) == []
+
+    def test_silent_over_explicit_cte(self) -> None:
+        sql = "CREATE VIEW v AS WITH c AS (SELECT id, name FROM users) SELECT * FROM c"
+        assert _smell_kinds(sql) == []
+
+    def test_silent_over_explicit_subquery(self) -> None:
+        sql = "CREATE VIEW v AS SELECT * FROM (SELECT id, name FROM users) sub"
+        assert _smell_kinds(sql) == []
+
+    def test_fires_when_cte_itself_selects_star(self) -> None:
+        sql = "CREATE VIEW v AS WITH c AS (SELECT * FROM users) SELECT * FROM c"
+        assert _smell_kinds(sql) == ["sql_select_star"]
+
+    def test_fires_on_qualified_table_sharing_a_cte_name(self) -> None:
+        sql = "CREATE VIEW v AS WITH users AS (SELECT id FROM t) SELECT * FROM other.users"
+        assert _smell_kinds(sql) == ["sql_select_star"]
+
+    def test_fires_when_star_joins_base_table(self) -> None:
+        sql = (
+            "CREATE VIEW v AS WITH c AS (SELECT id FROM users) "
+            "SELECT * FROM c JOIN orders o ON o.user_id = c.id"
+        )
+        assert _smell_kinds(sql) == ["sql_select_star"]
+
 
 class TestUpdateDeleteWithoutWhere:
     def test_update_fires(self) -> None:
@@ -158,6 +198,14 @@ class TestUpdateDeleteWithoutWhere:
 
     def test_delete_fires(self) -> None:
         assert _smell_kinds("DELETE FROM sessions") == ["sql_update_delete_without_where"]
+
+    def test_silent_on_temp_table_from_same_file(self) -> None:
+        sql = "CREATE TEMP TABLE tmp (id INT); DELETE FROM tmp; UPDATE tmp SET id = 0"
+        assert _smell_kinds(sql) == []
+
+    def test_fires_on_regular_table_created_in_same_file(self) -> None:
+        sql = "CREATE TABLE logs (id INT); DELETE FROM logs"
+        assert _smell_kinds(sql) == ["sql_update_delete_without_where"]
 
     def test_silent_with_where(self) -> None:
         assert _smell_kinds("UPDATE users SET active = 0 WHERE id = 1") == []
@@ -185,6 +233,21 @@ class TestCartesianJoin:
     def test_keyed_join_silent(self) -> None:
         assert _smell_kinds("SELECT a.x FROM a JOIN b ON a.id = b.id") == []
         assert _smell_kinds("SELECT a.x FROM a JOIN b USING (id)") == []
+
+    def test_multi_target_select_into_is_silent(self) -> None:
+        """Issue #1502: ``SELECT ... INTO a, b`` parses the trailing target as
+        a comma-join, so it must not be flagged as a cartesian join."""
+        assert _smell_kinds("select a, b into x, y from t where c = 1;") == []
+        assert _smell_kinds("select a, b into x, y from t;") == []
+
+    def test_single_target_select_into_is_silent(self) -> None:
+        assert _smell_kinds("select a into x from t;") == []
+
+    def test_multi_target_into_does_not_mask_real_cartesian(self) -> None:
+        """The INTO escape must not silence a genuine comma-join elsewhere."""
+        assert _smell_kinds(
+            "select a into x from t;\nselect * from orders o, customers c;"
+        ) == ["sql_cartesian_join"]
 
 
 class TestTemplatedFilesSilent:

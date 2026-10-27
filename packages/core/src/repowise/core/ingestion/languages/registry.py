@@ -23,20 +23,25 @@ from .spec import LanguageSpec
 from .specs import ALL_SPECS as _SPECS
 
 # Entry-point filename stems that are conventional across languages rather
-# than owned by any one of them ("bootstrap.php", "entry.ts", "cli.py",
-# "server.go", "main.rs", "app.py", "index.js" …). Language-unique stems
+# than owned by any one of them ("bootstrap.php", "cli.py", "server.go",
+# "main.rs", "app.py", "index.js" …). Language-unique stems
 # (manage/wsgi/asgi/__main__ → python, mod → rust) live on their specs.
 _GENERIC_ENTRY_STEMS: frozenset[str] = frozenset(
-    {"main", "index", "app", "server", "cli", "bootstrap", "entry"}
+    {"main", "index", "app", "server", "cli", "bootstrap"}
 )
 
-# Stems the traverser's is_entry_point *flag* accepts for any language —
-# deliberately a different (tighter on cli/bootstrap/entry, looser on
-# run/start) set than the tour-bonus stems above: the flag is strong
-# evidence, the tour stem a weak bonus. Per-language flag stems
-# (wsgi/asgi → python) live on the specs.
+# Stems that are entry-point evidence on their own, for any language. The
+# traverser flags on this *unioned* with the tour-bonus stems above (see
+# ``traverser._ENTRY_POINT_STEMS``): the two were hand-kept and disagreed both
+# ways, so this one keeps run/start, which the tour set lacks, and inherits
+# cli/bootstrap, which it lacked. Per-language flag stems (wsgi/asgi →
+# python) live on the specs.
+#
+# ``entry`` is a flag stem only: a bundler's ``entry.ts`` keeps its dead-code
+# exemption, but the name ranks neutral, since an ``entry.ts`` is as often a
+# module defining ``class Entry`` as a front door.
 _GENERIC_ENTRY_FLAG_STEMS: frozenset[str] = frozenset(
-    {"main", "index", "app", "run", "server", "start"}
+    {"main", "index", "app", "run", "server", "start", "entry"}
 )
 
 # =========================================================================
@@ -90,6 +95,10 @@ class LanguageRegistry:
         """Return ``{ext: tag}`` for all registered extensions."""
         return dict(self._ext_map)
 
+    def all_name_suffixes(self) -> dict[str, str]:
+        """Return ``{lowercase name ending: tag}`` for multi-dot endings."""
+        return {sfx: s.tag for s in self._specs.values() for sfx in s.name_suffixes}
+
     def all_special_filenames(self) -> dict[str, str]:
         """Return ``{filename: tag}`` for all special filenames."""
         return dict(self._filename_map)
@@ -126,6 +135,51 @@ class LanguageRegistry:
         """Return tags for languages with no AST parser."""
         return frozenset(s.tag for s in self._specs.values() if s.is_passthrough)
 
+    def dead_code_exempt_languages(self) -> frozenset[str]:
+        """Languages whose external runtime makes static reachability unsound."""
+        return frozenset(s.tag for s in self._specs.values() if s.dead_code_exempt)
+
+    def unparseable_data_languages(self) -> frozenset[str]:
+        """Config/markup/data plus infra passthrough tags, without ``openapi``
+        and ``unknown``.
+
+        The question is "we cannot extract structure from it, and there is none
+        to extract". That is narrower than :meth:`passthrough_languages`, which
+        also catches real code languages still awaiting a grammar (clojure,
+        elixir, haskell). For those, zero symbols is a gap in us rather than a
+        property of the file, so they must stay eligible for the analyses this
+        set exempts.
+
+        ``openapi`` is excluded because ``special_handlers`` extracts from it
+        without a tree-sitter grammar. ``unknown`` is excluded because it is not
+        a data format at all: it is the registry's "no idea what this is"
+        fallback, carrying ``is_passthrough=True`` only because there is no
+        grammar to point at. Callers that do want it say so, via
+        :meth:`unparseable_or_unknown_languages`.
+
+        Three call sites inlined this comprehension before it landed here (the
+        parser's passthrough skip, the traverser's generated-marker skip, and
+        dead code's non-code exemption) and they had already drifted on whether
+        ``unknown`` belonged. Same reasoning as ``core.test_paths``: one
+        spelling, so they cannot disagree.
+        """
+        return frozenset(
+            s.tag
+            for s in self._specs.values()
+            if s.is_passthrough
+            and (not s.is_code or s.is_infra)
+            and s.tag not in ("openapi", "unknown")
+        )
+
+    def unparseable_or_unknown_languages(self) -> frozenset[str]:
+        """:meth:`unparseable_data_languages` plus ``unknown``.
+
+        For callers that must not act on a file whose language was never
+        identified. Dead code is the one today: there, "unknown" means "no
+        evidence of reachability either way", so flagging it would be a guess.
+        """
+        return self.unparseable_data_languages() | {"unknown"}
+
     def infra_languages(self) -> frozenset[str]:
         """Return tags for infrastructure languages."""
         return frozenset(s.tag for s in self._specs.values() if s.is_infra)
@@ -137,6 +191,31 @@ class LanguageRegistry:
     def manifest_filenames(self) -> frozenset[str]:
         """Return the union of all manifest filenames."""
         return frozenset(f for s in self._specs.values() for f in s.manifest_files)
+
+    def package_manifest_filenames(self) -> frozenset[str]:
+        """Filenames that mark their directory as the root of a package.
+
+        The single source of truth for "is this directory a package". Both
+        monorepo detection (:mod:`..traverser`) and health's ``module``
+        attribution read this, so registering a language grants a repo in that
+        language monorepo bucketing with no second edit.
+
+        This is :meth:`manifest_filenames` minus each spec's
+        ``build_config_manifests`` — the whole union is not usable directly
+        because it also carries build configuration (``vite.config.js``, the
+        .NET ``Directory.Build.*`` family) that appears in directories which
+        are not packages, and a false root fragments the module rollup.
+        """
+        return frozenset(
+            f
+            for s in self._specs.values()
+            for f in s.manifest_files
+            if f not in s.build_config_manifests
+        )
+
+    def package_manifest_globs(self) -> frozenset[str]:
+        """Glob patterns that mark their directory as a package root (``*.csproj``)."""
+        return frozenset(g for s in self._specs.values() for g in s.manifest_globs)
 
     def blocked_dirs(self) -> frozenset[str]:
         """Return the union of all per-language blocked directories."""
@@ -165,7 +244,12 @@ class LanguageRegistry:
         return spec.import_support if spec else "none"
 
     def entry_filename_stems(self) -> frozenset[str]:
-        """Generic + per-language entry-point filename stems (tour bonus set)."""
+        """Generic + per-language entry-point filename stems.
+
+        Read by the tour's stem bonus and, minus the glue stems, by
+        :func:`repowise.core.entry_candidacy.conventional_entry_stems` — which
+        both the wiki ranking and the traverser's flag consume.
+        """
         return _GENERIC_ENTRY_STEMS | frozenset(
             stem for s in self._specs.values() for stem in s.entry_stems
         )
@@ -217,6 +301,29 @@ class LanguageRegistry:
                 sorted(spec.test_camel_suffixes, key=lambda sfx: (-len(sfx), sfx))
             )
             pattern = re.compile(rf"(?<=[a-z0-9])(?:{alternation})$")
+            for ext in spec.extensions:
+                result.setdefault(ext, pattern)
+        return result
+
+    def camel_test_prefix_res_by_extension(self) -> dict[str, re.Pattern[str]]:
+        """Per-extension case-sensitive camel-boundary test-prefix regexes.
+
+        The mirror of :meth:`camel_test_res_by_extension` for languages
+        whose test-program convention names the file ``Test<Subject>``
+        rather than ``<Subject>Test``. Each language's ``test_camel_prefixes``
+        compile to one anchored pattern (``^(?:Test)(?=[A-Z])``) keyed by
+        that language's own extensions — the uppercase-boundary lookahead is
+        what keeps ``Testing.dpr`` and bare ``Test.dpr`` out.
+        """
+        result: dict[str, re.Pattern[str]] = {}
+        for spec in self._specs.values():
+            if not spec.test_camel_prefixes:
+                continue
+            # Longest-first so a longer prefix wins inside the alternation.
+            alternation = "|".join(
+                sorted(spec.test_camel_prefixes, key=lambda pfx: (-len(pfx), pfx))
+            )
+            pattern = re.compile(rf"^(?:{alternation})(?=[A-Z])")
             for ext in spec.extensions:
                 result.setdefault(ext, pattern)
         return result

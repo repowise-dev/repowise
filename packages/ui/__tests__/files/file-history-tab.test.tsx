@@ -24,7 +24,13 @@ function makeGit(overrides: Partial<FileDetailGit> = {}): FileDetailGit {
     significant_commits: [],
     top_authors: [],
     co_change_partners: [],
-    agent: { agent_commit_count: 0, agent_authored_pct: null, tier_counts: {} },
+    agent: {
+      agent_commit_count: 0,
+      agent_authored_pct: null,
+      tier_counts: {},
+      attribution_coverage: null,
+      agent_share_suppressed: null,
+    },
     first_commit_at: null,
     ...overrides,
   };
@@ -111,6 +117,6 @@ describe("FileHistoryTab file age", () => {
 describe("FileHistoryTab without git", () => {
   it("falls back to the empty state", () => {
     renderTab(null);
-    expect(screen.getByText("No git history")).toBeTruthy();
+    expect(screen.getByText("No git history for this file")).toBeTruthy();
   });
 });

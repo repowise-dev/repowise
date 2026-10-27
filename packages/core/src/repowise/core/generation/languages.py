@@ -26,3 +26,17 @@ SUPPORTED_LANGUAGES = {
     "ar": "Arabic",
     "hi": "Hindi",
 }
+
+
+def sanitize_language_code(language: str | None) -> str:
+    """Return *language* lowered, stripped and reduced to ``[a-z0-9_]``.
+
+    The configured code reaches a system prompt and a label lookup, so it is
+    scrubbed before either sees it: without this a config value could inject
+    newlines and extra instructions into the prompt. Validation against
+    :data:`SUPPORTED_LANGUAGES` is the caller's, because the two callers
+    differ on what an unknown code means: the prompt path warns, the label
+    path silently falls back to English.
+    """
+    raw = (language or "en").lower().strip()
+    return "".join(ch for ch in raw if ch.isalnum() or ch == "_")

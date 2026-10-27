@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
 from pathlib import Path
 from typing import Any
 
+import click
 import pytest
 
 from repowise.cli.helpers import (
@@ -19,13 +22,33 @@ from repowise.cli.helpers import (
     resolve_reasoning,
     resolve_repo_path,
     run_async,
+    save_config,
     save_state,
     validate_provider_config,
+    warn,
 )
 
 # ---------------------------------------------------------------------------
 # run_async
 # ---------------------------------------------------------------------------
+
+
+class TestWarn:
+    def test_warn_prints_warning_prefix_to_stderr(self, capsys):
+        warn("something went wrong")
+        captured = capsys.readouterr()
+        assert "Warning:" in captured.err
+        assert "something went wrong" in captured.err
+        # Nothing leaks to stdout.
+        assert captured.out == ""
+
+    def test_warn_prefix_rendered(self, capsys):
+        warn("boom")
+        captured = capsys.readouterr()
+        # Rich renders the [yellow] markup away when stderr isn't a tty, but the
+        # human-facing "Warning:" prefix must survive on the stderr stream.
+        assert captured.err.startswith("Warning: boom\n")
+        assert captured.out == ""
 
 
 class TestRunAsync:
@@ -41,6 +64,43 @@ class TestRunAsync:
 
         with pytest.raises(ValueError, match="boom"):
             run_async(_fail())
+
+    def test_closes_provider_clients_on_the_loop_that_ran_the_coroutine(self, monkeypatch):
+        # #2946: an SDK client's pooled connections belong to this loop, so
+        # they are closed before it goes away, after the coroutine is done.
+        events: list[object] = []
+
+        async def _close():
+            events.append(("closed", asyncio.get_running_loop()))
+
+        async def _work():
+            events.append(("ran", asyncio.get_running_loop()))
+            return "done"
+
+        monkeypatch.setattr(
+            "repowise.core.providers.llm.base.close_provider_clients", _close
+        )
+
+        assert run_async(_work()) == "done"
+        assert [name for name, _ in events] == ["ran", "closed"]
+        assert events[0][1] is events[1][1]
+
+    def test_closes_provider_clients_when_the_coroutine_raises(self, monkeypatch):
+        closed: list[bool] = []
+
+        async def _close():
+            closed.append(True)
+
+        async def _fail():
+            raise ValueError("boom")
+
+        monkeypatch.setattr(
+            "repowise.core.providers.llm.base.close_provider_clients", _close
+        )
+
+        with pytest.raises(ValueError, match="boom"):
+            run_async(_fail())
+        assert closed == [True]
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +187,20 @@ class TestDbUrl:
         expected_path = (tmp_path / ".repowise" / "wiki.db").as_posix()
         assert url == f"sqlite+aiosqlite:///{expected_path}"
         assert (tmp_path / ".repowise").exists()
+
+    def test_configured_db_url_none_without_env(self, monkeypatch):
+        from repowise.core.persistence import get_configured_db_url
+
+        monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+        monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
+        assert get_configured_db_url() is None
+
+    def test_configured_db_url_returns_normalized_env_url(self, monkeypatch):
+        from repowise.core.persistence import get_configured_db_url
+
+        monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
+        monkeypatch.setenv("REPOWISE_DB_URL", "postgresql://user:pass@host:5432/db")
+        assert get_configured_db_url() == "postgresql+asyncpg://user:pass@host:5432/db"
 
 
 class TestResolveReasoning:
@@ -226,6 +300,95 @@ class TestSaveConfigPartial:
         assert cfg["embedder"] == "minilm"
 
 
+class TestStaleEmbeddingModelIsNotCarriedOver:
+    """A re-init that resolves no model must not keep a previous one (#2627)."""
+
+    def test_save_config_drops_a_stale_pin_on_the_new_embedder(self, tmp_path):
+        from repowise.cli.helpers import load_config, save_config
+
+        save_config(
+            tmp_path,
+            "openai",
+            "gpt-5",
+            "openai",
+            embedding_model="text-embedding-3-large",
+            save_key=False,
+        )
+        save_config(
+            tmp_path, "gemini", "gemini-2.5-flash", "gemini", embedding_model=None, save_key=False
+        )
+
+        cfg = load_config(tmp_path)
+        assert cfg["embedder"] == "gemini"
+        assert "embedding_model" not in cfg
+
+    def test_save_config_partial_drops_a_stale_pin_on_the_new_embedder(self, tmp_path):
+        from repowise.cli.helpers import load_config, save_config_partial
+
+        rw_dir = tmp_path / ".repowise"
+        rw_dir.mkdir()
+        (rw_dir / "config.yaml").write_text(
+            "embedder: openai\nembedding_model: text-embedding-3-large\n", encoding="utf-8"
+        )
+
+        save_config_partial(tmp_path, embedder="gemini", embedding_model=None)
+
+        cfg = load_config(tmp_path)
+        assert cfg["embedder"] == "gemini"
+        assert "embedding_model" not in cfg
+
+    def test_serve_does_not_export_the_dropped_pin(self, tmp_path, monkeypatch):
+        from repowise.cli.commands import serve_cmd
+        from repowise.cli.helpers import save_config
+
+        save_config(
+            tmp_path,
+            "openai",
+            "gpt-5",
+            "openai",
+            embedding_model="text-embedding-3-large",
+            save_key=False,
+        )
+        save_config(
+            tmp_path, "gemini", "gemini-2.5-flash", "gemini", embedding_model=None, save_key=False
+        )
+
+        monkeypatch.chdir(tmp_path)
+        # _load_local_provider_config only sets these when unset, and it writes
+        # straight to os.environ, which monkeypatch cannot undo unless it made
+        # the write itself. Pre-set the ones this test does not care about so
+        # the function leaves them alone, and only clear the one under test.
+        monkeypatch.setenv("REPOWISE_PROVIDER", "unrelated")
+        monkeypatch.setenv("REPOWISE_MODEL", "unrelated")
+        monkeypatch.setenv("REPOWISE_EMBEDDER", "unrelated")
+        monkeypatch.delenv("REPOWISE_EMBEDDING_MODEL", raising=False)
+        serve_cmd._load_local_provider_config()
+
+        assert os.environ.get("REPOWISE_EMBEDDING_MODEL") is None
+
+    def test_embedder_alone_does_not_clear_a_pin_it_was_never_told_changed(self, tmp_path):
+        """Regression from review on #2654: reindex passes only ``embedder=`` every run.
+
+        The first cut of the fix cleared the pin whenever ``embedder`` was
+        passed without ``embedding_model``, which reads reindex's silence
+        (it has never had a model to pass) as "the model is gone" and wiped a
+        real pin on every routine reindex. Clearing now needs an explicit
+        ``embedding_model=None``, not merely the absence of the keyword.
+        """
+        from repowise.cli.helpers import load_config, save_config_partial
+
+        rw_dir = tmp_path / ".repowise"
+        rw_dir.mkdir()
+        (rw_dir / "config.yaml").write_text(
+            "embedder: openai\nembedding_model: text-embedding-3-large\n", encoding="utf-8"
+        )
+
+        save_config_partial(tmp_path, embedder="openai")
+
+        cfg = load_config(tmp_path)
+        assert cfg["embedding_model"] == "text-embedding-3-large"
+
+
 class TestConfigFingerprint:
     def test_config_fingerprint_detects_change(self, tmp_path):
         """config_fingerprint returns a stable hash that changes with config."""
@@ -302,12 +465,44 @@ class TestUpdateLock:
 
         ensure_repowise_dir(tmp_path)
         lock_path = tmp_path / ".repowise" / UPDATE_LOCK_FILENAME
-        # Stale: started 2 hours ago
+        # Old, and carrying no PID, so the wall clock is what decides. Written
+        # without a `pid` deliberately: since the lock rework, a lock whose
+        # owner is alive is not stale however old it is, so naming any live PID
+        # here would assert the opposite of the contract.
         lock_path.write_text(
-            json.dumps({"pid": 1, "target_commit": "x", "started_at": 0}),
+            json.dumps({"target_commit": "x", "started_at": 0}),
             encoding="utf-8",
         )
         assert read_update_lock(tmp_path) is None
+
+    def test_a_live_owner_outranks_the_clock(self, tmp_path):
+        """An ancient lock is NOT stale while the process holding it is alive.
+
+        The other half of the contract, and the half nothing asserted. Without
+        it, a test could name a PID that merely happens to be dead on the
+        machine running it and read as if it were testing age — which is
+        exactly what `pid: 1` did: absent on Windows, always alive on Linux, so
+        the same assertion meant opposite things on the two platforms.
+
+        Uses this process's own PID, which is alive everywhere by definition.
+        """
+        import json
+        import os
+
+        from repowise.cli.helpers import (
+            UPDATE_LOCK_FILENAME,
+            ensure_repowise_dir,
+            read_update_lock,
+        )
+
+        ensure_repowise_dir(tmp_path)
+        (tmp_path / ".repowise" / UPDATE_LOCK_FILENAME).write_text(
+            json.dumps({"pid": os.getpid(), "target_commit": "x", "started_at": 0}),
+            encoding="utf-8",
+        )
+        payload = read_update_lock(tmp_path)
+        assert payload is not None
+        assert payload["target_commit"] == "x"
 
     def test_read_handles_corrupt_payload(self, tmp_path):
         from repowise.cli.helpers import (
@@ -371,6 +566,15 @@ class TestValidateProviderConfig:
         assert len(warnings) == 1
         assert "ANTHROPIC_API_KEY" in warnings[0]
 
+    def test_key_in_the_repo_env_file_counts(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("REPOWISE_PROVIDER", "openai")
+        (tmp_path / ".repowise").mkdir()
+        (tmp_path / ".repowise" / ".env").write_text("OPENAI_API_KEY=sk-test\n")
+
+        assert validate_provider_config(repo_path=tmp_path) == []
+        assert validate_provider_config() != []
+
     def test_openai_missing_key(self, monkeypatch):
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.setenv("REPOWISE_PROVIDER", "openai")
@@ -394,6 +598,14 @@ class TestValidateProviderConfig:
         monkeypatch.setenv("REPOWISE_PROVIDER", "kimi")
 
         assert validate_provider_config() == []
+
+    def test_mock_provider_needs_no_key_and_is_not_unknown(self):
+        assert validate_provider_config("mock") == []
+
+    def test_unregistered_provider_still_warns_unknown(self):
+        warnings = validate_provider_config("nope")
+        assert len(warnings) == 1
+        assert "Unknown provider 'nope'" in warnings[0]
 
     def test_gemini_with_gemini_key(self, monkeypatch):
         monkeypatch.setenv("GEMINI_API_KEY", "test-key")
@@ -612,6 +824,90 @@ class TestResolveProviderConfigModel:
         assert resolve_provider("openrouter", "anthropic/claude-opus-4", repo_path=tmp_path)
         assert captured["kwargs"].get("model") == "anthropic/claude-opus-4"
 
+    def test_env_model_used_when_set(self, monkeypatch, tmp_path):
+        captured = self._capture(monkeypatch, tmp_path, {})
+        monkeypatch.setenv("REPOWISE_PROVIDER", "openrouter")
+        monkeypatch.setenv("REPOWISE_MODEL", "anthropic/claude-sonnet-5")
+
+        assert resolve_provider(None, None, repo_path=tmp_path) == "provider"
+        assert captured["kwargs"].get("model") == "anthropic/claude-sonnet-5"
+
+    def test_config_model_overrides_env_model(self, monkeypatch, tmp_path):
+        """config.yaml outranks REPOWISE_MODEL, the order every entry point shares."""
+        captured = self._capture(monkeypatch, tmp_path, {"model": "google/gemini-3.1"})
+        monkeypatch.setenv("REPOWISE_PROVIDER", "openrouter")
+        monkeypatch.setenv("REPOWISE_MODEL", "anthropic/claude-opus-5")
+
+        assert resolve_provider(None, None, repo_path=tmp_path) == "provider"
+        assert captured["kwargs"].get("model") == "google/gemini-3.1"
+
+    def test_config_provider_overrides_env_provider(self, monkeypatch, tmp_path):
+        captured = self._capture(
+            monkeypatch, tmp_path, {"provider": "openrouter", "model": "google/gemini-3.1"}
+        )
+        monkeypatch.setenv("REPOWISE_PROVIDER", "anthropic")
+        monkeypatch.setenv("REPOWISE_MODEL", "claude-opus-4-6")
+
+        assert resolve_provider(None, None, repo_path=tmp_path) == "provider"
+        assert captured["name"] == "openrouter"
+        assert captured["kwargs"].get("model") == "google/gemini-3.1"
+
+    def test_flag_provider_does_not_inherit_another_providers_model(
+        self, monkeypatch, tmp_path
+    ):
+        captured = self._capture(
+            monkeypatch, tmp_path, {"provider": "gemini", "model": "gemini-3.1-pro-preview"}
+        )
+
+        assert resolve_provider("openrouter", None, repo_path=tmp_path) == "provider"
+        from repowise.core.providers.llm.specs import PROVIDER_SPECS
+
+        assert captured["kwargs"].get("model") == PROVIDER_SPECS["openrouter"].default_model
+
+    def test_config_base_url_beats_env_base_url(self, monkeypatch, tmp_path):
+        captured = self._capture(
+            monkeypatch,
+            tmp_path,
+            {"provider": "openai", "model": "qwen", "openai": {"base_url": "http://localhost:1234/v1"}},
+        )
+        monkeypatch.setenv("OPENAI_API_KEY", "lm-studio")
+        monkeypatch.setenv("OPENAI_BASE_URL", "http://other:4000/v1")
+
+        assert resolve_provider(None, None, repo_path=tmp_path) == "provider"
+        assert captured["kwargs"]["base_url"] == "http://localhost:1234/v1"
+
+    def test_unconfirmed_remote_base_url_is_refused_with_its_url(self, monkeypatch, tmp_path):
+        self._capture(
+            monkeypatch,
+            tmp_path,
+            {"provider": "openai", "openai": {"base_url": "https://collector.example/v1"}},
+        )
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-shell")
+
+        with pytest.raises(click.ClickException, match=r"collector\.example") as info:
+            resolve_provider(None, None, repo_path=tmp_path)
+        assert "repowise init" in info.value.message
+
+    def test_init_confirms_the_base_url_it_saves(self, monkeypatch, tmp_path):
+        captured = self._capture(
+            monkeypatch,
+            tmp_path,
+            {"provider": "openai", "openai": {"base_url": "https://gateway.example/v1"}},
+        )
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-shell")
+        save_config(tmp_path, "openai", "gpt-x", "mock", save_key=False)
+
+        assert resolve_provider(None, None, repo_path=tmp_path) == "provider"
+        assert captured["kwargs"]["base_url"] == "https://gateway.example/v1"
+
+    def test_explicit_model_flag_overrides_env_model(self, monkeypatch, tmp_path):
+        captured = self._capture(monkeypatch, tmp_path, {"model": "google/gemini-3.1"})
+        monkeypatch.setenv("REPOWISE_PROVIDER", "openrouter")
+        monkeypatch.setenv("REPOWISE_MODEL", "anthropic/claude-opus-5")
+
+        assert resolve_provider("openrouter", "openai/gpt-5.6-luna", repo_path=tmp_path) == "provider"
+        assert captured["kwargs"].get("model") == "openai/gpt-5.6-luna"
+
 
 # ---------------------------------------------------------------------------
 # Update queued / pending markers — coalescing primitives that prevent the
@@ -770,10 +1066,50 @@ class TestResolveProviderOrPrompt:
             helpers.resolve_provider_or_prompt(None, None, tmp_path, interactive=False)
         assert called["prompt"] == 0
 
+    def test_explicit_provider_prompt_resolves_after_setup(self, tmp_path, monkeypatch):
+        """An explicit provider gets inline credential setup only when interactive."""
+        import click
+
+        from repowise.cli import helpers
+
+        sentinel = object()
+        calls = {"resolve": 0, "prompt": 0}
+
+        def _resolve(provider_name, model, repo_path=None):
+            calls["resolve"] += 1
+            if calls["resolve"] == 1:
+                raise click.ClickException("Provider 'openai' requires a key")
+            assert provider_name == "anthropic"
+            assert model == "ag/gemini-3.7-flash-medium"
+            assert repo_path == tmp_path
+            return sentinel
+
+        monkeypatch.setattr(helpers, "resolve_provider", _resolve)
+
+        def _credentials(console, provider, *, repo_path=None, save_key=True):
+            calls["prompt"] += 1
+            assert provider == "anthropic"
+            assert repo_path == tmp_path
+            assert save_key is True
+            return True
+
+        monkeypatch.setattr(
+            "repowise.cli.ui.provider_selection.interactive_provider_credentials",
+            _credentials,
+        )
+
+        result = helpers.resolve_explicit_provider_or_prompt(
+            "anthropic",
+            "ag/gemini-3.7-flash-medium",
+            tmp_path,
+            interactive=True,
+        )
+
+        assert result is sentinel
+        assert calls == {"resolve": 2, "prompt": 1}
+
     @pytest.mark.parametrize("exc_name", ["EOFError", "Abort"])
-    def test_unanswerable_prompt_falls_back_to_clean_error(
-        self, tmp_path, monkeypatch, exc_name
-    ):
+    def test_unanswerable_prompt_falls_back_to_clean_error(self, tmp_path, monkeypatch, exc_name):
         """A tty that lies: the prompt hits EOF/Abort, so we surface the clean
         actionable error instead of a bare 'Aborted!' — the agent-safe path."""
         import click

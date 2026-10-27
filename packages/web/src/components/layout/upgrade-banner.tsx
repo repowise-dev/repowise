@@ -1,11 +1,15 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ArrowUpCircle, X } from "lucide-react";
+import { X } from "lucide-react";
+import { Callout } from "@repowise-dev/ui/shared/callout";
+import { useFormatter, useTranslations } from "next-intl";
 import { useMetaVersion } from "@/lib/hooks/use-meta-version";
 import { WhatsNewModal } from "./whats-new-modal";
 
 const STORAGE_PREFIX = "repowise:upgrade-banner-dismissed:v";
+/** Highlight titles named in the banner; the rest wait in the release notes. */
+const BANNER_TITLES = 2;
 
 /**
  * Global, non-blocking "newer release available" banner. Dismissal is keyed per
@@ -13,6 +17,9 @@ const STORAGE_PREFIX = "repowise:upgrade-banner-dismissed:v";
  * check fails - it simply renders nothing.
  */
 export function UpgradeBanner() {
+  const t = useTranslations("shell");
+  const tc = useTranslations("common");
+  const format = useFormatter();
   const { meta } = useMetaVersion();
   const [dismissed, setDismissed] = useState(true);
   const [showWhatsNew, setShowWhatsNew] = useState(false);
@@ -30,6 +37,7 @@ export function UpgradeBanner() {
   }, [updateAvailable, latest]);
 
   if (!updateAvailable || dismissed) return null;
+  const titles = (meta?.latest_highlights ?? []).slice(0, BANNER_TITLES);
 
   const dismiss = () => {
     try {
@@ -42,41 +50,60 @@ export function UpgradeBanner() {
 
   return (
     <>
-      <div
-        role="status"
-        className="flex items-center gap-3 border-b border-[var(--color-border-default)] bg-[var(--color-accent-muted)] px-4 py-2 text-sm"
-      >
-        <ArrowUpCircle
-          className="h-4 w-4 shrink-0 text-[var(--color-accent-primary)]"
-          aria-hidden="true"
-        />
-        <p className="flex-1 text-[var(--color-text-primary)]">
-          repowise <span className="font-medium">v{latest}</span> is available
+      <div className="px-3 pt-2 sm:px-[var(--page-pad)]">
+        <Callout
+          tone="info"
+          label={t("updateAvailable")}
+          className="py-1.5"
+          action={
+            <button
+              type="button"
+              onClick={dismiss}
+              aria-label={tc("dismiss")}
+              className="rounded p-1.5 text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          }
+        >
+          {/* Names what the newer release brings when GitHub could be read,
+              otherwise the plain "is available". */}
+          {titles.length > 0
+            ? t.rich("updateBannerHighlights", {
+                latest,
+                titles: format.list(titles, { type: "conjunction" }),
+                b: (chunks) => <span className="font-medium">{chunks}</span>,
+              })
+            : t.rich("updateBanner", {
+                latest,
+                b: (chunks) => <span className="font-medium">{chunks}</span>,
+              })}
           {meta?.server_version ? (
-            <span className="text-[var(--color-text-tertiary)]"> (you have v{meta.server_version})</span>
+            <span className="hidden text-[var(--color-text-tertiary)] sm:inline">
+              {t("updateBannerCurrent", { current: meta.server_version })}
+            </span>
           ) : null}
-          .{" "}
           {meta?.upgrade_command && (
-            <code className="rounded bg-[var(--color-bg-elevated)] px-1.5 py-0.5 text-xs">
-              {meta.upgrade_command}
-            </code>
+            <>
+              {" "}
+              {t.rich("updateBannerCommand", {
+                command: meta.upgrade_command,
+                code: (chunks) => (
+                  <code className="rounded bg-[var(--color-bg-elevated)] px-1.5 py-0.5 text-xs [overflow-wrap:anywhere]">
+                    {chunks}
+                  </code>
+                ),
+              })}
+            </>
           )}{" "}
           <button
             type="button"
             onClick={() => setShowWhatsNew(true)}
-            className="text-[var(--color-accent-primary)] underline underline-offset-2 hover:opacity-80"
+            className="text-[var(--color-text-primary)] underline underline-offset-2 hover:opacity-80"
           >
-            What&apos;s new
+            {t("whatsNew")}
           </button>
-        </p>
-        <button
-          type="button"
-          onClick={dismiss}
-          aria-label="Dismiss"
-          className="rounded p-1 text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]"
-        >
-          <X className="h-4 w-4" />
-        </button>
+        </Callout>
       </div>
       <WhatsNewModal open={showWhatsNew} onOpenChange={setShowWhatsNew} />
     </>

@@ -9,14 +9,16 @@ Tree-sitter AST walker. Single AST pass per file computes:
 > |--------|----------------|
 > | `walker.py` | Orchestration (`walk_file` / `walk_file_complexity`) + public re-exports |
 > | `models.py` | Output dataclasses (`FunctionComplexity`, `ClassComplexity`, `PerfHit`, ...) |
-> | `ast_utils.py` | Name/text helpers, function-node collection, parameter counting |
-> | `nloc.py` | Non-blank / non-comment line counting |
+> | `ast_utils.py` | Name/text helpers, callee-name reading, function-node collection, parameter counting |
+> | `file_scan.py` | The one descent the whole-file passes share (NLOC index, error handling, class nodes, function nodes at any depth, Rust test spans, perf import names) |
+> | `nloc.py` | Non-blank / non-comment line counting (`CodeLineIndex`) |
 > | `cyclomatic.py` | The CCN / cognitive / max-nesting engine (`_walk_function_body`) |
 > | `assertions.py` | Assertion-block detection (test-quality smells) |
-> | `error_handling.py` | Error-handling anti-pattern detection (`_collect_error_handling`) |
+> | `error_handling.py` | Error-handling anti-pattern detection (`_eh_visit`) |
 > | `perf_walk.py` | Performance-risk pass (`_collect_perf_hits`) |
 > | `class_analysis.py` | Class-level LCOM4 / god-class metrics (`_compute_lcom4`) |
 > | `languages.py` | Per-language tree-sitter `LanguageNodeMap` registry (extension point) |
+> | `cobol.py` | COBOL paragraphs and sections, whose bodies are the siblings after their header |
 >
 > The package `__init__` re-exports the dataclasses plus `walk_file` /
 > `walk_file_complexity`, so importers use
@@ -27,11 +29,16 @@ Tree-sitter AST walker. Single AST pass per file computes:
   (`if`, `for`, `while`, `case`, `catch`) plus boolean operators
   (`&&`, `||`).
 - **max nesting depth** — deepest nested control-flow block per function.
+  `else if` arms and, in TS/JS, ternary chain arms and ternaries choosing
+  JSX (`flat_ternary_kinds`), plus Python conditional-expression chains
+  (`1 if a else 2 if b else 3`), add CCN and a flat +1 cognitive but no
+  level. A `switch` / `match` / `when` opens one level for its body; its
+  case arms add CCN only, no level and no cognitive.
 - **cognitive complexity** — SonarSource-style weighted nesting cost
   (each level adds an incrementing penalty, plus +1 for each break in
   control flow).
 - **bumps** — count of branches at the same nesting depth as their
-  sibling branches. Feeds `bumpy_road`.
+  sibling branches. Feeds `repeated_nesting`.
 - **param_count** — formal parameter count. Feeds `primitive_obsession`.
 - **nloc** — non-comment lines of code per function.
 - **assertion_blocks** — runs of ≥ 2 consecutive assertion statements,
@@ -45,7 +52,11 @@ that opt in — see "Class-level metrics" below.
 ## Performance characteristics
 
 One parser instance per process (lazy-loaded via the ingestion registry).
-Single pass per file — no AST re-traversal. The walker re-parses the file
+One descent per file feeds every whole-file pass (`file_scan.py`); the
+per-function passes walk only their function's body, and the perf pass keeps
+its own descent for the loop / async / lock context it carries down the tree.
+Function and class NLOC are prefix-sum lookups, not subtree walks. The walker
+re-parses the file
 because `ParsedFile` does not carry the tree-sitter `Node` across the
 ingestion boundary; cost is acceptable (≲ 1 ms for typical files).
 
@@ -60,6 +71,10 @@ from repowise.core.analysis.health.complexity import (
 fcx: FileComplexity = walk_file(abs_path, language, source_bytes)
 fcx.functions  # list[FunctionComplexity]
 fcx.classes    # list[ClassComplexity]
+
+# Optional 4th argument: the repository's own assertion names, from the
+# `assertions:` config block. Reaches the broad assertion tier only.
+fcx = walk_file(abs_path, language, source_bytes, frozenset({"ensureinvariant"}))
 
 # Back-compat shortcut for callers that only need functions:
 results: list[FunctionComplexity] = walk_file_complexity(
@@ -85,6 +100,9 @@ edge between two methods when they (a) reference a common instance field
 or (b) one calls the other (a call surfaces as a reference to the callee's
 name). `lcom4` is the number of connected components: `1` is fully
 cohesive; `≥ 2` means the class splinters into unrelated method groups.
+Only components that touch instance state count: a component that reads no
+field (a static helper, a stateless hook override) is listed but not
+counted, since it is a method to move, not a class to extract.
 Consumed by `low_cohesion` and `god_class`.
 
 ### Heuristic limits (read before trusting a number)
@@ -120,7 +138,10 @@ Consumed by `low_cohesion` and `god_class`.
 ## Outputs
 
 One `FunctionComplexity` per function/method symbol detected. Caller maps
-back to ingestion `Symbol` objects by overlapping line ranges.
+back to ingestion `Symbol` objects by overlapping line ranges. A function or
+method defined inside another function has its own entry, listed before the
+entries of the file's own level; a lambda has none and counts toward the
+function that holds it.
 
 ## Extension points
 
@@ -142,13 +163,16 @@ fields on its `LanguageNodeMap` (all default to empty = opt-out):
   field reads and method calls).
 
 The receiver and member-name children are extracted by a generic
-field-name probe (`class_analysis._self_member_name`), which tries the
-`object`/`value`/`argument`/`expression` (receiver) and
-`property`/`attribute`/`field`/`name` (member) fields and then falls back
-to positional children — so most tree-sitter grammars need only the
-node-type names above. Get one wrong and the safety valve degrades the
-class to "no signal" rather than emitting a false positive, so it's cheap
-to add a language speculatively and refine later.
+field-name probe (`ast_utils.self_member_name`, built on `member_object`
+and `member_name`). `member_object` tries the
+`object`/`value`/`argument`/`operand`/`expression` fields and falls back
+to the first named child. `member_name` tries the
+`property`/`attribute`/`field`/`name` fields, then Swift's nested
+`suffix`, then the last named `*identifier` child — so most tree-sitter
+grammars need only the node-type names above. Get one wrong and the
+safety valve degrades the class to "no signal" rather than emitting a
+false positive, so it's cheap to add a language speculatively and refine
+later.
 
 For **assertion-block** detection (test-quality smells), set two more
 opt-in fields:
@@ -160,16 +184,24 @@ opt-in fields:
   kinds whose callee name starts with `assert` or `expect` (covers
   `assertEqual` / `assert_eq!` / `expect(...).toBe(...)`).
 
-A language that maps neither produces no assertion blocks — never a false
-positive. (Languages without an `expression_statement` wrapper — e.g.
+These two fields say which *nodes* can be an assertion. Which *names* count is
+separate, in `../asserts/lexicon.py`, and is two-tiered: the `assert`/`expect`
+prefixes above feed the calibrated block markers and never change, while a
+per-language row (Go's `t.Fatalf`, testify's `require`, should.js's `.should.`)
+feeds the advisory assertion total only. Adding a language's names is a row
+there; adding a language at all still starts here.
+
+A language that maps neither field produces no assertion facts at all — never a
+false positive, and no vocabulary row can give it any. (Languages without an `expression_statement` wrapper — e.g.
 Kotlin, where the call node sits directly in the statement list — are
 handled too: the call node is matched as the statement itself.)
 
-Ships control-flow + assertion mappings for **all eleven full-tier
-languages** (Python, TypeScript, JavaScript, Go, Java, Kotlin, Rust, C++,
-C#, Scala, Ruby) plus the `tsx`/`jsx` aliases and Dart; class-level (LCOM4 /
-god-class) mappings for all of those except **Go** (methods attach to a type
-via an external receiver, so there is no single grouping node). Ruby maps
+Ships control-flow + assertion mappings for eleven full-tier languages
+(Python, TypeScript, JavaScript, Go, Java, Kotlin, Rust, C++, C#, Scala,
+Ruby), the `tsx`/`jsx` aliases, and three Good-tier languages: Dart, Object
+Pascal and PHP. Class-level (LCOM4 / god-class) mappings cover all of those
+except **Go** (methods attach to a type via an external receiver, so there is
+no single grouping node) and Object Pascal. Ruby maps
 `class_kinds` (size / god-class facts) but leaves `member_access_kinds`
 unmapped on purpose — receiver-less `@ivar` idiom — so its LCOM4 stays at the
 no-signal valve. Adding more languages — any tier — is purely additive in

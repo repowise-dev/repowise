@@ -7,25 +7,35 @@ across `tool_flows.py` and `routers/graph.py`.
 from __future__ import annotations
 
 import json
+from collections import Counter
 from typing import Any
 
-from repowise.core.analysis.execution_flows import _EXCLUDE_PATH_PATTERNS
+from repowise.core.analysis.communities import has_community
+from repowise.core.analysis.execution_flows import FlowTermination, classify_termination
+from repowise.core.analysis.execution_graph import (
+    is_excluded_execution_path,
+    is_walkable_execution_edge,
+)
+from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES
 from repowise.core.persistence.crud import (
     get_graph_edges_for_node,
     get_graph_nodes_by_ids,
 )
 from repowise.core.persistence.models import GraphNode
 
+# Callee rows per hop; a stop behind this cut is an unknown, not a leaf.
+_CALLEE_FETCH_LIMIT = 20
+
 
 def _node_id_is_excluded(node_id: str) -> bool:
     """True if a ``path::Name`` node id lives in a test/demo/fixture path.
 
     Uses the same pattern as the core entry-point scorer so server-side
-    traces never wander into test fakes that a mis-resolved call edge points
+    traces never wander into test fakes that a mis-resolved execution edge points
     at (e.g. a fake ``fetchall``).
     """
     path = node_id.split("::", 1)[0] if "::" in node_id else node_id
-    return bool(_EXCLUDE_PATH_PATTERNS.search(path))
+    return is_excluded_execution_path(path)
 
 
 def parse_community_meta(node: GraphNode) -> dict[str, Any]:
@@ -48,6 +58,13 @@ def community_cohesion(node: GraphNode) -> float:
     return float(meta.get("cohesion", 0.0) or 0.0)
 
 
+def community_conductance(node: GraphNode) -> float | None:
+    """Conductance from community_meta_json; ``None`` on an older index."""
+    meta = parse_community_meta(node)
+    value = meta.get("conductance")
+    return float(value) if value is not None else None
+
+
 def entry_point_score(node: GraphNode) -> float:
     """Extract entry_point_score from community_meta_json (symbol nodes only)."""
     meta = parse_community_meta(node)
@@ -68,6 +85,8 @@ async def bfs_trace(
     entry_id: str,
     max_depth: int,
     node_cache: dict[str, GraphNode] | None = None,
+    hop_origins: dict[tuple[str, str], str] | None = None,
+    termination: dict[str, Any] | None = None,
 ) -> list[str]:
     """Trace the primary execution path from *entry_id* along ``calls`` edges.
 
@@ -78,6 +97,13 @@ async def bfs_trace(
     DB-cheap proxy for the core scorer's fan-out ordering). Test/demo/fixture
     nodes and low-confidence (< 0.5) edges are skipped; a visited set keeps it
     cycle-safe.
+
+    *hop_origins*, when given, is filled with ``{(src, dst): resolution_origin}``
+    for each hop taken. Keyed by pair rather than position because callers
+    filter the returned trace afterwards, and a positional list would then
+    describe the wrong hops.
+
+    *termination*, when given, is filled with ``reason`` and ``detail``.
     """
     if node_cache is None:
         node_cache = {}
@@ -86,37 +112,75 @@ async def bfs_trace(
     visited: set[str] = {entry_id}
     current = entry_id
 
+    revisited = 0
+    low_confidence: Counter = Counter()
+    excluded = 0
+    truncated = False
+
     for _ in range(max_depth):
-        edges = await get_graph_edges_for_node(
+        # One row over the limit, so a node with exactly the limit reads as
+        # uncut rather than as a stop we cannot explain.
+        rows = await get_graph_edges_for_node(
             session,
             repo_id,
             current,
             direction="callees",
-            edge_types=["calls"],
-            limit=20,
+            edge_types=sorted(EXECUTION_EDGE_TYPES),
+            limit=_CALLEE_FETCH_LIMIT + 1,
         )
+        edges = rows[:_CALLEE_FETCH_LIMIT]
+        # Rows arrive most-confident first, so a tail below the floor is
+        # provably unwalkable and hides nothing: only a cut whose last kept row
+        # is still walkable leaves a real unknown.
+        truncated = len(rows) > _CALLEE_FETCH_LIMIT and is_walkable_execution_edge(
+            edges[-1].edge_type,
+            edges[-1].resolution_origin,
+            edges[-1].confidence,
+        )
+        revisited = 0
+        low_confidence = Counter()
+        excluded = 0
 
         best_id: str | None = None
         best_conf = -1.0
+        best_origin: str | None = None
         for e in edges:
             tid = e.target_node_id
             conf = e.confidence if e.confidence is not None else 0.0
-            if (
-                tid in visited
-                or conf < 0.5
-                or _node_id_is_excluded(tid)
-            ):
+            if not is_walkable_execution_edge(e.edge_type, e.resolution_origin, e.confidence):
+                low_confidence[e.resolution_origin or "unlabelled"] += 1
+                continue
+            if _node_id_is_excluded(tid):
+                excluded += 1
+                continue
+            if tid in visited:
+                revisited += 1
                 continue
             if conf > best_conf:
                 best_conf = conf
                 best_id = tid
+                best_origin = e.resolution_origin
 
         if best_id is None:
             break
 
+        if hop_origins is not None and best_origin:
+            hop_origins[(current, best_id)] = best_origin
         visited.add(best_id)
         trace.append(best_id)
         current = best_id
+
+    if termination is not None:
+        reason: FlowTermination = classify_termination(
+            hops_taken=len(trace) - 1,
+            max_depth=max_depth,
+            revisited=revisited,
+            low_confidence=sum(low_confidence.values()),
+            excluded=excluded,
+            truncated=truncated,
+        )
+        termination["reason"] = reason
+        termination["detail"] = dict(low_confidence) if reason == "confidence_filtered" else {}
 
     return trace
 
@@ -141,7 +205,7 @@ async def resolve_trace_communities(
     for nid in trace:
         n = node_cache.get(nid)
         cid = n.community_id if n else 0
-        if cid is not None and cid not in seen:
+        if has_community(cid) and cid not in seen:
             seen.add(cid)
             communities_visited.append(cid)
 
@@ -210,8 +274,12 @@ def build_visual_context(
     # --- Community analysis ---
     src_meta = node_meta.get(source)
     tgt_meta = node_meta.get(target)
-    src_community = src_meta.community_id if src_meta else None
-    tgt_community = tgt_meta.community_id if tgt_meta else None
+    src_community = (
+        src_meta.community_id if src_meta and has_community(src_meta.community_id) else None
+    )
+    tgt_community = (
+        tgt_meta.community_id if tgt_meta and has_community(tgt_meta.community_id) else None
+    )
 
     context["community"] = {
         "source_community": src_community,
@@ -224,7 +292,8 @@ def build_visual_context(
         bridge_nodes = []
         nodes_by_community: dict[int, set[str]] = {}
         for n in nodes:
-            nodes_by_community.setdefault(n.community_id, set()).add(n.node_id)
+            if has_community(n.community_id):
+                nodes_by_community.setdefault(n.community_id, set()).add(n.node_id)
 
         src_community_nodes = nodes_by_community.get(src_community, set())
         tgt_community_nodes = nodes_by_community.get(tgt_community, set())
@@ -235,10 +304,12 @@ def build_visual_context(
             touches_tgt = bool(neighbors & tgt_community_nodes)
             if touches_src and touches_tgt:
                 meta = node_meta.get(node_id)
-                bridge_nodes.append({
-                    "node": node_id,
-                    "pagerank": meta.pagerank if meta else 0.0,
-                })
+                bridge_nodes.append(
+                    {
+                        "node": node_id,
+                        "pagerank": meta.pagerank if meta else 0.0,
+                    }
+                )
         bridge_nodes.sort(key=lambda x: x["pagerank"], reverse=True)
         context["bridge_suggestions"] = bridge_nodes[:5]
     else:
@@ -246,8 +317,8 @@ def build_visual_context(
 
     # --- Connectivity summary ---
     components = list(nx.weakly_connected_components(graph))
-    src_comp = next((c for c in components if source in c), set())
-    tgt_comp = next((c for c in components if target in c), set())
+    src_comp: set[Any] = next((c for c in components if source in c), set())
+    tgt_comp: set[Any] = next((c for c in components if target in c), set())
     actually_disconnected = src_comp != tgt_comp
 
     if actually_disconnected:

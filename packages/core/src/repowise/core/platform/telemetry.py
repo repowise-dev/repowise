@@ -38,18 +38,15 @@ _INGEST_URL = "https://api.repowise.dev/telemetry/events"
 #: Best-effort: telemetry must never stall or break a tool call.
 _TIMEOUT = 2.0
 
+#: Attribute an exception carries to report the other failures it was raised
+#: alongside. anyio reports a task group's death as one wrapper holding several
+#: leaves; whoever unwraps it stamps the leaf class names here, and whoever
+#: classifies the invocation reads them off. Named once, in the package both
+#: sides already import, so a rename cannot silently unhook the two.
+GROUP_LEAF_TYPES_ATTR = "repowise_group_leaf_types"
+
 _TRUTHY = {"1", "true", "yes", "on"}
 
-#: Common CI signals (kept in sync with the CLI's environment module).
-_CI_ENV_VARS = (
-    "CI",
-    "GITHUB_ACTIONS",
-    "GITLAB_CI",
-    "BUILDKITE",
-    "JENKINS_URL",
-    "TEAMCITY_VERSION",
-    "TF_BUILD",
-)
 
 #: Groups the events emitted by this process (e.g. one MCP server session).
 _SESSION_ID = uuid.uuid4().hex
@@ -89,6 +86,13 @@ def _env_truthy(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in _TRUTHY
 
 
+def network_disabled() -> bool:
+    """True when ``REPOWISE_OFFLINE``, ``DO_NOT_TRACK`` or ``REPOWISE_TELEMETRY_DISABLED`` is set."""
+    return any(
+        _env_truthy(n) for n in ("REPOWISE_OFFLINE", "DO_NOT_TRACK", "REPOWISE_TELEMETRY_DISABLED")
+    )
+
+
 def debug_mode() -> bool:
     """``REPOWISE_TELEMETRY_DEBUG`` prints the payload to stderr instead of sending."""
     return _env_truthy("REPOWISE_TELEMETRY_DEBUG")
@@ -106,7 +110,73 @@ def get_anonymous_id() -> str | None:
 
 
 def _is_ci() -> bool:
-    return any(os.environ.get(var) for var in _CI_ENV_VARS)
+    from repowise.core.ci.base import CI_ENV_VARS
+
+    return any(os.environ.get(var) for var in CI_ENV_VARS)
+
+
+#: Opt back in to delivery under a test runner. Only telemetry's own tests set it.
+TESTS_OPT_IN_ENV = "REPOWISE_TELEMETRY_IN_TESTS"
+
+
+def pytest_in_env() -> bool:
+    """Whether a pytest session is in progress, judged from the environment.
+
+    The env survives a subprocess boundary, so a real ``repowise`` command a
+    test spawns sees it too. ``PYTEST_CURRENT_TEST`` covers a running test;
+    ``PYTEST_VERSION`` (pytest 8.1+) also covers collection and teardown.
+    """
+    return bool(os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("PYTEST_VERSION"))
+
+
+def under_test() -> bool:
+    """Whether delivery is suppressed because a test runner is driving this process.
+
+    Test fixtures relocate the home that holds ``anon_id``, so every test that
+    reaches the emitter would otherwise register a brand new install. Applies to
+    any project's suite that exercises repowise, not only this one.
+    """
+    if _env_truthy(TESTS_OPT_IN_ENV):
+        return False
+    import sys
+
+    return pytest_in_env() or "pytest" in sys.modules
+
+
+#: Host labels, checked in order. Agents come before editors because an agent
+#: running inside an editor terminal sees both; Cursor before VS Code because
+#: Cursor's terminal also sets ``TERM_PROGRAM=vscode``.
+_HOST_ENV_VARS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("claude_code", ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")),
+    (
+        "codex",
+        (
+            "CODEX_SANDBOX",
+            "CODEX_SANDBOX_NETWORK_DISABLED",
+            "CODEX_MANAGED_BY_NPM",
+            "CODEX_MANAGED_BY_BUN",
+        ),
+    ),
+    ("cursor", ("CURSOR_TRACE_ID", "CURSOR_AGENT")),
+    ("vscode", ("VSCODE_PID", "VSCODE_IPC_HOOK_CLI")),
+)
+
+#: Every value :func:`detect_client` can return.
+CLIENT_LABELS = frozenset({label for label, _ in _HOST_ENV_VARS} | {"ci", "terminal"})
+
+
+def detect_client() -> str:
+    """Name the host that launched this process, from its environment alone.
+
+    One fixed label, never an env value: ``claude_code``, ``codex``,
+    ``cursor``, ``vscode``, ``ci``, else ``terminal``.
+    """
+    for label, names in _HOST_ENV_VARS:
+        if any(os.environ.get(name) for name in names):
+            return label
+    if os.environ.get("TERM_PROGRAM", "").lower() == "vscode":
+        return "vscode"
+    return "ci" if _is_ci() else "terminal"
 
 
 def _version() -> str:
@@ -135,7 +205,7 @@ def build_envelope(event: str, properties: dict[str, Any]) -> dict[str, object]:
         "anon_id": get_anonymous_id(),
         "session_id": _SESSION_ID,
         "cli_version": _version(),
-        "properties": properties,
+        "properties": {"client": detect_client(), **properties},
     }
     envelope.update(_base_facts())
     return envelope
@@ -170,7 +240,7 @@ def record_event(event: str, properties: dict[str, Any] | None = None) -> None:
     """
     try:
         # Cheap synchronous gate: env hard-offs need neither disk nor a thread.
-        if _env_truthy("DO_NOT_TRACK") or _env_truthy("REPOWISE_TELEMETRY_DISABLED"):
+        if network_disabled():
             return
         props = dict(properties or {})
 
@@ -182,6 +252,9 @@ def record_event(event: str, properties: dict[str, Any] | None = None) -> None:
                 + json.dumps(build_envelope(event, props), indent=2),
                 file=sys.stderr,
             )
+            return
+        if under_test():
+            # After the debug print, so a test can still see what would leave.
             return
 
         thread = threading.Thread(target=_deliver, args=(event, props), daemon=True)

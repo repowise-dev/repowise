@@ -98,6 +98,8 @@ export function hotspotToFileCard(h: HotspotLike): FileCardData {
 }
 
 export interface FileCardLinks {
+  /** The file's own page — the card is a preview of it, so it leads the row. */
+  file?: string;
   graph?: string;
   docs?: string;
   blastRadius?: string;

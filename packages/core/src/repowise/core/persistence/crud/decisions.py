@@ -1,7 +1,8 @@
 """CRUD operations for the decisions domain (repowise persistence layer).
 
 Split out of the former monolithic ``crud.py``; ``crud/__init__.py`` re-exports
-every public name, so existing imports are unaffected.
+every public name, so existing imports are unaffected. Single-record reads and
+writes live here; the ``decision_*`` siblings hold the rest and are re-exported.
 """
 
 from __future__ import annotations
@@ -10,22 +11,42 @@ import json
 from datetime import datetime
 from typing import Any
 
-import structlog
-from sqlalchemy import case, delete, func, or_, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.decision_provenance import compute_confidence, rank_for_source
+from repowise.core.analysis.decisions.lifecycle import DECISION_STATUS_ORDER, RETIRED_STATUSES
+from repowise.core.analysis.decisions.provenance import compute_confidence, rank_for_source
+from repowise.core.analysis.decisions.scope import SCOPE_BASIS_STATED
 
-from ..decision_graph import sync_decision_node_links
-from ..models import (
-    DecisionEdge,
-    DecisionEvidence,
-    DecisionNodeLink,
-    DecisionRecord,
-    GitMetadata,
-    _new_uuid,
-    _now_utc,
+from ..decision_graph import scope_modules, sync_links_from_record
+from ..models import DecisionCandidateMeta, DecisionRecord, _now_utc
+from .authority import accepted_predicate
+
+# Re-exported: these moved to sibling modules and are still imported from here.
+from .decision_evidence import (  # noqa: F401
+    _json_list,
+    _rederive_headline,
+    list_decision_evidence,
+    record_completeness,
 )
+from .decision_health import get_decision_health_summary  # noqa: F401
+from .decision_identity import (  # noqa: F401
+    _extraction_kind,
+    _extraction_status,
+    _merge_status,
+    derive_decision_id,
+    identity_quote_for,
+)
+from .decision_ingest import bulk_upsert_decisions  # noqa: F401
+from .decision_repairs import (  # noqa: F401
+    purge_proposed_decisions_by_source,
+    purge_proposed_decisions_outside_files,
+    reconcile_decision_confidence,
+    reconcile_source_ranks,
+    unretire_auto_superseded,
+)
+from .decision_review_meta import _write_candidate_meta
+from .decision_staleness import get_stale_decisions, recompute_decision_staleness  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # DecisionRecord CRUD
@@ -35,25 +56,49 @@ _VALID_DECISION_STATUSES = frozenset(
     {"proposed", "active", "deprecated", "superseded", "dismissed"}
 )
 
-# Statuses a human (or the evolution judge) set deliberately. Re-extraction
-# must never walk one of these back to ``proposed``: a re-harvested source
-# ties or beats the stored rank, so without this guard a reindex would flip
-# confirmed decisions back into the review queue and resurrect dismissed ones
-# (#751). ``dismissed`` is terminal: the row is kept purely as a tombstone so
-# the same content never re-proposes.
-_PROTECTED_STATUSES = frozenset({"active", "deprecated", "superseded", "dismissed"})
 
+def _dedup_query(
+    repository_id: str,
+    title: str,
+    *,
+    source: str,
+    evidence_file: str | None,
+) -> Any:
+    """The identity :func:`upsert_decision` deduplicates on.
 
-def _merge_status(existing: str, incoming: str) -> str:
-    """Resolve a re-extracted status against the stored one.
-
-    Extraction only ever emits ``proposed`` or ``active`` (ADR files can also
-    carry ``deprecated``/``superseded``). A protected stored status wins over
-    an incoming ``proposed``; anything else follows the incoming value.
+    ``evidence_file`` may be NULL, which no equality test matches, so the two
+    cases are separate clauses. Shared with :func:`find_decision_by_title` so a
+    caller can ask what an upsert would land on before it lands on it.
     """
-    if incoming == "proposed" and existing in _PROTECTED_STATUSES:
-        return existing
-    return incoming
+    q = select(DecisionRecord).where(
+        DecisionRecord.repository_id == repository_id,
+        DecisionRecord.title == title,
+        DecisionRecord.source == source,
+    )
+    if evidence_file is not None:
+        return q.where(DecisionRecord.evidence_file == evidence_file)
+    return q.where(DecisionRecord.evidence_file.is_(None))
+
+
+async def find_decision_by_title(
+    session: AsyncSession,
+    repository_id: str,
+    title: str,
+    *,
+    source: str = "cli",
+    evidence_file: str | None = None,
+) -> DecisionRecord | None:
+    """The record an :func:`upsert_decision` with these arguments would update.
+
+    Exists so a caller can tell "this creates a record" from "this overwrites
+    one" before writing. The create endpoint needs the difference: overwriting
+    an accepted decision with a scopeless body would clear the scope it governs
+    and leave its acceptance row behind.
+    """
+    result = await session.execute(
+        _dedup_query(repository_id, title, source=source, evidence_file=evidence_file)
+    )
+    return result.scalar_one_or_none()
 
 
 async def upsert_decision(
@@ -62,6 +107,7 @@ async def upsert_decision(
     repository_id: str,
     title: str,
     status: str = "proposed",
+    kind: str | None = None,
     context: str = "",
     decision: str = "",
     rationale: str = "",
@@ -74,7 +120,7 @@ async def upsert_decision(
     evidence_commits: list[str] | None = None,
     evidence_file: str | None = None,
     evidence_line: int | None = None,
-    confidence: float = 1.0,
+    confidence: float | None = None,
     verification: str = "unverified",
     last_code_change: datetime | None = None,
     staleness_score: float = 0.0,
@@ -84,59 +130,129 @@ async def upsert_decision(
     """Create or update a decision record.
 
     Dedup key: ``(repository_id, title, source, evidence_file)``.
+
+    This is the manual-entry path, the CLI's ``decision add`` and the HTTP
+    create route. It writes no evidence rows, so nothing re-derives the score
+    later unless a mined decision with the same normalised title lands on the
+    record and brings evidence with it. ``confidence=None`` therefore scores
+    it here. Both call sites used to pass a literal ``1.0``, which is above
+    the formula's own ``0.99`` ceiling and so was never a score at all.
+
+    ``kind`` is written only when it is given. ``None`` leaves an existing
+    record's noun alone rather than defaulting it back to ``architectural``:
+    a caller that does not know about the split must not silently un-agree an
+    accepted agreement by re-stating the record without it.
     """
     # Normalise text fields — LLM extractors may return explicit None
     rationale = rationale or ""
     context = context or ""
     decision = decision or ""
 
-    # Build the WHERE clause — evidence_file may be NULL
-    q = select(DecisionRecord).where(
-        DecisionRecord.repository_id == repository_id,
-        DecisionRecord.title == title,
-        DecisionRecord.source == source,
+    if confidence is None:
+        # Full rank credit, and no completeness term: a person wrote this, and
+        # how many prompts they answered is not evidence about whether the
+        # decision holds. Scored as verified for the same reason, since the
+        # decay it skips discounts a quote that may be hallucinated and this
+        # path takes no quote. ``verification`` still stores what it was given.
+        confidence = compute_confidence(rank_for_source(source), 1, "exact")
+
+    async def _restate(rec: DecisionRecord) -> DecisionRecord:
+        """Write this call's body onto an existing record.
+
+        Shared by the two ways of finding one: the title dedupe query, and
+        the derived id, which catches a second wording of the same decision
+        that the title query cannot see. ``identity_quote`` is not among the
+        fields, because it is pinned at first capture.
+        """
+        rec.status = status
+        if kind is not None:
+            rec.kind = _extraction_kind(kind)
+        rec.context = context
+        rec.decision = decision
+        rec.rationale = rationale
+        rec.alternatives_json = json.dumps(alternatives or [])
+        rec.consequences_json = json.dumps(consequences or [])
+        rec.affected_files_json = json.dumps(affected_files or [])
+        # The caller supplied these files, so they are its claim and not
+        # any footprint the row carried.
+        rec.scope_basis = SCOPE_BASIS_STATED if affected_files else ""
+        rec.affected_modules_json = json.dumps(
+            scope_modules(affected_files or [], affected_modules)
+        )
+        rec.tags_json = json.dumps(tags or [])
+        # ``None`` leaves the commits alone, like ``kind`` above: a caller
+        # restating a record without naming them has not disowned them, and
+        # the capture hook's suppression reads this column — wiping it asks
+        # the agent again for a decision it has already recorded.
+        if evidence_commits is not None:
+            rec.evidence_commits_json = json.dumps(evidence_commits)
+        rec.evidence_line = evidence_line
+        rec.confidence = confidence
+        rec.verification = verification
+        rec.last_code_change = last_code_change
+        rec.staleness_score = staleness_score
+        rec.superseded_by = superseded_by
+        rec.updated_at = _now_utc()
+        await session.flush()
+        await sync_links_from_record(session, rec)
+        await _write_candidate_meta(session, repository_id, {}, only={rec.id})
+        return rec
+
+    q = _dedup_query(
+        repository_id, title, source=source, evidence_file=evidence_file
     )
-    if evidence_file is not None:
-        q = q.where(DecisionRecord.evidence_file == evidence_file)
-    else:
-        q = q.where(DecisionRecord.evidence_file.is_(None))
+
+    # No write path creates authority. ``active`` here would be a status a
+    # caller asserted rather than an acceptance anyone performed; the caller
+    # accepts explicitly afterwards if it means to.
+    status = _extraction_status(status)
 
     result = await session.execute(q)
     existing = result.scalar_one_or_none()
 
     if existing is not None:
-        existing.status = status
-        existing.context = context
-        existing.decision = decision
-        existing.rationale = rationale
-        existing.alternatives_json = json.dumps(alternatives or [])
-        existing.consequences_json = json.dumps(consequences or [])
-        existing.affected_files_json = json.dumps(affected_files or [])
-        existing.affected_modules_json = json.dumps(affected_modules or [])
-        existing.tags_json = json.dumps(tags or [])
-        existing.evidence_commits_json = json.dumps(evidence_commits or [])
-        existing.evidence_line = evidence_line
-        existing.confidence = confidence
-        existing.verification = verification
-        existing.last_code_change = last_code_change
-        existing.staleness_score = staleness_score
-        existing.superseded_by = superseded_by
-        existing.updated_at = _now_utc()
-        await session.flush()
-        return existing
+        return await _restate(existing)
+
+    # No quote reaches this path: it is manual entry and the CLI's ``decision
+    # add``, where the decision text is the only verbatim thing the person
+    # wrote. Pinned once, like every other capture path.
+    identity_quote = decision or title
+    # An explicit id still wins: the manifest importer carries ids in from a
+    # tracked file and those are the record's identity, not ours.
+    derived = decision_id or derive_decision_id(
+        repository_id,
+        title,
+        source=source,
+        evidence_file=evidence_file,
+        affected_files=affected_files or [],
+        evidence_line=evidence_line,
+        identity_quote=identity_quote,
+    )
+    # A title the dedupe query did not match can still be the same decision:
+    # identity is the evidence, and two wordings of one choice derive one id.
+    # Inserting over it would collide on the primary key.
+    folded = await session.get(DecisionRecord, derived)
+    if folded is not None and folded.repository_id == repository_id:
+        return await _restate(folded)
 
     rec = DecisionRecord(
-        id=decision_id or _new_uuid(),
+        id=derived,
+        identity_quote=identity_quote,
         repository_id=repository_id,
         title=title,
         status=status,
+        kind=_extraction_kind(kind),
         context=context,
         decision=decision,
         rationale=rationale,
         alternatives_json=json.dumps(alternatives or []),
         consequences_json=json.dumps(consequences or []),
         affected_files_json=json.dumps(affected_files or []),
-        affected_modules_json=json.dumps(affected_modules or []),
+        # Same claim as the restate arm: files the caller supplied are stated.
+        scope_basis=SCOPE_BASIS_STATED if affected_files else "",
+        affected_modules_json=json.dumps(
+            scope_modules(affected_files or [], affected_modules)
+        ),
         tags_json=json.dumps(tags or []),
         evidence_commits_json=json.dumps(evidence_commits or []),
         source=source,
@@ -150,6 +266,8 @@ async def upsert_decision(
     )
     session.add(rec)
     await session.flush()
+    await sync_links_from_record(session, rec)
+    await _write_candidate_meta(session, repository_id, {}, only={rec.id})
     return rec
 
 
@@ -167,14 +285,27 @@ async def list_decisions(
     tag: str | None = None,
     module: str | None = None,
     include_proposed: bool = True,
-    limit: int = 100,
+    accepted: bool | None = None,
+    include_dismissed: bool = False,
+    limit: int | None = 100,
     offset: int = 0,
     sort: str = "priority",
 ) -> list[DecisionRecord]:
-    """Return decision records with optional filters.
+    """Return decision records with optional filters; ``limit=None`` returns every row.
 
     Dismissed records are tombstones and only show up when explicitly asked
     for via ``status="dismissed"``.
+
+    ``accepted`` filters on the acceptance join rather than the status column:
+    ``False`` is every candidate, ``True`` every decision. It is applied in SQL,
+    before the page is cut, because a caller paging a lane needs the page to be
+    of that lane. Filtering after the cut returned an empty Candidates page on a
+    store whose first fifty rows by priority were all statused ``active``.
+
+    ``include_dismissed`` keeps the tombstones in without narrowing to them.
+    A candidate that was dismissed should stay hidden, but a *decision* that was
+    accepted and then withdrawn is history somebody needs to be able to read,
+    and ``dismiss_candidate`` writes ``status="dismissed"`` for both.
 
     ``sort`` controls ordering:
 
@@ -190,7 +321,8 @@ async def list_decisions(
     if status is not None:
         q = q.where(DecisionRecord.status == status)
     else:
-        q = q.where(DecisionRecord.status != "dismissed")
+        if not include_dismissed:
+            q = q.where(DecisionRecord.status != "dismissed")
         if not include_proposed:
             q = q.where(DecisionRecord.status != "proposed")
     if source is not None:
@@ -202,21 +334,53 @@ async def list_decisions(
     if module is not None:
         # Match exact module path in JSON array
         q = q.where(DecisionRecord.affected_modules_json.contains(f'"{module}"'))
-    q = q.order_by(*_decision_order(sort)).limit(limit).offset(offset)
+    if accepted is not None:
+        predicate = accepted_predicate()
+        q = q.where(predicate if accepted else ~predicate)
+    if accepted is False and status is None and not include_dismissed:
+        # Same candidate set ``count_decisions_by_lane`` counts: a retired
+        # candidate is history, not something to review.
+        q = q.where(DecisionRecord.status.notin_(sorted(RETIRED_STATUSES)))
+    order = decision_priority_order(sort)
+    if accepted is False and sort != "recent":
+        # A candidates page is a review queue, so it leads with the rows the
+        # acceptance contract would take rather than the highest-confidence
+        # ones a reviewer cannot act on.
+        q = q.outerjoin(
+            DecisionCandidateMeta,
+            DecisionCandidateMeta.decision_id == DecisionRecord.id,
+        )
+        order = (
+            func.coalesce(DecisionCandidateMeta.review_priority, 0.0).desc(),
+            *order,
+        )
+    q = q.order_by(*order).limit(limit).offset(offset)
     result = await session.execute(q)
     return list(result.scalars().all())
 
 
-# Lower sorts first. Active is a rule the team stands behind; proposed is a
-# candidate; superseded and deprecated are history.
-_STATUS_RANK = {"active": 0, "proposed": 1, "superseded": 2, "deprecated": 3}
+# Lower sorts first, from the one ladder in lifecycle. ``dismissed`` is in the
+# ladder but not here: this rank also zero-fills ``count_decisions_by_status``,
+# which excludes dismissed rows, so a key for it would report a count of zero
+# for rows the query never looked at.
+_STATUS_RANK = {
+    status: rank
+    for rank, status in enumerate(DECISION_STATUS_ORDER)
+    if status != "dismissed"
+}
 
 
-def _decision_order(sort: str) -> tuple[Any, ...]:
-    """ORDER BY terms for :func:`list_decisions`."""
+def decision_priority_order(sort: str = "priority") -> tuple[Any, ...]:
+    """ORDER BY terms for :func:`list_decisions`.
+
+    Public because it is the order the Decisions page renders, and an agent
+    surface that serves the same records in a different order is a divergence
+    a reader has to reconcile by hand. ``get_context`` imports it rather than
+    re-spelling the three terms, so the two cannot drift apart silently.
+    """
     if sort == "recent":
         return (DecisionRecord.created_at.desc(),)
-    rank = case(_STATUS_RANK, value=DecisionRecord.status, else_=4)
+    rank = case(_STATUS_RANK, value=DecisionRecord.status, else_=len(DECISION_STATUS_ORDER))
     return (
         rank,
         DecisionRecord.confidence.desc(),
@@ -275,18 +439,28 @@ async def update_decision_metadata(
 ) -> DecisionRecord | None:
     """Patch the module/file linkage on a decision record.
 
-    Each argument left as ``None`` is preserved. Pass an empty list to clear.
-    Returns the updated record, or ``None`` if the id was not found.
+    Each argument left as ``None`` is preserved, except that supplying files
+    without modules re-derives the modules from those files: a scope whose two
+    halves describe different code links the record to a module its files are
+    not in. Pass an empty list to clear either. Returns the updated record, or
+    ``None`` if the id was not found.
     """
     rec = await session.get(DecisionRecord, decision_id)
     if rec is None:
         return None
-    if affected_modules is not None:
-        rec.affected_modules_json = json.dumps(affected_modules)
     if affected_files is not None:
         rec.affected_files_json = json.dumps(affected_files)
+        # A scope set by hand is stated, whatever the row held before:
+        # otherwise the new files are stored and then ignored everywhere.
+        rec.scope_basis = SCOPE_BASIS_STATED
+        # Modules follow the files they describe. Replacing one and keeping
+        # the other links the record to a module its files are not in.
+        affected_modules = scope_modules(affected_files, affected_modules)
+    if affected_modules is not None:
+        rec.affected_modules_json = json.dumps(affected_modules)
     rec.updated_at = _now_utc()
     await session.flush()
+    await sync_links_from_record(session, rec)
     return rec
 
 
@@ -296,10 +470,19 @@ async def update_decision_status(
     status: str,
     *,
     superseded_by: str | None = None,
+    accepter: str = "",
+    kind: str = "person",
 ) -> DecisionRecord | None:
-    """Update the status of a decision record.
+    """Move a decision record between statuses, recording authority changes.
 
-    Raises ValueError for invalid statuses. Returns None if not found.
+    The status column is a projection, so a caller asking for ``active`` is
+    asking for an acceptance and gets one, stamped with *accepter*; a caller
+    retiring an accepted decision gets a withdrawal appended to the same log.
+    Writing the column alone would leave the two disagreeing, which is how a
+    dismissal survives in one surface and not another.
+
+    Raises ValueError for an invalid status, and for an acceptance the record
+    cannot support. Returns None if not found.
     """
     if status not in _VALID_DECISION_STATUSES:
         raise ValueError(
@@ -308,10 +491,42 @@ async def update_decision_status(
     rec = await session.get(DecisionRecord, decision_id)
     if rec is None:
         return None
+
+    from .authority import (
+        AcceptanceRefusedError,
+        accept_decision,
+        is_accepted,
+        record_acceptance,
+    )
+
+    accepted = await is_accepted(session, rec.id)
+    try:
+        if status == "active":
+            if not accepted:
+                await accept_decision(
+                    session, rec, accepter=accepter or "unrecorded", kind=kind
+                )
+        elif accepted and status in RETIRED_STATUSES:
+            await record_acceptance(
+                session,
+                rec,
+                # ``deprecated`` and ``dismissed`` share a currency; the action
+                # keeps which one happened.
+                action=status,
+                currency="superseded" if status == "superseded" else "dismissed",
+                accepter=accepter or "unrecorded",
+                kind=kind,
+            )
+    except AcceptanceRefusedError as exc:
+        raise ValueError(str(exc)) from exc
+
     rec.status = status
     if superseded_by is not None:
         rec.superseded_by = superseded_by
     rec.updated_at = _now_utc()
+    # Both directions: a retirement drops the links and a revival rebuilds
+    # them, rather than either waiting for the next index.
+    await sync_links_from_record(session, rec)
     await session.flush()
     return rec
 
@@ -344,6 +559,13 @@ async def update_decision_by_id(
         "affected_modules": "affected_modules_json",
         "tags": "tags_json",
     }
+    if "affected_files" in fields:
+        # Same rule as every other path that takes a scope from its caller:
+        # the basis and the modules have to move with the files they describe.
+        rec.scope_basis = SCOPE_BASIS_STATED if fields["affected_files"] else ""
+        fields["affected_modules"] = scope_modules(
+            fields["affected_files"], fields.get("affected_modules")
+        )
     _scalar_fields = {
         "title",
         "context",
@@ -362,6 +584,7 @@ async def update_decision_by_id(
 
     rec.updated_at = _now_utc()
     await session.flush()
+    await sync_links_from_record(session, rec)
     return rec
 
 
@@ -373,579 +596,3 @@ async def delete_decision(session: AsyncSession, decision_id: str) -> bool:
     await session.delete(rec)
     await session.flush()
     return True
-
-
-def _normalize_title(title: str) -> str:
-    """Normalize a decision title for cross-source dedup comparison."""
-    import re as _re
-
-    t = title.lower().strip()
-    t = _re.sub(r"[^a-z0-9\s]", "", t)
-    t = _re.sub(r"\s+", " ", t)
-    return t
-
-
-def _evidence_quote(d: dict) -> str:
-    """Pick the verbatim span recorded as this evidence row's source quote.
-
-    Prefers the LLM/parser-supplied ``source_quote``; falls back to the
-    decision/rationale text so an evidence row is never empty.
-    """
-    return (d.get("source_quote") or d.get("decision") or d.get("rationale") or "").strip()
-
-
-async def _upsert_decision_evidence(
-    session: AsyncSession,
-    decision_id: str,
-    *,
-    source: str,
-    source_rank: int,
-    evidence_file: str | None,
-    evidence_line: int | None,
-    evidence_commit: str | None,
-    source_quote: str,
-    confidence: float,
-    verification: str,
-) -> None:
-    """Insert or update one evidence row, idempotent on its natural key.
-
-    Natural key is ``(decision_id, source, evidence_file, evidence_commit)``.
-    NULLs are matched explicitly (SQLite treats NULLs as distinct in a unique
-    constraint), so re-indexing the same source converges instead of
-    duplicating, while an incremental update adds genuinely new evidence.
-    """
-    q = select(DecisionEvidence).where(
-        DecisionEvidence.decision_id == decision_id,
-        DecisionEvidence.source == source,
-    )
-    q = (
-        q.where(DecisionEvidence.evidence_file == evidence_file)
-        if evidence_file is not None
-        else q.where(DecisionEvidence.evidence_file.is_(None))
-    )
-    q = (
-        q.where(DecisionEvidence.evidence_commit == evidence_commit)
-        if evidence_commit is not None
-        else q.where(DecisionEvidence.evidence_commit.is_(None))
-    )
-    existing = (await session.execute(q)).scalar_one_or_none()
-
-    if existing is not None:
-        existing.source_rank = source_rank
-        existing.evidence_line = evidence_line
-        existing.source_quote = source_quote
-        existing.confidence = confidence
-        existing.verification = verification
-        return
-
-    session.add(
-        DecisionEvidence(
-            decision_id=decision_id,
-            source=source,
-            source_rank=source_rank,
-            evidence_file=evidence_file,
-            evidence_line=evidence_line,
-            evidence_commit=evidence_commit,
-            source_quote=source_quote,
-            confidence=confidence,
-            verification=verification,
-        )
-    )
-
-
-def _best_verification(values: list[str]) -> str:
-    """Reduce per-evidence verdicts to the strongest: exact > fuzzy > unverified."""
-    if "exact" in values:
-        return "exact"
-    if "fuzzy" in values:
-        return "fuzzy"
-    return "unverified"
-
-
-async def list_decision_evidence(
-    session: AsyncSession,
-    decision_id: str,
-) -> list[DecisionEvidence]:
-    """Return all evidence rows for a decision, highest source rank first."""
-    result = await session.execute(
-        select(DecisionEvidence)
-        .where(DecisionEvidence.decision_id == decision_id)
-        .order_by(DecisionEvidence.source_rank.desc(), DecisionEvidence.created_at.asc())
-    )
-    return list(result.scalars().all())
-
-
-def _first_commit(d: dict) -> str | None:
-    commits = d.get("evidence_commits") or []
-    return commits[0] if commits else None
-
-
-async def bulk_upsert_decisions(
-    session: AsyncSession,
-    repository_id: str,
-    decisions: list[dict],
-    *,
-    vector_store: Any | None = None,
-) -> list[str]:
-    """Upsert decisions, accreting provenance instead of discarding losers.
-
-    Decisions with near-identical normalized titles are merged into a single
-    :class:`DecisionRecord`; every contributing source becomes a
-    :class:`DecisionEvidence` row. The record's headline fields come from the
-    highest-``source_rank`` contributor, and its confidence is recomputed from
-    the best rank + the number of independently corroborating sources + the
-    strongest surviving verification verdict.
-
-    Idempotent: a full re-index converges (evidence rows upsert on their
-    natural key); an incremental update adds new evidence and re-derives the
-    headline + confidence from the union.
-
-    When *vector_store* (the shared page-generator store) is supplied, a
-    Phase-2C semantic pass augments the cheap normalized-title match: an
-    incoming group that matched no existing record by title is looked up in the
-    store, and if its nearest ``decision:`` neighbour clears the cosine
-    threshold it is folded into that record as additional evidence — so
-    paraphrases ("Use Redis" vs "Adopt Redis cache") collapse into one record.
-    Every touched record is (re-)embedded into the store, so decisions are
-    matchable next run *and* discoverable via ``search_codebase``.
-
-    Returns the ids of every record touched (created or updated) this call, so
-    a caller can run the Phase-3 supersession/conflict detection over just the
-    records that changed.
-    """
-    # Group incoming decisions by normalized title.
-    groups: dict[str, list[dict]] = {}
-    for d in decisions:
-        norm = _normalize_title(d.get("title", ""))
-        if not norm:
-            continue
-        groups.setdefault(norm, []).append(d)
-
-    if not groups:
-        return []
-
-    # Map existing records (this repo) by normalized title so cross-run merges
-    # land on the same row. On a title collision keep the most authoritative
-    # existing row as canonical.
-    existing_rows = await session.execute(
-        select(DecisionRecord).where(DecisionRecord.repository_id == repository_id)
-    )
-    existing_by_norm: dict[str, DecisionRecord] = {}
-    for rec in existing_rows.scalars().all():
-        norm = _normalize_title(rec.title)
-        prior = existing_by_norm.get(norm)
-        if prior is None or rank_for_source(rec.source) > rank_for_source(prior.source):
-            existing_by_norm[norm] = rec
-
-    # Phase 2C semantic dedup runs against the shared vector store. ``id_to_rec``
-    # lets a store hit (which returns a decision id) resolve back to the live
-    # record, and is grown as records are created so paraphrases *within* one
-    # batch also collapse.
-    id_to_rec: dict[str, DecisionRecord] = {rec.id: rec for rec in existing_by_norm.values()}
-
-    # Headline candidate per group: highest source rank, tie-break by
-    # confidence. Hoisted so the batched embedding below can see every
-    # group's match text before the loop runs.
-    headline_by_norm: dict[str, dict] = {
-        norm: max(
-            members,
-            key=lambda d: (rank_for_source(d.get("source", "")), d.get("confidence", 0.0)),
-        )
-        for norm, members in groups.items()
-    }
-
-    # Batched embedding for dedup. The per-item path embeds one query per
-    # residual group and one upsert per touched record — thousands of serial
-    # network round-trips on a first index. Instead: embed every group's
-    # match text in a few chunked requests up front, search the store by raw
-    # vector, dedup *within* the batch against a local pending index, and
-    # defer the store writes to one batched upsert after the loop. Stores
-    # that can't hand back vectors (no embedder, or search_by_vector left at
-    # the base-class default) keep the per-item flow unchanged.
-    batch_mode = False
-    group_vecs: dict[str, list[float]] = {}
-    group_texts: dict[str, str] = {}
-    if vector_store is not None:
-        from repowise.core.analysis.decision_semantic_match import (
-            PendingDecisionIndex,
-            decision_match_text,
-            decision_vector_item,
-            find_duplicate_decision,
-            find_duplicate_decision_by_vector,
-            upsert_decision_vector,
-            upsert_decision_vectors,
-        )
-        from repowise.core.persistence.vector_store import VectorStore
-
-        # Static capability check: the base-class search_by_vector is the
-        # "unsupported" sentinel. A runtime probe would conflate a transient
-        # store error with lack of support and silently fall back to the
-        # O(N)-round-trip path this branch exists to avoid.
-        store_cls_search = getattr(type(vector_store), "search_by_vector", None)
-        supports_vector_search = (
-            callable(store_cls_search) and store_cls_search is not VectorStore.search_by_vector
-        )
-
-        ordered = [
-            (norm, decision_match_text(h.get("title", ""), h.get("decision") or ""))
-            for norm, h in headline_by_norm.items()
-        ]
-        ordered = [(norm, text) for norm, text in ordered if text]
-        if ordered and supports_vector_search:
-            try:
-                vecs = await vector_store.embed_texts([text for _, text in ordered])
-            except Exception:
-                vecs = None
-            if vecs is not None and len(vecs) == len(ordered):
-                group_vecs = dict(zip((n for n, _ in ordered), vecs, strict=True))
-                group_texts = dict(ordered)
-                batch_mode = True
-
-        structlog.get_logger(__name__).info(
-            "decision_dedup_embedding",
-            groups=len(groups),
-            batched=batch_mode,
-        )
-
-    # Vectors of records touched this batch but not yet written to the store —
-    # the in-batch side of dedup in batch mode. A record is only registered
-    # when its final text equals the group text its vector came from, so the
-    # index never matches against text the record doesn't actually contain.
-    pending = PendingDecisionIndex() if batch_mode else None
-
-    touched_ids: list[str] = []
-
-    for norm, members in groups.items():
-        headline = headline_by_norm[norm]
-        rec = existing_by_norm.get(norm)
-
-        # No title match → ask the store whether a semantically-equivalent
-        # decision already exists, and fold into it if so (cheap title dedup
-        # stays the first pass; this only runs on the residual).
-        if rec is None and vector_store is not None:
-            q_vec = group_vecs.get(norm)
-            if batch_mode and q_vec is not None:
-                match_id = await find_duplicate_decision_by_vector(
-                    vector_store, q_vec, pending=pending
-                )
-            else:
-                match_id = await find_duplicate_decision(
-                    vector_store,
-                    title=headline.get("title", ""),
-                    decision=headline.get("decision") or "",
-                )
-            if match_id is not None and match_id in id_to_rec:
-                rec = id_to_rec[match_id]
-                existing_by_norm[norm] = rec
-
-        # A dismissed record is a tombstone: leave it untouched (no headline
-        # promotion, no new evidence, not re-embedded, not in touched_ids) so
-        # dismissals survive every reindex.
-        if rec is not None and rec.status == "dismissed":
-            continue
-
-        if rec is None:
-            rec = DecisionRecord(
-                id=_new_uuid(),
-                repository_id=repository_id,
-                title=headline.get("title", ""),
-                status=headline.get("status", "proposed"),
-                context=headline.get("context") or "",
-                decision=headline.get("decision") or "",
-                rationale=headline.get("rationale") or "",
-                alternatives_json=json.dumps(headline.get("alternatives") or []),
-                consequences_json=json.dumps(headline.get("consequences") or []),
-                affected_files_json=json.dumps(headline.get("affected_files") or []),
-                affected_modules_json=json.dumps(headline.get("affected_modules") or []),
-                tags_json=json.dumps(headline.get("tags") or []),
-                evidence_commits_json=json.dumps(headline.get("evidence_commits") or []),
-                source=headline.get("source", "cli"),
-                evidence_file=headline.get("evidence_file"),
-                evidence_line=headline.get("evidence_line"),
-                confidence=headline.get("confidence", 0.5),
-            )
-            session.add(rec)
-            await session.flush()
-            existing_by_norm[norm] = rec
-            id_to_rec[rec.id] = rec
-        elif rank_for_source(headline.get("source", "")) >= rank_for_source(rec.source):
-            # A new contributor at least as authoritative as the current
-            # headline → promote its fields (provenance still accretes below).
-            rec.title = headline.get("title", rec.title)
-            rec.status = _merge_status(rec.status, headline.get("status", rec.status))
-            rec.context = headline.get("context") or rec.context
-            rec.decision = headline.get("decision") or rec.decision
-            rec.rationale = headline.get("rationale") or rec.rationale
-            rec.alternatives_json = json.dumps(headline.get("alternatives") or [])
-            rec.consequences_json = json.dumps(headline.get("consequences") or [])
-            rec.affected_files_json = json.dumps(headline.get("affected_files") or [])
-            rec.affected_modules_json = json.dumps(headline.get("affected_modules") or [])
-            rec.tags_json = json.dumps(headline.get("tags") or [])
-            rec.evidence_commits_json = json.dumps(headline.get("evidence_commits") or [])
-            rec.source = headline.get("source", rec.source)
-            rec.evidence_file = headline.get("evidence_file")
-            rec.evidence_line = headline.get("evidence_line")
-
-        # Accrete one evidence row per contributing source occurrence.
-        for d in members:
-            src = d.get("source", "cli")
-            await _upsert_decision_evidence(
-                session,
-                rec.id,
-                source=src,
-                source_rank=rank_for_source(src),
-                evidence_file=d.get("evidence_file"),
-                evidence_line=d.get("evidence_line"),
-                evidence_commit=_first_commit(d),
-                source_quote=_evidence_quote(d),
-                confidence=d.get("confidence", 0.5),
-                verification=d.get("verification", "unverified"),
-            )
-
-        # Re-derive headline confidence + verification from the FULL evidence
-        # set (existing + just-added), so corroboration accrues across runs.
-        evidence = await list_decision_evidence(session, rec.id)
-        if evidence:
-            distinct_sources = {e.source for e in evidence}
-            top_rank = max(e.source_rank for e in evidence)
-            best_ver = _best_verification([e.verification for e in evidence])
-            rec.confidence = compute_confidence(top_rank, len(distinct_sources), best_ver)
-            rec.verification = best_ver
-        rec.updated_at = _now_utc()
-        touched_ids.append(rec.id)
-
-        # Mirror the JSON file/module arrays into first-class decision→code
-        # links so the graph is traversable both directions (Phase 3A). The
-        # JSON stays the cheap read cache; these rows are the queryable truth.
-        await sync_decision_node_links(
-            session,
-            repository_id,
-            rec.id,
-            files=json.loads(rec.affected_files_json or "[]"),
-            modules=json.loads(rec.affected_modules_json or "[]"),
-        )
-
-        # (Re-)embed the record into the shared store so it's matchable by
-        # later groups in this batch + future runs, and discoverable via
-        # search_codebase. Best-effort — never blocks the SQL upsert. In
-        # batch mode the write is deferred to one batched upsert after the
-        # loop; until then the group vector stands in for the record in the
-        # pending index — but only when the record's final text IS the group
-        # text (created, or promoted from this headline). A fold that kept
-        # the record's own fields must not be matchable under the incoming
-        # group's text.
-        if vector_store is not None:
-            if batch_mode:
-                q_vec = group_vecs.get(norm)
-                final_text = decision_match_text(rec.title, rec.decision or "")
-                if (
-                    q_vec is not None
-                    and pending is not None
-                    and rec.id not in pending.ids
-                    and final_text == group_texts.get(norm)
-                ):
-                    pending.add(rec.id, q_vec)
-            else:
-                await upsert_decision_vector(
-                    vector_store,
-                    rec.id,
-                    title=rec.title,
-                    decision=rec.decision or "",
-                    evidence_file=rec.evidence_file,
-                )
-
-    # Batched store write: upsert every touched record's *final* text (post
-    # merge/promotion) in one go, reusing the vectors already computed for
-    # unchanged texts and embedding only the delta.
-    if vector_store is not None and batch_mode and touched_ids:
-        items: list[tuple[str, str, dict]] = []
-        for rid in dict.fromkeys(touched_ids):
-            rec = id_to_rec.get(rid)
-            if rec is None:
-                continue
-            item = decision_vector_item(
-                rec.id,
-                title=rec.title,
-                decision=rec.decision or "",
-                evidence_file=rec.evidence_file,
-            )
-            if item is not None:
-                items.append(item)
-        vectors_by_text = {
-            text: group_vecs[norm] for norm, text in group_texts.items() if norm in group_vecs
-        }
-        await upsert_decision_vectors(vector_store, items, vectors_by_text=vectors_by_text)
-
-    await session.flush()
-    return touched_ids
-
-
-async def purge_proposed_decisions_by_source(
-    session: AsyncSession,
-    repository_id: str,
-    source: str,
-) -> int:
-    """Delete still-``proposed`` records of *source* plus their child rows.
-
-    One-shot cleanup for retired extraction sources (today: the removed
-    ``code_comment`` harvest, #751). Only ``proposed`` rows go — anything the
-    user confirmed, deprecated, or dismissed is kept. Child rows are deleted
-    explicitly rather than trusting the FK cascade, which on SQLite depends on
-    the ``foreign_keys`` pragma. Returns the number of records deleted.
-    """
-    result = await session.execute(
-        select(DecisionRecord.id).where(
-            DecisionRecord.repository_id == repository_id,
-            DecisionRecord.source == source,
-            DecisionRecord.status == "proposed",
-        )
-    )
-    ids = [row[0] for row in result.all()]
-    if not ids:
-        return 0
-
-    await session.execute(delete(DecisionEvidence).where(DecisionEvidence.decision_id.in_(ids)))
-    await session.execute(
-        delete(DecisionEdge).where(
-            or_(
-                DecisionEdge.src_decision_id.in_(ids),
-                DecisionEdge.dst_decision_id.in_(ids),
-            )
-        )
-    )
-    await session.execute(delete(DecisionNodeLink).where(DecisionNodeLink.decision_id.in_(ids)))
-    await session.execute(delete(DecisionRecord).where(DecisionRecord.id.in_(ids)))
-    await session.flush()
-    structlog.get_logger(__name__).info("decision_purge_by_source", source=source, deleted=len(ids))
-    return len(ids)
-
-
-async def recompute_decision_staleness(
-    session: AsyncSession,
-    repository_id: str,
-    git_meta_map: dict[str, dict],
-) -> int:
-    """Recompute staleness_score for all active decisions. Returns update count."""
-    result = await session.execute(
-        select(DecisionRecord).where(
-            DecisionRecord.repository_id == repository_id,
-            DecisionRecord.status.in_(["active", "proposed"]),
-        )
-    )
-    decisions = list(result.scalars().all())
-
-    now = _now_utc()
-    updated = 0
-    for dec in decisions:
-        affected = json.loads(dec.affected_files_json)
-        if not affected:
-            continue
-
-        from repowise.core.analysis.decision_extractor import DecisionExtractor
-
-        decision_text = f"{dec.title} {dec.decision} {dec.rationale}"
-        new_score = DecisionExtractor.compute_staleness(
-            dec.created_at,
-            affected,
-            git_meta_map,
-            decision_text=decision_text,
-        )
-        if abs(new_score - dec.staleness_score) > 0.01:
-            dec.staleness_score = round(new_score, 3)
-            dec.updated_at = now
-            updated += 1
-
-    if updated:
-        await session.flush()
-    return updated
-
-
-async def get_stale_decisions(
-    session: AsyncSession,
-    repository_id: str,
-    threshold: float = 0.5,
-) -> list[DecisionRecord]:
-    """Return active decisions with staleness_score >= threshold."""
-    result = await session.execute(
-        select(DecisionRecord).where(
-            DecisionRecord.repository_id == repository_id,
-            DecisionRecord.status.in_(["active"]),
-            DecisionRecord.staleness_score >= threshold,
-        )
-    )
-    return list(result.scalars().all())
-
-
-async def get_decision_health_summary(
-    session: AsyncSession,
-    repository_id: str,
-) -> dict:
-    """Return decision health: counts by status, stale decisions, ungoverned hotspots."""
-    result = await session.execute(
-        select(DecisionRecord).where(
-            DecisionRecord.repository_id == repository_id,
-        )
-    )
-    all_decisions = list(result.scalars().all())
-
-    counts = {
-        "active": 0,
-        "proposed": 0,
-        "deprecated": 0,
-        "superseded": 0,
-        "dismissed": 0,
-        "stale": 0,
-    }
-    stale_decisions: list[DecisionRecord] = []
-    proposed_decisions: list[DecisionRecord] = []
-
-    # Collect all governed files from active decisions
-    governed_files: set[str] = set()
-    for d in all_decisions:
-        counts[d.status] = counts.get(d.status, 0) + 1
-        if d.status == "active":
-            if d.staleness_score >= 0.5:
-                counts["stale"] += 1
-                stale_decisions.append(d)
-            for fp in json.loads(d.affected_files_json):
-                governed_files.add(fp)
-        elif d.status == "proposed":
-            proposed_decisions.append(d)
-
-    # Find ungoverned hotspots
-    hotspot_result = await session.execute(
-        select(GitMetadata.file_path).where(
-            GitMetadata.repository_id == repository_id,
-            GitMetadata.is_hotspot == True,  # noqa: E712
-        )
-    )
-    hotspot_files = {row[0] for row in hotspot_result.all()}
-    ungoverned = sorted(hotspot_files - governed_files)
-
-    # Phase 3B: surface contradictory active decisions (conflicts_with edges).
-    from ..decision_graph import list_conflict_edges
-
-    by_id = {d.id: d for d in all_decisions}
-    conflicts: list[dict] = []
-    for edge in await list_conflict_edges(session, repository_id):
-        src = by_id.get(edge.src_decision_id)
-        dst = by_id.get(edge.dst_decision_id)
-        if src is None or dst is None:
-            continue
-        conflicts.append(
-            {
-                "src": {"id": src.id, "title": src.title, "status": src.status},
-                "dst": {"id": dst.id, "title": dst.title, "status": dst.status},
-                "confidence": edge.confidence,
-                "evidence": edge.evidence,
-            }
-        )
-    counts["conflicts"] = len(conflicts)
-
-    return {
-        "summary": counts,
-        "stale_decisions": stale_decisions,
-        "proposed_awaiting_review": proposed_decisions,
-        "ungoverned_hotspots": ungoverned,
-        "conflicts": conflicts,
-    }

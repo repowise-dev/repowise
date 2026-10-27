@@ -1,0 +1,296 @@
+"""One answer to "what is this type's bare name".
+
+Two questions were being answered independently in twenty places, and they are
+not the same question:
+
+``bare_type_name``
+    Shape only. Given a type as written in source, return the name without its
+    type arguments or its qualifier. Language-independent, because every
+    language we parse spells a qualifier with ``.``, ``::`` or ``\\`` and opens
+    type arguments with ``<``, ``[`` or ``(``.
+
+``is_resolvable_type_name``
+    Policy, for the type-use path only. Given a bare name and a language, could
+    it name a symbol this repo declares? Builtins and single-letter generic
+    parameters cannot, so looking them up is waste.
+
+They are deliberately separate. Heritage filters builtin parents through its
+own per-language set and the dynamic-hint extractors filter nothing at all, so
+a shared shape helper that also applied one builtin policy would hand every
+caller a different consumer's rules.
+
+This module is a leaf: it reads the language registry and nothing else.
+"""
+
+from __future__ import annotations
+
+import re
+
+from .language_data import get_builtin_types
+
+# A qualifier separator in any language we parse. PHP's ``\`` is here rather
+# than handled per-language because no type name may contain one, so splitting
+# on all three can only ever be right.
+_QUALIFIER_SEPARATORS = (".", "::", "\\")
+
+# Bracket pairs that delimit type arguments. A constructor call's ``(...)``
+# is deliberately not here: it sits in the same position but means something
+# else, and a Python base written ``factory().__class__`` must keep its last
+# attribute rather than yield the callee.
+_TYPE_ARGUMENT_BRACKETS = (("<", ">"), ("[", "]"))
+
+# Languages where a leading ``$`` starts a real user type rather than a
+# compiler artefact. This is consumer policy, not language identity: ``$`` is a
+# legal identifier start in several languages here, but only in TS/JS is a
+# ``$``-prefixed type routinely one the repo declares.
+_DOLLAR_START_LANGUAGES = frozenset({"typescript", "javascript"})
+
+
+def strip_type_arguments(raw: str) -> str:
+    """Return *raw* with every balanced type-argument group removed.
+
+    Removed rather than truncated at the opener, because a qualifier can follow
+    the group: ``Impl<C>::type`` names ``type``, and cutting at ``<`` would
+    answer ``Impl``. Truncating is equally wrong the other way round —
+    ``Outer<a.b.C>`` must not have its qualifier taken from inside the group.
+    """
+    text = raw
+    for opener, closer in _TYPE_ARGUMENT_BRACKETS:
+        out: list[str] = []
+        depth = 0
+        for char in text:
+            if char == opener:
+                depth += 1
+            elif char == closer:
+                # An unbalanced closer means the text was already truncated
+                # upstream; dropping it is better than keeping a stray bracket.
+                depth = max(0, depth - 1)
+            elif depth == 0:
+                out.append(char)
+        text = "".join(out)
+    return text
+
+
+def strip_call_arguments(raw: str) -> str:
+    """Return *raw* without a trailing constructor-call argument list.
+
+    For the languages whose heritage clause names a base by calling it —
+    Kotlin's ``Bar()``, a C# record's ``Base(x)``.
+    """
+    head, sep, _ = raw.partition("(")
+    return head if sep else raw
+
+
+def bare_type_name(raw: str) -> str:
+    """Return *raw* without its type arguments or qualifier.
+
+    ``Gen<Arg>`` → ``Gen``; ``ns.Qual`` → ``Qual``; ``ns.Both<Arg>`` → ``Both``;
+    ``\\Ns\\Qual`` → ``Qual``; ``NS::Widget`` → ``Widget``;
+    ``Impl<C>::type`` → ``type``.
+    """
+    text = strip_type_arguments(raw.strip())
+    for separator in _QUALIFIER_SEPARATORS:
+        text = text.rsplit(separator, 1)[-1]
+    return text.strip()
+
+
+def written_type_key(name: str, raw: str, language: str) -> str:
+    """*name*, the bare type *raw* spells, as receiver lookups key it.
+
+    A C# head keeps its arity (``IFoo`1``), since a same-file ``IFoo`` may be
+    another type; a Java or Apex member type keeps its outer type
+    (``Token.Tag``), which picks among same-named member types.
+    """
+    if language == "csharp" and (arity := type_argument_count(raw)):
+        return f"{name}`{arity}"
+    if language in ("java", "apex"):
+        return java_type_path(raw) or name
+    return name
+
+
+def java_type_path(raw: str) -> str | None:
+    """``p.Token.Tag<X>[]`` -> ``p.Token.Tag``: a type spelled through its qualifiers.
+
+    Kept whole because the qualifier picks which same-named type is meant: an
+    outer type a member type, a package (lowercase) a top-level type. None for
+    an undotted spelling or one that names no type.
+    """
+    text = strip_type_arguments(raw.strip()).replace(" ", "")
+    parts = text.split(".")
+    if len(parts) < 2 or not any(part[:1].isupper() for part in parts):
+        return None
+    return text if all(part.isidentifier() for part in parts) else None
+
+
+def type_argument_count(raw: str) -> int:
+    """How many type arguments the named type in *raw* is given.
+
+    ``Gen<A, B<C>>`` → 2; ``Gen<A>?`` → 1; ``Outer<A>.Inner`` and ``Plain`` → 0,
+    since only arguments on the last segment belong to the type named.
+    """
+    text = raw.strip().rstrip("?").rstrip()
+    while text.endswith("[]"):
+        text = text[:-2].rstrip()
+    if not text.endswith(">"):
+        return 0
+    depth = 0
+    commas = 0
+    for char in reversed(text):
+        if char == ">":
+            depth += 1
+        elif char == "<":
+            depth -= 1
+            if depth == 0:
+                return commas + 1
+        elif char == "," and depth == 1:
+            commas += 1
+    return 0
+
+
+def type_qualifier(raw: str) -> str:
+    """Return what ``bare_type_name`` drops from the front of *raw*, or ``""``.
+
+    ``os.FileInfo`` → ``os``; ``Plain`` → ``""``.
+    """
+    text = strip_type_arguments(raw.strip())
+    head = text[: len(text) - len(bare_type_name(text))]
+    return head.rstrip("".join(_QUALIFIER_SEPARATORS))
+
+
+def dotted_type_segments(raw: str) -> list[str]:
+    """``ns.Outer.Inner<T>`` -> ``["ns", "Outer", "Inner"]``: a dotted type path, segment by segment."""
+    return [segment.strip() for segment in strip_type_arguments(raw.strip()).split(".")]
+
+
+# C++ template heads whose ``operator->`` forwards to their argument, so
+# ``shared_ptr<Foo> p`` makes ``p->m()`` a call on ``Foo``. Only these: a
+# container holds a ``T`` without being one, and unwrapping ``vector<Foo>``
+# would answer ``Foo`` for ``v.size()``.
+#
+# ``weak_ptr`` is deliberately absent. It declares no ``operator->`` at all and
+# reaches its argument only through ``lock()``.
+_POINTER_LIKE_HEADS = frozenset({"shared_ptr", "unique_ptr", "auto_ptr", "optional"})
+
+# Every member the heads above declare, which is the whole of what a ``.`` call
+# on one can name -- the arrow yields the argument, the dot yields the wrapper.
+# A caller that cannot see which operator was written refuses these names
+# instead, which costs an arrow call that really did mean ``Foo::get`` and
+# never lets a ``p.get()`` bind to one. Measured over aria2's 2,242 wrapper
+# receivers: it covers every one of the 355 real dot calls and gives up 57
+# arrows.
+POINTER_LIKE_MEMBERS = frozenset({
+    "get", "reset", "release", "swap", "use_count", "unique", "owner_before",
+    "get_deleter", "value", "has_value", "value_or", "emplace",
+    "and_then", "transform", "or_else",
+})
+
+
+def unwrap_pointer_like(raw: str) -> str | None:
+    """The type ``raw``'s ``operator->`` yields, or None if it forwards nowhere.
+
+    ``std::shared_ptr<Foo>`` -> ``Foo``; ``unique_ptr<Foo, D>`` -> ``Foo``,
+    since the deleter is not what the arrow reaches. Every other head answers
+    None, a repo's own wrapper included: whether *its* arrow forwards is not
+    written at the declaration, and guessing would bind ``h->m()`` to a class
+    the handle merely holds.
+
+    ``normalize_return_type`` deliberately does not use this. There the head is
+    the receiver -- ``future<T>.get()`` is a method on ``future`` -- so the two
+    call sites want opposite answers from the same spelling.
+    """
+    head, opener, rest = raw.strip().partition("<")
+    rest = rest.rstrip()
+    if not opener or not rest.endswith(">"):
+        return None
+    for separator in _QUALIFIER_SEPARATORS:
+        head = head.rsplit(separator, 1)[-1]
+    if head.strip() not in _POINTER_LIKE_HEADS:
+        return None
+
+    # The first top-level argument, tracked by depth so a ``map<K, V>`` nested
+    # inside one cannot be split at its own comma.
+    depth = 0
+    first: list[str] = []
+    for char in rest[:-1]:
+        if char in "<([":
+            depth += 1
+        elif char in ">)]":
+            depth -= 1
+        elif char == "," and depth == 0:
+            break
+        first.append(char)
+    name = bare_type_name("".join(first))
+    return name or None
+
+
+def is_resolvable_type_name(name: str, language: str) -> bool:
+    """True if *name* could name a symbol declared in this repo.
+
+    Rejects the empty string, names not starting with an identifier character,
+    the language's builtin types, and single uppercase letters, which are
+    overwhelmingly generic parameters (``T``, ``K``, ``V``).
+    """
+    if not name:
+        return False
+    starters = "_$" if language in _DOLLAR_START_LANGUAGES else "_"
+    if not name[0].isalpha() and name[0] not in starters:
+        return False
+    if name in get_builtin_types(language):
+        return False
+    return not (len(name) == 1 and name.isupper())
+
+
+# The receiver of a C# extension method, as the parameter list spells it.
+# ``this`` is legal only on an extension method's first parameter, and the
+# parser keeps no modifiers, so this is the only surviving evidence a method is
+# one. Matched against the parameter list alone, because a default value may
+# hold a parenthesised string. An array receiver is captured so it can be
+# refused: ``this Order[]`` extends the array, not the element.
+_CSHARP_EXTENSION_RECEIVER = re.compile(
+    r"\s*this\s+(?:(?:ref|in|scoped|readonly)\s+)*"
+    r"(?P<type>[\w.]+(?:<[^>]*>)?(?:\s*\[[,\s]*\])*\??)"
+)
+
+
+def kotlin_extension_receiver(header: str, name: str) -> tuple[str, str | None] | None:
+    """``(written, extended)`` for Kotlin's ``fun Type.name(`` in *header*, or None.
+
+    *written* is the receiver as a symbol id spells it, nullable mark and type
+    parameter kept (``Int?``, ``T``), which tells ``Int.f()`` from
+    ``Int?.f()``. *extended* is the bare type the extension dispatches on,
+    None for a receiver that is the function's own type parameter
+    (``fun <T> T.name()``): any implicit receiver fits it.
+    """
+    # Read at the header's first `fun` only: a same-named function below it is
+    # another declaration.
+    first = re.search(r"\bfun\s", header)
+    match = first and re.compile(
+        rf"fun\s+(?:<(?P<params>(?:[^<>]|<[^<>]*>)*)>\s*)?"
+        rf"(?P<type>[^()=]+?)\.\s*`?{re.escape(name)}`?\s*[(<]"
+    ).match(header, first.start())
+    if not match:
+        return None
+    written = match.group("type").strip()
+    bare = bare_type_name(written.rstrip("?").strip())
+    if not bare:
+        return None
+    params = (match.group("params") or "").split(",")
+    declared = {p.split(":")[0].split()[-1] for p in params if p.strip()}
+    nullable = "?" if written.endswith("?") else ""
+    return bare + nullable, None if bare in declared else bare
+
+
+def csharp_extension_receiver(signature: str) -> str | None:
+    """The bare type a C# extension method extends, or None if it is not one.
+
+    Shape only, in keeping with this module: whether the name could resolve is
+    the caller's policy, not this module's.
+    """
+    _, opened, params = (signature or "").partition("(")
+    match = _CSHARP_EXTENSION_RECEIVER.match(params) if opened else None
+    if match is None:
+        return None
+    raw = match.group("type")
+    if "[" in raw:
+        return None
+    return bare_type_name(raw.rstrip("?")) or None

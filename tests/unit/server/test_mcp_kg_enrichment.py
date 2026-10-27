@@ -205,6 +205,15 @@ async def populated_db_with_kg(session: AsyncSession, repo_id: str) -> str:
             node_ids_json=json.dumps(["file:src/utils/helpers.py"]),
             display_order=1,
         ),
+        KnowledgeGraphLayer(
+            id="kgl3",
+            repository_id=rid,
+            layer_id="layer:test",
+            name="Automated Checks",
+            description="Unit tests",
+            node_ids_json=json.dumps(["file:tests/test_graph.py"]),
+            display_order=2,
+        ),
     ]
     for layer in kg_layers:
         session.add(layer)
@@ -348,7 +357,9 @@ async def test_overview_includes_architecture_when_kg_exists(setup_mcp_with_kg):
     assert "architecture" in result
     arch = result["architecture"]
     assert "layers" in arch
+    # The test layer partitions its files but is not part of the architecture.
     assert len(arch["layers"]) == 2
+    assert all(layer["name"] != "Automated Checks" for layer in arch["layers"])
     assert any(layer["name"] == "Core Ingestion" for layer in arch["layers"])
     assert any(layer["name"] == "Utilities" for layer in arch["layers"])
     assert arch["tour_available"] is True
@@ -373,12 +384,16 @@ async def test_overview_layer_file_count(setup_mcp_with_kg):
 
 
 @pytest.mark.asyncio
-async def test_overview_layer_description_truncated(setup_mcp_with_kg):
+async def test_overview_layers_carry_names_counts_and_roots_only(setup_mcp_with_kg):
     from repowise.server.mcp_server import get_overview
 
     result = await get_overview()
-    for layer in result["architecture"]["layers"]:
-        assert len(layer["description"]) <= 120
+    layers = result["architecture"]["layers"]
+    assert layers
+    # The layer prose restated the overview essay; get_context on a layer file
+    # is the route to it now.
+    for layer in layers:
+        assert set(layer) <= {"name", "file_count", "root"}
 
 
 # ---------------------------------------------------------------------------

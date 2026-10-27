@@ -42,12 +42,12 @@ async def _make_repo(sf, path: Path) -> str:
         return repo.id
 
 
-async def test_first_run_checkpoints_index(sf, sample_repo_path: Path) -> None:
-    repo_id = await _make_repo(sf, sample_repo_path)
+async def test_first_run_checkpoints_index(sf, sample_repo_copy: Path) -> None:
+    repo_id = await _make_repo(sf, sample_repo_copy)
     ctrl = ResumeController(sf, repo_id, resume=False)
 
     result = await run_pipeline(
-        sample_repo_path,
+        sample_repo_copy,
         mode=OrchestratorMode.FAST,
         resume_controller=ctrl,
     )
@@ -58,12 +58,12 @@ async def test_first_run_checkpoints_index(sf, sample_repo_path: Path) -> None:
     assert ResumePhase.INDEX in completed
 
 
-async def test_resume_skips_index_compute(sf, sample_repo_path: Path, monkeypatch) -> None:
-    repo_id = await _make_repo(sf, sample_repo_path)
+async def test_resume_skips_index_compute(sf, sample_repo_copy: Path, monkeypatch) -> None:
+    repo_id = await _make_repo(sf, sample_repo_copy)
 
     # First run persists the INDEX phase.
     await run_pipeline(
-        sample_repo_path,
+        sample_repo_copy,
         mode=OrchestratorMode.FAST,
         resume_controller=ResumeController(sf, repo_id, resume=False),
     )
@@ -82,7 +82,7 @@ async def test_resume_skips_index_compute(sf, sample_repo_path: Path, monkeypatc
     monkeypatch.setattr(orch, "_run_git_indexing", _boom_git)
 
     result = await run_pipeline(
-        sample_repo_path,
+        sample_repo_copy,
         mode=OrchestratorMode.FAST,
         resume_controller=ResumeController(sf, repo_id, resume=True),
     )
@@ -93,10 +93,10 @@ async def test_resume_skips_index_compute(sf, sample_repo_path: Path, monkeypatc
     assert result.graph_builder.graph().number_of_nodes() > 0, "graph should be rehydrated"
 
 
-async def test_first_run_checkpoints_analysis(sf, sample_repo_path: Path) -> None:
-    repo_id = await _make_repo(sf, sample_repo_path)
+async def test_first_run_checkpoints_analysis(sf, sample_repo_copy: Path) -> None:
+    repo_id = await _make_repo(sf, sample_repo_copy)
     await run_pipeline(
-        sample_repo_path,
+        sample_repo_copy,
         mode=OrchestratorMode.FAST,
         resume_controller=ResumeController(sf, repo_id, resume=False),
     )
@@ -107,12 +107,12 @@ async def test_first_run_checkpoints_analysis(sf, sample_repo_path: Path) -> Non
     assert ResumePhase.ANALYSIS in completed
 
 
-async def test_resume_skips_analysis_recompute(sf, sample_repo_path: Path, monkeypatch) -> None:
-    repo_id = await _make_repo(sf, sample_repo_path)
+async def test_resume_skips_analysis_recompute(sf, sample_repo_copy: Path, monkeypatch) -> None:
+    repo_id = await _make_repo(sf, sample_repo_copy)
 
     # First run persists INDEX + ANALYSIS.
     await run_pipeline(
-        sample_repo_path,
+        sample_repo_copy,
         mode=OrchestratorMode.FAST,
         resume_controller=ResumeController(sf, repo_id, resume=False),
     )
@@ -135,8 +135,34 @@ async def test_resume_skips_analysis_recompute(sf, sample_repo_path: Path, monke
     monkeypatch.setattr(orch, "_run_decision_extraction", _boom_decisions)
 
     result = await run_pipeline(
-        sample_repo_path,
+        sample_repo_copy,
         mode=OrchestratorMode.FAST,
         resume_controller=ResumeController(sf, repo_id, resume=True),
     )
     assert result.parsed_files, "resume should still produce a usable index"
+
+
+async def test_analysis_checkpoint_receives_the_runs_vector_store(
+    sf, sample_repo_copy: Path, monkeypatch
+) -> None:
+    """The store a caller hands ``run_pipeline`` has to reach the checkpoint.
+
+    Dropping it there is invisible: the run still succeeds and still embeds, it
+    just stores a duplicate instead of folding it.
+    """
+    repo_id = await _make_repo(sf, sample_repo_copy)
+    seen: list[object] = []
+
+    async def _capture(_self: object, **kwargs: object) -> None:
+        seen.append(kwargs.get("vector_store"))
+
+    monkeypatch.setattr(ResumeController, "checkpoint_analysis", _capture)
+
+    store = object()
+    await run_pipeline(
+        sample_repo_copy,
+        vector_store=store,
+        resume_controller=ResumeController(sf, repo_id, resume=False),
+    )
+
+    assert seen == [store]

@@ -6,13 +6,15 @@ orchestrator.py) imports these phase functions. No CLI/click/rich imports.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
 import structlog
 
+from repowise.core.co_change import parse_partners
 from repowise.core.ingestion.git_indexer import GitIndexTier
-from repowise.core.pipeline.progress import ProgressCallback
+from repowise.core.pipeline.progress import ProgressCallback, emit_warning
 
 from ._common import _phase_done
 
@@ -34,6 +36,26 @@ def drop_transient_git_signals(git_metadata_list: list[dict]) -> None:
     """
     for meta in git_metadata_list:
         meta.pop("blame_index", None)
+
+
+def label_co_change_structure(graph_builder: Any, git_meta_map: dict[str, dict]) -> int:
+    """Stamp each persisted co-change record with what the graph says about it.
+
+    The column holds JSON, so the records are decoded, labelled, and written
+    back; labelling the decoded copies alone would be discarded on persist.
+    Returns the number of pairs left unexplained.
+    """
+    decoded = {}
+    for file_path, meta in git_meta_map.items():
+        partners = parse_partners(meta.get("co_change_partners_json"))
+        if partners:
+            decoded[file_path] = [p.record for p in partners]
+    if not decoded:
+        return 0
+    unexplained = graph_builder.label_co_change_structure(decoded)
+    for file_path, records in decoded.items():
+        git_meta_map[file_path]["co_change_partners_json"] = json.dumps(records)
+    return unexplained
 
 
 async def _run_git_indexing(
@@ -58,6 +80,9 @@ async def _run_git_indexing(
             follow_renames=follow_renames,
             tier=tier,
             exclude_patterns=exclude_patterns,
+            # The indexing pass proper, and the one that knows the repo's
+            # excludes, so this is where a git episode may be recorded.
+            record_episodes=True,
         )
 
         def _on_start(total: int) -> None:
@@ -82,6 +107,9 @@ async def _run_git_indexing(
             # per-file git walk that keeps running afterwards (audit #29).
             _phase_done(progress, "co_change")
 
+        def _on_warning(text: str) -> None:
+            emit_warning(progress, text)
+
         git_summary, git_metadata_list = await git_indexer.index_repo(
             "",
             on_start=_on_start,
@@ -89,6 +117,8 @@ async def _run_git_indexing(
             on_co_change_start=_on_co_change_start,
             on_commit_done=_on_commit_done,
             on_co_change_done=_on_co_change_done,
+            on_warning=_on_warning,
+            timings=getattr(progress, "table", None),
         )
         git_meta_map = {m["file_path"]: m for m in git_metadata_list}
         _phase_done(progress, "git")

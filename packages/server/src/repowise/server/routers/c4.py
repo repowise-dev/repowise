@@ -30,7 +30,6 @@ from repowise.server.schemas import (
     ZoomMapResponse,
     ZoomMetricsResponse,
     ZoomNodeResponse,
-    ZoomRectResponse,
     ZoomRelationResponse,
 )
 from repowise.server.services import c4_builder
@@ -80,9 +79,12 @@ async def get_c4_l1(
 @router.get("/{repo_id}/c4/l2", response_model=C4L2Response)
 async def get_c4_l2(
     repo_id: str,
+    co_changes: bool = Query(
+        False, description="Overlay co-change relations on the dependency edges"
+    ),
     session: AsyncSession = Depends(get_db_session),
 ) -> C4L2Response:
-    view = await c4_builder.build_l2(session, repo_id)
+    view = await c4_builder.build_l2(session, repo_id, include_co_changes=co_changes)
     return C4L2Response(
         containers=[_container(c) for c in view.containers],
         external_systems=[external_system_response(e) for e in view.external_systems],
@@ -276,6 +278,7 @@ def _zoom_response(zoom: ZoomMap) -> ZoomMapResponse:
         root_id=zoom.root_id,
         project_name=zoom.project_name,
         total_files=zoom.total_files,
+        unclaimed_files=zoom.unclaimed_files,
         max_depth=zoom.max_depth,
         truncated=zoom.truncated,
         nodes=[
@@ -297,18 +300,9 @@ def _zoom_response(zoom: ZoomMap) -> ZoomMapResponse:
                     entry_point_count=n.metrics.entry_point_count,
                     on_flow_count=n.metrics.on_flow_count,
                 ),
-                layout=(
-                    ZoomRectResponse(
-                        x=round(n.layout.x, 6),
-                        y=round(n.layout.y, 6),
-                        w=round(n.layout.w, 6),
-                        h=round(n.layout.h, 6),
-                    )
-                    if n.layout is not None
-                    else None
-                ),
                 summary=n.summary,
                 language=n.language,
+                page_id=n.page_id,
                 health_score=(round(n.health_score, 2) if n.health_score is not None else None),
                 is_entry_point=n.is_entry_point,
                 is_hotspot=n.is_hotspot,

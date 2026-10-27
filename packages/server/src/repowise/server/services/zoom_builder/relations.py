@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from repowise.server.services.c4_builder.labels import coupling_strength, relation_label
+from repowise.core.analysis.c4.labels import coupling_strength, relation_label
 
 from .models import ZoomNode, ZoomRelation
 from .tree import file_id
@@ -79,7 +79,7 @@ def aggregate_relations(
             continue
         key = (parent, child_a, child_b)
         counts[key] += 1
-        types[key].add(etype or "imports")
+        types[key].add(etype)
 
     relations: list[ZoomRelation] = []
     for (parent, child_a, child_b), count in counts.items():

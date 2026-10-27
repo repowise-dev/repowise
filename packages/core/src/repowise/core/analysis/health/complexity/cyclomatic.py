@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from .body_facts import BodyTally, step
 from .languages import LanguageNodeMap
 from .models import ConditionComplexity
 
@@ -43,10 +44,27 @@ _BODY_FIELD_NAMES = (
 
 # The ``if``-shaped node types that can appear as an ``else if`` / ``elif``
 # chain continuation. Ternaries / ``if_element`` collection-``if`` are
-# deliberately excluded — only statement-level if chains flatten.
+# deliberately excluded — only statement-level if chains flatten. Pascal's
+# ``if`` (bare then, no else) and ``ifElse`` (then/else) are two distinct
+# node types for the same construct -- either can be a chain's last arm
+# (bare ``if`` when it has no further ``else``, ``ifElse`` when it does).
 _ELSE_IF_NODE_KINDS = frozenset(
-    {"if_statement", "if_expression", "elif_clause", "elsif", "if_let_expression"}
+    {
+        "if_statement",
+        "if_expression",
+        "elif_clause",
+        "elsif",
+        "else_if_clause",
+        "if_let_expression",
+        "if",
+        "ifElse",
+    }
 )
+
+# Token spelling(s) an else-if continuation's previous sibling carries when
+# the grammar has no dedicated wrapper node for it (Java / Go / C# / Dart /
+# Kotlin spell it "else"; Pascal spells it "kElse").
+_ELSE_TOKEN_KINDS = frozenset({"else", "kElse"})
 
 # Branch nodes that are a decision point (count toward CCN) but do NOT open a
 # nesting level: a comprehension filter (``[x for x in xs if a]``) and a match
@@ -60,6 +78,8 @@ _FLAT_BRANCH_KINDS = frozenset(
     {
         "if_clause",
         "guard",
+        # Swift ``for x in xs where c`` / ``catch E where c``.
+        "where_clause",
         "if_modifier",
         "unless_modifier",
         "while_modifier",
@@ -80,13 +100,16 @@ def _is_elif_continuation(node: Node) -> bool:
 
     - Python: a dedicated ``elif_clause`` node (always a continuation).
     - Ruby: a dedicated ``elsif`` node (always a continuation).
+    - PHP: a dedicated ``else_if_clause`` node for ``elseif`` (always a
+      continuation); ``else if`` is wrapped in an ``else_clause`` as below.
     - TypeScript / Rust / C++: the else-if is wrapped in an ``else_clause``.
-    - Java / Go / C# / Dart / Kotlin: the else-if node is the sibling that
-      immediately follows the parent ``if``'s ``else`` token.
+    - Java / Go / C# / Dart / Kotlin / Pascal: the else-if node is the
+      sibling that immediately follows the parent ``if``'s else token
+      (spelled ``else`` in those grammars, ``kElse`` in Pascal's).
     """
     if node.type not in _ELSE_IF_NODE_KINDS:
         return False
-    if node.type in ("elif_clause", "elsif"):
+    if node.type in ("elif_clause", "elsif", "else_if_clause"):
         return True
     parent = node.parent
     if parent is None:
@@ -94,19 +117,112 @@ def _is_elif_continuation(node: Node) -> bool:
     if parent.type == "else_clause":
         return True
     prev = node.prev_sibling
-    return prev is not None and prev.type == "else"
+    return prev is not None and prev.type in _ELSE_TOKEN_KINDS
 
 
-def _count_boolean_ops_in_condition(node: Node, lmap: LanguageNodeMap) -> int:
+def is_markup(node: Node) -> bool:
+    """True for a JSX node: an element, attribute, expression slot or text."""
+    return node.type.startswith("jsx_")
+
+
+# Nodes inside JSX whose contents are values, not rendered choices:
+# ``{fmt(a ? b : c)}`` and ``style={{k: a ? b : c}}``.
+_MARKUP_VALUE_KINDS = frozenset({"arguments", "object"})
+
+
+def _unparen(node: Node | None) -> Node | None:
+    while node is not None and node.type == "parenthesized_expression" and node.named_children:
+        node = node.named_children[0]
+    return node
+
+
+def _ternary_else_arm(node: Node, lmap: LanguageNodeMap) -> Node | None:
+    """The else-arm of a ternary: its ``alternative`` where the grammar names
+    it, else its last named child.
+
+    A positional grammar (``ternary_arms_positional``) spells the arms as the
+    node's first and last named children instead of ``consequence`` /
+    ``alternative`` fields — Python's ``X if C else Y`` orders them
+    ``X``, ``C``, ``Y``. Locating the else-arm by position lets a chain arm be
+    recognised as flat for those languages too.
+    """
+    arm = node.child_by_field_name("alternative")
+    if arm is not None:
+        return arm
+    if lmap.ternary_arms_positional and node.named_children:
+        return node.named_children[-1]
+    return None
+
+
+def _is_flat_ternary(node: Node, lmap: LanguageNodeMap, in_markup: bool) -> bool:
+    """A ternary that chooses rather than nests (see ``flat_ternary_kinds``).
+
+    That is one rendered inside JSX, one with a JSX branch, or an arm of a
+    chain (the else-arm, per ``_ternary_else_arm``, of a ternary of its kind).
+    A ternary in another's ``consequence`` still nests: that is a decision
+    inside a decision. Outside markup a branch must itself be JSX, so
+    ``cond ? c2 && <A/> : x`` nests. Like an ``else if``, a flat ternary costs
+    a flat +1 cognitive.
+    """
+    if node.type not in lmap.flat_ternary_kinds:
+        return False
+    if in_markup:
+        return True
+    parent = node.parent
+    while parent is not None and parent.type == "parenthesized_expression":
+        parent = parent.parent
+    if parent is not None and parent.type == node.type:
+        alternative = _unparen(_ternary_else_arm(parent, lmap))
+        if alternative is not None and alternative.id == node.id:
+            return True
+    return any(
+        (branch := _unparen(node.child_by_field_name(field))) is not None and is_markup(branch)
+        for field in ("consequence", "alternative")
+    )
+
+
+_AND_TOKENS = (b"&&", b"and")
+_OR_TOKENS = (b"||", b"or")
+# A prefix ``!`` / ``not`` (Swift spells it ``bang``). A postfix one (``a!``)
+# has a sibling before it, and Python's ``is not`` / ``not in`` are unnamed
+# operator nodes: neither negates a condition.
+_NEGATION_TOKENS = frozenset({"!", "not", "bang"})
+
+
+def _operator_kind(node: Node) -> str:
+    """``"and"`` / ``"or"`` for a boolean operator node, else its node type."""
+    for tok in (node, *node.children):
+        if tok.child_count == 0 and tok.text in _AND_TOKENS:
+            return "and"
+        if tok.child_count == 0 and tok.text in _OR_TOKENS:
+            return "or"
+    # Grammars with one node type per operator (Kotlin, Dart) name the kind.
+    return node.type
+
+
+def _is_negation(node: Node) -> bool:
+    if node.type not in _NEGATION_TOKENS or node.prev_sibling is not None:
+        return False
+    return node.parent is not None and node.parent.is_named
+
+
+def _count_boolean_ops_in_condition(
+    node: Node, lmap: LanguageNodeMap
+) -> tuple[int, set[str], bool]:
     """Count ``&&`` / ``||`` / ``and`` / ``or`` operators in a condition.
+
+    Returns ``(count, operator kinds, negated)``. One kind and no negation
+    is a flat chain (``a || b || c``) that reads as a list, not a knot.
 
     Walks the subtree rooted at *node* but does not descend into nested
     function bodies (lambdas / closures used as condition values are
     rare and would skew the count).
     """
-    if node is None:
-        return 0
     count = 0
+    kinds: set[str] = set()
+    negated = False
+    if node is None:
+        return count, kinds, negated
     stack: list[Node] = [node]
     while stack:
         cur = stack.pop()
@@ -117,9 +233,12 @@ def _count_boolean_ops_in_condition(node: Node, lmap: LanguageNodeMap) -> int:
             continue
         if _is_boolean_operator(cur, lmap):
             count += 1
+            kinds.add(_operator_kind(cur))
+        elif _is_negation(cur):
+            negated = True
         for child in cur.children:
             stack.append(child)
-    return count
+    return count, kinds, negated
 
 
 def _enclosing_construct(node: Node, lmap: LanguageNodeMap) -> str:
@@ -136,7 +255,7 @@ def _enclosing_construct(node: Node, lmap: LanguageNodeMap) -> str:
     return "if"
 
 
-def _condition_subtrees(node: Node) -> list[Node]:
+def _condition_subtrees(node: Node, lmap: LanguageNodeMap) -> list[Node]:
     """Best-effort: pull the *condition* parts out of a branch/loop node.
 
     Prefers the tree-sitter ``condition`` named field where exposed
@@ -144,29 +263,43 @@ def _condition_subtrees(node: Node) -> list[Node]:
     Falls back to all direct children except recognised body fields and
     syntactic punctuation.
     """
+    if node.type in lmap.foreach_kinds:
+        return []
     cond = node.child_by_field_name("condition")
     if cond is not None:
         return [cond]
+    # Python's ``X if C else Y`` names no fields: only the middle child is
+    # the condition, so the arms' operators are not counted.
+    named = node.named_children
+    if lmap.ternary_arms_positional and node.type in lmap.flat_ternary_kinds and len(named) == 3:
+        return [named[1]]
     # Switch case value (TS, Java)
     value = node.child_by_field_name("value")
     if value is not None and "case" in node.type:
         return [value]
-    # Fallback: direct children minus bodies / blocks.
+    return _non_body_children(node, lmap)
+
+
+_BLOCK_KINDS = frozenset({"block", "compound_statement", "statement_block"})
+
+
+def _non_body_children(node: Node, lmap: LanguageNodeMap) -> list[Node]:
+    """Direct named children of *node* minus bodies / blocks."""
     body_nodes: set[int] = set()
     for fname in _BODY_FIELD_NAMES:
         child = node.child_by_field_name(fname)
         if child is not None:
             body_nodes.add(child.id)
-    out: list[Node] = []
-    for child in node.children:
-        if child.id in body_nodes:
-            continue
-        if not child.is_named:
-            continue
-        if child.type in ("block", "compound_statement", "statement_block"):
-            continue
-        out.append(child)
-    return out
+    # A ``case ... if guard`` guard is its own branch node and counts its
+    # condition there.
+    return [
+        child
+        for child in node.children
+        if child.is_named
+        and child.id not in body_nodes
+        and child.type not in _BLOCK_KINDS
+        and child.type not in lmap.branch_kinds
+    ]
 
 
 def _collect_case_children(node: Node, lmap: LanguageNodeMap) -> list[Node]:
@@ -197,7 +330,17 @@ def _is_flat_match(node: Node, lmap: LanguageNodeMap) -> bool:
     ``loop``, ``if_let``, ``while_let`` expressions, and no ``block``
     with multiple statements).  Flat matches contribute 1 CCN point for
     the match keyword itself but do NOT count each arm individually.
+
+    Python's ``match_statement`` is excluded: ``match``/``case`` in Python
+    is *pattern matching* — each ``case`` is a distinct branch point,
+    structurally the same decision as ``if``/``elif``. Suppressing its arms
+    like a C-style flat switch would report a ``match`` with N arms as ~N
+    points too low (measured: a 3-arm ``match`` gave CCN 2 while the
+    equivalent ``if``/``elif`` gave 4). Rust ``match_expression`` and other
+    languages' dispatch switches keep the flat behaviour.
     """
+    if node.type == "match_statement":
+        return False
     complex_types = lmap.branch_kinds | lmap.loop_kinds | lmap.switch_kinds
     cases = _collect_case_children(node, lmap)
     if not cases:
@@ -217,7 +360,11 @@ def _subtree_contains_complex(arm_node: Node, complex_types: frozenset[str]) -> 
             return True
         # A block with multiple named children (statements) is complex.
         if cur.type == "block":
-            named_children = [c for c in cur.children if c.is_named]
+            named_children = [
+                c
+                for c in cur.children
+                if c.is_named and "comment" not in c.type
+            ]
             if len(named_children) > 1:
                 return True
         for child in cur.children:
@@ -228,6 +375,8 @@ def _subtree_contains_complex(arm_node: Node, complex_types: frozenset[str]) -> 
 def _walk_function_body(
     body_node: Node,
     lmap: LanguageNodeMap,
+    deepest: list[int] | None = None,
+    tally: BodyTally | None = None,
 ) -> tuple[int, int, int, int, list[ConditionComplexity]]:
     """Recursive AST walk. Returns (ccn, max_nesting, cognitive, bumps,
     complex_conditions).
@@ -238,11 +387,22 @@ def _walk_function_body(
 
     ``bumps`` counts how many *direct* children of the function body
     contain nested control flow that reaches a depth of ≥ 2. A function
-    with several heavy independent branches is "bumpy".
+    with several heavy independent branches has repeated nesting.
 
     ``complex_conditions`` is an additive side-channel — collected for
     every branch/loop/case construct encountered. The CCN / cognitive
     accumulation logic is unchanged.
+
+    ``deepest``, when given, is filled with the 1-indexed ``[start, end]``
+    lines of the first block that reaches the function's deepest nesting,
+    widened to the nearest enclosing control-flow block of at least
+    :data:`MIN_BLOCK_LINES` lines: where a reader starts flattening it. A
+    one-line branch is too small to name as the place to start. Also a
+    side-channel only.
+
+    ``tally``, when given, is filled on the same visits by :func:`body_facts.step`.
+    An expression body (``async () => await f()``) is a node the facts read
+    too, so the body root is counted when it is not the function itself.
     """
 
     ccn = 1
@@ -251,36 +411,32 @@ def _walk_function_body(
     bumps = 0
     conditions: list[ConditionComplexity] = []
 
-    # Track match_expression nodes identified as "flat" so their arms
-    # are not individually counted as branch points.
-    flat_match_ids: set[int] = set()
+    # Arms of a "flat" match are not counted at all; arms of any other
+    # switch count toward CCN but sit in the level their switch opened.
+    flat_arm_ids: set[int] = set()
+    switch_arm_ids: set[int] = set()
+    # Dart ``on T { }`` handlers with no ``catch``: see ``_bare_on_handlers``.
+    bare_handler_ids: set[int] = set()
+    deepest_depth = 0
+    deepest_node: list[Node] = []
 
-    def _recurse(node: Node, depth: int) -> None:
-        nonlocal ccn, max_nesting, cognitive
+    def _recurse(node: Node, depth: int, in_markup: bool = False, scope: int = 0) -> None:
+        nonlocal ccn, max_nesting, cognitive, deepest_depth
 
         # Don't descend into nested function bodies — they're walked
         # separately at the top level. Lambdas / arrow functions DO
         # contribute to the enclosing function's complexity.
-        if node.type in lmap.function_kinds:
+        node_type = node.type
+        if node_type in lmap.function_kinds:
             return
+        if tally is not None and node_type in tally.kinds.watched:
+            scope = step(tally, node, scope)
 
         nesting_increment = 0
         ccn_increment = 0
 
-        # Check if this is a case/arm inside a flat match — skip it.
-        # In Rust the parent chain is match_arm → match_block → match_expression,
-        # so we check both parent and grandparent.
-        _parent = node.parent
-        is_flat_match_arm = False
-        if (
-            node.type in lmap.case_kinds
-            and _parent is not None
-            and (
-                _parent.id in flat_match_ids
-                or (_parent.parent is not None and _parent.parent.id in flat_match_ids)
-            )
-        ):
-            is_flat_match_arm = True
+        is_flat_match_arm = node.id in flat_arm_ids
+        is_switch_arm = node.id in switch_arm_ids
 
         # ``node.is_named`` guards grammars (Ruby) whose keyword tokens share
         # the node-type name of their parent node (an ``if`` node contains an
@@ -297,38 +453,41 @@ def _walk_function_body(
             or node.type in lmap.catch_kinds
         ):
             ccn_increment = 1
-            # An ``else if`` / ``elif`` chain arm and a comprehension /
-            # case-guard filter are flat: charge the extra branch (ccn) but do
-            # not open a new nesting level for them. This parallels the
-            # flat-``switch``/``match`` special-case above.
-            if node.type not in _FLAT_BRANCH_KINDS and not _is_elif_continuation(node):
+            # An ``else if`` / ``elif`` chain arm, a ternary chain arm or
+            # markup choice, and a comprehension / case-guard filter are flat:
+            # charge the extra branch (ccn) but do not open a new nesting
+            # level for them. So is a switch arm: its switch already opened
+            # the level (Sonar's cognitive complexity spec).
+            if not (
+                is_switch_arm
+                or node.type in _FLAT_BRANCH_KINDS
+                or _is_elif_continuation(node)
+                or _is_flat_ternary(node, lmap, in_markup)
+            ):
                 nesting_increment = 1
-            # Side-channel: count compound boolean ops in this
-            # construct's condition. Does not affect ccn/cognitive
-            # (boolean operators are still tallied independently by
-            # the regular recursion below).
-            op_count = 0
-            for sub in _condition_subtrees(node):
-                op_count += _count_boolean_ops_in_condition(sub, lmap)
-            if op_count > 0:
-                conditions.append(
-                    ConditionComplexity(
-                        line=node.start_point[0] + 1,
-                        operator_count=op_count,
-                        enclosing_construct=_enclosing_construct(node, lmap),
-                    )
-                )
+            # Side-channel: does not affect ccn/cognitive (boolean operators
+            # are still tallied independently by the regular recursion below).
+            conditions.extend(_compound_condition(node, lmap))
+        elif node.id in bare_handler_ids:
+            # A bare ``on T { }`` handler branches and nests like a catch clause.
+            ccn_increment = nesting_increment = 1
         elif node.is_named and node.type in lmap.try_kinds:
-            # TRY opens a nesting level but does not branch on its own.
-            nesting_increment = 1
+            # TRY neither branches nor nests: each catch opens the level for
+            # its own body, and the guarded and finally bodies stay at the
+            # try's depth (Sonar's cognitive complexity spec).
+            bare_handler_ids.update(_bare_on_handlers(node))
         elif node.is_named and node.type in lmap.switch_kinds:
+            arm_ids = {c.id for c in _collect_case_children(node, lmap)}
             # Detect flat match: all arms are simple single-expression arms.
             if _is_flat_match(node, lmap):
-                flat_match_ids.add(node.id)
+                flat_arm_ids.update(arm_ids)
                 # Flat match: count 1 CCN point for the match itself,
                 # open a nesting level, but arms won't be counted.
                 ccn_increment = 1
-            # Switch opens nesting; each case contributes its own +1.
+            else:
+                switch_arm_ids.update(arm_ids)
+            # The switch opens one nesting level for its whole body; each
+            # case adds CCN only.
             nesting_increment = 1
         elif _is_boolean_operator(node, lmap):
             ccn_increment = 1
@@ -338,25 +497,117 @@ def _walk_function_body(
         if nesting_increment:
             # Cognitive complexity: each nesting node adds (1 + depth).
             cognitive += 1 + depth
-        elif ccn_increment:
-            # Flat +1 for boolean operators (no nesting impact).
+        elif ccn_increment and not is_switch_arm:
+            # Flat +1 for boolean operators (no nesting impact). A switch arm
+            # adds none: its switch carries the cognitive cost.
             cognitive += 1
 
         if new_depth > max_nesting:
             max_nesting = new_depth
+        if deepest is not None and nesting_increment and new_depth > deepest_depth:
+            deepest_depth = new_depth
+            deepest_node[:] = [node]
 
+        # Markup context ends at a callback (a handler inside JSX is logic) and
+        # at call arguments and object literals (a value, not a rendered
+        # choice). Only arrows need the reset: the walk never descends into
+        # other function kinds.
+        child_markup = (
+            (in_markup or is_markup(node))
+            and node.type not in lmap.lambda_kinds
+            and node.type not in _MARKUP_VALUE_KINDS
+        )
         for child in node.children:
-            _recurse(child, new_depth)
+            _recurse(child, new_depth, child_markup, scope)
 
+    root_scope = 0
+    if (
+        tally is not None
+        and body_node.type in tally.kinds.watched
+        and body_node.type not in lmap.function_kinds
+        and body_node.type not in lmap.lambda_kinds
+    ):
+        root_scope = step(tally, body_node, 0)
     for child in body_node.children:
         # Per-child peak depth: temporarily swap max_nesting out so we
         # can read just this child's contribution, then restore.
         outer_max = max_nesting
         max_nesting = 0
-        _recurse(child, 0)
+        _recurse(child, 0, scope=root_scope)
         child_peak = max_nesting
         max_nesting = max(outer_max, child_peak)
         if child_peak >= 2:
             bumps += 1
 
+    if deepest is not None and deepest_node:
+        block = _widened_block(deepest_node[0], body_node, lmap)
+        deepest[:] = [block.start_point[0] + 1, block.end_point[0] + 1]
     return ccn, max_nesting, cognitive, bumps, conditions
+
+
+def _compound_condition(node: Node, lmap: LanguageNodeMap) -> list[ConditionComplexity]:
+    """The compound boolean ops in *node*'s condition, as one record or none."""
+    op_count = 0
+    op_kinds: set[str] = set()
+    negated = False
+    for sub in _condition_subtrees(node, lmap):
+        sub_count, sub_kinds, sub_negated = _count_boolean_ops_in_condition(sub, lmap)
+        op_count += sub_count
+        op_kinds |= sub_kinds
+        negated = negated or sub_negated
+    if op_count == 0:
+        return []
+    return [
+        ConditionComplexity(
+            line=node.start_point[0] + 1,
+            operator_count=op_count,
+            enclosing_construct=_enclosing_construct(node, lmap),
+            flat_chain=len(op_kinds) == 1 and not negated,
+        )
+    ]
+
+
+def _bare_on_handlers(try_node: Node) -> list[int]:
+    """Ids of the type node opening each Dart ``on T { }`` handler.
+
+    The grammar gives ``on T catch (e)`` and ``catch (e)`` a ``catch_clause``
+    but leaves a bare ``on T`` as loose tokens beside its block, so the walk
+    counts the type node in its place. Other grammars have no ``on`` token here.
+    """
+    out: list[int] = []
+    arm: Node | None = None
+    after_on = False
+    for child in try_node.children:
+        if child.type == "on":
+            after_on, arm = True, None
+        elif child.type == "catch_clause":
+            after_on, arm = False, None
+        elif after_on and arm is None and child.is_named:
+            arm = child
+        elif child.type == "block" and arm is not None:
+            out.append(arm.id)
+            after_on, arm = False, None
+    return out
+
+
+#: The smallest block named as the place to start flattening a function.
+MIN_BLOCK_LINES = 4
+
+
+def _widened_block(node: Node, body_node: Node, lmap: LanguageNodeMap) -> Node:
+    """*node*, or its nearest enclosing control-flow block spanning at least
+    :data:`MIN_BLOCK_LINES` lines, never past the function body."""
+    kinds = (
+        lmap.branch_kinds
+        | lmap.loop_kinds
+        | lmap.case_kinds
+        | lmap.catch_kinds
+        | lmap.try_kinds
+        | lmap.switch_kinds
+    )
+    cur: Node | None = node
+    while cur is not None and cur != body_node:
+        if cur.type in kinds and cur.end_point[0] - cur.start_point[0] + 1 >= MIN_BLOCK_LINES:
+            return cur
+        cur = cur.parent
+    return node

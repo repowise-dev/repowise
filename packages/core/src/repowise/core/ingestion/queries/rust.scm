@@ -20,6 +20,21 @@
   parameters: (parameters) @symbol.params
 ) @symbol.def
 
+; function_signature_item WITH visibility -- a bodiless ``fn foo();``. Shared by
+; a trait's undefaulted methods, which may not write a modifier, and an
+; ``extern "C"`` block's declarations, which may and often do.
+(function_signature_item
+  (visibility_modifier) @symbol.modifiers
+  name: (identifier) @symbol.name
+  parameters: (parameters) @symbol.params
+) @symbol.def
+
+; function_signature_item WITHOUT visibility
+(function_signature_item
+  name: (identifier) @symbol.name
+  parameters: (parameters) @symbol.params
+) @symbol.def
+
 ; struct_item WITH visibility
 (struct_item
   (visibility_modifier) @symbol.modifiers
@@ -161,6 +176,14 @@
   !body
 ) @import.statement
 
+;; A macro call at the top of a file (`cfg_if! { if #[cfg(unix)] { mod unix; } }`)
+;; can declare child modules in its tokens; the parser reads them out.
+(source_file
+  (macro_invocation (token_tree) @import.module) @import.statement)
+(source_file
+  (expression_statement
+    (macro_invocation (token_tree) @import.module) @import.statement))
+
 ;; extern crate foo; / extern crate foo as bar;
 (extern_crate_declaration
   name: (identifier) @import.module
@@ -278,74 +301,107 @@
 ; to prevent false-positive dead code flags on functions passed by name.
 (call_expression
   arguments: (arguments
-    (identifier) @call.target
+    (identifier) @reference.name
   )
-) @call.site
+)
 
-; Type argument in turbofish: func::<MyType>(...), Channel::<MyType>::new()
-; Creates a reference edge so MyType is not flagged as unused.
-(generic_function
-  type_arguments: (type_arguments
-    (type_identifier) @call.target
+; Associated function or method as a callback argument: register(Foo::bar),
+; iter.map(Type::method). A separate pattern because the bare one above matches
+; only an (identifier), and this shape is the one that can name a method.
+(call_expression
+  arguments: (arguments
+    (scoped_identifier
+      path: (_) @reference.receiver
+      name: (identifier) @reference.name
+    )
   )
-) @call.site
+)
 
 ; Scoped identifier in struct field initializer: Foo { field: module::func }
 ; Captures the final identifier as a reference to prevent false dead code flags.
 (field_initializer
   value: (scoped_identifier
-    path: (_) @call.receiver
-    name: (identifier) @call.target
+    path: (_) @reference.receiver
+    name: (identifier) @reference.name
   )
-) @call.site
+)
 
 ; Plain identifier in struct field initializer: Foo { field: my_func }
 (field_initializer
-  value: (identifier) @call.target
-) @call.site
+  value: (identifier) @reference.name
+)
 
 ; ---------------------------------------------------------------------------
-; Type references — track types used in signatures to prevent false dead code
+; Type references — drive file-level ``type_use`` edges
 ; ---------------------------------------------------------------------------
+; These positions previously carried ``@call.target``/``@call.site``, which
+; recorded the enclosing function as *calling* the type: ``fn take(x: MyType)``
+; became take -> MyType in the call graph. A type is not callable, so every one
+; of those edges was wrong. The nodes captured are unchanged — only the
+; capture name moves to the cross-language ``@param.type``, which
+; parser._extract_type_refs turns into TypeReference records and
+; type_ref_resolution._resolve_rust_type_refs resolves into ``type_use``
+; edges. The dead-code reference the old captures existed to provide is
+; preserved, because type_use is a file-level use edge.
+;
+; Each pattern captures the parameter/return type node itself (whatever shape
+; it is), not just a bare ``type_identifier``; the Rust head extractor in
+; lang_helpers/type_heads.py unwraps ``&T`` / ``Box<T>`` / ``dyn T`` / ``impl T`` /
+; ``std::io::Error`` down to the head identifier, and filters the 55 rust
+; builtins, so a wrapper capture cannot mint a wrong edge -- it resolves to
+; the same head name a bare capture would, or to nothing.
 
-; Type reference in function parameter: fn foo(x: MyType)
+; Type reference in function parameter: fn foo(x: MyType), fn foo(x: &Foo),
+; fn foo(x: &dyn MyTrait), fn foo(x: impl MyTrait), fn foo(x: std::io::Error)
 (parameter
-  type: (type_identifier) @call.target
-) @call.site
-
-; Type reference via &dyn: fn foo(x: &dyn MyTrait)
-(parameter
-  type: (reference_type
-    type: (dynamic_type
-      (type_identifier) @call.target
-    )
-  )
-) @call.site
-
-; Type reference via impl Trait: fn foo(x: impl MyTrait)
-(parameter
-  type: (abstract_type
-    (type_identifier) @call.target
-  )
-) @call.site
+  type: (_) @param.type
+)
 
 ; Trait bound in generic parameter: fn foo<T: MyTrait>()
 ; Also matches where clauses: where T: MyTrait + OtherTrait
 (trait_bounds
-  (type_identifier) @call.target
-) @call.site
+  (type_identifier) @param.type
+)
 
-; Return type reference: fn foo() -> MyType
+; Return type reference: fn foo() -> MyType, fn foo() -> &Foo,
+; fn foo() -> std::io::Error
 (function_item
-  return_type: (type_identifier) @call.target
-) @call.site
+  return_type: (_) @param.type
+)
 
 ; dyn Trait in type arguments: Box<dyn MyTrait>, Arc<dyn MyTrait>
 (type_arguments
   (dynamic_type
-    (type_identifier) @call.target
+    (type_identifier) @param.type
   )
-) @call.site
+)
+
+; Type argument in turbofish: func::<MyType>(...), Channel::<MyType>::new()
+(generic_function
+  type_arguments: (type_arguments
+    (type_identifier) @param.type
+  )
+)
+
+; Type argument: Option<MyType>, Vec<super::MyType>, HashMap<K, MyType>.
+; One pattern for every shape: the Rust head extractor unwraps
+; ``scoped_type_identifier`` / ``reference_type`` / ``generic_type`` and
+; filters the builtins, so widening the capture costs nothing.
+(type_arguments
+  (_) @param.type
+)
+
+; Field type: struct Foo { bar: MyType }, including ``&T``, ``super::T`` and
+; ``Option<T>``. ``enum_variant`` reuses ``field_declaration`` for struct-like
+; variant bodies (``Received { state: MyType }``), so this covers those too.
+;
+; Rust intra-crate field references need no ``use`` -- path-qualified or
+; same-module access is legal without importing -- so without this capture the
+; reference never becomes a graph edge and the field's type reads as having no
+; importers.
+(field_declaration
+  type: (_) @param.type
+)
 
 ; ---------------------------------------------------------------------------
 ; Fields

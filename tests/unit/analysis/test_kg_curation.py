@@ -380,7 +380,12 @@ class TestDominantLanguageDeterminism:
 
 @pytest.fixture
 def entry_repo():
-    """Real runtime entries plus re-export barrels, all flagged entry_point."""
+    """Real runtime entries plus re-export barrels, all flagged entry_point.
+
+    The barrels are flagged by hand: ingestion's candidacy rule stops setting
+    the flag on a glue stem this deep, so the fixture pins the curator against
+    an older index rather than against what traversal produces today.
+    """
     reals = [f"src/app{i}/main.py" for i in range(12)]
     barrels = {f"packages/p{i}/index.ts" for i in range(5)}
     paths = reals + sorted(barrels)

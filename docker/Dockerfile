@@ -6,19 +6,33 @@
 #   docker run -p 7337:7337 -p 3000:3000 -v /path/to/repo/.repowise:/data -e GEMINI_API_KEY=... repowise
 # =============================================================================
 
-# ---------------------------------------------------------------------------
-# Stage 1: Build the Next.js frontend
-# ---------------------------------------------------------------------------
-FROM node:20-alpine AS frontend-builder
+# Use Debian-based Node builder (glibc) to match python:3.12-slim runtime.
+# Alpine (musl) builds produce a node binary that fails to execute in Debian slim with exit code 127.
+FROM node:20-bookworm-slim AS frontend-builder
 
 WORKDIR /app
 
-# Install dependencies first (cached layer)
-COPY packages/web/package.json packages/web/package-lock.json* ./
+# Copy root manifest/lockfile for workspace resolution
+COPY package.json package-lock.json* ./
+
+# Copy only workspace package.json manifests first so the npm install layer
+# is cached independently of source changes. Any edit to a .ts/.tsx/etc. file
+# will skip straight to `next build` without re-running the 2-min install.
+COPY packages/web/package.json       ./packages/web/package.json
+COPY packages/types/package.json     ./packages/types/package.json
+COPY packages/ui/package.json        ./packages/ui/package.json
+COPY packages/api-client/package.json ./packages/api-client/package.json
+
+# Change directory to web package and install dependencies
+WORKDIR /app/packages/web
 RUN npm install --production=false
 
-# Copy source and build
-COPY packages/web/ ./
+# Copy full package source (after install — source changes skip the install cache)
+WORKDIR /app
+COPY packages/ ./packages/
+
+# Build Next.js frontend
+WORKDIR /app/packages/web
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NEXT_PUBLIC_REPOWISE_API_URL=http://localhost:7337
 RUN npm run build
@@ -48,11 +62,16 @@ COPY packages/server/ packages/server/
 RUN pip install --no-cache-dir ".[all]"
 
 # Copy built Next.js standalone output
-COPY --from=frontend-builder /app/.next/standalone /app/web
-COPY --from=frontend-builder /app/.next/static /app/web/.next/static
-COPY --from=frontend-builder /app/public /app/web/public
+COPY --from=frontend-builder /app/packages/web/.next/standalone /app/web
+COPY --from=frontend-builder /app/packages/web/.next/static /app/web/packages/web/.next/static
+COPY --from=frontend-builder /app/packages/web/public /app/web/packages/web/public
 
 # Data volume for .repowise directory
+# mkdir is required: VOLUME only registers metadata and does not create the
+# directory on the image filesystem at build time. Without it, the subsequent
+# `chown -R repowise:repowise /data` (run at build time) fails with
+# "cannot access '/data': No such file or directory".
+RUN mkdir -p /data
 VOLUME /data
 
 # Environment defaults

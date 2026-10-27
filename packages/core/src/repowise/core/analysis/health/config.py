@@ -51,12 +51,15 @@ import structlog
 
 from repowise.core.repo_config import get_repowise_dir, load_repo_config
 
+from .biomarker_names import canonical_biomarker, canonical_biomarkers
 from .models import Severity
 
 log = structlog.get_logger(__name__)
 
 
 HEALTH_RULES_FILENAME = "health-rules.json"
+#: Where the rules file sits, repo-relative, as a git revision holds it.
+HEALTH_RULES_PATH = f".repowise/{HEALTH_RULES_FILENAME}"
 
 # Confidence floor labels a repo may set under ``refactoring.min_confidence``.
 # Ordered low -> high; mirrors ``refactoring.models.CONFIDENCE_LEVELS`` without
@@ -81,9 +84,23 @@ _PROFILES: dict[str, dict[str, Severity]] = {
         "change_entropy": Severity.LOW,
         "co_change_scatter": Severity.LOW,
         "primitive_obsession": Severity.LOW,
-        "bumpy_road": Severity.LOW,
+        "repeated_nesting": Severity.LOW,
     },
 }
+
+
+def _assertion_names(raw: object) -> list[str]:
+    """Coerce ``assertions.extra_names`` to sorted, matchable lowercase names.
+
+    Accepts one string or a list of them, as the ``coverage:`` block does, and
+    drops anything else rather than raising: a typo in optional config must not
+    fail an analysis.
+    """
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        return []
+    return sorted({n.strip().lower() for n in raw if isinstance(n, str) and n.strip()})
 
 
 def _string_list(raw: object, *, field: str) -> list[str]:
@@ -114,7 +131,7 @@ def _coerce_severity_map(raw: object) -> dict[str, Severity]:
         if sev is None:
             log.warning("health_rules_bad_severity", biomarker=name, value=value)
             continue
-        out[name] = sev
+        out[canonical_biomarker(name)] = sev
     return out
 
 
@@ -236,6 +253,12 @@ class HealthConfig:
     refactoring_enabled: bool = True
     disabled_refactorings: list[str] = field(default_factory=list)
     refactoring_min_confidence: str | None = None
+    # Extra assertion names, from the ``assertions:`` block of
+    # ``.repowise/config.yaml``, for a house assertion helper the built-in
+    # vocabulary misses. Exact lowercase names, never prefixes. They reach the
+    # broad tier only (``asserts/lexicon.py``), so unlike every other key here
+    # this one provably cannot move a score.
+    assert_extra_names: list[str] = field(default_factory=list)
 
     @classmethod
     def load(cls, repo_path: Path | str) -> HealthConfig:
@@ -243,41 +266,46 @@ class HealthConfig:
 
         The per-file biomarker overrides come from ``health-rules.json``; the
         refactoring-layer knobs come from the ``refactoring:`` block of
-        ``.repowise/config.yaml`` (loaded here and merged onto the same config
+        ``.repowise/config.yaml``, and the assertion vocabulary from its
+        ``assertions:`` block (both loaded here and merged onto the same config
         object). Missing file → empty config. Malformed file → empty config +
         a single warning log. Never raises.
         """
-        cfg = cls._load_refactoring(repo_path)
+        cfg = cls._load_config_yaml_blocks(repo_path)
         rules_path = get_repowise_dir(repo_path) / HEALTH_RULES_FILENAME
         if not rules_path.exists():
             return cfg
         try:
-            raw = json.loads(rules_path.read_text(encoding="utf-8"))
+            rules_cfg = cls.from_json(rules_path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
             log.warning("health_rules_load_failed", path=str(rules_path), error=str(exc))
             return cfg
-        rules_cfg = cls.from_dict(raw)
         rules_cfg.refactoring_enabled = cfg.refactoring_enabled
         rules_cfg.disabled_refactorings = cfg.disabled_refactorings
         rules_cfg.refactoring_min_confidence = cfg.refactoring_min_confidence
+        rules_cfg.assert_extra_names = cfg.assert_extra_names
         return rules_cfg
 
     @classmethod
-    def _load_refactoring(cls, repo_path: Path | str) -> HealthConfig:
-        """Read the ``refactoring:`` block from ``.repowise/config.yaml``.
+    def _load_config_yaml_blocks(cls, repo_path: Path | str) -> HealthConfig:
+        """Read the ``refactoring:`` and ``assertions:`` blocks of config.yaml.
 
-        Returns a config carrying only the refactoring knobs (biomarker fields
-        left at their defaults). Never raises: a missing/malformed file or an
-        unexpected shape degrades to the defaults (everything on, no floor).
+        Returns a config carrying only those knobs (biomarker fields left at
+        their defaults). Never raises: a missing/malformed file or an
+        unexpected shape degrades to the defaults (everything on, no floor,
+        no extra assertion names).
         """
         try:
             raw = load_repo_config(repo_path)
         except Exception as exc:  # defensive: config.yaml read must never break load
-            log.debug("refactoring_config_load_failed", error=str(exc))
+            log.debug("health_config_yaml_load_failed", error=str(exc))
             return cls()
-        return cls._from_refactoring_block(
-            raw.get("refactoring") if isinstance(raw, dict) else None
-        )
+        block = raw if isinstance(raw, dict) else {}
+        cfg = cls._from_refactoring_block(block.get("refactoring"))
+        assertions = block.get("assertions")
+        if isinstance(assertions, dict):
+            cfg.assert_extra_names = _assertion_names(assertions.get("extra_names"))
+        return cfg
 
     @classmethod
     def _from_refactoring_block(cls, block: object) -> HealthConfig:
@@ -307,25 +335,44 @@ class HealthConfig:
         something here would change the analysis: a disabled/severity-remapped
         biomarker, or any refactoring-layer knob set away from its default.
         """
-        return bool(
-            self.disabled_biomarkers
-            or self.rules
-            or self.severity_overrides
-            or self.profile
-            or not self.refactoring_enabled
-            or self.disabled_refactorings
-            or self.refactoring_min_confidence
+        return any(
+            (
+                self.disabled_biomarkers,
+                self.rules,
+                self.severity_overrides,
+                self.profile,
+                not self.refactoring_enabled,
+                self.disabled_refactorings,
+                self.refactoring_min_confidence,
+                self.assert_extra_names,
+            )
         )
+
+    @classmethod
+    def from_json(cls, text: str) -> HealthConfig:
+        """The rules in a ``health-rules.json`` text, from any revision.
+
+        Raises ``ValueError`` when it is not a JSON object; a bad entry inside
+        one is dropped with a warning, as :meth:`load` does.
+        """
+        raw = json.loads(text)
+        if not isinstance(raw, dict):
+            raise ValueError(f"{HEALTH_RULES_FILENAME} must be a JSON object")
+        return cls.from_dict(raw)
 
     @classmethod
     def from_dict(cls, raw: object) -> HealthConfig:
         if not isinstance(raw, dict):
             return cls()
-        disabled = _string_list(raw.get("disabled_biomarkers"), field="disabled_biomarkers")
+        disabled = canonical_biomarkers(
+            _string_list(raw.get("disabled_biomarkers"), field="disabled_biomarkers")
+        )
         rules: list[HealthRule] = []
         raw_rules = raw.get("rules")
         if raw_rules is not None and not isinstance(raw_rules, list | tuple):
-            log.warning("health_rules_field_not_a_list", field="rules", got=type(raw_rules).__name__)
+            log.warning(
+                "health_rules_field_not_a_list", field="rules", got=type(raw_rules).__name__
+            )
             raw_rules = []
         for entry in raw_rules or []:
             if not isinstance(entry, dict):
@@ -336,8 +383,8 @@ class HealthConfig:
             glob = entry.get("path") or entry.get("path_glob") or entry.get("glob")
             if not isinstance(glob, str) or not glob:
                 continue
-            disabled_for = _string_list(
-                entry.get("disabled_biomarkers"), field="rules[].disabled_biomarkers"
+            disabled_for = canonical_biomarkers(
+                _string_list(entry.get("disabled_biomarkers"), field="rules[].disabled_biomarkers")
             )
             # A rule written against the old matching may now cover less than
             # its author meant, which would quietly un-silence biomarkers they
@@ -426,4 +473,5 @@ class HealthConfig:
             "refactoring_enabled": self.refactoring_enabled,
             "disabled_refactorings": list(self.disabled_refactorings),
             "refactoring_min_confidence": self.refactoring_min_confidence,
+            "assert_extra_names": list(self.assert_extra_names),
         }

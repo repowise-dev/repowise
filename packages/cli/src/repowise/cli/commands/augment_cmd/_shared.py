@@ -8,7 +8,91 @@ depend on ``_shared``, never the other way around.
 from __future__ import annotations
 
 import tempfile
+import time
+from collections.abc import Callable
+from functools import lru_cache
 from pathlib import Path
+from typing import NamedTuple
+
+from repowise.cli import hook_ledger as _hook_ledger
+
+
+class HookResult(NamedTuple):
+    """What one PostToolUse handler wants the hook to do.
+
+    ``context`` is appended to what the agent sees (``additionalContext``);
+    ``replacement`` *replaces* the tool result outright
+    (``updatedToolOutput``). Most handlers only ever set ``context``, so
+    :func:`as_result` lifts their bare ``str | None`` into this shape and the
+    two-field response is assembled in exactly one place.
+
+    ``replacement`` is ``str | dict`` because Claude Code validates it against
+    the *replaced tool's own* output schema, not a common one: ``Bash`` takes a
+    string, ``Read`` takes ``{"type", "file": {...}}``. Handing Read a string
+    is rejected with ``does not match Read's output shape`` and the original
+    output is used — see :func:`read_skeleton.as_read_output`.
+
+    ``on_emitted`` is bookkeeping the handler wants done *after* the response
+    reaches the agent — savings accounting, counters. Anything here is off the
+    critical path by construction, which is the only way to keep it honest:
+    a docstring promising "this runs after the response" is not enforcement,
+    and the first version of this got it wrong.
+    """
+
+    context: str | None = None
+    replacement: str | dict | None = None
+    on_emitted: Callable[[], None] | None = None
+
+    def __bool__(self) -> bool:
+        return bool(self.context or self.replacement)
+
+
+def as_result(value: HookResult | str | None) -> HookResult:
+    """Normalize a handler return into a :class:`HookResult`."""
+    if isinstance(value, HookResult):
+        return value
+    return HookResult(context=value or None)
+
+
+def join_notices(*notices: str | None) -> str | None:
+    """One context block from several handlers, or ``None`` when all are quiet."""
+    spoken = [n for n in notices if n]
+    return "\n".join(spoken) if spoken else None
+
+
+#: Wall clock at the first moment repowise code runs in this hook process.
+#: Every ledger row carries the elapsed time to its own write, which is the
+#: part of hook latency repowise controls. It is a *lower bound* on what the
+#: user waits: the interpreter start and the click import happen before this
+#: module loads, and the response is written after. Claude Code records the
+#: true end-to-end figure as ``attachment.durationMs``, which the transcript
+#: pass in :mod:`repowise.core.sessions.efficacy` writes over the top.
+#: Re-exported, not defined: the clock and the build stamp are the rewrite
+#: hook's too, so both live in :mod:`repowise.cli.hook_ledger` and there is one
+#: of each. Bound at *this* module's scope on purpose — ``_shared`` is imported
+#: as augment starts, so ``hook_ledger._T0`` is captured then rather than at
+#: the first ledger write, which would stamp every firing with ~0 ms.
+#: ``hook_ledger`` is free to import: its module scope is ``os`` and ``time``.
+_elapsed_ms = _hook_ledger._elapsed_ms
+emitting_build = _hook_ledger.emitting_build
+
+
+def _ledger_key(surface: str, category: str, text: str) -> str:
+    """Efficacy-ledger id for one emission, keyed on the text itself.
+
+    The text is the one part of a firing that survives verbatim into the
+    transcript, so keying on it lets the update-time classifier
+    (:func:`repowise.core.sessions.efficacy.ledger_key`, which must stay
+    identical to this) find the very row the hook wrote and settle whether the
+    agent acted on it. Keying on the inputs instead would not work: the flood
+    digest's input is the whole grep output, which the transcript does not
+    keep. Doubling as the once-per-session dedup key is free — the same
+    enrichment worded the same way has nothing new to say.
+    """
+    import hashlib
+
+    digest = hashlib.sha1(text.encode("utf-8", "replace"), usedforsecurity=False).hexdigest()[:12]
+    return f"{surface}:{category}:{digest}"
 
 
 def _extract_output_text(tool_output: object) -> str:
@@ -49,15 +133,297 @@ def _extract_output_text(tool_output: object) -> str:
     return ""
 
 
-def _relativize(file_path: str, repo_path: Path) -> str | None:
-    """Repo-relative POSIX path for *file_path*, or None when outside it."""
+#: Hard ceiling on an ``updatedToolOutput`` string. Undocumented but observed;
+#: a replacement that does not fit is skipped rather than cut, because the
+#: elision markers that make an omission recoverable live at the end.
+MAX_OUTPUT_CHARS = 10_000
+
+
+def hook_flag_enabled(repo_path: Path, flag: str, *, default: bool = False) -> bool:
+    """True when ``hooks.<flag>`` is on for this repo. Fails closed.
+
+    *default* answers when the config or the key is absent; a surface that is
+    on by default passes ``True`` and is switched off by ``<flag>: false``. A
+    config that cannot be read or parsed still reads as off.
+
+    Every hook surface that *replaces* a tool result is opt-in behind one of
+    these, and they are all written by the single init consent (see
+    :func:`repowise.cli.helpers.save_hook_surface_enabled`). The env override
+    is ``REPOWISE_HOOK_<FLAG>``, upper-cased, for a one-session A/B.
+
+    Deliberately not :func:`repowise.core.repo_config.load_repo_config`: that
+    import is not free and this runs before the gates that would justify it.
+    Same open-plus-lazy-yaml shape as ``rewrite_hook._load_commands_config``,
+    with the opposite default: that one fails open because distilling is on by
+    default, these fail closed because replacing a tool result is not.
+    """
+    import os
+
+    override = os.environ.get(f"REPOWISE_HOOK_{flag.upper()}")
+    if override is not None:
+        return override.strip().lower() in ("1", "true", "yes", "on")
+    path = repo_path / ".repowise" / "config.yaml"
     try:
-        rel = Path(file_path).resolve().relative_to(Path(repo_path).resolve())
-    except (ValueError, OSError):
-        return None
-    return rel.as_posix()
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return default
+    except (OSError, ValueError):
+        # ValueError covers UnicodeDecodeError: a config with a latin-1 byte in
+        # it means "cannot tell", which for an opt-in means no.
+        return False
+    # Substring pre-check before the yaml import: a repo that has a config but
+    # not this key is the common case, and it should not pay ~70ms to learn so.
+    # The parse below is still what decides; this only rules out.
+    if flag not in text:
+        return default
+    try:
+        import yaml
+
+        data = yaml.safe_load(text) or {}
+        hooks = data.get("hooks")
+        return bool(isinstance(hooks, dict) and hooks.get(flag, default) is True)
+    except Exception:
+        return False
 
 
+#: The counterfactual's own table. Deliberately *not* the ``savings`` ledger:
+#: every row there is an event that happened, and ``repowise saved`` sums them
+#: into a headline figure that is already published. A forgone saving did not
+#: happen, and adding it to that sum would inflate a real number with a
+#: hypothetical one, the precise misreading the caveat exists to prevent.
+_FORGONE_TABLE_SQL = (
+    "CREATE TABLE IF NOT EXISTS forgone_savings ("
+    "created_at REAL NOT NULL, source TEXT NOT NULL, path TEXT NOT NULL, "
+    "raw_tokens INTEGER NOT NULL, distilled_tokens INTEGER NOT NULL, "
+    "filter TEXT NOT NULL DEFAULT '')"
+)
+
+#: ``filter`` arrived after the table did. Two replacing surfaces now share the
+#: ``hook-read`` source — the skeleton and the re-read collapse — so ``source``
+#: alone can no longer say which one forwent what, and summing by source would
+#: report each surface's counterfactual as both of them. Rows written before
+#: this column carry ``''`` and are attributed to neither.
+_FORGONE_MIGRATION_SQL = "ALTER TABLE forgone_savings ADD COLUMN filter TEXT NOT NULL DEFAULT ''"
+
+
+def _omission_db(repo_path: Path) -> Path | None:
+    """The omission store, or None when this repo has not opted into one.
+
+    Path spelled out rather than imported: the constants live in
+    ``distill.store``, which imports structlog: 250ms to learn that a repo
+    without an omission store has no omission store. Kept in sync by
+    ``test_the_omission_store_path_matches_distills``.
+    """
+    db_path = repo_path / ".repowise" / "omissions" / "omissions.db"
+    return db_path if db_path.exists() else None
+
+
+def record_saving(
+    repo_path: Path,
+    *,
+    source: str,
+    filter_name: str,
+    command: str,
+    raw_tokens: int,
+    distilled_tokens: int,
+    hook_adapter: str | None = None,
+) -> None:
+    """Bill one replacement to the savings ledger so ``repowise saved`` sees it.
+
+    Writes the legacy row and the canonical event. The legacy one stays until
+    the costs endpoint, the overview headline and ``repowise saved`` read the
+    canonical report instead; writing both means this change neither regresses
+    a published figure nor claims the old row improved.
+
+    Never creates the omission store: its absence means this repo has not
+    opted into distill bookkeeping, and a hook is not the place to decide
+    otherwise. Any failure is swallowed, because accounting must not cost the agent an
+    enrichment that is already computed.
+    """
+    db_path = _omission_db(repo_path)
+    if db_path is None:
+        return
+    try:
+        import sqlite3
+
+        from repowise.core.distill.tracking import record_saving as _record
+
+        con = sqlite3.connect(str(db_path), timeout=2)
+        try:
+            _record(
+                con,
+                filter_name=filter_name,
+                source=source,
+                command=command,
+                raw_tokens=raw_tokens,
+                distilled_tokens=distilled_tokens,
+            )
+            _record_event(
+                con,
+                repo_path,
+                filter_name=filter_name,
+                raw_tokens=raw_tokens,
+                distilled_tokens=distilled_tokens,
+                hook_adapter=hook_adapter,
+            )
+        finally:
+            con.close()
+    except Exception:
+        return
+
+
+def _record_event(
+    connection: object,
+    repo_path: Path,
+    *,
+    filter_name: str,
+    raw_tokens: int,
+    distilled_tokens: int,
+    hook_adapter: str | None,
+) -> None:
+    """Record the canonical event for one hook replacement. Never raises.
+
+    Written on the connection this function's caller already opened, which is
+    the point. Reaching the ledger through ``OmissionStore`` would import
+    ``distill.store`` and therefore structlog -- roughly 250ms, on the surface
+    whose entire justification is latency, and the exact import
+    :func:`_omission_db` spells its path out to avoid. This still runs before
+    the hook process exits, so the agent does wait on it; "after the response
+    is computed" is not the same as free.
+
+    Attribution is real here rather than ``unknown``. The hook was handed the
+    serving agent's own adapter, so which agent saved these tokens is evidence,
+    not a guess.
+
+    Pricing is read from cache only, never resolved. Detecting the agent's
+    model means scanning local transcripts -- around six seconds when the
+    repository has no Codex history -- and this is a fresh process per tool
+    call, so it could not amortize that even once. An unpriced event is the
+    correct outcome here; the report counts priced and unpriced tokens
+    separately, and the next distill or MCP call refills the cache for us.
+    """
+    try:
+        from datetime import UTC, datetime
+
+        from repowise.core.agents.identity import slug_for_hook_adapter
+        from repowise.core.savings import recorder
+        from repowise.core.savings.correlation import new_event_id, scoped_idempotency_key
+        from repowise.core.savings.pricing import resolve_pricing_snapshot
+
+        agent = slug_for_hook_adapter(hook_adapter)
+        event_id = new_event_id()
+        pricing = resolve_pricing_snapshot(repo_path, allow_scan=False)
+        recorder.record_event_on(
+            connection,
+            repo_path,
+            {
+                "event_id": event_id,
+                "idempotency_key": scoped_idempotency_key(str(repo_path), "hook", event_id),
+                "occurred_at": datetime.now(UTC),
+                "surface": "hook",
+                "integration": agent,
+                "agent": agent,
+                "operation": filter_name,
+                "evidence_kind": "measured",
+                "estimator": "chars_per_token_floor_v1",
+                "token_unit": "estimated_tokens",
+                "result_state": "success",
+                "is_usable": True,
+                "baseline_input_tokens": raw_tokens,
+                "pre_budget_input_tokens": raw_tokens,
+                "delivered_input_tokens": distilled_tokens,
+                **(pricing.as_payload() if pricing else {}),
+            },
+        )
+    except Exception:
+        return
+
+
+def record_forgone(
+    repo_path: Path,
+    *,
+    source: str,
+    path: str,
+    raw_tokens: int,
+    distilled_tokens: int,
+    filter_name: str = "",
+) -> None:
+    """Record a saving this repo *would* have made, had the surface been on.
+
+    Same never-create-the-store rule as :func:`record_saving`, into the
+    separate ``forgone_savings`` table so a hypothetical can never be summed
+    into the published figure.
+    """
+    db_path = _omission_db(repo_path)
+    if db_path is None:
+        return
+    try:
+        import sqlite3
+
+        con = sqlite3.connect(str(db_path), timeout=2)
+        try:
+            con.execute(_FORGONE_TABLE_SQL)
+            if "filter" not in {r[1] for r in con.execute("PRAGMA table_info(forgone_savings)")}:
+                con.execute(_FORGONE_MIGRATION_SQL)
+            con.execute(
+                "INSERT INTO forgone_savings "
+                "(created_at, source, path, raw_tokens, distilled_tokens, filter) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (time.time(), source, path, raw_tokens, distilled_tokens, filter_name),
+            )
+            con.commit()
+        finally:
+            con.close()
+    except Exception:
+        return
+    _record_opportunity(
+        repo_path,
+        filter_name=filter_name or source,
+        raw_tokens=raw_tokens,
+        distilled_tokens=distilled_tokens,
+    )
+
+
+def _record_opportunity(
+    repo_path: Path,
+    *,
+    filter_name: str,
+    raw_tokens: int,
+    distilled_tokens: int,
+) -> None:
+    """Record a forgone saving as an observed opportunity. Never raises.
+
+    An opportunity, not an event, and that distinction is the whole reason this
+    is a separate function: this repository did not save these tokens, it only
+    could have. The canonical ledger keeps the two in different tables so no
+    later aggregation can accidentally sum a hypothetical into what was actually
+    achieved.
+
+    The path is deliberately not carried over. The legacy table stores it to
+    tell a user which file to turn the surface on for; an opportunity row only
+    needs the size of what was missed, and a repo-relative path is still a path.
+    """
+    try:
+        from datetime import UTC, datetime
+
+        from repowise.core.savings import recorder
+        from repowise.core.savings.correlation import new_event_id
+
+        recorder.record_opportunity(
+            repo_path,
+            {
+                "observation_id": new_event_id(),
+                "occurred_at": datetime.now(UTC),
+                "integration": "unknown",
+                "kind": f"hook_surface_disabled:{filter_name}",
+                "estimated_potential_input_tokens": max(raw_tokens - distilled_tokens, 0),
+            },
+        )
+    except Exception:
+        return
+
+
+@lru_cache(maxsize=8)
 def _find_repo_root(cwd: Path) -> Path | None:
     """Walk up from cwd to find a directory with .repowise/.
 
@@ -65,6 +431,10 @@ def _find_repo_root(cwd: Path) -> Path | None:
     system temp ROOT is always a stray artifact (a tool that indexed with
     cwd=$TMP), so neither counts as a repo opt-in; repos legitimately created
     UNDER either directory still match.
+
+    Memoized: one hook invocation asks several times with the same cwd, and
+    the walk costs up to 20 ``resolve()``/``is_dir()`` syscall pairs. The
+    cache lives only as long as the hook process, so it cannot go stale.
     """
     current = Path(cwd).resolve()
     try:

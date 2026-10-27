@@ -10,6 +10,10 @@ import {
   OverviewRenderer,
   RiskReportRenderer,
   SearchResultsRenderer,
+  HealthRenderer,
+  DependencyPathRenderer,
+  CallPathRenderer,
+  SourceRenderer,
 } from "../../src/chat/artifacts.js";
 
 // Mermaid pulls in DOM measuring APIs jsdom doesn't implement; the renderer is
@@ -58,15 +62,63 @@ describe("chat artifact renderers", () => {
       <RiskReportRenderer
         data={{
           targets: [
-            { file_path: "src/hot.ts", churn_percentile: 99, is_hotspot: true },
+            // Wire scores are 0–1 fractions (rank / total), not 0–100.
+            { file_path: "src/hot.ts", churn_percentile: 0.99, is_hotspot: true },
           ],
-          global_hotspots: [{ path: "src/other.ts", churn_percentile: 88 }],
+          global_hotspots: [{ path: "src/other.ts", churn_percentile: 0.88 }],
         }}
       />,
     );
     expect(screen.getByText("src/hot.ts")).toBeInTheDocument();
-    expect(screen.getByText("hotspot")).toBeInTheDocument();
+    expect(screen.getByText("Hotspot")).toBeInTheDocument();
     expect(screen.getByText("src/other.ts")).toBeInTheDocument();
+    expect(screen.getByText(/99th pct/)).toBeInTheDocument();
+    expect(screen.getByText("88th")).toBeInTheDocument();
+  });
+
+  it("RiskReportRenderer accepts MCP dict targets and hotspot_score", () => {
+    render(
+      <RiskReportRenderer
+        data={{
+          targets: {
+            "src/auth.py": {
+              target: "src/auth.py",
+              // Backend now emits is_hotspot directly; the badge trusts it
+              // rather than re-deriving from the score.
+              hotspot_score: 0.91,
+              is_hotspot: true,
+              risk_type: "churn-heavy",
+              trend: "increasing",
+            },
+          },
+          global_hotspots: [
+            { file_path: "src/db.py", hotspot_score: 0.85 },
+          ],
+        }}
+      />,
+    );
+    expect(screen.getByText("src/auth.py")).toBeInTheDocument();
+    expect(screen.getByText("Hotspot")).toBeInTheDocument();
+    expect(screen.getByText("src/db.py")).toBeInTheDocument();
+    expect(screen.getByText(/91th pct/)).toBeInTheDocument();
+    expect(screen.getByText("85th")).toBeInTheDocument();
+  });
+
+  it("RiskReportRenderer renders get_change_risk score cards", () => {
+    render(
+      <RiskReportRenderer
+        data={{
+          ref: "HEAD",
+          score: 7.2,
+          risk_percentile: 82,
+          review_priority: "Elevated",
+          classification: "Above typical recent changes.",
+        }}
+      />,
+    );
+    expect(screen.getByText("HEAD")).toBeInTheDocument();
+    expect(screen.getByText("Elevated")).toBeInTheDocument();
+    expect(screen.getByText("p82")).toBeInTheDocument();
   });
 
   it("SearchResultsRenderer lists results with snippets", () => {
@@ -129,6 +181,29 @@ describe("chat artifact renderers", () => {
     expect(screen.getByText("Use SSE for chat")).toBeInTheDocument();
   });
 
+  it("DecisionsRenderer health mode reads MCP counts and stale rows", () => {
+    render(
+      <DecisionsRenderer
+        data={{
+          mode: "health",
+          summary: "12 active · 2 stale · 1 proposed · 3 ungoverned hotspots",
+          counts: { active: 12, stale: 2, proposed: 1 },
+          stale_decisions: [
+            {
+              title: "Prefer SSE",
+              affected_files: ["packages/server/src/chat.py"],
+            },
+          ],
+          proposed_awaiting_review: [{ title: "Drop Redis", source: "commit" }],
+          ungoverned_hotspots: ["src/hot.ts"],
+        }}
+      />,
+    );
+    expect(screen.getByText("12")).toBeInTheDocument();
+    expect(screen.getByText("Prefer SSE")).toBeInTheDocument();
+    expect(screen.getByText("Drop Redis")).toBeInTheDocument();
+  });
+
   it("DecisionsRenderer search mode renders matches with affected files", () => {
     render(
       <DecisionsRenderer
@@ -152,31 +227,87 @@ describe("chat artifact renderers", () => {
     ).toBeInTheDocument();
   });
 
-  it("DeadCodeRenderer separates high and medium confidence", () => {
+  it("DecisionsRenderer search mode reads MCP decisions array", () => {
+    render(
+      <DecisionsRenderer
+        data={{
+          mode: "search",
+          query: "auth",
+          decisions: [
+            {
+              title: "JWT sessions",
+              decision: "Use signed cookies.",
+              affected_files: ["packages/server/auth.py"],
+            },
+          ],
+        }}
+      />,
+    );
+    expect(screen.getByText("JWT sessions")).toBeInTheDocument();
+    expect(screen.getByText("packages/server/auth.py")).toBeInTheDocument();
+  });
+
+  it("DecisionsRenderer path mode shows governing decisions", () => {
+    render(
+      <DecisionsRenderer
+        data={{
+          mode: "path",
+          path: "packages/ui/src/chat/artifacts.tsx",
+          decisions: [
+            {
+              title: "Typed chat artifacts",
+              status: "active",
+              decision: "One renderer per tool.",
+            },
+          ],
+        }}
+      />,
+    );
+    expect(screen.getByText("Typed chat artifacts")).toBeInTheDocument();
+    expect(
+      screen.getByText((_, el) => el?.textContent === '"packages/ui/src/chat/artifacts.tsx"'),
+    ).toBeInTheDocument();
+  });
+
+  it("DeadCodeRenderer reads the tiered get_dead_code shape", () => {
+    // The wire shape of get_dead_code: totals under `summary`, findings
+    // grouped by confidence under `tiers`.
     render(
       <DeadCodeRenderer
         data={{
-          total_findings: 3,
-          deletable_lines: 88,
-          high_confidence: [
-            {
-              file_path: "src/legacy.ts",
-              symbol_name: "oldFn",
-              kind: "unused_export",
-              confidence: 0.95,
-              reason: "No callers found.",
-              lines: 30,
-              safe_to_delete: true,
+          summary: { total_findings: 3, deletable_lines: 88 },
+          tiers: {
+            high: {
+              count: 1,
+              truncated: false,
+              findings: [
+                {
+                  file_path: "src/legacy.ts",
+                  symbol_name: "oldFn",
+                  kind: "unused_export",
+                  confidence: 0.95,
+                  reason: "No callers found.",
+                  lines: 30,
+                  safe_to_delete: true,
+                },
+              ],
             },
-          ],
-          medium_confidence: [
-            {
-              file_path: "src/maybe.ts",
-              kind: "unreachable_file",
-              confidence: 0.6,
-              reason: "Possibly imported via dynamic require.",
+            medium: {
+              count: 4,
+              truncated: true,
+              findings: [
+                {
+                  file_path: "src/maybe.ts",
+                  kind: "unreachable_file",
+                  confidence: 0.6,
+                  reason: "Possibly imported via dynamic require.",
+                  lines: null,
+                  safe_to_delete: false,
+                },
+              ],
             },
-          ],
+            low: { count: 0, truncated: false, findings: [] },
+          },
         }}
       />,
     );
@@ -185,6 +316,69 @@ describe("chat artifact renderers", () => {
     expect(screen.getByText(/src\/legacy\.ts::oldFn/)).toBeInTheDocument();
     expect(screen.getByText("src/maybe.ts")).toBeInTheDocument();
     expect(screen.getByText("95%")).toBeInTheDocument();
+    expect(screen.getByText("1 of 4 shown")).toBeInTheDocument();
+    expect(screen.queryByText("Low confidence")).not.toBeInTheDocument();
+  });
+
+  it("DeadCodeRenderer shows the one finding a finding_id lookup returns", () => {
+    render(
+      <DeadCodeRenderer
+        data={{
+          mode: "finding",
+          finding_id: "dc_1",
+          resolved: true,
+          finding: {
+            file_path: "src/legacy.ts",
+            symbol_name: "oldFn",
+            kind: "unused_export",
+            confidence: 0.95,
+            reason: "No callers found.",
+            lines: 30,
+            safe_to_delete: true,
+          },
+        }}
+      />,
+    );
+    expect(screen.getByText(/src\/legacy\.ts::oldFn/)).toBeInTheDocument();
+    expect(screen.getByText(/30 lines/)).toBeInTheDocument();
+  });
+
+  it("DeadCodeRenderer names an id the lookup did not resolve", () => {
+    render(
+      <DeadCodeRenderer
+        data={{ mode: "finding", finding_id: "dc_gone", resolved: false, finding: null }}
+      />,
+    );
+    expect(screen.getByText("dc_gone")).toBeInTheDocument();
+  });
+
+  it("DeadCodeRenderer renders only the tier a tier-filtered call returned", () => {
+    render(
+      <DeadCodeRenderer
+        data={{
+          summary: { total_findings: 2, deletable_lines: 0 },
+          tiers: {
+            low: {
+              count: 1,
+              truncated: false,
+              findings: [
+                {
+                  file_path: "src/dynamic.py",
+                  kind: "unused_export",
+                  confidence: 0.3,
+                  reason: "Only reached through a string lookup.",
+                  lines: 12,
+                  safe_to_delete: false,
+                },
+              ],
+            },
+          },
+        }}
+      />,
+    );
+    expect(screen.getByText("Low confidence")).toBeInTheDocument();
+    expect(screen.getByText("src/dynamic.py")).toBeInTheDocument();
+    expect(screen.queryByText("High confidence")).not.toBeInTheDocument();
   });
 
   it("DiagramRenderer falls back gracefully when no syntax", () => {
@@ -195,5 +389,41 @@ describe("chat artifact renderers", () => {
   it("GenericJsonRenderer pretty-prints data", () => {
     render(<GenericJsonRenderer data={{ foo: "bar" }} />);
     expect(screen.getByText(/"foo": "bar"/)).toBeInTheDocument();
+  });
+
+  it("HealthRenderer supports the real dashboard contract", () => {
+    render(<HealthRenderer data={{ mode: "dashboard", kpis: { average_health: 7.4, hotspot_health: 5.2, maintainability_average: 8.6, performance_average: 6.9 }, top_findings: [{ file_path: "src/risky.ts", reason: "Low coverage" }], worst_files: [] }} />);
+    expect(screen.getByText("7.4")).toBeInTheDocument();
+    expect(screen.getByText("5.2")).toBeInTheDocument();
+    expect(screen.getByText("8.6")).toBeInTheDocument();
+    expect(screen.getByText("6.9")).toBeInTheDocument();
+    expect(screen.getByText("src/risky.ts")).toBeInTheDocument();
+    expect(screen.getByText("Low coverage")).toBeInTheDocument();
+  });
+
+  it("HealthRenderer renders a valid KPI-only dashboard", () => {
+    render(<HealthRenderer data={{ kpis: { average_health: 7.4 } }} />);
+    expect(screen.getByText("average health")).toBeInTheDocument();
+    expect(screen.getByText("7.4")).toBeInTheDocument();
+  });
+
+  it("DependencyPathRenderer supports canonical node/relationship rows", () => {
+    render(<DependencyPathRenderer data={{ path: [{ node: "src/a.ts", relationship: "imports" }, { node: "src/b.ts", relationship: "" }] }} />);
+    expect(screen.getByText("src/a.ts")).toBeInTheDocument();
+    expect(screen.getByText("imports")).toBeInTheDocument();
+    expect(screen.queryByText("Unknown node")).not.toBeInTheDocument();
+  });
+
+  it("CallPathRenderer shows canonical traces and termination", () => {
+    render(<CallPathRenderer data={{ flows: [{ entry_point_name: "main", trace: ["main", "loadConfig"], termination: "max_depth" }] }} />);
+    expect(screen.getAllByText("main")).toHaveLength(2);
+    expect(screen.getByText("loadConfig")).toBeInTheDocument();
+    expect(screen.getByText(/Stopped:/)).toHaveTextContent("Stopped: max_depth");
+  });
+
+  it("SourceRenderer reads the canonical get_symbol file field", () => {
+    render(<SourceRenderer data={{ file: "src/index.ts", source: "export const value = 1;" }} />);
+    expect(screen.getByText("src/index.ts")).toBeInTheDocument();
+    expect(screen.getByText(/export const value/)).toBeInTheDocument();
   });
 });

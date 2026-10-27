@@ -1,0 +1,9 @@
+{
+  "pid": 4242,
+  "host": "127.0.0.1",
+  "port": 7411,
+  "url": "http://127.0.0.1:7411",
+  "ui_port": null,
+  "server_version": "0.54.0",
+  "started_at": "2026-10-03T09:00:00Z"
+}

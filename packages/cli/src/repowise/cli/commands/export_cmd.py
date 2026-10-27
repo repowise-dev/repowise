@@ -10,11 +10,17 @@ from rich.progress import Progress
 
 from repowise.cli.helpers import (
     console,
+    cross_repo_cut_inputs,
     ensure_repowise_dir,
     get_db_url_for_repo,
     resolve_repo_path,
     run_async,
 )
+
+# Rows per page of the export walk. Large enough that a big wiki costs few
+# round trips, small enough that one batch is never the whole database in
+# memory at once.
+_EXPORT_PAGE_BATCH = 1000
 
 
 @click.command("export")
@@ -126,9 +132,24 @@ def export_command(
             # A reader-facing export drops tombstones so it does not write a
             # page for a file that no longer exists. --full is the archival
             # mode, so it keeps them for a complete record.
-            pages = await list_pages(
-                session, repo.id, include_tombstones=full_export, limit=10000
-            )
+            # Paged through rather than fetched with a raised cap. `list_pages`
+            # is the paginated listing helper whose limit defaults to 100; the
+            # single `limit=10000` call this replaces silently stopped an export
+            # at 10000 pages, so a larger wiki exported a truncated archive that
+            # looked complete. Export needs whole rows, so this walks the pages
+            # rather than narrowing the columns.
+            pages = []
+            while True:
+                batch = await list_pages(
+                    session,
+                    repo.id,
+                    include_tombstones=full_export,
+                    limit=_EXPORT_PAGE_BATCH,
+                    offset=len(pages),
+                )
+                pages.extend(batch)
+                if len(batch) < _EXPORT_PAGE_BATCH:
+                    break
 
             if full_export and fmt == "json":
                 from sqlalchemy import select
@@ -166,15 +187,19 @@ def export_command(
                         DeadCodeFinding.repository_id == repo.id
                     )
                 )
+                from repowise.cli._helpers.paths import find_workspace_root
+                from repowise.core.analysis.dead_code.serving import is_safe, serve_findings
+
+                cut = cross_repo_cut_inputs(repo_path, find_workspace_root(repo_path))
                 extra_data["dead_code"] = [
                     {
                         "file_path": f.file_path,
                         "symbol_name": f.symbol_name,
-                        "finding_type": f.finding_type,
+                        "kind": f.kind,
                         "confidence": f.confidence,
-                        "safe_to_delete": f.safe_to_delete,
+                        "safe_to_delete": is_safe(f),
                     }
-                    for f in dc.scalars().all()
+                    for f in serve_findings(list(dc.scalars().all()), **cut)
                 ]
 
                 # Git metadata (hotspots)
@@ -279,6 +304,8 @@ def export_command(
                     "page_type": page.page_type,
                     "title": page.title,
                     "content": page.content,
+                    # Agent material kept off the body; machine consumers want it.
+                    "digest": page.digest,
                     "target_path": page.target_path,
                     # Hierarchy columns, so a JSON consumer can rebuild the
                     # stored tree instead of re-deriving one from path strings.

@@ -20,9 +20,9 @@ const METRICS: ZoomMetrics = {
  * The return is not cast. The `as ZoomNode` that used to sit here accepted an
  * object that did not describe a `ZoomNode` at all: `metrics` was missing
  * `descendant_count`, `summary` was null against a `string`, `importance` and
- * `sibling_rank` were absent, and `rect` is not a field (the node's box is
- * `layout`). Only the one override call site ever errored, and only in the
- * type-check job, which does not run on pull requests.
+ * `sibling_rank` were absent, and `rect` is not a field (a node carries no box
+ * at all; the pack computes one). Only the one override call site ever errored,
+ * and only in the type-check job, which does not run on pull requests.
  */
 function node(
   over: Omit<Partial<ZoomNode>, "metrics"> & { metrics?: Partial<ZoomMetrics> } = {},
@@ -38,7 +38,7 @@ function node(
     children: [],
     importance: 0,
     sibling_rank: 0,
-    layout: null,
+    page_id: "",
     summary: "",
     language: null,
     health_score: null,
@@ -80,13 +80,11 @@ describe("healthBandLabel", () => {
     expect(healthBandLabel(null)).toBeNull();
   });
 
-  it("uses the canonical 3-band scale the card's dot paints on", () => {
-    expect(healthBandLabel(8.0)).toBe("Healthy");
-    expect(healthBandLabel(4.0)).toBe("Warning");
-    expect(healthBandLabel(3.9)).toBe("Alert");
-  });
-
-  it("does not report a 6.9 as 'Good' while the dot beside it paints amber", () => {
-    expect(healthBandLabel(6.9)).toBe("Warning");
+  it("uses the one band scale the card's dot paints on", () => {
+    expect(healthBandLabel(9.0)).toBe("Excellent");
+    expect(healthBandLabel(7.4)).toBe("Good");
+    expect(healthBandLabel(6.0)).toBe("Fair");
+    expect(healthBandLabel(4.0)).toBe("Needs work");
+    expect(healthBandLabel(3.9)).toBe("At risk");
   });
 });

@@ -4,6 +4,7 @@ import * as React from "react";
 import { cn } from "../lib/cn";
 import { scoreBadgeClass } from "./tokens";
 import type { CodeHealthMapFile } from "./code-health-map";
+import { scoreText } from "./map/lens";
 
 /** Labelled <select> used across the Triage queue filters. */
 export function FilterSelect({
@@ -35,7 +36,7 @@ export function FilterSelect({
   );
 }
 
-/** Toggleable filter chip (Hotspots / Untested / Failing). */
+/** Toggleable filter chip (Hotspots / Untested / Failing, zoom-map verbs). */
 export function FilterChip({
   active,
   onClick,
@@ -49,10 +50,11 @@ export function FilterChip({
     <button
       type="button"
       onClick={onClick}
+      aria-pressed={active}
       className={cn(
         "text-xs rounded-md px-2 py-1 border transition-colors",
         active
-          ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)] border-[var(--color-accent-primary)]/50"
+          ? "bg-[var(--color-bg-selected)] text-[var(--color-text-primary)] border-[var(--color-border-hover)]"
           : "border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:border-[var(--color-border-hover)]",
       )}
     >
@@ -61,7 +63,7 @@ export function FilterChip({
   );
 }
 
-/** Two-state segmented toggle (Queue / All files). */
+/** Segmented toggle for a single axis (e.g. the prompt's target agent). */
 export function ViewToggle<T extends string>({
   value,
   options,
@@ -81,7 +83,7 @@ export function ViewToggle<T extends string>({
           className={cn(
             "px-3 py-1.5 font-medium transition-colors",
             value === opt.value
-              ? "bg-[var(--color-accent-primary)] text-[var(--color-text-inverse)]"
+              ? "bg-[var(--color-control-selected)] text-[var(--color-control-selected-text)]"
               : "bg-transparent text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)]",
           )}
         >
@@ -111,14 +113,18 @@ export function FileSpotlight({
   return (
     <div className="space-y-2 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3">
       <div className="flex items-center gap-2">
-        <span
-          className={cn(
-            "inline-flex items-center justify-center rounded px-1.5 py-0.5 text-xs font-semibold",
-            scoreBadgeClass(file.score),
-          )}
-        >
-          {file.score.toFixed(1)}
-        </span>
+        {file.score == null ? (
+          <span className="text-xs text-[var(--color-text-tertiary)]">{scoreText(file)}</span>
+        ) : (
+          <span
+            className={cn(
+              "inline-flex items-center justify-center rounded px-1.5 py-0.5 text-xs font-semibold",
+              scoreBadgeClass(file.score),
+            )}
+          >
+            {file.score.toFixed(1)}
+          </span>
+        )}
         <span
           className="truncate text-sm font-medium text-[var(--color-text-primary)]"
           title={file.file_path}

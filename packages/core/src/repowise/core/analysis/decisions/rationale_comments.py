@@ -183,6 +183,8 @@ LINE_PREFIXES: dict[str, tuple[str, ...]] = {
     "lua": ("--",),
     "hs": ("--",),
     "elm": ("--",),
+    # Tree-sitter query files (and Scheme). Longest prefix first: ";; x" is common.
+    "scm": (";;", ";"),
 }
 
 # Extensions that use C-style /* ... */ block comments.
@@ -215,7 +217,7 @@ C_BLOCK_EXTS: frozenset[str] = frozenset(
 # The set of extensions this module can mine — anything we know a comment
 # syntax for. Markdown / RST / plain text are deliberately excluded: their
 # prose is full of causal words ("because") that are not code rationale, and
-# README / docs already feed the readme_mining source.
+# README / docs are not mined for decisions any more (readme_mining retired).
 CODE_EXTENSIONS: frozenset[str] = frozenset(LINE_PREFIXES) | C_BLOCK_EXTS
 
 # ---------------------------------------------------------------------------
@@ -312,7 +314,7 @@ def _strip_comment_open(stripped: str, prefixes: tuple[str, ...]) -> str | None:
 
 # A line that is only a divider rule (``# -------`` / ``// =====`` / ``***``).
 # These delimit comment runs and must never be glued into the rationale text.
-_SEPARATOR_CHARS = frozenset("-=*~_#/+.<> ")
+_SEPARATOR_CHARS = frozenset("-=*~_#/+.<>; ")
 
 
 def _is_separator(body: str) -> bool:

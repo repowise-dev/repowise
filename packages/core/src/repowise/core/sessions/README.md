@@ -12,26 +12,46 @@ own machine and never leave it.
 | File | What it holds |
 |------|---------------|
 | `events.py` | The `Event` / `ToolUse` / `ToolResult` model, the `INTERRUPT_MARKER` constant, and `iter_deduped_usage` |
-| `adapters/base.py` | The `HarnessAdapter` contract: `discover()` + `normalize()`, with shared `iter_events()` built on top |
-| `adapters/claude_code.py` | First adapter: `~/.claude/projects/<munged-cwd>/*.jsonl` |
+| `adapters/base.py` | The `HarnessAdapter` contract, with shared `iter_events()` built on top |
+| `adapters/claude_code.py` | `~/.claude/projects/<munged-cwd>/*.jsonl`, one cwd per line |
+| `adapters/codex.py` | `~/.codex/sessions/YYYY/MM/DD/*.jsonl`, one cwd per file |
+| `adapters/registry.py` | Which adapter a consumer gets by name, and the default |
 | `cursor.py` | `CursorStore` (byte offset + mtime per file) and `iter_new_events` for incremental scans |
 | `staging.py` | `SessionStagingStore`: the `.repowise/sessions/sessions.db` sidecar (WAL) holding mined candidates, observation counts, and DB-backed cursors |
 | `miners/decisions.py` | Session-sourced decisions: deterministic gates over Events, one batched LLM structuring pass per update, observation-counted promotion |
 
 ## The contract
 
-An adapter implements exactly two things:
+An adapter must implement two things:
 
 - `discover(repo_root, projects_root=None)`: transcript files for sessions
   rooted at a repo. Absent directory means empty list, never an error.
+  `projects_root` is a sandbox, so an adapter given one never reads outside
+  it.
 - `normalize(raw_line)`: one raw transcript line to an `Event`, or `None`
   when the line is unparseable. Never raises on content.
+
+and may implement three more:
+
+- `prefilter(intent)`: a gate on the raw string for a named intent.
+- `begin_file(path)` / `end_file()`: scope per-transcript state.
 
 Iteration, prefiltering, and cursoring are shared code. Consumers that only
 care about a slice of the stream pass a `prefilter` callable that gates on
 the raw string before any JSON parsing happens; transcript lines routinely
 run to hundreds of kilobytes, so this is the difference between skimming and
 parsing whole sessions.
+
+**A prefilter must admit whatever line carries the scoping `cwd`.** For a
+harness that states it once per file rather than once per line, a gate that
+drops that line leaves every event unscoped, and an empty `cwd` reads as "no
+opinion" to the miners rather than as a miss, so one repository's sessions
+land in another's records.
+
+**Per-file state is reset, not replayed.** A cursored read resumes mid-file
+and `begin_file` runs on the tail, so anything an adapter learned from the
+top of the file is gone. An adapter that threads state forward rebuilds it
+from the head itself; see `CodexAdapter._seed_from_head`.
 
 ## Claude Code schema gotchas (encoded in the adapter and fixtures)
 

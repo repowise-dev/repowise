@@ -32,9 +32,8 @@ By embedding codebase intelligence and MCP workflow guidance directly into
 `CLAUDE.md`, Claude Code treats it as project context and naturally reaches for
 Repowise tools without being prompted.
 
-The same principle applies to Cursor's `.cursor/rules` / `cursor.md`, GitHub
-Copilot's `.github/copilot-instructions.md`, and any other file an AI editor
-auto-loads at session start.
+The same principle applies to Codex's `AGENTS.md`, Cursor's rules, and any
+other file an AI editor auto-loads at session start.
 
 ---
 
@@ -69,7 +68,9 @@ CLAUDE.md written to repo root
 - Best-effort in `repowise update` — never fails the command
 - Instant — no LLM calls, typically < 200ms
 - Idempotent — re-running produces identical output if data hasn't changed
-- Deterministic — lists sorted by stable keys (PageRank desc, path asc as tiebreaker)
+- Deterministic — lists sorted by stable keys, with path asc as the final
+  tiebreaker. Most lists lead on PageRank desc; entry points deliberately do
+  not, and rank on execution-start evidence instead.
 
 ---
 
@@ -114,39 +115,27 @@ which the placeholder comment warns against.
 
 ## 4. What goes into the Repowise section
 
-The section has three parts. Total target length: **150–250 lines**. Conciseness
-is intentional — research shows AI assistants ignore bloated configuration files.
+The block is read into the agent's context on every turn, so it is lean by
+default. `editor_files.sections` picks the sections (see
+[CONFIG.md](../reference/CONFIG.md#the-editor_files-block)); the fetcher runs
+only the queries the chosen sections render. Both templates include the shared
+`_editor_block.j2` and differ only in the pre-edit sentence.
 
-### Part 1: Codebase Intelligence
-
-Auto-generated from indexed data. Updates on every `repowise update`.
-
-| Sub-section | Source | Cap |
-|-------------|--------|-----|
-| Architecture summary | First 4 sentences from `repo_overview` wiki page | 4 sentences |
-| Key Modules | `module_page` pages sorted by PageRank desc, joined with git_metadata for owner | Top 10 |
-| Entry Points | `graph_nodes` where `is_entry_point=True`, sorted by PageRank desc | Top 10 |
-| Tech Stack | Filesystem scan (package.json, pyproject.toml, Cargo.toml, go.mod, etc.) | All detected |
-| Hotspots | `git_metadata` where `is_hotspot=True`, sorted by `churn_percentile` desc | Top 5 |
-
-### Part 2: MCP Tools Workflow Guide
-
-**Static** — the same text for every repo. Hardcoded in `claude_md.j2`. Teaches
-Claude Code *when* to call each MCP tool using natural workflow framing rather than
-imperatives.
-
-This is the most important part. The phrasing matters: "Starting a new task?
-Call `get_overview()` first" is more effective than "ALWAYS call `get_overview()`
-before doing anything."
-
-### Part 3: Codebase Conventions
-
-Auto-generated from indexed data.
-
-| Sub-section | Source | Cap |
-|-------------|--------|-----|
-| Architectural Decisions | `decision_records` where `status='active'`, sorted by `staleness_score` asc | Top 8 |
-| Commands | Filesystem scan: `package.json` scripts, `Makefile` targets, `pyproject.toml` pytest/ruff | All detected |
+| Section | Default | Source | Cap |
+|---------|---------|--------|-----|
+| Header | always | Date and commit; a `Scope:` line only when the index lacks a model, has essential Git history only, or has a model upgrade pending | — |
+| `architecture` | on | First 4 sentences from the `repo_overview` wiki page | 4 sentences |
+| `key_modules` | on | `module_page` pages by PageRank desc | Top 10 |
+| `entry_points` | on | The curated `kg_project_meta` list, else `is_entry_point` nodes ranked on execution-start evidence | Top 6 |
+| `hotspots` | on | `git_metadata` bug magnets and hotspots, fix history first: the 6-month fix count with the last fix date | Top 5 |
+| `health` | on | Health score, band and worst file | 1 line |
+| `code_health` | off | Every health signal (replaces `health`) | 1 line |
+| `fix_first` | off | The Fix-first queue | Top 3 |
+| `decisions` | on | Accepted active `decision_records`, titles only, by `staleness_score` asc | Top 3 |
+| `how_to_work` | on | Static: pre-edit, distill, decision capture; a keyless bullet when the index has no model | 3-4 bullets |
+| `how_to_work_full` | off | The long protocol (replaces `how_to_work`) | — |
+| `tools` | on | `tool_table.py`, the MCP tool table | All tools |
+| `commands` | off | Manifest scan: `package.json` scripts, `Makefile`, `pyproject.toml` | All detected |
 
 ---
 
@@ -173,12 +162,25 @@ LIMIT 10
 ```
 
 **Entry points** (`_get_entry_points`)
+
+The curated `kg_project_meta.entry_points_json` list wins when the curation
+pass has run. Otherwise the raw flag is read unbounded and ranked in Python,
+because the ordering cannot be expressed as an `ORDER BY`:
+
 ```python
-SELECT node_id FROM graph_nodes
+SELECT node_id, pagerank, betweenness FROM graph_nodes
 WHERE repository_id = :repo_id AND is_entry_point = TRUE
-ORDER BY pagerank DESC
-LIMIT 10
+# then rank_entry_points(...): conventional entry name, then shallower path,
+# then centrality as a tiebreak; sliced to 10 after ranking.
 ```
+
+Both lists pass through `orientation_entry_points_view`, the rule
+`get_overview` shares. It sets build and CI tooling (`scripts/`, `docker/`) aside
+unless that is all there is.
+
+PageRank deliberately does **not** lead here. Centrality rewards fan-in, so it
+floats a widely-imported barrel above the real front door — see
+`generation/entry_points.py`.
 
 **Hotspots** (`_get_hotspots`)
 ```python
@@ -194,8 +196,7 @@ LIMIT 5
 SELECT * FROM decision_records
 WHERE repository_id = :repo_id AND status = 'active'
 ORDER BY staleness_score ASC
-LIMIT 8
-# → uses first 100 chars of rationale field
+LIMIT 9   -- 3 shown, titles only; the spare rows cover records in excluded paths
 ```
 
 **Average confidence** (`_get_avg_confidence`)
@@ -368,13 +369,25 @@ read project-local config, so theirs are no-ops.
 The distill command-rewrite hook is machine-wide too, but it is offered
 separately (`offer_distill_rewrite_hook`) because it is strictly opt-in.
 
-`--no-editor-setup` turns off that machine-wide group, including the rewrite
-hook offer, and leaves the project-local files alone:
+`--no-editor-setup` turns off **both** groups: the machine-wide registrations
+above, including the rewrite hook offer, *and* the project-local files
+(`.mcp.json`, `.claude/CLAUDE.md`, `.vscode/mcp.json`,
+`.vscode/extensions.json`). Only `.repowise/` is written.
 
 ```bash
-# Index the repo, leave everything outside it untouched
+# Index the repo, write nothing into it and nothing outside it
 repowise init --no-editor-setup --yes .
 ```
+
+It used to cover the machine-wide half only, and said so — which meant there
+was no combination of flags that indexed a repo without writing four files into
+the working tree, since VS Code had no opt-out flag of its own. Issue #1499 is
+the report of exactly that. One switch, one meaning.
+
+`.repowise/mcp.json` is the one deliberate exception and is written either way.
+No editor reads it unless pointed at it, and it is what `repowise mcp .` prints
+— so skipping it would mean opting out of editor setup also opted out of ever
+opting back in.
 
 Reach for it whenever the checkout or the binary running `init` is temporary:
 a scratch clone, a release smoke test from a throwaway venv, a git worktree, a
@@ -384,10 +397,18 @@ and the breakage only shows up later, when the path it now points at is gone
 and the MCP server quietly stops loading. `init` prints a notice when it is
 about to repoint an existing entry, but the flag is how you avoid it.
 
-One exception, so the two flags do not cancel each other out: `--no-editor-setup
+Two exceptions, so the flags do not cancel each other out. `--no-editor-setup
 --no-distill-hook` still records the `distill.commands.enabled: false` opt-out in
 this repo's `config.yaml`. That record is repo-local, and it is the only thing
 that gates an already-installed global rewrite hook off here.
+
+The same reasoning covers the instruction files: `--no-editor-setup
+--no-claude-md` still records `editor_files.claude_md: false`, and likewise for
+`--no-agents-md`. Those flags mean "never generate this file", not "skip it this
+once", and the generator declining on its way past used to be the only thing
+that wrote the preference down — so suppressing the writes would also have
+suppressed the memory of the refusal, and the next `repowise update` would have
+generated the file anyway. A preference is not a write.
 
 `REPOWISE_SKIP_EDITOR_SETUP=1` is the same switch as an env var, which is the
 better fit for CI and sandboxes where no one is passing flags by hand. Either
@@ -436,6 +457,7 @@ Returns 422 if `local_path` is not accessible from the server.
 # .repowise/config.yaml
 editor_files:
   claude_md: true     # default: true. Set false to disable entirely.
+  sections: ["+commands"]   # optional; adjusts the default section set
 ```
 
 The `--no-claude-md` CLI flag sets `editor_files.claude_md: false` in
@@ -449,6 +471,7 @@ Example: adding `cursor.md` support.
 
 ### Step 1 — Create the subclass
 
+<!-- repowise-drift-ignore -->
 **`packages/core/src/repowise/core/generation/editor_files/cursor_md.py`**
 
 ```python
@@ -512,8 +535,10 @@ from .cursor_md import CursorMdGenerator  # add this line
 
 ### Step 5 — Hook into init and update
 
-In `_maybe_generate_claude_md()` (or extract a more generic
-`_maybe_generate_editor_files()` helper):
+Add a sibling of `maybe_generate_claude_md()` in
+`packages/cli/src/repowise/cli/editor_integrations/claude.py` (Codex's
+`maybe_generate_agents_md()` in `codex.py` follows the same contract), or extract a
+generic helper both can share:
 
 ```python
 # After existing CLAUDE.md generation

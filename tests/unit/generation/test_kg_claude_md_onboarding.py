@@ -16,9 +16,6 @@ from repowise.core.generation.editor_files.data import (
 )
 from repowise.core.generation.kg_context import KnowledgeGraphContext
 from repowise.core.generation.onboarding.signals import OnboardingSignals
-from repowise.core.generation.onboarding.subkinds.codebase_map import (
-    CodebaseMapContext,
-)
 from repowise.core.generation.onboarding.subkinds.how_it_works import (
     HowItWorksContext,
     _build,
@@ -100,29 +97,45 @@ class TestClaudeMdKGSection:
         tmpl = jinja_env.get_template("claude_md.j2")
         data = self._data(
             key_modules=[
-                KeyModule(name="src/api", purpose="API layer", file_count=4, owner=None),
-                KeyModule(name="src/core", purpose="", file_count=9, owner=None),
+                KeyModule(name="src/api", purpose="API layer", owner=None),
+                KeyModule(name="src/core", purpose="", owner=None),
             ]
         )
         rendered = tmpl.render(data=data)
         assert "### Key modules" in rendered
-        assert "- `src/api` — API layer" in rendered
+        assert "- `src/api`: API layer" in rendered
         # No purpose → no dangling separator.
         assert "- `src/core`\n" in rendered
 
-    def test_workflow_protocol_leads(self, jinja_env):
+    def test_workflow_protocol_follows_the_repo_facts(self, jinja_env):
+        from repowise.core.generation.editor_files.data import HotspotFile
+
         tmpl = jinja_env.get_template("claude_md.j2")
-        rendered = tmpl.render(data=self._data())
+        hot = HotspotFile(path="src/a.py", churn_percentile=99.0, commit_count_90d=3, owner=None)
+        rendered = tmpl.render(data=self._data(entry_points=["src/main.py"], hotspots=[hot]))
         assert "### How to work in this repo" in rendered
-        assert "### Trust protocol" in rendered
+        # The load-bearing trust and basis clauses stay; the rest of the old
+        # bullets ride in the responses themselves (`_meta` hints, stale warnings).
+        assert "`verified: true` need no re-read" in rendered
+        assert '`bounds: "approximate"`' in rendered
+        assert "`*_basis`" in rendered
+        assert "never re-read them" not in rendered
         # Pre-edit framing: the mandatory Read of edit targets is conceded.
         assert "raw Read of any file you will Edit" in rendered
         # The tool table renders from the single-source module.
         assert "| Tool | When and why |" in rendered
         assert "`get_answer(question)`" in rendered
-        # Protocol comes before the repo-facts data blocks.
-        if "Entry points" in rendered:
-            assert rendered.index("Trust protocol") < rendered.index("Entry points")
+        # Repo facts lead: they are what an agent acts on before an edit.
+        protocol = rendered.index("### How to work in this repo")
+        assert rendered.index("### Entry points") < protocol
+        assert rendered.index("### Files that need care") < protocol
+
+    def test_the_full_protocol_is_opt_in(self, jinja_env):
+        tmpl = jinja_env.get_template("claude_md.j2")
+        rendered = tmpl.render(data=self._data(sections=frozenset({"how_to_work_full"})))
+        assert "never re-read them" in rendered
+        assert "`candidate_files` the reply names" in rendered
+        assert "`*_basis`" in rendered
 
 
 # ---------------------------------------------------------------------------
@@ -257,52 +270,6 @@ class TestHowItWorksWithTour:
         )
         ctx = _build(signals)
         assert ctx is None
-
-
-# ---------------------------------------------------------------------------
-# CodebaseMap + KG layers tests
-# ---------------------------------------------------------------------------
-
-
-class TestCodebaseMapWithLayers:
-    def test_layers_in_context(self):
-        ctx = CodebaseMapContext(
-            repo_name="test",
-            total_files=10,
-            total_loc=500,
-            kg_layers=[{"name": "Core", "description": "Core logic", "nodeIds": ["file:a.py"]}],
-        )
-        assert len(ctx.kg_layers) == 1
-
-    def test_template_renders_layers(self, onboarding_env):
-        tmpl = onboarding_env.get_template("codebase_map.j2")
-        ctx = CodebaseMapContext(
-            repo_name="test",
-            total_files=10,
-            total_loc=500,
-            kg_layers=[
-                {
-                    "name": "Core",
-                    "description": "Core business logic",
-                    "nodeIds": ["file:a.py", "file:b.py"],
-                },
-                {"name": "API", "description": "REST API layer", "nodeIds": ["file:c.py"]},
-            ],
-        )
-        rendered = tmpl.render(ctx=ctx)
-        assert "## Architectural Layers" in rendered
-        assert "**Core**" in rendered
-        assert "**API**" in rendered
-
-    def test_template_no_layers_section(self, onboarding_env):
-        tmpl = onboarding_env.get_template("codebase_map.j2")
-        ctx = CodebaseMapContext(
-            repo_name="test",
-            total_files=10,
-            total_loc=500,
-        )
-        rendered = tmpl.render(ctx=ctx)
-        assert "Architectural Layers" not in rendered
 
 
 # ---------------------------------------------------------------------------

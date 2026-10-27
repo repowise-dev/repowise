@@ -11,6 +11,7 @@ import networkx as nx
 from repowise.core.ingestion.resolvers.context import ResolverContext
 from repowise.core.ingestion.resolvers.ts_workspace import (
     build_ts_workspace_index,
+    find_grafana_plugin_targets,
     find_mdx_import_targets,
     find_npm_script_entry_targets,
     find_vitest_include_targets,
@@ -60,6 +61,18 @@ class TestExportsWildcardEntries:
         index = build_ts_workspace_index(ctx)
         for p in paths:
             assert p in index.exports_entry_paths, p
+
+    def test_wildcard_export_crosses_directory_boundaries(self, tmp_path: Path) -> None:
+        _write(tmp_path, "package.json", '{"workspaces":["packages/*"]}')
+        _write(
+            tmp_path,
+            "packages/zod/package.json",
+            '{"name":"@org/zod","exports":{"./*":"./src/*"}}',
+        )
+        _write(tmp_path, "packages/zod/src/a/b/c.ts", "export {};\n")
+        ctx = _ctx(tmp_path, ["packages/zod/src/a/b/c.ts"])
+        index = build_ts_workspace_index(ctx)
+        assert "packages/zod/src/a/b/c.ts" in index.exports_entry_paths
 
     def test_main_field_marked_as_entry(self, tmp_path: Path) -> None:
         _write(tmp_path, "package.json", '{"workspaces":["packages/*"]}')
@@ -251,3 +264,68 @@ class TestNpmScriptEntryScanner:
         ctx = _ctx(tmp_path, [])
         # No source files referenced — empty set, no crashes from ``-`` tokens.
         assert find_npm_script_entry_targets(ctx) == set()
+
+
+class TestGrafanaPluginEntries:
+    def test_module_beside_plugin_json_discovered(self, tmp_path: Path) -> None:
+        _write(
+            tmp_path,
+            "e2e-playwright/test-plugins/grafana-test-datasource/plugin.json",
+            '{"type":"datasource","name":"Test DS","id":"grafana-test-datasource"}',
+        )
+        _write(
+            tmp_path,
+            "e2e-playwright/test-plugins/grafana-test-datasource/module.ts",
+            "export const plugin = {};\n",
+        )
+        _write(
+            tmp_path,
+            "e2e-playwright/test-plugins/grafana-test-datasource/datasource.ts",
+            "export class TestDataSource {}\n",
+        )
+        ctx = _ctx(
+            tmp_path,
+            [
+                "e2e-playwright/test-plugins/grafana-test-datasource/module.ts",
+                "e2e-playwright/test-plugins/grafana-test-datasource/datasource.ts",
+            ],
+        )
+        targets = find_grafana_plugin_targets(ctx)
+        assert targets == {"e2e-playwright/test-plugins/grafana-test-datasource/module.ts"}
+
+    def test_module_inside_src_discovered(self, tmp_path: Path) -> None:
+        _write(
+            tmp_path,
+            "plugins/my-panel/plugin.json",
+            '{"type":"panel","name":"My Panel","id":"my-panel"}',
+        )
+        _write(
+            tmp_path,
+            "plugins/my-panel/src/module.tsx",
+            "export const plugin = {};\n",
+        )
+        ctx = _ctx(tmp_path, ["plugins/my-panel/src/module.tsx"])
+        targets = find_grafana_plugin_targets(ctx)
+        assert targets == {"plugins/my-panel/src/module.tsx"}
+
+    def test_js_module_discovered(self, tmp_path: Path) -> None:
+        _write(
+            tmp_path,
+            "plugins/legacy-panel/plugin.json",
+            '{"type":"panel","name":"Legacy Panel"}',
+        )
+        _write(
+            tmp_path,
+            "plugins/legacy-panel/module.js",
+            "define([], function() { return {}; });\n",
+        )
+        ctx = _ctx(tmp_path, ["plugins/legacy-panel/module.js"])
+        targets = find_grafana_plugin_targets(ctx)
+        assert targets == {"plugins/legacy-panel/module.js"}
+
+    def test_module_without_plugin_json_not_targeted(self, tmp_path: Path) -> None:
+        _write(tmp_path, "packages/core/src/module.ts", "export const x = 1;\n")
+        ctx = _ctx(tmp_path, ["packages/core/src/module.ts"])
+        targets = find_grafana_plugin_targets(ctx)
+        assert targets == set()
+

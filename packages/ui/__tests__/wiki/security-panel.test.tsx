@@ -10,6 +10,9 @@ const finding: SecurityFinding = {
   severity: "high",
   snippet: "API_KEY = \"sk-1234\"",
   detected_at: "2026-01-01T00:00:00Z",
+  line_number: 12,
+  line_verified: true,
+  commit_at: null,
 };
 
 describe("SecurityPanel", () => {
@@ -20,7 +23,7 @@ describe("SecurityPanel", () => {
 
   it("renders a skeleton while loading", () => {
     const { container } = render(<SecurityPanel findings={undefined} isLoading />);
-    expect(container.querySelector(".animate-pulse")).toBeInTheDocument();
+    expect(container.querySelector("[data-skeleton]")).toBeInTheDocument();
     expect(screen.queryByText(/no security signals/i)).not.toBeInTheDocument();
   });
 

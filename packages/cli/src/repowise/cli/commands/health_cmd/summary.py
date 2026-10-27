@@ -1,7 +1,7 @@
 """Console renderers for the top-of-report summary lines.
 
-Performance-risk headline, band distribution, README badge, and the
-"does the score find the bugs?" defect-accuracy line.
+The Fix-first lead, performance-risk headline, band distribution, README
+badge, and the "does the score find the bugs?" defect-accuracy line.
 """
 
 from __future__ import annotations
@@ -11,32 +11,61 @@ from typing import Any
 from repowise.cli.helpers import console
 
 
-def _render_performance_section(report: Any, lang_by_path: dict[str, str]) -> None:
-    """Honest performance headline: finding count + density + coverage + scope.
+def _render_fix_first(loaded: tuple[Any, Any] | None) -> None:
+    """What to fix first, as core ranks it: title, where, why, effort, how to
+    verify. ``loaded`` is the queue's head and the items' stored counts."""
+    from rich.markup import escape
 
-    Leads with the open-finding count and how much of the analyzed code a perf
+    if loaded is None:
+        return
+    queue, counts = loaded
+    if not queue.items:
+        console.print("\n[bold]Fix first[/bold]: nothing eligible in the stored analysis.")
+        return
+    shown = queue.items
+    console.print(
+        f"\n[bold]Fix first[/bold] [dim]({counts.shown} of {counts.eligible:,} eligible items, "
+        f"{counts.due:,} due; {counts.inventory:,} in the inventory, tests, tooling and "
+        "history-only files left out)[/dim]"
+    )
+    for item in shown:
+        target = item.target
+        where = target.file_path + (f":{target.line_start}" if target.line_start else "")
+        console.print(
+            f" {item.rank + 1}. [bold]{escape(item.title)}[/bold] "
+            f"[dim]{item.tier} · effort {item.effort.bucket} · {item.gain.text}[/dim]"
+        )
+        console.print(f"    [cyan]{escape(where)}[/cyan]")
+        console.print(f"    {escape(item.why)}")
+        if item.verify.command:
+            console.print(f"    [dim]verify:[/dim] {escape(item.verify.command)}")
+
+
+def _render_performance_section(report: Any, coverage: Any, causes: Any | None) -> None:
+    """Honest performance headline: the open causes + coverage + scope.
+
+    Leads with the causes worth fixing now (``crud.performance_headline``, as
+    every surface counts them) and how much of the analyzed code a perf
     detector actually ran on, so a mostly-unsupported-language repo reads a low
     coverage % rather than a meaningless bounded 10/10. Silent when no code file
     carries a supported language (nothing to say).
     """
-    from repowise.core.analysis.health.perf.coverage import coverage_for_metrics
-
-    coverage = coverage_for_metrics(report.metrics, lang_by_path)
     if not coverage.analyzed_files:
         return
-    perf_findings = sum(
-        1 for f in report.findings if getattr(f, "dimension", "defect") == "performance"
-    )
     perf_avg = report.kpis.get("performance_average")
 
-    parts = [f"[bold]{perf_findings}[/bold] finding{'s' if perf_findings != 1 else ''}"]
-    if coverage.covered_nloc > 0:
-        density = round(10000.0 * perf_findings / coverage.covered_nloc, 2)
-        parts.append(f"{density}/10K covered LOC")
+    parts = []
+    if causes is not None:
+        parts.append(
+            f"[bold]{causes.now:,}[/bold] cause{'s' if causes.now != 1 else ''} worth "
+            f"fixing now · {causes.production:,} open in production code · {causes.all:,} overall"
+        )
+        if causes.per_10k_loc is not None:
+            parts.append(f"{causes.per_10k_loc}/10K covered LOC")
     if isinstance(perf_avg, (int, float)):
-        parts.append(f"avg {perf_avg:.1f}/10")
+        parts.append(f"avg score {perf_avg:.1f}/10")
     console.print(
-        "\n[bold]Performance risk[/bold] "
+        "\n[bold]Performance[/bold] "
         "[dim](static, high-precision/low-recall)[/dim]: " + " · ".join(parts)
     )
 
@@ -49,40 +78,66 @@ def _render_performance_section(report: Any, lang_by_path: dict[str, str]) -> No
         cov_line += f"; {coverage.skipped_files} skipped in unsupported languages ({langs})"
     console.print(cov_line)
     console.print(
-        "[dim]Scope: I/O-in-loop / N+1, resource/regex/defer-in-loop, blocking-in-async. "
+        "[dim]Scope: I/O-in-loop (N+1 on database calls), resource/regex/defer-in-loop, "
+        "blocking-in-async. "
         "Not covered: algorithmic blowups, GC pressure, ORM lazy-load N+1.[/dim]"
     )
 
 
+def _render_split_line(kpis: dict) -> None:
+    """The headline's two halves, so a reader can see which one holds it down."""
+    structure = kpis.get("structure_average")
+    history = kpis.get("history_average")
+    if structure is None or history is None:
+        return
+    console.print(
+        f"[dim]Of that deduction, [/dim]{structure:.2f}[dim] is code shape and [/dim]"
+        f"{history:.2f}[dim] is history. History answers to time, not to editing.[/dim]"
+    )
+
+
 def _render_distribution_line(dist: dict) -> None:
-    """One compact line: the NLOC-weighted file split across the 3 bands."""
+    """One compact line: the NLOC-weighted file split across the bands."""
+    from repowise.core.analysis.health.grading import (
+        BAND_LABEL,
+        BAND_ORDER,
+        BAND_TERMINAL_COLOR,
+    )
+
     bands = dist.get("bands") or {}
     if not dist.get("total_files"):
         return
     parts = []
-    for band, color in (("healthy", "green"), ("warning", "yellow"), ("alert", "red")):
+    for band in BAND_ORDER:
+        color = BAND_TERMINAL_COLOR[band]
         share = bands.get(band) or {}
         parts.append(
-            f"[{color}]{share.get('pct', 0)}%[/{color}] {band} "
+            f"[{color}]{share.get('pct', 0)}%[/{color}] {BAND_LABEL[band].lower()} "
             f"([dim]{share.get('files', 0)} files[/dim])"
         )
     console.print("[dim]Distribution (by code volume):[/dim] " + " · ".join(parts) + "\n")
 
 
-def _render_badge(average_health: object) -> None:
+def _render_badge(average_health: object, share: float | None = None) -> None:
     """Print ready-to-paste health-badge Markdown for a README.
 
     Emits a static shields badge for the current score (immediately usable) and
     documents the live endpoint form for a running Repowise server / hosted repo.
     """
-    from repowise.core.analysis.health.grading import band_for
+    from repowise.core.analysis.health.grading import (
+        BADGE_UNKNOWN_COLOR,
+        BAND_BADGE_COLOR,
+        format_score,
+        headline_band,
+    )
 
     if not isinstance(average_health, (int, float)):
-        console.print("[yellow]No health score yet — run `repowise health` first.[/yellow]")
+        console.print("[yellow]No health score yet. Run `repowise init` first.[/yellow]")
         return
-    band = band_for(float(average_health))
-    color = {"healthy": "brightgreen", "warning": "yellow", "alert": "red"}[band]
-    msg = f"{float(average_health):.1f}/10"
+    band = headline_band(float(average_health), share)
+    # Neutral, not green, when too little of the repo was analysed for a band.
+    color = BAND_BADGE_COLOR[band] if band is not None else BADGE_UNKNOWN_COLOR
+    msg = f"{format_score(float(average_health))}/10"
     static = f"https://img.shields.io/badge/health-{msg.replace('/', '%2F')}-{color}"
     console.print("[bold]Static badge (current score):[/bold]")
     console.print(f"  ![code health]({static})")
@@ -101,8 +156,13 @@ def _render_defect_accuracy_line(report: Any) -> None:
     """
     try:
         from repowise.core.analysis.health.defect_accuracy import compute_defect_accuracy
+        from repowise.core.analysis.health.ranking import deduction_by_path
 
-        stat = compute_defect_accuracy(report.metrics, report.findings)
+        stat = compute_defect_accuracy(
+            report.metrics,
+            report.findings,
+            deductions=deduction_by_path(report.findings),
+        )
     except Exception:
         return
     if not stat:

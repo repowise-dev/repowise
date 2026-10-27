@@ -1,222 +1,377 @@
-"use client";
-
-import { useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
-import { ShieldCheck, ShieldAlert, RefreshCw, Waypoints, ListChecks, Gauge } from "lucide-react";
+import type { Metadata } from "next";
+import Link from "next/link";
+import { ShieldCheck } from "lucide-react";
+import type {
+  ConformanceReport,
+  ArchitectureMetrics,
+} from "@repowise-dev/api-client/types";
+import { getTranslations } from "next-intl/server";
+import { PageShell } from "@repowise-dev/ui/shared";
+import { PageLede, LedeLink } from "@repowise-dev/ui/shared/page-lede";
+import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
+import { OverviewSection, SectionLink } from "@repowise-dev/ui/overview";
+import { StatRibbon, type RibbonStat } from "@repowise-dev/ui/stats/stat-ribbon";
 import { buildDsm, DsmMatrixView } from "@repowise-dev/ui/workspace/dsm";
-import { AiPromptButton, AiPromptModal, buildConformanceAiPrompt } from "@repowise-dev/ui/health";
-import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
-import { MetricCard } from "@repowise-dev/ui/shared/metric-card";
-import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
+import { formatNumber } from "@repowise-dev/ui/lib/format";
 import {
-  useWorkspaceSystemGraph,
-  useWorkspaceConformance,
-  useWorkspaceArchitecture,
-} from "@/lib/hooks/use-workspace";
+  getWorkspaceSystemGraph,
+  getWorkspaceConformance,
+  getWorkspaceArchitecture,
+} from "@/lib/api/workspace";
+import { ConformanceAiPrompt } from "./conformance-ai-prompt";
 
-export default function ConformancePage() {
-  const router = useRouter();
-  const [promptOpen, setPromptOpen] = useState(false);
-  const { data: graph, isLoading: graphLoading } = useWorkspaceSystemGraph();
-  const { data: report, isLoading: reportLoading } = useWorkspaceConformance();
-  const { data: metrics } = useWorkspaceArchitecture();
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getTranslations("conformance");
+  return { title: t("title") };
+}
 
-  const isLoading = graphLoading || reportLoading;
-  const matrix = useMemo(() => buildDsm(graph, report), [graph, report]);
+export const revalidate = 30;
 
-  const violations = report?.violations ?? [];
+/**
+ * Whether the conformance analyser has ever produced this report.
+ *
+ * A report with no `generated_at` was never written a result, and its zero
+ * counts are the absence of a check rather than a clean pass. Three states
+ * have to stay separate: never ran, ran with no rules to check, and ran
+ * against real rules.
+ *
+ * `generated_at` is now `string | null`, and the checker stamps it whenever it
+ * runs. Artifacts written before that carry `""`, which the loader maps to
+ * null, so the falsy check covers both.
+ */
+function reportState(
+  report: ConformanceReport | null,
+): "unavailable" | "never_ran" | "no_rules" | "checked" {
+  if (!report) return "unavailable";
+  if (!report.generated_at) return "never_ran";
+  if ((report.rules_evaluated ?? 0) === 0) return "no_rules";
+  return "checked";
+}
+
+export default async function ConformancePage() {
+  const t = await getTranslations("conformance");
+
+  const [sg, cf, arch] = await Promise.allSettled([
+    getWorkspaceSystemGraph(),
+    getWorkspaceConformance(),
+    getWorkspaceArchitecture(),
+  ]);
+
+  const graph = sg.status === "fulfilled" ? sg.value : null;
+  const report = cf.status === "fulfilled" ? cf.value : null;
+  const metrics = arch.status === "fulfilled" ? arch.value : null;
+
+  const state = reportState(report);
+  const violations = state === "checked" ? (report?.violations ?? []) : [];
+  // Cycle *membership* comes from the report, but the count is recomputed from
+  // the graph on every request, so it stays true even when nothing has run.
   const cycles = report?.cycles ?? [];
+  // Null when the graph's evidence is insufficient: a count of zero over a
+  // graph with no edges would read as "no cycles", which nothing measured.
+  const undetermined = metrics != null && metrics.score === null;
+  const cycleCount = metrics?.cycle_count ?? cycles.length;
+  // The enumeration budget stopped the count, so it is a floor, not a total.
+  const cycleCountCapped = metrics?.cycle_count_capped === true;
+  const notDetermined = t("notDetermined");
+  const fixed = (value: number | null | undefined, digits: number) =>
+    value == null ? "—" : value.toFixed(digits);
+
+  const matrix = buildDsm(graph, report);
+
+  const ribbon: RibbonStat[] = [
+    {
+      label: t("ribbon.services"),
+      value: metrics ? formatNumber(metrics.node_count) : "—",
+      sub: t("ribbon.servicesSub"),
+    },
+    {
+      label: t("ribbon.structuralLinks"),
+      value: metrics ? formatNumber(metrics.structural_edge_count) : "—",
+      sub: t("ribbon.structuralLinksSub"),
+    },
+    {
+      label: t("ribbon.propagationCost"),
+      value:
+        metrics?.propagation_cost_pct != null
+          ? `${metrics.propagation_cost_pct.toFixed(1)}%`
+          : "—",
+      sub: t("ribbon.propagationCostSub"),
+    },
+    {
+      label: t("ribbon.coreSize"),
+      value: metrics?.core_size != null ? formatNumber(metrics.core_size) : "—",
+      sub:
+        metrics?.core_ratio != null
+          ? t("ribbon.coreSizeSubPct", { pct: Math.round(metrics.core_ratio * 100) })
+          : t("ribbon.coreSizeSub"),
+    },
+    {
+      label: t("ribbon.cycles"),
+      value:
+        metrics && !undetermined
+          ? cycleCountCapped
+            ? t("ribbon.cyclesAtLeast", { count: formatNumber(cycleCount) })
+            : formatNumber(cycleCount)
+          : "—",
+      sub: t("ribbon.cyclesSub"),
+    },
+  ];
 
   return (
-    <div className="p-5 sm:p-8 space-y-6 max-w-[1400px]">
-      <div>
-        <div className="flex items-center gap-2.5 mb-1">
-          <ShieldCheck className="h-6 w-6 text-[var(--color-accent-primary)]" />
-          <h1 className="text-2xl font-semibold text-[var(--color-text-primary)]">
-            Architecture Conformance
-          </h1>
-        </div>
-        <p className="text-sm text-[var(--color-text-secondary)]">
-          Declared dependency rules checked against the live system graph, plus any
-          circular service dependencies. Declare rules under{" "}
-          <code className="text-[var(--color-text-primary)]">conformance:</code> in
-          your <code className="text-[var(--color-text-primary)]">.repowise-workspace.yaml</code>;
-          run <code className="text-[var(--color-text-primary)]">repowise workspace check</code> to
-          gate CI.
-        </p>
-      </div>
-
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <MetricCard
-          label="Architecture score"
-          value={metrics ? `${metrics.score.toFixed(1)} / 10` : "—"}
-          description={
-            metrics
-              ? `${metrics.architecture_type} · ${metrics.propagation_cost_pct.toFixed(1)}% propagation cost`
-              : "Coupling + core roll-up"
-          }
-          icon={<Gauge className="h-4 w-4 text-[var(--color-accent-primary)]" />}
-        />
-        <MetricCard
-          label="Rules evaluated"
-          value={isLoading ? "—" : (report?.rules_evaluated ?? 0)}
-          icon={<ListChecks className="h-4 w-4 text-[var(--color-accent-secondary)]" />}
-        />
-        <MetricCard
-          label="Violations"
-          value={isLoading ? "—" : violations.length}
-          description="Dependencies that break a declared rule"
-          icon={<ShieldAlert className="h-4 w-4 text-[var(--color-risk-high)]" />}
-        />
-        <MetricCard
-          label="Dependency cycles"
-          value={isLoading ? "—" : cycles.length}
-          description="Circular service dependencies"
-          icon={<RefreshCw className="h-4 w-4 text-[var(--color-warning)]" />}
-        />
-      </div>
-
-      {/* DSM */}
-      <Card>
-        <CardHeader className="pb-2 flex-row items-center justify-between">
-          <CardTitle className="text-sm font-medium">
-            Dependency-structure matrix
-          </CardTitle>
-          <button
-            type="button"
-            onClick={() => router.push("/workspace/system-map")}
-            className="inline-flex items-center gap-1.5 text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
-          >
-            <Waypoints className="h-3.5 w-3.5" />
-            Open System Map
-          </button>
-        </CardHeader>
-        <CardContent className="pt-0">
-          <p className="text-xs text-[var(--color-text-tertiary)] mb-3">
-            Each filled cell means the row service depends on the column service,
-            tinted by transport. Red cells break a rule; amber cells sit on a cycle.
-          </p>
-          {isLoading ? (
-            <Skeleton className="h-72 w-full" />
-          ) : (
-            <DsmMatrixView matrix={matrix} {...(metrics ? { metrics } : {})} />
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Governance findings */}
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <Card>
-          <CardHeader className="pb-2 flex-row items-center justify-between gap-2">
-            <CardTitle className="text-sm font-medium inline-flex items-center gap-2">
-              <ShieldAlert className="h-4 w-4 text-[var(--color-risk-high)]" />
-              Rule violations ({violations.length})
-            </CardTitle>
-            {violations.length > 0 && (
-              <AiPromptButton
-                label="Fix violations with AI"
-                onClick={() => setPromptOpen(true)}
-              />
-            )}
-          </CardHeader>
-          <CardContent className="pt-0 space-y-3">
-            {isLoading ? (
-              <Skeleton className="h-20 w-full" />
-            ) : violations.length === 0 ? (
-              <p className="text-sm text-[var(--color-text-tertiary)]">
-                {report && report.rules_evaluated > 0
-                  ? "No dependencies violate the declared rules."
-                  : "No rules declared yet. Add a conformance block to start enforcing allowed dependencies."}
-              </p>
-            ) : (
-              violations.map((v) => (
-                <div
-                  key={`${v.edge_id}:${v.rule_source}:${v.rule_target}`}
-                  className="rounded-md border border-[var(--color-border-subtle)] p-3 text-sm"
-                >
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="font-semibold text-[var(--color-text-primary)]">
-                      {v.source_name || v.source}
-                    </span>
-                    <span className="text-[var(--color-text-tertiary)]">→</span>
-                    <span className="font-semibold text-[var(--color-text-primary)]">
-                      {v.target_name || v.target}
-                    </span>
-                    <span className="text-xs text-[var(--color-text-tertiary)]">
-                      ({v.edge_kind})
-                    </span>
-                  </div>
-                  <div className="text-[var(--color-text-secondary)] mt-1">
-                    breaks{" "}
-                    <code className="text-[var(--color-warning)]">
-                      {v.rule_source} !-&gt; {v.rule_target}
-                    </code>
-                  </div>
-                  {v.rule_description && (
-                    <div className="text-xs text-[var(--color-text-tertiary)] mt-1">
-                      {v.rule_description}
-                    </div>
-                  )}
-                </div>
-              ))
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium inline-flex items-center gap-2">
-              <RefreshCw className="h-4 w-4 text-[var(--color-warning)]" />
-              Dependency cycles ({cycles.length})
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="pt-0 space-y-3">
-            {isLoading ? (
-              <Skeleton className="h-20 w-full" />
-            ) : cycles.length === 0 ? (
-              <p className="text-sm text-[var(--color-text-tertiary)]">
-                No circular service dependencies detected.
-              </p>
-            ) : (
-              cycles.map((c) => (
-                <div
-                  key={c.nodes.join("->")}
-                  className="rounded-md border border-[var(--color-border-subtle)] p-3 text-sm"
-                >
-                  <div className="text-xs uppercase tracking-wide text-[var(--color-text-tertiary)] mb-1">
-                    {c.length} services
-                  </div>
-                  <div className="text-[var(--color-text-primary)] break-words">
-                    {c.nodes.join(" → ")} → {c.nodes[0]}
-                  </div>
-                </div>
-              ))
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      <AiPromptModal
-        open={promptOpen}
-        onOpenChange={setPromptOpen}
-        getPrompt={(flavor) =>
-          buildConformanceAiPrompt({
-            violations: violations.map((v) => ({
-              source: v.source,
-              target: v.target,
-              source_name: v.source_name,
-              target_name: v.target_name,
-              edge_kind: v.edge_kind,
-              rule_source: v.rule_source,
-              rule_target: v.rule_target,
-              rule_description: v.rule_description,
-            })),
-            flavor,
-          })
+    <PageShell
+      title={t("title")}
+      icon={<ShieldCheck />}
+      description={t("description")}
+    >
+      <PageLede
+        label={t("ledeLabel")}
+        value={fixed(metrics?.score, 1)}
+        unit={t("ledeUnit")}
+        {...(metrics?.architecture_type
+          ? {
+              band: {
+                label: undetermined ? notDetermined : metrics.architecture_type,
+              },
+            }
+          : {})}
+        layout="beside"
+        action={
+          <LedeLink href="/workspace/system-map" LinkComponent={Link}>
+            {t("ledeSeeSystemMap")}
+          </LedeLink>
         }
-        title="AI conformance fix"
-        description="A ready-to-paste prompt that has your AI agent resolve these architecture rule violations by removing the disallowed dependencies."
+      >
+        {undetermined ? (
+          <p>{t("ledeNotDetermined", { reason: metrics?.evidence?.summary ?? "" })}</p>
+        ) : metrics ? (
+          <p>
+            {t("ledeSentence", {
+              pct: fixed(metrics.propagation_cost_pct, 1),
+              links: formatNumber(metrics.structural_edge_count),
+              services: formatNumber(metrics.node_count),
+            })}
+          </p>
+        ) : (
+          <p>{t("ledeNoGraph")}</p>
+        )}
+        <RuleSentence state={state} report={report} />
+      </PageLede>
+
+      <StatRibbon stats={ribbon} />
+
+      {/*
+        The matrix counts a co-change relationship as a filled cell and the
+        ribbon's structural-link figure does not, so the two numbers differ by
+        design and sit a few hundred pixels apart. Reconciled in
+        `dsmDescription` rather than left for the reader to work out, and
+        stated there rather than changing the shared matrix's own caption,
+        which is accurate for what it counts.
+      */}
+      <OverviewSection
+        title={t("dsmTitle")}
+        description={t("dsmDescription")}
+        action={
+          <SectionLink href="/workspace/system-map" LinkComponent={Link}>
+            {t("dsmSystemMapLink")}
+          </SectionLink>
+        }
+      >
+        <DsmMatrixView matrix={matrix} {...(metrics ? { metrics } : {})} />
+      </OverviewSection>
+
+      <OverviewSection
+        title={
+          state === "checked"
+            ? t("violationsTitleCount", { count: violations.length })
+            : t("violationsTitle")
+        }
+        description={t("violationsDescription")}
+        {...(violations.length > 0
+          ? { action: <ConformanceAiPrompt violations={violations} /> }
+          : {})}
+      >
+        {violations.length === 0 ? (
+          <ViolationsEmptyState state={state} />
+        ) : (
+          <ul className="m-0 list-none divide-y divide-[var(--color-border-default)] border-t border-[var(--color-border-default)] p-0">
+            {violations.map((v) => (
+              <li
+                key={`${v.edge_id}:${v.rule_source}:${v.rule_target}`}
+                className="py-3.5"
+              >
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+                  <span className="font-medium text-[var(--color-text-primary)]">
+                    {v.source_name || v.source}
+                  </span>
+                  <span aria-hidden className="text-[var(--color-text-tertiary)]">
+                    →
+                  </span>
+                  <span className="font-medium text-[var(--color-text-primary)]">
+                    {v.target_name || v.target}
+                  </span>
+                  <span className="font-mono text-[11px] text-[var(--color-text-tertiary)]">
+                    {v.edge_kind}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-[var(--color-text-secondary)]">
+                  {t("violationBreaks")}{" "}
+                  <span className="font-mono text-[var(--color-warning)]">
+                    {v.rule_source} !&gt; {v.rule_target}
+                  </span>
+                  {v.rule_description ? ` — ${v.rule_description}` : ""}
+                </p>
+              </li>
+            ))}
+          </ul>
+        )}
+      </OverviewSection>
+
+      <OverviewSection
+        title={
+          undetermined
+            ? t("cyclesTitleUndetermined")
+            : cycleCountCapped
+              ? t("cyclesTitleAtLeast", { count: cycleCount })
+              : t("cyclesTitle", { count: cycleCount })
+        }
+        description={t("cyclesDescription")}
+      >
+        {cycles.length === 0 && undetermined ? (
+          <EmptyState
+            className="p-6"
+            title={t("cyclesNotDeterminedTitle")}
+            description={metrics?.evidence?.summary ?? ""}
+          />
+        ) : cycles.length === 0 ? (
+          <EmptyState
+            className="p-6"
+            title={
+              cycleCount > 0
+                ? cycleCountCapped
+                  ? t("cyclesDetectedNotListedAtLeast", { count: cycleCount })
+                  : t("cyclesDetectedNotListed", { count: cycleCount })
+                : t("noCyclesTitle")
+            }
+            description={
+              cycleCount > 0
+                ? t("cyclesUnlistedDescription")
+                : t("noCyclesDescription")
+            }
+          />
+        ) : (
+          <ul className="m-0 list-none divide-y divide-[var(--color-border-default)] border-t border-[var(--color-border-default)] p-0">
+            {cycles.map((c) => (
+              <li key={c.nodes.join("->")} className="py-3.5">
+                <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+                  {t("cycleServices", { count: c.length })}
+                </p>
+                <p className="mt-1 text-sm text-[var(--color-text-primary)] [overflow-wrap:anywhere]">
+                  {c.nodes.join(" → ")} → {c.nodes[0]}
+                </p>
+              </li>
+            ))}
+          </ul>
+        )}
+      </OverviewSection>
+    </PageShell>
+  );
+}
+
+/** The sentence in the lede that says whether the check has anything to say. */
+async function RuleSentence({
+  state,
+  report,
+}: {
+  state: ReturnType<typeof reportState>;
+  report: ConformanceReport | null;
+}) {
+  const t = await getTranslations("conformance");
+  if (state === "checked") {
+    const n = report?.rules_evaluated ?? 0;
+    const v = report?.violations?.length ?? 0;
+    return (
+      <p>
+        {v === 0
+          ? t("ruleCheckedClean", { rules: n })
+          : t("ruleCheckedViolations", { rules: n, violations: v })}
+      </p>
+    );
+  }
+  if (state === "no_rules") {
+    return (
+      <p>
+        {t.rich("ruleNoneDeclared", {
+          c: (chunks) => (
+            <code className="font-mono text-[var(--color-text-primary)]">
+              {chunks}
+            </code>
+          ),
+          f: (chunks) => (
+            <code className="font-mono text-[var(--color-text-primary)]">
+              {chunks}
+            </code>
+          ),
+        })}
+      </p>
+    );
+  }
+  return (
+    <p>
+      {t.rich("ruleNeverRan", {
+        c: (chunks) => (
+          <code className="font-mono text-[var(--color-text-primary)]">
+            {chunks}
+          </code>
+        ),
+      })}
+    </p>
+  );
+}
+
+/**
+ * Three empty states, because they mean three different things.
+ *
+ * Collapsing them into one "no violations" message is the failure this page
+ * shipped with: the artifact's zeros are written before anything runs.
+ */
+async function ViolationsEmptyState({
+  state,
+}: {
+  state: ReturnType<typeof reportState>;
+}) {
+  const t = await getTranslations("conformance");
+  if (state === "checked") {
+    return (
+      <EmptyState
+        className="p-6"
+        title={t("emptyNoRulesBrokenTitle")}
+        description={t("emptyNoRulesBrokenDescription")}
       />
-    </div>
+    );
+  }
+  if (state === "no_rules") {
+    return (
+      <EmptyState
+        className="p-6"
+        title={t("emptyNoRulesDeclaredTitle")}
+        description={t("emptyNoRulesDeclaredDescription")}
+      />
+    );
+  }
+  if (state === "never_ran") {
+    return (
+      <EmptyState
+        className="p-6"
+        title={t("emptyNotCheckedTitle")}
+        description={t("emptyNotCheckedDescription")}
+      />
+    );
+  }
+  return (
+    <EmptyState
+      className="p-6"
+      title={t("emptyUnavailableTitle")}
+      description={t("emptyUnavailableDescription")}
+    />
   );
 }

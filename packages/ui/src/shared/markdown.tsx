@@ -20,9 +20,13 @@
  * The face stays sans. Serif is bounded to the named wiki reading surfaces so
  * the mark keeps meaning "this is a document"; a reply is prose, not a document.
  *
- * `density="compact"` keeps the old chrome scale for consumers that render the
- * same markdown inside a narrow panel, where 16px body would not fit the column
- * it is given. One component, one prop — not a second renderer.
+ * `density="narrow"` steps the reading scale down to 14px for the chat dock;
+ * `density="compact"` keeps the chrome scale for side panels where 16px body
+ * would not fit the column. One component, one prop, not a second renderer.
+ *
+ * Streaming is read from context rather than baked into the component map, so
+ * the map keeps its identity when an answer completes: code blocks stay
+ * mounted in their final frame instead of remounting with a height jump.
  *
  * Inline code is deliberately *not* accent-coloured. Nothing here resolves to a
  * page, so an accent path would be decoration on something that does not
@@ -30,10 +34,18 @@
  * renderer already fixed.
  */
 
-import { lazy, Suspense, useMemo } from "react";
+import {
+  createContext,
+  lazy,
+  Suspense,
+  useContext,
+  useMemo,
+  type ComponentPropsWithoutRef,
+} from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
+import { CodeFrame, HighlightedCodeBlock } from "./code-block";
 
 // Mermaid pulls a heavy renderer that is strictly client-side. Lazy-load it so
 // it never enters the chat bundle (or SSR pass) unless a reply actually contains
@@ -45,7 +57,7 @@ const MermaidDiagram = lazy(() =>
 const MICRO_LABEL =
   "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
 
-export type MarkdownDensity = "reading" | "compact";
+export type MarkdownDensity = "reading" | "narrow" | "compact";
 
 interface Scale {
   h1: string;
@@ -58,6 +70,8 @@ interface Scale {
   gap: string;
   listIndent: string;
   rule: string;
+  /** Table width rule. Only the reading column can afford a 640px floor. */
+  table: string;
 }
 
 const SCALES: Record<MarkdownDensity, Scale> = {
@@ -72,6 +86,20 @@ const SCALES: Record<MarkdownDensity, Scale> = {
     gap: "mb-4",
     listIndent: "ml-5",
     rule: "my-6",
+    table: "w-full min-w-[640px]",
+  },
+  narrow: {
+    h1: "text-lg mt-6 mb-2.5",
+    h2: "text-base mt-5 mb-2",
+    h3: "text-[15px] mt-4 mb-1.5",
+    body: "text-sm",
+    list: "text-sm space-y-1",
+    block: "my-3",
+    code: "text-xs",
+    gap: "mb-3",
+    listIndent: "ml-5",
+    rule: "my-5",
+    table: "w-full",
   },
   compact: {
     h1: "text-base mt-4 mb-2",
@@ -80,107 +108,106 @@ const SCALES: Record<MarkdownDensity, Scale> = {
     body: "text-xs",
     list: "text-xs space-y-1",
     block: "my-2",
-    code: "text-[11px]",
+    code: "text-xs",
     gap: "mb-2",
     listIndent: "ml-4",
     rule: "my-3",
+    table: "w-full",
   },
 };
 
-function buildComponents(s: Scale): Components {
+const StreamingContext = createContext(false);
+
+function MarkdownCode({
+  className,
+  children,
+  node: _node,
+  compact,
+  ...props
+}: ComponentPropsWithoutRef<"code"> & { node?: unknown; compact: boolean }) {
+  const streaming = useContext(StreamingContext);
+  const declaredLanguage = className?.match(/language-([^\s]+)/)?.[1];
+  const rawCode = String(children ?? "");
+  const isBlock = Boolean(declaredLanguage) || rawCode.includes("\n");
+  if (isBlock) {
+    const language = declaredLanguage ?? "text";
+    const code = rawCode.replace(/\n$/, "");
+    if (language === "mermaid") {
+      const source = <pre><code>{code}</code></pre>;
+      return (
+        <CodeFrame code={code} language={language} compact={compact}>
+          {streaming ? source : <Suspense fallback={source}><MermaidDiagram chart={code} /></Suspense>}
+        </CodeFrame>
+      );
+    }
+    return <HighlightedCodeBlock code={code} language={language} compact={compact} streaming={streaming} />;
+  }
+  // 0.85em, relative: Geist Mono runs wider and taller than Geist at the
+  // same nominal size, so 1em mono inside 16px sans reads oversized.
+  return (
+    <code
+      className="break-all whitespace-normal rounded px-1 py-0.5 bg-[var(--color-bg-inset)] text-[var(--color-text-primary)] text-[0.85em] font-mono [overflow-wrap:anywhere]"
+      {...props}
+    >
+      {children}
+    </code>
+  );
+}
+
+function buildComponents(s: Scale, measure: string): Components {
+  const compact = s.body !== "text-base";
   return {
     h1: ({ children }) => (
       <h1
-        className={`${s.h1} font-semibold text-[var(--color-text-primary)]`}
+        className={`${s.h1} ${measure} font-semibold text-[var(--color-text-primary)] [overflow-wrap:anywhere]`}
       >
         {children}
       </h1>
     ),
     h2: ({ children }) => (
       <h2
-        className={`${s.h2} font-semibold text-[var(--color-text-primary)]`}
+        className={`${s.h2} ${measure} font-semibold text-[var(--color-text-primary)] [overflow-wrap:anywhere]`}
       >
         {children}
       </h2>
     ),
     h3: ({ children }) => (
       <h3
-        className={`${s.h3} font-semibold text-[var(--color-text-primary)]`}
+        className={`${s.h3} ${measure} font-semibold text-[var(--color-text-primary)] [overflow-wrap:anywhere]`}
       >
         {children}
       </h3>
     ),
     p: ({ children }) => (
       <p
-        className={`${s.body} ${s.gap} text-[var(--color-text-primary)] leading-relaxed`}
+        className={`${s.body} ${s.gap} ${measure} text-[var(--color-text-primary)] leading-relaxed [overflow-wrap:anywhere]`}
       >
         {children}
       </p>
     ),
     ul: ({ children }) => (
       <ul
-        className={`list-disc ${s.listIndent} ${s.list} ${s.gap} text-[var(--color-text-primary)]`}
+        className={`list-disc ${s.listIndent} ${s.list} ${s.gap} ${measure} text-[var(--color-text-primary)] [&.contains-task-list]:ml-0 [&.contains-task-list]:list-none`}
       >
         {children}
       </ul>
     ),
     ol: ({ children }) => (
       <ol
-        className={`list-decimal ${s.listIndent} ${s.list} ${s.gap} text-[var(--color-text-primary)]`}
+        className={`list-decimal ${s.listIndent} ${s.list} ${s.gap} ${measure} text-[var(--color-text-primary)]`}
       >
         {children}
       </ol>
     ),
-    li: ({ children }) => <li className="leading-relaxed">{children}</li>,
-    code: ({ className, children, ...props }) => {
-      const isBlock = className?.includes("language-");
-      if (isBlock) {
-        const isMermaid = className?.includes("language-mermaid");
-        const fence = `${s.block} rounded-lg bg-[var(--color-bg-inset)] border border-[var(--color-border-default)] p-4 overflow-x-auto`;
-        if (isMermaid) {
-          const chart = String(children ?? "").replace(/\n$/, "");
-          return (
-            <Suspense
-              fallback={
-                <pre className={fence}>
-                  <code
-                    className={`${s.code} font-mono text-[var(--color-text-primary)]`}
-                  >
-                    {chart}
-                  </code>
-                </pre>
-              }
-            >
-              <MermaidDiagram chart={chart} />
-            </Suspense>
-          );
-        }
-        return (
-          <pre className={fence}>
-            <code
-              className={`${s.code} font-mono text-[var(--color-text-primary)]`}
-              {...props}
-            >
-              {children}
-            </code>
-          </pre>
-        );
-      }
-      // 0.85em, relative: Geist Mono runs wider and taller than Geist at the
-      // same nominal size, so 1em mono inside 16px sans reads oversized.
-      return (
-        <code
-          className="rounded px-1 py-0.5 bg-[var(--color-bg-inset)] text-[var(--color-text-primary)] text-[0.85em] font-mono"
-          {...props}
-        >
-          {children}
-        </code>
-      );
-    },
+    li: ({ children, className }) => <li className={`${className ?? ""} leading-relaxed [overflow-wrap:anywhere] [&>p]:mb-1`}>{children}</li>,
+    input: ({ type, node: _node, ...props }) => type === "checkbox" ? (
+      <input type="checkbox" disabled className="mr-2 align-middle accent-[var(--color-accent-secondary)]" {...props} />
+    ) : <input type={type} {...props} />,
+    code: (props) => <MarkdownCode {...props} compact={compact} />,
     pre: ({ children }) => <>{children}</>,
     blockquote: ({ children }) => (
       <blockquote
-        className={`${s.block} ${s.body} border-l-2 border-[var(--color-border-default)] pl-4 text-[var(--color-text-secondary)]`}
+        className={`${s.block} ${s.body} ${measure} border-l-2 border-[var(--color-border-default)] pl-4 text-[var(--color-text-secondary)] [overflow-wrap:anywhere]`}
       >
         {children}
       </blockquote>
@@ -188,7 +215,7 @@ function buildComponents(s: Scale): Components {
     a: ({ href, children }) => (
       <a
         href={href}
-        className="text-[var(--color-accent-primary)] hover:underline"
+        className="text-[var(--color-accent-primary)] underline underline-offset-2 [overflow-wrap:anywhere]"
         target="_blank"
         rel="noopener noreferrer"
       >
@@ -196,8 +223,8 @@ function buildComponents(s: Scale): Components {
       </a>
     ),
     table: ({ children }) => (
-      <div className={`${s.block} overflow-x-auto`}>
-        <table className={`${s.code} w-full border-collapse`}>{children}</table>
+      <div className={`${s.block} max-w-full overflow-x-auto overscroll-x-contain border-y border-[var(--color-border-default)]`}>
+        <table className={`${s.code} ${s.table} border-collapse`}>{children}</table>
       </div>
     ),
     thead: ({ children }) => (
@@ -206,7 +233,7 @@ function buildComponents(s: Scale): Components {
       </thead>
     ),
     th: ({ children }) => (
-      <th className={`text-left px-3 py-2 font-normal ${MICRO_LABEL}`}>
+      <th scope="col" className={`text-left px-3 py-2.5 font-normal ${MICRO_LABEL}`}>
         {children}
       </th>
     ),
@@ -216,7 +243,7 @@ function buildComponents(s: Scale): Components {
       </tr>
     ),
     td: ({ children }) => (
-      <td className="px-3 py-2 text-[var(--color-text-primary)] tabular-nums">
+      <td className="px-3 py-2.5 align-top text-[var(--color-text-primary)] tabular-nums [overflow-wrap:anywhere]">
         {children}
       </td>
     ),
@@ -231,21 +258,108 @@ function buildComponents(s: Scale): Components {
   };
 }
 
-export interface MarkdownProps {
-  content: string;
-  /** `compact` keeps chrome sizes for narrow panels. */
-  density?: MarkdownDensity;
+/** A span of `content` (UTF-16 offsets) to mark, e.g. a figure no tool returned. */
+export interface MarkdownFlag {
+  start: number;
+  end: number;
 }
 
-export function Markdown({ content, density = "reading" }: MarkdownProps) {
+interface MdNode {
+  type: string;
+  value?: string;
+  children?: MdNode[];
+  position?: { start: { offset?: number }; end: { offset?: number } };
+  data?: object;
+}
+
+const FLAG_CLASS =
+  "cursor-help underline decoration-dotted decoration-[var(--color-text-tertiary)] underline-offset-4";
+
+/** Splits text nodes at each flag. A text node whose value differs from its
+ *  source (escapes, entities) cannot be mapped by offset and stays unmarked. */
+function flagSpans(node: MdNode, flags: readonly MarkdownFlag[], label: string): void {
+  if (!node.children) return;
+  node.children = node.children.flatMap((child): MdNode[] => {
+    const from = child.position?.start.offset;
+    const to = child.position?.end.offset;
+    if (child.type !== "text" || child.value === undefined || from === undefined || to === undefined) {
+      flagSpans(child, flags, label);
+      return [child];
+    }
+    const value = child.value;
+    if (value.length !== to - from) return [child];
+    const inside = flags
+      .filter((f) => f.start >= from && f.end <= to && f.end > f.start)
+      .sort((a, b) => a.start - b.start);
+    if (!inside.length) return [child];
+    const out: MdNode[] = [];
+    let at = 0;
+    for (const flag of inside) {
+      const start = flag.start - from;
+      if (start < at) continue;
+      if (start > at) out.push({ type: "text", value: value.slice(at, start) });
+      out.push({
+        type: "flag",
+        data: { hName: "span", hProperties: { className: FLAG_CLASS, title: label, "data-flagged": "" } },
+        children: [
+          { type: "text", value: value.slice(start, flag.end - from) },
+          {
+            type: "flagLabel",
+            data: { hName: "span", hProperties: { className: "sr-only" } },
+            children: [{ type: "text", value: ` (${label})` }],
+          },
+        ],
+      });
+      at = flag.end - from;
+    }
+    if (at < value.length) out.push({ type: "text", value: value.slice(at) });
+    return out;
+  });
+}
+
+export interface MarkdownProps {
+  content: string;
+  /** `narrow` for the chat dock, `compact` for chrome-sized side panels. */
+  density?: MarkdownDensity;
+  /** Defers expensive code/diagram rendering until the answer is complete. */
+  streaming?: boolean;
+  /** Fill the host column instead of capping prose at 72ch. For hosts that
+   *  already set a reading width, such as the chat column. */
+  fill?: boolean;
+  /** Spans to mark with a dotted underline; `flagLabel` is their tooltip and
+   *  screen-reader text, so the mark never rests on color alone. */
+  flags?: readonly MarkdownFlag[];
+  flagLabel?: string;
+}
+
+const REMARK_PLUGINS = [remarkGfm];
+
+export function Markdown({
+  content,
+  density = "reading",
+  streaming = false,
+  fill = false,
+  flags,
+  flagLabel = "Flagged",
+}: MarkdownProps) {
+  const measure = density === "reading" && !fill ? "max-w-[72ch]" : "max-w-full";
   const components = useMemo(
-    () => buildComponents(SCALES[density]),
-    [density],
+    () => buildComponents(SCALES[density], measure),
+    [density, measure],
+  );
+  const remarkPlugins = useMemo(
+    () =>
+      flags?.length
+        ? [...REMARK_PLUGINS, () => (tree: MdNode) => flagSpans(tree, flags, flagLabel)]
+        : REMARK_PLUGINS,
+    [flags, flagLabel],
   );
   return (
-    <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
-      {content}
-    </ReactMarkdown>
+    <StreamingContext.Provider value={streaming}>
+      <ReactMarkdown remarkPlugins={remarkPlugins} components={components}>
+        {content}
+      </ReactMarkdown>
+    </StreamingContext.Provider>
   );
 }
 

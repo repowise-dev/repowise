@@ -10,12 +10,11 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from typing import Any, TypeVar
 
+# Re-exported, not redefined: the estimator lives in the distill leaf module
+# so that importing it never drags this package's assembler graph along.
+from repowise.core.distill.budget import estimate_tokens
+
 T = TypeVar("T")
-
-
-def estimate_tokens(text: str) -> int:
-    """Estimate token count using the 4-chars-per-token heuristic."""
-    return len(text) // 4
 
 
 def trim_to_budget(text: str, remaining: int) -> str:

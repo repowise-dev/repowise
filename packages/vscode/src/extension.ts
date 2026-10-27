@@ -4,14 +4,16 @@ import { existsSync } from "node:fs";
 import { Commands, REPO_DIR, WORKSPACE_DIR } from "./constants";
 import { createLogger } from "./core/log";
 import { createApi } from "./core/api";
-import { createCache } from "./core/cache";
+import { createCache } from "@repowise-dev/api-client/cache";
 import { createCliRunner } from "./core/cliRunner";
 import { RepowiseContext } from "./core/context";
 import { registerStatusBar } from "./features/statusBar";
 import { registerOnboarding } from "./features/onboarding";
+import { registerHosted } from "./features/hosted";
 import { registerServerManager } from "./features/serverManager";
 import { registerMcp } from "./features/mcp";
 import { registerDiagnostics } from "./features/diagnostics";
+import { registerDocDriftDiagnostics } from "./features/docDriftDiagnostics";
 import { registerGutterHeat } from "./features/gutterHeat";
 import { registerHovers } from "./features/hovers";
 import { registerFileDecorations } from "./features/fileDecorations";
@@ -82,9 +84,11 @@ export function activate(extCtx: vscode.ExtensionContext): void {
   extCtx.subscriptions.push(
     registerStatusBar(ctx),
     registerOnboarding(ctx),
+    registerHosted(ctx, extCtx.globalState),
     registerServerManager(ctx),
     registerMcp(ctx),
     registerDiagnostics(ctx),
+    registerDocDriftDiagnostics(ctx),
     registerGutterHeat(ctx),
     registerHovers(ctx),
     registerFileDecorations(ctx),
@@ -130,7 +134,7 @@ async function checkSetup(ctx: RepowiseContext): Promise<void> {
           .map((c) => c.name)
           .join(", ") || "see log";
       const choice = await vscode.window.showWarningMessage(
-        `Repowise setup has ${failed.length} issue(s): ${summary}.`,
+        `Repowise setup has ${failed.length} ${failed.length === 1 ? "issue" : "issues"}: ${summary}.`,
         "Show Log",
       );
       if (choice === "Show Log") ctx.log.show();

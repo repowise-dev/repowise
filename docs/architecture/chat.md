@@ -2,7 +2,8 @@
 
 The codebase chat feature lets users have an interactive conversation with their
 codebase. The agent uses whichever LLM provider the user has configured, has
-access to all 10 MCP tools, and streams responses back to the browser in real time
+access to **7 tools** from the MCP surface (a curated chat subset — not the full
+11-tool MCP default), and streams responses back to the browser in real time
 showing tool calls as they happen and rendering results in an artifact panel.
 
 ---
@@ -52,7 +53,7 @@ POST /api/repos/{repo_id}/chat/messages
 +---------------------------------------+
 ```
 
-The agentic loop is in the chat router for most providers (OpenAI, Anthropic,
+The agentic loop is in the chat session engine (`chat_session.py`) for most providers (OpenAI, Anthropic,
 Ollama, LiteLLM). For Gemini, the loop runs inside `stream_chat()` using native
 Content objects to preserve thought signatures. The router passes a
 `tool_executor` callback that Gemini calls internally.
@@ -158,8 +159,10 @@ class ChatProvider(Protocol):
 
 Defined in `packages/server/src/repowise/server/chat_tools.py`.
 
-Single source of truth for tool schemas and execution. Imports the 10 MCP tool
-functions directly from `repowise.server.mcp_server`.
+Single source of truth for chat tool schemas and execution. Imports **7** MCP
+tool functions from `repowise.server.mcp_server` (the chat agent does not
+advertise the full MCP default surface — no `get_answer`, `get_symbol`,
+`get_health`, or `list_repos` here).
 
 ```python
 TOOL_REGISTRY: dict[str, ToolDef]  # name -> ToolDef(name, description, parameters, function, artifact_type)
@@ -171,39 +174,38 @@ TOOL_REGISTRY: dict[str, ToolDef]  # name -> ToolDef(name, description, paramete
 |----------|---------|
 | `get_tool_schemas_for_llm()` | Returns OpenAI-format tool definitions for the LLM |
 | `execute_tool(name, args)` | Runs a tool and ensures JSON-serializable output |
-| `get_artifact_type(name)` | Maps tool name to frontend artifact type |
+| `ToolBackend.catalog_for(...)` | Tool contracts, each carrying its frontend artifact type |
 | `init_tool_state(...)` | Bridges FastAPI app state to MCP module globals |
 
-**Tool to artifact type mapping:**
+**Tool to artifact type mapping (7 tools):**
 
 | Tool | Artifact Type |
 |------|--------------|
 | `get_overview` | `overview` |
 | `get_context` | `wiki_page` |
 | `get_risk` | `risk_report` |
+| `get_change_risk` | `risk_report` |
 | `get_why` | `decisions` |
 | `search_codebase` | `search_results` |
-| `get_dependency_path` | `graph` |
 | `get_dead_code` | `dead_code` |
-| `get_architecture_diagram` | `diagram` |
 
 ---
 
 ## 5. Provider Configuration
 
-Defined in `packages/server/src/repowise/server/provider_config.py`.
+Defined in `packages/server/src/repowise/server/provider_config.py`, on top of
+the resolver every entry point shares (`core/providers/llm/resolve.py`).
 
-API keys and active provider/model selection are stored in a server-side
-`provider_config.json` file. Environment variables take precedence over stored
-keys.
+**Provider, model and base URL** (first match wins):
+1. A per-request override from the chat model picker
+2. The repo's `.repowise/config.yaml` (`PATCH /api/providers/active` with `repo_id` writes here)
+3. The global default in `provider_config.json` (`PATCH` without `repo_id`)
+4. `REPOWISE_PROVIDER` / `REPOWISE_MODEL` and the provider's `*_BASE_URL`
+5. The provider's default model, or auto-detection from the keys present
 
-**Resolution order for API keys:**
-1. Environment variable (e.g. `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`)
-2. Stored key in `provider_config.json`
-
-**Active provider resolution:**
-1. Explicitly set via `PATCH /api/providers/active`
-2. Auto-detect from first configured provider
+**API keys:** environment variable, then the repo's `.repowise/.env`, then the
+key stored in `provider_config.json`. `GET /api/providers` reports the resolved
+values with the layer each came from (`active.provenance`).
 
 **Provider catalog:** Gemini, Anthropic, OpenAI, Ollama (local, no key), LiteLLM.
 
@@ -242,6 +244,12 @@ data: {"type": "...", ...}
 
 **Retry:** `retry: 3000` sent at stream start.
 
+**Terminal event:** every stream ends with `done` or `error` on the `data`
+channel. `useChat` switches on `type` and nothing else, so an event sent on a
+different channel, or without a `type`, is dropped: the client then sees a
+stream that simply stopped mid-answer. The client settles its own state when
+the reader ends without a terminal event, but the server still owes it one.
+
 ---
 
 ## 7. Agentic Loop
@@ -264,6 +272,18 @@ for each iteration:
 
 After the loop, the assistant message (text + all tool calls with results) is
 saved to the database and a `done` event is emitted.
+
+**Charts in chat:** the chat-only `chart` tool draws a repository dataset
+(files, findings, changes, health_trend, coverage, dead_code, dependencies,
+layers) in one call: the server reads every row from the index (cached per
+index state), filters, aggregates and draws it as a bar, horizontal bar,
+stacked bar, line, area, donut, scatter, treemap, heatmap or table. Its receipt
+carries the exact totals, shares and averages, every repair it made to the spec,
+a `kind_note` when the asked kind did not fit, and a `suggested_spec` on error.
+`show_view` draws a tool result already in the conversation (by `artifact_id`
+or `latest:<tool_name>`), redraws an earlier view by its id, and lets named
+views take `options.kind`. The same guards apply: no person fields, no risk
+score as a plotted value, and attribution figures only through `changes.provenance`.
 
 ---
 
@@ -296,7 +316,8 @@ saved to the database and a `done` event is emitted.
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/providers` | List all providers with status and active selection |
-| `PATCH` | `/api/providers/active` | Set active provider and model |
+| `PATCH` | `/api/providers/active` | Set active provider, model and base URL |
+| `GET` | `/api/providers/{id}/models` | The provider's live model list (cached briefly), or its built-in list with `error`; `?base_url=` tests an unsaved endpoint |
 | `POST` | `/api/providers/{id}/key` | Store an API key |
 | `DELETE` | `/api/providers/{id}/key` | Remove an API key |
 
@@ -307,7 +328,7 @@ saved to the database and a `done` event is emitted.
 ### API Layer (`src/lib/api/`)
 
 - `chat.ts` — `listConversations`, `getConversation`, `deleteConversation`, `postChatMessage` (returns raw Response for SSE reading)
-- `providers.ts` — `getProviders`, `setActiveProvider`, `addProviderKey`, `removeProviderKey`
+- `providers.ts` — `getProviders`, `getProviderModels`, `setActiveProvider`, `addProviderKey`, `removeProviderKey`
 
 ### Hooks (`src/lib/hooks/`)
 
@@ -323,7 +344,7 @@ saved to the database and a `done` event is emitted.
 | `ChatMarkdown` | Client-side markdown renderer using `react-markdown` + `remark-gfm` with design token styling |
 | `ToolCallBlock` | Inline tool call visualization — running (spinner), done collapsed (checkmark + summary), done expanded (input/output JSON) |
 | `ArtifactPanel` | Right slide-in panel with tabs for multiple artifacts. Renders by type: markdown, Mermaid diagrams, search results, raw JSON |
-| `ModelSelector` | Compact popover for switching provider/model and adding API keys inline |
+| `ModelSelector` | Per-conversation model menu: lists the chosen provider's live models when opened, takes a typed id, marks the repo default. It never writes config |
 | `ConversationHistory` | Dropdown listing past conversations with delete and new-conversation actions |
 
 ### Page Structure

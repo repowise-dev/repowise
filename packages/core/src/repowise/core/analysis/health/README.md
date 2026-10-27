@@ -18,7 +18,7 @@ analyzer = HealthAnalyzer(
     git_meta_map=git_meta_map,
     parsed_files=parsed_files,
     coverage_map=coverage_map,   # optional, see coverage/README.md
-    module_map=module_map,       # optional, file_path → community label
+    community_label_map=...,     # optional, file_path → community label
 )
 
 report = analyzer.analyze(config=None)
@@ -71,6 +71,16 @@ Per-file trajectory (same snapshots, the `{path: score}` map):
   history). Reused verbatim by the PR bot's in-comment sparkline.
 - `file_trend(history, path)` — wraps the series with `current` / `previous`
   / `delta` and a `declining` flag (per-file mirror of the alerts above).
+- `snapshot_file_maps(metrics, findings)` — the writer's other half: builds
+  both `{path: score}` and `{path: total_deduction}` from one health report.
+  All three snapshot writers call it so a repo's history cannot change shape
+  depending on which command wrote it.
+
+The score clamps at `SCORE_FLOOR`, so a file deep enough to sit on it has a
+flat series no matter how much of the work gets done. The deduction map covers
+those files only, and each point carries `unclamped_score` — `SCORE_MAX -
+deduction` where recorded, `score` otherwise — which is the series
+`_file_declining` reads.
 
 ## Per-file signals
 
@@ -117,28 +127,43 @@ text used by both the MCP `get_health(include=["refactoring"])` response and
 the dashboard's `RefactoringCard`. Templates live in `suggestions.py` —
 adding a new marker means adding a new `_TEMPLATES` entry.
 
-## Module rollups
+## Ranking and aggregation
+
+`ranking.py` and `aggregation.py` are the one owner for the arithmetic that
+used to be reimplemented per caller: worst-first ordering
+(`sort_metrics_worst_first`, `worst_metric`), module rollups
+(`module_rollups`), and the severity / biomarker / score breakdowns
+(`severity_breakdown`, `biomarker_breakdown`, `score_breakdown`). Both are
+pure folds over rows a caller has already loaded, read through
+`rows.field`/`rows.detail_map` so a mapping, an analyzer dataclass and an ORM
+row rank and roll up identically. Neither imports persistence, a session, or
+the analyzer engine.
 
 `HealthFileMetric.module` is populated from graph community labels by the
 orchestrator (falls back to the top-level directory). The MCP tool
-(`tool_health.py`) and the API endpoint (`routers/code_health.py`) both
-expose NLOC-weighted module aggregates and accept `module:foo` targets.
+(`tool_health/`) and the API endpoint (`routers/code_health/`) both call
+`aggregation.module_rollups` for NLOC-weighted module aggregates and accept
+`module:foo` targets.
 
 ## Sub-packages
 
 - `complexity/` — tree-sitter AST walker. CCN, max nesting, cognitive,
   parameter count, bumps. Single AST pass per file. Writes
   `Symbol.complexity_estimate` as a side effect.
-- `coverage/` — LCOV / Cobertura / Clover parsers + test-file heuristic.
+- `coverage/` — coverage report parsers (LCOV, Cobertura, Clover, Go cover
+  profiles, JaCoCo, repowise JSON; `coverage.PARSERS` is the registry) +
+  test-file heuristic.
 - `duplication/` — Rabin–Karp over tree-sitter tokens. Co-change correlation
   via `git_meta_map[path]["co_change_partners_json"]`.
 - `biomarkers/` — one detector per file. Implements the `Biomarker`
   Protocol from `biomarkers/base.py`. Twenty-six registered (see
   `biomarkers/registry.py` and `biomarkers/README.md` for the full list),
   plus three governance findings written by a separate additive pass.
-- `grading.py` — the presentation "currency" layer over the score: the 3
-  defect-backed bands (`band_for` — Alert `<4` / Warning `4–8` / Healthy `≥8`)
-  and the NLOC-weighted `distribution`. Single source of truth for the cutoffs
+- `grading.py` — the presentation "currency" layer over the score: the five
+  absolute bands (`band_for` — Excellent `≥8.5` / Good `≥7.0` / Fair `≥5.5` /
+  Needs work `≥4.0` / At risk below) and the NLOC-weighted `distribution`.
+  It also owns `TARGET_SCORE`, the refactoring deficit target, which is
+  deliberately not a band edge. Single source of truth for the cutoffs
   (mirrored in `@repowise-dev/types/health`). No letter grade — see
   `docs/architecture/code-health.md` §20.
 
@@ -150,7 +175,9 @@ extension points.
 - **New marker.** Drop a file under `biomarkers/`, implement
   `Biomarker.detect(ctx) -> list[BiomarkerResult]`, register in
   `biomarkers/registry.py`, add a suggestion in `suggestions.py`, add the
-  category mapping in `scoring._BIOMARKER_CATEGORY`.
+  category mapping in `scoring._BIOMARKER_CATEGORY`. Add its label in
+  `biomarker_labels.py` (then run `scripts/generate_biomarker_labels.py`) and
+  its entry in the web glossary `packages/ui/src/health/biomarker-glossary.ts`.
 - **New complexity language.** Add a `LanguageNodeMap` entry to
   `complexity/languages.py`. No new `.scm` files needed.
 - **New coverage format.** Drop a parser under `coverage/` and register it
@@ -167,11 +194,11 @@ parallel path automatically when `len(parsed_files) >= 500`.
 
 ## Where to look in the codebase
 
-- CLI: `packages/cli/src/repowise/cli/commands/health_cmd.py`,
-  `status_cmd.py`, `update_cmd.py`.
-- MCP tools: `packages/server/src/repowise/server/mcp_server/tool_health.py`
+- CLI: `packages/cli/src/repowise/cli/commands/health_cmd/`,
+  `status_cmd.py`, `update_cmd/`.
+- MCP tools: `packages/server/src/repowise/server/mcp_server/tool_health/`
   + enrichments in `tool_risk.py`, `tool_context.py`, `tool_overview.py`.
 - API: `packages/server/src/repowise/server/routers/code_health.py`.
 - UI primitives: `packages/ui/src/health/`. Web routes:
   `packages/web/src/app/repos/[id]/health/`.
-- CLAUDE.md template stanza: `packages/core/src/repowise/core/generation/templates/claude_md.j2`.
+- CLAUDE.md template stanza: `packages/core/src/repowise/core/generation/templates/_editor_block.j2`.

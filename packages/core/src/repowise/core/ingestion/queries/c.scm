@@ -14,6 +14,32 @@
   )
 ) @symbol.def
 
+; A declarator that returns a pointer wraps the function_declarator:
+; ``client *createClient(...)``, ``char **argv(...)``, and a function returning
+; a function pointer, ``int (*handler(int k))(int)``. Queries cannot recurse,
+; so each wrapper depth is listed (three pointer levels, ``T ***f()``, are not
+; matched; none occur in the C codebases checked). A function-pointer variable
+; (``void (*cb)(int);``) has no inner function_declarator and never matches.
+(function_definition
+  declarator: [
+    (pointer_declarator
+      declarator: (function_declarator
+        declarator: (identifier) @symbol.name
+        parameters: (parameter_list) @symbol.params))
+    (pointer_declarator
+      declarator: (pointer_declarator
+        declarator: (function_declarator
+          declarator: (identifier) @symbol.name
+          parameters: (parameter_list) @symbol.params)))
+    (function_declarator
+      declarator: (parenthesized_declarator
+        (pointer_declarator
+          declarator: (function_declarator
+            declarator: (identifier) @symbol.name
+            parameters: (parameter_list) @symbol.params))))
+  ]
+) @symbol.def
+
 (struct_specifier
   name: (type_identifier) @symbol.name
 ) @symbol.def
@@ -66,6 +92,27 @@
   )
 ) @symbol.def
 
+; ... returning a pointer, the same shapes as the definitions above
+(declaration
+  declarator: [
+    (pointer_declarator
+      declarator: (function_declarator
+        declarator: (identifier) @symbol.name
+        parameters: (parameter_list) @symbol.params))
+    (pointer_declarator
+      declarator: (pointer_declarator
+        declarator: (function_declarator
+          declarator: (identifier) @symbol.name
+          parameters: (parameter_list) @symbol.params)))
+    (function_declarator
+      declarator: (parenthesized_declarator
+        (pointer_declarator
+          declarator: (function_declarator
+            declarator: (identifier) @symbol.name
+            parameters: (parameter_list) @symbol.params))))
+  ]
+) @symbol.def
+
 ; ---------------------------------------------------------------------------
 ; Imports (#include directives)
 ; ---------------------------------------------------------------------------
@@ -105,7 +152,7 @@
 ; no import statement naming the type — only the ``#include`` of the header.
 ; Without these captures every header struct reads as an unused export. The
 ; shared ``@param.type`` capture name routes through the C head extractor
-; (see parser_helpers.TYPE_HEAD_EXTRACTORS), which drops the pointer/array
+; (see lang_helpers.type_heads.TYPE_HEAD_EXTRACTORS), which drops the pointer/array
 ; declarator wrapping (it lives on the declarator side in C, not the type)
 ; and filters primitive builtins. Mirrors the Go / C# captures.
 
@@ -120,3 +167,41 @@
 ; Function return type: JSON_Value * json_parse(...)
 (function_definition
   type: (_) @param.type)
+
+; ---------------------------------------------------------------------------
+; Bare references — drive symbol-level ``references`` edges
+; ---------------------------------------------------------------------------
+; The C half of #1602. Naming a function without calling it is a use that no
+; call pattern above can see, and C reaches for it constantly: a dispatch
+; table of handlers, a ``.callback =`` designated initialiser, a registration
+; macro. The referenced function otherwise carries no inbound edge and reads
+; as a ``safe_to_delete`` unused export. The parser drops any name that does
+; not resolve to a function, so a same-named local cannot mint an edge.
+
+; Dispatch table: struct cmd cmds[] = { {"add", do_add} };
+; Captured under its own name because the parser additionally requires a table
+; to sit at file scope: inside a function body the same shape is a local
+; aggregate whose elements are parameters, not functions.
+(initializer_list
+  (identifier) @reference.table)
+
+; Designated initialiser: static struct ops o = { .write = my_write };
+(initializer_pair
+  value: (identifier) @reference.name)
+
+; Callback field assignment: handle->on_close = on_close_cb;
+; Restricted to a member on the left: a plain ``x = y`` is overwhelmingly
+; local bookkeeping, and matching it manufactured an edge wherever a local
+; happened to share a function's name.
+(assignment_expression
+  left: (field_expression)
+  right: (identifier) @reference.name)
+
+; Registration macro: REGISTER_CMD(do_add);
+; ``@reference.via`` carries the macro name so the parser can require the
+; SCREAMING_CASE convention, without which this captures every identifier
+; argument of every ordinary call.
+(call_expression
+  function: (identifier) @reference.via
+  arguments: (argument_list
+    (identifier) @reference.name))

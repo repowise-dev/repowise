@@ -12,6 +12,7 @@ import {
 } from "../lib/confidence";
 import {
   formatConfidence,
+  formatDateTime,
   formatRelativeTime,
 } from "../lib/format";
 import { getPageTypeIcon, getPageTypeLabel } from "../lib/page-types";
@@ -136,10 +137,18 @@ export function FreshnessTable({
           }
           renderRow={(page) => {
             const status = page.freshness_status as FreshnessStatus;
+            // No `group` either: the underline was its only consumer. The
+            // hover ground stays — on a five-column table it is how you keep
+            // your place across the row, and unlike an underline on the path
+            // it does not name a target to follow.
             return (
-              <tr className="group border-b border-[var(--color-table-divider)] hover:bg-[var(--color-bg-elevated)] transition-colors last:border-0">
+              <tr className="border-b border-[var(--color-table-divider)] hover:bg-[var(--color-bg-elevated)] transition-colors last:border-0">
                 <td className="px-4 py-2.5 font-mono text-xs text-[var(--color-text-primary)] min-w-[220px] max-w-[480px]">
-                  <div className="truncate group-hover:underline underline-offset-2" title={page.target_path}>{page.target_path}</div>
+                  {/* No `group-hover:underline`: the row has no href and no
+                      onSelect, so the underline promised a navigation that
+                      could never happen. The row's one verb is Regenerate, in
+                      the action column. */}
+                  <div className="truncate" title={page.target_path}>{page.target_path}</div>
                   {(() => { const TypeIcon = getPageTypeIcon(page.page_type); return (
                     <div className="flex items-center gap-1 truncate text-[var(--color-text-tertiary)]" title={page.page_type}>
                       <TypeIcon className="h-3 w-3 shrink-0" />
@@ -175,7 +184,7 @@ export function FreshnessTable({
                 </td>
                 <td
                   className="px-4 py-2.5 text-xs text-[var(--color-text-tertiary)] hidden md:table-cell"
-                  title={new Date(page.updated_at).toLocaleString()}
+                  title={formatDateTime(page.updated_at)}
                 >
                   {formatRelativeTime(page.updated_at)}
                 </td>

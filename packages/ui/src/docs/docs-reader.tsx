@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   FileText,
   ArrowRight,
@@ -11,9 +11,10 @@ import {
 import type { DocPage, DocPageSummary } from "@repowise-dev/types/docs";
 import { cn } from "../lib/cn";
 import { formatRelativeTime, formatTokens } from "../lib/format";
-import { getPageTypeLabel } from "../lib/page-types";
+import { getPageLabel, isStubFallbackPage } from "../lib/page-types";
 import { computeDocNav } from "./doc-nav";
 import { filterMarkdownByPersona, type ReaderPersona } from "./reader-persona";
+import { ModuleHistory } from "./module-history";
 import { WikiMarkdown } from "../wiki/wiki-markdown";
 import { TableOfContents } from "../wiki/table-of-contents";
 import { BacklinksPanel } from "../wiki/backlinks-panel";
@@ -24,12 +25,18 @@ import {
   type RelatedReason,
 } from "../wiki/wiki-links-types";
 import { Breadcrumb } from "../shared/breadcrumb";
+import { ViewTabs } from "../shared/view-tabs";
 import { Skeleton } from "../ui/skeleton";
 
 /** Related entries shown before the "+ N more" line. Five, not eight: the list
  *  is a suggestion of where to go next, and past about five it reads as a dump
  *  of everything the graph knows. */
 const RELATED_LIMIT = 5;
+
+const READER_VIEWS = [
+  { id: "page", label: "Page" },
+  { id: "reference", label: "Reference" },
+];
 
 const RELATED_REASON_LABELS: Record<RelatedReason, string> = {
   imports: "imports",
@@ -55,6 +62,15 @@ function stripLeadingTitleHeading(content: string, title: string): string {
   return lines.join("\n");
 }
 
+/** The readable half of a page id, for telling someone what they asked for.
+ *  Ids are `"{page_type}:{target_path}"`, and the path is the part that names
+ *  anything; a bare `file_page:` prefix on screen is machinery, not an answer. */
+function describePageId(pageId: string): string {
+  const colon = pageId.indexOf(":");
+  const path = colon === -1 ? pageId : pageId.slice(colon + 1);
+  return path.trim() || pageId;
+}
+
 /** Router-aware anchor — host injects Next.js Link / in-app interception. */
 export type ReaderLinkComponent = React.ElementType<{
   href: string;
@@ -77,6 +93,24 @@ interface DocsReaderProps {
   sidebarOpen: boolean;
   /** ``?page=`` href builder — host owns the route shape. */
   buildPageHref: (pageId: string) => string;
+  /**
+   * Href for the source file's own page, given a repo-relative path.
+   *
+   * The reader is the one surface that knows a page documents a specific file —
+   * `page.target_path` on a `file_page` is exactly the path the file route
+   * takes — and until this it was the only surface with no link to it at all.
+   * Optional so a host without a file route (the VS Code webview) simply
+   * renders no door rather than a broken one.
+   */
+  buildFileHref?: ((filePath: string) => string) | undefined;
+  /**
+   * The page id that was asked for and could not be fetched.
+   *
+   * Set it only once the fetch has settled — while it is in flight the host
+   * should be passing `isLoading` instead, or the reader flashes "no page for
+   * this one" over a request that is about to succeed.
+   */
+  missingPageId?: string | undefined;
   /** Router-aware link for in-content + breadcrumb anchors. */
   LinkComponent: ReaderLinkComponent;
   /**
@@ -92,6 +126,77 @@ interface DocsReaderProps {
    * on AI-written pages so only auto pages advertise the upgrade.
    */
   upgradeSlot?: React.ReactNode;
+  /**
+   * The page's own model action ("Write this page with AI" / "Rewrite with
+   * AI"), rendered at the end of the metadata row under the title. Host owns
+   * the launch and decides which pages can be written; omit it elsewhere.
+   */
+  pageActionSlot?: React.ReactNode;
+  /**
+   * Where the "out of date" mark in the metadata row links (the host's doc
+   * drift view). Without it the mark is plain text. A fresh page shows no mark.
+   */
+  freshnessHref?: string | undefined;
+  /** Overrides for the out-of-date wording, for a host translating it. */
+  freshnessLabels?: FreshnessLabels | undefined;
+}
+
+export interface FreshnessLabels {
+  /** `freshness_status: "stale"`: the code moved since the page was written. */
+  stale?: string;
+  /** `freshness_status: "outdated"`. */
+  outdated?: string;
+}
+
+const DEFAULT_FRESHNESS_LABELS: Required<FreshnessLabels> = {
+  stale: "May be out of date",
+  outdated: "Out of date",
+};
+
+/**
+ * Freshness as metadata: nothing when the page is fresh (the quiet default),
+ * a warning dot and a word when it is not. Keyed on the stored status only;
+ * the confidence score is not a freshness signal for pages built from the
+ * index, so it is never used as a fallback here.
+ */
+function FreshnessMark({
+  status,
+  href,
+  labels,
+  LinkComponent,
+}: {
+  status: string | undefined;
+  href?: string | undefined;
+  labels?: FreshnessLabels | undefined;
+  LinkComponent: ReaderLinkComponent;
+}) {
+  if (status !== "stale" && status !== "outdated") return null;
+  const text = labels?.[status] ?? DEFAULT_FRESHNESS_LABELS[status];
+  const inner = (
+    <>
+      <span
+        aria-hidden
+        className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--color-warning)]"
+      />
+      {text}
+    </>
+  );
+  const cls = "inline-flex items-center gap-1.5 text-[var(--color-text-secondary)]";
+  return (
+    <>
+      {href ? (
+        <LinkComponent
+          href={href}
+          className={cn(cls, "hover:text-[var(--color-text-primary)] hover:underline")}
+        >
+          {inner}
+        </LinkComponent>
+      ) : (
+        <span className={cls}>{inner}</span>
+      )}
+      <span aria-hidden className="opacity-40">&middot;</span>
+    </>
+  );
 }
 
 export function DocsReader({
@@ -104,10 +209,15 @@ export function DocsReader({
   persona,
   sidebarOpen,
   buildPageHref,
+  buildFileHref,
+  missingPageId,
   LinkComponent,
   intelligenceSlot,
   versionHistorySlot,
   upgradeSlot,
+  pageActionSlot,
+  freshnessHref,
+  freshnessLabels,
 }: DocsReaderProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -127,6 +237,14 @@ export function DocsReader({
   if (isLoading) return <ReaderSkeleton />;
 
   if (!page) {
+    // Two different states wearing one screen until now. A reader who opened
+    // the surface with nothing selected needs "pick something". A reader who
+    // asked for a specific page and did not get it needs to be told that, or
+    // the generic prompt reads as the link having done nothing — and links
+    // into a specific page arrive from all over the app (row actions, the
+    // command palette, bookmarks), each of which can name a page the index
+    // never wrote or has since dropped.
+    const requested = missingPageId ? describePageId(missingPageId) : null;
     return (
       <div className="flex flex-col items-center justify-center h-full gap-4 text-center px-8">
         <div className="rounded-full bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] p-4">
@@ -134,10 +252,22 @@ export function DocsReader({
         </div>
         <div className="space-y-1">
           <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">
-            Select a page
+            {requested ? "No page for this one yet" : "Select a page"}
           </h3>
           <p className="text-xs text-[var(--color-text-secondary)] max-w-sm">
-            Choose a file or module from the tree to view its AI-generated documentation.
+            {requested ? (
+              <>
+                Repowise has not written a page for{" "}
+                <span className="font-mono text-[var(--color-text-primary)] break-all">
+                  {requested}
+                </span>
+                . Page selection is budgeted, so a repository is documented at
+                the files that carry its shape. Pick another from the tree, or
+                re-run the index with a wider page budget.
+              </>
+            ) : (
+              "Choose a file or module from the tree to read what Repowise wrote about it."
+            )}
           </p>
         </div>
       </div>
@@ -146,6 +276,8 @@ export function DocsReader({
 
   return (
     <DocsReaderBody
+      // Keyed so the Page / Reference choice resets with the page.
+      key={page.id}
       page={page}
       pages={pages}
       repoId={repoId}
@@ -154,10 +286,14 @@ export function DocsReader({
       goToPageId={goToPageId}
       persona={persona}
       buildPageHref={buildPageHref}
+      buildFileHref={buildFileHref}
       LinkComponent={LinkComponent}
       intelligenceSlot={intelligenceSlot}
       versionHistorySlot={versionHistorySlot}
       upgradeSlot={upgradeSlot}
+      pageActionSlot={pageActionSlot}
+      freshnessHref={freshnessHref}
+      freshnessLabels={freshnessLabels}
     />
   );
 }
@@ -209,10 +345,14 @@ function DocsReaderBody({
   goToPageId,
   persona,
   buildPageHref,
+  buildFileHref,
   LinkComponent,
   intelligenceSlot,
   versionHistorySlot,
   upgradeSlot,
+  pageActionSlot,
+  freshnessHref,
+  freshnessLabels,
 }: {
   page: DocPage;
   pages: DocPageSummary[];
@@ -222,10 +362,14 @@ function DocsReaderBody({
   goToPageId: (pageId: string) => void;
   persona: ReaderPersona;
   buildPageHref: (pageId: string) => string;
+  buildFileHref?: ((filePath: string) => string) | undefined;
   LinkComponent: ReaderLinkComponent;
   intelligenceSlot?: React.ReactNode;
   versionHistorySlot?: React.ReactNode;
   upgradeSlot?: React.ReactNode;
+  pageActionSlot?: React.ReactNode;
+  freshnessHref?: string | undefined;
+  freshnessLabels?: FreshnessLabels | undefined;
 }) {
   const nav = useMemo(() => computeDocNav(page, pages), [page, pages]);
   const wikiLinks = useMemo(() => getWikiLinks(page.metadata), [page.metadata]);
@@ -234,6 +378,12 @@ function DocsReaderBody({
   // and always will be; a model-written page that is still a template has
   // prose outstanding, which is what the upgrade affordance is for.
   const isTemplatePage = page.provider_name === "template";
+
+  // Of those, the ones where prose was attempted and lost rather than never
+  // asked for. This is the only per-page trust caveat the reader still draws,
+  // and it rides along with the affordance that fixes it instead of getting a
+  // callout of its own. See the end-of-content block below.
+  const proseLost = isStubFallbackPage(page);
 
   // The reader renders the page title as the H1 above the body, but generated
   // content often opens with its own "# <title>" line (the deterministic
@@ -248,6 +398,12 @@ function DocsReaderBody({
     () => filterMarkdownByPersona(bodyContent, persona),
     [bodyContent, persona],
   );
+
+  // The agent digest: questions, identifiers, public API and git signals the
+  // page carries for search and MCP, kept off the body and shown on request.
+  const digest = page.digest?.trim() ?? "";
+  const [view, setView] = useState<"page" | "reference">("page");
+  const showingReference = view === "reference" && digest !== "";
 
   // The nearest ancestor that is actually a module. Breadcrumbs now come from
   // the stored tree, whose ancestors can be a layer or the file a symbol was
@@ -299,6 +455,14 @@ function DocsReaderBody({
   // layer_id, whose value is the stable "layer:<slug>" the layer page is keyed
   // by. Reconstructing an id from the name never matched once the enrichment
   // pass had renamed a layer.
+  // The source file this page documents, when there is one. `target_path` on a
+  // `file_page` is the repo-relative path the file route takes — the same pair
+  // the file endpoint matches on — so no id parsing is involved.
+  const sourceFileHref =
+    page.page_type === "file_page" && page.target_path && buildFileHref
+      ? buildFileHref(page.target_path)
+      : undefined;
+
   const layerName =
     typeof page.metadata?.layer_name === "string" ? page.metadata.layer_name : "";
   const layerId =
@@ -363,6 +527,23 @@ function DocsReaderBody({
     return Comp;
   }, [goToPageId]);
 
+  /* No `prose` wrapper: every element the renderer emits is already styled
+     through our own tokens, so the plugin contributed exactly two things, a
+     hardcoded `prose-invert` that fed dark variables to light mode and
+     `code::before/::after { content: "`" }`, which printed literal backticks
+     around every unresolved inline ref. */
+  const article = (markdown: string) => (
+    <article data-chat-selection="" className="max-w-none leading-relaxed overflow-hidden">
+      <WikiMarkdown
+        content={markdown}
+        wikiLinks={wikiLinks}
+        buildHref={(pid) => buildPageHref(pid)}
+        LinkComponent={WikiInlineLink}
+        pages={pages}
+      />
+    </article>
+  );
+
   return (
     <div className="flex h-full">
       <div className="flex flex-col flex-1 min-w-0">
@@ -394,11 +575,9 @@ function DocsReaderBody({
             </h1>
 
             {/* One quiet provenance line: what kind of page this is, who wrote
-                it, and when. Previously this row carried an accent-filled
-                "Regenerate" pill immediately beside the h1, which read as a
-                statement about the page rather than an action on it and
-                out-shouted the title. The upgrade affordance now sits at the
-                end of the content, where a reader has seen the page is thin.
+                it, when, and whether it fell behind its code. A host's page
+                action (`pageActionSlot`) ends the row as plain model-coloured
+                text, so it never competes with the title.
 
                 "Written by <model>" / "Built from the index" is the Overview
                 page's vocabulary, deliberately: a page can lack prose because
@@ -406,7 +585,7 @@ function DocsReaderBody({
                 be untrue. */}
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-[11px] text-[var(--color-text-tertiary)] mb-5">
               <span className="font-mono text-[10px] uppercase tracking-[0.12em]">
-                {getPageTypeLabel(page.page_type)}
+                {getPageLabel(page)}
               </span>
               <span aria-hidden className="opacity-40">&middot;</span>
               <span className="text-[var(--color-text-secondary)]">
@@ -417,6 +596,12 @@ function DocsReaderBody({
                     : "Written by a model"}
               </span>
               <span aria-hidden className="opacity-40">&middot;</span>
+              <FreshnessMark
+                status={page.freshness_status}
+                href={freshnessHref}
+                labels={freshnessLabels}
+                LinkComponent={LinkComponent}
+              />
               <span title={page.updated_at}>
                 updated {formatRelativeTime(page.updated_at)}
               </span>
@@ -443,6 +628,38 @@ function DocsReaderBody({
                     {layerName}
                   </span>
                 ))}
+
+              {/* The door out to the code this page is about. The docs surface
+                  rendered no link to a file page anywhere, on any of its
+                  screens, so a reader who finished a file's documentation and
+                  wanted its health, history or dependents had to go back to
+                  the tree and start again from Files.
+
+                  It sits at the end of the provenance row rather than in the
+                  rail, because the rail is `2xl`-only and this is the one link
+                  on the page that has to survive a laptop.
+
+                  Two things it does not inherit from that row. It sets its own
+                  `text-xs`, because the row runs at 11px for metadata and this
+                  is the page's only action — an action smaller than every body
+                  size on the surface is not one. And it does not take
+                  `ml-auto`: this row wraps (a long model name beside a module
+                  pill and a layer pill does it at laptop width), and a flex
+                  item only right-aligns while it still shares a line, so
+                  `ml-auto` bought a tidy right edge on wide windows and a link
+                  stranded alone against the far margin on the widths that
+                  actually wrap. Inline, after the pills, it reads the same at
+                  every width. */}
+              {sourceFileHref && (
+                <LinkComponent
+                  href={sourceFileHref}
+                  className="shrink-0 text-xs font-medium text-[var(--color-accent-primary)] hover:underline"
+                  title={`Health, history and dependents for ${page.target_path}`}
+                >
+                  Open file page <span aria-hidden>&rarr;</span>
+                </LinkComponent>
+              )}
+              {pageActionSlot}
             </div>
 
             {/* What this page was written from. The rail carried this as
@@ -452,9 +669,9 @@ function DocsReaderBody({
                 after. Collapsed by default — it answers a question, it does not
                 raise one. */}
             {sources.length > 0 && (
-              <details className="group mb-6 rounded-lg border border-[var(--color-border-default)]">
+              <details className="group/toc mb-6 rounded-lg border border-[var(--color-border-default)]">
                 <summary className="flex cursor-pointer list-none items-center gap-2 px-3.5 py-2 text-xs text-[var(--color-text-secondary)]">
-                  <ChevronRight className="h-3 w-3 shrink-0 text-[var(--color-text-tertiary)] transition-transform group-open:rotate-90" />
+                  <ChevronRight className="h-3 w-3 shrink-0 text-[var(--color-text-tertiary)] transition-transform group-open/toc:rotate-90" />
                   <span>
                     Built from {sources.length} source{sources.length === 1 ? "" : " files"}
                   </span>
@@ -491,15 +708,6 @@ function DocsReaderBody({
               </details>
             )}
 
-            {/* Low-confidence flag */}
-            {page.confidence > 0 && page.confidence < 0.5 && (
-              <div className="mb-4 flex items-start gap-1.5 rounded-md border border-[var(--color-warning)]/40 bg-[var(--color-warning)]/10 px-3 py-2">
-                <span className="text-xs text-[var(--color-text-primary)]">
-                  This page was generated with low confidence — verify against the source before relying on it.
-                </span>
-              </div>
-            )}
-
             {/* Human notes (read-only callout; editing lives in the rail) */}
             {page.human_notes && (
               <div className="mb-4 rounded-lg border border-[var(--color-border-accent)] bg-[var(--color-accent-blue)]/5 px-4 py-3">
@@ -509,31 +717,55 @@ function DocsReaderBody({
               </div>
             )}
 
-            {/* Markdown content.
-                No `prose` wrapper: every element the renderer emits is already
-                styled through our own tokens, so the plugin contributed exactly
-                two things — a hardcoded `prose-invert` that fed dark variables
-                to light mode, and `code::before/::after { content: "`" }`, which
-                printed literal backticks around every unresolved inline ref. */}
-            <article className="max-w-none leading-relaxed overflow-hidden">
-              <WikiMarkdown
-                content={visibleContent}
-                wikiLinks={wikiLinks}
-                buildHref={(pid) => buildPageHref(pid)}
-                LinkComponent={WikiInlineLink}
-                pages={pages}
-              />
-            </article>
+            {/* Markdown content. A page with an agent digest gets a Page /
+                Reference switch: the body is what a reader came for, the
+                digest is what search and agents read, one click away. */}
+            {digest ? (
+              <ViewTabs
+                tabs={READER_VIEWS}
+                value={view}
+                onValueChange={(id) => setView(id === "reference" ? "reference" : "page")}
+                aria-label="Page or reference"
+              >
+                {showingReference && (
+                  <p className="mb-4 text-xs text-[var(--color-text-tertiary)]">
+                    What this page carries for search and agents: the questions it answers,
+                    the identifiers behind it and its git history.
+                  </p>
+                )}
+                {article(showingReference ? digest : visibleContent)}
+              </ViewTabs>
+            ) : (
+              article(visibleContent)
+            )}
 
             {/* The upgrade affordance, at the end of the content rather than
                 beside the title. Someone who has read to here knows the page is
                 thin; someone at the title does not yet, and an accent pill up
-                there competed with the h1 for a decision they could not make. */}
-            {isTemplatePage && upgradeSlot && (
+                there competed with the h1 for a decision they could not make.
+
+                The prose-lost caveat rides in the same block rather than in a
+                banner of its own. It used to be a bordered warning callout
+                above the content keyed on `confidence < 0.5`, which generation
+                stamped on every deterministic page, so an index built without
+                a key opened every page it had under "verify against the source
+                before relying on it", about pages that are pure index output
+                and have nothing to verify. Same sentence, same place as the
+                action that resolves it, no alarm colour: the reader is told
+                once, at the point it is actionable.
+
+                `proseLost` is checked on its own rather than under
+                `isTemplatePage`. A failed page is always a template here,
+                because the fallback substitutes a template render, so the two
+                are equivalent today. Coupling them would mean any other writer
+                of the marker could stamp a real provider name and silently
+                lose the caveat. */}
+            {(proseLost || (isTemplatePage && upgradeSlot)) && (
               <div className="mt-8 flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-[var(--color-border-default)] pt-4">
                 <p className="text-xs text-[var(--color-text-tertiary)]">
-                  This page is built from the index. A model can write the how and
-                  why on top of it.
+                  {proseLost
+                    ? "This page is built from the index. A model was meant to write over it on the last run and the call did not complete."
+                    : "This page is built from the index. A model can write the how and why on top of it."}
                 </p>
                 {upgradeSlot}
               </div>
@@ -605,6 +837,7 @@ function DocsReaderBody({
                 the intelligence sections and the contents. The breakpoint is
                 2xl, not lg — see the rail below for why. */}
             <div className="mt-10 grid gap-8 border-t border-[var(--color-border-default)] pt-6 sm:grid-cols-2 2xl:hidden">
+              <ModuleHistory metadata={page.metadata} />
               {intelligenceSlot && (
                 <div className="flex flex-col gap-4">{intelligenceSlot}</div>
               )}
@@ -656,7 +889,9 @@ function DocsReaderBody({
       {sidebarOpen && (
         <div className="hidden 2xl:block shrink-0 w-[300px] overflow-auto">
           <div className="flex flex-col gap-7 py-8 pl-6 pr-7">
-            <TableOfContents content={bodyContent} />
+            <TableOfContents content={showingReference ? digest : bodyContent} />
+
+            <ModuleHistory metadata={page.metadata} />
 
             {intelligenceSlot}
 

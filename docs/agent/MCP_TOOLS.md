@@ -1,167 +1,146 @@
 # MCP Tools Reference
 
-repowise exposes a curated set of tools via the [Model Context Protocol](https://modelcontextprotocol.io) (MCP). These tools give AI coding assistants (Claude Code, Codex, Cursor, Cline, Windsurf) structured access to your codebase intelligence: dependency graph, git history, documentation, and architectural decisions.
+repowise serves its codebase intelligence to AI coding assistants (Claude Code, Codex, Cursor, Cline, Windsurf and any other [Model Context Protocol](https://modelcontextprotocol.io) client) as MCP tools. They answer from the index: dependency graph, git history, generated docs, decision records, health and dead-code analysis. No tool edits your code.
 
-17 tools are registered in total. A single-repo server advertises 11 by default: the ten flagship tools below plus `list_repos`. Workspace mode adds 2 more automatically (`get_architecture`, `get_blast_radius`), for 13. Four further tools are off by default everywhere and must be opted in. The surface is configurable; see [Configuring the tool surface](#configuring-the-tool-surface).
+Two opt-in tools go further: `set_finding_status` records a triage verdict in the index, and `generate_refactoring_code` calls your LLM to draft a diff.
 
-**Start the MCP server:**
+18 tools are registered in total. A single-repo server advertises 10 by default: exactly the canonical tools. Workspace mode adds the `list_repos` discovery utility, for 11. 7 specialist tools are opt-in where eligible.
 
-```bash
-repowise mcp --transport stdio           # for Claude Code, Codex, Cursor, etc.
-repowise mcp --transport streamable-http # for HTTP clients on port 7338
-repowise mcp --transport sse --port 7338 # legacy SSE transport
-```
+This page says which tool to call and with what arguments. Response fields, the `_meta` envelope and truncation rules are in [MCP_RESPONSE_FIELDS.md](../reference/MCP_RESPONSE_FIELDS.md).
 
-**Auto-setup:** `repowise init` automatically registers the MCP server and installs proactive hooks for Claude Code. `repowise init --codex` writes project-local Codex MCP config and hooks.
+## Contents
 
-**Opting out:** each Claude config holds a single `repowise` MCP key, so indexing a second repo repoints it rather than adding a second entry. Pass `repowise init --no-editor-setup` (or set `REPOWISE_SKIP_EDITOR_SETUP=1`) for a repo you do not want registered: a scratch clone, a worktree, a CI or benchmark run. Nothing about the index changes, and re-running `repowise init` without the flag registers it later. `init` also prints a notice when it is about to repoint an existing entry.
+- [Starting the server](#starting-the-server)
+- [Configuring the tool surface](#configuring-the-tool-surface)
+- [Reading a response](#reading-a-response)
+- [Which tool for which question](#which-tool-for-which-question)
+- [Workspace mode](#workspace-mode)
+
+**Canonical tools (default in both modes, 10)**
+[get_answer](#get_answer) &middot; [get_context](#get_context) &middot; [get_symbol](#get_symbol) &middot; [search_codebase](#search_codebase) &middot; [get_risk](#get_risk) &middot; [get_change_risk](#get_change_risk) &middot; [get_why](#get_why) &middot; [get_overview](#get_overview) &middot; [get_health](#get_health) &middot; [get_dead_code](#get_dead_code)
+
+**Workspace discovery utility (default in workspace mode, 1)**
+[list_repos](#list_repos)
+
+**Opt-in specialists (7; workspace eligibility still applies)**
+[get_dependency_path](#get_dependency_path) &middot; [get_execution_flows](#get_execution_flows) &middot; [generate_refactoring_code](#generate_refactoring_code) &middot; [set_finding_status](#set_finding_status) &middot; [get_blast_radius](#get_blast_radius) &middot; [get_architecture](#get_architecture) &middot; [get_conformance](#get_conformance)
 
 ---
 
-## The ten flagship tools
+## Starting the server
 
-| Tool | Purpose | Typical use |
-|------|---------|-------------|
-| `get_overview` | Architecture summary | First call on any unfamiliar codebase |
-| `get_answer` | One-call RAG Q&A | First call on any code question |
-| `get_context` | Rich context for targets | Before reading or modifying code |
-| `get_symbol` | Raw source bytes for one symbol | When you need one function/class body |
-| `search_codebase` | Hybrid symbol / path / concept search | Finding a symbol or file, or discovering code by topic |
-| `get_risk` | Modification risk | Before changing hotspot files |
-| `get_change_risk` | Live commit or range risk | Before merging a commit or PR range |
-| `get_why` | Architectural decisions | Before structural changes |
-| `get_dead_code` | Unreachable code | Cleanup tasks |
-| `get_health` | Code-health marker scores | Before refactoring, find the worst files |
+```bash
+repowise mcp                              # stdio, for Claude Code, Codex, Cursor
+repowise mcp --transport streamable-http  # HTTP on port 7338
+repowise mcp --transport sse --port 7338  # legacy SSE transport
+```
 
-Also always on by default: `list_repos` (repo aliases). See [Supplementary tools](#supplementary-tools).
+- `repowise init` registers the server with Claude Code and installs its hooks; `repowise init --codex` writes project-local Codex MCP config and hooks.
+- `--no-editor-setup` (or `REPOWISE_SKIP_EDITOR_SETUP=1`) skips registration for a scratch clone, worktree or CI run.
+- Each Claude config holds one `repowise` entry, so indexing a second repo repoints it; `init` prints a notice first.
 
 ---
 
 ## Configuring the tool surface
 
-The default surface is deliberately small: fewer, richer tools mean fewer round-trips and less schema overhead per task. What a server advertises is resolved from three things: each tool's `default`/`requires_workspace` metadata, whether the server is in workspace mode, and an optional override.
+| Tool | Default | Mode |
+|------|---------|------|
+| `get_answer`, `get_context`, `get_symbol`, `search_codebase`, `get_risk`, `get_change_risk`, `get_why`, `get_overview`, `get_health`, `get_dead_code` | on | single-repo and workspace |
+| `list_repos` | on | workspace only |
+| `get_dependency_path`, `get_execution_flows`, `generate_refactoring_code`, `set_finding_status` | opt-in | single-repo and workspace |
+| `get_blast_radius`, `get_architecture`, `get_conformance` | opt-in | workspace only |
 
-- **Default (single-repo):** 11 tools, the ten flagship tools plus `list_repos`.
-- **Default (workspace):** those 11 plus `get_architecture` and `get_blast_radius`, added automatically when the server starts inside a workspace. They are never advertised outside one.
-- **Opt-in tools:** `get_dependency_path`, `get_execution_flows`, `generate_refactoring_code`, and `get_conformance` are registered but off by default. Turn them on per repo; `get_conformance` only does useful work in workspace mode (name it there).
+- **Default (single-repo):** 10 tools, exactly the canonical intelligence set.
+- **Default (workspace):** those 10 plus `list_repos`, the workspace discovery utility.
 
-**Configure it in `.repowise/config.yaml`** under an `mcp.tools` key. Four shapes are supported:
+Set `mcp.tools` in `.repowise/config.yaml`, or pass `--tools` per launch (it overrides the config):
 
 ```yaml
-# Adjust the default set with + / - deltas (the common case):
 mcp:
-  tools: ["+get_execution_flows", "-get_dead_code"]
-
-# Or give an explicit allowlist (only these tools):
-mcp:
-  tools: ["get_answer", "get_context", "get_symbol", "search_codebase"]
-
-# Or enable everything available in the current mode:
-mcp:
-  tools: all
-
-# Or select the agent-lean profile (see below):
-mcp:
-  tools: lean
+  tools: ["+get_execution_flows", "-get_dead_code"]   # adjust the default set
+# tools: ["get_answer", "get_context"]                 # explicit allowlist
+# tools: all                                           # every tool usable in this mode
+# tools: lean                                          # the agent-lean profile
 ```
-
-**Or per launch on the CLI**, which overrides the config block:
 
 ```bash
-repowise mcp --tools "+get_execution_flows"          # default set plus one
-repowise mcp --tools "get_answer,get_context"         # explicit allowlist
-repowise mcp --tools lean                             # agent-lean profile
-repowise mcp --all                                    # every available tool
+repowise mcp --tools "+get_execution_flows"   # default set plus one
+repowise mcp --tools "get_answer,get_context"  # explicit allowlist
+repowise mcp --tools lean                      # agent-lean profile
+repowise mcp --all                             # every tool usable in this mode
 ```
 
-Workspace-only tools named explicitly in single-repo mode are ignored (they cannot do useful work there). Unknown tool names are ignored with a warning.
+- `+` or `-` tokens adjust the default set; a list without prefixes is an allowlist.
+- Unknown names are ignored with a warning, as are workspace-only tools outside workspace mode (no workspace graph to read).
+- Clients see the surface resolved at server start; restart after changing it.
+- The dashboard Settings page toggles each tool per repo and writes the same block. See [CONFIG.md](../reference/CONFIG.md#the-mcp-block).
 
-**The `lean` profile** is the agent-lean surface: `get_answer`, `get_context`, `get_symbol`, `search_codebase`, `get_risk`, and `get_why`, plus `list_repos` in workspace mode (where repo aliases must be discoverable). `get_why` is part of the lean set because why/history questions are the category no code-search surface can answer from the tree alone; a lean profile without it measurably underperforms on exactly those questions. The profile advertises ~2.1k tokens of schema versus ~4.1k for the default surface. That is small enough to keep always loaded, so when a repo has `mcp.tools: lean` configured, `repowise init` skips the tool-search recommendation (the `ENABLE_TOOL_SEARCH` setting that defers MCP schemas behind a lookup round trip) for Claude Code; the six schemas the agent actually reaches for stay in context on every turn. init never turns an existing `ENABLE_TOOL_SEARCH` setting off, since it applies to every MCP server, not just repowise.
-
-**Or from the dashboard:** the Settings page lists every tool with its description and a per-repo toggle, and writes the same `mcp.tools` config for you.
+**The `lean` profile** is `get_answer`, `get_context`, `get_symbol`, `search_codebase`, `get_risk` and `get_why`, plus `list_repos` in workspace mode. It is small enough to keep every schema loaded, so with `mcp.tools: lean`, `repowise init` skips the Claude Code tool-search recommendation.
 
 ---
 
-## Reversible truncation: `_meta.omitted`
+## Reading a response
 
-Tool responses are token-budgeted. When a response is truncated, the dropped
-content is no longer silently lost: it is stored in the repo's
-[omission store](DISTILL.md#the-omission-store) and the response's `_meta`
-envelope lists how to get it back:
+Every tool returns JSON with a `_meta` envelope ([fields](../reference/MCP_RESPONSE_FIELDS.md#the-_meta-envelope)). Check:
 
-```jsonc
-"_meta": {
-  "omitted": {
-    "refs": ["a1b2c3d4e5f6"],
-    "tokens": 5840,
-    "restore": "repowise expand <ref> (CLI) or get_symbol(\"repowise#<ref>\", query?) (MCP)"
-  }
-}
-```
+- `stale_warning`: run `repowise update` (or `repowise update --working-tree` when `working_tree_dirty` is set) before trusting file-level detail. Absent means current.
+- `complete`: content verified against the live file. Do not re-read it.
+- `state`: `degraded`, `partial` or `truncated`. A degraded empty result is a failed read, not an empty repository.
+- `get_answer`'s top-level `confidence` is its one trust signal.
+- Diagnostics such as `timing_ms` ride only on `get_overview`; `REPOWISE_MCP_DEBUG_META=1` restores them everywhere.
 
-Truncated skeleton blocks are replaced in place by a `[repowise#<ref>: ...]`
-marker; everything else is captured into one combined document per response.
-Resolve refs with `repowise expand <ref>` from a shell, or
-`get_symbol("repowise#<ref>")` from any MCP client. See
-[DISTILL.md](DISTILL.md) for the full reversibility model.
+### Reversible truncation: `_meta.omitted`
 
-**The `_meta` envelope** (all fields optional, present only when meaningful):
+Responses fit 24,000 characters (32,000 with a nonempty `include` for most tools). Cut content goes to the [omission store](DISTILL.md#the-omission-store); restore a ref from `_meta.omitted` with `repowise expand <ref>` or `get_symbol("repowise#<ref>")`. Capped lists keep `*_total` counts. [Details](../reference/MCP_RESPONSE_FIELDS.md#truncation-and-recovery).
 
-| Field | When present |
-|-------|--------------|
-| `timing_ms` | Tool wall-time |
-| `hint` | A short, conservative follow-up suggestion |
-| `cached` | Only when `true` |
-| `index_age_days` | Days since the last `repowise update` |
-| `indexed_commit` | Short (12-char) SHA the index was built against |
-| `live_head` | Only when it differs from `indexed_commit` |
-| `stale_warning` | Only on a real signal: HEAD mismatch, or age over ~90 days when git is unreachable |
-| `embedder`, `embedder_degraded`, `embedder_warning` | Only when the embedder fell back to a mock/degraded mode |
+### Unrecognised arguments: `ignored_arguments`
 
-Silence on these fields means the index is current; don't infer staleness from their absence. `list_repos`, `get_architecture`, `get_blast_radius`, and `get_conformance` don't carry a freshness envelope at all.
+A value outside a closed vocabulary (a misspelled `kind`, `include` key or `mode`) is dropped, never applied as a filter matching nothing, and named in `ignored_arguments` with the valid values. [Per-tool shapes](../reference/MCP_RESPONSE_FIELDS.md#ignored-arguments).
 
 ---
 
-## `get_overview`
+## Which tool for which question
 
-Architecture summary, module map, entry points, git health, and community summary.
+| Question | Tool |
+|----------|------|
+| How does X work? Where is Y? Why is Z like this? | `get_answer` |
+| I am new to this repo. What is the shape of it? | `get_overview` |
+| What is in this file, who calls this function, who owns it? | `get_context` |
+| Show me this file's structure without reading all of it | `get_context(include=["skeleton"])` |
+| Give me the body of this one symbol | `get_symbol` |
+| Find the symbol, file or page matching this name or topic | `search_codebase` |
+| Is this file risky to touch? What has broken here before? | `get_risk` |
+| What could my set of changed files break, and which tests should run? | `get_risk(changed_files=[...])` |
+| What did this commit, range or uncommitted diff make worse? | `get_change_risk` |
+| Why was it built this way? Is there a decision governing it? | `get_why` |
+| What should we fix first? Which files are least healthy? | `get_health` |
+| Is the file I just edited healthier or worse? | `get_health(targets=[...])` |
+| What can we delete? | `get_dead_code` |
+| Which repos does this server serve? | `list_repos` (workspace) |
+| How are these two files connected? | `get_dependency_path` (opt-in) |
+| What runs when this entry point is called? | `get_execution_flows` (opt-in) |
+| Turn this refactoring plan into a diff | `generate_refactoring_code` (opt-in) |
+| Record that a refactoring plan is a false positive | `set_finding_status` (opt-in) |
+| Which services in other repos depend on this one? | `get_blast_radius` (workspace, opt-in) |
+| How coupled is the whole system? | `get_architecture` (workspace, opt-in) |
+| Does the system obey our declared dependency rules? | `get_conformance` (workspace, opt-in) |
 
-**Parameters:**
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `repo` | string | No | *(workspace only)* Target repo alias, or `"all"` |
-| `include` | list[string] | No | `"content"` returns the full overview essay in `content_md` instead of the compact summary section |
-
-**Returns:** Architecture description, key modules with purpose and owner, entry points, tech stack, hotspot files, knowledge silos, community summary (top communities by size with labels and cohesion scores). `content_md` is compact by default (summary + tech stack + layers); pass `include=["content"]` for the full essay.
-
-**When to use:** First call on any unfamiliar codebase. Gives the agent a mental map before diving into specifics. Skip on later calls in the same session; it doesn't change mid-session.
-
-**Example calls:**
-
-```
-get_overview()
-get_overview(include=["content"])
-```
+Every `repo` parameter takes a workspace repo alias and defaults to the default repo; `"all"` support is in [Workspace mode](#workspace-mode).
 
 ---
 
 ## `get_answer`
 
-One-call RAG: retrieves over the wiki, gates synthesis on confidence, and returns a cited 2-5 sentence answer.
+Answers a how, where or why question in one call: hybrid retrieval over the wiki and symbol index, then a cited answer. Call it first for any question; skip it when you know the exact file or symbol (use `get_context` or `get_symbol`).
 
-**Parameters:**
+| Parameter | Type | Default | Meaning |
+|-----------|------|---------|---------|
+| `question` | string | required | The question, in plain language |
+| `scope` | string | none | Path prefix to restrict retrieval, e.g. `"src/auth/"` |
+| `include` | list[string] | none | `evidence` (full evidence, larger budget), `diagnostics` (adds `retrieval_quality`) |
+| `repo` | string | default repo | `"all"` not supported |
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `question` | string | Yes | Natural language question about the codebase |
-| `repo` | string | No | *(workspace only)* Target repo alias |
-
-**Returns:** A synthesized answer with file/symbol citations and a confidence label (`high`, `medium`, `low`). High-confidence answers can be cited directly. Low-confidence answers return ranked wiki excerpts instead.
-
-**When to use:** First call on any code question. Collapses search, read, and reason into one round-trip. If confidence is low, follow up with `search_codebase` to discover candidate pages.
-
-**Example call:**
+**Returns** `answer`, `confidence`, `citations`, `symbol_bodies`, `candidate_files`, `best_guesses` ([fields](../reference/MCP_RESPONSE_FIELDS.md#get_answer)). On `low`, read the named rows, then `candidate_files`, before searching again. Without an LLM provider it answers from retrieval, marked `degraded`.
 
 ```
 get_answer(question="How does the authentication flow work?")
@@ -171,79 +150,51 @@ get_answer(question="How does the authentication flow work?")
 
 ## `get_context`
 
-The workhorse tool. Returns docs, symbols, ownership, freshness, and community membership for any combination of files, modules, or symbols.
+A triage card per file, module or symbol: summary, symbols with signatures, hotspot and fix-history cues, ownership, decisions. Relationships, not source. Use it before reading or editing, batching every target in one call; use `include=["skeleton"]` or read the file rather than calling `get_symbol` per signature.
 
-**Parameters:**
+| Parameter | Type | Default | Meaning |
+|-----------|------|---------|---------|
+| `targets` | list[string] | required | Paths, module paths, `"path::Symbol"`, `"component:<name>"`, `"change:<id>"`, `"package:<name>"` |
+| `include` | list[string] | none | `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `references`, `metrics`, `community`, `decisions`, `skeleton`, `skeleton+`, `health`, `doc_drift`, `symbols`, `changes`, `provenance`, `suspects` ([what each adds](../reference/MCP_RESPONSE_FIELDS.md#context-opt-in-blocks)) |
+| `compact` | bool | `true` | `false` adds the structure block, imports and docstrings |
+| `symptom` | string | none | Issue text, error or stack trace for `suspects` to rank against instead of path words |
+| `repo` | string | default repo | `"all"` returns an error |
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `targets` | list[string] | Yes | File paths, module names, or symbol IDs. Batch multiple targets in one call. |
-| `include` | list[string] | No | Additional data to include: `"full_doc"` (full wiki markdown), `"callers"` (who calls this, symbol targets), `"callees"` (what this calls, symbol targets), `"ownership"` (primary owner, bus factor, contributor count), `"last_change"` (last commit date + author), `"metrics"` (PageRank, betweenness, percentiles), `"community"` (cluster membership + neighbors), `"decisions"` (full decision records; default returns titles only), `"skeleton"` (file targets only; the file with bodies elided: every signature, imports, and the bodies of the most central symbols, token-budgeted; typically ~15% of the full file's tokens) |
-| `compact` | boolean | No | Default `true`. Set `false` for full structure block and importer list. |
-| `repo` | string | No | *(workspace only)* Target repo alias, or `"all"` |
+Target kinds:
 
-**Returns per target:** Documentation summary, symbols defined, ownership percentages, freshness score, co-change partners, architectural decisions governing the file. With `include` options: source code, call graph, graph metrics, community membership.
+- `path::Symbol`: a miss falls back to the file's card.
+- A directory: a module card from the indexed files under it, with or without a module page (none is `index_status: "directory_without_module_page"`, with up to 15 `docs.files`). Git history is stored per file, so `ownership` counts the files each person is primary owner of (`owners_by_files`), `last_change` gives the newest commit's date and file (and its author when a stored author matches), and `hotspot_files` counts hotspot files; no commit share, contributor count or bus factor is claimed.
+- `component:<name>`: declared context and rolled-up facts, from [`.repowise/components.yaml`](../reference/CONFIG.md#repowisecomponentsyaml) or derived.
+- `change:<id>` (`change:pr-123` or a commit sha): one [Change Record](../reference/CLI_REFERENCE.md#repowise-changes).
+- `package:<name>` (`package:requests`, `package:npm:lodash`): where a package is imported ([PACKAGE_USAGE.md](../reference/PACKAGE_USAGE.md)).
 
-**When to use:** Before reading or modifying code. Pass all relevant targets in one call to minimize round-trips. In workspace mode, enriched with cross-repo co-change and contract data.
-
-**Example calls:**
+**Returns** `targets` (one card each), plus `dropped_targets` and `recovery` when the budget forced targets out ([fields](../reference/MCP_RESPONSE_FIELDS.md#get_context)). Pass a symbol row's `symbol_id` to `get_symbol`. Before concluding nothing calls a symbol, read the `*_basis` beside an empty `callers` list. `references` gives a rename's edit set.
 
 ```
-get_context(targets=["src/auth/middleware.ts"])
-get_context(targets=["middleware", "api/routes", "payments"], include=["callers", "metrics"])
-get_context(targets=["src/auth"], compact=false, include=["community"])
+get_context(targets=["src/auth/middleware.ts", "src/api/routes.ts"], include=["callers"])
 get_context(targets=["src/big_module.py"], include=["skeleton"])
 ```
-
-**Skeletons:** with `include=["skeleton"]`, file targets gain a structure-level
-rendering sliced from the index's persisted symbol bounds (no parsing at query
-time): every signature, the import preamble, and the bodies of the top symbols
-ranked by graph centrality / hotspot / query match. Elision markers carry
-1-indexed line ranges so you can range-`Read` anything back. For
-structure-level questions ("what's in this file", "which function handles X")
-this replaces a full file read at a fraction of the cost.
 
 ---
 
 ## `get_symbol`
 
-Raw source bytes for one indexed symbol with exact line bounds, cheaper and
-safer than `Read` + offset math. The only tool that returns actual source code.
-Also resolves **omission refs** (`repowise#<12-hex>`) from truncated responses.
+Verified, line-numbered source for one symbol, a live line range, or an omission ref. A follow-up read, not an entry point: use it on an id another response gave you, an elided body, or truncated output. `get_answer` already ships `symbol_bodies`.
 
-**Parameters:**
+| Parameter | Type | Default | Meaning |
+|-----------|------|---------|---------|
+| `symbol_id` | string | none | `"path/file.py::Name"`, `"path/file.py:140-180"` (live range, 200 lines max) or `"repowise#<ref>"` |
+| `id` | string | none | Alias for `symbol_id` |
+| `reference` | object | none | A `continuation_reference` or `fetch_reference` this tool emitted, unchanged |
+| `context_lines` | int | `0` | Extra lines before and after, 0 to 50 |
+| `depth` | int | `1` | 2 or 3 adds the bodies it calls, transitively |
+| `query` | string | none | Omission refs: keep lines matching this regex or substring. Read as `symbol_id` when none is given |
+| `repo` | string | default repo | `"all"` not supported |
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `symbol_id` | string | Yes | One of three forms: `"path/to/file.py::SymbolName"` (canonical, from `get_context`'s symbol list; normalises `::` / `.` / `/` separators across languages), `"path/to/file.py:140-180"` (a live range read, 200 lines max), or an omission ref `"repowise#<12-hex>"` / a pasted whole `[repowise#...]` marker. |
-| `query` | string | No | Omission refs only: return just the stored lines matching this regex (or substring). Ignored for symbol ids and range reads. |
-| `context_lines` | int | No | Extra source lines before/after the symbol (0-50, default 0) |
-| `repo` | string | No | *(workspace only)* Usually omitted; `"all"` is not supported |
-
-**Returns:** For a symbol id or range: the source (bounded at ~600 lines,
-each line prefixed with its file line number in the same format as a `Read`
-result), its exact start/end line numbers, kind, and a `truncated` flag; on a
-miss, an `error` with the closest matches (`fallback_lines` from a live grep).
-When several indexed symbols match the id (overloads, re-exports, conditional
-definitions) the response has `ambiguous: true` and a `candidates` list with
-every matching body — none is silently chosen; candidates past the response
-budget appear in `not_rendered` with a `fetch_with` range read. For an
-omission ref: the stored content plus provenance (`source`, `created_at`,
-`original_tokens`).
-
-**When to use:** When you need the body of one function or class: pipe the
-`symbol_id` straight from `get_context`'s symbol list. Use the line-range form
-for anything that falls between symbols. Or when a response's `_meta.omitted`
-lists refs you want back and you have no shell for `repowise expand` (e.g.
-Claude Desktop).
-
-**Example calls:**
+**Returns** `source` (about 600 lines max), bounds, `kind`, `truncated`, `candidates`, `callee_bodies`, `outlined` ([fields](../reference/MCP_RESPONSE_FIELDS.md#get_symbol)).
 
 ```
-get_symbol(symbol_id="src/auth/service.py::AuthService")
-get_symbol(symbol_id="src/auth/service.py::login", context_lines=10)
-get_symbol(symbol_id="src/auth/service.py:140-180")
-get_symbol(symbol_id="repowise#a1b2c3d4e5f6")
+get_symbol(symbol_id="src/auth/service.py::login", depth=2)
 get_symbol(symbol_id="repowise#a1b2c3d4e5f6", query="FAILED")
 ```
 
@@ -251,52 +202,23 @@ get_symbol(symbol_id="repowise#a1b2c3d4e5f6", query="FAILED")
 
 ## `search_codebase`
 
-Hybrid code search over repowise's indexes. A single tool that, depending on
-the shape of the query, searches the indexed **symbols**, **file paths**, or
-the **wiki**, instead of forcing a fallback to Grep for identifiers.
+Hybrid search routed by query shape: identifiers hit the symbol index, paths resolve files, prose runs wiki-semantic search, and mixed queries run both, keeping only pages that name a file. Use it for ranked hits (enumerating matches, resolving an identifier to a `symbol_id`, scoping a `get_context`); for a question, use `get_answer`, which runs this retrieval.
 
-**Parameters:**
+| Parameter | Type | Default | Meaning |
+|-----------|------|---------|---------|
+| `query` | string | `""` | Identifier, path or natural language. Required unless `pattern` is given |
+| `pattern` | string | none | Alias for `query`; when both are given `query` wins and `pattern` lands in `ignored_arguments` |
+| `limit` | int | `5` | Max results; outside `symbol` mode, max distinct files |
+| `mode` | string | `"auto"` | `auto`, `concept`, `symbol`, `path`, `hybrid`; unknown runs as `auto` |
+| `kind` | string | none | `implementation`, `test`, `config` or `doc` |
+| `symbol_kind` | string | none | Symbol filter, e.g. `function`, `class`, `method` |
+| `page_type` | string | none | One page type, usually `file_page` or `module_page` |
+| `repo` | string | default repo | Or `"all"` for every repo |
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `query` | string | Yes | Identifier, path, or natural-language query |
-| `limit` | int | No | Max results (default 5) |
-| `mode` | string | No | `auto` (default) \| `concept` \| `symbol` \| `path` \| `hybrid` |
-| `kind` | string | No | `implementation` \| `test` \| `config` \| `doc` |
-| `symbol_kind` | string | No | Restrict symbol hits by kind (`function`, `class`, `method`, ...) |
-| `page_type` | string | No | Restrict to one page type. The two you will reach for are `file_page` (the always-on per-file docs) and `module_page` (the subsystem/concept pages). Other stored types (`repo_overview`, `layer_page`, `scc_page`, `api_contract`, `infra_page`, `symbol_spotlight`) also filter. |
-| `repo` | string | No | *(workspace only)* Target repo alias, or `"all"` to search across workspace |
-
-**Modes:**
-
-- **`auto`** (default) routes by query shape:
-  - an **identifier** (`GitIndexer`, `index_repo`) -> searches indexed symbols;
-  - a **path** (`core/ingestion/indexer.py`) -> searches file pages;
-  - **prose** ("how do we handle retries?") -> wiki-semantic search;
-  - mixed prose + identifier -> **hybrid** (symbol hits first, then concept pages).
-- **`concept`** forces the original wiki-semantic behavior.
-- **`symbol`** / **`path`** force the structural search.
-
-**Returns:**
-
-- *Symbol hits*: `{type: "symbol", symbol_id, name, kind, file, start_line, end_line, signature, next: "get_symbol"}`. Ranked by exact-name/qualified-name match, query-token coverage, then graph centrality (PageRank / betweenness / entry-point); non-test before test unless `kind="test"`.
-- *File hits*: `{type: "file", page_id, file, title, next: "get_context"}`.
-- *Concept hits*: ranked wiki pages with `relevance_score`, `snippet`, `target_path`, and a `search_method` (`embedding` vs `bm25` fallback).
-
-Tombstoned and `exclude_patterns`-excluded results are filtered. In workspace
-mode, structural and concept searches both federate across repos and merge
-(this is the one tool where `repo="all"` is fully supported).
-
-**When to use:** Locating a function/class/method by name, resolving a
-path-shaped query, or discovering pages by topic: the symbol/file shapes pipe
-directly into `get_symbol` / `get_context`.
-
-**Example calls:**
+**Returns** `results`, `candidates` (openable file paths), and `lines` with `complete` for identifier queries ([fields](../reference/MCP_RESPONSE_FIELDS.md#search_codebase)). Before a Read, read `candidates`: some `results` are pages, not files.
 
 ```
-search_codebase(query="GitIndexer index_repo")          # -> symbol hits
-search_codebase(query="core/ingestion/indexer.py")      # -> file hits
-search_codebase(query="rate limit OR throttle OR retry") # -> wiki pages
+search_codebase(query="GitIndexer index_repo")
 search_codebase(query="login", mode="symbol", symbol_kind="method")
 ```
 
@@ -304,29 +226,16 @@ search_codebase(query="login", mode="symbol", symbol_kind="method")
 
 ## `get_risk`
 
-Modification risk assessment for files or a set of changed files.
+What history says about touching a file: hotspot, bug-fix record, owners, co-change partners, dependents and security signals. With `changed_files` (PR mode) it leads with a `directive`: what may break and which tests to run. To review the diff itself, use `get_change_risk`.
 
-**Parameters:**
+| Parameter | Type | Default | Meaning |
+|-----------|------|---------|---------|
+| `targets` | list[string] | `changed_files` | File paths to assess |
+| `changed_files` | list[string] | none | Files in a change; switches on PR mode |
+| `include` | list[string] | none | `graph`, `churn`, `owners`, `tests`, `blast`, `scales`, `changes` ([what each adds](../reference/MCP_RESPONSE_FIELDS.md#get_risk)) |
+| `repo` | string | default repo | `"all"` not supported |
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `targets` | list[string] | No | File paths to assess |
-| `changed_files` | list[string] | No | Files in a PR/changeset for blast radius analysis; passing this switches the response into PR-directive mode |
-| `repo` | string | No | *(workspace only)* Target repo alias |
-
-**Returns:** Per-file risk score (0-10), hotspot status, dependent count, co-change partners, blast radius, recommended reviewers, test gap analysis, security signals. In workspace mode, enriched with cross-repo co-change partners and contract dependencies.
-
-When `changed_files` is passed, the response leads with a `directive` block. Its core lists are the local blast radius: `will_break` (production files that depend on the diff and are likely to break), `will_break_tests` (test files impacted the same way, kept separate so a burst of broken tests doesn't crowd production impact out of the capped list), `missing_cochanges` (historical co-changers absent from the diff), `missing_tests` (changed files without test coverage), and `tests_to_run` (the positive complement of `missing_tests`: the tests the per-test coverage map proves execute the changed files, as pytest-runnable ids to validate the change; empty until a coverage map is ingested with `repowise coverage add`). In workspace mode that directive also carries the cross-repo fallout of the changed repo:
-
-- `will_break_consumers`: services in *other* repos that depend on this one (structural impact), each with `repo`, `service`, `distance`, `score`, and the edge kinds carrying the impact.
-- `missing_cross_repo_cochanges`: services in other repos that historically co-change with this one but aren't in the diff.
-- `breaking_changes`: provider contracts in this repo that changed *incompatibly* since the last index (a removed route or field, a type or field-number change, a newly-required field), each with the changed `contract_id`, the change `kind`/`severity`, and the `impacted_consumers` (repo, service, file) it endangers across repos. Schema-level truth, distinct from the topology-level `will_break_consumers`; non-breaking changes (added optional field, new endpoint) never appear. See [Breaking-Change Guard](../scale/WORKSPACES.md#breaking-change-guard).
-- `conformance_violations`: declared dependency-rule breaches the diff's repo participates in, each with the offending `source`/`target` services, the `rule` (e.g. `frontend !-> db`), and `edge_kind`. See [Architecture Conformance](../scale/WORKSPACES.md#architecture-conformance).
-- `dependency_cycles`: circular service dependencies involving this repo, each with the participating `nodes` and `length`.
-
-**When to use:** Before modifying files, especially hotspots. Understand what could break, who to involve in review, and whether tests cover the affected area.
-
-**Example calls:**
+**Returns** per-file `hotspot_score`, `health_score`, `dependents_count`, `co_change_partners`, `primary_owner`, `security_signals`; in PR mode `directive` with `may_break`, `tests_to_run`, `tests_to_update`, `reach` ([fields](../reference/MCP_RESPONSE_FIELDS.md#pr-mode-directive)). Dependent counts are a floor; `reach` is an uncalibrated band, not a probability.
 
 ```
 get_risk(targets=["src/auth/middleware.ts"])
@@ -337,369 +246,211 @@ get_risk(changed_files=["src/api/routes.ts", "src/middleware/cors.ts"])
 
 ## `get_change_risk`
 
-Live risk scoring for one commit or a `base..head` range. Unlike `get_risk`,
-which evaluates indexed files and can report blast radius, this scores the
-shape of the live diff and needs no index refresh.
+Reviews a commit, a range, or uncommitted work by comparing the two revisions directly, with no index refresh: what it made worse (defect, maintainability, performance), which tests cover the changed lines, and the files' fix record. Use it before merging; use `get_risk` for an indexed file's history.
 
-**Parameters:**
+| Parameter | Type | Default | Meaning |
+|-----------|------|---------|---------|
+| `revspec` | string | uncommitted work | A commit, `base..head`, or `base...head` (from the merge-base). Pass `HEAD` when the tree is clean |
+| `extensions` | list[string] | all | File suffixes to count, e.g. `[".py", ".ts"]` |
+| `exclude_patterns` | list[string] | none | Gitignore-style paths to omit, plus a root `.riskignore` |
+| `include_paths` | list[string] or string | all | Gitignore-style paths to keep, as a list or comma-separated string |
+| `baseline` | int | `200` | Recent commits sampled for percentiles; `0` disables |
+| `include` | list[string] | none | `findings`, `diagnostics`, `scales`, `evidence` (the record `repowise changes show` prints), `tests` |
+| `finding_id` | string | none | Expand one `health_delta` finding |
+| `repo` | string | default repo | `"all"` not supported |
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `revspec` | string | No | Commit or `base..head` range to score (default `"HEAD"`) |
-| `repo` | string | No | *(workspace only)* Target repo alias |
-| `extensions` | list[string] | No | File suffixes to count, such as `[".py", ".ts"]` |
-| `exclude_patterns` | list[string] | No | Gitignore-style paths to omit; combined with root `.riskignore` rules |
-| `baseline` | int | No | Recent commits to sample for percentile ranking (default `200`; `0` disables percentile ranking) |
+`include_paths` and `exclude_patterns` scope the score, health delta and per-file blocks; `impacted_tests` still selects over the whole change, less repowise's own output.
 
-**Returns:** The corpus-calibrated `score`, `probability`, and `level`, plus a
-repo-relative `risk_percentile`, `review_priority`, and `classification`.
-`baseline_sample_size` reports how many filtered commits informed the percentile;
-`features`, `drivers`, and combined `exclude_patterns` make the result auditable.
-Use the percentile and review priority for triage; the raw score is secondary
-context when no repository baseline is available.
-
-It also returns `impacted_tests`: the tests the per-test coverage map proves
-execute the change's changed *lines* (line-precise, so a narrower set than
-`get_risk`'s file-level `tests_to_run`), capped at ten with `total` and
-`truncated` reporting any overflow. Its `missing_tests` buckets flag
-`untested_changes` (covered file, uncovered change), `stale_test_candidates`
-(covered lines whose guarding test file is absent from the diff), `covered`, and
-`no_coverage_data` (files absent from the map). When no map is ingested,
-`status` is `no_map` and the change is reported as unknown ("run the full
-suite"), never as untested. Build the map with `coverage run --contexts=test`
-followed by `repowise coverage add`.
-
-When the changed files carry counted bug fixes, the response also holds
-`prior_fixes`: per file, how many past bug-fix commits touched it
-(`fix_count`), how many of the change's lines fall inside the ranges one of
-those fixes replaced (`overlapping_lines`), and how long ago the most recent
-was (`last_fix_days_ago`). `total_fixes` counts distinct commits, not rows,
-and `files` is capped at ten with `truncated` reporting overflow.
-
-`overlapping_lines` is labelled `approximate` in the payload, and that label is
-load-bearing: a past fix's ranges are numbered against its own parent commit,
-so anything that moved lines in between shifts them. Read it as "this
-neighbourhood has been patched before", not "this exact line". The per-file
-`fix_count` beside it carries no such caveat. The whole block is aggregate and
-never names the commit that introduced a bug: file-level SZZ measured 74.5%
-precision on this repo's frozen judgments, which is enough to count fixes and
-not enough to accuse one commit of causing them. The block is absent entirely
-on an index with no fix history.
-
-**When to use:** Before merging a commit or PR range, especially when you need
-to assess the diff itself rather than the risk of an already-indexed file.
-
-**Example calls:**
+**Returns** `directive.status` (the verdict), `health_delta`, `impacted_tests`, `patch_coverage`, `fix_history`, `diff_shape` ([fields](../reference/MCP_RESPONSE_FIELDS.md#get_change_risk)).
 
 ```
 get_change_risk()
-get_change_risk(revspec="main..HEAD", extensions=[".py"], exclude_patterns=["tests/"])
+get_change_risk(revspec="main..HEAD", exclude_patterns=["tests/"])
+get_change_risk(revspec="main..HEAD", finding_id="chf_27a13be11e7ee33f")
 ```
 
 ---
 
 ## `get_why`
 
-Architectural decision intelligence. Falls back to git archaeology when no decision records exist for a path, and further to a rationale comment mined live from the source when neither decisions nor git history explain the "why".
+Why code is shaped as it is: decision records, falling back to git archaeology and mined rationale comments when no decision governs a path. Call it before a refactor or before diverging from a pattern.
 
-**Parameters:**
+| Parameter | Type | Default | Meaning |
+|-----------|------|---------|---------|
+| `query` | string | none | A question or a path. Omit for the decision health dashboard |
+| `targets` | list[string] | none | Paths to anchor a question to, or to ask about alone |
+| `id` | string | none | A decision id or `ev_...` evidence id from an earlier response |
+| `reference` | object | none | An evidence reference this tool emitted, unchanged |
+| `repo` | string | default repo | Or `"all"`, only with a `query` |
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `query` | string | No | Natural language question about decisions, OR a file/module path |
-| `targets` | list[string] | No | File paths to anchor an NL `query` search to |
-| `repo` | string | No | *(workspace only)* Target repo alias, or `"all"` (only when `query` is given) |
+Modes: a question searches decisions; a path (or `targets` alone) returns `decisions`, `candidates`, `history`, its origin story and `alignment`; `id` resolves one record; no arguments returns the dashboard (stale decisions, conflicts, ungoverned hotspots).
 
-**Modes:**
+A directory's origin story (`scope: "directory"`) is built from the files under it: how many have history, the first and last commit dates, and their stored key commits, each listed once. Git history is stored per file, so it carries no commit count or owner for the directory.
 
-1. **NL search**: pass a question, optionally anchored to `targets`: `get_why(query="why JWT over sessions?")` -> searches decision records.
-2. **Path-based**: pass a file path as `query`: `get_why(query="src/auth/service.ts")` -> returns decisions governing that file plus its origin story.
-3. **Health dashboard**: no `query`: `get_why()` -> stale decisions, conflicts, ungoverned hotspots.
-
-**Returns:** Matching decision records with title, rationale, alternatives considered, affected files, staleness score. Health mode returns stale decisions, conflicts, and ungoverned hotspots.
-
-**When to use:** Before architectural changes, understand existing intent and constraints. After changes, record new decisions.
-
-**Example calls:**
+**Returns** `decisions` (binding), `candidates` (hints, not rules), `history`, `answer_basis` ([fields](../reference/MCP_RESPONSE_FIELDS.md#get_why)).
 
 ```
-get_why(query="rate limiting")
+get_why(query="why JWT over sessions?")
 get_why(query="src/payments/processor.ts")
-get_why(query="why is caching split from the eviction path?", targets=["src/cache"])
 get_why()
 ```
 
 ---
 
-## `get_dead_code`
+## `get_overview`
 
-Unreachable code, unused exports, unused internals, and zombie packages, sorted by confidence tier with cleanup impact estimates. Flag-based, not include-list-based.
+Orientation for an unfamiliar repo: summary, key modules, entry points, layers, code health, riskiest files and this week's top actions. Call it once, first; it does not change within a session.
 
-**Parameters:**
+| Parameter | Type | Default | Meaning |
+|-----------|------|---------|---------|
+| `include` | list[string] | none | `content` (full essay), `outline`, `tour`, `decisions`, `graph`, `ownership`, `components` (with file counts), `changes`, `actions` (the quarter too), `tools` (enabled tools, opt-ins, recipes), `scope` |
+| `repo` | string | default repo | Or `"all"` for the cross-repo topology, where only `include=["tools"]` applies |
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `repo` | string | No | *(workspace only)* Target repo alias |
-| `kind` | string | No | Restrict to one finding kind: `unreachable_file` \| `unused_export` \| `unused_internal` \| `zombie_package` |
-| `min_confidence` | float | No | Minimum confidence floor (default `0.4`; `0.7`+ is cleanup-ready only) |
-| `safe_only` | boolean | No | Deletion-ready findings only, excluding anything with runtime-load risk (default `false`) |
-| `limit` | int | No | Max findings per tier, clamped to 25 (default 20) |
-| `tier` | string | No | Restrict to one tier: `high` (>= 0.8) \| `medium` \| `low` |
-| `directory` | string | No | Path-prefix filter |
-| `owner` | string | No | Primary-owner filter |
-| `group_by` | string | No | Roll findings up by `directory` or `owner` instead of listing them flat |
-| `include_internals` | boolean | No | Include private/underscore symbols (default `false`) |
-| `include_zombie_packages` | boolean | No | Include zombie-package findings (default `true`) |
-| `no_unreachable` | boolean | No | Exclude `unreachable_file` findings (default `false`) |
-| `no_unused_exports` | boolean | No | Exclude `unused_export` findings (default `false`) |
-
-**Returns:** Dead code findings grouped by confidence tier (high >= 0.8, medium, low). Each finding includes: file path, kind, confidence score, line count, and cleanup impact estimate. In workspace mode, confidence is lowered on findings other repos still import.
-
-**When to use:** Cleanup tasks, not a targeted fix. Conservative by design: `safe_only` excludes dynamically-loaded patterns and framework-decorated functions.
-
-**Example calls:**
+**Returns** `content_md`, `key_modules`, `entry_points`, `commands`, `architecture`, `code_health`, `git_health`, `next_actions`, `more` ([fields](../reference/MCP_RESPONSE_FIELDS.md#get_overview)).
 
 ```
-get_dead_code()
-get_dead_code(min_confidence=0.8, tier="high", safe_only=true)
-get_dead_code(kind="unused_export", group_by="owner")
+get_overview()
+get_overview(include=["outline", "content"])
 ```
 
 ---
 
 ## `get_health`
 
-Code-health marker scores: the same deterministic markers the
-`repowise health` CLI computes, across three signals (defect risk,
-maintainability, performance), exposed for agentic workflows. Zero LLM calls.
-Use it to **self-check a change before opening a PR**: the same signals a
-code-health merge-gate judges it on.
+Code-health scores and findings from stored analysis, across defect risk, maintainability and performance. No `targets` gives a dashboard led by `fix_first`, one ranked queue; `targets` scores those files. It never recomputes (commit, then `repowise update`) and makes no LLM calls.
 
-**Parameters:**
+| Parameter | Type | Default | Meaning |
+|-----------|------|---------|---------|
+| `targets` | list[string] | none (dashboard) | File paths or `module:<name>`; misses go to `unresolved` |
+| `include` | list[string] | none | Blocks: `biomarkers`, `refactoring`, `trend`, `coverage`, `accuracy`, `signals`, `churn_complexity`, `untested_complexity`, `doc_drift`, `semantics`, `unverified`, `recipe`, `what_if` ([what each adds](../reference/MCP_RESPONSE_FIELDS.md#opt-in-blocks)). Dimensions: `performance`, `defect`, `maintainability`, `advisory` |
+| `only` | list[string] | none | Keep these top-level keys; identity, totals and recovery always survive |
+| `limit` | int | `20` | Rows per ranked list, max 50; `0` for none |
+| `cursor` | int | `0` | Offset into a ranked list (or `fix_first` when named in `only`); `recovery` names the next call |
+| `fix_id` | string | none | One `fix_first` item (`fix1_...`) or `next_actions` action (`act_...`) in full |
+| `finding_id` | string | none | One finding |
+| `plan_id` | string | none | One refactoring plan; `include=["recipe"]` adds its preconditions, ordered steps, postconditions and what it must not do |
+| `opportunity_id` | string | none | `perf...` or `refop...` |
+| `refactoring_view` | string | `"diversified"` | `diversified`, `canonical`, `file_spread` |
+| `refactoring_scope` | string | `fix_first` without targets, `all` with | Which opportunities, and their plans, to list |
+| `refactoring_type` | string | none | `break_cycle`, `extract_class`, `extract_helper`, `extract_method`, `move_method`, `split_file` |
+| `refactoring_confidence` | string | none | `high`, `medium`, `low` |
+| `refactoring_effort` | string | none | `S`, `M`, `L`, `XL` |
+| `performance_view` | string | `detail` | `detail` or `summary` |
+| `performance_context` | string | `production` | `production`, `tooling`, `test`, `unknown`, `all` |
+| `performance_boundary` | string | none | `db`, `network`, `filesystem`, `subprocess`, `lock`, `none` |
+| `performance_confidence` | string | none | `high`, `medium`, `low` |
+| `performance_actionability` | string | none | `plan_ready`, `advisory`, `investigate`, `expected` |
+| `performance_sort` | string | `rank` | `rank`, `leverage`, `observations` |
+| `scope` | string | `"all"` | `production` drops test files from every figure |
+| `counts` | string | `"everything"` | `code_shape` drops the git-derived half of the score |
+| `repo` | string | default repo | `"all"` not supported |
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `targets` | list[string] | No | File paths, or `module:foo` to expand a module's file set. Empty means dashboard mode. |
-| `include` | list[string] | No | Opt-in blocks (default response stays lean): `"biomarkers"` (findings in dashboard mode), `"refactoring"` (structured, graph-aware refactoring plans; see below), `"trend"` (snapshot diff + declining / predicted-decline alerts), `"coverage"`, `"accuracy"` (the "does the score find the bugs?" stat, dashboard mode), `"signals"` (per-file process / people / topology signals, targeted mode), `"churn_complexity"` (churn x complexity quadrant points, dashboard mode), and a dimension name (`"performance"` / `"defect"` / `"maintainability"`) to filter findings to that pillar. |
-| `only` | list[string] | No | Keep just these top-level keys. `include` adds blocks, `only` subtracts them. `mode` and `_meta` always survive. |
-| `repo` | string | No | *(workspace only)* Target repo alias |
-| `limit` | int | No | Max rows in **every** ranked list (default 20, capped at 50) |
+- Pass one of `fix_id`, `finding_id`, `plan_id`, `opportunity_id`; two return `mode: "conflict"`. A miss on an id minted for another selector (a `fix1_` id passed as `plan_id`) carries a `hint` naming the right one.
+- `fix_first` shows five items unless `limit` comes with `only=["fix_first"]`, which pages up to 25.
+- The response is bounded: pair `include` with `only` to keep one block, e.g. `get_health(include=["refactoring"], only=["refactoring_opportunities"])`.
 
-**Returns:** Dashboard mode (no `targets`) returns a `directive`, repo-level KPIs
-(hotspot health, average health, worst performer, maintainability / performance
-pillar averages), the lowest-scoring files, and a per-module NLOC-weighted
-rollup. Targeted mode returns per-file marker findings with severity,
-per-dimension scores, and the score breakdown. Each finding carries a `dimension`
-(`defect` / `maintainability` / `performance`).
-
-**Lead with `directive`.** Dashboard mode opens with the single file to fix
-first, its dominant finding, `recovers_points` / `share_of_repo_gap_pct` (what
-fixing it buys the headline), and `then`, the next two by leverage. Every other
-block ranks and describes; this one recommends. Same role as `get_risk`'s
-`directive`. Rank by `weighted_deficit`, not `score` — the score floors at 1.0.
-
-**Nothing is dropped silently.** Any `targets` entry that matched nothing is
-named in `unresolved` with a reason (`not_indexed` → run `repowise update`,
-`no_such_path`, `excluded`, `no_such_module`; a missed module name also returns
-`known_modules`), so an empty `findings` list means healthy and nothing else. A
-target set that resolves to nothing still answers in targeted mode rather than
-falling back to the repo dashboard. Every capped list carries a `*_total`
-sibling, and `_meta.health_analyzed_at` dates the health pass, which is separate
-from indexing and can lag it.
-
-**Leverage, not just lowness.** `average_health` is NLOC-weighted (the number the
-badge and dashboard surface), so a few large low-scoring files hold it down. To
-make that actionable rather than a mystery:
-
-- `kpis.average_health_unweighted` is the plain file mean and
-  `kpis.average_health_weighting` is `"nloc"`. When the weighted and unweighted
-  numbers diverge, the gap is telling you to chase *big* files, not the long tail.
-- `gap_analysis` (dashboard mode) reports the net weighted points the average must
-  recover to reach the Healthy floor (8.0), how many files sit below it, and how
-  few of them carry the whole gap (`files_to_reach_target`) or half of it
-  (`files_for_half_gap`). This reframes a repo-wide number as a short worklist.
-- Every metric row carries `weighted_deficit = (8 - score) x nloc`: how much the
-  repo headline recovers if that file reaches 8.0. `high_leverage_files`
-  (dashboard mode) is the top-N ranked by it, distinct from `worst_files`, which
-  sorts by raw score and ranks a 30-line file at 1.0 equal to a 1,200-line file at
-  1.0 that moves the average ~40x more.
-
-The opt-in enrichments:
-
-- **`accuracy`** returns a `defect_accuracy` block: of the K least-healthy files, how
-  many were recently bug-fixed vs the repo-wide base rate (precision@K + `lift`),
-  with a per-K table and the flagged files. Silent (`null`) on repos with too
-  little history to be honest (< 25 scored files or < 5 recently-fixed files).
-- **`signals`** adds a `signals` object on each targeted metric: prior-defect count,
-  change scatter, 90-day churn, primary / recent owner, and graph in / out
-  degree. Honest `null` per field when the underlying row is absent (never an
-  imputed zero).
-- **`churn_complexity`** returns `churn_complexity` points (one per recently-changed
-  file: 90-day commit count, max CCN, NLOC, score, churn percentile): the
-  refactor zone where volatility and tangle collide.
-- **`refactoring`** returns ranked, structured refactoring plans (not template
-  strings): `extract_class` (the cohesion `groups` to split into), `extract_helper`
-  (clone `occurrences` + `suggested_site`), `move_method` (`{method, from_class,
-  to_class}`), and `break_cycle` (the import `cut_edges`). Each plan carries its
-  `evidence`, `impact_delta`, `effort_bucket`, `blast_radius`, and an `id` you can
-  hand to `generate_refactoring_code`. The list is capped to `limit` and ranked
-  file-leverage-first (by the file's `weighted_deficit`, then per-plan impact), so
-  plans on the files that move the headline surface first; `refactoring_plans_total`
-  reports the full count behind the cap. Each plan echoes its
-  `file_weighted_deficit`. Full shapes in [`docs/layers/REFACTORING.md`](../layers/REFACTORING.md).
-- **dimension filter** narrows the returned findings to one pillar, e.g.
-  `include=["biomarkers", "performance"]`.
-- **`refactoring`** also emits `suggestion_legend`: `biomarker_type` → the prose
-  suggestion for that type, once per response rather than per finding. Join on
-  `biomarker_type`.
-
-**When to use:** Before opening a PR, to self-check the files you changed
-(`targets=[...], include=["signals"]`) and confirm you are not regressing the
-worst files. Before refactoring, find the worst-scoring files and what to fix
-first (`include=["accuracy", "churn_complexity"]`). Pair with `get_risk` on
-hotspots.
-
-**Example calls:**
+**Returns** `mode`, `fix_first`, `kpis`, `gap_analysis`, `worst_files`, `high_leverage_files`, `top_findings`, `unresolved` ([fields](../reference/MCP_RESPONSE_FIELDS.md#get_health)). A due `fix_first` lead carries `first_step` and `verify`, so it can be started without a `fix_id` call.
 
 ```
-get_health(only=["directive"])                        # cheapest useful call: what to fix first
-get_health()                                          # directive, kpis, gap_analysis, worst + high_leverage files
-get_health(include=["accuracy", "churn_complexity"])
-get_health(include=["biomarkers", "performance"])     # only performance findings
+get_health(only=["fix_first"], limit=25)
+get_health(only=["fix_first"], limit=25, cursor=25)
+get_health(fix_id="fix1_...")
+get_health(fix_id="act_...")
+get_health(include=["refactoring"], only=["refactoring_plans"], limit=15, refactoring_scope="all")
 get_health(targets=["src/api/server.py"], include=["signals"])
-get_health(targets=["module:src.api"], include=["trend", "refactoring"])
-get_health(include=["accuracy"], only=["defect_accuracy"])   # the block, without the dashboard again
+get_health(include=["performance"], only=["performance_summary"])
+get_health(include=["coverage"], only=["coverage"])
 ```
 
 ---
 
-## Supplementary tools
+## `get_dead_code`
 
-These are registered and on by default (in the modes noted) but are not part
-of the ten-tool headline set.
+Unreachable files, unused exports, unused internals and zombie packages, tiered by confidence. For a cleanup pass, not a targeted fix.
 
-### `list_repos`
+| Parameter | Type | Default | Meaning |
+|-----------|------|---------|---------|
+| `kind` | string | all | `unreachable_file`, `unused_export`, `unused_internal`, `zombie_package` |
+| `min_confidence` | float or string | `0.4` | Floor; or `"high"` (0.7), `"medium"` (0.4), `"low"` (0.0) |
+| `tier` | string | all | `high` (0.7+), `medium` (0.4 to 0.7), `low` |
+| `safe_only` | bool | `false` | Deletion-ready only: drops runtime-load risk such as dynamic imports and framework-registered functions |
+| `limit` | int | `20` | Per tier, clamped to 25 |
+| `directory` | string | none | Path-prefix filter |
+| `owner` | string | none | Primary-owner filter |
+| `group_by` | string | none | `directory` or `owner` rollup |
+| `include_internals` | bool | `false` | Also scan private symbols (more false positives) |
+| `include_zombie_packages` | bool | `true` | Monorepo package findings |
+| `no_unreachable` | bool | `false` | Skip unreachable-file findings |
+| `no_unused_exports` | bool | `false` | Skip unused-export findings |
+| `include_unverified` | bool | `false` | Also show provisional types and gated-language findings |
+| `finding_id` | string | none | Open one finding |
+| `repo` | string | default repo | Or `"all"` to aggregate across repos |
 
-Lists the repos this server is serving. No parameters.
+**Returns** `tiers`, `summary`, and `by_directory` or `by_owner` with `group_by` ([fields](../reference/MCP_RESPONSE_FIELDS.md#get_dead_code)).
 
-**Returns:** In workspace mode, `workspace: true`, the workspace root, the default repo alias, and every configured repo alias (`repos`). In single-repo mode, `workspace: false` and a single `"default"` alias.
+```
+get_dead_code()
+get_dead_code(tier="high", safe_only=true)
+get_dead_code(kind="unused_export", group_by="owner")
+```
 
-**When to use:** Discovering the `repo` aliases to pass to other tools, especially in workspace mode.
+---
+
+## `list_repos`
+
+Lists the repos this server serves, to find the `repo` value for other tools. Default in workspace mode only (a single-repo server is bound to one repository). No parameters.
+
+**Returns** `workspace`, `workspace_root`, `default_repo`, `repos` ([fields](../reference/MCP_RESPONSE_FIELDS.md#list_repos)).
 
 ```
 list_repos()
 ```
 
-### Workspace-only tools
+---
 
-*(Available only when the server is started inside a workspace; see [Workspace Mode](#workspace-mode).)*
+## `get_dependency_path`
 
-#### `get_blast_radius`
+Opt-in (`mcp.tools: ["+get_dependency_path"]` or `--tools "+get_dependency_path"`; the same for every opt-in). The shortest dependency path between two files or modules; with none, context to debug the gap.
 
-Cross-repo downstream impact: if you change this service, what breaks across the other repos?
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `targets` | list[string] | Yes | Node ids (`repo` or `repo::service/path`) or repo aliases |
-| `max_depth` | int | No | Reachability depth (1-8, default 3) |
-| `include_behavioral` | bool | No | Include co-change (behavioral) edges (default `true`) |
-
-**Returns:** The impacted services ranked by impact `score`, each with `distance` (hops), `structural` (a real dependency vs co-change only), and the edge kinds that carried the impact; plus `impacted_repos`, `structural_count` / `behavioral_count`, `total_impacted`, and any `unresolved_targets`.
-
-**When to use:** Before changing a high-fan-out provider, see who consumes it across repo boundaries. Structural impact ("will break") outweighs behavioral co-change ("may drift"). Reads the same system graph the [Live System Map](../scale/WORKSPACES.md#live-system-map) renders.
-
-```
-get_blast_radius(targets=["backend"])
-get_blast_radius(targets=["mono::services/auth"], max_depth=2, include_behavioral=false)
-```
-
-#### `get_conformance`
-
-Architecture governance: does the live system graph obey the declared dependency rules, and are there circular service dependencies?
-
-**Opt-in.** Off by default even in workspace mode; enable with `mcp.tools: ["+get_conformance"]`. Named in single-repo mode it is ignored, since it needs the workspace graph. The same findings still surface in the `get_risk` PR-mode directive (`conformance_violations` / `dependency_cycles`) without opting the tool in.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `repo` | string | No | Limit findings to those involving this repo alias |
-
-**Returns:** `violations` (each with the offending `source`/`target` services, the `rule_source`/`rule_target` matchers that fired, and the `edge_kind`), `cycles` (each with the participating `nodes` and `length`), and the `violation_count` / `cycle_count` / `rules_evaluated` rollups.
-
-**When to use:** Before a refactor that changes service boundaries, or to audit whether the live architecture still matches the intended one. Rules are declared under `conformance:` in `.repowise-workspace.yaml`. See [Architecture Conformance](../scale/WORKSPACES.md#architecture-conformance).
-
-```
-get_conformance()
-get_conformance(repo="frontend")
-```
-
-#### `get_architecture`
-
-The one evaluative read of the whole system: how coupled is it, where is the architectural core, and a single 1-10 architecture score. Deterministic, structural edges only (co-change excluded). No parameters.
-
-**Returns:** `score` (1-10), `architecture_type` (`core-periphery` or `hierarchical`), `propagation_cost_pct` (share of other services the average service reaches), `core_size` / `core_ratio` / `core_members` (the largest cyclic group), `cycle_count`, `conformance_violations`, a `role_breakdown` (count of Core / Shared / Control / Peripheral services), and a one-line `summary`.
-
-**When to use:** Before a cross-service refactor, or to gauge and compare overall system structure over time. See [Architecture Metrics](../scale/WORKSPACES.md#architecture-metrics).
-
-```
-get_architecture()
-```
-
-### Opt-in tools
-
-*(Registered but off by default in every mode; enable with `mcp.tools: ["+name"]` or `repowise mcp --tools "+name"`. See [Configuring the tool surface](#configuring-the-tool-surface).)*
-
-#### `get_dependency_path`
-
-Shortest dependency path between two files or modules.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `source` | string | Yes | Source file or module path |
-| `target` | string | Yes | Target file or module path |
-| `repo` | string | No | *(workspace only)* Target repo alias; `"all"` is not supported |
-
-**Returns:** The dependency path when one exists. When no direct path exists, visual context instead: nearest common ancestors, shared neighbors, community analysis, and bridge suggestions, to help debug architectural silos.
-
-**When to use:** Understanding how two parts of the codebase are (or aren't) connected, or why an expected dependency doesn't show up.
+| Parameter | Type | Default | Meaning |
+|-----------|------|---------|---------|
+| `source` | string | required | Source file or module path |
+| `target` | string | required | Target file or module path |
+| `repo` | string | default repo | `"all"` not supported |
 
 ```
 get_dependency_path(source="src/api/routes.py", target="src/db/models.py")
 ```
 
-#### `get_execution_flows`
+---
 
-Top entry points and their call traces: how the codebase actually executes.
+## `get_execution_flows`
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `top_n` | int | No | Number of top entry points to trace (default 10) |
-| `max_depth` | int | No | Max trace depth per flow (default 8) |
-| `entry_point` | string | No | Trace from a specific symbol, overriding `top_n` scoring |
-| `repo` | string | No | *(workspace only)* Target repo alias; `"all"` is not supported |
+Opt-in. The top-scored entry points with a breadth-first call trace from each, marking community-boundary crossings: what runs end to end.
 
-**Returns:** Scored entry points with BFS call-path traces showing which functions are called in sequence, and whether the flow crosses community boundaries.
-
-**When to use:** Understanding runtime call flow through an unfamiliar system, or tracing what a specific entry point actually does end to end.
+| Parameter | Type | Default | Meaning |
+|-----------|------|---------|---------|
+| `top_n` | int | `10` | Entry points to trace, 1 to 50 |
+| `max_depth` | int | `8` | Trace depth per flow, 1 to 20 |
+| `entry_point` | string | none | Trace from this symbol, overriding `top_n` |
+| `repo` | string | default repo | `"all"` not supported |
 
 ```
-get_execution_flows()
 get_execution_flows(entry_point="src/cli/main.py::main", max_depth=4)
 ```
 
-#### `generate_refactoring_code`
+---
 
-Turns one structured refactoring plan from `get_health(include=["refactoring"])` into actual generated code and a unified diff, grounded on the plan plus the real source spans it references. For Extract Class, the result includes an LCOM4 before/after self-check.
+## `generate_refactoring_code`
 
-**Off by default twice over:** it must be opted into the tool surface (`mcp.tools: ["+generate_refactoring_code"]`), and even then returns `{"error": "disabled", ...}` unless `refactoring.llm.enabled: true` is set in the repo's `.repowise/config.yaml`. When enabled, it uses the repo's configured LLM provider/model (bring your own key) and caches results by a content hash, so an unchanged plan never regenerates.
+Opt-in. Turns one plan from `get_health(include=["refactoring"])` into code and a unified diff, grounded on the plan and its source spans. Extract Class results include an LCOM4 before-and-after check. It calls the repo's LLM and caches by content hash, so an unchanged plan never regenerates. Adding it to the surface is the opt-in step; generation also needs `refactoring.llm.enabled: true` in `.repowise/config.yaml` (off by default).
 
-**Parameters:**
+| Parameter | Type | Default | Meaning |
+|-----------|------|---------|---------|
+| `suggestion_id` | string | required | A plan `id` from `get_health` |
+| `repo` | string | default repo | `"all"` not supported |
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `suggestion_id` | string | Yes | The `id` of a plan returned by `get_health(include=["refactoring"])` |
-| `repo` | string | No | *(workspace only)* Target repo alias |
-
-**When to use:** After `get_health(include=["refactoring"])` surfaces a plan you want turned into an applyable diff, and your repo has opted into both the tool and LLM-backed generation.
+**Returns** the plan, code and diff; `generation.available: false` with `reason: "disabled"`, or `error: "no_provider"` ([fields](../reference/MCP_RESPONSE_FIELDS.md#generate_refactoring_code)).
 
 ```
 generate_refactoring_code(suggestion_id="a1b2c3d4")
@@ -707,31 +458,97 @@ generate_refactoring_code(suggestion_id="a1b2c3d4")
 
 ---
 
-## Workspace Mode
+## `set_finding_status`
 
-In workspace mode (initialized with `repowise init .`), all tools accept an optional `repo` parameter:
+Opt-in. Records a durable verdict on one refactoring plan, surviving later analysis runs. Returns the new status and its timestamp.
 
-- **Omit `repo`**: queries the default (primary) repo
-- **`repo="backend"`**: targets a specific repo by alias
-- **`repo="all"`**: queries across all workspace repos (fully supported by `search_codebase`; `get_context` and `get_overview` also accept it; not supported by `get_symbol`, `get_dependency_path`, or `get_execution_flows`)
+| Parameter | Type | Default | Meaning |
+|-----------|------|---------|---------|
+| `suggestion_id` | string | required | A plan `id` or `public_id` from `get_health` |
+| `status` | string | required | `false_positive` (never re-emitted), `acknowledged` (visible, no longer unheard), `resolved` (stays resolved if the detector still fires), `open` (resets) |
+| `reason` | string | `"agent"` | Free-text audit note |
+| `repo` | string | default repo | `"all"` not supported |
 
-The MCP server automatically enriches responses with cross-repo intelligence:
-- **Co-change partners** from other repos surfaced in `get_context` and `get_risk`
-- **API contract links** (HTTP, gRPC, topics) between repos
-- **Package dependencies** between repos
-- **Cross-repo blast radius** via the workspace-only `get_blast_radius` tool, and a cross-repo `directive` in `get_risk` PR-mode
-- **Breaking-change guard**: incompatible provider-contract changes and the consumers they endanger, in the `get_risk` PR-mode `breaking_changes` directive
-- **Architecture conformance**: declared dependency-rule violations and dependency cycles via the workspace-only, opt-in `get_conformance` tool, and `conformance_violations` / `dependency_cycles` in the `get_risk` PR-mode directive
-- **Architecture metrics**: whole-system coupling (propagation cost), the cyclic core, per-service roles, and a deterministic 1-10 architecture score via the workspace-only `get_architecture` tool
+```
+set_finding_status(suggestion_id="a1b2c3d4", status="false_positive", reason="the class is a DTO")
+```
 
 ---
 
-## Proactive Hooks (Complementary)
+## `get_blast_radius`
 
-In addition to the MCP tools above, `repowise init` installs AI-agent hooks (Claude Code and Codex) that provide **passive, automatic** context enrichment:
+*Workspace only, opt-in.* Services in other repos structurally reachable from a changed service, ranked by an uncalibrated 0 to 1 path weight (not a breakage probability). Structural edges (HTTP, gRPC, events, packages) outrank co-change.
 
-- **Claude Code PostToolUse**: broad or zero-result `Grep`/`Glob` calls can be enriched with graph context, and git operations can trigger stale-wiki notices.
-- **Codex SessionStart/UserPromptSubmit**: Codex receives concise repowise MCP workflow guidance when a session or prompt starts.
-- **Codex PostToolUse**: after edits or git operations, Codex receives a freshness reminder when indexed context may be stale.
+| Parameter | Type | Default | Meaning |
+|-----------|------|---------|---------|
+| `targets` | list[string] | required | Node ids (`repo` or `repo::service/path`), repo aliases, or a published symbol's id |
+| `max_depth` | int | `3` | Reachability depth, 1 to 8 |
+| `include_behavioral` | bool | `true` | Include co-change edges |
 
-Hooks are lightweight reminders. MCP tools are for deeper, on-demand investigation. See [Auto-Sync](../scale/AUTO_SYNC.md) and [Codex Integration](CODEX.md) for details.
+**Returns** impacted services with `score` and `distance`, `impacted_repos`, `symbol_targets` with guarding tests ([fields](../reference/MCP_RESPONSE_FIELDS.md#get_blast_radius)).
+
+```
+get_blast_radius(targets=["backend"])
+```
+
+---
+
+## `get_architecture`
+
+*Workspace only, opt-in.* Whole-system structure from structural edges: propagation cost, the largest cyclic core, service roles, and a deterministic 1 to 10 score. No parameters.
+
+**Returns** `score`, `architecture_type`, `propagation_cost_pct`, `core_members`, `role_breakdown` ([fields](../reference/MCP_RESPONSE_FIELDS.md#get_architecture)).
+
+```
+get_architecture()
+```
+
+---
+
+## `get_conformance`
+
+*Workspace only, opt-in.* Cross-repo dependencies breaking the rules under `conformance:` in `.repowise-workspace.yaml`, plus circular service dependencies. Without opting in, the same findings reach `get_risk`'s PR directive as `conformance_violations` and `dependency_cycles`.
+
+| Parameter | Type | Default | Meaning |
+|-----------|------|---------|---------|
+| `repo` | string | whole workspace | Limit to findings involving this repo |
+
+**Returns** `violations`, `cycles`, `violation_count`, `rules_evaluated` ([fields](../reference/MCP_RESPONSE_FIELDS.md#get_conformance)).
+
+```
+get_conformance(repo="frontend")
+```
+
+---
+
+## Workspace mode
+
+A server started inside a [workspace](../scale/WORKSPACES.md) serves every repo from one process; `repowise mcp --no-workspace` forces single-repo mode for a nested repo. A `repo` parameter takes an alias, path or absolute path from `list_repos`; omitted, it targets the default repo.
+
+| Tool | `repo="all"` |
+|------|--------------|
+| `search_codebase` | Yes: federated search, merged results |
+| `get_overview` | Yes: cross-repo topology (co-changes, package dependencies, API contracts), no single-repo detail |
+| `get_dead_code` | Yes: aggregated findings |
+| `get_why` | Only with a `query`, not the dashboard or an `id` |
+| `get_answer`, `get_context`, `get_symbol`, `get_risk`, `get_change_risk`, `get_health` | No |
+| `get_dependency_path`, `get_execution_flows`, `generate_refactoring_code`, `set_finding_status` | No |
+| `get_conformance` | No `"all"`; omitting `repo` covers the workspace |
+| `get_blast_radius`, `get_architecture`, `list_repos` | No `repo` parameter; always the whole workspace |
+
+Unsupported tools return an error naming the aliases. A `repo="all"` call queries 4 repos at a time with 60 seconds each (`REPOWISE_WORKSPACE_CONCURRENCY`, `REPOWISE_WORKSPACE_REPO_TIMEOUT_S`). Failed or timed-out repos are listed in `repos_failed` with a reason while the rest answer; repos behind their checkout are in `repos_stale` with `indexed_commit` and `live_head`, their rows marked `stale: true`. Both keys appear only when non-empty.
+
+### Routing without `repo`
+
+- `get_context`, `get_symbol`, `get_risk` and `get_health` route each path or `path::Name` target: the default repo if the file is there, else the one other repo that has it. Routed results carry `repo`.
+- `<alias>:<target>` (e.g. `web:src/app.ts::App`) names the repo outright.
+- A path in several other repos returns `candidates`; a path in none gets the default repo's not-found answer plus a `hint` naming `search_codebase(repo="all")` and the `<alias>:<path>` form.
+- `get_context` takes a batch spanning repos; `get_risk` and `get_health` answer one repo per call and name the per-repo calls.
+- `get_context` and `get_symbol` route a bare symbol name (`render`, `Client.send`) through the workspace symbol index the same way: the default repo keeps a name it has, one other repo gets the call, several return `candidates`.
+- A `repowise#<ref>` ref is found in whichever repo's omission store holds it.
+
+Single-repo tools also gain cross-repo evidence: `get_context` (`cross_repo`), `get_risk` PR mode (`will_break_consumers` and more), `get_change_risk` (`cross_repo`, with consumer-side tests), and `get_dead_code` (lower confidence on findings another repo imports). Fields: [MCP_RESPONSE_FIELDS.md](../reference/MCP_RESPONSE_FIELDS.md). Setup, contracts and the system graph: [WORKSPACES.md](../scale/WORKSPACES.md).
+
+---
+
+Hooks complement these tools with passive context: see [HOOKS.md](HOOKS.md) and [CODEX.md](CODEX.md).

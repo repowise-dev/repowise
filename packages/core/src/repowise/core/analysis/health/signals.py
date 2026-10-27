@@ -28,6 +28,11 @@ from typing import Protocol
 # these", short enough to sit inside an MCP response without a budget argument.
 _TOP_FIX_SYMBOLS = 5
 
+#: Below this many recorded commits churn and the blame-based markers cannot fire
+#: and the rest rarely do, so the history half reads near zero whatever the past:
+#: a new file, one split out of another, or a rename git did not follow.
+HISTORY_MIN_COMMITS = 5
+
 
 class GitMetaLike(Protocol):
     """The git-metadata fields the signals view reads (duck-typed).
@@ -84,6 +89,8 @@ class FileSignals:
     bug_magnet: bool | None
     last_fix_at: str | None
     fix_symbol_counts: dict[str, int] | None
+    # ``"short"`` below ``HISTORY_MIN_COMMITS`` recorded commits.
+    history: str | None
 
     @property
     def has_any(self) -> bool:
@@ -143,6 +150,18 @@ def _top_fix_symbols(raw: str | None) -> dict[str, int] | None:
     return {str(k): int(v) for k, v in list(counts.items())[:_TOP_FIX_SYMBOLS]}
 
 
+def history_basis(git_meta: object | None) -> str | None:
+    """``"short"`` below :data:`HISTORY_MIN_COMMITS` recorded commits, else ``None``.
+
+    ``None`` too when nothing was recorded (no row, no count) or the row is a
+    non-code file's, which carries no score to qualify.
+    """
+    total = getattr(git_meta, "commit_count_total", None)
+    if total is None or getattr(git_meta, "history_only", False):
+        return None
+    return "short" if total < HISTORY_MIN_COMMITS else None
+
+
 def file_signals(
     git_meta: GitMetaLike | None,
     degrees: dict[str, int] | None,
@@ -154,6 +173,14 @@ def file_signals(
     ``get_node_degree_counts`` (or ``None`` when the file is not a graph node).
     No DB access and no recompute — this is the single join the drawer, the
     file page, and MCP all reuse.
+
+    **Pass degrees scoped to** ``FILE_DEPENDENCY_EDGE_TYPES``. The UI states
+    these two fields as "N files depend on this" and "depends on N files", so
+    an unscoped count is a false claim: it adds one per symbol the file
+    declares, plus its co-change partners. Four call sites build this value
+    (the file page, the health drawer, ``get_context`` and ``get_health``), and
+    they render into one panel, so a producer that scopes differently from the
+    others is a visible contradiction rather than a private choice.
     """
     g = git_meta
     return FileSignals(
@@ -177,4 +204,5 @@ def file_signals(
         fix_symbol_counts=_top_fix_symbols(getattr(g, "fix_symbol_counts_json", None))
         if g
         else None,
+        history=history_basis(g),
     )

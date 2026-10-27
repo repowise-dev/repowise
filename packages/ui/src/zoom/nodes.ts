@@ -14,10 +14,10 @@
  * single neutral hue, thin, faded behind the cards.
  */
 
-import { ALERT_MAX, HEALTHY_MIN } from "@repowise-dev/types/health";
+import { bandForScore, type HealthBand } from "@repowise-dev/types/health";
 
 import type { Rect } from "./camera";
-import { hasRole } from "./node-signals";
+import { hasRole, KIND_LABEL } from "./node-signals";
 import { ARROW_SIZE_PX, EDGE_LINE_PX } from "./constants";
 import type { EdgeRoute } from "./edges";
 import type { ZoomPalette } from "./theme";
@@ -31,15 +31,6 @@ const TEXTURE_MIN_PX = 96; // paint the paper texture once the card is big enoug
 const GLYPH_MIN_PX = 52; // draw the kind glyph beside the title once there is room
 const FOOTER_MIN_W_PX = 132; // draw the bottom signal row on cards at least this wide
 const FOOTER_MIN_H_PX = 104; // ...and at least this tall
-
-/** Human label per node kind, shown small in the card footer. */
-const KIND_LABEL: Record<ZoomKind, string> = {
-  system: "System",
-  layer: "Layer",
-  group: "Group",
-  folder: "Folder",
-  file: "File",
-};
 
 /**
  * A minimal monoline glyph per node kind, drawn into the `[x, y, s, s]` box in the
@@ -129,16 +120,23 @@ function primaryMetric(node: ZoomNode): string {
   return n > 0 ? `${n} ${n === 1 ? "file" : "files"}` : "";
 }
 
+/** Excellent and Good share the green; the word beside the dot separates them. */
+const HEALTH_SLOT: Record<HealthBand, keyof ZoomPalette> = {
+  excellent: "healthGood",
+  good: "healthGood",
+  fair: "healthFair",
+  needs_work: "healthNeedsWork",
+  at_risk: "healthAtRisk",
+};
+
 /**
- * Traffic-light ink for a node's code-health score, on the same 0-10 bands the
- * /files treemap uses (`bandForScore`: <4 alert, <8 warning, else healthy) so a
- * card and a treemap tile never disagree. Null (unscored, sparse) reads neutral.
+ * Ink for a node's code-health score, on the shared bands, so a card, the
+ * detail panel and a treemap tile never disagree. Null (unscored) reads
+ * neutral.
  */
 function healthColor(score: number | null, palette: ZoomPalette): string {
   if (score === null) return palette.healthNeutral;
-  if (score < ALERT_MAX) return palette.healthAlert;
-  if (score < HEALTHY_MIN) return palette.healthWarning;
-  return palette.healthHealthy;
+  return palette[HEALTH_SLOT[bandForScore(score)]];
 }
 
 /**
@@ -177,16 +175,13 @@ function drawPaperTexture(
 /**
  * The role dot's colour, or null when a node carries no role.
  *
- * One hue, deliberately. This used to return a different colour per role from
- * `palette.entry` / `.hotspot` / `.dead` / `.flow`, which collided head-on with
- * the health dot in the footer: `palette.entry` and `palette.healthHealthy` are
- * both `--color-success`, so a green dot meant "has an entry point" in the
- * top-right corner and "healthy" in the bottom-left one, forty pixels apart on
- * the same card. Green/amber/red carry a band and belong to health.
+ * One hue, deliberately. A per-role palette collides with the health dot in the
+ * footer — `palette.entry` and `palette.healthGood` are both `--color-success`,
+ * so one green would mean "has an entry point" and another "Good", forty pixels
+ * apart on the same card. The band colours belong to health.
  *
- * The role dot now says only "there is something here"; `nodeRoles` in
- * `node-signals.ts` says what, in words, on hover and in the detail panel —
- * where it can name every applicable role rather than a cascade's winner.
+ * The role dot says only "there is something here"; `nodeRoles` in
+ * `node-signals.ts` names every applicable role in words.
  */
 function roleColor(node: ZoomNode, palette: ZoomPalette): string | null {
   return hasRole(node) ? palette.accent : null;

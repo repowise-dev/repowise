@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .base import BasePerfDialect
+from .iterables import IterableSources, text_of, upper_bound
 from .python import HTTP_VERBS
 
 if TYPE_CHECKING:
@@ -47,7 +47,7 @@ GO_SQL_METHODS: frozenset[str] = frozenset(
 # ``Scan`` is deliberately EXCLUDED: ``*sql.Rows.Scan`` (decoding an
 # already-fetched cursor row inside ``for rows.Next()``) is far more common than
 # GORM's ``db.Scan`` finisher and is NOT a round-trip — it FP'd ``io_in_loop``
-# on every cursor-read loop (Phase-7c syft corpus). Dropping it costs ~0
+# on every cursor-read loop, measured across a Go corpus. Dropping it costs ~0
 # measured recall (no corpus GORM-``Scan``-in-loop) and removes the FP class.
 GO_GORM_METHODS: frozenset[str] = frozenset(
     {
@@ -81,7 +81,10 @@ GO_IOUTIL_METHODS: frozenset[str] = frozenset({"ReadFile", "WriteFile", "ReadAll
 GO_REGEX_COMPILE: frozenset[str] = frozenset(
     {"MustCompile", "Compile", "MustCompilePOSIX", "CompilePOSIX"}
 )
+# GORM reads that fill the slice passed as ``&x``; ``Create(&x)`` writes it.
+GO_READ_INTO: frozenset[bytes] = frozenset({b"Find", b"Scan", b"Pluck", b"FindInBatches"})
 _GO_STRING_KINDS: frozenset[str] = frozenset({"interpreted_string_literal", "raw_string_literal"})
+_GO_LOOP_KINDS: frozenset[str] = frozenset({"for_statement"})
 
 # Heavy connection / client constructors, keyed ``(package, func)``. Opening one
 # per ``for ... range`` iteration is the connection-churn anti-pattern.
@@ -98,9 +101,86 @@ GO_RESOURCE_CTORS: frozenset[tuple[str, str]] = frozenset(
 )
 # ``sync.Mutex`` / ``sync.RWMutex`` acquisition (the contention side only).
 GO_LOCK_METHODS: frozenset[str] = frozenset({"Lock", "RLock"})
+# ``slices.Chunk`` (Go 1.23) and hand-rolled peers, matched on the call's
+# rightmost name so a local helper (``Batch(xs, n)``) counts too.
+GO_CHUNK_CALLS: frozenset[str] = frozenset({"Chunk", "chunk", "Batch", "batch", "Chunks", "chunks"})
 
 
-class GoPerfDialect(BasePerfDialect):
+def _single_identifier(node: Node | None) -> bytes | None:
+    if node is None:
+        return None
+    targets = node.named_children if node.type == "expression_list" else [node]
+    if len(targets) != 1 or targets[0].type != "identifier":
+        return None
+    return targets[0].text
+
+
+_GO_FN_KINDS: frozenset[str] = frozenset({"function_declaration", "method_declaration", "func_literal"})
+
+
+def _in_event_loop_case(node: Node) -> bool:
+    """*node* sits in a ``select`` case of a bare ``for { select { ... } }`` event loop.
+
+    The case runs once per received event and the loop blocks between events,
+    so there is no lock to hoist.
+    """
+    in_case = False
+    cur = node.parent
+    while cur is not None and cur.type not in _GO_FN_KINDS:
+        if cur.type == "communication_case":
+            in_case = True
+        elif cur.type == "for_statement":
+            # A bare ``for {`` has its body as its only named child.
+            return in_case and len(cur.named_children) == 1
+        cur = cur.parent
+    return False
+
+
+def _go_bindings(node: Node) -> list[tuple[bytes, Node]]:
+    """What *node* binds: ``x := v`` / ``x = v`` / ``var x = v`` (one call
+    answering several names counts for each), or a read filling ``&x`` (GORM
+    ``db.Find(&users)``)."""
+    if node.type in ("short_var_declaration", "assignment_statement"):
+        left = node.child_by_field_name("left")
+        targets = list(left.named_children) if left is not None else []
+        return _paired(targets, node.child_by_field_name("right"))
+    if node.type == "var_spec":
+        return _paired(list(node.children_by_field_name("name")), node.child_by_field_name("value"))
+    if node.type == "call_expression" and _callee_name(node) in GO_READ_INTO:
+        args = node.child_by_field_name("arguments")
+        filled = [_address_of(arg) for arg in (args.named_children if args is not None else ())]
+        return [(name, node) for name in filled if name]
+    return []
+
+
+def _callee_name(call: Node) -> bytes | None:
+    fn = call.child_by_field_name("function")
+    field = fn.child_by_field_name("field") if fn is not None else None
+    return field.text if field is not None else None
+
+
+def _address_of(arg: Node) -> bytes | None:
+    """``x`` of ``&x``."""
+    if arg.type != "unary_expression" or not (arg.text or b"").startswith(b"&"):
+        return None
+    operand = arg.child_by_field_name("operand")
+    return operand.text if operand is not None and operand.type == "identifier" else None
+
+
+def _paired(targets: list[Node], right: Node | None) -> list[tuple[bytes, Node]]:
+    if right is None:
+        return []
+    values = right.named_children if right.type == "expression_list" else [right]
+    if len(values) != len(targets) and len(values) != 1:
+        return []
+    return [
+        (target.text, values[index] if len(values) == len(targets) else values[0])
+        for index, target in enumerate(targets)
+        if target.type == "identifier" and target.text
+    ]
+
+
+class GoPerfDialect(IterableSources):
     language = "go"
     markers = frozenset(
         {
@@ -110,14 +190,17 @@ class GoPerfDialect(BasePerfDialect):
             "regex_compile_in_loop",
             "resource_construction_in_loop",
             "lock_in_loop",
-            # Phase 7b — centrality-gated / nesting-confidence markers.
+            # Centrality-gated / nesting-confidence markers.
             "nested_loop_with_io",
             "nested_loop_quadratic",
             "hot_path_sync_io",
-            # Phase 7d — Go-specific spawn explosion.
+            # Go-specific spawn explosion.
             "goroutine_in_unbounded_loop",
         }
     )
+    # ``exec.Command`` only builds a Cmd; the process runs at ``Run`` / ``Output``
+    # / ``CombinedOutput`` / ``Start``, which are sinks of their own.
+    hot_path_excluded_methods = frozenset({"Command"})
 
     def sink_kind(
         self,
@@ -183,7 +266,24 @@ class GoPerfDialect(BasePerfDialect):
         if right is None:
             return False
         targets = right.named_children if right.type == "expression_list" else [right]
-        return any(c.type in _GO_STRING_KINDS for c in targets)
+        if not any(c.type in _GO_STRING_KINDS for c in targets):
+            return False
+        left = _single_identifier(node.child_by_field_name("left"))
+        return left is None or not self.resets_per_iteration(node, left, _GO_LOOP_KINDS)
+
+    def binds_name(self, node: Node, name: bytes) -> bool:
+        if node.type == "short_var_declaration":
+            return _single_identifier(node.child_by_field_name("left")) == name
+        if node.type == "var_spec":
+            identifier = node.child_by_field_name("name")
+            return (
+                identifier is not None
+                and identifier.type == "identifier"
+                and identifier.text == name
+            )
+        if node.type != "assignment_statement" or not any(c.type == "=" for c in node.children):
+            return False
+        return _single_identifier(node.child_by_field_name("left")) == name
 
     def loop_call_marker(
         self, root: str, method: str, node: Node, list_names: frozenset[str]
@@ -192,7 +292,7 @@ class GoPerfDialect(BasePerfDialect):
             # Only a *string-literal* pattern is unambiguously hoistable: a
             # dynamic argument (``regexp.MustCompile(pat)`` / a concatenation with
             # a per-iteration variable) may legitimately vary each iteration and
-            # cannot be lifted out of the loop. Phase-7c Go corpus: the 10
+            # cannot be lifted out of the loop. Measured on a Go corpus: the 10
             # dynamic-arg cases were all UNSURE; gating on a literal removes them.
             return "regex_compile_in_loop"
         if (root, method) in GO_RESOURCE_CTORS:
@@ -200,8 +300,22 @@ class GoPerfDialect(BasePerfDialect):
         # ``mu.Lock()`` / ``mu.RLock()`` — a method on a receiver (the package-
         # level ``sync.Lock`` does not exist, so the attribute gate is a guard).
         if method in GO_LOCK_METHODS and self.callee_is_attribute(node):
-            return "lock_in_loop"
+            return None if _in_event_loop_case(node) else "lock_in_loop"
         return None
+
+    def defers_body(self, fn: Node) -> bool:
+        """A ``func(yield func(...) bool)`` literal is an ``iter.Seq`` body: it runs
+        when the caller ranges over it, not when the function returning it is called."""
+        if fn.type != "func_literal":
+            return False
+        params = fn.child_by_field_name("parameters")
+        if params is None:
+            return False
+        return any(
+            decl.type == "parameter_declaration"
+            and any(c.type == "identifier" and c.text == b"yield" for c in decl.children)
+            for decl in params.children
+        )
 
     def loop_iterable_name(self, node: Node) -> str | None:
         """The collection a ``for _, x := range coll`` loop iterates (``coll``)."""
@@ -216,6 +330,100 @@ class GoPerfDialect(BasePerfDialect):
         if named and named[-1].type in ("identifier", "selector_expression"):
             return self._dotted_path(named[-1])
         return None
+
+    def is_chunked_loop(self, node: Node) -> bool:
+        """``for i := 0; i < n; i += step``, or ``range slices.Chunk(xs, n)``."""
+        if node.type != "for_statement":
+            return False
+        clause = next((c for c in node.children if c.type == "for_clause"), None)
+        if clause is not None:
+            return self._steps_by_chunk(clause.child_by_field_name("update"))
+        clause = next((c for c in node.children if c.type == "range_clause"), None)
+        if clause is None:
+            return False
+        right = clause.child_by_field_name("right")
+        if right is None or right.type != "call_expression":
+            return False
+        return self.callee_method_name(right) in GO_CHUNK_CALLS
+
+    # -- what a loop walks (perf/dialects/iterables.py) ---------------------------
+
+    function_kinds = _GO_FN_KINDS
+    change_kinds = frozenset({"assignment_statement", "inc_statement", "dec_statement"})
+    conditional_kinds = frozenset(
+        {
+            "if_statement", "expression_switch_statement", "type_switch_statement",
+            "select_statement", "expression_case", "type_case", "default_case",
+            "communication_case", "for_statement",
+        }
+    )
+
+    literal_kinds = frozenset({"composite_literal"})
+    int_kinds = frozenset({"int_literal"})
+    wrapper_kinds = frozenset({"parenthesized_expression"})
+    # ``maps.Keys(m)`` / ``slices.Sorted(maps.Keys(m))`` walk their argument.
+    arg_walkers = frozenset({"Keys", "Values", "Sorted", "SortedFunc", "Collect", "Clone"})
+    size_names = frozenset({"len"})
+    # ``for rows.Next()`` (database/sql), ``for scanner.Scan()`` (bufio).
+    cursor_advances = frozenset({"Next", "Scan"})
+    listings = frozenset({"ReadDir", "Glob"})
+    streams = frozenset({"NewScanner", "NewReader"})
+    query_caps = frozenset({"Limit"})
+
+    def loop_header(self, loop: Node) -> tuple[str, Node | None]:
+        if loop.type != "for_statement":
+            return "each", None
+        body = loop.child_by_field_name("body")
+        for child in loop.named_children:
+            if child.type == "range_clause":
+                return "each", child.child_by_field_name("right")
+            if child.type == "for_clause":
+                return "counted", upper_bound(child.child_by_field_name("condition"))
+            if child.type == "call_expression" and child != body:
+                return "cursor", child
+        return "each", None
+
+    def is_literal(self, node: Node) -> bool:
+        """``[]string{"a", "b"}``; an empty ``[]T{}`` is filled later."""
+        body = node.child_by_field_name("body") if node.type == "composite_literal" else None
+        return body is not None and any(c.type != "comment" for c in body.named_children)
+
+    def call_parts(self, node: Node) -> tuple[str, Node | None, list[Node]] | None:
+        if node.type != "call_expression":
+            return None
+        fn = node.child_by_field_name("function")
+        args = node.child_by_field_name("arguments")
+        arg_nodes = [c for c in args.named_children if c.type != "comment"] if args else []
+        if fn is not None and fn.type == "selector_expression":
+            field = fn.child_by_field_name("field")
+            return text_of(field), fn.child_by_field_name("operand"), arg_nodes
+        return text_of(fn), None, arg_nodes
+
+    def fixed_slice(self, node: Node) -> Node | None:
+        """``xs[:5]`` / ``xs[0:5]``."""
+        if node.type != "slice_expression":
+            return None
+        start, end = node.child_by_field_name("start"), node.child_by_field_name("end")
+        if end is None or end.type != "int_literal":
+            return None
+        if start is not None and start.text != b"0":
+            return None
+        return node.child_by_field_name("operand")
+
+    def bindings_of(self, node: Node) -> list[tuple[bytes, Node]]:
+        return _go_bindings(node)
+
+    def param_names(self, loop: Node) -> set[bytes]:
+        scope = self._scope(loop)
+        params = scope.child_by_field_name("parameters") if scope is not None else None
+        if params is None:
+            return set()
+        return {
+            name.text
+            for decl in params.named_children
+            for name in decl.children_by_field_name("name")
+            if name.text
+        }
 
     @staticmethod
     def _has_static_pattern_arg(node: Node) -> bool:
@@ -232,6 +440,8 @@ class GoPerfDialect(BasePerfDialect):
 
     def loop_stmt_marker(self, node: Node, list_names: frozenset[str]) -> str | None:
         if node.type == "defer_statement":
+            if self._defer_runs_once_per_entry(node):
+                return None
             return "defer_in_loop"
         # ``go func(){…}()`` spawned per element of a ``for … range`` loop fans
         # out one goroutine per item with no concurrency bound (the spawn-
@@ -246,6 +456,133 @@ class GoPerfDialect(BasePerfDialect):
             if self._bounded_by_semaphore(node):
                 return None
             return "goroutine_in_unbounded_loop"
+        return None
+
+    # Statements an unlabeled Go ``break`` can exit. ``for_statement`` is Go's
+    # only loop; an unlabeled ``break`` inside a ``switch``/``select`` case
+    # leaves the case, not the loop.
+    _GO_BREAKABLE_KINDS: frozenset[str] = frozenset(
+        {
+            "for_statement",
+            "expression_switch_statement",
+            "type_switch_statement",
+            "select_statement",
+        }
+    )
+    # Function-scoped bodies a ``return`` (or a labeled ``break`` target) is
+    # relative to; a ``func`` literal nested in a loop is its own scope.
+    _GO_FUNC_KINDS: frozenset[str] = frozenset(
+        {"function_declaration", "method_declaration", "func_literal"}
+    )
+
+    def _defer_runs_once_per_entry(self, defer_node: Node) -> bool:
+        """True when a later statement in the defer's block leaves every loop.
+
+        A ``defer`` followed in its own block by a ``return``, or by a
+        ``break`` that exits the loop, with no ``continue``/``goto`` in
+        between, can only be reached once before control leaves the loop, so
+        the deferred call is registered at most once and the ``defer_in_loop``
+        leak does not apply. A ``break`` inside a ``switch``/``select`` case
+        leaves the case (loop keeps running), a labeled ``break`` only counts
+        when the label names a statement at or outside the loop, and in a loop
+        nest the exit must leave the OUTERMOST loop — otherwise each outer
+        iteration re-enters and registers the defer again. Ceiling: a ``goto``
+        never counts as an exit.
+        """
+        return self._exit_follows(
+            defer_node, self._leaves_all_loops, frozenset({"continue_statement", "goto_statement"})
+        )
+
+    def _leaves_all_loops(self, stmt: Node) -> bool:
+        if stmt.type == "return_statement":
+            # ``return`` exits the whole function — unless a func literal or
+            # method sits between the loop and this statement, in which case it
+            # only exits that inner scope and the loop continues.
+            return self._scope_below_loop(stmt) is None
+        if stmt.type == "break_statement":
+            return self._break_exits_all_loops(stmt)
+        return False
+
+    def _scope_below_loop(self, node: Node) -> Node | None:
+        """The nearest func-like scope between ``node`` and its loop, if any."""
+        cur = node.parent
+        while cur is not None:
+            if cur.type in self._GO_FUNC_KINDS:
+                return cur
+            if cur.type == "for_statement":
+                return None
+            cur = cur.parent
+        return None
+
+    def _break_exits_all_loops(self, brk: Node) -> bool:
+        label = self._break_label(brk)
+        if label is None:
+            # An unlabeled ``break`` leaves the innermost breakable statement.
+            # If that is a switch/select, the loop keeps running; if it is the
+            # loop, no further loop may wrap it up to the function scope, or an
+            # outer iteration re-enters and registers the defer again.
+            innermost = self._innermost_breakable(brk)
+            if innermost is None or innermost.type != "for_statement":
+                return False
+            return self._no_loop_above(innermost)
+        # ``break L`` counts only when ``L`` labels a ``for`` statement that
+        # encloses the defer, and no further loop wraps that statement up to
+        # the function scope (an outer iteration would re-enter and register
+        # the defer again).
+        target = self._labeled_statement_ancestor(brk, label)
+        if target is None:
+            # Undefined label (invalid Go): stay conservative and report.
+            return False
+        if not any(c.type == "for_statement" for c in target.children):
+            return False
+        return self._no_loop_above(target)
+
+    def _no_loop_above(self, node: Node) -> bool:
+        """True if no ``for`` loop wraps ``node`` below its function scope."""
+        cur = node.parent
+        while cur is not None:
+            if cur.type == "for_statement":
+                return False
+            if cur.type in self._GO_FUNC_KINDS:
+                return True
+            cur = cur.parent
+        return True
+
+    def _innermost_breakable(self, node: Node) -> Node | None:
+        cur = node.parent
+        while cur is not None:
+            if cur.type in self._GO_BREAKABLE_KINDS:
+                return cur
+            if cur.type in self._GO_FUNC_KINDS:
+                return None
+            cur = cur.parent
+        return None
+
+    @staticmethod
+    def _break_label(brk: Node) -> str | None:
+        lab = brk.child_by_field_name("label")
+        if lab is None:
+            # tree-sitter-go exposes ``break outer`` without a named field:
+            # the label is a bare ``label_name`` child after ``break``.
+            for child in brk.children:
+                if child.type == "label_name":
+                    lab = child
+                    break
+        if lab is None or lab.text is None:
+            return None
+        return lab.text.decode("utf-8", "replace")
+
+    @staticmethod
+    def _labeled_statement_ancestor(node: Node, label: str) -> Node | None:
+        cur = node.parent
+        while cur is not None:
+            if cur.type == "labeled_statement":
+                lab = cur.child_by_field_name("label")
+                if lab is not None and lab.text is not None and lab.text.decode(
+                    "utf-8", "replace"
+                ) == label:
+                    return cur
+            cur = cur.parent
         return None
 
     def _bounded_by_semaphore(self, go_node: Node) -> bool:
@@ -351,7 +688,13 @@ class GoPerfDialect(BasePerfDialect):
 
     @staticmethod
     def _is_buffered_make(call: Node) -> bool:
-        """True if ``call`` is ``make(chan T, N)`` with a positive buffer size."""
+        """True if ``call`` is ``make(chan T, N)`` and ``N`` is not a literal ``0``.
+
+        The size is usually a variable, a field or a call (``nParallel``,
+        ``cfg.Workers``, ``runtime.NumCPU()``), which is taken as a bound. One
+        that happens to be 0 at run time cannot be seen from here and is not
+        claimed; the literal ``0`` is the one size known to be unbuffered.
+        """
         if call.type != "call_expression":
             return False
         fn = call.child_by_field_name("function")
@@ -365,17 +708,16 @@ class GoPerfDialect(BasePerfDialect):
             return False
         size = named[1]
         if size.type != "int_literal" or size.text is None:
-            return False
-        try:
-            return int(size.text.decode("utf-8", "replace")) > 0
-        except ValueError:
-            return False
+            return True
+        digits = size.text.decode("utf-8", "replace").lower().replace("_", "")
+        # 0, 00, 0x0, 0b0, 0o0: no digit other than zero after the base prefix.
+        return any(ch not in "0xob" for ch in digits)
 
     @staticmethod
     def _nearest_for_is_range(node: Node) -> bool:
         """True if the nearest enclosing ``for`` loop ranges over a COLLECTION.
 
-        Phase-7d gate: a single-variable ``for i := range n`` (Go 1.22
+        Gate: a single-variable ``for i := range n`` (Go 1.22
         range-over-int, or a count constant) is a bounded count loop, NOT a
         per-element fan-out — both 0%-precision FPs were ``for i := range
         <const>`` in tests. The two-variable ``for k, v := range coll`` form is

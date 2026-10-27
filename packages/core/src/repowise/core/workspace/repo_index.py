@@ -1,0 +1,401 @@
+"""Read-only index access for the cross-repo hooks.
+
+The hooks run immediately after ingestion writes each repo's
+``.repowise/wiki.db`` and, until now, re-derived from raw text what that
+database already holds. This is the read side: one connection per repo, opened
+once and held across every hook phase.
+
+Read-only in intent, not in mechanism — the shared :func:`.registry.open_repo_db`
+runs the same schema check the MCP read path does.
+
+Line ranges here are the *index's*, so a file edited after its repo was
+indexed can hand back a span that no longer describes the bytes on disk. A
+caller slicing source with these numbers must bound them against the content
+it holds — see :func:`.extractors.from_index.symbols_for_content`.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import re
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Collection, Iterable, Mapping, Sequence
+
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+_log = logging.getLogger("repowise.workspace.repo_index")
+
+# Node-id prefix ingestion gives an import target it could not resolve inside
+# the repo — a third-party package or a sibling workspace repo.
+EXTERNAL_PREFIX = "external:"
+
+# How far below a declaration line its symbol may open. Covers a stack of
+# decorators or annotations and the blank lines between them. The ceiling: a
+# declaration this close above an unrelated *nested* definition binds to it,
+# since the index alone cannot tell a decorator run from ordinary code. Reading
+# the intervening text would settle it, at the cost of the caller holding the
+# file (see :func:`.extractors.from_index._decorators_above`, which does).
+_DECLARATION_LOOKAHEAD = 8
+
+
+@dataclass(frozen=True)
+class IndexedSymbol:
+    """One ``wiki_symbols`` row: what ingestion parsed, without the body."""
+
+    symbol_id: str  # "<rel_path>::<name>", the ingestion Symbol.id
+    name: str
+    qualified_name: str
+    kind: str
+    signature: str
+    file_path: str
+    start_line: int  # 1-indexed, inclusive
+    end_line: int  # 1-indexed, inclusive
+    visibility: str
+    #: ingestion's language key. Defaults so a caller building one by hand
+    #: (the tests, and from_index) need not know about it.
+    language: str = ""
+
+
+@dataclass(frozen=True)
+class ExternalImport:
+    """An ``imports`` edge from a repo file to an unresolved external target."""
+
+    source_file: str
+    external_name: str  # the target with its ``external:`` prefix stripped
+    imported_names: tuple[str, ...]
+
+
+#: What separates a qualifier from the name it qualifies, across the languages
+#: whose handler expressions reach :meth:`RepoIndex.symbol_named`.
+_QUALIFIER_RE = re.compile(r"::|\.")
+
+
+class RepoIndex:
+    """Read-only accessor over one repo's ``wiki.db``.
+
+    Built by :func:`open_workspace_index`, or by :meth:`from_symbols` from rows
+    the caller already holds; the caller owns :meth:`close`. Every accessor is a
+    pure in-memory read of what was loaded, so a dialect may call one from the
+    worker thread it runs in.
+    """
+
+    def __init__(
+        self,
+        alias: str,
+        repo_path: Path,
+        session: AsyncSession | Any,
+        engine: Any,
+        *,
+        # Required: an empty id makes every repository-scoped query return nothing.
+        repo_id: str,
+    ) -> None:
+        self.alias = alias
+        self.repo_path = repo_path
+        self.repo_id = repo_id
+        self._session = session
+        self._engine = engine
+        self._by_file: dict[str, list[IndexedSymbol]] = {}
+        self._by_name: dict[str, list[IndexedSymbol]] = {}
+        self._externals: list[ExternalImport] = []
+
+    @classmethod
+    def from_symbols(
+        cls,
+        alias: str,
+        symbols: Iterable[IndexedSymbol],
+        *,
+        repo_id: str,
+        session: Any = None,
+        names: Mapping[str, Sequence[IndexedSymbol]] | None = None,
+    ) -> RepoIndex:
+        """An index over *symbols* the caller already holds, with no database.
+
+        *session* is whatever the caller's test-impact reads take (see
+        :func:`.test_impact.analyze_workspace_test_impact`); :meth:`close` leaves
+        it alone. *names* replaces the name lookup built from *symbols*, for a
+        caller that loads only some files but resolves names across the repo.
+        """
+        index = cls(alias, Path(), session, None, repo_id=repo_id)
+        index._index(symbols)
+        if names is not None:
+            index._by_name = names  # type: ignore[assignment]
+        return index
+
+    # -- Loading -----------------------------------------------------------
+
+    def _index(self, symbols: Iterable[IndexedSymbol]) -> None:
+        for sym in symbols:
+            self._by_file.setdefault(sym.file_path, []).append(sym)
+        # Outermost first, so the first span containing a line is the class and
+        # the last is the method.
+        for file_symbols in self._by_file.values():
+            file_symbols.sort(key=lambda s: (s.start_line, -s.end_line))
+            for sym in file_symbols:
+                self._by_name.setdefault(sym.name, []).append(sym)
+
+    async def _load(self, repo_id: str) -> None:
+        from sqlalchemy import select
+
+        from repowise.core.persistence.models import GraphEdge, WikiSymbol
+
+        rows = await self._session.execute(
+            select(
+                WikiSymbol.symbol_id,
+                WikiSymbol.name,
+                WikiSymbol.qualified_name,
+                WikiSymbol.kind,
+                WikiSymbol.signature,
+                WikiSymbol.file_path,
+                WikiSymbol.start_line,
+                WikiSymbol.end_line,
+                WikiSymbol.visibility,
+                WikiSymbol.language,
+            ).where(WikiSymbol.repository_id == repo_id)
+        )
+        # By keyword: eight of the ten fields are strings, so a reordered or
+        # inserted column would swap values positionally without error.
+        self._index(
+            IndexedSymbol(
+                symbol_id=row.symbol_id,
+                name=row.name,
+                qualified_name=row.qualified_name,
+                kind=row.kind,
+                signature=row.signature,
+                file_path=row.file_path,
+                start_line=row.start_line,
+                end_line=row.end_line,
+                visibility=row.visibility,
+                language=row.language or "",
+            )
+            for row in rows
+        )
+
+        edges = await self._session.execute(
+            select(
+                GraphEdge.source_node_id,
+                GraphEdge.target_node_id,
+                GraphEdge.imported_names_json,
+            ).where(
+                GraphEdge.repository_id == repo_id,
+                GraphEdge.edge_type == "imports",
+                GraphEdge.target_node_id.startswith(EXTERNAL_PREFIX),
+            )
+        )
+        for source, target, names_json in edges:
+            try:
+                names = json.loads(names_json or "[]")
+            except ValueError:
+                names = []
+            if not isinstance(names, list):
+                names = []
+            self._externals.append(
+                ExternalImport(
+                    source_file=source,
+                    external_name=target[len(EXTERNAL_PREFIX) :],
+                    imported_names=tuple(n for n in names if isinstance(n, str)),
+                )
+            )
+
+    # -- Public API --------------------------------------------------------
+
+    @property
+    def session(self) -> AsyncSession | Any:
+        """The connection the index holds; reachability queries run on it too."""
+        return self._session
+
+    def symbols_for_file(self, rel_path: str) -> list[IndexedSymbol]:
+        """Symbols declared in *rel_path* (POSIX, repo-relative), outermost first."""
+        return self._by_file.get(rel_path, [])
+
+    def symbol_at(self, rel_path: str, line: int) -> IndexedSymbol | None:
+        """The innermost symbol whose span contains *line*, or None."""
+        best: IndexedSymbol | None = None
+        for sym in self._by_file.get(rel_path, ()):
+            if sym.start_line <= line <= sym.end_line and (
+                best is None or sym.start_line >= best.start_line
+            ):
+                best = sym
+        return best
+
+    def declared_symbol_at(self, rel_path: str, line: int) -> IndexedSymbol | None:
+        """The symbol a declaration on *line* names, or None.
+
+        :meth:`symbol_at` answers "which symbol contains this line", which is
+        the wrong question for a declaration that sits *above* its handler: a
+        route decorator or annotation is outside the handler's span, because
+        the parser takes a symbol's span from the definition node rather than
+        the decorated one. So a symbol opening just below *line* is preferred,
+        but only when it is nested inside whatever contains *line* — that guard
+        is what stops a call on a function's last line from binding to the next
+        function down.
+        """
+        containing = self.symbol_at(rel_path, line)
+        # A match *on* a symbol's own declaration line names that symbol, not
+        # the first member under it (a gRPC servicer class, say).
+        if containing is not None and containing.start_line == line:
+            return containing
+        following: IndexedSymbol | None = None
+        for sym in self._by_file.get(rel_path, ()):
+            if line < sym.start_line <= line + _DECLARATION_LOOKAHEAD and (
+                following is None or sym.start_line < following.start_line
+            ):
+                following = sym
+        if following is not None and (
+            containing is None
+            or containing.start_line <= following.start_line <= containing.end_line
+        ):
+            return following
+        return containing
+
+    def symbol_named(self, expression: str) -> IndexedSymbol | None:
+        """The one symbol *expression* names in this repo, or None.
+
+        *expression* may be qualified (``OrderHandlers.GetOrder``,
+        ``handlers::ping``); the qualifier settles a member name that is
+        ambiguous on its own, which is the common case for the handler shape
+        this exists for (``Endpoint.HandleAsync``). A name that still resolves to
+        more than one symbol is refused rather than guessed: which one the caller
+        meant would otherwise be decided by index row order.
+
+        ``::`` separates a qualifier too. Without it a Rust handler written
+        ``handlers::ping`` is looked up whole, matches nothing, and the caller
+        falls back to a line lookup that binds the route to its router builder.
+        """
+        parts = _QUALIFIER_RE.split(expression)
+        found = self._by_name.get(parts[-1], ())
+        if len(found) > 1 and len(parts) > 1:
+            tail = parts[-2:]
+            found = [
+                s for s in found if _QUALIFIER_RE.split(s.qualified_name)[-2:] == tail
+            ]
+        return found[0] if len(found) == 1 else None
+
+    def external_import_edges(self) -> list[ExternalImport]:
+        """Every ``imports`` edge leaving the repo, with the names it consumes."""
+        return self._externals
+
+    def public_symbols(self) -> list[IndexedSymbol]:
+        """Symbols ingestion marked public, across the whole repo."""
+        return [s for syms in self._by_file.values() for s in syms if s.visibility == "public"]
+
+    async def close(self) -> None:
+        # No engine means the caller built this over its own handle and owns it.
+        if self._engine is None:
+            return
+        await self._session.close()
+        await self._engine.dispose()
+
+
+class WorkspaceIndex:
+    """The open :class:`RepoIndex` for each workspace repo that has one.
+
+    *openable* names repos not opened yet (alias to checkout path);
+    :meth:`ensure` opens the ones a caller turns out to need, so a run that
+    reads two repos does not load the symbols of two hundred.
+    """
+
+    def __init__(self, repos: dict[str, RepoIndex], openable: dict[str, Path] | None = None) -> None:
+        self._repos = repos
+        self._openable = dict(openable or {})
+
+    def get(self, alias: str) -> RepoIndex | None:
+        return self._repos.get(alias)
+
+    async def ensure(self, aliases: Collection[str]) -> None:
+        """Open the index of each alias in *aliases* not opened yet. A repo that fails is skipped."""
+        todo = [(a, self._openable.pop(a)) for a in sorted(aliases) if a in self._openable]
+        opened = await asyncio.gather(
+            *(open_repo_index(alias, path) for alias, path in todo), return_exceptions=True
+        )
+        for (alias, _path), index in zip(todo, opened, strict=True):
+            if isinstance(index, BaseException):
+                _log.warning("Could not open the index for '%s'", alias, exc_info=index)
+            elif index is not None:
+                self._repos[alias] = index
+
+    async def close(self) -> None:
+        for repo in self._repos.values():
+            try:
+                await repo.close()
+            except Exception:
+                _log.warning("Error closing index for '%s'", repo.alias, exc_info=True)
+        self._repos.clear()
+
+
+async def checkout_repository(session: AsyncSession, repo_path: Path) -> Any:
+    """The ``repositories`` row describing *repo_path*, or None in an empty index.
+
+    A wiki.db normally holds one repository row; prefer the one recorded at
+    this checkout when it holds more, since test runs and moved checkouts leave
+    others behind. Newest first so the fallback is a decision rather than
+    whatever order the scan returns.
+    """
+    from sqlalchemy import select
+
+    from repowise.core.persistence.crud.repository import get_repository_by_path
+    from repowise.core.persistence.models import Repository
+
+    repo = await get_repository_by_path(session, str(repo_path))
+    if repo is None:
+        repo = (
+            await session.execute(
+                select(Repository).order_by(Repository.updated_at.desc()).limit(1)
+            )
+        ).scalar_one_or_none()
+    return repo
+
+
+async def open_repo_index(alias: str, repo_path: Path) -> RepoIndex | None:
+    """Open *repo_path*'s ``wiki.db`` read side, or None when it has no index."""
+    from .registry import open_repo_db, repo_db_path
+
+    if not repo_db_path(repo_path).is_file():
+        return None
+    engine, session_factory = await open_repo_db(repo_path)
+
+    session = session_factory()
+    ok = False
+    try:
+        repo = await checkout_repository(session, repo_path)
+        if repo is None:
+            raise LookupError(f"No repository row in {repo_path}")
+        index = RepoIndex(alias, repo_path, session, engine, repo_id=repo.id)
+        await index._load(repo.id)
+        ok = True
+    finally:
+        # BaseException too: a cancellation landing in _load would otherwise
+        # leak the engine and its connection.
+        if not ok:
+            await session.close()
+            await engine.dispose()
+    return index
+
+
+async def open_workspace_index(
+    ws_config: Any,
+    workspace_root: Path,
+    *,
+    aliases: Collection[str] | None = None,
+    deferred: bool = False,
+) -> WorkspaceIndex:
+    """Open every indexed repo in the workspace. A repo that fails is skipped.
+
+    *aliases*, when given, restricts the open to those repos. *deferred* opens
+    none of them yet: the caller opens what it needs with
+    :meth:`WorkspaceIndex.ensure`.
+    """
+    openable = {
+        e.alias: (workspace_root / e.path).resolve()
+        for e in ws_config.repos
+        if aliases is None or e.alias in aliases
+    }
+    index = WorkspaceIndex({}, openable)
+    if not deferred:
+        await index.ensure(list(openable))
+    return index

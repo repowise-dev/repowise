@@ -74,7 +74,7 @@ export function ChangeHistoryCard({
             </span>
             <span
               className={`tabular-nums ${hasDefects ? "text-[var(--color-error)]" : "text-[var(--color-text-secondary)]"}`}
-              title="Bug-fix commits that touched this file in the trailing defect window."
+              title="Bug-fix commits that touched this file in the last 6 months."
             >
               {priorDefectCount} {priorDefectCount === 1 ? "fix" : "fixes"}
               {fixAge ? ` · last ${fixAge}` : ""}

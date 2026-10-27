@@ -5,14 +5,13 @@ When a repo uses ``importlib.import_module``, ``import()``,
 be loaded at runtime. The dead-code analyzer scans for these markers to
 lower confidence on findings within their packages.
 
-Phase 2 work (A1/A2 in ``docs/LANGUAGE_REMAINING_WORK.md``) will:
-
-- expand the marker dicts to cover Go, Ruby, PHP, Kotlin, Swift, Scala,
-- and / or replace this text-scan with consumption of ``edge_type="dynamic"``
-  edges produced by the ``dynamic_hints`` extractors.
+The marker dictionary covers Python, JavaScript/TypeScript, Java, Kotlin,
+Ruby, PHP, Go, Swift, Scala, Rust, C#, and C/C++. In addition, language-specific
+dynamic imports are recognized via ``edge_type="dynamic"`` edges produced by
+the ``dynamic_hints`` extractors.
 
 Keep new entries grouped by file extension so the per-language audit
-in Phase 2 stays mechanical.
+stays mechanical.
 """
 
 from __future__ import annotations
@@ -20,15 +19,41 @@ from __future__ import annotations
 from pathlib import Path
 
 from repowise.core.ids import is_external
+from repowise.core.ingestion.languages.python_strings import PY_DYNAMIC_LOAD_MARKERS
+from repowise.core.ingestion.models import is_dynamic_edge
+
+
+def read_source_text(
+    rel_path: str,
+    abs_path: str,
+    source_map: dict[str, bytes] | None,
+) -> str:
+    """Decoded source for *rel_path*, preferring ingestion's already-read bytes.
+
+    The dead-code prepasses each scan the whole indexed file set for text
+    markers. Ingestion already read every one of those files into
+    ``source_map`` (keyed by the same repo-relative path as ``parsed_files``),
+    so a hit here replaces a full-repo disk pass with a dict lookup.
+
+    Decoding is deliberately identical on both paths, so a ``source_map`` hit
+    and a disk fallback can never disagree about the same bytes. The codec is
+    utf-8, not the locale's: this used to pin ``getpreferredencoding()`` to
+    reproduce the ``Path.read_text(errors="ignore")`` the prepasses called,
+    but that call was itself the bug: source files are utf-8, and the locale
+    codec is cp1252 on a default Windows install. Every marker is ASCII, so no
+    marker match changes; the surrounding text stops being mojibake.
+    """
+    data: bytes | None = None
+    if source_map is not None:
+        data = source_map.get(rel_path)
+    if data is None:
+        data = Path(abs_path).read_bytes()
+    return data.decode("utf-8", errors="ignore")
+
 
 # Patterns in source that indicate dynamic/runtime imports, keyed by suffix.
 _DYNAMIC_IMPORT_MARKERS: dict[str, tuple[str, ...]] = {
-    ".py": (
-        "importlib.import_module",
-        "__import__(",
-        "importlib.reload",
-        "pkgutil.iter_modules",
-    ),
+    ".py": PY_DYNAMIC_LOAD_MARKERS,
     # JS/TS dynamic-dispatch markers. Each implies the surrounding file
     # (and, by the package-co-location heuristic, its siblings) reaches
     # code through a runtime mechanism the static import graph cannot
@@ -449,7 +474,10 @@ _DYNAMIC_IMPORT_MARKERS: dict[str, tuple[str, ...]] = {
 }
 
 
-def find_dynamic_import_files(parsed_files: dict) -> set[str]:
+def find_dynamic_import_files(
+    parsed_files: dict,
+    source_map: dict[str, bytes] | None = None,
+) -> set[str]:
     """Return the set of file paths whose source contains a dynamic-import marker."""
     result: set[str] = set()
     for path, pf in parsed_files.items():
@@ -461,7 +489,7 @@ def find_dynamic_import_files(parsed_files: dict) -> set[str]:
             markers = _DYNAMIC_IMPORT_MARKERS.get(src_path.suffix)
             if not markers:
                 continue
-            source = src_path.read_text(errors="ignore")
+            source = read_source_text(path, file_info.abs_path, source_map)
             if any(marker in source for marker in markers):
                 result.add(path)
         except Exception:
@@ -483,8 +511,8 @@ def find_dynamic_edge_files(graph) -> set[str]:
     result: set[str] = set()
     try:
         for u, v, data in graph.edges(data=True):
-            etype = data.get("edge_type", "")
-            if etype != "dynamic" and not etype.startswith("dynamic_"):
+            # ``dynamic_hint``: a dynamic hint folded into a static edge.
+            if not (is_dynamic_edge(data.get("edge_type", "")) or data.get("dynamic_hint")):
                 continue
             for endpoint in (u, v):
                 if endpoint is None:

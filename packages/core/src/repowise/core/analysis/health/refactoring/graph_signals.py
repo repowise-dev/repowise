@@ -15,15 +15,43 @@ from __future__ import annotations
 
 from typing import Any
 
+from ....ingestion.cohesion import cannot_close_cycle
+from ....ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
+
 # File->file edge types that constitute a structural dependency cycle.
 # ``imports`` is the actionable, invertible edge; the others are carried so a
-# cycle that closes through a framework/type edge is still reported. Today the
-# only file-level edge type the graph emits is ``imports`` (the rest are
-# symbol-level), so this closely tracks ``GraphBuilder.file_subgraph`` (which
-# drops only git ``co_changes``) and the persisted ``graph_node_membership``
-# rows; the two could drift only if a new file-level edge type is added to one
-# definition but not the other.
-_CYCLE_EDGE_TYPES = ("imports", "framework", "dynamic", "type_use", "extends", "implements")
+# cycle that closes through a framework/type edge is still reported.
+#
+# This used to be a hand-written tuple, with a comment claiming ``imports`` was
+# the only file-level type the graph emits. That was wrong in both directions:
+# the tuple held a bare ``dynamic`` no producer writes, so every real
+# ``dynamic_*`` edge was invisible to cycle detection, and it carried
+# ``extends``/``implements``, which are symbol-to-symbol and cannot close a
+# file cycle. Sharing ``FILE_DEPENDENCY_EDGE_TYPES`` is what stops the next
+# file-level type from being added to one definition and not the other.
+#
+# It stays deliberately different from ``GraphBuilder.file_subgraph``, which is
+# an exclusion list (drop ``co_changes``) rather than an allowlist. Both reach
+# the same set today; the allowlist is the safer shape here because a new
+# non-dependency type defaults to "not a cycle" instead of silently closing one.
+#
+# Edge *type* is not sufficient on its own: the resolver passes synthesise
+# ``imports`` and ``type_use`` edges to express that two files are one
+# compilation unit (Go package siblings, C# partial fragments, a C++
+# header/impl pair). Those are not dependencies and must not close a cycle, so
+# both definitions additionally reject ``cannot_close_cycle``, which also drops
+# type-only and deferred imports and ``dynamic_uses`` hints. See
+# repowise.core.ingestion.cohesion.
+_CYCLE_EDGE_TYPES = FILE_DEPENDENCY_EDGE_TYPES
+
+
+def _is_cycle_edge(data: Any) -> bool:
+    """True if *data* is a file-level edge that can close a runtime cycle.
+
+    ``framework``, ``dynamic_imports`` and ``dynamic_url_route`` stay in: they
+    were not the edge types the measured false positives came from.
+    """
+    return data.get("edge_type") in _CYCLE_EDGE_TYPES and not cannot_close_cycle(data)
 
 
 def build_file_scc_index(graph: Any) -> dict[str, tuple[str, ...]]:
@@ -48,7 +76,7 @@ def build_file_scc_index(graph: Any) -> dict[str, tuple[str, ...]]:
     for u, v, data in graph.edges(data=True):
         if u == v:
             continue
-        if data.get("edge_type") in _CYCLE_EDGE_TYPES and u in fg and v in fg:
+        if _is_cycle_edge(data) and u in fg and v in fg:
             fg.add_edge(u, v)
 
     out: dict[str, tuple[str, ...]] = {}
@@ -80,9 +108,26 @@ def cycle_edges(graph: Any, members: tuple[str, ...]) -> list[tuple[str, str]]:
         for _u, v, data in graph.out_edges(u, data=True):
             if u == v or v not in member_set:
                 continue
-            if data.get("edge_type") in _CYCLE_EDGE_TYPES:
+            if _is_cycle_edge(data):
                 edges.append((u, v))
     return sorted(set(edges))
+
+
+def build_split_partial_types(graph: Any) -> dict[str, frozenset[str]]:
+    """Each file's ``partial`` type names that have parts in other files.
+
+    Read from the ``partial_class`` edges that link a partial type's files.
+    Both ends count: the linker skips a direction that already had an edge.
+    """
+    if graph is None:
+        return {}
+    out: dict[str, set[str]] = {}
+    for u, v, data in graph.edges(data=True):
+        if data.get("hint_source") == "partial_class":
+            names = data.get("imported_names") or ()
+            out.setdefault(u, set()).update(names)
+            out.setdefault(v, set()).update(names)
+    return {path: frozenset(names) for path, names in out.items()}
 
 
 def build_methods_by_file(graph: Any) -> dict[str, tuple[str, ...]]:
@@ -116,4 +161,23 @@ def build_methods_by_file(graph: Any) -> dict[str, tuple[str, ...]]:
         methods = edge_map.get(file_path) or prefix_map.get(file_path) or set()
         if methods:
             out[file_path] = tuple(sorted(methods))
+    return out
+
+
+def defined_symbols(graph: Any, file_path: str) -> list[tuple[str, dict[str, Any]]]:
+    """``(id, node)`` for each declaration *file_path* defines (``defines``
+    edges), the synthetic module symbol left out, with a whole line span.
+    Empty when the graph has no node for the file."""
+    if graph is None or file_path not in graph:
+        return []
+    out = []
+    for _u, target, data in graph.out_edges(file_path, data=True):
+        if data.get("edge_type") != "defines":
+            continue
+        node = graph.nodes[target]
+        if node.get("node_type") != "symbol" or node.get("kind") == "module":
+            continue
+        start, end = node.get("start_line"), node.get("end_line")
+        if isinstance(start, int) and isinstance(end, int) and end >= start:
+            out.append((target, node))
     return out

@@ -21,7 +21,6 @@ def _make_config(**overrides: Any) -> GenerationConfig:
     defaults = {
         "token_budget": 4000,
         "max_concurrency": 2,
-        "large_file_source_pct": 0.5,
     }
     defaults.update(overrides)
     return GenerationConfig(**defaults)
@@ -307,11 +306,8 @@ class TestFilePageTemplate:
 
         from jinja2 import Environment, FileSystemLoader
 
-        from repowise.core.generation.page_generator.structural import (
-            as_markdown,
-            oneline,
-            signature,
-        )
+        from repowise.core.generation.page_generator.structural import register_filters
+        from repowise.core.generation.structural_labels import resolve_structural_labels
 
         template_dir = (
             Path(__file__).resolve().parents[3]
@@ -326,9 +322,8 @@ class TestFilePageTemplate:
         env = Environment(loader=FileSystemLoader(str(template_dir)))
         # Mirror the production environment, which registers these in
         # PageGenerator.__init__. Without them the templates fail to compile.
-        env.filters["oneline"] = oneline
-        env.filters["as_markdown"] = as_markdown
-        env.filters["signature"] = signature
+        register_filters(env)
+        env.globals["labels"] = resolve_structural_labels(None)
         return env
 
     def test_file_page_renders_kg_layer(self, jinja_env):
@@ -340,7 +335,6 @@ class TestFilePageTemplate:
             symbols=[],
             imports=[],
             exports=[],
-            file_source_snippet="",
             pagerank_score=0.0,
             betweenness_score=0.0,
             community_id=0,
@@ -355,8 +349,9 @@ class TestFilePageTemplate:
             kg_layer_role="internal",
         )
         rendered = tmpl.render(ctx=ctx)
-        assert "**Layer:** Core Pipeline" in rendered
-        assert "**Role:** internal" in rendered
+        assert "`utils.py` belongs to the Core Pipeline layer." in rendered
+        # The stored value is an enum member and never reaches the page.
+        assert "internal" not in rendered
 
     def test_file_page_without_kg(self, jinja_env):
         tmpl = jinja_env.get_template("file_page.j2")
@@ -367,7 +362,6 @@ class TestFilePageTemplate:
             symbols=[],
             imports=[],
             exports=[],
-            file_source_snippet="",
             pagerank_score=0.0,
             betweenness_score=0.0,
             community_id=0,
@@ -380,4 +374,4 @@ class TestFilePageTemplate:
             estimated_tokens=0,
         )
         rendered = tmpl.render(ctx=ctx)
-        assert "**Layer:**" not in rendered
+        assert "layer" not in rendered

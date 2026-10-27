@@ -1,5 +1,5 @@
 import * as React from "react";
-import { formatRelativeTime, stripMarkdown } from "../lib/format";
+import { formatDateTime, formatRelativeTime, stripMarkdown } from "../lib/format";
 
 export interface CommitRow {
   sha: string;
@@ -37,7 +37,7 @@ export function CommitRows({
 }: {
   commits: CommitRow[];
   hrefFor: (sha: string) => string;
-  LinkComponent?: React.ElementType;
+  LinkComponent?: React.ElementType | undefined;
 }) {
   const A = LinkComponent ?? "a";
   if (commits.length === 0) {
@@ -63,7 +63,7 @@ export function CommitRows({
             {c.committed_at && (
               <span
                 className="shrink-0 font-mono text-[10px] text-[var(--color-text-tertiary)]"
-                title={`${c.author_name} · ${new Date(c.committed_at).toLocaleString()}`}
+                title={`${c.author_name} · ${formatDateTime(c.committed_at)}`}
               >
                 {formatRelativeTime(c.committed_at)}
               </span>
@@ -84,7 +84,7 @@ export function DecisionRows({
 }: {
   decisions: DecisionRow[];
   hrefFor: (id: string) => string;
-  LinkComponent?: React.ElementType;
+  LinkComponent?: React.ElementType | undefined;
 }) {
   const A = LinkComponent ?? "a";
   if (decisions.length === 0) {

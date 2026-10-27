@@ -19,11 +19,13 @@ _MAX_FIRST_LINE_CHARS = 90
 
 
 def _registered_tools():
-    # Importing the package registers every @mcp.tool with the registry.
-    import repowise.server.mcp_server  # noqa: F401
+    # Tool modules import lazily, so asking for the full surface is what
+    # registers every @mcp.tool with the registry.
+    from repowise.server.mcp_server import ensure_full_surface
 
+    ensure_full_surface()
     tools = mcp_tool_registry.tools()
-    assert tools, "tool registry is empty — import side effect broken?"
+    assert tools, "tool registry is empty — ensure_full_surface broken?"
     return tools
 
 

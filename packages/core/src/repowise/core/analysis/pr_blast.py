@@ -6,7 +6,7 @@ Given a set of changed files, computes:
   - Co-change warnings (historical co-change partners NOT in the PR)
   - Recommended reviewers (top owners of affected files)
   - Test gaps (affected files without a corresponding test file)
-  - Overall risk score (0-10)
+  - Structural impact heuristic (0-10; uncalibrated, not a probability)
 
 Reuses existing data: graph_nodes/graph_edges (SQL), git_metadata, and the
 co_change_partners_json field stored in git_metadata rows.
@@ -14,29 +14,129 @@ co_change_partners_json field stored in git_metadata rows.
 
 from __future__ import annotations
 
-import json
 import math
-import os
-from collections import defaultdict
+from collections import Counter, defaultdict
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.persistence.models import GitMetadata, GraphNode
+from repowise.core.analysis.risk_semantics import structural_impact_contract
+from repowise.core.co_change import parse_partners
+from repowise.core.exclusion import build_exclude_spec, is_excluded
+from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
+from repowise.core.persistence.models import GitMetadata, GraphNode, Repository
+
+
+def rank_tests_by_reach(by_file: Mapping[str, Iterable[str]]) -> list[str]:
+    """Test ids ordered by how many changed files each one reaches.
+
+    Callers cap this list and tell the agent to run the head of it first, so a
+    flat alphabetical sort hands over the head of the alphabet rather than the
+    tests that cover most of the change. Ties keep alphabetical order, which
+    leaves a single-file change ordered exactly as before.
+    """
+    reach = Counter(test_id for tests in by_file.values() for test_id in tests)
+    return sorted(reach, key=lambda t: (-reach[t], t))
+
+
+#: Prefixes that name a module for its slot in a dispatch table, not for
+#: its subject, so its tests are named after the subject alone: ``tool_dead_code``
+#: is tested by ``test_dead_code``, not ``test_tool_dead_code``.
+_ROLE_PREFIXES = ("tool_", "get_")
+
+#: Below this, a stripped stem is too generic to be evidence of anything.
+_MIN_STEM_LENGTH = 3
+
+
+def _subject_names(path: str) -> list[str]:
+    """*path*, and *path* with a dispatch-role prefix stripped from its file name."""
+    head, _, name = path.rpartition("/")
+    stem = name.split(".", 1)[0]
+    out = [path]
+    for prefix in _ROLE_PREFIXES:
+        if stem.startswith(prefix) and len(stem) - len(prefix) >= _MIN_STEM_LENGTH:
+            out.append(f"{head}/{name[len(prefix):]}" if head else name[len(prefix) :])
+    return out
+
+
+async def untested_files(session: AsyncSession, repo_id: str, paths: list[str]) -> list[str]:
+    """The code files among *paths* nothing can be shown to test, in their order.
+
+    Three signals, checked in descending order of what they can prove, and a
+    file only becomes a gap when all three stay silent. Asserting "nothing
+    tests this" is the one claim here that costs a reader something if it is
+    wrong, so the bar for making it is no evidence at all.
+
+    1. A per-test coverage row (from ``repowise coverage add``) is
+       execution-*proof*: never a gap.
+    2. A test file reaching it in the dependency graph is evidence, not proof,
+       but a recorded edge, not a guess, and it finds the suites that
+       name their tests for behaviour instead of for the file under test.
+    3. Otherwise a test named for it by convention (``tests_matching_by_name``,
+       also tried with a dispatch-role prefix stripped), an honest "unknown",
+       never asserted as untested.
+
+    Test files, files that are not code (a manifest, a workflow), and files
+    that declare only types (:func:`~repowise.core.analysis.test_reach.is_type_only`,
+    read from the repository's checkout) are never gaps: they need no test of
+    their own.
+    """
+    from repowise.core.analysis.test_reachability import (
+        load_test_files,
+        read_under,
+        tests_matching_by_name,
+        tests_reaching,
+        type_only_files,
+    )
+    from repowise.core.analysis.test_selection import is_code_file
+    from repowise.core.persistence.crud import covered_source_files
+
+    if not paths:
+        return []
+    test_files = await load_test_files(session, repo_id)
+    candidates = [p for p in paths if is_code_file(p) and p not in test_files]
+    if not candidates:
+        return []
+    covered = await covered_source_files(session, repo_id, set(candidates))
+    # Degrades to "no signal" and never raises: a failed walk must not
+    # turn into a false accusation.
+    try:
+        reached = set(await tests_reaching(session, repo_id, candidates, test_files=test_files))
+    except Exception:
+        reached = set()
+    rest = [p for p in candidates if p not in covered and p not in reached]
+    subjects = {p: _subject_names(p) for p in rest}
+    named = tests_matching_by_name(sorted({n for ns in subjects.values() for n in ns}), test_files)
+    gaps = [p for p in rest if not any(n in named for n in subjects[p])]
+    if not gaps:
+        return []
+    root = (
+        await session.execute(select(Repository.local_path).where(Repository.id == repo_id))
+    ).scalar_one_or_none()
+    types = type_only_files(gaps, read_under(root))
+    return [p for p in gaps if p not in types]
 
 
 class PRBlastRadiusAnalyzer:
     """Compute blast radius for a proposed PR given its changed files."""
 
-    def __init__(self, session: AsyncSession, repo_id: str) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        repo_id: str,
+        repository_alias: str | None = None,
+    ) -> None:
         self._session = session
         self._repo_id = repo_id
+        self._repository_alias = repository_alias
 
     async def analyze_files(
         self,
         changed_files: list[str],
         max_depth: int = 3,
+        exclude_spec: Any = None,
     ) -> dict:
         """Return full blast-radius analysis for the given changed files.
 
@@ -47,14 +147,34 @@ class PRBlastRadiusAnalyzer:
         max_depth:
             Maximum BFS depth for transitive ancestor lookup.
         """
+        if exclude_spec is None:
+            repo_path = (
+                await self._session.execute(
+                    select(Repository.local_path).where(Repository.id == self._repo_id)
+                )
+            ).scalar_one_or_none()
+            if repo_path:
+                exclude_spec = build_exclude_spec(repo_path)
+        changed_files = [
+            path for path in changed_files if not (exclude_spec and is_excluded(path, exclude_spec))
+        ]
         changed_set = set(changed_files)
 
         # 1. Per-file direct risk
         direct_risks = await self._score_files(changed_files)
 
         # 2. Transitive affected files
-        transitive_affected = await self._transitive_affected(changed_files, max_depth)
-        all_affected_paths = list(changed_set | {e["path"] for e in transitive_affected})
+        transitive_affected = await self._transitive_affected(
+            changed_files, max_depth, exclude_spec
+        )
+        # Sorted, because this list is cut before it is shown. ``test_gaps``
+        # preserves this order and ``get_risk``'s PR directive renders three of
+        # it as ``missing_tests``, the third line an agent is told to read.
+        # A bare set union is hash-ordered, so which three appeared varied
+        # between processes on identical input. The scale is a PR's own changed
+        # files, not the whole affected set — ``directives`` filters to those
+        # before cutting — so this is a handful of paths, reported stably.
+        all_affected_paths = sorted(changed_set | {e["path"] for e in transitive_affected})
 
         # 3. Co-change warnings
         cochange_warnings = await self._cochange_warnings(changed_files, changed_set)
@@ -65,12 +185,12 @@ class PRBlastRadiusAnalyzer:
         # 5. Test gaps
         test_gaps = await self._find_test_gaps(all_affected_paths)
 
-        # 6. Guarding tests — the tests the per-test coverage map proves execute
-        #    the changed files (the "run these to validate" answer).
-        guarding_tests = await self._guarding_tests(changed_files)
+        # 6. Canonical test impact: the typed population MCP and REST consume.
+        test_impact = await self._test_impact(changed_files, exclude_spec=exclude_spec)
 
-        # 7. Overall risk score (0-10)
-        overall_risk_score = self._compute_overall_risk(direct_risks, transitive_affected)
+        # 7. Structural impact heuristic (0-10). The compatibility field is an
+        #    exact alias supplied by the shared public semantics contract.
+        structural_impact_score = self._compute_overall_risk(direct_risks, transitive_affected)
 
         return {
             "direct_risks": direct_risks,
@@ -78,8 +198,8 @@ class PRBlastRadiusAnalyzer:
             "cochange_warnings": cochange_warnings,
             "recommended_reviewers": recommended_reviewers,
             "test_gaps": test_gaps,
-            "guarding_tests": guarding_tests,
-            "overall_risk_score": overall_risk_score,
+            "test_impact": test_impact,
+            **structural_impact_contract(structural_impact_score),
         }
 
     # ------------------------------------------------------------------
@@ -109,65 +229,131 @@ class PRBlastRadiusAnalyzer:
         )
         node_by_path: dict[str, Any] = {n.node_id: n for n in node_res.scalars().all()}
 
-        results = []
+        results: list[dict[str, Any]] = []
         for path in paths:
             meta = meta_by_path.get(path)
             node = node_by_path.get(path)
             temporal = float(getattr(meta, "temporal_hotspot_score", 0.0) or 0.0)
+            churn_pct = float(getattr(meta, "churn_percentile", 0.0) or 0.0)
+            hotspot = bool(getattr(meta, "is_hotspot", False))
             centrality = float(getattr(node, "pagerank", 0.0) or 0.0)
-            risk_score = self._score_file(temporal, centrality)
+            structural_score = self._score_file(temporal, centrality)
             results.append(
                 {
                     "path": path,
-                    "risk_score": round(risk_score, 4),
+                    "structural_score": round(structural_score, 4),
+                    # Compatibility alias for pre-semantics clients.
+                    "risk_score": round(structural_score, 4),
                     "temporal_hotspot": round(temporal, 4),
+                    "churn_percentile": round(churn_pct, 4),
+                    # Published so a consumer stops re-deriving it from the
+                    # churn conjunct alone, which on a dormant repository is
+                    # just its top quartile.
+                    "is_hotspot": hotspot,
                     "centrality": round(centrality, 6),
                 }
             )
 
-        results.sort(key=lambda x: -x["risk_score"])
+        results.sort(key=lambda x: -float(x["structural_score"]))
         return results
 
     @staticmethod
     def _score_file(temporal_hotspot_score: float, centrality: float) -> float:
-        """Compute file-level risk: centrality * (1 + temporal_hotspot_score)."""
+        """Compute file-level risk: centrality * (1 + temporal_hotspot_score).
+
+        Both inputs are repo-coupled -- the multiplier grows with commit
+        velocity, and pagerank sums to 1 so mean centrality is ``1/file_count``
+        -- so the score compares files within one change set and nothing across
+        repositories.
+
+        Substituting ``churn_percentile`` here was measured on 397 merged PRs
+        and rejected: it moved every moderate-band PR into localized, because a
+        bounded [1, 2] multiplier collapses an exponential tuned against an
+        unbounded one, and re-tuning that exponent would fit the constant to
+        this repository's file count. The rank is published beside the raw
+        value instead.
+        """
         return centrality * (1.0 + temporal_hotspot_score)
 
-    async def _transitive_affected(self, changed_files: list[str], max_depth: int) -> list[dict]:
+    async def _transitive_affected(
+        self, changed_files: list[str], max_depth: int, exclude_spec: Any = None
+    ) -> list[dict]:
         """BFS over reverse graph edges (source_node_id -> target_node_id direction).
 
         We want files that *import* the changed files (i.e. are affected when a
-        changed file changes).  In graph_edges, an edge means
+        changed file changes).  In graph_edges, a dependency edge means
         ``source imports target``, so we look for rows where
         ``target_node_id IN (frontier)`` and collect the ``source_node_id``
         values — those are the files that depend on our changed set.
+
+        Not every row is a dependency edge, though, which is what the sentence
+        above used to assume. ``co_changes`` rows live in the same table, so an
+        unfiltered BFS treated "these two files tend to change together" as
+        "this file imports that one" and walked through it, then walked
+        through *that* file's co-change partners at the next depth. On this
+        repository a PR touching ``core/__init__.py`` reached five co-change
+        rows and two real importers at depth 1, and since ``may_break`` is
+        capped at five and sorted by depth, the noise crowded out the answer.
+        Those partners are already reported, correctly labelled, by
+        :meth:`_cochange_warnings`.
         """
         visited: dict[str, int] = {}  # path -> depth at which it was first reached
-        frontier = list(set(changed_files))
+        # Sorted, not just deduped. This walk's output is cut twice downstream
+        # — ``may_break`` takes 15 of it, and that is the first field
+        # ``get_risk``'s PR directive tells an agent to read — so the order
+        # inside a depth band decides what an agent is shown. A hash-ordered
+        # seed plus an unordered ``SELECT DISTINCT`` made that order vary
+        # between processes on identical input.
+        frontier = sorted(set(changed_files))
 
         for depth in range(1, max_depth + 1):
             if not frontier:
                 break
             # SQLite / SQLAlchemy compatible IN query via text()
             placeholders = ",".join(f":p{i}" for i in range(len(frontier)))
+            allowed = ",".join(f":e{i}" for i in range(len(FILE_DEPENDENCY_EDGE_TYPES)))
             params: dict[str, Any] = {"repo_id": self._repo_id}
             params.update({f"p{i}": v for i, v in enumerate(frontier)})
+            params.update({f"e{i}": v for i, v in enumerate(sorted(FILE_DEPENDENCY_EDGE_TYPES))})
             rows = await self._session.execute(
                 text(
-                    f"SELECT DISTINCT source_node_id FROM graph_edges "
-                    f"WHERE repository_id = :repo_id "
-                    f"AND target_node_id IN ({placeholders})"
+                    f"SELECT DISTINCT e.source_node_id FROM graph_edges e "
+                    f"JOIN graph_nodes source ON source.repository_id = e.repository_id "
+                    f"AND source.node_id = e.source_node_id AND source.node_type = 'file' "
+                    f"JOIN graph_nodes target ON target.repository_id = e.repository_id "
+                    f"AND target.node_id = e.target_node_id AND target.node_type = 'file' "
+                    f"WHERE e.repository_id = :repo_id "
+                    f"AND e.target_node_id IN ({placeholders}) "
+                    f"AND e.edge_type IN ({allowed})"
                 ),
                 params,
             )
             next_frontier = []
             for (src,) in rows:
-                if src not in visited and src not in set(changed_files):
+                if (
+                    src not in visited
+                    and src not in set(changed_files)
+                    and not is_excluded(src, exclude_spec)
+                ):
                     visited[src] = depth
                     next_frontier.append(src)
             frontier = next_frontier
 
-        return [{"path": p, "depth": d} for p, d in sorted(visited.items(), key=lambda x: x[1])]
+        # Depth first, then path: a sort on depth alone is stable, so files
+        # sharing a depth kept the row order the query happened to return.
+        return [
+            {
+                "path": p,
+                "depth": d,
+                "distance": d,
+                "direct": d == 1,
+                "direction": "dependent_to_dependency",
+                "evidence_kind": "structural",
+                "claim": "structural_reach",
+                "runtime_breakage_claim": False,
+            }
+            for p, d in sorted(visited.items(), key=lambda item: (item[1], item[0]))
+        ]
 
     async def _cochange_warnings(
         self, changed_files: list[str], changed_set: set[str]
@@ -185,16 +371,19 @@ class PRBlastRadiusAnalyzer:
 
         warnings = []
         for meta in res.scalars().all():
-            partners = json.loads(meta.co_change_partners_json or "[]")
-            for partner in partners:
-                partner_path = partner.get("file_path") or partner.get("path") or ""
-                score = float(partner.get("co_change_count") or partner.get("count") or 0)
-                if partner_path and partner_path not in changed_set:
+            for partner in parse_partners(meta.co_change_partners_json):
+                partner_path, score = partner.file_path, partner.weight
+                if partner_path not in changed_set:
                     warnings.append(
                         {
                             "changed": meta.file_path,
                             "missing_partner": partner_path,
                             "score": score,
+                            "relationship_type": "co_change",
+                            "direction": "undirected",
+                            "evidence_kind": "historical",
+                            "provenance": "git_history",
+                            **({"support": partner.support} if partner.support else {}),
                         }
                     )
 
@@ -220,7 +409,7 @@ class PRBlastRadiusAnalyzer:
             if email:
                 owner_files[email].append(pct)
 
-        reviewers = [
+        reviewers: list[dict[str, Any]] = [
             {
                 "email": email,
                 "files": len(pcts),
@@ -228,124 +417,31 @@ class PRBlastRadiusAnalyzer:
             }
             for email, pcts in owner_files.items()
         ]
-        reviewers.sort(key=lambda x: (-x["files"], -x["ownership_pct"]))
+        reviewers.sort(key=lambda x: (-int(x["files"]), -float(x["ownership_pct"])))
         return reviewers[:5]
 
     async def _find_test_gaps(self, affected_files: list[str]) -> list[str]:
-        """Return files that lack a test, coverage-backed where the map has data.
+        """The affected files nothing can be shown to test (:func:`untested_files`)."""
+        return await untested_files(self._session, self._repo_id, affected_files)
 
-        A file with >=1 per-test coverage row (from ``repowise coverage add``) is
-        coverage-*proven* to be exercised by some test, so it is never a gap -
-        this supersedes the filename guess for files the map can speak to. Where
-        the per-test map has no data for a file, fall back to the filename
-        pattern (test_<name>, <name>_test, <name>.spec.*) - an honest "unknown",
-        never asserted as untested. Test files themselves are excluded; they
-        don't need their own tests.
-        """
-        if not affected_files:
-            return []
+    async def _test_impact(self, changed_files: list[str], exclude_spec: Any = None) -> dict:
+        """Canonical measured + inferred test-impact population."""
+        from repowise.core.analysis.test_impact import analyze_test_impact
 
-        from repowise.core.persistence.crud import covered_source_files
-
-        # Coverage-proven-tested files: absent from gaps regardless of naming.
-        covered = await covered_source_files(self._session, self._repo_id, set(affected_files))
-
-        node_res = await self._session.execute(
-            select(GraphNode.node_id, GraphNode.is_test).where(
-                GraphNode.repository_id == self._repo_id,
-                GraphNode.node_id.in_(affected_files),
-            )
+        return await analyze_test_impact(
+            self._session,
+            self._repo_id,
+            changed_files,
+            repository_alias=self._repository_alias,
+            exclude_spec=exclude_spec,
         )
-        # Build a set of affected files that are themselves test files
-        test_file_set = {row[0] for row in node_res.all() if row[1]}
-
-        # Fetch all test paths for the filename fallback (map-no-data files only)
-        all_test_res = await self._session.execute(
-            select(GraphNode.node_id).where(
-                GraphNode.repository_id == self._repo_id,
-                GraphNode.is_test == True,  # noqa: E712
-            )
-        )
-        test_paths = {row[0] for row in all_test_res.all()}
-
-        gaps = []
-        for path in affected_files:
-            # Skip test files — they don't need their own tests
-            if path in test_file_set:
-                continue
-            # Coverage proves a test exercises this file: not a gap.
-            if path in covered:
-                continue
-            base = os.path.splitext(os.path.basename(path))[0]
-            ext = os.path.splitext(path)[1].lstrip(".")
-            has_test = any(
-                (
-                    f"test_{base}" in tp
-                    or f"{base}_test" in tp
-                    or f"{base}.spec.{ext}" in tp
-                    or f"{base}.spec." in tp
-                )
-                for tp in test_paths
-            )
-            if not has_test:
-                gaps.append(path)
-
-        return gaps
-
-    async def _guarding_tests(self, changed_files: list[str]) -> dict:
-        """Tests the per-test coverage map proves execute the *changed* files.
-
-        The inverse of ``test_gaps``: instead of "which changed file lacks a
-        test", this answers "which recorded tests actually exercise this
-        change" - the coverage-backed "run these to validate" list, keyed by
-        test id (a pytest-runnable node id when the report carried node-id
-        contexts). Reuses the Phase 1 reverse index ``tests_covering``.
-
-        Scoped to the changed files, NOT the transitively-affected set: the
-        Phase 3 gate showed that affected (importing) files are covered
-        overwhelmingly by the same mega parametrized suites, so an
-        affected-file run-list is near-useless noise. The actionable set is the
-        tests that execute the code you actually edited. Line precision is not
-        available here (get_risk takes file paths, not a diff), so this is
-        file-level; ``repowise impacted-tests`` gives the line-level answer from
-        a real diff.
-
-        Returns ``{map_present, tests_to_run, by_file}``. ``map_present`` is
-        False when no per-test map is ingested at all - the honest "unknown",
-        distinct from "this change has no guarding tests".
-        """
-        empty = {"map_present": False, "tests_to_run": [], "by_file": {}}
-        if not changed_files:
-            return empty
-
-        from repowise.core.persistence.crud import get_test_coverage_summary, tests_covering
-
-        summary = await get_test_coverage_summary(self._session, self._repo_id)
-        if summary.get("pair_count", 0) == 0:
-            return empty
-
-        by_file: dict[str, list[str]] = {}
-        all_ids: set[str] = set()
-        for path in changed_files:
-            rows = await tests_covering(self._session, self._repo_id, path, lines=None)
-            if not rows:
-                continue
-            ids = sorted({r["test_id"] for r in rows})
-            by_file[path] = ids
-            all_ids.update(ids)
-
-        return {
-            "map_present": True,
-            "tests_to_run": sorted(all_ids),
-            "by_file": by_file,
-        }
 
     @staticmethod
     def _compute_overall_risk(
         direct_risks: list[dict],
         transitive_affected: list[dict],
     ) -> float:
-        """Compute overall risk score on 0-10 scale.
+        """Compute the uncalibrated structural-impact heuristic on 0-10.
 
         Per-file risk is ``pagerank * (1 + temporal_hotspot)`` — unbounded
         and pagerank-scaled (typically 0-0.3). The old ``min(raw * 100, 10)``
@@ -362,8 +458,8 @@ class PRBlastRadiusAnalyzer:
         if not direct_risks:
             return 0.0
 
-        avg_direct = sum(r["risk_score"] for r in direct_risks) / len(direct_risks)
-        max_direct = max(r["risk_score"] for r in direct_risks)
+        avg_direct = sum(r["structural_score"] for r in direct_risks) / len(direct_risks)
+        max_direct = max(r["structural_score"] for r in direct_risks)
         breadth_bonus = min(len(transitive_affected) / 20.0, 1.0)  # 0-1
 
         combined = 0.5 * avg_direct + 0.5 * max_direct

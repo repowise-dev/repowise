@@ -6,7 +6,20 @@ from any test file without conftest import restrictions.
 
 from __future__ import annotations
 
-from repowise.core.persistence.models import Repository
+from repowise.core.persistence.models import Repository, WikiSymbol
+
+
+def make_wiki_symbol(repo_id: str, file_path: str, name: str, **overrides) -> WikiSymbol:
+    """One symbol index row, the rows ``crud.count_symbols`` counts."""
+    return WikiSymbol(
+        repository_id=repo_id,
+        file_path=file_path,
+        symbol_id=f"{file_path}::{name}",
+        name=name,
+        qualified_name=name,
+        kind="function",
+        **overrides,
+    )
 
 
 def make_repo_kwargs(**overrides) -> dict:
@@ -41,3 +54,19 @@ async def insert_repo(session, **overrides) -> Repository:
     repo = await upsert_repository(session, **make_repo_kwargs(**overrides))
     await session.commit()
     return repo
+
+
+async def accept(session, decision_id: str, *, accepter: str = "tester"):
+    """Accept a stored record, the way the product does.
+
+    Tests that need a *governing* decision must go through this rather than
+    handing ``status="active"`` to ``bulk_upsert_decisions``: extraction cannot
+    create authority, so a setup that fabricates one is testing a state the
+    product can no longer reach.
+    """
+    from repowise.core.persistence.crud.authority import accept_decision
+    from repowise.core.persistence.models import DecisionRecord
+
+    record = await session.get(DecisionRecord, decision_id)
+    await accept_decision(session, record, accepter=accepter)
+    return record

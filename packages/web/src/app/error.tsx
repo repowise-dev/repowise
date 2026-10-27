@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect } from "react";
-import { AlertTriangle, RefreshCw } from "lucide-react";
-import { Button } from "@repowise-dev/ui/ui/button";
+import { useTranslations } from "next-intl";
+import { RouteError } from "@repowise-dev/ui/shared/route-states";
 
 export default function GlobalError({
   error,
@@ -11,32 +11,20 @@ export default function GlobalError({
   error: Error & { digest?: string };
   reset: () => void;
 }) {
+  const t = useTranslations("errors");
+
   useEffect(() => {
     console.error(error);
   }, [error]);
 
   return (
-    <div className="flex h-full min-h-[400px] flex-col items-center justify-center gap-4 p-6 text-center">
-      <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[var(--color-error)]/10">
-        <AlertTriangle className="h-6 w-6 text-[var(--color-error)]" />
-      </div>
-      <div>
-        <h2 className="text-base font-semibold text-[var(--color-text-primary)]">
-          Something went wrong
-        </h2>
-        <p className="mt-1 text-sm text-[var(--color-text-secondary)] max-w-sm">
-          {error.message || "An unexpected error occurred. Please try again."}
-        </p>
-        {error.digest && (
-          <p className="mt-1 text-xs font-mono text-[var(--color-text-tertiary)]">
-            Digest: {error.digest}
-          </p>
-        )}
-      </div>
-      <Button onClick={reset} size="sm" className="gap-2">
-        <RefreshCw className="h-3.5 w-3.5" />
-        Try again
-      </Button>
-    </div>
+    <RouteError
+      title={t("errorTitle")}
+      message={t("errorFallback")}
+      digest={error.digest}
+      digestLabel={t("digest")}
+      onRetry={reset}
+      retryLabel={t("tryAgain")}
+    />
   );
 }

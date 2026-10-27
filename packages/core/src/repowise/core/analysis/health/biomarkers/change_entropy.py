@@ -25,6 +25,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..models import Severity
+from ..semantics import format_top_percentile
 from .base import BiomarkerResult, FileContext
 
 _MIN_PERCENTILE = 0.80
@@ -82,12 +83,16 @@ class ChangeEntropyDetector:
                 line_end=None,
                 details={
                     "change_entropy": round(entropy, 4),
-                    "change_entropy_pct": round(percentile, 3),
+                    # 0-100, matching FileSignals._entropy_pct and every other
+                    # emitted copy of this field. The stored column is 0-1, and
+                    # emitting it raw here put two scales under one key in a
+                    # single get_health response.
+                    "change_entropy_pct": round(percentile * 100.0, 1),
                     "commit_count_90d": commits_90d,
                 },
                 reason=(
                     f"changes are scattered across noisy commits "
-                    f"(top {(1 - percentile) * 100:.0f}% change entropy); "
+                    f"({format_top_percentile(percentile, 'files eligible for change-entropy ranking')}); "
                     "a strong history-based fault predictor"
                 ),
             )

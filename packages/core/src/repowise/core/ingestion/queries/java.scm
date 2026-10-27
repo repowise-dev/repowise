@@ -7,39 +7,46 @@
 ; Symbols
 ; ---------------------------------------------------------------------------
 
+; One pattern per declaration, modifiers optional: with a second pattern
+; that captured them, the bare one matched first and a class's annotations
+; (``@Component``, ``@State``) never reached its symbol.
 (class_declaration
-  name: (identifier) @symbol.name
-) @symbol.def
-
-(class_declaration
-  (modifiers) @symbol.modifiers
+  (modifiers)? @symbol.modifiers
   name: (identifier) @symbol.name
 ) @symbol.def
 
 (interface_declaration
-  name: (identifier) @symbol.name
-) @symbol.def
-
-(interface_declaration
-  (modifiers) @symbol.modifiers
+  (modifiers)? @symbol.modifiers
   name: (identifier) @symbol.name
 ) @symbol.def
 
 (enum_declaration
+  (modifiers)? @symbol.modifiers
   name: (identifier) @symbol.name
 ) @symbol.def
 
 ; Java 16+ records: record Point(double x, double y) {}
 (record_declaration
+  (modifiers)? @symbol.modifiers
   name: (identifier) @symbol.name
 ) @symbol.def
 
-(record_declaration
-  (modifiers) @symbol.modifiers
+; An annotation type, and its elements as its methods: ``ann.value()`` calls one.
+(annotation_type_declaration
+  (modifiers)? @symbol.modifiers
   name: (identifier) @symbol.name
 ) @symbol.def
 
+(annotation_type_element_declaration
+  (modifiers)? @symbol.modifiers
+  name: (identifier) @symbol.name
+) @symbol.def
+
+; One pattern, modifiers optional: two overlapping patterns kept whichever
+; matched first, which dropped either the modifiers or the parameters that
+; name an overload.
 (method_declaration
+  (modifiers)? @symbol.modifiers
   name: (identifier) @symbol.name
   parameters: (formal_parameters) @symbol.params
 ) @symbol.def
@@ -47,12 +54,6 @@
 (constructor_declaration
   name: (identifier) @symbol.name
   parameters: (formal_parameters) @symbol.params
-) @symbol.def
-
-; Public modifier capture
-(method_declaration
-  (modifiers) @symbol.modifiers
-  name: (identifier) @symbol.name
 ) @symbol.def
 
 ; ---------------------------------------------------------------------------
@@ -80,9 +81,90 @@
   arguments: (argument_list) @call.arguments
 ) @call.site
 
+; Method call on the caller's own field: this.field.method(args).
+; The pattern above constrains ``object`` to a bare identifier and the bare
+; pattern constrains nothing, so without this a field receiver arrives with no
+; receiver at all — which the resolver reads as an implicit receiver on the
+; caller's own class.
+;
+; ``this``/``super`` only, which is the rule every sibling grammar keeps: a
+; captured receiver must name something in the *caller's* scope, because the
+; receiver strategies type a field against the caller's class. Lifting the
+; nearest name out of ``a.b.method()`` would offer ``b`` — which belongs to
+; ``a``'s type — to be typed as a field of the caller, and bind a same-named
+; one. ``Outer.this.method()`` declines on its own, since a qualified ``this``
+; is a ``this`` node and not an ``identifier``, and that is right: it is an
+; implicit receiver.
+(method_invocation
+  object: (field_access
+    object: [(this) (super)]
+    field: (identifier) @call.receiver
+  )
+  name: (identifier) @call.target
+  arguments: (argument_list) @call.arguments
+) @call.site
+
+; Self-dispatch: this.method(args). The pattern above claims ``this.field.m()``
+; and the bare pattern claims everything, so without this a plain ``this.m()``
+; arrives receiver-less and is read as an implicit receiver — which resolves by
+; bare name through the flat same-file index instead of against the caller's own
+; class.
+;
+; ``super.m()`` is captured too, so the resolver walks the caller's ancestors
+; instead of binding the caller's own override.
+(method_invocation
+  object: [(this) (super)] @call.receiver
+  name: (identifier) @call.target
+  arguments: (argument_list) @call.arguments
+) @call.site
+
+; Qualified super: ``S.super.m()``, where ``S`` is an enclosing class or a
+; superinterface. The plain member pattern above also matches it, with ``S`` as
+; the receiver; the parser drops that copy.
+(method_invocation
+  object: (identifier) @call.scope
+  (super) @call.receiver
+  name: (identifier) @call.target
+  arguments: (argument_list) @call.arguments
+) @call.site
+
+; Cast receiver: ((Foo) x).bar(args) names its type at the call site, like the
+; fluent construction below. A scoped type (``(a.Foo) x``) is left uncaptured,
+; and the anchors keep an intersection cast (``(Foo & Bar) x``) out.
+(method_invocation
+  object: (parenthesized_expression
+    (cast_expression
+      .
+      type: [
+        (type_identifier) @call.receiver
+        (generic_type (type_identifier) @call.receiver)
+      ]
+      .
+      value: (_)
+    )
+  )
+  name: (identifier) @call.target
+  arguments: (argument_list) @call.arguments
+) @call.site
+
+; Fluent construction: new Foo().bar(args). The receiver type is written at the
+; call site, so this lands on the receiver-names-a-class tier — which only binds
+; when that class declares the method — instead of the bare-name pool. Same
+; shape as csharp.scm's ``new Builder().Method()`` (#1680).
+(method_invocation
+  object: (object_creation_expression
+    type: [
+      (type_identifier) @call.receiver
+      (generic_type (type_identifier) @call.receiver)
+    ]
+  )
+  name: (identifier) @call.target
+  arguments: (argument_list) @call.arguments
+) @call.site
+
 ; Chained method call: obj.method1().method2(args)
 (method_invocation
-  object: (method_invocation)
+  object: (method_invocation) @call.receiver_call
   name: (identifier) @call.target
   arguments: (argument_list) @call.arguments
 ) @call.site
@@ -109,7 +191,7 @@
 ; type of a factory, the element type of ``new Foo()``. The single
 ; ``@param.type`` capture is reused across languages
 ; (see parser._extract_type_refs); the Java head extractor in
-; parser_helpers.py unwraps ``T[]`` / ``Foo<...>`` / ``ns.Foo`` / annotated
+; lang_helpers/type_heads.py unwraps ``T[]`` / ``Foo<...>`` / ``ns.Foo`` / annotated
 ; types and filters primitives plus the most ubiquitous ``java.lang`` /
 ; ``java.util`` / ``java.util.function`` builtins.
 

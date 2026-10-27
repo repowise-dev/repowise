@@ -9,11 +9,15 @@ plausible-looking paths — have nowhere to enter through. A group the model
 forgets to name keeps a deterministic name; a group id it invents is discarded.
 Coverage is therefore unchanged by anything the model does or fails to do.
 
-The payload conveys breadth, never importance. Ranking the input by PageRank
-and sampling the top files produced 12.7% coverage against 91.7% for the full
-inventory, because hub files are infrastructure — ``models.py``, ``client.ts``,
-``__init__.py`` — and an outline built around them describes the plumbing
-rather than the product.
+The file inventory conveys breadth, never importance. Ranking the input by
+PageRank and sampling the top files produced 12.7% coverage against 91.7% for
+the full inventory, because hub files are infrastructure — ``models.py``,
+``client.ts``, ``__init__.py`` — and an outline built around them describes the
+plumbing rather than the product. Every truncated field in the payload is
+nonetheless ordered for what its truncation should keep — filenames round-robin
+across directories, entry points by execution-start evidence — because the sort
+in front of a ``[:n]`` decides what the model sees, and none of those orders is
+centrality.
 
 Repo docs do not come in here as prose. Nine thousand characters of README
 injected alongside a 145-directory structural task collapsed the outline to
@@ -25,11 +29,14 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
+from collections.abc import Container, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 import structlog
 
+from ..entry_points import rank_entry_point_paths
 from ..onboarding.grounding import check_grounding
 from .grouping import ConceptGroup
 
@@ -106,6 +113,8 @@ def deterministic_title(group: ConceptGroup, layer_label: str = "") -> str:
     a key, so a keyless wiki gets a real tree with plainer labels rather than a
     worse tree.
     """
+    if group.packages:
+        return _package_rollup_title(group.packages)
     segments = [s for s in group.target_path.split("/") if s]
     meaningful = [s for s in segments if s.lower() not in _STOP_SEGMENTS] or segments
     tail = [_humanise(s) for s in meaningful[-2:]]
@@ -130,7 +139,166 @@ def deterministic_title(group: ConceptGroup, layer_label: str = "") -> str:
     return title
 
 
-def disambiguate_titles(titled: list[tuple[str, str]]) -> list[str]:
+# A chapter's subject is the directory it heads. ``core`` is the one stop
+# segment that survives here: as one of two segments it adds nothing ("Core
+# Ingestion" says no more than "Ingestion"), but as the whole subject it is
+# exactly what a reader means by the core package. The rest are containers with
+# no subject of their own, and no path ever ends at one on purpose.
+_CHAPTER_CONTAINERS = (_STOP_SEGMENTS - {"core"}) | {"dist", "build"}
+
+# A route parameter: ``[id]``, ``[...slug]``, ``{id}``, ``(group)``, ``:id``.
+# It names a variable rather than a subject, so a chapter at
+# ``app/repos/[id]`` is about repos.
+_DYNAMIC_SEGMENT = re.compile(r"^([\[{(].*[]})]|:.+)$")
+
+
+def _chapter_subject(target_path: str) -> str:
+    """The deepest segment of *target_path* that names something."""
+    segments = [s for s in target_path.split("/") if s]
+    if not segments:
+        return ""
+    for segment in reversed(segments):
+        if segment.lower() in _CHAPTER_CONTAINERS or _DYNAMIC_SEGMENT.match(segment):
+            continue
+        return segment
+    # Every segment is a container. The last one is still where the reader is.
+    return segments[-1]
+
+
+def _house_casing(segment: str, child_titles: Sequence[str]) -> str:
+    """How the project writes *segment* in its own page titles, or ``""``.
+
+    The children were named before their chapter needs a name, so they are the
+    one place that says whether this repository writes ``ui`` as "UI" or "Ui".
+    Taken from them rather than from an acronym list, which would be a rule
+    tuned to the repositories whose acronyms happened to be on it.
+    """
+    counts: Counter[str] = Counter()
+    for title in child_titles:
+        for word in re.split(r"[^A-Za-z0-9]+", title):
+            # An all-lowercase occurrence says nothing this function was asked
+            # about — a title carrying the word mid-sentence, or one quoting a
+            # path — and taking it would open a page title in lower case.
+            if word.lower() == segment.lower() and not word.islower():
+                counts[word] += 1
+    if not counts:
+        return ""
+    top = max(counts.values())
+    # Ties break on the string so an unchanged repository names it the same way
+    # every run.
+    return sorted(word for word, n in counts.items() if n == top)[0]
+
+
+def chapter_title(target_path: str, child_titles: Sequence[str] = ()) -> str:
+    """Name the chapter heading *target_path*, given the titles beneath it.
+
+    A chapter is not a leaf and must not be named like one. The namer, shown a
+    chapter's directory, names the loose files at that directory's root and
+    then that name stands over everything below: "Blast Radius UI" heading
+    eighteen UI modules, "Core Service Utilities" heading six core subsystems.
+    That is worse than no chapter at all, because the name now claims to head
+    things it does not describe. Measured, not assumed — a hint telling the
+    model which groups were chapters and what they contained changed two names
+    of nine and neither of those two.
+
+    What a chapter reliably *is* is the place: the directory, and the reader's
+    own word for it. So it gets that word and the word "Overview", and the only
+    thing the children are asked for is how this project spells it. Costs no
+    call, cannot drift between runs, and reproduces the four chapter names on
+    this repository's own index that read best today.
+    """
+    segment = _chapter_subject(target_path)
+    if not segment:
+        # A chapter at the repository root. It has no segment to name it by and
+        # the overview page already covers the repository, so say where it is
+        # rather than inventing a subject.
+        return "Repository Overview"
+    return f"{_house_casing(segment, child_titles) or _humanise(segment)} Overview"
+
+
+def nearest_chapter(target_path: str, chapters: Container[str]) -> str | None:
+    """The closest ancestor directory of *target_path* holding a chapter.
+
+    Strictly an ancestor, so a chapter never heads itself. Nearest rather than
+    topmost because chapters nest. The tree walks the same rule when it parents
+    a page, and a title drawn from a different set of children than the tree
+    shows beneath it is a title about the wrong pages.
+    """
+    cursor = target_path
+    while "/" in cursor:
+        cursor = cursor.rsplit("/", 1)[0]
+        if cursor in chapters:
+            return cursor
+    return None
+
+
+def chapter_titles(leaves: dict[str, str], chapters: Sequence[str]) -> dict[str, str]:
+    """Title every directory in *chapters* from the leaves it heads.
+
+    *leaves* maps a leaf page's directory to its title — every page that owns
+    files, including a directory that is both a chapter and a leaf. Titles are
+    made unique against each other and against the leaves, which do not move: a
+    leaf may carry a model-written name and a chapter yielding to it is the
+    cheaper of the two collisions to resolve.
+    """
+    keys = set(chapters)
+    kids: dict[str, list[str]] = {c: [] for c in keys}
+    for target_path, title in leaves.items():
+        parent = nearest_chapter(target_path, keys)
+        if parent is not None:
+            kids[parent].append(title)
+    ordered = sorted(keys)
+    named = disambiguate_titles(
+        [(chapter_title(c, kids[c]), c) for c in ordered],
+        reserved={t for path, t in leaves.items() if path not in keys},
+    )
+    return dict(zip(ordered, named, strict=True))
+
+
+def scc_where(members: list[str], *, max_parts: int = 2) -> str:
+    """Where a dependency cycle lives, from its members' directories.
+
+    A cycle page was titled by the hash of its member list — ``Circular
+    Dependency: scc-0fa5536d91fc``. Nothing a reader could search for names a
+    hash, which is why every one of them on this repository's index had no
+    inbound link at all: the title said only that the page existed.
+
+    Naming it after the place it happens in is the cheapest fix that keeps the
+    page and its id. Structural and repo-agnostic: the directories the members
+    share, or the two most-represented ones when they share nothing, which is
+    the honest description of a cycle that spans subsystems.
+
+    Returns an empty string when there is nothing to say, so the caller keeps
+    the id rather than rendering a title that claims less than the id does.
+    """
+    dirs = [m.rsplit("/", 1)[0] for m in members if "/" in m]
+    if not dirs:
+        return ""
+
+    common = dirs[0].split("/")
+    for d in dirs[1:]:
+        parts = d.split("/")
+        common = [a for a, b in zip(common, parts, strict=False) if a == b]
+        if not common:
+            break
+    if common:
+        # Everything is under one directory, so name that directory. The last
+        # two segments for the same reason concept titles use them: the tail
+        # carries the meaning and the head is usually a container.
+        meaningful = [s for s in common if s.lower() not in _STOP_SEGMENTS] or common
+        return " ".join(_humanise(s) for s in meaningful[-2:])
+
+    # No shared root: the cycle crosses subsystems, which is the interesting
+    # thing about it. Name the biggest two, in size order, ties on path so the
+    # title does not move between runs on an unchanged repository.
+    counts = Counter(d.split("/")[0] for d in dirs)
+    top = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:max_parts]
+    return " and ".join(_humanise(seg) for seg, _n in top)
+
+
+def disambiguate_titles(
+    titled: list[tuple[str, str]], *, reserved: set[str] | None = None
+) -> list[str]:
     """Make a set of ``(title, target_path)`` pairs' titles unique.
 
     Path-derived names collide easily: two packages that each hold a ``ui``
@@ -143,38 +311,79 @@ def disambiguate_titles(titled: list[tuple[str, str]]) -> list[str]:
     already used, and falls back to its full target path if even that
     repeats. Input order does not matter: the pairs are resolved in path
     order, so the same set always produces the same names.
+
+    *reserved* names are already taken by pages not in *titled*, so a caller
+    naming a second population against a settled one yields to it rather than
+    renaming it. Passing the settled titles in *titled* instead would let this
+    rename them — and a caller that then keeps only its own slice silently
+    discards those renames, leaving the collision it asked to resolve.
+
+    Case is not a difference. "UI Overview" over "Ui Overview" is two rows a
+    reader reads as one thing written twice, which is the whole condition this
+    function exists to remove, and it is the reading the planner's own
+    disambiguation has always taken.
     """
     order = sorted(range(len(titled)), key=lambda i: titled[i][1])
     out = list(titled)
-    used: set[str] = set()
+    used: set[str] = {t.lower() for t in (reserved or ())}
     for i in order:
         title, target = titled[i]
-        if title not in used:
-            used.add(title)
+        if title.lower() not in used:
+            used.add(title.lower())
             out[i] = (title, target)
             continue
         segments = [s for s in target.split("/") if s]
         candidate = title
         for extra in reversed(segments[:-2] or segments[:-1]):
             candidate = f"{_humanise(extra)} {title}"
-            if candidate not in used:
+            if candidate.lower() not in used:
                 break
-        if candidate in used:
+        if candidate.lower() in used:
             candidate = f"{title} ({target})"
-        used.add(candidate)
+        used.add(candidate.lower())
         out[i] = (candidate, target)
     return [t for t, _ in out]
 
 
+def _package_rollup_title(packages: Sequence[str]) -> str:
+    """The shared parent plus a member list, never one member's name alone."""
+    parent = _common_prefix(list(packages))
+    lead = _humanise(_chapter_subject(parent)) or "Root"
+    if not lead.lower().endswith("packages"):
+        lead = f"{lead} Packages"
+    names = [_humanise(p.rsplit("/", 1)[-1]) for p in sorted(packages)]
+    more = f" and {len(names) - 2} More" if len(names) > 2 else ""
+    title = f"{lead}: {names[0]}, {names[1]}{more}"
+    if len(title.split()) <= MAX_TITLE_WORDS:
+        return title
+    return f"{lead} ({len(names)})"
+
+
 def deterministic_scope(group: ConceptGroup) -> str:
     """A scope line stating coverage and its boundary, with no model."""
+    if group.packages:
+        names = [p.rsplit("/", 1)[-1] for p in group.packages]
+        listed = ", ".join(names[:8]) + (f" and {len(names) - 8} more" if len(names) > 8 else "")
+        return (
+            f"Covers {len(names)} small sibling packages ({listed}), "
+            f"{group.file_count} source files in all. Each is its own package; "
+            "code outside them is documented on its own pages."
+        )
     # The root directory is the empty string, which is a real directory and
     # not an absent one; filtering it out left a group reading "0 directories".
     dirs = list(group.dirs)
     if len(dirs) == 1:
         where = dirs[0] or "the repository root"
     else:
-        where = f"{len(dirs)} directories under {group.target_path or 'the repository root'}"
+        # Relative to what the directories share, not to ``target_path``. The
+        # target is one of the group's directories and is not always a prefix
+        # of the others — ``_assign_targets`` falls through to the first sorted
+        # member when the true ancestor is not itself a member — so naming it
+        # here produced "4 directories under src/lib/a" directly above a
+        # membership line holding three directories that are not under it. The
+        # sentence falsified itself against the line above.
+        common = _common_prefix(dirs)
+        where = f"{len(dirs)} directories" + (f" under {common}" if common else "")
     return (
         f"Covers the {group.file_count} source files in {where}. "
         "Does not cover code outside those directories, which is documented on "
@@ -339,6 +548,9 @@ def build_payload(
             common = _common_prefix(group.dirs)
             cut = len(common) + 1 if common else 0
             entry["subdirs"] = [d[cut:] or d.rsplit("/", 1)[-1] for d in group.dirs[:8]]
+        if group.packages:
+            # Sections only: the title stays the deterministic parent + members.
+            entry["packages"] = [p.rsplit("/", 1)[-1] for p in group.packages]
         label = labels.get(group.dominant_layer)
         if label:
             entry["layer"] = label
@@ -348,9 +560,14 @@ def build_payload(
         hint = hints.get(gid)
         if hint:
             entry["suggested_name"] = hint
-        group_entries = sorted(e.rsplit("/", 1)[-1] for e in entries if e in set(group.members))
+        # Ranked, not alphabetical by basename: this is truncated to three, so
+        # the sort decides which three the namer ever sees. Basenames are taken
+        # after ranking for the reason the docstring gives — a full path is
+        # something the model would quote back as a citation.
+        members = set(group.members)
+        group_entries = rank_entry_point_paths(e for e in entries if e in members)
         if group_entries:
-            entry["entry_points"] = group_entries[:3]
+            entry["entry_points"] = [e.rsplit("/", 1)[-1] for e in group_entries[:3]]
         entries_out.append(entry)
 
     return {"repo": "", "groups": entries_out}, index
@@ -436,6 +653,9 @@ def decode_response(
         title = _clean_title(entry.get("title"))
         scope = str(entry.get("scope") or "").strip()
         fallback = False
+        if group.packages:
+            # A model shown several packages names the page after one of them.
+            title, scope = "", ""
         if not title:
             title = deterministic_title(group, labels.get(group.dominant_layer, ""))
             fallback = True

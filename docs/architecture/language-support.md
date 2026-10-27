@@ -4,12 +4,40 @@ How the language pipeline is built, and how to add a new language. For the
 user-facing "what works today" matrix, see
 [docs/layers/LANGUAGE_SUPPORT.md](../layers/LANGUAGE_SUPPORT.md).
 
-The pipeline is fully modular. Language identity data lives in a centralised
-`LanguageRegistry`; per-language extraction logic lives in `extractors/`;
-per-language import resolution lives in `resolvers/`. Adding a language means
-dropping one file into each relevant subpackage and registering it in that
-subpackage's dispatcher, with **zero changes** to `parser.py`, `graph.py`,
-`traverser.py`, or any analysis core file.
+The pipeline is modular by construction. Language identity lives in a
+centralised `LanguageRegistry`; per-language extraction logic lives in
+`extractors/`; per-language import resolution lives in `resolvers/`; per-language
+call-resolution strategy lives behind a seam in `call_resolver.py`. Adding a
+language means dropping one file into each relevant subpackage and registering it
+in that subpackage's dispatcher. No edits are needed to `graph.py`,
+`traverser.py`, or any analysis core file. The `parser/` package holds a short per-language
+block for a handful of languages whose grammar shape the generic path cannot
+read (C++ qualified definitions, Dart mixins, Object Pascal out-of-line methods,
+[Elixir](#elixir), [F#](#f)); each is a few lines calling into a helper, and a
+new language needs one only when it hits the same kind of wall.
+
+---
+
+## Contents
+
+**Orientation**
+- [How the pipeline processes a file](#how-the-pipeline-processes-a-file)
+- [Module layout](#module-layout)
+
+**Contributor recipe**
+- [Adding a new language](#adding-a-new-language) · [required steps](#the-five-required-steps) · [optional depth](#optional-depth-per-language-extractors) · [call resolution](#opting-into-call-resolution)
+- [What a new language does *not* get for free](#what-a-new-language-does-not-get-for-free)
+
+**Deep dives**
+- [Call resolution](#call-resolution) · [the strategy seam](#the-per-language-strategy-seam) · [resolution origins](#resolution-origins) · [receiver typing](#receiver-typing) · [inherited dispatch](#inherited-dispatch)
+- [The edge vocabulary](#the-edge-vocabulary)
+- [Multi-language files (the SFC pattern)](#multi-language-files-the-sfc-pattern)
+- [Extensions and import resolution](#extensions-and-import-resolution)
+- [Per-language mechanics](#per-language-mechanics) · [Elixir](#elixir) · [F#](#f) · [Objective-C](#objective-c) · [GDScript / Godot](#gdscript--godot) · [VB.NET](#vbnet) · [QML](#qml) · [Flutter widget trees](#flutter-widget-trees) · [Salesforce](#salesforce)
+- [Known gaps per language](#known-gaps-per-language)
+- [Optional language-specific passes](#optional-language-specific-passes)
+- [The three code-health dialect registries](#the-three-code-health-dialect-registries) · [test-quality markers per language](#test-quality-markers-per-language)
+- [Workspace contract extraction](#workspace-contract-extraction)
 
 ---
 
@@ -23,13 +51,15 @@ Extension/filename -> LanguageTag  (via LanguageRegistry)
         |
         +-- Config/data language?  -> empty ParsedFile (passthrough)
         +-- Special format?        -> special_handlers.py (OpenAPI/Dockerfile/Makefile/SQL)
+        +-- Multi-language file?   -> sfc_source.py projects it to one
+        |                             grammar's language at identical offsets
         +-- Has grammar?           -> tree-sitter AST parsing
                 |
                 v
         .scm query extracts:
           @symbol.def / @symbol.name         -> Symbol nodes
           @import.statement / @import.module -> Import edges
-          @call.target / @call.receiver      -> Call edges
+          @call.target / @call.receiver      -> Call sites
                 |
                 v
         Per-language extractors:
@@ -44,16 +74,22 @@ Extension/filename -> LanguageTag  (via LanguageRegistry)
                   (src/ + monorepo packages/*/src + PEP 420 namespace
                   packages), __init__.py re-export barrels, stem fallback
           TS/JS:  relative paths, tsconfig aliases, workspace exports,
-                  `export ... from` re-export barrels, node_modules
+                  `export ... from` re-export barrels, node_modules,
+                  package.json "imports" (`#alias/*`) subpath imports
+          Svelte: the TS/JS resolver plus SvelteKit's `$lib` -> src/lib
           Go:     go.mod module path stripping
           Rust:   crate::/self::/super::, mod.rs probing
           C/C++:  compile_commands.json include directories
           Dart:   package:/dart:/relative URIs via the pubspec name map +
                   library-name index (dotted part-of)
-          Lightweight tier (Elixir/Clojure/Haskell/Lean 4/Erlang/F#):
+          Lightweight tier (Clojure/Haskell/Lean 4/Erlang):
                   regex-extracted imports vs a declared-module-name index
           dbt:    ref()/source() vs a per-project model-name index
           Other:  stem-map fallback (filename matching)
+                |
+                v
+        CallResolver turns each call site into an edge, stamped with
+        the ResolutionOrigin that produced it  (see "Call resolution")
                 |
                 v
         Graph analysis:
@@ -74,8 +110,9 @@ ingestion/
     registry.py        #   LanguageRegistry lookup interface + REGISTRY singleton
     specs/             #   one module per language, each exporting `SPEC`
       __init__.py      #     aggregates every SPEC into ordered `ALL_SPECS`
-      python.py  typescript.py  go.py  rust.py  csharp.py  …  (44 tags)
+      python.py  typescript.py  go.py  rust.py  csharp.py  …
     python_modules.py  #   dotted-module <-> file index (src / monorepo / PEP 420)
+    receiver_types.py  #   per-language receiver-declaration patterns (see below)
   extractors/          # Per-language AST extraction
     visibility.py      #   symbol visibility (public/private/protected)
     signatures.py      #   human-readable signature building
@@ -103,6 +140,7 @@ ingestion/
     php.py             #   namespace/PSR-4 resolution
     sql.py             #   dbt ref()/source() lineage
     generic.py         #   stem-matching fallback
+  call_resolver.py     # CallResolver: call site -> edge, per-language strategy seam
   framework_edges/     # Framework convention edges (one module per framework + base.py)
                        #   __init__.py re-exports add_framework_edges; iterates FrameworkHandler list
                        #   django/fastapi/flask/aspnet/rails/laravel/spring/express/go/rust/typo3
@@ -110,12 +148,15 @@ ingestion/
   dynamic_hints/       # Per-language dynamic-edge extractors
     base.py            #   DynamicHintExtractor + DynamicEdge
     registry.py        #   HintRegistry
-    django.py  pytest_hints.py  python_imports.py  node.py  dotnet.py
+    django.py  python_imports.py  node.py  dotnet.py
     spring.py  ruby.py  php.py  scala.py  swift.py  c.py  cpp.py  luau.py  go.py  jvm.py
-  parser.py            # ASTParser (language-agnostic orchestration)
+  sfc_source.py        # Multi-language-file (SFC) projection (see below)
+  parser/              # ASTParser (language-agnostic orchestration), one module per pass
+  extractors/imports/  # Per-language import rules (LanguageConfig.import_extractor)
   graph.py             # GraphBuilder (import/call/heritage resolution)
 
 analysis/
+  execution_flows.py   # Flow walk + the closed FlowTermination vocabulary
   dead_code/           # Dead code detection
     analyzer.py        #   DeadCodeAnalyzer class + detection passes
     models.py          #   DeadCodeKind, DeadCodeFindingData, DeadCodeReport
@@ -123,26 +164,31 @@ analysis/
     dynamic_markers.py #   per-language source-text dynamic markers
 ```
 
-The source-of-truth registry is
-`ingestion/languages/specs/__init__.py`, which builds `ALL_SPECS`
-(order-significant, first-spec-wins extension map) from one `specs/<tag>.py`
-module per language. `LanguageSpec`'s `import_support` field
-(`"full" | "partial" | "none"`) is the closest formal signal to a "tier";
-the tier names in the user-facing doc are a documentation grouping layered on
-top of `import_support` plus the presence of binding / heritage / resolver
-modules. (The section-header comments inside `specs/__init__.py` predate the
-current state and should not be treated as a live tier reference.)
+The source-of-truth registry is `ingestion/languages/specs/__init__.py`, which
+builds `ALL_SPECS` (order-significant, first-spec-wins extension map) from one
+`specs/<tag>.py` module per language. `LanguageSpec`'s `import_support` field
+(`"full" | "partial" | "none"`) is the closest formal signal to a "tier"; the
+tier names in the user-facing doc are a documentation grouping layered on top of
+`import_support` plus the presence of binding / heritage / resolver modules. (The
+section-header comments inside `specs/__init__.py` predate the current state and
+should not be treated as a live tier reference.)
 
 ---
 
 ## Adding a new language
 
-### Step 1: Add a `LanguageSpec` module
+**Five steps are required, three more buy depth, and three more buy call
+resolution.** The often-quoted "one `.scm` file and one config entry" is the
+*shape* of the work, not the count: two of the five required steps are one-line
+registrations, and one is a manual edit to a `Literal` type that cannot be
+derived.
 
-Language identity data lives in `languages/specs/`, **one module per
-language**. Create
-`packages/core/src/repowise/core/ingestion/languages/specs/mylang.py`
-exporting a single `SPEC`:
+### The five required steps
+
+#### Step 1: Add a `LanguageSpec` module
+
+Language identity data lives in `languages/specs/`, **one module per language**.
+Create a new module under `packages/core/src/repowise/core/ingestion/languages/specs/`, one module per language, exporting a single `SPEC`. For example, a new language can use a file named `mylang.py`:
 
 ```python
 """LanguageSpec for mylang."""
@@ -154,10 +200,14 @@ SPEC = LanguageSpec(
     display_name="MyLang",
     extensions=frozenset({".ml"}),
     grammar_package="tree_sitter_mylang",       # PyPI package name
+    grammar_loader="language",                  # package loader function
+    grammar_loader_args=(),                      # args for shared grammar packs
     scm_file="mylang.scm",                       # query file name
+    dead_code_exempt=False,                       # only for unobservable external entry
     heritage_node_types=frozenset({"class_declaration"}),
     entry_point_patterns=("main.ml",),
-    manifest_files=("mylang.toml",),
+    manifest_files=("mylang.toml", "mylang.build.json"),
+    build_config_manifests=("mylang.build.json",),  # usually empty, see below
     shebang_tokens=("mylang",),
     builtin_calls=frozenset({"print", "len"}),  # filter from call graph
     builtin_parents=frozenset({"Object"}),       # filter from heritage
@@ -165,20 +215,69 @@ SPEC = LanguageSpec(
 )
 ```
 
+Most grammar wheels expose a zero-argument `language()` function returning a
+PyCapsule. Shared grammar packs can instead declare `grammar_loader_args`; the
+loader may return either a capsule or a constructed `tree_sitter.Language`.
+COBOL uses this seam with
+`tree_sitter_language_pack.get_language("cobol")`, because no standalone
+Python COBOL grammar wheel exists. The pack downloads and caches that grammar
+on first use; the ordinary missing-grammar fallback still applies if it is not
+available.
+
+Set `dead_code_exempt=True` only when the runtime's entry paths fundamentally
+live outside the repository graph. COBOL uses it because JCL, schedulers and
+dynamic program calls cannot be proven by static source reachability. The flag
+suppresses file- and symbol-level dead-code claims without disabling parsing,
+call resolution or the rest of graph analysis.
+
 Then register it in `languages/specs/__init__.py` by importing the module and
 slotting it into the `ALL_SPECS` tuple. **Order matters**: `LanguageRegistry`
-builds its extension map first-spec-wins, so place more specific languages
-ahead of ones that share an extension (e.g. TypeScript before JavaScript). You
-never edit `registry.py` itself.
+builds its extension map first-spec-wins, so place more specific languages ahead
+of ones that share an extension (e.g. TypeScript before JavaScript). A spec using
+`shares_grammar_with` must also come *after* the spec it borrows from, which is
+resolved against the registry built so far. You never edit `registry.py` itself.
 
-### Step 2: Add the `LanguageTag`
+<details>
+<summary><strong><code>manifest_files</code> also decides package boundaries</strong></summary>
+
+Every name in `manifest_files` that is *not* in `build_config_manifests` marks
+its directory as a **package root**. That drives two things beyond ingestion:
+monorepo detection (`RepoStructure.packages`), and code health's `module`
+attribution, the label the dashboard, the module rollups and `module:` target
+expansion all group on. Declaring your manifests is therefore all it takes to
+give a monorepo in your language proper per-package health; there is no second
+list to edit. `REGISTRY.package_manifest_filenames()` is the single source of
+truth, and both consumers read it.
+
+`build_config_manifests` defaults to empty, which is nearly always right. Add to
+it only when a name in `manifest_files` configures a build rather than declaring
+a distributable unit, because such files appear in directories that are not
+packages and each one becomes a false root that fragments the rollup. The shipped
+cases are the .NET `Directory.Build.props` / `global.json` family (measured in
+135 non-package directories), `vite.config.js` / `nuxt.config.ts`,
+`svelte.config.js`, Cabal's `Setup.hs`, and `lean-toolchain`.
+
+`manifest_files` holds exact filenames only, so a language whose package file is
+a *pattern* cannot be expressed. .NET is the live example: `*.csproj` is the real
+package declaration, everything C# declares is build configuration, and a .NET
+monorepo therefore still falls back to the top-level directory.
+
+One caveat worth knowing: package roots are read from a **directory scan**, not
+from the indexed file list, because the traverser only emits files whose language
+it can detect and drops 18 manifest names on that rule (`go.mod`, `pom.xml`,
+`build.gradle`, `Gemfile`, `build.sbt` among them). So a manifest counts as a
+package root whether or not your language's files parse.
+</details>
+
+#### Step 2: Add the `LanguageTag`
 
 Add `"mylang"` to the `LanguageTag` Literal type in
-`packages/core/src/repowise/core/ingestion/models.py`. (`EXTENSION_TO_LANGUAGE`
-and `SPECIAL_FILENAMES` are derived from the registry filtered to these tags,
-so this remains a required manual step.)
+`packages/core/src/repowise/core/ingestion/models.py`. `EXTENSION_TO_LANGUAGE`
+and `SPECIAL_FILENAMES` are derived from the registry filtered to these tags, so
+this remains a required manual step: a `Literal` cannot be built from runtime
+data.
 
-### Step 3: Write a tree-sitter query file
+#### Step 3: Write a tree-sitter query file
 
 Create `packages/core/src/repowise/core/ingestion/queries/mylang.scm` using
 tree-sitter S-expression syntax. Follow the capture-name conventions:
@@ -193,16 +292,28 @@ tree-sitter S-expression syntax. Follow the capture-name conventions:
 | `@import.statement` | Full import node | Yes |
 | `@import.module` | Module path being imported | Yes |
 | `@call.target` | Function/method being called | No (enables call graph) |
-| `@call.receiver` | Object the call is made on | No |
+| `@call.receiver` | Object the call is made on | No (enables receiver typing) |
 | `@call.arguments` | Call arguments | No |
+| `@reference.name` | A function named without being called | No (mints `references`) |
+| `@param.type` | Parameter type annotation | No (mints `type_use`) |
 
-`python.scm` and `typescript.scm` are good starting points.
+`python.scm` and `typescript.scm` are good starting points. A language whose
+syntax *is* another's can skip this step entirely by pointing `scm_file` at the
+existing query file. That field names the query to load, so `svelte` declares
+`scm_file="typescript.scm"` and writes no `.scm` of its own.
 
-### Step 4: Add a `LanguageConfig` entry
+**`@call.receiver` is the highest-leverage optional capture.** Without it every
+member call falls back to matching a bare method name across the repo, which is
+the `global_unique` origin, which is a guess. With it, the language becomes eligible for
+receiver typing (step 9).
+
+#### Step 4: Add a `LanguageConfig` entry
 
 Add a parser configuration to `LANGUAGE_CONFIGS` in
-`packages/core/src/repowise/core/ingestion/language_configs.py` (re-exported
-from `parser.py` for back-compat):
+`packages/core/src/repowise/core/ingestion/language_configs.py` (re-exported from
+the `parser` package for back-compat). A language whose imports need more than
+the generic shape also sets `import_extractor` to an `ImportExtractor` from
+`extractors/imports/<lang>.py`:
 
 ```python
 "mylang": LanguageConfig(
@@ -219,9 +330,7 @@ from `parser.py` for back-compat):
 ),
 ```
 
-### Step 5: Add the tree-sitter grammar dependency
-
-Add the grammar package to `pyproject.toml`:
+#### Step 5: Add the tree-sitter grammar dependency
 
 ```toml
 [project]
@@ -231,25 +340,33 @@ dependencies = [
 ]
 ```
 
-### Step 6 (optional): Binding extractor
+### Optional depth: per-language extractors
 
-For full-tier support, add an extractor module under
-`extractors/bindings/mylang.py` and register it in the
-`extract_import_bindings()` dispatcher. Without this, imports are still
-resolved but named-binding-level call resolution won't work.
+Each of these is one module plus one dispatcher entry. Skipping one degrades to
+silence, never to a wrong answer.
 
-### Step 7 (optional): Heritage extractor
+| Step | Module | Register in | Without it |
+|---|---|---|---|
+| 6 | `extractors/bindings/mylang.py` | `extract_import_bindings()` | Imports still resolve, but named-binding-level call resolution does not |
+| 7 | `extractors/heritage/mylang.py` | `HERITAGE_EXTRACTORS` | Inheritance chains never appear in the graph |
+| 8 | `resolvers/mylang.py` | `_RESOLVERS` in `resolvers/__init__.py` | Imports fall back to the generic stem-map (filename matching) |
 
-Add a module under `extractors/heritage/mylang.py` and register it in the
-`HERITAGE_EXTRACTORS` dict. Without this, inheritance chains won't appear in
-the graph.
+### Opting into call resolution
 
-### Step 8 (optional): Import resolver
+These three seams postdate the original recipe and are where a language goes from
+"has a call graph" to "has a call graph you can trust". All three live in
+`ingestion/call_resolver.py` and `ingestion/languages/receiver_types.py`; see
+[Call resolution](#call-resolution) for what each one does.
 
-If the language has a non-trivial import system, create a resolver in
-`resolvers/mylang.py` and register it in the `_RESOLVERS` dict in
-`resolvers/__init__.py`. For simple languages, the generic stem-map fallback
-(matching by filename) works out of the box.
+| Step | Register in | Buys |
+|---|---|---|
+| 9 | `_LANGUAGE_CALL_STRATEGIES` | Language-specific tiers (a package tier, a same-package tier) and the `_resolve_typed_receiver` fallback |
+| 10 | `_LANGUAGE_PATTERNS` in `receiver_types.py` | Receiver typing: the declaration shapes that name a local, parameter or field's type |
+| 11 | `IMPLICIT_FIELD_LANGUAGES` / `_INHERITED_LANGUAGES` | Field-typed receivers, and calls that dispatch to an inherited method |
+
+**Do not register a language in these until you have measured it.** Every entry
+in all three sets was gated on a sampled precision audit before it shipped, and
+several languages are deliberately absent because they failed one.
 
 ### Verify
 
@@ -262,8 +379,722 @@ repowise init /path/to/mylang-project
 ```
 
 No changes are needed to `traverser.py`, `dead_code.py`, `page_generator.py`,
-`cost_estimator.py`, or any other consumer file, they all derive their
-language sets from the registry automatically.
+`cost_estimator.py`, or any other consumer file: they all derive their language
+sets from the registry automatically.
+
+---
+
+## What a new language does *not* get for free
+
+Steps 1–5 give you the symbols, imports and calls your query captures. They do
+**not** give you:
+
+- **Code-health markers.** The complexity walker uses its own per-language
+  node-type map (`analysis/health/complexity/languages.py`), independent of your
+  `.scm`. A language can parse perfectly for the graph and still produce zero
+  health findings. This is the single reason a language sits at Good rather than
+  Full.
+- **Performance or dataflow signal.** Two further registries
+  (`PERF_DIALECTS`, `DEFUSE_DIALECTS`), each with its own prerequisites on the
+  node map. See [the three registries](#the-three-code-health-dialect-registries).
+- **Receiver typing.** Steps 9–11 above, and each is gated on measurement.
+- **Framework edges.** One module per framework under `framework_edges/`.
+- **Class-level metrics, if the language does not nest method bodies in the
+  type.** Go's external receivers and Object Pascal's split
+  declaration/implementation sections both fail this, and both are deliberately
+  left unmapped rather than emitting a `ClassComplexity` with
+  `method_count == 0`.
+- **Dataflow, if the grammar does not label control-flow fields.** The CFG
+  builder resolves bodies and branches through *field names* (`body`,
+  `consequence`, `alternative`) and *node types* (`break_kinds`,
+  `continue_kinds`). tree-sitter-kotlin labels none of them and parses a bare
+  `break` as a plain `identifier`, which is why Kotlin has no dataflow: the
+  slicer refuses any span containing a jump, so an invisible jump would license
+  an extraction that silently changes control flow. A wrong suggestion is worse
+  than a missing one.
+
+---
+
+## Call resolution
+
+`ingestion/call_resolver.py` turns each captured call site into an edge. It is
+the part of the pipeline that most determines whether the graph is trustworthy,
+and it is built around one rule: **an edge is not a fact, so every edge says how
+it was produced.**
+
+### The per-language strategy seam
+
+`_LANGUAGE_CALL_STRATEGIES` maps a language tag to three ordered tuples of
+strategy method names:
+
+```python
+_LanguageCallStrategies(
+    free=(...),             # bare call: foo()
+    member=(...),           # member call: recv.foo()
+    member_fallback=(...),  # member call, after the language tiers declined
+)
+```
+
+A language absent from the dict runs only the shared tiers. The seam exists so a
+language-specific tier can claim a call *before* a weaker shared one gets it.
+Go's package tier is the load-bearing example: `pkg.Func()` is claimed outright
+by `_resolve_go_package_call`, so a package qualifier never reaches the typed
+fallback and cannot be mistaken for a variable.
+
+Registered today:
+
+| Language | `free` | `member` | `member_fallback` |
+|---|---|---|---|
+| Go | same-package | package call | typed receiver |
+| Java / Kotlin | JVM same-package | JVM receiver same-package | typed receiver |
+| C# / Python / Swift | — | — | typed receiver |
+| C / C++ | same build target | — | — |
+
+Rust's crate-root strategy is deliberately *not* in the dict: it runs for every
+language, and gating it per-language would drop crate-name receivers in mixed
+repos.
+
+### Resolution origins
+
+`ResolutionOrigin` in `ingestion/models.py` is a closed `Literal` vocabulary,
+held shut by the same test that pins `EdgeType`. **Every origin has exactly one
+confidence**, so the origin distribution and the confidence histogram are two
+views of the same data, and that is what makes the stamping checkable against the
+existing numbers. A `NULL` origin on an edge means the row predates the
+vocabulary, not "unknown".
+
+The tiers, highest evidence first:
+
+| Confidence | Origins | Evidence |
+|:---:|---|---|
+| 0.95 | `same_file`, `self_scope`, `enclosing_class` | The callee is in this file, or on the caller's own class |
+| 0.93 | `receiver_same_file`, `receiver_typed_same_file`, `receiver_field_same_file`, `receiver_framework_same_file`, `scoped_name`, `receiver_extension_same_file`, `receiver_chain_same_file`, `return_type_same_file` | The receiver or returned type names a class in this file, every chained field stays in this file, or the call names its class directly |
+| 0.90 | `same_package`, `import_scoped`, `receiver_same_package`, `receiver_typed_same_package`, `receiver_field_same_package`, `receiver_framework_same_package`, `return_type_same_package`, `self_inherited`, `enclosing_inherited` | A sibling file needing no import, an explicit import, or one unambiguous ancestor |
+| 0.88 | `package_alias`, `module_alias`, `crate_root`, `receiver_import`, `receiver_typed_import`, `receiver_field_import`, `receiver_framework_import`, `receiver_extension_import`, `receiver_chain_import`, `return_type_import` | The receiver, chained field, returned type, or target resolved through an imported file or scoped alias |
+| 0.85 | `import_merged`, `same_target` | In *some* imported file, or some sibling translation unit; which one is unattributed |
+| 0.75 | `receiver_global`, `receiver_typed_global`, `receiver_field_global`, `receiver_framework_global`, `receiver_extension_global`, `return_type_global` | The `(class, method)` pair exists somewhere in the repo |
+| 0.50 | `global_unique` | The name is unique repo-wide. **A guess** |
+
+The typed variants come in three parallel families of four, one per *scope*,
+because they are three different scans over three different scopes:
+
+- `receiver_typed_*`: the type was read from the **calling body** (a local or a
+  parameter declaration)
+- `receiver_field_*`: the type was read from the **enclosing class's fields**
+- `receiver_framework_*`: the type came from a **framework decorator table**
+
+They deliberately share their untyped twin's confidence: the inferred type had to
+declare the method before an edge was emitted, so the evidence is no weaker. What
+differs is *how the receiver was named*, and that is precisely what an origin is
+for. Keeping the three families apart is what makes each one separately
+auditable: an origin that cannot separate them cannot be measured.
+
+### Receiver typing
+
+`_resolve_typed_receiver` answers "what type is `user` in `user.save()`" by
+reading the receiver's declaration, then resolving `save` on that type through
+the same four scopes as an explicit receiver.
+
+The per-language declaration patterns live in
+`ingestion/languages/receiver_types.py` as `_LANGUAGE_PATTERNS`, keyed by tag.
+They are **regexes over comment-stripped source**, not an AST walk. That is a deliberate
+shortcut. The ceiling is that a declaration a regex cannot see is a receiver that
+does not get typed; the upgrade path is an AST-backed local-scope table, which
+was not built because the pattern families cover the idiomatic shapes and the
+measured miss rate did not justify the cost.
+
+Pattern families today:
+
+| Family | Languages | Shapes |
+|---|---|---|
+| C-family | Java, C#, Kotlin (partly), Swift (partly) | `Type name`, `var name = new Type()` |
+| Go | Go | parameters, `name := Type{}`, `var name Type` |
+| Kotlin | Kotlin | `name: Type`, `= Type(...)` |
+| Swift | Swift | `name: Type`, `= Type(...)` |
+| Dart | Dart | `Type name`, `Type? name`, `final name = Type(...)` |
+| Python | Python | annotations, `name = Type(...)`, target lists |
+
+Two further sets gate the harder half:
+
+- **`IMPLICIT_FIELD_LANGUAGES`** = `{csharp, dart, java, kotlin, swift}`. Only these
+  look up an unbound receiver among the *enclosing class's fields*. Go is
+  deliberately excluded even though its locals and parameters are typed: its
+  package-level `var` is a wider scope than a field, and the shape is a rounding
+  error of reachable calls.
+- **`_INHERITED_LANGUAGES`** = `{kotlin, python, typescript, swift, csharp}`,
+  see below.
+
+A distinct table, `_FRAMEWORK_DECORATOR_TYPES`, records the type a framework
+decorator turns its target into (`@shared_task def add` makes `add` a `Task`, so
+`add.s()` is `Task::s`). It is a per-language tuple of `(pattern, type)` pairs,
+and its ceiling is stated in the source: an entry only holds for the framework as
+an application imports it, not as a vendored fork might redefine it.
+
+### Inherited dispatch
+
+Two directions, deliberately separate:
+
+- **Reverse**: the caller's own class does not declare the method, but exactly
+  one ancestor does. Emits `self_inherited` / `enclosing_inherited` at 0.90,
+  below the two same-class origins because the walk compares no signature and
+  reads no visibility, so it can reach a method the language would not actually
+  dispatch to. Gated on `_INHERITED_LANGUAGES`.
+  Python's `super().m()` walks the caller's C3 MRO instead and also emits
+  `self_inherited`; a base the repository does not declare ends the walk
+  unresolved, since it may declare `m` itself.
+- **Forward**: `dispatches_to`, a base method → an implementation that can
+  answer for it. Named for what it asserts rather than for a heritage relation:
+  the pass matches by method name and compares no signature, so it is a
+  *possible* dispatch target, not a proven override. `method_implements` could
+  not be reused, it runs implementor → interface, and this edge has to point the
+  other way for a traversal starting at the base to reach the implementation.
+
+---
+
+## The edge vocabulary
+
+`EdgeType` in `ingestion/models.py` is a closed `Literal`, with
+`EDGE_TYPE_VALUES` derived from it at runtime, never hand-copied, because a
+second hand-written copy is exactly the failure mode the vocabulary exists to
+remove. The distinctions that matter most when consuming the graph:
+
+| Edge | Means | Explicitly does *not* mean |
+|---|---|---|
+| `calls` | The parser saw a call expression and resolved its callee | — |
+| `references` | Something holds a handle to this function: a dispatch-table entry, a callback field, a registration-macro argument | That it is ever invoked. Enough to make deletion unsafe, not enough to claim a call |
+| `dispatches_to` | Base method → an implementation that could answer for it | A proven override; no signature is compared |
+| `framework_binds` | A framework wires these two symbols together (pytest fixture injection, Spring field/constructor injection) | A call. Nothing here is source the parser could have seen, and letting it read as a call would put an inferred hop into an execution flow |
+| `type_use` | File → file, from a constructor / method / delegate / record parameter type reference | An import. Weighted lower, and its provenance is surfaced separately |
+| `reads` | A data reference, file → file (C# member access) | Anything symbol-level. Its former symbol → symbol producer now emits `framework_binds` |
+| `dynamic_*` | A dynamic-dispatch hint, prefixed by kind (`dynamic_url_route`, `dynamic_uses`, `dynamic_imports`) | A static edge. Note the prefix: a consumer matching bare `"dynamic"` matches none of these |
+
+Three derived sets are what consumers should read rather than re-deriving their
+own filter: `FILE_DEPENDENCY_EDGE_TYPES`, `SYMBOL_USE_EDGE_TYPES`, and
+`REACHABILITY_USE_EDGE_TYPES` (the symbol set plus `type_use`).
+
+### Flow termination
+
+`analysis/execution_flows.py` carries a matching closed vocabulary for why a
+trace stopped, because a trace that just ends reads as "execution ends here"
+whether it does or whether the walk ran out of things it could follow. One value
+per flow, first match wins in this order:
+
+| Value | Meaning |
+|---|---|
+| `depth_limit` | The hop budget ran out; nothing is known beyond it |
+| `callees_truncated` | Callee rows were cut before the walk saw them, so the three "every successor" values below are not available |
+| `cycle` | Every walkable successor was already on this trace: recursion or a mutual call |
+| `confidence_filtered` | Every successor sat below the confidence floor; `termination_detail` carries which origins were declined |
+| `excluded_target` | Every successor was a test/demo/fixture node |
+| `no_callees` | No outgoing call edges recorded. **Deliberately not called a leaf**: a symbol whose calls we failed to resolve looks exactly like this, and asserting the code has no callees is the claim we cannot make |
+
+`classify_termination` is shared by both walks (the in-process one and the
+query-time one in `mcp_server/_graph_utils`), so the two cannot describe one stop
+with different words.
+
+---
+
+## Multi-language files (the SFC pattern)
+
+Some file types hold more than one language. A `.svelte`, `.vue` or `.astro` component is
+TS/JS in its `<script>` blocks, framework-flavoured HTML in its markup, and CSS
+in `<style>`. The markup grammars parse the file but return each `<script>` body
+as one opaque `raw_text` node, so a `.scm` query against them captures no symbol,
+import, or call: a grammar alone cannot support such a language.
+
+`ingestion/sfc_source.py` solves this with a **byte-preserving projection**
+rather than a second coordinate space:
+
+1. a markup grammar *locates* the JS-bearing regions: every `<script>` body and
+   every markup expression;
+2. every byte outside those regions is blanked to a space, with newlines kept;
+3. each kept markup expression is fenced by rewriting its two surrounding
+   delimiter bytes to `;`, so adjacent expressions cannot run together and an
+   unterminated final script statement cannot swallow the following expression
+   via ASI.
+
+The result is valid TypeScript whose every byte offset and line number matches
+the original file. That single property is what makes the rest free: the spec
+declares `shares_grammar_with="typescript"` and `scm_file="typescript.scm"`, the
+`LanguageConfig` is an alias of TypeScript's, and the three health dialect
+registries alias the TS entries. Each consumer that hands raw bytes to a
+tree-sitter `Parser` calls `prepare_source(language, source, path=abs_path)`
+first, the ingestion parser plus the complexity, dataflow, and duplication
+walkers. It is a no-op for every language without a registered locator or
+sanitizer.
+
+`prepare_source` also carries per-language byte-preserving sanitizers that aren't
+about multi-language files at all. They handle a construct a grammar can't
+parse, where hitting it corrupts everything downstream. Object Pascal is the current example:
+`.dpr`/`.dpk`/`.lpr` project files write `unit in 'path.pas'` clauses in their
+`uses` list, a syntax tree-sitter-pascal has no rule for, and hitting one used to
+corrupt every unit named after it in the same clause. Its sanitizer
+(`prepare_pascal_source` in `ingestion/lang_helpers/source_prep.py`) is gated on `path`'s
+extension (that syntax is invalid in a plain `.pas`/`.pp` unit file) and is a
+no-op everywhere else, same contract as the `_LOCATORS` path. Registering a
+sanitizer this way, rather than as an if-block in the parser, means it stays
+"zero changes to the parser" for a new language and the health walkers get the
+same clean projection the ingestion parser does.
+
+### The locator registry
+
+Only step 1 differs per language, so it lives behind `_LOCATORS`, a dict of
+`Locator(grammar_module, visit, component_name)` for a grammar-backed markup
+language, or `Locator(byte_scan, component_name)` when no grammar exists and
+the regions are found by walking the bytes. The blanking, fencing, caching
+and offset invariants are shared; adding a markup language means adding a
+`Locator`, not a second copy of the walker.
+
+| | Svelte | Vue | Razor | Astro |
+|---|---|---|---|---|
+| Grammar | `tree-sitter-svelte` | `tree-sitter-html` | none; byte scan, projected to C# | none; byte scan, projected to TS |
+| Expression nodes | `svelte_raw_text` under `expression` / `if_start` / `key_start` / `html_tag` | `attribute_value` inside `quoted_attribute_value`; `{{ … }}` scanned inside `text` | brace-matched `@code { }`, `@functions { }`, `@{ }` interiors | the `---` frontmatter and every JS `<script>` body (plain, `is:inline`, `type="module"`, `define:vars`); markup `{expr}` is blanked |
+| Fence bytes | the surrounding `{` `}` | the surrounding `"` or `'` | the surrounding `{` `}` | the `>` of each `<script>` opening tag |
+| Skipped binding forms | `{#each}`, `{#await}` heads | `v-for`, `v-slot` / `#default` | `@using`, `@inject`, `@bind`, `@on*`, `@model`, inline `@expr` | markup `{expr}` |
+| Non-component tags | the `svelte:*` namespace | `<KeepAlive>`, `<Transition>`, `<RouterView>`, … in either spelling | lowercase elements; anything inside `@* *@` or `<!-- -->` | lowercase elements, `<Fragment>`; anything inside `<!-- -->` or a `<script>` |
+
+There is no `tree-sitter-vue` on PyPI. The HTML grammar parses a Vue SFC cleanly
+anyway, because `<template>`, `<script>` and `<style>` are ordinary elements to
+it, so one dependency covers both Vue and plain HTML.
+
+Razor has no usable grammar either, and unlike Vue it cannot borrow the HTML one:
+an HTML parser reads `List<Order>` as an element. Its locator is therefore a
+**byte scan** rather than a grammar walk. It brace-matches the `@code { }`,
+`@functions { }` and `@{ }` interiors, projects them into a C# buffer at the same
+offsets, and skips Razor (`@* *@`) and HTML comments so commented-out code mints
+nothing. Everything downstream is shared: the C# queries, `LanguageConfig`,
+complexity map and perf dialect all apply verbatim, PascalCase tags mint
+component call edges, and the file becomes a symbol named after its filename. The
+ceiling is that the C# body lands at top level with no enclosing class, so
+`@code` members are call targets rather than symbols, and every directive is
+blanked, which is why a Razor file carries no import edges.
+
+Astro has no grammar on PyPI either, so its locator is a byte scan too, projecting
+into TypeScript: the leading `---` frontmatter and every JS `<script>` body keep
+their bytes, a `<script>` whose `type` is data (`application/ld+json`) or that
+sits in an HTML comment is blanked, and PascalCase tags mint component call edges.
+Frontmatter imports are ordinary ESM, so an Astro file does carry import edges.
+
+**Plain HTML deliberately has no locator.** It reuses the same grammar but not
+the projection, and the distinction is the point: a projection exists to turn a
+`<script>` block into analysable TypeScript, which is worth it when that block is
+where the component lives. A plain `.html` file's inline script almost never
+carries a module import, so projecting would buy a rounding error and would mint
+symbols,
+contradicting HTML's import-only tier. Its `<script src>` / `<link href>`
+attributes are read directly in `lightweight_imports/html.py`, which is extractor
+work, not projection work. Adding a `Locator` for HTML purely for symmetry with
+Vue and Svelte would be a mistake; `_LOCATORS` is for languages whose *script
+blocks* need projecting.
+
+Vue's expressions live in attribute *values*, which is why the fence bytes are
+quotes rather than braces, and why only directive attributes (`:`, `@`, `v-`) are
+projected: `class="btn primary"` is a literal string, and projecting it would put
+two juxtaposed identifiers at statement position.
+
+Two things markup carries that the projection cannot express are minted
+separately: the component symbol itself (via
+`extractors/synthetic_symbols/sfc_component.py`, since the filename is the only
+thing that names a component) and `<Foo />` instantiation call edges (via
+`component_call_sites`, the analogue of `tsx.scm`'s JSX captures). For Vue both
+run the filename and the tag through the *same* normaliser, so `back-to-top.vue`
+and `<back-to-top />` cannot disagree about the name `BackToTop`.
+
+---
+
+## Extensions and import resolution
+
+The file extensions each Full and Good language claims, and the build files and
+conventions its import resolver reads. Good-tier languages resolve the
+dependency surface their syntax supports.
+
+| Tier | Language | Extensions | Import resolution |
+|------|----------|-----------|-------------------|
+| Full | **Python** | `.py` `.pyi` | Source-root-aware module index (`src/`, monorepo `packages/*/src`, PEP 420), `__init__.py` re-export barrels |
+| Full | **TypeScript** | `.ts` `.tsx` `.mts` `.cts` | ESM and `require()`, tsconfig path aliases, npm/yarn/pnpm workspaces, `export * from` barrels |
+| Full | **JavaScript** | `.js` `.jsx` `.mjs` `.cjs` | `import` and `require()`, including CommonJS re-export shapes |
+| Full | **Svelte** | `.svelte` | The TS/JS resolver plus SvelteKit's `$lib` and `#` subpath imports |
+| Full | **Vue** | `.vue` | The TS/JS resolver plus config aliases, directory-index components, router `import()` specifiers |
+| Full | **Java** | `.java` | Maven and Gradle reactor discovery, JPMS, `import static`, package fan-out |
+| Full | **Kotlin** | `.kt` `.kts` | Shares the JVM index with Java, so resolution is cross-language |
+| Full | **Go** | `.go` | Multi-module `go.mod` discovery; a package import fans out to every file in the package |
+| Full | **Rust** | `.rs` | `use crate::` / `super::` / `self::` with `Cargo.toml` |
+| Full | **C++** | `.cpp` `.cc` `.cxx` `.h` `.hh` `.hpp` `.hxx` `.inl` `.ipp` `.tpp` `.inc` | `#include` via `compile_commands.json` plus CMake and Bazel header maps, header/implementation pairing |
+| Full | **C#** | `.cs` | `using`, `global using` and aliases via `.csproj` / `.sln`, MSBuild project graph, `partial` class linking |
+| Full | **Scala** | `.scala` | The shared JVM index, with SBT and Mill build parsing as fallback |
+| Full | **Ruby** | `.rb` | `require` / `require_relative` with `$LOAD_PATH` probing, Gemfile externals, Rails / Zeitwerk autoloading |
+| Full | **Apex** | `.cls` `.trigger` `.apex` | No imports: names resolve within the file's sfdx project, a declared package dependency or a namespace prefix |
+| Good | **C** | `.c` | `#include` via `compile_commands.json` (shares the C++ grammar) |
+| Good | **Swift** | `.swift` | SPM `Package.swift` targets, intra-module type references, `@main` entry points |
+| Good | **PHP** | `.php` | `use` declarations through PSR-4 from every `composer.json`, same-namespace and fully qualified class references |
+| Good | **Dart** | `.dart` | `import` / `export` / `part`, `package:` via every `pubspec.yaml` |
+| Good | **Object Pascal** | `.pas` `.pp` `.dpr` `.dpk` `.lpr` | `uses` clauses via unit-name to file-stem match; project files as entry points |
+| Good | **COBOL** | `.cbl` `.cob` `.cobol` `.cpy` `.dcl` (DCLGEN, by content) | `COPY` members to copybooks; literal `CALL`, `PERFORM` and CICS `LINK`/`XCTL` targets, with constants followed; dynamic targets shown as such |
+| Good | **GDScript** | `.gd` | `preload` / `load` / `extends "res://..."` from the nearest `project.godot` |
+| Good | **VB.NET** | `.vb` | `Imports` through the same MSBuild project index C# uses |
+| Good | **Elixir** | `.ex` `.exs` | `alias` / `import` / `require` / `use` against a `defmodule` index, Mix path convention as fallback |
+| Good | **F#** | `.fs` `.fsx` `.fsi` | `open` against a declared-name index plus the fsproj compile order; `.fsi` files contribute imports only |
+| Good | **Objective-C** | `.m` `.mm` `.h` | `#import` / `#include` through the header-stem index |
+
+---
+
+## Per-language mechanics
+
+The resolution shapes that are specific to one language and are not derivable
+from the recipe above.
+
+### Elixir
+
+Elixir is the one language whose grammar gives every construct the same node
+kind. `defmodule`, `def`, `defp`, `alias`, `import`, `use` and every `@attribute`
+all parse as a `call` whose `target` field is an `identifier` holding the keyword
+text, and a definition head (`add(a, b)` in `def add(a, b)`) is a `call` too.
+Three consequences the recipe above does not cover:
+
+- **`symbol_node_types` maps `call` to a non-callable placeholder kind**, refined
+  per keyword afterwards. A `def` sits inside its `defmodule`'s `do_block`, so a
+  callable mapping would make the callable-ancestor filter drop every function in
+  every module. The real kind comes from `refine_elixir_call_kind`.
+- **Parent detection cannot use the generic nesting walk**, which reads a `name`
+  field an Elixir `call` does not have. The module name is the first argument of
+  the call to `defmodule`, read by `_elixir_module_parent`.
+- **A definition head and a module attribute are dropped from the call graph
+  structurally**, in `_elixir_call_is_definitional`, because a query predicate
+  sees a node's own text and never its parent. Without it every function calls
+  itself, and every `@doc "..."` calls `doc`. A typespec attribute (`@spec`,
+  `@type`, `@callback`) also drops the calls inside it, since its body is types;
+  every other attribute keeps them, so `@endpoint Application.compile_env(...)`
+  still mints its edge. Reserved keywords are dropped by name through the spec's
+  `builtin_calls`, which is where Kernel's guards sit too.
+
+`alias Foo.{Bar, Baz}` names two modules in one statement (a `dot` over a
+`tuple`), expanded per member in `extractors/bindings/elixir.py` before the
+dedup-by-statement-text the generic path applies. No heritage is emitted: `use`
+and `@behaviour` are the nearest things Elixir has to inheritance and neither is
+one, and both already produce a module dependency through the import and
+type-reference captures.
+
+### F#
+
+F# has no field named on any of its type nodes and no shape shared between a
+type body and a member the way Elixir shares `call` across everything, so its
+per-language block is about extending and locating rather than reclassifying:
+
+- **A `let rec f ... and g ...` group is one grammar node for every clause**, so
+  `@symbol.def` sits on each clause's left-hand side and the parser extends its
+  span forward to the next clause (or the file end), stepping over a return-type
+  annotation sitting between the two. The same left-hand side node also marks a
+  binding local to another binding's body, which the generic callable-ancestor
+  filter cannot see because it looks for an ancestor's *type*, never the
+  captured node's own nesting, so `_fsharp_binding_is_nested` walks that
+  ancestry directly.
+- **Parent detection reads a `type_name` child instead of a `name` field**, in
+  `_fsharp_parent_name`, and joins every enclosing nested module into a dotted
+  owner path: one file may hold two modules each declaring the same type with
+  the same member, and a symbol id is path plus parent plus name. A nested
+  module is a parent but not a type, so the generic function-to-method
+  promotion is gated on `_fsharp_parent_is_type` to keep a `let` inside a
+  nested module a function rather than a member.
+- **A dotted static call (`Path.Combine(a, b)`) is one identifier node**, with no
+  dot node to capture a receiver from, so the receiver/target split happens on
+  the joined text after the query fires.
+
+A bare name in F# is lexically scoped, so `fsharp` joins `elixir` in
+`_LEXICAL_BARE_NAME_LANGUAGES`: the resolver refuses the repo-wide-uniqueness
+tier for one and merges names only from `open`, which carries the wildcard
+sentinel because that is what `open` binds. `open type A.B.C` names a type, so
+its module dependency is recorded as `A.B`. An unqualified call target
+beginning with a capital is dropped: F# reserves an initial capital for union
+cases, types and constructors, which share the node shape of an ordinary
+application and would otherwise bind to any same-named function.
+
+`.fsi` signature files load a second grammar (`language_signature`) that a spec
+cannot select per-file, and the implementation grammar mis-parses a signature
+body's `val` bindings into ERROR recovery, so `.fsi` is routed to the regex
+import tier instead of a symbol tree built on invented nodes. Where a project
+splits one namespace across many single-file assemblies, most `open` targets
+are ambiguous and stay unresolved by design, which puts that repo's F#
+unused-export findings at the review tier rather than the asserted one.
+
+### Objective-C
+
+Three shapes the recipe does not cover.
+
+- **Header routing is by content, not extension.** The extension map holds one
+  language per extension for the whole repository, and `.h` belongs to C++, so
+  claiming it for Objective-C as well would reroute every C and C++ header
+  everywhere. `_objc_header_language` in `traverser.py` runs immediately after
+  the extension lookup and only when that lookup answered `cpp`. It reads the
+  first 4 KB of a `.h`, blanks the `//` and `/* */` spans in place, and returns
+  `objectivec` when an `@interface`, `@implementation` or `@protocol` opens a
+  line in what is left. All three are keywords no C or C++ header can carry
+  outside a comment. Both the anchoring and the comment blanking are load
+  bearing: `@interface` and `@class` are Doxygen commands too, and an
+  anywhere-in-the-file token match routed C++ headers documented with
+  `/** @class Widget */` to this grammar. `@class` and `#import` are not in the
+  set at all, since neither can be anchored the same way and neither adds a
+  header the rule above misses. A header carrying only preprocessor macros
+  stays `cpp`, which is the right answer for it. The C/C++ `header_source_pair` hint is still gated to the
+  `c` and `cpp` tags and is deliberately not widened here, so a sniffed
+  Objective-C header does not yet pair with its `.m`.
+
+- **A method is named by its whole selector.** `initWithName:age:` is one name,
+  and the grammar has no selector node and no selector field for it: the keyword
+  parts are bare `identifier` children of the `method_declaration`, interleaved
+  with the `method_parameter` nodes that carry the colon, the type and the
+  parameter name. The query captures the first keyword and `_objc_selector_name`
+  joins the rest; without the join every multi-keyword method would be named
+  after its first part and two of them would collide on one symbol id. A
+  keyword is only an identifier that a `method_parameter` follows: anything
+  after the last parameter is an attribute macro, and joining
+  `NS_DESIGNATED_INITIALIZER` or `NS_REQUIRES_SUPER` into the name stopped a
+  header pairing with the `.m` that defines the same method. A message
+  send is the mirror image: `message_expression` does field-label every keyword
+  as `method:`, so the one query pattern matches once per part, and
+  `_objc_message_selector` joins them on the first match and drops the rest so
+  the call-site name meets the symbol name. `@selector(a:b:)` is not captured at
+  all: this grammar leaves the text between the parens out of the tree entirely,
+  so there is nothing for a query to match.
+
+- **A whole-line nullability macro is blanked before parsing.**
+  `NS_ASSUME_NONNULL_BEGIN` is not a preprocessor directive and the grammar has
+  no rule for it, so it parses as the start of an ordinary C declaration and
+  error recovery folds the entire `@interface … @end` block after it into one
+  ERROR node. `prepare_objectivec_source` blanks those lines with spaces,
+  preserving every other byte offset, through the same
+  `sfc_source.prepare_source` hook Pascal uses, so the health walkers see the
+  same projection the ingestion parser does. Call-shaped macros are a different
+  problem and are left alone. `typedef NS_ENUM(Type, Name) { … }` still
+  produces ERROR nodes, and because only its enum *cases* survive as
+  declarators, capturing them mints a symbol per case named as though it were
+  the type and never one for the type itself, so `_objc_is_macro_enum` skips
+  the whole typedef: no symbol beats a wrong one.
+
+An `@interface` and its `@implementation` are two symbols in two files, told
+apart by `is_declaration`, following the C/C++ precedent rather than merging
+across files. Within one file they collapse in
+`_dedupe_objc_interface_symbols`, which is what stops the class extension a `.m`
+opens with from duplicating the implementation below it. A category is named for
+the class it extends plus its own name (`NSString(Trimming)`), so two categories
+on one class stay two symbols; a class extension binds no `category` field and
+keeps the plain class name. The dedup keys on which container declared each
+member, because a `@protocol` and a class may share a name in one file and the
+class's `-ping` would otherwise dedupe the protocol's `-ping` away. The two
+still share a symbol id, a stated ceiling: the id scheme has no room for a
+namespace, and renaming the protocol would break the `implements` heritage
+edges and type references that name it as written. Because a declaration and a
+definition are separate symbols, an `unused_export` finding on either is
+evidence about that one declaration and stays review tier: a header method with
+no in-repo caller may be exactly the public API the implementation serves.
+
+Two shapes are handled in the parser rather than the query. A block held in a
+parameter or a local is invoked with C call syntax, so `completionBlock(hit)`
+is a `call_expression` on a bare identifier that nothing in the grammar
+separates from a call to a C function; `_objc_call_is_block_variable` walks out
+to the enclosing method and drops the call when the name is one of its
+parameters or locals, which is what stops the resolver binding it to a
+same-named `@property` in an unrelated class. And nothing ever `#import`s a
+`.m`, so `is_file_reachable` lets a same-stem, same-directory `.h` answer for
+its implementation: without it every implementation file in an Objective-C
+library reported as an unreachable file.
+
+### GDScript / Godot
+
+`preload(...)`, `load(...)` and `extends "res://..."` resolve as absolute paths
+from the **nearest ancestor `project.godot`**, so a repo holding several Godot
+projects keeps each project's `res://` namespace separate instead of merging
+them. `.tscn` / `.tres` / `.escn`, `project.godot` and an addon's `plugin.cfg`
+are indexed as a `godot_resource` passthrough language and read with
+line-anchored regexes rather than a second grammar: an `[ext_resource]` script or
+sub-scene path becomes an import edge, `[autoload]`, `[application]
+run/main_scene` and a plugin's `script=` become entry points, and a `class_name`
+used by name in another script becomes a framework edge.
+
+A `[connection ... to="Player" method="_on_hit"]` binds to the method symbol by
+resolving the `to` node path to the script attached to that node or to its
+nearest scripted ancestor. It is refused, with no edge, when the node is absent,
+when nothing on that chain carries a script, when the script would come from
+another scene's `instance=ExtResource(...)`, or when the resolved script declares
+no such function. It is never matched on the method name alone.
+
+A `uid://` reference resolves through the `.uid` sidecar Godot writes for
+scripts; scenes get no sidecar, so a scene uid resolves through the `path=` on
+its `[ext_resource]` header instead. An `addons/` tree is exempt from dead-code
+reporting only when a `project.godot` sits above it, so a plugin's own repo
+reports normally.
+
+Two constructs the upstream grammar rejects: `$%UniqueName` (`$` and `%` are
+separate node-path forms, so the pair fails), and a bare call to a function named
+`export` or `onready` (`export()`), which the grammar still reserves at statement
+position for the GDScript 3 declaration forms. Error recovery keeps both to the
+enclosing statement.
+
+### VB.NET
+
+VB.NET shares the .NET project graph with C# rather than resolving on file stems.
+A `.vbproj` is indexed alongside the `.csproj` files, an `Imports` directive is
+matched against the namespace its owning project declares through
+`<RootNamespace>` and against the namespaces its references bring in, and the
+same-namespace and partial-class links are shared, so a VB.NET type and a C# type
+in one namespace see each other. A plain `Namespace X` in a project rooted at
+`R` is keyed as `R.X` and never as a bare `X`; only `Namespace Global.X` opts
+out of the root and is reachable under its own name. The
+never-flag globs mirror the C# ones: designer files, `AssemblyInfo`, everything
+under `My Project`, and the `ApplicationEvents` hooks. Grammar gaps remaining:
+XML literals, tuple literals used as expressions, a nested double quote inside an
+interpolation hole, an omitted argument in a call that also carries type
+arguments, and some multi-line LINQ layouts, each recovered from locally.
+
+### QML
+
+Module specs resolve against an index built from the `qmldir` manifests in the
+repo, and quoted references resolve relative to the importing file, with a
+directory import linking that directory's `qmldir`. Two refusals: a directory
+carrying no `qmldir` gets no edge rather than fanning out to its `.qml` files,
+and a module name declared by two `qmldir` files gets no edge rather than a
+guessed one.
+
+### Flutter widget trees
+
+A `build()` method returns a widget tree, so a constructor call in its body names
+a child widget. The body is read by **brace balancing** from the signature rather
+than through a fixed window, so a long `build()` keeps its tail. Two rules keep
+the edge honest: the constructed class becomes a target only when its heritage
+makes it a widget, without which any class spelled like a constructor call would
+qualify, and the name must be declared by exactly one file this one imports.
+Dart makes nothing visible across files without an import, so that requirement
+both settles a name two files declare and refuses a class that merely shadows a
+framework widget. A class reached through an `export` barrel is missed, which
+costs an edge rather than inventing one.
+
+### Salesforce
+
+#### Apex
+
+The language pack's `apex` grammar keeps Java's node names, so queries, heritage
+and type heads follow Java; inline SOQL/SOSL and DML never produce call sites.
+Keywords and builtin types compare case-insensitively, declared names keep their
+written case, and CumulusCI `%%%NAMESPACE%%%` tokens are blanked before parsing.
+
+Apex has no imports, so a type name resolves to the top-level class its own
+sfdx project declares, compared without case, then to an un-namespaced package
+it declares a dependency on; another project is reached only through its
+namespace prefix (`usf3.Foo`). Static, inner-class, typed, chained, inherited
+and `super` calls follow Java's tiers, and a bare name never reaches another
+class's method. Ceiling: a call site does not record `new`, so a constructor
+written in lower case is missed.
+
+Dead code starts from triggers, tests, entry annotations such as `@AuraEnabled`
+and `@InvocableMethod`, `global` members and platform interfaces such as
+`Schedulable`. A class is live when a live class or any Salesforce metadata,
+Lightning or project file writes its name in any case, strings included, since
+`Type.forName` reaches classes by name. Ceiling: a mention in a comment counts as
+a use, and a class shaped like a Visualforce controller stays live.
+
+A static resource (`staticresources/`, or an NPSP-style `StaticResourceSources/`
+mirror) is vendored when it sits in a library's release folder (`arbor-v0.92/`)
+or opens with another project's versioned license banner. Ceiling: a library
+copied with neither, such as a minified Google client with no banner, stays
+production.
+
+#### Lightning Web Components, Aura and Visualforce
+
+LWC, Aura, Visualforce and flows reach Apex classes by the same rules from the
+project they sit in, and also reach a class that exactly one other, un-namespaced
+project declares: they name action classes of packages installed separately in the
+same org. A name two projects declare binds nothing. Ceiling: two copies outside
+every package directory of one project (an mdapi export) tie and bind nothing, as
+they do for Apex.
+
+Inside an `lwc/<name>/` bundle, `c/<name>` imports resolve to that bundle's
+main module and `@salesforce/apex/Cls.method` imports to the Apex method.
+Templates link to child components by tag and to their own class's members by
+`{binding}`, `@wire` binds its Apex method, and an exposed bundle is an entry
+point. A bundle two sfdx projects declare goes to the nearer one; a tie gets no edge.
+
+Markup directly inside `aura/<bundle>/` is Aura, and each `key: function` of the
+bundle's Controller, Helper and Renderer JavaScript is a function symbol. Markup
+and JavaScript link to the Apex controller and its methods, to controller and helper
+functions (inherited through `extends`), and to the Aura or LWC bundles that tags,
+events and `$A.createComponent` literals name. Aura names match by exact case, and a
+name with two candidate bundles binds to neither.
+
+Visualforce pages and components link the Apex classes their `controller=` and
+`extensions=` name, and each `{!expr}` binds the identifier before its first `.`
+to a public member (property, `getX`, or `setX` for inputs) of the controller,
+then each extension, up the `extends` chain. Custom component tags, included
+pages and Apex `Page.X` references link pages and components; a
+`PageReference('/apex/X')` literal is a `dynamic_uses` edge. Names fold case,
+and a page or component two equally near files declare binds nothing.
+
+#### Flows and Lightning metadata
+
+Each flow (`.flow-meta.xml`, or a legacy `.flow` in a `flows/` directory) is
+one symbol named by its API name, linked to the Apex invocable actions,
+subflows, screen components and Apex-defined types it names, and a
+record-triggered flow references its object's metadata symbol. Apex
+`Flow.Interview` references and LWC `<lightning-flow>` tags with a literal name
+link back to it. Flexipages, quick actions, tabs, email services and Experience
+sites mark what they name as live; names in another package's namespace are not
+followed.
+
+#### Objects and fields
+
+Object and field metadata files (`.object-meta.xml`, `.field-meta.xml`,
+`.object`) become object and field symbols. SOQL and SOSL queries, DML
+statements, triggers, literal `Database.query` strings, `.soql` files and lookup
+fields reference them, matched case-insensitively, with one edge to one copy when
+an object is defined in several places (the default package directory first). A
+name with no definition in the repository gets no edge; `getDescribe()` schema
+tokens and `TYPEOF` branches are not read.
+
+#### Coverage, health and REST
+
+Salesforce CLI coverage names a class or trigger, never a file, so it maps to
+the one `.cls` or `.trigger` file of that name, ignoring case. A name two files
+share, or no file has, stays unmapped.
+
+Health scores Apex methods, constructors, triggers and property accessors that
+hold code, and reports SOQL, DML, callouts, `Messaging.sendEmail`,
+`System.enqueueJob` and same-class `@future` calls inside loops. It stays quiet on
+the bulk idioms (a query in the loop header, SOQL for-loops over lists, chunked or
+literal-bound loops) and on calls that run once, such as a lazily filled cache.
+Four advisory markers (SOQL injection, missing sharing, hardcoded record Ids,
+`SeeAllData=true`) never move a score. Ceiling: `while` loops,
+`Database.executeBatch` and `System.schedule` are not reported, and untested
+complexity needs measured coverage or a test the graph sees. Extract Method
+writes helpers as Apex methods, static when the host method is, and reads inline
+SOQL only for its `:bind` expressions.
+
+A `@RestResource` class's `@Http*` methods are HTTP providers at
+`/services/apexrest` plus its `urlMapping`, and are entry points in the graph.
+An `HttpRequest` callout is a consumer when its endpoint and verb are literal
+within one method; `callout:Name` keeps the Named Credential as the base. The
+credential's own endpoint is not read.
+
+### Known gaps per language
+
+- **Template dialects are invisible.** Django/Jinja, Go templates, ERB,
+  Handlebars, Blade and Thymeleaf parse as HTML and yield nothing.
+- **Svelte and Vue binding forms are skipped.** `{#each x as y}` and
+  `v-for="x in xs"` are not resolved, and the unused-export pass is off for
+  both, since props are set by the parent as markup attributes.
+- **Object Pascal type kinds collapse** to `kind="class"`, and its `extends`
+  vs `implements` split follows the `I`-prefix naming convention.
+- **COBOL dynamic `CALL` targets stay silent**, and free-format source is read
+  without column handling.
+- **Razor has no import edges**, because every directive is blanked by the
+  projection.
+- **GDScript string dispatch is unresolved**, and a script without `class_name`
+  gets no class symbol.
+- **VB.NET leaves a few constructs unparsed**, XML and tuple literals among them.
+- **C has no performance risk support.** Extract Method reuses the C++
+  def/use dialect; C carries none of the C++-only nodes, so the same plan
+  fires for both.
+- **Salesforce references are followed when literal.** Runtime-built names and
+  objects with no metadata file in the repository get no edge.
+- **Scala import resolution is partial**, and ScalaTest's infix DSL
+  (`x shouldBe y`) is not counted as an assertion.
 
 ---
 
@@ -272,108 +1103,234 @@ language sets from the registry automatically.
 Several pluggable hooks let a language opt into deeper resolution without
 touching the shared pipeline files:
 
-- **`graph_warmups.py`**, register a one-time pre-import warmup (e.g. building
-  a project index) so its cost shows up as its own phase instead of inflating
+- **`graph_warmups.py`**: register a one-time pre-import warmup (e.g. building a
+  project index) so its cost shows up as its own phase instead of inflating
   `graph.imports`. Warmups can also set `is_never_flag=True` on file nodes a
   build manifest declares secondary (the dead-code analyzer consults this in
   `_should_never_flag`), so each repo's own build files teach the analyzer what
   to ignore without extending the hardcoded glob list. Used today by
   `_warmup_jvm` to exempt Gradle non-`main` source sets automatically.
-- **`type_ref_resolution._STRATEGIES`**, register a strategy that resolves
-  parameter-type captures (`@param.type`) to file-level `type_use` edges.
-  Drives DI-aware analysis and keeps type-only interfaces off the dead list.
-- **`languages/<lang>_member_reads.py`**, emit `reads` edges for property /
+- **`type_ref_resolution._STRATEGIES`**: register a strategy that resolves
+  parameter-type captures (`@param.type`) to file-level `type_use` edges. Drives
+  DI-aware analysis and keeps type-only interfaces off the dead list.
+- **`languages/<lang>_member_reads.py`**: emit `reads` edges for property /
   member access. Used today for C# `var x = new T()` locals; the same shape
   applies to any statically-typed language.
-- **`extractors/synthetic_symbols.py`**, recognise source-generator attributes
+- **`extractors/synthetic_symbols.py`**: recognise source-generator attributes
   and emit the symbols the generator would produce at compile time. Used today
   for CommunityToolkit MVVM (`[ObservableProperty]`, `[RelayCommand]`) and JVM
   Lombok / `record` / Kotlin `data class`; the same shape fits Kotlin
   `@Parcelize`, etc.
-- **`extractors/visibility.py::refine_<lang>_visibility`**, node-aware
-  visibility refinement for languages where access is dictated by AST context
-  (C/C++ access specifiers, storage class, export attributes) rather than
-  modifier text alone.
+- **`extractors/visibility.py::refine_<lang>_visibility`**: node-aware visibility
+  refinement for languages where access is dictated by AST context (C/C++ access
+  specifiers, storage class, export attributes) rather than modifier text alone.
 
-The three code-health signal layers are each driven by the same
-per-language plugin pattern, registered in a dict exactly like `resolvers/`:
+---
 
-- **`analysis/health/complexity/languages.py`** (`LANGUAGE_MAPS`), the
-  code-health complexity walker's per-language node-type map, independent of the
-  ingestion `.scm` queries. A map gives McCabe complexity, nesting, cognitive
-  complexity, and per-function markers; optional `class_kinds` /
-  `self_identifiers` / `member_access_kinds` add class-level metrics (LCOM4,
-  god-class), and `assert_kinds` / `assert_call_kinds` add assertion-block
-  smells. Ships for the 11 Full languages plus Dart. See `complexity/README.md`.
-- **`analysis/health/perf/dialects/`** (`PERF_DIALECTS`), the **performance**
-  signal. A `PerfDialect` owns callee extraction (the per-grammar seam), the
-  execution-sink lexicon (`sink_kind`), the constant-loop / string-concat /
-  async predicates, and its own marker list, so Go contributes `defer_in_loop`,
-  Java/Go contribute `regex_compile_in_loop`, C# contributes
-  `blocking_sync_in_async`, and the Phase-7a loop markers are opt-in per
-  dialect. Every method has a safe "no signal" default.
-- **`analysis/health/dataflow/dialects/`** (`DEFUSE_DIALECTS`), the
-  **dataflow** layer (intra-procedural CFG + def/use + reaching definitions,
-  powering **Extract Method**). A `DefUseDialect` owns the read-vs-write
-  classification of each statement and the parameter binders; the CFG builder,
-  the reaching-definitions fixpoint, and the Extract Method slicer stay
-  language-agnostic (the control-flow grammar they branch on lives on the
-  `LanguageNodeMap`). The full pass runs only for functions a structural marker
-  already flagged (`large_method` / `brain_method` / `complex_method`), so it
-  stays within the health-pass budget.
+## The three code-health dialect registries
 
-All tiers are purely additive and degrade to silence: an unmapped language
-produces no findings rather than wrong ones.
+Each is a dict keyed by `LanguageTag`, registered exactly like `resolvers/`, and
+each has a safe "no signal" default. They are **independent of the `.scm`
+queries** and of each other, and they stack: perf and dataflow both have
+prerequisites on the complexity map.
+
+### 1. Complexity: `analysis/health/complexity/languages.py` (`LANGUAGE_MAPS`)
+
+The per-language node-type map. A map alone gives McCabe complexity, nesting,
+cognitive complexity and per-function markers. Optional additions widen it:
+`class_kinds` / `self_identifiers` / `member_access_kinds` add class-level
+metrics (LCOM4, god-class); `assert_kinds` / `assert_call_kinds` add
+assertion-block smells. See `complexity/README.md`.
+
+C, Swift, F# and Objective-C have maps of their own (C separate from C++ despite
+the shared grammar), so they get complexity markers, but none of the four has a
+perf or dataflow dialect yet. Swift's map counts `guard` as a decision, a `for` /
+`catch` `where` filter as one more, and a computed property (also a subscript's
+body, and a `willSet` / `didSet` block) as a function unit named for the property;
+a struct, an enum, an extension and an actor are classes, since the grammar gives
+them all `class_declaration`.
+
+### 2. Performance: `analysis/health/perf/dialects/` (`PERF_DIALECTS`)
+
+A `PerfDialect` owns callee extraction (the per-grammar seam), the execution-sink
+lexicon (`sink_kind`), the constant-loop / string-concat / async predicates, and
+its own marker list, so Go contributes `defer_in_loop`, Java and Go contribute
+`regex_compile_in_loop`, and C# contributes `blocking_sync_in_async`. Requires
+`call_kinds` (and any `async_function_kinds`) on the language's `LanguageNodeMap`.
+
+Three shared hooks answer questions that recur in every language, so a new
+dialect reuses them instead of re-deriving them:
+
+- **`block_loop_body(node)`**: the per-iteration body when the language's real
+  iteration idiom is a call taking a block or lambda (Ruby `items.each do … end`,
+  Kotlin `ids.forEach { … }`). The walker then applies every loop rule (body
+  scoping, constant-bound skip, nesting, the same-collection quadratic gate) to
+  it exactly as to a native loop. A lambda returned this way is *not* treated as
+  a deferred scope, so `loop_depth` survives the boundary.
+- **`loop_body(node)`**: the per-iteration body of a *native* loop, defaulting to
+  the `body` field. Only tree-sitter-kotlin leaves that field unlabeled; the
+  override is what keeps a sink in a `for (u in repo.findAll())` **header** from
+  reading as a sink inside the loop.
+- **`resets_per_iteration(node, name, loop_kinds)`** + **`binds_name(node, name)`**: the shared answer to the top `string_concat_in_loop` false positive: an
+  accumulator declared fresh each pass (`var s = ""; s += part`) is bounded per
+  iteration rather than an O(n²) rebuild. The traversal is shared; only the "does
+  this statement bind the name" question is per-grammar. (The Python, Ruby and
+  Dart dialects predate the hook and keep their own tuned versions.)
+
+Object Pascal's DB and network sinks are gated on file-wide `uses` evidence: a
+file importing `FireDAC` gates every `.Open` / `.ExecSQL` / `.Post` in it,
+because a Pascal variable's declared type has no textual link back to its unit.
+
+### 3. Dataflow: `analysis/health/dataflow/dialects/` (`DEFUSE_DIALECTS`)
+
+Intra-procedural CFG + def/use + reaching definitions, powering **Extract
+Method**. A `DefUseDialect` owns the read-vs-write classification of each
+statement and the parameter binders; the CFG builder, the reaching-definitions
+fixpoint and the Extract Method slicer stay language-agnostic (the control-flow
+grammar they branch on lives on the `LanguageNodeMap`). Requires
+`assignment_kinds` / `augmented_assign_kinds` / `local_decl_kinds` on that map.
+The full pass runs only for functions a structural marker already flagged
+(`large_method` / `brain_method` / `complex_method`), so it stays within the
+health-pass budget.
+
+A dialect is only half the requirement. See
+[what a new language does not get for free](#what-a-new-language-does-not-get-for-free)
+for the grammar-shaped reasons a dialect alone cannot serve a language.
+`find_extractions` also refuses a function whose subtree carries a parse error
+(`Node.has_error`): macro-heavy C/C++ headers make tree-sitter emit one bogus
+`function_definition` spanning a whole class, and proposing to lift "statements"
+out of that is a wrong suggestion.
+
+All three registries are purely additive and degrade to silence: an unmapped
+language produces no findings rather than wrong ones.
+
+### Test-quality markers per language
+
+The test-quality markers need per-language data beyond the node map, and a
+language with no row produces no signal.
+
+- **Assertion count** (`analysis/health/asserts/lexicon.py`) has two tiers. The
+  narrow tier is the fixed `assert` / `expect` prefix match the scored
+  assertion-block markers are calibrated on. The broad tier adds a per-language
+  row plus a repo's `health.assertions` config, feeds only the advisory count,
+  and matches names exactly, never as prefixes (prefix families such as `check`
+  and `validate` match production functions, not assertions). Oracles that are
+  not plain assertion statements are counted at the broad tier too:
+  `with pytest.raises(...)`, Java's split `object` + `name` call shape, chai
+  property chains (`expect(x).to.be.null`), AVA's `t.is` / `t.deepEqual` /
+  `t.throwsAsync` methods on the test handle, expression-bodied test lambdas
+  and private `_assert_*` helpers.
+- **Mock saturation** (`analysis/health/mocks/lexicon.py`, `MOCK_DIALECTS`) has
+  rows for Python and JS/TS only. Go has no mock vocabulary. Java is held out
+  because Mockito states its checks as `verify(...)`, which counts toward
+  `verification_count` and not `assertion_count`, so an over-mocked Java test
+  arrives with a near-empty denominator.
+- **Assertion-free test** needs a per-language "is this a test case" rule
+  (`analysis/health/complexity/test_case.py`: a name prefix for Python, `TestXxx`
+  for Go, the `it(...)` / `test(...)` callback for JS/TS, `@Test` for Java) and
+  reports only for the detector's `SHIPPING_LANGUAGES` (JS, TS, TSX, Python).
+  Mock verification does count as an oracle here. Go and Java are classified but
+  not reported: Go hands `*testing.T` to package-level helpers and Java inherits
+  base-class helpers, which the oracle resolution below does not reliably reach.
+- **Oracle resolution.** A test that delegates its checks is not assertion-free.
+  Within a file, the names a function calls resolve against same-file functions
+  that assert. Across files, `asserts/oracle_reach.py` uses two lanes: a test
+  that is a graph symbol walks its own call edges (depth 2); an anonymous JS/TS
+  callback, which has no node, needs both a resolved edge from its file to the
+  asserting symbol and an unqualified call by name in its body. Only edges that
+  bind one definition are read (`import_merged` is excluded), and an unresolved
+  call suppresses nothing, so a gap leaves a false positive and never hides a
+  real finding.
+- **`.tsx` grammar.** A `.tsx` file is tagged `typescript`, but the complexity
+  walk, clone tokenizer and dataflow CFG pick the grammar from the path, so JSX
+  parses without error recovery.
+- **Every walked function is visible.** Markers read `all_functions`, the full
+  walked list, not a map keyed by function name, which would collapse anonymous
+  `it` callbacks and same-named methods on different classes to one row.
+  `duplicated_assertion_block` has no floor of its own; the `test_quality`
+  category cap (0.5) bounds its effect on a file's score.
 
 ---
 
 ## Workspace contract extraction
 
 In workspace mode (multiple repos indexed together), repowise links
-service-to-service API contracts (HTTP routes, gRPC services, and DB tables) so
-a provider endpoint in one repo connects to its consumers in another. The
-extractors live in `core/workspace/extractors/` and follow the same
-dialect-plugin shape: the orchestrator owns only the file walk, and each
-framework / client library is an independent module registered in a tuple.
+service-to-service contracts (HTTP routes, gRPC services, message topics,
+sockets, and DB tables) so a provider in one repo connects to its consumers in
+another. The extractors live in `core/workspace/extractors/` and share one
+dialect shape: each framework or client library is an independent module
+registered in a tuple, and one walk-and-dispatch loop runs them all.
 
 ```
 workspace/extractors/
   base.py            # iter_source_files walk + ScanContext (shared by all)
+  dialect.py         # ContractDialect protocol, build_contract, DialectExtractor
+  strings.py         # string expressions: argument scanning, constants, Arg selection
   langs.py           # registry-derived extension sets (JS_TS, PYTHON, RUST, …)
   http/
-    dialect.py       #   HttpDialect protocol + build_provider/consumer_contract
+    dialect.py       #   build_provider/consumer_contract
     paths.py         #   normalize_http_path + URL helpers
-    express.py  fastapi.py  spring.py  laravel.py  go.py  aspnet.py  # providers
-    js_clients.py  python_clients.py  csharp_http.py  rust_clients.py # consumers
-    rust_axum.py  mounts.py                                          # providers
-    __init__.py      #   HttpExtractor + PROVIDER_DIALECTS / CONSUMER_DIALECTS
-  grpc/
-    dialect.py       #   GrpcDialect protocol + make_grpc_contract
-    proto.py  go.py  java.py  python.py  typescript.py  csharp.py
-    __init__.py      #   GrpcExtractor + DIALECTS
+    client_calls.py  #   ClientCallMatch + consumer_contracts
+    express.py  nestjs.py  fastapi.py  spring.py  laravel.py  go.py  …  # providers
+    js_clients.py  node_clients.py  python_clients.py  php_clients.py  # consumers
+    __init__.py      #   HttpExtractor (adds router mounts + index passes)
+  grpc/              #   proto.py + languages.py (one table of stub shapes)
+  calls.py           #   call_sites / call_chain / decorated_member: the table reader every type shares
+  topic/             #   dialect.py (TopicCall table) + kafka.py rabbitmq.py nats.py redis.py
+                     #   bullmq.py aws.py nestjs.py laravel.py (a repo pass: dispatch <-> job class)
+  socket/            #   dialect.py (SocketCall table) + dotnet.py python.py socketio.py broadcasting.py
   data/              #   table providers (DDL / ORM entities) <-> SQL consumers
+workspace/matching/  # shared exact pass + per-type passes (http.py, topic.py, data.py)
 ```
 
-A dialect declares the file extensions it understands (via `langs.py`) and
-turns regex matches into `Contract`s through shared builders, so every dialect
-emits identically-shaped providers/consumers and path-normalization lives in
-one place. **Adding a framework or client** means dropping one module into
-`http/`, `grpc/`, or `data/` and appending its dialect to the relevant registry
-tuple, no orchestrator edits.
+A dialect declares the file extensions it understands (via `langs.py`) and turns
+matches into `Contract`s through shared builders, so every dialect emits
+identically-shaped providers/consumers and normalization lives in one place.
+**Adding a framework or client** means dropping one module into `http/`,
+`grpc/`, `topic/`, `socket/` or `data/` and appending its dialect to the
+relevant registry tuple, with no orchestrator edits. A dialect whose contracts
+span files (a Laravel job dispatched in one file runs on the queue its class
+declares in another) offers a `repo_pass()` instead: it sees every file, then
+names its contracts once. A contract type whose two ends can name one thing
+differently (HTTP mount prefixes, a queue bound to an exchange, a pattern
+subscription) registers its extra passes, or its own `keys`, in
+`matching.MATCHERS`.
+
+Every dialect declares `requires`: tokens one of which a file must hold, chosen
+so that every match needs one (a contract format such as `.proto` declares
+`EVERY_FILE`). `dialect.run_dialect` checks the gate, looking each token up
+once per file, and drops a contract whose line is only a comment. `call_sites`,
+`code_matches`, `outside_comments` and `consumer_contracts` skip a match that
+starts in a comment, so a commented-out decorator sets no state either.
+`test_dialect_registry.py` fails on an ungated entry, and
+`test_extraction_dialect_budget.py` on a dialect that costs as much as an
+ungated scan. A Python docstring example is still read, because the mask keeps
+strings, and Ruby, VB and SQL files are not masked: their comment syntax would
+mislead the masker.
 
 | Contract | Providers | Consumers |
 |----------|-----------|-----------|
-| **HTTP** | Express, FastAPI, Spring, Laravel, Go (gin/echo/chi/net-http), ASP.NET (attribute + minimal), Rust (Axum routes, Actix/Rocket attribute macros) | `fetch` / `axios` / URL-literal wrappers (JS/TS), `requests` / `httpx` (Python), `HttpClient` / `UnityWebRequest` / Best.HTTP (C#), `reqwest` (Rust) |
-| **gRPC** | `.proto` IDL, Go, Java, Python, NestJS (`@GrpcMethod`), C# (gRPC-dotnet) | Go, Java, Python, C# |
-| **Data** | DDL `CREATE`/`ALTER`, Alembic `op.create_table`, ORM entities (SQLAlchemy, SQLModel, Django, JPA, EF Core, ActiveRecord, Eloquent) | SQL string literals in app code (sqlglot-parsed, verb-anchored-regex fallback) |
+| **HTTP** | Express, Hono, Fastify, Koa, Elysia, NestJS, Next.js, Remix, FastAPI, Flask, Django, Spring, JAX-RS, Micronaut, Laravel, Go, ASP.NET, Axum/Actix/Rocket, OpenAPI 3.x | Client calls in JS/TS, Python, PHP, Java, Kotlin, Go, C#, Ruby and Rust; JS/TS client instances carry their base URL across files |
+| **gRPC** | `.proto` IDL, Go, Java (bare or package-qualified `ImplBase`), Python, NestJS (`@GrpcMethod`), Node grpc-js (`server.addService(X.service)`), C# (gRPC-dotnet, primary-constructor impls too) | Go, Java, Python, C# (`new X.XClient(...)`, `AddGrpcClient<X.XClient>`, and the class the client is injected into) |
+| **Topic** | Kafka (Spring `KafkaTemplate` under any name, kafka-clients `ProducerRecord`, kafkajs, kafka-python, aiokafka, confluent-kafka for Python and .NET, Go sarama, segmentio/kafka-go and franz-go), RabbitMQ (Spring AMQP, amqplib, pika, php-amqplib), NATS (nats.go, jnats, nats.js, nats-py; read only in a file importing one), Redis pub/sub, BullMQ / Bull, SQS / SNS, NestJS `ClientProxy`, Dapr `PublishEventAsync` (C#), Laravel job dispatch | The same libraries' consumers (including pattern subscriptions, Dapr `[Topic]` and `Subscription` manifests, and Laravel `ShouldQueue` classes), plus RabbitMQ queue bindings |
+| **Socket** | SignalR `MapHub`, FastAPI `@app.websocket`, `ws`, NestJS gateways; socket.io `emit`, Laravel broadcast events, Pusher `trigger` | ClientWebSocket, SignalR client, NativeWebSocket, WebSocketSharp, `new WebSocket(url)`; socket.io `on`, Laravel Echo, pusher-js |
+| **Data** | DDL `CREATE`/`ALTER`, Alembic `op.create_table`, Laravel `Schema::create`/`Schema::table`, Knex migrations, ORM models (SQLAlchemy, SQLModel, Django, JPA, EF Core, ActiveRecord, Eloquent, Prisma, TypeORM, Sequelize, Drizzle) | SQL string literals in app code (sqlglot-parsed, verb-anchored-regex fallback), Laravel `DB::table`, Knex queries |
+| **Topic (C# integration events)** | `IntegrationEvent` subclasses constructed and passed to a publish call, keyed by short type name | `AddSubscription<T, TH>`, `Subscribe<T, TH>`, `IIntegrationEventHandler<T>` |
+| **Topic (JMS)** | Spring `JmsTemplate` / `JmsMessagingTemplate` sends with a destination argument | `@JmsListener(destination)`, template `receive` / `receiveAndConvert`, listener containers' `setDestinationName` |
 
-See [docs/scale/WORKSPACES.md](../scale/WORKSPACES.md) for the user-facing workspace guide.
+RabbitMQ topics are also read from Go (streadway/amqp, amqp091-go), including
+a queue named through its declaration's result (`q.Name`).
+
+See [docs/scale/WORKSPACES.md](../scale/WORKSPACES.md) for the user-facing
+workspace guide, and [workspace.md](workspace.md) for the layer's pipeline,
+registries and contributor recipes.
 
 ---
 
 ## See also
 
-- [docs/layers/LANGUAGE_SUPPORT.md](../layers/LANGUAGE_SUPPORT.md), user-facing support matrix
-- [docs/layers/CODE_HEALTH.md](../layers/CODE_HEALTH.md), code-health markers and per-language precision hazards
-- [architecture/code-health.md](code-health.md), code-health layer internals
-- [architecture/ARCHITECTURE.md](ARCHITECTURE.md), full system architecture
+- [docs/layers/GRAPH.md](../layers/GRAPH.md) · user-facing graph page: edge vocabulary, origins, flows
+- [docs/layers/LANGUAGE_SUPPORT.md](../layers/LANGUAGE_SUPPORT.md) · user-facing support matrix
+- [docs/layers/CODE_HEALTH.md](../layers/CODE_HEALTH.md) · code-health markers and per-language precision hazards
+- [architecture/code-health.md](code-health.md) · code-health layer internals
+- [architecture/ARCHITECTURE.md](ARCHITECTURE.md) · full system architecture

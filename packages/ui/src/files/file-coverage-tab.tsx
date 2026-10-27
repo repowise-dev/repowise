@@ -1,8 +1,10 @@
-import { Shield } from "lucide-react";
-import { EmptyState } from "../shared/empty-state";
-import { coverageColor } from "../health/tokens";
-import { formatRelativeTime } from "../lib/format";
+import type { ReactNode } from "react";
+import { PageLede } from "../shared/page-lede";
+import { coverageBand } from "../health/tokens";
+import { COVERAGE_REPORT_FORMATS } from "../health/coverage-formats";
+import { formatNumber, formatRelativeTime } from "../lib/format";
 import type { FileDetailCoverage } from "@repowise-dev/types/files";
+import { FileSection, Fig } from "./file-section";
 
 interface FileCoverageTabProps {
   coverage: FileDetailCoverage | null;
@@ -12,65 +14,161 @@ interface FileCoverageTabProps {
    * When absent we fall back to a summary-only view.
    */
   coverageCodeHtml?: string | undefined;
+  /** Names the file a selection inside the source came from. */
+  filePath?: string;
+  /**
+   * The graph-inferred "which tests reach this file" block, supplied by the host
+   * already wrapped. A node rather than a fetcher because the tab bodies are
+   * server components; see `buildFilePanels`.
+   */
+  testsPanel?: ReactNode | undefined;
 }
 
-export function FileCoverageTab({ coverage, coverageCodeHtml }: FileCoverageTabProps) {
+export function FileCoverageTab({
+  coverage,
+  coverageCodeHtml,
+  filePath,
+  testsPanel,
+}: FileCoverageTabProps) {
+  // Rendered on both bases. Without a report it is the whole answer; with one it
+  // adds what a coverage report structurally cannot give at file level - the
+  // names of the tests, rather than how much of the file ran.
+  const reaching = testsPanel ?? null;
+
   if (!coverage) {
+    // Not a dead end any more. No report was ingested, and the dependency graph
+    // can still name the tests that reach this file, with no setup at all.
     return (
-      <EmptyState
-        icon={<Shield className="h-8 w-8" />}
-        title="No coverage data"
-        description="Ingest a coverage report (repowise coverage add <report>) to see line-level coverage here."
-      />
+      <div className="flex flex-col gap-6">
+        {reaching}
+        <FileSection
+          title="Line-level coverage"
+          description="What a report would add here: which lines of this file your tests actually executed, rather than which tests can reach it."
+        >
+          <p className="max-w-[62ch] text-xs leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
+            Run your suite with coverage on and hand us the report with{" "}
+            <span className="font-mono text-[var(--color-text-primary)]">
+              repowise coverage add &lt;report&gt;
+            </span>
+            . Any of {COVERAGE_REPORT_FORMATS.join(", ")} works.
+          </p>
+        </FileSection>
+      </div>
     );
   }
 
   const pct = coverage.line_coverage_pct;
-  const coveredCount = coverage.covered_lines.length;
+  // `coverageBand().color` is a CSS custom-property reference. `coverageColor()`
+  // returns a Tailwind *class* string, and this file used to put it straight
+  // into `style={{ color }}` / `background:` — which is not a colour, so the
+  // figure and the bar had been painting default ink the whole time.
+  const band = coverageBand(pct);
+  const coveredCount = coverage.covered_line_count ?? coverage.covered_lines.length;
+  const uncovered = Math.max(0, coverage.total_coverable_lines - coveredCount);
+  // Covered line numbers from an earlier version of the file would tint the
+  // wrong lines, so a stale file shows no tinted source at all.
+  const stale = coverage.freshness === "stale";
+  const codeHtml = stale ? undefined : coverageCodeHtml;
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-        <span className="text-2xl font-semibold tabular-nums" style={{ color: coverageColor(pct) }}>
-          {pct.toFixed(1)}%
-        </span>
-        <span className="text-xs text-[var(--color-text-secondary)]">
-          {coveredCount.toLocaleString()} of {coverage.total_coverable_lines.toLocaleString()}{" "}
-          coverable lines hit
-          {coverage.branch_coverage_pct != null &&
-            ` · branches ${coverage.branch_coverage_pct.toFixed(1)}%`}
-        </span>
-        <span className="text-[10px] text-[var(--color-text-tertiary)] ml-auto">
-          {coverage.source_format}
-          {coverage.ingested_at && ` · ingested ${formatRelativeTime(coverage.ingested_at)}`}
-          {coverage.ingested_commit_sha && ` @ ${coverage.ingested_commit_sha.slice(0, 7)}`}
-        </span>
-      </div>
-      <div className="h-2 w-full overflow-hidden rounded-full bg-[var(--color-bg-inset)]">
-        <div
-          className="h-full rounded-full"
-          style={{ width: `${pct}%`, background: coverageColor(pct) }}
-        />
-      </div>
+    <div>
+      {/* `PageLede`, not a hand-rolled copy of it. Its docstring says it was
+          extracted precisely because "three hand-rolled copies is how the
+          44 / 48 / 52 sizes drift apart", and a second band chip built out of
+          `color-mix` by hand is the pill rule 9 kills. `CoverageLede` is the
+          wrong shape here — it opens a whole *surface* and wants a
+          `CoverageSummary` plus per-file rows to split. */}
+      <PageLede
+        label="Line coverage"
+        value={`${pct.toFixed(1)}%`}
+        valueColor={band.color}
+        unit="of coverable lines"
+        band={band}
+        layout="beside"
+        figureFooter={
+          <div
+            className="h-2 w-full overflow-hidden rounded-full bg-[var(--color-bg-inset)]"
+            role="img"
+            aria-label={`${pct.toFixed(1)}% of coverable lines covered`}
+          >
+            <div
+              className="h-full rounded-full"
+              style={{ width: `${Math.min(100, Math.max(0, pct))}%`, background: band.color }}
+            />
+          </div>
+        }
+      >
+        <p>
+          Tests ran{" "}
+          <Fig>
+            {formatNumber(coveredCount)} of {formatNumber(coverage.total_coverable_lines)}{" "}
+            coverable lines
+          </Fig>
+          , leaving <Fig>{formatNumber(uncovered)}</Fig> that no test executed
+          {coverage.branch_coverage_pct != null && (
+            <>
+              . Branch coverage is <Fig>{coverage.branch_coverage_pct.toFixed(1)}%</Fig>
+            </>
+          )}
+          . Measured by your own test run, not inferred from the dependency graph.
+        </p>
+        <p className="mt-2.5">
+          Read from a{" "}
+          <span className="font-mono text-[var(--color-text-primary)]">
+            {coverage.source_format}
+          </span>{" "}
+          report
+          {coverage.ingested_at && <> ingested {formatRelativeTime(coverage.ingested_at)}</>}
+          {coverage.ingested_commit_sha && (
+            <>
+              {" "}
+              at{" "}
+              <span className="font-mono text-[var(--color-text-primary)]">
+                {coverage.ingested_commit_sha.slice(0, 7)}
+              </span>
+            </>
+          )}
+          . Re-ingest after a test run to move these figures.
+        </p>
+      </PageLede>
 
-      {coverageCodeHtml ? (
-        <div className="coverage-code overflow-x-auto rounded-md border border-[var(--color-border-default)] text-xs leading-relaxed">
-          {/* Highlighted by the host through the shared shiki path; the
-              data-covered line attributes drive the gutter tint below. */}
-          <div dangerouslySetInnerHTML={{ __html: coverageCodeHtml }} />
-          <style>{`
+      {reaching ? <div className="mt-6">{reaching}</div> : null}
+
+      <FileSection
+        title="Source"
+        description={
+          codeHtml
+            ? "Every coverable line, tinted by whether the last report saw it run."
+            : stale
+              ? "This file changed after coverage was measured; re-run tests with coverage to refresh."
+              : "The highlighted source appears here for files under the render cap once a coverage report has been ingested for them."
+        }
+      >
+        {codeHtml ? (
+          <div
+            data-chat-selection=""
+            {...(filePath ? { "data-chat-selection-path": filePath } : {})}
+            className="coverage-code overflow-x-auto border-y border-[var(--color-border-default)] text-xs leading-relaxed"
+          >
+            {/* Highlighted by the host through the shared shiki path; the
+                data-covered line attributes drive the gutter tint below. */}
+            <div dangerouslySetInnerHTML={{ __html: codeHtml /* shiki output; repowise-security-ignore: unsafe_inner_html */ }} />
+            <style>{`
             .coverage-code pre { margin: 0; padding: 0.75rem 0; background: transparent !important; }
             .coverage-code code { display: block; }
             .coverage-code .line { display: inline-block; width: 100%; padding: 0 0.75rem 0 0.5rem; border-left: 3px solid transparent; }
             .coverage-code .line[data-covered="y"] { border-left-color: var(--color-success); background: color-mix(in srgb, var(--color-success) 7%, transparent); }
             .coverage-code .line[data-covered="n"] { border-left-color: var(--color-error); background: color-mix(in srgb, var(--color-error) 8%, transparent); }
           `}</style>
-        </div>
-      ) : (
-        <p className="text-xs text-[var(--color-text-tertiary)]">
-          Source preview unavailable — coverage summary only.
-        </p>
-      )}
+          </div>
+        ) : (
+          <p className="text-sm text-[var(--color-text-tertiary)]">
+            {stale
+              ? "Source preview hidden until coverage is measured again."
+              : "Source preview unavailable for this file."}
+          </p>
+        )}
+      </FileSection>
     </div>
   );
 }

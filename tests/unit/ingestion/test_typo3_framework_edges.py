@@ -245,16 +245,17 @@ class TestTypo3JavaScriptModules:
                     "    ],\n"
                     "];\n"
                 ),
-                "Resources/Public/JavaScript/Local.js": "// stub\n",
+                # Same relative path as the foreign reference, so only the
+                # extension-key check keeps the edge out.
+                "Resources/Public/JavaScript/Foo.js": "// stub\n",
             },
         )
         parsed = _build_parsed(tmp_path)
         graph = _graph_with_nodes(parsed)
         ctx = _ctx(tmp_path, parsed)
         add_framework_edges(graph, parsed, ctx, tech_stack=[])
-        # No edge to a file under a foreign extension key.
-        assert not any(
-            target.startswith("EXT:other_ext/") for _, target in graph.edges()
+        assert not graph.has_edge(
+            "Configuration/JavaScriptModules.php", "Resources/Public/JavaScript/Foo.js"
         )
 
 

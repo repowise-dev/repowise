@@ -5,6 +5,7 @@ from __future__ import annotations
 from tree_sitter import Node
 
 from ...models import HeritageRelation
+from ...type_names import bare_type_name
 from ..helpers import node_text
 
 
@@ -15,12 +16,12 @@ def _superclass(
     superclass = def_node.child_by_field_name("superclass")
     if not superclass:
         return
-    parent = node_text(superclass, src).strip().removeprefix("extends").strip()
+    parent = bare_type_name(node_text(superclass, src).strip().removeprefix("extends"))
     if parent:
         out.append(
             HeritageRelation(
                 child_name=name,
-                parent_name=parent.split(".")[-1],
+                parent_name=parent,
                 kind="extends",
                 line=line,
             )
@@ -43,7 +44,7 @@ def _permits(def_node: Node, name: str, line: int, src: str, out: list[HeritageR
             for type_node in sub.children:
                 if type_node.type in (",", "permits"):
                     continue
-                permit_name = node_text(type_node, src).strip().split(".")[-1]
+                permit_name = bare_type_name(node_text(type_node, src))
                 if permit_name:
                     out.append(
                         HeritageRelation(
@@ -80,7 +81,7 @@ def _interfaces(
                 for type_node in child.children:
                     if type_node.type == ",":
                         continue
-                    parent = node_text(type_node, src).strip().split(".")[-1]
+                    parent = bare_type_name(node_text(type_node, src))
                     if parent:
                         out.append(
                             HeritageRelation(
@@ -91,7 +92,7 @@ def _interfaces(
                             )
                         )
             continue
-        parent = node_text(child, src).strip().split(".")[-1]
+        parent = bare_type_name(node_text(child, src))
         if parent and parent not in ("implements", "extends"):
             out.append(HeritageRelation(child_name=name, parent_name=parent, kind=kind, line=line))
 

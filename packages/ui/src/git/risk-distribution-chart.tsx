@@ -24,14 +24,14 @@ interface RiskDistributionChartProps {
   maxBars?: number;
 }
 
-function computeRiskScore(h: Hotspot): number {
+function computeTriageIndex(h: Hotspot): number {
   const churn = h.churn_percentile / 100;
   const busFactor = h.bus_factor <= 1 ? 1 : h.bus_factor === 2 ? 0.5 : 0;
   const trend = Math.min(1, (h.temporal_hotspot_score ?? 0) / 10);
   return Math.round((churn * 0.4 + busFactor * 0.35 + trend * 0.25) * 100);
 }
 
-function riskColor(score: number): string {
+function triageColor(score: number): string {
   return riskInk(score / 100);
 }
 
@@ -41,24 +41,30 @@ export function RiskDistributionChart({ hotspots, maxBars = 30 }: RiskDistributi
       .map((h) => ({
         name: h.file_path.split("/").pop() ?? h.file_path,
         fullPath: h.file_path,
-        risk: computeRiskScore(h),
+        triageIndex: computeTriageIndex(h),
         churn: Math.round(h.churn_percentile),
         busFactor: h.bus_factor,
       }))
-      .sort((a, b) => b.risk - a.risk)
+      .sort((a, b) => b.triageIndex - a.triageIndex)
       .slice(0, maxBars);
   }, [hotspots, maxBars]);
 
   if (data.length === 0) return null;
 
-  const avgRisk = Math.round(data.reduce((s, d) => s + d.risk, 0) / data.length);
+  const averageIndex = Math.round(
+    data.reduce((sum, row) => sum + row.triageIndex, 0) / data.length,
+  );
   const truncated = hotspots.length > data.length;
 
   return (
     <div className="w-full">
+      <p className="mb-1 text-[10px] text-[var(--color-text-tertiary)]">
+        Triage index (0–100 heuristic): 40% churn percentile + 35% bus-factor tier +
+        25% temporal activity. Uncalibrated; not a probability.
+      </p>
       {truncated && (
         <p className="text-[10px] text-[var(--color-text-tertiary)] mb-1 text-right tabular-nums">
-          Showing top {data.length} of {hotspots.length.toLocaleString()} by risk score
+          Showing top {data.length} of {hotspots.length.toLocaleString()} by triage index
         </p>
       )}
       <ResponsiveContainer width="100%" height={Math.max(200, data.length * 22 + 40)}>
@@ -91,18 +97,18 @@ export function RiskDistributionChart({ hotspots, maxBars = 30 }: RiskDistributi
               fontSize: 11,
               color: "var(--color-text-primary)",
             }}
-            formatter={(value) => [`${typeof value === "number" ? value : 0}`, "Risk Score"]}
+            formatter={(value) => [`${typeof value === "number" ? value : 0}`, "Triage index"]}
             labelFormatter={(label) => String(label)}
           />
           <ReferenceLine
-            x={avgRisk}
+            x={averageIndex}
             stroke="var(--color-text-tertiary)"
             strokeDasharray="4 4"
-            label={{ value: `avg ${avgRisk}`, position: "top", fontSize: 9, fill: "var(--color-text-tertiary)" }}
+            label={{ value: `avg ${averageIndex}`, position: "top", fontSize: 9, fill: "var(--color-text-tertiary)" }}
           />
-          <Bar dataKey="risk" radius={[0, 4, 4, 0]}>
+          <Bar dataKey="triageIndex" radius={[0, 4, 4, 0]}>
             {data.map((entry, idx) => (
-              <Cell key={idx} fill={riskColor(entry.risk)} fillOpacity={0.85} />
+              <Cell key={idx} fill={triageColor(entry.triageIndex)} fillOpacity={0.85} />
             ))}
           </Bar>
         </BarChart>

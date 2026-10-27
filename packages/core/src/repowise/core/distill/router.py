@@ -40,13 +40,18 @@ def normalize_command(command: str) -> str:
     for _ in range(4):
         previous = cmd
         cmd = _ENV_ASSIGN_RE.sub("", cmd)
+        # Strip the exe path *inside* the loop and before the wrapper table:
+        # a wrapper invoked by path (".venv/Scripts/python.exe -m pytest")
+        # only looks like a wrapper once the path is gone. Running this once
+        # at the end left "python -m pytest", which no family matches and
+        # which the hook's ignore-list then bails on outright.
+        cmd = _EXE_PATH_RE.sub(lambda m: m.group("exe"), cmd)
         cmd = _WRAPPER_RE.sub("", cmd)
         quoted = _WHOLE_QUOTED_RE.match(cmd)
         if quoted:
             cmd = quoted.group(1).strip()
         if cmd == previous:
             break
-    cmd = _EXE_PATH_RE.sub(lambda m: m.group("exe"), cmd)
     return cmd.lower()
 
 

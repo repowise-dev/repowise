@@ -8,6 +8,11 @@ from __future__ import annotations
 
 from typing import Any
 
+#: How many entries each extractor returns. Both were bare literals at the
+#: ``return``; naming them lets a caller and a test say which cut it means.
+MAX_CALL_ENTRIES = 15
+MAX_HERITAGE_ENTRIES = 10
+
 
 def build_symbol_index(graph: Any) -> dict[str, list[tuple[Any, dict]]]:
     """Bucket symbol nodes by ``file_path`` in one pass over the graph.
@@ -16,7 +21,10 @@ def build_symbol_index(graph: Any) -> dict[str, list[tuple[Any, dict]]]:
     graph node per file — O(files x nodes) across a generation run. Callers
     that assemble context for many files build this index once and pass it
     in; per-file extraction becomes a dict lookup. Buckets preserve the
-    graph's node iteration order, so results are byte-identical to the scan.
+    graph's node iteration order, so results are byte-identical to the scan —
+    and that is still the reason, not the ranking the extractors now apply:
+    neither sort key is total (heritage ignores ``kind``, the call dedup
+    collapses on names alone), so ties fall back to input order.
     """
     index: dict[str, list[tuple[Any, dict]]] = {}
     try:
@@ -80,7 +88,19 @@ def extract_call_graph(
                     )
     except Exception:
         pass
-    # Deduplicate and cap
+    # Rank, then deduplicate, then cap. The cut used to keep whichever 15 the
+    # graph happened to yield first, so a file's most confident call edges
+    # could be dropped in favour of arbitrary ones. ``confidence`` is already
+    # on every entry — it is the resolver's own certainty that this call is
+    # real — so the entries it is least sure about are the ones to lose.
+    # Ranking before the dedup also means a pair kept once is kept at its
+    # highest confidence rather than at whichever copy came first.
+    #
+    # Worth knowing before this is quoted as a user-facing fix: the caller
+    # stores this on ``FilePageContext.call_graph``, and **no template, prompt
+    # or reader consumes that field**. This is one line on the module's public
+    # surface, not a change anyone can see today.
+    entries.sort(key=lambda e: (-float(e.get("confidence") or 0.0), e["caller"], e["callee"]))
     seen: set[str] = set()
     unique: list[dict] = []
     for e in entries:
@@ -88,7 +108,7 @@ def extract_call_graph(
         if key not in seen:
             seen.add(key)
             unique.append(e)
-    return unique[:15]
+    return unique[:MAX_CALL_ENTRIES]
 
 
 def extract_heritage(
@@ -98,6 +118,12 @@ def extract_heritage(
 ) -> list[dict]:
     """Extract extends/implements edges for symbols in this file."""
     entries: list[dict] = []
+    # Parallel to ``entries``: the confidence this cut ranks on. Kept beside
+    # the dicts rather than inside them because no caller reads it — the
+    # module page ranks these by the *file's* PageRank when it merges several
+    # files' lists — and a key nothing consumes is a key someone later has to
+    # work out the purpose of.
+    scores: list[float] = []
     try:
         for node, data in _file_symbol_nodes(file_path, graph, symbol_index):
             for _, target, edata in graph.out_edges(node, data=True):
@@ -112,6 +138,7 @@ def extract_heritage(
                             "parent_file": tdata.get("file_path", ""),
                         }
                     )
+                    scores.append(float(edata.get("confidence") or 0.0))
             for source, _, edata in graph.in_edges(node, data=True):
                 etype = edata.get("edge_type", "")
                 if etype in ("extends", "implements"):
@@ -124,9 +151,21 @@ def extract_heritage(
                             "child_file": sdata.get("file_path", ""),
                         }
                     )
+                    scores.append(float(edata.get("confidence") or 0.0))
     except Exception:
         pass
-    return entries[:10]
+    # Same cut as ``extract_call_graph``, same reason to rank it. The resolver
+    # scores an inheritance edge it matched inside the file well above one it
+    # guessed from a bare name — across the corpus ``extends`` carries 6,726
+    # edges at 0.5 against 5,135 at 0.95 — so the guesses are what a full list
+    # should lose. Names break ties, which ``kind`` deliberately does not join:
+    # two entries alike in confidence, child and parent are the same
+    # relationship reported from both ends.
+    ranked = sorted(
+        zip(scores, entries, strict=True),
+        key=lambda pair: (-pair[0], pair[1]["child"], pair[1]["parent"]),
+    )
+    return [entry for _score, entry in ranked[:MAX_HERITAGE_ENTRIES]]
 
 
 def extract_community_meta(file_path: str, graph: Any) -> tuple[str, float]:

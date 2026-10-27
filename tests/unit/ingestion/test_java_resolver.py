@@ -86,11 +86,46 @@ class TestJavaImportResolution:
         targets = resolve_java_import_all("com.foo.Constants", "Main.java", ctx)
         assert a in targets
 
-    def test_stem_fallback(self, tmp_path: Path) -> None:
-        a = _make_java(tmp_path, "src/Util.java", "com.foo", "Util")
-        ctx = _ctx(tmp_path, [a])
+    def test_name_match_needs_the_importing_package(self, tmp_path: Path) -> None:
+        # A file in com.foo cannot answer an import of com.bar.Util. The name
+        # alone used to be enough, which is how a third-party type bound to a
+        # same-named repo class.
+        _make_java(tmp_path, "src/Util.java", "com.foo", "Util")
+        ctx = _ctx(tmp_path, ["src/Util.java"])
         result = resolve_java_import("com.bar.Util", "Main.java", ctx)
-        assert result == a
+        assert result == "external:com.bar.Util"
+
+    def test_third_party_import_does_not_take_a_same_named_local_class(
+        self, tmp_path: Path
+    ) -> None:
+        local = _make_java(
+            tmp_path,
+            "src/main/java/com/acme/cache/stats/CacheStats.java",
+            "com.acme.cache.stats",
+            "CacheStats",
+        )
+        ctx = _ctx(tmp_path, [local])
+        targets = resolve_java_import_all(
+            "com.google.common.cache.CacheStats",
+            "src/test/java/com/acme/guava/CompatTest.java",
+            ctx,
+        )
+        assert targets == ("external:com.google.common.cache.CacheStats",)
+
+    def test_name_match_inside_the_named_package_still_resolves(
+        self, tmp_path: Path
+    ) -> None:
+        # The package scan reads a file's package but records no type for it —
+        # here the class name differs from the file name, so the exact-FQN
+        # lookup misses and only the name match can answer.
+        # The path deliberately does not mirror the package, so the directory
+        # fallback below cannot answer either.
+        full = tmp_path / "src/Widgets.java"
+        full.parent.mkdir(parents=True, exist_ok=True)
+        full.write_text("package com.foo;\n\nclass Internal {}\n")
+        ctx = _ctx(tmp_path, ["src/Widgets.java"])
+        result = resolve_java_import("com.foo.Widgets", "Main.java", ctx)
+        assert result == "src/Widgets.java"
 
     def test_package_fan_out_single_import(self, tmp_path: Path) -> None:
         """A single-class import resolves to the specific file, not all package files."""

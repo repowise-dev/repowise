@@ -25,7 +25,7 @@ export interface HealthTabsProps {
 const TABS: { key: HealthTabKey; label: string; suffix: string; Icon: React.ComponentType<{ className?: string }> }[] = [
   { key: "overview", label: "Overview", suffix: "", Icon: HeartPulse },
   { key: "trend", label: "Trend", suffix: "/trend", Icon: TrendingUp },
-  { key: "coverage", label: "Coverage", suffix: "/coverage", Icon: TestTubeDiagonal },
+  { key: "coverage", label: "Tests", suffix: "/coverage", Icon: TestTubeDiagonal },
   { key: "refactoring", label: "Refactoring", suffix: "/refactoring-targets", Icon: Wrench },
 ];
 
@@ -40,7 +40,7 @@ export function HealthTabs({ repoId, active, basePath, renderLink }: HealthTabsP
           const baseCls =
             "inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium border-b-2 transition-colors";
           const activeCls = isActive
-            ? "border-[var(--color-accent-primary)] text-[var(--color-text-primary)]"
+            ? "border-[var(--color-tab-active)] text-[var(--color-text-primary)]"
             : "border-transparent text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:border-[var(--color-border-default)]";
           const icon = <t.Icon className="h-4 w-4" />;
           if (renderLink) {

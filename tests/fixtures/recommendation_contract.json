@@ -1,0 +1,27 @@
+{
+  "canonical_order": ["Alpha.run", "Beta.run"],
+  "fields": [
+    "id",
+    "refactoring_type",
+    "file_path",
+    "target_symbol",
+    "line_start",
+    "line_end",
+    "plan",
+    "evidence",
+    "impact_delta",
+    "effort_bucket",
+    "blast_radius",
+    "confidence",
+    "source_biomarker",
+    "benefit",
+    "leverage",
+    "cost",
+    "risk",
+    "rank_score",
+    "dependents",
+    "file_nloc",
+    "file_weighted_deficit",
+    "validation"
+  ]
+}

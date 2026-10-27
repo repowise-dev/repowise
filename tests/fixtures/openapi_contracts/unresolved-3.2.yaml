@@ -1,0 +1,44 @@
+openapi: 3.2.0
+info: {title: Unsupported cases, version: '1'}
+paths:
+  /remote:
+    get:
+      responses:
+        '200':
+          description: remote reference
+          content:
+            application/json:
+              schema: {$ref: 'https://example.invalid/schemas.json#/User'}
+  /choice:
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - {type: string}
+                - {type: integer}
+      responses:
+        '204': {description: no content}
+  /tree:
+    get:
+      responses:
+        '200':
+          description: cyclic local reference
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Node'}
+  /xml:
+    get:
+      responses:
+        '200':
+          description: unsupported media type
+          content:
+            application/xml:
+              schema: {type: string}
+components:
+  schemas:
+    Node:
+      type: object
+      properties:
+        child: {$ref: '#/components/schemas/Node'}

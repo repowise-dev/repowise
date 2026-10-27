@@ -27,6 +27,8 @@ from __future__ import annotations
 import contextlib
 from typing import Any
 
+from repowise.core.providers.embedding.base import store_has_semantic_vectors
+
 __all__ = [
     "DECISION_PAGE_TYPE",
     "DECISION_VECTOR_PREFIX",
@@ -238,7 +240,14 @@ async def find_duplicate_decision_by_vector(
     than the store's stale row. Same policy as the text twin: the overall
     nearest decision decides, thresholded at *tau*; store errors degrade to
     the pending-only comparison.
+
+    Returns None on a keyless store, without consulting *pending* either: the
+    pending index holds vectors from that same embedder, so it cannot separate
+    a duplicate from an unrelated record any better than the store can. See
+    :func:`store_has_semantic_vectors`.
     """
+    if not store_has_semantic_vectors(store):
+        return None
     best: tuple[str, float] | None = None
     try:
         results = await store.search_by_vector(vector, limit=SEARCH_FETCH)
@@ -339,9 +348,11 @@ async def find_duplicate_decision(
 
     Queries the shared store, filters hits to the ``decision:`` namespace
     (dropping any in *exclude_ids*), and returns the nearest one whose cosine
-    similarity is ≥ *tau* — or None when nothing clears the bar. Store errors
-    degrade to None (title dedup still applied upstream).
+    similarity is ≥ *tau* — or None when nothing clears the bar. Store errors,
+    and a keyless store, degrade to None (title dedup still applied upstream).
     """
+    if not store_has_semantic_vectors(store):
+        return None
     query = decision_match_text(title, decision)
     if not query:
         return None
@@ -377,9 +388,11 @@ async def find_related_decisions(
     whose cosine similarity sits in the band ``[lo, hi)`` — high enough to be
     the same topic, but (by default) *below* the dedup threshold so they were
     not collapsed into one record. Those are exactly the candidates that might
-    contradict / supersede each other. Ordered best-first; store errors degrade
-    to an empty list.
+    contradict / supersede each other. Ordered best-first; store errors, and a
+    keyless store, degrade to an empty list.
     """
+    if not store_has_semantic_vectors(store):
+        return []
     query = decision_match_text(title, decision)
     if not query:
         return []
@@ -428,11 +441,13 @@ async def find_related_decisions_many(
     *items* is ``(title, decision, exclude_ids)`` per query; the result list
     is aligned by index. Uses the store's ``search_many`` so every query is
     embedded in a single embedder call — the per-query network round-trip is
-    what made the supersession pass scale with decision count. Store errors
-    degrade to empty lists, matching the per-item helper.
+    what made the supersession pass scale with decision count. Store errors,
+    and a keyless store, degrade to empty lists, matching the per-item helper.
     """
     if not items:
         return []
+    if not store_has_semantic_vectors(store):
+        return [[] for _ in items]
     queries = [decision_match_text(title, decision) for title, decision, _ in items]
     try:
         # Empty query texts still occupy their slot (keeps results aligned)

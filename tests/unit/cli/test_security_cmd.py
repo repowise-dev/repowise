@@ -31,7 +31,10 @@ def test_security_scan_help_lists_history_flags() -> None:
     assert "--since" in result.output
     assert "--to" in result.output
     assert "--all-patterns" in result.output
-    assert "--output" in result.output
+    # ``--output`` still works but is hidden: the machine-readable axis is
+    # spelled ``--format`` everywhere now, and --help documents one name.
+    assert "--format" in result.output
+    assert "--output" not in result.output
 
 
 @dataclass

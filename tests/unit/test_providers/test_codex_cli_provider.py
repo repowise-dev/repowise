@@ -6,6 +6,7 @@ All tests mock the Codex subprocess; no real Codex CLI calls are made.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from typing import Any
 
@@ -16,6 +17,7 @@ from repowise.core.providers.llm.codex_cli import (
     CodexCliProvider,
     CodexModelReasoning,
     _extract_codex_model_catalog,
+    _resolve_concurrency,
 )
 
 
@@ -237,7 +239,9 @@ async def test_generate_invokes_codex_exec_with_stdin(monkeypatch, tmp_path):
     args = list(captured["args"])
     assert args[:6] == [codex_cmd, "exec", "--ephemeral", "--sandbox", "read-only", "--json"]
     assert args[args.index("--cd") + 1] == str(tmp_path.resolve())
-    assert args[args.index("--config") + 1] == 'model_reasoning_effort="low"'
+    configs = [args[i + 1] for i, a in enumerate(args) if a == "--config"]
+    assert "project_doc_max_bytes=0" in configs
+    assert 'model_reasoning_effort="low"' in configs
     assert args[args.index("--model") + 1] == "gpt-5.5"
     assert args[-1] == "-"
     assert captured["kwargs"]["stdin"] == asyncio.subprocess.PIPE
@@ -264,7 +268,9 @@ async def test_generate_passes_supported_codex_reasoning_effort(monkeypatch, tmp
     )
 
     args = list(captured["args"])
-    assert args[args.index("--config") + 1] == 'model_reasoning_effort="xhigh"'
+    configs = [args[i + 1] for i, a in enumerate(args) if a == "--config"]
+    assert "project_doc_max_bytes=0" in configs
+    assert 'model_reasoning_effort="xhigh"' in configs
 
 
 async def test_generate_passes_unknown_model_effort_without_catalog_block(
@@ -291,7 +297,9 @@ async def test_generate_passes_unknown_model_effort_without_catalog_block(
     )
 
     args = list(captured["args"])
-    assert args[args.index("--config") + 1] == 'model_reasoning_effort="max"'
+    configs = [args[i + 1] for i, a in enumerate(args) if a == "--config"]
+    assert "project_doc_max_bytes=0" in configs
+    assert 'model_reasoning_effort="max"' in configs
     assert args[args.index("--model") + 1] == "future-codex"
 
 
@@ -404,16 +412,25 @@ async def test_generate_raises_when_jsonl_has_no_agent_message(monkeypatch, tmp_
         await CodexCliProvider(repo_path=tmp_path).generate("sys", "user")
 
 
-async def test_generate_serializes_subprocess_calls(monkeypatch, tmp_path):
+async def test_generate_respects_configured_concurrency(monkeypatch, tmp_path):
+    """The semaphore is the fan-out knob: 2 in flight, never more."""
     monkeypatch.setattr("shutil.which", lambda cmd: "codex" if cmd == "codex" else None)
+    monkeypatch.setenv("REPOWISE_CODEX_CLI_CONCURRENCY", "2")
     active = 0
     max_active = 0
+    # A barrier, not a sleep: on a loaded runner the first call could finish
+    # before the last one starts. The timeout keeps a serialised regression
+    # failing fast instead of hanging.
+    all_in = asyncio.Event()
 
     async def on_communicate() -> None:
         nonlocal active, max_active
         active += 1
         max_active = max(max_active, active)
-        await asyncio.sleep(0.01)
+        if active == 2:
+            all_in.set()
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(all_in.wait(), timeout=2)
         active -= 1
 
     async def fake_exec(*_args: str, **_kwargs: Any) -> FakeProcess:
@@ -425,9 +442,63 @@ async def test_generate_serializes_subprocess_calls(monkeypatch, tmp_path):
     await asyncio.gather(
         provider.generate("sys", "user 1"),
         provider.generate("sys", "user 2"),
+        provider.generate("sys", "user 3"),
     )
 
-    assert max_active == 1
+    assert max_active == 2
+
+
+async def test_generate_fans_out_to_the_default_concurrency(monkeypatch, tmp_path):
+    """Serializing made a 104-page generate take about 95 minutes."""
+    monkeypatch.setattr("shutil.which", lambda cmd: "codex" if cmd == "codex" else None)
+    monkeypatch.delenv("REPOWISE_CODEX_CLI_CONCURRENCY", raising=False)
+    active = 0
+    max_active = 0
+    # A barrier, not a sleep: on a loaded runner the first call could finish
+    # before the last one starts. The timeout keeps a serialised regression
+    # failing fast instead of hanging.
+    all_in = asyncio.Event()
+
+    async def on_communicate() -> None:
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        if active == 4:
+            all_in.set()
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(all_in.wait(), timeout=2)
+        active -= 1
+
+    async def fake_exec(*_args: str, **_kwargs: Any) -> FakeProcess:
+        return FakeProcess(stdout=_success_jsonl("OK"), on_communicate=on_communicate)
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+    provider = CodexCliProvider(repo_path=tmp_path)
+
+    await asyncio.gather(*[provider.generate("sys", f"user {i}") for i in range(4)])
+
+    assert max_active == 4
+
+
+def test_concurrency_env_overrides_the_default(monkeypatch):
+    monkeypatch.setenv("REPOWISE_CODEX_CLI_CONCURRENCY", "6")
+    assert _resolve_concurrency() == 6
+
+
+def test_concurrency_default_is_four(monkeypatch):
+    monkeypatch.delenv("REPOWISE_CODEX_CLI_CONCURRENCY", raising=False)
+    assert _resolve_concurrency() == 4
+
+
+def test_concurrency_rejects_invalid_and_clamps_to_one(monkeypatch):
+    monkeypatch.setenv("REPOWISE_CODEX_CLI_CONCURRENCY", "not-a-number")
+    assert _resolve_concurrency() == 4
+
+    monkeypatch.setenv("REPOWISE_CODEX_CLI_CONCURRENCY", "0")
+    assert _resolve_concurrency() == 1
+
+    monkeypatch.setenv("REPOWISE_CODEX_CLI_CONCURRENCY", " 2 ")
+    assert _resolve_concurrency() == 2
 
 
 async def test_generate_times_out_and_kills_codex_exec(monkeypatch, tmp_path):
@@ -467,3 +538,21 @@ async def test_generate_rejects_unsupported_reasoning_off(monkeypatch, tmp_path)
 
     with pytest.raises(ProviderError, match="model_reasoning_effort='none'"):
         await CodexCliProvider(repo_path=tmp_path).generate("sys", "user", reasoning="off")
+
+
+def test_model_catalog_probe_never_inherits_stdin(monkeypatch):
+    """Inside a stdio MCP server stdin is the JSON-RPC pipe."""
+    import subprocess
+
+    from repowise.core.providers.llm import codex_cli
+
+    seen: dict[str, Any] = {}
+
+    def fake_run(_args, **kwargs):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(_args, 1, "", "")
+
+    monkeypatch.setattr(codex_cli.subprocess, "run", fake_run)
+    codex_cli._load_codex_model_catalog.cache_clear()
+    assert codex_cli._load_codex_model_catalog("codex-stdin-probe") is None
+    assert seen["stdin"] is subprocess.DEVNULL

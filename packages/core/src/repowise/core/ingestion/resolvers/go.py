@@ -32,6 +32,65 @@ def read_go_module_path(repo_path: Path | None) -> str | None:
     return _read_module_directive(go_mod)
 
 
+def _read_local_replacements(go_mod: Path, repo_path: Path) -> list[tuple[str, str]]:
+    """Return ``(dir_posix, import_path)`` for each filesystem ``replace`` in *go_mod*.
+
+    ``replace github.com/x/y => ./y`` makes an import path local that no
+    ``module`` directive mentions, which is the normal way a Go monorepo wires a
+    library into its consumers. Without this the import matches no module and
+    resolves to an external node, so the local package loses every inbound edge
+    and reads as dead.
+
+    Only filesystem replacements count. Go's rule: the replacement is a path
+    when it starts with ``./``, ``../`` or is absolute; anything else is a
+    module-to-module replacement that stays external. A version on either side
+    is ignored, and a target outside the repo is skipped.
+    """
+    out: list[tuple[str, str]] = []
+    try:
+        text = go_mod.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return out
+
+    in_block = False
+    for raw in text.splitlines():
+        line = raw.split("//", 1)[0].strip()
+        if not line:
+            continue
+        if in_block:
+            if line.startswith(")"):
+                in_block = False
+                continue
+        elif line.startswith("replace ("):
+            in_block = True
+            continue
+        elif line.startswith("replace "):
+            line = line[len("replace ") :].strip()
+        else:
+            continue
+
+        if "=>" not in line:
+            continue
+        lhs, _, rhs = line.partition("=>")
+        # "path v1.2.3" on either side — the version is not part of the identity.
+        left = lhs.split()
+        right = rhs.split()
+        if not left or not right:
+            continue
+        if len(right) > 1:
+            continue  # module => module@version, not a local directory
+        target = right[0]
+        if not (target.startswith("./") or target.startswith("../") or Path(target).is_absolute()):
+            continue
+        try:
+            resolved = (go_mod.parent / target).resolve()
+            rel = resolved.relative_to(repo_path.resolve()).as_posix()
+        except (OSError, ValueError):
+            continue  # replacement points outside the repo
+        out.append(("" if rel == "." else rel, left[0]))
+    return out
+
+
 def read_go_modules(
     repo_path: Path | None, *, prune_nested_git: bool = True
 ) -> tuple[tuple[str, str], ...]:
@@ -39,7 +98,8 @@ def read_go_modules(
     ``((module_dir_posix, module_path), ...)`` sorted longest-module-path-first.
 
     This supports Go monorepos with multiple modules (e.g.
-    ``services/foo/go.mod`` + ``libs/bar/go.mod``).
+    ``services/foo/go.mod`` + ``libs/bar/go.mod``), and local ``replace``
+    directives, which bind an unrelated import path to a directory in the repo.
     """
     if repo_path is None or not repo_path.is_dir():
         return ()
@@ -56,6 +116,7 @@ def read_go_modules(
         if module_dir == ".":
             module_dir = ""
         found.append((module_dir, module_path))
+        found.extend(_read_local_replacements(go_mod, repo_path))
     # Longest module path first so prefix-matching prefers the most specific.
     found.sort(key=lambda t: len(t[1]), reverse=True)
     return tuple(found)
@@ -97,7 +158,24 @@ def resolve_go_import(module_path: str, importer_path: str, ctx: ResolverContext
             if result:
                 return result
 
-    # No module match — fall back to stem matching on the last segment.
+    # Nothing local matched. Go import paths are fully qualified, so the stem
+    # fallback below is a guess on the last segment alone — and a wrong guess
+    # invents an edge pointing the wrong way down the dependency graph. Because
+    # the mis-matched local package usually imports the importer back for real,
+    # that fabricates an import cycle Go itself would reject (issue #1294):
+    # hugo's ``import "strings"`` stem-matched ``tpl/strings/strings.go``, and
+    # ``golang.org/x/text/transform`` matched ``tpl/transform/transform.go``.
+    #
+    # Once a go.mod has told us the local module paths — including the
+    # directories bound by local ``replace`` directives — an import that matched
+    # none of them is not local, so guessing can only do harm.
+    if ctx.go_modules or ctx.go_module_path:
+        return ctx.add_external_node(module_path)
+
+    # No module metadata at all: a pre-modules / GOPATH-era checkout, or a
+    # hand-built test context. Here we genuinely cannot tell ``net/http`` from a
+    # GOPATH import root like ``myproject/lib``, so the legacy stem match stays
+    # rather than externalising real local code.
     stem = module_path.rsplit("/", 1)[-1].lower()
     result = ctx.stem_lookup(stem)
     if result:

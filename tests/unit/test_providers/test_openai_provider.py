@@ -24,9 +24,9 @@ def test_provider_name():
     assert p.provider_name == "openai"
 
 
-def test_default_model_is_nano():
+def test_default_model_is_luna():
     p = OpenAIProvider(api_key="sk-test")
-    assert p.model_name == "gpt-5.4-nano"
+    assert p.model_name == "gpt-5.6-luna"
 
 
 def test_api_key_from_env(monkeypatch):
@@ -59,6 +59,35 @@ def test_supported_reasoning_modes_are_model_specific():
         api_key="sk-test",
         model="gpt-4o",
     ).supported_reasoning_modes() == ("auto",)
+
+
+def test_gpt56_family_ladder_drops_minimal_and_max():
+    """Pin the 5.6 ladder: it is neither the gpt-5 one nor what the docs say.
+
+    Verified against the live API on 2026-08-15 for both variants. The model
+    docs advertise `max`; the API rejects it with `unsupported_value` and names
+    exactly these five. `minimal` is gone from 5.6 entirely, and offering it
+    fails only on a real call, which is what this pins.
+    """
+    for model in ("gpt-5.6-luna", "gpt-5.6-sol", "gpt-6-luna", "gpt-6-sol"):
+        assert OpenAIProvider(
+            api_key="sk-test",
+            model=model,
+        ).supported_reasoning_modes() == ("auto", "none", "low", "medium", "high", "xhigh")
+    # gpt-6.1 also drops `none` (verified live on gpt-6.1-sol, 2026-10-15).
+    assert OpenAIProvider(
+        api_key="sk-test",
+        model="gpt-6.1-sol",
+    ).supported_reasoning_modes() == ("auto", "low", "medium", "high", "xhigh")
+
+    # The generic gpt-5 branch is a prefix of gpt-5.6 and must not win.
+    assert (
+        "minimal"
+        in OpenAIProvider(
+            api_key="sk-test",
+            model="gpt-5.4-nano",
+        ).supported_reasoning_modes()
+    )
 
 
 def test_gpt54_model():
@@ -105,6 +134,47 @@ def test_available_model_options_uses_models_endpoint(monkeypatch):
     )
 
 
+def test_available_model_options_accepts_namespaced_compatible_models(monkeypatch):
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict:
+            return {
+                "data": [
+                    {"id": "ag/gemini-3.7-flash-medium"},
+                    {"id": "ds/deepseek-v4-flash"},
+                    {"id": "cmc/moonshotai/Kimi-K2.6"},
+                    {"id": "text-embedding-3-large"},
+                ]
+            }
+
+    captured: dict[str, object] = {}
+
+    def fake_get(url, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return FakeResponse()
+
+    monkeypatch.setattr("httpx.get", fake_get)
+
+    options = OpenAIProvider(
+        api_key="sk-test",
+        base_url="http://localhost:20128/v1",
+    ).available_model_options()
+    models = [option.model for option in options]
+
+    assert models == [
+        "ag/gemini-3.7-flash-medium",
+        "cmc/moonshotai/Kimi-K2.6",
+        "ds/deepseek-v4-flash",
+    ]
+    assert captured["trust_env"] is False
+    assert next(
+        option for option in options if option.model == "ag/gemini-3.7-flash-medium"
+    ).reasoning_modes == ("auto",)
+
+
 def test_available_model_options_falls_back_to_configured_model(monkeypatch):
     def fake_get(*_args, **_kwargs):
         raise RuntimeError("offline")
@@ -113,9 +183,41 @@ def test_available_model_options_falls_back_to_configured_model(monkeypatch):
 
     options = OpenAIProvider(api_key="sk-test").available_model_options()
 
-    assert options[0].model == "gpt-5.4-nano"
+    assert options[0].model == "gpt-5.6-luna"
     assert options[0].recommended is True
     assert options[0].source == "fallback"
+
+
+def test_discover_model_options_surfaces_endpoint_errors(monkeypatch):
+    def fake_get(*_args, **_kwargs):
+        raise RuntimeError("gateway unavailable")
+
+    monkeypatch.setattr("httpx.get", fake_get)
+
+    provider = OpenAIProvider(
+        api_key="sk-test",
+        base_url="http://localhost:20128/v1",
+    )
+    with pytest.raises(RuntimeError, match="gateway unavailable"):
+        provider.discover_model_options()
+
+
+def test_discover_model_options_rejects_malformed_payload(monkeypatch):
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict:
+            return {"models": []}
+
+    monkeypatch.setattr("httpx.get", lambda *_a, **_k: FakeResponse())
+
+    provider = OpenAIProvider(
+        api_key="sk-test",
+        base_url="http://localhost:20128/v1",
+    )
+    with pytest.raises(ValueError, match="data list"):
+        provider.discover_model_options()
 
 
 # ---------------------------------------------------------------------------
@@ -211,7 +313,7 @@ async def test_generate_sends_correct_messages():
     assert messages[1] == {"role": "user", "content": "user msg"}
 
 
-@pytest.mark.parametrize("model", ["gpt-5.6-luna", "gpt-5-mini", "o3", "o1", "o4-mini"])
+@pytest.mark.parametrize("model", ["gpt-6-luna", "gpt-5.6-luna", "gpt-5-mini", "o3", "o1", "o4-mini"])
 async def test_generate_clamps_temperature_for_reasoning_models(model):
     """GPT-5+ / o-series models only accept the default temperature of 1."""
     provider = OpenAIProvider(api_key="sk-test", model=model)
@@ -245,6 +347,41 @@ async def test_generate_forwards_minimal_reasoning_effort():
         await provider.generate("system msg", "user msg", reasoning="minimal")
 
     assert captured_kwargs[0]["reasoning_effort"] == "minimal"
+
+
+async def test_generate_forwards_xhigh_reasoning_effort_for_luna():
+    """The top effort 5.6 does accept must reach the API, not be dropped.
+
+    The mapping used to enumerate the efforts it forwarded, so an effort that
+    passed validation but was missing from that list produced a request with no
+    `reasoning_effort` at all, indistinguishable from success at the call site.
+    """
+    provider = OpenAIProvider(api_key="sk-test", model="gpt-5.6-luna")
+    mock_response = _make_mock_chat_response()
+    captured_kwargs: list[dict] = []
+
+    async def fake_create(**kwargs):
+        captured_kwargs.append(kwargs)
+        return mock_response
+
+    with patch("openai.AsyncOpenAI") as mock_client:
+        mock_client.return_value.chat.completions.create = fake_create
+        provider._client = mock_client.return_value
+        await provider.generate("system msg", "user msg", reasoning="xhigh")
+
+    assert captured_kwargs[0]["reasoning_effort"] == "xhigh"
+
+
+async def test_generate_rejects_max_for_luna():
+    """`max` is a valid repowise mode that no OpenAI model accepts."""
+    provider = OpenAIProvider(api_key="sk-test", model="gpt-5.6-luna")
+
+    with patch("openai.AsyncOpenAI") as mock_client:
+        provider._client = mock_client.return_value
+        with pytest.raises(ProviderError, match="reasoning='max' is not supported"):
+            await provider.generate("system msg", "user msg", reasoning="max")
+
+    mock_client.return_value.chat.completions.create.assert_not_called()
 
 
 async def test_generate_forwards_none_reasoning_effort_for_gpt51():
@@ -311,7 +448,7 @@ async def test_generate_rejects_minimal_for_non_reasoning_model():
 
 @pytest.mark.parametrize(
     "model",
-    ["gpt-5.1", "gpt-5-pro"],
+    ["gpt-5.1", "gpt-5-pro", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-6-luna", "gpt-6.1-sol"],
 )
 async def test_generate_rejects_minimal_for_known_unsupported_reasoning_models(model):
     provider = OpenAIProvider(api_key="sk-test", model=model)
@@ -333,6 +470,91 @@ async def test_generate_rejects_off_for_non_qwen_model():
             await provider.generate("system msg", "user msg", reasoning="off")
 
     mock_client.return_value.chat.completions.create.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Streaming chat compatibility
+# ---------------------------------------------------------------------------
+
+
+class _EmptyChatStream:
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        raise StopAsyncIteration
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gpt-5.6",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "openai/gpt-5.6-sol-2026-08-01",
+        "gpt-6-luna",
+        "gpt-6-sol",
+    ],
+)
+async def test_stream_chat_disables_gpt_5_6_reasoning_with_function_tools(model):
+    """Use the Chat Completions-compatible setting across the GPT-5.6 and GPT-6 families."""
+    provider = OpenAIProvider(api_key="sk-test", model=model)
+    captured_kwargs: list[dict] = []
+
+    async def fake_create(**kwargs):
+        captured_kwargs.append(kwargs)
+        return _EmptyChatStream()
+
+    with patch("openai.AsyncOpenAI") as mock_client:
+        mock_client.return_value.chat.completions.create = fake_create
+        provider._client = mock_client.return_value
+        events = [
+            event
+            async for event in provider.stream_chat(
+                messages=[{"role": "user", "content": "Inspect this repository"}],
+                tools=[
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "get_overview",
+                            "description": "Read repository overview",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+                system_prompt="Use repository tools.",
+            )
+        ]
+
+    assert events == []
+    assert captured_kwargs[0]["reasoning_effort"] == "none"
+    assert captured_kwargs[0]["tools"][0]["function"]["name"] == "get_overview"
+
+
+@pytest.mark.parametrize("model", ["gpt-5.6", "gpt-5.6-terra", "gpt-5.6-luna"])
+async def test_stream_chat_keeps_gpt_5_6_default_reasoning_without_tools(model):
+    provider = OpenAIProvider(api_key="sk-test", model=model)
+    captured_kwargs: list[dict] = []
+
+    async def fake_create(**kwargs):
+        captured_kwargs.append(kwargs)
+        return _EmptyChatStream()
+
+    with patch("openai.AsyncOpenAI") as mock_client:
+        mock_client.return_value.chat.completions.create = fake_create
+        provider._client = mock_client.return_value
+        events = [
+            event
+            async for event in provider.stream_chat(
+                messages=[{"role": "user", "content": "Say hello"}],
+                tools=[],
+                system_prompt="Be concise.",
+            )
+        ]
+
+    assert events == []
+    assert "reasoning_effort" not in captured_kwargs[0]
 
 
 # ---------------------------------------------------------------------------
@@ -370,3 +592,22 @@ async def test_api_status_error():
         provider._client = mock_client.return_value
         with pytest.raises(ProviderError):
             await provider.generate("sys", "user")
+
+
+async def test_stream_chat_asks_the_hosted_api_for_a_usage_chunk(monkeypatch):
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    captured: list[dict] = []
+
+    async def fake_create(**kwargs):
+        captured.append(kwargs)
+        return _EmptyChatStream()
+
+    for base_url in (None, "http://127.0.0.1:8000/v1"):
+        provider = OpenAIProvider(api_key="sk-test", model="gpt-5.6", base_url=base_url)
+        provider._client = MagicMock()
+        provider._client.chat.completions.create = fake_create
+        [e async for e in provider.stream_chat(messages=[], tools=[], system_prompt="s")]
+
+    assert captured[0]["stream_options"] == {"include_usage": True}
+    # A compatible server may reject the field, so it is not asked.
+    assert "stream_options" not in captured[1]

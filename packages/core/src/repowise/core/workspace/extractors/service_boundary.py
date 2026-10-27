@@ -1,7 +1,8 @@
 """Service boundary detection for monorepo sub-services.
 
 Walks a repo directory tree looking for marker files (package.json, go.mod,
-Dockerfile, etc.) that indicate independent service boundaries. Used to
+Dockerfile, etc., named per ecosystem in :data:`~..manifests.ECOSYSTEMS`) that
+indicate independent service boundaries. Used to
 distinguish intra-service calls from inter-service calls when matching
 contracts.
 
@@ -20,25 +21,12 @@ from pathlib import Path
 
 from repowise.core.fs_walk import walk_repo
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
+from repowise.core.ingestion.traverser import is_output_dir
+from repowise.core.workspace.manifests import SERVICE_MARKERS
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-
-_SERVICE_MARKERS = frozenset(
-    {
-        "package.json",
-        "go.mod",
-        "Dockerfile",
-        "pom.xml",
-        "build.gradle",
-        "build.gradle.kts",
-        "Cargo.toml",
-        "pyproject.toml",
-        "requirements.txt",
-        "mix.exs",
-    }
-)
 
 _BLOCKED_DIRS = frozenset(
     {
@@ -47,9 +35,6 @@ _BLOCKED_DIRS = frozenset(
         "__pycache__",
         ".venv",
         "venv",
-        "dist",
-        "build",
-        "target",
         "vendor",
         ".next",
         ".nuxt",
@@ -76,6 +61,7 @@ _SOURCE_EXTENSIONS = _LANG_REGISTRY.extensions_for(
         "kotlin",
         "scala",
         "elixir",
+        "apex",
     ]
 )
 
@@ -123,10 +109,12 @@ def detect_service_boundaries(repo_path: Path) -> list[ServiceBoundary]:
     repo_root = repo_path.resolve()
     boundaries: list[ServiceBoundary] = []
 
-    for dirpath, dirnames, filenames in walk_repo(repo_root):
-        # ``walk_repo`` already prunes junk dirs and nested git repos; layer on
-        # the derived-output names (dist/build/target/...) it intentionally
-        # leaves ambiguous, plus dotfile dirs, that are never service roots.
+    for dirpath, dirnames, filenames in walk_repo(repo_root, prune=is_output_dir):
+        # ``walk_repo`` already prunes junk dirs and nested git repos, and
+        # ``is_output_dir`` prunes build and report output (``dist``, ``build``,
+        # ``target``, ...) while keeping a source package with one of those
+        # names. Layer on the other derived names it leaves ambiguous, plus
+        # dotfile dirs, that are never service roots.
         dirnames[:] = [d for d in dirnames if d not in _BLOCKED_DIRS and not d.startswith(".")]
 
         current = Path(dirpath)
@@ -134,7 +122,7 @@ def detect_service_boundaries(repo_path: Path) -> list[ServiceBoundary]:
             continue  # skip repo root itself
 
         # Check for marker files
-        found_markers = [f for f in filenames if f in _SERVICE_MARKERS]
+        found_markers = [f for f in filenames if f in SERVICE_MARKERS]
         if not found_markers:
             continue
 
@@ -155,6 +143,14 @@ def detect_service_boundaries(repo_path: Path) -> list[ServiceBoundary]:
                 )
             except (PermissionError, OSError):
                 has_source = False
+
+        if not has_source and "src" in dirnames:
+            # src-layout packages (src/<pkg>/...) keep sources below the first level
+            has_source = any(
+                Path(f).suffix.lower() in _SOURCE_EXTENSIONS
+                for _, _, fs in walk_repo(Path(dirpath, "src"))
+                for f in fs
+            )
 
         if not has_source:
             continue

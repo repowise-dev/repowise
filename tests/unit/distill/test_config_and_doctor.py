@@ -143,10 +143,18 @@ def _isolate_codex(monkeypatch):
 
 @pytest.fixture
 def no_real_hook(monkeypatch):
-    """Keep doctor away from the developer's real ~/.claude/settings.json."""
+    """Keep doctor away from the developer's real ~/.claude/settings.json.
+
+    Both entry points are stubbed on purpose. Patching the presence check
+    alone worked only while nothing else read the file, and the matcher
+    lookup does — leaving the isolation to depend on which of the two a
+    caller happens to reach first is how a suite starts passing or failing
+    on the machine that runs it.
+    """
     from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
 
     monkeypatch.setattr(ClaudeCodeAdapter, "rewrite_hook_installed", lambda self: False)
+    monkeypatch.setattr(ClaudeCodeAdapter, "rewrite_hook_matcher", lambda self: None)
 
 
 def _rows(repo: Path) -> dict[str, tuple[bool, str]]:
@@ -195,10 +203,22 @@ def test_doctor_store_over_cap_fails(repo: Path, no_real_hook) -> None:
     assert "over cap" in rows["Omission store"][1]
 
 
+def _live_hook(monkeypatch, adapter_cls, unmatched: tuple[str, ...] = ()) -> None:
+    """Report *adapter_cls*'s rewrite hook as installed, without reading $HOME.
+
+    Patching only the presence check would leave the matcher lookup reading the
+    developer's real settings, which makes the assertion depend on the machine.
+    """
+    from repowise.cli.agent_adapters.base import RewriteHookStatus
+
+    status = RewriteHookStatus(True, "Bash|PowerShell", unmatched, True)
+    monkeypatch.setattr(adapter_cls, "rewrite_hook_status", lambda self: status)
+
+
 def test_doctor_hook_installed_with_repo_opt_out(repo: Path, monkeypatch) -> None:
     from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
 
-    monkeypatch.setattr(ClaudeCodeAdapter, "rewrite_hook_installed", lambda self: True)
+    _live_hook(monkeypatch, ClaudeCodeAdapter)
     (repo / ".repowise" / "config.yaml").write_text(
         "distill:\n  commands:\n    enabled: false\n", encoding="utf-8"
     )
@@ -210,11 +230,22 @@ def test_doctor_reports_codex_surface_when_installed(repo: Path, monkeypatch) ->
     from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
     from repowise.cli.agent_adapters.codex import CodexAdapter
 
-    monkeypatch.setattr(ClaudeCodeAdapter, "rewrite_hook_installed", lambda self: True)
+    _live_hook(monkeypatch, ClaudeCodeAdapter)
     monkeypatch.setattr(CodexAdapter, "detect", lambda self: True)
-    monkeypatch.setattr(CodexAdapter, "rewrite_hook_installed", lambda self: True)
+    _live_hook(monkeypatch, CodexAdapter)
     rows = _rows(repo)
     assert rows["Distill rewrite hook"][1] == "installed: claude-code, codex"
+
+
+def test_doctor_names_what_a_narrowed_matcher_misses(repo: Path, monkeypatch) -> None:
+    # An entry left behind by a tool rename is registered and rewrites only
+    # some of what the agent runs. Reporting it as plain "installed" is the
+    # answer that hides why nothing is being distilled.
+    from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
+
+    _live_hook(monkeypatch, ClaudeCodeAdapter, unmatched=("PowerShell",))
+    rows = _rows(repo)
+    assert rows["Distill rewrite hook"][1] == "installed: claude-code (matcher misses PowerShell)"
 
 
 # ---------------------------------------------------------------------------
@@ -280,7 +311,7 @@ def test_install_workspace_mode_re_enables_every_repo(
         assert cfg["distill"]["commands"]["enabled"] is True
 
 
-def test_uninstall_removes_hook_but_leaves_repo_config(
+def test_uninstall_removes_hook_and_disables_repo_config(
     tmp_path: Path, settings_path: Path, monkeypatch
 ) -> None:
     from repowise.core.repo_config import load_repo_config
@@ -295,10 +326,36 @@ def test_uninstall_removes_hook_but_leaves_repo_config(
     assert "removed" in result.output
     data = json.loads(settings_path.read_text(encoding="utf-8"))
     assert not data.get("hooks", {}).get("PreToolUse")
-    # Uninstall is global (settings.json); per-repo config stays as-is so a
-    # later reinstall does not need to re-discover repo preferences.
     cfg = load_repo_config(repo)
-    assert cfg["distill"]["commands"]["enabled"] is True
+    assert cfg["distill"]["commands"]["enabled"] is False
+
+
+def test_uninstall_workspace_disables_all_repo_configs(
+    tmp_path: Path, settings_path: Path, monkeypatch
+) -> None:
+    from repowise.core.repo_config import load_repo_config
+    from repowise.core.workspace.config import RepoEntry, WorkspaceConfig
+
+    root = tmp_path / "workspace"
+    root.mkdir(parents=True)
+    aliases = ("alpha", "beta")
+    for alias in aliases:
+        repo = root / alias
+        (repo / ".repowise").mkdir(parents=True)
+    WorkspaceConfig(repos=[RepoEntry(path=a, alias=a) for a in aliases], default_repo="alpha").save(
+        root
+    )
+    monkeypatch.chdir(root)
+
+    CliRunner().invoke(rewrite_install, ["--workspace"])
+    for alias in aliases:
+        assert load_repo_config(root / alias)["distill"]["commands"]["enabled"] is True
+
+    result = CliRunner().invoke(rewrite_uninstall, ["--workspace"])
+    assert result.exit_code == 0
+    assert "disabled" in result.output
+    for alias in aliases:
+        assert load_repo_config(root / alias)["distill"]["commands"]["enabled"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -375,6 +432,30 @@ def test_uninstall_removes_codex_hook_and_agents_md_section(
     data = json.loads(codex_env.read_text(encoding="utf-8"))
     assert not data.get("hooks", {}).get("PreToolUse")
     assert not (repo / "AGENTS.md").exists()  # awareness section round-tripped away
+
+
+def test_uninstall_removes_agents_md_section_when_codex_not_detected(
+    tmp_path: Path, settings_path: Path, monkeypatch
+) -> None:
+    from repowise.cli.agent_adapters.codex import CodexAdapter
+    from repowise.cli.editor_integrations import codex_config
+
+    monkeypatch.setattr(CodexAdapter, "detect", lambda self: True)
+    monkeypatch.setattr(codex_config, "codex_cli_version", lambda: (0, 137, 0))
+    repo = _make_repo(tmp_path, monkeypatch)
+
+    # Install writes AGENTS.md while Codex is detected
+    CliRunner().invoke(rewrite_install, [])
+    assert (repo / "AGENTS.md").exists()
+    assert "REPOWISE_DISTILL" in (repo / "AGENTS.md").read_text(encoding="utf-8")
+
+    # Simulate Codex no longer detected
+    monkeypatch.setattr(CodexAdapter, "detect", lambda self: False)
+
+    result = CliRunner().invoke(rewrite_uninstall, [])
+    assert result.exit_code == 0
+    assert "AGENTS.md distill section removed" in result.output
+    assert not (repo / "AGENTS.md").exists()
 
 
 def test_status_is_honest_about_codex_capability(

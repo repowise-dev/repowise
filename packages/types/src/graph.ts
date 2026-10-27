@@ -11,6 +11,10 @@
  * `GraphExport` below before passing data to components.
  */
 
+// The relation vocabulary lives beside the symbol types that define it, so
+// `CallersCallees` below borrows it rather than restating the group union.
+import type { SymbolRelationGroup } from "./symbols";
+
 // ---------------------------------------------------------------------------
 // Core node + link
 // ---------------------------------------------------------------------------
@@ -70,8 +74,15 @@ export interface GraphExport {
 export interface ArchitectureNode {
   community_id: number;
   label: string;
+  /** Decays with size; kept for older servers. Read `conductance` instead. */
   cohesion: number;
+  /** Share of this group's dependency volume that leaves it, lower is tighter.
+   *  Absent or null on an older index. */
+  conductance?: number | null;
+  /** Members in the requested population; every figure is over them. */
   member_count: number;
+  /** Members the population filter left out. */
+  hidden_member_count?: number;
   top_file: string;
   avg_pagerank: number;
   hotspot_count: number;
@@ -87,9 +98,39 @@ export interface ArchitectureEdge {
   edge_count: number;
 }
 
+/** Which non-production files a community view counts. All off = production only. */
+export interface GraphPopulation {
+  tests: boolean;
+  examples: boolean;
+  docs: boolean;
+}
+
+export const PRODUCTION_ONLY: GraphPopulation = { tests: false, examples: false, docs: false };
+
+/** What the map is counting. Category totals are always reported. */
+export interface PopulationBreakdown {
+  total: number;
+  visible: number;
+  tests?: number;
+  examples?: number;
+  docs?: number;
+  include_tests?: boolean;
+  include_examples?: boolean;
+  include_docs?: boolean;
+}
+
+/** Visible files in no drawn community. `files` is the head by PageRank. */
+export interface UnclusteredFiles {
+  file_count: number;
+  files?: string[];
+}
+
 export interface ArchitectureGraph {
   nodes: ArchitectureNode[];
   edges: ArchitectureEdge[];
+  /** Both absent on an older server. */
+  population?: PopulationBreakdown | null;
+  unclustered?: UnclusteredFiles | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -107,6 +148,7 @@ export interface CommunitySlice {
   community_id: number;
   member_count: number;
   truncated?: boolean;
+  hidden_member_count?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -233,6 +275,78 @@ export interface SymbolNodeSummary {
   signature?: string | null;
 }
 
+/**
+ * Which resolution strategy produced a `calls` edge. Closed vocabulary owned
+ * by `ingestion/models.py::ResolutionOrigin`; the two are edited together.
+ * Render via `originDescriptor` (`@repowise-dev/ui/graph/edge-provenance`) —
+ * which origins count as a guess is one decision and lives in one place.
+ */
+export type ResolutionOrigin =
+  | "same_file"
+  | "self_scope"
+  | "enclosing_class"
+  | "receiver_same_file"
+  | "same_package"
+  | "import_scoped"
+  | "receiver_same_package"
+  | "package_alias"
+  | "module_alias"
+  | "crate_root"
+  | "receiver_import"
+  | "import_merged"
+  | "scoped_name"
+  | "same_target"
+  | "receiver_global"
+  | "global_unique"
+  | "receiver_typed_same_file"
+  | "receiver_typed_same_package"
+  | "receiver_typed_import"
+  | "receiver_typed_global"
+  | "receiver_field_same_file"
+  | "receiver_field_same_package"
+  | "receiver_field_import"
+  | "receiver_field_global"
+  | "receiver_framework_same_file"
+  | "receiver_framework_same_package"
+  | "receiver_framework_import"
+  | "receiver_framework_global"
+  | "receiver_extension_same_file"
+  | "receiver_extension_import"
+  | "receiver_extension_global"
+  | "receiver_chain_same_file"
+  | "receiver_chain_import"
+  | "return_type_same_file"
+  | "return_type_same_package"
+  | "return_type_import"
+  | "return_type_global"
+  | "self_inherited"
+  | "enclosing_inherited";
+
+/**
+ * An origin as received, not as declared. An index outlives the bundle reading
+ * it, so a newer indexer can stamp a word this build predates —
+ * `originDescriptor` degrades those rather than throwing. Same `(string & {})`
+ * escape as `SymbolKind`: autocomplete on the vocabulary, no lie about the wire.
+ */
+export type ResolutionOriginWire = ResolutionOrigin | (string & {});
+
+/**
+ * What stopped a traced flow. Closed vocabulary owned by
+ * `analysis/execution_flows.py::FlowTermination`. A trace that merely ends
+ * reads as "execution ends here" whether it does or whether the walk ran out
+ * of things it could follow; this keeps those apart.
+ */
+export type FlowTermination =
+  | "depth_limit"
+  | "callees_truncated"
+  | "cycle"
+  | "confidence_filtered"
+  | "excluded_target"
+  | "no_callees";
+
+/** A termination as received. See `ResolutionOriginWire`. */
+export type FlowTerminationWire = FlowTermination | (string & {});
+
 export interface CallerCalleeEntry {
   symbol_id: string;
   name: string;
@@ -241,16 +355,23 @@ export interface CallerCalleeEntry {
   start_line?: number | null;
   edge_type: string;
   confidence: number;
+  /** Absent on an index built before origins were stamped. */
+  resolution_origin?: ResolutionOriginWire | null;
 }
 
 export interface CallersCallees {
   symbol_id: string;
   symbol: SymbolNodeSummary;
+  /** `calls` edges only. Every other relation kind is in `relations`. */
   callers: CallerCalleeEntry[];
   callees: CallerCalleeEntry[];
+  /** True totals, not the number of rows served. */
   caller_count: number;
   callee_count: number;
   truncated: boolean;
+  /** Heritage, framework wiring and references, each named and counted.
+   *  Absent on a backend that predates the split. */
+  relations?: SymbolRelationGroup<CallerCalleeEntry>[];
 }
 
 // ---------------------------------------------------------------------------
@@ -261,6 +382,10 @@ export interface CommunityMember {
   path: string;
   pagerank: number;
   is_entry_point: boolean;
+  /** Cross-link signals, so a count can name the files behind it. Optional: an
+   *  older server omits them, which reads as "no signal", not as "not flagged". */
+  is_hotspot?: boolean;
+  is_dead?: boolean;
 }
 
 export interface NeighboringCommunity {
@@ -272,18 +397,44 @@ export interface NeighboringCommunity {
 export interface CommunityDetail {
   community_id: number;
   label: string;
+  /** Decays with size; kept for older servers. The panel reads `conductance`. */
   cohesion: number;
+  /** Share of this group's dependency volume that leaves it, lower is tighter.
+   *  Absent or null on an older index. */
+  conductance?: number | null;
+  /** Members in the requested population; every count is over them. */
   member_count: number;
+  hidden_member_count?: number;
   members: CommunityMember[];
   truncated: boolean;
   neighboring_communities: NeighboringCommunity[];
+  /** State of the area rather than its shape. Every field below is optional:
+   *  additive on the wire, and absent from an older server.
+   *
+   *  LOC-weighted mean health over the members that carry a score, 0-10, higher
+   *  is better. `null` when none do — which is not zero and must not render as
+   *  a score. */
+  health_score?: number | null;
+  /** How many members contributed to `health_score`. */
+  scored_member_count?: number;
+  /** Members flagged hot / dead / decision-anchored, over every member — not
+   *  only the page returned in `members`. */
+  hot_count?: number;
+  dead_count?: number;
+  decision_count?: number;
+  /** Who is primary owner on the most members, and how many. "Most files
+   *  owned", not "most commits" — see the router comment. */
+  primary_owner?: string | null;
+  primary_owner_file_count?: number;
 }
 
 export interface CommunitySummaryItem {
   community_id: number;
   label: string;
   cohesion: number;
+  conductance?: number | null;
   member_count: number;
+  hidden_member_count?: number;
   top_file: string;
 }
 
@@ -298,6 +449,8 @@ export interface GraphMetrics {
   pagerank_percentile: number;
   betweenness: number;
   betweenness_percentile: number;
+  /** False when the node appeared after the last exact centrality scoring. */
+  betweenness_scored?: boolean;
   community_id: number;
   community_label: string | null;
   is_entry_point: boolean;
@@ -316,6 +469,16 @@ export interface ExecutionFlowEntry {
   depth: number;
   crosses_community: boolean;
   communities_visited: number[];
+  /** Why the trace stopped. Absent on an index that carries no terminations. */
+  termination?: FlowTerminationWire | null;
+  /** For `confidence_filtered` only: declined origin -> count. */
+  termination_detail?: Record<string, number> | null;
+  /**
+   * Origin per hop, pairwise with `trace`, so `trace_via[i]` describes the hop
+   * from `trace[i]` to `trace[i + 1]` and the array is one shorter. Omitted
+   * when no hop carries one.
+   */
+  trace_via?: (ResolutionOriginWire | null)[] | null;
 }
 
 export interface ExecutionFlows {

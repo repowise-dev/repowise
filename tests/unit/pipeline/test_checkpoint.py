@@ -53,6 +53,7 @@ class FakeJobStore:
             j
             for j in self.jobs.values()
             if (repository_id is None or j.repository_id == repository_id)
+            and (state is None or j.state == state)
         ]
 
 

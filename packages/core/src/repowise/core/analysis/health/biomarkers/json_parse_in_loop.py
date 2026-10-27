@@ -1,11 +1,10 @@
-"""JSON-parse/stringify-in-loop — serialize/deserialize every iteration.
+"""JSON-deep-clone-in-loop: ``JSON.parse(JSON.stringify(x))`` every iteration.
 
-``JSON.parse`` / ``JSON.stringify`` inside a loop re-serializes each pass; the
-``JSON.parse(JSON.stringify(x))`` deep-clone in a loop is the canonical waste
-(use ``structuredClone`` or hoist the parse). A ``performance`` dimension signal,
-shipped advisory: per-iteration parsing of *distinct* payloads is sometimes
-necessary work, so the centrality ranker downranks the cold sites. This detector
-lifts the hits into findings.
+The round-trip clone serializes and re-parses the whole value each pass (use
+``structuredClone`` or clone once outside the loop). The TS/JS dialect fires only
+on that clone: a bare ``JSON.parse`` or ``JSON.stringify`` per iteration usually
+converts a distinct payload, which is necessary work. A ``performance`` dimension
+signal, shipped advisory. This detector lifts the hits into findings.
 """
 
 from __future__ import annotations
@@ -32,10 +31,10 @@ class JsonParseInLoopDetector:
                     function_name=hit.function,
                     line_start=hit.line,
                     line_end=hit.line,
-                    details={},
+                    details=hit.loop_facts(),
                     reason=(
-                        "JSON.parse/stringify runs every loop iteration; hoist the "
-                        "serialization or use structuredClone for deep copies"
+                        "a JSON.parse(JSON.stringify(...)) deep clone runs every loop "
+                        "iteration; use structuredClone or clone once outside the loop"
                     ),
                 )
             )

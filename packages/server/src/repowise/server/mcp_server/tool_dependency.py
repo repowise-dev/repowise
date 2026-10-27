@@ -1,12 +1,14 @@
-﻿"""MCP Tool 6: get_dependency_path — dependency graph path finding."""
+"""MCP Tool 6: get_dependency_path — dependency graph path finding."""
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from sqlalchemy import select
 
+from repowise.core.analysis.communities import has_community
+from repowise.core.co_change import parse_partners
+from repowise.core.ingestion.models import TEMPORAL_EDGE_TYPES
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
     GitMetadata,
@@ -24,7 +26,14 @@ from repowise.server.mcp_server._helpers import (
 )
 
 
-@mcp.tool(default=False)
+@mcp.tool(
+    default=False,
+    surface_order=220,
+    trust_kind="structural",
+    artifact_type="dependency_path",
+    presentation="dependency_path",
+    evidence_basis="inferred",
+)
 async def get_dependency_path(source: str, target: str, repo: str | None = None) -> dict:
     """Find how two files/modules are connected in the dependency graph.
 
@@ -48,9 +57,20 @@ async def get_dependency_path(source: str, target: str, repo: str | None = None)
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
 
+        # Drop the temporal relation only. A ``co_changes`` edge records that
+        # two files move together in history, so leaving it in makes it a free
+        # hop and the tool reports a "dependency path" no code creates.
+        #
+        # Containment stays, unlike in the consumers that answer "what depends
+        # on this file". ``defines`` is the only bridge from the file layer to
+        # the symbol layer, and no edge points back the other way, so excluding
+        # it cannot suppress a false file-to-file path — there is none to
+        # suppress — while it does delete the real ones: a --defines--> a::foo
+        # --calls--> b::bar is how a caller asks which file reaches a function.
         edge_result = await session.execute(
             select(GraphEdge).where(
                 GraphEdge.repository_id == repository.id,
+                GraphEdge.edge_type.notin_(TEMPORAL_EDGE_TYPES),
             )
         )
         edges = edge_result.scalars().all()
@@ -75,6 +95,12 @@ async def get_dependency_path(source: str, target: str, repo: str | None = None)
     # ancestors, shared neighbors, and bridges never route through excluded files.
     allowed = {n.node_id for n in nodes} if exclude_spec else None
     graph = nx.DiGraph()
+    # Seed every surviving node, not just the endpoints of surviving edges. A
+    # file whose only edges were temporal is still indexed, and the "no direct
+    # path" branch below has a co-change fallback written precisely for it —
+    # unreachable if the node never entered the graph, which also made the
+    # "not found in graph" message untrue.
+    graph.add_nodes_from(n.node_id for n in nodes)
     for e in edges:
         if allowed is not None and (
             e.source_node_id not in allowed or e.target_node_id not in allowed
@@ -83,7 +109,7 @@ async def get_dependency_path(source: str, target: str, repo: str | None = None)
         graph.add_edge(
             e.source_node_id,
             e.target_node_id,
-            edge_type=getattr(e, "edge_type", None) or "imports",
+            edge_type=e.edge_type,
         )
 
     if source not in graph:
@@ -117,14 +143,12 @@ async def get_dependency_path(source: str, target: str, repo: str | None = None)
                 )
             )
             src_meta = src_res.scalar_one_or_none()
-            if src_meta and src_meta.co_change_partners_json:
-                partners = json.loads(src_meta.co_change_partners_json)
-                for p in partners:
-                    partner_path = p.get("file_path", "")
-                    if partner_path == target:
+            if src_meta:
+                for p in parse_partners(src_meta.co_change_partners_json):
+                    if p.file_path == target:
                         result_data["co_change_signal"] = {
-                            "co_change_count": p.get("co_change_count", 0),
-                            "last_co_change": p.get("last_co_change"),
+                            "co_change_count": p.weight,
+                            "last_co_change": p.last_co_change,
                             "note": (
                                 "No import dependency, but these files co-change "
                                 "frequently — likely logical coupling."
@@ -209,8 +233,12 @@ def _build_visual_context(
     # --- Community analysis ---
     src_meta = node_meta.get(source)
     tgt_meta = node_meta.get(target)
-    src_community = src_meta.community_id if src_meta else None
-    tgt_community = tgt_meta.community_id if tgt_meta else None
+    src_community = (
+        src_meta.community_id if src_meta and has_community(src_meta.community_id) else None
+    )
+    tgt_community = (
+        tgt_meta.community_id if tgt_meta and has_community(tgt_meta.community_id) else None
+    )
 
     context["community"] = {
         "source_community": src_community,
@@ -223,8 +251,9 @@ def _build_visual_context(
         # Find nodes that have edges crossing these two communities
         bridge_nodes = []
         nodes_by_community: dict[int, set[str]] = {}
-        for n in nodes:
-            nodes_by_community.setdefault(n.community_id, set()).add(n.node_id)
+        for n in nodes: 
+            if has_community(n.community_id):
+                nodes_by_community.setdefault(n.community_id, set()).add(n.node_id)
 
         src_community_nodes = nodes_by_community.get(src_community, set())
         tgt_community_nodes = nodes_by_community.get(tgt_community, set())

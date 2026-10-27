@@ -136,6 +136,80 @@ async def test_list_pages_summary_has_no_layer_stamp_when_unstamped(
 
 
 @pytest.mark.asyncio
+async def test_list_pages_summary_keeps_the_chapter_flag(client: AsyncClient, app) -> None:
+    """A chapter survives the summary trim, and an ordinary module stays one.
+
+    A chapter's page type is ``module_page``, exactly like the pages nested
+    under it, so this flag is the only thing that separates them. Left inside
+    the dropped metadata blob, every reader drawing from a listing labels a
+    subsystem's landing page "Module".
+    """
+    repo = await create_test_repo(client)
+    repo_id = repo["id"]
+    async with get_session(app.state.session_factory) as session:
+        await crud.upsert_page(
+            session,
+            page_id="module_page:src/core",
+            repository_id=repo_id,
+            page_type="module_page",
+            title="Core",
+            content="body",
+            target_path="src/core",
+            source_hash="abc123",
+            model_name="mock",
+            provider_name="mock",
+            metadata={"is_chapter": True},
+        )
+        await crud.upsert_page(
+            session,
+            page_id="module_page:src/core/health",
+            repository_id=repo_id,
+            page_type="module_page",
+            title="Health",
+            content="body",
+            target_path="src/core/health",
+            source_hash="def456",
+            model_name="mock",
+            provider_name="mock",
+        )
+
+    resp = await client.get(
+        "/api/pages", params={"repo_id": repo_id, "fields": "summary"}
+    )
+    assert resp.status_code == 200
+    by_id = {row["id"]: row for row in resp.json()}
+    assert "metadata" not in by_id["module_page:src/core"]
+    assert by_id["module_page:src/core"]["is_chapter"] is True
+    assert by_id["module_page:src/core/health"]["is_chapter"] is False
+
+
+@pytest.mark.asyncio
+async def test_full_page_row_also_carries_the_chapter_flag(client: AsyncClient, app) -> None:
+    """The two response models share ``_summary_fields``, so this cannot drift."""
+    repo = await create_test_repo(client)
+    repo_id = repo["id"]
+    async with get_session(app.state.session_factory) as session:
+        await crud.upsert_page(
+            session,
+            page_id="module_page:src/core",
+            repository_id=repo_id,
+            page_type="module_page",
+            title="Core",
+            content="body",
+            target_path="src/core",
+            source_hash="abc123",
+            model_name="mock",
+            provider_name="mock",
+            metadata={"is_chapter": True},
+        )
+
+    resp = await client.get("/api/pages", params={"repo_id": repo_id})
+    row = resp.json()[0]
+    assert row["is_chapter"] is True
+    assert row["metadata"]["is_chapter"] is True
+
+
+@pytest.mark.asyncio
 async def test_list_pages_rejects_unknown_fields(client: AsyncClient, app) -> None:
     repo_id, _ = await _create_page(client, app.state.session_factory)
     resp = await client.get(

@@ -1,50 +1,229 @@
-{#- Deterministic (no-LLM) tier-2 file page.
+{#- Deterministic (no-LLM) file page.
 
-    Rendered straight from the assembled FilePageContext for the long tail
-    of selected files on large repos. No model call, the content is a
-    structured, factual stub built entirely from parsed AST + graph signals,
-    and is embedded for search like any other page.
+    Rendered straight from the assembled FilePageContext: no model call, every
+    statement comes from the parse, the import graph, git history or the
+    knowledge graph. It is read on the file view and embedded for search, so it
+    serves both a reader and the index.
 
-    Written for retrieval as much as for reading: the page names its own
-    symbols, its neighbours' file paths and its layer in full, because those
-    are the identifiers a question embeds near. Nobody reads a file page end
-    to end, so where readability and retrieval disagree, retrieval wins.
+    For the reader it opens with prose (the docstring, or sentences built from
+    what the file defines and who imports it) and follows with a compact
+    reference. For the index every identifier the context carried stays in the
+    text: symbols, neighbour paths and the layer are spelled in full. Sections
+    written only for retrieval stay on the page and the reader personas in
+    ``docs/reader-persona.ts`` hide them client-side.
+
+    Every section below the Overview is conditional. A heading with nothing
+    under it costs a reader a stop and puts the same stock sentence on
+    thousands of pages. The Overview always says something, and
+    ``_extract_summary`` reads its first paragraph back as the summary shown in
+    search results, the wiki list and ``get_context``.
 -#}
-{%- set public_syms = ctx.symbols | selectattr("visibility", "equalto", "public") | list -%}
+{%- set api_syms = ctx.symbols | api_symbols -%}
+{%- set other_syms = ctx.symbols | internal_symbols -%}
+{%- set git = ctx.git_metadata or {} -%}
+{%- set facts = ctx | file_facts -%}
+{#- "`a`, `b` and `c`", or "`a`, `b`, `c` and 4 more". -#}
+{%- macro name_list(names, more=0) -%}
+{%- set items = names + ([labels.and_count_more.format(count=more)] if more else []) -%}
+{%- if items | length > 1 -%}{{ items[:-1] | join(", ") }} {{ labels.and_word }} {{ items[-1] }}{%- else -%}{{ items | join("") }}{%- endif -%}
+{%- endmacro -%}
+{#- The opening, which is also the page summary the wiki list, search results
+    and ``get_context`` show. The author's docstring leads when there is one;
+    otherwise the first sentence names the file and says what it defines and
+    who imports it, and a second paragraph says where it sits. Every sentence
+    is conditional on the fact behind it. Sentences carry a ``{subject}`` slot:
+    the page's first sentence names the file, the rest say "it". -#}
+{%- set about = [] -%}
+{%- set where = [] -%}
+{%- if facts.defines -%}
+{%- set _ = about.append(labels.file_defines.format(subject="{subject}", names=name_list(facts.defines, facts.defines_more))) -%}
+{%- endif -%}
+{%- set imp = facts.importers -%}
+{%- if imp.listed -%}
+{%- set _ = about.append(labels.file_imported_by.format(subject="{subject}", names=name_list(imp.listed))) -%}
+{%- elif imp.count -%}
+{%- set _ = about.append(labels.file_imported_by_count.format(subject="{subject}", count=imp.count, tests=labels.of_them_tests.format(count=imp.tests) if imp.tests else "")) -%}
+{%- if imp.all_in_one -%}
+{%- set _ = about.append(labels.all_in_directory.format(directory=imp.directory)) -%}
+{%- elif imp.directory -%}
+{%- set _ = about.append((labels.largest_share_code if imp.tests else labels.largest_share).format(count=imp.share, directory=imp.directory)) -%}
+{%- endif -%}
+{%- endif -%}
+{%- set dep = facts.imports -%}
+{%- if dep.listed -%}
+{%- set _ = where.append(labels.file_imports.format(subject="{subject}", names=name_list(dep.listed))) -%}
+{%- elif dep.count -%}
+{%- set _ = where.append(labels.file_imports_count.format(subject="{subject}", count=dep.count)) -%}
+{%- if dep.all_in_one -%}
+{%- set _ = where.append(labels.all_in_directory.format(directory=dep.directory)) -%}
+{%- elif dep.directory -%}
+{%- set _ = where.append(labels.largest_share.format(count=dep.share, directory=dep.directory)) -%}
+{%- endif -%}
+{%- endif -%}
+{%- if ctx.kg_layer_name and ctx.kg_layer_role == "entry_point" -%}
+{%- set _ = where.append(labels.file_layer_entry.format(subject="{subject}", layer=ctx.kg_layer_name)) -%}
+{%- elif ctx.kg_layer_name and ctx.kg_layer_role == "edge_connector" -%}
+{%- set _ = where.append(labels.file_layer_boundary.format(subject="{subject}", layer=ctx.kg_layer_name)) -%}
+{%- elif ctx.kg_layer_name -%}
+{%- set _ = where.append(labels.file_layer.format(subject="{subject}", layer=ctx.kg_layer_name)) -%}
+{%- endif -%}
+{%- if ctx.is_entry_point and not (ctx.kg_layer_name and ctx.kg_layer_role == "entry_point") -%}
+{%- set _ = where.append(labels.file_entry_point.format(subject="{subject}")) -%}
+{%- endif -%}
+{%- if not (facts.purpose or about or where) -%}
+{%- set _ = about.append(labels.file_fallback.format(subject="{subject}", article=labels.article_an if ctx.language and ctx.language[0] in "aeiou" else labels.article_a, language=ctx.language)) -%}
+{%- endif -%}
+{%- set sentences = (about + where) | with_subject(labels.it_subject if facts.purpose else facts.name, labels.it_subject) -%}
+{%- set paragraphs = [facts.purpose, sentences] if facts.purpose else [sentences[:about | length], sentences[about | length:]] -%}
 # {{ ctx.file_path }}
 
-## Overview
+## {{ labels.overview }}
+{%- for paragraph in paragraphs if paragraph %}
 
-{% if ctx.docstring %}{{ ctx.docstring | as_markdown }}{% else %}`{{ ctx.file_path }}` is a {{ ctx.language }} {% if ctx.is_entry_point %}entry-point {% endif %}{% if ctx.is_test %}test {% endif %}source file{% if ctx.kg_layer_name %} in the {{ ctx.kg_layer_name }} layer{% endif %}{% if ctx.community_label %}, part of the {{ ctx.community_label }} module cluster{% endif %}.{% endif %}
+{{ paragraph if paragraph is string else paragraph | join(" ") }}
+{%- endfor %}
+{%- if ctx.decision_records %}
 
-{% if public_syms %}It exposes {{ public_syms | length }} public symbol{{ "s" if public_syms | length != 1 else "" }}{% if ctx.dependencies %} and depends on {{ ctx.dependencies | length }} other file{{ "s" if ctx.dependencies | length != 1 else "" }}{% endif %}.{% endif %}
+## {{ labels.decisions_heading }}
+{% for dr in ctx.decision_records[:3] %}
+- **{{ dr.title | oneline(80) }}**: {{ dr.decision | oneline }}{% if dr.rationale %} *({{ dr.rationale | oneline(120) }})*{% endif %}
+{%- endfor %}
+{%- endif %}
+{#- The declared surface as a list a reader scans: each symbol's declaration
+    and the first sentence of its docstring, methods under their class.
 
-## Public API
+    Names that are public to the parser without being anything a caller
+    reaches for (``log``, ``__all__``) are declared under the list, not
+    dropped, with their signatures: ``content`` is also the index entry, and
+    ``log`` alone would take ``structlog`` and ``get_logger`` out of it.
+-#}
+{%- if api_syms or other_syms %}
 
-{% if public_syms %}| Symbol | Kind | Signature |
-| --- | --- | --- |
-{% for s in public_syms %}| `{{ s.name }}` | {{ s.kind }} | {{ (s.signature or "") | signature | replace("|", "\\|") }} |
-{% endfor %}{% else %}_No public symbols were extracted from this file._
-{% endif %}
-## Depends on
+## {{ labels.public_api }}
+{%- if api_syms %}
+{% for entry in api_syms | symbol_entries %}
+- {{ entry.declared }}{% if entry.doc %}: {{ entry.doc }}{% endif %}
+{%- for member in entry.members %}
+  - {{ member.declared }}{% if member.doc %}: {{ member.doc }}{% endif %}
+{%- endfor %}
+{%- endfor %}
+{%- endif %}
+{%- if other_syms %}
 
-{% if ctx.dependencies %}{% for dep in ctx.dependencies[:25] %}- `{{ dep }}`
-{% endfor %}{% if ctx.dependencies | length > 25 %}
-_and {{ ctx.dependencies | length - 25 }} more._
-{% endif %}{% else %}_No internal dependencies resolved._
-{% endif %}
-## Used by
+{{ labels.also_defined.format(names=other_syms | declarations | map("code_span") | join(", ")) }}
+{%- endif %}
+{%- endif %}
+{#- Import neighbourhoods, one line per directory. The opening already says
+    how many and where most of them are; this is the lookup. Each path is
+    printed whole: it is what the reader's link resolves and what a question
+    matches in the index. -#}
+{%- for heading, paths in [(labels.used_by, ctx.dependents), (labels.depends_on, ctx.dependencies)] if paths %}
 
-{% if ctx.dependents %}Imported by {{ ctx.dependents | length }} file{{ "s" if ctx.dependents | length != 1 else "" }} in this repository.
+## {{ heading }}
+{% for group in paths | group_paths %}
+- {{ group.paths | map("code_span") | join(", ") }}
+{%- endfor %}
+{%- if paths | length > 25 %}
 
-{% for dep in ctx.dependents[:25] %}- `{{ dep }}`
-{% endfor %}{% if ctx.dependents | length > 25 %}
-_and {{ ctx.dependents | length - 25 }} more._
-{% endif %}{% else %}_No internal callers were resolved for this file._
-{% endif %}
-{% if ctx.community_label or ctx.kg_layer_name %}## Usage Notes
+_{{ labels.and_more.format(count=paths | length - 25) }}_
+{%- endif %}
+{%- endfor %}
+{#- What the history knows and the code cannot say, as one short paragraph.
 
-{% if ctx.community_label %}Part of the **{{ ctx.community_label }}** module cluster.
-{% endif %}{% if ctx.kg_layer_name %}**Layer:** {{ ctx.kg_layer_name }}{% if ctx.kg_layer_role %} | **Role:** {{ ctx.kg_layer_role }}{% endif %}
-{% endif %}
-{% endif %}{% include "_footer.j2" %}
+    Every clause is conditional on the number behind it, so a repository with
+    no git history renders no heading rather than a row of zeroes. Dates are
+    absolute, never "three days ago": the rendered bytes are this page's reuse
+    key, and a relative date would restate every page in the wiki daily.
+-#}
+{%- set history = [] -%}
+{%- set commits = git.get("commit_count_total") or 0 -%}
+{%- if commits -%}
+{%- set _ = history.append(labels.history_commits.format(total=commits, commit_word=labels.commit_plural if commits != 1 else labels.commit_singular, recent=git.get("commit_count_90d") or 0)) -%}
+{%- if git.get("last_commit_at") -%}
+{%- set _ = history.append(labels.history_last_commit.format(date=git.get("last_commit_at") | datestamp)) -%}
+{%- endif -%}
+{#- The column is written on either scale depending on the producer, the
+    same normalisation ``health/biomarkers/developer_congestion.py`` applies.
+    Unnormalised, a 0-100 source renders "at 8500% of commits". -#}
+{#- With blame the owner is the top author of current lines, so the line share
+    leads and the commit share is named as such; without blame both the owner
+    and the share come from commits. -#}
+{%- set owner_pct = git.get("primary_owner_commit_pct") -%}
+{%- set line_pct = git.get("primary_owner_line_pct") -%}
+{%- if git.get("primary_owner_name") and line_pct and owner_pct -%}
+{%- set _ = history.append(labels.history_owner_lines.format(owner=git.get("primary_owner_name"), line=(line_pct if line_pct > 1.0 else line_pct * 100) | round | int, commit=(owner_pct if owner_pct > 1.0 else owner_pct * 100) | round | int)) -%}
+{%- elif git.get("primary_owner_name") and line_pct -%}
+{%- set _ = history.append(labels.history_owner_lines_only.format(owner=git.get("primary_owner_name"), line=(line_pct if line_pct > 1.0 else line_pct * 100) | round | int)) -%}
+{%- elif git.get("primary_owner_name") and owner_pct -%}
+{%- set _ = history.append(labels.history_owner.format(owner=git.get("primary_owner_name"), pct=(owner_pct if owner_pct > 1.0 else owner_pct * 100) | round | int)) -%}
+{%- endif -%}
+{#- Suppressed when it exceeds the commit total: the two are counted over
+    different windows, and a file whose fix count outruns its own log is one
+    that has been moved, so the fixes belong to a path this page no longer
+    describes. -#}
+{%- if git.get("prior_defect_count") and git.get("prior_defect_count") <= commits -%}
+{%- set _ = history.append(labels.history_fixes.format(count=git.get("prior_defect_count"), fix_word=labels.fix_commit_plural if git.get("prior_defect_count") != 1 else labels.fix_commit_singular, window=labels.fix_window)) -%}
+{%- endif -%}
+{%- if git.get("is_hotspot") -%}
+{%- set _ = history.append(labels.history_hotspot) -%}
+{%- elif git.get("is_stable") -%}
+{%- set _ = history.append(labels.history_stable) -%}
+{%- endif -%}
+{%- endif -%}
+{%- if history %}
+
+## {{ labels.history }}
+
+{{ history | join(" ") }}
+{%- endif %}
+{%- if ctx.co_change_pages %}
+
+## {{ labels.changes_with }}
+
+{{ labels.changes_with_intro }}
+{% for cc in ctx.co_change_pages %}
+- `{{ cc.path }}`: {{ labels.changes_with_entry.format(count=cc.commits, commit_word=labels.commit_plural if cc.commits != 1 else labels.commit_singular) }}{% if cc.last %} ({{ labels.last_together.format(date=cc.last | datestamp) }}){% endif %}
+{%- endfor %}
+{%- endif %}
+{#- Question-shaped text, built from structure rather than prose.
+
+    Every search query is a question and this page is a declarative reference,
+    so the two share almost no vocabulary. The identifiers are the whole point:
+    thousands of file pages asking the same question differ only in the file
+    and symbol they name, and without those they would be one sentence
+    repeated across the corpus, matching everything and distinguishing nothing.
+
+    A question is emitted only where the page can answer it. A question whose
+    answer is not below it puts the words of a promise into the index and then
+    breaks it, which is the failure this block exists to avoid. Low on the
+    page so it cannot become the summary ``_extract_summary`` reads back.
+
+    Built as a list and capped, because a fully-connected file qualifies for
+    more of them than are worth carrying: past three the block stops being
+    question-shaped text and starts being padding on every page in the corpus.
+-#}
+{%- set questions = [] -%}
+{%- if api_syms -%}
+{%- set _ = questions.append(labels.question_exports.format(path=ctx.file_path)) -%}
+{%- set _ = questions.append(labels.question_where_defined.format(symbol=api_syms[0].name)) -%}
+{%- endif -%}
+{%- if ctx.dependents -%}
+{%- set _ = questions.append(labels.question_what_imports.format(path=ctx.file_path)) -%}
+{%- endif -%}
+{%- if ctx.dependencies -%}
+{%- set _ = questions.append(labels.question_depends_on.format(path=ctx.file_path)) -%}
+{%- endif -%}
+{%- if questions %}
+
+## {{ labels.questions_heading }}
+{% for q in questions[:3] %}
+- {{ q }}
+{%- endfor %}
+{%- endif %}
+{#- The file's own vocabulary (``ctx.file_vocabulary``) is not rendered.
+    ``_render_file_page`` stores it in page metadata and ``embed_item`` adds
+    it to the embedded text: it is a bag of words, which serves retrieval and
+    reads to a person as noise.
+#}
+
+{% include "_footer.j2" %}

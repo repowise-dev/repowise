@@ -19,8 +19,13 @@ import type { SigmaNodeAttributes, SigmaEdgeAttributes } from "./types";
 import { EDGE_COLORS } from "./constants";
 import { computeRadialLayout, hubSizeFromMembers } from "./radial-layout";
 
+/** Pseudo community id of the "not grouped" disc. Never a real community. */
+export const UNCLUSTERED_COMMUNITY_ID = -2;
+export const UNCLUSTERED_NODE_ID = "__unclustered__";
+
 /** Stable hub node id derived from the community id. */
 export function hubNodeId(communityId: number): string {
+  if (communityId === UNCLUSTERED_COMMUNITY_ID) return UNCLUSTERED_NODE_ID;
   return `__community__${communityId}`;
 }
 
@@ -31,23 +36,25 @@ export const CORE_NODE_ID = "__repo_core__";
 const PLACEHOLDER_HUB_COLOR = EDGE_COLORS.crossCommunity;
 const PLACEHOLDER_CORE_COLOR = "#1a1320";
 
-/** Uppercase, trimmed community label; falls back to dirname / "Community N". */
+/**
+ * The community's own label, in its own case; falls back to dirname /
+ * "Community N". Drawn *outside* the disc now, so it no longer has to be
+ * shouted to fit: the disc carries the member count and the name sits under
+ * it, in full, the way the paths it is derived from are written.
+ */
 function hubLabel(node: ArchitectureNode): string {
   const raw = (node.label ?? "").trim();
-  if (raw) return raw.toUpperCase();
+  if (raw) return raw;
   const fromFile = (node.top_file ?? "").split("/").slice(-2, -1)[0];
-  if (fromFile) return fromFile.toUpperCase();
-  return `COMMUNITY ${node.community_id}`;
+  if (fromFile) return fromFile;
+  return `Community ${node.community_id}`;
 }
 
-/** Curvature mirrors the file/module adapters (deterministic per edge key). */
-function computeEdgeCurvature(edgeKey: string): number {
-  let hash = 5381;
-  for (let i = 0; i < edgeKey.length; i++) {
-    hash = ((hash << 5) + hash + (edgeKey.charCodeAt(i) ?? 0)) | 0;
-  }
-  return 0.12 + (Math.abs(hash) % 80) / 1000;
-}
+/** A pair of communities is drawn when it carries this share of the
+ *  heaviest pair's edges... */
+const EDGE_KEEP_SHARE = 0.08;
+/** ...or is one of a community's this-many strongest ties. */
+const EDGE_KEEP_PARTNERS = 2;
 
 export interface ConstellationOptions {
   /** Repo name for the core label. Falls back to "REPO". */
@@ -129,24 +136,80 @@ export function architectureToGraphology(
     });
   }
 
-  // Aggregated cross-community edges: thin plum spokes beneath the hubs.
-  const maxEdgeCount = arch.edges.reduce((m, e) => Math.max(m, e.edge_count), 1);
+  // The files no community claims, as one disc past the outer ring at six
+  // o'clock: outside the ranking, so it is not passed to the radial layout.
+  const unclustered = arch.unclustered;
+  if (unclustered && unclustered.file_count > 0) {
+    result.addNode(UNCLUSTERED_NODE_ID, {
+      x: layout.core.x,
+      y: layout.core.y + layout.ringRadii[2] * 1.18,
+      size: hubSizeFromMembers(unclustered.file_count),
+      color: PLACEHOLDER_HUB_COLOR,
+      label: "not grouped",
+      nodeType: "hub",
+      fullPath: "",
+      language: "",
+      communityId: UNCLUSTERED_COMMUNITY_ID,
+      pagerank: 0,
+      betweenness: 0,
+      isTest: false,
+      isEntryPoint: false,
+      hasDoc: false,
+      symbolCount: 0,
+      memberCount: unclustered.file_count,
+      forceLabel: true,
+      zIndex: 2,
+      originalColor: PLACEHOLDER_HUB_COLOR,
+    });
+  }
+
+  // One weighted edge per pair of communities, the weak ones pruned.
+  //
+  // The payload is directed, so most pairs arrived as two edges drawn over
+  // each other at 1.5-2.5px: on this repo 130 near-identical plum strokes
+  // with no way to tell a 900-edge dependency from a 3-edge one. Folding the
+  // two directions together and sizing by sqrt(share of the heaviest) makes
+  // weight readable; pruning keeps every pair at 8% or more of the heaviest,
+  // plus each community's two strongest partners so none is left floating.
+  const pairs = new Map<string, { s: string; t: string; count: number }>();
   for (const edge of arch.edges) {
-    const src = hubNodeId(edge.source);
-    const tgt = hubNodeId(edge.target);
-    if (!result.hasNode(src) || !result.hasNode(tgt)) continue;
-    const edgeKey = src + "→" + tgt;
-    if (result.hasEdge(edgeKey)) continue;
-    // 1.5–2.5px proportional to edge_count.
-    const size = 1.5 + (edge.edge_count / maxEdgeCount);
-    result.addEdgeWithKey(edgeKey, src, tgt, {
-      size,
+    const a = hubNodeId(edge.source);
+    const b = hubNodeId(edge.target);
+    if (a === b || !result.hasNode(a) || !result.hasNode(b)) continue;
+    const [s0, t0] = a < b ? [a, b] : [b, a];
+    const key = s0 + "|" + t0;
+    const p = pairs.get(key);
+    if (p) p.count += edge.edge_count;
+    else pairs.set(key, { s: s0, t: t0, count: edge.edge_count });
+  }
+  const ranked = [...pairs.values()].sort(
+    (p, q) => q.count - p.count || (p.s + p.t < q.s + q.t ? -1 : 1),
+  );
+  const heaviest = ranked[0]?.count ?? 1;
+  const keep = new Set<string>();
+  const partners = new Map<string, number>();
+  for (const p of ranked) {
+    const key = p.s + "|" + p.t;
+    if (p.count >= heaviest * EDGE_KEEP_SHARE) keep.add(key);
+    for (const hub of [p.s, p.t]) {
+      const n = partners.get(hub) ?? 0;
+      if (n < EDGE_KEEP_PARTNERS) keep.add(key);
+      partners.set(hub, n + 1);
+    }
+  }
+  for (const p of ranked) {
+    const edgeKey = p.s + "|" + p.t;
+    if (!keep.has(edgeKey)) continue;
+    const weight = Math.sqrt(p.count / heaviest);
+    result.addEdgeWithKey(edgeKey, p.s, p.t, {
+      size: 0.8 + 9 * weight,
       color: EDGE_COLORS.crossCommunity,
       type: "curved",
-      curvature: computeEdgeCurvature(edgeKey),
+      curvature: 0.18,
       edgeKind: "crossCommunity",
       importedNames: [],
-      edgeCount: edge.edge_count,
+      edgeCount: p.count,
+      weight,
       zIndex: 0,
     });
   }
@@ -198,6 +261,11 @@ export interface SliceMergeResult {
  * Colors are placeholders (recolored per theme by use-sigma); satellites are
  * `nodeType:"file"` so the community-mode recolor paints them the family SOFT
  * variant automatically.
+ */
+/**
+ * @deprecated No longer called. A hub double-click enters the community and
+ * hands its slice to the file-graph renderer instead of blossoming satellites
+ * on the radial layout. Kept exported for out-of-tree hosts mid-port.
  */
 export function mergeCommunitySlice(
   graph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes>,

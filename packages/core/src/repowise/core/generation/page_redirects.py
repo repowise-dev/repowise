@@ -6,21 +6,31 @@ something.  This module owns that mapping and nothing else: it turns a retired
 page id into the id of the page that took over its material.
 
 Page ids are ``{page_type}:{target_path}`` (see ``models.compute_page_id``).
-Retirements come in three shapes and the tables mirror that:
+Retirements come in four shapes and the tables mirror that.  Two axes: whether
+the rule is keyed by page *type* or by exact *id*, and whether the successor
+can be named up front or has to be resolved against the store.
 
 * **A whole page type folds into another, keeping its path.**  Its target path
   is usually the repository name, which differs per repo, so the rule cannot be
   written as a literal id.  :data:`SUPERSEDED_TYPES` rewrites the type and
   carries the path across unchanged.
-* **One page with a fixed target path retires.**  The onboarding slots are
-  ``onboarding/{slot}`` for every repo, so these can be written as exact ids in
-  :data:`SUPERSEDED_IDS`.
-* **A page folds into the repository's single page of some other type.**  Here
-  the retired id carries nothing that identifies the successor — a layer page is
-  keyed by its layer slug, and the overview by the repository name — so the
-  successor cannot be named without reading the store.
+* **One page with a fixed target path retires into another named page.**  The
+  onboarding slots are ``onboarding/{slot}`` for every repo, so these can be
+  written as exact ids in :data:`SUPERSEDED_IDS`.
+* **A page type folds into the repository's single page of some other type.**
+  Here the retired id carries nothing that identifies the successor — a layer
+  page is keyed by its layer slug, and the overview by the repository name — so
+  the successor cannot be named without reading the store.
   :data:`SUPERSEDED_TO_REPO_WIDE` names the successor *type* and the serving
   layer resolves it.
+* **One page with a fixed target path folds into a repo-wide page.**  Both of
+  the above at once, and the shape the retired onboarding slots need: the
+  retired id is exact (``onboarding:onboarding/codebase_map`` in every repo)
+  but the successor is the overview, whose id carries the repository name.
+  Keying these by type is not available — the surviving onboarding pages share
+  the type, so a type rule would redirect the whole collection — and
+  :data:`SUPERSEDED_IDS` cannot name a per-repo successor.
+  :data:`SUPERSEDED_IDS_TO_REPO_WIDE` closes that gap.
 
 Retirements chain: a page folded into a second page that later folds into a
 third must land on the third, not the second, or the redirect leads somewhere
@@ -65,6 +75,31 @@ SUPERSEDED_TO_REPO_WIDE: dict[str, str] = {
     # an inbound link to a retired layer page lands on the overview.
     "layer_page": "repo_overview",
 }
+
+# Retired page id → the page type of the *one* repo-wide page that took over.
+#
+# The id-keyed twin of the table above, for a page whose id is fixed across
+# repositories but whose successor is not.  ``repo_wide_successor_type`` checks
+# this before the type table, so a single retired id can fold into the overview
+# while every other page of its type keeps being served.
+SUPERSEDED_IDS_TO_REPO_WIDE: dict[str, str] = {
+    # Three orientation pages retired together.  The Guided Tour's *data* did
+    # not go anywhere — the ordered stops are still computed and still served
+    # by ``get_overview`` and Present mode from the overview's own metadata —
+    # so the page's material is genuinely on the overview.  The Codebase Map
+    # described the repository at the overview's altitude in the overview's
+    # words.  The Development Guide reported filename shapes as if they were
+    # procedures, and had no successor worth naming.
+    "onboarding:onboarding/guided_tour": "repo_overview",
+    "onboarding:onboarding/codebase_map": "repo_overview",
+    "onboarding:onboarding/development_guide": "repo_overview",
+}
+
+# Every retired id, whichever table names it.  The sweep and the config-key
+# validator both need "was this an onboarding slot once?" and neither should
+# keep its own list: a slot that is redirected but not swept is the exact state
+# ``sweep_retired_pages`` exists to clear.
+RETIRED_IDS: frozenset[str] = frozenset(SUPERSEDED_IDS) | frozenset(SUPERSEDED_IDS_TO_REPO_WIDE)
 
 # A chain longer than this is a table authoring mistake rather than a real
 # history — the orientation set has never held more than a handful of pages.
@@ -172,8 +207,17 @@ def repo_wide_successor_type(page_id: str) -> str | None:
     repository, which ``page_id`` does not carry.  The caller resolves it
     against the store it is already reading.
 
+    An exact-id rule is more specific than a type-level one and wins, matching
+    :func:`_successor`.  That ordering is what lets three onboarding slots
+    retire into the overview while every other page of type ``onboarding``
+    keeps being served as itself.
+
     Raises:
         SupersededTargetError: ``page_id`` is not ``{page_type}:{target_path}``.
     """
+    exact = SUPERSEDED_IDS_TO_REPO_WIDE.get(page_id)
+    if exact is not None:
+        return exact
+
     page_type, _ = _split(page_id)
     return SUPERSEDED_TO_REPO_WIDE.get(page_type)

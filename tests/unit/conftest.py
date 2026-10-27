@@ -1,0 +1,50 @@
+"""Guards shared by every unit test."""
+
+from __future__ import annotations
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def cursor_hooks_json(tmp_path_factory, monkeypatch):
+    """Keep every test off the developer's real ``~/.cursor/hooks.json``.
+
+    Rewrite-hook install paths run wherever ``~/.cursor`` exists, and not every
+    suite isolates ``$HOME``. Tests that want Cursor present patch ``detect``.
+    """
+    from repowise.cli.agent_adapters import cursor
+
+    hooks = tmp_path_factory.mktemp("cursor") / "hooks.json"
+    monkeypatch.setattr(cursor, "user_hooks_path", lambda: hooks)
+    monkeypatch.setattr(cursor.CursorAdapter, "detect", lambda self: False)
+    return hooks
+
+
+@pytest.fixture(autouse=True)
+def network_switches_off(monkeypatch):
+    """Start every test with the network off switches cleared.
+
+    ``network_disabled()`` short-circuits the PyPI check and agent-CLI probes.
+    A shell ``DO_NOT_TRACK`` or ``uninstall`` writing ``os.environ`` directly
+    would otherwise turn those paths off for later tests. Tests of the gate set
+    the switch themselves.
+    """
+    for var in ("REPOWISE_OFFLINE", "DO_NOT_TRACK", "REPOWISE_TELEMETRY_DISABLED"):
+        monkeypatch.delenv(var, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def fresh_test_map_cache():
+    """In-memory stores reuse one URL and seed graph rows without moving the
+    index stamp, so the process-wide index-state caches start empty per test."""
+    from repowise.core.analysis.test_reachability import clear_test_map_cache
+    from repowise.server.services.areas import clear_area_cache
+    from repowise.server.services.coupling import clear_coupling_cache
+
+    clear_test_map_cache()
+    clear_area_cache()
+    clear_coupling_cache()
+    yield
+    clear_test_map_cache()
+    clear_area_cache()
+    clear_coupling_cache()

@@ -12,8 +12,17 @@ export const CONFIG_SECTION = "repowise";
 /**
  * Lowest server version this build understands. Older servers may serve a
  * store shape this extension cannot read, so the status bar flags them.
+ *
+ * 0.43.0: the risk panel leads with `fix_history`, which no earlier server
+ * sends. `RiskRangeResponse.fix_history` is a required field and the panel
+ * dereferences it, so an older server would throw rather than degrade.
+ *
+ * 0.47.0: the health dashboard reads `/health/map` and the refactoring view
+ * reads `/refactoring/opportunities`, neither of which exists earlier. The
+ * dashboard awaits the map alongside the overview and trend in one `Promise.all`,
+ * so a 404 there fails the whole view rather than dropping one panel.
  */
-export const MIN_SERVER_VERSION = "0.26.0";
+export const MIN_SERVER_VERSION = "0.47.0";
 
 /** Command ids contributed by the extension, mirrored from package.json. */
 export const Commands = {
@@ -32,6 +41,7 @@ export const Commands = {
   showKnowledgeGraph: "repowise.showKnowledgeGraph",
   showDecisionTimeline: "repowise.showDecisionTimeline",
   showSettings: "repowise.showSettings",
+  publish: "repowise.publish",
 } as const;
 
 /**
@@ -48,6 +58,10 @@ export const InternalCommands = {
   handPlanToCopilot: "repowise.handPlanToCopilot",
   /** Hand a refactoring plan to Claude Code; bound to code actions. */
   handPlanToClaudeCode: "repowise.handPlanToClaudeCode",
+  /** The one-time "publish to repowise.dev" prompt; fired after setup succeeds. */
+  offerPublish: "repowise.offerPublish",
+  /** Re-asks every Repowise tree; bound to the "Retry" row of a failed load. */
+  retryTrees: "repowise.retryTrees",
 } as const;
 
 /**

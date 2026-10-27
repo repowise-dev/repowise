@@ -6,7 +6,6 @@ Split out of ``framework_edges.py`` (PR 3.5) — behaviour-preserving move.
 from __future__ import annotations
 
 import re
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..resolvers import ResolverContext, resolve_import
@@ -14,6 +13,7 @@ from .base import (
     DetectionContext,
     FrameworkHandler,
     _add_edge_if_new,
+    read_text,
 )
 
 if TYPE_CHECKING:
@@ -47,10 +47,7 @@ def _add_fastapi_edges(
     for path, parsed in parsed_files.items():
         if parsed.file_info.language != "python":
             continue
-        try:
-            source = Path(parsed.file_info.abs_path).read_text(errors="ignore")
-        except Exception:
-            continue
+        source = read_text(parsed)
         for match in router_re.finditer(source):
             var_name = match.group(1)
             target = var_to_file.get(var_name)

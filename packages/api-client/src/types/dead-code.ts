@@ -12,7 +12,7 @@ export interface DeadCodeFindingResponse {
   symbol_kind: string | null;
   confidence: number;
   reason: string;
-  lines: number;
+  lines: number | null;
   start_line: number | null;
   end_line: number | null;
   /** Effective deletion-readiness — re-derived from confidence + risk factors. */
@@ -24,6 +24,10 @@ export interface DeadCodeFindingResponse {
   primary_owner: string | null;
   status: DeadCodeStatus;
   note: string | null;
+  /** When the file was last touched — the staleness signal, not `age_days`. */
+  last_commit_at: string | null;
+  /** Commits to the file in the last 90 days; 0 is what earns a high confidence. */
+  commit_count_90d: number;
 }
 
 export interface DeadCodePatchRequest {
@@ -35,6 +39,10 @@ export interface DeadCodeSummaryResponse {
   total_findings: number;
   confidence_summary: Record<string, number>;
   deletable_lines: number;
+  /** Deletion-ready findings, the ones `deletable_lines` sums. */
+  safe_to_delete_count?: number | null;
   total_lines: number;
   by_kind: Record<string, number>;
+  /** ISO 8601 UTC; `null`/absent = never ran or unknown (not an all-clear). */
+  analyzed_at?: string | null;
 }

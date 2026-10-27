@@ -66,6 +66,13 @@
   )
 ) @import.statement
 
+; Grouped form: use App\Models\{User, Post as P}; the parser expands the
+; group into one import per clause.
+(namespace_use_declaration
+  (namespace_name) @import.module
+  (namespace_use_group)
+) @import.statement
+
 ; require/include file imports — double-quoted strings are
 ; encapsed_string nodes, single-quoted (the common form) are plain
 ; string nodes, and the __DIR__ . '<path>' idiom nests either inside a
@@ -105,14 +112,18 @@
   (arguments) @call.arguments
 ) @call.site
 
-; Method call: $obj->method(args)
+; Method call: $obj->method(args). The receiver is a `variable_name` whose own
+; text keeps the sigil (`$this`), which the parser normalises.
 (member_call_expression
+  object: (_) @call.receiver
   name: (name) @call.target
   (arguments) @call.arguments
 ) @call.site
 
-; Static call: ClassName::method(args)
+; Static call: ClassName::method(args). `scope:` is a `relative_scope` for
+; self/static/parent and a `name` for an explicit class.
 (scoped_call_expression
+  scope: (_) @call.receiver
   name: (name) @call.target
   (arguments) @call.arguments
 ) @call.site

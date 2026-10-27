@@ -22,14 +22,35 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
-from repowise.core.sessions.adapters.base import HarnessAdapter
-from repowise.core.sessions.events import Event, ToolResult, ToolUse
+from repowise.core.fs_walk import iter_glob
+from repowise.core.sessions.adapters.base import (
+    INTENT_EDIT_CALLS,
+    INTENT_SHELL_CALLS,
+    INTENT_TOOL_CALLS,
+    INTENT_TURNS,
+    HarnessAdapter,
+    RawPrefilter,
+)
+from repowise.core.sessions.adapters.registry import register_adapter
+from repowise.core.sessions.events import Event, ToolResult, ToolUse, parse_timestamp
+
+if TYPE_CHECKING:
+    from repowise.core.edit_capture.edits import FileEdit
 
 _NON_SLUG_RE = re.compile(r"[^A-Za-z0-9-]")
+
+#: Conversation turns in Claude Code's JSONL. One alternation rather than a
+#: tuple of both JSON spellings: a tuple scans the whole (often huge) line
+#: once per token and silently stops matching the day a writer pretty-prints
+#: with two spaces. Same trade the security scan already makes.
+_TURN_RE = re.compile(r'"type":\s*"(?:user|assistant)"')
+_EDIT_USE_RE = re.compile(r'"name":\s*"(?:Edit|Write|MultiEdit|NotebookEdit)"')
+#: What a ``Write`` result says when it made a new file. Subagent transcripts
+#: carry no ``toolUseResult``, so this text is the only record of a create.
+_CREATED_PREFIX = "File created successfully at:"
 
 
 def transcript_dir_for(repo_root: Path, projects_root: Path | None = None) -> Path:
@@ -41,26 +62,64 @@ def transcript_dir_for(repo_root: Path, projects_root: Path | None = None) -> Pa
     return root / _NON_SLUG_RE.sub("-", str(repo_root))
 
 
-def parse_timestamp(value: Any) -> float | None:
-    """Epoch seconds from an ISO-8601 transcript timestamp, or None."""
-    if not isinstance(value, str):
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
-    except ValueError:
-        return None
-
-
+@register_adapter
 class ClaudeCodeAdapter(HarnessAdapter):
     """Normalizes Claude Code session JSONL into the shared Event stream."""
 
     name: ClassVar[str] = "claude_code"
+    edit_tool_names: ClassVar[frozenset[str]] = frozenset(
+        {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+    )
+    shell_tool_names: ClassVar[frozenset[str]] = frozenset({"Bash", "PowerShell"})
 
     def discover(self, repo_root: Path, *, projects_root: Path | None = None) -> list[Path]:
         directory = transcript_dir_for(repo_root, projects_root)
         if not directory.is_dir():
             return []
         return sorted(directory.glob("*.jsonl"))
+
+    def discover_all(self, *, projects_root: Path | None = None) -> list[Path]:
+        """Every project's transcripts, subagent transcripts under a session included."""
+        root = projects_root if projects_root is not None else Path.home() / ".claude" / "projects"
+        if not root.is_dir():
+            return []
+        return sorted(path for path in iter_glob(root, "*.jsonl") if path.is_file())
+
+    def file_edits(self, use: ToolUse, result: ToolResult | None = None) -> list[FileEdit]:
+        """As the base, recovering a subagent's ``Write`` of a new file from its result text.
+
+        Only a create is recovered: an overwrite may keep lines the agent did
+        not write, and without the structured patch nothing says which.
+        """
+        if (
+            result is not None
+            and result.payload is None
+            and use.name == "Write"
+            and _result_text(result.content).startswith(_CREATED_PREFIX)
+        ):
+            result = ToolResult(
+                tool_use_id=result.tool_use_id,
+                is_error=result.is_error,
+                content=result.content,
+                payload={"type": "create"},
+            )
+        return super().file_edits(use, result)
+
+    def prefilter(self, intent: str) -> RawPrefilter | None:
+        """Claude Code's raw-line gates, keyed by what the consumer wants.
+
+        ``toolUseResult`` is a Claude-Code-only key and appears here rather
+        than in any miner. Every predicate reads the raw string only.
+        """
+        if intent == INTENT_SHELL_CALLS:
+            return _shell_calls_prefilter
+        if intent == INTENT_TOOL_CALLS:
+            return _tool_calls_prefilter
+        if intent == INTENT_TURNS:
+            return _turns_prefilter
+        if intent == INTENT_EDIT_CALLS:
+            return _edit_calls_prefilter
+        return None
 
     def normalize(self, raw_line: str) -> Event | None:
         try:
@@ -137,6 +196,38 @@ class ClaudeCodeAdapter(HarnessAdapter):
                         )
                     )
         event.text = "\n".join(texts)
+
+
+def _shell_calls_prefilter(raw: str) -> bool:
+    """Only shell tool_use lines and result lines are worth parsing."""
+    return ('"tool_use"' in raw and '"command"' in raw) or '"toolUseResult"' in raw
+
+
+def _tool_calls_prefilter(raw: str) -> bool:
+    """Only tool_use lines and result lines are worth parsing."""
+    return '"tool_use"' in raw or '"tool_result"' in raw
+
+
+def _turns_prefilter(raw: str) -> bool:
+    """Dialog lines only; skips the fat non-dialog entries.
+
+    User prose, assistant prose, tool uses and results all ride "user" and
+    "assistant" entries; what this drops is file-history snapshots, queue
+    operations and system hooks.
+    """
+    return _TURN_RE.search(raw) is not None
+
+
+def _edit_calls_prefilter(raw: str) -> bool:
+    """Only tool_use lines naming an edit tool; every line carries its own cwd."""
+    return '"tool_use"' in raw and _EDIT_USE_RE.search(raw) is not None
+
+
+def _result_text(content: Any) -> str:
+    if isinstance(content, list):
+        texts = (block.get("text") for block in content if isinstance(block, dict))
+        return "".join(t for t in texts if isinstance(t, str)).lstrip()
+    return content.lstrip() if isinstance(content, str) else ""
 
 
 def _str_or_none(value: Any) -> str | None:

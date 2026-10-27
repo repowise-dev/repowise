@@ -8,19 +8,66 @@ re-exported from the package ``__init__`` so the historical import path
 
 from __future__ import annotations
 
+import json
+import logging
 import math
 from abc import ABC, abstractmethod
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
+from dataclasses import dataclass
+from typing import Literal
 
-from ..search import SearchResult
+from ..information_floor import count_page_denied_a_vector, meets_information_floor
+from ..search import FILE_VOCABULARY_KEY, SearchResult
 
 __all__ = [
     "EMBED_BATCH_MAX_ITEMS",
     "EMBED_TEXT_MAX_CHARS",
+    "FILE_VOCABULARY_KEY",
+    "STORED_SNIPPET_CHARS",
+    "BatchChunkFailure",
+    "BatchEmbeddingError",
     "VectorStore",
+    "cap_embed_text",
     "cosine_similarity",
+    "embed_item",
     "iter_embed_chunks",
 ]
+
+EmbeddingItem = tuple[str, str, dict]
+
+
+@dataclass(frozen=True)
+class BatchChunkFailure:
+    """One request-sized chunk that a batch vector write could not persist."""
+
+    items: tuple[EmbeddingItem, ...]
+    stage: Literal["embedding", "persistence"]
+    cause: Exception
+
+
+class BatchEmbeddingError(RuntimeError):
+    """Partial batch failure with enough detail for bounded caller recovery.
+
+    Stores used to raise only an aggregate count. A caller could not tell which
+    chunks had already committed, so reindex retried the entire outer slice one
+    item at a time. Under a provider timeout that multiplied one failed request
+    into minutes of duplicate work.
+    """
+
+    def __init__(self, *, failures: list[BatchChunkFailure], total_items: int) -> None:
+        self.failures = tuple(failures)
+        self.total_items = total_items
+        self.failed_items = tuple(item for failure in failures for item in failure.items)
+        self.successful_count = total_items - len(self.failed_items)
+        last = failures[-1]
+        detail = f"{type(last.cause).__name__}: {last.cause}"
+        super().__init__(
+            f"embed_batch: {len(self.failed_items)}/{total_items} items failed during "
+            f"{last.stage} ({detail})"
+        )
+
+
+logger = logging.getLogger(__name__)
 
 # One embedder call per chunk of this many items. OpenAI rejects embedding
 # requests past 300k total tokens — a generation level of 275 full wiki
@@ -31,18 +78,165 @@ __all__ = [
 # (a 16-page chunk measured at 0.6s against OpenAI).
 EMBED_BATCH_MAX_ITEMS = 16
 
-# Per-input cap (~7.5k tokens): embedding models reject a single input past
-# ~8,192 tokens, and one oversized page must not sink its whole chunk.
-EMBED_TEXT_MAX_CHARS = 30_000
+# Per-input cap sized conservatively for code-heavy text. The old 30,000-char
+# cap assumed roughly four characters per token, but generated SCC pages in a
+# real repository exceeded OpenAI's 8,192-token input limit even after that
+# cut. Code and punctuation tokenize more densely than prose. Keep enough of
+# each page for useful semantic coverage while leaving substantial headroom
+# across providers and tokenizers; confirmed provider rejections can still be
+# recovered by a bounded, smaller retry in the reindex command.
+EMBED_TEXT_MAX_CHARS = 16_000
+
+# How much of a page's content a vector row keeps for its evidence snippet.
+#
+# Defined here rather than in a backend because it belongs to the item every
+# backend is handed, not to any one store: a row can only ever show what the
+# recipe put in front of it, so a store that cuts at a width the recipe never
+# reaches is cutting nothing. That is what happened when this widened — the
+# store raised its ceiling while the recipe still handed it 600 characters,
+# and on the paths that passed no content at all, an empty string.
+STORED_SNIPPET_CHARS = 2_000
+
+
+def cap_embed_text(page_id: str, text: str) -> str:
+    """Return text bounded for one embedding input and report any loss.
+
+    Both batch and single-item writers use this helper. Previously only the
+    batch path applied the cap, so a page could succeed during generation but
+    fail during ``doctor --repair`` or reindex's per-item isolation depending
+    solely on which writer happened to touch it.
+    """
+    if len(text) <= EMBED_TEXT_MAX_CHARS:
+        return text
+    logger.error(
+        # ``page_id`` is empty for the raw ``embed_texts`` path, which embeds
+        # loose strings belonging to no page.
+        "embed_text_truncated page_id=%s chars=%d chars_dropped=%d cap=%d",
+        page_id,
+        len(text),
+        len(text) - EMBED_TEXT_MAX_CHARS,
+        EMBED_TEXT_MAX_CHARS,
+    )
+    return text[:EMBED_TEXT_MAX_CHARS]
+
+
+def embed_item(
+    page_id: str,
+    *,
+    title: str,
+    page_type: str,
+    target_path: str,
+    summary: str,
+    content: str,
+    page_metadata: Mapping[str, object] | str | None = None,
+    digest: str = "",
+) -> tuple[str, str, dict] | None:
+    """Build the one ``(page_id, text, metadata)`` item every writer embeds.
+
+    Returns ``None`` when the page says too little to be worth a search slot,
+    which callers skip. See the information floor note below.
+
+    Four things write vectors for a page — generation, ``reindex``,
+    ``doctor --repair`` and the hosted indexer — and until now each built its
+    own text. One embedded the content alone, one prefixed the title, one
+    passed neither summary nor path. A vector was therefore not comparable
+    with another vector: whether a page could be found by its own name
+    depended on which command last wrote it, and nothing anywhere reported
+    the difference.
+
+    The text carries all four fields because each answers a question the
+    others cannot. ``target_path`` is the strongest one: a page about
+    ``search.py`` has no idea it is about ``search.py`` unless its prose
+    happens to say so, and prose usually does not repeat its own filename.
+
+    ``title`` is required. A page with no title is not a page whose title is
+    empty — it is a writer that lost it, and the row it produces looks
+    healthy while being unfindable by name, so this raises rather than
+    storing it. The other three may legitimately be empty (some page types
+    have no summary; a repository-wide page has no path).
+
+    **The information floor.** A page whose content says too little to answer
+    anything gets no vector, and ``None`` comes back instead. The full-text
+    index already applies the same rule, and it has to be the same rule: a
+    page held out of one arm and kept in the other is still fetched, still
+    occupies one of the fixed number of rows retrieval takes before it filters
+    anything, and still displaces a page that could have answered. The test is
+    applied to ``content`` and ``digest`` for that reason, the same input the
+    full-text side measures, so the two arms cannot disagree about a page.
+
+    The page itself is untouched either way. It stays in ``wiki_pages``, still
+    resolves as a link target, and a reader who arrives at it still learns the
+    file exists. It is only kept out of the index, where its cost is paid by
+    other pages. The floor is 0 by default, which admits everything.
+
+    ``page_metadata`` is the page's metadata, as a dict (a generated page) or
+    the stored JSON string (a ``wiki_pages`` row). Only
+    :data:`FILE_VOCABULARY_KEY` is read from it, and appended after the
+    content; the floor does not measure it.
+
+    ``digest`` is the page's agent material (``wiki_pages.digest``), embedded
+    after the content for the same reason the vocabulary is.
+    """
+    if not title.strip():
+        raise ValueError(
+            f"embed_item: page {page_id!r} has no title. A blank title writes a "
+            f"vector that cannot be found by name and reports nothing wrong; "
+            f"pass the page's real title."
+        )
+    if not meets_information_floor(content, digest=digest):
+        count_page_denied_a_vector()
+        return None
+    parts = [
+        p for p in (title, target_path, summary, content, digest, _vocabulary(page_metadata)) if p
+    ]
+    return (
+        page_id,
+        "\n".join(parts),
+        {
+            "title": title,
+            "page_type": page_type,
+            "target_path": target_path,
+            "summary": summary,
+            # Wide enough for a store to cut an evidence window out of, and a
+            # prefix rather than the page so a large corpus is not held twice.
+            "content": content[:STORED_SNIPPET_CHARS],
+        },
+    )
+
+
+def _vocabulary(page_metadata: Mapping[str, object] | str | None) -> str:
+    """The file vocabulary stored in *page_metadata*, or ``""``."""
+    if isinstance(page_metadata, str):
+        try:
+            page_metadata = json.loads(page_metadata or "{}")
+        except ValueError:
+            return ""
+    if not isinstance(page_metadata, Mapping):
+        return ""
+    return str(page_metadata.get(FILE_VOCABULARY_KEY) or "")
 
 
 def iter_embed_chunks(
     items: list[tuple[str, str, dict]],
 ) -> Iterator[tuple[list[tuple[str, str, dict]], list[str]]]:
-    """Yield ``(chunk, capped_texts)`` slices sized for one embedder request."""
+    """Yield ``(chunk, capped_texts)`` slices sized for one embedder request.
+
+    Text past :data:`EMBED_TEXT_MAX_CHARS` is dropped, and dropping it is
+    reported. The cap was sized when the largest page in a corpus was well
+    under it, so for a long time it bound on nothing; a corpus whose page mix
+    has since changed can push pages over it, and the characters past the cut
+    are simply absent from the vector. Nothing downstream can tell that apart
+    from a page that never said those words, so the only place the loss is
+    observable is here.
+
+    Reported at ``error`` although the run continues, because the CLI pins
+    ``repowise.core`` to that level unless ``--verbose`` is passed. Anything
+    quieter would be discarded by the very commands that write the index,
+    which is a report that exists only in the tests for it.
+    """
     for start in range(0, len(items), EMBED_BATCH_MAX_ITEMS):
         chunk = items[start : start + EMBED_BATCH_MAX_ITEMS]
-        yield chunk, [text[:EMBED_TEXT_MAX_CHARS] for _, text, _ in chunk]
+        yield chunk, [cap_embed_text(page_id, text) for page_id, text, _ in chunk]
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:

@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
@@ -40,6 +40,7 @@ from .analyze import FunctionAnalysis
 from .dialects.base import get_defuse_dialect
 from .gating import is_flagged
 from .parsing import function_metrics, parse_source
+from .reaching import observed_definitions
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -155,42 +156,13 @@ def derive_facts(analysis: FunctionAnalysis) -> DataflowFacts:
 def _live_definition_indices(analysis: FunctionAnalysis) -> set[int]:
     """Definition indices some read can observe (conservative: over-marks live).
 
-    A use of ``v`` at line ``L`` in block ``b`` observes:
-
-    - the latest same-block definition(s) of ``v`` strictly before ``L``, or,
-      when none exists, every definition of ``v`` reaching ``IN[b]``;
-    - plus, conservatively, any same-block definition of ``v`` AT line ``L``
-      (multiple statements on one line cannot be ordered by line numbers alone,
-      so ambiguity counts as live -- fewer dead stores, never a false one).
-
-    Anything the rules cannot prove observed stays potentially dead; the caller
-    subtracts this set from all body definitions to get the dead stores.
+    Anything :func:`observed_definitions` cannot prove observed stays
+    potentially dead; the caller subtracts this set from all body definitions
+    to get the dead stores.
     """
-    def_use = analysis.def_use
-    reaching = analysis.reaching
     live: set[int] = set()
-
-    for bid, bdu in def_use.blocks.items():
-        if not bdu.uses:
-            continue
-        in_defs = reaching.in_sets.get(bid, frozenset())
-        in_by_var: dict[str, list[int]] = {}
-        for i in in_defs:
-            in_by_var.setdefault(reaching.definitions[i].var, []).append(i)
-        local_by_var: dict[str, list] = {}
-        for d in bdu.defs:
-            local_by_var.setdefault(d.var, []).append(d)
-
-        for use in bdu.uses:
-            local = local_by_var.get(use.name, [])
-            earlier = [d for d in local if d.line < use.line]
-            if earlier:
-                latest = max(d.line for d in earlier)
-                live.update(d.index for d in earlier if d.line == latest)
-            else:
-                live.update(in_by_var.get(use.name, ()))
-            live.update(d.index for d in local if d.line == use.line)
-
+    for _use, seen in observed_definitions(analysis.def_use, analysis.reaching):
+        live.update(seen)
     return live
 
 
@@ -209,10 +181,19 @@ class FileDataflow:
     non-convergence -- degrades to an empty result for the affected scope.
     """
 
-    def __init__(self, abs_path: str, language: str, source: bytes | None = None) -> None:
+    def __init__(
+        self,
+        abs_path: str,
+        language: str,
+        source: bytes | None = None,
+        read_source: Any | None = None,
+    ) -> None:
         self.abs_path = abs_path
         self.language = language
         self._source = source
+        # When set, the only source of bytes: a miss is unreadable, not a
+        # fall-through to the checkout.
+        self._read_source_fn = read_source
         self._parsed = False
         self._root: Node | None = None
         self._lmap: LanguageNodeMap | None = None
@@ -242,6 +223,9 @@ class FileDataflow:
             analysis = self._analysis_for(idx, fn_node)
             if analysis is not None:
                 out.append(analysis)
+        # ``_functions()`` visits siblings last to first; restore source order.
+        # The sort is stable, so same-line functions keep collection order.
+        out.sort(key=lambda a: a.start_line)
         return out
 
     def analyses_covering(self, lines: Iterable[int]) -> list[FunctionAnalysis]:
@@ -312,6 +296,9 @@ class FileDataflow:
     def _read_source(self) -> bytes | None:
         if self._source is not None:
             return self._source
+        if self._read_source_fn is not None:
+            self._source = self._read_source_fn(self.abs_path)
+            return self._source
         try:
             self._source = Path(self.abs_path).read_bytes()
         except OSError:
@@ -368,14 +355,24 @@ class FileDataflowCache:
 
     Keyed by absolute path; entries are created lazily and hold no parse until
     a consumer gate fires. The cache lives for one pass and is dropped with it.
+
+    *read_source* is the pass's source reader, handed to each entry so a
+    revision analysis cannot fall through to the working tree for any file.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, read_source: Any | None = None) -> None:
         self._by_path: dict[str, FileDataflow] = {}
+        self._read_source = read_source
 
     def get(self, abs_path: str, language: str) -> FileDataflow:
         fd = self._by_path.get(abs_path)
         if fd is None:
-            fd = FileDataflow(abs_path, language)
+            fd = FileDataflow(abs_path, language, read_source=self._read_source)
             self._by_path[abs_path] = fd
         return fd
+
+    def release(self, abs_path: str) -> None:
+        """Drop a file's entry (its source, tree and analyses) once no later
+        consumer in the pass will ask for it, so a repository-wide pass holds
+        one file's parse at a time instead of every file it touched."""
+        self._by_path.pop(abs_path, None)

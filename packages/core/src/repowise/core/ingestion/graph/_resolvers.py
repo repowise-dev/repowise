@@ -6,11 +6,35 @@ emitting EXTENDS/IMPLEMENTS, ``reads``, and ``calls`` edges respectively.
 
 from __future__ import annotations
 
+from collections import defaultdict
 from typing import Any
 
 import structlog
 
+from ..decorator_names import decorator_base
+from ..languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
+from ..models import REGISTRATION_HINT, CallSite, ParsedFile
+
 log = structlog.get_logger(__name__)
+
+#: Lowest call-resolution confidence a ``references`` edge may be built from.
+#: Set above the resolver's global-unique tier (0.50), which binds a name to
+#: the only symbol that carries it anywhere in the repo. That tier is a guess
+#: even for a call; for a bare identifier it bound ordinary words to unrelated
+#: files. See ``_add_reference_edges``.
+_MIN_REFERENCE_CONFIDENCE = 0.85
+
+#: Symbol kinds a resolved reference may land on, by how the name was spelled.
+#: See ``_add_reference_edges`` for why a bare name never reaches a method. A
+#: class is admitted: handing one over (``[FooService]``, ``isinstance(x, Foo)``)
+#: is a use, and no grammar lets a bare class name stand for a local.
+_BARE_REFERENCE_KINDS = frozenset({"function", "class"})
+_QUALIFIED_REFERENCE_KINDS = frozenset({"function", "method", "class"})
+
+#: Languages that share the MSBuild project graph, so the namespace and
+#: partial-class passes below serve both. Call resolution and receiver typing
+#: stay per-language and are deliberately not gated on this.
+_DOTNET_LANGUAGES = frozenset({"csharp", "vbnet"})
 
 
 class ResolveMixin:
@@ -93,7 +117,7 @@ class ResolveMixin:
         if progress:
             progress.on_phase_start(phase, None)
         try:
-            cs_texts = collect_csharp_source_texts(self._parsed_files)
+            cs_texts = collect_csharp_source_texts(self._parsed_files, self._source_map)
             type_to_file = build_csharp_type_to_file(self._parsed_files)
             added = resolve_csharp_member_reads(self._graph, cs_texts, type_to_file)
             log.info("member_read_edges", language="csharp", added=added)
@@ -132,7 +156,7 @@ class ResolveMixin:
             progress.on_phase_start(phase, None)
         try:
             jvm_index = get_or_build_jvm_index(ctx)
-            texts = collect_jvm_source_texts(self._parsed_files)
+            texts = collect_jvm_source_texts(self._parsed_files, self._source_map)
             added = resolve_jvm_same_package_refs(self._graph, jvm_index, texts)
             log.info("same_package_edges", added=added)
         except Exception as exc:
@@ -143,25 +167,33 @@ class ResolveMixin:
                 if callable(done):
                     done(phase)
 
-    def _resolve_csharp_same_namespace(self, ctx: Any, progress: Any | None = None) -> None:
-        """Emit same-namespace / global-using ``imports`` edges for C# files.
+    def _resolve_dotnet_same_namespace(self, ctx: Any, progress: Any | None = None) -> None:
+        """Emit same-namespace ``imports`` edges for C# and VB.NET files.
 
-        C# references same-namespace types with no using directive, and
-        ``global using`` / csproj ``<Using>`` items make namespaces visible
-        project-wide — both leave cohesive code (and whole test suites)
-        looking like zero-edge orphans. Conservative text-level scan, same
-        shape as the JVM same-package pass.
+        Both languages reference same-namespace types with no import
+        directive, and project-wide ``global using`` / ``<Using>`` /
+        ``<Import>`` items widen that further, so cohesive code (and whole
+        test suites) otherwise read as zero-edge orphans. VB.NET adds the
+        harder case: most .vb files declare no namespace at all and sit in
+        the project's ``<RootNamespace>``. Conservative text-level scan,
+        same shape as the JVM same-package pass.
         """
         from ..languages.csharp_member_reads import collect_csharp_source_texts
         from ..languages.csharp_same_namespace import (
             resolve_csharp_same_namespace_refs,
         )
+        from ..languages.scope_scan import collect_source_texts
+        from ..languages.vbnet_same_namespace import (
+            resolve_vbnet_same_namespace_refs,
+        )
         from ..resolvers.dotnet import get_or_build_index
 
-        has_csharp = any(
-            pf.file_info.language == "csharp" for pf in self._parsed_files.values()
-        )
-        if not has_csharp:
+        languages = {
+            pf.file_info.language
+            for pf in self._parsed_files.values()
+            if pf.file_info.language in _DOTNET_LANGUAGES
+        }
+        if not languages:
             return
 
         phase = "graph.same_namespace"
@@ -169,14 +201,25 @@ class ResolveMixin:
             progress.on_phase_start(phase, None)
         try:
             index = get_or_build_index(ctx)
-            cs_texts = collect_csharp_source_texts(self._parsed_files)
             repo = getattr(index, "repo_path", None) if index is not None else None
-            added = resolve_csharp_same_namespace_refs(
-                self._graph, index, cs_texts, repo
-            )
-            log.info("same_namespace_edges", language="csharp", added=added)
+            if "csharp" in languages:
+                cs_texts = collect_csharp_source_texts(
+                    self._parsed_files, self._source_map
+                )
+                added = resolve_csharp_same_namespace_refs(
+                    self._graph, index, cs_texts, repo
+                )
+                log.info("same_namespace_edges", language="csharp", added=added)
+            if "vbnet" in languages:
+                vb_texts = collect_source_texts(
+                    self._parsed_files, ("vbnet",), self._source_map
+                )
+                added = resolve_vbnet_same_namespace_refs(
+                    self._graph, index, vb_texts, repo
+                )
+                log.info("same_namespace_edges", language="vbnet", added=added)
         except Exception as exc:
-            log.warning("csharp_same_namespace_failed", error=str(exc))
+            log.warning("dotnet_same_namespace_failed", error=str(exc))
         finally:
             if progress:
                 done = getattr(progress, "on_phase_done", None)
@@ -242,7 +285,8 @@ class ResolveMixin:
                     done(phase)
 
     def _resolve_cpp_header_pairs(self, progress: Any | None = None) -> None:
-        """Pair C/C++ headers with their same-stem same-dir implementations.
+        """Pair C/C++/Objective-C headers with their same-stem same-dir
+        implementations.
 
         ``foo.c`` → ``foo.h`` exists via the #include, but nothing ever
         points ``foo.h`` → ``foo.c`` — so a consumer that includes the
@@ -251,12 +295,30 @@ class ResolveMixin:
         The pairing edge makes BFS transit headers into implementations.
         """
         header_exts = (".h", ".hpp", ".hxx", ".hh", ".h++")
-        source_exts = (".c", ".cc", ".cpp", ".cxx", ".c++")
+        # An include fragment pairs as the implementation side: ``vector.inl``
+        # holds what ``vector.h`` declares, which is the relationship this edge
+        # exists to carry. The reachability pass groups fragments with headers
+        # instead, because the question there is "who imports this", and a
+        # fragment has no importer of its own either. Different questions.
+        source_exts = (
+            ".c",
+            ".cc",
+            ".cpp",
+            ".cxx",
+            ".c++",
+            # Objective-C and Objective-C++. Both carry ``language ==
+            # "objectivec"`` (``specs/objectivec.py`` claims ``.m`` and
+            # ``.mm``; nothing maps ``.mm`` to cpp), so without them the
+            # language gate below has nothing to admit for an ObjC repo.
+            ".m",
+            ".mm",
+            *sorted(INCLUDE_FRAGMENT_EXTENSIONS),
+        )
 
         cpp_files = [
             p
             for p, pf in self._parsed_files.items()
-            if pf.file_info.language in ("c", "cpp")
+            if pf.file_info.language in ("c", "cpp", "objectivec")
         ]
         if not cpp_files:
             return
@@ -308,19 +370,22 @@ class ResolveMixin:
                 if callable(done):
                     done(phase)
 
-    def _resolve_csharp_partials(self, ctx: Any, progress: Any | None = None) -> None:
-        """Link C# ``partial`` co-fragments of one type bidirectionally.
+    def _resolve_dotnet_partials(self, ctx: Any, progress: Any | None = None) -> None:
+        """Link ``partial`` co-fragments of one type bidirectionally.
 
         Fragments of a partial class across files are literally one
         class — without these edges the secondary fragment files read as
-        disconnected from their own type.
+        disconnected from their own type. VB.NET leans on this far harder
+        than C#: every WinForms designer splits ``Form.vb`` from
+        ``Form.Designer.vb`` as a ``Partial Class``.
         """
         from ..resolvers.dotnet import get_or_build_index
 
-        has_csharp = any(
-            pf.file_info.language == "csharp" for pf in self._parsed_files.values()
+        has_dotnet = any(
+            pf.file_info.language in _DOTNET_LANGUAGES
+            for pf in self._parsed_files.values()
         )
-        if not has_csharp:
+        if not has_dotnet:
             return
 
         phase = "graph.partials"
@@ -340,9 +405,21 @@ class ResolveMixin:
                             continue
                         if self._graph.has_node(rel):
                             rels.append(rel)
+                    # ``Policy`1`` is the generic ``Policy<T>``; symbol ids and
+                    # imported names spell it ``Policy``.
+                    local_name = fqn.rsplit(".", 1)[-1].split("`", 1)[0]
+                    fragments = tuple(sorted(rels))
+                    for rel in rels:
+                        # Two partial types sharing a bare name in one file
+                        # (``Policy`` and ``Policy<T>``, or two namespaces) are
+                        # told apart by nothing the call resolver sees, so
+                        # neither lends that file its fragments.
+                        key = (rel, local_name)
+                        self._partial_fragments[key] = (
+                            () if key in self._partial_fragments else fragments
+                        )
                     if len(rels) < 2:
                         continue
-                    local_name = fqn.rsplit(".", 1)[-1]
                     for a in rels:
                         for b in rels:
                             if a == b or self._graph.has_edge(a, b):
@@ -355,9 +432,9 @@ class ResolveMixin:
                                 hint_source="partial_class",
                             )
                             added += 1
-            log.info("partial_class_edges", language="csharp", added=added)
+            log.info("partial_class_edges", added=added)
         except Exception as exc:
-            log.warning("csharp_partials_failed", error=str(exc))
+            log.warning("dotnet_partials_failed", error=str(exc))
         finally:
             if progress:
                 done = getattr(progress, "on_phase_done", None)
@@ -389,11 +466,39 @@ class ResolveMixin:
             progress.on_phase_start(phase, None)
         try:
             swift_targets = get_or_build_swift_targets(ctx)
-            texts = collect_swift_source_texts(self._parsed_files)
+            texts = collect_swift_source_texts(self._parsed_files, self._source_map)
             added = resolve_swift_same_module_refs(self._graph, swift_targets, texts)
             log.info("same_module_edges", language="swift", added=added)
         except Exception as exc:
             log.warning("swift_same_module_failed", error=str(exc))
+        finally:
+            if progress:
+                done = getattr(progress, "on_phase_done", None)
+                if callable(done):
+                    done(phase)
+
+    def _resolve_php_same_namespace(self, progress: Any | None = None) -> None:
+        """Emit same-namespace ``imports`` edges for PHP files.
+
+        An unqualified class name resolves against the file's own namespace
+        with no ``use``, so a subclass never imported its base class (the
+        Laravel ``Controller`` every controller extends read as unreachable).
+        """
+        from ..languages.php_same_namespace import resolve_php_same_namespace_refs
+        from ..languages.scope_scan import collect_source_texts
+
+        if not any(pf.file_info.language == "php" for pf in self._parsed_files.values()):
+            return
+
+        phase = "graph.same_namespace_php"
+        if progress:
+            progress.on_phase_start(phase, None)
+        try:
+            texts = collect_source_texts(self._parsed_files, ("php",), self._source_map)
+            added = resolve_php_same_namespace_refs(self._graph, self._parsed_files, texts)
+            log.info("same_namespace_edges", language="php", added=added)
+        except Exception as exc:
+            log.warning("php_same_namespace_failed", error=str(exc))
         finally:
             if progress:
                 done = getattr(progress, "on_phase_done", None)
@@ -467,6 +572,45 @@ class ResolveMixin:
                 if callable(done):
                     done(phase)
 
+    def _resolve_override_dispatch(self, progress: Any | None = None) -> None:
+        """Emit ``dispatches_to`` edges from base methods to implementations.
+
+        Runs last: it reads the heritage edges Phase 2 resolved and the
+        ``has_method`` edges ``add_file`` laid down, and nothing else.
+        """
+        from ..dispatch_edges import resolve_override_dispatch
+
+        phase = "graph.dispatch"
+        if progress:
+            progress.on_phase_start(phase, None)
+        try:
+            resolve_override_dispatch(self._graph)
+        except Exception as exc:
+            log.warning("override_dispatch_failed", error=str(exc))
+        finally:
+            if progress:
+                done = getattr(progress, "on_phase_done", None)
+                if callable(done):
+                    done(phase)
+
+    def _heritage_parents(self) -> dict[str, set[str]]:
+        """``{type symbol id: parent type symbol ids}`` from the built graph.
+
+        Symbol ids, not type names: a name-keyed map unions the parents of
+        every same-named class in the repo and reaches ancestors that are not
+        this class's.
+        """
+        parents: dict[str, set[str]] = defaultdict(set)
+        for child, parent, data in self._graph.edges(data=True):
+            if data.get("edge_type") not in ("extends", "implements"):
+                continue
+            if (
+                self._graph.nodes[child].get("node_type") == "symbol"
+                and self._graph.nodes[parent].get("node_type") == "symbol"
+            ):
+                parents[child].add(parent)
+        return parents
+
     def _resolve_calls(
         self,
         import_targets: dict[str, set[str]],
@@ -480,8 +624,20 @@ class ResolveMixin:
             import_targets,
             repo_path=str(self._repo_path) if self._repo_path else None,
             import_maps=self._shared_import_maps(),
+            heritage_parents=self._heritage_parents(),
+            partial_fragments=self._partial_fragments,
         )
+
+        # Record which C/C++ declarations were paired with a definition. The
+        # dead-code pass suppresses a declaration only when one was found: a
+        # prototype whose body exists nowhere in the repo is real dead code,
+        # and the header that declares it is the only place left to report it.
+        for decl_id, def_id in resolver.declaration_definitions.items():
+            if decl_id in self._graph:
+                self._graph.nodes[decl_id]["defined_by"] = def_id
+
         total_resolved = 0
+        total_referenced = 0
 
         files_with_calls = [
             (p, pf) for p, pf in self._parsed_files.items() if pf.calls
@@ -491,19 +647,60 @@ class ResolveMixin:
         for path, parsed in files_with_calls:
             resolved = resolver.resolve_file(path, parsed.calls)
             for rc in resolved:
-                if rc.caller_id in self._graph and rc.callee_id in self._graph:
-                    if not self._graph.has_edge(rc.caller_id, rc.callee_id):
-                        self._graph.add_edge(
-                            rc.caller_id,
-                            rc.callee_id,
-                            edge_type="calls",
-                            confidence=rc.confidence,
-                        )
+                if rc.caller_id not in self._graph or rc.callee_id not in self._graph:
+                    continue
+                if not self._graph.has_edge(rc.caller_id, rc.callee_id):
+                    attrs = (
+                        {
+                            "edge_type": "calls",
+                            "call_lines": [rc.line],
+                            "supplied_props": rc.supplied_props,
+                            **({"spawn_lines": [rc.line]} if rc.spawned else {}),
+                        }
+                        if rc.edge_type == "calls"
+                        else {"edge_type": "references"}
+                    )
+                    self._graph.add_edge(
+                        rc.caller_id,
+                        rc.callee_id,
+                        confidence=rc.confidence,
+                        resolution_origin=rc.origin,
+                        **attrs,
+                    )
+                    if rc.edge_type == "calls":
                         total_resolved += 1
                     else:
-                        existing = self._graph[rc.caller_id][rc.callee_id]
-                        if rc.confidence > existing.get("confidence", 0):
-                            existing["confidence"] = rc.confidence
+                        total_referenced += 1
+                    continue
+                existing = self._graph[rc.caller_id][rc.callee_id]
+                if rc.edge_type != "calls":
+                    # A pair reached by both an invocation and a non-invoking
+                    # site keeps the call: it is the stronger claim, and the
+                    # same rule ``_add_reference_edges`` applies.
+                    continue
+                if existing.get("edge_type") == "references":
+                    existing["edge_type"] = "calls"
+                    total_referenced -= 1
+                    total_resolved += 1
+                # Several call sites collapse onto one edge; the strongest
+                # wins, and the origin has to follow the confidence it
+                # explains.
+                lines = existing.setdefault("call_lines", [])
+                if rc.line not in lines:
+                    lines.append(rc.line)
+                    lines.sort()
+                spawned = existing.setdefault("spawn_lines", []) if rc.spawned else None
+                if spawned is not None and rc.line not in spawned:
+                    spawned.append(rc.line)
+                    spawned.sort()
+                if rc.confidence > existing.get("confidence", 0):
+                    existing["confidence"] = rc.confidence
+                    existing["resolution_origin"] = rc.origin
+                ex_props = existing.get("supplied_props")
+                if ex_props is None or rc.supplied_props is None:
+                    existing["supplied_props"] = None
+                else:
+                    existing["supplied_props"] = frozenset(ex_props | rc.supplied_props)
             if progress:
                 progress.on_item_done("graph.calls")
 
@@ -511,4 +708,144 @@ class ResolveMixin:
             _phase_done = getattr(progress, "on_phase_done", None)
             if _phase_done is not None:
                 _phase_done("graph.calls")
-        log.info("Call edges resolved", total=total_resolved)
+        log.info(
+            "Call edges resolved",
+            total=total_resolved,
+            non_invoking=total_referenced,
+        )
+
+        self._add_reference_edges(resolver)
+        self._add_registration_edges(resolver)
+
+    def _add_reference_edges(self, resolver: Any) -> None:
+        """Emit ``references`` edges for functions named but never called.
+
+        Shares the ``CallResolver`` built for calls: resolving "which symbol
+        does this name mean" is the same problem and the same three tiers, and
+        building a second index over every parsed file would double that cost
+        for nothing.
+
+        **What may be named depends on how it was written, not on the
+        language.** A receiver-less name produces an edge only to a free
+        function or a class: a bare identifier cannot name a member in the languages that
+        spell a reference that way, so a plain name resolving to a method is a
+        collision rather than a reference, and C++ names its getters exactly
+        like the locals that feed them. Measured on leveldb, admitting methods
+        there turned ``value``, ``status``, ``level``, ``key`` and ``offset``
+        into fifteen edges, every one of them wrong.
+
+        A name that arrived with a receiver went through an operator only a
+        callable accepts — ``Foo::bar``, ``pkg.Handler`` in argument position —
+        so a method is the expected target and refusing one would discard the
+        whole idiom.
+
+        A ``calls`` edge already covering the same pair wins and is left alone:
+        it is the stronger claim, and downgrading it here would lose the fact
+        that the function is genuinely invoked.
+
+        The confidence floor drops the resolver's last tier, which fires when a
+        name happens to be globally unique. That is already a guess for a call;
+        for a bare identifier it reached across the repo to bind common words
+        like ``output`` to an unrelated file's function. A real dispatch table
+        names something in its own file or in a header it includes, which the
+        earlier tiers cover.
+        """
+        total = 0
+        for path, parsed in self._parsed_files.items():
+            if not parsed.references:
+                continue
+            bare = [r for r in parsed.references if not r.receiver_name]
+            qualified = [r for r in parsed.references if r.receiver_name]
+            batches = (
+                (bare, _BARE_REFERENCE_KINDS),
+                (qualified, _QUALIFIED_REFERENCE_KINDS),
+            )
+            for sites, allowed_kinds in batches:
+                if not sites:
+                    continue
+                for rc in resolver.resolve_file(path, sites):
+                    if rc.confidence < _MIN_REFERENCE_CONFIDENCE:
+                        continue
+                    if rc.caller_id not in self._graph or rc.callee_id not in self._graph:
+                        continue
+                    if self._graph.nodes[rc.callee_id].get("kind") not in allowed_kinds:
+                        continue
+                    total += self._add_reference_edge(rc.caller_id, rc.callee_id, rc)
+        log.info("Reference edges resolved", total=total)
+
+    def _add_reference_edge(
+        self, source: str, target: str, rc: Any, hint_source: str | None = None
+    ) -> int:
+        """Add a ``references`` edge between two graph nodes unless the pair has one."""
+        if source not in self._graph or target not in self._graph:
+            return 0
+        if self._graph.has_edge(source, target):
+            return 0
+        self._graph.add_edge(
+            source,
+            target,
+            edge_type="references",
+            confidence=rc.confidence,
+            resolution_origin=rc.origin,
+            **({"hint_source": hint_source} if hint_source else {}),
+        )
+        return 1
+
+    def _add_registration_edges(self, resolver: Any) -> None:
+        """Link each registering decorator to the functions it decorates.
+
+        The decorated function is reached through the registry, never by name.
+        A mention, not a call: running the decorator does not run the function.
+        """
+        registrar_ids = {
+            f"{path}::{name}"
+            for path, parsed in self._parsed_files.items()
+            for name in parsed.registrars
+        }
+        if not registrar_ids:
+            return
+        names = {node_id.rsplit("::", 1)[1] for node_id in registrar_ids}
+        total = 0
+        for path, parsed in self._parsed_files.items():
+            sites = _decorator_sites(parsed, names)
+            if not sites:
+                continue
+            for rc in resolver.resolve_file(path, sites):
+                if rc.confidence < _MIN_REFERENCE_CONFIDENCE or rc.callee_id not in registrar_ids:
+                    continue
+                total += self._add_reference_edge(
+                    rc.callee_id, rc.caller_id, rc, hint_source=REGISTRATION_HINT
+                )
+        log.info("Registration edges resolved", total=total)
+
+
+def _decorator_sites(parsed: ParsedFile, registrar_names: set[str]) -> list[CallSite]:
+    """One site per Python decorator that may name a registrar, called from the decorated symbol.
+
+    A name imported under an alias (``import rule as r``) is matched by its alias;
+    the resolver then binds it back through the same import.
+    """
+    if parsed.file_info.language != "python":
+        return []
+    names = registrar_names | {
+        b.local_name
+        for imp in parsed.imports
+        for b in imp.bindings
+        if b.exported_name in registrar_names
+    }
+    sites: list[CallSite] = []
+    for sym in parsed.symbols:
+        for text in sym.decorators:
+            receiver, _, name = decorator_base(text).rpartition(".")
+            if name in names:
+                sites.append(
+                    CallSite(
+                        target_name=name,
+                        receiver_name=receiver or None,
+                        caller_symbol_id=sym.id,
+                        line=sym.start_line,
+                        argument_count=None,
+                        edge_type="references",
+                    )
+                )
+    return sites

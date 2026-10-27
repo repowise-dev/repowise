@@ -10,10 +10,14 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from repowise.core.analysis.dead_code.deletion_gate import effective_safe_to_delete
+from repowise.core.analysis.decisions.scope import binds_to_paths
+from repowise.core.analysis.finding_registry import excluded_types, gate_for
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 from repowise.core.ingestion.models import ParsedFile
 
@@ -219,19 +223,27 @@ def _select_clone_representatives(
         # Near-clones usually share a PageRank (often 0.0), so the path breaks
         # the tie. Without it the survivor of each cluster changes between
         # runs, and with it which file gets a page at all.
-        members.sort(
-            key=lambda p: (-pagerank.get(p.file_info.path, 0.0), p.file_info.path)
-        )
+        members.sort(key=lambda p: (-pagerank.get(p.file_info.path, 0.0), p.file_info.path))
         for loser in members[1:]:
             drop.add(loser.file_info.path)
     return drop
 
 
 def build_dead_code_map(dead_code_report: Any | None) -> dict[str, list[dict]]:
-    """Index dead-code findings by file path for per-page lookup."""
+    """Index dead-code findings by file path for per-page lookup.
+
+    Kinds the finding-type registry withholds, and findings on a language it
+    gates for dead code, never reach a page prompt.
+
+    Ceiling: the analyzer's own values, without the workspace's cross-repo cut;
+    pages are generated per repository, before the workspace pass writes it.
+    """
     dead_code_by_file: dict[str, list[dict]] = {}
+    withheld = excluded_types()
     if dead_code_report is not None and getattr(dead_code_report, "findings", None):
         for f in dead_code_report.findings:
+            if str(f.kind) in withheld or gate_for("dead_code", f.file_path, str(f.kind)):
+                continue
             dead_code_by_file.setdefault(f.file_path, []).append(
                 {
                     "symbol_name": f.symbol_name,
@@ -239,20 +251,91 @@ def build_dead_code_map(dead_code_report: Any | None) -> dict[str, list[dict]]:
                     "kind": str(f.kind),
                     "reason": f.reason,
                     "confidence": f.confidence,
-                    "safe_to_delete": f.safe_to_delete,
+                    "safe_to_delete": effective_safe_to_delete(
+                        f.confidence, f.file_path, f.safe_to_delete, str(f.kind)
+                    ),
                 }
             )
     return dead_code_by_file
 
 
+def _decision_confidence(payload: dict) -> float:
+    """A decision's confidence as a float, 0.0 when it is missing or unusable."""
+    try:
+        return float(payload.get("confidence") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _is_governing(payload: dict) -> bool:
+    """Whether a person accepted this decision. ``active`` is that projection."""
+    return str(payload.get("status") or "") == "active"
+
+
+def rank_decisions(decisions: Iterable[dict]) -> list[dict]:
+    """Accepted first, then most confident, ties in discovery order.
+
+    A page has room for a handful, so which handful matters -- the list is
+    both rendered and fed to the model as context. Taking a raw slice showed
+    whichever happened to be written first.
+
+    Authority leads confidence because the two measure different things. A
+    confidence score says how well a candidate is grounded in what it was
+    mined from; an acceptance says a person read it and agreed it binds. A
+    page with room for three should spend them on the rules before the
+    proposals, and the promotion bar admits several times as many proposals
+    as it used to, which is what would otherwise crowd them out.
+    """
+    ranked = list(decisions)
+    ranked.sort(key=lambda payload: (not _is_governing(payload), -_decision_confidence(payload)))
+    return ranked
+
+
+def decisions_for_files(
+    decisions_by_file: dict[str, list[dict]], paths: Iterable[str]
+) -> list[dict]:
+    """The decisions governing *paths*, de-duplicated and ranked.
+
+    A decision that affects several of a module's files appears once. The key
+    matches the ``decision_records`` uniqueness constraint (title, source,
+    evidence file), so two genuinely distinct records are never collapsed.
+    """
+    seen: set[tuple[Any, Any, Any]] = set()
+    scoped: list[dict] = []
+    for path in paths:
+        for payload in decisions_by_file.get(path) or ():
+            key = (payload.get("title"), payload.get("source"), payload.get("evidence_file"))
+            if key in seen:
+                continue
+            seen.add(key)
+            scoped.append(payload)
+    return rank_decisions(scoped)
+
+
 def build_decision_maps(
     decision_report: Any | None,
 ) -> tuple[dict[str, list[dict]], list[dict]]:
-    """Index decision records by file path and as a flat list."""
+    """Index decision records by file path and as a flat list.
+
+    Every page's decisions section is built from these two, and until now they
+    carried no authority at all: a proposal nobody had read was indexed beside
+    a rule somebody accepted, and a dismissed record beside both. The status
+    rides along so :func:`rank_decisions` can lead with what governs.
+    """
     decisions_by_file: dict[str, list[dict]] = {}
     decisions_all: list[dict] = []
     if decision_report is not None and getattr(decision_report, "decisions", None):
         for d in decision_report.decisions:
+            status = str(getattr(d, "status", "") or "proposed")
+            # A tombstone is the one thing that must not reach a page. It is
+            # what stops re-extraction re-proposing something already
+            # rejected, and publishing it as a decision says the opposite of
+            # what the dismissal meant. Everything else is carried, with its
+            # status, rather than filtered: this store holds no acceptances at
+            # all, so an accepted-only filter empties the decisions section of
+            # every page rather than making it more honest.
+            if status == "dismissed":
+                continue
             payload = {
                 "title": d.title,
                 "decision": d.decision,
@@ -260,8 +343,15 @@ def build_decision_maps(
                 "source": d.source,
                 "confidence": d.confidence,
                 "evidence_file": d.evidence_file,
+                "status": status,
             }
             decisions_all.append(payload)
+            # Repo-wide lists keep every record; the per-file index does
+            # not. A footprint would otherwise print on every file its commit
+            # touched. It still reaches the overview, where a claim about a
+            # whole change belongs.
+            if not binds_to_paths(getattr(d, "scope_basis", "")):
+                continue
             for fp in d.affected_files or []:
                 decisions_by_file.setdefault(fp, []).append(payload)
     return decisions_by_file, decisions_all

@@ -33,7 +33,13 @@ def reparse_repo(
     the original index — a fast index built with ``--include-submodules`` must
     not drop submodule files from the docs re-parse.
     """
-    from repowise.core.ingestion import ASTParser, FileTraverser
+    from repowise.core.ingestion import FileTraverser
+    from repowise.core.pipeline.phases.ingestion import (
+        _collect_parsed,
+        _read_sources,
+        parse_guarded,
+        report_parse_failures,
+    )
 
     traverser = FileTraverser(
         repo_path,
@@ -44,15 +50,12 @@ def reparse_repo(
     file_infos = list(traverser.traverse())
     repo_structure = traverser.get_repo_structure()
 
-    parser = ASTParser()
-    parsed_files: list[Any] = []
-    source_map: dict[str, bytes] = {}
-    for fi in file_infos:
-        try:
-            source = Path(fi.abs_path).read_bytes()
-            parsed = parser.parse_file(fi, source)
-            parsed_files.append(parsed)
-            source_map[fi.path] = source
-        except Exception:
-            pass  # unreadable / unparseable files are skipped, as in init
+    # Same deadline pool as init, so a file that never finishes parsing is
+    # skipped here too instead of hanging the re-parse.
+    fi_and_bytes = _read_sources(file_infos, None)
+    to_parse = [(idx, item, "") for idx, item in enumerate(fi_and_bytes)]
+    results = parse_guarded(to_parse)
+    report_parse_failures(to_parse, results)  # logs each file it gave up on
+    # Unreadable / unparseable files are skipped, as in init.
+    parsed_files, source_map = _collect_parsed(fi_and_bytes, dict(enumerate(results)))
     return parsed_files, source_map, repo_structure

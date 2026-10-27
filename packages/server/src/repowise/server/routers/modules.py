@@ -113,7 +113,7 @@ async def get_module_health(
     module_path: str,
     session: AsyncSession = Depends(get_db_session),
 ) -> ModuleHealthDetail:
-    from repowise.server.services.module_health import module_of
+    from repowise.server.services.module_health import top_level_module
 
     accs = await aggregate_modules(session, repo_id)
     decoded = unquote(module_path)
@@ -149,7 +149,7 @@ async def get_module_health(
         )
 
     # 3. Parent module fallback
-    acc = accs.get(module_of(decoded))
+    acc = accs.get(top_level_module(decoded))
     if acc is not None:
         base = summarize(acc)
         extras = detail_extras(acc)

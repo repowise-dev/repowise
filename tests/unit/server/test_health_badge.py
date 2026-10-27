@@ -16,9 +16,28 @@ from repowise.server.routers.code_health import (
 
 
 def test_badge_fields_band_colors() -> None:
-    assert _badge_fields(9.0) == ("health", "9.0/10", "brightgreen", "healthy")
-    assert _badge_fields(6.0) == ("health", "6.0/10", "yellow", "warning")
-    assert _badge_fields(2.0) == ("health", "2.0/10", "red", "alert")
+    assert _badge_fields(9.0) == ("health", "9.0/10", "brightgreen", "excellent")
+    assert _badge_fields(7.5) == ("health", "7.5/10", "brightgreen", "good")
+    assert _badge_fields(6.0) == ("health", "6.0/10", "yellow", "fair")
+    assert _badge_fields(4.5) == ("health", "4.5/10", "orange", "needs_work")
+    assert _badge_fields(2.0) == ("health", "2.0/10", "red", "at_risk")
+    # Just under an edge: the message must not round up into the next band.
+    assert _badge_fields(6.98) == ("health", "6.9/10", "yellow", "fair")
+
+
+def test_badge_is_neutral_when_too_little_was_analysed() -> None:
+    # 4 of 435 files scored: the score stays, but not in green.
+    assert _badge_fields(10.0, 4 / 435) == ("health", "10.0/10", "lightgrey", "unknown")
+    assert _badge_fields(9.0, 1.0) == ("health", "9.0/10", "brightgreen", "excellent")
+
+
+def test_every_band_colour_has_a_hex_for_the_self_rendered_svg() -> None:
+    # The JSON endpoint hands shields a colour name; the SVG endpoint has to
+    # resolve it here. A band colour without a hex renders grey.
+    from repowise.core.analysis.health.grading import BAND_BADGE_COLOR
+    from repowise.server.routers.code_health.badge import _BADGE_COLOR_HEX
+
+    assert set(BAND_BADGE_COLOR.values()) <= set(_BADGE_COLOR_HEX)
 
 
 def test_badge_fields_no_data() -> None:
@@ -54,6 +73,10 @@ def test_file_trend_to_dict_thin_history() -> None:
         "current": None,
         "previous": None,
         "delta": None,
+        # Null alongside ``delta``, not absent: a thin history has no movement
+        # to report on either series, and a consumer reading
+        # ``unclamped_delta ?? delta`` must not fall through to a stale number.
+        "unclamped_delta": None,
         "declining": False,
         "snapshot_count": 1,
     }
@@ -65,20 +88,29 @@ def test_file_trend_to_dict_serializes_points() -> None:
     t = FileTrend(
         file_path="a.py",
         points=[
-            FileTrendPoint(taken_at=datetime(2026, 1, 1, tzinfo=UTC), score=8.0),
-            FileTrendPoint(taken_at=None, score=6.5),
+            FileTrendPoint(
+                taken_at=datetime(2026, 1, 1, tzinfo=UTC), score=8.0, unclamped_score=8.0
+            ),
+            # Sitting on the floor with the real depth recorded: the point the
+            # serializer has to carry both numbers for.
+            FileTrendPoint(taken_at=None, score=1.0, unclamped_score=-2.9),
         ],
-        current=6.5,
+        current=1.0,
         previous=8.0,
-        delta=-1.5,
+        delta=-7.0,
+        unclamped_delta=-10.9,
         declining=True,
         snapshot_count=2,
     )
     d = _file_trend_to_dict(t)
     assert d["points"][0]["taken_at"] == "2026-01-01T00:00:00+00:00"
     assert d["points"][0]["score"] == 8.0
+    assert d["points"][0]["unclamped_score"] == 8.0
     assert d["points"][1]["taken_at"] is None
-    assert d["delta"] == -1.5
+    assert d["points"][1]["score"] == 1.0
+    assert d["points"][1]["unclamped_score"] == -2.9
+    assert d["delta"] == -7.0
+    assert d["unclamped_delta"] == -10.9
     assert d["declining"] is True
 
 
@@ -111,6 +143,7 @@ def test_file_signals_to_dict_no_data_all_null() -> None:
         "lines_deleted_90d": None,
         "commit_count_90d": None,
         "age_days": None,
+        "history": None,
         "primary_owner_name": None,
         "primary_owner_commit_pct": None,
         "recent_owner_name": None,
@@ -151,3 +184,23 @@ def test_churn_complexity_to_dict_wire_shape() -> None:
         "score": 3.4,
         "churn_percentile": 92.0,
     }
+
+
+def test_the_badge_response_model_keeps_schema_version() -> None:
+    """Shields renders "invalid response" without it, so the model must carry it.
+
+    The route builds the payload as a plain dict, so a model that omitted this
+    key would drop it silently and break every embedded badge.
+    """
+    from repowise.server.schemas import HealthBadgeResponse
+
+    label, message, color, band = _badge_fields(9.0)
+    body = {
+        "schemaVersion": 1,
+        "label": label,
+        "message": message,
+        "color": color,
+        "band": band,
+    }
+
+    assert HealthBadgeResponse.model_validate(body).model_dump() == body

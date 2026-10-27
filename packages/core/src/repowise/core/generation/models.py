@@ -10,12 +10,18 @@ import graph stays one-directional:
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from collections.abc import Iterable, Iterator, Mapping
+from copy import deepcopy
+from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime
+from types import MappingProxyType
 from typing import Any, Literal
 
+import structlog
+
 from repowise.core.reasoning import ReasoningMode, normalize_reasoning
+
+logger = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # PageType and generation levels
@@ -53,6 +59,127 @@ GENERATION_LEVELS: dict[str, int] = {
 
 FreshnessStatus = Literal["fresh", "stale", "expired", "unknown"]
 DEFAULT_MAX_TOKENS = 16384
+DEFAULT_SOURCE_EVIDENCE_TOKEN_BUDGET = 8000
+
+
+def _source_evidence_page_keys() -> set[str]:
+    """Return synthesis page keys that have a model-written consumer."""
+    from .onboarding.slots import ONBOARDING_ORDER, PROMOTED_SLOTS
+
+    promoted = set(PROMOTED_SLOTS.values())
+    return {"repo_overview"} | {
+        f"onboarding/{slot}" for slot in ONBOARDING_ORDER if slot not in promoted
+    }
+
+
+def _retired_page_keys() -> set[str]:
+    """Config keys that named a page which has since been retired.
+
+    A key here was valid in a release the user has already run, so it cannot be
+    treated as a typo: raising would turn an upgrade into a failed generation
+    for a config that was correct when it was written.  Derived from the
+    retirement table rather than listed again, so a slot cannot be retired
+    without this following.
+
+    An onboarding page's config key is its ``target_path``, which is the half
+    of the page id after the type.
+    """
+    from .page_redirects import RETIRED_IDS
+
+    return {page_id.split(":", 1)[1] for page_id in RETIRED_IDS if page_id.startswith("onboarding:")}
+
+
+def _normalize_evidence_files(
+    raw_files: Mapping[str, Any], *, label: str
+) -> dict[str, tuple[str, ...]]:
+    """Validate a page-key -> paths mapping, framing errors with *label*.
+
+    Shared by ``from_repo_config`` (label ``generation_context.files``, the key
+    the user wrote) and ``__post_init__`` (label ``source_evidence_files``, the
+    internal field for direct construction). The two labels are the whole point
+    of the parameter: the same rules, reported against the surface the caller
+    touched.
+
+    Sharing one validator also unifies key normalization: both paths now
+    ``str(...).strip()`` a key before the membership check. ``from_repo_config``
+    always did; direct construction did not, so a padded key like
+    ``" repo_overview "`` is now trimmed and accepted where it used to raise.
+
+    A key naming a *retired* page is dropped with a warning rather than raised
+    on. The strictness here is aimed at a typo, which is only ever a mistake;
+    a retired key is a config that was correct when it was written, and an
+    upgrade that turns it into a failed generation punishes the user for a
+    decision this project made.
+    """
+    valid_page_keys = _source_evidence_page_keys()
+    retired_page_keys = _retired_page_keys()
+    result: dict[str, tuple[str, ...]] = {}
+    for raw_page_key, raw_paths in raw_files.items():
+        page_key = str(raw_page_key).strip()
+        if page_key in retired_page_keys:
+            logger.warning(
+                "generation_context_key_retired",
+                label=label,
+                page_key=page_key,
+                detail="page has been retired; the entry is ignored, remove it to silence this",
+            )
+            continue
+        if page_key not in valid_page_keys:
+            raise ValueError(
+                f"{label} keys must name repo_overview or a "
+                "model-written onboarding slot; project_overview is configured "
+                "as repo_overview"
+            )
+        if not isinstance(raw_paths, (list, tuple)) or not all(
+            isinstance(path, str) and path.strip() for path in raw_paths
+        ):
+            raise ValueError(f"{label}.{page_key} must be a list of file paths")
+        result[page_key] = tuple(path.strip() for path in raw_paths)
+    return result
+
+
+class _FrozenEvidenceFiles(Mapping[str, tuple[str, ...]]):
+    """Small immutable mapping that preserves the frozen config contract.
+
+    The config is ``frozen=True`` and hash-tested, so the stored value must be
+    hashable and read-only. Backed by a ``MappingProxyType`` over a plain dict:
+    O(1) lookup and no in-place mutation, still hashable because ``__hash__``
+    runs over ``frozenset(items())`` rather than the proxy. The ``__setattr__``
+    guard blocks rebinding ``_items``. ``__reduce__`` stays because a
+    ``mappingproxy`` is not picklable on its own; it rebuilds from a plain dict,
+    which also serves ``copy``/``deepcopy``. ``__slots__`` and the explicit
+    ``__copy__``/``__deepcopy__`` are gone — ``__reduce__`` covers all three.
+    """
+
+    def __init__(self, values: Mapping[str, tuple[str, ...]] | None = None) -> None:
+        object.__setattr__(
+            self,
+            "_items",
+            MappingProxyType({key: tuple(paths) for key, paths in (values or {}).items()}),
+        )
+
+    def __setattr__(self, name: str, value: object) -> None:
+        raise TypeError("source_evidence_files is immutable")
+
+    def __getitem__(self, key: str) -> tuple[str, ...]:
+        return self._items[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._items)
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Mapping):
+            return NotImplemented
+        return dict(self.items()) == dict(other.items())
+
+    def __hash__(self) -> int:
+        return hash(frozenset(self.items()))
+
+    def __reduce__(self) -> tuple[type[_FrozenEvidenceFiles], tuple[dict[str, tuple[str, ...]]]]:
+        return type(self), (dict(self),)
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +190,10 @@ DEFAULT_MAX_TOKENS = 16384
 @dataclass(frozen=True)
 class GenerationConfig:
     """Configuration for the generation engine.
+
+    Use :meth:`to_dict` for a plain, rehydratable public snapshot. Direct
+    ``dataclasses.asdict`` output is not a public serialization contract because
+    frozen nested values may retain their immutable implementation types.
 
     Attributes:
         max_tokens:               Max tokens in LLM completion.
@@ -150,13 +281,6 @@ class GenerationConfig:
     # an empty / nearly-empty store anyway, so the search is a wasted
     # round-trip until enough content is indexed to return useful hits.
     rag_min_store_size: int = 10
-    # Phase 2: harvest candidate architectural decisions from Tier-1 LLM page
-    # generation (file pages). On by default, escapable via
-    # ``--no-harvest-decisions``. The model is instructed to emit a decision
-    # block only on a genuine hit, so the output-token cost lands only on files
-    # that carry a decision; harvested candidates pass the same substring gate
-    # as every other source before storage.
-    harvest_decisions: bool = True
     # ---- In-loop self-repair (hallucinated symbol refs) ----------------
     # When the post-generation validator flags at least this many backtick
     # identifiers that do not exist in the documented file, the tier-1 file
@@ -165,7 +289,6 @@ class GenerationConfig:
     # Pages reused from a prior run are never retried (validated back then).
     repair_warning_threshold: int = 2
     jobs_dir: str = ".repowise/jobs"
-    large_file_source_pct: float = 0.4  # use structural summary when source tokens > budget * this
     language: str = "en"
     # Wiki documentation style (voice/density). Resolved to a StyleSpec by
     # ``generation.styles.resolve_style``. "comprehensive" (default) is inert and
@@ -205,6 +328,23 @@ class GenerationConfig:
     # (emit an arbitrary subset from the complete repo view) and is what
     # ``repowise generate`` uses to refresh those repo-wide pages on demand.
     file_pages_only: bool = False
+    # New fields stay at the end to preserve GenerationConfig's positional
+    # constructor contract for direct-library callers.
+    # Repository-source excerpts appended to model-written synthesis prompts.
+    # The normal context budget above still owns per-file structural assembly;
+    # this independent cap keeps high-level evidence bounded and predictable.
+    source_evidence_token_budget: int = DEFAULT_SOURCE_EVIDENCE_TOKEN_BUDGET
+    # Page key -> explicit repository-relative files to add. Supported keys are
+    # ``repo_overview`` and ``onboarding/<slot>``.
+    source_evidence_files: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return the supported plain, rehydratable configuration snapshot."""
+        snapshot = {item.name: deepcopy(getattr(self, item.name)) for item in fields(self)}
+        snapshot["source_evidence_files"] = {
+            page_key: tuple(paths) for page_key, paths in self.source_evidence_files.items()
+        }
+        return snapshot
 
     @classmethod
     def from_repo_config(
@@ -230,7 +370,25 @@ class GenerationConfig:
         if max_tokens <= 0:
             raise ValueError("max_tokens must be a positive integer")
 
-        values = {"max_tokens": max_tokens, **overrides}
+        values: dict[str, Any] = {"max_tokens": max_tokens}
+        raw_evidence = config.get("generation_context")
+        if raw_evidence is not None:
+            if not isinstance(raw_evidence, Mapping):
+                raise ValueError("generation_context must be a mapping")
+
+            raw_budget = raw_evidence.get("token_budget", DEFAULT_SOURCE_EVIDENCE_TOKEN_BUDGET)
+            if isinstance(raw_budget, bool) or not isinstance(raw_budget, int) or raw_budget < 0:
+                raise ValueError("generation_context.token_budget must be a non-negative integer")
+            values["source_evidence_token_budget"] = raw_budget
+
+            raw_files = raw_evidence.get("files", {})
+            if not isinstance(raw_files, Mapping):
+                raise ValueError("generation_context.files must be a mapping")
+            values["source_evidence_files"] = _normalize_evidence_files(
+                raw_files, label="generation_context.files"
+            )
+
+        values.update(overrides)
         return cls(**values)
 
     def __post_init__(self) -> None:
@@ -242,12 +400,78 @@ class GenerationConfig:
             raise ValueError("max_tokens must be a positive integer")
         if self.embed_concurrency is None:
             object.__setattr__(self, "embed_concurrency", self.max_concurrency)
+        if (
+            isinstance(self.source_evidence_token_budget, bool)
+            or not isinstance(self.source_evidence_token_budget, int)
+            or self.source_evidence_token_budget < 0
+        ):
+            raise ValueError("source_evidence_token_budget must be a non-negative integer")
+        if not isinstance(self.source_evidence_files, Mapping):
+            raise ValueError("source_evidence_files must be a mapping")
+        evidence_files = _normalize_evidence_files(
+            self.source_evidence_files, label="source_evidence_files"
+        )
+        object.__setattr__(
+            self,
+            "source_evidence_files",
+            _FrozenEvidenceFiles(evidence_files),
+        )
         object.__setattr__(self, "reasoning", normalize_reasoning(self.reasoning))
 
 
 # ---------------------------------------------------------------------------
 # GeneratedPage
 # ---------------------------------------------------------------------------
+
+# What a page's ``confidence`` says, and why there are exactly three values.
+#
+# The column stood at a constant 1.0 on every page a run produced. A constant
+# cannot gate anything: retrieval could not weight by it, the reader UI's
+# low-confidence banner had never once rendered, and a wiki where a provider
+# outage left hundreds of stubs looked exactly as trustworthy as a complete
+# one. These three values are the distinctions that are actually available at
+# the moment a page is written, and no more than that — a finer scale would be
+# a number with nothing behind it.
+#
+# The axis is *trust*, not completeness. A page can be thin and still be
+# entirely true, and the two questions have separate carriers: whether a model
+# has written a page yet is ``provider_name`` (see ``MODEL_WRITTEN_PAGE_TYPES``
+# and the reader's upgrade affordance), and confidence stays out of it.
+# Collapsing the two is what this comment block previously got wrong; see
+# ``STUB_PAGE_CONFIDENCE``.
+
+#: A page whose statements all came from the parse, the import graph or git
+#: history, with no model in the loop: file pages, symbol spotlights, and the
+#: deterministic renderings of the four model-written types produced by a
+#: keyless run. There is nothing on the page to be unsure about.
+TEMPLATE_PAGE_CONFIDENCE = 1.0
+
+#: A page a model wrote from assembled material. It is grounded in that
+#: material and checked against it, but it is a summary of the code rather
+#: than an extraction from it, so it is not the same claim a template page
+#: makes. Nothing gates on the difference; it is reported, not enforced.
+MODEL_PAGE_CONFIDENCE = 0.8
+
+#: The structural stub substituted for a model page whose provider call
+#: **failed**, and only that. Paired with :data:`STUB_FALLBACK_ERROR`, which
+#: carries the error; :func:`is_stub_fallback` is the predicate.
+#:
+#: This deliberately no longer covers the keyless run. Both cases render the
+#: same template, so stamping both 0.3 read as "0.3 is what a template module
+#: page is worth". A keyless run produces *every* model-written page that way,
+#: so the reader's banner landed on the repository overview and all of its
+#: subsystem pages at once, on precisely the wikis with nothing wrong with
+#: them: an index built without a key is that shape by design, and the product
+#: told its reader to distrust all of it.
+#:
+#: What survives is the case the number was introduced for: a page that was
+#: meant to carry prose and lost it to an outage. That page is a stand-in for
+#: something the run intended and failed to produce, and it is the one state a
+#: reader cannot infer from the page itself. The keyless rendering stands in
+#: for nothing. It is the finished deterministic page, and it takes
+#: :data:`TEMPLATE_PAGE_CONFIDENCE`, exactly as ``_model_free_onboarding_page``
+#: already argued for the subkinds it renders without a model.
+STUB_PAGE_CONFIDENCE = 0.3
 
 
 @dataclass
@@ -269,7 +493,9 @@ class GeneratedPage:
         target_path:      File/module/SCC this page documents.
         created_at:       ISO-8601 UTC timestamp.
         updated_at:       ISO-8601 UTC timestamp.
-        confidence:       Decay score (1.0 = fresh, 0.0 = expired).
+        confidence:       How far this page's statements can be trusted, set
+                          at generation from how the page was written.  See
+                          the three constants below.
         freshness_status: Current freshness state.
         metadata:         Provider-specific or page-type-specific extras.
     """
@@ -293,8 +519,7 @@ class GeneratedPage:
     metadata: dict[str, object] = field(default_factory=dict)
     # Cross-run reuse KEY (not a plain file hash): SHA256 of the documented
     # file's raw-bytes hash folded with the generation fingerprint (template,
-    # system prompt, language, style, harvest flag — see
-    # PageGenerator._reuse_content_hash). Empty for pages not built from a
+    # system prompt, language, style). Empty for pages not built from a
     # single file (module/overview/architecture). Unlike source_hash it is
     # stable across runs for an unchanged file + unchanged settings, so
     # cross-run reuse can key on it even when the rendered prompt (RAG
@@ -304,6 +529,9 @@ class GeneratedPage:
     # MCP get_context as the default narrative payload (content is gated behind
     # include=["full_doc"]).
     summary: str = ""
+    # Agent digest: material indexed and served to agents but kept out of the
+    # reader's page body. See :mod:`repowise.core.generation.agent_digest`.
+    digest: str = ""
     # Where this page sits in the wiki. Left unset by generators that do not
     # place their pages; the tree builder fills them in before persistence.
     # See the matching columns on the Page model for what each one means.
@@ -367,6 +595,10 @@ MODEL_WRITTEN_PAGE_TYPES: frozenset[str] = frozenset(
 # failed while still handing back a row.
 STUB_FALLBACK_ERROR = "stub_fallback_error"
 
+# Metadata key holding the user-facing hint (``{"kind", "message"}``) for a
+# stub whose error was a recognised provider failure, such as a rejected key.
+STUB_FALLBACK_HINT = "stub_fallback_hint"
+
 
 def is_stub_fallback(page: Any) -> bool:
     """True when *page* is a stub standing in for a failed provider call."""
@@ -383,6 +615,23 @@ def count_stub_fallbacks(pages: Iterable[Any]) -> int:
     back into counting a failure as a success, which is the bug itself.
     """
     return sum(1 for page in pages if is_stub_fallback(page))
+
+
+def dominant_stub_fallback_hint(pages: Iterable[Any]) -> dict | None:
+    """The provider hint most of *pages*' failed stubs share, or ``None``.
+
+    One rejected key fails every page the same way, so the most common hint
+    is the one worth showing for the whole run.
+    """
+    counts: dict[tuple[tuple[str, str], ...], int] = {}
+    for page in pages:
+        hint = (getattr(page, "metadata", None) or {}).get(STUB_FALLBACK_HINT)
+        if isinstance(hint, dict) and hint.get("message"):
+            key = tuple(sorted((str(k), str(v)) for k, v in hint.items()))
+            counts[key] = counts.get(key, 0) + 1
+    if not counts:
+        return None
+    return dict(max(counts, key=counts.__getitem__))
 
 
 def member_structural_key(members: Iterable[str], *, prefix: str) -> str:

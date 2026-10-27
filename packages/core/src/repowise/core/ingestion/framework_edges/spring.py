@@ -16,11 +16,14 @@ Expanded in Phase 4 of the JVM parity plan. The handler now covers:
 - **Spring Data repositories** — any interface extending
   ``CrudRepository`` / ``JpaRepository`` / ``MongoRepository`` /
   friends becomes an entry point (the impl is generated at runtime).
+- **Route handlers**: every ``@GetMapping`` / ``@RequestMapping`` method is
+  bound from its file's module symbol, the shape Express routes take, read
+  through the recogniser the HTTP contract dialect shares.
 - **Autoconfig consumer edges** — emit edges from each
   ``META-INF/spring/...AutoConfiguration.imports`` file (and
   ``spring.factories``) to the listed FQNs so the resource file
   shows as the importer (the FQN files were already stamped
-  ``is_entry_point`` during the JVM warmup).
+  ``is_reachability_root`` during the JVM warmup).
 """
 
 from __future__ import annotations
@@ -29,13 +32,18 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ..framework_routes import spring_routes
 from ..resolvers import ResolverContext
+from ..type_names import strip_type_arguments
 from .base import (
     DetectionContext,
     FrameworkHandler,
     _add_edge_if_new,
     _build_class_to_file,
+    add_symbol_edge,
+    build_type_to_symbol,
     read_text,
+    source_text,
 )
 
 if TYPE_CHECKING:
@@ -65,8 +73,12 @@ _SPRING_BEAN_METHOD_KOTLIN_RE = re.compile(
 
 # Lombok constructor-synthesis annotations. RAC = constructor over every
 # ``final`` (and ``@NonNull``) field; AAC = constructor over every field.
-_LOMBOK_RAC_ANNOT = ("@RequiredArgsConstructor", "@AllArgsConstructor")
-_LOMBOK_DATA_VALUE = ("@Data", "@Value")
+_LOMBOK_RAC_ANNOT = ("@RequiredArgsConstructor", "@AllArgsConstructor", "@Data")
+# Lombok's `@Value` makes a class immutable and takes no argument; Spring's
+# takes a property expression and sits on a field. Matching the bare spelling
+# is what separates them — reading `@Value("${app.name}")` as Lombok turns
+# every field in the class into a constructor parameter.
+_LOMBOK_VALUE_RE = re.compile(r"@Value\s*(?![(\w])")
 
 # Spring Data repository base interfaces — any interface extending one of
 # these has Spring-generated impls at runtime and must be treated as an
@@ -96,6 +108,15 @@ _SPRING_DATA_BASES: frozenset[str] = frozenset({
     "JpaSpecificationExecutor",
 })
 
+# Spring base classes the servlet container instantiates without any source
+# naming the subclass: Spring Boot's WAR bootstrap, and the classic Spring MVC
+# ``WebApplicationInitializer`` implementations it finds on the classpath.
+_SERVLET_INITIALIZER_BASES: frozenset[str] = frozenset({
+    "SpringBootServletInitializer",
+    "AbstractAnnotationConfigDispatcherServletInitializer",
+    "AbstractDispatcherServletInitializer",
+})
+
 # Java field declaration with optional ``final`` modifier — used for
 # Lombok RAC ctor-param inference. Captures the type's head identifier.
 _JAVA_FINAL_FIELD_RE = re.compile(
@@ -115,33 +136,67 @@ def _has_spring_imports(parsed_files: dict[str, Any]) -> bool:
     return False
 
 
-def _is_spring_data_repo(parsed: Any) -> bool:
-    """True if *parsed* is a Java/Kotlin interface extending a Spring Data base."""
+def _extends_any(parsed: Any, bases: frozenset[str]) -> bool:
+    """True if a Java/Kotlin type in *parsed* extends or implements one of *bases*.
+
+    The parent is matched by its simple name, without generic arguments or a
+    package.
+    """
     if parsed.file_info.language not in ("java", "kotlin"):
         return False
     for rel in parsed.heritage:
         if rel.kind in ("extends", "implements"):
             base = rel.parent_name.split("<")[0].rsplit(".", 1)[-1].strip()
-            if base in _SPRING_DATA_BASES:
+            if base in bases:
                 return True
     return False
 
 
-def _scan_lombok_ctor_params(text: str) -> list[str]:
+def _is_spring_data_repo(parsed: Any) -> bool:
+    """True if *parsed* is a Java/Kotlin interface extending a Spring Data base."""
+    return _extends_any(parsed, _SPRING_DATA_BASES)
+
+
+def _is_servlet_initializer(parsed: Any) -> bool:
+    """True if *parsed* declares a class the servlet container bootstraps."""
+    return _extends_any(parsed, _SERVLET_INITIALIZER_BASES)
+
+
+def _owner_at_offset(parsed: Any, text: str, offset: int) -> str | None:
+    """The innermost declared type whose body contains *offset*.
+
+    The injection regexes scan whole-file text with no scope awareness, so the
+    owner has to come from the match position. Taking the type the file is
+    named for instead attributes a nested ``@Configuration``'s injections to the
+    outer class -- and finds nothing at all in a file whose stem names no type.
+    """
+    line = text.count("\n", 0, offset) + 1
+    best: str | None = None
+    best_span = None
+    for sym in parsed.symbols:
+        if sym.kind not in ("class", "interface", "record", "enum"):
+            continue
+        if not (sym.start_line <= line <= sym.end_line):
+            continue
+        span = sym.end_line - sym.start_line
+        if best_span is None or span < best_span:
+            best, best_span = sym.id, span
+    return best
+
+
+def _scan_lombok_ctor_params(text: str) -> list[tuple[str, int]]:
     """Return Lombok-synthesized constructor param types (head identifiers).
 
     For a class annotated ``@RequiredArgsConstructor`` (or ``@Data``), this
     is every ``final`` field's head type; for ``@AllArgsConstructor`` (or
     ``@Value``), every field's head type. Builtin types are filtered.
     """
-    is_rac = any(a in text for a in _LOMBOK_RAC_ANNOT) or any(
-        a in text for a in _LOMBOK_DATA_VALUE if a == "@Data"
-    )
-    is_aac = "@AllArgsConstructor" in text or "@Value" in text
+    is_rac = any(a in text for a in _LOMBOK_RAC_ANNOT)
+    is_aac = "@AllArgsConstructor" in text or bool(_LOMBOK_VALUE_RE.search(text))
     if not (is_rac or is_aac):
         return []
 
-    params: list[str] = []
+    params: list[tuple[str, int]] = []
     for m in _JAVA_FINAL_FIELD_RE.finditer(text):
         is_final = bool(m.group(1))
         type_head = m.group(2)
@@ -150,8 +205,46 @@ def _scan_lombok_ctor_params(text: str) -> list[str]:
                          "List", "Map", "Set", "Collection"):
             continue
         if is_aac or (is_rac and is_final):
-            params.append(type_head)
+            params.append((type_head, m.start()))
     return params
+
+
+def _add_route_handler_edges(
+    graph: nx.DiGraph, parsed_files: dict[str, Any], ctx: ResolverContext
+) -> int:
+    """Bind each mapped method from its file's module symbol.
+
+    The route is declared on the handler itself, so no call site names it;
+    the edge is what says the framework dispatches to it. Not gated on a
+    stereotype: an OpenAPI-generated ``*Api`` interface carries the mappings
+    its ``@RestController`` implementation serves.
+    """
+    count = 0
+    for path, parsed in parsed_files.items():
+        if parsed.file_info.language not in ("java", "kotlin"):
+            continue
+        text = source_text(path, parsed, ctx.source_map or {})
+        methods = [s for s in parsed.symbols if s.kind in ("method", "function")]
+        for route in spring_routes(text):
+            line = text.count("\n", 0, route.offset) + 1
+            # A JVM method's span starts at its annotations, so the innermost
+            # method holding the annotation's line is the one it sits on.
+            holders = [s for s in methods if s.start_line <= line <= s.end_line]
+            if holders:
+                handler = max(holders, key=lambda s: s.start_line)
+                count += add_symbol_edge(graph, f"{path}::__module__", handler.id)
+    return count
+
+
+def _bind_injected_symbol(
+    graph: nx.DiGraph, type_to_symbol: dict[str, str], owner: str | None, type_name: str
+) -> int:
+    if owner is None:
+        return 0
+    target = type_to_symbol.get(strip_type_arguments(type_name).strip())
+    if target is None:
+        return 0
+    return 1 if add_symbol_edge(graph, owner, target) else 0
 
 
 def _add_spring_edges(
@@ -162,6 +255,7 @@ def _add_spring_edges(
 ) -> int:
     count = 0
     class_to_file = _build_class_to_file(parsed_files, ("java", "kotlin"))
+    type_to_symbol = build_type_to_symbol(parsed_files, ("java", "kotlin"))
 
     # Build interface → list of impl files map from heritage
     impl_map: dict[str, list[str]] = {}
@@ -195,6 +289,17 @@ def _add_spring_edges(
                 node["is_entry_point"] = True
                 node["framework_role"] = "spring_data_repository"
 
+    # ---- 1b. Servlet initializers ----
+    # ``SpringBootServletInitializer`` (WAR deployment) and the Spring MVC
+    # dispatcher initializers are instantiated by the servlet container, so
+    # no source names them.
+    for path, parsed in parsed_files.items():
+        if _is_servlet_initializer(parsed):
+            node = graph.nodes.get(path)
+            if node is not None:
+                node["is_entry_point"] = True
+                node["framework_role"] = "spring_servlet_initializer"
+
     # ---- 2. Per-class DI + @Bean factory edges ----
     for path, parsed in parsed_files.items():
         if parsed.file_info.language not in ("java", "kotlin"):
@@ -218,6 +323,9 @@ def _add_spring_edges(
         # 2a. Field injection (@Autowired / @Inject / @Resource)
         for m in _SPRING_INJECT_FIELD_RE.finditer(text):
             type_name = m.group(1).split("<")[0].strip()
+            count += _bind_injected_symbol(
+                graph, type_to_symbol, _owner_at_offset(parsed, text, m.start()), type_name
+            )
             for target in _resolve_type(type_name):
                 if target in path_set and _add_edge_if_new(graph, path, target):
                     count += 1
@@ -236,12 +344,21 @@ def _add_spring_edges(
                 type_name = pm.group(1)
                 if type_name in ("String", "Integer", "Long", "Boolean", "Double", "Float"):
                     continue
+                count += _bind_injected_symbol(
+                    graph,
+                    type_to_symbol,
+                    _owner_at_offset(parsed, text, ctor_match.start()),
+                    type_name,
+                )
                 for target in _resolve_type(type_name):
                     if target in path_set and _add_edge_if_new(graph, path, target):
                         count += 1
 
         # 2c. Lombok @RequiredArgsConstructor / @AllArgsConstructor / @Data
-        for type_name in _scan_lombok_ctor_params(text):
+        for type_name, offset in _scan_lombok_ctor_params(text):
+            count += _bind_injected_symbol(
+                graph, type_to_symbol, _owner_at_offset(parsed, text, offset), type_name
+            )
             for target in _resolve_type(type_name):
                 if target in path_set and _add_edge_if_new(graph, path, target):
                     count += 1
@@ -260,7 +377,7 @@ def _add_spring_edges(
     # ---- 3. Autoconfig consumer edges ----
     # Pull the JVM workspace index (already memoised on ctx) and emit edges
     # from each autoconfig resource file (key) to the FQN target files.
-    # The autoconfig FQN files were stamped ``is_entry_point`` in the
+    # The autoconfig FQN files were stamped ``is_reachability_root`` in the
     # warmup; here we add the resource file as a visible importer so the
     # autoconfig file itself does not read as orphan.
     try:
@@ -281,7 +398,7 @@ def _add_spring_edges(
                     node_type="file",
                     language="properties",
                     path=resource_path,
-                    is_entry_point=True,
+                    is_reachability_root=True,
                 )
             for fqn in fqns:
                 for target in jvm_index.files_for_fqn(fqn):
@@ -291,7 +408,7 @@ def _add_spring_edges(
         for iface_fqn, impls in jvm_index.services.items():
             # The resource path isn't tracked per-iface; we use a synthetic
             # source so the impl files gain a visible importer. The warmup
-            # already stamped them ``is_entry_point``, so this is belt-and-
+            # already stamped them ``is_reachability_root``, so this is belt-and-
             # suspenders for the unused_export visibility heuristic.
             source = f"META-INF/services/{iface_fqn}"
             if source not in graph:
@@ -300,7 +417,7 @@ def _add_spring_edges(
                     node_type="file",
                     language="properties",
                     path=source,
-                    is_entry_point=True,
+                    is_reachability_root=True,
                 )
             for impl_fqn in impls:
                 for target in jvm_index.files_for_fqn(impl_fqn):
@@ -325,7 +442,9 @@ class _SpringHandler:
         ctx: ResolverContext,
         path_set: set[str],
     ) -> int:
-        return _add_spring_edges(graph, parsed_files, path_set, ctx)
+        return _add_spring_edges(graph, parsed_files, path_set, ctx) + _add_route_handler_edges(
+            graph, parsed_files, ctx
+        )
 
 
 class _JvmAutoconfigHandler:

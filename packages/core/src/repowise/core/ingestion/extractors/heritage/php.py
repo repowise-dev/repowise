@@ -5,15 +5,21 @@ from __future__ import annotations
 from tree_sitter import Node
 
 from ...models import HeritageRelation
+from ...type_names import bare_type_name
 from ..helpers import node_text
+
+# A namespaced reference (``\Ns\Qual``) is a ``qualified_name``, not a ``name``,
+# so accepting only the latter dropped every namespaced parent, interface and
+# trait outright.
+_NAME_NODES = frozenset({"name", "qualified_name"})
 
 
 def _named_children_text(node: Node, src: str, name: str) -> list[tuple[str, Node]]:
-    """Return ``(text, child)`` for each ``name`` child whose text differs from *name*."""
+    """Return ``(bare name, child)`` for each named child differing from *name*."""
     out: list[tuple[str, Node]] = []
     for sub in node.children:
-        if sub.type == "name":
-            parent = node_text(sub, src).strip()
+        if sub.type in _NAME_NODES:
+            parent = bare_type_name(node_text(sub, src))
             if parent and parent != name:
                 out.append((parent, sub))
     return out

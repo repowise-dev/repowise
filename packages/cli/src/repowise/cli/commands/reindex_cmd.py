@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import click
-from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
 from repowise.cli.helpers import (
     console,
@@ -11,19 +10,29 @@ from repowise.cli.helpers import (
     get_db_url_for_repo,
     resolve_repo_path,
     run_async,
+    warn,
 )
-from repowise.cli.ui import BRAND_STYLE, OWL_SPINNER
+from repowise.cli.ui import make_progress
+
+_PROVIDER_FAILURE_CIRCUIT_SLICES = 2
+_INPUT_TOO_LONG_RETRIES = 4
 
 
 @click.command("reindex")
 @click.argument("path", required=False, default=None)
 @click.option(
     "--embedder",
-    type=click.Choice(["gemini", "openai", "openrouter", "ollama", "mock", "auto"]),
+    type=click.Choice(["gemini", "openai", "openrouter", "ollama", "edenai", "mock", "auto"]),
     default="auto",
-    help="Embedder to use. 'auto' detects from env vars / config.",
+    help="Embedder to use. 'auto' keeps the repo's embedder, or detects one from env keys "
+    "when the repo has none or only the keyless mock.",
 )
-@click.option("--batch-size", type=int, default=32, help="Pages per embedding batch.")
+@click.option(
+    "--batch-size",
+    type=click.IntRange(min=1),
+    default=32,
+    help="Pages per embedding batch.",
+)
 def reindex_command(path: str | None, embedder: str, batch_size: int) -> None:
     """Rebuild vector search index from existing wiki pages.
 
@@ -39,7 +48,27 @@ def reindex_command(path: str | None, embedder: str, batch_size: int) -> None:
 
     load_dotenv(repo_path)
 
+    index_only = _index_only_message(repo_path)
+    if index_only:
+        console.print(index_only)
+        return
     run_async(_reindex(repo_path, embedder, batch_size))
+
+
+def _index_only_message(repo_path) -> str | None:
+    """What to run first on an Index only repo, which has no documentation to embed."""
+    from repowise.cli.helpers import load_state
+    from repowise.core.docs_mode import resolve_docs_mode
+    from repowise.core.index_scope import FAST_TO_FULL_COMMAND
+
+    state = load_state(repo_path)
+    if not state or resolve_docs_mode(state) != "none":
+        return None
+    return (
+        "[yellow]This repo is Index only: it has no documentation to embed yet.[/yellow] "
+        f"Run [bold]{FAST_TO_FULL_COMMAND}[/bold] to build it from code (no key needed), "
+        "then [bold]repowise reindex[/bold]."
+    )
 
 
 async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
@@ -48,28 +77,10 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-    from repowise.cli.providers.embedders import build_embedder
     from repowise.core.persistence.database import create_engine, init_db
     from repowise.core.persistence.models import Page
-    from repowise.core.providers.embedding.base import MockEmbedder
 
-    # --- Resolve embedder ---
-    requested_embedder = embedder_name
-    if embedder_name == "auto":
-        from repowise.cli.commands.init_cmd import _resolve_embedder
-
-        embedder_name = _resolve_embedder(None)
-
-    embedder_impl = build_embedder(embedder_name)
-    if isinstance(embedder_impl, MockEmbedder) and requested_embedder != "mock":
-        console.print(
-            "[red]No real embedder available. Set a real embedder key, configure Ollama, or pass --embedder mock for test vectors.[/red]"
-        )
-        raise click.Abort()
-    if embedder_name == "mock":
-        console.print("[yellow]Using mock embedder (deterministic test vectors)[/yellow]")
-    else:
-        console.print(f"[green]Using {embedder_name} embedder[/green]")
+    embedder_name, embedder_impl = _embedder_for(repo_path, embedder_name)
 
     # --- Create LanceDB vector store ---
     lance_dir = Path(repo_path) / ".repowise" / "lancedb"
@@ -112,47 +123,56 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
         return
 
     # --- Embed and upsert pages in batches ---
+    # The recipe is shared with generation and ``doctor --repair`` so a page
+    # reindexed here gets the same vector it would have got from any of them.
+    from repowise.core.persistence.vector_store import embed_item
+
     indexed = 0
     failed = 0
+    below_floor = 0
+    consecutive_provider_failures = 0
+    provider_circuit_error: Exception | None = None
 
-    with Progress(
-        SpinnerColumn(spinner_name=OWL_SPINNER, style=BRAND_STYLE),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TextColumn("{task.completed}/{task.total}"),
-        TimeElapsedColumn(),
-        console=console,
-    ) as progress:
-        task = progress.add_task("Indexing pages...", total=total)
+    with make_progress(console) as progress:
+        task = progress.add_task("Indexing pages...", total=total, unit="pages")
 
         warned = 0
 
-        async def _embed_slice(items: list[tuple[str, str, dict]]) -> None:
-            """Embed one slice batched; on failure retry per item.
+        async def _embed_slice(items: list[tuple[str, str, dict]]) -> Exception | None:
+            """Embed one slice with bounded recovery for input-specific failures.
 
             The batched call is the fast path (one embedder request per
-            chunk). A raised error falls back to per-item embedding so one
-            poison item can't sink its neighbours, and the indexed/failed
-            counters stay per-item accurate.
+            chunk). The store reports exactly which internal chunks failed and
+            whether embedding or persistence raised. Only an input-shaped HTTP
+            error is isolated per item: retrying timeouts, rate limits, server
+            errors, or failed writes one page at a time multiplies an outage
+            into hours of duplicate work.
             """
             nonlocal indexed, failed, warned
             try:
                 await vector_store.embed_batch(items)
                 indexed += len(items)
-                return
-            except Exception:
-                pass
-            for page_id, text, meta in items:
+                return None
+            except Exception as exc:
+                successful, retry_items, terminal = _batch_recovery_plan(exc, items)
+                indexed += successful
+
+            for (page_id, _text, _meta), stage, exc in terminal:
+                failed += 1
+                warned += 1
+                if warned <= 3:
+                    warn(f"  failed to embed {page_id} during {stage}: {exc}")
+
+            for page_id, text, meta in retry_items:
                 try:
-                    await vector_store.embed_and_upsert(page_id, text, meta)
+                    await _embed_one_with_input_recovery(vector_store, (page_id, text, meta))
                     indexed += 1
                 except Exception as exc:
                     failed += 1
                     warned += 1
                     if warned <= 3:
-                        console.print(
-                            f"[yellow]  Warning: failed to embed {page_id}: {exc}[/yellow]"
-                        )
+                        warn(f"  failed to embed {page_id}: {exc}")
+            return next((exc for _item, stage, exc in terminal if stage == "embedding"), None)
 
         # Pages — one batched embed per slice instead of one embedder
         # round-trip per page (a large wiki paid thousands of serial calls).
@@ -160,29 +180,55 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
             batch = pages[i : i + batch_size]
             items = []
             for page in batch:
-                text = f"{page.title}\n{page.content}" if page.content else page.title or ""
-                if not text.strip():
-                    continue  # embedders reject empty input; nothing to index
-                items.append(
-                    (
-                        page.id,
-                        text,
-                        {
-                            "title": page.title or "",
-                            "page_type": page.page_type or "",
-                            "target_path": page.target_path or "",
-                        },
-                    )
+                if not (page.title or "").strip():
+                    # The shared recipe refuses a blank title, and it is right
+                    # to: the row would be unfindable by name. Here that must
+                    # not abort a whole reindex over one bad row, so the page
+                    # is skipped and counted like any other failure.
+                    failed += 1
+                    warned += 1
+                    if warned <= 3:
+                        warn(f"  skipped {page.id}: no title to index it by")
+                    continue
+                item = embed_item(
+                    page.id,
+                    title=page.title,
+                    page_type=page.page_type or "",
+                    target_path=page.target_path or "",
+                    summary=page.summary or "",
+                    content=page.content or "",
+                    page_metadata=page.metadata_json,
+                    digest=page.digest or "",
                 )
-            await _embed_slice(items)
+                if item is None:
+                    # Below the information floor. Not a failure — the page is
+                    # deliberately kept out of the index and is counted apart
+                    # from the ones that broke, because a reindex reporting
+                    # them together would read as an embedder losing rows.
+                    below_floor += 1
+                    continue
+                items.append(item)
+            provider_failure = await _embed_slice(items)
             progress.advance(task, advance=len(batch))
+            if provider_failure is None:
+                consecutive_provider_failures = 0
+            else:
+                consecutive_provider_failures += 1
+                if consecutive_provider_failures >= _PROVIDER_FAILURE_CIRCUIT_SLICES:
+                    provider_circuit_error = provider_failure
+                    break
 
         # Decision records — embedded into the shared page store under the
         # decision: namespace, batched like the pages. Uses embed_batch
         # directly (which raises on failure) rather than the ingest-side
         # best-effort wrapper, so the indexed/failed counters stay honest.
-        progress.update(task, description="Indexing decisions...")
-        for i in range(0, len(decisions), batch_size):
+        # Only when there are any. Set unconditionally, this relabelled a bar
+        # that had just finished the pages, so a repo with no decisions ended
+        # its reindex reading "Indexing decisions... 186/186" — 186 pages
+        # reported as decisions that were never indexed.
+        if decisions and provider_circuit_error is None:
+            progress.update(task, description="Indexing decisions...")
+        for i in range(0, len(decisions) if provider_circuit_error is None else 0, batch_size):
             batch = decisions[i : i + batch_size]
             items = [
                 item
@@ -197,11 +243,24 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
                 )
                 is not None
             ]
-            await _embed_slice(items)
+            provider_failure = await _embed_slice(items)
             progress.advance(task, advance=len(batch))
+            if provider_failure is None:
+                consecutive_provider_failures = 0
+            else:
+                consecutive_provider_failures += 1
+                if consecutive_provider_failures >= _PROVIDER_FAILURE_CIRCUIT_SLICES:
+                    provider_circuit_error = provider_failure
+                    break
 
     await vector_store.close()
     await engine.dispose()
+
+    if provider_circuit_error is not None:
+        raise click.ClickException(
+            "Embedding provider failed in two consecutive batches; stopped the reindex "
+            f"before the outage multiplied across the corpus. Last error: {provider_circuit_error}"
+        )
 
     # Record the embedder we actually built the table with. Without this, a
     # repo indexed keyless keeps `embedder: mock` in config.yaml, and the next
@@ -218,8 +277,163 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
 
         save_config_partial(Path(repo_path), embedder=embedder_name)
 
+    # The run that clears a failed embed must say so: init and update mark the
+    # semantic leg unavailable and point here, and nothing else flips it back.
+    if indexed and not failed and embedder_name != "mock":
+        from repowise.cli.helpers import load_config, load_state, save_state
+        from repowise.core.index_scope import stamp_index_scope
+
+        state = load_state(Path(repo_path))
+        if "index_scope" in state:
+            stamp_index_scope(
+                state,
+                load_config(Path(repo_path)),
+                search={"semantic": "available", "next_command": None},
+            )
+            save_state(Path(repo_path), state)
+
     console.print(
         f"\n[bold green]Done![/bold green] Indexed {indexed} items"
         + (f" ({failed} failed)" if failed else "")
+        # Named separately from failures, and only when it happened: a count
+        # folded into "failed" would read as an embedder losing rows, and a
+        # standing "0 held back" would read as a problem on every run that
+        # never had one.
+        + (f" ({below_floor} held back as too thin to index)" if below_floor else "")
         + f" -> {lance_dir}"
     )
+
+    # A reindex that indexed nothing but failed on every item is a failed
+    # build, not a success: an automated pipeline (or an agent) must not treat
+    # an empty vector index as a successful reindex. Exit non-zero so the
+    # failure is visible in the exit status, not just in the printed count.
+    if indexed == 0 and failed > 0:
+        raise click.Abort()
+
+
+def _embedder_for(repo_path, embedder_name: str) -> tuple[str, object]:
+    """Resolve, build and announce the embedder; exit when auto finds none."""
+    from repowise.cli.providers.embedders import build_embedder, semantic_search_setup_hint
+    from repowise.core.providers.embedding.base import MockEmbedder
+    from repowise.core.providers.embedding.resolve import (
+        embedder_reason,
+        resolve_reindex_embedder,
+    )
+
+    reason = "--embedder"
+    if embedder_name == "auto":
+        # Through the repo, not only the environment: the pin names the backend
+        # that wrote the table, so a key for another provider must not rewrite
+        # it. A mock pin is the exception (see resolve_reindex_embedder).
+        embedder_name, source = resolve_reindex_embedder(repo_path)
+        reason = embedder_reason(embedder_name, source, repo_path=repo_path)
+        # Mock vectors carry no meaning, so rebuilding them adds nothing. Only
+        # an explicit REPOWISE_EMBEDDER=mock (or the flag) still means mock.
+        if embedder_name == "mock" and source in ("config.yaml", "default"):
+            console.print(
+                "[yellow]No embedder found, so semantic search stays off.[/yellow] "
+                f"{semantic_search_setup_hint()}"
+            )
+            raise click.exceptions.Exit(1)
+
+    embedder_impl = build_embedder(embedder_name, repo_path)
+    # A named backend that could not be built fell back to mock: an error, not
+    # a run to finish with test vectors.
+    if isinstance(embedder_impl, MockEmbedder) and embedder_name != "mock":
+        console.print(
+            "[red]No real embedder available. Set a real embedder key, configure Ollama, or pass --embedder mock for test vectors.[/red]"
+        )
+        raise click.Abort()
+    if embedder_name == "mock":
+        console.print(
+            f"Embedder: [yellow]mock[/yellow] ({reason}). Test vectors, no semantic search."
+        )
+    else:
+        console.print(f"Embedder: [green]{embedder_name}[/green] ({reason}).")
+    return embedder_name, embedder_impl
+
+
+def _batch_recovery_plan(
+    exc: Exception,
+    items: list[tuple[str, str, dict]],
+) -> tuple[
+    int,
+    list[tuple[str, str, dict]],
+    list[tuple[tuple[str, str, dict], str, Exception]],
+]:
+    """Return successful, individually retryable, and terminal batch items."""
+
+    from repowise.core.persistence.vector_store import BatchEmbeddingError
+
+    if isinstance(exc, BatchEmbeddingError):
+        retry_items: list[tuple[str, str, dict]] = []
+        terminal: list[tuple[tuple[str, str, dict], str, Exception]] = []
+        for failure in exc.failures:
+            if failure.stage == "embedding" and _is_input_specific_error(failure.cause):
+                retry_items.extend(failure.items)
+            else:
+                terminal.extend((item, failure.stage, failure.cause) for item in failure.items)
+        return exc.successful_count, retry_items, terminal
+
+    if _is_input_specific_error(exc):
+        return 0, items, []
+    return 0, [], [(item, "embedding", exc) for item in items]
+
+
+def _is_input_specific_error(exc: Exception) -> bool:
+    """Whether splitting a failed provider request can plausibly isolate one input."""
+
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if getattr(current, "status_code", None) in {400, 413, 422}:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+async def _embed_one_with_input_recovery(
+    vector_store: object,
+    item: tuple[str, str, dict],
+) -> None:
+    """Retry one confirmed oversized input with bounded adaptive truncation."""
+
+    from repowise.core.persistence.vector_store import cap_embed_text
+
+    page_id, text, metadata = item
+    candidate = cap_embed_text(page_id, text)
+    for attempt in range(_INPUT_TOO_LONG_RETRIES + 1):
+        try:
+            await vector_store.embed_and_upsert(page_id, candidate, metadata)  # type: ignore[attr-defined]
+            return
+        except Exception as exc:
+            if (
+                attempt >= _INPUT_TOO_LONG_RETRIES
+                or len(candidate) <= 1
+                or not _is_input_too_long_error(exc)
+            ):
+                raise
+            candidate = candidate[: max(1, len(candidate) // 2)]
+
+
+def _is_input_too_long_error(exc: Exception) -> bool:
+    """Whether a provider explicitly rejected one input for token length."""
+
+    markers = (
+        "maximum input length",
+        "maximum context length",
+        "input is too long",
+        "too many tokens",
+        "token limit",
+    )
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        status = getattr(current, "status_code", None)
+        message = str(current).lower()
+        if status in {400, 413, 422} and any(marker in message for marker in markers):
+            return True
+        current = current.__cause__ or current.__context__
+    return False

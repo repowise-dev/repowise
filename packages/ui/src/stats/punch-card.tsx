@@ -4,6 +4,7 @@ import * as React from "react";
 import type { StatsPunchCard } from "@repowise-dev/types/stats";
 import { DEFAULT_WEEKEND_PRESET, weekendShare } from "./weekend";
 import { repoArchetype } from "./archetype";
+import { formatNumber, parseDate } from "../lib/format";
 
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
 /** One gap value on both axes, so the cells read as an even lattice. */
@@ -34,12 +35,12 @@ function weekdayLong(i: number): string {
 function spanLabel(first: string | null, last: string | null): string | null {
   if (!first || !last) return null;
   const fmt = (iso: string) => {
-    const d = new Date(iso);
+    const d = parseDate(iso);
     return Number.isNaN(d.getTime())
       ? null
       : // UTC deliberately: this is a coarse month label on an absolute instant,
         // and rendering it in the viewer's zone can slip it across a boundary.
-        d.toLocaleDateString(undefined, { month: "short", year: "numeric", timeZone: "UTC" });
+        d.toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
   };
   const a = fmt(first);
   const b = fmt(last);
@@ -160,10 +161,10 @@ export function PunchCard({
     >
       <div className="flex min-w-0 flex-1 flex-col gap-4">
         <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-          <h3 className="text-base font-semibold text-[var(--color-text-primary)]">Coding rhythm</h3>
-          <span className="font-mono text-[11px] tabular-nums text-[var(--color-text-tertiary)]">
+          <h3 className="text-lg font-semibold text-[var(--color-text-primary)]">Coding rhythm</h3>
+          <span className="font-mono text-xs tabular-nums text-[var(--color-text-tertiary)]">
             <b className="font-medium text-[var(--color-text-secondary)]">
-              {data.total.toLocaleString()}
+              {formatNumber(data.total)}
             </b>{" "}
             commits{span ? ` · ${span}` : ""} ·{" "}
             <b className="font-medium text-[var(--color-text-secondary)]">{weekendPct}%</b> on
@@ -174,7 +175,7 @@ export function PunchCard({
         {/* The readout is the chart's title line, so it holds its height rather
             than reflowing the lattice every time the pointer moves. */}
         <p
-          className={`min-h-[1.25rem] text-sm transition-colors ${
+          className={`min-h-[1.25rem] text-[15px] transition-colors ${
             hover
               ? "font-medium text-[var(--color-text-primary)]"
               : "text-[var(--color-text-secondary)]"
@@ -316,7 +317,14 @@ export function PunchCard({
             title={
               isLocal
                 ? "Each commit is placed at its author's own local time, using the UTC offset git recorded with it."
-                : "This index predates the commit-offset capture, so hours fall back to UTC. Run `repowise update` to switch to author-local time."
+                : // Describes the state, prescribes nothing. This renders in the
+                  // CLI's web UI and in the hosted app, where a viewer of someone
+                  // else's public snapshot can act on neither a shell command nor
+                  // a re-index. Also says what the rule actually is: the branch
+                  // is coverage-based (_LOCAL_TIME_COVERAGE), so an index whose
+                  // offsets are merely patchy lands here too, and any promised
+                  // remedy would be false for it.
+                  "Too few commits carry the UTC offset git records with them, so hours fall back to UTC rather than mixing two clocks in one matrix."
             }
             className="cursor-help font-mono uppercase tracking-[0.1em]"
           >
@@ -348,10 +356,10 @@ export function PunchCard({
             <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
               Ships like a
             </span>
-            <span className="text-xl font-semibold leading-tight text-[var(--color-accent-primary)]">
+            <span className="text-[22px] font-semibold leading-tight text-[var(--color-text-primary)]">
               {archetype.name}
             </span>
-            <span className="text-[11px] leading-snug text-[var(--color-text-tertiary)]">
+            <span className="text-xs leading-snug text-[var(--color-text-secondary)]">
               {archetype.because}
             </span>
           </div>
@@ -362,7 +370,7 @@ export function PunchCard({
             <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
               Quietest stretch
             </span>
-            <p className="text-[13px] leading-snug text-[var(--color-text-secondary)]">
+            <p className="text-xs leading-snug text-[var(--color-text-secondary)]">
               No commit has ever landed between{" "}
               <span className="font-mono">{hourLabel(quiet.from)}</span> and{" "}
               <span className="font-mono">{hourLabel((quiet.to + 1) % 24)}</span>.
@@ -374,7 +382,7 @@ export function PunchCard({
           <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
             Hottest slot
           </span>
-          <p className="text-[13px] leading-snug text-[var(--color-text-secondary)]">
+          <p className="text-xs leading-snug text-[var(--color-text-secondary)]">
             <span className="font-mono">
               {weekdayLong(data.peak.weekday).slice(0, 3)} {hourLabel(data.peak.hour)}
             </span>

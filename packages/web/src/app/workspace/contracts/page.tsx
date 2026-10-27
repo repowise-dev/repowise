@@ -1,251 +1,328 @@
-"use client";
-
-import { useState } from "react";
-import { Link2, Filter } from "lucide-react";
-import { useWorkspaceContracts } from "@/lib/hooks/use-workspace";
-import { useWorkspace } from "@/lib/hooks/use-workspace";
-import { ContractLinksTable } from "@repowise-dev/ui/workspace/contract-links-table";
-import { ContractTypeBadge, RoleBadge } from "@repowise-dev/ui/workspace/contract-type-badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
-import { MetricCard } from "@repowise-dev/ui/shared/metric-card";
+import type { Metadata } from "next";
+import Link from "next/link";
+import { Link2 } from "lucide-react";
+import { getTranslations } from "next-intl/server";
+import type { ExtractionDiagnostics } from "@repowise-dev/api-client/types";
+import { PageShell } from "@repowise-dev/ui/shared";
+import { PageLede } from "@repowise-dev/ui/shared/page-lede";
+import { OverviewSection } from "@repowise-dev/ui/overview";
+import { StatRibbon, type RibbonStat } from "@repowise-dev/ui/stats/stat-ribbon";
 import {
-  EmptyState,
-  ResponsiveTable,
-  TableSkeleton,
-  type ResponsiveColumn,
-} from "@repowise-dev/ui/shared";
-import type { WorkspaceContractEntry } from "@/lib/api/types";
+  groupOrphanProviders,
+  unmatchedOutsideService,
+  unmatchedReasonsOutsideService,
+} from "@repowise-dev/ui/workspace/contract-facts";
+import { MAX_PROMPT_ROWS } from "@repowise-dev/ui/workspace/contract-ai-prompt";
+import { formatNumber } from "@repowise-dev/ui/lib/format";
+import {
+  getWorkspace,
+  getWorkspaceContracts,
+  getWorkspaceDiagnostics,
+} from "@/lib/api/workspace";
+import { httpLinkedStat, unmatchedHint } from "@/lib/http-link-coverage";
+import { BreakingChangesSection } from "./breaking-changes-section";
+import { ContractDrawerProvider } from "./contract-drawer-host";
+import { ContractListControls, ContractListPager } from "./contract-filters";
+import { contractsListHref, type ContractListFilters } from "./contract-href";
+import { ContractsTable } from "./contracts-table";
+import { LinksSection } from "./links-table";
+import { NeedsAttention } from "./needs-attention";
 
-const TYPE_OPTIONS = [
-  { value: "", label: "All Types" },
-  { value: "http", label: "HTTP" },
-  { value: "grpc", label: "gRPC" },
-  { value: "socket", label: "Socket" },
-  { value: "topic", label: "Topic" },
-  { value: "data", label: "Table" },
-];
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getTranslations("contracts");
+  return { title: t("title") };
+}
 
-const ROLE_OPTIONS = [
-  { value: "", label: "All Roles" },
-  { value: "provider", label: "Providers" },
-  { value: "consumer", label: "Consumers" },
-];
+export const revalidate = 30;
 
-type ContractRow = WorkspaceContractEntry & { _key: string };
+/** The minimal translator shape the copy helpers below need; next-intl's `t` fits. */
+type Translator = (key: string, values?: Record<string, string | number>) => string;
 
-const CONTRACT_COLUMNS: ResponsiveColumn<ContractRow>[] = [
-  {
-    key: "contract_id",
-    header: "Contract ID",
-    render: (c) => (
-      <span className="text-xs font-mono text-[var(--color-text-secondary)] break-all">
-        {c.contract_id}
-      </span>
-    ),
-  },
-  {
-    key: "contract_type",
-    header: "Type",
-    render: (c) => <ContractTypeBadge type={c.contract_type} />,
-  },
-  {
-    key: "role",
-    header: "Role",
-    render: (c) => <RoleBadge role={c.role} />,
-  },
-  {
-    key: "repo",
-    header: "Repo",
-    render: (c) => (
-      <span className="text-xs font-medium text-[var(--color-text-primary)]">{c.repo}</span>
-    ),
-  },
-  {
-    key: "file_path",
-    header: "File",
-    priority: 2,
-    render: (c) => (
-      <span className="text-xs font-mono text-[var(--color-text-tertiary)] truncate block max-w-[200px]">
-        {c.file_path}
-      </span>
-    ),
-  },
-  {
-    key: "confidence",
-    header: "Confidence",
-    align: "right",
-    render: (c) => (
-      <span className="text-xs text-[var(--color-text-tertiary)] tabular-nums">
-        {Math.round(c.confidence * 100)}%
-      </span>
-    ),
-  },
-];
+/** Rows per page of the full list. The server caps a page at 1,000. */
+const PAGE_SIZE = 100;
 
-export default function ContractsPage() {
-  const { workspace } = useWorkspace();
-  const [contractType, setContractType] = useState("");
-  const [repo, setRepo] = useState("");
-  const [role, setRole] = useState("");
+type Props = {
+  searchParams: Promise<{
+    type?: string;
+    repo?: string;
+    role?: string;
+    linked?: string;
+    q?: string;
+    page?: string;
+    contract?: string;
+    file?: string;
+  }>;
+};
 
-  const { data, isLoading } = useWorkspaceContracts({
-    contract_type: contractType || undefined,
-    repo: repo || undefined,
-    role: role || undefined,
-  });
+/**
+ * Contracts detected across the workspace, which of them matched, and which
+ * need a look.
+ *
+ * The figures come from `/api/workspace/diagnostics`, which knows the
+ * workspace-wide denominators, and deliberately do not move when the list is
+ * filtered. The list pages on the server, so every contract is reachable and
+ * the count beside it is the count of what the filters return.
+ *
+ * `?contract=&repo=&file=` opens the drawer on load (the System Map links here
+ * that way). While it is present `repo` names the drawer's contract, not a list
+ * filter, so a deep link never lands on a list narrowed by accident.
+ */
+export default async function ContractsPage({ searchParams }: Props) {
+  const t = await getTranslations("contracts");
+  const tLinks = await getTranslations("linkCoverage");
+  const sp = await searchParams;
+  const deepLink =
+    sp.contract && sp.repo && sp.file
+      ? { contract_id: sp.contract, repo: sp.repo, file_path: sp.file }
+      : null;
+  const filters: ContractListFilters = {
+    type: sp.type || undefined,
+    repo: deepLink ? undefined : sp.repo || undefined,
+    role: sp.role || undefined,
+    linked: sp.linked === "yes" || sp.linked === "no" ? sp.linked : undefined,
+    // A contract link without a file (an edge ref) cannot name one declaration,
+    // so it lands on the list searched for that id instead.
+    q: sp.q?.trim() || (!deepLink && sp.contract) || undefined,
+  };
+  const page = Math.max(1, Number.parseInt(sp.page ?? "1", 10) || 1);
 
-  const repos = workspace?.repos ?? [];
+  const [ct, diag, ws] = await Promise.allSettled([
+    getWorkspaceContracts({
+      contract_type: filters.type,
+      repo: filters.repo,
+      role: filters.role,
+      q: filters.q,
+      ...(filters.linked ? { linked: filters.linked === "yes" } : {}),
+      // The links section fetches its own; resending them on every page turn
+      // was most of this request.
+      include_links: false,
+      limit: PAGE_SIZE,
+      offset: (page - 1) * PAGE_SIZE,
+    }),
+    // Workspace-wide and unchanged by the filters, so a page turn or a search
+    // reuses them instead of refetching.
+    getWorkspaceDiagnostics({ next: { revalidate: 30 } }),
+    getWorkspace({ next: { revalidate: 30 } }),
+  ]);
 
-  // Count unmatched contracts (providers with no link, consumers with no link)
-  const linkedContractIds = new Set(
-    (data?.links ?? []).map((l) => l.contract_id),
-  );
-  const unmatchedCount = (data?.contracts ?? []).filter(
-    (c) => !linkedContractIds.has(c.contract_id),
-  ).length;
+  const data = ct.status === "fulfilled" ? ct.value : null;
+  const diagnostics = diag.status === "fulfilled" ? diag.value : null;
+  const workspace = ws.status === "fulfilled" ? ws.value : null;
+  const repos = workspace?.repos.map((r) => r.alias) ?? [];
+  // The workspace-wide breakdown, not `data.by_type`: that one is counted after
+  // the filters run, so picking a type would leave only the type already picked.
+  const byType = workspace?.contract_summary?.by_type ?? null;
+  const workspaceTotal = byType ? Object.values(byType).reduce((a, b) => a + b, 0) : null;
+  const repoIds: Record<string, string> = {};
+  for (const r of workspace?.repos ?? []) {
+    if (r.repo_id) repoIds[r.alias] = r.repo_id;
+  }
 
-  const selectClass =
-    "rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-1.5 text-sm text-[var(--color-text-primary)] outline-none focus:border-[var(--color-accent-primary)]";
+  const rows = data?.contracts ?? [];
+  const total = data?.total_contracts ?? 0;
+  const filtered = Boolean(filters.type || filters.repo || filters.role || filters.linked || filters.q);
+
+  // The lede carries matched links, so the ribbon does not repeat it.
+  const ribbon: RibbonStat[] = [
+    {
+      label: t("ribbon.providers"),
+      value: diagnostics ? formatNumber(diagnostics.total_providers) : "",
+      sub: t("ribbon.providersSub"),
+    },
+    {
+      label: t("ribbon.consumers"),
+      value: diagnostics ? formatNumber(diagnostics.total_consumers) : "",
+      sub: t("ribbon.consumersSub"),
+    },
+    {
+      label: t("ribbon.unmatched"),
+      value: diagnostics ? formatNumber(unmatchedOutsideService(diagnostics).length) : "",
+      sub: unmatchedReasonSub(t, diagnostics),
+      hint: diagnostics ? unmatchedHint(tLinks, diagnostics) : undefined,
+    },
+    {
+      label: t("ribbon.orphans"),
+      value: diagnostics ? formatNumber(diagnostics.orphan_providers.length) : "",
+      sub: t("ribbon.orphansSub"),
+    },
+    // An artifact older than the linked count keeps the read share.
+    (diagnostics && httpLinkedStat(tLinks, diagnostics)) ?? {
+      label: t("ribbon.httpRead"),
+      value:
+        diagnostics?.http_consumer_coverage != null
+          ? `${Math.floor(diagnostics.http_consumer_coverage * 100)}%`
+          : "",
+      sub: diagnostics?.http_consumers_unresolved
+        ? t("ribbon.httpUnresolved", {
+            count: formatNumber(diagnostics.http_consumers_unresolved),
+          })
+        : t("ribbon.httpSub"),
+    },
+    ...topicStat(t, diagnostics),
+  ];
 
   return (
-    <div className="p-5 sm:p-8 space-y-6 max-w-[1200px]">
-      {/* Header */}
-      <div>
-        <div className="flex items-center gap-2.5 mb-1">
-          <Link2 className="h-6 w-6 text-[var(--color-accent-primary)]" />
-          <h1 className="text-2xl font-semibold text-[var(--color-text-primary)]">
-            Contracts
-          </h1>
-        </div>
-        <p className="text-sm text-[var(--color-text-secondary)]">
-          HTTP routes, gRPC services, socket endpoints, and message topics detected across repositories.
-        </p>
-      </div>
+    <PageShell
+      title={t("title")}
+      icon={<Link2 />}
+      description={t("description")}
+    >
+      <PageLede
+        label={t("links.title")}
+        value={diagnostics ? formatNumber(diagnostics.total_links) : t("ledeUnknown")}
+        unit={t("ledeUnit")}
+        layout="beside"
+      >
+        {diagnostics ? (
+          <>
+            <p>{t("ledeLinkLine1")}</p>
+            <p>{t("ledeLinkLine2", { attention: t("attention.title") })}</p>
+          </>
+        ) : (
+          <p>{t("ledeNoDiagnostics")}</p>
+        )}
+      </PageLede>
 
-      {/* Summary Stats */}
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <MetricCard
-          label="Total Contracts"
-          value={data?.total_contracts ?? "—"}
-          icon={<Link2 className="h-4 w-4" />}
-        />
-        <MetricCard
-          label="Matched Links"
-          value={data?.total_links ?? "—"}
-          icon={<Link2 className="h-4 w-4 text-[var(--color-success)]" />}
-        />
-        <MetricCard
-          label="Unmatched"
-          value={isLoading ? "—" : unmatchedCount}
-          description="No matching provider or consumer"
-          icon={<Link2 className="h-4 w-4 text-[var(--color-warning)]" />}
-        />
-        <MetricCard
-          label="By Type"
-          value={
-            data?.by_type
-              ? Object.values(data.by_type).reduce((a, b) => a + b, 0)
-              : "—"
-          }
-          description={
-            data?.by_type
-              ? Object.entries(data.by_type)
-                  .map(([k, v]) => `${v} ${k}`)
-                  .join(", ")
-              : undefined
-          }
-          icon={<Filter className="h-4 w-4 text-[var(--color-accent-secondary)]" />}
-        />
-      </div>
+      <StatRibbon stats={ribbon} />
 
-      {/* Filters */}
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="flex items-center gap-2">
-          <Filter className="h-4 w-4 text-[var(--color-text-tertiary)]" />
-          <span className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
-            Filters
-          </span>
-        </div>
-        <select
-          value={contractType}
-          onChange={(e) => setContractType(e.target.value)}
-          className={selectClass}
-        >
-          {TYPE_OPTIONS.map((o) => (
-            <option key={o.value} value={o.value}>
-              {o.label}
-            </option>
-          ))}
-        </select>
-        <select
-          value={repo}
-          onChange={(e) => setRepo(e.target.value)}
-          className={selectClass}
-        >
-          <option value="">All Repos</option>
-          {repos.map((r) => (
-            <option key={r.alias} value={r.alias}>
-              {r.alias}
-            </option>
-          ))}
-        </select>
-        <select
-          value={role}
-          onChange={(e) => setRole(e.target.value)}
-          className={selectClass}
-        >
-          {ROLE_OPTIONS.map((o) => (
-            <option key={o.value} value={o.value}>
-              {o.label}
-            </option>
-          ))}
-        </select>
-      </div>
+      <ContractDrawerProvider repoIds={repoIds} initial={deepLink}>
+        <BreakingChangesSection repoIds={repoIds} />
 
-      {/* Contract Links */}
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm font-medium">
-            Matched Contract Links ({data?.total_links ?? 0})
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="pt-0">
-          {isLoading ? (
-            <TableSkeleton rows={5} className="py-4" />
-          ) : (
-            <ContractLinksTable links={data?.links ?? []} />
-          )}
-        </CardContent>
-      </Card>
-
-      {/* All Contracts */}
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm font-medium">
-            All Detected Contracts ({data?.total_contracts ?? 0})
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="pt-0">
-          {isLoading ? (
-            <TableSkeleton rows={5} className="py-4" />
-          ) : (data?.contracts ?? []).length === 0 ? (
-            <EmptyState
-              className="p-6"
-              title="No contracts detected"
-              description="API contracts are detected during workspace indexing when providers and consumers share schemas."
+        {diagnostics ? (
+          <OverviewSection title={t("attention.title")}>
+            <NeedsAttention
+              unmatched={diagnostics.unmatched_consumers}
+              // Counts plus a prompt's worth of rows per group, not all 1,000+.
+              orphanGroups={groupOrphanProviders(diagnostics.orphan_providers, MAX_PROMPT_ROWS)}
             />
+          </OverviewSection>
+        ) : null}
+
+        <LinksSection type={filters.type} repo={filters.repo} q={filters.q} />
+
+        <OverviewSection
+          id="all-contracts"
+          title={t("list.title")}
+          description={data ? listDescription(t, total, workspaceTotal, filtered) : undefined}
+        >
+          <ContractListControls filters={filters} repos={repos} byType={byType} />
+          {rows.length === 0 ? (
+            // One quiet sentence, like every other state with nothing in it.
+            <p className="text-xs leading-relaxed text-[var(--color-text-secondary)]">
+              {!data
+                ? t("list.loadFailed")
+                : total > 0
+                  ? t.rich("list.pagePastEnd", {
+                      page: formatNumber(page),
+                      total,
+                      first: (chunks) => (
+                        <Link
+                          href={contractsListHref({ ...filters, page: 1 })}
+                          className="text-[var(--color-accent-primary)] hover:underline"
+                        >
+                          {chunks}
+                        </Link>
+                      ),
+                    })
+                  : filtered
+                    ? t("list.noMatch")
+                    : t("list.noneDetected")}
+            </p>
           ) : (
-            <ResponsiveTable
-              columns={CONTRACT_COLUMNS}
-              rows={(data?.contracts ?? []).map((c, i) => ({ ...c, _key: `${c.contract_id}|${i}` }))}
-              rowKey={(c) => c._key}
-              caption="All detected contracts"
-              stacked="md"
-              bare
-            />
+            <>
+              <ContractsTable contracts={rows} showType={!filters.type} />
+              <ContractListPager
+                filters={filters}
+                page={page}
+                pageSize={PAGE_SIZE}
+                shown={rows.length}
+                total={total}
+              />
+            </>
           )}
-        </CardContent>
-      </Card>
-    </div>
+        </OverviewSection>
+      </ContractDrawerProvider>
+
+      <p className="text-xs text-[var(--color-text-tertiary)]">
+        {t.rich("footer.note", {
+          link: (chunks) => (
+            <Link
+              href="/workspace/system-map"
+              className="text-[var(--color-accent-primary)] hover:underline"
+            >
+              {chunks}
+            </Link>
+          ),
+        })}
+      </p>
+    </PageShell>
   );
+}
+
+/** Say exactly what the list holds against the workspace it came from. */
+function listDescription(
+  t: Translator,
+  total: number,
+  workspaceTotal: number | null,
+  filtered: boolean,
+): string {
+  if (!filtered) {
+    return t("list.description", { total, pageSize: PAGE_SIZE });
+  }
+  return workspaceTotal != null
+    ? t("list.filteredOf", { total, workspaceTotal })
+    : t("list.filtered", { total });
+}
+
+/**
+ * The unmatched-reason short labels. The reason codes come from the system
+ * graph; the prose in `@repowise-dev/ui` stays English, so the label the ribbon
+ * shows is named here instead.
+ */
+const REASON_KEYS: Record<string, string> = {
+  no_provider: "reasons.no_provider",
+  unlinked: "reasons.unlinked",
+  internal_only: "reasons.internal_only",
+  external_host: "reasons.external_host",
+  ambiguous_provider: "reasons.ambiguous_provider",
+};
+
+/** Name why consumers went unmatched, since the count alone invites the wrong read. */
+function unmatchedReasonSub(
+  t: Translator,
+  diagnostics: ExtractionDiagnostics | null,
+): string {
+  if (!diagnostics) return "";
+  const reasons = Object.entries(unmatchedReasonsOutsideService(diagnostics.unmatched_by_reason))
+    .sort((a, b) => b[1] - a[1]);
+  if (reasons.length === 0) return t("reasons.everyMatched");
+  return reasons
+    .map(([reason, n]) => `${n} ${t(REASON_KEYS[reason] ?? "reasons.unknown")}`)
+    .join(", ");
+}
+
+/**
+ * Topic calls read, beside the broker calls not named and the files on a
+ * messaging SDK no extractor reads. Counts only, like the CLI line; absent on
+ * an artifact older than the messaging probe and on a workspace with no messaging.
+ */
+function topicStat(t: Translator, diagnostics: ExtractionDiagnostics | null): RibbonStat[] {
+  const files = diagnostics?.unrecognised_message_file_count;
+  if (!diagnostics || files == null) return [];
+  const read = diagnostics.repo_breakdown.reduce(
+    (n, r) => n + (r.providers_by_type.topic ?? 0) + (r.consumers_by_type.topic ?? 0),
+    0,
+  );
+  const unresolved = diagnostics.topic_names_unresolved ?? 0;
+  if (read + unresolved + files === 0) return [];
+  return [
+    {
+      label: t("ribbon.topicRead"),
+      value: formatNumber(read),
+      sub: t("ribbon.topicSub", {
+        unresolved: formatNumber(unresolved),
+        files: formatNumber(files),
+      }),
+    },
+  ];
 }

@@ -36,6 +36,14 @@ from .registry import RefactoringDetector, register
 _MAX_CYCLE_FILES = 20
 _MAX_CUT_EDGES = 4
 
+# Languages that compile files referencing each other in one pass, so a cycle
+# whose files all sit in one directory (a JVM package, a C# folder that is
+# conventionally one namespace, a Rust module directory) is real but idiomatic:
+# a class and its builder, two entities that point at each other. It is still
+# reported, at low confidence and labelled as such, not as a cut to make.
+_SAME_DIRECTORY_IDIOM_LANGUAGES = frozenset({"java", "kotlin", "scala", "csharp", "rust"})
+_IDIOM_LABEL = "same directory, idiomatic"
+
 
 def _greedy_mfas(members: tuple[str, ...], edges: list[tuple[str, str]]) -> list[tuple[str, str]]:
     """Approximate the minimum feedback arc set with the greedy ordering heuristic.
@@ -94,8 +102,21 @@ def _greedy_mfas(members: tuple[str, ...], edges: list[tuple[str, str]]) -> list
     return sorted(set(cut))
 
 
+def _split_path(path: str) -> tuple[str, str]:
+    """``(directory, basename)`` of a repo path, either separator."""
+    head, _, tail = path.replace("\\", "/").rpartition("/")
+    return head, tail
+
+
 def _basename(path: str) -> str:
-    return path.replace("\\", "/").rsplit("/", 1)[-1]
+    return _split_path(path)[1]
+
+
+def _same_directory_idiom(language: str, members: tuple[str, ...]) -> bool:
+    """Whether every member sits in one directory of an idiom language."""
+    if language not in _SAME_DIRECTORY_IDIOM_LANGUAGES:
+        return False
+    return len({_split_path(m)[0] for m in members}) == 1
 
 
 @register
@@ -138,12 +159,17 @@ class BreakCycleDetector(RefactoringDetector):
         # A short cut on a small cycle is the cleanest, highest-confidence
         # break; a sprawling component with many back-edges is murkier.
         confidence = "high" if len(cut) == 1 and size <= 4 else "medium"
+        label = f"cycle[{size}]"
+        if _same_directory_idiom(ctx.language, members):
+            confidence = "low"
+            plan["idiom"] = evidence["idiom"] = "same_directory"
+            label = f"{label} ({_IDIOM_LABEL})"
         cut_label = ", ".join(f"{_basename(u)}->{_basename(v)}" for u, v in cut)
         return [
             RefactoringSuggestion(
                 refactoring_type=self.name,
                 file_path=ctx.file_path,
-                target_symbol=f"cycle[{size}]: {cut_label}",
+                target_symbol=f"{label}: {cut_label}",
                 line_start=None,
                 line_end=None,
                 plan=plan,

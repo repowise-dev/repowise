@@ -171,11 +171,12 @@ def test_save_vscode_extensions_config_rejects_jsonc_without_writing(tmp_path: P
 # ---------------------------------------------------------------------------
 
 
-def test_vscode_setup_writes_both_project_files(tmp_path: Path) -> None:
+def test_vscode_setup_writes_every_project_file(tmp_path: Path) -> None:
     VSCodeSetup().write_project_files(_silent_console(), tmp_path, EditorSetupOptions())
 
     assert (tmp_path / ".vscode" / "mcp.json").exists()
     assert (tmp_path / ".vscode" / "extensions.json").exists()
+    assert (tmp_path / ".github" / "copilot-instructions.md").exists()
 
 
 def test_vscode_setup_skips_when_project_file_disabled(tmp_path: Path) -> None:
@@ -198,6 +199,12 @@ def test_vscode_setup_refresh_rewrites_idempotently(tmp_path: Path) -> None:
 
     assert (tmp_path / ".vscode" / "mcp.json").read_text(encoding="utf-8") == mcp_first
     assert (tmp_path / ".vscode" / "extensions.json").read_text(encoding="utf-8") == ext_first
+
+
+def test_vscode_setup_refresh_never_creates_the_workspace_files(tmp_path: Path) -> None:
+    VSCodeSetup().refresh_project_files(_silent_console(), tmp_path, EditorSetupOptions())
+
+    assert not (tmp_path / ".vscode").exists()
 
 
 def test_vscode_setup_refresh_skips_when_disabled(tmp_path: Path) -> None:
@@ -236,28 +243,16 @@ def test_vscode_included_in_default_integrations() -> None:
     assert any(isinstance(i, VSCodeSetup) for i in integrations)
 
 
-def test_vscode_configure_options_disables_when_declined(monkeypatch) -> None:
-    monkeypatch.setattr("click.confirm", lambda *a, **k: False)
-    options = VSCodeSetup().configure_options(
+def test_vscode_setup_writes_nothing_when_its_project_file_is_disabled(tmp_path: Path) -> None:
+    """Unticking VS Code in the agent checklist reaches the writer as this.
+
+    The integration used to own a ``configure_options`` prompt that set the
+    flag itself; the checklist sets it now, and this is the half that has to
+    keep working. See ``test_editor_setup`` for the checklist's own tests.
+    """
+    VSCodeSetup().write_project_files(
         _silent_console(),
-        EditorSetupOptions(prompt_for_project_files=True),
+        tmp_path,
+        EditorSetupOptions(disabled_project_files=frozenset({"vscode_mcp"})),
     )
-    assert "vscode_mcp" in options.disabled_project_files
-
-
-def test_vscode_configure_options_keeps_enabled_when_accepted(monkeypatch) -> None:
-    monkeypatch.setattr("click.confirm", lambda *a, **k: True)
-    options = VSCodeSetup().configure_options(
-        _silent_console(),
-        EditorSetupOptions(prompt_for_project_files=True),
-    )
-    assert "vscode_mcp" not in options.disabled_project_files
-
-
-def test_vscode_configure_options_no_prompt_when_not_requested(monkeypatch) -> None:
-    def _fail(*_a, **_k):
-        raise AssertionError("must not prompt")
-
-    monkeypatch.setattr("click.confirm", _fail)
-    options = VSCodeSetup().configure_options(_silent_console(), EditorSetupOptions())
-    assert "vscode_mcp" not in options.disabled_project_files
+    assert not (tmp_path / ".vscode").exists()

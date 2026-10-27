@@ -37,6 +37,19 @@ def test_search_codebase_floors_per_distinct_cited_path() -> None:
     assert cf.replaced_tokens_for("search_codebase", result) == 2 * cf.SEARCH_FLOOR_PER_HIT
 
 
+def test_search_codebase_counts_symbol_rows_by_path() -> None:
+    """A symbol row has no target_path, so it used to earn nothing."""
+    result = {
+        "results": [
+            {"type": "symbol", "path": "src/a.py", "file": "src/a.py"},
+            {"page_type": "file_page", "path": "src/b.py"},
+            {"page_type": "module_page", "target_path": "src"},  # pre-path payload shape
+        ],
+        "_meta": {},
+    }
+    assert cf.replaced_tokens_for("search_codebase", result) == 3 * cf.SEARCH_FLOOR_PER_HIT
+
+
 def test_search_codebase_no_results_returns_zero() -> None:
     assert cf.replaced_tokens_for("search_codebase", {"results": [], "_meta": {}}) == 0
 
@@ -108,13 +121,13 @@ def test_get_context_module_credit_is_capped() -> None:
     assert cf.replaced_tokens_for("get_context", result) == cf.CONTEXT_MODULE_MAX
 
 
-def test_get_risk_unions_will_break_and_missing_cochanges() -> None:
+def test_get_risk_unions_may_break_and_missing_cochanges() -> None:
     # A file that both breaks and is a missed co-change partner is one file.
     # Two targets so the total clears RISK_FLOOR — otherwise the floor masks
     # whether the overlapping file was counted once or twice.
     result = {
         "targets": {"a.py": {}, "b.py": {}},
-        "directive": {"will_break": ["c.py"], "missing_cochanges": ["c.py"]},
+        "directive": {"may_break": ["c.py"], "missing_cochanges": ["c.py"]},
     }
     expected = 2 * cf.RISK_PER_TARGET + 1 * cf.RISK_PER_RELATED_FILE
     assert expected > cf.RISK_FLOOR
@@ -156,7 +169,7 @@ def test_get_context_skeleton_file_not_double_counted() -> None:
 def test_get_risk_scales_with_targets_and_blast() -> None:
     result = {
         "targets": {"a.py": {}, "b.py": {}},
-        "directive": {"will_break": ["c.py"], "missing_cochanges": ["d.py", "e.py"]},
+        "directive": {"may_break": ["c.py"], "missing_cochanges": ["d.py", "e.py"]},
     }
     expected = 2 * cf.RISK_PER_TARGET + 3 * cf.RISK_PER_RELATED_FILE
     assert cf.replaced_tokens_for("get_risk", result) == expected
@@ -199,6 +212,30 @@ def test_newly_covered_tools_credit_successful_calls() -> None:
     assert cf.replaced_tokens_for("get_change_risk", {"error": "bad revspec"}) == 0
 
 
+def test_generate_refactoring_code_is_grounded_in_the_spans_it_read() -> None:
+    """The spans fed to the model are exactly what a hand refactor would read."""
+    result = {"spans": [{"source": "x" * 8000}, {"source": "y" * 4000}]}
+    assert cf.replaced_tokens_for("generate_refactoring_code", result) == 3000
+    # …floored for a tiny span, capped for an enormous one, zero without them.
+    assert cf.replaced_tokens_for("generate_refactoring_code", {"spans": [{"source": "x"}]}) == (
+        cf.REFACTOR_FLOOR
+    )
+    assert cf.replaced_tokens_for(
+        "generate_refactoring_code", {"spans": [{"source": "x" * 900_000}]}
+    ) == cf.REFACTOR_MAX
+    assert cf.replaced_tokens_for("generate_refactoring_code", {"spans": []}) == 0
+    assert cf.replaced_tokens_for("generate_refactoring_code", {"spans": [{"file": "a.py"}]}) == 0
+    assert cf.replaced_tokens_for("generate_refactoring_code", {"error": "disabled"}) == 0
+
+
+def test_list_repos_scales_with_the_repos_it_named() -> None:
+    assert cf.replaced_tokens_for("list_repos", {"repos": [{}] * 10}) == 400
+    assert cf.replaced_tokens_for("list_repos", {"repos": [{}]}) == cf.REPOS_FLOOR
+    assert cf.replaced_tokens_for("list_repos", {"repos": [{}] * 500}) == cf.REPOS_MAX
+    assert cf.replaced_tokens_for("list_repos", {"repos": []}) == 0
+    assert cf.replaced_tokens_for("list_repos", {"error": "no index"}) == 0
+
+
 def test_dead_end_records_debit_row(tmp_path, monkeypatch) -> None:
     """An error response writes raw=0/distilled=N — a negative net at
     aggregation, so the ledger stops only ever crediting (E11)."""
@@ -225,3 +262,88 @@ def test_dead_end_records_debit_row(tmp_path, monkeypatch) -> None:
         assert per["saved_tokens"] == -350
     finally:
         store.close()
+
+
+def test_a_file_card_without_a_skeleton_earns_the_file_floor() -> None:
+    """Skeleton-by-default went away on 2026-08-11 and nothing replaced the
+    credit, so the commonest ``get_context`` call earned nothing at all."""
+    result = {"targets": {"a.py": {"target": "a.py", "type": "file"}}, "_meta": {}}
+    assert cf.replaced_tokens_for("get_context", result) == cf.CONTEXT_FILE_FLOOR
+
+
+def test_a_skeleton_still_wins_over_the_file_floor() -> None:
+    """The floor is the fallback, never an addition: an exact size beats it."""
+    result = {
+        "targets": {"a.py": {"target": "a.py", "type": "file", "skeleton": {"full_tokens": 4321}}},
+        "_meta": {},
+    }
+    assert cf.replaced_tokens_for("get_context", result) == 4321
+
+
+def test_a_failed_file_target_earns_nothing() -> None:
+    result = {"targets": {"a.py": {"target": "a.py", "type": "file", "error": "nope"}}, "_meta": {}}
+    assert cf.replaced_tokens_for("get_context", result) == 0
+
+
+def test_change_risk_scales_with_the_files_in_the_diff() -> None:
+    """The flat floor credited 500 against live delivered sizes of 4,439-4,671,
+    so the tool recorded itself as a net cost on every call it answered."""
+    three = {"summary": "x", "features": {"nf": 3}}
+    assert cf.replaced_tokens_for("get_change_risk", three) == (
+        cf.CHANGE_RISK_FLOOR + 3 * cf.CHANGE_RISK_PER_FILE
+    )
+
+
+def test_change_risk_is_capped_on_a_huge_diff() -> None:
+    huge = {"summary": "x", "features": {"nf": 500}}
+    assert cf.replaced_tokens_for("get_change_risk", huge) == cf.CHANGE_RISK_MAX
+
+
+def test_change_risk_falls_back_to_the_floor_without_a_file_count() -> None:
+    """A payload with no ``features.nf`` keeps the old behaviour rather than
+    guessing a diff size."""
+    assert cf.replaced_tokens_for("get_change_risk", {"summary": "x"}) == cf.CHANGE_RISK_FLOOR
+    assert cf.replaced_tokens_for("get_change_risk", {"features": {"nf": 0}}) == (
+        cf.CHANGE_RISK_FLOOR
+    )
+    assert cf.replaced_tokens_for("get_change_risk", {"features": {"nf": "three"}}) == (
+        cf.CHANGE_RISK_FLOOR
+    )
+
+
+def test_health_scales_with_the_files_it_judged() -> None:
+    """A flat 400 credited less than a third of one median source file, on a
+    tool whose whole job is telling you about several of them."""
+    result = {"targets": [{"path": "a.py"}, {"path": "b.py"}, {"path": "c.py"}]}
+    assert cf.replaced_tokens_for("get_health", result) == (
+        cf.HEALTH_FLOOR + 3 * cf.HEALTH_PER_FILE
+    )
+
+
+def test_health_reads_repository_mode_metrics_too() -> None:
+    """Targets mode names ``targets``; repository mode names ``metrics``."""
+    result = {"metrics": [{"path": "a.py"}, {"path": "b.py"}]}
+    assert cf.replaced_tokens_for("get_health", result) == (
+        cf.HEALTH_FLOOR + 2 * cf.HEALTH_PER_FILE
+    )
+
+
+def test_health_is_capped_and_falls_back_to_its_floor() -> None:
+    assert cf.replaced_tokens_for("get_health", {"targets": [{}] * 500}) == cf.HEALTH_MAX
+    assert cf.replaced_tokens_for("get_health", {"summary": "x"}) == cf.HEALTH_FLOOR
+    assert cf.replaced_tokens_for("get_health", {"error": "no index"}) == 0
+
+
+def test_the_raised_floors_stay_under_the_artifact_they_stand_for() -> None:
+    """The bar these floors are set against, asserted so a later bump has to
+    argue with a measurement rather than with a feeling.
+
+    Measured on this repository: the README is 15,941 estimated tokens; a
+    ``git log -p -5`` on one hot file is 4,834-7,108; the median source file
+    across 4,115 of them is 1,296 and a capped grep is 1,584.
+    """
+    assert cf.OVERVIEW_FLOOR < 15_941, "get_overview must undersell one README"
+    assert cf.WHY_FLOOR < 4_834, "get_why must undersell one git log -p"
+    assert cf.RISK_PER_TARGET < 1_296 + 1_584, "a target is a read plus a grep"
+    assert cf.HEALTH_PER_FILE < 1_296, "a judged file must undersell reading it"
+    assert cf.CONTEXT_FILE_FLOOR < 620, "the file floor must sit under the p25"

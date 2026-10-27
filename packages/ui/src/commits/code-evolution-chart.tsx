@@ -22,6 +22,8 @@ import {
   TooltipTrigger,
 } from "../ui/tooltip";
 import { cn } from "../lib/cn";
+import { parseDate } from "../lib/format";
+import { commitCategoryColor } from "../shared/series";
 
 /**
  * The repo's development "story arc" — a stacked-area timeline of how the
@@ -41,30 +43,18 @@ interface CategoryMeta {
 // Drawn bottom-to-top in STACK_ORDER; "feature" anchors the base so the growth
 // band reads as the foundation the rest of the work sits on.
 //
-// Two hues, then neutrals. This used to paint Feature in --color-success and
-// Fix in --color-error, which reads intuitively for about a second and then
-// costs more than it gives: those two tokens carry a health band on every
-// other surface in the app, so a reader arriving from Code Health has been
-// trained that green means good and red means bad. Here they mean "new
-// capability" and "bug fix", and a quarter of commits being fixes is not
-// thereby bad. Seven hues on the largest graphic on the page also set the
-// ceiling for everything under it, leaving the review-priority pills in the
-// table competing with the chart instead of leading.
-//
-// Fix keeps the accent because it is the series this chart exists to show;
-// Feature takes the plum secondary, a pairing globals.css already sanctions
-// (--color-savings-distill / --color-savings-mcp are exactly these two). The
-// rest are context, so they recede — which is also the honest encoding, since
-// the categories were never equally interesting.
+// Each category takes its fixed series colour (commitCategoryColor), the same
+// on every chart that shows commit types. Not the health green and red: those
+// carry a verdict elsewhere, and a quarter of commits being fixes is not bad.
 const CATEGORY_META: Record<CommitCategory, CategoryMeta> = {
-  feature: { label: "Feature", color: "var(--color-accent-secondary)", blurb: "new capability" },
-  fix: { label: "Fix", color: "var(--color-ramp-1)", blurb: "bug / regression" },
-  refactor: { label: "Refactor", color: "var(--color-ramp-3)", blurb: "reshape / perf" },
-  docs: { label: "Docs", color: "var(--color-neutral-1)", blurb: "documentation" },
-  test: { label: "Test", color: "var(--color-ramp-5)", blurb: "tests / coverage" },
-  deps: { label: "Deps", color: "var(--color-neutral-2)", blurb: "dependency bumps" },
-  chore: { label: "Chore", color: "var(--color-neutral-3)", blurb: "tooling / CI / release" },
-  other: { label: "Other", color: "var(--color-bg-inset)", blurb: "unclassified" },
+  feature: { label: "Feature", color: commitCategoryColor("feature"), blurb: "new capability" },
+  fix: { label: "Fix", color: commitCategoryColor("fix"), blurb: "bug / regression" },
+  refactor: { label: "Refactor", color: commitCategoryColor("refactor"), blurb: "reshape / perf" },
+  docs: { label: "Docs", color: commitCategoryColor("docs"), blurb: "documentation" },
+  test: { label: "Test", color: commitCategoryColor("test"), blurb: "tests / coverage" },
+  deps: { label: "Deps", color: commitCategoryColor("deps"), blurb: "dependency bumps" },
+  chore: { label: "Chore", color: commitCategoryColor("chore"), blurb: "tooling / CI / release" },
+  other: { label: "Other", color: commitCategoryColor("other"), blurb: "unclassified" },
 };
 
 const STACK_ORDER: CommitCategory[] = [
@@ -81,13 +71,13 @@ const STACK_ORDER: CommitCategory[] = [
 type Mode = "share" | "volume";
 
 function formatBucketLabel(startIso: string, granularity: string): string {
-  const d = new Date(startIso);
+  const d = parseDate(startIso);
   if (Number.isNaN(d.getTime())) return startIso;
-  const month = d.toLocaleString("en-US", { month: "short" });
+  const month = d.toLocaleString("en-US", { month: "short", timeZone: "UTC" });
   if (granularity === "week") {
-    return `${month} ${d.getDate()}`;
+    return `${month} ${d.getUTCDate()}`;
   }
-  return `${month} ${String(d.getFullYear()).slice(2)}`;
+  return `${month} ${String(d.getUTCFullYear()).slice(2)}`;
 }
 
 /** Dominant category across a slice of buckets (by summed count). */
@@ -254,7 +244,7 @@ export function CodeEvolutionChart({
               className={cn(
                 "rounded-md px-2.5 py-1 font-medium capitalize transition-colors",
                 mode === m
-                  ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
+                  ? "bg-[var(--color-selection-wash)] text-[var(--color-text-primary)]"
                   : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]",
               )}
             >
@@ -267,7 +257,7 @@ export function CodeEvolutionChart({
       <ResponsiveContainer width="100%" height={260}>
         <AreaChart
           data={chartData}
-          margin={{ top: 4, right: 8, bottom: 0, left: -16 }}
+          margin={{ top: 4, right: 8, bottom: 0, left: 0 }}
         >
           <CartesianGrid
             strokeDasharray="3 3"
@@ -288,6 +278,8 @@ export function CodeEvolutionChart({
             tickLine={false}
             width={36}
             domain={mode === "share" ? [0, 100] : [0, "auto"]}
+            // Per-band rounding can stack to 100.1; keep the axis at 100%.
+            allowDataOverflow={mode === "share"}
             tickFormatter={(v) => (mode === "share" ? `${v}%` : `${v}`)}
           />
           <Tooltip

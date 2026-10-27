@@ -14,6 +14,8 @@ from pathlib import Path
 
 import networkx as nx
 
+from repowise.core.analysis.dead_code import DeadCodeAnalyzer, DeadCodeKind
+from repowise.core.ingestion.graph import GraphBuilder
 from repowise.core.ingestion.models import FileInfo, ParsedFile, TypeReference
 from repowise.core.ingestion.parser import ASTParser
 from repowise.core.ingestion.resolvers.context import ResolverContext
@@ -214,6 +216,29 @@ class TestParserEmitsTypeRefs:
         names = {r.type_name for r in parsed.type_refs}
         assert "IRepo" in names
 
+    def test_generic_method_arguments_and_typeof(self, tmp_path: Path) -> None:
+        rel = "Registration.cs"
+        (tmp_path / rel).write_text(
+            "namespace Demo;\n"
+            "class Registration {\n"
+            "  void Configure(IServiceCollection services) {\n"
+            "    services.AddScoped<IService, Service>();\n"
+            "    services.Register<Wrapper<Nested>, Other>();\n"
+            "    var type = typeof(Reflected);\n"
+            "  }\n"
+            "}\n"
+        )
+        parsed = ASTParser().parse_file(_file_info(tmp_path, rel), (tmp_path / rel).read_bytes())
+        refs = {(r.type_name, r.origin) for r in parsed.type_refs}
+        assert {
+            ("IService", "generic_argument"),
+            ("Service", "generic_argument"),
+            ("Wrapper", "generic_argument"),
+            ("Nested", "generic_argument"),
+            ("Other", "generic_argument"),
+            ("Reflected", "typeof"),
+        } <= refs
+
 
 # ---------------------------------------------------------------------------
 # End-to-end: graph builder emits type_use edges (cross-project workspace)
@@ -268,6 +293,96 @@ class TestGraphEdgeEmission:
         assert data["edge_type"] == "type_use"
         assert "IUserRepo" in data["type_uses"]
         assert "IUserRepo" in data["imported_names"]
+
+    def test_generic_method_arguments_emit_cross_project_edges(self, tmp_path: Path) -> None:
+        (tmp_path / "src" / "Api").mkdir(parents=True)
+        (tmp_path / "src" / "Domain").mkdir(parents=True)
+        (tmp_path / "src" / "Api" / "Api.csproj").write_text(
+            _csproj(refs=[r"..\Domain\Domain.csproj"])
+        )
+        (tmp_path / "src" / "Domain" / "Domain.csproj").write_text(_csproj())
+        (tmp_path / "src" / "Domain" / "IService.cs").write_text(
+            "namespace Acme.Domain;\npublic interface IService {}\n"
+        )
+        (tmp_path / "src" / "Domain" / "Service.cs").write_text(
+            "namespace Acme.Domain;\npublic class Service {}\n"
+        )
+        (tmp_path / "src" / "Api" / "Registration.cs").write_text(
+            "namespace Acme.Api;\n"
+            "public class Registration {\n"
+            "  public void Configure(IServiceCollection services) {\n"
+            "    services.AddScoped<IService, Service>();\n"
+            "  }\n"
+            "}\n"
+        )
+
+        parser = ASTParser()
+        parsed_files: dict[str, ParsedFile] = {}
+        for cs in tmp_path.rglob("*.cs"):
+            rel = cs.resolve().relative_to(tmp_path.resolve()).as_posix()
+            parsed_files[rel] = parser.parse_file(_file_info(tmp_path, rel), cs.read_bytes())
+
+        graph = nx.DiGraph()
+        for rel in parsed_files:
+            graph.add_node(rel, node_type="file", language="csharp")
+        ctx = ResolverContext(
+            path_set=set(parsed_files), stem_map={}, graph=graph, repo_path=tmp_path
+        )
+
+        emitted = resolve_type_refs(parsed_files, ctx, graph)
+        assert emitted.get("csharp", 0) >= 2
+        source = "src/Api/Registration.cs"
+        for target, type_name in (
+            ("src/Domain/IService.cs", "IService"),
+            ("src/Domain/Service.cs", "Service"),
+        ):
+            assert graph.has_edge(source, target)
+            edge = graph[source][target]
+            assert edge["edge_type"] == "type_use"
+            assert type_name in edge["type_uses"]
+            assert type_name in edge["imported_names"]
+
+
+def test_generic_type_use_preserves_dead_code_true_positive(tmp_path: Path) -> None:
+    sources = {
+        "Registration.cs": (
+            "namespace Demo; public class Registration { "
+            "public void Configure(IServiceCollection services) { "
+            "_ = new UsedByNew(); "
+            "services.Register<IUsed, UsedByGenericArg>(); } }"
+        ),
+        "IUsed.cs": "namespace Demo; public interface IUsed {}",
+        "UsedByNew.cs": "namespace Demo; public class UsedByNew {}",
+        "UsedByGenericArg.cs": "namespace Demo; public class UsedByGenericArg {}",
+        "UsedNever.cs": "namespace Demo; public class UsedNever {}",
+    }
+    parser = ASTParser()
+    builder = GraphBuilder(repo_path=tmp_path)
+    for rel, source in sources.items():
+        path = tmp_path / rel
+        path.write_text(source)
+        builder.add_file(parser.parse_file(_file_info(tmp_path, rel), source.encode()))
+    graph = builder.build()
+
+    generic_edge = graph["Registration.cs"]["UsedByGenericArg.cs"]
+    assert generic_edge["edge_type"] == "type_use"
+    assert generic_edge["type_uses"] == ["UsedByGenericArg"]
+    assert any(
+        target == "UsedByNew.cs::UsedByNew" and data.get("edge_type") == "calls"
+        for _, target, data in graph.edges(data=True)
+    )
+
+    report = DeadCodeAnalyzer(graph, git_meta_map={}).analyze(
+        {"detect_unreachable_files": False, "detect_zombie_packages": False}
+    )
+    unused = {
+        finding.symbol_name
+        for finding in report.findings
+        if finding.kind == DeadCodeKind.UNUSED_EXPORT
+    }
+    assert "UsedByNew" not in unused
+    assert "UsedByGenericArg" not in unused
+    assert "UsedNever" in unused
 
 
 # ---------------------------------------------------------------------------

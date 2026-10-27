@@ -2,36 +2,65 @@
 
 import { X } from "lucide-react";
 
-const SHORTCUTS: { keys: string[]; action: string }[] = [
+export interface ShortcutRow {
+  keys: string[];
+  action: string;
+}
+
+export interface GestureRow {
+  gesture: string;
+  action: string;
+}
+
+const SHORTCUTS: ShortcutRow[] = [
   { keys: ["f"], action: "Fit graph to view" },
   { keys: ["/"], action: "Focus search" },
   { keys: ["⌘K"], action: "Focus search" },
   { keys: ["1"], action: "Color by language" },
   { keys: ["2"], action: "Color by community" },
-  { keys: ["3"], action: "Color by risk" },
+  { keys: ["↑", "↓"], action: "Step through search results" },
+  { keys: ["Enter"], action: "Select the highlighted search result" },
   { keys: ["Esc"], action: "Dismiss top layer (panel, selection, blossom…)" },
   { keys: ["?"], action: "Toggle this help" },
 ];
 
-const GESTURES: { gesture: string; action: string }[] = [
+const GESTURES: GestureRow[] = [
   { gesture: "Click", action: "Select + inspect a node" },
   { gesture: "Double-click", action: "Drill deeper (expand module / blossom hub / open doc)" },
   { gesture: "Right-click", action: "Context menu (docs, explore, path from/to)" },
 ];
 
+export interface GraphShortcutHelpProps {
+  onClose: () => void;
+  /** Another surface's keys; the Architecture graph's by default. */
+  shortcuts?: ShortcutRow[];
+  /** Pointer gestures; an empty list drops the Mouse section. */
+  gestures?: GestureRow[];
+  /** The dialog's accessible name. */
+  label?: string;
+  /** The visible heading. */
+  title?: string;
+}
+
 /** Keyboard + gesture cheatsheet, toggled with `?`. */
-export function GraphShortcutHelp({ onClose }: { onClose: () => void }) {
+export function GraphShortcutHelp({
+  onClose,
+  shortcuts = SHORTCUTS,
+  gestures = GESTURES,
+  label = "Graph keyboard shortcuts",
+  title = "Keyboard shortcuts",
+}: GraphShortcutHelpProps) {
   return (
-    <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+    <div className="absolute inset-0 z-[var(--z-modal)] flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
       <div
         className="w-full max-w-sm rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] p-4 shadow-xl shadow-black/30"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
-        aria-label="Graph keyboard shortcuts"
+        aria-label={label}
       >
         <div className="mb-3 flex items-center justify-between">
           <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">
-            Keyboard shortcuts
+            {title}
           </h3>
           <button
             onClick={onClose}
@@ -42,7 +71,7 @@ export function GraphShortcutHelp({ onClose }: { onClose: () => void }) {
           </button>
         </div>
         <div className="space-y-1.5">
-          {SHORTCUTS.map((s) => (
+          {shortcuts.map((s) => (
             <div key={s.keys.join("+") + s.action} className="flex items-center justify-between gap-3 text-xs">
               <span className="text-[var(--color-text-secondary)]">{s.action}</span>
               <span className="flex shrink-0 gap-1">
@@ -58,17 +87,21 @@ export function GraphShortcutHelp({ onClose }: { onClose: () => void }) {
             </div>
           ))}
         </div>
-        <p className="mb-1.5 mt-3 text-[10px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
-          Mouse
-        </p>
-        <div className="space-y-1.5">
-          {GESTURES.map((g) => (
-            <div key={g.gesture} className="flex items-start justify-between gap-3 text-xs">
-              <span className="shrink-0 text-[var(--color-text-primary)]">{g.gesture}</span>
-              <span className="text-right text-[var(--color-text-secondary)]">{g.action}</span>
+        {gestures.length > 0 && (
+          <>
+            <p className="mb-1.5 mt-3 text-[10px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
+              Mouse
+            </p>
+            <div className="space-y-1.5">
+              {gestures.map((g) => (
+                <div key={g.gesture} className="flex items-start justify-between gap-3 text-xs">
+                  <span className="shrink-0 text-[var(--color-text-primary)]">{g.gesture}</span>
+                  <span className="text-right text-[var(--color-text-secondary)]">{g.action}</span>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+          </>
+        )}
       </div>
     </div>
   );

@@ -5,19 +5,19 @@ import { ArrowRight } from "lucide-react";
 import { AiPromptButton } from "../health/ai-prompt-button";
 import { OverviewSection } from "../overview/section";
 import { cn } from "../lib/cn";
+import { FilePath } from "../shared/file-path";
+import { formatNumber } from "../lib/format";
 
 export interface SafeToDeletePileFinding {
   id: string;
   file_path: string;
   symbol_name: string | null;
-  lines: number;
+  lines: number | null;
   confidence: number;
 }
 
 interface SafeToDeletePileProps {
   findings: SafeToDeletePileFinding[];
-  /** Total lines reclaimable across all safe findings (may differ if filtered). */
-  reclaimableLines?: number;
   /** Optional CTA — invoked with the list of finding ids. */
   onPropose?: (findingIds: string[]) => void;
   /**
@@ -29,27 +29,17 @@ interface SafeToDeletePileProps {
 }
 
 /**
- * The "what do I delete" list: files carrying high-confidence findings, biggest
- * pile first.
- *
- * It used to be a red gradient card with a trash icon in a tinted tile and the
- * reclaimable line count set at 3xl. The lede above now leads with that same
- * figure, so repeating it here at near-hero size gave the page two headlines
- * that agree, and the red ground made a list of file paths read as a warning
- * about the files rather than an offer to remove them. Rule 9: the loudest
- * thing on screen should be the thing that responds, and what responds here is
- * the row and the prompt button.
+ * The "what do I delete" list: files carrying deletion-ready findings, biggest
+ * pile first, on quiet hairline rows. The reclaimable line total is the lede's
+ * figure, so this section does not repeat it; what responds here is the row
+ * and the prompt button.
  */
 export function SafeToDeletePile({
   findings,
-  reclaimableLines,
   onPropose,
   onSelect,
   className,
 }: SafeToDeletePileProps) {
-  const lines =
-    reclaimableLines ??
-    findings.reduce((sum, f) => sum + (Number.isFinite(f.lines) ? f.lines : 0), 0);
   const files = new Set(findings.map((f) => f.file_path)).size;
 
   // Roll findings up by file so the preview list shows distinct files
@@ -67,7 +57,7 @@ export function SafeToDeletePile({
     for (const f of findings) {
       const existing = byFile.get(f.file_path);
       if (existing) {
-        existing.lines += Number.isFinite(f.lines) ? f.lines : 0;
+        existing.lines += f.lines ?? 0;
         existing.finding_count += 1;
         if ((f.lines ?? 0) > (existing.representative.lines ?? 0)) {
           existing.representative = f;
@@ -75,7 +65,7 @@ export function SafeToDeletePile({
       } else {
         byFile.set(f.file_path, {
           file_path: f.file_path,
-          lines: Number.isFinite(f.lines) ? f.lines : 0,
+          lines: f.lines ?? 0,
           finding_count: 1,
           representative: f,
         });
@@ -89,7 +79,7 @@ export function SafeToDeletePile({
   return (
     <OverviewSection
       title="Safe to delete"
-      description={`${lines.toLocaleString()} lines across ${files.toLocaleString()} file${files === 1 ? "" : "s"} (${findings.length.toLocaleString()} finding${findings.length === 1 ? "" : "s"}) come back high confidence, with no caller we can find. Read the diff before you delete, then hand the rest to an agent.`}
+      description={`${formatNumber(findings.length)} high-confidence finding${findings.length === 1 ? "" : "s"} in ${formatNumber(files)} file${files === 1 ? "" : "s"}, with no runtime-load risk. Read the diff before you delete.`}
       {...(className ? { className } : {})}
       action={
         onPropose && findings.length > 0 ? (
@@ -116,23 +106,20 @@ export function SafeToDeletePile({
                   type={onSelect ? "button" : undefined}
                   onClick={onSelect ? () => onSelect(g.representative) : undefined}
                   className={cn(
-                    "flex w-full items-center justify-between gap-3 py-2.5 text-left text-xs",
+                    "flex min-h-9 w-full items-center justify-between gap-3 py-2 text-left text-xs",
                     onSelect && "hover:bg-[var(--color-bg-elevated)]",
                   )}
                 >
-                  <span
-                    className="min-w-0 truncate font-mono text-xs text-[var(--color-text-primary)]"
-                    title={g.file_path}
-                  >
-                    {g.file_path}
+                  <span className="flex min-w-0 items-baseline text-[var(--color-text-primary)]">
+                    <FilePath path={g.file_path} fold />
                     {g.finding_count > 1 && (
-                      <span className="ml-1.5 text-[var(--color-text-tertiary)]">
-                        ({g.finding_count} findings)
+                      <span className="ml-1.5 shrink-0 font-mono text-xs text-[var(--color-text-tertiary)]">
+                        ({formatNumber(g.finding_count)} findings)
                       </span>
                     )}
                   </span>
                   <span className="shrink-0 font-mono tabular-nums text-[var(--color-text-tertiary)]">
-                    {g.lines.toLocaleString()} lines
+                    {formatNumber(g.lines)} lines
                     {onSelect && <ArrowRight className="ml-1 inline h-3 w-3" />}
                   </span>
                 </Tag>
@@ -143,7 +130,7 @@ export function SafeToDeletePile({
       )}
       {moreFiles > 0 && (
         <p className="text-xs text-[var(--color-text-tertiary)]">
-          {moreFiles.toLocaleString()} more file{moreFiles === 1 ? "" : "s"} in the
+          {formatNumber(moreFiles)} more file{moreFiles === 1 ? "" : "s"} in the
           findings table below.
         </p>
       )}

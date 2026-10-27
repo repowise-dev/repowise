@@ -47,6 +47,8 @@ def test_resolve_embedder_explicit_flag_wins(monkeypatch: pytest.MonkeyPatch) ->
         ({"OPENROUTER_API_KEY": "x"}, "openrouter"),
         ({"OLLAMA_BASE_URL": "http://localhost:11434"}, "mock"),
         ({"OLLAMA_EMBEDDING_MODEL": "embeddinggemma"}, "ollama"),
+        ({"EDENAI_API_KEY": "x"}, "edenai"),
+        ({"OLLAMA_EMBEDDING_MODEL": "embeddinggemma", "EDENAI_API_KEY": "x"}, "ollama"),
         ({"REPOWISE_EMBEDDER": "ollama"}, "ollama"),
         ({}, "mock"),
     ],
@@ -61,6 +63,7 @@ def test_resolve_embedder_env_detection(
         "OPENROUTER_API_KEY",
         "OLLAMA_BASE_URL",
         "OLLAMA_EMBEDDING_MODEL",
+        "EDENAI_API_KEY",
         "REPOWISE_EMBEDDER",
     ):
         monkeypatch.delenv(key, raising=False)

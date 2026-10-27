@@ -1,4 +1,4 @@
-﻿"""MCP Tool: get_execution_flows — trace how the codebase executes.
+"""MCP Tool: get_execution_flows — trace how the codebase executes.
 
 Hybrid approach: reads persisted entry-point scores from community_meta_json,
 then recomputes BFS call-path traces on demand from stored call edges. This
@@ -9,14 +9,17 @@ off the hot path.
 from __future__ import annotations
 
 import time
+from itertools import pairwise
 from typing import Any
+
+from sqlalchemy import select
 
 from repowise.core.persistence.crud import (
     get_graph_node,
     get_top_entry_points,
 )
 from repowise.core.persistence.database import get_session
-from repowise.core.persistence.models import GraphNode
+from repowise.core.persistence.models import GraphNode, WikiSymbol
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server._graph_utils import (
     bfs_trace,
@@ -31,12 +34,58 @@ from repowise.server.mcp_server._helpers import (
     _resolve_repo_context,
     _unsupported_repo_all,
     filter_embedded_path_ids,
+    filter_rows_by_attr,
     is_excluded,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._symbol_lookup import resolve_symbol_rows, symbol_rank_key
 
 
-@mcp.tool(default=False)
+async def _entry_node(
+    session: Any, repo_id: str, entry_point: str, exclude_spec: Any
+) -> GraphNode | None:
+    """The graph node *entry_point* names, resolved the way get_symbol resolves ids.
+
+    An exact node id first, then get_symbol's lookup (separator variants,
+    partial paths, ``Class.method``), then a bare name, best candidate first.
+    A candidate in an excluded file gives way to the next one.
+    """
+    node = await get_graph_node(session, repo_id, entry_point)
+    if node is not None:
+        return node
+    rows = await resolve_symbol_rows(session, repo_id, entry_point)
+    if not rows and "::" not in entry_point:
+        res = await session.execute(
+            select(WikiSymbol).where(
+                WikiSymbol.repository_id == repo_id, WikiSymbol.name == entry_point
+            )
+        )
+        rows = sorted(
+            res.scalars().all(),
+            key=lambda r: symbol_rank_key(
+                entry_point,
+                name=r.name,
+                qualified_name=r.qualified_name,
+                kind=r.kind,
+                path=r.file_path,
+                language=r.language,
+            ),
+        )
+    for row in filter_rows_by_attr(rows, "file_path", exclude_spec):
+        node = await get_graph_node(session, repo_id, row.symbol_id)
+        if node is not None:
+            return node
+    return None
+
+
+@mcp.tool(
+    default=False,
+    surface_order=230,
+    trust_kind="structural",
+    artifact_type="call_path",
+    presentation="call_path",
+    evidence_basis="inferred",
+)
 async def get_execution_flows(
     top_n: int = 10,
     max_depth: int = 8,
@@ -71,26 +120,31 @@ async def get_execution_flows(
 
         # Determine entry points
         entry_nodes: list[tuple[GraphNode, float]] = []
+        exclude_spec = _get_exclude_spec(ctx.path)
 
         if entry_point:
             # Trace from a specific symbol
-            node = await get_graph_node(session, repo_id, entry_point)
+            node = await _entry_node(session, repo_id, entry_point, exclude_spec)
             if node is None:
+                from repowise.server.mcp_server._savings.interaction import note_error_reason
+
+                note_error_reason("not_found")
                 return {
                     "entry_point": entry_point,
                     "error": f"Symbol not found: {entry_point!r}",
-                    "_meta": _build_meta(timing_ms=(time.perf_counter() - t0) * 1000),
+                    "_meta": _build_meta(
+                        timing_ms=(time.perf_counter() - t0) * 1000,
+                        repository=repository,
+                        targets=None,
+                    ),
                 }
             entry_nodes = [(node, _ep_score(node))]
         else:
             # Top-N scored entry points from DB
-            top_nodes = await get_top_entry_points(
-                session, repo_id, min_score=0.0, limit=top_n
-            )
+            top_nodes = await get_top_entry_points(session, repo_id, min_score=0.0, limit=top_n)
             for n in top_nodes:
                 entry_nodes.append((n, _ep_score(n)))
 
-        exclude_spec = _get_exclude_spec(ctx.path)
         if exclude_spec:
             entry_nodes = [
                 (n, s)
@@ -102,27 +156,58 @@ async def get_execution_flows(
             return {
                 "total_entry_points": 0,
                 "flows": [],
-                "_meta": _build_meta(timing_ms=(time.perf_counter() - t0) * 1000),
+                # No file content served, so freshness never warns here.
+                "_meta": _build_meta(
+                    timing_ms=(time.perf_counter() - t0) * 1000,
+                    repository=repository,
+                    targets=[],
+                ),
             }
 
         # BFS trace from each entry point
         node_cache: dict[str, GraphNode] = {}
         flows: list[dict[str, Any]] = []
+        # Files the published traces touch, so freshness warns only when one
+        # of them changed after indexing.
+        trace_paths: set[str] = set()
 
         for ep_node, ep_score in entry_nodes:
+            hop_origins: dict[tuple[str, str], str] = {}
+            termination: dict[str, Any] = {}
             trace = await bfs_trace(
-                session, repo_id, ep_node.node_id, max_depth, node_cache
+                session,
+                repo_id,
+                ep_node.node_id,
+                max_depth,
+                node_cache,
+                hop_origins,
+                termination,
             )
             # Drop excluded files reached downstream so they don't leak via the
             # trace (entry-point filtering above doesn't cover BFS descendants).
             if exclude_spec:
-                trace = filter_embedded_path_ids(trace, exclude_spec)
+                filtered = filter_embedded_path_ids(trace, exclude_spec)
+                # The walk classified the node it actually stopped at. When
+                # filtering drops that node, the trace we publish ends earlier
+                # and it ends there because of the exclude spec — reporting the
+                # walk's reason would assert the new last node calls nothing.
+                if filtered and filtered[-1] != trace[-1]:
+                    termination["reason"] = "excluded_target"
+                    termination["detail"] = {}
+                trace = filtered
 
             communities_visited, crosses = await resolve_trace_communities(
                 session, repo_id, trace, node_cache
             )
 
-            flows.append({
+            for nid in trace:
+                cached = node_cache.get(nid)
+                # A file node keeps its path in node_id; _meta reduces symbol ids.
+                path = (cached.file_path if cached is not None else None) or nid
+                if path:
+                    trace_paths.add(path)
+
+            flow: dict[str, Any] = {
                 "entry_point": ep_node.node_id,
                 "entry_point_name": ep_node.name or ep_node.node_id.split("::")[-1],
                 "entry_point_score": round(ep_score, 3),
@@ -130,7 +215,17 @@ async def get_execution_flows(
                 "depth": len(trace) - 1,
                 "crosses_community": crosses,
                 "communities_visited": communities_visited,
-            })
+                "termination": termination.get("reason"),
+            }
+            if termination.get("detail"):
+                flow["termination_detail"] = termination["detail"]
+            # Which strategy produced each hop, aligned to `trace` pairwise.
+            # Omitted when no hop has one, so an older index shows no field
+            # rather than a list of nulls.
+            via = [hop_origins.get(pair) for pair in pairwise(trace)]
+            if any(via):
+                flow["trace_via"] = via
+            flows.append(flow)
 
     # Sort by score descending
     flows.sort(key=lambda f: -f["entry_point_score"])
@@ -141,6 +236,8 @@ async def get_execution_flows(
         "_meta": _build_meta(
             timing_ms=(time.perf_counter() - t0) * 1000,
             hint="Use get_context(include=['callers','callees']) on any trace node for detail.",
+            repository=repository,
+            targets=sorted(trace_paths),
         ),
     }
     return result

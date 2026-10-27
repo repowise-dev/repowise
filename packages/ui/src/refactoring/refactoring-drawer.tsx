@@ -19,32 +19,43 @@
  * line of prose under the title.
  */
 
-import { Layers, Sparkles, TrendingUp, Wand2 } from "lucide-react";
+import type { ReactNode } from "react";
+import { Layers, TrendingUp, Wand2 } from "lucide-react";
+import { AiPromptButton } from "../health/ai-prompt-button";
 
+import { CollapsibleSection } from "../shared/collapsible-section";
 import { Sheet, SheetContent, SheetTitle } from "../ui/sheet";
-import { formatNumber } from "../lib/format";
+import { Skeleton, SkeletonRegion } from "../ui/skeleton";
+import { disambiguateBasenames, formatNumber } from "../lib/format";
+import { FilePath } from "../shared/file-path";
 import { PlanComparison } from "./plan-comparison";
 import { GenerateCodePanel } from "./generate-code-panel";
-import { CONFIDENCE_LABEL, EFFORT_LABEL, typeMeta } from "./meta";
-import {
-  blastCount,
-  blastFiles,
-  evidenceRows,
-  planWins,
-  type Confidence,
-  type EffortBucket,
-  type GeneratedCode,
-  type RefactoringPlan,
-} from "./types";
+import { RefactoringModelToggle, type RefactoringModelToggleProps } from "./refactoring-settings-card";
+import { PriorityExplanation } from "./priority-explanation";
+import { ValidationSummary } from "./validation-summary";
+import { CONFIDENCE_LABEL, EFFORT_LABEL, planBlurb, typeMeta } from "./meta";
+import { blastCount, blastFiles, evidenceRows, planWins } from "./types";
+import type {
+  Confidence,
+  EffortBucket,
+  GeneratedCode,
+  RefactoringPlan,
+} from "@repowise-dev/types/refactoring";
 
 export interface RefactoringDrawerProps {
   plan: RefactoringPlan | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  loading?: boolean | undefined;
+  error?: string | undefined;
+  /** Optional causal context supplied by another shared product surface. */
+  contextSlot?: ReactNode;
   onAiPrompt?: ((plan: RefactoringPlan) => void) | undefined;
   /** Opt-in LLM code generation. Omit to hide the section entirely. */
   onGenerateCode?: ((plan: RefactoringPlan) => Promise<GeneratedCode>) | undefined;
   settingsHref?: string | undefined;
+  /** The code-generation switch, offered in place of the action while it is off. */
+  modelSetting?: RefactoringModelToggleProps | undefined;
   fileHref?: ((path: string, line?: number | null) => string | undefined) | undefined;
 }
 
@@ -52,9 +63,13 @@ export function RefactoringDrawer({
   plan,
   open,
   onOpenChange,
+  loading = false,
+  error,
+  contextSlot,
   onAiPrompt,
   onGenerateCode,
   settingsHref,
+  modelSetting,
   fileHref,
 }: RefactoringDrawerProps) {
   return (
@@ -73,10 +88,29 @@ export function RefactoringDrawer({
             onAiPrompt={onAiPrompt}
             onGenerateCode={onGenerateCode}
             settingsHref={settingsHref}
+            modelSetting={modelSetting}
             fileHref={fileHref}
+            contextSlot={contextSlot}
           />
+        ) : loading ? (
+          <>
+            <SheetTitle className="border-b border-[var(--color-border-default)] px-5 py-4 pr-12 text-[15px]">
+              Loading structured plan
+            </SheetTitle>
+            <SkeletonRegion className="space-y-4 px-5 py-5" label="Loading structured plan">
+              <Skeleton className="h-16 rounded-none" />
+              <Skeleton className="h-40 rounded-none" />
+            </SkeletonRegion>
+          </>
+        ) : error ? (
+          <>
+            <SheetTitle className="border-b border-[var(--color-border-default)] px-5 py-4 pr-12 text-[15px]">
+              Structured plan unavailable
+            </SheetTitle>
+            <p className="px-5 py-5 text-sm text-[var(--color-text-secondary)]">{error}</p>
+          </>
         ) : (
-          <SheetTitle className="sr-only">Refactoring plan</SheetTitle>
+          <SheetTitle className="sr-only">Structured plan</SheetTitle>
         )}
       </SheetContent>
     </Sheet>
@@ -88,21 +122,31 @@ function DrawerBody({
   onAiPrompt,
   onGenerateCode,
   settingsHref,
+  modelSetting,
   fileHref,
+  contextSlot,
 }: {
   plan: RefactoringPlan;
   onAiPrompt?: ((plan: RefactoringPlan) => void) | undefined;
   onGenerateCode?: ((plan: RefactoringPlan) => Promise<GeneratedCode>) | undefined;
   settingsHref?: string | undefined;
+  modelSetting?: RefactoringModelToggleProps | undefined;
   fileHref?: ((path: string, line?: number | null) => string | undefined) | undefined;
+  contextSlot?: ReactNode;
 }) {
   const meta = typeMeta(plan.refactoring_type);
+  const blurb = planBlurb(plan);
   const effort = (plan.effort_bucket || "M") as EffortBucket;
   const confidence = (plan.confidence || "medium") as Confidence;
   const evidence = evidenceRows(plan);
   const wins = planWins(plan);
   const blast = blastFiles(plan).filter((f) => f !== plan.file_path);
   const blastN = blastCount(plan);
+  const blastLabels = disambiguateBasenames(blast);
+  const lines =
+    plan.line_start && plan.line_end
+      ? `${plan.line_start}–${plan.line_end}`
+      : plan.line_start || null;
   const name = plan.file_path.split("/").pop() ?? plan.file_path;
 
   // One line of words, in the order a reader asks: how big, how sure, how far,
@@ -120,11 +164,13 @@ function DrawerBody({
         <SheetTitle className="mt-0.5 break-words font-mono text-[15px] font-semibold text-[var(--color-text-primary)]">
           {plan.target_symbol || name}
         </SheetTitle>
-        <p className="mt-1 break-all font-mono text-[11.5px] text-[var(--color-text-tertiary)]">
-          {plan.file_path}
-          {plan.line_start ? `:${plan.line_start}` : ""}
-          {plan.line_start && plan.line_end ? `–${plan.line_end}` : ""}
-        </p>
+        <FilePath
+          path={plan.file_path}
+          line={lines}
+          mode="full"
+          copyable
+          className="mt-1 block text-[11.5px] text-[var(--color-text-tertiary)]"
+        />
       </div>
 
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-[var(--color-border-default)] px-5 py-2.5 text-[12.5px] text-[var(--color-text-secondary)]">
@@ -141,7 +187,30 @@ function DrawerBody({
       </div>
 
       <div className="flex-1 space-y-6 overflow-y-auto px-5 py-5">
-        <p className="text-sm leading-relaxed text-[var(--color-text-secondary)]">{meta.blurb}</p>
+        {contextSlot}
+        <p className="text-sm leading-relaxed text-[var(--color-text-secondary)]">{blurb}</p>
+
+        {plan.risks && plan.risks.length > 0 ? (
+          <section>
+            <h4 className="mb-2.5 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+              Before you start
+            </h4>
+            <ul className="space-y-1">
+              {plan.risks.map((risk) => (
+                <li
+                  key={`${risk.kind}:${risk.ref ?? risk.text}`}
+                  className="flex items-start gap-2 text-sm text-[var(--color-text-secondary)]"
+                >
+                  <span
+                    className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--color-warning)]"
+                    aria-hidden
+                  />
+                  {risk.text}
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
 
         <section>
           <h4 className="mb-3 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
@@ -167,6 +236,10 @@ function DrawerBody({
               ) : null}
             </div>
             <GenerateCodePanel plan={plan} onGenerate={onGenerateCode} />
+          </section>
+        ) : modelSetting ? (
+          <section className="border-t border-[var(--color-border-default)] pt-4">
+            <RefactoringModelToggle {...modelSetting} />
           </section>
         ) : null}
 
@@ -198,10 +271,7 @@ function DrawerBody({
         ) : null}
 
         {evidence.length > 0 ? (
-          <section>
-            <h4 className="mb-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-              Why this was flagged
-            </h4>
+          <CollapsibleSection title="Why this was flagged">
             <dl className="grid grid-cols-2 sm:grid-cols-4">
               {evidence.map((row) => (
                 <div
@@ -217,15 +287,19 @@ function DrawerBody({
                 </div>
               ))}
             </dl>
-          </section>
+          </CollapsibleSection>
         ) : null}
 
         {blast.length > 0 ? (
-          <section>
-            <h4 className="mb-2 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-              <Layers className="h-3.5 w-3.5" />
-              Also affected
-            </h4>
+          <CollapsibleSection
+            title={
+              <span className="flex items-center gap-1.5">
+                <Layers className="h-3.5 w-3.5" aria-hidden="true" />
+                Also affected
+              </span>
+            }
+            hint={formatNumber(blast.length)}
+          >
             <ul className="space-y-1">
               {blast.map((f) => {
                 const href = fileHref?.(f, null);
@@ -234,33 +308,47 @@ function DrawerBody({
                     {href ? (
                       <a
                         href={href}
-                        className="break-all font-mono text-xs text-[var(--color-text-secondary)] underline-offset-2 hover:text-[var(--color-accent-primary)] hover:underline"
+                        className="flex min-w-0 text-[var(--color-text-secondary)] underline-offset-2 hover:text-[var(--color-accent-primary)] hover:underline"
                       >
-                        {f}
+                        <FilePath path={f} mode="distinguishing" labels={blastLabels} />
                       </a>
                     ) : (
-                      <span className="break-all font-mono text-xs text-[var(--color-text-secondary)]">
-                        {f}
+                      <span className="flex min-w-0 text-[var(--color-text-secondary)]">
+                        <FilePath path={f} mode="distinguishing" labels={blastLabels} />
                       </span>
                     )}
                   </li>
                 );
               })}
             </ul>
-          </section>
+          </CollapsibleSection>
         ) : null}
+
+        <CollapsibleSection
+          title="Validation"
+          hint={
+            plan.validation
+              ? plan.validation.total > 0
+                ? `${formatNumber(plan.validation.total)} tests`
+                : "none guarding"
+              : undefined
+          }
+          defaultOpen={plan.validation?.total === 0}
+        >
+          <ValidationSummary
+            validation={plan.validation}
+            fileHref={(path) => fileHref?.(path, null)}
+          />
+        </CollapsibleSection>
+
+        <CollapsibleSection title="Priority">
+          <PriorityExplanation plan={plan} />
+        </CollapsibleSection>
       </div>
 
       {onAiPrompt ? (
         <div className="flex items-center gap-3 border-t border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-5 py-3.5">
-          <button
-            type="button"
-            onClick={() => onAiPrompt(plan)}
-            className="inline-flex items-center justify-center gap-2 rounded-lg bg-[var(--color-accent-fill)] px-3.5 py-2 text-sm font-semibold text-[var(--color-text-on-accent)] transition-opacity hover:opacity-90"
-          >
-            <Sparkles className="h-4 w-4" />
-            Copy prompt for an agent
-          </button>
+          <AiPromptButton onClick={() => onAiPrompt(plan)} />
           <span className="hidden text-xs text-[var(--color-text-tertiary)] sm:block">
             The steps, the blast radius, and a completion contract.
           </span>

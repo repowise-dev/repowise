@@ -64,6 +64,13 @@ def load_page_records(pages: list[Any]) -> list[PageRecord]:
     A page is "template" (unwritten) when a model never touched it: the
     template provider stamps ``provider_name='template'`` and
     ``metadata.deterministic=True``. Either signal is enough.
+
+    ``metadata.model_free`` overrides both. Those pages carry the same two
+    signals and mean the opposite by them: their subkind is registered
+    ``deterministic``, so no model is ever going to write one. Counting them as
+    unwritten would offer them to ``generate --unwritten`` on every run, bill a
+    cost estimate for prose that will not be written, and leave the reader UI's
+    "bulk generate" affordance up on a wiki that is complete.
     """
     records: list[PageRecord] = []
     for p in pages:
@@ -71,8 +78,8 @@ def load_page_records(pages: list[Any]) -> list[PageRecord]:
             meta = json.loads(getattr(p, "metadata_json", None) or "{}")
         except ValueError:
             meta = {}
-        is_template = getattr(p, "provider_name", "") == "template" or bool(
-            meta.get("deterministic")
+        is_template = not meta.get("model_free") and (
+            getattr(p, "provider_name", "") == "template" or bool(meta.get("deterministic"))
         )
         records.append(
             PageRecord(
@@ -138,6 +145,14 @@ def build_dependencies(
     generation emits. Repo-wide ids are the overview + architecture pages
     (keyed by repo name) plus every persisted onboarding page.
     """
+    # Full selection, not the ranked/budgeted path: cascade needs every
+    # module/SCC group's real page id, not a coverage-limited subset.
+    # This runs on every `update` (post-commit hook, watcher, polling), so its
+    # cost was benchmarked rather than assumed cheap: median 15.33ms select /
+    # 23.48ms build_dependencies on a ~1,250-file repo, 137.86ms / 204.91ms on
+    # an ~11,187-file repo (see scripts/benchmark_scope_selection.py). Both
+    # scale roughly linearly with file count, so this is safe to run inline on
+    # a hook-driven update rather than needing a separate async pass.
     selection = select_pages(
         _selection_inputs(
             parsed_files=parsed_files,

@@ -7,7 +7,10 @@ from pathlib import Path
 import networkx as nx
 
 from repowise.core.ingestion.resolvers.context import ResolverContext
-from repowise.core.ingestion.resolvers.kotlin import resolve_kotlin_import
+from repowise.core.ingestion.resolvers.kotlin import (
+    resolve_kotlin_import,
+    resolve_kotlin_import_all,
+)
 from repowise.core.ingestion.resolvers.kotlin_gradle import build_kotlin_index
 
 
@@ -57,11 +60,26 @@ class TestKotlinIndex:
         assert result == rel
 
     def test_falls_through_without_gradle(self, tmp_path: Path) -> None:
+        # No build file, no package clause, and a path that does not mirror
+        # the package — neither signal places the file where the import says,
+        # so the name alone must not bind it.
         (tmp_path / "src").mkdir()
         (tmp_path / "src" / "Foo.kt").write_text("class Foo\n")
         ctx = _ctx(tmp_path, ["src/Foo.kt"])
         result = resolve_kotlin_import("com.example.Foo", "main.kt", ctx)
-        assert result == "src/Foo.kt"
+        assert result == "external:com.example.Foo"
+
+    def test_falls_through_without_gradle_on_a_matching_path(
+        self, tmp_path: Path
+    ) -> None:
+        # Same shape, still no build file and no package clause, but the path
+        # mirrors the package: the directory fallback answers.
+        src = tmp_path / "src" / "com" / "example"
+        src.mkdir(parents=True)
+        (src / "Foo.kt").write_text("class Foo\n")
+        ctx = _ctx(tmp_path, ["src/com/example/Foo.kt"])
+        result = resolve_kotlin_import("com.example.Foo", "main.kt", ctx)
+        assert result == "src/com/example/Foo.kt"
 
     def test_single_module_root_build_gradle(self, tmp_path: Path) -> None:
         (tmp_path / "build.gradle.kts").write_text("// single module\n")
@@ -106,3 +124,94 @@ class TestKotlinStdlibFiltering:
         ctx = _ctx(tmp_path, ["src/kotlinutil/Helper.kt"])
         result = resolve_kotlin_import("kotlinutil.Helper", "Main.kt", ctx)
         assert result == "src/kotlinutil/Helper.kt"
+
+    def test_third_party_import_does_not_take_a_same_named_local_class(
+        self, tmp_path: Path
+    ) -> None:
+        # com.google.* carries no external-namespace short-circuit, so only the
+        # package check stops this binding.
+        repo_file = tmp_path / "src" / "cache" / "CacheStats.kt"
+        repo_file.parent.mkdir(parents=True)
+        repo_file.write_text("package com.acme.cache\n\nclass CacheStats\n")
+        ctx = _ctx(tmp_path, ["src/cache/CacheStats.kt"])
+        result = resolve_kotlin_import(
+            "com.google.common.cache.CacheStats", "Main.kt", ctx
+        )
+        assert result == "external:com.google.common.cache.CacheStats"
+
+    def test_top_level_function_in_the_named_package_still_resolves(
+        self, tmp_path: Path
+    ) -> None:
+        # A file declaring only top-level functions records no type, so the
+        # exact-FQN lookup misses; the package is what identifies the file.
+        # Its path does not mirror the package, so the directory fallback
+        # cannot answer either.
+        repo_file = tmp_path / "src" / "CommentRoutes.kt"
+        repo_file.parent.mkdir(parents=True)
+        repo_file.write_text("package com.acme.domain\n\nfun commentRoutes() {}\n")
+        ctx = _ctx(tmp_path, ["src/CommentRoutes.kt"])
+        result = resolve_kotlin_import("com.acme.domain.commentRoutes", "Main.kt", ctx)
+        assert result == "src/CommentRoutes.kt"
+
+
+class TestTopLevelFunctionImports:
+    """``import pkg.fn`` must reach the file declaring ``fn``, whatever its name."""
+
+    def _util_repo(self, repo: Path) -> tuple[str, str]:
+        util = "core/src/main/kotlin/com/acme/util/StringUtils.kt"
+        app = "app/src/main/kotlin/com/acme/app/Main.kt"
+        for rel, body in (
+            (
+                util,
+                "package com.acme.util\n\n"
+                "fun String.shout(): String = uppercase() + \"!\"\n\n"
+                "fun twice(s: String): String = s + s\n",
+            ),
+            (
+                app,
+                "package com.acme.app\n\n"
+                "import com.acme.util.shout\nimport com.acme.util.twice\n\n"
+                "fun main() { println(twice(\"hi\".shout())) }\n",
+            ),
+        ):
+            full = repo / rel
+            full.parent.mkdir(parents=True, exist_ok=True)
+            full.write_text(body)
+        return util, app
+
+    def test_function_import_resolves_to_utility_file(self, tmp_path: Path) -> None:
+        util, app = self._util_repo(tmp_path)
+        ctx = _ctx(tmp_path, [util, app])
+
+        assert resolve_kotlin_import_all("com.acme.util.twice", app, ctx) == (util,)
+        assert resolve_kotlin_import_all("com.acme.util.shout", app, ctx) == (util,)
+
+    def test_function_import_is_not_an_external_node(self, tmp_path: Path) -> None:
+        util, app = self._util_repo(tmp_path)
+        ctx = _ctx(tmp_path, [util, app])
+
+        result = resolve_kotlin_import("com.acme.util.twice", app, ctx)
+
+        assert result == util
+        assert not str(result).startswith("external:")
+
+    def test_unknown_function_in_known_package_stays_external(self, tmp_path: Path) -> None:
+        util, app = self._util_repo(tmp_path)
+        ctx = _ctx(tmp_path, [util, app])
+
+        result = resolve_kotlin_import("com.acme.util.missing", app, ctx)
+
+        assert result == "external:com.acme.util.missing"
+
+    def test_private_function_import_does_not_resolve(self, tmp_path: Path) -> None:
+        # A file name unrelated to the function, so the stem fallback cannot
+        # be what resolves (or fails to resolve) it.
+        rel = "src/main/kotlin/com/acme/util/Internals.kt"
+        full = tmp_path / rel
+        full.parent.mkdir(parents=True)
+        full.write_text("package com.acme.util\n\nprivate fun hidden() {}\n")
+        ctx = _ctx(tmp_path, [rel])
+
+        assert resolve_kotlin_import("com.acme.util.hidden", "x.kt", ctx) == (
+            "external:com.acme.util.hidden"
+        )

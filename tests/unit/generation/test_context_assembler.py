@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import dataclasses
+import json
+
 import networkx as nx
 
 from repowise.core.generation.context_assembler import (
@@ -85,6 +88,38 @@ def test_assemble_file_page_returns_context(
     assert ctx.language == "python"
 
 
+def test_assemble_file_page_does_not_retain_source(
+    sample_config, sample_parsed_file, sample_graph, graph_metrics
+):
+    """No field carries the file's source text (issue #1394).
+
+    A run keeps one context per code file alive from level 2 until it ends, so
+    anything on the context is multiplied by the size of the repository. The
+    context used to carry a budget-trimmed copy of the whole file that nothing
+    read, which is what exhausted memory on large repositories. Asserted on the
+    values rather than on a field name so re-introducing the source under any
+    other name fails here too.
+    """
+    # A multi-line slice, because the per-file vocabulary legitimately keeps
+    # single words off the source and would make a one-word sentinel ambiguous.
+    body = "def sentinel_body():\n    return 41 + 1\n"
+    ctx = ContextAssembler(sample_config).assemble_file_page(
+        sample_parsed_file,
+        sample_graph,
+        graph_metrics["pagerank"],
+        graph_metrics["betweenness"],
+        graph_metrics["community"],
+        f"# header\n{body}".encode(),
+    )
+
+    retained = [
+        f.name
+        for f in dataclasses.fields(ctx)
+        if body in str(getattr(ctx, f.name))
+    ]
+    assert retained == []
+
+
 def test_assemble_file_page_dependents_from_graph(
     sample_config, sample_parsed_file, sample_graph, graph_metrics, sample_source_bytes
 ):
@@ -123,11 +158,8 @@ def test_assemble_file_page_dependencies_from_graph(
     assert "python_pkg/utils.py" in ctx.dependencies
 
 
-def test_assemble_file_page_filters_dependency_edges_by_semantics(
-    sample_config, sample_parsed_file, graph_metrics, sample_source_bytes
-):
-    """Only structural file-to-file edges become dependencies or dependents."""
-    path = sample_parsed_file.file_info.path
+def _semantic_edge_graph(path: str) -> nx.DiGraph:
+    """Every kind of edge a file node carries, structural or not."""
     graph = nx.DiGraph()
     file_nodes = (
         path,
@@ -153,6 +185,14 @@ def test_assemble_file_page_filters_dependency_edges_by_semantics(
     graph.add_edge("historical_dependent.py", path, edge_type="co_changes")
     graph.add_edge(path, "external:third-party", edge_type="imports")
     graph.add_edge(path, "external_file.py", edge_type="imports")
+    return graph
+
+
+def test_assemble_file_page_filters_dependency_edges_by_semantics(
+    sample_config, sample_parsed_file, graph_metrics, sample_source_bytes
+):
+    """Only structural file-to-file edges become dependencies or dependents."""
+    graph = _semantic_edge_graph(sample_parsed_file.file_info.path)
 
     ctx = ContextAssembler(sample_config).assemble_file_page(
         sample_parsed_file,
@@ -227,6 +267,27 @@ def test_assemble_symbol_spotlight_callers(
     assert "caller.py" in ctx.callers
 
 
+def test_spotlight_importers_match_the_file_page(
+    sample_config, sample_parsed_file, graph_metrics, sample_source_bytes
+):
+    """One importer count per file: co-change and containment edges count on neither."""
+    graph = _semantic_edge_graph(sample_parsed_file.file_info.path)
+    assembler = ContextAssembler(sample_config)
+    file_ctx = assembler.assemble_file_page(
+        sample_parsed_file,
+        graph,
+        graph_metrics["pagerank"],
+        graph_metrics["betweenness"],
+        graph_metrics["community"],
+        sample_source_bytes,
+    )
+    spot_ctx = assembler.assemble_symbol_spotlight(
+        sample_parsed_file.symbols[0], sample_parsed_file, graph_metrics["pagerank"], graph
+    )
+
+    assert spot_ctx.callers == file_ctx.dependents == ["importer.py", "framework_entrypoint.py"]
+
+
 def test_assemble_symbol_spotlight_no_callers(
     sample_config, sample_parsed_file, sample_graph, graph_metrics
 ):
@@ -274,6 +335,36 @@ def test_assemble_module_page_public_symbols(
     )
     ctx = assembler.assemble_module_page("python_pkg", "python", [fc], sample_graph)
     assert ctx.public_symbols >= 0
+
+
+def test_assemble_module_page_ranks_its_entry_points(
+    sample_config, sample_parsed_file, sample_graph, graph_metrics, sample_source_bytes
+):
+    """``module_page.j2`` renders these under an "Entry points" heading.
+
+    The input is ``file_contexts`` order — whatever the selector handed over —
+    so without ranking the heading led with whichever entry point happened to
+    be assembled first. Here that is a deep glue leaf.
+    """
+    from dataclasses import replace
+
+    assembler = ContextAssembler(sample_config)
+    base = assembler.assemble_file_page(
+        sample_parsed_file,
+        sample_graph,
+        graph_metrics["pagerank"],
+        graph_metrics["betweenness"],
+        graph_metrics["community"],
+        sample_source_bytes,
+    )
+    contexts = [
+        replace(base, file_path="src/features/api/index.ts", is_entry_point=True),
+        replace(base, file_path="src/util.py", is_entry_point=False),
+        replace(base, file_path="src/main.py", is_entry_point=True),
+    ]
+    ctx = assembler.assemble_module_page("python_pkg", "python", contexts, sample_graph)
+
+    assert ctx.entry_points == ["src/main.py", "src/features/api/index.ts"]
 
 
 # ---------------------------------------------------------------------------
@@ -450,20 +541,117 @@ def test_foreign_edge_rejects_this_files_own_symbols():
     were 70% of every dependency line on the file pages, and on some pages
     they were the entire list.
     """
-    from repowise.core.generation.context.assembler import _is_foreign_edge
+    from repowise.core.analysis.dead_code.file_reachability import is_foreign_edge
 
     path = "pkg/mod.py"
-    assert not _is_foreign_edge("pkg/mod.py", path)
-    assert not _is_foreign_edge("pkg/mod.py::Thing", path)
-    assert not _is_foreign_edge("pkg/mod.py::Thing::method", path)
-    assert not _is_foreign_edge("external:requests", path)
+    assert not is_foreign_edge("pkg/mod.py", path)
+    assert not is_foreign_edge("pkg/mod.py::Thing", path)
+    assert not is_foreign_edge("pkg/mod.py::Thing::method", path)
+    assert not is_foreign_edge("external:requests", path)
 
 
 def test_foreign_edge_keeps_real_neighbours():
-    from repowise.core.generation.context.assembler import _is_foreign_edge
+    from repowise.core.analysis.dead_code.file_reachability import is_foreign_edge
 
     path = "pkg/mod.py"
-    assert _is_foreign_edge("pkg/other.py", path)
-    assert _is_foreign_edge("pkg/other.py::Thing", path)
+    assert is_foreign_edge("pkg/other.py", path)
+    assert is_foreign_edge("pkg/other.py::Thing", path)
     # A path that merely shares a prefix is a different file.
-    assert _is_foreign_edge("pkg/mod_extra.py", path)
+    assert is_foreign_edge("pkg/mod_extra.py", path)
+
+
+def test_coupled_modules_name_the_package_not_the_parent_directory(sample_config):
+    """A coupled module must be somewhere a reader can navigate to.
+
+    The parent directory of a coupled file is a location, but on a monorepo it
+    is an arbitrarily deep one that names no subsystem. The package boundary is
+    the unit the rest of the wiki groups by.
+    """
+    assembler = ContextAssembler(sample_config)
+    git_meta_map = {
+        "packages/core/pyproject.toml": {},
+        "packages/ui/package.json": {},
+        "packages/core/src/a.py": {
+            "co_change_partners_json": json.dumps(
+                [
+                    {
+                        "file_path": "packages/ui/src/deep/nested/widget.ts",
+                        "co_change_count": 5,
+                        "structural": "unexplained",
+                    }
+                ]
+            )
+        },
+    }
+
+    _, _, _, coupled_modules, _, _ = assembler._module_git_enrichment(
+        ["packages/core/src/a.py"], {"packages/core/src/a.py"}, git_meta_map
+    )
+
+    assert coupled_modules == [{"path": "packages/ui", "count": 1}]
+
+
+def test_coupled_modules_survive_a_changed_files_only_git_map(sample_config, tmp_path):
+    """An incremental run passes only the changed files' git metadata.
+
+    Deriving package roots from that map alone finds no manifest, and every
+    coupled partner then falls back to the same top-level bucket. The roots
+    come off the checkout so the answer does not depend on what changed.
+    """
+    (tmp_path / "packages" / "core").mkdir(parents=True)
+    (tmp_path / "packages" / "ui").mkdir(parents=True)
+    (tmp_path / "packages" / "core" / "pyproject.toml").write_text("[project]\n")
+    (tmp_path / "packages" / "ui" / "package.json").write_text("{}\n")
+
+    assembler = ContextAssembler(sample_config, repo_path=tmp_path)
+    changed_only = {
+        "packages/core/src/a.py": {
+            "co_change_partners_json": json.dumps(
+                [
+                    {
+                        "file_path": "packages/ui/src/deep/widget.ts",
+                        "co_change_count": 5,
+                        "structural": "unexplained",
+                    }
+                ]
+            )
+        }
+    }
+
+    _, _, _, coupled_modules, _, _ = assembler._module_git_enrichment(
+        ["packages/core/src/a.py"], {"packages/core/src/a.py"}, changed_only
+    )
+
+    assert coupled_modules == [{"path": "packages/ui", "count": 1}]
+
+
+def test_coupled_modules_exclude_pairs_the_graph_explains(sample_config):
+    """The page says these modules co-change *without* a dependency between
+    them, so a pair the graph accounts for must not be listed."""
+    assembler = ContextAssembler(sample_config)
+    git_meta_map = {
+        "packages/core/pyproject.toml": {},
+        "packages/ui/package.json": {},
+        "packages/core/src/a.py": {
+            "co_change_partners_json": json.dumps(
+                [
+                    {
+                        "file_path": "packages/ui/src/imported.ts",
+                        "co_change_count": 9,
+                        "structural": "corroborated",
+                    },
+                    {
+                        "file_path": "packages/ui/src/lockfile-ish.json",
+                        "co_change_count": 9,
+                        "structural": "not_applicable",
+                    },
+                ]
+            )
+        },
+    }
+
+    _, _, _, coupled_modules, _, _ = assembler._module_git_enrichment(
+        ["packages/core/src/a.py"], {"packages/core/src/a.py"}, git_meta_map
+    )
+
+    assert coupled_modules == []

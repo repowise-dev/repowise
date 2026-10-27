@@ -20,7 +20,8 @@ import { EmptyState } from "../shared/empty-state";
 import { ResultsFooter } from "../shared/results-footer";
 import { RowActions } from "../shared/row-actions";
 import { VirtualizedTable } from "../shared/virtualized-table";
-import { truncatePath } from "../lib/format";
+import { docsPagePath, filePageId } from "../shared/entity/routes";
+import { FilePath } from "../shared/file-path";
 import { cn } from "../lib/cn";
 import type { CodeSymbol } from "@repowise-dev/types/symbols";
 
@@ -68,7 +69,7 @@ function ImportanceBar({ score }: { score: number | null | undefined }) {
   const pct = Math.min(100, Math.max(0, Math.round((score ?? 0) * 100)));
   const color =
     pct >= 70
-      ? "bg-[var(--color-accent-primary)]"
+      ? "bg-[var(--color-progress-fill)]"
       : pct >= 40
         ? "bg-[var(--color-warning)]"
         : "bg-[var(--color-text-tertiary)]";
@@ -170,7 +171,7 @@ function FacetToggle({
       className={cn(
         "inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs transition-colors",
         active
-          ? "border-[var(--color-accent-primary)] bg-[var(--color-accent-primary)]/15 text-[var(--color-accent-primary)]"
+          ? "border-[var(--color-selection-border)] bg-[var(--color-selection-wash)] text-[var(--color-text-primary)]"
           : "border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)]",
       )}
     >
@@ -359,9 +360,7 @@ export function SymbolTable({
                   <Badge variant={sym.kind === "class" ? "accent" : "default"}>{sym.kind}</Badge>
                 </td>
                 <td className="px-4 py-2.5 font-mono text-xs text-[var(--color-text-tertiary)] min-w-[200px] max-w-[420px] hidden sm:table-cell">
-                  <span className="block truncate" title={`${sym.file_path}:${sym.start_line}`}>
-                    {truncatePath(sym.file_path)}:{sym.start_line}
-                  </span>
+                  <FilePath path={sym.file_path} line={sym.start_line} fold className="flex" />
                 </td>
                 <td className="px-4 py-2.5 text-xs text-[var(--color-text-secondary)] tabular-nums hidden md:table-cell text-right">
                   <span
@@ -383,12 +382,16 @@ export function SymbolTable({
                         {
                           icon: GitBranch,
                           label: "Graph",
-                          href: `${prefix}/architecture?view=graph&node=${encodeURIComponent(sym.file_path)}`,
+                          href: `${prefix}/architecture?view=files&node=${encodeURIComponent(sym.file_path)}`,
                         },
                         {
                           icon: BookOpen,
                           label: "Docs",
-                          href: `${prefix}/docs?file=${encodeURIComponent(sym.file_path)}`,
+                          // `?file=` was read by nothing, so this opened the
+                          // repo overview. `?page=` is the docs reader's
+                          // parameter and takes a wiki page id; a file with no
+                          // page gets told so by name.
+                          href: docsPagePath(prefix, filePageId(sym.file_path)),
                         },
                       ]}
                     />

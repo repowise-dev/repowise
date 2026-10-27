@@ -25,7 +25,7 @@ from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from typing import Any
 
-from ._constants import is_fix_commit
+from ._constants import classify_commit_category, is_fix_commit
 from .identity import author_identity_key
 
 # Commit subjects are a headline (`%s`); cap defensively against a pathological
@@ -131,6 +131,55 @@ def build_commit_rows(parsed_commits: list[dict]) -> list[dict]:
                 "agent_channel": c.get("agent_channel"),
                 "agent_confidence": c.get("agent_confidence"),
                 "agent_model_id": c.get("agent_model_id"),
+                "attribution": c.get("attribution"),
+                "category": classify_commit_category(subject),
             }
         )
     return rows
+
+
+def _file_rows_for(sha: str, changes: list) -> list[dict]:
+    """One row per distinct path in *changes*.
+
+    numstat can repeat a path (a split rename pair); (sha, path) is the natural
+    key, so fold rather than let the upsert pick one arbitrarily.
+    """
+    seen: set[str] = set()
+    rows: list[dict] = []
+    for path, added, deleted in changes:
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        rows.append(
+            {
+                "sha": sha,
+                "file_path": path,
+                "lines_added": max(int(added or 0), 0),
+                "lines_deleted": max(int(deleted or 0), 0),
+            }
+        )
+    return rows
+
+
+def build_commit_file_rows(parsed_commits: list[dict], path_prefix: str = "") -> list[dict]:
+    """Build ``git_commit_files`` rows from the same sunk records.
+
+    The per-file detail ``build_commit_rows`` aggregates away. Same input, same
+    walk, so the two must always be built from one batch.
+
+    *path_prefix* keeps only files under that git-root-relative directory. The
+    commit rows keep describing the whole commit; only the per-file detail is
+    narrowed, which is what stops a bulk commit of a large repository from
+    storing a row per file for a directory that indexes a handful of them.
+    """
+    prefix = f"{path_prefix}/" if path_prefix else ""
+
+    def _scoped(changes: list) -> list:
+        return [c for c in changes if (c[0] or "").startswith(prefix)] if prefix else changes
+
+    return [
+        row
+        for c in parsed_commits
+        if c.get("sha")
+        for row in _file_rows_for(c["sha"], _scoped(c.get("changes") or []))
+    ]

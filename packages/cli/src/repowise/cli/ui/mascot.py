@@ -1,218 +1,193 @@
-"""Owl mascot: banner art, state frames, and the heatmap wordmark.
+"""Owl mascot: banner art, the one-line header, eye states, and the wordmark.
 
-Single home for every piece of the init-banner identity: the owl, the
-REPOWISE block wordmark (full + compact variants), the GitHub-heatmap
-colouring, and the spinner frames used while repowise thinks.
+Single home for every piece of the init-banner identity: the owl, the REPOWISE
+wordmark, the mini owl and its states, and the spinner that blinks while
+repowise thinks. All render functions are pure and deterministic.
 
-All render functions are pure and deterministic — the heatmap pattern is
-seeded from the repo name, so the same repo always gets the same banner.
+Colours: owl strokes cream, eyes and wordmark brand orange, tagline dim. The
+wordmark is one colour on purpose: decoration that carries no meaning gets one
+accent, not a ramp.
 """
 
 from __future__ import annotations
 
-import zlib
-from functools import cache
-from random import Random
+from typing import Any
 
+from rich.console import Console, ConsoleOptions, RenderResult
+from rich.live import Live
 from rich.text import Text
 
-from repowise.cli.ui.brand import BRAND
+from repowise.cli.ui.brand import BRAND_STYLE, DIM
+from repowise.cli.ui.brand import OWL as OWL_STYLE
+from repowise.cli.ui.glyphs import ascii_only, glyph
 
-# ---------------------------------------------------------------------------
-# Palette
-# ---------------------------------------------------------------------------
-
-WHITE = "#E8E8E8"  # owl body strokes (logo white)
-
-# Floored 5-shade heatmap ramp: deep ember → blazing. No near-black shade so
-# the wordmark always reads, even at the cold end of the gradient.
-HEAT = ["#5C3208", "#9C5710", "#D97A16", "#F59520", "#FFC06A"]
+TAGLINE = "codebase intelligence for developers and AI"
 
 # ---------------------------------------------------------------------------
 # Owl
 # ---------------------------------------------------------------------------
 
-OWL_FULL = [
-    " ,_____,",
-    " (◉ , ◉)",
-    " (  ▼  )",
-    " /)___(\\",
-    '   " "  ',
-]
-
-OWL_COMPACT = [
+OWL = [
     " ,___,",
-    " (◉,◉)",
+    " {◉,◉}",
     " ( ▼ )",
     " /)_(\\",
     '  " " ',
 ]
 
-EYES_THINKING = ["◐", "◓", "◑", "◒"]  # eye-roll cycle (kept for callers that want it)
-EYES_IDLE = "◉"
-EYES_SLEEPY = "─"  # interrupt message
-EYES_HAPPY = "^"  # completion panels
-EYES_ERROR = "x"  # reserved: error output deliberately stays sober (no owl) for now
+# The mini owl is the big owl's face line. Its eyes say how the run went, so a
+# state reads with colour off. state -> (unicode eyes, ascii eyes).
+IDLE = "idle"
+BLINK = "blink"
+SHUT = "shut"
+DONE = "done"
+INTERRUPTED = "interrupted"
+WARNED = "warn"
+FAILED = "failed"
+
+EYES: dict[str, tuple[str, str]] = {
+    IDLE: ("◉", "o"),
+    BLINK: ("◒", "o"),
+    SHUT: ("─", "o"),
+    DONE: ("^", "^"),
+    INTERRUPTED: ("─", "-"),
+    WARNED: ("•", "."),
+    FAILED: ("×", "x"),
+}
 
 
-def mini(eyes: str = EYES_IDLE) -> str:
-    """Single-line mini owl face, e.g. ``{◉ ◉}`` — always 5 chars wide."""
-    return "{" + eyes + " " + eyes + "}"
+def _eyes(state: str) -> str:
+    unicode, ascii_form = EYES[state]
+    return ascii_form if ascii_only() else unicode
+
+
+def mini(state: str = IDLE) -> str:
+    """The mini owl face for *state*, e.g. ``{◉,◉}``. Always 5 columns."""
+    eyes = _eyes(state)
+    return f"{{{eyes},{eyes}}}"
+
+
+def mini_text(state: str = IDLE) -> Text:
+    """:func:`mini` with cream strokes and orange eyes."""
+    eyes = _eyes(state)
+    return Text.assemble(
+        ("{", OWL_STYLE),
+        (eyes, BRAND_STYLE),
+        (",", OWL_STYLE),
+        (eyes, BRAND_STYLE),
+        ("}", OWL_STYLE),
+    )
 
 
 # The spinner is a slow blink, not a spin. A continuous eye-roll at 5fps reads
 # as a cheap loading GIF and draws the eye away from the progress bar next to
 # it; holding the eyes open and closing them once per cycle reads as alive
 # without competing for attention. Motion lives in the last three frames.
-_BLINK_CYCLE = [EYES_IDLE] * 7 + ["◒", EYES_SLEEPY, "◒"]
+_BLINK_CYCLE = [IDLE] * 7 + [BLINK, SHUT, BLINK]
+_FRAME_SECONDS = 0.18
 
-THINKING_FRAMES = [mini(e) for e in _BLINK_CYCLE]
+THINKING_FRAMES = [mini(state) for state in _BLINK_CYCLE]
+
+
+def thinking_text(time: float) -> Text:
+    """The spinner frame for *time*, in seconds."""
+    return mini_text(_BLINK_CYCLE[int(time / _FRAME_SECONDS) % len(_BLINK_CYCLE)])
+
+
+class OwlSpinner:
+    """The blinking mini owl in front of a status line; see :func:`owl_status`."""
+
+    def __init__(self, text: str = "") -> None:
+        self.text = Text.from_markup(text)
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        frame = thinking_text(console.get_time())
+        yield Text.assemble(frame, " ", self.text) if self.text else frame
+
+
+def owl_status(console: Console, text: str, **live_kwargs: Any) -> Live:
+    """``console.status`` with the owl: a transient line that blinks while work runs.
+
+    Built the way Rich builds a status, so it behaves the same on a pipe.
+    """
+    return Live(
+        OwlSpinner(text),
+        console=console,
+        refresh_per_second=12.5,
+        transient=True,
+        **live_kwargs,
+    )
+
 
 # ---------------------------------------------------------------------------
-# Spinner registration — ``rich._spinners.SPINNERS`` is private API (a plain
-# dict consumed by ``rich.spinner.Spinner``), so registration is wrapped: if a
-# future rich version moves it, everything silently stays on "dots". Always
-# reference ``OWL_SPINNER`` at call sites, never the literal ``"owl"``.
+# Wordmark: thin box-drawing letters, three rows, beside the owl's top three.
 # ---------------------------------------------------------------------------
 
-try:
-    from rich._spinners import SPINNERS
-
-    SPINNERS["owl"] = {"interval": 180, "frames": THINKING_FRAMES}
-    OWL_SPINNER = "owl"
-except Exception:  # pragma: no cover — depends on rich internals
-    OWL_SPINNER = "dots"
-
-# ---------------------------------------------------------------------------
-# Wordmark fonts — half-block finished letterforms (R tail = stepped taper).
-# FONT_FULL uses 2-char stroke cells; FONT_COMPACT is the same design at
-# 1-char strokes for narrow terminals.
-# ---------------------------------------------------------------------------
-
-FONT_FULL = {
-    "R": ["██████▄", "██   ██", "██████▀", "██ ▀█▄ ", "██  ▀█▄"],
-    "E": ["██████", "██    ", "█████ ", "██    ", "██████"],
-    "P": ["██████▄", "██   ██", "██████▀", "██     ", "██     "],
-    "O": ["▄█████▄", "██   ██", "██   ██", "██   ██", "▀█████▀"],
-    "W": ["██     ██", "██     ██", "██  █  ██", "██ ███ ██", "▀██▀ ▀██▀"],
-    "I": ["████", " ██ ", " ██ ", " ██ ", "████"],
-    "S": ["▄█████▄", "██     ", "▀█████▄", "     ██", "▀█████▀"],
-}
-
-FONT_COMPACT = {
-    "R": ["███▄ ", "█  █ ", "███▀ ", "█ ▀▄ ", "█  ▀▄"],
-    "E": ["███", "█  ", "██ ", "█  ", "███"],
-    "P": ["███▄", "█  █", "███▀", "█   ", "█   "],
-    "O": ["▄██▄", "█  █", "█  █", "█  █", "▀██▀"],
-    "W": ["█   █", "█   █", "█ █ █", "█ █ █", "▀█▀█▀"],
-    "I": ["███", " █ ", " █ ", " █ ", "███"],
-    "S": ["▄██▄", "█   ", "▀██▄", "   █", "▀██▀"],
+FONT = {
+    "R": ["┬─┐", "├┬┘", "┴└─"],
+    "E": ["┌─┐", "├┤ ", "└─┘"],
+    "P": ["┌─┐", "├─┘", "┴  "],
+    "O": ["┌─┐", "│ │", "└─┘"],
+    "W": ["┬ ┬", "│││", "└┴┘"],
+    "I": ["┬", "│", "┴"],
+    "S": ["┌─┐", "└─┐", "└─┘"],
 }
 
 _WORD = "REPOWISE"
+_OWL_GAP = 3
+_INDENT = 1
 
 
-@cache
-def render_wordmark(compact: bool = False) -> tuple[tuple[str, ...], tuple[int, ...]]:
-    """Wordmark rows + per-column heat-cell ids.
-
-    Cell ids are aligned to each letter's own grid (one cell = ``cell_w``
-    columns starting at the letter's left edge) so every coloured unit is a
-    true square — a cell never slices a stroke or bleeds across the
-    inter-letter gap. Gap columns map to ``-1`` (unpainted).
-    """
-    font = FONT_COMPACT if compact else FONT_FULL
-    cell_w = 1 if compact else 2
-    gap = 1 if compact else 2
-
-    rows = ["", "", "", "", ""]
-    cellmap: list[int] = []
-    cell_base = 0
-    for li, ch in enumerate(_WORD):
-        glyph = font[ch]
-        width = len(glyph[0])
-        n_cells = (width + cell_w - 1) // cell_w
-        for lx in range(width):
-            cellmap.append(cell_base + min(lx // cell_w, n_cells - 1))
-        cell_base += n_cells
-        for r in range(5):
-            rows[r] += glyph[r]
-        if li < len(_WORD) - 1:
-            for r in range(5):
-                rows[r] += " " * gap
-            cellmap.extend([-1] * gap)
-    return tuple(rows), tuple(cellmap)
+def render_wordmark() -> tuple[str, ...]:
+    """The three wordmark rows, letters set solid."""
+    return tuple("".join(FONT[char][r] for char in _WORD) for r in range(3))
 
 
-def banner_width(compact: bool = False) -> int:
-    """Total rendered banner width in columns (indent + owl + gap + wordmark).
-
-    Single source of truth for layout maths — ``print_banner`` derives its
-    full/compact switch threshold from this, so font or owl changes can't
-    silently desync the two.
-    """
-    owl = OWL_COMPACT if compact else OWL_FULL
-    rows, _ = render_wordmark(compact)
-    return 1 + max(len(line) for line in owl) + 2 + len(rows[0])
-
-
-def seed_for(repo_name: str | None) -> int:
-    """Stable cross-process seed for a repo's heatmap pattern.
-
-    Uses ``zlib.crc32`` deliberately — the built-in ``hash()`` is salted per
-    process, which would give every run a different banner.
-    """
-    return zlib.crc32((repo_name or "repowise").encode())
-
-
-def heat_grid(seed: int, n_cells: int) -> list[list[int]]:
-    """Gradient + jitter shade grid (5 rows by *n_cells*), deterministic.
-
-    Base shade sweeps linearly left→right across cells; each cell jitters
-    ±1 shade around the sweep, clamped to the palette bounds.
-    """
-    rng = Random(seed)
-    span = max(n_cells - 1, 1)
-    grid = [[0] * n_cells for _ in range(5)]
-    for r in range(5):
-        for c in range(n_cells):
-            base = (c / span) * (len(HEAT) - 1)
-            idx = round(base + rng.uniform(-1.1, 1.1))
-            grid[r][c] = min(max(idx, 0), len(HEAT) - 1)
-    return grid
+def banner_width() -> int:
+    """Total rendered banner width in columns: indent, owl, gap, then the widest text."""
+    text_width = max(len(render_wordmark()[0]), len(TAGLINE))
+    return _INDENT + max(len(line) for line in OWL) + _OWL_GAP + text_width
 
 
 def _paint_owl(line: str) -> Text:
-    """Owl strokes in logo white, eyes in brand orange."""
+    """Owl strokes in cream, eyes in brand orange."""
     out = Text()
     for ch in line:
-        if ch == EYES_IDLE:
-            out.append(ch, style=f"bold {BRAND}")
+        if ch == EYES[IDLE][0]:
+            out.append(ch, style=BRAND_STYLE)
         elif ch == " ":
             out.append(" ")
         else:
-            out.append(ch, style=f"bold {WHITE}")
+            out.append(ch, style=OWL_STYLE)
     return out
 
 
-def banner_text(repo_name: str | None, compact: bool = False) -> Text:
-    """Compose owl + heatmap wordmark into a single renderable ``Text``."""
-    owl = OWL_COMPACT if compact else OWL_FULL
-    rows, cellmap = render_wordmark(compact)
-    n_cells = max(c for c in cellmap if c >= 0) + 1
-    grid = heat_grid(seed_for(repo_name), n_cells)
-
-    owl_w = max(len(line) for line in owl)
+def banner_text(version: str = "") -> Text:
+    """The owl beside the wordmark, the tagline and the version. Unicode only."""
+    owl_w = max(len(line) for line in OWL)
+    right: list[tuple[str, str]] = [(row, BRAND_STYLE) for row in render_wordmark()]
+    right.append((TAGLINE, DIM))
+    right.append((f"v{version}" if version else "", DIM))
     out = Text()
-    for r in range(5):
+    for r, (text, style) in enumerate(right):
         if r:
             out.append("\n")
-        out.append(" ")
-        out.append_text(_paint_owl(owl[r].ljust(owl_w)))
-        out.append("  ")
-        for x, ch in enumerate(rows[r]):
-            if ch == " " or cellmap[x] < 0:
-                out.append(" ")
-            else:
-                out.append(ch, style=f"bold {HEAT[grid[r][cellmap[x]]]}")
+        out.append(" " * _INDENT)
+        out.append_text(_paint_owl(OWL[r].ljust(owl_w)))
+        out.append(" " * _OWL_GAP)
+        out.append(text, style=style)
+    out.rstrip()
     return out
+
+
+def header_text(version: str, width: int | None = None) -> Text:
+    """The one-line header: ``{◉,◉} repowise  v0.57.0 · codebase intelligence ...``.
+
+    For a terminal narrower than the banner, or one that cannot show it. The
+    tagline is dropped when the line would not fit in *width* columns.
+    """
+    line = Text.assemble(" ", mini_text(IDLE), " ", ("repowise", BRAND_STYLE), "  ")
+    full = f"v{version} {glyph('sep')} {TAGLINE}"
+    fits = width is None or line.cell_len + len(full) <= width
+    line.append(full if fits else f"v{version}", style=DIM)
+    return line

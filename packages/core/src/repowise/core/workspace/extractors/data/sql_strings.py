@@ -15,11 +15,12 @@ Precision rules (this is where the false links would come from):
 
 from __future__ import annotations
 
-import logging
 import re
 from typing import TYPE_CHECKING
 
-from ..base import ScanContext
+from repowise.core.workspace.origins import ContractOrigin
+
+from ..base import ScanContext, line_at
 from ..langs import CSHARP, GO, JAVA, JS_TS, KOTLIN, PHP, PYTHON, RUBY
 from .dialect import build_table_consumer
 
@@ -37,6 +38,7 @@ _STRING_RE = re.compile(
     r'"""(?P<t1>.*?)"""'
     r"|'''(?P<t2>.*?)'''"
     r"|`(?P<bt>[^`]*)`"
+    r'|(?:\$@|@\$|@)"(?P<verb>(?:[^"]|"")*)"'
     r'|"(?P<dq>(?:[^"\\\n]|\\.)*)"'
     r"|'(?P<sq>(?:[^'\\\n]|\\.)*)'",
     re.DOTALL,
@@ -84,6 +86,33 @@ _SQL_KEYWORDS = frozenset(
 
 _MIN_LITERAL_LEN = 12
 
+# A SQL literal *opens* with SQL. Prose that happens to satisfy the verb shape
+# does not: a docstring reading "The incremental update path re-parses ... would
+# SELECT the whole table ... vanished from a file" clears every gate above and
+# yielded the tables ``path`` and ``would``. Anchoring to the start rejects
+# prose as a class instead of blocklisting the English words it leaks.
+#
+# The opener set is deliberately wider than the statement verbs. A query is
+# routinely preceded by a named-query comment (``-- name: get_user``, the
+# aiosql/yesql/sqlc/HugSQL convention), a ``CREATE TABLE x AS SELECT ... FROM
+# y`` whose read of ``y`` is a real consumer, an ``EXPLAIN``, or a T-SQL
+# ``DECLARE``/``SET``/``BEGIN`` preamble. Requiring a bare statement verb threw
+# all of those away; the verb gate below still decides whether it is SQL.
+_SQL_COMMENT_PREFIX_RE = re.compile(r"^(?:\s|--[^\n]*\n|/\*.*?\*/)+", re.DOTALL)
+_SQL_OPENER_RE = re.compile(
+    r"^[(\s]*(?:"
+    r"WITH|SELECT|INSERT|UPDATE|DELETE|MERGE|REPLACE|UPSERT"
+    r"|CREATE|EXPLAIN|TRUNCATE|CALL|EXEC(?:UTE)?|DECLARE|SET|BEGIN|COPY"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _opens_with_sql(literal: str) -> bool:
+    """True when *literal* begins with SQL, ignoring any leading comment."""
+    stripped = _SQL_COMMENT_PREFIX_RE.sub("", literal, count=1)
+    return bool(_SQL_OPENER_RE.match(stripped))
+
 
 def _verb_for_statement(stmt: object) -> str:
     kind = type(stmt).__name__.lower()
@@ -95,11 +124,17 @@ class SqlStringsDialect:
 
     name = "sql-strings"
     extensions = PYTHON | JS_TS | JAVA | KOTLIN | GO | CSHARP | RUBY | PHP
+    # A SQL literal holds one of the verbs `_SQL_VERB_RE` reads, in some case.
+    requires = tuple(
+        spelling
+        for verb in ("select", "insert", "update", "delete", "merge")
+        for spelling in (verb.upper(), verb, verb.capitalize())
+    )
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         out: list[Contract] = []
         seen: set[str] = set()
-        for literal in self._sql_literals(ctx.content):
+        for literal, line in self._sql_literals(ctx.content):
             for table_raw, verb in self._tables_in(literal):
                 if table_raw.lower().strip('"`[]') in _SQL_KEYWORDS:
                     continue
@@ -108,23 +143,30 @@ class SqlStringsDialect:
                     continue
                 seen.add(key)
                 contract = build_table_consumer(
-                    ctx, table_raw=table_raw, verb=verb, client=self.name
+                    ctx,
+                    table_raw=table_raw,
+                    verb=verb,
+                    client=self.name,
+                    line=line,
+                    origin=ContractOrigin.SQL_STRING,
                 )
                 if contract is not None:
                     out.append(contract)
         return out
 
     @staticmethod
-    def _sql_literals(content: str) -> list[str]:
-        literals: list[str] = []
+    def _sql_literals(content: str) -> list[tuple[str, int]]:
+        """``(literal, line)`` for each SQL-looking string literal in *content*."""
+        literals: list[tuple[str, int]] = []
         for m in _STRING_RE.finditer(content):
             s = next(g for g in m.groups() if g is not None)
             if (
                 len(s) >= _MIN_LITERAL_LEN
+                and _opens_with_sql(s)
                 and _SQL_VERB_RE.search(s)
                 and (_UPPER_VERB_RE.search(s) or _SQL_PUNCT_RE.search(s))
             ):
-                literals.append(s)
+                literals.append((s, line_at(content, m.start())))
         return literals
 
     def _tables_in(self, literal: str) -> list[tuple[str, str]]:
@@ -146,9 +188,12 @@ class SqlStringsDialect:
             from sqlglot import exp
         except ImportError:
             return None
-        logging.getLogger("sqlglot").setLevel(logging.ERROR)
+        from repowise.core.ingestion.sql_parse import parse_sql
+
         try:
-            statements = sqlglot.parse(literal, error_level=sqlglot.ErrorLevel.RAISE)
+            statements = parse_sql(
+                literal, error_level=sqlglot.ErrorLevel.RAISE, psql_meta_commands=False
+            )
         except Exception:
             return None
         found: list[tuple[str, str]] = []
@@ -156,9 +201,18 @@ class SqlStringsDialect:
             if stmt is None:
                 return None
             verb = _verb_for_statement(stmt)
+            # A CTE alias is a name bound by this statement, not a table it
+            # reads. sqlglot models a reference to one as exp.Table all the
+            # same, so ``WITH ranked AS (...) ... FROM ranked`` reported a
+            # table named ``ranked``. Only unqualified references shadow.
+            cte_names = {
+                cte.alias.lower() for cte in stmt.find_all(exp.CTE) if cte.alias
+            }
             for table in stmt.find_all(exp.Table):
                 name = table.name
                 if not name:
+                    continue
+                if not table.db and name.lower() in cte_names:
                     continue
                 raw = f"{table.db}.{name}" if table.db else name
                 found.append((raw, verb))

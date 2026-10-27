@@ -1,10 +1,16 @@
 /**
- * Sidebar Home: the face of the extension. A hero card with the repo's
- * hotspot-health score and trend, an index-freshness row with a one-click
- * update, and a launcher card per dashboard panel so everything the extension
- * can show is discoverable from the first click on the activity-bar icon.
- * Designed for the sidebar's ~300px width; the dashboards themselves open as
- * editor tabs via `host.openView`.
+ * Sidebar Home: the face of the extension. The repo's health score and trend,
+ * an index-freshness row with a one-click update, and a launcher card per
+ * dashboard panel so everything the extension can show is discoverable from the
+ * first click on the activity-bar icon. Designed for the sidebar's ~300px
+ * width; the dashboards themselves open as editor tabs via `host.openView`.
+ *
+ * The two statistics group with hairlines and the launchers keep their cards.
+ * That split is the rule rather than an inconsistency: a card means "a discrete
+ * object you can act on", which every launcher is and neither statistic was.
+ * Sizes stay at 11 and 13px here — a ~300px rail is the width argument the
+ * compact density exists for, and the full-tab panels do not get the same
+ * excuse.
  */
 
 import { useCallback, useEffect, useState, type ComponentType } from "react";
@@ -23,6 +29,9 @@ import {
   Sun,
   Wrench,
 } from "lucide-react";
+import { EmptyState } from "@repowise-dev/ui/shared";
+import { scoreTextColor } from "@repowise-dev/ui/health/tokens";
+import { formatScore } from "@repowise-dev/types/health";
 import type {
   HomeSummary,
   PanelViewId,
@@ -40,12 +49,10 @@ import {
 import owlDarkTheme from "../../assets/owl-dark-theme.png";
 import owlLightTheme from "../../assets/owl-light-theme.png";
 
-/** 0-10 score to its signal color; the same bands the risk view uses, inverted. */
-function scoreColor(score: number | null): string {
-  if (score == null) return "var(--color-text-tertiary)";
-  if (score >= 7.5) return "var(--color-success)";
-  if (score >= 5) return "var(--color-warning)";
-  return "var(--color-error)";
+/** The shared band ramp as a text class, so this hero and the health dashboard
+ * it launches read a score the same way. */
+function scoreTone(score: number | null): string {
+  return score == null ? "text-[var(--color-text-tertiary)]" : scoreTextColor(score);
 }
 
 /** Compact relative time for the freshness row ("3h ago"). */
@@ -76,16 +83,16 @@ interface CardSpec {
 const CARDS: CardSpec[] = [
   {
     view: "health",
-    title: "Health Dashboard",
+    title: "Code Health",
     icon: Activity,
     subtitle: (s) =>
       s?.health
         ? `${s.health.openFindings.toLocaleString()} open findings · ${s.health.fileCount.toLocaleString()} files`
-        : "Score map, trends, and the churn quadrant",
+        : "The score map, its lenses, and the trend",
   },
   {
     view: "architecture",
-    title: "Architecture Map",
+    title: "Architecture",
     icon: Layers,
     subtitle: () => "Modules and layers on one canvas",
   },
@@ -97,7 +104,7 @@ const CARDS: CardSpec[] = [
   },
   {
     view: "refactoring",
-    title: "Refactoring Plans",
+    title: "Refactoring",
     icon: Wrench,
     subtitle: (s) =>
       s?.counts.refactoringPlans != null
@@ -106,7 +113,7 @@ const CARDS: CardSpec[] = [
   },
   {
     view: "decisions",
-    title: "Decision Timeline",
+    title: "Decisions",
     icon: Scale,
     subtitle: (s) =>
       s?.counts.decisions != null
@@ -121,7 +128,7 @@ const CARDS: CardSpec[] = [
   },
   {
     view: "risk",
-    title: "Branch Risk",
+    title: "Change Risk",
     icon: GitBranch,
     subtitle: (_s, defaultBranch) => `Score this branch against ${defaultBranch ?? "main"}`,
   },
@@ -182,37 +189,30 @@ export function App({ host, repo, refreshToken }: ViewProps<"home">) {
         updating={updating}
         onUpdate={runUpdate}
       />
-      <nav aria-label="Dashboards" className="space-y-1.5">
-        <p className="px-1 pt-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+      <nav
+        aria-label="Dashboards"
+        className="border-t border-[var(--color-border-default)] pt-3"
+      >
+        <p className="px-1 pb-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
           Explore
         </p>
         {CARDS.map((card) => (
-          <LauncherCard
+          <LauncherRow
             key={card.view}
-            spec={card}
+            icon={card.icon}
+            title={card.title}
             subtitle={card.subtitle(summary, repo.defaultBranch)}
             onOpen={() => host.openView(card.view)}
           />
         ))}
+        <LauncherRow
+          icon={Settings2}
+          title="Settings"
+          subtitle="Toggle editor signals, server, and more"
+          muted
+          onOpen={() => host.openView("settings")}
+        />
       </nav>
-      <button
-        type="button"
-        onClick={() => host.openView("settings")}
-        className="group flex w-full items-center gap-3 rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-2.5 text-left transition-colors hover:border-[var(--color-border-hover)] hover:bg-[var(--color-bg-elevated)]"
-      >
-        <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-[var(--color-bg-inset)] text-[var(--color-text-secondary)]">
-          <Settings2 className="h-4 w-4" />
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-[13px] font-medium text-[var(--color-text-primary)]">
-            Settings
-          </span>
-          <span className="block truncate text-[11px] text-[var(--color-text-tertiary)]">
-            Toggle editor signals, server, and more
-          </span>
-        </span>
-        <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)] opacity-0 transition-opacity group-hover:opacity-100" />
-      </button>
       <Footer host={host} />
     </div>
   );
@@ -235,8 +235,8 @@ function Footer({ host }: { host: WebviewHost }) {
 
   const options: { value: ThemePreference; icon: ComponentType<{ className?: string }>; label: string }[] = [
     { value: "auto", icon: Monitor, label: "Follow editor theme" },
-    { value: "light", icon: Sun, label: "Light" },
-    { value: "dark", icon: Moon, label: "Dark" },
+    { value: "light", icon: Sun, label: "Light theme" },
+    { value: "dark", icon: Moon, label: "Dark theme" },
   ];
 
   return (
@@ -247,7 +247,7 @@ function Footer({ host }: { host: WebviewHost }) {
           alt=""
           className="h-4 w-4"
         />
-        <span className="text-[11px] font-semibold tracking-wide text-[var(--color-text-tertiary)]">
+        <span className="text-xs font-semibold tracking-wide text-[var(--color-text-tertiary)]">
           Repowise
         </span>
       </span>
@@ -263,9 +263,10 @@ function Footer({ host }: { host: WebviewHost }) {
             onClick={() => choose(value)}
             aria-pressed={pref === value}
             title={label}
+            aria-label={label}
             className={
               pref === value
-                ? "rounded-md bg-[var(--color-accent-primary)] p-1 text-[var(--color-text-on-accent)]"
+                ? "rounded-md bg-[var(--color-bg-selected)] p-1 text-[var(--color-text-primary)]"
                 : "rounded-md p-1 text-[var(--color-text-tertiary)] transition-colors hover:text-[var(--color-text-primary)]"
             }
           >
@@ -293,18 +294,17 @@ function Hero({
   // which case only the average shows.
   const hasHotspot = health?.hotspot != null;
   const headline = health?.average ?? health?.hotspot ?? null;
-  const color = scoreColor(headline);
+  // A statistic, not an object you can act on, so it groups with rhythm rather
+  // than with a border and a raised ground. The launchers below keep theirs:
+  // those are navigation buttons.
   return (
-    <section
-      aria-label="Repository health"
-      className="rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-4"
-    >
+    <section aria-label="Repository health" className="px-1 pt-1">
       <div className="flex items-center justify-between gap-2">
-        <p className="truncate text-sm font-semibold text-[var(--color-text-primary)]">
+        <p className="truncate text-xs font-semibold text-[var(--color-text-primary)]">
           {repoName}
         </p>
         {branch ? (
-          <span className="flex min-w-0 shrink items-center gap-1 text-[11px] text-[var(--color-text-tertiary)]">
+          <span className="flex min-w-0 shrink items-center gap-1 text-xs text-[var(--color-text-tertiary)]">
             <GitBranch className="h-3 w-3 shrink-0" />
             <span className="truncate font-mono">{branch}</span>
           </span>
@@ -312,24 +312,26 @@ function Hero({
       </div>
 
       {loading ? (
-        <div className="mt-3 space-y-2" aria-hidden>
+        <div className="mt-3 space-y-2" role="status" aria-label="Loading health score">
           <div className="h-9 w-24 animate-pulse rounded-md bg-[var(--color-bg-inset)]" />
           <div className="h-3 w-40 animate-pulse rounded bg-[var(--color-bg-inset)]" />
         </div>
       ) : headline != null ? (
         <>
           <div className="mt-3 flex items-end gap-2">
-            <span className="text-4xl font-bold leading-none tracking-tight" style={{ color }}>
-              {headline.toFixed(1)}
+            <span
+              className={`text-4xl font-bold leading-none tracking-tight tabular-nums ${scoreTone(headline)}`}
+            >
+              {formatScore(headline)}
             </span>
-            <span className="pb-0.5 text-sm text-[var(--color-text-tertiary)]">/ 10</span>
+            <span className="pb-0.5 text-xs text-[var(--color-text-tertiary)]">/ 10</span>
           </div>
-          <p className="mt-1.5 flex flex-wrap items-center gap-x-1.5 text-[11px] text-[var(--color-text-secondary)]">
+          <p className="mt-1.5 flex flex-wrap items-center gap-x-1.5 text-xs text-[var(--color-text-secondary)]">
             <span>Average health</span>
             {hasHotspot ? (
               <>
                 <span aria-hidden className="text-[var(--color-text-tertiary)]">·</span>
-                <span>hotspot {health?.hotspot?.toFixed(1)}</span>
+                <span>hotspot {health?.hotspot != null ? formatScore(health.hotspot) : undefined}</span>
                 <DeltaChip delta={health?.hotspotDelta ?? null} />
               </>
             ) : null}
@@ -337,37 +339,44 @@ function Hero({
             <span>{(health?.fileCount ?? 0).toLocaleString()} files</span>
           </p>
           {hasHotspot && (health?.history.length ?? 0) >= 2 ? (
-            <Sparkline values={health?.history ?? []} color={scoreColor(health?.hotspot ?? null)} />
+            <Sparkline values={health?.history ?? []} tone={scoreTone(health?.hotspot ?? null)} />
           ) : null}
         </>
       ) : (
-        <p className="mt-3 text-xs text-[var(--color-text-secondary)]">
-          No health data yet. Scores appear after the first full index.
-        </p>
+        <EmptyState
+          size="compact"
+          title="No health data yet"
+          description="Scores appear after the first full index."
+        />
       )}
     </section>
   );
 }
 
+/**
+ * Hotspot movement since the last snapshot.
+ *
+ * Not a filled pill and not coloured. Green forty pixels under a green health
+ * numeral is the two-marks-one-colour trap: on the numeral green means "band:
+ * healthy", here it would mean "direction: improved", and a reader who
+ * correctly infers one has been taught a rule that makes them wrong about the
+ * other. Health owns green/amber/red on this surface because those carry a
+ * band; direction is carried by the arrow, which needs no hue.
+ */
 function DeltaChip({ delta }: { delta: number | null }) {
   if (delta == null || delta === 0) return null;
-  const up = delta > 0;
   return (
     <span
-      className="mb-0.5 rounded-full px-1.5 py-0.5 text-[10px] font-semibold"
-      style={{
-        color: up ? "var(--color-success)" : "var(--color-error)",
-        backgroundColor: "var(--color-bg-inset)",
-      }}
+      className="text-[10px] font-medium tabular-nums text-[var(--color-text-tertiary)]"
       title="Hotspot health change since the previous snapshot"
     >
-      {up ? "▲" : "▼"} {Math.abs(delta).toFixed(1)}
+      {delta > 0 ? "▲" : "▼"} {Math.abs(delta).toFixed(1)}
     </span>
   );
 }
 
 /** Tiny inline trend line; the hero already labels it, so it is decorative. */
-function Sparkline({ values, color }: { values: number[]; color: string }) {
+function Sparkline({ values, tone }: { values: number[]; tone: string }) {
   const width = 100;
   const height = 24;
   const min = Math.min(...values);
@@ -381,10 +390,16 @@ function Sparkline({ values, color }: { values: number[]; color: string }) {
     <svg
       viewBox={`0 0 ${width} ${height}`}
       preserveAspectRatio="none"
-      className="mt-2 h-6 w-full"
+      className={`mt-2 h-6 w-full ${tone}`}
       aria-hidden
     >
-      <polyline points={points} fill="none" stroke={color} strokeWidth="1.5" opacity="0.9" />
+      <polyline
+        points={points}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        opacity="0.9"
+      />
     </svg>
   );
 }
@@ -401,7 +416,6 @@ function Freshness({
   const stale = freshness?.stale ?? false;
   const indexed = short(freshness?.indexedCommit ?? null);
   const live = short(freshness?.liveCommit ?? null);
-  const dotColor = stale ? "var(--color-warning)" : "var(--color-success)";
 
   let detail = "";
   if (stale && indexed && live) detail = `${indexed} → ${live}`;
@@ -411,15 +425,19 @@ function Freshness({
   }
 
   return (
+    // A statistic plus its one action, so it groups with a hairline rather than
+    // a card. The dot renders only when the index is behind: a marker every
+    // state carries says nothing, and a quiet row is a fresh index.
     <section
       aria-label="Index freshness"
-      className="flex items-center gap-2.5 rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-2.5"
+      className="flex items-center gap-2.5 border-t border-[var(--color-border-default)] px-1 pt-3"
     >
-      <span
-        className="h-2 w-2 shrink-0 rounded-full"
-        style={{ backgroundColor: dotColor }}
-        aria-hidden
-      />
+      {stale ? (
+        <span
+          className="h-2 w-2 shrink-0 rounded-full bg-[var(--color-warning)]"
+          aria-hidden
+        />
+      ) : null}
       <div className="min-w-0 flex-1">
         <p className="text-xs font-medium text-[var(--color-text-primary)]">
           {updating ? "Updating index…" : stale ? "Index behind checkout" : "Index up to date"}
@@ -434,11 +452,11 @@ function Freshness({
         type="button"
         onClick={onUpdate}
         disabled={updating}
-        title="Run an incremental index update"
+        title="Update the index with recent changes"
         className={
           stale && !updating
-            ? "flex shrink-0 items-center gap-1.5 rounded-lg bg-[var(--color-accent-primary)] px-2.5 py-1.5 text-[11px] font-medium text-[var(--color-text-on-accent)] transition-opacity hover:opacity-90"
-            : "flex shrink-0 items-center gap-1.5 rounded-lg border border-[var(--color-border-default)] px-2.5 py-1.5 text-[11px] font-medium text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-border-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-default disabled:opacity-60"
+            ? "flex shrink-0 items-center gap-1.5 rounded-lg bg-[var(--color-accent-primary)] px-2.5 py-1.5 text-xs font-medium text-[var(--color-text-on-accent)] transition-opacity hover:opacity-90"
+            : "flex shrink-0 items-center gap-1.5 rounded-lg border border-[var(--color-border-default)] px-2.5 py-1.5 text-xs font-medium text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-border-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-default disabled:opacity-60"
         }
       >
         <RefreshCw className={updating ? "h-3 w-3 animate-spin" : "h-3 w-3"} />
@@ -448,34 +466,38 @@ function Freshness({
   );
 }
 
-function LauncherCard({
-  spec,
+function LauncherRow({
+  icon: Icon,
+  title,
   subtitle,
+  muted,
   onOpen,
 }: {
-  spec: CardSpec;
+  icon: ComponentType<{ className?: string }>;
+  title: string;
   subtitle: string;
+  muted?: boolean;
   onOpen: () => void;
 }) {
-  const Icon = spec.icon;
   return (
     <button
       type="button"
       onClick={onOpen}
-      className="group flex w-full items-center gap-3 rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-2.5 text-left transition-colors hover:border-[var(--color-border-hover)] hover:bg-[var(--color-bg-elevated)]"
+      className="group flex w-full items-center gap-3 rounded-md border-b border-[var(--color-border-default)] px-2 py-2 text-left transition-colors last:border-b-0 hover:bg-[var(--color-bg-wash-hover)]"
     >
-      <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]">
-        <Icon className="h-4 w-4" />
-      </span>
+      <Icon
+        className={
+          "h-4 w-4 shrink-0 " +
+          (muted ? "text-[var(--color-text-secondary)]" : "text-[var(--color-accent-primary)]")
+        }
+      />
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-[13px] font-medium text-[var(--color-text-primary)]">
-          {spec.title}
-        </span>
-        <span className="block truncate text-[11px] text-[var(--color-text-tertiary)]">
+        <span className="block text-xs font-medium text-[var(--color-text-primary)]">{title}</span>
+        <span className="block text-xs leading-snug text-[var(--color-text-tertiary)]">
           {subtitle}
         </span>
       </span>
-      <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)] opacity-0 transition-opacity group-hover:opacity-100" />
+      <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)] opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
     </button>
   );
 }

@@ -14,10 +14,12 @@
 ) @symbol.def
 
 (class_declaration
+  (modifiers)? @symbol.modifiers
   (identifier) @symbol.name
 ) @symbol.def
 
 (object_declaration
+  (modifiers)? @symbol.modifiers
   (identifier) @symbol.name
 ) @symbol.def
 
@@ -55,20 +57,78 @@
 ; Calls
 ; ---------------------------------------------------------------------------
 
-; Simple call: foo(args)
+; Simple call: foo(args), or foo { ... } whose only argument is a trailing
+; lambda: the grammar gives that form no ``value_arguments`` at all.
 (call_expression
   (identifier) @call.target
-  (value_arguments) @call.arguments
+  [
+    (value_arguments)
+    (annotated_lambda)
+  ] @call.arguments
 ) @call.site
 
-; Member call: obj.method(args)
+; Member call: obj.method(args) — and self-dispatch: this.method(args).
+; See typescript.scm for why ``this`` rides an alternation in the receiver slot
+; instead of a second pattern. ``this.field.method()`` captures the field, as
+; java.scm does, so a constructor property types it.
 (call_expression
   (navigation_expression
-    (identifier) @call.receiver
+    [
+      (identifier) @call.receiver
+      (this_expression) @call.receiver
+      (navigation_expression (this_expression) (identifier) @call.receiver)
+    ]
+    (identifier) @call.target
+  )
+  [
+    (value_arguments)
+    (annotated_lambda)
+  ] @call.arguments
+) @call.site
+
+; Call chained on another call: a.b().c(args), a?.b()?.c(args), B.Builder().c().
+; The inner call is captured whole as ``@call.receiver_call``; the grammar
+; names no fields on either node, so ``parser._kotlin_call_receiver`` reads its
+; target, receiver and arguments by position. The ``.`` or ``?.`` between the
+; two is an unnamed token, so one pattern serves both.
+(call_expression
+  (navigation_expression
+    (call_expression) @call.receiver_call
     (identifier) @call.target
   )
   (value_arguments) @call.arguments
 ) @call.site
+
+; ---------------------------------------------------------------------------
+; Callable references — a function named without being called
+; ---------------------------------------------------------------------------
+; The operator is matched literally because the installed grammar gives
+; ``Foo::bar`` and ``Foo.bar`` the same node shape, and the token is the only
+; thing separating them. ``::`` also precedes a property (``Foo::name``) and
+; the reserved ``::class``; neither is filtered here, because the symbol kind
+; settles it at resolution and no symbol is ever named ``class``.
+
+; Qualified: list.map(Foo::bar), register(A::process)
+(navigation_expression
+  (identifier) @reference.receiver
+  "::"
+  (identifier) @reference.name
+)
+
+; Bound to the enclosing instance: val f = this::handle
+(navigation_expression
+  (this_expression) @reference.receiver
+  "::"
+  (identifier) @reference.name
+)
+
+; Unqualified: list.map(::transform). Also catches a qualified spelling whose
+; receiver the grammar parsed as a type rather than an expression, which then
+; arrives receiver-less and so reaches only top-level functions. A ceiling in
+; the safe direction: it costs an edge, it cannot invent one.
+(callable_reference
+  (identifier) @reference.name
+)
 
 ; ---------------------------------------------------------------------------
 ; Type references — drive file-level ``type_use`` edges
@@ -78,7 +138,7 @@
 ; of which carry an import statement of their own. The single
 ; ``@param.type`` capture is reused across languages
 ; (see parser._extract_type_refs); the Kotlin head extractor in
-; parser_helpers.py unwraps ``Foo?`` / ``List<Foo>`` / dotted ``ns.Foo`` and
+; lang_helpers/type_heads.py unwraps ``Foo?`` / ``List<Foo>`` / dotted ``ns.Foo`` and
 ; filters the kotlin-stdlib ubiquitous types.
 
 ; Function parameter: fun f(x: Bar) — `(user_type)` and `(nullable_type)`

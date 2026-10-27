@@ -195,17 +195,17 @@ Filter unions:
 
 ## `dead-code/dead-code-view` - `DeadCodeView`
 
-The whole Dead Code page: summary tiles, the safe-to-delete pile, the
-"where it clusters" rollups, and the drill-down findings table. Owns the
+The whole Dead Code page: a lede (reclaimable lines and one posture
+sentence), the safe-to-delete list, and the findings table. Owns the
 optimistic patch + undo toast, bulk resolve, the AI cleanup prompt modal,
-Re-analyze, and the status filter that switches which slice the table shows.
+Re-analyze, and the status control that switches which slice the table shows.
 
 | Prop | Type | Required | Notes |
 |------|------|----------|-------|
 | `adapter` | `DeadCodeAdapter` | yes | Everything host-specific: fetching, mutation, links, navigation. |
 
 Behaviour worth knowing:
-- Two fetches. The open slice feeds the pile, the rollups and the table;
+- Two fetches. The open slice feeds the list and the table;
   a second, conditional fetch backs the status filter when it is not "open".
   Both are capped at 500 rows. The open slice has a repo-wide total to
   compare against, so its hint says "Showing N of M"; a non-open status has
@@ -215,7 +215,12 @@ Behaviour worth knowing:
   repository. A failed refresh over rows already in hand keeps the table and
   puts the card above it.
 - Optimistic row state lives here, not in the table, so resolving a row moves
-  the pile and the rollups with it and undo can put it back.
+  the list with it and undo can put it back.
+- Zero open findings: with `summary.analyzed_at` set, the lede reads "0 lines"
+  with a positive all-clear and no sections; with it `null` (no run recorded),
+  a neutral "Not analysed yet" with a run button. With the field absent (a
+  host that does not report runs), the all-clear shows without an "Analysed"
+  time; such a host should also set `analyzeDisabledReason`.
 
 ---
 
@@ -232,6 +237,7 @@ adding a required member is a breaking change for every consumer.
 | `listFindings` | `(opts?: { limit?: number; status?: DeadCodeStatus }) => Promise<DeadCodeFinding[]>` | yes | `status` defaults to `"open"` server-side. |
 | `analyze` | `() => Promise<{ job_id?: string } \| void>` | yes | Returning a `job_id` lets the view wait and refresh itself. |
 | `waitForAnalysis` | `(jobId: string) => Promise<void>` | no | Without it the view cannot know when to refetch, and says so in its toast. |
+| `analyzeDisabledReason` | `string` | no | Renders Re-analyze disabled with this sentence beside it. |
 | `patchFinding` | `(id: string, patch: DeadCodePatchInput) => Promise<DeadCodeFinding>` | yes | Must return the updated finding; the view stores it as the optimistic override. |
 | `fileHref` | `(path: string) => string` | yes | Makes the path a link and the row clickable. |
 | `graphHref` | `(path: string) => string` | no | Omit and the per-row Graph action disappears, which keeps app routes out of this package. |
@@ -241,14 +247,14 @@ adding a required member is a breaking change for every consumer.
 
 ## `dead-code/findings-table` - `FindingsTable`
 
-The drill-down table: kind tabs driven by the data, a search box, sortable
-columns, the confidence slider, a cleanup-ready switch, bulk resolve, and
-per-row status actions. Built on `shared/responsive-table` with
+The findings table: kind tabs driven by the data, a search box, sortable
+columns, one confidence control (All / High only), bulk resolve, and per-row
+status actions. Built on `shared/responsive-table` with
 `stacked="sm"` and windowed rows.
 
 | Prop | Type | Required | Notes |
 |------|------|----------|-------|
-| `findings` | `DeadCodeFinding[]` | yes | One status slice; the table filters it by kind / confidence / safety client-side. |
+| `findings` | `DeadCodeFinding[]` | yes | One status slice; the table filters it by kind / confidence / search client-side. |
 | `onPatch` | `(id, { status }) => Promise<DeadCodeFinding>` | yes | Host owns the API call and the undo toast. |
 | `onBulkResolve` | `(ids: string[]) => Promise<string[]>` | no | Must return the ids that actually resolved, not the ids it was given. The table reconciles against that, never against position. |
 | `fileHref` | `(path: string) => string` | no | |
@@ -258,8 +264,8 @@ per-row status actions. Built on `shared/responsive-table` with
 | `status` | `DeadCodeStatus` | no | Which slice is on screen. Defaults to `"open"`; bulk resolve only appears there. |
 | `isLoading` | `boolean` | no | Shows a skeleton instead of an empty state during the first fetch. |
 
-Selection is always intersected with the rows currently visible, so raising
-the confidence slider after selecting cannot resolve rows the user can no
+Selection is always intersected with the rows currently visible, so narrowing
+the confidence filter after selecting cannot resolve rows the user can no
 longer see.
 
 ---
@@ -267,7 +273,8 @@ longer see.
 ## `dead-code/finding-cells` - cell renderers
 
 `FindingIdentity`, `FindingConfidence`, `FindingSafety` and
-`FindingRowActions` back the table's columns. `FindingRowActions` is separate
+`FindingRowActions` back the table's columns. `FindingSafety` renders nothing
+on a deletion-ready row and "Review first" plus the reason on the rest. `FindingRowActions` is separate
 because it owns per-row pending/confirm state that a plain `render(row)`
 closure cannot hold; it offers resolve/ack/FP on an open finding and Reopen
 on anything already actioned. `DEAD_CODE_STATUS_LABELS` is the shared label
@@ -285,49 +292,6 @@ findings with the AI cleanup CTA.
 | `findings` | `SafeToDeletePileFinding[]` | yes | Caller passes the safe slice; structural subset of `DeadCodeFinding`. |
 | `onPropose` | `(ids: string[]) => void` | no | Opens the AI prompt modal; omit and the CTA disappears. |
 | `onSelect` | `(finding: DeadCodeFinding) => void` | no | Row click. |
-| `reclaimableLines` | `number` | no | The repo-wide total. Pass it only when the findings are not a capped slice, otherwise it sits next to counts describing a different population. |
-
----
-
-## `dead-code/owner-leaderboard` - `OwnerLeaderboard`
-
-Inline bar chart of dead-code lines per primary contributor. No charting
-dependency.
-
-| Prop | Type | Required | Notes |
-|------|------|----------|-------|
-| `findings` | `OwnerLeaderboardFinding[]` | yes | Structural subset of `DeadCodeFinding`. |
-| `topN` | `number` | no | Default 8. |
-| `safeOnly` | `boolean` | no | Count only cleanup-ready findings. |
-| `onSelect` | `(owner: string) => void` | no | Turns each bar into a button. |
-| `className` | `string` | no | |
-
----
-
-## `dead-code/findings-breakdown-grid` - `FindingsBreakdownGrid`
-
-Confidence-tier by kind heat matrix. Its own `<table>` is deliberate:
-this is a matrix, not a list, so `ResponsiveTable` is the wrong primitive.
-Tier boundaries come from `DEAD_CODE_CONFIDENCE` in
-`@repowise-dev/types/dead-code`, which mirrors the engine's
-`SAFE_CONFIDENCE_THRESHOLD`. The low row renders only when something is in
-it, since the list endpoint floors at the medium boundary.
-
-| Prop | Type | Required | Notes |
-|------|------|----------|-------|
-| `findings` | `FindingsBreakdownItem[]` | yes | Needs only `kind` and `confidence`. |
-| `className` | `string` | no | |
-
----
-
-## `dead-code/summary-bar` - `SummaryBar`
-
-Four-tile summary header for a dead-code report: total findings, candidate
-lines, breakdown by kind, breakdown by confidence band.
-
-| Prop | Type | Required | Notes |
-|------|------|----------|-------|
-| `summary` | `DeadCodeSummary` (`@repowise-dev/types/dead-code`) | yes | Caller fetches the rollup. |
 
 ---
 
@@ -443,13 +407,19 @@ contributors only.
 
 ### `git/hotspot-table` â€” `HotspotTable`
 
-Searchable, filterable, sortable table of hotspots. Filter chips:
-`all` / `hot` / `risk` / `accelerating`. Sortable columns:
-`commits` / `churn` / `trend`. UI-local state â€” no fetch coupling.
+Server-driven table of hotspots: the host owns search, filter, sort and
+paging (the table debounces the search box and reports settled values).
+Chips (`all` / `bus_factor_1` / `accelerating` / `bug_magnet`) show the
+server's `facets` as "N of total"; sortable columns (`score` / `commits` /
+`fixes` / `churn`) render only with `onSortChange`. One quiet per-row agent
+prompt and a header "Copy prompt for these N".
 
 | Prop | Type | Required |
 |------|------|----------|
 | `hotspots` | `Hotspot[]` (`@repowise-dev/types/git`) | yes |
+| `total`, `facets` | `number`, `HotspotFacets` | no |
+| `query` / `filter` / `sort` and their `on*Change` | controlled state | no |
+| `onGeneratePrompt`, `onGenerateBatchPrompt` | callbacks | no |
 
 ### `git/ownership-table` â€” `OwnershipTable`
 
@@ -824,7 +794,7 @@ role (`provider` / `consumer`).
 
 ### `workspace/repo-card` â€” `RepoCard`
 
-Tile linking to `/repos/{id}/overview` with file count, doc-coverage,
+Tile linking to `/repos/{id}/overview` with file count, doc confidence,
 hotspot count, and a primary indicator.
 
 | Prop | Type | Required |
@@ -887,15 +857,90 @@ link to `/commits?commit=`). `SavingsMini` accepts the structural
 ## `files/*` — File entity page
 
 The canonical "everything about this file" page used by
-`/repos/[id]/files/<path>`. `FilePage` (client) assembles the header
-(path, health badge, signal chips, governing decisions) plus Doc /
-Health / History / Coverage / Graph tabs; per-tab components are
-exported individually. Data arrives as one `FileDetailResponse`
-(`@repowise-dev/types/files`); the host supplies `docSlot` (rendered
-markdown), `coverageCodeHtml` (shiki output whose `.line` nodes carry
-`data-covered` attributes), and `onFindingStatusChange` for triage.
-`symbols/symbol-page` (`SymbolPage`) is the symbol-page sibling fed by
-`SymbolDetailResponse`.
+`/repos/[id]/files/<path>`. `symbols/symbol-page` (`SymbolPage`) is the
+symbol-page sibling fed by `SymbolDetailResponse`.
+
+**The page is four pieces, not one component, and the split is the
+hydration boundary.** A host composes them; it does not hand a
+`FileDetailResponse` to a client component.
+
+| Piece | Where it runs | Job |
+|---|---|---|
+| `FilePageHeader` | server | Eyebrow, path as identity, the `PageLede` figure, the marker row, the `StatRibbon`. |
+| `fileTabsFor(data)` | server | The tab row as `FileTabDef[]` — label, blurb, badge. `resolveFileTab` narrows a `?tab=` value against it. |
+| `buildFilePanels({...})` | server | Renders the six pure tab bodies and returns them keyed by tab id. Takes `healthPanel` as an already-wrapped node. |
+| `FilePage` | client | The shell: header slot, `ViewTabs`, active panel. Imports `ViewTabs` and nothing else from the slice. |
+
+`FilePage` used to be `"use client"` and import all seven tab bodies, so
+the whole slice plus a twice-serialised `FileDetailResponse` reached the
+browser to render one tab. `file-health-tab` is now the only file in
+`files/*` carrying `"use client"` — it owns triage state, two virtualised
+lists and a measured trend. Because its triage callback and href builders
+are functions, a host wraps it itself and passes the result in as
+`healthPanel`; that wrapper is the page's only client boundary besides
+the shell.
+
+Two consequences a host must honour:
+
+- **Key the shell on the file path.** Tab clicks are a shallow
+  `history.replaceState`, so a soft navigation from one file page to
+  another keeps React's state at the same tree position and strands the
+  active tab out of sync with the URL. Every cross-file link in the tab
+  bodies is a plain `<a>` today, which hides this; converting one to a
+  router link without the key surfaces it.
+- **`fields=slim` is the default fetch.** Only Documentation, Health and
+  Coverage read the four unbounded blocks the aggregate can drop, so the
+  route fetches slim unless the requested tab is one of those, and tells
+  the shell through `refetchTabs` which tabs need a round trip on first
+  click. A tab with nothing behind it is left out of that list rather
+  than buying a trip to be shown the same empty state.
+
+Bands come from `bandForScore` (`@repowise-dev/types/health`), never from a
+threshold of the page's own — this page sits one click from the treemap and
+the health map, and all three paint the same five bands.
+
+**The doors, and who owns each end.** The page had thirty surfaces linking
+into it and almost nothing linking out, and the docs surface — the one that
+knows a page documents *this exact path* — linked to it zero times.
+
+- `FilePageHeader` takes `wikiHref`. It used to live in the Doc tab, which
+  made the only link to the wiki reachable only from the tab that already
+  renders the wiki. Pass it **only when a page exists** — this route already
+  knows, and the reader's missing-page reply is for someone who typed the id,
+  not for a link the product offered. It reads "Read in Docs", naming the
+  surface the nav names: "Documentation" is the tab forty pixels below it, and
+  two controls with near enough one name, one staying and one leaving, is the
+  two-verbs-one-subject problem relocated rather than fixed.
+- `DocsReader` takes `buildFileHref`, and renders the door only for a
+  `file_page`. `page.target_path` is the repo-relative path the file route
+  takes, so nothing parses an id. Optional, so a host with no file route
+  (the VS Code webview) renders no door rather than a broken one.
+- `buildFilePanels` forwards `LinkComponent` to Overview, History, Decisions
+  and Dependencies. **This does not move the hydration boundary**: a
+  `next/link` element *rendered from* a server component is still server
+  markup. An `onClick` would not be — that is what would drag a body back
+  into the client bundle.
+- Because those cross-file links are soft navigations now, the shell's
+  `key` on the file path is load-bearing rather than defensive. Without it a
+  file → file click keeps React's tab state at the same tree position and
+  strands the active tab out of sync with the URL.
+
+Route builders are `fileEntityPath`, `symbolEntityPath`, `filePageId` and
+`docsPagePath` from `shared/entity`. `filePageId` exists because the
+`"file_page:<path>"` id has to agree with a backend primary key and was
+spelled out at five call sites; `pageHref` derives its parse prefix from the
+builder so the two cannot drift. The docs surface reads `?page=`, never
+`?file=` — three surfaces shipped a `?file=` link that nothing read, which
+meant they silently opened the repo overview and looked like they had worked.
+
+Repointing them at `?page=` puts real traffic on ids that resolve to nothing,
+because page selection is budgeted and most files have no page. So
+`DocsReader` takes `missingPageId` and answers by naming the page that is
+missing, instead of the "Select a page, choose one from the tree" prompt meant
+for a reader who asked for nothing. `docs-explorer` sets it only once the
+fetch has settled, or the line flashes over a request about to succeed. It
+deliberately does **not** fall back to the overview: a reader who asked about
+one file must not silently land in another file's prose.
 
 ### `dashboard/attention-panel` â€” `AttentionPanel`
 
@@ -1079,11 +1124,13 @@ these components only render `BlastRadiusResponse` (from
 
 ### `blast-radius/risk-score-card` — `RiskScoreCard`
 
-Coloured 0–10 gauge. Red ≥7, amber ≥4, emerald otherwise.
+Structural-impact gauge. The server-owned band is `broad`, `moderate`, or
+`localized`; the value is an uncalibrated 0–10 heuristic, not a probability.
 
 | Prop | Type | Required |
 |------|------|----------|
 | `score` | `number` (0–10) | yes |
+| `band` | `"localized" \| "moderate" \| "broad"` | no |
 
 ### `blast-radius/table-section` — `TableSection`
 
@@ -1098,8 +1145,9 @@ Card wrapper with title and "empty" placeholder.
 
 ### `blast-radius/direct-risks-table` — `DirectRisksTable`
 
-Renders `DirectRiskEntry[]`. Multiplies `risk_score` and
-`temporal_hotspot` by 10 for display (backend ships 0–1).
+Renders `DirectRiskEntry[]`. `structural_score` is the raw, unbounded
+pagerank-weighted-hotspot heuristic and is displayed in those units. Bars use
+within-change relative share only; they do not invent a 0–10 scale.
 
 | Prop | Type | Required |
 |------|------|----------|
@@ -1131,7 +1179,9 @@ Email + files-owned + percent ownership. `ownership_pct` is 0–1.
 
 ### `blast-radius/test-gaps-list` — `TestGapsList`
 
-Bullet list of files lacking adjacent test coverage.
+Compatibility list of file-level test gaps. It is not a measured-coverage
+claim; consumers use `result.test_impact` for typed recommendations, evidence
+basis, and coverage availability.
 
 | Prop | Type | Required |
 |------|------|----------|
@@ -1148,7 +1198,10 @@ Transitive Files / Co-change Warnings / Test Gaps).
 
 ### `blast-radius/blast-radius-results` — `BlastRadiusResults`
 
-Composes the full results stack: gauge + summary + the five tables.
+Composes the full results stack: gauge, summary, impact map, typed test
+recommendations with measured/inferred basis, explicit unavailable-analysis
+copy, and the compatibility tables. `test_impact` is optional in the shared
+TypeScript contract so the component remains compatible with older servers.
 
 | Prop | Type | Required |
 |------|------|----------|
@@ -1213,6 +1266,7 @@ multi-tenant settings persistence is deferred to Phase 5 RBAC.
 |------|------|----------|
 | `value` | `RepoSettingsValue` | yes |
 | `onSubmit` | `(next: RepoSettingsValue) => Promise<void>` | no |
+| `autosave` | `boolean` (saves each field on commit, rolls back when `onSubmit` rejects) | no |
 | `localPath` | `string` | no |
 | `remoteUrl` | `string` | no |
 | `disabledHint` | `string` | no |

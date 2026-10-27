@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from repowise.server.mcp_server._enrichment import CrossRepoEnricher
+from repowise.server.mcp_server.tool_risk.enrichment import _combined_analysis
 
 
 def _write_json(path: Path, data: dict) -> None:
@@ -72,6 +73,8 @@ class TestEnricherContractLoading:
     def test_no_contracts_path(self, empty_cross_repo: Path) -> None:
         enricher = CrossRepoEnricher(empty_cross_repo)
         assert enricher.has_contract_data is False
+        assert enricher.cross_repo_analysis["status"] == "available"
+        assert enricher.contract_analysis["status"] == "unavailable"
 
     def test_missing_contracts_file(self, empty_cross_repo: Path, tmp_path: Path) -> None:
         enricher = CrossRepoEnricher(
@@ -79,6 +82,64 @@ class TestEnricherContractLoading:
             contracts_path=tmp_path / "nonexistent.json",
         )
         assert enricher.has_contract_data is False
+        assert enricher.contract_analysis == {
+            "status": "unavailable",
+            "reason": "artifact_missing",
+        }
+
+    def test_valid_empty_contract_artifact_is_available(
+        self, empty_cross_repo: Path, tmp_path: Path
+    ) -> None:
+        contracts = tmp_path / "contracts.json"
+        _write_json(contracts, {"version": 2, "contracts": [], "contract_links": []})
+        enricher = CrossRepoEnricher(empty_cross_repo, contracts_path=contracts)
+
+        assert enricher.has_contract_data is False
+        assert enricher.contract_analysis["status"] == "available"
+
+    def test_malformed_artifacts_are_degraded(self, tmp_path: Path) -> None:
+        cross_repo = tmp_path / "cross_repo_edges.json"
+        contracts = tmp_path / "contracts.json"
+        cross_repo.write_text("{", encoding="utf-8")
+        contracts.write_text("{", encoding="utf-8")
+        enricher = CrossRepoEnricher(cross_repo, contracts_path=contracts)
+
+        assert enricher.cross_repo_analysis["status"] == "degraded"
+        assert enricher.contract_analysis["status"] == "degraded"
+
+    def test_malformed_rows_make_otherwise_valid_artifacts_partial(self, tmp_path: Path) -> None:
+        cross_repo = tmp_path / "cross_repo_edges.json"
+        contracts = tmp_path / "contracts.json"
+        _write_json(
+            cross_repo,
+            {"version": 2, "co_changes": [{"source_repo": "alpha"}], "package_deps": []},
+        )
+        _write_json(
+            contracts,
+            {"version": 2, "contracts": [], "contract_links": [{"provider_repo": "alpha"}]},
+        )
+        enricher = CrossRepoEnricher(cross_repo, contracts_path=contracts)
+
+        assert enricher.cross_repo_analysis["status"] == "partial"
+        assert enricher.cross_repo_analysis["malformed_co_changes_skipped"] == 1
+        assert enricher.contract_analysis["status"] == "partial"
+        assert enricher.contract_analysis["malformed_contract_links_skipped"] == 1
+
+    @pytest.mark.parametrize(
+        ("cross_state", "contract_state"),
+        [
+            ({"status": "available"}, {"status": "unavailable"}),
+            ({"status": "unavailable"}, {"status": "available"}),
+        ],
+    )
+    def test_mixed_source_availability_is_partial(
+        self, cross_state: dict, contract_state: dict
+    ) -> None:
+        analysis = _combined_analysis(cross_state, contract_state, [])
+
+        assert analysis["status"] == "partial"
+        assert analysis["sources"]["cross_repo_overlay"] == cross_state
+        assert analysis["sources"]["contracts"] == contract_state
 
     def test_loads_contract_links(
         self, empty_cross_repo: Path, contracts_json: Path
@@ -132,3 +193,46 @@ class TestEnricherContractLoading:
         enricher = CrossRepoEnricher(missing_path, contracts_path=contracts_json)
         assert enricher.has_data is True
         assert enricher.has_contract_data is True
+
+
+class TestEnricherFromData:
+    """Parsed payloads get the same validation and indexes a file load does."""
+
+    def test_payloads_build_the_indexes_a_file_load_builds(
+        self, contracts_json: Path, empty_cross_repo: Path
+    ) -> None:
+        payload = json.loads(contracts_json.read_text(encoding="utf-8"))
+        from_file = CrossRepoEnricher(empty_cross_repo, contracts_path=contracts_json)
+        from_data = CrossRepoEnricher.from_data(
+            overlay={"version": 2, "co_changes": [], "package_deps": []}, contracts=payload
+        )
+
+        assert from_data.contracts == from_file.contracts
+        assert from_data.contract_links == from_file.contract_links
+        assert from_data.contract_analysis == from_file.contract_analysis
+        assert from_data.cross_repo_analysis == from_file.cross_repo_analysis
+        assert from_data.get_contract_links_as_provider(
+            "backend", "routes.py"
+        ) == from_file.get_contract_links_as_provider("backend", "routes.py")
+        assert from_data.get_affected_repos("backend", "routes.py") == ["frontend"]
+
+    def test_a_stale_overlay_payload_is_refused_like_a_stale_file(self) -> None:
+        pair = {
+            "source_repo": "a",
+            "source_file": "x",
+            "target_repo": "b",
+            "target_file": "y",
+            "strength": 0.5,
+        }
+        enricher = CrossRepoEnricher.from_data(overlay={"version": 1, "co_changes": [pair]})
+        assert enricher.co_changes == []
+        assert enricher.cross_repo_analysis["reason"] == "unsupported_contract_version"
+
+    def test_absent_payloads_are_absent_artifacts(self) -> None:
+        enricher = CrossRepoEnricher.from_data(
+            conformance={"generated_at": "t", "violations": [], "cycles": []}
+        )
+        assert enricher.has_data is False
+        assert enricher.get_system_graph() is None
+        assert enricher.has_conformance is True
+        assert enricher.contract_analysis["status"] == "unavailable"

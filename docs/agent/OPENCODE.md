@@ -1,9 +1,47 @@
 # OpenCode Integration
 
-Repowise supports OpenCode via the `opencode` LLM provider, which runs
-documentation generation through your local OpenCode CLI installation.
-No API keys are managed by repowise — OpenCode handles all authentication
-and model selection through its own provider system.
+Repowise and OpenCode connect in **two independent directions**, and it is worth
+knowing which one you want before reading further. They share nothing but a name.
+
+| Direction | What it is | Where to read |
+|---|---|---|
+| Repowise calls OpenCode | The `opencode` **LLM provider**. Repowise runs your local OpenCode CLI to generate wiki pages, instead of using an API key. | [`opencode` Provider](#opencode-provider) below |
+| OpenCode calls Repowise | The `opencode` **agent target**. OpenCode gets the repowise MCP tools, so you can ask it about your codebase. | [OpenCode as an MCP host](#opencode-as-an-mcp-host) below |
+
+You can use either, both, or neither. Enabling one does not enable the other.
+
+## OpenCode as an MCP host
+
+```bash
+repowise agents add --target=opencode
+```
+
+This registers the repowise MCP server under the `mcp` key of your
+`opencode.jsonc` (or an existing `opencode.json`) and adds a managed section to
+`AGENTS.md`. By default it writes both the repo-local pair at the repo root and
+the per-machine pair under `$XDG_CONFIG_HOME/opencode`, falling back to
+`~/.config/opencode`; pass `--scope=project` or `--scope=user` for one of them.
+That config path is the same on Windows, where OpenCode does not read
+`%APPDATA%`.
+
+OpenCode is at the **Good** tier: it gets the MCP tools and the config to reach
+them, but no hook-level interception and no transcript mining. See the
+[support matrix](INTEGRATIONS.md) for what that means in full.
+
+Two things worth knowing:
+
+- **Comments in the config are safe.** OpenCode accepts JSONC, and repowise does
+  not rewrite a config it cannot parse as strict JSON. If yours has comments,
+  `repowise agents add` leaves it alone and tells you to run
+  `repowise agents print-config opencode` and paste the entry yourself.
+- **`AGENTS.md` is shared with Codex and Hermes.** All three agents read the same
+  file, and all three manage the same marker-delimited section of it. Removing one
+  of them leaves the section in place while another is still wired, and says so.
+
+Remove it with `repowise agents remove --target=opencode`, and check it with
+`repowise agents` or `repowise doctor`. To remove every agent at once, along
+with the index and anything else repowise has written, see
+[`repowise uninstall`](../reference/CLI_REFERENCE.md#repowise-uninstall-path).
 
 ## Prerequisites
 
@@ -44,10 +82,11 @@ You can also persist it:
 REPOWISE_PROVIDER=opencode repowise update
 ```
 
-The provider runs:
+The provider runs `opencode run --format json` with the repository as the
+subprocess working directory:
 
 ```bash
-opencode run --format json --dangerously-skip-permissions --dir /absolute/path/to/repo
+cd /absolute/path/to/repo && opencode run --format json
 ```
 
 Repowise sends the combined system + user prompt on **stdin**, parses
@@ -91,8 +130,8 @@ The provider enforces several safety measures:
 - Model names are validated against a safe character set
   (`[a-zA-Z0-9][a-zA-Z0-9._/\-]*`), rejecting shell metacharacters
   before anything reaches the subprocess.
-- All paths are resolved with `Path.resolve()` before being passed to
-  `--dir`.
+- All paths are resolved with `Path.resolve()` before the repo is used as
+  the subprocess working directory.
 - Subprocess execution is serialized via `asyncio.Semaphore(1)`.
 - A 600-second hard timeout with process kill prevents runaway calls.
 
@@ -106,7 +145,7 @@ The provider enforces several safety measures:
 | Reasoning modes | Not passed (OpenCode manages it) | `model_reasoning_effort` mapping |
 | Sandbox | OpenCode manages its own | `--sandbox read-only` |
 | Model discovery | `opencode models` | `codex debug models --bundled` |
-| Editor integration | None | `.codex/config.toml`, hooks, plugin |
+| MCP host integration | `opencode.jsonc`, `AGENTS.md` (Good tier) | `.codex/config.toml`, hooks, plugin, prompts (Full tier) |
 | API keys stored | No | No |
 
 ## Official OpenCode Docs

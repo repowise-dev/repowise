@@ -3,6 +3,7 @@ import {
   CO_CHANGES,
   describeCap,
   describeRelations,
+  toggleVerb,
   indexRelationsByNode,
   summarizeRelations,
 } from "../../src/zoom/relation-summary";
@@ -109,5 +110,28 @@ describe("describeCap", () => {
     expect(describeCap(summarizeRelations(many))).toBe(
       `Showing the ${EDGE_MAX_PER_PARENT} strongest`,
     );
+  });
+});
+
+describe("toggleVerb", () => {
+  it("starts a filter from the unfiltered state", () => {
+    expect([...(toggleVerb(null, "calls") ?? [])]).toEqual(["calls"]);
+  });
+
+  it("accumulates, so the control is a multi-select and not a radio group", () => {
+    const one = toggleVerb(null, "calls");
+    expect([...(toggleVerb(one, "imports") ?? [])].sort()).toEqual(["calls", "imports"]);
+  });
+
+  it("returns to null when the last verb is removed, never to an empty set", () => {
+    // An empty set would draw no arrows at all, which is not what clearing the
+    // last chip asks for.
+    expect(toggleVerb(new Set(["calls"]), "calls")).toBeNull();
+  });
+
+  it("does not mutate the set it was given", () => {
+    const before = new Set(["calls"]);
+    toggleVerb(before, "imports");
+    expect([...before]).toEqual(["calls"]);
   });
 });

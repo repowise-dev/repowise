@@ -7,9 +7,22 @@ SPEC = LanguageSpec(
     display_name="C#",
     import_support="full",
     # xUnit/NUnit conventions: FooTest(s)/FooSpec(s); sibling Foo.Tests/
-    # and BDD-style Foo.Specs/ projects (Polly's test/Polly.Specs).
+    # and BDD-style Foo.Specs/ projects (Polly's test/Polly.Specs), plus the
+    # Foo.UnitTests / Foo.IntegrationTests / Foo.FunctionalTests / Foo.FuzzTests
+    # spellings (PowerToys' Settings.UI.UnitTests, Hosts.FuzzTests) and the
+    # singular Foo.UnitTest (#2662). Case-sensitive whole-suffix matches, so a
+    # shipped Foo.Testing/ library stays production code.
     test_camel_suffixes=("Test", "Tests", "Spec", "Specs"),
-    test_dir_suffixes=(".Tests", ".Specs"),
+    fixture_camel_suffixes=("Fixture", "Fixtures"),
+    test_dir_suffixes=(
+        ".Tests",
+        ".Specs",
+        ".UnitTests",
+        ".IntegrationTests",
+        ".FunctionalTests",
+        ".FuzzTests",
+        ".UnitTest",
+    ),
     # Clean-architecture project-dir suffixes (Foo.Api/, Foo.Domain/,
     # Foo.Infrastructure/) — not yet verified against a live .NET repo.
     layer_dir_hints=((".Api", "API"), (".Domain", "Service"), (".Infrastructure", "Data")),
@@ -32,6 +45,20 @@ SPEC = LanguageSpec(
         "App.xaml.cs",  # WPF / WinUI / MAUI app shell
     ),
     manifest_files=(
+        "Directory.Build.props",
+        "Directory.Build.targets",
+        "Directory.Packages.props",
+        "global.json",
+        "nuget.config",
+        "NuGet.Config",
+    ),
+    manifest_globs=("*.csproj",),
+    # None of these declare a package — the .csproj does. They are MSBuild /
+    # NuGet settings that sit at a solution root and are re-declared under
+    # tests/, templates/ and misc/, so treating them as package roots would
+    # fragment a .NET repo's module rollup (135 such directories measured
+    # across the repos censused when this field landed).
+    build_config_manifests=(
         "Directory.Build.props",
         "Directory.Build.targets",
         "Directory.Packages.props",
@@ -81,6 +108,64 @@ SPEC = LanguageSpec(
             "IComparable",
             "ICloneable",
             "IEquatable",
+            # UI and component base classes matching the VB.NET shared BCL set.
+            "Form",
+            "Control",
+            "UserControl",
+            "Component",
+            "Page",
+            "Window",
+            "Attribute",
+            "EventArgs",
+            "MarshalByRefObject",
+            "INotifyPropertyChanged",
+            "IComparer",
+            "ICollection",
+            "IList",
+            "IDictionary",
+        }
+    ),
+    # Type expressions that never resolve to a user-defined .NET type. Skipping
+    # these avoids polluting the resolver with hopeless lookups. Generic args
+    # inside `IList<T>` are stripped before this check is applied.
+    builtin_types=frozenset(
+        {
+            "void",
+            "bool",
+            "byte",
+            "sbyte",
+            "char",
+            "short",
+            "ushort",
+            "int",
+            "uint",
+            "long",
+            "ulong",
+            "float",
+            "double",
+            "decimal",
+            "string",
+            "object",
+            "nint",
+            "nuint",
+            "dynamic",
+            "var",
+            # Frequently appearing BCL types that are always external — listing
+            # them here is purely a performance optimisation (one dict miss
+            # avoided per occurrence).
+            "Task",
+            "ValueTask",
+            "CancellationToken",
+            "Action",
+            "Func",
+            "Type",
+            "Exception",
+            "DateTime",
+            "DateTimeOffset",
+            "TimeSpan",
+            "Guid",
+            "Uri",
+            "Stream",
         }
     ),
     color_hex="#178600",

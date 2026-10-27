@@ -71,6 +71,76 @@ def test_short_pushback_is_skipped():
     assert mine_events([_user("no")], REPO_PREFIX) == []
 
 
+def test_pushback_inside_a_longer_brief_is_a_correction():
+    """The gate scans sentences, not just the opening of the message.
+
+    Measured over 436 transcripts: requiring the whole message to open with a
+    lead found 62 corrections and, over the two most recent days, zero — while
+    pushback language held its long-run density. A correction now usually
+    arrives as one sentence inside a longer brief.
+    """
+    events = [
+        _user(
+            "Work on the hook track next session. Do not run uv sync in the "
+            "worktree, it triggers a numpy source build. Then open the PR."
+        )
+    ]
+    (candidate,) = mine_events(events, REPO_PREFIX)
+    assert candidate.kind == "user_correction"
+    assert candidate.quotes == [
+        "Do not run uv sync in the worktree, it triggers a numpy source build."
+    ]
+
+
+def test_correction_quote_is_the_sentence_not_the_message():
+    """``contradicts()`` compares one statement; give it one statement."""
+    events = [_user("Some preamble that sets up the task. Never run ruff format here.")]
+    (candidate,) = mine_events(events, REPO_PREFIX)
+    assert candidate.quotes == ["Never run ruff format here."]
+
+
+def test_actually_is_not_a_pushback_lead():
+    """Mid-message it is narrative as often as reversal; see PUSHBACK_LEADS.
+
+    Opens with the lead, so it fails the moment "actually" goes back on the
+    list — which the weaker phrasing of this test did not.
+    """
+    events = [_user("Actually, that produces the right total after all.")]
+    assert [c for c in mine_events(events, REPO_PREFIX) if c.kind == "user_correction"] == []
+
+
+def test_a_brief_that_corrects_still_yields_its_explicit_choices():
+    """The correction gate must not swallow the rest of a long message.
+
+    Skipping the choice gate was harmless while a correction was a short reply
+    that was only a correction; one lead sentence inside a brief is not.
+    """
+    events = [
+        _tool_call("Edit", {"file_path": f"{CWD}\\svc.py"}),
+        _user(
+            "Do not use the shared pool here. We went with per-request sessions "
+            "because the pool leaks under the test runner."
+        ),
+    ]
+    kinds = _kinds(mine_events(events, REPO_PREFIX))
+    assert "user_correction" in kinds
+    assert "explicit_choice" in kinds
+
+
+def test_two_corrections_in_one_message_are_both_quoted():
+    """One declarative opener must not discard the real correction behind it."""
+    events = [
+        _user(
+            "No releases yet. Never run the formatter here, CI only checks lint."
+        )
+    ]
+    (candidate,) = mine_events(events, REPO_PREFIX)
+    assert candidate.quotes == [
+        "No releases yet.",
+        "Never run the formatter here, CI only checks lint.",
+    ]
+
+
 def test_meta_compact_sidechain_and_tag_text_skipped():
     events = [
         _user("Don't ever do that again, use the helper because it exists", is_meta=True),
@@ -94,7 +164,7 @@ def test_forward_files_attach_to_correction():
         _tool_call("Edit", {"file_path": "C:\\Users\\x\\repo\\adapter.py"}),
     ]
     (candidate,) = mine_events(events, REPO_PREFIX)
-    assert candidate.files == ["C:\\Users\\x\\repo\\adapter.py"]
+    assert candidate.files == ["adapter.py"]
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +183,27 @@ def test_choice_near_file_activity_is_candidate():
     (candidate,) = mine_events(events, REPO_PREFIX)
     assert candidate.kind == "explicit_choice"
     assert candidate.quotes == [CHOICE_TEXT]
-    assert candidate.files == ["C:\\Users\\x\\repo\\staging.py"]
+    assert candidate.files == ["staging.py"]
+
+
+def test_a_choice_touching_only_another_checkout_is_dropped():
+    """An out-of-repo path is not a scope, so it cannot carry the gate."""
+    events = [
+        _tool_call("Write", {"file_path": "C:\\Users\\x\\other\\staging.py"}),
+        _tool_result("t1", {"ok": True}),
+        Event(kind="assistant", cwd=CWD, session_id="sess-1", text=CHOICE_TEXT),
+    ]
+    assert mine_events(events, REPO_PREFIX) == []
+
+
+def test_a_correction_keeps_only_the_files_inside_the_repository():
+    events = [
+        _user("No, keep the parser in the adapter module, don't inline it"),
+        _tool_call("Edit", {"file_path": "C:\\Users\\x\\repo\\a.py"}, "t1"),
+        _tool_call("Edit", {"file_path": "C:\\Users\\x\\elsewhere\\b.py"}, "t2"),
+    ]
+    (candidate,) = mine_events(events, REPO_PREFIX)
+    assert candidate.files == ["a.py"]
 
 
 def test_choice_with_no_files_anywhere_is_dropped():
@@ -275,8 +365,63 @@ def test_candidate_hash_is_content_stable():
 
 
 def test_session_mining_enabled_parsing():
-    assert session_mining_enabled(None) is True
-    assert session_mining_enabled({}) is True
+    # The lane ships off, so an absent or unreadable `decisions:` block means
+    # no transcript is read until somebody asks for it.
+    assert session_mining_enabled(None) is False
+    assert session_mining_enabled({}) is False
+    assert session_mining_enabled({"decisions": "garbage"}) is False
+    assert session_mining_enabled({"decisions": {"sources": {"session": True}}}) is True
     assert session_mining_enabled({"decisions": {"session_mining": True}}) is True
     assert session_mining_enabled({"decisions": {"session_mining": False}}) is False
-    assert session_mining_enabled({"decisions": "garbage"}) is True
+
+
+# ---------------------------------------------------------------------------
+# edited-above-read ordering
+# ---------------------------------------------------------------------------
+
+EDIT_TOOLS = frozenset({"Edit", "Write"})
+
+
+def test_edited_files_lead_the_files_the_session_only_read():
+    events = [
+        _tool_call("Read", {"file_path": "a/read.py"}, "t1"),
+        _tool_call("Edit", {"file_path": "a/edit.py"}, "t2"),
+        _user("no, always keep the loader separate because the parser reuses it"),
+    ]
+    # The lead sentence trips the correction gate and falls through to the
+    # choice gate, so both candidates carry the same window.
+    candidates = mine_events(events, REPO_PREFIX, edit_tools=EDIT_TOOLS)
+    assert candidates
+    for candidate in candidates:
+        assert candidate.files == ["a/edit.py", "a/read.py"]
+
+
+def test_without_an_edit_vocabulary_the_order_is_left_alone():
+    """An adapter that declares none must not have its files reordered."""
+    events = [
+        _tool_call("Read", {"file_path": "a/read.py"}, "t1"),
+        _tool_call("Edit", {"file_path": "a/edit.py"}, "t2"),
+        _user("no, always keep the loader separate because the parser reuses it"),
+    ]
+    candidates = mine_events(events, REPO_PREFIX)
+    assert candidates
+    for candidate in candidates:
+        assert candidate.files == ["a/read.py", "a/edit.py"]
+
+
+def test_a_candidates_own_edit_leads_however_long_the_session_runs_on():
+    """The rank is what this candidate saw, not the session's last few touches."""
+    events = [
+        _tool_call("Read", {"file_path": "a/looked.py"}, "t1"),
+        _tool_call("Edit", {"file_path": "a/decided.py"}, "t2"),
+        _user("no, always keep the loader separate because the parser reuses it"),
+    ]
+    events += [_tool_call("Edit", {"file_path": f"z/later{i}.py"}, f"t{i + 10}") for i in range(12)]
+    candidates = mine_events(events, REPO_PREFIX, edit_tools=EDIT_TOOLS)
+    assert candidates
+    for candidate in candidates:
+        # Files edited after the candidate attach to it on purpose, so the
+        # read is last rather than second; what matters is that the file being
+        # changed when the decision landed still leads.
+        assert candidate.files[0] == "a/decided.py"
+        assert candidate.files[-1] == "a/looked.py"

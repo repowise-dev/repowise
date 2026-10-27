@@ -2,10 +2,13 @@
  * Canonical dead-code finding types.
  *
  * Canonical source: engine `DeadCodeFindingResponse` + `DeadCodeSummaryResponse`.
- * Some downstream pipelines emit extra raw-shape fields (`evidence`, `package`,
- * `last_commit_at`, `commit_count_90d`, `age_days`) — preserved here as
- * optional so consumer adapters don't lose information when normalising.
+ * Some downstream pipelines emit extra raw-shape fields (`evidence`,
+ * `age_days`) — preserved here as optional so consumer adapters don't lose
+ * information when normalising. `package` was dropped: it duplicated the
+ * first segment of `file_path`.
  */
+
+import type { GatedByLanguage } from "./health.js";
 
 export type DeadCodeStatus = "open" | "acknowledged" | "resolved" | "false_positive";
 
@@ -41,6 +44,34 @@ export function deadCodeConfidenceTier(confidence: number): "high" | "medium" | 
   return "low";
 }
 
+/**
+ * Human-readable label per runtime-load risk factor.
+ *
+ * Mirrors `_FACTOR_BLURB` in `core/analysis/dead_code/risk_factors.py`, which
+ * is where the engine's own evidence line gets its wording. The slugs are an
+ * API vocabulary, not English: joining them straight into a sentence renders
+ * "Runtime-load risk (config, asset)" where the engine says
+ * "configuration, runtime-loaded web asset".
+ *
+ * Keyed on every tag `path_risk_factors` can emit; a contract test
+ * (`tests/unit/dead_code/test_confidence_parity.py`) fails when the two key
+ * sets drift, so a new engine factor cannot ship without a label here.
+ */
+export const DEAD_CODE_RISK_FACTOR_LABELS: Record<string, string> = {
+  config: "configuration",
+  environment: "environment/bootstrap",
+  bootstrap: "bootstrap/entry-point",
+  database: "database/schema",
+  script: "script/task",
+  asset: "runtime-loaded web asset",
+  aura: "Salesforce Aura bundle",
+};
+
+/** Label for one risk factor, falling back to the raw slug for an unknown tag. */
+export function deadCodeRiskFactorLabel(factor: string): string {
+  return DEAD_CODE_RISK_FACTOR_LABELS[factor] ?? factor;
+}
+
 export interface DeadCodeFinding {
   id: string;
   kind: string;
@@ -49,7 +80,8 @@ export interface DeadCodeFinding {
   symbol_kind: string | null;
   confidence: number;
   reason: string;
-  lines: number;
+  /** Lines the finding covers; null when they could not be counted. */
+  lines: number | null;
   /**
    * Effective deletion-readiness — high confidence AND no runtime-load risk
    * factors. Re-derived server-side, not the raw persisted boolean.
@@ -57,18 +89,28 @@ export interface DeadCodeFinding {
   safe_to_delete: boolean;
   /**
    * Runtime-load risk factors (config / bootstrap / database / environment /
-   * script). Non-empty means a review candidate, never deletion-ready.
+   * script / asset). Non-empty means a review candidate, never
+   * deletion-ready.
    */
   risk_factors?: string[];
   primary_owner: string | null;
   status: DeadCodeStatus;
   note: string | null;
+  /**
+   * When the file was last touched. This is the staleness signal, and it is
+   * not `age_days`: that is measured from the *first* commit, so it answers
+   * "how old is this file" rather than "how long has this been dead". The two
+   * disagree on 75% of findings, so never label `age_days` as deadness.
+   */
+  last_commit_at?: string | null;
+  /** Commits to the file in the last 90 days; 0 is what earns a high confidence. */
+  commit_count_90d?: number;
   /** Raw engine artifact fields — present in some downstream pipelines, optional here. */
   evidence?: string[] | null;
-  package?: string | null;
-  last_commit_at?: string | null;
-  commit_count_90d?: number;
   age_days?: number | null;
+  /** The measurement note when the row's language cell is served as a preview;
+   *  null or absent for a validated cell. */
+  preview?: string | null;
 }
 
 export interface DeadCodePatchInput {
@@ -80,6 +122,16 @@ export interface DeadCodeSummary {
   total_findings: number;
   confidence_summary: Record<string, number>;
   deletable_lines: number;
+  /** Deletion-ready findings, the ones `deletable_lines` sums. Absent from older hosts. */
+  safe_to_delete_count?: number | null;
   total_lines: number;
   by_kind: Record<string, number>;
+  /**
+   * ISO 8601 UTC time dead-code analysis last ran. `null` means no run is
+   * recorded, which is not an all-clear. Absent means the host does not
+   * report it, and a zero then reads as clean.
+   */
+  analyzed_at?: string | null;
+  /** What a language gate held back, by language. Empty or absent when nothing was. */
+  gated?: GatedByLanguage;
 }

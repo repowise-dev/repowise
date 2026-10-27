@@ -177,24 +177,95 @@
 ; Calls
 ; ---------------------------------------------------------------------------
 
-; Simple call: Method(args)
+; Simple call: Method(args) and Method<T>(args).
+; A type argument list wraps the name in a `generic_name`, so matching only
+; `(identifier)` drops every generic call. The capture sits inside each branch
+; so the target is the bare name either way — capturing the alternation itself
+; would name the target `Method<T>`, which no index holds.
 (invocation_expression
-  function: (identifier) @call.target
+  function: [
+    (identifier) @call.target
+    (generic_name (identifier) @call.target)
+  ]
   arguments: (argument_list) @call.arguments
 ) @call.site
 
-; Member call: obj.Method(args)
+; Member call: obj.Method(args) — and self-dispatch: this.Method(args).
+; ``this`` is an ANONYMOUS node in tree-sitter-c-sharp, so it is matched as the
+; literal token "this"; `(this)` does not compile. See typescript.scm for why
+; this is an alternation rather than a second pattern.
 (invocation_expression
   function: (member_access_expression
-    expression: (identifier) @call.receiver
-    name: (identifier) @call.target
+    expression: [(identifier) "this"] @call.receiver
+    name: [
+      (identifier) @call.target
+      (generic_name (identifier) @call.target)
+    ]
   )
   arguments: (argument_list) @call.arguments
 ) @call.site
 
-; Constructor: new ClassName(args)
+; Chained call: factory().Method(args). Carry the inner invocation as an AST
+; node so resolution can use its declared return type without scanning text.
+(invocation_expression
+  function: (member_access_expression
+    expression: (invocation_expression) @call.receiver_call
+    name: [
+      (identifier) @call.target
+      (generic_name (identifier) @call.target)
+    ]
+  )
+  arguments: (argument_list) @call.arguments
+) @call.site
+
+; Null-conditional call: obj?.Method(args).
+; tree-sitter-c-sharp spells the `?.` form as a `conditional_access_expression`
+; wrapping a `member_binding_expression`, not a `member_access_expression`, so
+; none of the member-call patterns above can match it and the call site is
+; never produced at all rather than produced unresolved.
+; Scoped to the plain identifier receiver: a chained or constructed receiver
+; inside the conditional access raises its own receiver-typing question, which
+; belongs with the patterns that already answer it.
+(invocation_expression
+  function: (conditional_access_expression
+    condition: (identifier) @call.receiver
+    (member_binding_expression
+      name: [
+        (identifier) @call.target
+        (generic_name (identifier) @call.target)
+      ]
+    )
+  )
+  arguments: (argument_list) @call.arguments
+) @call.site
+
+; Fluent construction: new Builder().Method(args).
+; The receiver is captured from the constructed type rather than from a
+; variable, because here the type is written at the call site. That keeps the
+; site on the resolver's receiver-names-a-class path, which only binds when
+; that class declares the method, instead of the bare-name pool.
+(invocation_expression
+  function: (member_access_expression
+    expression: (object_creation_expression
+      type: [
+        (identifier) @call.receiver
+        (generic_name (identifier) @call.receiver)
+      ]
+    )
+    name: [
+      (identifier) @call.target
+      (generic_name (identifier) @call.target)
+    ]
+  )
+  arguments: (argument_list) @call.arguments
+) @call.site
+
+; Constructor: new ClassName(args) and new ClassName<T>(args)
 (object_creation_expression
-  type: (identifier) @call.target
+  type: [
+    (identifier) @call.target
+    (generic_name (identifier) @call.target)
+  ]
   arguments: (argument_list) @call.arguments
 ) @call.site
 
@@ -231,3 +302,15 @@
   (parameter_list
     (parameter
       type: (_) @param.type)))
+
+; Generic type arguments are type uses even when they occur on an invocation
+; rather than in a declaration, e.g. `services.AddScoped<IService, Service>()`.
+; The pattern is global so nested arguments are captured recursively by their
+; own `type_argument_list` node.
+(type_argument_list
+  (_) @param.type)
+
+; `typeof(Service)` is an explicit type reference with an unambiguous type
+; field, so it uses the same extraction and resolution path.
+(typeof_expression
+  type: (_) @param.type)

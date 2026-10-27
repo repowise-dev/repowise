@@ -24,11 +24,14 @@ entirely.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
+import sys
 import threading
 
 from repowise.core.procutils import ProcInfo, ancestor_chain, pid_alive, process_create_token
+from repowise.server.mcp_server._transport import CLIENT_GONE, log_outcome
 
 _log = logging.getLogger(__name__)
 
@@ -47,12 +50,10 @@ _DISABLE_ENV = "REPOWISE_MCP_NO_WATCHDOG"
 _POLL_INTERVAL_SECONDS = 5.0
 
 
-def _is_launcher(name: str | None) -> bool:
-    if not name:
-        # Unknown name: treat as a launcher so the walk continues to a
-        # nameable ancestor rather than anointing a mystery process as
-        # the client.
-        return True
+def _is_launcher(name: str) -> bool:
+    # Every caller of _is_launcher has already excluded an unresolved name:
+    # compute_watch_set stops the walk before reaching it (an unnamed
+    # ancestor is never appended, let alone tested for launcher-ness).
     normalized = name.lower()
     if normalized.endswith(".exe"):
         normalized = normalized[:-4]
@@ -65,9 +66,19 @@ def compute_watch_set() -> list[ProcInfo]:
     Stops at the client so unrelated higher ancestors (shell, terminal,
     desktop session) are never watched — those may die while the client
     legitimately keeps running. Returns ``[]`` when nothing was resolvable.
+
+    Also stops, without appending, at an ancestor whose name could not be
+    resolved or whose process is already gone: on Windows an unnamed entry
+    is always the chain's last one (``ancestor_chain`` resolves a parent's
+    name from the child's own snapshot entry, so a parent that had already
+    exited before the snapshot was taken comes back nameless), and a process
+    that is already dead at startup cannot later tell us the client left.
+    Watching either would treat a dead process's leftover PID as the client.
     """
     watch: list[ProcInfo] = []
     for info in ancestor_chain(os.getpid()):
+        if info.name is None or pid_alive(info.pid) is False:
+            break
         watch.append(info)
         if not _is_launcher(info.name):
             break
@@ -122,11 +133,31 @@ def start_parent_watchdog() -> threading.Thread | None:
             try:
                 for info in watch:
                     if _ancestor_died(info):
-                        _log.info(
-                            "MCP watchdog: ancestor %s(%d) is gone — exiting",
-                            info.name or "?",
-                            info.pid,
+                        # Named in the same vocabulary as every other way a
+                        # session ends, so one grep over a host's stderr tells
+                        # a dead client from a dead server.
+                        log_outcome(
+                            CLIENT_GONE,
+                            "stdio",
+                            f"ancestor {info.name or '?'}({info.pid}) is gone",
                         )
+                        # os._exit skips interpreter shutdown, which includes
+                        # flushing, so the line above can sit in a buffer and
+                        # never reach the log. That makes a watchdog kill
+                        # indistinguishable from the server simply answering
+                        # nothing: an in-flight batch of tool calls returns
+                        # instantly and empty from then on with no recorded
+                        # cause. Flush so the reason survives.
+                        #
+                        # Deliberately NOT logging.shutdown(): it acquires every
+                        # handler's lock, and the trigger condition here is a
+                        # dead client, which is exactly when nobody is draining
+                        # our stderr pipe. A main thread blocked inside emit()
+                        # holds that lock, so acquiring it would hang the
+                        # watchdog forever and leak the process this exists to
+                        # kill. Flushing the stream takes no logging lock.
+                        with contextlib.suppress(Exception):
+                            sys.stderr.flush()
                         os._exit(0)
             except Exception:
                 # Probe hiccup — never let the watchdog kill or crash the

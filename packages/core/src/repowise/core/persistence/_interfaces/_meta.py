@@ -39,8 +39,8 @@ class MetaIndexStore(ABC):
         *,
         name: str,
         local_path: str,
-        url: str = "",
-        default_branch: str = "main",
+        url: str | None = None,
+        default_branch: str | None = None,
         settings: dict | None = None,
     ) -> Repository: ...
 

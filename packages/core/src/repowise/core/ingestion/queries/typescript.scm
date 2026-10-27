@@ -44,9 +44,13 @@
   name: (identifier) @symbol.name
 ) @symbol.def
 
-; Method inside class body
+; Method inside class body, including ECMAScript #private members. One
+; pattern carries both the accessibility modifier and the parameters: the
+; parser keeps the first match per (line, name), so a second pattern for
+; ``private foo(...)`` used to win the dedup with no @symbol.params.
 (method_definition
-  name: (property_identifier) @symbol.name
+  (accessibility_modifier)? @symbol.modifiers
+  name: [(property_identifier) (private_property_identifier)] @symbol.name
   parameters: (formal_parameters) @symbol.params
 ) @symbol.def
 
@@ -60,17 +64,54 @@
   )
 ) @symbol.def
 
-; Public method accessor modifier capture
-(method_definition
-  (accessibility_modifier) @symbol.modifiers
-  name: (property_identifier) @symbol.name
+; Arrow function assigned to const/let (unparenthesized single parameter): const foo = x => { }
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @symbol.name
+    value: (arrow_function
+      parameter: (identifier) @symbol.params
+    )
+  )
 ) @symbol.def
 
-; Top-level const/let with a non-function value — module constants. The
-; declarator (not the lexical_declaration) is @symbol.def so the kind map
-; can distinguish it from the arrow-function pattern above. Anchored at
-; (program …) — directly or under an export_statement — so function-local
-; declarations never match.
+; Class property holding a function: ``static create = (...) => {}`` and
+; ``handler = function () {}``.
+;
+; Gated on the initialiser actually being an arrow_function or a
+; function_expression, so an ordinary data property (``count = 0``,
+; ``label: string``) still mints no symbol. The property's *type annotation*
+; keeps its own pattern further down; this one supplies the callable
+; definition that pattern never carried, which is why the common
+; static-factory idiom was absent from every symbol table.
+;
+; The optional accessibility_modifier capture keeps ``private handler =
+; () => {}`` from reading as public, matching the method pattern above.
+(public_field_definition
+  (accessibility_modifier)? @symbol.modifiers
+  name: [(property_identifier) (private_property_identifier)] @symbol.name
+  value: [
+    (arrow_function parameters: (formal_parameters) @symbol.params)
+    (arrow_function parameter: (identifier) @symbol.params)
+    (function_expression parameters: (formal_parameters) @symbol.params)
+    (arrow_function)
+    (function_expression)
+  ]
+) @symbol.def
+
+; Top-level const/let bindings — module constants and call-expression
+; bindings. The declarator (not the lexical_declaration) is @symbol.def so
+; the kind map can distinguish it from the arrow-function pattern above.
+; Anchored at (program …) — directly or under an export_statement — so
+; function-local declarations never match; without that anchor every
+; module-internal ``const x = useMemo(...)`` would flood the index.
+;
+; (call_expression) is what makes forwardRef / memo / styled() /
+; createContext() / zod schemas / Firebase ``export const f = onCall(...)``
+; indexable at all. CommonJS declarators (``const svc = require('./svc')``,
+; ``await import('./lazy')``) match this too but are module references, not
+; symbols — the parser drops them via ``declarator_value_is_module_ref``,
+; which unwraps the await / paren / non-null / member-pick shells that a
+; query predicate cannot see through.
 (program
   (lexical_declaration
     (variable_declarator
@@ -79,6 +120,9 @@
         (string) (template_string) (number) (true) (false) (null) (undefined)
         (array) (object) (unary_expression) (binary_expression)
         (new_expression) (member_expression) (as_expression) (satisfies_expression)
+        (call_expression) (function_expression) (class)
+        (await_expression) (parenthesized_expression) (non_null_expression)
+        (regex) (ternary_expression)
       ]
     ) @symbol.def
   )
@@ -93,10 +137,31 @@
           (string) (template_string) (number) (true) (false) (null) (undefined)
           (array) (object) (unary_expression) (binary_expression)
           (new_expression) (member_expression) (as_expression) (satisfies_expression)
+          (call_expression) (function_expression) (class)
+          (await_expression) (parenthesized_expression) (non_null_expression)
+          (regex) (ternary_expression)
         ]
       ) @symbol.def
     )
   )
+)
+
+; Overload signatures: ``function f(a: string): string;`` and a class body's
+; ``m(a: string): void;``. Bodiless, so the parser marks them declarations; the
+; implementation under the same id is the symbol that is served, and one with
+; no implementation (an ambient ``declare``) is dropped there. An interface's
+; method_signature is a member shape, not an overload, and stays out.
+(function_signature
+  name: (identifier) @symbol.name
+  parameters: (formal_parameters) @symbol.params
+) @symbol.def
+
+(class_body
+  (method_signature
+    (accessibility_modifier)? @symbol.modifiers
+    name: [(property_identifier) (private_property_identifier)] @symbol.name
+    parameters: (formal_parameters) @symbol.params
+  ) @symbol.def
 )
 
 ; ---------------------------------------------------------------------------
@@ -120,6 +185,20 @@
 ;   export type { T } from "./types"
 (export_statement
   source: (string) @import.module
+) @import.statement
+
+; Dynamic import: import("./module") — the ESM code-splitting form, and how
+; a router lazy-loads a route component:
+;     component: () => import('@/views/user/profile')
+; The specifier is a real module edge, so without this the target carries no
+; inbound import and reads as unreachable. That is the dominant dead-code
+; false positive on any app with a lazy route table (Vue Router, React.lazy,
+; Angular loadChildren) — it flagged 94 of 131 components on vue-element-admin.
+; Named as @import.statement on the call so multiple lazy imports in one route
+; table are not deduped into a single edge.
+(call_expression
+  function: (import)
+  arguments: (arguments (string) @import.module)
 ) @import.statement
 
 ; CommonJS: const svc = require('./svc')  /  const { a, b } = require('./svc')
@@ -179,11 +258,20 @@
   arguments: (arguments) @call.arguments
 ) @call.site
 
-; Method call: obj.method(args)
+; Method call: obj.method(args) — and self-dispatch: this.method(args).
+; ``this`` is its own node type, not an identifier, so it is an alternation in
+; the receiver slot rather than a second pattern: one pattern means tree-sitter
+; does not run an extra match pass over every call_expression (measured +29-40%
+; parse time on angular for the two-pattern form, ~0% for this one), and there
+; is no duplicate rule to keep in sync. ``receiver_name`` then reads "this",
+; which call_resolver Strategy 3 already resolves against the caller's class.
+; A member_expression receiver (``this.a.b.m()``) is kept only when it is a
+; plain dotted path, which the parser checks; the resolver types it field by
+; field.
 (call_expression
   function: (member_expression
-    object: (identifier) @call.receiver
-    property: (property_identifier) @call.target
+    object: [(identifier) (this) (member_expression)] @call.receiver
+    property: [(property_identifier) (private_property_identifier)] @call.target
   )
   arguments: (arguments) @call.arguments
 ) @call.site
@@ -191,7 +279,7 @@
 ; Chained call: obj.method1().method2(args)
 (call_expression
   function: (member_expression
-    object: (call_expression)
+    object: (call_expression) @call.receiver_call
     property: (property_identifier) @call.target
   )
   arguments: (arguments) @call.arguments
@@ -204,11 +292,44 @@
 ) @call.site
 
 ; ---------------------------------------------------------------------------
+; Value references: a function or class handed over by name, not called
+; ---------------------------------------------------------------------------
+; register(fn), [fn], { handler: fn }, { fn }, return fn, x = fn, export default fn.
+; Each becomes a ``references`` edge once the name resolves to a function or
+; class; one alternation per spelling keeps it to two query patterns.
+[
+  (arguments (identifier) @reference.name)
+  (array (identifier) @reference.name)
+  (pair value: (identifier) @reference.name)
+  (shorthand_property_identifier) @reference.name
+  (return_statement (identifier) @reference.name)
+  (variable_declarator value: (identifier) @reference.name)
+  (assignment_expression right: (identifier) @reference.name)
+  (export_statement value: (identifier) @reference.name)
+]
+
+; The same positions holding mod.fn or this.handle
+[
+  (arguments (member_expression
+    object: [(identifier) (this)] @reference.receiver
+    property: (property_identifier) @reference.name))
+  (array (member_expression
+    object: [(identifier) (this)] @reference.receiver
+    property: (property_identifier) @reference.name))
+  (pair value: (member_expression
+    object: [(identifier) (this)] @reference.receiver
+    property: (property_identifier) @reference.name))
+  (assignment_expression right: (member_expression
+    object: [(identifier) (this)] @reference.receiver
+    property: (property_identifier) @reference.name))
+]
+
+; ---------------------------------------------------------------------------
 ; Type references (non-import positions)
 ;
 ; Mirrors the C# / Go pattern: a single ``@param.type`` capture name fans
 ; in every position where a user-defined type appears outside an import
-; statement. The TypeScript head extractor in parser_helpers.py unwraps
+; statement. The TypeScript head extractor in lang_helpers/type_heads.py unwraps
 ; ``Foo[]`` / ``Promise<Foo>`` / ``ns.Foo`` / ``Foo | Bar`` shells and
 ; filters TS builtins (``string`` / ``number`` / ``Promise`` / ...). The
 ; result lets the dead-code analyzer see an ``interface Foo`` referenced
@@ -269,3 +390,7 @@
 (union_type (_) @param.type)
 (intersection_type (_) @param.type)
 (conditional_type (_) @param.type)
+
+; Generic type arguments can be the only mention of an ambient type:
+; ``Partial<AmbientSettings>`` or ``decodeConfig<AmbientSettings>()``.
+(type_arguments (type_identifier) @param.type)

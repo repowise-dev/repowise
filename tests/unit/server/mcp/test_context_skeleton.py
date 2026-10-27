@@ -137,7 +137,78 @@ async def test_skeleton_for_symbol_target_renders_defining_file(
     assert "error" not in sk
     assert "class AuthService:" in sk["text"]  # whole file, not just the symbol
     assert sk["of_file"] == "src/auth/service.py"
+    # The target's body is whole; the enclosing class's other code is elided.
+    assert all(f"step_{n} = {n}" in sk["text"] for n in range(21, 41))
+    assert "tail_99 = 99" not in sk["text"]
+    assert sk["bodies_kept"] == ["login"]
+    assert "every other symbol as its signature" in sk["symbol_hint"]
+    assert "mostly_full" not in sk
+
+
+async def _add_symbol_node(session, name, kind, start, end):
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import GraphNode, Repository
+
+    repo = (await session.execute(select(Repository))).scalars().first()
+    target_id = f"src/auth/service.py::{name}"
+    session.add(
+        GraphNode(
+            id=f"sk_{name}",
+            repository_id=repo.id,
+            node_id=target_id,
+            node_type="symbol",
+            name=name,
+            file_path="src/auth/service.py",
+            kind=kind,
+            start_line=start,
+            end_line=end,
+        )
+    )
+    await session.flush()
+    return target_id
+
+
+@pytest.mark.asyncio
+async def test_large_class_target_falls_back_to_ranked_skeleton(
+    setup_mcp, session, tmp_path, monkeypatch
+):
+    """A container over the get_symbol outline threshold is not inlined whole."""
+    from repowise.server.mcp_server import _state, get_context
+
+    monkeypatch.setattr(_state, "_repo_path", str(tmp_path))
+    target_id = await _add_symbol_node(session, "AuthService", "class", 10, 100)
+
+    _write_source(tmp_path)
+    small = (await get_context([target_id], include=["skeleton"]))["targets"][target_id]
+    assert small["skeleton"]["bodies_kept"] == ["AuthService"]
+
+    path = _write_source(tmp_path)
+    pad = "x" * 300  # 60 tail lines push the class body past 12,000 chars
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("tail_", f"tail_{pad}_"), encoding="utf-8"
+    )
+    sk = (await get_context([target_id], include=["skeleton"]))["targets"][target_id]["skeleton"]
+    assert "AuthService" not in sk["bodies_kept"]
+    assert "class AuthService:" in sk["text"]
+    assert f"tail_{pad}_99 = 99" not in sk["text"]
     assert "get_symbol" in sk["symbol_hint"]
+
+
+@pytest.mark.asyncio
+async def test_symbol_target_with_no_matching_row_takes_the_fallback(
+    setup_mcp, session, tmp_path, monkeypatch
+):
+    from repowise.server.mcp_server import _state, get_context
+
+    _write_source(tmp_path)
+    monkeypatch.setattr(_state, "_repo_path", str(tmp_path))
+    target_id = await _add_symbol_node(session, "ghost", "function", 20, 40)
+
+    sk = (await get_context([target_id], include=["skeleton"]))["targets"][target_id]["skeleton"]
+    assert "error" not in sk
+    assert "ghost" not in sk["bodies_kept"]
+    assert sk["symbol_hint"].endswith(f"get_symbol('{target_id}').")
 
 
 @pytest.mark.asyncio
@@ -151,28 +222,59 @@ async def test_skeleton_missing_source_file(setup_mcp, tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_skeleton_is_default_for_large_file_targets(setup_mcp, tmp_path, monkeypatch):
-    # service.py spans 100 lines (> the 80-line threshold): the default card
-    # auto-upgrades to the skeleton and drops the redundant symbol list.
+async def test_no_skeleton_without_an_explicit_include(setup_mcp, tmp_path, monkeypatch):
+    """A file target serves the symbol card, never source bytes, unless asked.
+
+    service.py spans 100 lines and used to auto-upgrade to a skeleton above an
+    80-line threshold, on the claim that the skeleton beat the bare signature
+    list per token. Re-measured on pinned Textualize/rich the claim is
+    inverted — rich/ansi.py's card is 2,171 characters against 6,585 with the
+    auto skeleton, of which the skeleton text alone is 5,295 — so source is
+    opt-in. See the note on the retired constant in ``tool_context/targets``.
+    """
     from repowise.server.mcp_server import _state, get_context
 
     _write_source(tmp_path)
     monkeypatch.setattr(_state, "_repo_path", str(tmp_path))
     result = await get_context(["src/auth/service.py"])
     card = result["targets"]["src/auth/service.py"]
-    sk = card["skeleton"]
-    assert sk["auto"] is True
-    assert "compact=False" in sk["opt_out_hint"]
-    assert "class AuthService:" in sk["text"]
-    assert "symbols" not in card["docs"]
-    # Summary and freshness still ride along.
+    assert "skeleton" not in card
+    # The navigation the skeleton used to displace survives: names,
+    # signatures, line numbers, and the cheap card around them.
+    assert card["docs"]["symbols"]
     assert card["docs"].get("summary") is not None
     assert "freshness" in card
 
 
 @pytest.mark.asyncio
+async def test_include_skeleton_still_serves_the_full_text(setup_mcp, tmp_path, monkeypatch):
+    """The other direction: the opt-in path is untouched and carries the text."""
+    from repowise.server.mcp_server import _state, get_context
+
+    _write_source(tmp_path)
+    monkeypatch.setattr(_state, "_repo_path", str(tmp_path))
+    result = await get_context(["src/auth/service.py"], include=["skeleton"])
+    card = result["targets"]["src/auth/service.py"]
+    assert "class AuthService:" in card["skeleton"]["text"]
+    assert card["skeleton"]["verified"] is True
+
+
+@pytest.mark.asyncio
+async def test_untruncated_response_omits_the_empty_truncation_keys(
+    setup_mcp, tmp_path, monkeypatch
+):
+    """60 characters of "nothing happened", on every response that fits."""
+    from repowise.server.mcp_server import _state, get_context
+
+    monkeypatch.setattr(_state, "_repo_path", str(tmp_path))
+    result = await get_context(["src/db/models.py"])
+    assert not result.get("truncated")
+    for key in ("truncated", "dropped_targets", "dropped_symbols"):
+        assert key not in result, f"{key} shipped on an untruncated response"
+
+
+@pytest.mark.asyncio
 async def test_small_file_keeps_symbol_card(setup_mcp, tmp_path, monkeypatch):
-    # models.py's symbols end at line 30 — below the threshold, no skeleton.
     from repowise.server.mcp_server import _state, get_context
 
     monkeypatch.setattr(_state, "_repo_path", str(tmp_path))
@@ -183,7 +285,7 @@ async def test_small_file_keeps_symbol_card(setup_mcp, tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_compact_false_opts_out_of_auto_skeleton(setup_mcp, tmp_path, monkeypatch):
+async def test_compact_false_still_serves_no_skeleton(setup_mcp, tmp_path, monkeypatch):
     from repowise.server.mcp_server import _state, get_context
 
     _write_source(tmp_path)
@@ -195,11 +297,9 @@ async def test_compact_false_opts_out_of_auto_skeleton(setup_mcp, tmp_path, monk
 
 
 @pytest.mark.asyncio
-async def test_auto_skeleton_falls_back_to_card_when_source_missing(
-    setup_mcp, tmp_path, monkeypatch
-):
-    # Nothing on disk: the auto-upgrade must degrade to the symbol card, not
-    # to an error-only response (explicit include=["skeleton"] still errors).
+async def test_default_card_survives_a_missing_source_file(setup_mcp, tmp_path, monkeypatch):
+    # Nothing on disk. The default card never touches the source, so it is
+    # unaffected; explicit include=["skeleton"] still errors (test above).
     from repowise.server.mcp_server import _state, get_context
 
     monkeypatch.setattr(_state, "_repo_path", str(tmp_path))
@@ -207,3 +307,36 @@ async def test_auto_skeleton_falls_back_to_card_when_source_missing(
     card = result["targets"]["src/auth/service.py"]
     assert "skeleton" not in card
     assert card["docs"]["symbols"]
+
+
+@pytest.mark.asyncio
+async def test_skeleton_plus_keeps_class_code_and_elides_method_bodies(
+    setup_mcp, tmp_path, monkeypatch
+):
+    from repowise.server.mcp_server import _state, get_context
+
+    _write_source(tmp_path)
+    monkeypatch.setattr(_state, "_repo_path", str(tmp_path))
+
+    result = await get_context(["src/auth/service.py"], include=["skeleton+"])
+    assert "ignored_arguments" not in result
+    sk = result["targets"]["src/auth/service.py"]["skeleton"]
+    assert sk["mode"] == "plus"
+    text = sk["text"]
+    # Class-level code outside the method stays, the method body does not.
+    assert "    setup_15 = 15" in text
+    assert "    tail_90 = 90" in text
+    assert "async def login" in text
+    assert "step_30" not in text
+    assert "        ... 20 lines (21-40)" in text
+
+
+@pytest.mark.asyncio
+async def test_skeleton_and_skeleton_plus_together_render_plus(setup_mcp, tmp_path, monkeypatch):
+    from repowise.server.mcp_server import _state, get_context
+
+    _write_source(tmp_path)
+    monkeypatch.setattr(_state, "_repo_path", str(tmp_path))
+
+    result = await get_context(["src/auth/service.py"], include=["skeleton", "skeleton+"])
+    assert result["targets"]["src/auth/service.py"]["skeleton"]["mode"] == "plus"

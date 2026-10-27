@@ -1,30 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { OverviewSection } from "@repowise-dev/ui/overview";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Switch } from "@repowise-dev/ui/ui/switch";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@repowise-dev/ui/ui/select";
-import {
-  SaveIndicator,
-  SettingsRow,
-  SettingsRows,
-  type SaveState,
-} from "@repowise-dev/ui/settings";
-import { listRepos } from "@/lib/api/repos";
+import { SettingsRow, SettingsRows, useSaveState } from "@repowise-dev/ui/settings";
 import { getMcpToolSurface, updateMcpTools } from "@/lib/api/mcp-tools";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 import type { McpToolSurface } from "@/lib/api/types";
-
-interface RepoOption {
-  id: string;
-  name: string;
-}
+import { useTranslations } from "next-intl";
 
 function enabledNames(surface: McpToolSurface): Set<string> {
   return new Set(surface.tools.filter((t) => t.enabled).map((t) => t.name));
@@ -42,192 +24,97 @@ function toDeltas(surface: McpToolSurface, enabled: Set<string>): string[] {
 }
 
 /**
- * Which tools the MCP server exposes.
+ * Which tools the MCP server exposes in one repository.
  *
- * This was the page's only explicit Save button, on a surface where every other
- * control wrote on change. Nothing said which half you were in, so a toggle
- * that silently did nothing until you found the button read as broken. It
- * autosaves now, like everything else, and reports through the one shared
- * indicator.
+ * Autosaves, like everything else in settings: each switch writes on change,
+ * shows its tick on its own row, and goes back where the server has it when
+ * the write fails. Only the newest write may land, so a slow older response
+ * cannot undo a newer switch.
  */
-export function McpToolsSection() {
-  const [repos, setRepos] = useState<RepoOption[]>([]);
-  const [repoId, setRepoId] = useState<string | null>(null);
+export function McpToolsSection({ repoId }: { repoId: string }) {
+  const t = useTranslations("settings");
   const [surface, setSurface] = useState<McpToolSurface | null>(null);
   const [enabled, setEnabled] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
-  const [saveState, setSaveState] = useState<SaveState>("idle");
-  const [error, setError] = useState<string | null>(null);
-
-  const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Guards against an older in-flight save landing after a newer one.
-  const saveSeq = useRef(0);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [savedTool, setSavedTool] = useState<string | null>(null);
+  const save = useSaveState();
+  // What the server last accepted, from the newest write that succeeded.
+  const server = useRef<{ surface: McpToolSurface | null; seq: number }>({ surface: null, seq: 0 });
+  const writeSeq = useRef(0);
 
   useEffect(() => {
-    listRepos()
-      .then((rows) => {
-        const opts = rows
-          .filter((r) => !r.id.startsWith("ws:"))
-          .map((r) => ({ id: r.id, name: r.name }));
-        setRepos(opts);
-        setRepoId((cur) => cur ?? opts[0]?.id ?? null);
-        if (opts.length === 0) setLoading(false);
-      })
-      .catch((e) => {
-        setError(toFriendlyMessage(e, "Could not list repositories"));
-        setLoading(false);
-      });
-  }, []);
-
-  useEffect(
-    () => () => {
-      if (savedTimer.current) clearTimeout(savedTimer.current);
-    },
-    [],
-  );
-
-  const loadSurface = useCallback((id: string) => {
     setLoading(true);
-    setError(null);
-    getMcpToolSurface(id)
+    setLoadError(null);
+    getMcpToolSurface(repoId)
       .then((s) => {
+        server.current = { surface: s, seq: 0 };
         setSurface(s);
         setEnabled(enabledNames(s));
       })
-      .catch((e) => setError(toFriendlyMessage(e, "Could not load tools")))
+      .catch((e) => setLoadError(toFriendlyMessage(e, "Could not load tools")))
       .finally(() => setLoading(false));
-  }, []);
-
-  useEffect(() => {
-    if (repoId) loadSurface(repoId);
-  }, [repoId, loadSurface]);
+  }, [repoId]);
 
   async function toggle(name: string, on: boolean) {
-    if (!surface || !repoId) return;
-
+    if (!surface) return;
     const next = new Set(enabled);
     if (on) next.add(name);
     else next.delete(name);
     setEnabled(next);
+    setSavedTool(name);
 
-    const seq = ++saveSeq.current;
-    setSaveState("saving");
-    setError(null);
-    try {
-      const deltas = toDeltas(surface, next);
-      const updated = await updateMcpTools({
-        repo_id: repoId,
-        tools: deltas.length ? deltas : null,
-      });
-      if (seq !== saveSeq.current) return;
-      setSurface(updated);
-      setEnabled(enabledNames(updated));
-      setSaveState("saved");
-      if (savedTimer.current) clearTimeout(savedTimer.current);
-      savedTimer.current = setTimeout(() => setSaveState("idle"), 2000);
-    } catch (e) {
-      if (seq !== saveSeq.current) return;
-      // Put the switch back where the server still has it.
-      setEnabled(enabledNames(surface));
-      setError(toFriendlyMessage(e, "Could not save"));
-      setSaveState("error");
-    }
+    const deltas = toDeltas(surface, next);
+    const mine = ++writeSeq.current;
+    const outcome = await save.track(
+      async () => {
+        const updated = await updateMcpTools({ repo_id: repoId, tools: deltas.length ? deltas : null });
+        if (mine > server.current.seq) server.current = { surface: updated, seq: mine };
+      },
+      (e) => toFriendlyMessage(e, "Could not save"),
+    );
+    const accepted = server.current.surface;
+    if (outcome === "saved" && accepted) setSurface(accepted);
+    // A failure puts every switch back where the server still has it.
+    if (outcome !== "stale" && accepted) setEnabled(enabledNames(accepted));
   }
 
   const summary = useMemo(() => {
     if (!surface) return null;
-    const available = surface.tools.filter(
-      (t) => !(t.requires_workspace && !surface.is_workspace),
-    );
-    const on = available.filter((t) => enabled.has(t.name)).length;
-    const mode = surface.is_workspace
-      ? "Workspace mode, so workspace-only tools are available."
-      : "Single-repo mode, so workspace-only tools are unavailable here.";
-    return `${on} of ${available.length} tools exposed. ${mode}`;
-  }, [surface, enabled]);
+    const available = surface.tools.filter((tool) => !(tool.requires_workspace && !surface.is_workspace));
+    const on = available.filter((tool) => enabled.has(tool.name)).length;
+    const mode = surface.is_workspace ? t("mcpTools.summaryWorkspace") : t("mcpTools.summarySingleRepo");
+    return t("mcpTools.summary", { on, total: available.length, mode });
+  }, [surface, enabled, t]);
+
+  if (loadError) return <p className="text-xs text-[var(--color-error)]">{loadError}</p>;
+  if (loading || !surface) return null;
 
   return (
-    <OverviewSection
-      title="Tool surface"
-      // Rule 4: the figure is the point. "9 of 15 exposed" answers the question
-      // the list is there to answer, before you read fifteen rows.
-      description={
-        summary ??
-        "Which tools the MCP server offers an agent. Saved to the repo's .repowise/config.yaml and applied the next time you start repowise mcp for it."
-      }
-      action={<SaveIndicator state={saveState} error={error} />}
-    >
-      {repos.length === 0 && !loading && (
-        <p className="text-sm text-[var(--color-text-tertiary)]">
-          Index a repository and its tool surface shows up here.
-        </p>
-      )}
-
-      {repos.length > 1 && (
-        <SettingsRows>
-          <SettingsRow
-            label="Repository"
-            hint="The surface is stored per repo."
-          >
-            <Select value={repoId ?? undefined} onValueChange={setRepoId}>
-              <SelectTrigger className="w-full sm:w-64">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {repos.map((r) => (
-                  <SelectItem key={r.id} value={r.id}>
-                    {r.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </SettingsRow>
-        </SettingsRows>
-      )}
-
-      {surface && !loading && (
-        <ul className="border-t border-[var(--color-border-default)]">
-          {surface.tools.map((tool) => {
-            const locked = tool.requires_workspace && !surface.is_workspace;
-            return (
-              <li
-                key={tool.name}
-                className="flex items-start gap-3 border-b border-[var(--color-border-default)] py-3"
-              >
-                <Switch
-                  checked={enabled.has(tool.name)}
-                  disabled={locked}
-                  onCheckedChange={(v) => void toggle(tool.name, v)}
-                  aria-label={tool.name}
-                  className="mt-0.5"
-                />
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-baseline gap-x-2">
-                    <code className="font-mono text-sm text-[var(--color-text-primary)]">
-                      {tool.name}
-                    </code>
-                    {/* Rule 10: only mark what needs attention. Every non-default
-                        tool carried an "opt-in" badge and every workspace tool a
-                        "workspace" badge, which badged most rows and so said
-                        nothing. The switch already reports opt-in state; only
-                        the unavailable case needs a word. */}
-                    {locked && (
-                      <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-                        workspace only
-                      </span>
-                    )}
-                  </div>
-                  {tool.description && (
-                    <p className="mt-0.5 text-xs leading-relaxed text-[var(--color-text-tertiary)]">
-                      {tool.description}
-                    </p>
-                  )}
-                </div>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-    </OverviewSection>
+    <div className="flex flex-col gap-2">
+      {/* The figure is the point: "9 of 15 exposed" before fifteen rows. */}
+      {summary && <p className="text-xs text-[var(--color-text-secondary)]">{summary}</p>}
+      <SettingsRows>
+        {surface.tools.map((tool) => {
+          const locked = tool.requires_workspace && !surface.is_workspace;
+          return (
+            <SettingsRow
+              key={tool.name}
+              inline
+              label={<code className="font-mono">{tool.name}</code>}
+              hint={locked ? `${t("mcpTools.workspaceOnly")} · ${tool.description ?? ""}` : tool.description}
+              {...(savedTool === tool.name ? { saveState: save.state, saveError: save.error } : {})}
+            >
+              <Switch
+                checked={enabled.has(tool.name)}
+                disabled={locked}
+                onCheckedChange={(v) => void toggle(tool.name, v)}
+                aria-label={tool.name}
+              />
+            </SettingsRow>
+          );
+        })}
+      </SettingsRows>
+    </div>
   );
 }

@@ -135,10 +135,13 @@ async def test_get_context_single_file(setup_mcp):
     assert t["ownership"]["contributor_count"] == 2
     # Last change
     assert t["last_change"]["author"] == "Alice"
-    assert t["last_change"]["days_ago"] == 443
-    # Decisions
-    assert len(t["decisions"]) >= 1
-    assert any(d["title"] == "Use JWT for authentication" for d in t["decisions"])
+    # Days from the file's last commit to the repository's newest one, not the
+    # file's age: this row is the newest, so nothing has changed since.
+    assert t["last_change"]["days_ago"] == 0
+    # Decisions. The fixture record is ``proposed`` with no acceptance behind
+    # it, so it is a candidate — it used to be served as a governing decision.
+    assert t["decisions"] == []
+    assert any(d["title"] == "Use JWT for authentication" for d in t["candidates"])
     # Freshness
     assert t["freshness"]["confidence_score"] == 0.85
     assert t["freshness"]["freshness_status"] == "fresh"
@@ -330,9 +333,14 @@ def test_truncate_noop_when_under_budget():
         "_meta": {},
     }
     out = _truncate_to_budget(small)
-    assert out["truncated"] is False
-    assert out["dropped_targets"] == []
-    assert out["dropped_symbols"] == {}
+    # Absent, not false. ``truncated: false`` plus two empty containers is 60
+    # characters of "nothing happened" on every response that fits — which is
+    # nearly all of them. Both projections read these with ``.get()``, so empty
+    # and absent are the same answer to a consumer.
+    assert not out.get("truncated")
+    assert not out.get("dropped_targets")
+    assert not out.get("dropped_symbols")
+    assert "truncated" not in out
     assert "content_md" not in out["targets"]["a.py"]["docs"]  # wasn't there anyway
 
 
@@ -414,7 +422,9 @@ async def test_file_on_git_preferred_over_partial_module(setup_mcp_multi):
     assert t.get("type") != "module"
     assert t.get("exists_in_git") is True
     assert t["primary_owner"] == "Carol"
-    assert "error" in t  # "exists but has no wiki page" shape
+    assert "error" not in t
+    assert t["type"] == "file"
+    assert t["index_status"] == "live_file_without_wiki_page"
 
 
 @pytest.mark.asyncio
@@ -451,7 +461,8 @@ async def test_batch_isolation_one_target_errors(setup_mcp, monkeypatch):
     # Failing target carries a per-target error entry (keyed on its target).
     assert "boom" in targets
     assert "error" in targets["boom"]
-    assert targets["boom"]["target"] == "boom"
+    # The map key is the target. The card no longer echoes it back as a field.
+    assert "target" not in targets["boom"]
 
 
 @pytest.mark.asyncio
@@ -467,6 +478,56 @@ async def test_file_target_callers_rolls_up_importers(setup_mcp):
     [middleware] = [c for c in callers if c["file"] == "src/auth/middleware.py"]
     assert middleware.get("imports") is True
     assert "rollup" in t.get("_call_graph_note", "")
+
+
+@pytest.mark.asyncio
+async def test_file_target_callers_bank_the_full_ranked_tail(
+    setup_mcp, session, tmp_path, monkeypatch
+):
+    """File import rollups report and bank every caller beyond the visible 20."""
+    from repowise.core.persistence.models import GraphEdge, GraphNode, Repository
+    from repowise.server.mcp_server import get_context, get_symbol
+
+    store_path = tmp_path / "omissions.sqlite3"
+    monkeypatch.setattr(
+        "repowise.server.mcp_server._budget.collector.default_store_path",
+        lambda _root: store_path,
+    )
+    monkeypatch.setattr(
+        "repowise.core.distill.store.default_store_path",
+        lambda _root=None: store_path,
+    )
+    repo = (await session.execute(__import__("sqlalchemy").select(Repository))).scalars().first()
+    for index in range(25):
+        node_id = f"src/generated/importer_{index:02d}.py"
+        session.add(
+            GraphNode(
+                id=f"file_importer_{index}",
+                repository_id=repo.id,
+                node_id=node_id,
+                node_type="file",
+                name=f"importer_{index:02d}.py",
+                file_path=node_id,
+            )
+        )
+        session.add(
+            GraphEdge(
+                repository_id=repo.id,
+                source_node_id=node_id,
+                target_node_id="src/auth/service.py",
+                edge_type="imports",
+            )
+        )
+    await session.commit()
+
+    result = await get_context(["src/auth/service.py"], include=["callers"], compact=False)
+    card = result["targets"]["src/auth/service.py"]
+    assert card["callers_total"] == 27
+    assert card["callers_emitted"] == 20
+    assert card["callers_reduced_reason"] == "construction_cap"
+    [ref] = result["_meta"]["omitted"]["refs"]
+    recovered = await get_symbol(ref)
+    assert "src/generated/importer_24.py" in recovered.get("content", ""), recovered
 
 
 @pytest.mark.asyncio
@@ -525,12 +586,105 @@ async def test_symbol_callers_carry_definition_line(setup_mcp, session):
 
 
 @pytest.mark.asyncio
-async def test_high_fan_in_callers_signal_truncation(setup_mcp, session):
+async def test_one_caller_joined_by_two_edge_types_is_listed_once(setup_mcp, session):
+    """Two edges between the same pair must not become two callers.
+
+    The displayed list is compared against a COUNT(DISTINCT) to decide
+    truncation, so an entry per edge makes the two sides count different
+    things: the list looks longer than the true total and `callers_truncated`
+    stays unset while real callers have been cut. Reachable since the caller
+    set became the shared symbol view — in Go a struct routinely both `calls`
+    an interface's methods and `method_implements` it.
+    """
+    from repowise.core.persistence.models import GraphEdge, GraphNode, Repository
+    from repowise.server.mcp_server import get_context
+
+    repo = (await session.execute(__import__("sqlalchemy").select(Repository))).scalars().first()
+    target_id = "src/store/iface.go::Storer"
+    caller_id = "src/store/disk.go::DiskStore"
+    session.add_all(
+        [
+            GraphNode(
+                id="dup_tgt",
+                repository_id=repo.id,
+                node_id=target_id,
+                node_type="symbol",
+                name="Storer",
+                file_path="src/store/iface.go",
+                kind="interface",
+                start_line=1,
+                end_line=5,
+                created_at=_NOW,
+            ),
+            GraphNode(
+                id="dup_src",
+                repository_id=repo.id,
+                node_id=caller_id,
+                node_type="symbol",
+                name="DiskStore",
+                file_path="src/store/disk.go",
+                kind="struct",
+                start_line=1,
+                end_line=9,
+                created_at=_NOW,
+            ),
+            GraphEdge(
+                id="dup_edge_calls",
+                repository_id=repo.id,
+                source_node_id=caller_id,
+                target_node_id=target_id,
+                edge_type="calls",
+                confidence=0.9,
+                created_at=_NOW,
+            ),
+            GraphEdge(
+                id="dup_edge_impl",
+                repository_id=repo.id,
+                source_node_id=caller_id,
+                target_node_id=target_id,
+                edge_type="method_implements",
+                confidence=0.95,
+                created_at=_NOW,
+            ),
+        ]
+    )
+    await session.flush()
+
+    result = await get_context([target_id], include=["callers"], compact=False)
+    t = result["targets"][target_id]
+    matching = [c for c in t.get("callers", []) if c["symbol_id"] == caller_id]
+    assert len(matching) == 1, matching
+    # The two edges are different relations, so they are reported separately
+    # rather than collapsed onto whichever had the higher confidence: the call
+    # is a call, and satisfying the interface is heritage.
+    assert matching[0]["edge_type"] == "calls"
+    assert not t.get("callers_truncated")
+
+    impl = [
+        r
+        for r in t.get("relations", [])
+        if r["edge_type"] == "method_implements" and r["direction"] == "in"
+    ]
+    assert len(impl) == 1, t.get("relations")
+    assert impl[0]["group"] == "heritage"
+    assert impl[0]["total"] == 1
+    assert [r["symbol_id"] for r in impl[0]["rows"]] == [caller_id]
+
+
+@pytest.mark.asyncio
+async def test_high_fan_in_callers_signal_truncation(
+    setup_mcp, session, tmp_path, monkeypatch
+):
     """A symbol with more callers than the display cap must report the TRUE
     total + a truncation flag, so a find-all-callers sweep is not silently
     misled into thinking the partial list is complete (S2 dogfood bug)."""
     from repowise.core.persistence.models import GraphEdge, GraphNode, Repository
     from repowise.server.mcp_server import get_context
+    from repowise.server.mcp_server._budget import collector as collector_mod
+
+    monkeypatch.setattr(
+        collector_mod, "default_store_path", lambda start=None: tmp_path / "omissions.db"
+    )
 
     repo = (await session.execute(__import__("sqlalchemy").select(Repository))).scalars().first()
     target_id = "src/db/util.py::hot"
@@ -584,8 +738,11 @@ async def test_high_fan_in_callers_signal_truncation(setup_mcp, session):
     t = result["targets"][target_id]
     assert len(t["callers"]) == 50  # capped display
     assert t["callers_total"] == n_callers  # true total surfaced
+    assert t["callers_emitted"] == 50
+    assert t["callers_reduced_reason"] == "construction_cap"
     assert t["callers_truncated"] is True
-    assert "grep" in t["_callers_note"]
+    assert "get_symbol" in t["_callers_note"]
+    assert result["_meta"]["omitted"]["refs"]
 
 
 # --- Structural retrieval: parent page + concept-page tree position ---------
@@ -696,3 +853,237 @@ async def test_concept_target_returns_section_and_children(setup_mcp, session):
     )
     assert all(c["page_type"] != "file_page" for c in children)
     assert any(f["path"] == "src/payments/charge.py" for f in t["docs"]["files"])
+
+
+@pytest.mark.asyncio
+async def test_get_context_meta_envelope(setup_mcp):
+    """get_context returns a well-formed _meta envelope without dead hint fields."""
+    from repowise.server.mcp_server import get_context
+
+    result = await get_context(["src/payments/charge.py"])
+    assert "_meta" in result
+    meta = result["_meta"]
+    assert "index_age_days" in meta
+    # Diagnostics stay off a routine response.
+    assert "contract_version" not in meta
+    assert "timing_ms" not in meta
+    # hint was dead/always None and has been removed; no empty or spurious hint field
+    assert "hint" not in meta
+
+
+
+def _card(name: str, *, symbols: int, callers: int, pad: int = 120) -> dict:
+    return {
+        "target": name,
+        "type": "file",
+        "docs": {
+            "title": name,
+            "summary": "s" * 80,
+            "symbols": [
+                {"name": f"f{j}", "kind": "function", "signature": "x" * pad, "line": j}
+                for j in range(symbols)
+            ],
+        },
+        "callers": [{"file": f"caller_{j}.py", "note": "c" * pad} for j in range(callers)],
+    }
+
+
+def test_two_targets_share_the_budget_instead_of_one_being_dropped():
+    from repowise.server.mcp_server.tool_context import _truncate_to_budget
+
+    result = {
+        "targets": {
+            "a.py": _card("a.py", symbols=40, callers=40),
+            "b.py": _card("b.py", symbols=40, callers=40),
+        },
+        "_meta": {},
+    }
+    out = _truncate_to_budget(result, char_budget=9000)
+
+    assert len(json.dumps(out, separators=(",", ":"), default=str)) <= 9000
+    assert set(out["targets"]) == {"a.py", "b.py"}
+    assert not out.get("dropped_targets")
+    for name, tgt in out["targets"].items():
+        assert tgt["docs"]["title"] == name
+        assert tgt["docs"]["symbols"]
+        assert "callers" in out["dropped_blocks"][name]
+
+
+def test_a_small_target_keeps_everything_while_a_large_one_degrades():
+    from repowise.server.mcp_server.tool_context import _truncate_to_budget
+
+    small = _card("small.py", symbols=2, callers=2)
+    result = {
+        "targets": {
+            "small.py": json.loads(json.dumps(small)),
+            "large.py": _card("large.py", symbols=80, callers=80),
+        },
+        "_meta": {},
+    }
+    out = _truncate_to_budget(result, char_budget=9000)
+
+    assert out["targets"]["small.py"] == small
+    assert "small.py" not in out.get("dropped_blocks", {})
+    assert "large.py" in out["dropped_symbols"]
+
+
+def test_a_dropped_target_leads_the_response_with_its_recovery_call():
+    import inspect
+
+    from repowise.server.mcp_server._budget import enforce_response_budget
+
+    def get_context(targets, include=None, compact=True, repo=None):
+        pass
+
+    # Identity cards alone overflow: every summary is long and cannot shrink.
+    names = [f"src/m{i}.py" for i in range(60)]
+    cards = {name: _card(name, symbols=1, callers=0, pad=10) for name in names}
+    for card in cards.values():
+        card["docs"]["summary"] = "s" * 900
+    payload = {"targets": cards, "_meta": {}}
+    out = enforce_response_budget(
+        "get_context",
+        payload,
+        signature=inspect.signature(get_context),
+        args=(),
+        kwargs={"targets": names, "include": ["callers"]},
+    )
+
+    dropped = out["dropped_targets"]
+    assert dropped and not set(dropped) & set(out["targets"])
+    assert list(out)[:2] == ["dropped_targets", "recovery"]
+    assert out["recovery"] == {
+        "tool": "get_context",
+        "arguments": {"targets": dropped, "include": ["callers"]},
+    }
+
+
+def _crowd(n: int) -> dict:
+    """*n* ordinary cards plus a miss with suggestions and an ambiguous symbol."""
+    targets = {f"src/m{i}.py": _card(f"src/m{i}.py", symbols=6, callers=4, pad=40) for i in range(n)}
+    targets["src/missing.py"] = {
+        "target": "src/missing.py",
+        "error": "Target not found: 'src/missing.py'",
+        "suggestions": ["src/m1.py", "src/m2.py"],
+    }
+    targets["src/amb.py::run"] = {
+        "target": "src/amb.py::run",
+        "type": "symbol",
+        "docs": {
+            "title": "run",
+            "candidates": [{"symbol_id": "src/amb.py::A::run"}, {"symbol_id": "src/amb.py::B::run"}],
+        },
+    }
+    return {"targets": targets, "_meta": {}}
+
+
+def test_suggestions_and_candidates_survive_budget_pressure():
+    from repowise.server.mcp_server.tool_context import _truncate_to_budget
+
+    for n, budget in ((30, 6000), (60, 12000), (80, 12000)):
+        out = _truncate_to_budget(_crowd(n), char_budget=budget)
+        missing = out["targets"].get("src/missing.py")
+        assert missing is not None and missing["suggestions"] == ["src/m1.py", "src/m2.py"]
+        amb = out["targets"].get("src/amb.py::run")
+        if amb is not None:
+            assert len(amb["docs"]["candidates"]) == 2
+        for labels in out.get("dropped_blocks", {}).values():
+            assert "suggestions" not in labels and "docs.candidates" not in labels
+
+
+def test_a_capped_list_dropped_whole_reports_zero_emitted():
+    from repowise.server.mcp_server._budget import truncate_to_budget
+
+    card = _card("a.py", symbols=2, callers=20, pad=200)
+    card.update(callers_total=50, callers_emitted=20)
+    other = _card("b.py", symbols=2, callers=0)
+    out = truncate_to_budget(
+        {"targets": {"a.py": card, "b.py": other}, "_meta": {}},
+        char_budget=2500,
+        record_counts=True,
+    )
+    kept = out["targets"]["a.py"]
+    assert "callers" not in kept
+    assert kept["callers_emitted"] == 0
+    assert kept["callers_total"] == 50
+
+
+def test_survivors_keep_their_detail_when_identity_cards_overflow():
+    from repowise.server.mcp_server.tool_context import _truncate_to_budget
+
+    out = _truncate_to_budget(_crowd(30), char_budget=6000)
+
+    assert out["dropped_targets"]
+    # Eviction came first, so the fair share had room: no survivor lost a block.
+    assert not out.get("dropped_blocks")
+    assert len(json.dumps(out, separators=(",", ":"), default=str)) <= 6000
+
+
+def _git_row(rid: str, path: str, last_commit_at: datetime | None) -> GitMetadata:
+    return GitMetadata(
+        id=f"gm-{path}",
+        repository_id=rid,
+        file_path=path,
+        commit_count_total=1,
+        commit_count_90d=0,
+        commit_count_30d=0,
+        first_commit_at=datetime(2020, 1, 1, tzinfo=UTC),
+        last_commit_at=last_commit_at,
+        primary_owner_name="Dana",
+        primary_owner_email="dana@example.com",
+        primary_owner_commit_pct=1.0,
+        top_authors_json=json.dumps([{"name": "Dana", "count": 1}]),
+        significant_commits_json=json.dumps([]),
+        co_change_partners_json=json.dumps([]),
+        is_hotspot=False,
+        is_stable=True,
+        churn_percentile=0.1,
+        age_days=2000,
+        created_at=_NOW,
+        updated_at=_NOW,
+    )
+
+
+async def _days_ago(path: str) -> int | None:
+    from repowise.server.mcp_server import get_context
+
+    result = await get_context([path], include=["last_change"], compact=False)
+    return result["targets"][path]["last_change"]["days_ago"]
+
+
+@pytest.mark.asyncio
+async def test_last_change_days_ago_counts_to_the_newest_commit_not_the_files_age(
+    setup_mcp, session
+):
+    # A later commit elsewhere in the repository moves the reference date:
+    # service.py was last changed 2026-03-15, four days before it.
+    session.add(_git_row(setup_mcp, "src/later.py", datetime(2026, 3, 19, tzinfo=UTC)))
+    await session.flush()
+
+    assert await _days_ago("src/auth/service.py") == 4
+    assert await _days_ago("src/later.py") == 0
+
+
+@pytest.mark.asyncio
+async def test_last_change_days_ago_is_none_without_a_last_commit(setup_mcp, session):
+    session.add(_git_row(setup_mcp, "src/undated.py", None))
+    await session.flush()
+
+    assert await _days_ago("src/undated.py") is None
+
+
+@pytest.mark.asyncio
+async def test_last_change_days_ago_accepts_a_naive_timestamp(setup_mcp, session):
+    # SQLite hands timestamps back naive; they are read as UTC, not rejected.
+    session.add(_git_row(setup_mcp, "src/naive.py", datetime(2026, 3, 10)))
+    await session.flush()
+
+    assert await _days_ago("src/naive.py") == 5
+
+
+async def test_days_since_last_change_prefers_as_of_ts(session):
+    from repowise.server.mcp_server.tool_context.targets import _days_since_last_change
+
+    last = datetime(2026, 3, 15)
+    as_of = datetime(2026, 3, 25)
+    assert await _days_since_last_change(session, "any-repo-id", last, as_of) == 10

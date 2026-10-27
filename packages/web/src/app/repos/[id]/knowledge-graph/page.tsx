@@ -26,10 +26,11 @@
 
 import { use, useCallback, useMemo, useRef, useState } from "react";
 import { parseAsString, useQueryState } from "nuqs";
+import { useTranslations } from "next-intl";
 import { ScanSearch } from "lucide-react";
 import { PageShell } from "@repowise-dev/ui/shared/page-shell";
 import { ZoomCanvas } from "@repowise-dev/ui/zoom";
-import { CO_CHANGES, indexRelationsByNode } from "@repowise-dev/ui/zoom";
+import { indexRelationsByNode, summarizeRelations } from "@repowise-dev/ui/zoom";
 import type { ZoomCanvasHandle, ZoomNode, ZoomRelation } from "@repowise-dev/ui/zoom";
 import { useZoomMap } from "@/lib/hooks/use-graph";
 import { ZoomBreadcrumb } from "@/components/zoom/zoom-breadcrumb";
@@ -44,6 +45,7 @@ const EMPTY_RELATIONS: ZoomRelation[] = [];
 const NO_RELATIONS: Map<string, ZoomRelation[]> = new Map();
 
 export default function KnowledgeGraphPage({ params }: { params: Promise<{ id: string }> }) {
+  const t = useTranslations("views.knowledgeGraph");
   const { id: repoId } = use(params);
 
   const { zoomMap, error, isLoading } = useZoomMap(repoId);
@@ -55,7 +57,7 @@ export default function KnowledgeGraphPage({ params }: { params: Promise<{ id: s
   );
   const [chain, setChain] = useState<ZoomNode[]>([]);
   const [selected, setSelected] = useState<ZoomNode | null>(null);
-  const [relationVerb, setRelationVerb] = useState<string | null>(null);
+  const [relationVerbs, setRelationVerbs] = useState<ReadonlySet<string> | null>(null);
 
   // Snapshot the initial URL focus once so later URL writes don't re-trigger a jump.
   const initialFocus = useRef(focusParam ?? undefined).current;
@@ -82,17 +84,19 @@ export default function KnowledgeGraphPage({ params }: { params: Promise<{ id: s
     () => (zoomMap ? indexRelationsByNode(zoomMap) : NO_RELATIONS),
     [zoomMap],
   );
-  const coChangeCount = useMemo(
-    () => (zoomMap?.relations ?? []).filter((r) => r.label === CO_CHANGES).length,
+  // The verb vocabulary of *this* map, so the filter offers what is actually
+  // drawable rather than the seven labels the backend can emit.
+  const verbs = useMemo(
+    () => summarizeRelations(zoomMap?.relations ?? EMPTY_RELATIONS).verbs,
     [zoomMap],
   );
   const showStats = process.env.NODE_ENV === "development";
 
   return (
     <PageShell
-      title="Knowledge Graph"
-      icon={<ScanSearch className="h-5 w-5 text-[var(--color-accent-primary)]" />}
-      description="Explore your codebase like a map: scroll to zoom, drag to pan, and double-click any card to dive into its layers, folders and files, ranked by how the code actually runs."
+      title={t("title")}
+      icon={<ScanSearch />}
+      description={t("description")}
       // The export has its own endpoint and does not need the zoom map, but a
       // map that failed to load is the cheapest signal that this repo has
       // nothing indexed to export either.
@@ -101,12 +105,12 @@ export default function KnowledgeGraphPage({ params }: { params: Promise<{ id: s
     >
       {isLoading && (
         <div className="flex h-[520px] items-center justify-center text-sm text-[var(--color-text-secondary)]">
-          Building the knowledge graph…
+          {t("loading")}
         </div>
       )}
       {error && !isLoading && (
         <div className="flex h-[520px] items-center justify-center text-sm text-[var(--color-error)]">
-          Could not load the knowledge graph for this repository.
+          {t("error")}
         </div>
       )}
       {zoomMap && !isLoading && (
@@ -143,7 +147,7 @@ export default function KnowledgeGraphPage({ params }: { params: Promise<{ id: s
                 onSelect={setSelected}
                 onFocusChange={onFocusChange}
                 showStats={showStats}
-                relationVerb={relationVerb}
+                relationVerbs={relationVerbs}
                 relationsByNode={relationsByNode}
               />
               <ZoomHint />
@@ -154,7 +158,7 @@ export default function KnowledgeGraphPage({ params }: { params: Promise<{ id: s
                   node={selected}
                   repoId={repoId}
                   relations={relationsByNode.get(selected.id) ?? EMPTY_RELATIONS}
-                  relationVerb={relationVerb}
+                  relationVerbs={relationVerbs}
                   onClose={() => setSelected(null)}
                   onZoom={(id) => flyTo(id)}
                 />
@@ -163,9 +167,11 @@ export default function KnowledgeGraphPage({ params }: { params: Promise<{ id: s
           </div>
 
           <ZoomMapKey
-            verb={relationVerb}
-            onVerbChange={setRelationVerb}
-            coChangeCount={coChangeCount}
+            verbs={verbs}
+            totalFiles={zoomMap.total_files}
+            unclaimedFiles={zoomMap.unclaimed_files ?? 0}
+            selected={relationVerbs}
+            onSelectedChange={setRelationVerbs}
           />
         </>
       )}

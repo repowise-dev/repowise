@@ -13,11 +13,13 @@ import { healthBand100 } from "../health/tokens";
 
 /* Literal class strings per band so Tailwind's static scanner keeps them. */
 const BAND_CHIP: Record<HealthBand, string> = {
-  healthy:
+  excellent:
     "text-[var(--color-success)] bg-[var(--color-success)]/10 border-[var(--color-success)]/40",
-  warning:
-    "text-[var(--color-caution)] bg-[var(--color-caution)]/10 border-[var(--color-caution)]/40",
-  alert: "text-[var(--color-error)] bg-[var(--color-error)]/10 border-[var(--color-error)]/40",
+  good: "text-[var(--color-success)] bg-[var(--color-success)]/10 border-[var(--color-success)]/40",
+  fair: "text-[var(--color-caution)] bg-[var(--color-caution)]/10 border-[var(--color-caution)]/40",
+  needs_work:
+    "text-[var(--color-warning)] bg-[var(--color-warning)]/10 border-[var(--color-warning)]/40",
+  at_risk: "text-[var(--color-error)] bg-[var(--color-error)]/10 border-[var(--color-error)]/40",
 };
 
 /** Colour classes for a 0–100 module health score. */

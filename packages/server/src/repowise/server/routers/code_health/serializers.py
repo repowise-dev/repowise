@@ -5,16 +5,23 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from repowise.core.analysis.finding_registry import preview_label, verification_label
+from repowise.core.analysis.health.aggregation import (
+    primary_and_magnitude,
+    primary_and_magnitude_by_file,
+)
+from repowise.core.analysis.health.scoring import unclamped_score
 from repowise.core.analysis.health.signals import FileSignals
 from repowise.core.analysis.health.trends import FileTrend
+from repowise.core.analysis.health.worth import LOW_PRIORITY_LABEL
 
 
-def _finding_to_dict(f: Any) -> dict:
+def _finding_to_dict(f: Any, lower_priority: str | None = None) -> dict:
     try:
         details = json.loads(f.details_json) if f.details_json else {}
     except Exception:
         details = {}
-    return {
+    row = {
         "id": f.id,
         "file_path": f.file_path,
         "biomarker_type": f.biomarker_type,
@@ -30,7 +37,14 @@ def _finding_to_dict(f: Any) -> dict:
         # so the UI can filter findings per dimension. Defaults to defect for
         # rows that predate the split.
         "dimension": getattr(f, "dimension", None) or "defect",
+        # "unverified" for a provisional type a caller asked for by name.
+        "verification": verification_label(f.biomarker_type),
+        "lower_priority": LOW_PRIORITY_LABEL.get(lower_priority or ""),
     }
+    # The measurement label, sent only on a language the layer serves as a preview.
+    if note := preview_label("health", f.file_path, f.biomarker_type):
+        row["preview"] = note
+    return row
 
 
 def _round_opt(v: Any) -> float | None:
@@ -38,74 +52,82 @@ def _round_opt(v: Any) -> float | None:
     return round(v, 2) if v is not None else None
 
 
-def _primary_and_magnitude(findings: list[Any]) -> dict:
-    """Dominant cause + pre-clamp deduction magnitude for one file's findings.
-
-    Two presentation signals the score alone can't carry:
-
-    - ``primary_biomarker`` / ``primary_reason`` — the single worst finding, so a
-      low file can lead with "the one reason" instead of a wall of markers.
-    - ``total_deduction`` — the summed (pre-floor) ``health_impact``. Equal to
-      the breakdown endpoint's ``total_deduction`` (each finding's stored impact
-      is already the applied, capped value), so it distinguishes two files that
-      both floor at 1.0 (a -25 file from a -9 one) without touching ``score``.
-
-    All-null on an empty list: a clean file has no lead and no magnitude.
-    """
-    if not findings:
-        return {"primary_biomarker": None, "primary_reason": None, "total_deduction": None}
-    primary = max(findings, key=lambda x: x.health_impact)
-    total = sum(float(x.health_impact or 0.0) for x in findings)
-    return {
-        "primary_biomarker": primary.biomarker_type,
-        "primary_reason": primary.reason,
-        "total_deduction": round(total, 3),
-    }
-
-
-def _leads_by_file(findings: list[Any]) -> dict[str, dict]:
-    """Group findings by file and reduce each group to its dominant-cause lead."""
-    by_file: dict[str, list[Any]] = {}
-    for f in findings:
-        by_file.setdefault(f.file_path, []).append(f)
-    return {path: _primary_and_magnitude(fs) for path, fs in by_file.items()}
+# Old names kept for the routes and tests that import them.
+_primary_and_magnitude = primary_and_magnitude
+_leads_by_file = primary_and_magnitude_by_file
 
 
 def _metric_to_dict(
     m: Any,
     lead: dict | None = None,
     *,
-    perf_findings: int = 0,
+    perf_opportunities: int = 0,
     perf_analyzed: bool | None = None,
+    summary: bool = False,
+    history_basis: str | None = None,
 ) -> dict:
-    return {
+    """One file row. ``summary=True`` omits the keys only the table and drawer read.
+
+    Not "nulled" — **omitted**. Measured over the code-health map's 2,000-row
+    request, the three lead keys and the two detail keys dropped here are
+    432,081 B of a 1,060,095 B payload, and only 177,527 B of that is lead
+    *values*: the key names are the rest, so a row that nulls them saves a
+    fraction of what a row that drops them saves.
+
+    **Exactly the keys already declared optional on ``HealthFileMetric``**, which
+    is the line that keeps this safe rather than a judgement about who reads
+    what: every consumer already handles them absent or null (they *are* null on
+    any row whose findings were not loaded), and the wire type needs no change.
+    ``max_ccn`` / ``max_nesting`` are unread by the map too and stay anyway —
+    they are required on the type, they are 56 KB of the 488 KB, and dropping
+    them would trade the whole safety argument for 5%.
+    """
+    # Built in the historical key order so the full row stays byte-identical.
+    out: dict = {
         "file_path": m.file_path,
-        "score": round(m.score, 2),
+        # ``None`` for a language health has no dialect for: nothing measured it.
+        "score": _round_opt(m.score),
         "max_ccn": m.max_ccn,
         "max_nesting": m.max_nesting,
-        "nloc": m.nloc,
-        "has_test_file": m.has_test_file,
-        "line_coverage_pct": m.line_coverage_pct,
-        "module": m.module,
-        "duplication_pct": getattr(m, "duplication_pct", None),
+    }
+    out["nloc"] = m.nloc
+    out["has_test_file"] = m.has_test_file
+    out["line_coverage_pct"] = m.line_coverage_pct
+    out["module"] = m.module
+    if not summary:
+        out["duplication_pct"] = getattr(m, "duplication_pct", None)
         # Per-dimension scores from the three-signal split. ``score`` above stays
         # the overall surfaced number (== defect_score for now).
-        # ``performance_score`` is computed but not yet surfaced as its own pillar.
-        "defect_score": _round_opt(getattr(m, "defect_score", None)),
-        "maintainability_score": _round_opt(getattr(m, "maintainability_score", None)),
-        "performance_score": _round_opt(getattr(m, "performance_score", None)),
-        # Performance lens inputs for the code-health map: the open perf-finding
-        # count colors the heat, and ``perf_analyzed`` (did a detector run on this
-        # language?) separates green ("analyzed, none found") from grey ("never
-        # looked"). Presentation only — the score above is untouched.
-        "performance_findings": perf_findings,
-        "performance_analyzed": perf_analyzed,
+        out["defect_score"] = _round_opt(getattr(m, "defect_score", None))
+    # ``performance_score`` is computed but not yet surfaced as its own pillar.
+    out["maintainability_score"] = _round_opt(getattr(m, "maintainability_score", None))
+    out["performance_score"] = _round_opt(getattr(m, "performance_score", None))
+    # Performance lens inputs for the code-health map: the file's causes in the
+    # default queue color the heat, and ``perf_analyzed`` (did a detector run on
+    # this language?) separates green ("analyzed, none found") from grey ("never
+    # looked"). Presentation only — the score above is untouched.
+    out["performance_opportunities"] = perf_opportunities
+    out["performance_analyzed"] = perf_analyzed
+    if not summary:
+        # The headline's two halves, and the score the file would carry without
+        # the floor. A file pinned at 1.0 reads 1.0 for months while real work
+        # lands on it; the unclamped number is the only place that shows.
+        structure = _round_opt(getattr(m, "structure_deduction", None))
+        history = _round_opt(getattr(m, "history_deduction", None))
+        out["structure_deduction"] = structure
+        out["history_deduction"] = history
+        out["unclamped_score"] = unclamped_score(structure, history)
         # Dominant-cause lead + pre-clamp magnitude (null when findings weren't
         # loaded for this row, or the file is clean). Additive; readers degrade.
-        "primary_biomarker": lead.get("primary_biomarker") if lead else None,
-        "primary_reason": lead.get("primary_reason") if lead else None,
-        "total_deduction": lead.get("total_deduction") if lead else None,
-    }
+        out["primary_biomarker"] = lead.get("primary_biomarker") if lead else None
+        out["primary_reason"] = lead.get("primary_reason") if lead else None
+        out["total_deduction"] = lead.get("total_deduction") if lead else None
+        # ``"short"``: too few recorded commits for most history markers to
+        # fire, so a high score here is an absent history, not a clean one.
+        # Omitted otherwise, like the MCP rows and the drawer's signals.
+        if history_basis:
+            out["history"] = history_basis
+    return out
 
 
 def _file_trend_to_dict(t: FileTrend) -> dict:
@@ -117,12 +139,17 @@ def _file_trend_to_dict(t: FileTrend) -> dict:
             {
                 "taken_at": p.taken_at.isoformat() if p.taken_at else None,
                 "score": round(p.score, 2),
+                # The score with the floor undone. Equal to ``score`` unless
+                # the snapshot recorded how deep the file actually was, which
+                # only happens once it is sitting on the floor.
+                "unclamped_score": round(p.unclamped_score, 2),
             }
             for p in t.points
         ],
         "current": t.current,
         "previous": t.previous,
         "delta": t.delta,
+        "unclamped_delta": t.unclamped_delta,
         "declining": t.declining,
         "snapshot_count": t.snapshot_count,
     }
@@ -139,6 +166,7 @@ def _file_signals_to_dict(s: FileSignals) -> dict:
         "lines_deleted_90d": s.lines_deleted_90d,
         "commit_count_90d": s.commit_count_90d,
         "age_days": s.age_days,
+        "history": s.history,
         "primary_owner_name": s.primary_owner_name,
         "primary_owner_commit_pct": s.primary_owner_commit_pct,
         "recent_owner_name": s.recent_owner_name,

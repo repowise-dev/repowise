@@ -11,6 +11,23 @@ from repowise.core.persistence.crud import (
 from repowise.core.pipeline.persist import _prune_stale_file_rows
 
 
+async def test_health_excludes_follow_config_yaml_over_legacy_settings(session, tmp_path) -> None:
+    from repowise.core.persistence.crud.analysis.health.exclude import health_exclude_spec
+
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / "config.yaml").write_text(
+        "exclude_patterns:\n- vendor/\n", encoding="utf-8"
+    )
+    repo = await upsert_repository(
+        session, name="repo", local_path=str(tmp_path), settings={"exclude_patterns": ["tools/"]}
+    )
+
+    spec = await health_exclude_spec(session, repo.id)
+
+    assert spec.match_file("vendor/a.py")
+    assert not spec.match_file("tools/gen.py")
+
+
 async def test_health_reads_honor_repo_settings_excludes(session, tmp_path) -> None:
     repo = await upsert_repository(
         session,
@@ -88,15 +105,22 @@ async def test_health_reads_honor_repo_settings_excludes(session, tmp_path) -> N
     assert await get_health_findings(session, repo.id, file_path="tools/gen.py") == []
     assert summary == {
         "file_count": 1,
+        "unanalysed_file_count": 0,
+        "analysed_share": 1.0,
         "average_health": 8.5,
         "worst_performer_path": "src/app.py",
         "worst_performer_score": 8.5,
+        "worst_test_path": None,
+        "worst_test_score": None,
         "open_findings": 1,
         "maintainability_average": None,
         "performance_average": None,
+        # None because this fixture's rows predate the split, not because the
+        # summary stopped reporting it.
+        "structure_average": None,
+        "history_average": None,
         "maintainability_findings": 0,
-        "performance_findings": 0,
-        "performance_findings_density": None,
+        "performance_causes": {"now": 0, "production": 0, "all": 0, "per_10k_loc": None},
         "performance_coverage_pct": None,
         "performance_covered_files": 0,
         "performance_analyzed_files": 0,
@@ -180,3 +204,23 @@ async def test_prune_stale_rows_removes_excluded_health_data(session, tmp_path) 
 
     assert [m.file_path for m in metrics] == ["src/app.py"]
     assert [f.file_path for f in findings] == ["src/app.py"]
+
+
+async def test_health_excludes_fall_back_to_saved_settings_on_broken_config(
+    session, tmp_path, caplog
+) -> None:
+    import logging
+
+    from repowise.core.persistence.crud.analysis.health.exclude import health_exclude_spec
+
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / "config.yaml").write_text("- not a mapping\n", encoding="utf-8")
+    repo = await upsert_repository(
+        session, name="repo", local_path=str(tmp_path), settings={"exclude_patterns": ["tools/"]}
+    )
+
+    with caplog.at_level(logging.WARNING):
+        spec = await health_exclude_spec(session, repo.id)
+
+    assert spec.match_file("tools/gen.py")
+    assert "using saved settings" in caplog.text

@@ -97,7 +97,7 @@ export function ReviewerSuggestions({
                   <div
                     className={cn(
                       "h-full",
-                      i === 0 ? "bg-[var(--color-accent-primary)]" : "bg-[var(--color-text-tertiary)]/50",
+                      i === 0 ? "bg-[var(--color-progress-fill)]" : "bg-[var(--color-text-tertiary)]/50",
                     )}
                     style={{ width: `${pct}%` }}
                   />

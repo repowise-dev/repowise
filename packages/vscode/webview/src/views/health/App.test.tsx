@@ -2,10 +2,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import type {
   ChurnComplexityResponse,
-  HealthFilesResponse,
+  HealthMapFeed,
   HealthOverviewResponse,
   HealthTrendResponse,
 } from "@repowise-dev/types/health";
+import { bandForScore } from "@repowise-dev/types/health";
+import { OVERLAY_SPECS } from "@repowise-dev/ui/health/code-health-map";
+import { healthRampFill, scoreTextColor } from "@repowise-dev/ui/health/tokens";
 import type { WebviewHost } from "../../runtime/rpc";
 import { App } from "./App";
 
@@ -25,29 +28,45 @@ const overview: HealthOverviewResponse = {
     worst_performer_path: "src/worst.py",
     worst_performer_score: 2.3,
     open_findings: 42,
-    band: "warning",
+    band: "good",
     maintainability_average: 8.2,
     performance_average: 9.9,
     maintainability_findings: 6,
-    performance_findings: 0,
+    performance_causes: { now: 0, production: 0, all: 0, per_10k_loc: null },
   },
   distribution: {
     total_files: 128,
     total_nloc: 10000,
     bands: {
-      healthy: { files: 80, nloc: 6000, pct: 60 },
-      warning: { files: 40, nloc: 3000, pct: 30 },
-      alert: { files: 8, nloc: 1000, pct: 10 },
+      excellent: { files: 50, nloc: 4000, pct: 40 },
+      good: { files: 30, nloc: 2000, pct: 20 },
+      fair: { files: 40, nloc: 3000, pct: 30 },
+      needs_work: { files: 0, nloc: 0, pct: 0 },
+      at_risk: { files: 8, nloc: 1000, pct: 10 },
     },
   },
   files: [],
   top_findings: [],
 };
 
-const files: HealthFilesResponse = {
-  total: 128,
-  offset: 0,
-  limit: 2000,
+const files: HealthMapFeed = {
+  cap: 2000,
+  shown: 2,
+  eligible_total: 128,
+  repository_total: 130,
+  selection: {
+    basis: "active_then_performance_then_nloc",
+    active_requested: [],
+    active_shown: [],
+    active_missing: [],
+    performance_shown: 0,
+    performance_eligible: 0,
+    nloc_shown: 2,
+  },
+  omitted: { files: 126, performance_files: 0, opportunities: 0, observations: 0 },
+  recovery: {},
+  modules: [],
+  performance: null,
   files: [
     {
       file_path: "src/worst.py",
@@ -57,6 +76,18 @@ const files: HealthFilesResponse = {
       nloc: 320,
       has_test_file: false,
       line_coverage_pct: 12,
+      module: "core",
+    },
+    // 7.6 is the score the old local threshold got wrong: it called anything
+    // at or above 7.5 healthy-green while the map beside it painted amber.
+    {
+      file_path: "src/mid.py",
+      score: 7.6,
+      max_ccn: 9,
+      max_nesting: 2,
+      nloc: 140,
+      has_test_file: true,
+      line_coverage_pct: 71,
       module: "core",
     },
   ],
@@ -111,7 +142,7 @@ function makeHost(): { host: WebviewHost; openFile: ReturnType<typeof vi.fn> } {
   const host = {
     api: {
       healthOverview: () => Promise.resolve(overview),
-      healthFiles: () => Promise.resolve(files),
+      healthMap: () => Promise.resolve(files),
       healthTrend: () => Promise.resolve(trend),
       churnComplexity: () => Promise.resolve(churn),
     },
@@ -123,7 +154,7 @@ function makeHost(): { host: WebviewHost; openFile: ReturnType<typeof vi.fn> } {
 afterEach(cleanup);
 
 describe("Health dashboard", () => {
-  it("renders the KPI header and the map section from host data", async () => {
+  it("renders the lede, the map section and the trend from host data", async () => {
     const { host } = makeHost();
     render(
       <App
@@ -134,23 +165,57 @@ describe("Health dashboard", () => {
       />,
     );
 
-    // KPI header: the three co-equal signal tiles.
-    expect(await screen.findByText("Defect risk")).toBeTruthy();
-    expect(screen.getByText("Maintainability")).toBeTruthy();
-    expect(screen.getByText("Performance")).toBeTruthy();
+    // The lede leads with the health score, as the web code-health page does.
+    // The page title carries the same words, so this asserts the figure's own
+    // label rather than the first match.
+    expect(
+      (await screen.findAllByText("Code health")).length,
+    ).toBeGreaterThan(1);
+    // The figure, and again inside the sentence that makes it mean something.
+    expect(screen.getAllByText("7.4").length).toBeGreaterThan(0);
 
-    // The map is the hero section.
+    // The map is the page spine; trend sits under it.
     expect(screen.getByText("Code health map")).toBeTruthy();
+    expect(screen.getByText("Trend")).toBeTruthy();
 
     // Repo identity is surfaced in the header.
     expect(screen.getByText("demo-repo")).toBeTruthy();
+  });
+
+  it("bands a focused file's score the way the map bands the same file", async () => {
+    const { host } = makeHost();
+    render(
+      <App
+        host={host}
+        repo={{ id: "r1", name: "demo-repo", headCommit: null, defaultBranch: "main" }}
+        params={{ selectPath: "src/mid.py" }}
+        refreshToken={0}
+      />,
+    );
+
+    const figure = await screen.findByText("7.6");
+    const found = files.files.find((f) => f.file_path === "src/mid.py")!;
+    const file = { ...found, score: found.score! };
+
+    // The contradiction this replaced: the panel called 7.6 green while the
+    // canvas beside it coloured the same node amber.
+    //
+    // The two are no longer the same colour value, and must not be asserted to
+    // be. Inking text and filling a disc are different jobs, so the map paints
+    // from its continuous ramp and the panel from the semantic one. What may
+    // never differ is the score beneath both, which is what this pins: the map
+    // fills the ramp at this file's score, and the figure carries the ink that
+    // the band function gives the same score.
+    expect(bandForScore(file.score)).toBe("good");
+    expect(OVERLAY_SPECS.health.fill(file)).toBe(healthRampFill(file.score));
+    expect(figure.className).toContain(scoreTextColor(file.score));
   });
 
   it("shows an error panel when the host fails", async () => {
     const host = {
       api: {
         healthOverview: () => Promise.reject(new Error("server down")),
-        healthFiles: () => Promise.resolve(files),
+        healthMap: () => Promise.resolve(files),
         healthTrend: () => Promise.resolve(trend),
         churnComplexity: () => Promise.resolve(churn),
       },

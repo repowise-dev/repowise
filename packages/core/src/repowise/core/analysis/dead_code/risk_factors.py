@@ -5,17 +5,23 @@ The ``_NEVER_FLAG_PATTERNS`` allowlist in :mod:`constants` removes files we
 are *confident* are framework/config/generated (``alembic/versions/*``,
 ``*.config.*``, ``page.tsx``, …). This module is the softer, complementary
 layer: a file that *escaped* that allowlist but still looks like a config /
-bootstrap / database / environment / script file. Such a file is not removed
-from the report — surfacing likely-unused code is the whole point — but it is
-capped below the deletion-ready threshold and tagged with the risk factors
-that explain why, so the UI can present it as a *candidate to review* rather
-than as *safe to delete*.
+bootstrap / database / environment / script / runtime-asset file. Such a file
+is not removed from the report, since surfacing likely-unused code is the
+whole point. It is capped below the deletion-ready threshold and tagged with
+the risk factors that explain why, so the UI can present it as a *candidate to
+review* rather than as *safe to delete*.
 
 Static reachability + git age cannot *prove* a file is unused; it can only
 say nothing imports it. For ordinary modules that is a strong signal. For a
 ``database/environment.db.js`` bootstrap file — exactly the class of file that
 is wired up by a runtime loader, a config key, or a string path rather than a
 static import — it is not. This module encodes that asymmetry.
+
+Note which way git age points for these files. Confidence rises the longer a
+file goes untouched, but a runtime-loaded asset is written once and then
+correct forever, so the top confidence tier is precisely where it lands. Age
+is evidence of deadness only for a file that something would have had to
+import in the first place.
 
 The classifier is pure path inspection, so it can run both at analysis time
 (to cap the persisted finding) and at read time (to defensively re-derive
@@ -27,11 +33,25 @@ from __future__ import annotations
 import re
 from pathlib import PurePosixPath
 
+from repowise.core.ingestion.languages.specs.aura import aura_bundle
+
 # Findings at or above this confidence, with no risk factors, are presented as
 # deletion-ready ("safe to delete"). Anything below — or anything carrying a
 # risk factor — is a review candidate. Kept here as the single source of truth
 # so the analyzer and every read-time consumer agree.
 SAFE_CONFIDENCE_THRESHOLD: float = 0.7
+
+# Confidence for an unreachable file that has no git row at all. Absence is
+# the weakest evidence the ladder sees, not the strongest: the file may be
+# untracked, newly added, or outside the walk that produced the rows. Held
+# below the deletion-ready threshold so no verdict is issued on it.
+NO_GIT_SIGNAL_CONFIDENCE: float = 0.5
+
+# Confidence for an unused export whose absence nothing could have shown: no
+# importer of its file names the symbols it takes (a C ``#include``, a C#
+# ``using``, or no importer at all). Below the deletion-ready threshold, above
+# the review cap: still ranked, never issued as a deletion.
+UNPROVEN_EXPORT_CONFIDENCE: float = 0.6
 
 # Confidence ceiling applied to a finding that carries a runtime-load risk
 # factor. 0.4 is the default ``min_confidence`` floor across CLI, REST router,
@@ -39,6 +59,12 @@ SAFE_CONFIDENCE_THRESHOLD: float = 0.7
 # finding still surfaces (as a medium / review-required candidate) but never
 # reads as deletion-ready.
 RISK_CAP_CONFIDENCE: float = 0.4
+
+# Finding kinds that are never deletion-ready, whatever their confidence. A
+# whole file with no importers was measured well below the deletion-ready bar
+# (files read by build scripts, manifests and runtime loaders by path), so it
+# is a review candidate until path mentions and entry-shape evidence exist.
+REVIEW_ONLY_KINDS: frozenset[str] = frozenset({"unreachable_file"})
 
 # Filename-stem tokens → risk-factor tag. Matched against the basename split on
 # ``. _ -`` so ``environment.db.js`` yields {environment, db, js} → environment
@@ -72,6 +98,29 @@ _FILENAME_RISK_TOKENS: dict[str, str] = {
     "migrations": "database",
     "datastore": "database",
     "sqlite": "database",
+    # runtime-loaded web asset
+    #
+    # The sharpest case in this module. A service worker is registered by URL,
+    # so nothing imports it, and it is written once and then correct forever,
+    # so it ages into the top confidence tier. Both halves of the evidence
+    # point at "delete me" for a file that must not be deleted.
+    #
+    # Only ``sw``, covering ``sw.js`` and ``firebase-messaging-sw.js``. A bare
+    # ``worker`` token would catch every ``queue_worker.py`` and thread-pool
+    # module in the world, so the hyphenated ``service-worker`` spelling is
+    # handled as a token pair below instead. ``manifest`` is deliberately
+    # absent: ``manifest.json`` and ``.webmanifest`` are non-code languages and
+    # never become findings, and ``*/manifest.ts`` is already in
+    # ``_NEVER_FLAG_PATTERNS``, so the token's only remaining reach would be
+    # real modules like ``manifest.rs``.
+    "sw": "asset",
+}
+
+# Filename token *pairs* → risk-factor tag. ``_SPLIT_RE`` splits on ``. _ -``,
+# so ``service-worker.ts`` and ``service_worker.js`` both yield the pair below
+# while ``queue_worker.py`` does not.
+_FILENAME_RISK_TOKEN_PAIRS: dict[frozenset[str], str] = {
+    frozenset({"service", "worker"}): "asset",
 }
 
 # Directory-segment tokens → risk-factor tag. A file *inside* one of these
@@ -89,6 +138,12 @@ _DIRECTORY_RISK_TOKENS: dict[str, str] = {
     "scripts": "script",
     "bin": "script",
     "tasks": "script",
+    # Served verbatim rather than bundled, so nothing in the tree imports it.
+    # ``assets`` is deliberately absent: ``src/assets/`` is the Vite / Vue /
+    # Angular convention for *bundled* source, which is imported normally.
+    "public": "asset",
+    "static": "asset",
+    "www": "asset",
 }
 
 # Human-readable one-liners per factor, used to build evidence strings.
@@ -98,6 +153,8 @@ _FACTOR_BLURB: dict[str, str] = {
     "bootstrap": "bootstrap/entry-point",
     "database": "database/schema",
     "script": "script/task",
+    "asset": "runtime-loaded web asset",
+    "aura": "Salesforce Aura bundle",
 }
 
 _SPLIT_RE = re.compile(r"[._\-]+")
@@ -108,8 +165,9 @@ def path_risk_factors(file_path: str) -> tuple[str, ...]:
 
     Empty tuple means no risk factor — an ordinary module. A non-empty result
     means the file looks like the kind of thing that is referenced outside
-    normal static imports (config, bootstrap, database, environment, script),
-    so a "no importers" finding for it is weaker evidence than it looks.
+    normal static imports (config, bootstrap, database, environment, script,
+    runtime asset), so a "no importers" finding for it is weaker evidence than
+    it looks.
     """
     if not file_path:
         return ()
@@ -119,9 +177,16 @@ def path_risk_factors(file_path: str) -> tuple[str, ...]:
     factors: set[str] = set()
 
     # Filename tokens (includes the extension, which never matches a token).
-    for token in _SPLIT_RE.split(p.name.lower()):
+    tokens = set(_SPLIT_RE.split(p.name.lower()))
+    for token in tokens:
         tag = _FILENAME_RISK_TOKENS.get(token)
         if tag:
+            factors.add(tag)
+
+    # Token pairs, for names whose signal is the combination rather than any
+    # one word (``service-worker`` vs an ordinary ``worker``).
+    for pair, tag in _FILENAME_RISK_TOKEN_PAIRS.items():
+        if pair <= tokens:
             factors.add(tag)
 
     # Directory segments.
@@ -129,6 +194,10 @@ def path_risk_factors(file_path: str) -> tuple[str, ...]:
         tag = _DIRECTORY_RISK_TOKENS.get(segment.lower())
         if tag:
             factors.add(tag)
+
+    # The Lightning runtime loads a whole Aura bundle, so an uncalled function may be load-bearing.
+    if aura_bundle(norm) is not None:
+        factors.add("aura")
 
     return tuple(sorted(factors))
 
@@ -143,23 +212,3 @@ def risk_evidence(factors: tuple[str, ...] | list[str]) -> str | None:
         "outside static imports — review before deleting"
     )
 
-
-def effective_safe_to_delete(
-    confidence: float,
-    file_path: str,
-    stored_safe: bool = True,
-) -> bool:
-    """Re-derive whether a finding is genuinely deletion-ready.
-
-    Monotonic — only ever *downgrades* the stored flag, never upgrades it, so
-    it is safe to apply to findings persisted before risk factors existed:
-
-    - never True when ``stored_safe`` is already False,
-    - never True below :data:`SAFE_CONFIDENCE_THRESHOLD`,
-    - never True when the path carries any runtime-load risk factor.
-    """
-    if not stored_safe:
-        return False
-    if confidence < SAFE_CONFIDENCE_THRESHOLD:
-        return False
-    return not path_risk_factors(file_path)

@@ -4,8 +4,24 @@ import {
   biomarkerLabel,
   type BiomarkerCategory,
 } from "./biomarker-glossary";
-import { scoreBadgeClass, type Severity } from "./tokens";
+import { SCORE_FLOOR } from "@repowise-dev/types/health";
+import { type Severity } from "./tokens";
+import { ImpactFigure } from "./impact-figure";
 import { SeverityMark } from "./severity-mark";
+
+/**
+ * The proportion bars carry no colour.
+ *
+ * They were all the deduction red, which on a file with seven scoring
+ * categories is seven red bars: the colour said "bad" seven times and ranked
+ * nothing. Nothing was gained by tying the tone to severity either, because
+ * the bar's own length already is the magnitude and the rows are sorted by it.
+ * So the bar states one thing, in one channel, and the red is left to mean
+ * something where it is still used.
+ */
+const BAR_FILL = "color-mix(in srgb, var(--color-text-tertiary) 55%, transparent)";
+/** Fainter again when there is no cap, so the bar's scale is approximate. */
+const BAR_FILL_UNCAPPED = "color-mix(in srgb, var(--color-text-tertiary) 30%, transparent)";
 
 export interface ScoreBreakdownCategoryFinding {
   id: string;
@@ -34,26 +50,35 @@ export interface ScoreBreakdownProps {
   score: number;
   totalDeduction: number;
   categories: ScoreBreakdownCategory[];
+  /** List each category's findings under its bar. Default true; a surface
+   *  that already lists the findings turns it off. */
+  showFindings?: boolean;
+}
+
+/** "10.0 − X = score", naming the floor when the deductions go past it. */
+function arithmetic(score: number, totalDeduction: number): string {
+  const head = `10.0 − ${totalDeduction.toFixed(2)} = `;
+  const raw = 10 - totalDeduction;
+  if (raw >= SCORE_FLOOR || score > SCORE_FLOOR) return head + score.toFixed(1);
+  const shown = raw.toFixed(2).replace(/^-(0\.00)$/, "$1").replace(/^-/, "−");
+  return `${head}${shown}, floored at ${SCORE_FLOOR.toFixed(1)}`;
 }
 
 export function ScoreBreakdown({
   score,
   totalDeduction,
   categories,
+  showFindings = true,
 }: ScoreBreakdownProps) {
   return (
     <div className="space-y-3">
-      <div className="flex items-baseline gap-3">
-        <span
-          className={`inline-flex items-center rounded-md px-2 py-1 text-lg font-bold tabular-nums ${scoreBadgeClass(score)}`}
-        >
-          {score.toFixed(1)}
-          <span className="ml-0.5 text-xs font-normal opacity-70">/10</span>
-        </span>
-        <span className="text-xs text-[var(--color-text-tertiary)]">
-          10.0 − {totalDeduction.toFixed(2)} = {score.toFixed(2)}
-        </span>
-      </div>
+      {/* The arithmetic, once, quietly. This led with the score again as a
+          large coloured badge, a second copy of the figure the surface above
+          it already shows at four times the size. What this section is for is
+          the subtraction, not the total. */}
+      <p className="text-xs tabular-nums text-[var(--color-text-tertiary)]">
+        {arithmetic(score, totalDeduction)}
+      </p>
 
       <div className="space-y-2.5">
         {[...categories]
@@ -95,7 +120,7 @@ export function ScoreBreakdown({
                 </span>
                 <span
                   className="cursor-help tabular-nums text-[var(--color-text-tertiary)]"
-                  title="The cap is the most this category is allowed to subtract from the 10-point score, no matter how many findings it has."
+                  title="The cap is the most this category can subtract from the 10-point score. Code categories approach it gradually as findings add up; history stops at it."
                 >
                   −{c.applied_deduction.toFixed(2)}
                   {cap != null ? <> / cap −{cap.toFixed(1)}</> : null}
@@ -104,20 +129,19 @@ export function ScoreBreakdown({
               </div>
               <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-[var(--color-bg-inset)]">
                 <div
-                  className={
-                    cap != null
-                      ? "h-full bg-[var(--color-error)]/70"
-                      : "h-full bg-[var(--color-text-tertiary)]/40"
-                  }
+                  className="h-full"
                   title={
                     cap == null
                       ? "No defined cap for this category — bar scale is approximate."
                       : undefined
                   }
-                  style={{ width: `${pct}%` }}
+                  style={{
+                    width: `${pct}%`,
+                    background: cap == null ? BAR_FILL_UNCAPPED : BAR_FILL,
+                  }}
                 />
               </div>
-              {c.findings.length > 0 && (
+              {showFindings && c.findings.length > 0 && (
                 <ul className="mt-2 space-y-1">
                   {c.findings.slice(0, 6).map((f) => (
                     <li
@@ -133,9 +157,10 @@ export function ScoreBreakdown({
                           {f.function_name}
                         </span>
                       ) : null}
-                      <span className="ml-auto tabular-nums text-[var(--color-error)]">
-                        −{f.applied_impact.toFixed(2)}
-                      </span>
+                      {/* Muted: the severity mark at the head of the row is
+                          already the colour channel, and six red numbers under
+                          a red bar rank nothing. */}
+                      <ImpactFigure impact={f.applied_impact} tone="muted" className="ml-auto" />
                     </li>
                   ))}
                   {c.findings.length > 6 ? (

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -42,6 +43,20 @@ def test_create_job_status_is_pending(tmp_path):
     job_id = _create(js)
     cp = js.get_checkpoint(job_id)
     assert cp.status == "pending"
+
+
+def test_create_job_serializes_public_evidence_mapping_shape(tmp_path):
+    js = _make_system(tmp_path)
+    config = GenerationConfig(
+        source_evidence_files={"repo_overview": ("README.md",)},
+    )
+
+    job_id = js.create_job(".", config, "mock", "mock-model-1")
+    snapshot = js.get_checkpoint(job_id).config_snapshot
+
+    assert snapshot["source_evidence_files"] == {"repo_overview": ["README.md"]}
+    restored = GenerationConfig(**snapshot)
+    assert restored.source_evidence_files == {"repo_overview": ("README.md",)}
 
 
 # ---------------------------------------------------------------------------
@@ -95,10 +110,75 @@ def test_complete_page_json_persisted(tmp_path):
     job_id = _create(js)
     js.start_job(job_id, 5)
     js.complete_page(job_id, "file_page:x.py")
+    js.flush(job_id)
     # New instance — reads from disk
     js2 = JobSystem(tmp_path / "jobs")
     cp = js2.get_checkpoint(job_id)
     assert "file_page:x.py" in cp.completed_page_ids
+
+
+def test_completions_are_buffered_until_flushed(tmp_path):
+    """The window the durability contract names, asserted rather than assumed."""
+    js = _make_system(tmp_path)
+    job_id = _create(js)
+    js.start_job(job_id, 5)
+    js.complete_page(job_id, "file_page:x.py")
+
+    on_disk = json.loads((tmp_path / "jobs" / f"{job_id}.json").read_text(encoding="utf-8"))
+    assert on_disk["completed_page_ids"] == []
+    # ...while the owning instance still reports it.
+    assert "file_page:x.py" in js.get_checkpoint(job_id).completed_page_ids
+
+    js.flush(job_id)
+    on_disk = json.loads((tmp_path / "jobs" / f"{job_id}.json").read_text(encoding="utf-8"))
+    assert on_disk["completed_page_ids"] == ["file_page:x.py"]
+
+
+def test_completions_flush_on_their_own_at_the_bound(tmp_path):
+    """A level larger than the bound cannot buffer without limit."""
+    from repowise.core.generation.job_system import _FLUSH_EVERY_PAGES
+
+    js = _make_system(tmp_path)
+    job_id = _create(js)
+    js.start_job(job_id, _FLUSH_EVERY_PAGES)
+    for i in range(_FLUSH_EVERY_PAGES):
+        js.complete_page(job_id, f"file_page:{i}.py")
+
+    on_disk = json.loads((tmp_path / "jobs" / f"{job_id}.json").read_text(encoding="utf-8"))
+    assert len(on_disk["completed_page_ids"]) == _FLUSH_EVERY_PAGES
+
+
+def test_complete_job_flushes_buffered_pages(tmp_path):
+    js = _make_system(tmp_path)
+    job_id = _create(js)
+    js.start_job(job_id, 2)
+    js.complete_page(job_id, "file_page:a.py")
+    js.complete_job(job_id)
+
+    cp = JobSystem(tmp_path / "jobs").get_checkpoint(job_id)
+    assert cp.status == "completed"
+    assert "file_page:a.py" in cp.completed_page_ids
+
+
+def test_failed_pages_are_durable_without_a_flush(tmp_path):
+    """The failure report reads this field off disk after the run."""
+    js = _make_system(tmp_path)
+    job_id = _create(js)
+    js.start_job(job_id, 2)
+    js.fail_page(job_id, "file_page:bad.py", "upstream 529")
+
+    cp = JobSystem(tmp_path / "jobs").get_checkpoint(job_id)
+    assert cp.failed_page_ids == ["file_page:bad.py"]
+
+
+def test_flush_leaves_no_temp_files_behind(tmp_path):
+    js = _make_system(tmp_path)
+    job_id = _create(js)
+    js.start_job(job_id, 2)
+    js.complete_page(job_id, "file_page:a.py")
+    js.flush(job_id)
+
+    assert list((tmp_path / "jobs").glob("*.tmp")) == []
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +285,7 @@ def test_json_round_trip_persistence(tmp_path):
     js.start_job(job_id, 3)
     js.complete_page(job_id, "file_page:a.py")
     js.complete_page(job_id, "file_page:b.py")
+    js.flush(job_id)
 
     # Reload from disk with a new instance
     js2 = JobSystem(tmp_path / "jobs")

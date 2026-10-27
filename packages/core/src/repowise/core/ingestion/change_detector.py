@@ -15,6 +15,7 @@ Key design decisions:
 from __future__ import annotations
 
 import difflib
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -22,6 +23,7 @@ from typing import Literal
 import structlog
 
 from .models import FileInfo, ParsedFile, Symbol
+from .traverser import is_candidate_source_path, is_repowise_output
 
 log = structlog.get_logger(__name__)
 
@@ -74,6 +76,7 @@ class AffectedPages:
     regenerate: list[str]  # page IDs to fully regenerate
     rename_patch: list[str]  # pages that only need a symbol rename text patch
     decay_only: list[str]  # pages to mark stale without immediate regeneration
+    stale_due_to_budget: int = 0  # pages skipped due to cascade budget cap
 
 
 def compute_adaptive_budget(file_diffs: list[FileDiff], total_files: int) -> int:
@@ -111,6 +114,10 @@ class ChangeDetector:
     def __init__(self, repo_path: Path) -> None:
         self.repo_path = repo_path
         self._repo: object = None  # lazy git.Repo
+        # Where repo_path sits inside the git working tree ("" when it is the
+        # root). Git reports root-relative paths; the index is keyed relative
+        # to repo_path, so every path is translated through this prefix.
+        self._prefix: str = ""
 
     # ------------------------------------------------------------------
     # Public API
@@ -133,70 +140,214 @@ class ChangeDetector:
         try:
             base_commit = repo.commit(base_ref)
             until_commit = repo.commit(until_ref)
-            diff_items = base_commit.diff(until_commit)
+            if self._prefix:
+                diff_items = base_commit.diff(until_commit, paths=self._prefix)
+            else:
+                diff_items = base_commit.diff(until_commit)
         except Exception as exc:
             log.warning("git diff failed", base=base_ref, until=until_ref, error=str(exc))
             return []
 
+        return [
+            self._file_diff_from_item(item) for item in diff_items if self._item_in_scope(item)
+        ]
+
+    def get_working_tree_changes(self) -> list[FileDiff]:
+        """Return FileDiffs for changes that are in the working tree, not in git.
+
+        Everything ``git status`` would show: staged and unstaged edits to
+        tracked files (diffed against ``HEAD``) plus untracked files, which git
+        reports as additions. Gitignored paths never appear — ``untracked_files``
+        applies the standard exclusions — and paths the index would skip anyway
+        (``.repowise/``, ``node_modules/``, lockfiles, non-source extensions)
+        are dropped here rather than travelling through the pipeline as no-op
+        page work. Unlike :meth:`get_changed_files`, which is bounded by what a
+        commit touched, this sees the whole untracked tree, so the filter is
+        what stops one un-gitignored build directory from swamping every run.
+
+        This is what ``repowise watch`` needs and what :meth:`get_changed_files`
+        cannot give it: a commit-range diff of ``HEAD..HEAD`` is empty by
+        definition, so a repo with unsaved-to-git edits reads as "already up to
+        date" no matter how much has changed on disk.
+
+        Falls back to an empty list on a non-git directory or an unborn HEAD
+        (a repo with no commits yet), matching :meth:`get_changed_files`.
+        """
+        repo = self._get_repo()
+        if repo is None:
+            return []
+
         results: list[FileDiff] = []
-
-        for item in diff_items:
-            status: Literal["added", "deleted", "modified", "renamed"]
-            old_path: str | None = None
-            new_path: str | None = None
-
-            change_type = item.change_type
-            if change_type == "A":
-                status = "added"
-                new_path = item.b_path
-            elif change_type == "D":
-                status = "deleted"
-                old_path = item.a_path
-            elif change_type == "R":
-                status = "renamed"
-                old_path = item.a_path
-                new_path = item.b_path
-            else:
-                status = "modified"
-                old_path = item.a_path
-                new_path = item.b_path
-
-            path = new_path or old_path or ""
-
-            # Parse old version (from git blob)
-            old_parsed = None
-            if old_path and item.a_blob:
-                old_parsed = self._parse_blob(item.a_blob, old_path)
-
-            # Parse new version (from working tree)
-            new_parsed = None
-            if new_path:
-                abs_path = self.repo_path / new_path
-                if abs_path.exists():
-                    new_parsed = self._parse_path(abs_path, new_path)
-                elif item.b_blob:
-                    new_parsed = self._parse_blob(item.b_blob, new_path)
-
-            sym_diff = None
-            if old_parsed and new_parsed:
-                sym_diff = self._compute_symbol_diff(old_parsed, new_parsed)
-            elif old_parsed:
-                sym_diff = SymbolDiff(removed=list(old_parsed.symbols))
-            elif new_parsed:
-                sym_diff = SymbolDiff(added=list(new_parsed.symbols))
-
-            results.append(
-                FileDiff(
-                    path=path,
-                    status=status,
-                    old_path=old_path,
-                    old_parsed=old_parsed,
-                    new_parsed=new_parsed,
-                    symbol_diff=sym_diff,
-                )
+        output_dirs: dict[Path, bool] = {}  # one listing per output-named dir
+        try:
+            head_commit = repo.head.commit
+            # ``None`` as the diff target means "the working tree", so this
+            # covers staged and unstaged changes in one pass.
+            items = (
+                head_commit.diff(None, paths=self._prefix)
+                if self._prefix
+                else head_commit.diff(None)
             )
+            for item in items:
+                if not self._item_in_scope(item):
+                    continue
+                # Git returns root-relative paths for a nested index. Prefer
+                # the in-scope side (a rename may cross the module boundary),
+                # then apply the same source/output filter as root indexing.
+                path = self._within(item.b_path) or self._within(item.a_path) or ""
+                if not path or not _counts_as_change(path, self.repo_path, output_dirs, item):
+                    continue
+                results.append(self._file_diff_from_item(item))
+            untracked = self._untracked_files(repo)
+        except Exception as exc:
+            log.warning("working tree diff failed", error=str(exc))
+            return []
+
+        for rel_path in untracked:
+            path = rel_path.replace("\\", "/")
+            if not _counts_as_change(path, self.repo_path, output_dirs):
+                continue
+            abs_path = self.repo_path / path
+            if not abs_path.is_file():
+                continue
+            results.append(self._added_from_disk(path, abs_path))
 
         return results
+
+    def stale_working_tree_diffs(
+        self,
+        previous_paths: Iterable[str],
+        current_paths: set[str],
+    ) -> list[FileDiff]:
+        """Diffs that undo working-tree work the index still reflects.
+
+        Working-tree state has no equivalent of ``last_sync_commit``: a path
+        stops being reported the moment it stops differing from ``HEAD``, so
+        nothing would ever tell a later run that the index is still carrying
+        it. Undo an edit, or delete an untracked file the watcher indexed, and
+        that content would otherwise be served forever — a symbol whose file
+        no longer has it, or a page for a file that no longer exists.
+
+        *previous_paths* is what the last working-tree run indexed. Anything
+        in it that is no longer diverging is re-diffed here: as ``deleted``
+        when it is gone from disk, and as ``modified`` (re-read from disk,
+        i.e. back to the committed content) when it is still there.
+        """
+        stale: list[FileDiff] = []
+        for rel_path in previous_paths:
+            path = str(rel_path).replace("\\", "/")
+            if path in current_paths:
+                continue
+            abs_path = self.repo_path / path
+            if abs_path.is_file():
+                stale.append(self._added_from_disk(path, abs_path, status="modified"))
+            else:
+                stale.append(
+                    FileDiff(
+                        path=path,
+                        status="deleted",
+                        old_path=path,
+                        old_parsed=None,
+                        new_parsed=None,
+                        symbol_diff=None,
+                    )
+                )
+        return stale
+
+    def _added_from_disk(
+        self,
+        path: str,
+        abs_path: Path,
+        status: Literal["added", "modified"] = "added",
+    ) -> FileDiff:
+        """A FileDiff whose new side is the file as it is on disk right now.
+
+        Used where there is no git blob to diff against: an untracked file,
+        and a file whose working-tree change has just been undone.
+        """
+        new_parsed = self._parse_path(abs_path, path)
+        return FileDiff(
+            path=path,
+            status=status,
+            old_path=None,
+            old_parsed=None,
+            new_parsed=new_parsed,
+            symbol_diff=SymbolDiff(added=list(new_parsed.symbols)) if new_parsed else None,
+        )
+
+    def _within(self, path: str | None) -> str | None:
+        """*path* (git-root-relative) relative to repo_path, or None if outside it."""
+        if path is None:
+            return None
+        path = path.replace("\\", "/")
+        if not self._prefix:
+            return path
+        if path.startswith(self._prefix + "/"):
+            return path[len(self._prefix) + 1 :]
+        return None
+
+    def _item_in_scope(self, item: object) -> bool:
+        return self._within(item.a_path) is not None or self._within(item.b_path) is not None
+
+    def _untracked_files(self, repo: object) -> list[str]:
+        """Untracked, non-ignored files inside repo_path, relative to it.
+
+        Scoped to the module when it is nested: ``repo.untracked_files`` walks
+        the whole working tree, which for a module of a large repository is
+        most of the cost of detecting one changed file.
+        """
+        if not self._prefix:
+            return list(repo.untracked_files)
+        listing = repo.git.ls_files("--others", "--exclude-standard", "-z", "--", self._prefix)
+        return [p for p in (self._within(raw) for raw in listing.split("\0") if raw) if p]
+
+    def _file_diff_from_item(self, item: object) -> FileDiff:
+        """Build a :class:`FileDiff` from one GitPython ``Diff``.
+
+        Shared by the commit-range and working-tree change sources so both
+        resolve status, old/new blobs and the symbol diff identically. The new
+        version is read from disk when the path exists there, which is what
+        makes the same code correct for a diff whose right-hand side *is* the
+        working tree.
+        """
+        # Paths inside the module, however deep the module sits in the repo.
+        status, old_path, new_path = _classify_change(
+            item.change_type, self._within(item.a_path), self._within(item.b_path)
+        )
+
+        path = new_path or old_path or ""
+
+        # Parse old version (from git blob)
+        old_parsed = None
+        if old_path and item.a_blob:
+            old_parsed = self._parse_blob(item.a_blob, old_path)
+
+        # Parse new version (from working tree)
+        new_parsed = None
+        if new_path:
+            abs_path = self.repo_path / new_path
+            if abs_path.exists():
+                new_parsed = self._parse_path(abs_path, new_path)
+            elif item.b_blob:
+                new_parsed = self._parse_blob(item.b_blob, new_path)
+
+        sym_diff = None
+        if old_parsed and new_parsed:
+            sym_diff = self._compute_symbol_diff(old_parsed, new_parsed)
+        elif old_parsed:
+            sym_diff = SymbolDiff(removed=list(old_parsed.symbols))
+        elif new_parsed:
+            sym_diff = SymbolDiff(added=list(new_parsed.symbols))
+
+        return FileDiff(
+            path=path,
+            status=status,
+            old_path=old_path,
+            old_parsed=old_parsed,
+            new_parsed=new_parsed,
+            symbol_diff=sym_diff,
+        )
+
 
     def detect_symbol_renames(
         self,
@@ -263,6 +414,7 @@ class ChangeDetector:
         graph: object,  # nx.DiGraph
         cascade_budget: int = 30,
         pagerank: dict[str, float] | None = None,
+        stale_pages: dict[str, float] | None = None,
     ) -> AffectedPages:
         """Compute which wiki pages need action after a set of file changes.
 
@@ -274,6 +426,14 @@ class ChangeDetector:
                 passes GraphBuilder's cached file pagerank so this function
                 does not recompute a full-graph pass). Falls back to an
                 internal computation when omitted.
+            stale_pages: ``{file_path: staleness_age_seconds}`` for pages whose
+                prose is already stale, oldest-stale mapping to the largest
+                value. When the cascade budget is constrained, these bubble to
+                the top of the regenerate slice so the run spends its LLM calls
+                on the pages that actually lag the code rather than the
+                highest-importance pages that may already be current (issues
+                #847 / #851). Pages with no entry count as fresh and sort last.
+                Absent (or empty) keeps the historical pure-importance order.
         """
         import networkx as nx
 
@@ -337,7 +497,16 @@ class ChangeDetector:
 
         all_pages_needing_regen = sorted(
             directly_changed | one_hop,
-            key=lambda p: pr.get(p, 0.0),
+            key=lambda p: (
+                # Staleness-first: an already-stale page (larger age) outranks a
+                # fresh page no matter how central the fresh one is, so a
+                # constrained budget spends its LLM calls on the pages that
+                # actually lag the code (issues #847 / #851). Fresh pages sort
+                # below every stale page, importance then breaking the tie
+                # within each staleness class.
+                0.0 if not stale_pages else float(stale_pages.get(p, -1.0)),
+                pr.get(p, 0.0),
+            ),
             reverse=True,
         )
 
@@ -345,12 +514,14 @@ class ChangeDetector:
         decay_only = (
             all_pages_needing_regen[cascade_budget:] + sorted(two_hop) + sorted(co_change_decay)
         )
+        stale_due_to_budget = max(0, len(all_pages_needing_regen) - cascade_budget)
         rename_patch = [p for p in rename_candidates if p in regenerate]
 
         return AffectedPages(
             regenerate=regenerate,
             rename_patch=rename_patch,
             decay_only=decay_only,
+            stale_due_to_budget=stale_due_to_budget,
         )
 
     # ------------------------------------------------------------------
@@ -361,9 +532,10 @@ class ChangeDetector:
         if self._repo is not None:
             return self._repo
         try:
-            import git as gitpython
+            from repowise.core.git_repo import Repo
 
-            self._repo = gitpython.Repo(self.repo_path, search_parent_directories=True)
+            self._repo = Repo(self.repo_path, search_parent_directories=True)
+            self._prefix = _prefix_in_repo(self._repo, self.repo_path)
             return self._repo
         except Exception as exc:
             log.info(
@@ -377,7 +549,7 @@ class ChangeDetector:
         """Parse a git blob (old file version from git history)."""
         try:
             source = blob.data_stream.read()
-            return self._parse_bytes(source, path)
+            return self.parse_bytes(source, path)
         except Exception as exc:
             log.warning("Failed to parse blob", path=path, error=str(exc))
             return None
@@ -385,18 +557,19 @@ class ChangeDetector:
     def _parse_path(self, abs_path: Path, rel_path: str) -> ParsedFile | None:
         """Parse a file from the working tree."""
         try:
-            return self._parse_bytes(abs_path.read_bytes(), rel_path)
+            return self.parse_bytes(abs_path.read_bytes(), rel_path)
         except Exception as exc:
             log.warning("Failed to parse file", path=rel_path, error=str(exc))
             return None
 
-    def _parse_bytes(self, source: bytes, path: str) -> ParsedFile | None:
+    def parse_bytes(self, source: bytes, path: str) -> ParsedFile | None:
+        """Parse one file's *source* as *path* with the repository's parser, or ``None``."""
         from datetime import datetime
 
         from .parser import parse_file
         from .traverser import _detect_language
 
-        lang = _detect_language(Path(path))
+        lang = _detect_language(Path(path), source)
         file_info = FileInfo(
             path=path,
             abs_path=str(self.repo_path / path),
@@ -439,3 +612,135 @@ class ChangeDetector:
             renamed=renames,
             modified=modified,
         )
+
+
+_ChangeStatus = Literal["added", "deleted", "modified", "renamed"]
+
+
+def _classify_change(
+    change_type: str, a_path: str | None, b_path: str | None
+) -> tuple[_ChangeStatus, str | None, str | None]:
+    """``(status, old_path, new_path)`` for one git change, paths already in scope."""
+    if change_type == "A":
+        return "added", None, b_path
+    if change_type == "D":
+        return "deleted", a_path, None
+    if change_type != "R":
+        return "modified", a_path, b_path
+    if a_path and b_path:
+        return "renamed", a_path, b_path
+    if b_path:
+        # Moved into the module from outside it.
+        return "added", None, b_path
+    # Moved out of the module.
+    return "deleted", a_path, None
+
+
+def _prefix_in_repo(repo: object, repo_path: Path) -> str:
+    """Where *repo_path* sits inside *repo*'s working tree, POSIX, "" at the root."""
+    try:
+        root = Path(repo.working_tree_dir).resolve()
+        parts = Path(repo_path).resolve().relative_to(root).parts
+    except Exception:
+        return ""
+    return "/".join(parts)
+
+
+def has_working_tree_changes(repo_path: Path) -> bool:
+    """Whether the working tree holds changes ``HEAD`` does not.
+
+    The same question :meth:`ChangeDetector.get_working_tree_changes` answers,
+    over the same paths, without parsing any of them. Callers that only need
+    the yes/no (a staleness check that runs on every watcher trigger) should
+    use this; parsing every changed and untracked source file just to learn
+    that one exists is the cost it avoids.
+
+    Repo resolution and the path filter deliberately match the detector's, or
+    the two would disagree: a "clean" verdict here followed by a non-empty
+    diff there is how a staleness gate skips work that exists.
+
+    False on a non-git directory or a repo with no commits yet.
+    """
+    try:
+        from repowise.core.git_repo import Repo
+
+        repo = Repo(repo_path, search_parent_directories=True)
+    except Exception:
+        return False
+    try:
+        detector = ChangeDetector(repo_path)
+        detector._repo = repo
+        detector._prefix = _prefix_in_repo(repo, repo_path)
+        items = (
+            repo.head.commit.diff(None, paths=detector._prefix)
+            if detector._prefix
+            else repo.head.commit.diff(None)
+        )
+        output_dirs: dict[Path, bool] = {}
+        for item in items:
+            if not detector._item_in_scope(item):
+                continue
+            path = detector._within(item.b_path) or detector._within(item.a_path)
+            if path and _counts_as_change(path, repo_path, output_dirs, item):
+                return True
+        return any(
+            _counts_as_change(p.replace("\\", "/"), repo_path, output_dirs)
+            for p in detector._untracked_files(repo)
+        )
+    except Exception as exc:
+        log.warning("working tree check failed", path=str(repo_path), error=str(exc))
+        return False
+    finally:
+        repo.close()
+
+
+def _counts_as_change(
+    path: str, repo_path: Path, output_dirs: dict[Path, bool], item: object | None = None
+) -> bool:
+    """Whether a working-tree path is a change the index has to see.
+
+    A path the index would read, unless repowise wrote the change itself: its
+    own ``.claude/CLAUDE.md`` block left untracked or refreshed in a tracked
+    file is not the user's work, and counting it marked every repo with an
+    editor file dirty on every run. *item* is the ``HEAD`` diff entry of a
+    tracked path, whose committed text tells a refreshed block from an edit.
+    """
+    if not is_candidate_source_path(path, repo_path, output_dirs):
+        return False
+    a_blob = getattr(item, "a_blob", None)
+    committed = (
+        (lambda: a_blob.data_stream.read().decode("utf-8", "replace")) if a_blob else None
+    )
+    try:
+        return not is_repowise_output(repo_path / path, path, committed)
+    except Exception:
+        # An unreadable committed blob (LFS pointer, missing object) must not
+        # hide the repo's other changes; counting this one is the safe side.
+        return True
+
+
+def merge_file_diffs(*sources: list[FileDiff]) -> list[FileDiff]:
+    """Union FileDiffs from several change sources, first mention winning.
+
+    Order matters: the commit-range diff is passed first because its
+    ``old_parsed`` is the last *indexed* version of the file, which is the
+    right baseline for a symbol diff. The working-tree diff's baseline is
+    ``HEAD``, so for a file that changed in both it would under-report what
+    the index has yet to see. Both already read the new version from disk, so
+    nothing is lost by preferring the earlier entry.
+
+    One exception: a deletion loses to any later source that says the file is
+    there. A commit can delete a path that the working tree then recreates,
+    and a deleted ``FileDiff`` carries ``new_parsed=None`` — keeping it would
+    tombstone the page and prune the symbols of a file that exists on disk
+    with content, until the recreation happened to be committed.
+    """
+    merged: dict[str, FileDiff] = {}
+    for source in sources:
+        for diff in source:
+            existing = merged.get(diff.path)
+            if existing is None or (
+                existing.status == "deleted" and diff.status != "deleted"
+            ):
+                merged[diff.path] = diff
+    return list(merged.values())

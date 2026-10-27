@@ -1,188 +1,142 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Bug, Search } from "lucide-react";
-import { AgentBadge, NewContributorBadge, isNewContributor } from "./agent-badge";
-import { PriorityBadge } from "./priority-badge";
+import { Search } from "lucide-react";
 import { Input } from "../ui/input";
 import { EmptyState } from "../shared/empty-state";
-import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-table";
+import { ResponsiveTable } from "../shared/responsive-table";
 import { ResultsFooter } from "../shared/results-footer";
-import { formatLOC, formatRelativeTime } from "../lib/format";
+import { Segmented } from "../shared/segmented";
 import { cn } from "../lib/cn";
-import type { Commit, ReviewPriority } from "@repowise-dev/types/git";
+import type { Commit } from "@repowise-dev/types/git";
+import type { HealthDeltaLabels } from "./health-delta-mark";
+import { commitColumns } from "./commit-columns";
 
 export type CommitSort = "risk" | "date";
-export type CommitAuthorship = "all" | "human" | "agent";
+export type CommitAuthorship = "all" | "human" | "agent" | "unknown";
+export type CommitKind = "all" | "high" | "fixes";
 
-export interface CommitTableProps {
+/** Review priority and fixes, server-driven. `counts` are repo-wide: pass
+ *  them only when nothing else narrows the list. */
+export function CommitKindControl({
+  value,
+  onChange,
+  counts,
+}: {
+  value: CommitKind;
+  onChange: (kind: CommitKind) => void;
+  counts?: { all: number; high: number; fixes: number } | undefined;
+}) {
+  return (
+    <Segmented<CommitKind>
+      label="Review priority and fixes"
+      value={value}
+      options={[
+        { value: "all", label: "All", count: counts?.all.toLocaleString() },
+        { value: "high", label: "High priority", count: counts?.high.toLocaleString() },
+        { value: "fixes", label: "Fixes", count: counts?.fixes.toLocaleString() },
+      ]}
+      onChange={onChange}
+    />
+  );
+}
+
+/** Ordering, server-driven: recency, or the diff-shape review priority. */
+export function CommitSortControl({
+  value,
+  onChange,
+}: {
+  value: CommitSort;
+  onChange: (sort: CommitSort) => void;
+}) {
+  return (
+    <Segmented<CommitSort>
+      label="Sort"
+      value={value}
+      options={[
+        { value: "date", label: "Most recent" },
+        { value: "risk", label: "Review priority" },
+      ]}
+      onChange={onChange}
+    />
+  );
+}
+
+/** Search over the loaded commits; it narrows the page, not the repository. */
+export function CommitSearch({
+  value,
+  onChange,
+  className,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  className?: string | undefined;
+}) {
+  return (
+    <div className={cn("relative", className)}>
+      <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--color-text-tertiary)]" />
+      <Input
+        type="search"
+        aria-label="Search commits or authors"
+        placeholder="Search commits or authors…"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="h-8 w-full pl-8 text-xs sm:w-56"
+      />
+    </div>
+  );
+}
+
+/** Loaded commits whose subject, author or sha contains `search`. */
+export function filterCommits(commits: Commit[], search: string): Commit[] {
+  const q = search.trim().toLowerCase();
+  if (!q) return commits;
+  return commits.filter(
+    (c) =>
+      c.subject.toLowerCase().includes(q) ||
+      c.author_name.toLowerCase().includes(q) ||
+      c.sha.toLowerCase().includes(q),
+  );
+}
+
+export interface CommitListProps {
   commits: Commit[];
-  /** Server-driven ordering. `risk` = review-priority order, `date` = recency. */
-  sort: CommitSort;
-  onSortChange?: (sort: CommitSort) => void;
-  /** Server-driven authorship filter (agent provenance). Control omitted when
-   *  no handler is provided. */
-  authorship?: CommitAuthorship;
-  onAuthorshipChange?: (authorship: CommitAuthorship) => void;
+  /** Client-side search over the loaded page. */
+  search?: string | undefined;
+  /** True when a filter narrowed the list, so empty reads "no matches", not
+   *  "nothing indexed". */
+  narrowed?: boolean | undefined;
   onSelect?: (commit: Commit) => void;
   total?: number;
   hasMore?: boolean;
   loadingMore?: boolean;
   onLoadMore?: () => void;
+  /** Words for the health chip; the host's translations. */
+  healthLabels?: Partial<HealthDeltaLabels> | undefined;
+  /** Word marking a commit that made health worse in a hotspot file. */
+  hotspotLabel?: string | undefined;
 }
 
-type Filter = "all" | "high" | "fixes";
-
-type CommitRow = Commit & { _idx: number };
-
-const COLUMNS: ResponsiveColumn<CommitRow>[] = [
-  {
-    key: "rank",
-    header: "#",
-    headerClassName: "w-8",
-    hideInCard: true,
-    render: (c) => (
-      <span className="text-xs tabular-nums text-[var(--color-text-tertiary)]">{c._idx + 1}</span>
-    ),
-  },
-  {
-    key: "commit",
-    header: "Commit",
-    cellClassName: "min-w-[200px] max-w-[460px]",
-    render: (c) => (
-      <div className="flex items-center gap-2">
-        <span className="font-mono text-xs text-[var(--color-text-tertiary)] shrink-0">
-          {c.short_sha}
-        </span>
-        {c.is_fix && <Bug className="h-3 w-3 shrink-0 text-[var(--color-error)]" />}
-        {/* Wraps rather than truncates. This is the primary column, and an
-            ellipsis here reports a layout decision to the reader as a shorter
-            commit message: "release: v0.4.0, language-support upgrades across
-            all Goo…" is the page hiding the part that says which. */}
-        <span className="min-w-0 text-xs text-[var(--color-text-primary)] [text-wrap:pretty]">
-          {c.subject || "(no subject)"}
-        </span>
-      </div>
-    ),
-  },
-  {
-    key: "author",
-    header: "Author",
-    priority: 2,
-    cellClassName: "max-w-[220px]",
-    render: (c) => (
-      <div className="flex items-center gap-1.5 min-w-0 text-xs text-[var(--color-text-secondary)]">
-        <span className="truncate">{c.author_name || "—"}</span>
-        {c.agent_name && <AgentBadge agentName={c.agent_name} tier={c.agent_autonomy_tier} />}
-        {!c.agent_name && isNewContributor(c.author_commit_count) && (
-          <NewContributorBadge commitCount={c.author_commit_count as number} />
-        )}
-      </div>
-    ),
-    mobileRender: (c) => c.author_name || "—",
-  },
-  {
-    key: "when",
-    header: "When",
-    headerClassName: "w-24",
-    priority: 3,
-    render: (c) => (
-      <span className="text-xs tabular-nums text-[var(--color-text-tertiary)]">
-        {c.committed_at ? formatRelativeTime(c.committed_at) : "—"}
-      </span>
-    ),
-  },
-  {
-    key: "lines",
-    header: "Lines",
-    headerClassName: "w-24",
-    priority: 3,
-    render: (c) => (
-      <span className="text-xs tabular-nums">
-        <span className="text-[var(--color-success)]">+{formatLOC(c.lines_added)}</span>{" "}
-        <span className="text-[var(--color-error)]">-{formatLOC(c.lines_deleted)}</span>
-      </span>
-    ),
-  },
-  {
-    key: "risk",
-    header: "Risk",
-    headerClassName: "w-28",
-    // No ChurnBar. The cell was carrying the same fact three times over (a
-    // filled bar, the percentile, and the pill), and because the queue sorts
-    // by risk the bar was full-width and semantic-red on every visible row —
-    // decoration that could not vary, drawn in the loudest colour available.
-    // The number and the pill say it, and only one of them needs ink.
-    render: (c) => (
-      <div className="flex items-center gap-2">
-        <span className="w-8 text-xs tabular-nums text-[var(--color-text-tertiary)]">
-          {Math.round(c.risk_percentile)}%
-        </span>
-        <PriorityBadge priority={c.review_priority as ReviewPriority} />
-      </div>
-    ),
-    mobileRender: (c) => (
-      <span className="inline-flex items-center gap-2">
-        <span className="tabular-nums">{Math.round(c.risk_percentile)}%</span>
-        <PriorityBadge priority={c.review_priority as ReviewPriority} />
-      </span>
-    ),
-  },
-  {
-    key: "top_driver",
-    header: "Top driver",
-    headerClassName: "max-xl:hidden",
-    cellClassName: "max-xl:hidden max-w-[220px]",
-    hideInCard: true,
-    render: (c) => (
-      <span
-        className="block truncate text-xs text-[var(--color-text-tertiary)]"
-        title={c.top_driver ?? undefined}
-      >
-        {c.top_driver ?? "—"}
-      </span>
-    ),
-  },
-];
-
 /**
- * The review-priority queue: per-commit change-risk, ranked. Ordering is
- * server-driven (risk vs date); search + priority filters are client-side over
- * the loaded page. Risk is shown as a **repo-relative** percentile + priority,
- * so the column is portable across repos.
+ * The commits themselves, each led by what it did to code health. Controls
+ * are separate pieces, so a host can place them where its page wants them.
  */
-export function CommitTable({
+export function CommitList({
   commits,
-  sort,
-  onSortChange,
-  authorship = "all",
-  onAuthorshipChange,
+  search = "",
+  narrowed = false,
   onSelect,
   total,
   hasMore,
   loadingMore,
   onLoadMore,
-}: CommitTableProps) {
-  const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState<Filter>("all");
+  healthLabels,
+  hotspotLabel = "Hotspot",
+}: CommitListProps) {
+  const cols = useMemo(() => commitColumns(healthLabels, hotspotLabel), [healthLabels, hotspotLabel]);
+  const shown = useMemo(() => filterCommits(commits, search), [commits, search]);
 
-  const filtered = useMemo(() => {
-    let items = commits;
-    if (search) {
-      const q = search.toLowerCase();
-      items = items.filter(
-        (c) =>
-          c.subject.toLowerCase().includes(q) ||
-          c.author_name.toLowerCase().includes(q) ||
-          c.sha.toLowerCase().includes(q),
-      );
-    }
-    if (filter === "high") items = items.filter((c) => c.review_priority === "high");
-    else if (filter === "fixes") items = items.filter((c) => c.is_fix);
-    return items;
-  }, [commits, search, filter]);
-
-  if (commits.length === 0 && authorship === "all") {
+  if (commits.length === 0 && !narrowed && !search.trim()) {
     return (
       <EmptyState
         title="No commits indexed"
@@ -190,120 +144,89 @@ export function CommitTable({
       />
     );
   }
+  if (shown.length === 0) {
+    return <EmptyState title="No matches" description="Try adjusting your search or filters." />;
+  }
+  return (
+    <div className="overflow-hidden rounded-lg border border-[var(--color-border-default)]">
+      <ResponsiveTable
+        columns={cols}
+        rows={shown.map((c, i) => ({ ...c, _idx: i }))}
+        rowKey={(c) => c.sha}
+        caption="Commits, each led by what it did to code health"
+        {...(onSelect ? { onRowClick: onSelect } : {})}
+        stacked="sm"
+        bare
+      />
+      {total != null && (
+        <ResultsFooter
+          shown={shown.length}
+          total={total}
+          hasMore={!!hasMore}
+          loading={loadingMore}
+          onLoadMore={onLoadMore}
+          noun="commits"
+        />
+      )}
+    </div>
+  );
+}
 
-  const filters: { key: Filter; label: string; count: number }[] = [
-    { key: "all", label: "All", count: commits.length },
-    {
-      key: "high",
-      label: "High priority",
-      count: commits.filter((c) => c.review_priority === "high").length,
-    },
-    { key: "fixes", label: "Fixes", count: commits.filter((c) => c.is_fix).length },
-  ];
+const AUTHORSHIP: { key: CommitAuthorship; label: string }[] = [
+  { key: "all", label: "Everyone" },
+  { key: "agent", label: "Agents" },
+  { key: "human", label: "Human-attested" },
+  { key: "unknown", label: "Unknown" },
+];
 
-  const sorts: { key: CommitSort; label: string }[] = [
-    { key: "risk", label: "Review priority" },
-    { key: "date", label: "Most recent" },
-  ];
+export interface CommitTableProps extends Omit<CommitListProps, "search" | "narrowed"> {
+  /** Server-driven ordering. `risk` = review-priority order, `date` = recency. */
+  sort: CommitSort;
+  onSortChange?: (sort: CommitSort) => void;
+  /** Server-driven authorship filter. Control omitted without a handler. */
+  authorship?: CommitAuthorship;
+  onAuthorshipChange?: (authorship: CommitAuthorship) => void;
+  /** Server-driven review-priority / fixes filter. */
+  kind?: CommitKind;
+  onKindChange?: (kind: CommitKind) => void;
+  counts?: { all: number; high: number; fixes: number } | undefined;
+  narrowed?: boolean | undefined;
+}
 
+/**
+ * The list with its controls in one row above it, for hosts that want the
+ * whole thing in one piece. The OSS Commits page composes the pieces itself.
+ */
+export function CommitTable({
+  sort,
+  onSortChange,
+  authorship = "all",
+  onAuthorshipChange,
+  kind = "all",
+  onKindChange,
+  counts,
+  narrowed = false,
+  ...list
+}: CommitTableProps) {
+  const [search, setSearch] = useState("");
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
-        <div className="relative">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />
-          <Input
-            placeholder="Search commits or authors…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="pl-8 h-8 w-full sm:w-56 text-xs"
-          />
-        </div>
-        <div className="flex flex-wrap rounded-md border border-[var(--color-border-default)] overflow-hidden text-xs">
-          {filters.map((f) => (
-            <button
-              key={f.key}
-              onClick={() => setFilter(f.key)}
-              className={cn(
-                "px-2.5 py-1.5 font-medium transition-colors",
-                filter === f.key
-                  ? "bg-[var(--color-accent-primary)] text-[var(--color-text-inverse)]"
-                  : "bg-transparent text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)]",
-              )}
-            >
-              {f.label}
-              <span className="ml-1 text-[10px] opacity-70">({f.count})</span>
-            </button>
-          ))}
-        </div>
+        <CommitSearch value={search} onChange={setSearch} />
+        <CommitKindControl value={kind} onChange={(k) => onKindChange?.(k)} counts={counts} />
         {onAuthorshipChange && (
-          <div className="flex rounded-md border border-[var(--color-border-default)] overflow-hidden text-xs">
-            {(
-              [
-                { key: "all", label: "Everyone" },
-                { key: "human", label: "Humans" },
-                { key: "agent", label: "Agents" },
-              ] as { key: CommitAuthorship; label: string }[]
-            ).map((a) => (
-              <button
-                key={a.key}
-                onClick={() => onAuthorshipChange(a.key)}
-                aria-pressed={authorship === a.key}
-                className={cn(
-                  "px-2.5 py-1.5 font-medium transition-colors",
-                  authorship === a.key
-                    ? "bg-[var(--color-bg-elevated)] text-[var(--color-text-primary)]"
-                    : "bg-transparent text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-elevated)]",
-                )}
-              >
-                {a.label}
-              </button>
-            ))}
-          </div>
+          <Segmented<CommitAuthorship>
+            label="Authorship"
+            value={authorship}
+            options={AUTHORSHIP.map((a) => ({ value: a.key, label: a.label }))}
+            onChange={onAuthorshipChange}
+          />
         )}
-        <div className="ml-auto flex rounded-md border border-[var(--color-border-default)] overflow-hidden text-xs">
-          {sorts.map((s) => (
-            <button
-              key={s.key}
-              onClick={() => onSortChange?.(s.key)}
-              aria-pressed={sort === s.key}
-              className={cn(
-                "px-2.5 py-1.5 font-medium transition-colors",
-                sort === s.key
-                  ? "bg-[var(--color-bg-elevated)] text-[var(--color-text-primary)]"
-                  : "bg-transparent text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-elevated)]",
-              )}
-            >
-              {s.label}
-            </button>
-          ))}
+        <div className="ml-auto">
+          <CommitSortControl value={sort} onChange={(s) => onSortChange?.(s)} />
         </div>
       </div>
-
-      {filtered.length === 0 ? (
-        <EmptyState title="No matches" description="Try adjusting your search or filters." />
-      ) : (
-        <div className="rounded-lg border border-[var(--color-border-default)] overflow-hidden">
-          <ResponsiveTable
-            columns={COLUMNS}
-            rows={filtered.map((c, i) => ({ ...c, _idx: i }))}
-            rowKey={(c) => c.sha}
-            caption="Commit review-priority queue"
-            {...(onSelect ? { onRowClick: onSelect } : {})}
-            stacked="sm"
-            bare
-          />
-          {total != null && (
-            <ResultsFooter
-              shown={filtered.length}
-              total={total}
-              hasMore={!!hasMore}
-              loading={loadingMore}
-              onLoadMore={onLoadMore}
-              noun="commits"
-            />
-          )}
-        </div>
-      )}
+      <CommitList {...list} search={search} narrowed={narrowed || kind !== "all" || authorship !== "all"} />
     </div>
   );
 }

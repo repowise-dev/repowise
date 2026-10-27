@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from typing import ClassVar
 
 import networkx as nx
 
@@ -163,3 +164,92 @@ class TestHonestyGuard:
         findings = DeadCodeAnalyzer(graph).analyze().findings
         flagged = {f.symbol_name for f in findings}
         assert "avif_encode" not in flagged
+
+
+# ---------------------------------------------------------------------------
+# C++ same-TU type use (#1656) — a struct used only inside its own .cpp
+# ---------------------------------------------------------------------------
+
+
+class TestCppSameTranslationUnitTypeUse:
+    """Issue #1656: a ``struct``/``class`` defined in a .cpp and used only
+    within that same translation unit must NOT read as an unused export.
+
+    The C++ resolver mints a cross-file ``type_use`` edge for a header type
+    used across an ``#include``, but a type defined and used in the *same* file
+    has no cross-file edge to mint. It is still genuinely referenced, so it
+    must be rescued via ``local_type_uses`` — exactly as the Go and TS
+    resolvers already do for intra-module type refs.
+    """
+
+    _SOURCES: ClassVar[dict[str, str]] = {
+        "sky.h": (
+            "#pragma once\n\n"
+            "namespace demo\n"
+            "{\n"
+            "    class Sky\n"
+            "    {\n"
+            "    public:\n"
+            "        float Compute(float t) const;\n"
+            "    };\n"
+            "}\n"
+        ),
+        "sky.cpp": (
+            '#include "sky.h"\n\n'
+            "namespace demo\n"
+            "{\n"
+            "    struct Row\n"
+            "    {\n"
+            "        float a;\n"
+            "        float b;\n"
+            "    };\n\n"
+            "    float Sky::Compute(float t) const\n"
+            "    {\n"
+            "        Row scratch{ 1.0f, 2.0f };   // Row is used right here\n"
+            "        return scratch.a * t + scratch.b;\n"
+            "    }\n"
+            "}\n"
+        ),
+        "main.cpp": (
+            '#include "sky.h"\n\n'
+            "int main()\n"
+            "{\n"
+            "    demo::Sky sky;\n"
+            "    return static_cast<int>(sky.Compute(2.0f));\n"
+            "}\n"
+        ),
+    }
+
+    def _build(self, repo: Path) -> nx.DiGraph:
+        for rel, body in self._SOURCES.items():
+            p = repo / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(body, encoding="utf-8")
+        # FileTraverser infers language from the extension (.cpp → cpp), which
+        # is what routes the C++ type-ref strategy.
+        from repowise.core.ingestion import FileTraverser
+
+        parser = ASTParser()
+        builder = GraphBuilder(repo_path=repo)
+        for fi in FileTraverser(repo).traverse():
+            builder.add_file(
+                parser.parse_file(fi, Path(fi.abs_path).read_bytes())
+            )
+        return builder.build()
+
+    def test_same_file_type_use_stamped_local(self, tmp_path: Path) -> None:
+        graph = self._build(tmp_path)
+        # Row is defined and used only inside sky.cpp — no cross-file edge, but
+        # the type-ref resolver must stamp it as a local use.
+        node = graph.nodes.get("sky.cpp")
+        assert node is not None
+        assert "Row" in node.get("local_type_uses", ())
+
+    def test_same_file_type_not_flagged_as_dead(self, tmp_path: Path) -> None:
+        graph = self._build(tmp_path)
+        findings = DeadCodeAnalyzer(graph).analyze().findings
+        flagged = {f.symbol_name for f in findings}
+        assert "Row" not in flagged, (
+            "Row is used in the same TU; it must not read as an unused_export"
+        )
+

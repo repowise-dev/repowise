@@ -24,17 +24,16 @@ so deleted files age out naturally.
 
 from __future__ import annotations
 
-import contextlib
 import dataclasses
 import hashlib
-import os
 import pickle
-import tempfile
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 import structlog
+
+from repowise.core.cache_seal import dump_sealed_pickle, load_sealed_pickle
 
 from . import models
 from .models import FileInfo, ParsedFile
@@ -127,8 +126,9 @@ class ParseCache:
 
     def load(self) -> None:
         try:
-            with self._path.open("rb") as fh:
-                payload = pickle.load(fh)
+            # HMAC-verify *before* unpickling — the cache lives inside the
+            # indexed repo and is attacker-writable (see cache_seal).
+            payload = load_sealed_pickle(self._path, domain=_CACHE_FILENAME)
             if (
                 payload.get("version") != _CACHE_VERSION
                 or payload.get("fingerprint") != self._fingerprint
@@ -137,29 +137,18 @@ class ParseCache:
             self._entries = payload.get("files", {})
         except FileNotFoundError:
             return
-        except Exception as exc:  # corrupt / unreadable cache -> full parse
+        except Exception as exc:  # corrupt / unreadable / unsigned -> full parse
             log.debug("parse_cache_load_failed", error=str(exc))
 
     def save(self) -> None:
         """Atomically persist the entries used or created this run."""
         try:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
             payload = {
                 "version": _CACHE_VERSION,
                 "fingerprint": self._fingerprint,
                 "files": self._fresh,
             }
-            fd, tmp_name = tempfile.mkstemp(
-                dir=str(self._path.parent), prefix=_CACHE_FILENAME, suffix=".tmp"
-            )
-            try:
-                with os.fdopen(fd, "wb") as fh:
-                    pickle.dump(payload, fh, protocol=pickle.HIGHEST_PROTOCOL)
-                os.replace(tmp_name, self._path)
-            except BaseException:
-                with contextlib.suppress(OSError):
-                    os.unlink(tmp_name)
-                raise
+            dump_sealed_pickle(self._path, payload, domain=_CACHE_FILENAME)
         except Exception as exc:
             log.debug("parse_cache_save_failed", error=str(exc))
 
@@ -180,7 +169,8 @@ class ParseCache:
             self.misses += 1
             return None
         try:
-            parsed: Any = pickle.loads(blob)
+            # An entry of the cache file load_sealed_pickle verified on load.
+            parsed: Any = pickle.loads(blob)  # repowise-security-ignore: pickle_loads
         except Exception as exc:  # corrupt entry -> re-parse this file
             log.debug("parse_cache_entry_corrupt", path=file_info.path, error=str(exc))
             self.misses += 1
@@ -195,6 +185,8 @@ class ParseCache:
 
     def put(self, parsed: ParsedFile, content_hash: str) -> None:
         """Snapshot *parsed* (call before any graph build mutates it)."""
+        if parsed.grammar_missing:
+            return  # re-parse next run, when the grammar may have loaded
         try:
             blob = pickle.dumps(parsed, protocol=pickle.HIGHEST_PROTOCOL)
         except Exception as exc:

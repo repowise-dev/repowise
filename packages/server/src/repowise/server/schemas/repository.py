@@ -9,6 +9,8 @@ from pathlib import Path
 from pydantic import BaseModel, field_validator
 
 from repowise.core.docs_mode import DocsMode
+from repowise.core.forges import strip_credentials
+from repowise.core.index_scope import load_index_scope
 
 
 class RepoCreate(BaseModel):
@@ -70,20 +72,98 @@ class RepoResponse(BaseModel):
     # built at.
     run_mode: str | None = None
     git_tier: str | None = None
+    # Canonical versioned projection shared with CLI status and MCP metadata.
+    index_scope: dict | None = None
     # Set on POST /api/repos responses when registration auto-enqueued the
     # first index; clients attach to /api/jobs/{id}/stream with it.
     initial_job_id: str | None = None
 
     @classmethod
-    def from_orm(cls, obj: object) -> RepoResponse:
+    def from_orm(cls, obj: object, settings: dict | None = None) -> RepoResponse:
+        """*settings* replaces the row's stored ``settings_json`` when given."""
+        local_path = obj.local_path  # type: ignore[attr-defined]
+        scope = load_index_scope(local_path) if local_path else None
         return cls(
             id=obj.id,  # type: ignore[attr-defined]
             name=obj.name,  # type: ignore[attr-defined]
-            url=obj.url,  # type: ignore[attr-defined]
-            local_path=obj.local_path,  # type: ignore[attr-defined]
+            url=strip_credentials(obj.url or ""),  # type: ignore[attr-defined]
+            local_path=local_path,
             default_branch=obj.default_branch,  # type: ignore[attr-defined]
             head_commit=obj.head_commit,  # type: ignore[attr-defined]
-            settings=json.loads(obj.settings_json),  # type: ignore[attr-defined]
+            settings=json.loads(obj.settings_json) if settings is None else settings,  # type: ignore[attr-defined]
             created_at=obj.created_at,  # type: ignore[attr-defined]
             updated_at=obj.updated_at,  # type: ignore[attr-defined]
+            index_scope=scope,
         )
+
+
+class RepoDeletedResponse(BaseModel):
+    """What a repository delete removed, for the confirmation toast."""
+
+    ok: bool = True
+    deleted_pages: int = 0
+
+
+class JobAcceptedResponse(BaseModel):
+    """The 202 payload every background-job launch returns.
+
+    ``stream_token`` authorizes ``/api/jobs/{job_id}/stream`` directly, so a
+    client can attach without a second round-trip or an API key in the query
+    string.
+    """
+
+    job_id: str
+    status: str = "accepted"
+    stream_token: str
+
+
+class RepoSummaryRow(BaseModel):
+    """One repository's headline figures, for the multi-repo dashboard.
+
+    Every count here is a count of the thing its name says. ``file_count`` in
+    particular is file nodes only: ``/stats`` counts every ``graph_nodes`` row,
+    which on this repo is 38,813 against 3,600 actual files, because symbol
+    nodes live in the same table.
+    """
+
+    id: str
+    name: str
+    local_path: str
+    updated_at: datetime | None = None
+    #: "indexed" | "needs_index" | "missing_dir" — same vocabulary as
+    #: ``RepoResponse.workspace_status``, which the sidebar already renders.
+    status: str = "indexed"
+
+    file_count: int = 0
+    symbol_count: int = 0
+    entry_point_count: int = 0
+
+    #: Documentation pages, and how many of them are still fresh. Both counts
+    #: ship rather than a percentage so a caller can print "3,797 of 4,059"
+    #: and the ratio without the two disagreeing.
+    doc_page_count: int = 0
+    doc_fresh_page_count: int = 0
+
+    dead_export_count: int = 0
+
+    #: Files carrying git history, and the hotspot subset. The denominator is
+    #: here because hotspots are only meaningful against it.
+    tracked_file_count: int = 0
+    hotspot_count: int = 0
+
+    #: Latest health snapshot. ``None`` when the repo has never been analysed —
+    #: distinct from a score of 0, which would mean "analysed, and terrible".
+    average_health: float | None = None
+    hotspot_health: float | None = None
+    health_taken_at: datetime | None = None
+
+    #: Index-vs-checkout freshness. ``index_behind`` is ``None`` when the
+    #: comparison could not run (no git checkout on disk, unreadable HEAD)
+    #: rather than ``False``, so "current" and "unknown" stay separable.
+    indexed_commit: str | None = None
+    live_head: str | None = None
+    index_behind: bool | None = None
+
+
+class ReposSummaryResponse(BaseModel):
+    repos: list[RepoSummaryRow]

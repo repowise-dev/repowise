@@ -12,7 +12,10 @@ from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
 from repowise.core.ingestion.git_commit_index import load_commit_index
-from repowise.core.ingestion.git_indexer.commit_rows import build_commit_rows
+from repowise.core.ingestion.git_indexer.commit_rows import (
+    build_commit_file_rows,
+    build_commit_rows,
+)
 
 
 def _iso_from_ts(ts: int) -> str:
@@ -90,48 +93,85 @@ def test_commit_sink_collects_full_footprint_including_non_indexable() -> None:
     ]
 
 
+def _mock_repo(commits: list[dict]):
+    """A repo whose ``git log`` answers both passes the loader makes.
+
+    With ``since_ts`` the loader first asks for ``%ct`` only, to learn how deep
+    the surviving prefix goes, and only then asks for the numstat block bounded
+    to that depth. A mock that returned the same string to both would let the
+    bound go untested.
+    """
+    repo = MagicMock()
+    calls: list[tuple] = []
+
+    def log(*args, **kwargs):
+        calls.append(args)
+        depth = int(str(args[0]).lstrip("-"))
+        if "--format=%ct" in args:
+            return "\n".join(str(c["ct"]) for c in commits[:depth])
+        return _build_log(commits[:depth])
+
+    repo.git.log.side_effect = log
+    repo._log_calls = calls
+    return repo
+
+
 def test_commit_sink_since_ts_drops_old_commits() -> None:
     """``since_ts`` filters the sink to commits strictly newer than the bound —
     the incremental capture path's freshness guarantee."""
-    raw = _build_log(
-        [
-            {
-                "sha": "new",
-                "an": "A",
-                "ae": "a@x",
-                "ct": 3000,
-                "subj": "new",
-                "files": [(1, 0, "src/a.py")],
-            },
-            {
-                "sha": "mid",
-                "an": "A",
-                "ae": "a@x",
-                "ct": 2000,
-                "subj": "mid",
-                "files": [(1, 0, "src/a.py")],
-            },
-            {
-                "sha": "old",
-                "an": "A",
-                "ae": "a@x",
-                "ct": 1000,
-                "subj": "old",
-                "files": [(1, 0, "src/a.py")],
-            },
-        ]
-    )
-    repo = MagicMock()
-    repo.git.log.return_value = raw
-
+    commits = [
+        {"sha": "new", "an": "A", "ae": "a@x", "ct": 3000, "subj": "new",
+         "files": [(1, 0, "src/a.py")]},
+        {"sha": "mid", "an": "A", "ae": "a@x", "ct": 2000, "subj": "mid",
+         "files": [(1, 0, "src/a.py")]},
+        {"sha": "old", "an": "A", "ae": "a@x", "ct": 1000, "subj": "old",
+         "files": [(1, 0, "src/a.py")]},
+    ]
+    repo = _mock_repo(commits)
     sink: list[dict] = []
     load_commit_index(repo, 100, {"src/a.py"}, commit_sink=sink, since_ts=1500)
     # Only commits with ts > 1500 survive (3000, 2000).
     assert sorted(c["sha"] for c in sink) == ["mid", "new"]
 
+    repo2 = _mock_repo(commits)
     sink2: list[dict] = []
-    load_commit_index(repo, 100, {"src/a.py"}, commit_sink=sink2, since_ts=3000)
+    load_commit_index(repo2, 100, {"src/a.py"}, commit_sink=sink2, since_ts=3000)
     assert sink2 == []
+
+
+def test_since_ts_bounds_the_numstat_walk_to_the_surviving_prefix() -> None:
+    """The expensive pass must not diff commits the ts filter would drop.
+
+    Without this the loader can ask git to produce ``--numstat`` for the whole
+    window and throw it away, which is invisible to every behavioural test
+    above: the returned rows are identical either way.
+    """
+    commits = [
+        {"sha": f"c{i}", "an": "A", "ae": "a@x", "ct": 5000 - i * 100, "subj": f"c{i}",
+         "files": [(1, 0, "src/a.py")]}
+        for i in range(20)
+    ]
+    repo = _mock_repo(commits)
+    sink: list[dict] = []
+    # ts > 4800 keeps c0..c1 (5000, 4900); c2 is exactly 4800 and is excluded.
+    load_commit_index(repo, 100, {"src/a.py"}, commit_sink=sink, since_ts=4800)
+
+    assert sorted(c["sha"] for c in sink) == ["c0", "c1"]
+    numstat_calls = [c for c in repo._log_calls if "--numstat" in c]
+    assert len(numstat_calls) == 1
+    assert numstat_calls[0][0] == "-2"
+
+
+def test_since_ts_newer_than_every_commit_skips_the_numstat_walk() -> None:
+    commits = [
+        {"sha": "only", "an": "A", "ae": "a@x", "ct": 1000, "subj": "x",
+         "files": [(1, 0, "src/a.py")]}
+    ]
+    repo = _mock_repo(commits)
+    sink: list[dict] = []
+    assert load_commit_index(repo, 100, {"src/a.py"}, commit_sink=sink, since_ts=9999) == {}
+    assert sink == []
+    assert [c for c in repo._log_calls if "--numstat" in c] == []
 
 
 def test_commit_sink_default_none_is_noop() -> None:
@@ -309,3 +349,46 @@ def test_build_commit_rows_committed_at_parsed() -> None:
         ]
     )
     assert rows0[0]["committed_at"] is None
+
+
+def test_build_commit_file_rows_keeps_the_detail_the_aggregates_drop():
+    rows = build_commit_file_rows(
+        [{"sha": "a" * 40, "changes": [("pkg/a.py", 10, 2), ("pkg/b.py", 0, 5)]}]
+    )
+
+    assert [r["file_path"] for r in rows] == ["pkg/a.py", "pkg/b.py"]
+    assert rows[0] == {
+        "sha": "a" * 40,
+        "file_path": "pkg/a.py",
+        "lines_added": 10,
+        "lines_deleted": 2,
+    }
+    # 0/0-style rows are real: a binary file is touched, size unknown.
+    assert rows[1]["lines_added"] == 0
+
+
+def test_build_commit_file_rows_folds_a_repeated_path():
+    """numstat can emit a path twice; (sha, path) is the natural key."""
+    rows = build_commit_file_rows(
+        [{"sha": "a" * 40, "changes": [("pkg/a.py", 10, 2), ("pkg/a.py", 3, 3)]}]
+    )
+
+    assert len(rows) == 1
+
+
+def test_build_commit_file_rows_skips_records_without_a_sha():
+    rows = build_commit_file_rows([{"changes": [("x.py", 1, 1)]}, {"sha": "", "changes": []}])
+
+    assert rows == []
+
+
+def test_build_commit_file_rows_covers_exactly_the_commits_it_was_given():
+    commits = [
+        {"sha": "a" * 40, "changes": [("a.py", 1, 1)]},
+        {"sha": "b" * 40, "changes": [("b.py", 2, 0)]},
+    ]
+
+    file_rows = build_commit_file_rows(commits)
+    commit_rows = build_commit_rows(commits)
+
+    assert {r["sha"] for r in file_rows} == {r["sha"] for r in commit_rows}

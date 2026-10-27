@@ -61,7 +61,7 @@ export function registerFileDecorations(ctx: RepowiseContext): vscode.Disposable
       if (defect > maxScore()) return undefined;
       return {
         badge: BADGE,
-        tooltip: `Repowise defect score ${defect.toFixed(1)}`,
+        tooltip: `Repowise code health ${defect.toFixed(1)}`,
         color: errorColor,
         propagate: false,
       };

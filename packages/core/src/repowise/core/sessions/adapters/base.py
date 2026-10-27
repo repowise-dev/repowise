@@ -4,7 +4,9 @@ An adapter knows two things about its agent: where transcripts for a given
 repo live (:meth:`HarnessAdapter.discover`) and how one raw transcript line
 becomes a normalized :class:`~repowise.core.sessions.events.Event`
 (:meth:`HarnessAdapter.normalize`). Iteration, cursoring, and mining are
-shared code built on those two primitives.
+shared code built on those two primitives. Three optional hooks scope the
+rest: :meth:`HarnessAdapter.prefilter` and the per-file
+:meth:`HarnessAdapter.begin_file` / :meth:`HarnessAdapter.end_file`.
 
 Best-effort contract, matching the distill miners this layer was extracted
 from: ``normalize`` returns None for anything it cannot parse rather than
@@ -15,11 +17,14 @@ apply their own skip policy per file.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
-from repowise.core.sessions.events import Event
+from repowise.core.sessions.events import Event, ToolResult, ToolUse
+
+if TYPE_CHECKING:
+    from repowise.core.edit_capture.edits import FileEdit
 
 #: Cheap gate on the raw line, applied before paying for JSON parsing.
 #: Transcript lines routinely run to hundreds of kilobytes; a substring
@@ -27,12 +32,51 @@ from repowise.core.sessions.events import Event
 #: so consumers that only want tool events pass one of these.
 RawPrefilter = Callable[[str], bool]
 
+#: What a consumer wants out of a transcript, named rather than spelled.
+#: A consumer asks for an intent; the adapter owns which of its harness's
+#: key names spot it, so harness vocabulary never leaks into a miner.
+#:
+#: Shell tool calls together with their results (command-level mining).
+INTENT_SHELL_CALLS = "shell_calls"
+#: Any tool call or tool result, shell or otherwise.
+INTENT_TOOL_CALLS = "tool_calls"
+#: Conversation turns: user prose, assistant prose, and the tool traffic
+#: carried on them.
+INTENT_TURNS = "turns"
+#: Tool calls that may change a file, plus the lines that scope them (cwd,
+#: model). Results are not included: a consumer pairing them admits a result
+#: line by its call id, which only it knows.
+INTENT_EDIT_CALLS = "edit_calls"
+
 
 class HarnessAdapter(ABC):
     """Reads one agent's transcripts into the shared Event stream."""
 
     #: Stable identifier, e.g. ``"claude_code"``.
     name: ClassVar[str]
+
+    #: Tool names, in this harness's own vocabulary, whose calls change a file
+    #: rather than only look at one. A consumer ranking what a session did to a
+    #: path reads it from the adapter, never from a shared list: one harness
+    #: normalizes every edit to a single token and has no read tool at all, so
+    #: a flat set would be wrong rather than merely duplicated. Empty means the
+    #: adapter has not declared one, and nothing is treated as an edit.
+    #:
+    #: Namesake, not sibling: ``cli.agent_adapters.AgentAdapter`` declares the
+    #: same attribute for the editor hooks, and answers it for the live tool
+    #: call rather than for a recorded transcript. The two deliberately hold
+    #: different names for the same harness, and core cannot import cli, so
+    #: neither is the other's source of truth.
+    edit_tool_names: ClassVar[frozenset[str]] = frozenset()
+
+    #: Tool names whose result is a shell command's output, in this harness's
+    #: vocabulary. Per adapter for the same reason ``edit_tool_names`` is: one
+    #: harness spells it ``Bash``, another splits one interactive shell across
+    #: ``exec_command``, ``write_stdin`` and ``wait``. Consumers use it to tell
+    #: command output from a tool call's structured response. Empty means the
+    #: adapter declared none, and such a consumer sees no shell results rather
+    #: than guessing.
+    shell_tool_names: ClassVar[frozenset[str]] = frozenset()
 
     @abstractmethod
     def discover(self, repo_root: Path, *, projects_root: Path | None = None) -> list[Path]:
@@ -42,9 +86,108 @@ class HarnessAdapter(ABC):
         tests). An absent directory yields an empty list, never an error.
         """
 
+    def discover_all(self, *, projects_root: Path | None = None) -> list[Path]:
+        """Every transcript this harness keeps on this machine, sorted.
+
+        For a pass that scopes each edit by its own path rather than by where
+        the session started: worktree sessions and subagent transcripts sit
+        outside :meth:`discover`'s directory. Empty unless an adapter says.
+        """
+        return []
+
     @abstractmethod
     def normalize(self, raw_line: str) -> Event | None:
         """One raw transcript line as an Event, or None when unparseable."""
+
+    def prefilter(self, intent: str) -> RawPrefilter | None:
+        """A cheap raw-line gate for *intent*, or None for no gate.
+
+        The returned predicate reads the **raw string** and runs before any
+        parsing: lines routinely run to hundreds of kilobytes, and this gate
+        is most of the layer's speed. An adapter that normalizes the line to
+        decide would give all of it back, so overrides return a predicate
+        over the text and nothing else.
+
+        None means "no cheap gate for this intent", so every line is parsed.
+        Correct but slow, which is the right default for an intent an
+        adapter has not thought about.
+
+        Not purely a speed knob for a harness that states its ``cwd`` once
+        per file rather than once per line: dropping that line leaves every
+        event unscoped, and the miners read a blank ``cwd`` as "no opinion"
+        rather than as a miss. A gate for such a harness admits the line
+        carrying it, however narrow the rest of the gate is.
+        """
+        return None
+
+    def begin_file(self, path: Path | None = None) -> None:  # noqa: B027 — opt-in hook
+        """Called once before the first line of a transcript.
+
+        The hook exists so an adapter whose harness splits one logical event
+        across lines can hold correlation state for the duration of a file.
+        Stateless adapters ignore it. Events are still emitted by
+        :meth:`normalize`, one line at a time; this scopes state, it is not
+        a flush protocol.
+
+        *path* is the transcript being opened when the drive path knows it,
+        and None when the caller supplied bare lines.
+        """
+
+    def end_file(self) -> None:  # noqa: B027 — opt-in hook
+        """Called after the last line of a transcript, including on error."""
+
+    def events_from_lines(
+        self,
+        lines: Iterable[str],
+        *,
+        prefilter: RawPrefilter | None = None,
+        path: Path | None = None,
+    ) -> Iterator[Event]:
+        """Normalized events from already-decoded transcript *lines*.
+
+        The one read loop: gate, normalize, skip unparseable, bracketed by
+        the per-file lifecycle. Every drive path routes through here; only
+        the source of lines differs (a whole file, a cursored tail, or a
+        handle the caller already holds).
+
+        The gate runs on the raw string and decides *before* :meth:`normalize`
+        is paid for. That ordering is the layer's performance contract, not an
+        implementation detail; a line that fails the gate is never parsed.
+
+        One adapter drives one transcript at a time. This is a generator, so
+        the lifecycle brackets iteration rather than the call: ``begin_file``
+        runs on the first ``next()`` and ``end_file`` when the iterator is
+        exhausted, closed, or collected. A caller that opens a second iterator
+        on the same adapter before draining the first would interleave two
+        files into one adapter's state, so callers iterate one at a time.
+        """
+        self.begin_file(path)
+        try:
+            for raw in lines:
+                if prefilter is not None and not prefilter(raw):
+                    continue
+                event = self.normalize(raw)
+                if event is not None:
+                    yield event
+        finally:
+            self.end_file()
+
+    def file_edits(self, use: ToolUse, result: ToolResult | None = None) -> list[FileEdit]:
+        """Lines a recorded tool call added, per file; empty for a non-edit call.
+
+        The same extractor the live capture hook runs (keyed by this adapter's
+        ``name`` in :data:`repowise.core.edit_capture.edits.EXTRACTORS`), so a
+        transcript and a hook payload of one call can never disagree. A result
+        marked as an error wrote nothing.
+        """
+        from repowise.core.edit_capture.edits import EXTRACTORS
+
+        extractor = EXTRACTORS.get(self.name)
+        if extractor is None or use.name not in self.edit_tool_names:
+            return []
+        if result is not None and result.is_error:
+            return []
+        return extractor(use.name, use.input, result.payload if result is not None else None)
 
     def iter_events(self, path: Path, *, prefilter: RawPrefilter | None = None) -> Iterator[Event]:
         """Events from one transcript file, in order.
@@ -53,9 +196,4 @@ class HarnessAdapter(ABC):
         is tolerant (``errors="replace"``); ``OSError`` propagates.
         """
         with path.open(encoding="utf-8", errors="replace") as fh:
-            for raw in fh:
-                if prefilter is not None and not prefilter(raw):
-                    continue
-                event = self.normalize(raw)
-                if event is not None:
-                    yield event
+            yield from self.events_from_lines(fh, prefilter=prefilter, path=path)

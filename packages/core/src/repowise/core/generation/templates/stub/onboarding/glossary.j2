@@ -1,0 +1,51 @@
+{#- The glossary. Deterministic on every run, not only under --no-prose.
+
+    Every cell is mined: the term, the repository's own sentence about it, the
+    parts of the system that name it, and the document the sentence came from.
+    There is nothing here for a model to add that would not be an invention,
+    and this is the page where an invented definition does the most damage —
+    the reader consults it precisely because they cannot check the answer.
+
+    The spec sets ``deterministic=True``, so the prompt template that every
+    other subkind has does not exist for this one; this file is the page.
+-#}
+# Glossary
+
+{{ ctx.entries | length }} term{{ "s" if ctx.entries | length != 1 else "" }} `{{ ctx.repo_name }}` uses for itself, read from its own documentation. Each definition is the repository's own sentence, quoted rather than written — a term the repository names without defining is left blank rather than filled in.
+
+| Term | What the repository says it is | Where it is used | Written in |
+|---|---|---|---|
+{% for e in ctx.entries -%}
+{#- oneline before table_cell: truncating after escaping can cut a ``\|`` in
+    half and leave the backslash orphaned at the end of the cell. -#}
+| {% if e.is_indexed_symbol %}`{{ e.term | table_cell }}`{% else %}**{{ e.term | table_cell }}**{% endif %} | {% if e.definition %}{{ e.definition | oneline(220) | table_cell }}{% else %}—{% endif %} | {% if e.used_in %}{{ e.used_in | map("table_cell") | join(" · ") }}{% else %}—{% endif %} | `{{ e.source_path | table_cell }}` |
+{% endfor %}
+
+## Where these came from
+
+{{ ctx.defined }} of {{ ctx.entries | length }} term{{ "s" if ctx.entries | length != 1 else "" }} carry a definition the repository wrote. They were read from:
+
+{% for path in ctx.sources -%}
+- `{{ path }}`
+{% endfor %}
+
+{% if ctx.mined > ctx.corroborated %}
+{{ ctx.mined }} candidate terms were mined in all, and {{ ctx.corroborated }} survived. A term reaches this page only when the codebase's own structure names it too — the parts of the system in the third column are grouped from the dependency graph, with no knowledge of the documents — so vocabulary the documentation uses without the code confirming it is left off.
+{% endif %}
+{% if ctx.corroborated > ctx.entries | length %}
+The {{ ctx.entries | length }} most corroborated are listed; {{ ctx.corroborated - ctx.entries | length }} more were left off for length.
+{% endif %}
+{#- Not ``stub/_footer.j2``: that footer offers to write the page properly once
+    an API key is present, and this page is already what it is meant to be.
+
+    The blank line below is written as an explicit newline because it is
+    load-bearing and whitespace control keeps eating it. ``paragraph``
+    immediately followed by ``---`` is a setext H2 in CommonMark, not a
+    thematic break, so without it the closing note typesets the paragraph
+    above it as a section heading. -#}
+{{ "\n" }}
+---
+
+*Every term, definition and path on this page is quoted from the repository's
+own documents. Nothing here is written by a model, so two builds of an
+unchanged repository produce this page byte for byte.*

@@ -14,10 +14,14 @@ No edits to the walker. A language absent here ⇒ the perf pass is silent for i
 
 from __future__ import annotations
 
+from . import apex as _apex
+from . import cpp as _cpp
 from . import csharp as _csharp
 from . import dart as _dart
 from . import go as _go
 from . import java as _java
+from . import kotlin as _kotlin
+from . import pascal as _pascal
 from . import python as _python
 from . import ruby as _ruby
 from . import rust as _rust
@@ -32,15 +36,31 @@ _REGISTER: tuple[tuple[str, BasePerfDialect], ...] = (
     ("python", _python.DIALECT),
     ("typescript", _ts_js.DIALECT),
     ("tsx", _ts_js.DIALECT),
+    # SFC <script> blocks are TS/JS and reach the pass as a TS buffer.
+    ("svelte", _ts_js.DIALECT),
+    ("vue", _ts_js.DIALECT),
+    ("astro", _ts_js.DIALECT),
     ("javascript", _ts_js.DIALECT),
     ("jsx", _ts_js.DIALECT),
     ("java", _java.DIALECT),
+    ("apex", _apex.DIALECT),
     ("go", _go.DIALECT),
     ("csharp", _csharp.DIALECT),
+    # Razor/Blazor reaches the pass as a C# buffer (its C# regions
+    # projected by sfc_source), so the C# dialect applies verbatim.
+    ("razor", _csharp.DIALECT),
     ("rust", _rust.DIALECT),
     ("dart", _dart.DIALECT),
     ("scala", _scala.DIALECT),
     ("ruby", _ruby.DIALECT),
+    ("kotlin", _kotlin.DIALECT),
+    ("cpp", _cpp.DIALECT),
+    # NB: "c" shares the C++ grammar and now has its own ``LanguageNodeMap``,
+    # so it does reach the health pass for complexity. It is still absent here
+    # on purpose: no perf dialect has been written for it, and the coverage
+    # report names it as an unsupported language rather than pretending a
+    # detector ran.
+    ("pascal", _pascal.DIALECT),
 )
 
 for _tag, _dialect in _REGISTER:

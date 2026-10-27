@@ -11,6 +11,8 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, Query, Request
 
+from repowise.core.persistence.search import SearchResult
+from repowise.core.providers.embedding import store_has_semantic_vectors
 from repowise.server.deps import (
     get_fts,
     get_vector_store,
@@ -64,10 +66,12 @@ async def search(
       - Workspace mode without ``repo_id``: fans out across every loaded
         repo's index and merges results by score.
     """
-    if search_type == "fulltext":
+    if search_type == "fulltext" or not store_has_semantic_vectors(vector_store):
         results = await _fulltext(request, query, limit, repo_id=repo_id, primary_fts=fts)
     else:
         results = await _semantic(request, query, limit, repo_id=repo_id, primary_vs=vector_store)
+        if results is None:
+            results = await _fulltext(request, query, limit, repo_id=repo_id, primary_fts=fts)
 
     return [_to_response(r) for r in results]
 
@@ -83,7 +87,7 @@ async def _fulltext(request: Request, query: str, limit: int, *, repo_id, primar
 
     # Single-repo mode (no workspace_fts registry) → use the primary FTS.
     if not ws_fts:
-        return await primary_fts.search(query, limit=limit)
+        return await primary_fts.search(query, limit=limit, repository_id=repo_id)
 
     # Workspace mode with explicit repo_id.
     if repo_id is not None:
@@ -96,13 +100,17 @@ async def _fulltext(request: Request, query: str, limit: int, *, repo_id, primar
         if target_fts is None:
             # Unknown repo_id — fall back to primary so callers don't
             # silently get nothing.
-            return await primary_fts.search(query, limit=limit)
-        return await target_fts.search(query, limit=limit)
+            return await primary_fts.search(query, limit=limit, repository_id=repo_id)
+        return await target_fts.search(query, limit=limit, repository_id=repo_id)
 
     # Workspace mode, no filter → fan out across every loaded FTS,
     # merge by score, and cap at limit.
     all_results = []
+    seen_fts = set()
     for fts_inst in ws_fts.values():
+        if fts_inst in seen_fts:
+            continue
+        seen_fts.add(fts_inst)
         try:
             per_repo = await fts_inst.search(query, limit=limit)
         except Exception:
@@ -127,18 +135,21 @@ async def _semantic(request: Request, query: str, limit: int, *, repo_id, primar
         if repo_id.startswith("ws:"):
             return []
         vs = await resolve_repo_vector_store(request.app.state, repo_id)
-        if vs is None:
-            return await primary_vs.search(query, limit=limit)
-        return await vs.search(query, limit=limit)
+        target = primary_vs if vs is None else vs
+        # None, not [], so the caller can serve this repo lexically. An empty
+        # list here would be indistinguishable from "nothing matched".
+        if not store_has_semantic_vectors(target):
+            return None
+        return await target.search(query, limit=limit)
 
     if ws_config is None:
         # Single-repo mode. Startup resolves the primary store from the same
         # repo-local database used by `repowise serve`.
         return await primary_vs.search(query, limit=limit)
 
-    # Fan-out: iterate over every workspace repo with an indexed wiki.db
-    # and try to load its persisted LanceDB store. Repos without one
-    # fall back to FTS so the user still gets some signal.
+    # Fan-out: iterate over every workspace repo and try to load its
+    # persisted LanceDB store. Repos without one fall back to FTS so the
+    # user still gets some signal.
     ws_root = getattr(request.app.state, "workspace_root", None)
     if ws_root is None:
         return await primary_vs.search(query, limit=limit)
@@ -146,31 +157,38 @@ async def _semantic(request: Request, query: str, limit: int, *, repo_id, primar
 
     all_results = []
     workspace_fts = getattr(request.app.state, "workspace_fts", {}) or {}
+    path_to_rid = getattr(request.app.state, "workspace_path_to_repo_id", None) or {}
 
     for entry in ws_config.repos:
         repo_path = (ws_root_path / entry.path).resolve()
-        db_path = repo_path / ".repowise" / "wiki.db"
-        if not db_path.exists():
-            continue
-        # Resolve repo_id from the per-repo DB once (cached on app.state).
-        import sqlite3 as _sql
+        rid = path_to_rid.get(str(repo_path))
+        if rid is None:
+            db_path = repo_path / ".repowise" / "wiki.db"
+            if db_path.exists():
+                import sqlite3 as _sql
 
-        try:
-            with _sql.connect(str(db_path)) as conn:
-                row = conn.execute("SELECT id FROM repositories LIMIT 1").fetchone()
-        except Exception:
-            row = None
-        rid = row[0] if row else None
+                try:
+                    with _sql.connect(str(db_path)) as conn:
+                        row = conn.execute("SELECT id FROM repositories LIMIT 1").fetchone()
+                except Exception:
+                    row = None
+                rid = row[0] if row else None
+
+        if rid is None:
+            continue
 
         # Try the vector store first.
         per_repo = []
         vs = None
-        if rid is not None:
-            try:
-                vs = await resolve_repo_vector_store(request.app.state, rid)
-            except Exception:
-                vs = None
-        if vs is not None:
+        try:
+            vs = await resolve_repo_vector_store(request.app.state, rid, repo_path=repo_path)
+        except Exception:
+            vs = None
+        # A keyless repo is skipped here rather than searched, so it reaches the
+        # FTS fallback below. Its vector leg never returns empty (mock scores
+        # sit near 0.75 for anything), so without this the noise window would
+        # permanently suppress the fallback for that repo.
+        if vs is not None and store_has_semantic_vectors(vs):
             try:
                 per_repo = await vs.search(query, limit=limit)
             except Exception:
@@ -179,11 +197,16 @@ async def _semantic(request: Request, query: str, limit: int, *, repo_id, primar
         # than silently returning nothing on workspaces that haven't
         # built LanceDB indexes yet.
         if not per_repo and rid in workspace_fts:
+            fts_inst = workspace_fts[rid]
             try:
-                per_repo = await workspace_fts[rid].search(query, limit=limit)
+                per_repo = await fts_inst.search(query, limit=limit, repository_id=rid)
             except Exception:
                 per_repo = []
         all_results.extend(per_repo)
 
-    all_results.sort(key=lambda r: r.score, reverse=True)
+    unique_results: dict[str, SearchResult] = {}
+    for r in all_results:
+        if r.page_id not in unique_results or r.score > unique_results[r.page_id].score:
+            unique_results[r.page_id] = r
+    all_results = sorted(unique_results.values(), key=lambda r: r.score, reverse=True)
     return all_results[:limit]

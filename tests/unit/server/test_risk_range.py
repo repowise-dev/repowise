@@ -8,7 +8,11 @@ from pathlib import Path
 import pytest
 from httpx import AsyncClient
 
-from repowise.core.analysis.change_risk import baseline_scores
+from repowise.core.analysis.change_risk import (
+    baseline_samples,
+    densities_excluding,
+    scores_excluding,
+)
 from tests.unit.server.conftest import create_test_repo
 
 
@@ -65,15 +69,22 @@ async def test_risk_range_happy_path(client: AsyncClient, git_repo: Path, tmp_pa
     assert data["base"] == base
     assert data["head"] == "HEAD"
     assert 0.0 <= data["score"] <= 10.0
-    assert 0.0 <= data["probability"] <= 1.0
-    assert data["level"] in {"low", "moderate", "high"}
+    assert data["score_unit"] == "per-commit"
     assert data["is_fix"] is True
     assert data["features"]["nf"] == 2
     assert data["features"]["la"] == 3
     assert isinstance(data["drivers"], list) and len(data["drivers"]) > 0
-    # Only two commits sampled, below _MIN_BASELINE, so no percentile.
+    # The collinear diffusion features stay out of the reported drivers.
+    assert {d["feature"] for d in data["drivers"]}.isdisjoint({"nf", "nd", "ns"})
+    # Only two commits sampled, below _MIN_BASELINE, so no percentile — which
+    # is exactly when the absolute band is offered, and only then.
     assert data["risk_percentile"] is None
     assert data["review_priority"] is None
+    assert data["classification"] is None
+    assert data["fallback_band"] in {"low", "moderate", "high"}
+    assert data["risk_authority"]["primary_fields"] == ["risk_percentile"]
+    assert data["risk_authority"]["score_role"] == "supporting_diff_shape_signal"
+    assert "risk_scales" not in data
 
 
 @pytest.mark.asyncio
@@ -113,18 +124,23 @@ async def test_risk_range_baseline_zero_skips_percentile(
     data = resp.json()
     assert data["risk_percentile"] is None
     assert data["review_priority"] is None
+    # The fix density is ranked against the same sample, so it goes too.
+    assert data["fix_history"]["percentile"] is None
 
 
-def test_baseline_scores_returns_floats(git_repo: Path) -> None:
+def test_baseline_samples_carry_sha_score_and_churn(git_repo: Path) -> None:
     _commit(git_repo, {"src/d.py": "a = 1\nb = 2\n"}, "feat: add d")
     _commit(git_repo, {"src/e.py": "c = 3\n"}, "fix: crash on null")
 
-    scores = baseline_scores(str(git_repo), "HEAD", 200, (), excluded_ref="")
-    assert len(scores) >= 1
-    assert all(isinstance(s, float) for s in scores)
+    samples = baseline_samples(str(git_repo), "HEAD", 200, ())
+    assert len(samples) >= 1
+    assert all(isinstance(sample.sha, str) for sample in samples)
+    assert all(isinstance(sample.score, float) for sample in samples)
+    # The churn rides along so a fix density can be computed without a second walk.
+    assert all(sample.file_churn for sample in samples)
 
 
-def test_baseline_scores_filters_excluded_paths(git_repo: Path) -> None:
+def test_baseline_samples_filters_excluded_paths(git_repo: Path) -> None:
     _commit(git_repo, {"src/app.py": "a = 1\n"}, "feat: app")
     _commit(
         git_repo,
@@ -132,17 +148,233 @@ def test_baseline_scores_filters_excluded_paths(git_repo: Path) -> None:
         "test: app",
     )
 
-    scores = baseline_scores(
-        str(git_repo), "HEAD", 2, (), excluded_ref="", exclude_patterns=("tests/",)
-    )
+    samples = baseline_samples(str(git_repo), "HEAD", 2, (), exclude_patterns=("tests/",))
 
-    assert len(scores) == 1
+    assert len(samples) == 1
+    # Inclusion is the same filter from the other side.
+    assert len(baseline_samples(str(git_repo), "HEAD", 2, (), include_paths=("tests/",))) == 1
 
 
-def test_baseline_scores_omits_target_ref(git_repo: Path) -> None:
+def test_densities_excluding_omits_target_ref(git_repo: Path) -> None:
+    """Same self-exclusion contract as the scores: a change never ranks itself."""
     _commit(git_repo, {"src/app.py": "a = 1\n"}, "feat: app")
     head = _commit(git_repo, {"src/next.py": "b = 2\n"}, "feat: next")
 
-    scores = baseline_scores(str(git_repo), "HEAD", 2, (), excluded_ref=head)
+    samples = baseline_samples(str(git_repo), "HEAD", 2, ())
+    pressure = {"src/app.py": 2.0, "src/next.py": 1.0}
 
-    assert len(scores) == 1
+    assert len(densities_excluding(samples, head, pressure)) == 1
+    assert len(densities_excluding(samples, head[:7], pressure)) == 1
+    assert len(densities_excluding(samples, "", pressure)) == 2
+    # And it is a density, not a score: the retained commit touches app.py only.
+    assert densities_excluding(samples, head, pressure) == [2.0]
+
+
+def test_scores_excluding_omits_target_ref(git_repo: Path) -> None:
+    _commit(git_repo, {"src/app.py": "a = 1\n"}, "feat: app")
+    head = _commit(git_repo, {"src/next.py": "b = 2\n"}, "feat: next")
+
+    samples = baseline_samples(str(git_repo), "HEAD", 2, ())
+
+    # The sample is cached whole; only the ranking drops the target itself.
+    assert len(samples) == 2
+    assert len(scores_excluding(samples, head)) == 1
+    assert len(scores_excluding(samples, head[:7])) == 1
+    assert len(scores_excluding(samples, "")) == 2
+
+
+async def test_route_scores_through_the_shared_facade(
+    client: AsyncClient, git_repo: Path, tmp_path: Path
+) -> None:
+    """The route must not carry its own copy of the scoring composition.
+
+    It once repeated the features -> score -> fix-history -> baseline sequence
+    inline, with comments saying it matched the other surfaces. Two copies that
+    agree only by comment drift the first time one is edited, so this pins the
+    route's numbers to the facade every other surface uses.
+    """
+    from repowise.core.analysis.change_risk import (
+        assess_change,
+        extract_range_features,
+        fix_pressure,
+        range_anchor,
+    )
+
+    repo = await create_test_repo(client, tmp_path)
+    _commit(git_repo, {"src/f.py": "a = 1\nb = 2\n"}, "feat: f")
+    _commit(git_repo, {"src/g.py": "c = 3\n"}, "fix: crash")
+
+    response = await client.get(
+        f"/api/repos/{repo['id']}/risk/range",
+        params={"base": "HEAD~2", "head": "HEAD"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+
+    anchor = range_anchor(str(git_repo), "HEAD~2", "HEAD")
+    samples = baseline_samples(str(git_repo), anchor, 200, ())
+    pressure = fix_pressure(str(git_repo), anchor)
+    expected = assess_change(
+        extract_range_features(str(git_repo), "HEAD~2", "HEAD"),
+        fix_pressure=pressure,
+        baseline_scores=scores_excluding(samples, ""),
+        baseline_fix_densities=densities_excluding(samples, "", pressure),
+    )
+
+    assert body["score"] == expected.risk.score
+    assert body["risk_percentile"] == expected.percentile
+    assert body["review_priority"] == expected.priority
+    assert body["fix_history"]["density"] == expected.fix_density
+    assert body["fix_history"]["percentile"] == expected.fix_percentile
+    assert body["fix_history"]["available"] == expected.fix_history_available
+
+
+@pytest.mark.asyncio
+async def test_patch_coverage_reads_stored_coverage(
+    client: AsyncClient, session, git_repo: Path, tmp_path: Path
+) -> None:
+    from repowise.core.analysis.health.coverage import file_coverage
+    from repowise.core.persistence.crud import save_coverage_files
+
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=git_repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    head = _commit(git_repo, {"src/a.py": "x = 1\ny = 2\nz = 3\n"}, "feat: add a")
+    repo = await _register(client, tmp_path)
+    url = f"/api/repos/{repo['id']}/health/coverage/patch"
+
+    # Nothing ingested yet: null, not a zero.
+    empty = await client.get(url, params={"base": base})
+    assert empty.status_code == 200 and empty.json() is None
+
+    async def _ingest(commit: str) -> None:
+        await save_coverage_files(
+            session,
+            repo["id"],
+            [file_coverage("src/a.py", [1, 2], [1, 2, 3])],
+            source_format="lcov",
+            ingested_commit_sha=commit,
+        )
+        await session.commit()
+
+    async def _with_config(coverage_block: str) -> dict:
+        (git_repo / ".repowise").mkdir(exist_ok=True)
+        (git_repo / ".repowise" / "config.yaml").write_text(
+            f"coverage:\n{coverage_block}", encoding="utf-8"
+        )
+        return (await client.get(url, params={"base": base})).json()
+
+    await _ingest(head)
+    data = (await client.get(url, params={"base": base})).json()
+
+    assert data["patch_coverage_pct"] == 66.66
+    assert data["files"][0]["uncovered_ranges"] == [[3, 3]]
+    assert data["scope"]["freshness"] == "current"
+    assert data["scope"]["label"] == f"{base}...HEAD"
+    # The index has no git row for a file the change adds, so git alone answers.
+    assert data["files"][0]["risk"]["basis"] == "git"
+    assert data["risky"]["file_count"] == 0
+    # The index knows no symbol or test here: a hint that honestly names none.
+    assert data["files"][0]["hints"] == [
+        {"range": [3, 3], "symbol": None, "tests": [], "basis": "none", "total": 0}
+    ]
+    assert (await client.get(url, params={"base": "nope"})).status_code == 400
+
+    # The repository's coverage config reaches the stored-coverage surface as
+    # it does the CLI gate; the compute tests own what each verdict is.
+    ignored = await _with_config("  ignore: [src/a.py]\n")
+    assert ignored["scope"]["ignored_file_count"] == 1
+    assert ignored["files"] == []
+    assert ignored["path_gates"] == []
+
+    one_gate = "  gates:\n    - {name: src, paths: [src/], fail_under: 50}\n"
+    gated = await _with_config(one_gate)
+    assert [(g["name"], g["gate"]) for g in gated["path_gates"]] == [("src", "pass")]
+
+    # An invalid entry is carried, and no gate is judged beside it.
+    partial = await _with_config(one_gate + "    - {name: src, paths: [lib/]}\n")
+    assert partial["scope"]["config_errors"] == [
+        "coverage.gates[1] ('src'): duplicate name; each gate needs its own."
+    ]
+    assert [g["gate"] for g in partial["path_gates"]] == ["no_data"]
+
+    # Coverage measured at another commit gets no verdict either.
+    await _ingest(base)
+    stale = await _with_config(one_gate)
+    assert stale["scope"]["freshness"] == "stale"
+    assert [g["gate"] for g in stale["path_gates"]] == ["no_data"]
+
+
+@pytest.mark.asyncio
+async def test_patch_coverage_rows_carry_index_risk(
+    client: AsyncClient, session, git_repo: Path, tmp_path: Path
+) -> None:
+    from repowise.core.analysis.health.coverage import file_coverage
+    from repowise.core.persistence.crud import save_coverage_files, upsert_git_metadata
+
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=git_repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    head = _commit(git_repo, {"src/a.py": "x = 1\ny = 2\nz = 3\n"}, "feat: add a")
+    repo = await _register(client, tmp_path)
+    await save_coverage_files(
+        session,
+        repo["id"],
+        [file_coverage("src/a.py", [1, 2], [1, 2, 3])],
+        source_format="lcov",
+        ingested_commit_sha=head,
+    )
+    await upsert_git_metadata(
+        session, repository_id=repo["id"], file_path="src/a.py", is_hotspot=True
+    )
+    await session.commit()
+
+    data = (
+        await client.get(f"/api/repos/{repo['id']}/health/coverage/patch", params={"base": base})
+    ).json()
+
+    risk = data["files"][0]["risk"]
+    assert risk["basis"] == "git_and_index"
+    assert risk["risky"] is True and risk["reasons"] == ["hotspot"]
+    assert data["risky"]["file_count"] == 1
+    assert data["risky"]["patch_coverage_pct"] == 66.66
+
+
+@pytest.mark.asyncio
+async def test_patch_coverage_compares_the_ingest_at_the_merge_base(
+    client: AsyncClient, session, git_repo: Path, tmp_path: Path
+) -> None:
+    from repowise.core.analysis.health.coverage import parse_lcov, resolve_reports
+    from repowise.core.persistence.crud import save_coverage_files
+
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=git_repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    head = _commit(git_repo, {"src/a.py": "x = 1\ny = 2\nz = 3\n"}, "feat: add a")
+    repo = await _register(client, tmp_path)
+    url = f"/api/repos/{repo['id']}/health/coverage/patch"
+
+    async def _ingest(commit: str, hits: str) -> None:
+        lcov = f"SF:src/a.py\nDA:1,1\nDA:2,{hits}\nDA:3,0\nend_of_record\n"
+        resolved = resolve_reports([parse_lcov(lcov)], {"src/a.py"})
+        await save_coverage_files(
+            session,
+            repo["id"],
+            resolved.files,
+            source_format="lcov",
+            provenance=resolved.provenance,
+            ingested_commit_sha=commit,
+        )
+        await session.commit()
+
+    await _ingest(base, "1")
+    await _ingest(head, "0")
+    project = (await client.get(url, params={"base": base})).json()["project"]
+
+    assert (project["basis"], project["base_commit"], project["head_commit"]) == (
+        "history",
+        base,
+        head,
+    )
+    assert project["delta_pct"] == -33.33
+    assert (project["gate"], project["outside_change"]) == ("not_set", None)

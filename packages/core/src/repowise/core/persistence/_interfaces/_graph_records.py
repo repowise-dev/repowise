@@ -93,7 +93,7 @@ class GraphRecordsIndexStore(ABC):
 
     @abstractmethod
     async def link_graph_nodes_to_external_systems(
-        self, repository_id: str, name_to_id: dict[str, int]
+        self, repository_id: str, name_to_id: dict[str, int | None]
     ) -> int: ...
 
     @abstractmethod

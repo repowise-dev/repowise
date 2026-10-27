@@ -25,7 +25,7 @@ OPENAI_KEY = os.environ.get("OPENAI_API_KEY", "")
 
 
 @pytest.mark.skipif(not OPENAI_KEY, reason="OPENAI_API_KEY not set")
-@pytest.mark.parametrize("model", ["gpt-5.4-nano", "gpt-5.4-mini", "gpt-5.4"])
+@pytest.mark.parametrize("model", ["gpt-5.6-luna", "gpt-5.4-nano", "gpt-5.4-mini", "gpt-5.4"])
 async def test_openai_live(model):
     from repowise.core.providers.llm.openai import OpenAIProvider
 
@@ -42,6 +42,28 @@ async def test_openai_live(model):
     print(
         f"\n[{model}] tokens: {result.input_tokens}in / {result.output_tokens}out | content: {result.content!r}"
     )
+
+
+@pytest.mark.skipif(not OPENAI_KEY, reason="OPENAI_API_KEY not set")
+@pytest.mark.parametrize("effort", ["none", "low", "medium", "high", "xhigh"])
+async def test_openai_luna_accepts_every_advertised_effort(effort):
+    """The half of the reasoning contract only a real call can settle.
+
+    Which efforts a model takes is a server-side fact, and getting it wrong is
+    a 400 on the first real generation, after the user has committed to a run.
+    The unit tests pin what we *offer*; this pins that the API agrees. `max` is
+    excluded deliberately: the model docs list it, the API rejects it.
+    """
+    from repowise.core.providers.llm.openai import OpenAIProvider
+
+    provider = OpenAIProvider(api_key=OPENAI_KEY, model="gpt-5.6-luna")
+    result = await provider.generate(
+        system_prompt="You are a concise assistant.",
+        user_prompt="Reply with exactly: OK",
+        max_tokens=16,
+        reasoning=effort,
+    )
+    assert result.content.strip()
 
 
 # ---------------------------------------------------------------------------

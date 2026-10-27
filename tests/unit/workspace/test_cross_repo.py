@@ -18,10 +18,10 @@ from repowise.core.workspace.cross_repo import (
     _is_noise_path,
     _parse_git_log,
     detect_cross_repo_co_changes,
-    detect_package_dependencies,
     load_overlay,
     save_overlay,
 )
+from repowise.core.workspace.manifests import detect_package_dependencies
 
 # ---------------------------------------------------------------------------
 # _parse_git_log
@@ -112,7 +112,9 @@ class TestCrossRepoCoChanges:
             return []
 
         with patch("repowise.core.workspace.cross_repo._parse_git_log", side_effect=fake_parse):
-            return detect_cross_repo_co_changes(repo_paths, **kwargs)
+            # [0] is the capped list; the pre-cap total is asserted separately
+            # in TestCoChangeTruncationTotals.
+            return detect_cross_repo_co_changes(repo_paths, **kwargs)[0]
 
     def test_same_author_within_window(self) -> None:
         """Two repos, same author, commits <24h apart → edges found."""
@@ -393,7 +395,7 @@ class TestCrossRepoCoChanges:
         # a<->c: one weaker (older) pair
         ac_a = [("x@co.com", now - (100 + i * 2) * day, ["shared.py"]) for i in range(2)]
         ac_c = [("x@co.com", now - (100 + i * 2) * day + 60, ["consumer.go"]) for i in range(2)]
-        with patch.object(cr, "_MAX_EDGES_PER_REPO_PAIR", 5):
+        with patch.object(cr, "MAX_EDGES_PER_REPO_PAIR", 5):
             results = self._detect_with_mocked_logs(
                 {
                     "a": _make_commits("a", ab_a + ac_a),
@@ -406,6 +408,67 @@ class TestCrossRepoCoChanges:
         ac_edges = [r for r in results if {r.source_repo, r.target_repo} == {"a", "c"}]
         assert len(ab_edges) == 5, "hyperactive pair capped"
         assert len(ac_edges) == 1, "weaker pair still present"
+
+
+class TestCoChangeTruncationTotals:
+    """The caps must report what they dropped, not just drop it."""
+
+    def _detect(self, repo_commits, **kwargs):
+        repo_paths = {alias: Path(f"/fake/{alias}") for alias in repo_commits}
+
+        def fake_parse(repo_path, commit_limit=500):
+            for alias, path in repo_paths.items():
+                if str(repo_path) == str(path):
+                    return repo_commits[alias]
+            return []
+
+        with patch("repowise.core.workspace.cross_repo._parse_git_log", side_effect=fake_parse):
+            return detect_cross_repo_co_changes(repo_paths, **kwargs)
+
+    def test_total_exceeds_returned_list_when_capped(self) -> None:
+        """The pre-cap count survives the per-pair cap that dropped the rest."""
+        now = int(time.time())
+        day = 86400
+        commits_a = [
+            ("x@co.com", now - (i * 2) * day, [f"a{i}.py", f"b{i}.py", f"c{i}.py"])
+            for i in range(6)
+        ]
+        commits_b = [
+            ("x@co.com", now - (i * 2) * day + 60, [f"p{i}.ts", f"q{i}.ts", f"r{i}.ts"])
+            for i in range(6)
+        ]
+        import repowise.core.workspace.cross_repo as cr
+
+        with patch.object(cr, "MAX_EDGES_PER_REPO_PAIR", 3):
+            results, total = self._detect(
+                {"a": _make_commits("a", commits_a), "b": _make_commits("b", commits_b)},
+                min_score=0.0,
+                min_sessions=1,
+            )
+        assert len(results) == 3, "list is capped"
+        assert total > 3, "the true count survived the cap"
+
+    def test_total_equals_list_when_nothing_dropped(self) -> None:
+        """An uncapped run must not inflate its own total."""
+        now = int(time.time())
+        results, total = self._detect(
+            {
+                "backend": _make_commits(
+                    "backend", [("alice@co.com", now - 3600, ["src/api.py"])]
+                ),
+                "frontend": _make_commits(
+                    "frontend", [("alice@co.com", now - 7200, ["src/client.ts"])]
+                ),
+            },
+            min_score=0.0,
+            min_sessions=1,
+        )
+        assert total == len(results)
+
+    def test_single_repo_returns_a_pair_not_a_bare_list(self) -> None:
+        """Every exit returns (list, total) — an early return that forgot the
+        total would raise on unpack, which is how one was found."""
+        assert self._detect({"solo": _make_commits("solo", [])}) == ([], 0)
 
 
 # ---------------------------------------------------------------------------
@@ -475,7 +538,9 @@ class TestCrossRepoNoiseFiltering:
             return []
 
         with patch("repowise.core.workspace.cross_repo._parse_git_log", side_effect=fake_parse):
-            return detect_cross_repo_co_changes(repo_paths, **kwargs)
+            # [0] is the capped list; the pre-cap total is asserted separately
+            # in TestCoChangeTruncationTotals.
+            return detect_cross_repo_co_changes(repo_paths, **kwargs)[0]
 
     def test_noise_files_excluded_from_pairs(self) -> None:
         """Workflow/lockfile noise never appears in co-change results."""
@@ -695,3 +760,72 @@ class TestOverlayPersistence:
         path = save_overlay(overlay, tmp_path)
         assert path.is_file()
         assert (tmp_path / ".repowise-workspace").is_dir()
+
+
+# ---------------------------------------------------------------------------
+# run_cross_repo_analysis with no repo changed
+# ---------------------------------------------------------------------------
+
+
+def _indexed_workspace(tmp_path: Path, aliases: list[str]):
+    from repowise.core.workspace.config import RepoEntry, WorkspaceConfig
+
+    for alias in aliases:
+        (tmp_path / alias / ".repowise").mkdir(parents=True)
+    return WorkspaceConfig(repos=[RepoEntry(path=a, alias=a) for a in aliases])
+
+
+def test_no_changed_repo_reuses_the_stored_overlay(tmp_path: Path) -> None:
+    """A settings edit moves no git history, so nothing is walked again."""
+    import asyncio
+
+    from repowise.core.workspace.cross_repo import run_cross_repo_analysis, save_overlay
+
+    ws_config = _indexed_workspace(tmp_path, ["api", "web"])
+    stored = CrossRepoOverlay(repo_summaries={"api": {}, "web": {}}, total_co_changes=7)
+    save_overlay(stored, tmp_path)
+
+    with patch("repowise.core.workspace.cross_repo.detect_cross_repo_co_changes") as walk:
+        overlay = asyncio.run(run_cross_repo_analysis(ws_config, tmp_path, []))
+
+    walk.assert_not_called()
+    assert overlay.total_co_changes == 7
+
+
+def test_stored_overlay_for_other_repos_is_recomputed(tmp_path: Path) -> None:
+    import asyncio
+
+    from repowise.core.workspace.cross_repo import run_cross_repo_analysis, save_overlay
+
+    ws_config = _indexed_workspace(tmp_path, ["api", "web"])
+    save_overlay(CrossRepoOverlay(repo_summaries={"api": {}, "gone": {}}), tmp_path)
+
+    with patch(
+        "repowise.core.workspace.cross_repo.detect_cross_repo_co_changes", return_value=([], 0)
+    ) as walk:
+        overlay = asyncio.run(run_cross_repo_analysis(ws_config, tmp_path, []))
+
+    walk.assert_called_once()
+    assert set(overlay.repo_summaries) == {"api", "web"}
+
+
+def test_repo_re_indexed_after_the_overlay_is_recomputed(tmp_path: Path) -> None:
+    """A repo updated on its own since the overlay was written has new history."""
+    import asyncio
+    import os
+
+    from repowise.core.workspace.cross_repo import run_cross_repo_analysis, save_overlay
+
+    ws_config = _indexed_workspace(tmp_path, ["api", "web"])
+    out = save_overlay(CrossRepoOverlay(repo_summaries={"api": {}, "web": {}}), tmp_path)
+    state = tmp_path / "web" / ".repowise" / "state.json"
+    state.write_text("{}", encoding="utf-8")
+    later = out.stat().st_mtime + 10
+    os.utime(state, (later, later))
+
+    with patch(
+        "repowise.core.workspace.cross_repo.detect_cross_repo_co_changes", return_value=([], 0)
+    ) as walk:
+        asyncio.run(run_cross_repo_analysis(ws_config, tmp_path, []))
+
+    walk.assert_called_once()

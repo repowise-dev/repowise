@@ -1,31 +1,32 @@
 """Distill — index-aware compaction of noisy command output.
 
-The engine orchestrates the pure pieces (router -> filter) around the
-stateful ones (omission store, savings ledger) and owns the safety
-guarantees the filters rely on:
+This package `__init__` is a **lazy re-export shim** and imports nothing at
+module scope. The public names below resolve on first attribute access via
+PEP 562 ``__getattr__``, so ``from repowise.core.distill import
+distill_output`` still works and costs the same as before, while importing a
+sibling submodule costs only that submodule.
 
-- **fallback-to-raw**: any filter exception, storage failure, or
-  non-improvement returns the original output untouched;
-- **reversibility**: the full raw output is persisted before a marker is
-  emitted, so ``repowise expand <ref>`` always round-trips;
-- **net-positive only**: distilled text (marker included) must actually be
-  smaller than the raw output, with a small floor so trivial wins don't
-  litter markers everywhere.
+Why it matters: a package ``__init__`` runs on *any* submodule import, so the
+engine's graph (structlog, the filter registry, the omission store) used to be
+charged to ``import repowise.core.distill.skeleton`` — 556ms, paid by the
+PostToolUse Read hook on every fire that reached the skeleton path. Same bug
+class as ``search.py``'s ``persistence.sql`` and ``claude_config.py``'s
+``core.workspace.config``; this is the shape that stops it recurring here.
+
+The engine itself lives in :mod:`repowise.core.distill.engine`.
 """
 
 from __future__ import annotations
 
-import contextlib
-from dataclasses import dataclass
-from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
-import structlog
-
-from repowise.core.distill.budget import estimate_tokens, savings_pct
-from repowise.core.distill.markers import parse_marker_refs, render_marker
-from repowise.core.distill.registry import filter_registry
-from repowise.core.distill.router import normalize_command, select_filter
-from repowise.core.distill.store import OmissionStore
+if TYPE_CHECKING:  # pragma: no cover - import-time typing only
+    from repowise.core.distill.budget import estimate_tokens, savings_pct
+    from repowise.core.distill.engine import DistillResult, distill_output
+    from repowise.core.distill.markers import parse_marker_refs, render_marker
+    from repowise.core.distill.registry import filter_registry
+    from repowise.core.distill.router import normalize_command, select_filter
+    from repowise.core.distill.store import OmissionStore
 
 __all__ = [
     "DistillResult",
@@ -40,109 +41,33 @@ __all__ = [
     "select_filter",
 ]
 
-logger = structlog.get_logger(__name__)
-
-#: Distillation must save at least this many tokens to be worth a marker.
-MIN_SAVED_TOKENS = 40
-
-
-@dataclass(frozen=True)
-class DistillResult:
-    """Outcome of one distillation attempt."""
-
-    text: str
-    distilled: bool
-    filter_name: str | None
-    ref: str | None
-    raw_tokens: int
-    distilled_tokens: int
-
-    @property
-    def savings_pct(self) -> float:
-        return savings_pct(self.raw_tokens, self.distilled_tokens)
+#: Public name -> defining submodule. The single source of truth for both
+#: ``__getattr__`` and ``__dir__``; ``__all__`` above is asserted against it.
+_EXPORTS: dict[str, str] = {
+    "DistillResult": "engine",
+    "OmissionStore": "store",
+    "distill_output": "engine",
+    "estimate_tokens": "budget",
+    "filter_registry": "registry",
+    "normalize_command": "router",
+    "parse_marker_refs": "markers",
+    "render_marker": "markers",
+    "savings_pct": "budget",
+    "select_filter": "router",
+}
 
 
-def distill_output(
-    output: str,
-    *,
-    command: str = "",
-    exit_code: int = 0,
-    source: str = "cli",
-    store: OmissionStore | None = None,
-    store_start: Path | None = None,
-    disabled_filters: tuple[str, ...] = (),
-) -> DistillResult:
-    """Distill *output*, falling back to the raw text on any failure.
+def __getattr__(name: str) -> Any:
+    """Resolve a public export on first access, importing only its module."""
+    module = _EXPORTS.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    from importlib import import_module
 
-    When *store* is None one is opened at the default sidecar location for
-    *store_start* (default: cwd) and closed before returning.
-    """
-    raw_tokens = estimate_tokens(output)
-    raw = DistillResult(
-        text=output,
-        distilled=False,
-        filter_name=None,
-        ref=None,
-        raw_tokens=raw_tokens,
-        distilled_tokens=raw_tokens,
-    )
+    value = getattr(import_module(f"{__name__}.{module}"), name)
+    globals()[name] = value  # cache: subsequent accesses skip __getattr__
+    return value
 
-    try:
-        chosen = select_filter(command, output, disabled=disabled_filters)
-    except Exception:
-        logger.debug("distill filter selection failed", exc_info=True)
-        return raw
-    if chosen is None:
-        return raw
-    if len(output.splitlines()) < chosen.min_lines:
-        return raw
 
-    try:
-        kept = chosen.distill(output, command=command, exit_code=exit_code)
-    except Exception:
-        logger.debug("distill filter failed; falling back to raw", filter=chosen.name)
-        return raw
-
-    kept_tokens = estimate_tokens(kept)
-    omitted_lines = max(0, len(output.splitlines()) - len(kept.splitlines()))
-
-    owns_store = store is None
-    try:
-        if owns_store:
-            store = OmissionStore.open_default(store_start)
-        ref = store.put(
-            output,
-            source=f"{source}:{chosen.name}",
-            original_tokens=raw_tokens,
-            kept_tokens=kept_tokens,
-        )
-        marker = render_marker(ref, omitted_lines, max(0, raw_tokens - kept_tokens))
-        text = kept.rstrip("\n") + "\n\n" + marker + "\n"
-        distilled_tokens = estimate_tokens(text)
-        # Net-positive guarantee, marker included.
-        if distilled_tokens >= raw_tokens - MIN_SAVED_TOKENS:
-            return raw
-        store.record_saving(
-            filter_name=chosen.name,
-            source=source,
-            command=command or None,
-            raw_tokens=raw_tokens,
-            distilled_tokens=distilled_tokens,
-        )
-        return DistillResult(
-            text=text,
-            distilled=True,
-            filter_name=chosen.name,
-            ref=ref,
-            raw_tokens=raw_tokens,
-            distilled_tokens=distilled_tokens,
-        )
-    except Exception:
-        # Raw output is never recoverable without a successful store write,
-        # so a storage failure means we must not drop anything.
-        logger.debug("omission store unavailable; falling back to raw", exc_info=True)
-        return raw
-    finally:
-        if owns_store and store is not None:
-            with contextlib.suppress(Exception):
-                store.close()
+def __dir__() -> list[str]:
+    return sorted(__all__)

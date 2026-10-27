@@ -18,8 +18,18 @@ export interface HiddenCouplingFinding {
 export interface HiddenCouplingListProps {
   findings: HiddenCouplingFinding[];
   limit?: number;
+  /**
+   * Open a path. This is the row's one verb, and it opens the file drawer,
+   * which carries the link to the file's own page.
+   *
+   * There was an `hrefFor` beside it that no consumer ever passed, and that
+   * `PairLink` could not have used if one had: it returned the button branch
+   * whenever `onSelect` was set, and the only consumer sets it. A prop that
+   * cannot fire is rule 21 in prop form, so it is gone rather than wired —
+   * wiring it would have put a second verb on a row whose first one already
+   * leads to the same file.
+   */
   onSelect?: ((path: string) => void) | undefined;
-  hrefFor?: ((path: string) => string) | undefined;
   /** Start collapsed, showing only `collapsedCount` pairs behind a toggle. */
   collapsible?: boolean;
   /** Pairs shown while collapsed. */
@@ -94,7 +104,6 @@ export function HiddenCouplingList({
   findings,
   limit = 15,
   onSelect,
-  hrefFor,
   collapsible = false,
   collapsedCount = 4,
 }: HiddenCouplingListProps) {
@@ -151,11 +160,11 @@ export function HiddenCouplingList({
               </span>
             </div>
             <div className="grid grid-cols-1 gap-1 text-xs font-mono">
-              <PairLink path={row.a} onSelect={onSelect} hrefFor={hrefFor} />
+              <PairLink path={row.a} onSelect={onSelect} />
               <span className="text-[var(--color-text-tertiary)] inline-flex items-center gap-1">
                 <ArrowLeftRight className="h-3 w-3" aria-hidden="true" />
               </span>
-              <PairLink path={row.b} onSelect={onSelect} hrefFor={hrefFor} />
+              <PairLink path={row.b} onSelect={onSelect} />
             </div>
           </li>
         ))}
@@ -176,13 +185,10 @@ export function HiddenCouplingList({
 function PairLink({
   path,
   onSelect,
-  hrefFor,
 }: {
   path: string;
   onSelect?: ((path: string) => void) | undefined;
-  hrefFor?: ((path: string) => string) | undefined;
 }) {
-  const href = hrefFor?.(path);
   if (onSelect) {
     return (
       <button
@@ -194,15 +200,7 @@ function PairLink({
       </button>
     );
   }
-  if (href) {
-    return (
-      <a
-        href={href}
-        className="text-[var(--color-accent-primary)] hover:underline truncate"
-      >
-        {path}
-      </a>
-    );
-  }
+  // No handler, so no affordance: plain text rather than accent-coloured text
+  // that does nothing when clicked.
   return <span className="text-[var(--color-text-primary)] truncate">{path}</span>;
 }

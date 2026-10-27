@@ -1,7 +1,7 @@
 "use client";
 
 import { GraphDocPanel as GraphDocPanelShell } from "@repowise-dev/ui/graph/graph-doc-panel";
-import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
+import { fileEntityPath, filePageId } from "@repowise-dev/ui/shared/entity";
 import { usePage } from "@/lib/hooks/use-page";
 import type { DocPage } from "@repowise-dev/types/docs";
 
@@ -12,7 +12,7 @@ interface GraphDocPanelWrapperProps {
 }
 
 export function GraphDocPanel({ repoId, nodeId, onClose }: GraphDocPanelWrapperProps) {
-  const pageId = `file_page:${nodeId}`;
+  const pageId = filePageId(nodeId);
   const { page, isLoading, error } = usePage(pageId, repoId);
 
   return (
@@ -21,7 +21,9 @@ export function GraphDocPanel({ repoId, nodeId, onClose }: GraphDocPanelWrapperP
       page={page as DocPage | null | undefined}
       isLoading={isLoading}
       error={error}
-      fullPageHref={page ? fileEntityPath(`/repos/${repoId}`, nodeId) : undefined}
+      // Unconditional: the file page is a valid route whether or not a wiki
+      // page was written for the file, and it is the empty state's way out.
+      fullPageHref={fileEntityPath(`/repos/${repoId}`, nodeId)}
       browseDocsHref={`/repos/${repoId}/docs`}
       onClose={onClose}
     />

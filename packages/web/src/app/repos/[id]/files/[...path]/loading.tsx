@@ -1,16 +1,42 @@
-import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
+import { getTranslations } from "next-intl/server";
+import { PageFrame } from "@repowise-dev/ui/shared/page-shell";
+import { Skeleton, SkeletonRegion } from "@repowise-dev/ui/ui/skeleton";
 
-export default function FilePageLoading() {
+/**
+ * Shapes match the real header: eyebrow, path, the lede's 44px figure beside
+ * its prose column, the hairline stat ribbon, then the tab row and one panel.
+ * The old version drew a row of pills the page no longer has and no figure at
+ * all, so content landing reflowed everything — which reads as slower than
+ * showing nothing.
+ */
+export default async function FilePageLoading() {
+  const t = await getTranslations("loading");
   return (
-    <div className="p-4 sm:p-6 max-w-[1200px] space-y-4">
-      <Skeleton className="h-6 w-2/3" />
-      <div className="flex gap-2">
-        <Skeleton className="h-6 w-14" />
-        <Skeleton className="h-6 w-20" />
-        <Skeleton className="h-6 w-24" />
+    <SkeletonRegion label={t("file")}>
+    <PageFrame>
+      <div className="flex flex-col gap-8">
+        <div className="flex flex-col gap-6">
+          <div>
+            <Skeleton className="h-3 w-8" />
+            <Skeleton className="mt-2 h-7 w-2/3" />
+          </div>
+          <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:gap-12">
+            <div className="lg:w-[220px]">
+              <Skeleton className="h-3 w-20" />
+              <Skeleton className="mt-2.5 h-11 w-28" />
+            </div>
+            <div className="flex-1 space-y-2">
+              <Skeleton className="h-4 w-full max-w-[62ch]" />
+              <Skeleton className="h-4 w-5/6 max-w-[62ch]" />
+              <Skeleton className="h-4 w-3/4 max-w-[62ch]" />
+            </div>
+          </div>
+          <Skeleton className="h-[74px] w-full" />
+        </div>
+        <Skeleton className="h-9 w-full max-w-lg" />
+        <Skeleton className="h-96 w-full" />
       </div>
-      <Skeleton className="h-9 w-96" />
-      <Skeleton className="h-96 w-full" />
-    </div>
+    </PageFrame>
+    </SkeletonRegion>
   );
 }

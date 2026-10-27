@@ -64,6 +64,40 @@ def _schema(request=None, response=None):
     )
 
 
+def test_schema_diff_reports_uncertainty_until_source_declares_comparison_ready():
+    before = ContractSchema(
+        source="openapi",
+        request_fields=[SchemaField("id", "string", required=True)],
+        comparison_ready=False,
+    )
+    after = ContractSchema(source="openapi", comparison_ready=False)
+
+    report = detect_breaking_changes(
+        _store([_provider("http::POST::/orders", schema=before)]),
+        _store([_provider("http::POST::/orders", schema=after)]),
+    )
+
+    assert _kinds(report) == ["schema_comparison_uncertain"]
+    assert report.changes[0].severity == SEVERITY_WARNING
+
+
+def test_schema_diff_reports_uncertainty_for_mismatched_comparison_fidelity():
+    before = ContractSchema(
+        source="openapi",
+        comparison_key="openapi-wire-v1",
+        request_fields=[SchemaField("id", "string", required=True)],
+    )
+    after = ContractSchema(source="openapi", comparison_key="openapi-wire-v2")
+
+    report = detect_breaking_changes(
+        _store([_provider("http::POST::/orders", schema=before)]),
+        _store([_provider("http::POST::/orders", schema=after)]),
+    )
+
+    assert _kinds(report) == ["schema_comparison_uncertain"]
+    assert report.changes[0].comparison_key == "openapi-wire-v2"
+
+
 def _kinds(report):
     return sorted(c.kind for c in report.changes)
 
@@ -271,6 +305,33 @@ def test_report_round_trips_through_dict():
     assert restored.changes[0].provider_node_id == "api"
 
 
+def test_comparison_evidence_round_trips_through_report() -> None:
+    change = BreakingChangeReport.from_dict(
+        {
+            "changes": [
+                {
+                    "kind": "field_enum_changed",
+                    "severity": "breaking",
+                    "contract_id": "http::POST::/orders",
+                    "contract_type": "http",
+                    "provider_repo": "api",
+                    "provider_file": "openapi.yaml",
+                    "provider_symbol": "openapi:POST /orders",
+                    "provider_service": None,
+                    "detail": "request enum narrowed",
+                    "side": "request",
+                    "comparison_source": "openapi",
+                    "comparison_key": "openapi-wire-v1",
+                }
+            ]
+        }
+    ).to_dict()["changes"][0]
+
+    assert change["side"] == "request"
+    assert change["comparison_source"] == "openapi"
+    assert change["comparison_key"] == "openapi-wire-v1"
+
+
 def test_save_and_load_report(tmp_path):
     prev = _store([_provider("http::GET::/users")], [_link("http::GET::/users")])
     run_breaking_change_detection(tmp_path, prev, _store())
@@ -287,3 +348,30 @@ def test_load_missing_report_returns_none(tmp_path):
 def test_save_returns_path(tmp_path):
     out = save_breaking_change_report(BreakingChangeReport(), tmp_path)
     assert out.name == "breaking_changes.json"
+
+
+# ---------------------------------------------------------------------------
+# Never-ran vs found-nothing
+# ---------------------------------------------------------------------------
+
+
+def test_detection_stamps_its_own_report():
+    """Before this, run_breaking_change_detection never passed a timestamp, so
+    every persisted report claimed to have never run."""
+    report = detect_breaking_changes(ContractStore(), ContractStore())
+    assert report.ran
+    assert report.to_dict()["generated_at"]
+
+
+def test_an_unbuilt_report_is_not_a_clean_one():
+    report = BreakingChangeReport()
+    assert not report.ran
+    assert report.generated_at is None
+    assert not report.has_changes
+    assert report.to_dict()["generated_at"] is None
+
+
+def test_legacy_empty_string_stamp_reads_as_never_ran():
+    restored = BreakingChangeReport.from_dict({"generated_at": "", "changes": []})
+    assert restored.generated_at is None
+    assert not restored.ran

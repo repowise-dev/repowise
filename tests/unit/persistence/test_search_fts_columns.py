@@ -18,7 +18,12 @@ import pytest
 from sqlalchemy.sql import text
 
 from repowise.core.persistence.crud import upsert_page
-from repowise.core.persistence.search import FullTextSearch
+from repowise.core.persistence.search import (
+    _BM25_COLUMN_WEIGHTS,
+    FILE_VOCABULARY_KEY,
+    PAGE_FTS_COLUMNS,
+    FullTextSearch,
+)
 from tests.unit.persistence.helpers import insert_repo
 
 _OLD_SCHEMA_DDL = "CREATE VIRTUAL TABLE page_fts USING fts5(page_id UNINDEXED, title, content)"
@@ -61,7 +66,7 @@ async def repo(async_session):
 
 
 async def test_ensure_index_upgrades_old_schema_and_backfills(async_engine, async_session, repo):
-    """An index written by an older repowise gains both columns, populated.
+    """An index written by an older repowise gains the new columns, populated.
 
     The rebuild reads ``wiki_pages``, which is the only place the two new
     fields exist — the old FTS rows never carried them. A silent no-op here
@@ -78,13 +83,7 @@ async def test_ensure_index_upgrades_old_schema_and_backfills(async_engine, asyn
 
     await FullTextSearch(async_engine).ensure_index()
 
-    assert await _fts_columns(async_engine) == [
-        "page_id",
-        "title",
-        "content",
-        "summary",
-        "target_path",
-    ]
+    assert await _fts_columns(async_engine) == list(PAGE_FTS_COLUMNS)
     async with async_engine.connect() as conn:
         rows = await conn.execute(text("SELECT page_id, summary, target_path FROM page_fts"))
         indexed = rows.fetchall()
@@ -186,26 +185,228 @@ async def test_index_with_an_empty_summary_does_not_warn(async_engine):
     assert fts._warned_missing_fields is False
 
 
-async def test_rebuild_refuses_to_shrink_the_index(async_engine, async_session, repo):
-    """The upgrade drops the table, so it must not run against a thinner source.
-
-    The rebuild refills from ``wiki_pages``. If that table cannot account for
-    the rows already indexed — a store whose two halves have drifted apart, or
-    an engine pointed at the wrong file — dropping and refilling silently
-    deletes searchable pages. Raise instead, and leave the old index in place.
-    """
-    await _downgrade_to_old_schema(async_engine)
-    async with async_engine.begin() as conn:
-        for i in range(3):
+async def _insert_old_rows(engine, page_ids: list[str]) -> None:
+    async with engine.begin() as conn:
+        for pid in page_ids:
             await conn.execute(
                 text("INSERT INTO page_fts(page_id, title, content) VALUES (:p, :t, :c)"),
-                {"p": f"orphan-{i}", "t": "Orphan", "c": "no wiki_pages row backs this"},
+                {"p": pid, "t": pid, "c": f"body of {pid}"},
             )
 
-    with pytest.raises(RuntimeError, match="page_fts"):
+
+async def _indexed_ids(engine) -> set[str]:
+    async with engine.connect() as conn:
+        rows = await conn.execute(text("SELECT page_id FROM page_fts"))
+        return {r[0] for r in rows.fetchall()}
+
+
+async def test_rebuild_discards_orphans_instead_of_refusing(
+    async_engine, async_session, repo
+):
+    """An index holding more rows than ``wiki_pages`` still upgrades (#1309).
+
+    The excess is orphans: rows whose page was swept from SQL while the FTS
+    delete that should have followed never ran. Refusing to rebuild protected
+    rows that already point at nothing, and did it from inside the call every
+    command makes to open the store — including ``doctor --repair``, which the
+    error then told the user to run.
+    """
+    await _seed_page(async_session, repo.id)
+    await _downgrade_to_old_schema(async_engine)
+    await _insert_old_rows(
+        async_engine,
+        ["file_page:src/main.py", "orphan-0", "orphan-1", "orphan-2"],
+    )
+
+    await FullTextSearch(async_engine).ensure_index()
+
+    assert await _fts_columns(async_engine) == list(PAGE_FTS_COLUMNS)
+    assert await _indexed_ids(async_engine) == {"file_page:src/main.py"}
+
+
+async def test_rebuild_reports_the_orphans_it_dropped(async_engine, async_session, repo, caplog):
+    """Silently discarding indexed rows is how the next drift goes unnoticed."""
+    await _seed_page(async_session, repo.id)
+    await _downgrade_to_old_schema(async_engine)
+    await _insert_old_rows(async_engine, ["file_page:src/main.py", "orphan-0", "orphan-1"])
+
+    with caplog.at_level("WARNING", logger="repowise.core.persistence.search"):
         await FullTextSearch(async_engine).ensure_index()
 
-    async with async_engine.connect() as conn:
-        rows = await conn.execute(text("SELECT count(*) FROM page_fts"))
-        assert rows.scalar() == 3
+    assert any("2 orphaned page_fts row" in r.getMessage() for r in caplog.records)
+
+
+async def test_rebuild_survives_an_index_with_no_pages_behind_it(async_engine):
+    """Every row orphaned is the extreme of the same case, not a special one."""
+    await _downgrade_to_old_schema(async_engine)
+    await _insert_old_rows(async_engine, ["orphan-0", "orphan-1"])
+
+    await FullTextSearch(async_engine).ensure_index()
+
+    assert await _fts_columns(async_engine) == list(PAGE_FTS_COLUMNS)
+    assert await _indexed_ids(async_engine) == set()
+
+
+async def test_rebuild_leaves_the_old_index_alone_when_wiki_pages_is_missing(async_engine):
+    """No source to refill from is the one case where rebuilding loses data.
+
+    It must not raise either: ``ensure_index`` is on the way in to every
+    command, so an exception here takes down a CLI whose index still answers
+    queries perfectly well on its old shape.
+    """
+    await _downgrade_to_old_schema(async_engine)
+    await _insert_old_rows(async_engine, ["p1"])
+    async with async_engine.begin() as conn:
+        await conn.execute(text("DROP TABLE wiki_pages"))
+
+    await FullTextSearch(async_engine).ensure_index()
+
     assert await _fts_columns(async_engine) == ["page_id", "title", "content"]
+    assert await _indexed_ids(async_engine) == {"p1"}
+
+
+async def test_prune_orphans_removes_rows_whose_page_is_gone(
+    async_engine, async_session, repo
+):
+    """The residue of a sweep whose FTS delete never ran.
+
+    Six call sites delete pages from SQL and their index rows afterwards,
+    outside the transaction, best-effort. Anything that ends the process in
+    between leaves a row that answers queries in full and 404s when opened.
+    """
+    await _seed_page(async_session, repo.id)
+    fts = FullTextSearch(async_engine)
+    await fts.ensure_index()
+    await fts.index("file_page:src/main.py", "Main", "body", summary="s", target_path="p")
+    await fts.index("swept:gone", "Gone", "body of a swept page", summary="s", target_path="p")
+
+    assert await fts.prune_orphans() == 1
+    assert await _indexed_ids(async_engine) == {"file_page:src/main.py"}
+
+
+async def test_prune_orphans_is_a_no_op_on_a_clean_store(async_engine, async_session, repo):
+    """It runs on every command, so the common case must not touch the index."""
+    await _seed_page(async_session, repo.id)
+    fts = FullTextSearch(async_engine)
+    await fts.ensure_index()
+    await fts.index("file_page:src/main.py", "Main", "body", summary="s", target_path="p")
+
+    assert await fts.prune_orphans() == 0
+    assert await _indexed_ids(async_engine) == {"file_page:src/main.py"}
+
+
+async def test_ensure_index_prunes_orphans_on_a_current_schema(
+    async_engine, async_session, repo
+):
+    """The self-heal cannot depend on there being a column upgrade to do.
+
+    A store already on the current shape is where the orphans of an
+    interrupted sweep land from now on, and nothing else ever reconciles them.
+    """
+    await _seed_page(async_session, repo.id)
+    fts = FullTextSearch(async_engine)
+    await fts.ensure_index()
+    await fts.index("swept:gone", "Gone", "body", summary="s", target_path="p")
+
+    await FullTextSearch(async_engine).ensure_index()
+
+    assert await _indexed_ids(async_engine) == set()
+
+
+def test_one_bm25_weight_per_indexed_column():
+    """A column added without a weight would be ranked, silently, at 1.0.
+
+    bm25() takes its weights positionally and validates nothing: a sixth
+    column defaults to 1.0 and a surplus weight is dropped, so drift here
+    changes ranking without raising anywhere.
+    """
+    assert len(_BM25_COLUMN_WEIGHTS) == len(PAGE_FTS_COLUMNS)
+
+
+_VOCABULARY_PAGE = {
+    "content": "# Overview\n\nEntry point for the application.",
+    "metadata": {FILE_VOCABULARY_KEY: "localeError customError xylophone"},
+}
+
+
+async def test_a_vocabulary_only_term_finds_the_page_without_an_embedder(
+    async_engine, async_session, repo
+):
+    """The vocabulary is kept off the page, so full-text is its only reach.
+
+    A keyless store has no vectors. When the vocabulary left the rendered page
+    it left the index with it, and a question whose only match was a field
+    name or comment returned nothing.
+    """
+    await _seed_page(async_session, repo.id, **_VOCABULARY_PAGE)
+    fts = FullTextSearch(async_engine)
+    await fts.ensure_index()
+    await fts.index(
+        "file_page:src/main.py",
+        "File: src/main.py",
+        _VOCABULARY_PAGE["content"],
+        summary="",
+        target_path="src/main.py",
+    )
+
+    results = await fts.search("xylophone")
+
+    assert [r.page_id for r in results] == ["file_page:src/main.py"]
+    assert "xylophone" not in results[0].snippet
+
+
+async def test_upgrade_refills_the_vocabulary_from_page_metadata(
+    async_engine, async_session, repo
+):
+    """A store indexed before the column existed gains it, populated."""
+    await _seed_page(async_session, repo.id, **_VOCABULARY_PAGE)
+    async with async_engine.begin() as conn:
+        await conn.execute(text("DROP TABLE IF EXISTS page_fts"))
+        await conn.execute(
+            text(
+                "CREATE VIRTUAL TABLE page_fts USING "
+                "fts5(page_id UNINDEXED, title, content, summary, target_path)"
+            )
+        )
+
+    fts = FullTextSearch(async_engine)
+    await fts.ensure_index()
+
+    assert await _fts_columns(async_engine) == list(PAGE_FTS_COLUMNS)
+    assert [r.page_id for r in await fts.search("xylophone")] == ["file_page:src/main.py"]
+
+
+async def test_unreadable_page_metadata_indexes_without_a_vocabulary(
+    async_engine, async_session, repo
+):
+    """Bad JSON on one row must not fail the write for the batch."""
+    await _seed_page(async_session, repo.id)
+    async with async_engine.begin() as conn:
+        await conn.execute(text("UPDATE wiki_pages SET metadata_json = '{not json'"))
+    fts = FullTextSearch(async_engine)
+    await fts.ensure_index()
+    await fts.index(
+        "file_page:src/main.py", "File: src/main.py", "Entry point body.", summary="", target_path=""
+    )
+
+    assert [r.page_id for r in await fts.search("entry point")] == ["file_page:src/main.py"]
+
+
+async def test_the_vocabulary_and_the_digest_are_both_searchable(
+    async_engine, async_session, repo
+):
+    """Two columns kept off the rendered body, one per kind of reader-invisible text."""
+    await _seed_page(async_session, repo.id, **_VOCABULARY_PAGE)
+    fts = FullTextSearch(async_engine)
+    await fts.ensure_index()
+    await fts.index(
+        "file_page:src/main.py",
+        "File: src/main.py",
+        _VOCABULARY_PAGE["content"],
+        summary="",
+        target_path="src/main.py",
+        digest="## Questions this page answers\n\n- Where does the zeppelin start?",
+    )
+
+    assert [r.page_id for r in await fts.search("xylophone")] == ["file_page:src/main.py"]
+    assert [r.page_id for r in await fts.search("zeppelin")] == ["file_page:src/main.py"]

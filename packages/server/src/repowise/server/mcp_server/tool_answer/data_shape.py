@@ -1,28 +1,21 @@
 """Ground data-shape questions ("what fields does each entry in X contain?").
 
-A data-shape question names a data blob / row / record and asks for its field
-set. Fuzzy retrieval scatters across every file that *touches* the blob and
-gates low, so the tool hands back a best_guesses pointer list and the agent
-drills with Read/get_symbol to find the fields itself. But the answer usually
-lives verbatim in source: a documented ``{...}`` shape in a docstring near the
-identifier, and/or the concrete keys consumers pull off the parsed value
-(``partner.get("co_change_count")``). This module mines that field set directly
-so the tool answers in one call.
-
-Precision-first: every reported field is a quoted token lifted from source, so a
-field with no source backing can never be synthesised. Two grounding sources,
-precision-ordered: a documented brace shape (authoritative -> high) beats mined
-key accesses (usage-inferred -> medium). Returns ``None`` (the caller falls
-through to normal retrieval) unless a shape is genuinely grounded.
+Fuzzy retrieval scatters across every file that touches a blob, but the field
+set usually lives verbatim in source: a documented ``{...}`` shape (high) or the
+keys consumers read off the value (medium). Every field is a quoted token lifted
+from source; ``None`` means nothing was grounded and retrieval runs as normal.
 """
 
 from __future__ import annotations
 
 import re
 import subprocess
+import time
 from pathlib import Path
 
 from repowise.core.exclusion import build_exclude_spec, is_excluded
+from repowise.server.mcp_server._meta import answer_hint as _answer_hint
+from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server.tool_answer.config import (
     _DATA_SHAPE_ACCESS_WINDOW,
     _DATA_SHAPE_DOC_WINDOW,
@@ -63,20 +56,50 @@ _CONTAINMENT_VERBS = ("contain", "consist", "comprise", "hold", "look like", "ma
 
 _WORD = re.compile(r"[a-z_]+")
 
+# Longer than this with no `?` is a pasted report, not a question. Generous:
+# genuine one-line shape questions are well under it.
+_BARE_QUESTION_MAX_CHARS = 400
+
+# Only `?` matters below; the other splits bound a question sentence so it
+# cannot swallow the prose around it.
+_SENTENCE_SPLIT = re.compile(r"(?<=[.?!])\s+|\n+")
+
+
+def _interrogative_clauses(question: str) -> list[str]:
+    """The parts of ``question`` that are actually asking something.
+
+    A sentence ending in `?` is a question. A short input with no `?` is itself
+    the question (people rarely punctuate); a longer one is a report and gets
+    no clauses.
+    """
+    clauses = [s.strip() for s in _SENTENCE_SPLIT.split(question) if s.strip().endswith("?")]
+    if clauses:
+        return clauses
+    if len(question) <= _BARE_QUESTION_MAX_CHARS:
+        return [question]
+    return []
+
 
 def _is_data_shape_question(question: str, question_ids: set[str]) -> bool:
     """Whether ``question`` asks for the field set of a named data blob.
 
-    Requires (a) a named identifier (something to ground on) and (b) a lexical
-    data-shape cue: a shape noun (field/key/column/schema/...), or a container
-    noun (entry/record/element/...) paired with a containment verb. Mechanism
-    questions ("how does X work") carry neither and fall through. The cue is a
-    cheap gate only; the miner is the real precision gate (it returns nothing
-    unless the fields are grounded in source), so a false-positive cue is safe.
+    Requires (a) a named identifier anywhere in the text, something to ground on,
+    and (b) a lexical data-shape cue **inside an interrogative clause**: a shape
+    noun (field/key/column/schema/...), or a container noun
+    (entry/record/element/...) paired with a containment verb. Mechanism
+    questions ("how does X work") carry neither and fall through.
+
+    The clause restriction matters for pasted bodies: shape nouns like `field`
+    appear incidentally in most bug reports, and without it the miner would
+    answer a question nobody asked before retrieval runs.
     """
     if not question or not question_ids:
         return False
-    low = question.lower()
+    return any(_clause_carries_shape_cue(c) for c in _interrogative_clauses(question))
+
+
+def _clause_carries_shape_cue(clause: str) -> bool:
+    low = clause.lower()
     words = set(_WORD.findall(low))
     if words & _SHAPE_NOUNS:
         return True
@@ -98,6 +121,9 @@ def _neg_str(s: str) -> tuple[int, ...]:
     return tuple(-ord(c) for c in s)
 
 
+_MAX_SHAPE_IDENTIFIERS = 4
+
+
 def _specific_identifiers(question_ids: set[str]) -> list[str]:
     """Keep only identifiers specific enough to ground a data shape on.
 
@@ -111,7 +137,9 @@ def _specific_identifiers(question_ids: set[str]) -> list[str]:
         for q in question_ids
         if len(q) >= _DATA_SHAPE_MIN_IDENT_LEN and ("_" in q or any(c.isupper() for c in q))
     ]
-    return sorted(kept, key=len, reverse=True)
+    # Each one costs a whole-repo grep run one after another; a pasted issue
+    # body names dozens. Name tie-break keeps the cut deterministic.
+    return sorted(kept, key=lambda q: (-len(q), q))[:_MAX_SHAPE_IDENTIFIERS]
 
 
 # Pathspecs limiting the grep to source and excluding heavy/vendored dirs. The
@@ -183,17 +211,10 @@ def _run_grep(
 def _grep_identifier_files(repo_root: Path, identifier: str, spec: object = None) -> list[str]:
     """Source files naming ``identifier`` (whole word), repo-relative.
 
-    Tracked ``git grep`` first (fast, skips ignored/vendored). If the tree isn't
-    a git checkout (returncode 128), retry with ``--no-index`` so the tool still
-    grounds its answer on a non-git tree - both are fast C greps, never the
-    per-file Python read that wedges on a large tree. Returns the full match set;
-    the caller orders (doc files first) then caps, so the documenting file is
-    never dropped by an unlucky order.
-
-    ``--no-index`` scans the raw filesystem and ignores ``.gitignore``, so a
-    gitignored stale wheel / vendored copy can surface as a match. The compiled
-    ``spec`` (gitignore + ``exclude_patterns``) filters those out authoritatively,
-    matching every other MCP read path.
+    Tracked ``git grep`` first; on a non-git tree (returncode 128) retry with
+    ``--no-index``, which ignores ``.gitignore``, so ``spec`` filters the hits
+    like every other MCP read path. Returns the full match set; the caller
+    orders then caps, so the documenting file is never dropped.
     """
     proc = _run_grep(repo_root, [], identifier)
     if proc is not None and proc.returncode == 128:
@@ -296,14 +317,10 @@ def _alias_keys_on_documented_lines(
 ) -> list[tuple[str, int]]:
     """Alias keys a documented field is read as a fallback for.
 
-    Targets one idiom precisely: ``<recv>.get("<A>") or <recv>.get("<B>")`` - the
-    same receiver reads two keys joined by ``or``, so when one is a documented
-    field the other is an alias for it (``partner.get("co_change_count") or
-    partner.get("count")`` -> ``count``; ``... or partner.get("path")`` ->
-    ``path``). Requiring the ``or`` fallback and a shared receiver keeps this tight:
-    an assignment that merely co-mentions a documented key on a different record
-    (``meta["prior_defect_count"] = ...meta["file_path"]``) or a test assertion
-    does not match. Returns ``(alias, line)`` for keys not in ``doc_fields``.
+    Targets one idiom: ``<recv>.get("<A>") or <recv>.get("<B>")`` where one key
+    is documented, so the other is its alias. The ``or`` and the shared receiver
+    keep incidental co-mentions out. Returns ``(alias, line)`` for keys not in
+    ``doc_fields``.
     """
     out: list[tuple[str, int]] = []
     for idx, line in enumerate(lines, 1):
@@ -397,9 +414,7 @@ def mine_data_shape(repo_root: Path | None, question_ids: set[str]) -> dict | No
     except Exception:
         return None
 
-    # Compile the repo's exclusion rules once per query. The grep fallbacks
-    # (esp. ``git grep --no-index`` on a non-git tree) don't honour .gitignore,
-    # so filter their hits the same way every other MCP read path does.
+    # ``--no-index`` ignores .gitignore, so grep hits are filtered through this.
     exclude_spec = build_exclude_spec(root)
 
     for identifier in _specific_identifiers(question_ids):
@@ -459,12 +474,8 @@ def mine_data_shape(repo_root: Path | None, question_ids: set[str]) -> dict | No
                 if any(src["file"] == s["file"] for s in sources):
                     continue
                 sources.append(src)
-            # Divergence: keys consumers read right beside a documented field but
-            # the doc never lists (a legacy alias like ``count`` for
-            # ``co_change_count``, an optional key). The documented shape is
-            # authoritative for what it declares, but if we said "cite it, no Read
-            # needed" while hiding a key four consumers defensively handle, an
-            # agent could ship a change that ignores it. Surface it instead.
+            # Keys consumers read beside a documented field that the doc omits
+            # (an alias): "no Read needed" must not hide a key the code handles.
             doc_field_set = set(fields)
             also_accessed: list[dict] = []
             also_seen: set[str] = set()
@@ -495,3 +506,92 @@ def mine_data_shape(repo_root: Path | None, question_ids: set[str]) -> dict | No
             }
 
     return None
+
+
+def _data_shape_prose(grounded: dict, citations: list[str]) -> tuple[str, str]:
+    """The ``answer`` and ``note`` for a mined data shape, by how it was grounded.
+
+    A documented shape is authoritative and says so (cite it, no verification
+    Read). A usage-mined shape is the keys consumers actually pull off the value,
+    which may be a subset of what is stored, so it asks to be verified.
+    """
+    ident = grounded["identifier"]
+    fields = grounded["fields"]
+    sources = grounded["sources"]
+    also_accessed = grounded.get("also_accessed") or []
+    field_list = ", ".join(f"`{f}`" for f in fields)
+
+    if grounded["grounding"] != "docstring":
+        first = sources[0]
+        return (
+            f"Each entry in `{ident}` is accessed with {len(fields)} key(s): "
+            f"{field_list}. These are the keys consumers actually pull off the "
+            f"parsed value (e.g. {first['file']}:{first['line']}); this is mined "
+            "from usage, not a declared schema, so verify if you need the full set.",
+            "Grounded in the key accesses mined from consumer source (no "
+            "documented shape was found). Medium confidence: these are the keys "
+            "the code reads, which may be a subset of the stored fields.",
+        )
+
+    doc_src = next((s for s in sources if s["kind"] == "docstring"), None)
+    where = f"{doc_src['file']}:{doc_src['line']}" if doc_src else citations[0]
+    if not also_accessed:
+        return (
+            f"Each entry in `{ident}` has {len(fields)} field(s): {field_list}. "
+            f"This is the documented shape at {where}; cite it directly, no "
+            "verification Read needed.",
+            "Grounded in the documented field shape mined from source (the "
+            "quoted keys in the docstring/comment at the cited line). "
+            "data_shape.sources lists every field's origin line.",
+        )
+
+    alias_list = ", ".join(f"`{a['field']}`" for a in also_accessed)
+    first_alias = also_accessed[0]
+    return (
+        f"Each entry in `{ident}` has {len(fields)} documented field(s): "
+        f"{field_list} (documented shape at {where}). Consumers also read "
+        f"{alias_list} as a fallback (e.g. {first_alias['file']}:"
+        f"{first_alias['line']}) - an alias the docstring omits, so handle "
+        f"{alias_list} too if you touch this.",
+        "Grounded in the documented field shape, plus alias key(s) "
+        "consumers read beside a documented field that the docstring "
+        "omits (see data_shape.also_accessed). The documented fields are "
+        "authoritative; the aliases are real keys the code defends against.",
+    )
+
+
+def build_data_shape_payload(grounded: dict, t0: float, repository) -> dict:
+    """Shape a grounded data-shape result into a get_answer response.
+
+    ``grounded`` is :func:`mine_data_shape`'s return. Cite the exact source
+    lines the fields were lifted from; a docstring shape is authoritative
+    (confidence high, no verification Read), a usage-mined shape is medium.
+    """
+    ident = grounded["identifier"]
+    fields = grounded["fields"]
+    sources = grounded["sources"]
+    also_accessed = grounded.get("also_accessed") or []
+    citations = sorted({s["file"] for s in sources})
+    answer, note = _data_shape_prose(grounded, citations)
+    payload: dict = {
+        "answer": answer,
+        "citations": citations,
+        "confidence": grounded["confidence"],
+        "grounding": "data_shape",
+        "data_shape": {
+            "identifier": ident,
+            "fields": fields,
+            "sources": sources,
+            **({"also_accessed": also_accessed} if also_accessed else {}),
+        },
+        "fallback_targets": citations,
+        "retrieval": [],
+        "note": note,
+        "_meta": _build_meta(
+            timing_ms=(time.perf_counter() - t0) * 1000,
+            hint=_answer_hint(grounded["confidence"]),
+            repository=repository,
+            targets=citations,
+        ),
+    }
+    return payload

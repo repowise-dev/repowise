@@ -25,23 +25,14 @@
 {%- if ctx.external_systems %} It builds on {{ ctx.external_systems | length }} external {{ "dependency" if ctx.external_systems | length == 1 else "dependencies" }}, including {% for s in ctx.external_systems[:5] %}`{{ s.name }}`{% if not loop.last %}, {% endif %}{% endfor %}.{% endif %}
 
 {% if ctx.packages %}
+{# Replaced wholesale by the Package | Path | Files | Languages table, which is
+   embedded after this renders. The list stays as what a reader gets when there
+   are no per-package counts to tabulate — the heading has to exist here or the
+   table would be appended after the footer. #}
 ## Packages
 {% for pkg in ctx.packages %}
 - **{{ pkg.name }}** (`{{ pkg.path }}`, {{ pkg.language }})
 {% endfor %}
-{% endif %}
-
-{% if ctx.entry_points %}
-## Entry Points
-Start here when reading the codebase.
-{# Capped: a monorepo where every UI folder has an index.ts produces 75 of
-   these, and a 75-item wall is not a place to start reading. #}
-{% for ep in ctx.entry_points[:15] %}
-- `{{ ep }}`
-{% endfor %}
-{%- if ctx.entry_points | length > 15 %}
-- ...and {{ ctx.entry_points | length - 15 }} more.
-{% endif %}
 {% endif %}
 
 {% if ctx.execution_flows %}
@@ -59,26 +50,14 @@ Groups of files that depend on each other far more than on the rest of the repo.
 {% endfor %}
 {% endif %}
 
-{% if ctx.top_files_by_pagerank %}
-## Most Central Files
-Ranked by PageRank over the import graph: the files most of the codebase ultimately depends on.
-{% for item in ctx.top_files_by_pagerank %}
-- `{{ item.path }}` ({{ "%.4f"|format(item.score) }})
-{% endfor %}
-{% endif %}
-
-{% if ctx.language_distribution %}
-{# Same ordering and cap as the summary sentence above, or the two disagree. #}
-{% set langs = ctx.language_distribution.items() | sort(attribute='1', reverse=true) %}
-## Languages
-{% for lang, pct in langs[:8] %}
-- {{ lang }}: {{ "%.1f"|format(pct * 100) }}%
-{% endfor %}
-{%- if langs | length > 8 %}
-- ...and {{ langs | length - 8 }} more.
-{% endif %}
-{% endif %}
-
+{# Two path tables used to sit above: the entry points and the highest-PageRank
+   files. Both are lists a reader can produce with `ls` and neither says what
+   the file is for. The summary sentence still names the first few entry points
+   in a sentence, which is where a path is worth reading. #}
+{# A repository-wide percentage breakdown of languages told the reader nothing
+   they could act on — "python 57.2%" is not a fact anyone navigates by. The
+   package table names the languages per package, which is, and the summary
+   sentence above still names the dominant one. #}
 {% if ctx.external_systems %}
 ## External Systems
 {% for sys in ctx.external_systems[:25] %}

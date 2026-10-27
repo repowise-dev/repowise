@@ -1,23 +1,16 @@
 "use client";
 
 /**
- * ThemeToggle — shared segmented Light / Dark control.
+ * ThemeToggle: one icon button that shows the theme in effect and switches to
+ * the other on click. `showLabel` names that theme beside the icon.
  *
- * Canonical implementation consumed by both `packages/web` and the hosted
- * frontend so the toggle UX stays identical across surfaces. Relies on
- * `next-themes` (a peer dependency of consumers) for state + persistence;
- * this component just calls `setTheme()`.
+ * Relies on `next-themes` (a peer dependency of consumers) for state and
+ * persistence. Deliberately two-state, no "System" option. Consumers set
+ * `enableSystem={false}`; the mount effect migrates any stale persisted
+ * "system" value to light. An explicit light or dark choice is never rewritten.
  *
- * Deliberately two-state — no "System" option (product decision: keep the
- * choice explicit). Consumers set `enableSystem={false}` on their provider;
- * the mount effect below migrates any stale persisted "system" value to the
- * light default so pre-simplification visitors don't keep an unknown theme.
- * The migration only fires for non light/dark values, so an explicit Light or
- * Dark choice is never rewritten.
- *
- * Renders nothing theme-dependent until mounted so the control doesn't flash
- * the wrong selection during hydration (next-themes returns `undefined` on
- * the server).
+ * Until mounted the button renders a neutral placeholder of the same size, so
+ * server and first client markup match.
  */
 
 import { useEffect, useState } from "react";
@@ -25,66 +18,69 @@ import { useTheme } from "next-themes";
 import { Sun, Moon } from "lucide-react";
 import { cn } from "../lib/cn";
 
-const OPTIONS = [
-  { value: "light" as const, label: "Light", icon: Sun },
-  { value: "dark" as const, label: "Dark", icon: Moon },
-];
-
 export interface ThemeToggleProps {
-  /** Hide the text labels and render an icon-only compact control. */
+  /** Accessible name and tooltip while light is active. */
+  switchToDarkLabel?: string;
+  /** Accessible name and tooltip while dark is active. */
+  switchToLightLabel?: string;
+  /** Accepted for backwards compatibility; the control is always icon-only. */
   compact?: boolean;
+  /** Name the theme in effect ("Light" or "Dark") beside the icon. Off by default. */
+  showLabel?: boolean;
   className?: string;
 }
 
-export function ThemeToggle({ compact = false, className }: ThemeToggleProps) {
-  const { theme, setTheme } = useTheme();
+/** Shared by the labelled button and its placeholder, so nothing moves on mount. */
+const LABELLED_WIDTH = "min-w-[5rem]";
+
+const BUTTON =
+  "inline-flex h-8 w-8 items-center justify-center rounded-md text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-wash-hover)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]";
+
+export function ThemeToggle({
+  switchToDarkLabel = "Switch to dark theme",
+  switchToLightLabel = "Switch to light theme",
+  showLabel = false,
+  className,
+}: ThemeToggleProps) {
+  const { theme, resolvedTheme, setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
     setMounted(true);
   }, []);
 
-  // Migrate a persisted "system" (or any unknown) theme from before the
-  // simplification to the explicit light default. Only fires for non
-  // light/dark values, so an explicit user choice is never clobbered.
+  // Migrate a persisted "system" (or any unknown) theme to the explicit light
+  // default. Only fires for non light/dark values.
   useEffect(() => {
     if (mounted && theme !== "light" && theme !== "dark") setTheme("light");
   }, [mounted, theme, setTheme]);
 
+  if (!mounted) {
+    return (
+      <span
+        aria-hidden
+        className={cn("inline-block h-8", showLabel ? LABELLED_WIDTH : "w-8", className)}
+      />
+    );
+  }
+
+  const isDark = resolvedTheme === "dark";
+  const current = isDark ? "Dark" : "Light";
+  const action = isDark ? switchToLightLabel : switchToDarkLabel;
+  // The accessible name starts with the visible text (WCAG 2.5.3).
+  const label = showLabel ? `${current} theme. ${action}` : action;
+  const Icon = isDark ? Moon : Sun;
+
   return (
-    <div
-      role="radiogroup"
-      aria-label="Theme preference"
-      className={cn(
-        "inline-flex items-center gap-1 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] p-1",
-        className,
-      )}
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      onClick={() => setTheme(isDark ? "light" : "dark")}
+      className={cn(BUTTON, showLabel && cn("w-auto gap-2 px-3", LABELLED_WIDTH), className)}
     >
-      {OPTIONS.map((opt) => {
-        const Icon = opt.icon;
-        const selected = mounted && theme === opt.value;
-        return (
-          <button
-            key={opt.value}
-            type="button"
-            role="radio"
-            aria-checked={selected}
-            aria-label={opt.label}
-            title={opt.label}
-            onClick={() => setTheme(opt.value)}
-            className={cn(
-              "inline-flex items-center justify-center gap-1.5 rounded-md text-xs font-medium transition-colors",
-              compact ? "px-2 py-1.5" : "px-3 py-1.5",
-              selected
-                ? "bg-[var(--color-bg-surface)] text-[var(--color-text-primary)] shadow-[var(--shadow-sm)]"
-                : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]",
-            )}
-          >
-            <Icon className="h-3.5 w-3.5 shrink-0" />
-            {!compact && opt.label}
-          </button>
-        );
-      })}
-    </div>
+      <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden />
+      {showLabel && <span className="text-xs font-medium">{current}</span>}
+    </button>
   );
 }

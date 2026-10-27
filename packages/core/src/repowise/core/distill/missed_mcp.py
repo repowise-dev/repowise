@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Any
 
 from repowise.core.distill.budget import estimate_tokens
-from repowise.core.sessions import ClaudeCodeAdapter, Event, transcript_dir_for
+from repowise.core.sessions import INTENT_TOOL_CALLS, Event, HarnessAdapter, get_adapter
 
 #: Default scan window, in days. Matches the missed-savings scan.
 DEFAULT_WINDOW_DAYS = 7.0
@@ -52,8 +52,6 @@ REREAD_FLOOR = 0.5
 _MIN_EST_TOKENS = 40
 
 _MUTATING_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
-
-_ADAPTER = ClaudeCodeAdapter()
 
 
 def empty_report(days: float = DEFAULT_WINDOW_DAYS) -> dict[str, Any]:
@@ -87,20 +85,21 @@ def scan_missed_mcp_savings(
 def _scan(
     repo_root: Path, days: float, now: float | None, projects_root: Path | None
 ) -> dict[str, Any]:
-    transcripts = transcript_dir_for(repo_root, projects_root)
+    adapter = get_adapter()
     report = empty_report(days)
-    if not transcripts.is_dir():
+    transcripts = adapter.discover(repo_root, projects_root=projects_root)
+    if not transcripts:
         return report
 
     cutoff = (now if now is not None else time.time()) - days * 86400.0
     repo_prefix = str(repo_root).lower().rstrip("\\/")
     per_file: dict[str, dict[str, int]] = {}
 
-    for path in sorted(transcripts.glob("*.jsonl")):
+    for path in transcripts:
         try:
             if path.stat().st_mtime < cutoff:
                 continue  # untouched since the window opened
-            _scan_file(path, cutoff, repo_prefix, repo_root, per_file)
+            _scan_file(adapter, path, cutoff, repo_prefix, repo_root, per_file)
         except OSError:
             continue
 
@@ -123,12 +122,8 @@ def _rel(file_path: str, repo_root: Path) -> str:
     return rel.replace("\\", "/")
 
 
-def _prefilter(raw: str) -> bool:
-    """Only tool_use lines and result lines are worth parsing."""
-    return '"tool_use"' in raw or '"tool_result"' in raw
-
-
 def _scan_file(
+    adapter: HarnessAdapter,
     path: Path,
     cutoff: float,
     repo_prefix: str,
@@ -146,7 +141,8 @@ def _scan_file(
     last_read_seq: dict[str, int] = {}
     last_edit_seq: dict[str, int] = {}
 
-    for event in _ADAPTER.iter_events(path, prefilter=_prefilter):
+    prefilter = adapter.prefilter(INTENT_TOOL_CALLS)
+    for event in adapter.iter_events(path, prefilter=prefilter):
         if event.kind == "assistant":
             seq = _collect_tool_use(event, cutoff, repo_prefix, seq, pending, last_edit_seq)
         elif pending and event.tool_results:

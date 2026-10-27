@@ -1,17 +1,18 @@
 # Hooks
 
-repowise installs a set of lightweight hooks so context reaches your agent, and
-your index stays fresh, with zero effort on your part. They fall into two
-families:
+repowise installs small hooks so context reaches your agent and your index
+stays fresh without you asking. There are two families:
 
-- **Git hooks** keep the wiki and graph in sync with your code.
-- **Agent hooks** feed graph, git, health, and decision context into Claude Code
-  and Codex at the exact moments the agent needs it.
+- **Git hooks** keep the wiki and graph in step with your code.
+- **Agent hooks** feed graph, git, health and decision context into Claude Code
+  and Codex at the moment the agent needs it.
 
-Every agent hook shares the same guarantees: **no LLM calls, no network**, only
-local SQLite (`wiki.db`) and `git` reads. They are import-isolated (cold start
-under ~500ms), and any failure exits `0` silently, so a broken environment never
-crashes or blocks your agent.
+Every agent hook makes **no LLM calls and no network calls**. It reads the local
+index (`wiki.db`) and `git`. Any failure exits `0` silently, so a broken
+environment never blocks your agent.
+
+For the exact settings entries each install writes, see the
+[hooks reference](../reference/HOOKS_REFERENCE.md).
 
 ---
 
@@ -19,139 +20,179 @@ crashes or blocks your agent.
 
 | Hook | Family | Installed by | Fires on | What it does |
 |------|--------|--------------|----------|--------------|
-| **Post-commit auto-sync** | git | `repowise hook install` (or the `repowise init` prompt) | every `git commit` | Runs `repowise update` in the background so the wiki tracks your code |
-| **SessionStart context** | Claude Code | `repowise init` | session `startup` / `resume` / `clear` | Live index-freshness line, core-tool trust rule, and the standing decisions relevant to this session |
-| **PostToolUse enrichment** | Claude Code | `repowise init` | `Grep` / `Glob` / `Read` / `Edit` / `Write` / `Bash` / `PowerShell` / repowise MCP calls | Graph context on searches, git/edit freshness, read-intelligence notices, and edit-time "governed by" decision notices |
-| **Command-rewrite (distill)** | Claude Code | `repowise hook rewrite install` (opt-in) | `Bash` / `PowerShell` | Rewrites noisy commands to `repowise distill <cmd>`; auto-allowed by default, set `permission: ask` to approve each one |
-| **Codex context + staleness** | Codex | `repowise init --codex` | SessionStart / UserPromptSubmit / edit / Bash | Reminds Codex to use the MCP tools and flags stale context after edits |
+| **Post-commit auto-sync** | git | `repowise init` by default (`--no-hook` skips it), or `repowise hook install` | every `git commit` | Runs `repowise update` in the background so the wiki tracks your code |
+| **Pre-commit security check** | git | `repowise hook install --security` (opt-in) | every `git commit` | Runs `repowise security check --staged` and blocks a commit that adds a finding at or above `high` ([details](../layers/SECURITY.md#before-a-commit---staged)) |
+| **SessionStart context** | Claude Code | `repowise init` | session `startup` / `resume` / `clear` | Index-freshness line, core-tool pointer, and the standing decisions relevant to this session |
+| **PostToolUse enrichment** | Claude Code | `repowise init` | `Grep` / `Glob` / `Read` / `Edit` / `Write` / repowise MCP calls | Graph context on searches, read notices, edit-time decision and bug-history notices |
+| **Wrong-path rescue** | Claude Code | `repowise init` | a path tool call that failed on a path this tree does not have | Names the file when exactly one indexed file carries that basename; silent otherwise |
+| **Decision capture prompt** | Claude Code, Codex | `repowise init` and the Claude Code plugin; `repowise decision config capture-prompt --off` silences it per repository | a fresh `git commit` via `Bash` / `PowerShell` whose message states a choice | Once a session, asks the agent to record the decision with `repowise decision add --agent`; it lands as a candidate |
+| **Coverage re-ingest** (opt-in) | Claude Code | `hooks.coverage_reingest: true`, then the next `repowise coverage add` / `init` / `update` | `Bash` / `PowerShell` | Re-ingests a fresh full-suite coverage report in the background |
+| **Health gate** (opt-in) | Claude Code | `repowise hook health-gate install` | `git commit` / `git push` via `Bash` / `PowerShell` | Runs `repowise health check` on what the command records and blocks it when the gate fails ([details](../start/CI.md#before-an-agent-commits-or-pushes)) |
+| **Command rewrite (distill)** | Claude Code, Codex, Cursor | `repowise hook rewrite install`, or Yes at the `repowise init` prompt | `Bash` / `PowerShell` (Cursor: `Shell`) | Rewrites noisy commands to `repowise distill <cmd>` |
+| **Codex context and staleness** | Codex | `repowise init --codex` | SessionStart, edits, shell | Reminds Codex to use the MCP tools and flags stale context after git operations |
+
+Each agent hook records what it said and whether the agent acted on it. See
+[Hook efficacy](#hook-efficacy-repowise-hook-stats).
 
 ---
 
 ## Git hook: post-commit auto-sync
 
-The wiki, graph, and health scores are only as current as your last index. The
-post-commit hook closes that gap: after every commit it runs `repowise update`
-in the background, so documentation, dependency edges, and code-health follow
-your code without you thinking about it. Your terminal is never blocked.
+The wiki, graph and health scores are only as current as your last index. After
+every commit this hook runs `repowise update` in the background, so docs,
+dependency edges and health follow your code. Your terminal is never blocked.
 
 ```bash
-repowise hook install              # install for the current repo
-repowise hook install --workspace  # install for all repos in the workspace
-repowise hook status               # check whether the hook is installed
-repowise hook uninstall            # remove it
+repowise hook install              # current repo
+repowise hook install --workspace  # every repo in the workspace
+repowise hook status
+repowise hook uninstall
 ```
 
-The hook is **marker-delimited**, so it coexists safely with other tools' hooks
-(linters, formatters, commit-msg checks) in the same `post-commit` file: repowise
-only ever touches the block between its own markers. See
-[AUTO_SYNC.md](../scale/AUTO_SYNC.md) for the full sync model, including how git worktrees
-seed from the base checkout.
+The hook is marker-delimited, so it coexists with other tools' hooks in the same
+`post-commit` file: repowise only touches the block between its own markers. See
+[Keeping the index fresh](../scale/AUTO_SYNC.md) for every sync method, and
+[WORKTREES.md](../scale/WORKTREES.md) for how worktrees seed from the base checkout.
 
-> Prefer to keep updates manual? Skip this hook and run `repowise update`
-> yourself. The agent hooks below will remind you when the index falls behind.
+Prefer manual updates? Skip this hook and run `repowise update` yourself. The
+SessionStart hook tells the agent when the index falls behind.
 
 ---
 
 ## Claude Code agent hooks
 
-Installed automatically during `repowise init` into your global
-`~/.claude/settings.json`. Existing user hooks are always preserved, and legacy
-repowise entries are migrated in place on the next `init` / `update`. All of them
-route through the `repowise-augment` console script (a standalone entry point
-that does not load the full CLI).
+`repowise init` installs these into your global `~/.claude/settings.json`.
+Existing user hooks are preserved, and older repowise entries are updated in
+place on the next `init` or `update`. They all run the `repowise-augment` entry
+point, which does not load the full CLI.
 
-`repowise init --no-editor-setup` skips this whole group, along with the MCP
-server registration that shares the same file. Reach for it when the repo is
-temporary (a scratch clone, a worktree, a benchmark loop) and you do not want
-that machine-wide config to move. `REPOWISE_SKIP_EDITOR_SETUP=1` is the same
-switch for CI. The index itself is identical either way. To register the repo
-afterwards, re-run `repowise init` in it without the flag.
+`repowise init --no-editor-setup` skips this group, along with the MCP server
+registration in the same file. Use it for a scratch clone, a worktree or a
+benchmark loop where you do not want machine-wide config to change.
+`REPOWISE_SKIP_EDITOR_SETUP=1` does the same in CI. The index is identical
+either way; re-run `repowise init` without the flag to register the repo later.
 
-### SessionStart, live freshness + relevant decisions
+### SessionStart: freshness and relevant decisions
 
-The generated `CLAUDE.md` is static between reindexes, so it can't say whether
-the index is current *right now*. This hook adds a short per-session block so the
-agent starts with calibrated trust instead of discovering staleness mid-task:
+The generated `CLAUDE.md` is static between reindexes, so it cannot say whether
+the index is current right now. This hook adds a short block at session start:
 
-- **Index current** → one line saying so, plus the core-tool pointer.
-- **Update running** → a positive "catching up" notice (never a stale scare).
-- **Index behind** → indexed vs `HEAD` with a changed-file count, and the
-  target-scoped trust rule (a `stale_warning` fires only when a file a response
-  actually served has changed).
+- **Index current**: one line saying so, plus the core-tool pointer.
+- **Update running**: a "catching up" notice.
+- **Index behind**: indexed commit vs `HEAD` with a changed-file count, and the
+  trust rule (a `stale_warning` fires only when a file a response served has
+  changed).
 
-It also carries the **relevance-ranked standing decisions** for this session.
-repowise scores the repo's active decisions against the session's likely working
-set (dirty and staged files, files changed on the branch vs `main`, the previous
-session's edited files, and branch-name tokens), expanded one hop through import
-edges and co-change partners. The top few land under a hard ~400-token cap.
-Relevance or silence: nothing clears the floor, nothing is injected, and
-decisions are never shown just for being high-confidence. Repo-wide rules mined
-from your own corrections are the one exception: a rule like "use the shared
-logger, not print" applies everywhere rather than to specific files, so it
-competes at a flat base relevance.
+It also carries the **standing decisions** most relevant to this session.
+repowise scores active decisions against the likely working set (dirty and
+staged files, files changed on the branch vs `main`, the previous session's
+edited files, branch-name tokens), expanded one hop through imports and
+co-change partners. The top few land under a hard 400-token cap. If nothing
+clears the relevance floor, nothing is injected. Working agreements mined from
+your own corrections (for example "use the shared logger, not print") name no
+file, so they compete at a flat base relevance.
 
-### PostToolUse, enrichment on every tool call
+### PostToolUse: enrichment on tool calls
 
-One hook covers several jobs, matched on
-`Grep`, `Glob`, `Read`, `Edit`, `Write`, `Bash`, `PowerShell`, and repowise MCP
-calls:
+One hook, matched on `Grep`, `Glob`, `Read`, `Edit`, `Write` and repowise MCP
+calls, does several jobs.
 
-**Grep/Glob enrichment.** When Claude Code runs a broad or zero-result search,
-repowise appends focused context pulled straight from `wiki.db`:
+**Search enrichment.** On a broad or zero-result search, repowise appends
+context from the index:
 
 | Field | What it tells the agent |
 |-------|------------------------|
-| **Symbols** | Functions, classes, and methods defined in the file |
-| **Imported by** | Which files depend on this file (reverse dependency) |
-| **Depends on** | What this file imports (forward dependency) |
-| **Git signals** | Hotspot status, bus factor, and owner |
-
-So an agent that greps for `PageGenerator` immediately knows what depends on it,
-what it depends on, and that it is a hotspot, without a separate MCP call:
+| **Symbols** | Functions, classes and methods defined in the file |
+| **Imported by** | Files that depend on this file |
+| **Depends on** | What this file imports |
+| **Git** | Hotspot status, bus factor and owner |
 
 ```
 [repowise] 2 related file(s) found:
 
-  packages/core/.../page_generator.py
-    Symbols: function:_now_iso, class:PageGenerator, method:__init__
-    Imported by: init_cmd.py, update_cmd.py, generation/__init__.py
-    Depends on: context_assembler.py, base.py, models.py
-    Git: HOTSPOT, bus-factor=1, owner=RaghavChamadiya
+  src/billing/invoice_service.py
+    Symbols: class:InvoiceService, method:__init__, function:_now_iso
+    Imported by: api/routes.py, jobs/reconcile.py
+    Depends on: models.py, tax.py
+    Git: HOTSPOT, bus-factor=1, owner=alice
 ```
 
-**Git/edit freshness.** After a successful `git commit`, `merge`, `rebase`,
-`cherry-pick`, or `pull`, repowise compares `HEAD` against the last indexed commit
-in `.repowise/state.json` and, if the wiki is behind, reminds the agent to run
-`repowise update` so it never silently works from outdated docs.
+**Search-flood digests.** A grep that returns 50 or more lines also gets a
+per-file digest: each matched file with its match count and anchor line
+numbers, ranked by graph centrality when the index can rank them, with a
+`(N more files, M matches)` tail past the top ten. With `hooks.search_digest:
+true`, the digest replaces the raw match list. Single-file context greps (`-C`,
+`-A`, `-B`) and `files_with_matches` results are never digested.
 
-**Read-intelligence.** On `Read` of an indexed file, repowise can nudge the agent
-toward the cheaper `get_context(..., include=["skeleton"])` for structure-level
-questions, and emit a per-file stale-read notice when the file changed after
-indexing.
+**Read notices.** On a `Read` of an indexed file, repowise warns when the file
+changed after the session's previous read of it, and points at
+`get_context(..., include=["skeleton"])` for structure-level questions.
 
-**Edit-time "governed by" decisions.** When the agent edits a file governed by an
-architectural decision (via `decision_node_links`), it gets a one-line notice
-with the rationale, at most once per session per decision and only a few times
-per session total. This is how a decision reaches the agent at the moment it is
-about to violate (or honor) it.
+**Skeleton reads** (opt-in, `hooks.read_skeleton: true`). An unbounded `Read`
+of a large indexed file returns the file's skeleton, once per file per session.
+Signatures keep their real line numbers; bodies collapse to `... N lines (a-b)`
+markers, so the agent can range-read any elided span. Reading the file again
+with no range returns it whole. A skeleton read still satisfies Claude Code's
+read-before-edit check, so an `Edit` or `Write` on such a file raises a one-line
+warning, once per file, until the file is read in full.
 
-Every injected decision id is recorded locally in
-`.repowise/sessions/sessions.db`. On the next `repowise update`, the session miner
-checks whether the guidance was followed or contradicted by your corrections in
-that session, and relaxes or bumps the decision's staleness accordingly, so
-guidance that stops being true stops being injected. This is the feedback loop
-behind "learns from your sessions" (see the [README](../../README.md) and
-[decisions layer](../layers/INTELLIGENCE_LAYERS.md)).
+**Re-read collapse** (opt-in, `hooks.read_reread: true`). A `Read` of a file
+the session already read comes back as a short notice naming the earlier read.
+It applies only when the same range was served, no `Edit` or `Write` came
+between, and the bytes hash the same. When the bytes differ, the agent gets the
+file plus a line saying it changed on disk outside this session. It is never
+applied twice in a row for the same file, so one more Read always returns the
+content after a context compaction. Because a skeleton read records no content,
+this mostly trims small files, unindexed files and third reads of a range.
+
+**Glob timeouts.** On Windows a `Glob` can exhaust its 20-second budget and
+return nothing. A glob is a path query and the index holds every path, so
+repowise answers it from the index at that moment. Brace expansion (`{a,b}`) is
+declined, and zero indexed matches stays silent.
+
+**Edit-time notices.** When the agent edits a file governed by an architectural
+decision, it gets a one-line notice with the rationale, once per session per
+decision and under a per-session cap. A file with a repeated bug-fix history
+gets a one-line heads-up too (see [bug history](../layers/BUG_HISTORY.md)).
+
+Every injected decision id is recorded in `.repowise/sessions/sessions.db`. On
+the next `repowise update`, the session miner checks whether your corrections
+followed or contradicted that guidance and adjusts the decision's staleness, so
+guidance that stops being true stops being injected. See
+[decisions](../layers/DECISIONS.md).
+
+The three opt-in read and search keys are written by the rewrite-hook question
+in `repowise init`, and toggled per repo with `repowise hook read-skeleton`,
+`hook read-reread` and `hook search-digest` (`install | uninstall | status`).
+Each one's savings appear in `repowise saved` under its own filter, and a repo
+with the key off still gets the counterfactual number. Key details:
+[CONFIG.md](../reference/CONFIG.md#the-hooks-block).
+
+### PostToolUseFailure: wrong-path rescue
+
+An agent that guesses the wrong directory for a file gets "Path does not exist"
+and burns a turn hunting. The index knows where that filename lives:
+
+```
+[repowise] billing/invoice.py is not in this tree.
+The only indexed invoice.py is src/billing/invoice.py
+```
+
+It speaks only when the basename resolves to exactly one indexed file that is
+still on disk. It stays silent for an ambiguous basename, a directory target, a
+path in another checkout, a failure Claude Code already answered with its own
+"Did you mean", and the path that just failed. Most path-not-found failures
+therefore get silence by design.
 
 ---
 
-## Command-rewrite hook (distill), opt-in
+## Command-rewrite hook (distill)
 
-Most of what an agent reads from a shell command is noise: 300 lines of passing
-tests around 4 failures, full commit bodies for "what changed recently". The
-rewrite hook intercepts noisy `Bash` / `PowerShell` commands and rewrites them to
-[`repowise distill <cmd>`](DISTILL.md), which compresses the output errors-first
-before the agent reads it, exit code preserved and every omission reversible.
+Most of what an agent reads from a shell command is noise. The rewrite hook
+rewrites noisy `Bash` / `PowerShell` commands to
+[`repowise distill <cmd>`](DISTILL.md), which compresses output errors-first
+before the agent reads it, keeps the exit code, and makes every omission
+reversible.
 
 ```bash
 repowise hook rewrite install     # or answer Yes at the `repowise init` prompt
@@ -159,97 +200,88 @@ repowise hook rewrite status
 repowise hook rewrite uninstall
 ```
 
-- Defaults to **`allow`**, so a rewrite runs without a prompt. That is not a
+- Rewrites run without a prompt by default (`permission: allow`). This is not a
   permission escalation: a rewrite is always `repowise distill <one recognized
-  command>` from a closed family set, never an arbitrary command smuggled
-  behind the wrapper. Set `permission: ask` under `distill.commands` in
-  `.repowise/config.yaml` to approve each one instead.
-- Never rewrites compound commands, redirections, or watch modes. The one pipe
-  shape it handles (macOS/Linux) is a single stage into `head`, `tail`, `grep`
-  or `rg`, quoted whole so it runs unchanged inside distill's own shell.
-- Installing also adds `Bash(repowise distill:*)` / `PowerShell(repowise distill:*)`
-  to `permissions.allow`, so an already-approved command family doesn't start
-  re-prompting just because its string changed.
+  command>`. Set `permission: ask` under `distill.commands` in
+  `.repowise/config.yaml` to approve each one.
+- Compound commands, redirections and watch modes are never rewritten. On
+  macOS/Linux, a single pipe into `head`, `tail`, `grep` or `rg` is rewritten as
+  one quoted command.
+- With `permission: ask`, a rewritten string no longer matches allow rules such
+  as `Bash(git diff:*)`. `repowise hook rewrite install --allow-rule` adds
+  `Bash(repowise distill:*)` / `PowerShell(repowise distill:*)` to cover that.
 
-Per-repo behavior lives under `distill.commands` in `.repowise/config.yaml`
-([CONFIG.md](../reference/CONFIG.md)). Track what it saved with `repowise saved`.
+Codex support, the safety model and the per-repo config are in
+[DISTILL.md](DISTILL.md#3-the-command-rewrite-hook-claude-code--codex).
 
 ---
 
 ## Codex hooks
 
-Written to project-local `.codex/hooks.json` by `repowise init --codex` (they do
-not touch your global `~/.codex/config.toml`):
+`repowise init --codex` writes project-local `.codex/hooks.json` (your global
+`~/.codex/config.toml` is untouched):
 
-- **SessionStart / UserPromptSubmit** → a short developer note reminding Codex to
-  use the repowise MCP tools for architecture, search, risk, decisions, and
-  dead-code analysis.
-- **PostToolUse** (`Bash`, `apply_patch` / `Edit` / `Write`) → flags that indexed
-  context may be stale after edits or git operations, pointing at `repowise
-  update`.
+- **SessionStart**: a short note reminding Codex to use the repowise MCP tools,
+  plus the same relevance-ranked standing decisions Claude Code receives.
+- **PostToolUse** (the shell tool, and `apply_patch` / `Edit` / `Write`): after
+  a successful `git commit`, `merge`, `rebase`, `cherry-pick` or `pull`, compares
+  `HEAD` with the last indexed commit and flags that context may be stale.
 
-Full Codex setup: [CODEX.md](CODEX.md).
+Codex names its shell tool `shell_command` on current releases and `Bash` on
+older ones, so the matcher covers both. Codex has no `Read` / `Grep` / `Glob`
+tools for repowise to enrich, which is why it watches the shell and Claude Code
+does not. Full setup: [CODEX.md](CODEX.md).
+
+---
+
+## Hook efficacy: `repowise hook stats`
+
+The agent hooks keep a local ledger in `.repowise/sessions/sessions.db`: what
+each hook said, and whether the agent then did what it pointed at. The verdict
+comes from your own Claude Code transcripts, so the numbers are yours. Nothing
+leaves the machine.
+
+```bash
+repowise hook stats                        # per-surface firing counts and action rates
+repowise hook backfill --all-projects      # seed the ledger from existing transcripts
+```
+
+Flags and the `--reset` upgrade step: [CLI reference](../reference/CLI_REFERENCE.md#repowise-hook-stats).
 
 ---
 
 ## What gets written where
 
-`repowise init` writes these entries into `~/.claude/settings.json` (Claude Code)
-and `.codex/hooks.json` (Codex when `--codex` is passed):
+| Client | Hook type | Matcher | Written to |
+|--------|-----------|---------|------------|
+| Claude Code | `SessionStart` | `startup\|resume\|clear` | `~/.claude/settings.json` |
+| Claude Code | `PostToolUse` | `Grep\|Glob\|Read\|Edit\|Write\|mcp__.*[Rr]epowise.*__.*` | `~/.claude/settings.json` |
+| Claude Code | `PostToolUseFailure` | `Read\|Edit\|Write\|Grep\|Glob\|NotebookEdit` | `~/.claude/settings.json` |
+| Claude Code | `PreToolUse` (opt-in rewrite) | `Bash\|PowerShell` | `~/.claude/settings.json` |
+| Claude Code | `PostToolUse` (decision capture prompt) | `Bash\|PowerShell` | `~/.claude/settings.json`, or the plugin's `hooks.json` |
+| Claude Code | `PostToolUse` and `PostToolUseFailure` (opt-in coverage re-ingest) | `Bash\|PowerShell` | the repo's `.claude/settings.local.json` |
+| Codex | `SessionStart` | `startup\|resume\|clear` | the repo's `.codex/hooks.json` |
+| Codex | `PostToolUse` | `Bash\|shell_command`, `apply_patch\|Edit\|Write` | the repo's `.codex/hooks.json` |
+| Cursor | `preToolUse` (opt-in rewrite) | `Shell` | `~/.cursor/hooks.json` |
 
-| Client | Hook type | Matcher | Command |
-|--------|-----------|---------|---------|
-| Claude Code | `SessionStart` | `startup\|resume\|clear` | `repowise-augment` [^guard] |
-| Claude Code | `PostToolUse` | `Bash\|PowerShell\|Grep\|Glob\|Read\|Edit\|Write\|mcp__.*[Rr]epowise.*__.*` | `repowise-augment` [^guard] |
-| Claude Code | `PreToolUse` (opt-in) | `Bash\|PowerShell` | `repowise-rewrite` |
-| Codex | `SessionStart` / `UserPromptSubmit` | lifecycle | context reminder |
-| Codex | `PostToolUse` | `Bash`, `apply_patch\|Edit\|Write` | staleness check |
+The capture prompt's entry checks the payload for `git commit` in the shell
+and starts `repowise-augment` only on a match, so any other shell call costs
+only the shell start. `init` skips it when the repowise plugin already ships
+it, so it never runs twice.
 
-[^guard]: The command is written wrapped in a presence check rather than as the
-    bare name:
-
-    ```sh
-    if command -v repowise-augment >/dev/null 2>&1; then exec repowise-augment; fi
-    ```
-
-    The Claude Code plugin ships these hooks independently of the CLI, so
-    "plugin installed, `repowise` not installed" is a supported state — and a
-    partially written install reaches it too (on Windows an MCP server holds
-    `repowise.exe` open, so an installer can abort after writing only some
-    console scripts). Unguarded, either state prints `command not found` on
-    every matched tool call: non-blocking, unactionable, and endless. The guard
-    is POSIX (`command -v` + `exec`, verified under `sh`, `bash` and `dash`) and
-    forwards stdin unchanged, so the hook behaves identically when the script is
-    present. An older install carrying the bare name is rewritten on the next
-    `repowise init`. Codex hooks keep the bare name: their execution model is
-    not documented as shell-based, and a directly `exec`'d guard would try to
-    run a binary named `if`.
-
-`SessionStart` deliberately excludes `compact`: the block usually survives
-compaction in the summary, and re-emitting it there would double it up. `init`
-also sets `env.ENABLE_TOOL_SEARCH=true` so the MCP tool schemas load on demand
-rather than sitting in every session's standing context (an existing value you
-set, including a deliberate `false`, is left untouched).
-
-For manual debugging, the underlying entry points can be run directly:
-
-```bash
-repowise-augment    # invoked by the agent hooks; prints what it would inject
-repowise augment    # equivalent Click subcommand
-```
+The coverage re-ingest entries are written by the next `repowise coverage add`,
+`init` or `update` once `hooks.coverage_reingest: true` is set, and removed when
+the key is false or gone. Command strings, the presence guard and the other
+settings `init` writes: [hooks reference](../reference/HOOKS_REFERENCE.md).
 
 ---
 
 ## Hooks vs MCP tools
 
-The two are complementary:
+- **Hooks** are passive. They fire on every search, edit or session start,
+  whether or not the agent is thinking about graph context.
+- **[MCP tools](MCP_TOOLS.md)** are on-demand and return richer output: full
+  documentation, risk, decision history, dependency paths.
 
-- **Hooks** are passive, automatic, and cost the agent nothing. They fire on
-  every search, edit, or session start whether or not the agent is thinking about
-  graph context.
-- **[MCP tools](MCP_TOOLS.md)** are active and on-demand, with richer output.
-  Reach for them when the agent needs full documentation, a risk assessment,
-  decision history, or dependency tracing.
-
-For most day-to-day coding, the hooks supply enough context on their own; the MCP
-tools are there for deeper investigation.
+For day-to-day coding the hooks supply most of the context; the MCP tools are
+there for deeper questions.

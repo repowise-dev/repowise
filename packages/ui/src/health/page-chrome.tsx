@@ -1,6 +1,7 @@
 "use client";
 
 import { HealthTabs, type HealthTabKey, type HealthTabsProps } from "./health-tabs";
+import { formatDate, parseDate } from "../lib/format";
 
 export interface HealthPageChromeProps {
   repoId: string;
@@ -24,7 +25,7 @@ export interface HealthPageChromeProps {
 
 function formatIndexedAt(iso: string | null): string {
   if (!iso) return "never";
-  const d = new Date(iso);
+  const d = parseDate(iso);
   const diff = Date.now() - d.getTime();
   const minutes = Math.round(diff / 60_000);
   if (minutes < 1) return "just now";
@@ -33,7 +34,7 @@ function formatIndexedAt(iso: string | null): string {
   if (hours < 24) return `${hours}h ago`;
   const days = Math.round(hours / 24);
   if (days < 30) return `${days}d ago`;
-  return d.toLocaleDateString();
+  return formatDate(d);
 }
 
 export function HealthPageChrome({

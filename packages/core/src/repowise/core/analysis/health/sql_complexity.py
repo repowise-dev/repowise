@@ -25,8 +25,8 @@ none of it may move the surfaced defect score.
 
 from __future__ import annotations
 
-import logging
 import re
+from collections.abc import Callable
 from typing import Any
 
 from .complexity import FileComplexity, FunctionComplexity, PerfHit
@@ -177,17 +177,18 @@ def _statement_smells(text: str, dialect: str | None) -> list[PerfHit]:
     if "{{" in text or "{%" in text:
         return []
     try:
-        import sqlglot
         from sqlglot import exp
     except ImportError:
         return []
-    logging.getLogger("sqlglot").setLevel(logging.ERROR)
+    from repowise.core.ingestion.sql_parse import parse_sql
+
     try:
-        statements = sqlglot.parse(text, read=dialect, error_level=sqlglot.ErrorLevel.IGNORE)
+        statements = parse_sql(text, dialect=dialect)
     except Exception:
         return []
 
     hits: list[PerfHit] = []
+    temp_tables: set[str] = set()
     cursor = 0
 
     def _anchor(token: str) -> int:
@@ -198,67 +199,118 @@ def _statement_smells(text: str, dialect: str | None) -> list[PerfHit]:
     for stmt in statements:
         if stmt is None:
             continue
-
-        # -- sql_select_star: bare * projection inside a maintained relation.
-        if isinstance(stmt, exp.Create) and (stmt.kind or "").upper() in _STAR_SCOPES:
-            name = _create_name(stmt, exp)
-            for sel in stmt.find_all(exp.Select):
-                if any(isinstance(e, exp.Star) for e in sel.expressions):
-                    hits.append(
-                        PerfHit(
-                            kind="sql_select_star",
-                            line=_anchor(name) if name else 1,
-                            function=name,
-                            detail=(stmt.kind or "").lower(),
-                        )
-                    )
-                    break  # one finding per relation, not per nested select
-
-        # -- sql_update_delete_without_where: whole-table DML.
-        # A LIMIT (``UPDATE ... LIMIT n`` / ``DELETE ... LIMIT n`` in MySQL and
-        # friends) bounds the affected row count, so the statement provably does
-        # NOT touch every row — treat it like a WHERE and stay silent.
-        elif (
-            isinstance(stmt, (exp.Update, exp.Delete))
-            and not stmt.args.get("where")
-            and not stmt.args.get("limit")
-        ):
-            table = _clean_ident(getattr(stmt.this, "name", "") or "")
-            if table:
-                hits.append(
-                    PerfHit(
-                        kind="sql_update_delete_without_where",
-                        line=_anchor(table),
-                        function=None,
-                        detail=f"{type(stmt).__name__.lower()} {table}",
-                    )
-                )
-
-        # -- sql_cartesian_join: comma-join with no predicate anywhere.
-        for sel in stmt.find_all(exp.Select):
-            if sel.args.get("where"):
-                continue
-            for join in sel.args.get("joins") or ():
-                if (
-                    not join.args.get("kind")  # CROSS/OUTER etc. are explicit intent
-                    and not join.args.get("side")
-                    and not join.args.get("on")
-                    and not join.args.get("using")
-                    and not join.args.get("method")  # NATURAL carries its predicate
-                ):
-                    right = _clean_ident(getattr(join.this, "name", "") or "")
-                    if right is None:
-                        continue
-                    hits.append(
-                        PerfHit(
-                            kind="sql_cartesian_join",
-                            line=_anchor(right),
-                            function=None,
-                            detail=right,
-                        )
-                    )
-                    break  # one finding per select
+        # A temp table created earlier in the file is scratch space: emptying
+        # it whole is the intent, not a missing WHERE.
+        if _is_temp_table(stmt, exp):
+            temp_tables.add((_create_name(stmt, exp) or "").lower())
+        # Source order matters: each hit advances the forward-only anchor cursor.
+        star = _select_star_hit(stmt, exp, _anchor)
+        dml = _whole_table_dml_hit(stmt, exp, _anchor, temp_tables)
+        hits += [hit for hit in (star, dml) if hit is not None]
+        hits.extend(_cartesian_join_hits(stmt, exp, _anchor))
     return hits
+
+
+def _select_star_hit(stmt: Any, exp: Any, anchor: Callable[[str], int]) -> PerfHit | None:
+    """sql_select_star: a bare ``*`` projection inside a maintained relation."""
+    if not (isinstance(stmt, exp.Create) and (stmt.kind or "").upper() in _STAR_SCOPES):
+        return None
+    ctes = {(c.alias or "").lower() for c in stmt.find_all(exp.CTE)}
+    if not any(_star_reads_base_table(sel, ctes, exp) for sel in stmt.find_all(exp.Select)):
+        return None  # one finding per relation, not per nested select
+    name = _create_name(stmt, exp)
+    return PerfHit(
+        kind="sql_select_star",
+        line=anchor(name) if name else 1,
+        function=name,
+        detail=(stmt.kind or "").lower(),
+    )
+
+
+def _whole_table_dml_hit(
+    stmt: Any, exp: Any, anchor: Callable[[str], int], temp_tables: set[str]
+) -> PerfHit | None:
+    """sql_update_delete_without_where: whole-table DML.
+
+    A LIMIT (``UPDATE ... LIMIT n`` / ``DELETE ... LIMIT n`` in MySQL and
+    friends) bounds the affected row count, so the statement provably does
+    NOT touch every row: treat it like a WHERE and stay silent.
+    """
+    if not isinstance(stmt, (exp.Update, exp.Delete)):
+        return None
+    if stmt.args.get("where") or stmt.args.get("limit"):
+        return None
+    table = _clean_ident(getattr(stmt.this, "name", "") or "")
+    if not table or table.lower() in temp_tables:
+        return None
+    return PerfHit(
+        kind="sql_update_delete_without_where",
+        line=anchor(table),
+        function=None,
+        detail=f"{type(stmt).__name__.lower()} {table}",
+    )
+
+
+def _cartesian_join_hits(stmt: Any, exp: Any, anchor: Callable[[str], int]) -> list[PerfHit]:
+    """sql_cartesian_join: a comma-join with no predicate anywhere, one per select."""
+    hits: list[PerfHit] = []
+    for sel in stmt.find_all(exp.Select):
+        # ``SELECT ... INTO a, b`` (a multi-target INTO) is parsed with the
+        # trailing target (``b``) as a comma-join FROM item, so a
+        # table-creating statement looks like a cartesian join (issue #1502).
+        # ``into`` is present exactly when the trailing names are INTO
+        # targets, not joins; skip those.
+        if sel.args.get("where") or sel.args.get("into"):
+            continue
+        right = next((r for r in map(_bare_join_name, sel.args.get("joins") or ()) if r), None)
+        if right is not None:
+            hits.append(
+                PerfHit(kind="sql_cartesian_join", line=anchor(right), function=None, detail=right)
+            )
+    return hits
+
+
+def _bare_join_name(join: Any) -> str | None:
+    """The joined table's name when *join* carries no predicate or explicit kind."""
+    if any(
+        join.args.get(k)
+        # CROSS/OUTER etc. are explicit intent; NATURAL (``method``) carries its predicate.
+        for k in ("kind", "side", "on", "using", "method")
+    ):
+        return None
+    return _clean_ident(getattr(join.this, "name", "") or "")
+
+
+def _star_reads_base_table(sel: Any, ctes: set[str], exp: Any) -> bool:
+    """True when *sel* projects a bare ``*`` straight off a base table.
+
+    Silent for a star under ``EXISTS`` (the projection is ignored) and for a
+    star over only CTEs or subqueries: their column list is explicit, or their
+    own inner ``SELECT *`` is visited and judged on its own.
+    """
+    if not any(isinstance(e, exp.Star) for e in sel.expressions):
+        return False
+    node = sel.parent
+    while node is not None and not isinstance(node, exp.Select):
+        if isinstance(node, exp.Exists):
+            return False
+        node = node.parent
+    from_ = sel.args.get("from")
+    sources = [from_.this] if from_ else []
+    sources += [j.this for j in sel.args.get("joins") or ()]
+    return any(
+        isinstance(src, exp.Table)
+        and isinstance(src.this, exp.Identifier)
+        and (src.args.get("db") or src.name.lower() not in ctes)
+        for src in sources
+    )
+
+
+def _is_temp_table(stmt: Any, exp: Any) -> bool:
+    if not isinstance(stmt, exp.Create) or (stmt.kind or "").upper() != "TABLE":
+        return False
+    props = stmt.args.get("properties")
+    return bool(props) and any(isinstance(p, exp.TemporaryProperty) for p in props.expressions)
 
 
 def _create_name(stmt: Any, exp: Any) -> str | None:

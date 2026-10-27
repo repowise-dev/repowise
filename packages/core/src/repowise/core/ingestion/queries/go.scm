@@ -26,6 +26,15 @@
   name: (type_identifier) @symbol.name
 ) @symbol.def
 
+; Interface method spec: type Reader interface { Peek() byte }
+; A bodiless declaration parented by its interface (see parser._find_parent).
+; Methods of an anonymous interface (a field or parameter type) have no named
+; owner and are dropped there.
+(method_elem
+  name: (field_identifier) @symbol.name
+  parameters: (parameter_list) @symbol.params
+) @symbol.def
+
 ; Package-level const: const MaxRetries = 3
 (const_spec
   name: (identifier) @symbol.name
@@ -55,10 +64,67 @@
   arguments: (argument_list) @call.arguments
 ) @call.site
 
+; Generic call with explicit type arguments and one argument: F[int](x)
+; tree-sitter-go cannot tell this from a conversion to a generic type, so it is
+; a type_conversion_expression, which no call_expression pattern matches. A
+; real conversion (List[int](xs)) is captured too, and resolves to the type as
+; a plain conversion (MyInt(x), a call_expression) always has.
+(type_conversion_expression
+  type: (generic_type
+    type: (type_identifier) @call.target
+  )
+) @call.site
+
+; The same through a package: pkg.NewQ[string](x)
+(type_conversion_expression
+  type: (generic_type
+    type: (qualified_type
+      package: (package_identifier) @call.receiver
+      name: (type_identifier) @call.target
+    )
+  )
+) @call.site
+
+; One type argument with no argument or several: F[int](), F[int](a, b)
+; Here the grammar reads F[int] as an index expression. (Two or more type
+; arguments with two or more arguments parse as an ordinary call_expression
+; with a type_arguments field, which the patterns above already match.)
+(call_expression
+  function: (index_expression
+    operand: (identifier) @call.target
+  )
+  arguments: (argument_list) @call.arguments
+) @call.site
+
+; The same through a package: pkg.NewQ[string](), pkg.F[int](a, b)
+(call_expression
+  function: (index_expression
+    operand: (selector_expression
+      operand: (identifier) @call.receiver
+      field: (field_identifier) @call.target
+    )
+  )
+  arguments: (argument_list) @call.arguments
+) @call.site
+
 ; Method call: obj.Method(args)
 (call_expression
   function: (selector_expression
     operand: (identifier) @call.receiver
+    field: (field_identifier) @call.target
+  )
+  arguments: (argument_list) @call.arguments
+) @call.site
+
+; Method call through a field: a.b.Method(args)
+; The operand is itself a selector_expression (``o.in`` in ``o.in.Do()``),
+; which the identifier-only pattern above does not match, so the call was
+; missing from the graph entirely. Capture the whole receiver expression so
+; the resolver has something to type; resolution is a separate, measured
+; change and must not route the composed text to the bare-name lookup.
+(call_expression
+  function: (selector_expression
+    operand: (selector_expression) @call.receiver
     field: (field_identifier) @call.target
   )
   arguments: (argument_list) @call.arguments
@@ -71,25 +137,60 @@
 ; Chained call: obj.Method1().Method2(args)
 (call_expression
   function: (selector_expression
-    operand: (call_expression)
+    operand: (call_expression) @call.receiver_call
     field: (field_identifier) @call.target
   )
   arguments: (argument_list) @call.arguments
 ) @call.site
 
-; Package-qualified function value passed as call argument: f(pkg.Handler, ...)
+; Qualified function value passed as call argument: f(pkg.Handler, ...)
 ; Rescues functions used as first-class values — passed as callbacks, middleware,
-; or handlers rather than called directly. Without this, pkg.Func referenced
-; only in argument position (never in function: position) has no call edges
-; and is incorrectly flagged as an unused export.
+; or handlers rather than called directly. A reference and not a call: nothing
+; here says ``Handler`` runs, only that something holds a handle to it.
 (call_expression
   arguments: (argument_list
     (selector_expression
-      operand: (_) @call.receiver
-      field: (field_identifier) @call.target
+      operand: (_) @reference.receiver
+      field: (field_identifier) @reference.name
     )
   )
-) @call.site
+)
+
+; Function value in composite literal (keyed map/struct or slice/array element):
+; template.FuncMap{"greet": greet, "handler": pkg.Handler}, Config{fn: greet}, []func(){greet}
+(keyed_element
+  value: (literal_element
+    (identifier) @reference.name
+  )
+)
+
+(keyed_element
+  value: (literal_element
+    (selector_expression
+      operand: (_) @reference.receiver
+      field: (field_identifier) @reference.name
+    )
+  )
+)
+
+(composite_literal
+  body: (literal_value
+    (literal_element
+      (identifier) @reference.name
+    )
+  )
+)
+
+(composite_literal
+  body: (literal_value
+    (literal_element
+      (selector_expression
+        operand: (_) @reference.receiver
+        field: (field_identifier) @reference.name
+      )
+    )
+  )
+)
 
 ; ---------------------------------------------------------------------------
 ; Type references — drive file-level ``type_use`` edges

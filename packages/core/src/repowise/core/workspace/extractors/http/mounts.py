@@ -20,6 +20,13 @@ collected per dialect and merged by the orchestrator.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable, Mapping
+from typing import TYPE_CHECKING
+
+from repowise.core.ingestion.framework_routes import GroupMatch
+
+if TYPE_CHECKING:
+    from ..calls import FileStrings
 
 # A ``prefix="..."`` / ``prefix='...'`` keyword argument inside a constructor call.
 _PREFIX_KW_RE = re.compile(r"""prefix\s*=\s*['"]([^'"]+)['"]""")
@@ -74,15 +81,142 @@ def compose_prefix(prefix: str, path: str) -> str:
 
 
 def merge_mount_maps(maps: list[dict[str, str]]) -> dict[str, str]:
-    """Merge per-file cross-file mount maps into one unambiguous ``var -> prefix``.
+    """Merge per-file mount maps into one unambiguous map.
 
-    A router variable mounted at two *different* prefixes anywhere in the repo is
-    ambiguous (the common case being a generic name like ``router`` reused across
-    files), so it is dropped rather than guessed. Only names with a single
-    distinct prefix survive.
+    A key two files give *different* values anywhere in the repo is ambiguous
+    (the common case being a generic router name like ``router`` reused across
+    files), so it is dropped rather than guessed. Only keys with a single
+    distinct value survive. Keys are router variables, and prefixed names for
+    everything else a dialect shares (``laravel-route-file:``, ``nest-prefix:``,
+    ``http-client:``).
     """
     collected: dict[str, set[str]] = {}
     for m in maps:
         for var, prefix in m.items():
             collected.setdefault(var, set()).add(prefix)
     return {var: next(iter(prefixes)) for var, prefixes in collected.items() if len(prefixes) == 1}
+
+
+# Mount values are strings; a declared value this cannot read travels as this.
+_UNREADABLE = "\0"
+# The merge above drops a key two files disagree on. A second key, always the
+# same value, survives it, so a declared-but-dropped value reads as ambiguous
+# (refused) rather than undeclared (the default).
+_DECLARED = "declared:"
+
+
+def declare_mount(key: str, value: str | None) -> dict[str, str]:
+    """The mount entries declaring *key* as *value* (``None``: unreadable)."""
+    return {key: _UNREADABLE if value is None else value, _DECLARED + key: ""}
+
+
+def declared_mount(mounts: Mapping[str, str], key: str) -> tuple[bool, str | None]:
+    """``(declared, value)`` for *key*; ``value`` is ``None`` when unreadable or ambiguous."""
+    if _DECLARED + key not in mounts:
+        return False, None
+    value = mounts.get(key, _UNREADABLE)
+    return True, None if value == _UNREADABLE else value
+
+
+def declared_names(mounts: Mapping[str, str], prefix: str) -> list[str]:
+    """The names declared under *prefix*, agreed on or not."""
+    head = _DECLARED + prefix
+    return [key[len(head) :] for key in mounts if key.startswith(head)]
+
+
+def group_prefixes(groups: Iterable[GroupMatch]) -> dict[str, str]:
+    """Resolve each router-group variable to its transitively composed prefix.
+
+    ``api := r.Group("/api"); v1 := api.Group("/v1")`` gives ``v1 -> /api/v1``.
+    A variable with no binding (the base router) or in a cycle resolves to the
+    empty string, so a route on it keeps its literal path.
+    """
+    edges = {g.var: (g.parent, g.prefix) for g in groups}
+    resolved: dict[str, str] = {}
+
+    def resolve(var: str | None, seen: frozenset[str]) -> str:
+        if var is None:
+            return ""
+        if var in resolved:
+            return resolved[var]
+        if var not in edges or var in seen:
+            return ""
+        parent, segment = edges[var]
+        prefix = compose_prefix(resolve(parent, seen | {var}), segment)
+        resolved[var] = prefix
+        return prefix
+
+    for var in edges:
+        resolve(var, frozenset())
+    return resolved
+
+
+# Module mounts nest a few levels deep; a longer chain is a cycle.
+_MAX_MODULE_DEPTH = 16
+
+
+def add_mounts(out: dict[str, str], entries: Mapping[str, str]) -> None:
+    """Add *entries* to one file's mount map; a key the file already gave a
+    different value becomes unreadable, as two files disagreeing does in
+    :func:`merge_mount_maps`."""
+    for key, value in entries.items():
+        out[key] = _UNREADABLE if key in out and out[key] != value else value
+
+
+def declare_alias_mount(namespace: str, spec: str) -> dict[str, str]:
+    """Record that a module was mounted through a spec this cannot resolve
+    (``@/routes``, a bundler or tsconfig alias), by its last path segment."""
+    return declare_mount(f"{namespace}-alias:{spec.rstrip('/').rsplit('/', 1)[-1]}", "")
+
+
+def alias_mounted(mounts: Mapping[str, str], namespace: str, module: str) -> bool:
+    """Whether a module named like *module* was mounted through an unresolved
+    alias, so where it is served cannot be told from here."""
+    name = module.rsplit("/", 1)[-1]
+    return declared_mount(mounts, f"{namespace}-alias:{name}")[0]
+
+
+def declare_module_mount(
+    namespace: str, module: str, prefix: str | None, parent: str
+) -> dict[str, str]:
+    """The mount entries saying *module* is served at *prefix* under *parent*.
+
+    For frameworks that mount a whole module from another (a hapi plugin, a
+    Koa router module): *parent* is the mounting module, itself perhaps
+    mounted. A module mounted at two prefixes or under two parents reads as
+    unreadable, so its routes are left out rather than placed at one guess.
+    """
+    return {
+        **declare_mount(f"{namespace}:{module}", prefix),
+        **declare_mount(f"{namespace}-in:{module}", parent),
+    }
+
+
+def module_prefix(
+    mounts: Mapping[str, str], namespace: str, module: str, depth: int = 0
+) -> tuple[bool, str | None]:
+    """``(mounted, full prefix)`` of *module*; the prefix is None when unreadable."""
+    declared, value = declared_mount(mounts, f"{namespace}:{module}")
+    if not declared:
+        return False, ""
+    has_parent, parent = declared_mount(mounts, f"{namespace}-in:{module}")
+    if value is None or (has_parent and parent is None) or depth > _MAX_MODULE_DEPTH:
+        return True, None
+    if not parent:
+        return True, value
+    _mounted, outer = module_prefix(mounts, namespace, parent, depth + 1)
+    return True, None if outer is None else compose_prefix(outer, value)
+
+
+def prefix_text(strings: FileStrings | None, expr: str | None) -> str | None:
+    """A prefix or path expression read through the file's constants.
+
+    "" for no expression; None for an unreadable one (None) or one that does
+    not resolve to a whole string.
+    """
+    if expr is None:
+        return None
+    if not expr:
+        return ""
+    text = strings.text(expr) if strings is not None else None
+    return None if text is None or "${" in text else text

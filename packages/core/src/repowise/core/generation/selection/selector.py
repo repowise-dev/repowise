@@ -9,17 +9,21 @@ emitted.
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass, field
+from collections.abc import Iterable
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 import structlog
 
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
+from repowise.core.ingestion.package_roots import package_manifest_names, package_roots_from_paths
 
 from ..concept_tree.grouping import ConceptGroup, group_files
 from ..concept_tree.naming import (
     _humanise,
+    chapter_title,
+    chapter_titles,
     deterministic_scope,
     deterministic_title,
     disambiguate_titles,
@@ -42,9 +46,8 @@ _CODE_LANGUAGES = _LANG_REGISTRY.code_languages()
 # Top-level directories whose contents document or illustrate the repository
 # rather than being it. Matched as a whole first path segment only. See
 # ``_is_support_file`` for why the anchoring is the point.
-_SUPPORT_ROOT_DIRS = frozenset(
-    {"docs", "doc", "documentation", "docs_src", "examples", "example", "samples", "sample"}
-)
+_DOC_ROOT_DIRS = frozenset({"docs", "doc", "documentation"})
+_SUPPORT_ROOT_DIRS = _DOC_ROOT_DIRS | {"docs_src", "examples", "example", "samples", "sample"}
 
 
 # ---------------------------------------------------------------------------
@@ -85,10 +88,26 @@ class ModuleGroup:
     #: outline planner. Threaded to the renderer so the opener can situate the
     #: page against its siblings. Empty on the deterministic path until named.
     scope: str = ""
-    #: A rollup page overviews a subsystem directory whose detail lives on the
-    #: child concept pages below it. It carries its members only for context and
-    #: owns none of them, so the leaves keep their files.
+    #: A rollup page heads the subsystem directory whose detail lives on the
+    #: child concept pages below it. It still owns whatever ``file_paths``
+    #: holds — a directory that has children *and* loose files of its own is
+    #: one page that does both, because both would otherwise be
+    #: ``module_page:{that directory}`` and only one page can have an id.
     is_rollup: bool = False
+    #: Files the renderer may read to describe the page, beyond the ones it
+    #: owns. A rollup sets this to its whole subsystem so the prose can be
+    #: about the subsystem while ``file_paths`` stays the disjoint ownership
+    #: claim. Empty means "the same files it owns", which is every leaf.
+    #:
+    #: The split exists because three consumers read ``file_paths`` as an
+    #: ownership claim and assume the partition is disjoint — the tree's
+    #: ``module_of_file``, the incremental cascade's ``module_page_of``, and
+    #: ``related_pages``' sibling map. Widening ``file_paths`` for context
+    #: silently broke all three: a rollup out-claimed its own leaves for every
+    #: file in the subtree.
+    context_paths: tuple[str, ...] = ()
+    #: Package roots of a roll-up of thin sibling packages; empty otherwise.
+    packages: tuple[str, ...] = ()
 
 
 @dataclass
@@ -125,6 +144,10 @@ class Selection:
     # so the cost estimator and scope resolution keep costing nothing.
     concept_groups: list[ConceptGroup] = field(default_factory=list)
     layer_labels: dict[str, str] = field(default_factory=dict)
+    # File-page volume ledger: candidate population before the cap, and the
+    # cap that actually sliced it. These are reporting facts, not selectors.
+    eligible_file_pages: int = 0
+    effective_file_page_cap: int | None = None
 
     def counts(self) -> dict[str, int]:
         """Per-page-type counts of the pages this run will emit.
@@ -257,13 +280,56 @@ def count_documentable_files(parsed_files: list[Any]) -> int:
     nothing about. Exists so a caller can report what the volume policy is about
     to do before generation starts, in the same terms the policy uses.
     """
-    return sum(
-        1 for p in parsed_files if _is_code_file(p) and _passes_importance_floor(p.file_info.path)
+    return sum(1 for p in parsed_files if _is_code_file(p) and _passes_importance_floor(p))
+
+
+def file_page_eligible(parsed: Any, *, is_hotspot: bool) -> bool:
+    """Whether *parsed* clears every per-file gate of file-page selection.
+
+    Repo-wide gates (cap, near-clone dedupe) are not asked: an update rendering
+    the file alone would still give it a page.
+    """
+    return (
+        _is_code_file(parsed)
+        and _passes_importance_floor(parsed)
+        # Graph metrics only add to a positive score.
+        and score_file(
+            parsed,
+            pagerank=0.0,
+            betweenness=0.0,
+            max_pagerank=0.0,
+            max_betweenness=0.0,
+            is_hotspot=is_hotspot,
+        )
+        > 0.0
     )
 
 
-def _passes_importance_floor(path: str) -> bool:
-    """Whether *path* is worth a file page at all.
+def eligible_file_page_paths(
+    parsed_files: list[Any],
+    pagerank: dict[str, float],
+    *,
+    hotspots: set[str],
+    dedupe_near_clones: bool = True,
+) -> set[str]:
+    """The files selection would consider for a page: every gate but the cap."""
+    from ..page_generator.helpers import _select_clone_representatives
+
+    drop = (
+        _select_clone_representatives([p for p in parsed_files if _is_code_file(p)], pagerank)
+        if dedupe_near_clones
+        else set()
+    )
+    return {
+        p.file_info.path
+        for p in parsed_files
+        if p.file_info.path not in drop
+        and file_page_eligible(p, is_hotspot=p.file_info.path in hotspots)
+    }
+
+
+def _passes_importance_floor(parsed: Any) -> bool:
+    """Whether *parsed* is worth a file page at all.
 
     Two exclusions, both measured rather than assumed: test files and pure
     ``__init__.py`` re-export files. Pages for either only dilute retrieval
@@ -275,11 +341,14 @@ def _passes_importance_floor(path: str) -> bool:
     more because every file that clears this floor gets a page, so the floor is
     now simply what file-page selection means. The rule is unchanged; only the
     set it applies to grew from the remainder to the whole.
+
+    Tests are read off ``FileInfo.is_test``, the flag ingestion stamps once, so
+    ``e2e-tests/`` and ``foo.spec.ts`` are caught exactly as everywhere else.
     """
-    norm = path.replace("\\", "/")
-    if norm.startswith("tests/") or "/tests/" in norm:
+    fi = parsed.file_info
+    if fi.is_test:
         return False
-    return norm.rsplit("/", 1)[-1] != "__init__.py"
+    return fi.path.replace("\\", "/").rsplit("/", 1)[-1] != "__init__.py"
 
 
 # ---------------------------------------------------------------------------
@@ -289,7 +358,7 @@ def _passes_importance_floor(path: str) -> bool:
 
 def _build_file_candidates(
     inputs: SelectionInputs,
-) -> list[tuple[float, str]]:
+) -> tuple[list[tuple[float, str]], int, int | None]:
     """Return ``[(score, file_path), ...]`` for code files, descending."""
     max_pr = max(inputs.pagerank.values(), default=0.0)
     max_bet = max(inputs.betweenness.values(), default=0.0)
@@ -300,9 +369,9 @@ def _build_file_candidates(
     for p in inputs.parsed_files:
         if not _is_code_file(p):
             continue
-        path = p.file_info.path
-        if not _passes_importance_floor(path):
+        if not _passes_importance_floor(p):
             continue
+        path = p.file_info.path
         is_hotspot = bool(git.get(path, {}).get("is_hotspot", False))
         s = score_file(
             p,
@@ -330,16 +399,27 @@ def _build_file_candidates(
     cap = getattr(inputs.config, "max_file_pages", None)
     if cap is None:
         cap = auto_file_page_cap(len(scored))
+    eligible = len(scored)
+    effective_cap = cap or None
     if not cap:  # None (nothing to do) or 0 (explicitly unlimited)
-        return scored
-    return scored[: max(1, cap)]
+        return scored, eligible, effective_cap
+    return scored[: max(1, cap)], eligible, effective_cap
 
 
 def _build_symbol_candidates(
     inputs: SelectionInputs,
 ) -> list[tuple[float, tuple[str, str]]]:
     """Return ``[(score, (file_path, symbol_name)), ...]`` descending."""
+    ranked, keep = rank_symbol_candidates(inputs)
+    return ranked[:keep]
+
+
+def rank_symbol_candidates(
+    inputs: SelectionInputs,
+) -> tuple[list[tuple[float, tuple[str, str]]], int]:
+    """Every production spotlight candidate in rank order, and how many selection keeps."""
     max_pr = max(inputs.pagerank.values(), default=0.0)
+    test_paths = {p.file_info.path for p in inputs.parsed_files if p.file_info.is_test}
     scored: list[tuple[float, tuple[str, str]]] = []
     for p in inputs.parsed_files:
         file_pr = inputs.pagerank.get(p.file_info.path, 0.0)
@@ -373,13 +453,13 @@ def _build_symbol_candidates(
     # predating the field must not silently select a wider slice than the
     # declared default.
     pct = getattr(inputs.config, "top_symbol_percentile", 0.10) or 0.0
-    if pct <= 0:
-        return []
-    if pct >= 1.0:
-        return deduped
     # At least one, so a repo with few public symbols still gets a spotlight.
-    keep = max(1, int(len(deduped) * pct))
-    return deduped[:keep]
+    keep = len(deduped) if pct >= 1.0 else max(1, int(len(deduped) * pct))
+    if pct <= 0:
+        keep = 0
+    # Sized on the whole pool so production never loses a slot it had; tests only
+    # hand theirs to the next production symbol.
+    return [c for c in deduped if c[1][0] not in test_paths], keep
 
 
 def _layer_map_from_kg(
@@ -407,7 +487,24 @@ def _layer_map_from_kg(
     return layer_of_file, labels
 
 
-def _is_support_file(path: str) -> bool:
+def _doc_app_roots(parsed_files: list[Any]) -> frozenset[str]:
+    """Top-level doc directories that hold their own package manifest.
+
+    A ``docs/package.json`` makes ``docs/`` a separately built app (a docs
+    site), which is part of the subject. Read from the parsed file list, so a
+    manifest the traverser drops (``go.mod``, ``Gemfile``) is not seen here;
+    a docs app is in practice an npm or Python package.
+    """
+    names = package_manifest_names()
+    roots: set[str] = set()
+    for p in parsed_files:
+        head, sep, rest = p.file_info.path.partition("/")
+        if sep and rest in names and head.lower() in _DOC_ROOT_DIRS:
+            roots.add(head.lower())
+    return frozenset(roots)
+
+
+def _is_support_file(path: str, doc_app_roots: frozenset[str]) -> bool:
     """Whether *path* is documentation or example source rather than the subject.
 
     Anchored at the repository root and matched on whole path segments, which
@@ -422,10 +519,11 @@ def _is_support_file(path: str) -> bool:
     concept query on vocabulary without answering how the system works, and a
     wiki that documents its subject's documentation has said nothing about the
     subject. They keep their deterministic file pages, so nothing becomes
-    unreachable.
+    unreachable. A doc directory in *doc_app_roots* is an app, not prose, and
+    stays in (see :func:`_doc_app_roots`).
     """
     head = path.split("/", 1)[0].lower()
-    return head in _SUPPORT_ROOT_DIRS
+    return head in _SUPPORT_ROOT_DIRS and head not in doc_app_roots
 
 
 def _build_module_groups(inputs: SelectionInputs) -> ConceptCandidates:
@@ -454,7 +552,8 @@ def _build_module_groups(inputs: SelectionInputs) -> ConceptCandidates:
         for p in inputs.parsed_files
         if _is_code_file(p) and not getattr(p.file_info, "is_test", False)
     ]
-    files = [p for p in production if not _is_support_file(p)]
+    doc_apps = _doc_app_roots(inputs.parsed_files)
+    files = [p for p in production if not _is_support_file(p, doc_apps)]
     if not files:
         # A repository whose production code is entirely under one of those
         # roots. Documenting the docs is a bad wiki; having no wiki at all is
@@ -472,7 +571,12 @@ def _build_module_groups(inputs: SelectionInputs) -> ConceptCandidates:
         return ConceptCandidates()
 
     layer_of_file, layer_labels = _layer_map_from_kg(inputs)
-    groups = group_files(files, layer_of_file=layer_of_file)
+    # Read off the parsed file list, not the disk, so the estimate, the run and
+    # the update cascade all see the same walls and mint the same page ids.
+    # Ceiling: a manifest the traverser does not emit (go.mod, pom.xml) is no
+    # wall; threading the disk scan through every SelectionInputs lifts it.
+    package_roots = package_roots_from_paths({p.file_info.path for p in inputs.parsed_files})
+    groups = group_files(files, layer_of_file=layer_of_file, package_roots=package_roots)
 
     lang_of = {p.file_info.path: p.file_info.language for p in inputs.parsed_files}
     # Names are decided over the whole set, not per group: two packages that
@@ -485,11 +589,18 @@ def _build_module_groups(inputs: SelectionInputs) -> ConceptCandidates:
             for g in groups
         ]
     )
+    # Which directories head a subsystem. Computed before the groups are built
+    # so a directory that is both a chapter and a leaf becomes one page rather
+    # than colliding with itself on ``module_page:{dir}``.
+    chapters = _chapter_members(groups, files, package_roots)
+
     scored: list[tuple[float, ModuleGroup]] = []
     for group, title in zip(groups, titles, strict=True):
         langs = Counter(lang_of.get(m, "") for m in group.members)
         langs.pop("", None)
         score = sum(inputs.pagerank.get(m, 0.0) for m in group.members)
+        # A package roll-up keeps its own name and material, never a chapter's.
+        subsystem = None if group.packages else chapters.get(group.target_path)
         scored.append(
             (
                 score,
@@ -508,11 +619,22 @@ def _build_module_groups(inputs: SelectionInputs) -> ConceptCandidates:
                     # Filled here so the deterministic path carries a scope
                     # sentence; the naming call overwrites it with a written one
                     # when a provider is present.
-                    scope=deterministic_scope(group),
+                    scope=(
+                        _chapter_scope(group.target_path, owns=True)
+                        if subsystem
+                        else deterministic_scope(group)
+                    ),
+                    is_rollup=subsystem is not None,
+                    context_paths=tuple(subsystem or ()),
+                    packages=group.packages,
                 ),
             )
         )
-    scored.extend(_build_rollup_groups(groups, files, lang_of, inputs.pagerank))
+    scored.extend(_build_rollup_groups(chapters, groups, files, lang_of, inputs.pagerank))
+    # Last, because a chapter is named from the leaves beneath it and they all
+    # have to exist first.
+    retitled = retitle_chapters([mg for _, mg in scored])
+    scored = [(score, mg) for (score, _), mg in zip(scored, retitled, strict=True)]
     scored.sort(key=lambda x: (-x[0], x[1].key))
     return ConceptCandidates(scored=scored, groups=groups, layer_labels=layer_labels)
 
@@ -525,96 +647,169 @@ def _build_module_groups(inputs: SelectionInputs) -> ConceptCandidates:
 _ROLLUP_MAX_MEMBER_FRACTION = 0.5
 
 
-def _build_rollup_groups(
-    groups: list[ConceptGroup],
-    files: list[str],
-    lang_of: dict[str, str],
-    pagerank: dict[str, float],
-) -> list[tuple[float, ModuleGroup]]:
-    """Emit one overview page per parent directory that owns several concept pages.
+def _chapter_scope(parent: str, *, owns: bool) -> str:
+    """The scope sentence for a chapter, on the deterministic path."""
+    segment = parent.rsplit("/", 1)[-1] if "/" in parent else parent
+    lead = (
+        f"Heads the {_humanise(segment)} subsystem and links to the concept pages "
+        "documenting its parts"
+    )
+    if owns:
+        return (
+            f"{lead}; the files directly under this directory are documented here and "
+            "the rest of the detail lives on those child pages."
+        )
+    return f"{lead}; the detail lives on those child pages, not here."
+
+
+def _chapter_members(
+    groups: list[ConceptGroup], files: list[str], package_roots: Iterable[str] = ()
+) -> dict[str, list[str]]:
+    """Directories that head a subsystem → every production file beneath them.
 
     The partition splits a large subsystem into path-local leaves, so a
     directory such as ``.../ingestion`` gets no page of its own — only its
     children do. A reader asking "what is the ingestion subsystem" then lands on
     a file, not the subsystem, and a directory-level retrieval query has nothing
     to match against, because directory-level retrieval matches a page to a
-    directory by exact ``target_path`` equality. This adds a page whose
-    ``target_path`` is exactly that parent directory: an overview that names its
-    child pages and links down to them from its body.
+    directory by exact ``target_path`` equality. A chapter is a page whose
+    ``target_path`` is exactly that parent directory: it names its child pages
+    and links down to them from its body.
 
     The rule is purely structural and repo-agnostic: a parent is eligible when at
-    least two leaf concept pages are its *immediate* children and no leaf already
-    claims that directory. With leaves at mixed depths several ancestor levels can
-    each qualify, so two guards keep the set sane: a parent covering more than
-    ``_ROLLUP_MAX_MEMBER_FRACTION`` of the repository is left to the repository
-    overview, and colliding titles are disambiguated the same way leaf titles are.
+    least two leaf concept pages are its *immediate* children. With leaves at
+    mixed depths several ancestor levels can each qualify, which is intended —
+    chapters nest — but one guard keeps the set sane: a parent covering more than
+    ``_ROLLUP_MAX_MEMBER_FRACTION`` of the repository is not a subsystem
+    overview, it is the repository overview under another name, and that page
+    already exists.
 
-    A rollup carries its subsystem's files only so the renderer has real material
-    to summarise; it owns none of them (``is_rollup`` → empty ``file_paths``), so
-    the leaves below keep their files and nothing is documented twice. In the nav
-    tree it currently sits alongside its children under their shared layer rather
-    than nesting them; the body still links down via ``child_pages``. True tree
-    nesting is a deferred nicety, not a correctness requirement.
+    Eligibility deliberately does **not** exclude a parent that is itself a leaf
+    group. Both pages would be ``module_page:{parent}`` and only one page can
+    have an id, so excluding it was the only way to avoid a collision — but it
+    excluded exactly the directories a reader most wants a chapter for. On this
+    repository it suppressed nine of thirteen, including one heading eighteen
+    child pages. Such a parent becomes a single page that both owns its own
+    loose files and heads its children; see ``ModuleGroup.context_paths`` for how
+    ownership stays disjoint while the prose still covers the subsystem.
+
+    A package root whose files span two or more groups is always a chapter,
+    whatever its depth or size: a package is what a consumer installs, so it
+    gets one page covering all of it (and its Public API) even when that is
+    most of the repository. A package in one group already has that page, and
+    a roll-up of thin packages is their shared page.
 
     All paths here are POSIX-normalised upstream (the grouper lowercases
     separators), so the ``/`` splits below are safe.
     """
     total = len(files)
-    leaf_targets = {g.target_path for g in groups}
-    direct_children: dict[str, list[ConceptGroup]] = {}
+    child_count: Counter[str] = Counter()
     for g in groups:
         tp = g.target_path
-        if "/" not in tp:
-            continue
-        parent = tp.rsplit("/", 1)[0]
-        direct_children.setdefault(parent, []).append(g)
+        if "/" in tp:
+            child_count[tp.rsplit("/", 1)[0]] += 1
 
-    # First pass: which parents qualify, and over what members. Titles are
-    # computed in a second pass so they can be disambiguated as a set.
-    candidates: list[tuple[str, list[str]]] = []
-    for parent, children in sorted(direct_children.items()):
-        if len(children) < 2 or parent in leaf_targets:
+    out: dict[str, list[str]] = {}
+    for parent, kids in sorted(child_count.items()):
+        if kids < 2:
             continue
         members = sorted(f for f in files if f.startswith(parent + "/"))
         if not members or (total and len(members) > _ROLLUP_MAX_MEMBER_FRACTION * total):
             continue
-        candidates.append((parent, members))
+        out[parent] = members
+    for root in sorted(package_roots):
+        members = sorted(f for f in files if f.startswith(root + "/"))
+        spanned = sum(1 for g in groups if any(m.startswith(root + "/") for m in g.members))
+        if spanned > 1:
+            out[root] = members
+    return out
 
-    # Disambiguate overview titles against each other exactly as leaf titles are,
-    # so two same-named subsystems in different packages ("Components Overview"
-    # under packages/web and packages/vscode) do not render as identical rows.
-    def _base_title(parent: str) -> str:
-        segment = parent.rsplit("/", 1)[-1] if "/" in parent else parent
-        return f"{_humanise(segment)} Overview".strip()
 
-    titles = disambiguate_titles([(_base_title(p), p) for p, _ in candidates])
+def retitle_chapters(groups: list[ModuleGroup]) -> list[ModuleGroup]:
+    """Name every chapter after the subsystem it heads, not after its own files.
+
+    Called twice on a keyed run: once here, over the deterministic titles, and
+    once after the namer answers, because the leaf titles it is derived from
+    have changed by then. The rule is the same both times and lives in one
+    place, so the two cannot disagree. See
+    :func:`~..concept_tree.naming.chapter_title` for why a chapter is named
+    from its place rather than by the model.
+
+    A leaf is a group that owns files; a chapter that owns none is a pure
+    rollup. A directory that is both keeps one page and takes the chapter name,
+    because the name a reader sees stands over the whole subtree whatever else
+    that page also documents.
+
+    The scope sentence comes back with the title, for the same reason. A model
+    shown a chapter's directory writes about the loose files at its root, so a
+    chapter that took its scope from that call would open by promising the
+    reader a page about those files and then be a page about the subsystem.
+    """
+    chapters = [mg.key for mg in groups if mg.is_rollup]
+    if not chapters:
+        return groups
+    titles = chapter_titles({mg.key: mg.display for mg in groups if mg.file_paths}, chapters)
+    return [
+        replace(
+            mg,
+            display=titles[mg.key],
+            scope=_chapter_scope(mg.key, owns=bool(mg.file_paths)),
+        )
+        if mg.is_rollup and mg.key in titles
+        else mg
+        for mg in groups
+    ]
+
+
+def _build_rollup_groups(
+    chapters: dict[str, list[str]],
+    groups: list[ConceptGroup],
+    files: list[str],
+    lang_of: dict[str, str],
+    pagerank: dict[str, float],
+) -> list[tuple[float, ModuleGroup]]:
+    """Chapter pages for the directories that are *not* already a leaf group.
+
+    A chapter whose directory is also a leaf is built by the caller, in the same
+    loop as every other leaf, so it keeps that group's structural key and its
+    section, both of which are keyed on the identity the namer already gave it.
+    Only the directories with no group of their own need a page synthesised
+    here, and those own no files.
+
+    The title set here is provisional: :func:`retitle_chapters` runs over every
+    chapter once the leaves exist and settles both kinds together, including
+    making them unique.
+    """
+    pending = sorted(set(chapters) - {g.target_path for g in groups})
+    if not pending:
+        return []
 
     rollups: list[tuple[float, ModuleGroup]] = []
-    for (parent, members), title in zip(candidates, titles, strict=True):
+    for parent in pending:
+        title = chapter_title(parent)
+        members = chapters[parent]
         langs = Counter(lang_of.get(m, "") for m in members)
         langs.pop("", None)
-        segment = parent.rsplit("/", 1)[-1] if "/" in parent else parent
-        score = sum(pagerank.get(m, 0.0) for m in members)
         rollups.append(
             (
-                score,
+                sum(pagerank.get(m, 0.0) for m in members),
                 ModuleGroup(
                     key=parent,
                     display=title,
                     language=langs.most_common(1)[0][0] if langs else "unknown",
-                    file_paths=tuple(members),
+                    # Owns nothing: every file beneath it belongs to one of the
+                    # leaves below. The subsystem reaches the renderer through
+                    # ``context_paths`` instead.
+                    file_paths=(),
                     label=None,
                     cohesion=None,
                     # Hashed over the full subsystem with a distinct prefix so a
-                    # rollup can never collide with a leaf whose members are a
+                    # chapter can never collide with a leaf whose members are a
                     # subset of these, and so the sweep tracks it as its own row.
                     structural_key=member_structural_key(members, prefix="concept-rollup"),
-                    scope=(
-                        f"Overviews the {_humanise(segment)} subsystem as a whole and "
-                        "links to the concept pages documenting its parts; the detail "
-                        "lives on those child pages, not here."
-                    ),
+                    scope=_chapter_scope(parent, owns=False),
                     is_rollup=True,
+                    context_paths=tuple(members),
                 ),
             )
         )
@@ -681,7 +876,7 @@ def select_pages(inputs: SelectionInputs) -> Selection:
     Deterministic given identical inputs. Safe to call from both the generator
     and the cost estimator.
     """
-    files = _build_file_candidates(inputs)
+    files, eligible_file_pages, effective_file_page_cap = _build_file_candidates(inputs)
     symbols = _build_symbol_candidates(inputs)
     concepts = _build_module_groups(inputs)
     modules = concepts.scored
@@ -699,6 +894,8 @@ def select_pages(inputs: SelectionInputs) -> Selection:
         infra_paths=[p for _, p in infras],
         scc_groups=[g for _, g in sccs],
         emit_repo_overview=True,
+        eligible_file_pages=eligible_file_pages,
+        effective_file_page_cap=effective_file_page_cap,
     )
     log.info("page_selection.complete", counts=sel.counts())
     return sel

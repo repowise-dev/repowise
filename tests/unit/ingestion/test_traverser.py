@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import subprocess
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -10,7 +13,20 @@ from repowise.core.ingestion import traverser as traverser_mod
 from repowise.core.ingestion.traverser import (
     FileTraverser,
     _compile_gitignore,
+    _content_language,
     _detect_language,
+    _is_generated,
+    _scan_package_dir,
+    in_blocked_dir,
+)
+
+# A DCLGEN member for COBOL, with fixed-format sequence numbers in columns 1-6.
+_COBOL_DCLGEN = (
+    "      * DCLGEN TABLE(CARDDEMO.TRANSACTION_TYPE)\n"
+    "000100     EXEC SQL DECLARE CARDDEMO.TRANSACTION_TYPE TABLE\n"
+    "000200     ( TR_TYPE CHAR(2) NOT NULL ) END-EXEC.\n"
+    "000300 01  DCLTRTYP.\n"
+    "000400     10 TR-TYPE              PIC X(2).\n"
 )
 
 
@@ -89,6 +105,69 @@ class TestLanguageDetection:
     def test_cpp_extension(self, tmp_path: Path) -> None:
         assert _detect_language(tmp_path / "calc.cpp") == "cpp"
 
+    def test_objectivec_header_is_routed_by_content(self, tmp_path: Path) -> None:
+        # One extension maps to one language repo-wide and ``.h`` belongs to
+        # C++, so an Objective-C header can only be told apart by what is in
+        # it: an @interface / @implementation / @protocol opening a line
+        # outside a comment is not valid C or C++.
+        f = tmp_path / "Widget.h"
+        f.write_text('#import <Foundation/Foundation.h>\n@interface Widget\n@end\n')
+        assert _detect_language(f) == "objectivec"
+
+    def test_a_protocol_declaration_is_enough(self, tmp_path: Path) -> None:
+        f = tmp_path / "Feeder.h"
+        f.write_text('@protocol Feeder <NSObject>\n- (void)feed;\n@end\n')
+        assert _detect_language(f) == "objectivec"
+
+    def test_a_doxygen_comment_does_not_route_a_cpp_header(self, tmp_path: Path) -> None:
+        # ``@interface`` and ``@class`` are also Doxygen commands, so an
+        # anywhere-in-the-file token match sent documented C++ headers to the
+        # Objective-C grammar.
+        f = tmp_path / "widget.h"
+        f.write_text(
+            '/**\n * @interface Widget\n * @class Widget\n */\n'
+            '// #import "legacy.h"\nclass Widget { int add(int a); };\n'
+        )
+        assert _detect_language(f) == "cpp"
+
+    def test_a_plain_c_header_stays_cpp(self, tmp_path: Path) -> None:
+        f = tmp_path / "calc.h"
+        f.write_text('#include <stdio.h>\nint add(int a, int b);\n')
+        assert _detect_language(f) == "cpp"
+
+    def test_a_dot_m_needs_no_sniff(self, tmp_path: Path) -> None:
+        assert _detect_language(tmp_path / "Widget.m") == "objectivec"
+
+    def test_a_cobol_dclgen_member_is_cobol(self, tmp_path: Path) -> None:
+        f = tmp_path / "DCLTRTYP.dcl"
+        f.write_text(_COBOL_DCLGEN)
+        assert _detect_language(f) == "cobol"
+
+    def test_a_pli_dclgen_member_is_not_cobol(self, tmp_path: Path) -> None:
+        f = tmp_path / "DCLEMP.dcl"
+        f.write_text(
+            " EXEC SQL DECLARE DSN8C10.EMP TABLE\n"
+            "   ( EMPNO CHAR(6) NOT NULL ) ;\n"
+            " DCL 1 DCLEMP,\n"
+            "     5 EMPNO CHAR(6);\n"
+        )
+        assert _detect_language(f) == "unknown"
+
+    def test_an_uppercase_dcl_extension_is_sniffed_too(self, tmp_path: Path) -> None:
+        f = tmp_path / "DCLTRTYP.DCL"
+        f.write_text(_COBOL_DCLGEN)
+        assert _detect_language(f) == "cobol"
+
+    def test_a_table_declaration_without_a_record_is_not_cobol(self, tmp_path: Path) -> None:
+        f = tmp_path / "TABLE.dcl"
+        f.write_text("     EXEC SQL DECLARE CARDDEMO.T TABLE ( A CHAR(1) ) END-EXEC.\n")
+        assert _detect_language(f) == "unknown"
+
+    def test_a_vms_dcl_procedure_is_not_cobol(self, tmp_path: Path) -> None:
+        f = tmp_path / "build.dcl"
+        f.write_text("$ SET VERIFY\n$ CC/DEBUG MAIN.C\n$ LINK MAIN\n$ EXIT\n")
+        assert _detect_language(f) == "unknown"
+
     def test_special_dockerfile(self, tmp_path: Path) -> None:
         assert _detect_language(tmp_path / "Dockerfile") == "dockerfile"
 
@@ -102,6 +181,80 @@ class TestLanguageDetection:
         f = tmp_path / "script"
         f.write_text("#!/usr/bin/env python3\nprint('hi')")
         assert _detect_language(f) == "python"
+
+
+class TestIncLanguageDetection:
+    @pytest.mark.parametrize("suffix", [".inc", ".INC"])
+    @pytest.mark.parametrize(
+        "content",
+        [
+            '#include "impl.h"\n',
+            "# define REGISTER(T) register_type<T>()\n",
+            "#if defined(USE_FAST_PATH)\n#endif\n",
+            "namespace library\n",
+            "template <typename T> T identity(T);\n",
+            "constexpr int answer() { return 42; }\n",
+            "int answer() { return 42; }\n",
+            "int counts[] = { 1, 2 };\n",
+            'std::string name() { return "example"; }\n',
+            'const char *tag = "<?php";\n',
+            "/* <?php */\n// <?php\nstruct Value { int count; };\n",
+            "/* License banner */\n// implementation\nint answer() { return 42; }\n",
+        ],
+    )
+    def test_cpp_fragments_stay_cpp(self, tmp_path: Path, suffix: str, content: str) -> None:
+        f = tmp_path / f"impl{suffix}"
+        f.write_text(content)
+        assert _detect_language(f) == "cpp"
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "/* BankDemo-style PL/I include member */\n"
+            "    05 DD_AREAS,\n      10 DD_ENV CHAR(4);\n",
+            "DCL 1 RECORD,\n    5 NAME CHAR(20);\n",
+            "%INCLUDE CBANKVAC;\n",
+            "/* #include <header.h>\nnamespace example { template <class T> } */\n"
+            "// #define EXAMPLE\n05 DD_AREAS,\n",
+            "DCL TEXT CHAR(80) INIT('namespace example { template <class T> }');\n",
+            'DCL TEXT CHAR(80) INIT("/* not a comment */ namespace example {}");\n',
+            "/* An unfinished comment containing { and #define\n",
+            "{ field layout }\nvar Count: Integer;\n",
+            "{$I types.inc}\n",
+            "{ namespace example { template <class T> } }\nvar Count: Integer;\n",
+            "(* #include <example.h>\nnamespace example { } *)\nvar Count: Integer;\n",
+            "{ An unfinished comment with namespace example\n",
+            "<?php\nfunction countItems() { return 1; }\n",
+            "<?php\nnamespace App\\Models;\n",
+            "<?= renderItems(); ?>\n",
+            "<? function countItems() { return 1; } ?>\n",
+            # Braces without a C++ declaration can also be a Pascal comment.
+            "{ 1, 2 },\n",
+            "",
+        ],
+    )
+    def test_members_without_cpp_evidence_are_unknown(self, tmp_path: Path, content: str) -> None:
+        f = tmp_path / "member.inc"
+        f.write_text(content)
+        assert _detect_language(f) == "unknown"
+
+    def test_source_bytes_take_precedence_over_the_working_tree(self, tmp_path: Path) -> None:
+        f = tmp_path / "member.inc"
+        f.write_text("namespace library {}\n")
+        assert _content_language(f, "cpp", b"05 DD_AREAS,\n10 DD_ENV CHAR(4);\n") is None
+        f.write_text("05 DD_AREAS,\n10 DD_ENV CHAR(4);\n")
+        assert _content_language(f, "cpp", b"namespace library {}\n") == "cpp"
+
+    def test_unreadable_member_is_not_assumed_to_be_cpp(self, tmp_path: Path) -> None:
+        assert _content_language(tmp_path / "missing.inc", "cpp") is None
+
+    def test_other_cpp_fragment_extensions_do_not_need_a_content_signal(
+        self, tmp_path: Path
+    ) -> None:
+        for suffix in (".inl", ".ipp", ".tpp"):
+            f = tmp_path / f"table{suffix}"
+            f.write_text("REGISTER_TYPE(Widget)\n")
+            assert _detect_language(f) == "cpp"
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +293,28 @@ class TestFileTraverser:
         paths = [f.path for f in traverser.traverse()]
         assert not any("__pycache__" in p for p in paths)
 
+    def test_only_a_cobol_dclgen_member_is_indexed(self, tmp_path: Path) -> None:
+        (tmp_path / "DCLTRTYP.dcl").write_text(_COBOL_DCLGEN)
+        (tmp_path / "build.dcl").write_text("$ SET VERIFY\n$ EXIT\n")
+        traverser = FileTraverser(tmp_path)
+        found = {f.path: f.language for f in traverser.traverse()}
+        assert found == {"DCLTRTYP.dcl": "cobol"}
+        assert traverser.stats.skipped_unknown_language == 1
+
+    def test_only_cpp_inc_members_are_indexed(self, tmp_path: Path) -> None:
+        (tmp_path / "CDATED.inc").write_text(
+            "/* PL/I include */\n05 DD_AREAS,\n10 DD_ENV CHAR(4);\n"
+        )
+        (tmp_path / "impl.inc").write_text("inline int answer() { return 42; }\n")
+        traverser = FileTraverser(tmp_path)
+        assert {f.path: f.language for f in traverser.traverse()} == {"impl.inc": "cpp"}
+        assert traverser.stats.skipped_unknown_language == 1
+
     def test_skips_unity_generated_dirs(self, tmp_path: Path) -> None:
+        (tmp_path / "ProjectSettings").mkdir()
+        (tmp_path / "ProjectSettings" / "ProjectVersion.txt").write_text(
+            "m_EditorVersion: 6000.0.0f1\n"
+        )
         (tmp_path / "Assets" / "Scripts").mkdir(parents=True)
         (tmp_path / "Assets" / "Scripts" / "Game.cs").write_text("class Game {}")
         (tmp_path / "Library" / "PackageCache").mkdir(parents=True)
@@ -153,12 +327,206 @@ class TestFileTraverser:
         assert not any(p.startswith("Library/") for p in paths)
         assert not any(p.startswith("Temp/") for p in paths)
 
+    def test_unity_dir_names_outside_unity_projects_are_indexed(self, tmp_path: Path) -> None:
+        files = {
+            "MediaBrowser.Controller/Library/ILibraryManager.cs": "interface ILibraryManager {}",
+            "MediaBrowser.Controller/Entities/Folder.cs": "class Folder {}",
+            "Tools/Builds/BuildInfo.cs": "class BuildInfo {}",
+            "Server/Logs/LogFileTask.cs": "class LogFileTask {}",
+        }
+        for rel, text in files.items():
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_text(text, encoding="utf-8")
+
+        paths = {f.path for f in FileTraverser(tmp_path).traverse()}
+        assert paths == set(files)
+        assert not in_blocked_dir("Tools/Builds/BuildInfo.cs", tmp_path)
+
+    def test_skips_unity_generated_dirs_in_a_nested_unity_project(self, tmp_path: Path) -> None:
+        files = {
+            "game/ProjectSettings/ProjectVersion.txt": "m_EditorVersion: 6000.0.0f1\n",
+            "game/Assets/Player.cs": "class Player {}",
+            "game/Library/x.cs": "class X {}",
+            "src/Library/y.cs": "class Y {}",
+        }
+        for rel, text in files.items():
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_text(text, encoding="utf-8")
+
+        paths = {f.path for f in FileTraverser(tmp_path).traverse()}
+        assert "game/Assets/Player.cs" in paths
+        assert "src/Library/y.cs" in paths
+        assert "game/Library/x.cs" not in paths
+        assert in_blocked_dir("game/Library/x.cs", tmp_path)
+        assert not in_blocked_dir("src/Library/y.cs", tmp_path)
+
+    def test_source_packages_named_like_output_dirs_are_indexed(self, tmp_path: Path) -> None:
+        files = {
+            "src/pkg/analysis/coverage/__init__.py": "",
+            "src/pkg/analysis/coverage/parsers.py": "def parse(): ...\n",
+            "internal/build/build.go": "package build\n",
+            "app/(platform)/build/page.tsx": "export default function P() {}\n",
+            "coverage/__init__.py": "",  # a project's own root package
+        }
+        for rel, text in files.items():
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_text(text, encoding="utf-8")
+
+        paths = {f.path for f in FileTraverser(tmp_path).traverse()}
+
+        assert set(files) <= paths
+
+    def test_output_trees_stay_pruned_without_gitignore(self, tmp_path: Path) -> None:
+        files = {
+            # Bundles and declarations a compiler writes, committed.
+            "packages/web/dist/index.js": "var a = 1;\n",
+            "packages/web/dist/index.d.ts": "export {};\n",
+            # Copied source sits a level below the output root.
+            "build/lib/pkg/__init__.py": "",
+            "build/lib/pkg/mod.py": "x = 1\n",
+            "target/generated-sources/Gen.java": "class Gen {}\n",
+            "coverage/lcov-report/prettify.js": "var p;\n",
+            # Generated C from a configure step, and generated stubs.
+            "build/config.h": "#define X 1\n",
+            "build/api_pb2.py": "x = 1\n",
+            "vendor/github.com/x/y/y.go": "package y\n",
+        }
+        for rel, text in files.items():
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_text(text, encoding="utf-8")
+        (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
+
+        paths = {f.path for f in FileTraverser(tmp_path).traverse()}
+
+        assert paths == {"app.py"}
+
+    def test_reincluded_dir_in_root_repowise_ignore_is_indexed(self, tmp_path: Path) -> None:
+        (tmp_path / "package.json").write_text('{"name":"tool","type":"module"}', encoding="utf-8")
+        (tmp_path / "src" / "build").mkdir(parents=True)
+        (tmp_path / "src" / "build" / "index.js").write_text(
+            "export function bundle(entries) { return entries.map(String); }\n", encoding="utf-8"
+        )
+        (tmp_path / "src" / "app").mkdir(parents=True)
+        (tmp_path / "src" / "app" / "main.js").write_text(
+            'import { bundle } from "../build/index.js";\n', encoding="utf-8"
+        )
+
+        # Without negation rule, build holding only JS is pruned as an output dir.
+        paths_without = {f.path for f in FileTraverser(tmp_path).traverse()}
+        assert "src/build/index.js" not in paths_without
+
+        # With !src/build/, the directory is re-included and indexed.
+        (tmp_path / ".repowiseIgnore").write_text("!src/build/\n", encoding="utf-8")
+        paths_with = {f.path for f in FileTraverser(tmp_path).traverse()}
+        assert "src/build/index.js" in paths_with
+        assert "src/app/main.js" in paths_with
+
+    def test_reincluded_dir_in_exclude_patterns_is_indexed(self, tmp_path: Path) -> None:
+        (tmp_path / "package.json").write_text('{"name":"tool","type":"module"}', encoding="utf-8")
+        (tmp_path / "src" / "build").mkdir(parents=True)
+        (tmp_path / "src" / "build" / "index.js").write_text("export const x = 1;\n", encoding="utf-8")
+
+        paths = {
+            f.path
+            for f in FileTraverser(tmp_path, extra_exclude_patterns=["!src/build/"]).traverse()
+        }
+        assert "src/build/index.js" in paths
+
+    def test_reincluded_dir_in_nested_repowise_ignore_is_indexed(self, tmp_path: Path) -> None:
+        (tmp_path / "src" / "build").mkdir(parents=True)
+        (tmp_path / "src" / "build" / "index.js").write_text("export const x = 1;\n", encoding="utf-8")
+        (tmp_path / "src" / ".repowiseIgnore").write_text("!build/\n", encoding="utf-8")
+
+        paths = {f.path for f in FileTraverser(tmp_path).traverse()}
+        assert "src/build/index.js" in paths
+
+    def test_reincluded_dir_does_not_reopen_nested_blocked_dirs(self, tmp_path: Path) -> None:
+        (tmp_path / ".repowiseIgnore").write_text("!src/build/\n", encoding="utf-8")
+        (tmp_path / "src" / "build" / "node_modules").mkdir(parents=True)
+        (tmp_path / "src" / "build" / "index.js").write_text("export const x = 1;\n", encoding="utf-8")
+        (tmp_path / "src" / "build" / "node_modules" / "x.js").write_text(
+            "export const y = 2;\n", encoding="utf-8"
+        )
+
+        paths = {f.path for f in FileTraverser(tmp_path).traverse()}
+        assert "src/build/index.js" in paths
+        assert "src/build/node_modules/x.js" not in paths
+
+    def test_negation_cannot_bypass_nested_repo_or_submodule_boundary(self, tmp_path: Path) -> None:
+        (tmp_path / ".repowiseIgnore").write_text("!vendor/\n", encoding="utf-8")
+        nested = tmp_path / "vendor" / "nested_repo"
+        nested.mkdir(parents=True)
+        (nested / ".git").mkdir()
+        (nested / "mod.py").write_text("x = 1\n", encoding="utf-8")
+        (tmp_path / "vendor" / "lib.py").write_text("y = 2\n", encoding="utf-8")
+
+        paths = {f.path for f in FileTraverser(tmp_path).traverse()}
+        # vendor/lib.py is re-included by !vendor/
+        assert "vendor/lib.py" in paths
+        # But the nested git repository boundary is NEVER bypassed
+        assert "vendor/nested_repo/mod.py" not in paths
+
+    def test_cached_negations_refresh_on_file_creation_or_edit(self, tmp_path: Path) -> None:
+        (tmp_path / "src" / "build").mkdir(parents=True)
+        (tmp_path / "src" / "build" / "index.js").write_text("export const x = 1;\n", encoding="utf-8")
+
+        # 1st traversal: no ignore file, build directory is skipped as output
+        paths1 = {f.path for f in FileTraverser(tmp_path).traverse()}
+        assert "src/build/index.js" not in paths1
+
+        # Now create nested .repowiseIgnore in the same process
+        (tmp_path / "src" / ".repowiseIgnore").write_text("!build/\n", encoding="utf-8")
+
+        # 2nd traversal: cache refreshes and re-includes the directory
+        paths2 = {f.path for f in FileTraverser(tmp_path).traverse()}
+        assert "src/build/index.js" in paths2
+
+    def test_custom_ignore_filename_negations(self, tmp_path: Path) -> None:
+        (tmp_path / "src" / "build").mkdir(parents=True)
+        (tmp_path / "src" / "build" / "index.js").write_text("export const x = 1;\n", encoding="utf-8")
+        (tmp_path / ".customIgnore").write_text("!src/build/\n", encoding="utf-8")
+
+        paths = {
+            f.path
+            for f in FileTraverser(tmp_path, extra_ignore_filename=".customIgnore").traverse()
+        }
+        assert "src/build/index.js" in paths
+
+    def test_traverses_e2e_specs(self, tmp_path: Path) -> None:
+        """e2e spec files are indexed so they can get a file_page (#1497).
+
+        They used to be silently dropped via ``_BLOCKED_DIRS``, which left
+        the wiki unable to answer any test-infrastructure question with no
+        signal a whole area was missing. They are now indexed like other
+        tests and tagged ``is_test=True`` so they stay filterable.
+        """
+        (tmp_path / "apps" / "console" / "e2e" / "helpers").mkdir(parents=True)
+        (tmp_path / "apps" / "console" / "e2e" / "helpers" / "hydration.ts").write_text(
+            "export function hydrate() {}\n"
+        )
+        (tmp_path / "apps" / "console" / "e2e" / "fixtures.ts").write_text(
+            "export const fixtures = {};\n"
+        )
+        (tmp_path / "apps" / "console" / "e2e" / "login.spec.ts").write_text(
+            "it('works', () => {});\n"
+        )
+
+        traverser = FileTraverser(tmp_path)
+        infos = {f.path: f for f in traverser.traverse()}
+
+        assert "apps/console/e2e/helpers/hydration.ts" in infos
+        assert "apps/console/e2e/fixtures.ts" in infos
+        assert "apps/console/e2e/login.spec.ts" in infos
+        # Tagged as test material so consumers (skip_tests, scoring) can
+        # filter them without dropping them silently.
+        assert all(info.is_test for info in infos.values())
+
     def test_skips_unity_asset_extensions_before_binary_detection(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         (tmp_path / "Assets").mkdir()
         (tmp_path / "Assets" / "Scene.unity").write_text("%YAML 1.1\n")
-        (tmp_path / "Assets" / "Main.cs").write_text("class Main {}")
+        (tmp_path / "Assets" / "Main.cs").write_text("class Main {}\n")
 
         def _fail_binary(_path: Path) -> bool:
             raise AssertionError("Unity asset hit binary detection")
@@ -225,12 +593,81 @@ class TestFileTraverser:
         assert not any("app_ok.py" in p for p in paths)
         assert not any("debug.log" in p for p in paths)
 
-    def test_skips_oversized_files(self, tmp_path: Path) -> None:
+    def test_skips_oversized_files_without_a_parser(self, tmp_path: Path) -> None:
+        # No AST parser, so size is the only signal and the default cap holds.
+        big = tmp_path / "fixture.json"
+        big.write_bytes(b'{"k": 1}\n' * 200_000)  # ~1.7 MB
+        traverser = FileTraverser(tmp_path, max_file_size_kb=500)
+        paths = [f.path for f in traverser.traverse()]
+        assert not any("fixture.json" in p for p in paths)
+        assert traverser.stats.skipped_oversized == 1
+        # Blobs stay in the aggregate — naming them would drown the signal.
+        assert traverser.stats.skipped_source_files == []
+
+    def test_indexes_source_past_the_default_cap(self, tmp_path: Path) -> None:
+        # The #1237 regression: a repo's biggest hand-written module was
+        # dropped before any language check ran.
         big = tmp_path / "big.py"
         big.write_bytes(b"x = 1\n" * 200_000)  # ~1.2 MB
         traverser = FileTraverser(tmp_path, max_file_size_kb=500)
         paths = [f.path for f in traverser.traverse()]
-        assert not any("big.py" in p for p in paths)
+        assert any("big.py" in p for p in paths)
+        assert traverser.stats.skipped_oversized == 0
+
+    def test_skips_source_past_the_source_ceiling(self, tmp_path: Path) -> None:
+        # The ceiling is a memory budget: tree-sitter peaks at ~95 MB of RSS
+        # per MB of source and the parse pool runs 8 workers.
+        big = tmp_path / "huge.py"
+        big.write_bytes(b"x = 1\n" * 500_000)  # ~2.9 MB, over the 2 MB ceiling
+        traverser = FileTraverser(tmp_path, max_file_size_kb=500)
+        paths = [f.path for f in traverser.traverse()]
+        assert not any("huge.py" in p for p in paths)
+        assert traverser.stats.skipped_oversized == 1
+        # ...and it is named, because a silently dropped module is the bug.
+        assert [s.path for s in traverser.stats.skipped_source_files] == ["huge.py"]
+        assert traverser.stats.skipped_source_files[0].reason == "over_max_size"
+
+    def test_skips_minified_bundle_under_the_ceiling(self, tmp_path: Path) -> None:
+        # Real parser, source extension, under the ceiling — only the line
+        # shape distinguishes it from hand-written code.
+        bundle = tmp_path / "vendor.js"
+        bundle.write_bytes(b"!function(){" + b";".join(b"var a=1" for _ in range(90_000)) + b"}();")
+        assert bundle.stat().st_size > 500 * 1024
+        traverser = FileTraverser(tmp_path, max_file_size_kb=500)
+        paths = [f.path for f in traverser.traverse()]
+        assert not any("vendor.js" in p for p in paths)
+        assert traverser.stats.skipped_oversized == 1
+        assert traverser.stats.skipped_source_files[0].reason == "minified"
+
+    def test_source_ceiling_cannot_be_raised_by_max_file_size_kb(self, tmp_path: Path) -> None:
+        # The source ceiling is a memory budget (~95 MB RSS per MB of source,
+        # times an 8-worker pool), not a preference. Raising the caller-facing
+        # knob must not be able to lift it, or the OOM guard is optional.
+        big = tmp_path / "huge.py"
+        big.write_bytes(b"x = 1\n" * 500_000)  # ~2.9 MB, over the 2 MB ceiling
+        traverser = FileTraverser(tmp_path, max_file_size_kb=100_000)  # 100 MB
+        paths = [f.path for f in traverser.traverse()]
+        assert not any("huge.py" in p for p in paths)
+        assert traverser.stats.skipped_oversized == 1
+
+    def test_max_file_size_kb_still_governs_parserless_files(self, tmp_path: Path) -> None:
+        # ...but it remains the knob for everything with no parser.
+        blob = tmp_path / "fixture.json"
+        blob.write_bytes(b'{"k": 1}\n' * 200_000)  # ~1.7 MB
+        traverser = FileTraverser(tmp_path, max_file_size_kb=100_000)
+        paths = [f.path for f in traverser.traverse()]
+        assert any("fixture.json" in p for p in paths)
+
+    def test_normal_source_is_not_mistaken_for_minified(self, tmp_path: Path) -> None:
+        # Long-ish but ordinary lines must survive the guard: the threshold is
+        # 200 bytes/line and real source measured 25-60.
+        wide = tmp_path / "wide.py"
+        line = b"result = compute(" + b"argument_name, " * 8 + b"final)\n"  # ~140 bytes
+        wide.write_bytes(line * 5_000)
+        assert wide.stat().st_size > 500 * 1024
+        traverser = FileTraverser(tmp_path, max_file_size_kb=500)
+        paths = [f.path for f in traverser.traverse()]
+        assert any("wide.py" in p for p in paths)
 
     def test_deterministic_ordering(self, simple_repo: Path) -> None:
         traverser = FileTraverser(simple_repo)
@@ -245,6 +682,114 @@ class TestFileTraverser:
         assert files[test_file].is_test is True
         main_file = next(p for p in files if p.endswith("main.py"))
         assert files[main_file].is_test is False
+
+    def test_a_test_named_module_outside_pytest_testpaths_is_production(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "demo"\n[tool.pytest.ini_options]\ntestpaths = ["tests"]\n'
+        )
+        for rel in ("demo/test_selection.py", "tests/test_demo.py", "tools/test_cli.py"):
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_text("x = 1\n")
+        # A nested config governs its own directory.
+        (tmp_path / "tools" / "pytest.ini").write_text("[pytest]\n")
+        files = {f.path: f.is_test for f in FileTraverser(tmp_path).traverse()}
+        assert files["demo/test_selection.py"] is False
+        assert files["tests/test_demo.py"] is True
+        assert files["tools/test_cli.py"] is True
+
+    def test_test_helper_directories_are_test_material(self, tmp_path: Path) -> None:
+        """#3244: helper dirs only tests import are not production code, unless
+        the directory is a package root of its own (preact's ``test-utils/``)."""
+        files_on_disk = {
+            "ui/src/test-helpers/load-styles.ts": "export function loadStyles(): void {}\n",
+            "ui/src/ui/app.test.ts": (
+                'import { loadStyles } from "../test-helpers/load-styles";\nloadStyles();\n'
+            ),
+            "src/test-utils/async.ts": "export const tick = () => Promise.resolve();\n",
+            "test-utils/package.json": '{"name": "test-utils"}\n',
+            "test-utils/src/index.js": "export function act() {}\n",
+        }
+        for rel, text in files_on_disk.items():
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_text(text)
+        files = {f.path: f.is_test for f in FileTraverser(tmp_path).traverse()}
+        assert files["ui/src/test-helpers/load-styles.ts"] is True
+        assert files["src/test-utils/async.ts"] is True
+        assert files["ui/src/ui/app.test.ts"] is True
+        assert files["test-utils/src/index.js"] is False
+
+    def test_a_test_named_php_class_outside_phpunit_testsuites_is_production(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "phpunit.xml.dist").write_text(
+            '<phpunit><testsuites><testsuite name="Suite">'
+            '<directory suffix="Test.php">./tests</directory>'
+            '</testsuite></testsuites></phpunit>'
+        )
+        for rel in (
+            "src/Testing/Attributes/UnitTest.php",
+            "tests/RouterTest.php",
+            "tools/HelperTest.php",
+        ):
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_text("<?php\n")
+        # A nested config governs its own directory.
+        (tmp_path / "tools" / "phpunit.xml").write_text(
+            '<phpunit><testsuites><testsuite name="Tools">'
+            '<directory>tests</directory>'
+            '</testsuite></testsuites></phpunit>'
+        )
+        files = {f.path: f.is_test for f in FileTraverser(tmp_path).traverse()}
+        assert files["src/Testing/Attributes/UnitTest.php"] is False
+        assert files["tests/RouterTest.php"] is True
+        assert files["tools/HelperTest.php"] is False
+
+    def test_malformed_primary_phpunit_config_does_not_fall_back_to_dist(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "phpunit.xml").write_text("not valid xml <")
+        (tmp_path / "phpunit.xml.dist").write_text(
+            '<phpunit><testsuites><testsuite name="Suite">'
+            '<directory suffix="Test.php">./tests</directory>'
+            '</testsuite></testsuites></phpunit>'
+        )
+        for rel in (
+            "src/Testing/Attributes/UnitTest.php",
+            "tests/RouterTest.php",
+        ):
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_text("<?php\n")
+
+        files = {f.path: f.is_test for f in FileTraverser(tmp_path).traverse()}
+        # Fails closed: unreadable primary does not fall back, so test-named class stays True
+        assert files["src/Testing/Attributes/UnitTest.php"] is True
+        assert files["tests/RouterTest.php"] is True
+
+    def test_csharp_test_project_classifies_files_as_tests(self, tmp_path: Path) -> None:
+        (tmp_path / "acceptance" / "Acme.Acceptance.csproj").parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / "acceptance" / "Acme.Acceptance.csproj").write_text(
+            '<Project Sdk="Microsoft.NET.Sdk">\n'
+            "  <PropertyGroup><IsTestProject>true</IsTestProject></PropertyGroup>\n"
+            "  <ItemGroup>\n"
+            '    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.0" />\n'
+            '    <PackageReference Include="xunit" Version="2.9.0" />\n'
+            "  </ItemGroup>\n"
+            "</Project>\n"
+        )
+        (tmp_path / "acceptance" / "Authentication" / "AuthSteps.cs").parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / "acceptance" / "Authentication" / "AuthSteps.cs").write_text("public class AuthSteps {}\n")
+        (tmp_path / "acceptance" / "Authentication" / "AuthenticationTests.cs").write_text(
+            "public class AuthenticationTests {}\n"
+        )
+        (tmp_path / "src" / "App" / "Program.cs").parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / "src" / "App" / "Program.cs").write_text("public class Program {}\n")
+
+        files = {f.path: f.is_test for f in FileTraverser(tmp_path).traverse()}
+        assert files["acceptance/Authentication/AuthSteps.cs"] is True
+        assert files["acceptance/Authentication/AuthenticationTests.cs"] is True
+        assert files["src/App/Program.cs"] is False
 
     def test_file_info_fields(self, tmp_path: Path) -> None:
         (tmp_path / "calc.py").write_text("class Calc: pass")
@@ -436,6 +981,84 @@ class TestNestedGitignore:
         assert not any("comp.snap" in p for p in paths)
 
 
+class TestTrackedFilesNeverGitignored:
+    """Git never ignores a tracked file, so a ``.gitignore`` rule here can't either.
+
+    The shape that dropped a real doc: a root ``logs`` rule, and a nested
+    ``.gitignore`` re-including one file with ``!`` that git then tracks.
+    """
+
+    @staticmethod
+    def _git_add(root: Path, *paths: str) -> None:
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+        subprocess.run(["git", "add", "-f", *paths], cwd=root, check=True)
+
+    def _repo(self, root: Path) -> None:
+        (root / ".gitignore").write_text("logs\n")
+        docs = root / "docs"
+        (docs / "logs").mkdir(parents=True)
+        (docs / ".gitignore").write_text("!logs/\n!logs/overview.py\n")
+        (docs / "logs" / "overview.py").write_text("x = 1\n")
+        (docs / "logs" / "scratch.py").write_text("y = 2\n")
+        (root / "app.py").write_text("pass\n")
+
+    def test_tracked_file_under_ignored_dir_indexed(self, tmp_path: Path) -> None:
+        self._repo(tmp_path)
+        self._git_add(tmp_path, "app.py", "docs/logs/overview.py")
+        tv = FileTraverser(tmp_path)
+        paths = {f.path for f in tv.traverse()}
+        assert "docs/logs/overview.py" in paths
+        assert not tv.dir_chain_skipped(Path("docs/logs"))
+
+    def test_untracked_ignored_still_skipped(self, tmp_path: Path) -> None:
+        self._repo(tmp_path)
+        self._git_add(tmp_path, "app.py", "docs/logs/overview.py")
+        (tmp_path / "logs").mkdir()
+        (tmp_path / "logs" / "run.py").write_text("pass\n")
+        paths = {f.path for f in FileTraverser(tmp_path).traverse()}
+        assert "docs/logs/scratch.py" not in paths
+        assert "logs/run.py" not in paths
+        assert "app.py" in paths
+
+    def test_nested_gitignore_yields_to_tracked_file(self, tmp_path: Path) -> None:
+        (tmp_path / "pkg").mkdir()
+        (tmp_path / "pkg" / ".gitignore").write_text("gen_*.py\n")
+        (tmp_path / "pkg" / "gen_kept.py").write_text("pass\n")
+        (tmp_path / "pkg" / "gen_scratch.py").write_text("pass\n")
+        self._git_add(tmp_path, "pkg/gen_kept.py")
+        paths = {f.path for f in FileTraverser(tmp_path).traverse()}
+        assert "pkg/gen_kept.py" in paths
+        assert "pkg/gen_scratch.py" not in paths
+
+    def test_untracked_beside_tracked_keep_file_in_nested_ignored_dir_skipped(
+        self, tmp_path: Path
+    ) -> None:
+        web = tmp_path / "web"
+        (web / "gen" / "assets").mkdir(parents=True)
+        (web / ".gitignore").write_text("gen/\n")
+        (web / "gen" / "keep.py").write_text("pass\n")
+        (web / "gen" / "bundle.py").write_text("pass\n")
+        (web / "gen" / "assets" / "chunk.py").write_text("pass\n")
+        self._git_add(tmp_path, "web/gen/keep.py")
+        paths = {f.path for f in FileTraverser(tmp_path).traverse()}
+        assert paths == {"web/gen/keep.py"}
+
+    def test_repowise_ignore_and_excludes_still_drop_tracked_files(self, tmp_path: Path) -> None:
+        self._repo(tmp_path)
+        (tmp_path / "vendor").mkdir()
+        (tmp_path / "vendor" / "lib.py").write_text("pass\n")
+        (tmp_path / ".repowiseIgnore").write_text("docs/\n")
+        self._git_add(tmp_path, "app.py", "docs/logs/overview.py", "vendor/lib.py")
+        tv = FileTraverser(tmp_path, extra_exclude_patterns=["vendor/"])
+        assert {f.path for f in tv.traverse()} == {"app.py"}
+
+    def test_non_git_checkout_keeps_gitignore_rules(self, tmp_path: Path) -> None:
+        self._repo(tmp_path)
+        paths = {f.path for f in FileTraverser(tmp_path).traverse()}
+        assert "docs/logs/overview.py" not in paths
+        assert "app.py" in paths
+
+
 # ---------------------------------------------------------------------------
 # Monorepo detection
 # ---------------------------------------------------------------------------
@@ -508,8 +1131,10 @@ class TestTraversalStats:
         assert traverser.stats.included >= 1
 
     def test_stats_counts_oversized_skips(self, tmp_path: Path) -> None:
-        big = tmp_path / "big.py"
-        big.write_bytes(b"x = 1\n" * 200_000)
+        # A parserless blob past the cap: the counter must still fire, or the
+        # size guard has been removed rather than narrowed.
+        big = tmp_path / "big.json"
+        big.write_bytes(b'{"k": 1}\n' * 200_000)
         (tmp_path / "small.py").write_text("pass")
         traverser = FileTraverser(tmp_path, max_file_size_kb=500)
         list(traverser.traverse())
@@ -781,6 +1406,17 @@ class TestEntryPointFlag:
         flagged = self._flagged(tmp_path)
         assert flagged == set(files), flagged
 
+    def test_test_file_is_a_root_not_an_entry_point(self, tmp_path: Path) -> None:
+        for rel in ("tests/app.py", "src/main.py"):
+            p = tmp_path / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("print('x')")
+        info = {f.path: f for f in FileTraverser(tmp_path).traverse()}
+        assert info["tests/app.py"].is_reachability_root
+        assert not info["tests/app.py"].is_entry_point
+        assert info["src/main.py"].is_reachability_root
+        assert info["src/main.py"].is_entry_point
+
     def test_historical_stem_parity_and_non_entries(self, tmp_path: Path) -> None:
         files = {
             "run.py": "print('x')",  # covered by the run stem (dropped pattern)
@@ -797,6 +1433,40 @@ class TestEntryPointFlag:
         assert "server.py" in flagged
         assert "pkg/helper.py" not in flagged
         assert "latest_app.py" not in flagged
+
+    def test_candidacy_rejects_names_that_cannot_start_execution(self, tmp_path: Path) -> None:
+        # Every one of these matches the traverser's name/stem conventions and
+        # is still not where a reader enters the system. The flag is what
+        # exempts a file from dead-code detection, so a name-only guess here is
+        # a file nothing can ever report.
+        files = {
+            "index.html": "<html></html>",  # entry *filename*, non-code language
+            "docs/guide/index.md": "# guide",  # entry stem, non-code language
+            "pkg/resolvers/dotnet/index.ts": "export * from './x';",  # deep glue leaf
+            "src/main.py": "print('x')",  # the control: a real entry
+            "cli/index.ts": "export const x = 1;",  # glue near a package root survives
+        }
+        for rel, content in files.items():
+            p = tmp_path / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content)
+        assert self._flagged(tmp_path) == {"src/main.py", "cli/index.ts"}
+
+    def test_stem_union_widens_the_flag_without_dropping_a_stem(self, tmp_path: Path) -> None:
+        # The flag stems and the stems the wiki ranks by were kept by hand and
+        # disagreed both ways. Union: neither side loses one it had.
+        files = {
+            "src/bootstrap.rb": "puts 1",  # ranking-only stem, now flagged
+            "src/cli.go": "package main",
+            "src/entry.ts": "export const x = 1;",
+            "run.py": "print('x')",  # flag-only stems must survive
+            "start.js": "console.log(1);",
+        }
+        for rel, content in files.items():
+            p = tmp_path / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content)
+        assert self._flagged(tmp_path) == set(files)
 
     def test_pyproject_console_scripts_flag_entry_modules(self, tmp_path: Path) -> None:
         (tmp_path / "pyproject.toml").write_text(
@@ -821,18 +1491,34 @@ class TestEntryPointFlag:
         assert "src/demo/plugins/__init__.py" in flagged
         assert "src/demo/cli/other.py" not in flagged
 
+    def test_a_console_script_target_outranks_the_candidacy_rule(self, tmp_path: Path) -> None:
+        # ``pyproject.toml`` *names* the module a launcher imports, so it is
+        # evidence, not a guess about the filename — the glue-leaf rule must
+        # not overrule it. Same reason the post-traversal stampers
+        # (graph_warmups / framework_edges) are left alone.
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "demo"\n[project.scripts]\ndemo = "demo.sub.index:main"\n'
+        )
+        p = tmp_path / "src" / "demo" / "sub" / "index.py"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("def main(): pass")
+        assert "src/demo/sub/index.py" in self._flagged(tmp_path)
+
     def test_single_segment_script_target_matches_exactly(self, tmp_path: Path) -> None:
         # A bare ``main`` target must not suffix-match every ``.../main.py``.
+        # The stem must be one the name conventions do *not* claim, or both
+        # files flag for that reason and the test proves nothing — ``cli`` was
+        # such a stem until it joined the flag set.
         (tmp_path / "pyproject.toml").write_text(
-            '[project]\nname = "demo"\n[project.scripts]\ndemo = "cli:main"\n'
+            '[project]\nname = "demo"\n[project.scripts]\ndemo = "tool:main"\n'
         )
-        (tmp_path / "cli.py").write_text("def main(): pass")
-        nested = tmp_path / "pkg" / "cli.py"
+        (tmp_path / "tool.py").write_text("def main(): pass")
+        nested = tmp_path / "pkg" / "tool.py"
         nested.parent.mkdir(parents=True)
         nested.write_text("x = 1")
         flagged = self._flagged(tmp_path)
-        assert "cli.py" in flagged
-        assert "pkg/cli.py" not in flagged
+        assert "tool.py" in flagged
+        assert "pkg/tool.py" not in flagged
 
 
 # ---------------------------------------------------------------------------
@@ -886,3 +1572,409 @@ def test_production_paths_that_merely_contain_the_word_are_not_tests(rel_path):
     from repowise.core.test_paths import is_test_related_path
 
     assert not is_test_related_path(rel_path)
+
+
+class TestUnknownLanguageFileRecording:
+    """Paths kept when language detection fails, for the dead-code clamp.
+
+    The clamp reads files ingestion never parsed and refuses to call a symbol
+    deletion-ready when an unread file names it. It could never be offered a
+    file without a language spec, because the walk bumped a counter and threw
+    the path away.
+    """
+
+    def test_records_a_reference_bearing_file(self, tmp_path: Path) -> None:
+        (tmp_path / "guide.rst").write_text("literalinclude:: ../src/widget.py\n")
+        traverser = FileTraverser(tmp_path)
+        paths = [f.path for f in traverser.traverse()]
+
+        # Still not indexed — recording a path registers no language.
+        assert not any("guide.rst" in p for p in paths)
+        assert traverser.stats.skipped_unknown_language == 1
+        assert [s.path for s in traverser.stats.unknown_language_files] == ["guide.rst"]
+        assert traverser.stats.unknown_language_files[0].reason == "unknown_language"
+
+    def test_records_files_that_name_native_symbols(self, tmp_path: Path) -> None:
+        # A .def EXPORTS list and assembly name C/C++ symbols no parsed file does.
+        (tmp_path / "CustomAction.def").write_text("EXPORTS\n    SetInstallLocationCA\n")
+        (tmp_path / "barrier.S").write_text("PATCH_LABEL JIT_WriteBarrier_Patch_Label\n")
+        (tmp_path / "helpers.asm").write_text("extern JIT_Helper:proc\n")
+        traverser = FileTraverser(tmp_path)
+        list(traverser.traverse())
+
+        recorded = sorted(s.path for s in traverser.stats.unknown_language_files)
+        assert recorded == ["CustomAction.def", "barrier.S", "helpers.asm"]
+
+    def test_ignores_formats_that_name_no_code(self, tmp_path: Path) -> None:
+        # The tail is dominated by these, and a name-matching clamp fed prose
+        # suppresses findings on coincidence rather than on evidence.
+        (tmp_path / "django.po").write_text('msgid "Widget"\nmsgstr ""\n')
+        (tmp_path / "LICENSE.txt").write_text("Redistribution of Widget is permitted.\n")
+        traverser = FileTraverser(tmp_path)
+        list(traverser.traverse())
+
+        assert traverser.stats.skipped_unknown_language == 2
+        assert traverser.stats.unknown_language_files == []
+
+    def test_does_not_consume_the_size_skip_budget(self, tmp_path: Path) -> None:
+        # The two lists are separate so hundreds of unparsed docs cannot
+        # truncate the oversized-source records, which are shown to the user.
+        for i in range(traverser_mod._MAX_SKIPPED_SOURCE_PATHS + 5):
+            (tmp_path / f"doc{i}.rst").write_text("text\n")
+        big = tmp_path / "huge.py"
+        big.write_bytes(b"x = 1\n" * 500_000)  # over the source ceiling
+
+        traverser = FileTraverser(tmp_path, max_file_size_kb=500)
+        list(traverser.traverse())
+
+        assert [s.path for s in traverser.stats.skipped_source_files] == ["huge.py"]
+        assert traverser.stats.skipped_source_files_truncated is False
+        assert len(traverser.stats.unknown_language_files) == 55
+
+    def test_caps_the_list_and_flags_truncation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(traverser_mod, "_MAX_UNKNOWN_LANGUAGE_PATHS", 3)
+        for i in range(6):
+            (tmp_path / f"doc{i}.rst").write_text("text\n")
+
+        traverser = FileTraverser(tmp_path)
+        list(traverser.traverse())
+
+        assert len(traverser.stats.unknown_language_files) == 3
+        assert traverser.stats.unknown_language_files_truncated is True
+        # The count stays exact whatever the cap does to the names.
+        assert traverser.stats.skipped_unknown_language == 6
+
+
+class TestIsGenerated:
+    """The generated-file banner check must not match ordinary prose.
+
+    ``AUTO-GENERATED`` (and the other markers) occur naturally in docblocks
+    that explain a routing or build convention. A banner is a header
+    convention — it sits on the first line or two — so a marker buried in a
+    paragraph must not drop a hand-written file from the index.
+    """
+
+    def test_banner_on_first_line_is_generated(self, tmp_path: Path) -> None:
+        p = tmp_path / "gen.ts"
+        p.write_text("// Code generated by protoc. DO NOT EDIT.\n\nexport const x = 1;\n")
+        assert _is_generated(p) is True
+
+    def test_marker_on_second_line_is_generated(self, tmp_path: Path) -> None:
+        p = tmp_path / "gen.py"
+        p.write_text("#!/usr/bin/env python\n# AUTO-GENERATED — do not edit.\n\nx = 1\n")
+        assert _is_generated(p) is True
+
+    def test_marker_buried_in_prose_is_not_generated(self, tmp_path: Path) -> None:
+        # The exact false positive from the issue: a hand-written endpoint
+        # whose docblock mentions the framework's auto-generated routes.
+        p = tmp_path / "handwritten.ts"
+        p.write_text(
+            "/**\n"
+            " * Widget endpoint.\n"
+            " * Uses a /widget-ops/ prefix to avoid colliding with the\n"
+            " * framework's auto-generated collection routes.\n"
+            " */\n"
+            "export function widgetEndpoint() { return 1 }\n"
+        )
+        assert _is_generated(p) is False
+
+    def test_generated_suffix_still_wins(self, tmp_path: Path) -> None:
+        p = tmp_path / "api_pb2.py"
+        p.write_text("x = 1\n")
+        assert _is_generated(p) is True
+
+    def test_generated_marker_in_string_literal_kept(self, tmp_path: Path) -> None:
+        # The constant a code generator stamps on its output is not a banner.
+        p = tmp_path / "constants.ts"
+        p.write_text("export const BANNER = 'Auto-generated by the CLI. Do not modify.';\n")
+        assert _is_generated(p) is False
+
+    def test_docstring_mentions_autogenerated_kept(self, tmp_path: Path) -> None:
+        p = tmp_path / "__init__.py"
+        p.write_text('"""\nThis module is a light wrapper around the auto-generated client.\n"""\n')
+        assert _is_generated(p) is False
+
+    def test_go_code_generated_header_dropped(self, tmp_path: Path) -> None:
+        p = tmp_path / "api.pb.gw.go"
+        p.write_text(
+            "// Code generated by protoc-gen-grpc-gateway. DO NOT EDIT.\n"
+            "// source: api.proto\n\npackage api\n"
+        )
+        assert _is_generated(p) is True
+
+    @pytest.mark.parametrize(
+        "header",
+        [
+            "# Generated by the protocol buffer compiler.  DO NOT EDIT!\n",
+            "/** @generated */\n",
+            "// <auto-generated/>\n",
+            '"""Auto-generated by schema_gen.py."""\n',
+            '"""\nAuto-generated by schema_gen.py.\n"""\n',
+            "# NOTE: this file is auto-generated by gen.py, edit the template\n",
+            "#!/usr/bin/env node\n// AUTO-GENERATED by setup\n",
+        ],
+    )
+    def test_real_banners_still_dropped(self, tmp_path: Path, header: str) -> None:
+        p = tmp_path / "gen.py"
+        p.write_text(header + "x = 1\n")
+        assert _is_generated(p) is True
+
+    @pytest.mark.parametrize(
+        "header",
+        [
+            "# Helpers for code generated by the compiler plugin.\n",
+            '"""Utilities for reading GENERATED CODE maps."""\n',
+            'MSG = "Code generated by X. DO NOT EDIT."\n',
+        ],
+    )
+    def test_marker_not_leading_the_comment_kept(self, tmp_path: Path, header: str) -> None:
+        p = tmp_path / "mod.py"
+        p.write_text(header + "x = 1\n")
+        assert _is_generated(p) is False
+
+    def test_dropped_generated_paths_recorded(self, tmp_path: Path) -> None:
+        (tmp_path / "gen.go").write_text("// Code generated by tool. DO NOT EDIT.\npackage x\n")
+        (tmp_path / "main.go").write_text("package x\n")
+        traverser = FileTraverser(tmp_path)
+        paths = [f.path for f in traverser.traverse()]
+        assert paths == ["main.go"]
+        assert traverser.stats.skipped_generated == 1
+        assert traverser.stats.generated_files == ["gen.go"]
+
+    def test_generated_files_reach_the_dead_code_unindexed_list(self, tmp_path: Path) -> None:
+        # A jnigen binding is the only caller of its plugin header's helpers.
+        (tmp_path / "bindings.c").write_text(
+            '// Autogenerated by jnigen. DO NOT EDIT!\n#include "dartjni.h"\n'
+        )
+        (tmp_path / "dartjni.h").write_text("static inline void load_method(void) {}\n")
+        (tmp_path / "api.def").write_text("EXPORTS\n  load_method\n")
+        traverser = FileTraverser(tmp_path)
+        assert [f.path for f in traverser.traverse()] == ["dartjni.h"]
+        assert traverser.stats.unindexed_source_files() == [
+            ("api.def", "unknown_language"),
+            ("bindings.c", "generated"),
+        ]
+
+
+class TestConcurrentLazyInit:
+    """The lazy scans behind ``_build_file_info`` run once, not once per worker.
+
+    ``build_repo_graph`` maps ``_build_file_info`` over every path with ~2x
+    cpu_count workers, so an unsynchronised ``is None`` check is not a wasted
+    branch — it is one full repo walk per worker that wins the race.
+    """
+
+    def test_console_script_tables_is_collected_once(self, tmp_path: Path) -> None:
+        calls = 0
+        real = traverser_mod._collect_console_scripts
+
+        def counting(repo_root, **kwargs):
+            nonlocal calls
+            calls += 1
+            # Widen the window a real walk would occupy, so an unsynchronised
+            # implementation reliably loses the race instead of flaking.
+            time.sleep(0.05)
+            return real(repo_root, **kwargs)
+
+        traverser_mod._collect_console_scripts = counting
+        try:
+            tv = FileTraverser(tmp_path)
+            with ThreadPoolExecutor(max_workers=16) as pool:
+                results = list(pool.map(lambda _: tv._console_script_tables(), range(16)))
+        finally:
+            traverser_mod._collect_console_scripts = real
+
+        assert calls == 1
+        # Every caller sees the one published object, not a private copy.
+        assert all(r is results[0] for r in results)
+
+    def test_dir_ignore_cache_publishes_one_spec_per_directory(self, tmp_path: Path) -> None:
+        (tmp_path / "pkg").mkdir()
+        (tmp_path / "pkg" / ".gitignore").write_text("build/\n", encoding="utf-8")
+        tv = FileTraverser(tmp_path)
+
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            specs = list(pool.map(lambda _: tv._get_dir_ignore(tmp_path / "pkg"), range(16)))
+
+        assert all(s is specs[0] for s in specs)
+
+    def test_pre_seeded_root_entry_survives_concurrent_readers(self, tmp_path: Path) -> None:
+        tv = FileTraverser(tmp_path)
+        seeded = tv._dir_ignore_cache[str(tmp_path)]
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(lambda _: tv._get_dir_ignore(tmp_path), range(8)))
+
+        assert tv._dir_ignore_cache[str(tmp_path)] is seeded
+
+
+def _never_pruned(_rel_dir: Path) -> bool:
+    """The old helpers applied no ignore layer; this is that, spelled out."""
+    return False
+
+
+class TestPackageScanPruning:
+    """The package scan answers from the files traversal actually indexes.
+
+    ``_scan_package_dir`` reads a package's primary language and its entry
+    points off one walk. Without the traverser's own boundary test it reads
+    them off directories that are never indexed, so a package could be
+    described entirely by files absent from the index.
+    """
+
+    def _pkg(self, tmp_path: Path, gitignore: str) -> Path:
+        (tmp_path / ".gitignore").write_text(gitignore, encoding="utf-8")
+        pkg = tmp_path / "pkg"
+        (pkg / "src").mkdir(parents=True)
+        (pkg / "package.json").write_text('{"name": "p"}', encoding="utf-8")
+        (pkg / "src" / "index.ts").write_text("export const a = 1;\n", encoding="utf-8")
+        return pkg
+
+    def test_gitignored_output_no_longer_decides_the_language(self, tmp_path: Path) -> None:
+        pkg = self._pkg(tmp_path, "pkg/out/\n")
+        out = pkg / "out"
+        out.mkdir()
+        # Enough generated JS to outvote the single real source.
+        for i in range(5):
+            (out / f"chunk{i}.js").write_text("var a=1;\n", encoding="utf-8")
+
+        tv = FileTraverser(tmp_path)
+        assert not any("/out/" in fi.path for fi in tv.traverse())
+
+        unpruned, _ = _scan_package_dir(pkg, tmp_path, is_pruned=_never_pruned)
+        pruned, _ = _scan_package_dir(pkg, tmp_path, is_pruned=tv.dir_chain_skipped)
+        assert unpruned == "javascript"
+        assert pruned == "typescript"
+
+    def test_entry_points_come_only_from_indexed_directories(self, tmp_path: Path) -> None:
+        pkg = self._pkg(tmp_path, "pkg/out/\n")
+        out = pkg / "out"
+        out.mkdir()
+        (out / "index.html").write_text("<html></html>\n", encoding="utf-8")
+        (pkg / "index.html").write_text("<html></html>\n", encoding="utf-8")
+
+        tv = FileTraverser(tmp_path)
+        _, unpruned = _scan_package_dir(pkg, tmp_path, is_pruned=_never_pruned)
+        _, pruned = _scan_package_dir(pkg, tmp_path, is_pruned=tv.dir_chain_skipped)
+
+        assert "pkg/out/index.html" in unpruned
+        assert "pkg/out/index.html" not in pruned
+        assert "pkg/index.html" in pruned
+
+    def test_a_committed_build_dir_is_excluded_too(self, tmp_path: Path) -> None:
+        """Not just gitignored trees. A ``dist`` holding only bundles is an
+        output root, so the traverser never indexes it even when it is
+        committed, and a directory nothing indexes must not name the package's
+        language."""
+        pkg = self._pkg(tmp_path, "node_modules/\n")  # dist/ deliberately tracked
+        dist = pkg / "dist"
+        dist.mkdir()
+        # Outnumber the one real source rather than tie with it, so this test
+        # asserts pruning and not tie-breaking. Ties are now resolved by name
+        # (see test_an_exact_language_tie_does_not_depend_on_walk_order); before
+        # that they followed filesystem order, which is what made this pass
+        # locally and fail on CI.
+        for i in range(5):
+            (dist / f"chunk{i}.js").write_text("var a=1;\n", encoding="utf-8")
+
+        tv = FileTraverser(tmp_path)
+        assert not any("/dist/" in fi.path for fi in tv.traverse())
+
+        unpruned, _ = _scan_package_dir(pkg, tmp_path, is_pruned=_never_pruned)
+        pruned, _ = _scan_package_dir(pkg, tmp_path, is_pruned=tv.dir_chain_skipped)
+        assert unpruned == "javascript"
+        assert pruned == "typescript"
+
+    def test_an_exact_language_tie_does_not_depend_on_walk_order(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A tie must resolve the same way whatever order the filesystem yields.
+
+        counts is built in walk order and walk_repo does not sort
+        dirnames, so a bare max returned whichever tied language came
+        first — machine-dependent, and unstable on one machine as unrelated
+        files are added. Drive both orders through the same package and require
+        one answer.
+        """
+        # Built by hand rather than via _pkg: that helper ships a src/index.ts,
+        # which makes typescript win outright and there is no tie left to test.
+        (tmp_path / ".gitignore").write_text("", encoding="utf-8")
+        pkg = tmp_path / "pkg"
+        pkg.mkdir()
+        (pkg / "package.json").write_text('{"name": "p"}', encoding="utf-8")
+        (pkg / "a.js").write_text("var a=1;\n", encoding="utf-8")
+        (pkg / "b.ts").write_text("const b: number = 1;\n", encoding="utf-8")
+
+        # ``_package_files`` imports walk_repo inside the function body, so
+        # the patch has to land on the source module, not on the traverser.
+        from repowise.core import fs_walk
+
+        real_walk = fs_walk.walk_repo
+
+        def walk_in(order: list[str]):
+            def _walk(directory, **kwargs):
+                for dirpath, dirnames, filenames in real_walk(directory, **kwargs):
+                    known = [f for f in order if f in filenames]
+                    rest = [f for f in filenames if f not in order]
+                    yield dirpath, dirnames, known + rest
+
+            return _walk
+
+        monkeypatch.setattr(fs_walk, "walk_repo", walk_in(["a.js", "b.ts"]))
+        js_first, _ = _scan_package_dir(pkg, tmp_path, is_pruned=_never_pruned)
+
+        monkeypatch.setattr(fs_walk, "walk_repo", walk_in(["b.ts", "a.js"]))
+        ts_first, _ = _scan_package_dir(pkg, tmp_path, is_pruned=_never_pruned)
+
+        assert js_first == ts_first
+
+    def test_a_package_with_nothing_indexed_reports_unknown(self, tmp_path: Path) -> None:
+        """The one shape where the answer gets smaller rather than sharper."""
+        pkg = self._pkg(tmp_path, "pkg/src/\n")
+        tv = FileTraverser(tmp_path)
+        language, _ = _scan_package_dir(pkg, tmp_path, is_pruned=tv.dir_chain_skipped)
+        assert language == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# API contract flag
+# ---------------------------------------------------------------------------
+
+_YAML_SPEC = "openapi: 3.0.0\ninfo:\n  title: t\npaths: {}\n"
+_JSON_SPEC = '{"swagger": "2.0", "paths": {}}\n'
+_PROTO = "syntax = 'proto3';\n"
+
+
+class TestApiContractFlag:
+    @pytest.mark.parametrize(
+        ("path", "content", "expected"),
+        [
+            ("api/openapi.yaml", _YAML_SPEC, True),
+            ("public/openapi-webhooks.json", _JSON_SPEC, True),
+            ("gen/echo.swagger.json", '{\n  "swagger": "2.0",\n  "info": {}\n}\n', True),
+            ("api.json", _JSON_SPEC, True),
+            ("proto/service.proto", _PROTO, True),
+            ("schema/schema.graphql", "type Query { a: Int }\n", True),
+            # Named after the format, but a generator config rather than a spec.
+            ("proto/openapi_merge.buf.gen.yaml", "plugins:\n  - local: protoc-gen-openapiv2\n", False),
+            ("swagger-config.yaml", "url: /openapi.json\n", False),
+            # Code named after a spec reads or builds one; it is not the spec.
+            ("lib/openapi.ts", "export {}\n", False),
+            ("scripts/fetch-openapi.mjs", "export {}\n", False),
+            ("pkg/utils/openapi.py", "x = 1\n", False),
+            # Whole words: a config variant is not a spec.
+            ("tsconfig.api.json", _JSON_SPEC, False),
+            # A test that exercises a spec is not the spec.
+            ("tests/test_openapi.py", "x = 1\n", False),
+            ("tests/api/openapi.yaml", _YAML_SPEC, False),
+            ("src/test/protobuf/bag.proto", _PROTO, False),
+        ],
+    )
+    def test_flag(self, tmp_path: Path, path: str, content: str, expected: bool) -> None:
+        f = tmp_path / path
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(content)
+        by_path = {fi.path: fi for fi in FileTraverser(tmp_path).traverse()}
+        assert by_path[path].is_api_contract is expected

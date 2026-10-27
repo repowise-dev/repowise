@@ -49,6 +49,11 @@ from ..external_systems.cmake import (
     discover_cmake_reactor,
     parse_cmake_file_api_reply,
 )
+from ..source_text import decode_source
+
+# One list of C/C++ header extensions: the resolver's, so the fallback scan
+# below cannot drift from what the include resolver treats as a header.
+from .cpp import _HEADER_EXTS
 
 if TYPE_CHECKING:
     from .context import ResolverContext
@@ -238,15 +243,19 @@ _PROJECT_EXPORT_MACRO_RE = re.compile(
 _EXPORT_LIKE_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]{2,}_(?:EXPORT|API|PUBLIC|DLL|VISIBLE)$")
 
 
+def _export_macros_in(text: str) -> tuple[str, ...]:
+    # Limit to the first ~8KB — export macros are nearly always near the top.
+    return tuple({m.group(1) for m in _PROJECT_EXPORT_MACRO_RE.finditer(text[:8192])})
+
+
 @lru_cache(maxsize=8192)
 def _scan_header_for_export_macros(abs_path: str) -> tuple[str, ...]:
+    """:func:`_export_macros_in` for a header the source map did not have."""
     try:
         text = Path(abs_path).read_text(encoding="utf-8", errors="ignore")
     except OSError:
         return ()
-    # Limit to the first ~8KB — export macros are nearly always near the top.
-    head = text[:8192]
-    return tuple({m.group(1) for m in _PROJECT_EXPORT_MACRO_RE.finditer(head)})
+    return _export_macros_in(text)
 
 
 def _classify_dir(root_dir: str) -> dict[str, bool]:
@@ -355,6 +364,33 @@ def _register_target(index: CppWorkspaceIndex, t: CppTarget) -> None:
                 index.public_header_includes.setdefault(rel, hdr)
 
 
+_MAX_HEADER_CANDIDATES = 200
+
+
+def _headers_near_target_sources(index: CppWorkspaceIndex, path_set: set[str]) -> list[str]:
+    """Headers in the directories of each target's own sources.
+
+    Fallback for export-macro discovery when no target declares public
+    headers. Deterministic (targets and paths are sorted) and capped, so a
+    huge tree cannot make the scan unbounded.
+    """
+    src_dirs: set[str] = set()
+    for tid in sorted(index.targets):
+        for src in index.targets[tid].sources:
+            src_dirs.add(PurePosixPath(src.replace("\\", "/")).parent.as_posix())
+    if not src_dirs:
+        return []
+    found: list[str] = []
+    for p in sorted(path_set):
+        if not p.lower().endswith(_HEADER_EXTS):
+            continue
+        if PurePosixPath(p.replace("\\", "/")).parent.as_posix() in src_dirs:
+            found.append(p)
+            if len(found) > _MAX_HEADER_CANDIDATES:
+                break
+    return found
+
+
 def build_cpp_workspace_index(ctx: ResolverContext) -> CppWorkspaceIndex:
     index = CppWorkspaceIndex()
     if ctx.repo_path is None:
@@ -362,8 +398,17 @@ def build_cpp_workspace_index(ctx: ResolverContext) -> CppWorkspaceIndex:
 
     repo_path = ctx.repo_path.resolve()
     path_set = set(ctx.path_set)
+    # ``getattr``, not attribute access: the call resolver builds these
+    # indexes from a minimal stand-in context that carries neither field
+    # (``call_language_strategies._Ctx``). A miss means disk and a live walk, which
+    # is what that path did before.
+    source_map = getattr(ctx, "source_map", None)
 
-    cmake_files = discover_cmake_reactor(repo_path)
+    # Same reason as ``source_map`` above: the stand-in context has no
+    # snapshot, and None means the live walk this always did.
+    cmake_files = discover_cmake_reactor(
+        repo_path, snapshot=getattr(ctx, "walk_snapshot", None)
+    )
     file_api_targets = parse_cmake_file_api_reply(repo_path)
     bazel_files = discover_bazel_packages(repo_path) if is_bazel_repo(repo_path) else []
 
@@ -408,9 +453,17 @@ def build_cpp_workspace_index(ctx: ResolverContext) -> CppWorkspaceIndex:
                 header_candidates.append(p)
                 if len(header_candidates) > 200:
                     break
+    if not header_candidates:
+        # No target declares public headers and there is no ``include/``
+        # tree (Flutter FFI plugins, small shared libraries): the header
+        # that defines the project's export macro sits beside the sources.
+        header_candidates.extend(_headers_near_target_sources(index, path_set))
     for rel in header_candidates:
-        abs_p = str((repo_path / rel).resolve())
-        macros.update(_scan_header_for_export_macros(abs_p))
+        data = source_map.get(rel) if source_map is not None else None
+        if data is not None:
+            macros.update(_export_macros_in(decode_source(data)))
+        else:
+            macros.update(_scan_header_for_export_macros(str((repo_path / rel).resolve())))
     _scan_header_for_export_macros.cache_clear()
 
     # Filter out anything that doesn't look like an export marker name.

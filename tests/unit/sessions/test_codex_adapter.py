@@ -1,0 +1,431 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from repowise.core.sessions import CodexAdapter, Event
+from repowise.core.sessions.adapters.base import (
+    INTENT_SHELL_CALLS,
+    INTENT_TOOL_CALLS,
+    INTENT_TURNS,
+)
+from repowise.core.sessions.adapters.codex import _bind_first_file, _normalize_tool_name
+from repowise.core.sessions.events import ToolUse
+from repowise.core.sessions.miners.decisions import mine_events
+
+FIXTURE = Path(__file__).parent / "data" / "codex_session.jsonl"
+#: The miners lowercase each event's ``cwd`` before comparing, so a prefix with
+#: capitals in it matches nothing. Passing the fixture's own cwd verbatim looks
+#: right and silently scopes every assertion to zero events.
+REPO_PREFIX = r"C:\Users\Rehan\Documents\Codex\2026-07-14\c".lower()
+
+
+@pytest.fixture
+def adapter() -> CodexAdapter:
+    """A fresh adapter per test: correlation state is per-file, not global."""
+    return CodexAdapter()
+
+
+def test_discover_lists_jsonl_sorted(adapter: CodexAdapter, tmp_path: Path) -> None:
+    root = tmp_path / "sessions"
+    (root / "2026" / "07" / "13").mkdir(parents=True)
+    (root / "2026" / "07" / "13" / "b.jsonl").write_text("", encoding="utf-8")
+    (root / "2026" / "07" / "13" / "a.jsonl").write_text("", encoding="utf-8")
+    (root / "2026" / "07" / "13" / "notes.txt").write_text("", encoding="utf-8")
+
+    found = adapter.discover(Path("/tmp/repo"), projects_root=root)
+
+    assert [p.name for p in found] == ["a.jsonl", "b.jsonl"]
+
+
+def test_normalize_real_codex_rollout(adapter: CodexAdapter) -> None:
+    events = list(adapter.iter_events(FIXTURE))
+
+    meta = next(e for e in events if e.kind == "session_meta")
+
+    assert isinstance(meta, Event)
+    assert meta.kind == "session_meta"
+    assert meta.is_meta is True
+
+
+def test_normalize_handles_session_meta_and_custom_tool_payloads(adapter: CodexAdapter) -> None:
+    session_meta = json.dumps(
+        {
+            "timestamp": "2026-07-12T14:39:30.546Z",
+            "type": "session_meta",
+            "payload": {
+                "session_id": "sess-2",
+                "id": "sess-2",
+                "timestamp": "2026-07-12T14:39:30.546Z",
+                "cwd": r"C:\Users\x\repo",
+            },
+        }
+    )
+    tool_call = json.dumps(
+        {
+            "timestamp": "2026-07-12T14:39:31.000Z",
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call",
+                "id": "ctc_1",
+                "call_id": "call_1",
+                "name": "exec",
+                "input": {"command": "pwd"},
+            },
+        }
+    )
+    tool_output = json.dumps(
+        {
+            "timestamp": "2026-07-12T14:39:31.100Z",
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call_output",
+                "call_id": "call_1",
+                "output": [{"type": "input_text", "text": "done"}],
+            },
+        }
+    )
+
+    meta_event = adapter.normalize(session_meta)
+    call_event = adapter.normalize(tool_call)
+    output_event = adapter.normalize(tool_output)
+
+    assert meta_event is not None
+    assert meta_event.kind == "session_meta"
+    assert meta_event.session_id == "sess-2"
+    assert meta_event.cwd == r"C:\Users\x\repo"
+    assert meta_event.is_meta is True
+
+    assert call_event is not None
+    assert call_event.tool_uses[0].name == "bash"
+    assert call_event.tool_uses[0].id == "call_1"
+
+    assert output_event is not None
+    assert output_event.tool_results[0].tool_use_id == "call_1"
+    assert output_event.text == "done"
+
+
+def test_iter_events_threads_session_id(adapter: CodexAdapter) -> None:
+    events = list(adapter.iter_events(FIXTURE))
+
+    session = events[0].session_id
+
+    assert session is not None
+    assert all(e.session_id == session for e in events)
+
+
+def test_iter_events_threads_cwd(adapter: CodexAdapter) -> None:
+    """Codex writes cwd once. Without threading it, repo scoping is a no-op."""
+    events = list(adapter.iter_events(FIXTURE))
+
+    assert all(e.cwd for e in events)
+
+
+def test_another_repos_session_is_scoped_out(adapter: CodexAdapter) -> None:
+    """The guard the threaded cwd exists for: one repo's sessions stay its own."""
+    events = list(adapter.iter_events(FIXTURE))
+
+    assert mine_events(events, r"d:\some\other\repo") == []
+
+
+def test_codex_rollout_feeds_decision_miner(adapter: CodexAdapter) -> None:
+    events = list(adapter.iter_events(FIXTURE))
+
+    decisions = mine_events(events, REPO_PREFIX)
+
+    assert len(decisions) == 1
+
+    decision = decisions[0]
+
+    assert decision.kind == "explicit_choice"
+    assert decision.files == ["outputs/sqlite-signup-demo/app.py"]
+    assert decision.session_id is not None
+
+    assert decision.quotes == [
+        "We chose Flask because it is lightweight, keeps SQLite integration straightforward, and avoids unnecessary boilerplate for this small application."
+    ]
+
+
+def test_normalize_exec_rg_to_search_codebase():
+    assert (
+        _normalize_tool_name(
+            "exec",
+            {
+                "command": ('const r = await tools.shell_command({"command":"rg --files"});'),
+            },
+        )
+        == "search_codebase"
+    )
+
+
+def test_normalize_handles_mcp_function_call_and_output(adapter: CodexAdapter) -> None:
+    tool_call = json.dumps(
+        {
+            "timestamp": "2026-07-17T16:46:00.000Z",
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "search_codebase",
+                "namespace": "mcp__repowise",
+                "arguments": json.dumps({"query": "signup"}),
+                "call_id": "call_mcp_1",
+            },
+        }
+    )
+
+    tool_output = json.dumps(
+        {
+            "timestamp": "2026-07-17T16:46:01.000Z",
+            "type": "response_item",
+            "payload": {
+                "type": "function_call_output",
+                "call_id": "call_mcp_1",
+                "output": (
+                    'Wall time: 0.1 seconds\n'
+                    'Output:\n'
+                    '{"result":{"results":[{"path":"app.py"}]}}'
+                ),
+            },
+        }
+    )
+
+    call_event = adapter.normalize(tool_call)
+    output_event = adapter.normalize(tool_output)
+
+    assert call_event is not None
+    assert call_event.kind == "assistant"
+    assert call_event.tool_uses[0].id == "call_mcp_1"
+    assert call_event.tool_uses[0].name == "search_codebase"
+    assert call_event.tool_uses[0].input["query"] == "signup"
+    assert call_event.tool_uses[0].input["path"] == "app.py"
+    assert output_event is not None
+    assert output_event.kind == "assistant"
+    assert output_event.tool_results[0].tool_use_id == "call_mcp_1"
+
+    # The output should bind the returned file to the original tool call.
+    assert call_event.tool_uses[0].input["path"] == "app.py"
+
+
+def test_a_search_binds_its_served_path_over_the_file_alias() -> None:
+    tool = ToolUse(id="c1", name="search_codebase", input={"query": "q"})
+    _bind_first_file(tool, [{"path": "new.py", "file": "old.py"}])
+    assert tool.input["path"] == "new.py"
+
+
+def test_function_call_decision_gets_file_attribution(adapter: CodexAdapter) -> None:
+    """A `function_call` tool use must reach the decision miner like `custom_tool_call` does.
+
+    Regression for #2622: the adapter used to label `function_call` /
+    `function_call_output` events with the raw payload type instead of
+    `"assistant"`, so the decision miner's `kind == "assistant"` gate skipped
+    them outright and a decision right after the call got no file context.
+    """
+    session_meta = json.dumps(
+        {
+            "timestamp": "2026-07-17T16:46:00.000Z",
+            "type": "session_meta",
+            "payload": {"id": "s1", "session_id": "s1", "cwd": r"C:\work\repo"},
+        }
+    )
+    tool_call = json.dumps(
+        {
+            "timestamp": "2026-07-17T16:46:01.000Z",
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "get_context",
+                "call_id": "c1",
+                "arguments": json.dumps({"path": "app.py"}),
+            },
+        }
+    )
+    tool_output = json.dumps(
+        {
+            "timestamp": "2026-07-17T16:46:02.000Z",
+            "type": "response_item",
+            "payload": {"type": "function_call_output", "call_id": "c1", "output": "ok"},
+        }
+    )
+    choice = json.dumps(
+        {
+            "timestamp": "2026-07-17T16:46:03.000Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": (
+                            "We chose Flask because it is lightweight and keeps "
+                            "SQLite integration straightforward."
+                        ),
+                    }
+                ],
+            },
+        }
+    )
+
+    events = [adapter.normalize(line) for line in (session_meta, tool_call, tool_output, choice)]
+
+    assert [e.kind for e in events] == ["session_meta", "assistant", "assistant", "assistant"]
+
+    decisions = mine_events(events, r"c:\work\repo")
+
+    assert len(decisions) == 1
+    assert decisions[0].kind == "explicit_choice"
+    assert decisions[0].files == ["app.py"]
+
+
+def _search_then_output(output: object) -> str:
+    """An rg search whose result is *output*, as one raw transcript line."""
+    return json.dumps(
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call_output",
+                "call_id": "call_rg",
+                "output": output,
+            },
+        }
+    )
+
+
+RG_CALL = json.dumps(
+    {
+        "type": "response_item",
+        "payload": {
+            "type": "custom_tool_call",
+            "call_id": "call_rg",
+            "name": "exec",
+            "input": 'const r = await tools.shell_command({"command":"rg TODO src"});',
+        },
+    }
+)
+
+
+def test_a_content_match_binds_the_path_not_the_matched_line(adapter: CodexAdapter) -> None:
+    """``rg`` prints ``path:line:text``. Only the path half is a file."""
+    adapter.normalize(RG_CALL)
+    event = adapter.normalize(
+        _search_then_output(
+            [{"type": "input_text", "text": "Exit code: 0\nOutput:\nsrc/app.py:12:    # TODO\n"}]
+        )
+    )
+
+    assert event is not None
+    results = json.loads(event.tool_results[0].content)["result"]["results"]
+    assert results == [{"path": "src/app.py"}]
+
+
+def test_a_root_level_content_match_still_binds_its_path(adapter: CodexAdapter) -> None:
+    """A ``path:line:`` match with no separator in the path is still a path."""
+    call_event = adapter.normalize(RG_CALL)
+    event = adapter.normalize(
+        _search_then_output(
+            [{"type": "input_text", "text": "Exit code: 0\nOutput:\napp.py:12:    # TODO\n"}]
+        )
+    )
+
+    assert event is not None
+    results = json.loads(event.tool_results[0].content)["result"]["results"]
+    assert results == [{"path": "app.py"}]
+    assert call_event is not None
+    assert call_event.tool_uses[0].input["path"] == "app.py"
+
+
+def test_a_bare_root_level_filename_is_kept(adapter: CodexAdapter) -> None:
+    """``rg --files``/``rg -l`` output with no ``:line:`` still admits a root file."""
+    adapter.normalize(RG_CALL)
+    event = adapter.normalize(_search_then_output([{"type": "input_text", "text": "Output:\nsetup.py\n"}]))
+
+    assert event is not None
+    results = json.loads(event.tool_results[0].content)["result"]["results"]
+    assert results == [{"path": "setup.py"}]
+
+
+def test_a_bare_prose_line_is_still_dropped(adapter: CodexAdapter) -> None:
+    """Loosening the bare-line filter must not admit stray prose as a file."""
+    adapter.normalize(RG_CALL)
+    event = adapter.normalize(
+        _search_then_output([{"type": "input_text", "text": "Output:\nNo files were searched\n"}])
+    )
+
+    assert event is not None
+    results = json.loads(event.tool_results[0].content)["result"]["results"]
+    assert results == []
+
+
+def test_unreadable_search_output_neither_raises_nor_erases(adapter: CodexAdapter) -> None:
+    """``normalize`` may not raise on content, and must not drop a real result."""
+    adapter.normalize(RG_CALL)
+    event = adapter.normalize(_search_then_output(None))
+
+    assert event is not None
+    assert event.tool_results[0].content is None
+
+
+def test_a_string_search_output_survives_rewriting(adapter: CodexAdapter) -> None:
+    adapter.normalize(RG_CALL)
+    event = adapter.normalize(_search_then_output("Output:\nsrc/app.py\n"))
+
+    assert event is not None
+    assert event.tool_results[0].content == "Output:\nsrc/app.py\n"
+
+
+#: A session bulk-imported from another harness into the Codex store.
+IMPORTED_FIXTURE = Path(__file__).parent / "data" / "codex_imported_session.jsonl"
+
+
+@pytest.mark.parametrize("intent", [INTENT_TURNS, INTENT_SHELL_CALLS, INTENT_TOOL_CALLS])
+def test_cwd_threads_under_the_gate_production_runs(adapter: CodexAdapter, intent: str) -> None:
+    """The scoping guard has to hold on the gated path, not just the bare one.
+
+    Every consumer passes a prefilter. A gate that drops ``session_meta``
+    leaves ``cwd`` unset on every event, and the miners' scoping test reads a
+    blank cwd as "no opinion" rather than as a miss, so one machine's every
+    session lands in whichever repo is being indexed.
+    """
+    events = list(adapter.iter_events(FIXTURE, prefilter=adapter.prefilter(intent)))
+
+    assert events
+    assert all(e.cwd for e in events)
+
+
+def test_another_repos_session_is_scoped_out_under_the_gate(adapter: CodexAdapter) -> None:
+    prefilter = adapter.prefilter(INTENT_TURNS)
+    events = list(adapter.iter_events(FIXTURE, prefilter=prefilter))
+
+    assert mine_events(events, r"d:\some\other\repo") == []
+
+
+def test_bulk_imported_session_yields_nothing_minable(adapter: CodexAdapter) -> None:
+    """An import is the other harness's session, and its adapter already read it.
+
+    Mining it here would count one session twice: once under the harness that
+    recorded it and once under the store it was copied into.
+    """
+    prefilter = adapter.prefilter(INTENT_TURNS)
+    events = list(adapter.iter_events(IMPORTED_FIXTURE, prefilter=prefilter))
+
+    assert all(not e.text for e in events)
+    assert mine_events(events, r"c:\users\dev\projects\demo") == []
+
+
+def test_the_import_gate_does_not_catch_a_native_session(adapter: CodexAdapter) -> None:
+    """The fixture's own originator is ``Codex Desktop``, so that is not the signal."""
+    prefilter = adapter.prefilter(INTENT_TURNS)
+    events = list(adapter.iter_events(FIXTURE, prefilter=prefilter))
+
+    assert mine_events(events, REPO_PREFIX)
+
+
+def test_import_state_does_not_leak_between_files(adapter: CodexAdapter) -> None:
+    """One adapter drives many transcripts; the latch is per file."""
+    prefilter = adapter.prefilter(INTENT_TURNS)
+    list(adapter.iter_events(IMPORTED_FIXTURE, prefilter=prefilter))
+    events = list(adapter.iter_events(FIXTURE, prefilter=prefilter))
+
+    assert mine_events(events, REPO_PREFIX)

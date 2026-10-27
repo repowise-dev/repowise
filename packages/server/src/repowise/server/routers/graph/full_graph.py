@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import load_only
 
+from repowise.core.analysis.execution_graph import is_walkable_execution_edge
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import GraphEdge, GraphNode
 from repowise.core.persistence.sql import LIKE_ESCAPE, escape_like
-from repowise.server.deps import get_db_session
+from repowise.server.deps import cross_repo_cut_inputs, get_db_session
 from repowise.server.mcp_server._graph_utils import _node_id_is_excluded
 from repowise.server.routers.graph._common import with_repo
 from repowise.server.schemas import GraphExportResponse, NodeSearchResult
@@ -61,7 +62,7 @@ def _flow_member_ids(
     """
     adjacency: dict[str, list[GraphEdge]] = {}
     for e in edges:
-        if e.edge_type == "calls":
+        if is_walkable_execution_edge(e.edge_type, e.resolution_origin, e.confidence):
             adjacency.setdefault(e.source_node_id, []).append(e)
 
     members: set[str] = set()
@@ -74,7 +75,7 @@ def _flow_member_ids(
             for e in adjacency.get(current, ()):
                 tid = e.target_node_id
                 conf = e.confidence if e.confidence is not None else 0.0
-                if tid in visited or conf < 0.5 or _node_id_is_excluded(tid):
+                if tid in visited or _node_id_is_excluded(tid):
                     continue
                 if conf > best_conf:
                     best_conf = conf
@@ -115,6 +116,7 @@ async def search_nodes(
 @router.get("/{repo_id}", response_model=GraphExportResponse)
 async def export_graph(
     repo_id: str,
+    request: Request,
     limit: int = Query(
         _FULL_GRAPH_NODE_CAP,
         ge=1,
@@ -183,7 +185,9 @@ async def export_graph(
 
     # Repo-wide signals: needed for the *_total counts and, when truncating,
     # for reserved-slot selection (flagged nodes are known before the cut).
-    signals = await collect_node_signals(session, repo_id, None)
+    signals = await collect_node_signals(
+        session, repo_id, None, **cross_repo_cut_inputs(request, repo_id)
+    )
 
     def _sig(n: GraphNode):
         return signals.get(n.node_id, EMPTY_SIGNALS)

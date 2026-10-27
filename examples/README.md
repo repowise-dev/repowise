@@ -8,10 +8,19 @@ self-contained README under `examples/<name>/`.
 | Example | What it shows |
 |---------|----------------|
 | [codex/](codex/) | Codex CLI setup: `repowise init --codex`, smoke checks, local plugin install |
+| [components/](components/) | `repowise components check` and `list`: Backstage-shaped components and per-component facts (no LLM key) |
+| [dead-code/](dead-code/) | `repowise dead-code` — unused exports and cleanup candidates (no LLM key) |
+| [decisions/](decisions/) | `repowise decision` list/health/confirm — architectural records (no LLM key) |
 | [distill/](distill/) | `distill` / `expand` / `saved` — compress command output (no LLM key) |
 | [health-coverage/](health-coverage/) | Code health, coverage ingest, and impacted-tests (no LLM key) |
+| [hooks-sync/](hooks-sync/) | `hook install` + `watch` — keep the index fresh (no LLM key) |
+| [plugins/hello/](plugins/hello/) | A minimal installable plugin: a CLI command, an MCP tool, an event sink and a report section |
 | [opencode/](opencode/) | OpenCode as the LLM provider for wiki generation |
+| [risk/](risk/) | `repowise risk` change / PR defect scoring (no LLM key) |
+| [search/](search/) | `repowise search` fulltext / symbol / semantic wiki lookup |
 | [security-scan/](security-scan/) | Working-tree security signals + OSS `security scan --history` (no LLM key) |
+| [structurizr-export/](structurizr-export/) | `export --format structurizr` fragment vs standalone (no LLM key) |
+| [wiki-export/](wiki-export/) | `export` markdown / html / json wiki pages (no LLM key) |
 
 ## Conventions
 
@@ -27,6 +36,11 @@ self-contained README under `examples/<name>/`.
 - [Codex integration](../docs/agent/CODEX.md)
 - [OpenCode integration](../docs/agent/OPENCODE.md)
 - [Code health](../docs/layers/CODE_HEALTH.md)
+- [Dead code](../docs/layers/DEAD_CODE.md)
+- [Decisions](../docs/layers/DECISIONS.md)
+- [Change risk](../docs/layers/CHANGE_RISK.md)
 - [Test intelligence](../docs/layers/TEST_INTELLIGENCE.md)
 - [Distill](../docs/agent/DISTILL.md)
+- [Auto-sync](../docs/scale/AUTO_SYNC.md)
+- [Structurizr export](../docs/architecture/structurizr-export.md)
 - [CLI: security](../docs/reference/CLI_REFERENCE.md)

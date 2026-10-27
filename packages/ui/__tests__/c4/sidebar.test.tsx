@@ -7,7 +7,7 @@ import { ArchNodeInfo } from "../../src/c4/panels/ArchNodeInfo";
 import { FileExplorer } from "../../src/c4/panels/FileExplorer";
 import { createMockView } from "./fixtures";
 
-vi.mock("../../src/dashboard/health-score-ring", () => ({
+vi.mock("../../src/c4/health-score-ring", () => ({
   HealthScoreRing: ({ score }: { score: number }) => (
     <div data-testid="health-score-ring">{score}</div>
   ),
@@ -235,7 +235,7 @@ describe("FileExplorer", () => {
     expect(store.getState().activeLayerId).toBe("layer:api");
   });
 
-  it("highlights selected file with accent background", () => {
+  it("highlights selected file with the neutral selection wash", () => {
     act(() => {
       store.getState().setView(mockView);
       store.getState().selectNode("src/app.py");
@@ -243,7 +243,7 @@ describe("FileExplorer", () => {
     render(<FileExplorer />);
     fireEvent.click(screen.getByLabelText("Expand src"));
     const button = screen.getByLabelText("Select app.py");
-    expect(button.style.background).toContain("rgba(245,149,32,0.2)");
+    expect(button.style.background).toContain("--color-selection-wash");
   });
 
   it("returns null when view is null", () => {

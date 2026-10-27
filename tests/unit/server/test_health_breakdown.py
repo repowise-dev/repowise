@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from repowise.core.analysis.health.impact_effort import WORK_QUEUE_SORTS
 from repowise.core.analysis.health.models import Severity
 from repowise.core.analysis.health.scoring import biomarker_weight, severity_deduction
 from repowise.server.routers.code_health import (
@@ -18,6 +19,41 @@ from repowise.server.routers.code_health import (
     _primary_and_magnitude,
     _score_breakdown_from_findings,
 )
+
+
+def _target(path, score, total_impact):
+    return {
+        "file_path": path,
+        "score": score,
+        "total_impact": total_impact,
+        "impact_per_effort": total_impact,
+        "finding_count": 1,
+    }
+
+
+def test_worst_score_sort_breaks_floored_ties_by_impact() -> None:
+    """``sort=score`` on the refactoring queue ranks the depth behind the floor.
+
+    The score clamps at 1.0, so sorting on it alone left the top of the "Worst
+    score" list in dict-insertion order, which is whatever order the findings
+    happened to group in.
+    """
+    targets = [
+        _target("a.py", 1.0, 2.0),
+        _target("z.py", 1.0, 9.0),
+        _target("m.py", 1.0, 5.0),
+        _target("ok.py", 6.0, 40.0),
+    ]
+    targets.sort(key=WORK_QUEUE_SORTS["score"])
+    assert [t["file_path"] for t in targets] == ["z.py", "m.py", "a.py", "ok.py"]
+
+
+def test_worst_score_sort_is_a_total_order() -> None:
+    """Equal score and equal impact still order deterministically, so a
+    ``limit`` boundary does not shuffle between requests."""
+    targets = [_target("b.py", 1.0, 3.0), _target("a.py", 1.0, 3.0)]
+    targets.sort(key=WORK_QUEUE_SORTS["score"])
+    assert [t["file_path"] for t in targets] == ["a.py", "b.py"]
 
 
 def _finding(

@@ -139,3 +139,51 @@ class TestJvmSampleNoFalsePositives:
         # exported class shouldn't be flagged unused.
         exports = _names(jvm_report, DeadCodeKind.UNUSED_EXPORT)
         assert "UserService" not in exports
+
+
+def _analyze_repo(repo: Path):
+    traverser = FileTraverser(repo)
+    parser = ASTParser()
+    builder = GraphBuilder(repo_path=repo)
+    for fi in traverser.traverse():
+        builder.add_file(parser.parse_file(fi, Path(fi.abs_path).read_bytes()))
+    graph = builder.build()
+    report = DeadCodeAnalyzer(graph, git_meta_map={}).analyze({"min_confidence": 0.0})
+    return graph, report
+
+
+class TestKotlinTopLevelFunctionImports:
+    """Issue #3081: a Kotlin utility file imported by function name is live."""
+
+    def _write(self, repo: Path) -> None:
+        util = repo / "core/src/main/kotlin/com/acme/util/StringUtils.kt"
+        app = repo / "app/src/main/kotlin/com/acme/app/Main.kt"
+        util.parent.mkdir(parents=True)
+        app.parent.mkdir(parents=True)
+        util.write_text(
+            "package com.acme.util\n\n"
+            'fun String.shout(): String = uppercase() + "!"\n\n'
+            "fun twice(s: String): String = s + s\n"
+        )
+        app.write_text(
+            "package com.acme.app\n\n"
+            "import com.acme.util.shout\nimport com.acme.util.twice\n\n"
+            'fun main() {\n    println(twice("hi".shout()))\n}\n'
+        )
+
+    def test_import_edge_targets_the_utility_file(self, tmp_path: Path) -> None:
+        self._write(tmp_path)
+        graph, _ = _analyze_repo(tmp_path)
+
+        util = "core/src/main/kotlin/com/acme/util/StringUtils.kt"
+        app = "app/src/main/kotlin/com/acme/app/Main.kt"
+        assert graph.has_edge(app, util)
+        assert not graph.has_node("external:com.acme.util.shout")
+        assert not graph.has_node("external:com.acme.util.twice")
+
+    def test_utility_file_is_not_unreachable(self, tmp_path: Path) -> None:
+        self._write(tmp_path)
+        _, report = _analyze_repo(tmp_path)
+
+        unreachable = _paths(report, DeadCodeKind.UNREACHABLE_FILE)
+        assert not any(p.endswith("StringUtils.kt") for p in unreachable)

@@ -1,204 +1,172 @@
-"use client";
+import type { Metadata } from "next";
+import { GitMerge } from "lucide-react";
+import { getTranslations } from "next-intl/server";
+import type { WorkspaceCoChangeEntry } from "@repowise-dev/api-client/types";
+import { PageShell } from "@repowise-dev/ui/shared";
+import { PageLede } from "@repowise-dev/ui/shared/page-lede";
+import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
+import { StatRibbon, type RibbonStat } from "@repowise-dev/ui/stats/stat-ribbon";
+import type { RepoPairSummary } from "@repowise-dev/ui/workspace/repo-pair-table";
+import { formatNumber } from "@repowise-dev/ui/lib/format";
+import { repoPairId, STRENGTH_DEFINITION } from "@repowise-dev/ui/workspace/co-change-facts";
+import { getWorkspace, getWorkspaceCoChanges } from "@/lib/api/workspace";
+import { CoChangesExplorer } from "./co-changes-explorer";
 
-import { useState, useMemo } from "react";
-import { GitMerge, Filter, ArrowLeft, LayoutList, Columns } from "lucide-react";
-import { useWorkspaceCoChanges, useWorkspace } from "@/lib/hooks/use-workspace";
-import { CoChangeTable } from "@repowise-dev/ui/workspace/co-change-table";
-import { RepoPairTable, type RepoPairSummary } from "@repowise-dev/ui/workspace/repo-pair-table";
-import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
-import { MetricCard } from "@repowise-dev/ui/shared/metric-card";
-import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
-import { Button } from "@repowise-dev/ui/ui/button";
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getTranslations("coChanges");
+  return { title: t("title") };
+}
 
-export default function CoChangesPage() {
-  const { workspace } = useWorkspace();
-  const [repo, setRepo] = useState("");
-  const [viewMode, setViewMode] = useState<"pairs" | "flat">("pairs");
-  const [selectedPairId, setSelectedPairId] = useState<string | null>(null);
+export const revalidate = 30;
 
-  const { data, isLoading } = useWorkspaceCoChanges({
-    repo: repo || undefined,
-    limit: 100,
-  });
+/** The endpoint's ceiling. Asked for in full so the table is not a second,
+ *  narrower cap on top of the one the miner already applied. */
+const ROW_LIMIT = 500;
 
-  const repos = workspace?.repos ?? [];
+type Props = {
+  searchParams: Promise<{ pair?: string; q?: string; cc?: string }>;
+};
 
-  const selectClass =
-    "rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-1.5 text-sm text-[var(--color-text-primary)] outline-none focus:border-[var(--color-accent-primary)]";
+/**
+ * Cross-repo co-changes.
+ *
+ * The server renders the figures; everything that responds to the reader (the
+ * repository-pair narrowing, the path search and the pair drawer) lives in one
+ * client leaf, which filters the rows it was handed instead of asking the
+ * server again. The URL still carries all three, so a narrowed list or an open
+ * pair is a linkable address.
+ */
+export default async function CoChangesPage({ searchParams }: Props) {
+  const t = await getTranslations("coChanges");
+  const { pair, q, cc } = await searchParams;
 
-  const repoPairs = useMemo(() => {
-    if (!data?.co_changes) return [];
-    const map = new Map<string, RepoPairSummary>();
-    for (const cc of data.co_changes) {
-      const sorted = [cc.source_repo, cc.target_repo].sort();
-      const id = `${sorted[0]}↔${sorted[1]}`;
-      
-      if (!map.has(id)) {
-        map.set(id, {
-          id,
-          repo1: sorted[0],
-          repo2: sorted[1],
-          filePairCount: 0,
-          maxStrength: 0,
-          lastDate: "",
-        });
-      }
-      const summary = map.get(id)!;
-      summary.filePairCount += 1;
-      if (cc.strength > summary.maxStrength) {
-        summary.maxStrength = cc.strength;
-      }
-      if (!summary.lastDate || cc.last_date > summary.lastDate) {
-        summary.lastDate = cc.last_date;
-      }
-    }
-    return Array.from(map.values()).sort((a, b) => b.maxStrength - a.maxStrength);
-  }, [data?.co_changes]);
+  // One wave. The workspace call is what the layout already makes, and it
+  // gives the alias-to-repo-id map the drawer's file links need.
+  const [res, ws] = await Promise.allSettled([
+    getWorkspaceCoChanges({ limit: ROW_LIMIT }),
+    getWorkspace(),
+  ]);
+  const data = res.status === "fulfilled" ? res.value : null;
+  const coChanges = data?.co_changes ?? [];
+  // What the miner found before its own caps trimmed the artifact. Above
+  // coChanges.length means this page is the top of a longer list.
+  const totalMined = data?.total_mined ?? coChanges.length;
+  const repoIds: Record<string, string> = {};
+  if (ws.status === "fulfilled") {
+    for (const r of ws.value.repos) if (r.repo_id) repoIds[r.alias] = r.repo_id;
+  }
 
-  const displayedCoChanges = useMemo(() => {
-    if (!data?.co_changes) return [];
-    if (viewMode === "pairs" && selectedPairId) {
-      return data.co_changes.filter((cc) => {
-        const sorted = [cc.source_repo, cc.target_repo].sort();
-        return `${sorted[0]}↔${sorted[1]}` === selectedPairId;
-      });
-    }
-    return data.co_changes;
-  }, [data?.co_changes, viewMode, selectedPairId]);
+  const icon = <GitMerge />;
+  const description = t("description");
+
+  if (coChanges.length === 0) {
+    return (
+      <PageShell title={t("title")} icon={icon} description={description}>
+        <EmptyState
+          title={t("emptyTitle")}
+          description={t("emptyDescription")}
+          icon={<GitMerge className="h-8 w-8" />}
+        />
+      </PageShell>
+    );
+  }
+
+  const repoPairs = summarisePairs(coChanges);
+  const strongest = repoPairs[0] ?? null;
+  const mostRecent = coChanges.reduce<string>(
+    (latest, c) => (c.last_date > latest ? c.last_date : latest),
+    "",
+  );
+  const freqs = coChanges.map((c) => c.frequency);
+  const minFreq = Math.min(...freqs);
+  const maxFreq = Math.max(...freqs);
+
+  // The lede owns the file-pair count, so the ribbon does not repeat it.
+  const ribbon: RibbonStat[] = [
+    {
+      label: t("ribbon.repoPairs"),
+      value: String(repoPairs.length),
+      sub: t("ribbon.repoPairsSub"),
+    },
+    {
+      label: t("ribbon.strongest"),
+      value: strongest ? `${strongest.repo1} and ${strongest.repo2}` : "",
+      sub: t("ribbon.strongestSub"),
+    },
+    {
+      label: t("ribbon.peakStrength"),
+      value: strongest ? `${Math.round(strongest.maxStrength * 100)}%` : "",
+      hint: STRENGTH_DEFINITION,
+      sub: t("ribbon.peakStrengthSub"),
+    },
+    {
+      label: t("ribbon.sessionsPerPair"),
+      value:
+        minFreq === maxFreq
+          ? String(minFreq)
+          : t("ribbon.sessionsRange", { min: minFreq, max: maxFreq }),
+      sub: t("ribbon.sessionsPerPairSub"),
+    },
+    {
+      label: t("ribbon.mostRecent"),
+      value: mostRecent ? mostRecent.slice(0, 10) : "",
+      sub: t("ribbon.mostRecentSub"),
+    },
+  ];
 
   return (
-    <div className="p-5 sm:p-8 space-y-6 max-w-[1200px]">
-      {/* Header */}
-      <div>
-        <div className="flex items-center justify-between mb-1">
-          <div className="flex items-center gap-2.5">
-            <GitMerge className="h-6 w-6 text-[var(--color-accent-primary)]" />
-            <h1 className="text-2xl font-semibold text-[var(--color-text-primary)]">
-              Co-Changes
-            </h1>
-          </div>
-          <div className="flex items-center rounded-md border border-[var(--color-border-default)] p-1 bg-[var(--color-bg-surface)]">
-            <button
-              onClick={() => { setViewMode("pairs"); setSelectedPairId(null); }}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded transition-colors ${
-                viewMode === "pairs"
-                  ? "bg-[var(--color-bg-elevated)] text-[var(--color-text-primary)] shadow-sm"
-                  : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
-              }`}
-            >
-              <Columns className="h-4 w-4" />
-              Repo Pairs
-            </button>
-            <button
-              onClick={() => { setViewMode("flat"); setSelectedPairId(null); }}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded transition-colors ${
-                viewMode === "flat"
-                  ? "bg-[var(--color-bg-elevated)] text-[var(--color-text-primary)] shadow-sm"
-                  : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
-              }`}
-            >
-              <LayoutList className="h-4 w-4" />
-              Flat List
-            </button>
-          </div>
-        </div>
-        <p className="text-sm text-[var(--color-text-secondary)] mt-2">
-          Files the same author tends to change in the same work sessions across
-          repositories. Strength is the share of the less-active file&apos;s recent
-          sessions that also touched the partner. This is a temporal work-pattern
-          hint from git history, not a verified technical dependency, so treat it
-          as a starting point for inspection rather than proof of coupling.
-        </p>
-      </div>
+    <PageShell title={t("title")} icon={icon} description={description}>
+      <PageLede
+        label={t("ledeLabel")}
+        value={formatNumber(coChanges.length)}
+        unit={
+          totalMined > coChanges.length
+            ? t("ledeUnitOfFound", { total: formatNumber(totalMined) })
+            : t("ledeUnitFound")
+        }
+        layout="beside"
+      >
+        <p>{t("ledeSentence")}</p>
+      </PageLede>
 
-      {/* Summary */}
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
-        <MetricCard
-          label="Total Co-Change Pairs"
-          value={data?.total ?? "—"}
-          icon={<GitMerge className="h-4 w-4 text-[var(--color-accent-primary)]" />}
-        />
-        <MetricCard
-          label="Repo Pairs"
-          value={data?.co_changes ? repoPairs.length : "—"}
-          icon={<GitMerge className="h-4 w-4 text-[var(--color-accent-secondary)]" />}
-        />
-        <MetricCard
-          label="Avg Strength"
-          value={
-            data?.co_changes && data.co_changes.length > 0
-              ? `${Math.round(
-                  (data.co_changes.reduce((sum, cc) => sum + cc.strength, 0) /
-                    data.co_changes.length) *
-                    100,
-                )}%`
-              : "—"
-          }
-          icon={<GitMerge className="h-4 w-4 text-[var(--color-accent-primary)]" />}
-        />
-      </div>
+      <StatRibbon stats={ribbon} />
 
-      {/* Filters */}
-      <div className="flex items-center justify-between">
-        {viewMode === "pairs" && selectedPairId ? (
-          <Button 
-            variant="outline" 
-            size="sm" 
-            onClick={() => setSelectedPairId(null)}
-            className="flex items-center gap-1.5"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            Back to Repo Pairs
-          </Button>
-        ) : (
-          <div className="flex items-center gap-3">
-            <Filter className="h-4 w-4 text-[var(--color-text-tertiary)]" />
-            <span className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
-              Filter
-            </span>
-            <select
-              value={repo}
-              onChange={(e) => setRepo(e.target.value)}
-              className={selectClass}
-            >
-              <option value="">All Repos</option>
-              {repos.map((r) => (
-                <option key={r.alias} value={r.alias}>
-                  {r.alias}
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
-      </div>
-
-      {/* Table */}
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm font-medium">
-            {viewMode === "pairs" && !selectedPairId 
-              ? `Repo Pairs (${repoPairs.length})` 
-              : `Co-Change Pairs (${displayedCoChanges.length})`}
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="pt-0">
-          {isLoading ? (
-            <div className="space-y-3 py-4">
-              {Array.from({ length: 8 }).map((_, i) => (
-                <Skeleton key={i} className="h-10 w-full" />
-              ))}
-            </div>
-          ) : viewMode === "pairs" && !selectedPairId ? (
-            <RepoPairTable 
-              repoPairs={repoPairs} 
-              onSelectPair={setSelectedPairId} 
-              selectedPairId={selectedPairId}
-            />
-          ) : (
-            <CoChangeTable coChanges={displayedCoChanges} />
-          )}
-        </CardContent>
-      </Card>
-    </div>
+      <CoChangesExplorer
+        coChanges={coChanges}
+        repoPairs={repoPairs}
+        totalMined={totalMined}
+        caps={{
+          truncatedBy: data?.truncated_by ?? null,
+          perRepoPairCap: data?.per_repo_pair_cap ?? null,
+          totalCap: data?.total_cap ?? null,
+        }}
+        repoIds={repoIds}
+        initialPair={pair && repoPairs.some((p) => p.id === pair) ? pair : null}
+        initialQuery={q ?? ""}
+        initialOpen={cc ?? null}
+      />
+    </PageShell>
   );
+}
+
+/** Roll file pairs up to the repository pairs they connect. */
+function summarisePairs(coChanges: WorkspaceCoChangeEntry[]): RepoPairSummary[] {
+  const map = new Map<string, RepoPairSummary>();
+  for (const c of coChanges) {
+    const [repo1, repo2] = [c.source_repo, c.target_repo].sort() as [string, string];
+    const id = repoPairId(repo1, repo2);
+    const summary = map.get(id) ?? {
+      id,
+      repo1,
+      repo2,
+      filePairCount: 0,
+      maxStrength: 0,
+      lastDate: "",
+    };
+    summary.filePairCount += 1;
+    if (c.strength > summary.maxStrength) summary.maxStrength = c.strength;
+    if (c.last_date > summary.lastDate) summary.lastDate = c.last_date;
+    map.set(id, summary);
+  }
+  return [...map.values()].sort((a, b) => b.maxStrength - a.maxStrength);
 }

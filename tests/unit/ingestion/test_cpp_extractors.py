@@ -77,6 +77,15 @@ static int Helper(int x) { return x; }
         sym = next(s for s in result.symbols if s.name == "Helper")
         assert sym.visibility == "private"
 
+    def test_anonymous_namespace_function_is_private(self, parser: ASTParser) -> None:
+        src = b"""namespace {
+  int Helper(int x) { return x; }
+}
+"""
+        result = parser.parse_file(_file(), src)
+        sym = next(s for s in result.symbols if s.name == "Helper")
+        assert sym.visibility == "private"
+
     def test_class_method_private_by_default(self, parser: ASTParser) -> None:
         src = b"""\
 class Foo {
@@ -121,10 +130,32 @@ void Free() { }
         assert by_name["Free"].kind == "function"
         assert by_name["Free"].parent_name is None
 
+    def test_qualified_definition_after_multibyte_text_binds_to_class(
+        self, parser: ASTParser
+    ) -> None:
+        src = """\
+// Author: 李
+void Foo::DoWork() { }
+""".encode()
+        result = parser.parse_file(_file(), src)
+        sym = next(s for s in result.symbols if s.name == "DoWork")
+        assert sym.kind == "method"
+        assert sym.parent_name == "Foo"
+
     def test_dllexport_marks_exported_symbol(self, parser: ASTParser) -> None:
         src = b"""\
 extern "C" __declspec(dllexport) HRESULT DllRegisterServer(void) { return 0; }
 """
+        result = parser.parse_file(_file(), src)
+        sym = next(s for s in result.symbols if s.name == "DllRegisterServer")
+        assert sym.visibility == "public"
+        assert sym.is_exported_symbol is True
+
+    def test_dllexport_after_multibyte_text_marks_exported_symbol(self, parser: ASTParser) -> None:
+        src = """\
+// Author: 李
+extern "C" __declspec(dllexport) HRESULT DllRegisterServer(void) { return 0; }
+""".encode()
         result = parser.parse_file(_file(), src)
         sym = next(s for s in result.symbols if s.name == "DllRegisterServer")
         assert sym.visibility == "public"

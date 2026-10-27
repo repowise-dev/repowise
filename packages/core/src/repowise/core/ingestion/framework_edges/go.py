@@ -2,11 +2,14 @@
 
 Covers the route/handler wiring that carries no import edge:
 
-* **Router frameworks** — Gin / Echo / Chi ``r.GET("/path", handler)``.
+* **Router frameworks** — Gin / Echo ``r.GET("/path", handler)``, chi / fiber
+  ``r.Get("/path", handler)``, gorilla/mux ``r.Path("/x").Handler(h)`` chains.
 * **stdlib ``net/http``** — ``http.HandleFunc("/path", handler)`` and
   ``mux.Handle("/path", handler)`` (same ``.HandleFunc`` / ``.Handle``
   selector shape as the router frameworks, so one regex serves both —
-  the only difference is which import gates emission).
+  the only difference is which import gates emission). The recogniser lives in
+  ``ingestion.framework_routes``, shared with the contract extractor that reads
+  the same call for its path.
 * **gRPC** — ``pb.RegisterXxxServer(s, &impl{})`` connects the registration
   site to the file defining the server implementation type.
 
@@ -17,8 +20,12 @@ Go-parity work (Phase 4).
 from __future__ import annotations
 
 import re
+from itertools import chain
 from typing import TYPE_CHECKING, Any
 
+from ..framework_routes import go_routes
+from ..framework_routes_chi import title_case_routes
+from ..framework_routes_gorilla import gorilla_routes
 from ..resolvers import ResolverContext
 from .base import (
     DetectionContext,
@@ -37,15 +44,12 @@ _GO_ROUTER_PKG_PATTERNS = (
     "github.com/gin-gonic/gin",
     "github.com/labstack/echo",
     "github.com/go-chi/chi",
+    "github.com/gofiber/fiber",
+    "github.com/gorilla/mux",
 )
 # stdlib net/http is gated separately: its handler-registration calls share
 # the ``.HandleFunc`` / ``.Handle`` selector shape with the router frameworks.
 _GO_HTTP_PKG = "net/http"
-
-_GO_ROUTE_CALL_RE = re.compile(
-    r"\.\s*(?:GET|POST|PUT|DELETE|PATCH|OPTIONS|HEAD|HandleFunc|Handle|Any)"
-    r"\s*\(\s*[\"'][^\"']*[\"']\s*,\s*([\w.]+)"
-)
 
 # gRPC generated registration: ``pb.RegisterGreeterServer(s, &greeter{})`` or
 # ``RegisterGreeterServer(srv, impl)``. Capture the implementation argument
@@ -94,9 +98,12 @@ def _add_go_route_edges(
         if not text:
             continue
 
-        for m in _GO_ROUTE_CALL_RE.finditer(text):
-            handler = m.group(1)
-            targets = _resolve_go_handler(handler, parsed, func_to_files, class_to_file)
+        for route in chain(go_routes(text), title_case_routes(text), gorilla_routes(text)):
+            if not route.handler:
+                continue  # an inline `func(c *gin.Context)` names nothing to link to
+            targets = _resolve_go_handler(
+                route.handler, parsed, func_to_files, class_to_file
+            )
             for target in targets:
                 if target != path and target in path_set and _add_edge_if_new(graph, path, target):
                     count += 1
@@ -169,7 +176,7 @@ def _resolve_go_handler(
 class _GoWebHandler:
     def detect(self, dctx: DetectionContext) -> bool:
         go_web_in_stack = any(
-            token in dctx.stack_lower for token in ("gin", "echo", "chi", "grpc")
+            token in dctx.stack_lower for token in ("gin", "echo", "chi", "fiber", "gorilla", "grpc")
         )
         return go_web_in_stack or _has_go_web_imports(dctx.parsed_files)
 

@@ -1,19 +1,43 @@
 """LanguageSpec for cpp (extracted from the registry data table)."""
 
 from ..spec import LanguageSpec
+from .c import BUILTIN_TYPES as _C_BUILTIN_TYPES
+from .c import TEST_SUPPORT_STEM_SUFFIXES
+
+#: Include fragments: C++ source that is ``#include``d into a translation unit
+#: rather than compiled as one of its own. The convention carries inline and
+#: template implementations, and generated binding tables pasted mid-file.
+#:
+#: Exported because three questions elsewhere need the same answer and used to
+#: each keep their own list: which extensions are C++ at all, which behave like
+#: a header for include resolution and reachability, and which are a fragment
+#: rather than a module. See ``traverser`` for the last of those.
+#:
+#: ``.inc`` was claimed exclusively by the Pascal spec, which routed abseil's
+#: 24 template-implementation fragments to a grammar that cannot parse them —
+#: no symbols, no edges, no error. Reassigned here on the corpus count: 24 of
+#: the 25 code-bearing ``.inc`` files are C++ and none are Pascal, on a corpus
+#: that does contain Pascal. The one PHP ``.inc`` (a Drush plugin) is the known
+#: cost of extension-only routing. ``.inc`` is also shared with PL/I, PHP and
+#: Pascal: traverser's content check now keeps this C++ default only when the
+#: file's head contains C/C++ evidence, leaving other members unindexed.
+INCLUDE_FRAGMENT_EXTENSIONS: frozenset[str] = frozenset({".inl", ".ipp", ".tpp", ".inc"})
 
 SPEC = LanguageSpec(
     tag="cpp",
     display_name="C++",
     import_support="full",
-    # GoogleTest conventions: foo_test.cc / foo_unittest.cc / test_foo.cpp.
+    # GoogleTest conventions: foo_test.cc / foo_unittest.cc / test_foo.cpp,
+    # and the helpers tests share (abseil's cord_test_helpers.h,
+    # distribution_test_util.h, log_basic_test_impl.inc).
     test_stem_prefixes=("test_",),
-    test_stem_suffixes=("_test", "_unittest"),
+    test_stem_suffixes=("_test", "_unittest", *TEST_SUPPORT_STEM_SUFFIXES),
     # A top-level include/ holds a C++ library's installed public headers —
     # its API surface (fmt, leveldb, boost layouts). Root-anchored: a
     # vendored include/ deep in another tree must not mint the layer.
     layer_dir_hints=(("/include", "API"),),
-    extensions=frozenset({".cpp", ".cc", ".cxx", ".h", ".hpp", ".hxx"}),
+    extensions=frozenset({".cpp", ".cc", ".cxx", ".h", ".hh", ".hpp", ".hxx"})
+    | INCLUDE_FRAGMENT_EXTENSIONS,
     grammar_package="tree_sitter_cpp",
     scm_file="cpp.scm",
     heritage_node_types=frozenset({"class_specifier", "struct_specifier"}),
@@ -68,5 +92,7 @@ SPEC = LanguageSpec(
             "weak_ptr",
         }
     ),
+    # Same C extractor and grammar as c.py, so the same builtin set applies.
+    builtin_types=_C_BUILTIN_TYPES,
     color_hex="#F34B7D",
 )

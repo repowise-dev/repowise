@@ -27,7 +27,7 @@ The types and functions the rest of `{{ ctx.repo_name }}` leans on most, ranked 
 {% if ctx.relations %}
 ## How they connect
 {% for r in ctx.relations %}
-- `{{ r.source }}` {{ r.kind }} `{{ r.target }}`
+- `{{ r.source }}` {{ r.verb }} `{{ r.target }}`
 {% endfor %}
 {% endif %}
 

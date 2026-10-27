@@ -36,6 +36,12 @@ export interface FileHealthFinding {
    * `defect` when an older payload omits it.
    */
   dimension?: HealthDimension;
+  /** `"unverified"` for a provisional finding type; null for a validated one. */
+  verification?: string | null;
+  lower_priority?: string | null;
+  /** The measurement note when the row's language cell is served as a preview;
+   *  null or absent for a validated cell. */
+  preview?: string | null;
 }
 
 export interface FileHealthMetric {
@@ -104,10 +110,15 @@ export interface FileDetailHealth {
   signals: FileSignals | null;
 }
 
+/** Agent share (0-1) of the file's commits with a known source, null below
+ * the coverage floor with `agent_share_suppressed` set; coverage is known /
+ * all commits (0-1). Unknown commits are never counted as human. */
 export interface FileAgentProvenance {
   agent_commit_count: number;
   agent_authored_pct: number | null;
   tier_counts: Record<string, number>;
+  attribution_coverage: number | null;
+  agent_share_suppressed: string | null;
 }
 
 /** Hotspot row + history extras the detail endpoint joins in. */
@@ -115,8 +126,12 @@ export interface FileDetailGit extends Hotspot {
   significant_commits: SignificantCommit[];
   top_authors: FileAuthor[];
   co_change_partners: CoChangePartner[];
-  agent: FileAgentProvenance;
+  /** Null when attribution is off for the repository. */
+  agent: FileAgentProvenance | null;
   first_commit_at: string | null;
+  /** The primary (blame) owner's share of current lines, 0-1. Null without
+   *  blame; `primary_owner_commit_pct` is the same person's share of commits. */
+  primary_owner_line_pct?: number | null;
   /** `symbol_id` -> counted fixes that landed in it, over the same window as
    *  `prior_defect_count`. Approximate: symbol spans are current-tree while
    *  each fix's line ranges are numbered on its own parent commit. A symbol
@@ -129,10 +144,25 @@ export interface FileDetailCoverage {
   line_coverage_pct: number;
   branch_coverage_pct: number | null;
   total_coverable_lines: number;
+  /**
+   * How many lines `covered_lines` names. Always sent, including under
+   * `fields=slim` where the array itself is dropped — the coverage headline
+   * only ever wanted the count, and counting it client-side is what forced the
+   * whole integer array across the wire. Optional so older payloads parse.
+   */
+  covered_line_count?: number;
+  /** Empty under `fields=slim`; read `covered_line_count` for the total. */
   covered_lines: number[];
   source_format: string;
   ingested_at: string | null;
   ingested_commit_sha: string | null;
+  /**
+   * Whether `covered_lines` still lines up with the file on disk: `stale` when
+   * git shows the file changed since `ingested_commit_sha`, `unknown` when it
+   * cannot tell. Only `stale` withholds the line tint. Optional so older
+   * payloads parse.
+   */
+  freshness?: "current" | "stale" | "unknown";
 }
 
 export interface FileGraphNeighbor {
@@ -196,7 +226,7 @@ export interface FileDeadCodeFinding {
   symbol_name: string | null;
   confidence: number;
   reason: string;
-  lines: number;
+  lines: number | null;
   safe_to_delete: boolean;
 }
 
@@ -209,6 +239,7 @@ export interface FileDeadCodeFinding {
 export interface FileRow {
   file_path: string;
   language: string;
+  /** NLOC, not raw lines; null where health measured none (see `loc_null_reason`). */
   loc: number | null;
   symbol_count: number;
   pagerank_pct: number;
@@ -220,6 +251,9 @@ export interface FileRow {
   churn_pct: number | null;
   commit_count: number | null;
   last_commit_at: string | null;
+  /** Measured line coverage, 0-100, from the stored report. Optional so older servers parse. */
+  line_coverage_pct?: number | null;
+  /** @deprecated The same figure as `line_coverage_pct`; read that. */
   coverage_pct: number | null;
   is_test: boolean;
   is_entry_point: boolean;
@@ -235,6 +269,10 @@ export interface FilesIndexResponse {
   files: FileRow[];
   total: number;
   languages: FileLanguageCount[];
+  /** What `loc` counts. Optional so older servers parse. */
+  loc_unit?: "nloc";
+  /** Why a row's `loc` is null. */
+  loc_null_reason?: string;
 }
 
 export interface FileDetailResponse {
@@ -245,7 +283,16 @@ export interface FileDetailResponse {
   coverage: FileDetailCoverage | null;
   graph: FileDetailGraph | null;
   symbols: FileSymbolSlim[];
+  /** Empty under `fields=slim`; read `function_blame_count` for the total. */
   function_blame: FunctionBlameRow[];
+  /**
+   * How many blame rows exist, in both modes. Optional so a frontend ahead of
+   * its backend degrades rather than rendering `NaN` — the same contract
+   * `coverage.covered_line_count` follows, and for the same reason: a caller
+   * deciding whether a block is worth fetching cannot otherwise tell an empty
+   * table from a dropped one.
+   */
+  function_blame_count?: number;
   governing_decisions: GoverningDecisionRef[];
   dead_code: FileDeadCodeFinding[];
 }

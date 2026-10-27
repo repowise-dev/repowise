@@ -7,6 +7,7 @@ from typing import ClassVar
 import pytest
 
 from repowise.core.distill import distill_output
+from repowise.core.distill.budget import estimate_tokens
 from repowise.core.distill.filters.base import OutputFilter
 from repowise.core.distill.markers import parse_marker_refs
 from repowise.core.distill.registry import filter_registry
@@ -100,6 +101,31 @@ def test_savings_recorded_in_ledger(load_fixture, store: OmissionStore) -> None:
     summary = store.savings_summary()
     assert summary["events"] == 1
     assert summary["per_filter"]["git_log"]["saved_tokens"] > 0
+
+
+def test_saving_is_capped_at_what_the_host_would_have_delivered(store: OmissionStore) -> None:
+    """Output past the host's truncation point was never going to cost anything.
+
+    Claimed savings must be measured against what the agent would have
+    *received*, not against the raw byte count, or a huge output books a
+    saving for tokens the model would never have seen.
+    """
+    from repowise.core.distill.engine import HOST_OUTPUT_CAP_CHARS
+
+    # A diffstat far past the cap: 4x the host's limit.
+    body = "\n".join(f" packages/mod_{i}/file_{i}.py | {i % 90 + 1} +++---" for i in range(2600))
+    raw = body + "\n 2600 files changed, 90000 insertions(+), 40000 deletions(-)\n"
+    assert len(raw) > HOST_OUTPUT_CAP_CHARS * 3
+
+    result = distill_output(raw, command="git diff --stat", source="cli", store=store)
+    assert result.distilled
+    # Billed against the capped counterfactual, not the raw size.
+    assert result.raw_tokens == estimate_tokens(raw[:HOST_OUTPUT_CAP_CHARS])
+    assert result.raw_tokens < estimate_tokens(raw) // 3
+    assert store.savings_summary()["raw_tokens"] == result.raw_tokens
+    # …while the marker and the stored artifact still describe the real thing,
+    # because `repowise expand` hands back all of it.
+    assert result.ref is not None
 
 
 def test_disabled_filters_respected(load_fixture, store: OmissionStore) -> None:

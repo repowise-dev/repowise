@@ -13,6 +13,19 @@ embedding and lexical relevance to the question. Within that ~200-file
 neighbourhood a far endpoint that lost the corpus-wide retrieval wins, so it
 rises; the top few contest the bottom served slot. The head is never reordered,
 so a gold already surfaced can't be demoted.
+
+**The motion-cue gate was removed and put back, 2026-08-02.** Running the walk
+on every question is the obviously-right-looking change: phrasing is not a
+property of the graph, and this module's own note argues the precision controls
+are the walk and the contested slot rather than the gate. Measured on the
+99-question eval it cost 6.4 points of recall@5. The mechanism is specific: the
+stage re-ranks everything below ``_KEEP_TOP`` by fused relevance and injects
+**file** pages, and on a subsystem-shaped question ("what does the health
+subsystem cover") the answer is a *module* page sitting in one of those lower
+slots. Fabricated file neighbours evict it. The gate was accidentally load-
+bearing, not because flow questions are the only ones with far endpoints, but
+because they are the ones whose answer is never a module page. Reaching the
+other questions needs the injection to respect page type, not a wider gate.
 """
 
 from __future__ import annotations
@@ -23,8 +36,9 @@ from typing import Any
 from sqlalchemy import select
 
 from repowise.core.persistence.models import Page
+from repowise.core.providers.embedding import store_has_semantic_vectors
 from repowise.server.mcp_server._answer_pipeline import question_vector, vector_search
-from repowise.server.mcp_server._flow_path import _is_plumbing, _load_file_adjacency
+from repowise.server.mcp_server._flow_path import _is_plumbing, file_adjacency
 
 # Motion cues that mark a data-flow question. Loose on purpose: the walk (reaches
 # only files near the top hits) and the single contested slot are the real
@@ -110,7 +124,7 @@ def _hub_cutoff(deg: dict[str, int]) -> int:
     return max(vals[min(len(vals) - 1, int(len(vals) * _HUB_PERCENTILE))], 1)
 
 
-def _walk_neighborhood(adj: dict[str, set[str]], seeds: list[str]) -> set[str]:
+def _walk_neighborhood(adj: dict[str, list[str]], seeds: list[str]) -> set[str]:
     """Bounded BFS out from ``seeds``, never expanding through a hub or plumbing.
 
     Such nodes may be *reached* (a hub can be the gold) but are never expanded
@@ -151,6 +165,12 @@ async def _relevance_order(
     embedded; the lexical arm has no use for it and ignores it.
     """
     if searcher is None or not pool:
+        return []
+    # Checked here and not only inside ``vector_search``: on a keyless index
+    # ``question_vector`` returns None, which routes to the ``else`` arm below
+    # and would reach the store directly, re-embedding the question on the way
+    # to vectors that cannot rank. The guard has to sit above the branch.
+    if not store_has_semantic_vectors(searcher):
         return []
     try:
         if vector is not None:
@@ -199,7 +219,7 @@ async def expand_via_neighbor_rerank(
     if not seed_paths:
         return hits
 
-    adj = await _load_file_adjacency(session, repo_id)
+    adj = await file_adjacency(session, repo_id)
     pool = _walk_neighborhood(adj, seed_paths) if adj else set()
     if not pool:
         return hits

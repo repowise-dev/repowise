@@ -49,7 +49,7 @@ async def test_mark_tombstone_pages_sets_status_and_successors(setup_mcp, sessio
     )
     await session.commit()
 
-    assert marked == 1
+    assert marked == ["file_page:src/auth/service.py"]
     await session.refresh(page)
     assert page.freshness_status == "tombstone"
     assert json.loads(page.metadata_json)["successor_paths"] == ["src/auth/service_v2.py"]
@@ -106,7 +106,12 @@ async def test_search_drops_tombstoned_pages(setup_mcp, session, monkeypatch):
 
     mcp_mod._vector_store.search = fake_search
     result = await search_codebase("auth service")
-    ids = [r["page_id"] for r in result["results"]]
+    # ``page_id`` is omitted only where ``page_type`` + ``target_path`` rebuild
+    # it, or ``path`` on a file page that serves ``path`` instead.
+    ids = [
+        r.get("page_id") or f"{r['page_type']}:{r.get('target_path') or r['path']}"
+        for r in result["results"]
+    ]
     assert "file_page:src/auth/service.py" not in ids
     assert "file_page:src/db/models.py" in ids
 

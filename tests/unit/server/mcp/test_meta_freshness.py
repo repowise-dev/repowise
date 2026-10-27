@@ -3,22 +3,32 @@
 "Silence means current" only trains agent trust if ``stale_warning`` fires
 when the served content is actually affected. These tests pin the contract:
 
-  * HEAD match → silence (no warning, no ``index_behind``).
+  * HEAD match → prose silence, and ``index_behind: false``.
   * HEAD mismatch + a served target changed → ``stale_warning``.
   * HEAD mismatch + no served target changed → ``index_behind: true`` only.
   * HEAD mismatch + no targets passed (repo-level tools) → repo-level warning.
   * git can't diff the two SHAs → fall back to the repo-level warning
     (fail toward warning, never toward false silence).
+
+``index_behind`` is two-valued wherever the live-vs-indexed comparison ran, and
+absent only where it could not run. It used to be written on the true branches
+only, which made the key unusable as a rate: every consumer that averaged it saw
+100% stale because a false was indistinguishable from a tool that never checks.
 """
 
 from __future__ import annotations
 
 import subprocess
 import types
+from pathlib import Path
 
 import pytest
 
 from repowise.server.mcp_server import _meta
+from tests.unit.persistence.test_repository_head_commit import (
+    linked_worktree,
+    submodule_checkout,
+)
 
 _INDEXED = "a" * 40
 _LIVE = "b" * 40
@@ -40,23 +50,57 @@ def _prime(tmp_path, changed: frozenset[str] | None):
 
 
 def test_head_match_is_silent(tmp_path, monkeypatch):
-    monkeypatch.setattr(_meta, "_read_live_head", lambda p: _INDEXED)
+    monkeypatch.setattr(_meta, "read_live_head", lambda p: _INDEXED)
     out = _meta.freshness_from_repo(_repo(tmp_path), targets=["a.py"])
     assert "stale_warning" not in out
+    assert out["index_behind"] is False
+    assert out["live_head"] == _INDEXED[:12]
+
+
+def test_no_git_signal_omits_index_behind_entirely(tmp_path, monkeypatch):
+    """Absence means "not evaluated", which is not the same as false.
+
+    Without a live HEAD the comparison never runs, so claiming ``false`` here
+    would report a repo as verified-current on no evidence at all.
+    """
+    monkeypatch.setattr(_meta, "read_live_head", lambda p: None)
+    out = _meta.freshness_from_repo(_repo(tmp_path), targets=["a.py"])
     assert "index_behind" not in out
-    assert "live_head" not in out
+
+
+def test_build_meta_exposes_the_persisted_index_scope(tmp_path, monkeypatch):
+    repowise_dir = tmp_path / ".repowise"
+    repowise_dir.mkdir()
+    (repowise_dir / "state.json").write_text(
+        '{"run_mode":"fast","git_tier":"essential","docs_mode":"none"}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(_meta, "read_live_head", lambda p: None)
+
+    out = _meta.build_meta(repository=_repo(tmp_path))
+    whole = _meta.build_meta_with_full_scope(repository=_repo(tmp_path))
+
+    # An ordinary response carries the digest; what it says about the run is
+    # the same, and the diagnostics it leaves out are one get_overview away.
+    assert out["index_scope"]["run_mode"] == "fast"
+    assert out["index_scope"]["content_provenance"] == "none"
+    assert out["index_scope"]["projection"] == "compact"
+    assert whole["index_scope"]["run_mode"] == "fast"
+    assert whole["index_scope"]["content_provenance"] == "none"
+    assert whole["index_scope"]["git_history_coverage"] is None
 
 
 def test_served_target_changed_warns(tmp_path, monkeypatch):
-    monkeypatch.setattr(_meta, "_read_live_head", lambda p: _LIVE)
+    monkeypatch.setattr(_meta, "read_live_head", lambda p: _LIVE)
     _prime(tmp_path, frozenset({"src/a.py"}))
     out = _meta.freshness_from_repo(_repo(tmp_path), targets=["src/a.py"])
     assert "stale_warning" in out
-    assert "index_behind" not in out
+    # The sharper signal does not suppress the measurable one.
+    assert out["index_behind"] is True
 
 
 def test_unaffected_targets_get_index_behind_not_warning(tmp_path, monkeypatch):
-    monkeypatch.setattr(_meta, "_read_live_head", lambda p: _LIVE)
+    monkeypatch.setattr(_meta, "read_live_head", lambda p: _LIVE)
     _prime(tmp_path, frozenset({"docs/README.md"}))
     out = _meta.freshness_from_repo(_repo(tmp_path), targets=["src/a.py"])
     assert "stale_warning" not in out
@@ -65,21 +109,81 @@ def test_unaffected_targets_get_index_behind_not_warning(tmp_path, monkeypatch):
 
 
 def test_no_targets_keeps_repo_level_warning(tmp_path, monkeypatch):
-    monkeypatch.setattr(_meta, "_read_live_head", lambda p: _LIVE)
+    monkeypatch.setattr(_meta, "read_live_head", lambda p: _LIVE)
     out = _meta.freshness_from_repo(_repo(tmp_path), targets=None)
     assert "stale_warning" in out
 
 
 def test_empty_targets_means_nothing_served_and_never_warns(tmp_path, monkeypatch):
-    monkeypatch.setattr(_meta, "_read_live_head", lambda p: _LIVE)
+    monkeypatch.setattr(_meta, "read_live_head", lambda p: _LIVE)
     _prime(tmp_path, frozenset({"src/a.py"}))
     out = _meta.freshness_from_repo(_repo(tmp_path), targets=[])
     assert "stale_warning" not in out
     assert out.get("index_behind") is True
 
 
+def test_no_targets_with_zero_changed_files_does_not_warn(tmp_path, monkeypatch):
+    """HEAD moved but the trees are identical — nothing anywhere can be stale.
+
+    Regression (N4): a repo-level response took the "no targets" branch before
+    ever asking git *what* changed, so an empty commit (or a merge that changed
+    nothing) produced ``stale_warning`` on a repo that was completely current.
+    A warning that fires when zero files changed is the loudest possible way to
+    be wrong, and it trains an agent to stop reading the field.
+    """
+    monkeypatch.setattr(_meta, "read_live_head", lambda p: _LIVE)
+    _prime(tmp_path, frozenset())
+    out = _meta.freshness_from_repo(_repo(tmp_path), targets=None)
+    assert "stale_warning" not in out
+    assert out.get("index_behind") is True
+    assert out.get("live_head") == _LIVE[:12]
+
+
+def test_no_targets_with_real_changes_still_warns(tmp_path, monkeypatch):
+    """The zero-change carve-out must not silence a genuinely behind index."""
+    monkeypatch.setattr(_meta, "read_live_head", lambda p: _LIVE)
+    _prime(tmp_path, frozenset({"src/a.py"}))
+    out = _meta.freshness_from_repo(_repo(tmp_path), targets=None)
+    assert "stale_warning" in out
+    assert out["index_behind"] is True
+
+
+def test_empty_commit_over_real_git_is_not_stale(tmp_path):
+    """End to end against git, since the carve-out turns on a real empty diff."""
+
+    def git(*args):
+        subprocess.run(
+            ["git", "-C", str(tmp_path), *args], check=True, capture_output=True, text=True
+        )
+
+    def sha():
+        return subprocess.run(
+            ["git", "-C", str(tmp_path), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    git("init", "-q")
+    git("config", "user.email", "t@t.t")
+    git("config", "user.name", "t")
+    (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-qm", "one")
+    indexed = sha()
+    git("commit", "-q", "--allow-empty", "-m", "empty")
+    live = sha()
+
+    assert live != indexed
+    assert _meta._changed_files_between(str(tmp_path), indexed, live) == frozenset()
+    repo = types.SimpleNamespace(updated_at=None, local_path=str(tmp_path), head_commit=indexed)
+    out = _meta.freshness_from_repo(repo, targets=None)
+    assert "stale_warning" not in out
+    assert out.get("index_behind") is True
+
+
 def test_git_diff_failure_falls_back_to_repo_level_warning(tmp_path, monkeypatch):
-    monkeypatch.setattr(_meta, "_read_live_head", lambda p: _LIVE)
+    monkeypatch.setattr(_meta, "read_live_head", lambda p: _LIVE)
     _prime(tmp_path, None)  # git couldn't answer (rebased-away SHA, timeout)
     out = _meta.freshness_from_repo(_repo(tmp_path), targets=["src/a.py"])
     assert "stale_warning" in out
@@ -136,3 +240,144 @@ def test_changed_files_between_real_git(tmp_path):
     assert changed == frozenset({"b.py"})
     # Unknown SHA → None (fail toward warning), and the miss is cached too.
     assert _meta._changed_files_between(str(tmp_path), "f" * 40, sha2) is None
+
+
+def test_confident_answer_is_never_told_retrieval_found_nothing() -> None:
+    """A high-confidence answer empties ``retrieval`` deliberately, so the hint
+    must never read that block's length as a count of what retrieval found.
+    Every cached reply re-derives its hint from the stored payload, which is
+    where such a misreading would reach the most trustworthy answers we send."""
+    from repowise.server.mcp_server._meta import answer_hint
+
+    assert answer_hint("high") is None
+    assert answer_hint("medium") is None
+    assert "candidate_files" in (answer_hint("low") or "")
+
+
+def test_no_answer_hint_names_an_external_tool() -> None:
+    """A dead end redirects into our own surface; only the exhaustive-sweep
+    wording may name an external tool, and it is not a get_answer hint."""
+    from repowise.server.mcp_server._meta import NO_HITS_RECOVERY_HINT, answer_hint
+
+    hints = [answer_hint(c) for c in ("high", "medium", "low")]
+    hints += [
+        answer_hint("low", degraded="no-llm-provider", retrieval_quality=q)
+        for q in ("high", "partial", "weak")
+    ]
+    assert not [h for h in hints if h and "Grep" in h]
+    assert "Grep" not in NO_HITS_RECOVERY_HINT
+    assert "search_codebase" in NO_HITS_RECOVERY_HINT
+
+
+async def _stamp_head_commit(sha: str) -> None:
+    """Give the fixture repository an indexed commit so freshness has something
+    to report. Without it ``freshness_from_repo`` emits only the age fields, and
+    a tool that forgot to pass ``repository`` would look identical to one that
+    passed it."""
+    from sqlalchemy import update
+
+    import repowise.server.mcp_server as mcp_mod
+    from repowise.core.persistence.database import get_session
+    from repowise.core.persistence.models import Repository
+
+    async with get_session(mcp_mod._session_factory) as session:
+        await session.execute(update(Repository).values(head_commit=sha))
+
+
+@pytest.mark.asyncio
+async def test_structured_search_meta_carries_freshness(setup_mcp):
+    """A single-repo symbol search compares against one index, so it must say
+    which commit that index was built from."""
+    from repowise.server.mcp_server import search_codebase
+
+    await _stamp_head_commit(_INDEXED)
+    result = await search_codebase("AuthService", mode="symbol")
+    assert result["_meta"]["indexed_commit"] == _INDEXED[:12]
+
+
+@pytest.mark.asyncio
+async def test_execution_flows_meta_carries_freshness(setup_mcp):
+    """get_execution_flows serves traces over files of one repo, so its
+    envelope carries that repo's freshness like every other default tool."""
+    from repowise.server.mcp_server.tool_flows import get_execution_flows
+
+    await _stamp_head_commit(_INDEXED)
+    result = await get_execution_flows()
+    assert result["_meta"]["indexed_commit"] == _INDEXED[:12]
+
+
+@pytest.mark.asyncio
+async def test_execution_flows_targets_name_the_traced_files(setup_mcp, monkeypatch):
+    """A stale warning is scoped to what the response served, so the files the
+    published traces walk have to reach freshness as targets."""
+    from repowise.server.mcp_server import tool_flows
+
+    seen: list = []
+    real = tool_flows._build_meta
+
+    def spy(**kwargs):
+        seen.append(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setattr(tool_flows, "_build_meta", spy)
+    await _stamp_head_commit(_INDEXED)
+    result = await tool_flows.get_execution_flows(entry_point="src/auth/service.py")
+    assert result["flows"]
+    assert result["_meta"]["indexed_commit"] == _INDEXED[:12]
+    assert seen[-1]["repository"] is not None
+    assert "src/auth/service.py" in seen[-1]["targets"]
+
+
+def test_read_live_head_plain_git_dir(tmp_path: Path) -> None:
+    sha = "a" * 40
+    git = tmp_path / ".git"
+    (git / "refs" / "heads").mkdir(parents=True)
+    (git / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    (git / "refs" / "heads" / "main").write_text(sha + "\n", encoding="utf-8")
+    assert _meta.read_live_head(str(tmp_path)) == sha
+
+
+def test_read_live_head_non_git_and_empty(tmp_path: Path) -> None:
+    assert _meta.read_live_head(str(tmp_path)) is None
+    assert _meta.read_live_head(None) is None
+    assert _meta.read_live_head("") is None
+
+
+def test_read_live_head_worktree_loose_ref(tmp_path: Path) -> None:
+    sha = "a" * 40
+    checkout = linked_worktree(tmp_path, sha, how="loose")
+    assert _meta.read_live_head(str(checkout)) == sha
+
+
+def test_read_live_head_worktree_packed_refs(tmp_path: Path) -> None:
+    sha = "c" * 40
+    checkout = linked_worktree(tmp_path, sha, how="packed")
+    assert _meta.read_live_head(str(checkout)) == sha
+
+
+def test_read_live_head_worktree_detached(tmp_path: Path) -> None:
+    sha = "b" * 40
+    checkout = linked_worktree(tmp_path, sha, how="detached")
+    assert _meta.read_live_head(str(checkout)) == sha
+
+
+def test_read_live_head_worktree_relative_gitdir(tmp_path: Path) -> None:
+    sha = "f" * 40
+    checkout = linked_worktree(tmp_path, sha, how="loose", relative=True)
+    assert _meta.read_live_head(str(checkout)) == sha
+
+
+def test_read_live_head_worktree_missing_gitdir_returns_none(tmp_path: Path) -> None:
+    (tmp_path / ".git").write_text("gitdir: /somewhere/.git/worktrees/wt\n", encoding="utf-8")
+    assert _meta.read_live_head(str(tmp_path)) is None
+
+
+def test_read_live_head_garbled_gitfile_returns_none(tmp_path: Path) -> None:
+    (tmp_path / ".git").write_text("not a gitdir\n", encoding="utf-8")
+    assert _meta.read_live_head(str(tmp_path)) is None
+
+
+def test_read_live_head_submodule_gitdir(tmp_path: Path) -> None:
+    sha = "9" * 40
+    checkout = submodule_checkout(tmp_path, sha)
+    assert _meta.read_live_head(str(checkout)) == sha

@@ -20,15 +20,21 @@ JVM source that view misses three real shapes:
 
 META-INF/services, JPMS ``provides ... with``, and Spring Boot autoconfig
 imports are *not* re-checked here — those are stamped as
-``is_entry_point`` on the file node during the JVM warmup (see
-:mod:`graph_warmups`), and the analyzer's existing entry-point skip
-honours them before reaching this hook.
+``is_reachability_root`` on the file node during the JVM warmup (see
+:mod:`graph_warmups`), and the analyzer's root skip honours them before
+reaching this hook.
 """
 
 from __future__ import annotations
 
+import re
+from collections.abc import Iterator
 from pathlib import PurePosixPath
 from typing import Any
+
+from ...entry_candidacy import is_reachability_root
+from ...ingestion.decorator_names import decorator_base
+from .entry_shape import defines_main_function
 
 # Class-level annotation names (without the leading ``@``) that mark the
 # bearing class as runtime-instantiated. Kept compact; full Spring
@@ -74,6 +80,12 @@ _STEREOTYPE_ANNOTATIONS: frozenset[str] = frozenset({
     "Endpoint",
     "RestControllerEndpoint",
     "RegisterForReflection",
+    "Module",                   # Dagger / Hilt
+    "GlideModule",              # Glide annotation processor
+    # JMH runs these by reflection; ``Benchmark`` sits on the methods.
+    "State",
+    "BenchmarkMode",
+    "Benchmark",
 })
 
 
@@ -100,12 +112,8 @@ def build_jvm_package_files(graph: Any) -> dict[str, list[str]]:
 
 
 def _annotation_base(decorator: str) -> str:
-    """Strip ``@``, generic args, and arg list from a decorator string."""
-    s = decorator.lstrip("@")
-    for sep in ("(", "<"):
-        pos = s.find(sep)
-        if pos >= 0:
-            s = s[:pos]
+    """Strip ``@``, generic args, arg list and trailing modifiers from a decorator string."""
+    s = decorator_base(decorator).partition("<")[0]
     # Spring annotations may be FQN ('org.springframework.stereotype.Service');
     # we match the bare type name.
     if "." in s:
@@ -113,29 +121,70 @@ def _annotation_base(decorator: str) -> str:
     return s
 
 
-def _file_defines_entry_class(graph: Any, file_node: str) -> bool:
-    """True if *file_node* defines a class with a stereotype annotation
-    or a ``main`` method.
-    """
+# The shape follows the JVM launcher rules: one ``String[]`` parameter
+# (``String[] a``, ``String... a``, ``String a[]``, annotations allowed) or,
+# since Java 25 (JEP 512), no parameters. The graph keeps no ``static`` keyword
+# for Java, so the parameter shape is what tells the entry point from an
+# ordinary method that happens to be named ``main``.
+_JAVA_ANNOTATION = r"@[\w.]+(?:\([^)]*\))?"
+_JAVA_MAIN_PARAMS = re.compile(
+    rf"^main\(\s*(?:(?:(?:{_JAVA_ANNOTATION}|final)\s+)*(?:java\.lang\.)?String"
+    rf"(?:\s*(?:{_JAVA_ANNOTATION}\s*)?(?:\[\s*\]|\.\.\.)\s*\w+|\s+\w+\s*\[\s*\])\s*)?\)"
+)
+
+
+def _defined_symbols(graph: Any, file_node: str) -> Iterator[dict[str, Any]]:
+    """The attribute dicts of the symbols *file_node* defines."""
     for succ in graph.successors(file_node):
         succ_data = graph.nodes.get(succ, {})
         if succ_data.get("node_type") != "symbol":
             continue
-        edge = graph.get_edge_data(file_node, succ, {})
-        if edge.get("edge_type") != "defines":
-            continue
-        # Stereotype annotation on a class / record / object.
-        decorators = succ_data.get("decorators") or []
-        for dec in decorators:
-            if _annotation_base(dec) in _STEREOTYPE_ANNOTATIONS:
-                return True
-        # ``main`` method — JAR / Kotlin file entry point.
-        if (
-            succ_data.get("kind") in ("method", "function")
-            and succ_data.get("name") == "main"
-        ):
-            return True
-    return False
+        if graph.get_edge_data(file_node, succ, {}).get("edge_type") == "defines":
+            yield succ_data
+
+
+def _is_main_method(is_java: bool, sym: dict[str, Any]) -> bool:
+    # The symbol name, not the id: an overloaded Java id reads ``main#1(String[])``.
+    if sym.get("name") != "main" or sym.get("kind") != "method":
+        return False
+    if is_java:
+        return bool(_JAVA_MAIN_PARAMS.match(sym.get("signature") or ""))
+    # Kotlin: a ``@JvmStatic`` main in an object. A class member ``fun main()``
+    # is an ordinary method.
+    return "JvmStatic" in _annotation_names(sym)
+
+
+def _annotation_names(sym: dict[str, Any]) -> set[str]:
+    # One modifiers blob holds every annotation of the declaration.
+    return {
+        _annotation_base(token)
+        for dec in sym.get("decorators") or []
+        for token in dec.split("@")
+        if token.strip()
+    }
+
+
+def defines_main(graph: Any, file_node: str) -> bool:
+    """True if *file_node* is a Java or Kotlin file declaring a program ``main``."""
+    if not file_node.endswith((".java", ".kt")):
+        return False
+    is_java = file_node.endswith(".java")
+    # Kotlin's top-level ``fun main`` is a function, not a method.
+    if not is_java and defines_main_function(graph, file_node):
+        return True
+    return any(_is_main_method(is_java, sym) for sym in _defined_symbols(graph, file_node))
+
+
+def _file_defines_entry_class(graph: Any, file_node: str) -> bool:
+    """True if *file_node* defines a class with a stereotype annotation
+    or a ``main`` method.
+    """
+    if any(
+        not _STEREOTYPE_ANNOTATIONS.isdisjoint(_annotation_names(sym))
+        for sym in _defined_symbols(graph, file_node)
+    ):
+        return True
+    return defines_main(graph, file_node)
 
 
 def is_jvm_file_reachable(
@@ -156,7 +205,10 @@ def is_jvm_file_reachable(
       (Spring/Jakarta/Quarkus/Micronaut/JPA);
     - it defines a ``main`` method.
     """
-    if graph.in_degree(node) > 0:
+    # Called, not imported at module level: file_reachability imports this module.
+    from .file_reachability import has_dependency_importer
+
+    if has_dependency_importer(graph, node):
         return True
 
     if _file_defines_entry_class(graph, node):
@@ -166,9 +218,9 @@ def is_jvm_file_reachable(
         if sibling == node:
             continue
         sib_data = graph.nodes.get(sibling, {})
-        if graph.in_degree(sibling) > 0:
+        if has_dependency_importer(graph, sibling):
             return True
-        if sib_data.get("is_entry_point", False):
+        if is_reachability_root(sib_data):
             return True
         if _file_defines_entry_class(graph, sibling):
             return True

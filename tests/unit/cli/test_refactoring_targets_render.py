@@ -11,6 +11,11 @@ from __future__ import annotations
 import json
 
 from repowise.cli.commands.health_cmd import _render_refactoring_targets
+from repowise.core.analysis.health.models import (
+    HealthFileMetricData,
+    HealthFindingData,
+    Severity,
+)
 from repowise.core.analysis.health.refactoring import RefactoringSuggestion
 
 
@@ -52,17 +57,246 @@ def test_json_includes_move_and_break_plans(capsys):
     out = json.loads(capsys.readouterr().out)
     types = {p["refactoring_type"] for p in out["refactoring_plans"]}
     assert {"move_method", "break_cycle"} <= types
-    # Order is preserved from the (already unified-ranked) input.
+    # Raw detector rows are normalized into the canonical recommendation rank.
     assert [p["refactoring_type"] for p in out["refactoring_plans"]] == [
-        "move_method",
         "break_cycle",
+        "move_method",
     ]
 
 
-def test_markdown_renders_both_sections(capsys):
+def test_markdown_renders_both_plans_as_opportunity_steps(capsys):
+    """The organizing principle is the file, not the refactoring type.
+
+    Type-grouped sections meant a file needing a split and two extractions
+    appeared three times in three places. The per-type detail is unchanged and
+    now renders under the step it belongs to.
+    """
     _render_refactoring_targets([], [], [_move_method(), _break_cycle()], fmt="md")
     text = capsys.readouterr().out
-    assert "## Move Method plans" in text
-    assert "C.envious" in text and "`T (t.py)`" in text
-    assert "## Break Cycle plans" in text
+    assert "## Refactoring opportunities" in text
+    assert "## Move Method plans" not in text
+    assert "## Break Cycle plans" not in text
+    # Every step says which kind of change it is, and keeps its own detail.
+    assert "move_method **C.envious**" in text and "`T (t.py)`" in text
+    assert "judgment" in text
+    # A cycle is advisory: never a numbered step, still listed with its cut.
+    assert "break_cycle **cycle[2]: b.py->a.py**" not in text
+    assert "## Unattached observations" in text
+    assert "- **cycle[2]: b.py->a.py** (a.py)" in text
     assert "invert b.py -> a.py" in text
+
+
+def test_markdown_states_the_unknown_primary_problem_rather_than_denying_it(capsys):
+    """Tri-state. With no findings supplied the answer is unknown, not "no"."""
+    _render_refactoring_targets([], [], [_move_method()], fmt="md")
+    text = capsys.readouterr().out
+    assert "no dominant problem recorded" in text
+    assert "does not address" not in text
+
+
+def test_json_carries_the_opportunities_beside_the_plans(capsys):
+    _render_refactoring_targets([], [], [_move_method(), _break_cycle()], fmt="json")
+    out = json.loads(capsys.readouterr().out)
+    opportunities = out["refactoring_opportunities"]
+    # The cycle-only file publishes no opportunity; its plan stays listed.
+    assert {o["file_path"] for o in opportunities} == {"c.py"}
+    assert "break_cycle" in {p["refactoring_type"] for p in out["refactoring_plans"]}
+    assert all(o["opportunity_id"].startswith("refop") for o in opportunities)
+    # The step ids are the plan ids, so the CLI and the server address one thing.
+    step_ids = [s["plan_id"] for o in opportunities for s in o["steps"]]
+    assert all(pid.startswith("refac") for pid in step_ids)
+    assert all(o["addresses_primary_problem"] is None for o in opportunities)
+
+
+def _extract_helper(suggested_site: dict) -> RefactoringSuggestion:
+    return RefactoringSuggestion(
+        refactoring_type="extract_helper",
+        file_path="pkg/api/a.py",
+        target_symbol="a.py:10-25",
+        line_start=10,
+        line_end=25,
+        plan={
+            "occurrences": [
+                {"file": "pkg/api/a.py", "line_start": 10, "line_end": 25},
+                {"file": "pkg/core/b.py", "line_start": 40, "line_end": 55},
+            ],
+            "suggested_site": suggested_site,
+            "duplicated_lines": 16,
+            "suggested_name": "pkg_helper",
+        },
+        evidence={"duplicated_lines": 16, "occurrence_count": 2, "co_change_count": 0},
+        impact_delta=0.9,
+        effort_bucket="S",
+        blast_radius={"files": ["pkg/core/b.py"], "file_count": 1},
+        confidence="high",
+        source_biomarker="dry_violation",
+    )
+
+
+def test_helper_site_renders_the_directory(capsys):
+    """``directory`` is the only namespace a plan now carries."""
+    _render_refactoring_targets([], [], [_extract_helper({"directory": "pkg/api"})], fmt="md")
+    assert "near `pkg/api`" in capsys.readouterr().out
+
+
+def test_helper_site_prefers_directory_over_a_legacy_community_label(capsys):
+    """Plans stored before the community label was dropped still carry
+    ``module``, and it named a directory the occurrences did not live in on
+    every measured row (905 of 905). Rendering it is what told users to put a
+    shared helper in a package two thirds of its callers are not in, so the
+    directory must win on those rows too.
+    """
+    legacy = _extract_helper({"module": "ui", "directory": "pkg/api"})
+    _render_refactoring_targets([], [], [legacy], fmt="md")
+    text = capsys.readouterr().out
+    assert "near `pkg/api`" in text
+    assert "near `ui`" not in text
+
+
+def test_helper_site_falls_back_when_a_legacy_row_has_no_directory(capsys):
+    """Salvage only: a legacy row with no directory still renders something."""
+    legacy = _extract_helper({"module": "ui", "directory": None})
+    _render_refactoring_targets([], [], [legacy], fmt="md")
+    assert "near `ui`" in capsys.readouterr().out
+
+
+def _extract_method(i: int) -> RefactoringSuggestion:
+    """One plan per file, so composition yields one step per file."""
+    return RefactoringSuggestion(
+        refactoring_type="extract_method",
+        file_path=f"m{i}.py",
+        target_symbol=f"f{i}",
+        line_start=10,
+        line_end=30,
+        plan={"span": {"start": 10, "end": 30}, "suggested_name": f"_f{i}_part"},
+        evidence={"ccn_removed": 6, "slice_nloc": 20},
+        impact_delta=float(i),
+        effort_bucket="S",
+        blast_radius={"scope": "local"},
+        confidence="high",
+    )
+
+
+def test_a_step_whose_plan_falls_outside_the_limit_still_renders(capsys):
+    """Composition runs over every suggestion; the plan list is truncated.
+
+    So a step can outrank its own plan's detail, and the detail lookup hands
+    the renderer an empty dict. It used to dereference that and raise
+    ``KeyError: 'refactoring_type'``, taking the whole command down.
+    """
+    suggestions = [_extract_method(i) for i in range(25)]
+    for fmt in ("console", "md"):
+        _render_refactoring_targets([], [], suggestions, fmt=fmt, limit=3)
+        assert capsys.readouterr().out
+
+
+def _metric(path: str) -> HealthFileMetricData:
+    return HealthFileMetricData(
+        file_path=path,
+        score=7.0,
+        max_ccn=1,
+        max_nesting=1,
+        nloc=40,
+        has_test_file=False,
+    )
+
+
+def _finding(path: str, biomarker: str, impact: float) -> HealthFindingData:
+    return HealthFindingData(
+        biomarker_type=biomarker,
+        severity=Severity.LOW,
+        file_path=path,
+        function_name="f",
+        line_start=3,
+        line_end=5,
+        details={},
+        health_impact=impact,
+        reason=f"{biomarker} in {path}",
+    )
+
+
+def test_a_file_whose_findings_are_all_advisory_leaves_the_table(capsys):
+    """``primary_finding`` names no cause for one, and the table ranks causes.
+
+    It returns None rather than an advisory row, because advisory deducts
+    nothing. Dereferencing that took the whole command down, and the row it
+    would have produced ranks at an impact of zero regardless.
+    """
+    metrics = [_metric("a.py"), _metric("b_test.py")]
+    findings = [
+        _finding("a.py", "complex_method", 2.5),
+        _finding("b_test.py", "assertion_free_test", 0.0),
+    ]
+    _render_refactoring_targets(metrics, findings, [], fmt="json")
+    out = json.loads(capsys.readouterr().out)
+    assert [t["file_path"] for t in out["targets"]] == ["a.py"]
+
+
+def test_an_advisory_finding_beside_a_real_one_keeps_the_real_lead(capsys):
+    """The sibling shape: a file is only dropped when nothing accuses it."""
+    metrics = [_metric("a.py")]
+    findings = [
+        _finding("a.py", "assertion_free_test", 0.0),
+        _finding("a.py", "complex_method", 2.5),
+    ]
+    _render_refactoring_targets(metrics, findings, [], fmt="json")
+    out = json.loads(capsys.readouterr().out)
+    assert [t["primary_biomarker"] for t in out["targets"]] == ["complex_method"]
+
+
+def test_an_idiomatic_cycle_is_marked_optional_in_the_detail(capsys):
+    cycle = _break_cycle()
+    cycle.plan["idiom"] = "same_directory"
+    _render_refactoring_targets([], [], [cycle], fmt="md")
+    text = capsys.readouterr().out
+    assert "(same directory, idiomatic; optional)" in text
+
+
+def test_an_unattached_split_with_an_unnamed_group_says_it_needs_design(capsys):
+    split = RefactoringSuggestion(
+        refactoring_type="split_file",
+        file_path="pkg/big.py",
+        target_symbol="big.py -> 2 files",
+        line_start=None,
+        line_end=None,
+        plan={
+            "groups": [
+                {"name": "walk", "symbols": ["walk"], "suggested_file": "pkg/walk.py"},
+                {"name": None, "symbols": ["a", "b"], "suggested_file": None},
+            ],
+            "shim_required": True,
+        },
+        evidence={"group_count": 2},
+        impact_delta=0.0,
+        effort_bucket="L",
+        blast_radius={"dependent_count": 0},
+        confidence="high",
+    )
+    _render_refactoring_targets([], [], [split], fmt="md")
+    text = capsys.readouterr().out
+    assert "1 need design: a group has no name yet." in text
+    assert "- **big.py -> 2 files** (pkg/big.py) needs design" in text
+
+
+def _size_finding(target: str, ccn: int, line: int) -> HealthFindingData:
+    return HealthFindingData(
+        biomarker_type="complex_method",
+        severity=Severity.HIGH,
+        file_path=f"pkg/{target}.py",
+        function_name=target,
+        line_start=line,
+        line_end=line + 200,
+        details={"ccn": ccn, "nloc": 150},
+        health_impact=1.0,
+    )
+
+
+def test_raw_plans_carry_the_above_the_bar_mark_and_rank_by_it(capsys):
+    from tests.unit.health.test_worth_after_plan import _plan
+
+    big, small = _plan("big", 10, 10, impact=3.0), _plan("small", 10, 10, impact=1.0)
+    findings = [_size_finding("big", 90, 10), _size_finding("small", 30, 10)]
+    _render_refactoring_targets([], findings, [big, small], fmt="json")
+    plans = json.loads(capsys.readouterr().out)["refactoring_plans"]
+    assert [plan["target_symbol"] for plan in plans] == ["small", "big"]
+    assert plans[1]["leaves_above_bar"].startswith("leaves big at CCN 80")

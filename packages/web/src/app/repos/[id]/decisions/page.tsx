@@ -1,22 +1,19 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 import { notFound } from "next/navigation";
 import { PageShell } from "@repowise-dev/ui/shared/page-shell";
-import { OverviewSection, SectionLink } from "@repowise-dev/ui/overview";
+import { OverviewSection } from "@repowise-dev/ui/overview";
 import { PageLede } from "@repowise-dev/ui/shared/page-lede";
+import { CheckoutFacts } from "@repowise-dev/ui/decisions";
 import {
-  DecisionConflicts,
-  GovernedFiles,
-  summarizeGovernance,
-} from "@repowise-dev/ui/decisions";
-import {
-  getDecision,
   getDecisionCounts,
-  getDecisionGraph,
+  getDecisionLaneCounts,
   listDecisions,
 } from "@/lib/api/decisions";
+import { listEpisodes } from "@/lib/api/episodes";
 import { ApiClientError } from "@/lib/api/client";
-import { DecisionsTableWrapper } from "@/components/decisions/decisions-table-wrapper";
+import { AddDecisionButton } from "@/components/decisions/add-decision-button";
+import { DecisionReviewWrapper } from "@/components/decisions/decision-review-wrapper";
+import { getTranslations } from "next-intl/server";
 
 export const revalidate = 30;
 export const metadata: Metadata = { title: "Decisions" };
@@ -34,19 +31,41 @@ interface Props {
  * The page used to open with a title and go straight into a filter bar, then
  * close with a React Flow canvas of the decision graph. Neither said the thing
  * the data says loudest: most records here are unconfirmed *proposals* mined by
- * the indexer, and only a handful are confirmed. That makes this a triage
- * queue, not an archive, and the lede now says so.
+ * the indexer, and only a handful are confirmed.
  *
  * Every figure comes from `/decisions/counts`, a grouped COUNT. An earlier cut
  * counted the rows it had fetched and printed "97 of 100" on a repository
  * holding several hundred — a count nobody measured, on the surface whose whole
  * job is to be trusted.
  *
- * The canvas is gone. See `decision-governance.tsx` for what its payload
- * actually contained and why two lists beat it.
+ * Two sections and a fetch left in the same pass, and the reason for each is
+ * the same distribution argument that deleted the canvas before them.
+ *
+ * **Conflicts** rendered from `decision_edges`, which holds zero rows, and not just on
+ * a fresh repository, on every repository, because the detector that wrote
+ * them was disabled for retiring 74 records on loose semantic matches and its
+ * structural replacement is not built. A section that cannot render is not a
+ * section.
+ *
+ * **Most governed files** ranked files by how many records name them, under a
+ * heading that reads like settled governance. On a live index 81% of those
+ * links belong to *proposed* records, so it ranked files by unconfirmed
+ * guesses and told the reader they were "worth reading before you change one".
+ * Scoping it to confirmed records does not rescue it: the top file falls from
+ * 42 links to 4 and the top twelve run 4,3,3,3,3,3,3,2,2,2,2,2, which is a
+ * proportion bar over noise. The honest version of that number is per-file,
+ * and the file page already carries it.
+ *
+ * Both components stay exported, because the hosted decisions view mounts them, and
+ * both fed on `getDecisionGraph`, whose payload is roughly 261 KB of code
+ * edges for twelve rows. Dropping it takes the page's whole graph fetch, the
+ * follow-up per-conflict title lookups, and a swallowed failure with it: that
+ * call intermittently 500s and the page caught it silently, so two sections
+ * disappeared with nothing to say they had.
  */
 export default async function DecisionsPage({ params }: Props) {
   const { id: repoId } = await params;
+  const t = await getTranslations("views.decisions");
 
   let decisions;
   try {
@@ -71,51 +90,50 @@ export default async function DecisionsPage({ params }: Props) {
     include_proposed: true,
   }).catch(() => undefined);
 
-  // Aggregated here, not in the browser: the graph payload runs to thousands of
-  // code edges and only a dozen rows of it survive to the page.
-  const graph = await getDecisionGraph(repoId).catch(() => undefined);
+  // The lede's figure. `/decisions/counts` groups the status column, which is
+  // the projection kept in step for readers that predate the acceptance split,
+  // so its `active` counts records nobody accepted. The number this page leads
+  // with is what the repository actually stands behind, which is the lane
+  // count. Degrades the same way: a frontend ahead of its backend 404s here
+  // and falls back to the projection rather than losing the page.
+  const lanes = await getDecisionLaneCounts(repoId).catch(() => undefined);
 
-  // Conflict endpoints routinely sit outside the graph's own node payload — on
-  // a live index every one of them did — so titles come from the rows we
-  // already have, and anything still unnamed is fetched by id. Conflicts are
-  // rare, so this stays a handful of requests.
-  const titles = new Map(decisions.map((d) => [d.id, d.title]));
-  const unresolved = [
-    ...new Set(
-      summarizeGovernance(graph, { titles })
-        .conflicts.flatMap((c) => [
-          ...(c.aTitle ? [] : [c.aId]),
-          ...(c.bTitle ? [] : [c.bId]),
-        ]),
-    ),
-  ];
-  if (unresolved.length > 0) {
-    const fetched = await Promise.all(
-      unresolved.map((id) =>
-        getDecision(repoId, id).then(
-          (d) => [id, d.title] as const,
-          () => null,
-        ),
-      ),
-    );
-    for (const row of fetched) if (row) titles.set(row[0], row[1]);
-  }
-
-  const { conflicts, governedFiles, governedFileTotal } = summarizeGovernance(
-    graph,
-    { topFiles: 12, titles },
-  );
-  // A pair still missing a title is dropped rather than shown as a hash.
-  const namedConflicts = conflicts.filter((c) => c.aTitle && c.bTitle);
+  // Facts about the checkout, which is the structural tier of the episode
+  // store. Five rows on this repository and none of them need history, a key
+  // or a transcript, so this is the one section that says something on a
+  // repository indexed an hour ago.
+  //
+  // The git tier is deliberately not fetched. It is 289 rows of one fix commit
+  // each against 301 `fix:`-typed commits in the same window, and Commits is
+  // two items up the nav, so a list of it here is that page with a filter on
+  // it. A failure and a cold start are different: `available: false` is a 200
+  // meaning this repository never derived episodes and gets copy saying what
+  // will fill the section, whereas a throw means we do not know and the
+  // section does not render at all.
+  const facts = await listEpisodes(repoId, {
+    tier: "structural",
+    limit: 50,
+  }).catch(() => undefined);
 
   // With counts we can state a measured total; without them we report only
   // what this page actually loaded, and say so. Never a number nobody counted.
-  const total = counts?.total;
+  const total = lanes?.total ?? counts?.total;
   const proposed =
-    counts?.proposed ?? decisions.filter((d) => d.status === "proposed").length;
-  const active =
-    counts?.active ?? decisions.filter((d) => d.status === "active").length;
-  const queue = proposed > 0;
+    lanes?.candidates ??
+    counts?.proposed ??
+    decisions.filter((d) => d.status === "proposed").length;
+  // Everything with an acceptance row, which is what "accepted" means. Not
+  // `governing`: that is `active + needs_review` and leaves the accepted but
+  // unscoped records out, so the lede and the Uncheckable tab under it would
+  // not add up. The status fallback counts the projection instead, and it can
+  // include records nobody accepted, so it is labelled differently below.
+  const accepted =
+    lanes !== undefined
+      ? lanes.active + lanes.needs_review + lanes.uncheckable
+      : (counts?.active ??
+        decisions.filter((d) => d.status === "active").length);
+  const measuredByLane = lanes !== undefined;
+  const empty = total === 0;
   const denominator =
     total !== undefined
       ? `of ${total.toLocaleString()} recorded`
@@ -123,90 +141,92 @@ export default async function DecisionsPage({ params }: Props) {
 
   return (
     <PageShell
-      title="Architectural decisions"
-      description="Why the codebase is built the way it is — constraints, tradeoffs, and the alternatives that were rejected."
+      title={t("title")}
+      description={t("description")}
     >
+      {/* The headline used to be the size of the review queue, so the largest
+          number on the page pointed at the work nobody had done rather than at
+          what the repository actually stands behind. The accepted count leads
+          now; the queue keeps its sentence, because a few hundred unreviewed
+          candidates are worth knowing about, just not worth 52px.
+
+          It counts acceptance rows, not the status column, so it is every
+          record somebody accepted: the ones that govern plus the ones that
+          were accepted and then drifted or turned out to name nothing. Those
+          are separate lanes below and the four numbers add up.
+
+          The count is not de-duplicated. A live index carries near-identical
+          pairs, two spellings of one fix landing as two accepted records, and
+          collapsing them here would need a title-similarity threshold tuned on
+          one repository sitting in a page component, where a wrong merge hides
+          a record a human accepted. That belongs to supersession, which is
+          structural and not yet built. Until then the number is honest about
+          what it counts and the pairs stay visible in their lane, where they
+          can be superseded. */}
       <PageLede
-        label={queue ? "Awaiting review" : "Active decisions"}
-        value={(queue ? proposed : active).toLocaleString()}
+        label={measuredByLane ? t("ledeAccepted") : t("ledeConfirmed")}
+        value={accepted.toLocaleString()}
         unit={denominator}
         layout="beside"
       >
-        {queue ? (
+        {empty ? (
+          <p>
+            {t.rich("ledeEmpty", {
+              code: (chunks) => <code>{chunks}</code>,
+            })}
+          </p>
+        ) : accepted === 0 ? (
+          // A repository with records and no accepted one is not an empty
+          // repository, and it used to get the copy for one: "decisions land
+          // here as the indexer mines them" on a store already holding five
+          // hundred of them. It is also what a store looks like the first time
+          // it is read after the acceptance split, when everything the status
+          // column called active turns out to be something nobody accepted, so
+          // this is the state most likely to be read by somebody surprised.
           <>
-            <p>
-              {proposed.toLocaleString()}{" "}
-              {total !== undefined
-                ? `of ${total.toLocaleString()} records are`
-                : `of the first ${decisions.length.toLocaleString()} records are`}{" "}
-              proposals mined from commits, comments and docs that nobody has
-              confirmed yet, against {active.toLocaleString()} marked active.
-              Until one is confirmed it is a guess about your codebase, not a
-              rule for it — so this page is a queue before it is an archive.
-            </p>
-            <p>
-              Confirming takes a click and changes no code. It marks the record
-              as something your team stands behind, which is what makes it worth
-              quoting back to an agent later.
-            </p>
+            <p>{t("ledeNoGovernance")}</p>
+            <p>{t("ledeCandidates", { count: proposed })}</p>
           </>
         ) : (
-          <p>
-            {active.toLocaleString()}{" "}
-            {total !== undefined ? `of ${total.toLocaleString()} ` : ""}
-            decisions are confirmed as current, with nothing waiting on review.
-            New proposals appear here as the indexer mines them from commits,
-            comments and docs.
-          </p>
+          <>
+            <p>{t("ledeAcceptedRecords", { count: accepted })}</p>
+            {proposed > 0 && (
+              <p>{t("ledeAcceptedMore", { count: proposed })}</p>
+            )}
+          </>
         )}
       </PageLede>
 
-      {namedConflicts.length > 0 && (
+      {/* Visible in both states on purpose: the table section below is not
+          rendered at all on an empty repo, which is exactly when somebody
+          needs to record the first one. */}
+      <div className="flex justify-end">
+        <AddDecisionButton repoId={repoId} />
+      </div>
+
+      {facts && (
         <OverviewSection
-          title="Conflicts"
-          description={`${namedConflicts.length} pair${
-            namedConflicts.length === 1 ? "" : "s"
-          } of decisions appear to contradict each other. Confirming one and deprecating the other resolves the pair.`}
+          title={t("checkoutTitle")}
+          description={t("checkoutDescription")}
         >
-          <DecisionConflicts
-            conflicts={namedConflicts}
-            decisionHref={(id) => `/repos/${repoId}/decisions/${id}`}
-            LinkComponent={Link}
+          <CheckoutFacts
+            facts={facts.episodes}
+            available={facts.available}
+            total={facts.total}
           />
         </OverviewSection>
       )}
 
-      <OverviewSection
-        title="All decisions"
-        description="Confirmed rules first, then the proposals most likely to be real. Filter by status to work the queue, or by source to see where a record came from."
-      >
-        <DecisionsTableWrapper
-          repoId={repoId}
-          initialData={decisions}
-          {...(total !== undefined ? { initialTotal: total } : {})}
-          pageSize={PAGE_SIZE}
-        />
-      </OverviewSection>
-
-      {governedFiles.length > 0 && (
+      {!empty && (
         <OverviewSection
-          title="Most governed files"
-          description={`Of ${governedFileTotal.toLocaleString()} files carrying at least one decision, these have the most. Worth reading before you change one.`}
-          action={
-            <SectionLink href={`/repos/${repoId}/files`} LinkComponent={Link}>
-              All files
-            </SectionLink>
-          }
+          title={t("reviewTitle")}
+          description={t("reviewDescription")}
         >
-          <GovernedFiles
-            files={governedFiles}
-            fileHref={(path) =>
-              `/repos/${repoId}/files?path=${encodeURIComponent(path)}`
-            }
-            LinkComponent={Link}
-          />
+          <DecisionReviewWrapper repoId={repoId} pageSize={PAGE_SIZE} />
         </OverviewSection>
       )}
+
+
     </PageShell>
   );
 }

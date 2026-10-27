@@ -27,7 +27,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from repowise.core.sessions import ClaudeCodeAdapter, Event, transcript_dir_for
+from repowise.core.sessions import INTENT_SHELL_CALLS, Event, HarnessAdapter, get_adapter
 
 #: Default scan window, in days. Corrections are rarer than missed savings,
 #: so the default window is wider.
@@ -43,8 +43,6 @@ WRITE_MIN_COUNT = 2
 WRITE_MAX_RULES = 10
 
 _SHELL_TOOLS = ("Bash", "PowerShell")
-
-_ADAPTER = ClaudeCodeAdapter()
 
 #: The one true command-failure shape in real transcripts. Everything else
 #: stringly (cancellations, rejections, permission denials, harness errors)
@@ -142,9 +140,10 @@ def scan_corrections(
 def _scan(
     repo_root: Path, days: float, now: float | None, projects_root: Path | None
 ) -> dict[str, Any]:
-    transcripts = transcript_dir_for(repo_root, projects_root)
+    adapter = get_adapter()
     report = empty_report(days)
-    if not transcripts.is_dir():
+    transcripts = adapter.discover(repo_root, projects_root=projects_root)
+    if not transcripts:
         return report
 
     cutoff = (now if now is not None else time.time()) - days * 86400.0
@@ -152,11 +151,11 @@ def _scan(
 
     rules: dict[tuple[str, str, str], dict[str, Any]] = {}
     pairs = 0
-    for path in sorted(transcripts.glob("*.jsonl")):
+    for path in transcripts:
         try:
             if path.stat().st_mtime < cutoff:
                 continue
-            events = _session_events(path, cutoff, repo_prefix)
+            events = _session_events(adapter, path, cutoff, repo_prefix)
         except OSError:
             continue
         pairs += _pair_events(events, rules)
@@ -173,16 +172,14 @@ def _scan(
 # ---------------------------------------------------------------------------
 
 
-def _prefilter(raw: str) -> bool:
-    """Only shell tool_use lines and result lines are worth parsing."""
-    return ('"tool_use"' in raw and '"command"' in raw) or '"toolUseResult"' in raw
-
-
-def _session_events(path: Path, cutoff: float, repo_prefix: str) -> list[dict[str, Any]]:
+def _session_events(
+    adapter: HarnessAdapter, path: Path, cutoff: float, repo_prefix: str
+) -> list[dict[str, Any]]:
     """Ordered shell events: ``{"command", "failed", "error"}`` per call."""
     events: list[dict[str, Any]] = []
     pending: dict[str, str] = {}
-    for event in _ADAPTER.iter_events(path, prefilter=_prefilter):
+    prefilter = adapter.prefilter(INTENT_SHELL_CALLS)
+    for event in adapter.iter_events(path, prefilter=prefilter):
         if event.kind == "assistant" and event.tool_uses:
             _collect_tool_use(event, cutoff, repo_prefix, pending)
         elif pending and event.tool_results:

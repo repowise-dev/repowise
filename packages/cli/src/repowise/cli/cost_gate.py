@@ -14,6 +14,7 @@ from typing import Any
 
 import click
 
+from repowise.cli.errors import reasoned_error
 from repowise.cli.helpers import console
 
 # The LLM-cost confirmation threshold. A run whose estimate exceeds this asks
@@ -120,12 +121,33 @@ def cost_gate_blocks(est: Any, *, yes: bool, message: str) -> bool:
     if est.estimated_cost_usd <= COST_GATE_USD or yes:
         return False
     if not sys.stdin.isatty():
-        raise click.ClickException(
+        raise reasoned_error(
             f"This would spend about {format_cost(est)} and there is no terminal "
             "to confirm on. Re-run with --yes to accept the cost, or with "
-            "--no-prose to build the wiki from structure for free."
+            "--no-prose to build the wiki from structure for free.",
+            reason="cost_gate_no_tty",
         )
     return not confirm_cost_gate(message, estimated_usd=est.estimated_cost_usd)
+
+
+def spend_phrase(est: Any, concurrency: int | None = None) -> str:
+    """``Estimated $1.20 USD``, or for a subscription CLI its quota and time.
+
+    A subscription seat prices at $0.00 per token, which reads as free; what
+    it really spends is plan usage and wall time, so that is what it shows.
+    *concurrency* is the run's ``--concurrency``; ``None`` means the CLI's own
+    process limit decides.
+    """
+    from repowise.core.providers.llm.specs import PROVIDER_SPECS
+
+    spec = PROVIDER_SPECS.get(getattr(est, "provider_name", "") or "")
+    if spec is not None and spec.agent:
+        from repowise.cli.ui.subscription import model_call_count, subscription_estimate
+
+        calls = model_call_count(est.plans)
+        text = subscription_estimate(spec.name, calls, concurrency)
+        return text[0].upper() + text[1:]
+    return f"Estimated [bold]{format_cost(est)}[/bold]"
 
 
 def format_cost(est: Any) -> str:
@@ -142,3 +164,16 @@ def format_cost(est: Any) -> str:
             cost_str += " (calibrated on this repo's history)"
         return cost_str
     return f"${est.estimated_cost_usd:.2f} USD"
+
+
+def embedding_note(est: Any) -> str | None:
+    """One line on the embedding share of *est*, ``None`` when none was priced."""
+    embedder = getattr(est, "embedder", "")
+    if not embedder or embedder == "mock":
+        return None
+    pages = f"{est.total_pages:,} pages"
+    usd = est.embedding_cost_usd
+    if not usd:
+        return f"Embedding {pages} with {embedder} adds no cost."
+    amount = "under $0.01" if usd < 0.01 else f"about ${usd:.2f}"
+    return f"Includes {amount} USD to embed {pages} with {embedder}."

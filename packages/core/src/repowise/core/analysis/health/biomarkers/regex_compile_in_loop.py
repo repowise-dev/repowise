@@ -38,7 +38,7 @@ class RegexCompileInLoopDetector:
                     function_name=hit.function,
                     line_start=hit.line,
                     line_end=hit.line,
-                    details={},
+                    details=hit.loop_facts(),
                     reason=(
                         "a regex with a static pattern is recompiled every loop "
                         "iteration; compile it once outside the loop and reuse it"

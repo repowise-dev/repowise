@@ -89,7 +89,9 @@ async def test_pages_flushed_incrementally(repo_dir, monkeypatch):
             on_page_ready(p)
         return emitted
 
-    monkeypatch.setattr("repowise.core.pipeline.run_generation", fake_run_generation, raising=True)
+    monkeypatch.setattr(
+        "repowise.core.pipeline.run_generation", fake_run_generation, raising=True
+    )
 
     pages = await run_generation_with_persistence(
         repo_path=repo_dir,
@@ -132,7 +134,9 @@ async def test_sink_failure_never_breaks_generation(repo_dir, monkeypatch):
         on_page_ready(_page("delta"))
         return [_page("delta")]
 
-    monkeypatch.setattr("repowise.core.pipeline.run_generation", fake_run_generation, raising=True)
+    monkeypatch.setattr(
+        "repowise.core.pipeline.run_generation", fake_run_generation, raising=True
+    )
 
     pages = await run_generation_with_persistence(repo_path=repo_dir, repo_name=repo_dir.name)
     assert {p.page_id for p in pages} == {"delta"}
@@ -140,6 +144,80 @@ async def test_sink_failure_never_breaks_generation(repo_dir, monkeypatch):
     stored = await _read_db_page_ids(repo_dir)
     assert "delta" in stored
 
+
+async def test_batched_flush_stores_every_page_and_times_the_drain(repo_dir, monkeypatch):
+    """Pages queued faster than they are written go out in batches, none lost,
+    and the drain after generation is recorded in the run's phase table."""
+    from types import SimpleNamespace
+
+    from repowise.cli.commands.init_cmd import _generation_persist
+    from repowise.core.pipeline import PhaseTimings
+
+    monkeypatch.setattr(_generation_persist, "_FLUSH_BATCH", 7)
+    emitted = [_page(f"p{i:02d}") for i in range(30)]
+
+    async def fake_run_generation(*, repo_path, on_page_ready=None, prior_pages=None, **_kw):
+        # No await between pages: all 30 are queued before the consumer runs.
+        for p in emitted:
+            on_page_ready(p)
+        return emitted
+
+    monkeypatch.setattr(
+        "repowise.core.pipeline.run_generation", fake_run_generation, raising=True
+    )
+    table = PhaseTimings()
+
+    await run_generation_with_persistence(
+        repo_path=repo_dir,
+        repo_name=repo_dir.name,
+        progress=SimpleNamespace(table=table),
+    )
+
+    assert await _read_db_page_ids(repo_dir) == {p.page_id for p in emitted}
+    assert "generation.persist_drain" in table.totals
+
+
+async def test_resume_hands_the_persisted_ids_to_generation(repo_dir, monkeypatch):
+    """Resume passes the ids that have a stored row, so a page whose vector
+    landed but whose row did not is regenerated and then persisted."""
+    seen: dict = {}
+
+    async def first_run(*, repo_path, on_page_ready=None, **_kw):
+        on_page_ready(_page("saved"))
+        return [_page("saved")]
+
+    async def resumed_run(*, repo_path, on_page_ready=None, persisted_page_ids=None, **kw):
+        seen["persisted"] = persisted_page_ids
+        seen["resume"] = kw.get("resume")
+        # "vector_only" has a vector from the killed run but no row; the
+        # generator regenerates it because it is not in persisted_page_ids.
+        on_page_ready(_page("vector_only"))
+        return [_page("vector_only")]
+
+    monkeypatch.setattr("repowise.core.pipeline.run_generation", first_run, raising=True)
+    await run_generation_with_persistence(repo_path=repo_dir, repo_name=repo_dir.name)
+
+    monkeypatch.setattr("repowise.core.pipeline.run_generation", resumed_run, raising=True)
+    await run_generation_with_persistence(
+        repo_path=repo_dir, repo_name=repo_dir.name, resume=True, reuse_prior_pages=False
+    )
+
+    assert seen == {"persisted": {"saved"}, "resume": True}
+    assert await _read_db_page_ids(repo_dir) == {"saved", "vector_only"}
+
+
+async def test_non_resume_run_passes_no_persisted_ids(repo_dir, monkeypatch):
+    seen: dict = {}
+
+    async def fake_run_generation(*, repo_path, persisted_page_ids="unset", **_kw):
+        seen["persisted"] = persisted_page_ids
+        return []
+
+    monkeypatch.setattr(
+        "repowise.core.pipeline.run_generation", fake_run_generation, raising=True
+    )
+    await run_generation_with_persistence(repo_path=repo_dir, repo_name=repo_dir.name)
+    assert seen["persisted"] is None
 
 async def test_generation_completion_callback_reports_only_current_run_failures(
     repo_dir, monkeypatch
@@ -281,7 +359,7 @@ def test_run_repo_generation_prints_partial_failure_warning_after_progress(monke
     monkeypatch.setattr(
         generation_cmd, "console", Console(file=output, force_terminal=False, width=200)
     )
-    monkeypatch.setattr(generation_cmd, "build_embedder", lambda _name: object())
+    monkeypatch.setattr(generation_cmd, "build_embedder", lambda *_args: object())
     monkeypatch.setattr(generation_cmd, "build_vector_store", lambda *_args: object())
 
     async def fake_generation(*, on_generation_complete, **_kwargs):
@@ -321,5 +399,5 @@ def test_run_repo_generation_prints_partial_failure_warning_after_progress(monke
     assert "2 failed" in text
     assert "[red]spoof[/red]: 1" in text
     assert "module_page: 1" in text
-    assert "The wiki is incomplete" in text
+    assert "The documentation is incomplete" in text
     assert "repowise init --resume" in text

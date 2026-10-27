@@ -6,24 +6,32 @@ import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+from repowise.core.analysis.health.scoring import SCORE_FLOOR
 from repowise.core.analysis.health.trends import (
     DECLINE_LOOKBACK,
     DECLINE_THRESHOLD,
     diff_snapshots,
+    drop_unscoped_fields,
     file_score_series,
     file_trend,
     recent_kpis,
+    snapshot_fields,
+    snapshot_file_maps,
 )
 
 
 @dataclass
 class _S:
     taken_at: datetime
-    hotspot_health: float
+    hotspot_health: float | None
     average_health: float
     worst_performer_path: str | None = "x"
     worst_performer_score: float | None = 1.0
     per_file_scores_json: str = "{}"
+    # Deliberately defaulted to the empty map rather than omitted: a snapshot
+    # written before deductions were captured has exactly this, and the
+    # "history stays flat" tests below depend on that being the shape.
+    per_file_deductions_json: str = "{}"
 
 
 def _ts(n: int) -> datetime:
@@ -34,9 +42,9 @@ def _series(values: list[float]) -> list[_S]:
     return [_S(taken_at=_ts(i), hotspot_health=v, average_health=v) for i, v in enumerate(values)]
 
 
-def test_diff_empty_history_neutral():
+def test_diff_empty_history_has_no_hotspot_figure():
     summary = diff_snapshots([])
-    assert summary.current_hotspot_health == 10.0
+    assert summary.current_hotspot_health is None
     assert summary.hotspot_delta is None
     assert summary.alerts == []
 
@@ -46,6 +54,36 @@ def test_diff_single_snapshot_no_alerts():
     assert summary.current_hotspot_health == 7.5
     assert summary.previous_hotspot_health is None
     assert summary.alerts == []
+
+
+def test_a_repo_with_no_hotspots_trends_as_none_not_ten():
+    """A snapshot with no hotspot figure reads as null, never a perfect 10.0."""
+    snaps = [
+        _S(taken_at=_ts(i), hotspot_health=None, average_health=7.0 - 0.1 * i) for i in range(7)
+    ]
+    summary = diff_snapshots(snaps)
+    assert summary.current_hotspot_health is None
+    assert summary.previous_hotspot_health is None
+    assert summary.hotspot_delta is None
+    assert {a.metric for a in summary.alerts} == {"average_health"}
+    assert [r["hotspot_health"] for r in recent_kpis(snaps)] == [None] * 7
+
+
+def test_a_hotspot_figure_appearing_has_no_delta():
+    summary = diff_snapshots(
+        [
+            _S(taken_at=_ts(0), hotspot_health=None, average_health=7.0),
+            _S(taken_at=_ts(1), hotspot_health=6.0, average_health=7.0),
+        ]
+    )
+    assert summary.current_hotspot_health == 6.0
+    assert summary.previous_hotspot_health is None
+    assert summary.hotspot_delta is None
+
+
+def test_snapshot_fields_records_no_hotspots_as_none():
+    kpis = {"hotspot_health": None, "average_health": 7.0}
+    assert snapshot_fields(kpis, [], [])["hotspot_health"] is None
 
 
 def test_declining_health_alert_triggers_at_threshold():
@@ -84,6 +122,179 @@ def test_recent_kpis_orders_newest_first():
     rows = recent_kpis(_series([5.0, 6.0, 7.0]), limit=10)
     scores = [r["hotspot_health"] for r in rows]
     assert scores == [7.0, 6.0, 5.0]
+
+
+def test_recent_kpis_carries_the_drift_count_only_when_asked():
+    snaps = _series([5.0, 6.0])
+    snaps[1].doc_drift_count = 3
+    assert "doc_drift_count" not in recent_kpis(snaps)[0]
+    rows = recent_kpis(snaps, doc_drift=True)
+    assert [r["doc_drift_count"] for r in rows] == [3, None]
+    assert drop_unscoped_fields(rows)[0]["doc_drift_count"] is None
+
+
+# --------------------------------------------------------------------------- #
+# Attribution: what a decline is blamed on
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class _Split(_S):
+    """A snapshot carrying the two halves and the maintainability figure."""
+
+    structure_average: float | None = None
+    history_average: float | None = None
+    maintainability_average: float | None = None
+
+
+def _split_series(rows: list[tuple[float, float, float]]) -> list[_Split]:
+    """Snapshots from ``(average_health, structure_deduction, history_deduction)``."""
+    return [
+        _Split(
+            taken_at=_ts(i),
+            hotspot_health=10.0,
+            average_health=avg,
+            structure_average=structure,
+            history_average=history,
+        )
+        for i, (avg, structure, history) in enumerate(rows)
+    ]
+
+
+def test_a_decline_the_code_shape_did_not_cause_is_not_an_alarm():
+    """The founding case: history rises through a week of refactoring."""
+    flat = (8.0, 1.60, 1.20)
+    rows = [flat] * 6 + [(8.0 - DECLINE_THRESHOLD - 0.1, 1.30, 2.10)]
+    summary = diff_snapshots(_split_series(rows))
+    alerts = [a for a in summary.alerts if a.metric == "average_health"]
+    assert [a.kind for a in alerts] == ["history_drag"]
+    alert = alerts[0]
+    assert alert.driver == "history"
+    assert alert.structure_delta == 0.3
+    assert "code shape improved 0.30" in alert.message
+    assert "Change history is the only half that moved down" in alert.message
+    assert "dropped 0.60 points" in alert.message
+
+
+def test_a_decline_the_code_shape_shares_stays_an_alarm():
+    """History still leads, but structure fell too — that is a real regression."""
+    flat = (8.0, 1.60, 1.20)
+    rows = [flat] * 6 + [(8.0 - DECLINE_THRESHOLD - 0.1, 1.85, 2.10)]
+    summary = diff_snapshots(_split_series(rows))
+    alerts = [a for a in summary.alerts if a.metric == "average_health"]
+    assert [a.kind for a in alerts] == ["declining"]
+    assert alerts[0].driver == "history"
+
+
+def test_a_structure_led_decline_stays_an_alarm():
+    flat = (8.0, 1.60, 1.20)
+    rows = [flat] * 6 + [(8.0 - DECLINE_THRESHOLD - 0.1, 2.50, 1.20)]
+    summary = diff_snapshots(_split_series(rows))
+    alerts = [a for a in summary.alerts if a.metric == "average_health"]
+    assert [a.kind for a in alerts] == ["declining"]
+    assert alerts[0].driver == "structure"
+
+
+def test_code_shape_holding_still_reads_as_a_watch_item():
+    flat = (8.0, 1.60, 1.20)
+    rows = [flat] * 6 + [(8.0 - DECLINE_THRESHOLD - 0.1, 1.60, 2.10)]
+    alerts = [
+        a for a in diff_snapshots(_split_series(rows)).alerts if a.metric == "average_health"
+    ]
+    assert alerts[0].kind == "history_drag"
+    assert "code shape held" in alerts[0].message
+
+
+def test_a_fall_neither_half_explains_stays_an_alarm():
+    """Both halves improved while the clamped score fell.
+
+    ``driver`` names the half that moved furthest, which is not the same as the
+    half that moved down. Muting the alarm here would blame a fall on a half
+    that had just got better.
+    """
+    flat = (8.0, 1.60, 1.20)
+    rows = [flat] * 6 + [(8.0 - DECLINE_THRESHOLD - 0.1, 1.50, 0.70)]
+    alerts = [
+        a for a in diff_snapshots(_split_series(rows)).alerts if a.metric == "average_health"
+    ]
+    assert [a.kind for a in alerts] == ["declining"]
+    assert alerts[0].driver == "history"
+    assert alerts[0].history_delta == 0.5
+
+
+def test_a_shape_gain_too_small_to_show_reads_as_held():
+    """0.004 formats as 0.00, and "improved 0.00" is the held case mislabelled."""
+    flat = (8.0, 1.600, 1.200)
+    rows = [flat] * 6 + [(8.0 - DECLINE_THRESHOLD - 0.1, 1.596, 2.100)]
+    alert = next(
+        a for a in diff_snapshots(_split_series(rows)).alerts if a.metric == "average_health"
+    )
+    assert alert.kind == "history_drag"
+    assert "code shape held" in alert.message
+
+
+def test_a_predicted_decline_is_attributed_the_same_way():
+    rows = [(8.0, 1.60, 1.20), (7.9, 1.55, 1.35), (7.8, 1.50, 1.50), (7.7, 1.45, 1.65)]
+    alerts = [
+        a for a in diff_snapshots(_split_series(rows)).alerts if a.metric == "average_health"
+    ]
+    assert [a.kind for a in alerts] == ["history_drag"]
+
+
+def test_the_headline_is_named_code_health_not_average_health():
+    vals = [8.0] * 6 + [8.0 - DECLINE_THRESHOLD - 0.1]
+    alerts = diff_snapshots(_series(vals)).alerts
+    messages = {a.metric: a.message for a in alerts}
+    assert messages["average_health"].startswith("Code health dropped")
+    assert messages["hotspot_health"].startswith("Hotspot health dropped")
+
+
+# --------------------------------------------------------------------------- #
+# Maintainability
+# --------------------------------------------------------------------------- #
+
+
+def _maintainability_series(values: list[float]) -> list[_Split]:
+    return [
+        _Split(
+            taken_at=_ts(i),
+            hotspot_health=10.0,
+            average_health=10.0,
+            maintainability_average=v,
+        )
+        for i, v in enumerate(values)
+    ]
+
+
+def test_maintainability_declines_are_alerted():
+    """Nothing watched the one figure a refactor is supposed to move."""
+    vals = [8.5] * 6 + [8.5 - DECLINE_THRESHOLD - 0.1]
+    alerts = [
+        a
+        for a in diff_snapshots(_maintainability_series(vals)).alerts
+        if a.metric == "maintainability_average"
+    ]
+    assert [a.kind for a in alerts] == ["declining"]
+    assert alerts[0].message.startswith("Maintainability dropped 0.60 points")
+
+
+def test_a_maintainability_fall_is_never_blamed_on_history():
+    """It is code shape already, so it has no halves to split and never softens."""
+    vals = [8.5] * 6 + [8.5 - DECLINE_THRESHOLD - 0.1]
+    alert = next(
+        a
+        for a in diff_snapshots(_maintainability_series(vals)).alerts
+        if a.metric == "maintainability_average"
+    )
+    assert alert.driver is None
+    assert alert.structure_delta is None
+
+
+def test_snapshots_without_maintainability_raise_no_alert():
+    """Series predating the column must not read a missing figure as zero."""
+    vals = [8.0] * 6 + [8.0 - DECLINE_THRESHOLD - 0.1]
+    alerts = diff_snapshots(_series(vals)).alerts
+    assert not [a for a in alerts if a.metric == "maintainability_average"]
 
 
 # --------------------------------------------------------------------------- #
@@ -174,3 +385,326 @@ def test_file_trend_declining_on_consecutive_drops():
 def test_file_trend_not_declining_when_recovering():
     t = file_trend(_file_series([{"a.py": 7.0}, {"a.py": 8.0}, {"a.py": 9.0}]), "a.py")
     assert t.declining is False
+
+
+# --------------------------------------------------------------------------- #
+# Below the floor
+#
+# The stored score clamps at SCORE_FLOOR, so a file deep enough to sit on it
+# has a flat series however much of the work gets done. Snapshots record the
+# pre-clamp deduction for those files only; ``unclamped_score`` is the series
+# that can still move.
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class _Metric:
+    file_path: str
+    score: float
+
+
+@dataclass
+class _Finding:
+    file_path: str
+    health_impact: float
+
+
+def _floored_series(
+    per_file: list[dict[str, float]],
+    per_file_ded: list[dict[str, float]],
+) -> list[_S]:
+    """Snapshots carrying both maps, zipped positionally."""
+    return [
+        _S(
+            taken_at=_ts(i),
+            hotspot_health=10.0,
+            average_health=10.0,
+            per_file_scores_json=json.dumps(scores),
+            per_file_deductions_json=json.dumps(ded),
+        )
+        for i, (scores, ded) in enumerate(zip(per_file, per_file_ded, strict=True))
+    ]
+
+
+def test_unclamped_score_tracks_the_recorded_deduction():
+    # The motivating case: three snapshots, all printing 1.0, while 3.3 points
+    # of deduction were actually cleared. The visible series says nothing
+    # happened; the unclamped one says a third of the way there.
+    snaps = _floored_series(
+        [{"a.py": 1.0}, {"a.py": 1.0}, {"a.py": 1.0}],
+        [{"a.py": 12.9}, {"a.py": 11.2}, {"a.py": 9.6}],
+    )
+    pts = file_score_series(snaps, "a.py")
+    assert [p.score for p in pts] == [1.0, 1.0, 1.0]
+    assert [p.unclamped_score for p in pts] == [-2.9, -1.2, 0.4]
+
+    t = file_trend(snaps, "a.py")
+    # The surfaced score is unchanged — it really is 1.0 and it really has not
+    # moved. The unclamped delta is where the work shows up.
+    assert t.current == 1.0
+    assert t.delta == 0.0
+    assert t.unclamped_delta == 1.6
+
+
+def test_unclamped_score_equals_score_without_a_recorded_deduction():
+    # Every file the floor never touches, and every row written before
+    # deductions were captured: one series, no divergence, no second code path.
+    snaps = _file_series([{"a.py": 9.0}, {"a.py": 7.5}])
+    pts = file_score_series(snaps, "a.py")
+    assert [p.unclamped_score for p in pts] == [9.0, 7.5]
+    t = file_trend(snaps, "a.py")
+    assert t.unclamped_delta == t.delta == -1.5
+
+
+def test_pre_existing_floored_history_stays_flat():
+    # A repo indexed before this landed has scores but no deductions. Its
+    # floored files must stay flat rather than acquire an invented depth.
+    snaps = _file_series([{"a.py": 1.0}, {"a.py": 1.0}, {"a.py": 1.0}])
+    t = file_trend(snaps, "a.py")
+    assert [p.unclamped_score for p in t.points] == [1.0, 1.0, 1.0]
+    assert t.unclamped_delta == 0.0
+    assert t.declining is False
+
+
+def test_a_partial_deduction_history_reports_no_depth_at_all():
+    """The shape the first index after this ships produces, and the one that
+    has to stay quiet.
+
+    Old rows carry no deduction; the newest does. Reading the old points as
+    1.0 and the new one as its real depth draws a cliff on a file that did not
+    change — measured against the live index, that flipped 21 of 32 floored
+    files to ``declining`` on an index where nothing moved. The series
+    therefore stays clamped until the whole window has depth.
+    """
+    snaps = _floored_series(
+        [{"a.py": 1.0}, {"a.py": 1.0}, {"a.py": 1.0}],
+        [{}, {}, {"a.py": 11.0}],
+    )
+    pts = file_score_series(snaps, "a.py")
+    assert [p.unclamped_score for p in pts] == [1.0, 1.0, 1.0]
+
+    t = file_trend(snaps, "a.py")
+    assert t.unclamped_delta == 0.0
+    assert t.declining is False
+
+
+def test_depth_appears_once_the_whole_window_has_it():
+    """The other side of the gate: nothing is lost, only deferred."""
+    snaps = _floored_series(
+        [{"a.py": 1.0}, {"a.py": 1.0}, {"a.py": 1.0}],
+        [{"a.py": 12.0}, {"a.py": 11.5}, {"a.py": 11.0}],
+    )
+    assert [p.unclamped_score for p in file_score_series(snaps, "a.py")] == [-2.0, -1.5, -1.0]
+    assert file_trend(snaps, "a.py").unclamped_delta == 0.5
+
+
+def test_an_unfloored_point_counts_as_known_depth():
+    """A file that collapsed *into* the floor must still chart the collapse.
+
+    Its early points are above the floor, where the score is already the
+    unclamped value, so the window is complete even though only the tail
+    carries a recorded deduction. Gating on "every point has a deduction"
+    instead of "every point has a known depth" would have silenced this.
+    """
+    snaps = _floored_series(
+        [{"a.py": 8.8}, {"a.py": 5.2}, {"a.py": 3.5}, {"a.py": 1.0}],
+        [{}, {}, {}, {"a.py": 12.0}],
+    )
+    assert [p.unclamped_score for p in file_score_series(snaps, "a.py")] == [8.8, 5.2, 3.5, -2.0]
+    t = file_trend(snaps, "a.py")
+    assert t.unclamped_delta == -5.5
+    # Four points, each below the last, so the consecutive-drop rule fires.
+    assert t.declining is True
+
+
+def test_unclamped_score_ignores_a_deduction_for_a_different_file():
+    # The deduction map is keyed by path like the score map; a hit on a
+    # neighbour must not leak into this file's depth.
+    snaps = _floored_series(
+        [{"a.py": 1.0}, {"a.py": 1.0}],
+        [{"b.py": 12.0}, {"b.py": 11.0}],
+    )
+    assert [p.unclamped_score for p in file_score_series(snaps, "a.py")] == [1.0, 1.0]
+
+
+def test_unclamped_series_skips_snapshots_missing_the_file():
+    # A deduction recorded in a snapshot that does not score the file at all
+    # cannot manufacture a point — the score map is what decides membership.
+    snaps = _floored_series(
+        [{"a.py": 1.0}, {"b.py": 5.0}, {"a.py": 1.0}],
+        [{"a.py": 12.0}, {"a.py": 3.0}, {"a.py": 10.5}],
+    )
+    pts = file_score_series(snaps, "a.py")
+    assert len(pts) == 2
+    assert [p.unclamped_score for p in pts] == [-2.0, -0.5]
+
+
+def test_unclamped_score_tolerates_a_broken_deduction_map():
+    # A deduction map that will not parse is an unknown depth, not a zero one,
+    # so the series stays clamped rather than reporting a 3-point drop into
+    # the unparseable snapshot. The score map still drives the points.
+    snaps = _floored_series([{"a.py": 1.0}, {"a.py": 1.0}], [{"a.py": 12.0}, {}])
+    snaps[1].per_file_deductions_json = "not json"
+    pts = file_score_series(snaps, "a.py")
+    assert [p.score for p in pts] == [1.0, 1.0]
+    assert [p.unclamped_score for p in pts] == [1.0, 1.0]
+
+
+def test_declining_fires_for_a_file_getting_worse_below_the_floor():
+    # The flag's whole claim is "is it getting worse now". On the clamped
+    # series it could never answer yes for a floored file; every value is 1.0.
+    worsening = _floored_series(
+        [{"a.py": 1.0}] * 4,
+        [{"a.py": 9.5}, {"a.py": 10.5}, {"a.py": 11.5}, {"a.py": 12.5}],
+    )
+    assert file_trend(worsening, "a.py").declining is True
+    # And the same shape without recorded depth cannot, which is what makes
+    # the assertion above about this change rather than about the fixture.
+    assert file_trend(_file_series([{"a.py": 1.0}] * 4), "a.py").declining is False
+
+
+def test_declining_stays_false_while_a_floored_file_recovers():
+    recovering = _floored_series(
+        [{"a.py": 1.0}] * 4,
+        [{"a.py": 12.5}, {"a.py": 11.5}, {"a.py": 10.5}, {"a.py": 9.5}],
+    )
+    assert file_trend(recovering, "a.py").declining is False
+
+
+# --------------------------------------------------------------------------- #
+# snapshot_file_maps — the writer half
+# --------------------------------------------------------------------------- #
+
+
+def test_snapshot_file_maps_records_depth_only_at_the_floor():
+    metrics = [_Metric("floored.py", SCORE_FLOOR), _Metric("fine.py", 7.5)]
+    findings = [
+        _Finding("floored.py", 6.0),
+        _Finding("floored.py", 6.9),
+        _Finding("fine.py", 2.5),
+    ]
+    scores, deductions = snapshot_file_maps(metrics, findings)
+    assert scores == {"floored.py": 1.0, "fine.py": 7.5}
+    # Summed across the file's findings, and only for the floored one — the
+    # unfloored file's deduction is exactly 10 - 7.5 and needs no storage.
+    assert deductions == {"floored.py": 12.9}
+
+
+def test_snapshot_file_maps_omits_a_floored_file_with_no_findings():
+    # Nothing to sum means nothing is known; recording 0.0 would claim the
+    # file is at 10.0 and invert its trend.
+    scores, deductions = snapshot_file_maps([_Metric("a.py", SCORE_FLOOR)], [])
+    assert scores == {"a.py": 1.0}
+    assert deductions == {}
+
+
+def test_snapshot_file_maps_ignores_findings_for_unscored_files():
+    # Findings can outlive a metric row (a file dropped from this run). The
+    # deduction map is keyed off metrics so it cannot grow phantom entries.
+    scores, deductions = snapshot_file_maps(
+        [_Metric("a.py", SCORE_FLOOR)],
+        [_Finding("a.py", 11.0), _Finding("gone.py", 9.0)],
+    )
+    assert scores == {"a.py": 1.0}
+    assert deductions == {"a.py": 11.0}
+
+
+def test_snapshot_file_maps_round_trips_into_the_reader():
+    # The two halves are written and read by different modules; this pins that
+    # they agree on the same file's depth end to end.
+    metrics = [_Metric("a.py", SCORE_FLOOR)]
+    before = snapshot_file_maps(metrics, [_Finding("a.py", 12.0)])
+    after = snapshot_file_maps(metrics, [_Finding("a.py", 10.0)])
+    snaps = _floored_series([before[0], after[0]], [before[1], after[1]])
+    t = file_trend(snaps, "a.py")
+    assert t.delta == 0.0
+    assert t.unclamped_delta == 2.0
+
+
+# --------------------------------------------------------------------------- #
+# The per-snapshot parse memo
+# --------------------------------------------------------------------------- #
+#
+# The per-file maps are per-*repo* blobs read one file at a time, so asking
+# about N files re-parsed the same few blobs N times. Measured on the repowise
+# index (20 snapshots averaging 186 KB each), ``get_health`` on a ``module:``
+# target expanding to 822 files spent 13.0s in ``json.loads``; memoized, 0.4s.
+
+
+def _counting_loads(monkeypatch) -> list[int]:
+    """Count ``json.loads`` calls made by ``trends``, without changing them.
+
+    Clears the memo first: it is content-keyed and process-wide, so a blob an
+    earlier test already parsed would otherwise make this one pass for the
+    wrong reason.
+    """
+    import repowise.core.analysis.health.trends as trends_mod
+
+    trends_mod._parsed_map.cache_clear()
+    calls = [0]
+    real = json.loads
+
+    def counted(s, *a, **kw):
+        calls[0] += 1
+        return real(s, *a, **kw)
+
+    monkeypatch.setattr(trends_mod.json, "loads", counted)
+    return calls
+
+
+def test_each_snapshot_map_is_parsed_once_however_many_files_are_asked_about(monkeypatch):
+    paths = [f"f{i}.py" for i in range(40)]
+    snaps = _file_series([{p: 9.0 for p in paths}, {p: 8.0 for p in paths}])
+    calls = _counting_loads(monkeypatch)
+
+    for p in paths:
+        assert file_trend(snaps, p).delta == -1.0
+
+    # One parse per distinct blob: two score maps, and the one empty deduction
+    # map both snapshots share. Unmemoized this is 40x that, and it is the shape
+    # that made a ``module:`` target take 13 seconds.
+    assert calls[0] <= 3, f"re-parsed per file: {calls[0]} loads"
+
+
+def test_the_memo_is_keyed_on_content_so_it_cannot_serve_a_stale_map():
+    """Different bytes are a different key.
+
+    A memo keyed on ``(snapshot, column)`` would keep answering with the first
+    map it ever saw. These are historical rows so a rewrite is not expected —
+    but a cache that *cannot* notice one is a different promise from a cache
+    that re-parses when the bytes change.
+    """
+    snaps = _file_series([{"a.py": 9.0}, {"a.py": 8.0}])
+    assert file_trend(snaps, "a.py").current == 8.0
+
+    snaps[-1].per_file_scores_json = json.dumps({"a.py": 3.0})
+    assert file_trend(snaps, "a.py").current == 3.0
+
+
+def test_the_memo_needs_nothing_of_the_snapshot_object():
+    """Content-keying is what lets an unhashable row through.
+
+    The obvious memo — a ``WeakKeyDictionary`` on the snapshot — silently
+    degrades to no caching for any snapshot type that is unhashable or not
+    weak-referenceable, which is every ``@dataclass`` row (``eq=True`` sets
+    ``__hash__`` to ``None``) and every ``__slots__`` stub.
+    """
+
+    class _Slotted:
+        __slots__ = ("per_file_deductions_json", "per_file_scores_json", "taken_at")
+
+        def __init__(self, taken_at, scores):
+            self.taken_at = taken_at
+            self.per_file_scores_json = json.dumps(scores)
+            self.per_file_deductions_json = "{}"
+
+    snaps = [_Slotted(_ts(0), {"a.py": 9.0}), _Slotted(_ts(1), {"a.py": 7.0})]
+    assert file_trend(snaps, "a.py").delta == -2.0
+
+
+def test_recent_kpis_carries_the_analyzer_version_only_when_asked():
+    snaps = _series([5.0, 6.0])
+    snaps[1].analyzer_version = 42
+    assert "analyzer_version" not in recent_kpis(snaps)[0]
+    rows = recent_kpis(snaps, analyzer_version=True)
+    assert [r["analyzer_version"] for r in rows] == [42, None]

@@ -77,6 +77,27 @@ def test_bare_and_baseexception_stay_bare(source: bytes) -> None:
     assert "KeyboardInterrupt" in _REASONS["bare_except"]
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        b"try:\n    x()\nexcept Exception:\n    cleanup()\n    raise\n",
+        b"try:\n    x()\nexcept BaseException as exc:\n    close()\n    raise exc\n",
+        b"try:\n    x()\nexcept:\n    raise Wrapped() from None\n",
+    ],
+    ids=["cleanup-reraise", "base-reraise-bound", "bare-translate"],
+)
+def test_a_catch_all_that_ends_in_raise_is_not_flagged(source: bytes) -> None:
+    kinds = _kinds("python", source)
+    assert "broad_except" not in kinds
+    assert "bare_except" not in kinds
+
+
+def test_a_raise_that_is_not_last_still_flags() -> None:
+    # ``raise`` on one branch only; the fall-through swallows.
+    source = b"try:\n    x()\nexcept Exception:\n    if strict:\n        raise\n    log()\n"
+    assert "broad_except" in _kinds("python", source)
+
+
 # --- R3: Go blank-identifier discard only in the trailing (error) slot ---
 
 

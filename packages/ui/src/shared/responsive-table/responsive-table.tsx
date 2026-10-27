@@ -64,6 +64,12 @@ export interface ResponsiveTableProps<T> {
   rows: T[];
   rowKey: (row: T) => string;
   onRowClick?: ((row: T) => void) | undefined;
+  /**
+   * Pointer entered a row, for tables paired with a view that highlights it.
+   * Pointer-only, so never make it the sole route to information: pair it with
+   * `onRowClick`, which also works on touch.
+   */
+  onRowHover?: ((row: T) => void) | undefined;
   selectedKey?: string | null | undefined;
   /** Extra per-row classes — e.g. a multi-select highlight `selectedKey` can't express. */
   rowClassName?: ((row: T) => string | undefined) | undefined;
@@ -123,7 +129,7 @@ export function clickableRowProps<E extends HTMLElement>(activate: () => void) {
 }
 
 export const CLICKABLE_ROW_CLS =
-  "cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-primary)]";
+  "cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-focus-ring)]";
 
 const NOOP_MEASURE = () => {};
 
@@ -140,6 +146,7 @@ export function ResponsiveTable<T>({
   rows,
   rowKey,
   onRowClick,
+  onRowHover,
   selectedKey,
   rowClassName,
   virtualize,
@@ -242,7 +249,7 @@ export function ResponsiveTable<T>({
                   {c.sortable && onSort ? (
                     <button
                       type="button"
-                      className="inline-flex cursor-pointer select-none items-center font-medium uppercase tracking-wider focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] rounded"
+                      className="inline-flex cursor-pointer select-none items-center font-medium uppercase tracking-wider focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] rounded"
                       onClick={() => onSort(c.key)}
                     >
                       {label}
@@ -269,12 +276,14 @@ export function ResponsiveTable<T>({
                 key={key}
                 ref={tableWindow.measure}
                 data-index={index}
+                data-selected={isSelected || undefined}
                 className={cn(
-                  "border-t border-[var(--color-table-divider)] hover:bg-[var(--color-bg-elevated)]",
-                  isSelected && "bg-[var(--color-accent-muted)]/30",
+                  "group/row border-t border-[var(--color-table-divider)] hover:bg-[var(--color-bg-elevated)]",
+                  isSelected && "bg-[var(--color-selection-wash)]",
                   onRowClick && CLICKABLE_ROW_CLS,
                   rowClassName?.(row),
                 )}
+                onMouseEnter={onRowHover ? () => onRowHover(row) : undefined}
                 {...(onRowClick ? clickableRowProps(() => onRowClick(row)) : {})}
               >
                 {columns.map((c) => (
@@ -321,12 +330,14 @@ export function ResponsiveTable<T>({
               key={key}
               ref={cardsWindow.measure}
               data-index={index}
+              data-selected={isSelected || undefined}
               className={cn(
-                "px-3 py-2.5",
-                isSelected && "bg-[var(--color-accent-muted)]/30",
+                "group/row px-3 py-2.5",
+                isSelected && "bg-[var(--color-selection-wash)]",
                 onRowClick && cn("hover:bg-[var(--color-bg-elevated)]", CLICKABLE_ROW_CLS),
                 rowClassName?.(row),
               )}
+              onMouseEnter={onRowHover ? () => onRowHover(row) : undefined}
               {...(onRowClick ? clickableRowProps(() => onRowClick(row)) : {})}
             >
               <div className="text-sm text-[var(--color-text-primary)]">

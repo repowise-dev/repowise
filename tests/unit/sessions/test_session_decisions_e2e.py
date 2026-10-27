@@ -63,7 +63,9 @@ async def test_correction_mines_structures_and_promotes(tmp_path):
 
     (decision,) = decisions
     assert decision.source == "session"
-    assert decision.status == "active"  # correction fast path, first promotion
+    # A user correction promotes on one observation, but promotion means
+    # "worth reviewing", not "accepted": only `decision confirm` sets active.
+    assert decision.status == "proposed"
     assert decision.verification == "exact"
     assert decision.evidence_commits == ["sess-1"]
     assert decision.source_quote == CORRECTION
@@ -149,7 +151,7 @@ async def test_llm_failure_leaves_candidates_staged(tmp_path):
         repo_root, provider=provider, projects_root=projects_root, now=200.0
     )
     (decision,) = decisions
-    assert decision.status == "active"
+    assert decision.status == "proposed"
 
 
 async def test_init_pipeline_appends_session_decisions(tmp_path, monkeypatch):
@@ -166,6 +168,12 @@ async def test_init_pipeline_appends_session_decisions(tmp_path, monkeypatch):
         return [ExtractedDecision(title="Use X", source="session", status="active")]
 
     monkeypatch.setattr("repowise.core.sessions.miners.decisions.mine_session_decisions", fake_mine)
+
+    # The lane ships off; this covers the fold-in, not the default.
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / "config.yaml").write_text(
+        "decisions:\n  sources:\n    session: true\n", encoding="utf-8"
+    )
 
     class Graph:
         def graph(self):
@@ -224,6 +232,155 @@ async def test_init_pipeline_respects_session_mining_gate(tmp_path, monkeypatch)
     assert "session" not in report.by_source
 
 
-def test_session_rank_sits_between_adr_and_commit():
-    assert SOURCE_RANK["session"] == 7
-    assert SOURCE_RANK["adr"] > SOURCE_RANK["session"] > SOURCE_RANK["commit"]
+def test_session_rank_sits_above_adr_and_below_cli():
+    """A transcript is the user speaking; an ADR is a write-up of it.
+
+    This used to assert ``adr > session``, which meant the ``>=`` promotion
+    branch in ``crud.decisions`` never fired for a transcript and a mined
+    document overwrote the user's own words.
+    """
+    assert SOURCE_RANK["session"] == 8
+    assert SOURCE_RANK["cli"] > SOURCE_RANK["session"] > SOURCE_RANK["adr"]
+
+
+# ---------------------------------------------------------------------------
+# One read, two consumers
+# ---------------------------------------------------------------------------
+
+
+async def test_the_transcript_read_serves_episodes_without_a_provider(tmp_path):
+    """Keyless is the primary path, and this pass is where transcripts are read.
+
+    Gating the read on a provider would leave a user with no API key no
+    transcript supply at all, while the episode half needs no model. The
+    structuring pass is what skips.
+    """
+    from repowise.core.precedent.store import TIER_TRANSCRIPT, EpisodeStore
+    from repowise.core.precedent.store import default_store_path as episode_store_path
+
+    repo_root = tmp_path / "repo"
+    (repo_root / ".repowise").mkdir(parents=True)
+    projects_root = tmp_path / "projects"
+    _write_transcript(repo_root, projects_root, "one.jsonl", "sess-1", CORRECTION)
+
+    decisions = await mine_session_decisions(
+        repo_root, provider=None, projects_root=projects_root, now=100.0
+    )
+
+    assert decisions == []  # nothing can be structured without a model
+    with EpisodeStore(episode_store_path(repo_root)) as store:
+        (row,) = store.list_episodes(tier=TIER_TRANSCRIPT)
+    assert CORRECTION in row["body"]
+    assert row["subject"].endswith("one.jsonl")
+
+
+async def test_the_episode_write_leaves_decision_mining_unchanged(tmp_path):
+    """The tee must not perturb the stream it rides.
+
+    Measured on the real corpus as well: 426 transcripts produced 547 candidates
+    with and without the recorder attached.
+    """
+    repo_root = tmp_path / "repo"
+    (repo_root / ".repowise").mkdir(parents=True)
+    projects_root = tmp_path / "projects"
+    provider = FakeProvider()
+    _write_transcript(repo_root, projects_root, "one.jsonl", "sess-1", CORRECTION)
+
+    decisions = await mine_session_decisions(
+        repo_root, provider=provider, projects_root=projects_root, now=100.0
+    )
+
+    (decision,) = decisions
+    assert decision.source == "session"
+    assert decision.source_quote == CORRECTION
+
+
+async def test_a_repo_with_no_transcripts_derives_nothing_and_deletes_nothing(tmp_path):
+    """Rule 3a's test: the CI case must be degraded, never broken."""
+    from repowise.core.precedent.store import default_store_path as episode_store_path
+
+    repo_root = tmp_path / "repo"
+    (repo_root / ".repowise").mkdir(parents=True)
+    projects_root = tmp_path / "projects"
+
+    decisions = await mine_session_decisions(
+        repo_root, provider=None, projects_root=projects_root, now=100.0
+    )
+    assert decisions == []
+    assert not episode_store_path(repo_root).exists()
+
+
+# ---------------------------------------------------------------------------
+# Broad discovery rides the same read (one cursor, one pass over the bytes)
+# ---------------------------------------------------------------------------
+
+
+async def test_discovery_spans_are_collected_only_when_asked(tmp_path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    projects_root = tmp_path / "projects"
+    _write_transcript(repo_root, projects_root, "one.jsonl", "sess-1", CORRECTION)
+
+    await mine_session_decisions(
+        repo_root, provider=None, projects_root=projects_root, now=100.0
+    )
+    with SessionStagingStore(default_store_path(repo_root)) as store:
+        assert store.pending_discovery_count() == 0
+
+
+async def test_discovery_spans_ride_the_miners_single_transcript_read(tmp_path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    projects_root = tmp_path / "projects"
+    _write_transcript(repo_root, projects_root, "one.jsonl", "sess-1", CORRECTION)
+
+    await mine_session_decisions(
+        repo_root,
+        provider=None,
+        projects_root=projects_root,
+        collect_discovery_spans=True,
+        now=100.0,
+    )
+    with SessionStagingStore(default_store_path(repo_root)) as store:
+        spans = store.pending_discovery_spans(10)
+    assert [span["session_id"] for span in spans] == ["sess-1"]
+    assert CORRECTION in spans[0]["text"]
+
+    # The cursor already consumed those bytes, so a second pass adds nothing.
+    await mine_session_decisions(
+        repo_root,
+        provider=None,
+        projects_root=projects_root,
+        collect_discovery_spans=True,
+        now=200.0,
+    )
+    with SessionStagingStore(default_store_path(repo_root)) as store:
+        assert store.pending_discovery_count() == 1
+
+
+async def test_a_span_from_another_checkout_is_not_collected(tmp_path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    other = tmp_path / "other"
+    other.mkdir()
+    projects_root = tmp_path / "projects"
+    directory = transcript_dir_for(repo_root, projects_root)
+    directory.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "type": "user",
+        "cwd": str(other),
+        "timestamp": "2026-07-11T10:00:00.000Z",
+        "sessionId": "sess-elsewhere",
+        "message": {"role": "user", "content": [{"type": "text", "text": CORRECTION}]},
+    }
+    (directory / "one.jsonl").write_text(json.dumps(entry) + "\n", encoding="utf-8")
+
+    await mine_session_decisions(
+        repo_root,
+        provider=None,
+        projects_root=projects_root,
+        collect_discovery_spans=True,
+        now=100.0,
+    )
+    with SessionStagingStore(default_store_path(repo_root)) as store:
+        assert store.pending_discovery_count() == 0

@@ -19,35 +19,74 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
+import structlog
+
+from ....support_paths import is_example_path
+from ...entry_points import orientation_entry_points
 from ..registry import SubkindSpec, register
-from ..signals import OnboardingSignals
+from ..signals import OnboardingSignals, file_layer_map
 from ..slots import SLOT_HOW_IT_WORKS, SLOT_TITLES
+
+log = structlog.get_logger(__name__)
 
 Archetype = Literal["service", "cli", "library", "pipeline", "module"]
 
 _MIN_TRACE_HOPS = 3
 _TOP_FLOWS = 3
+_FLOW_CANDIDATE_LIMIT = 24
 _TRACE_DISPLAY_HOPS = 8
 
 # Framework hints by ecosystem — anything matching tilts the archetype.
-_SERVICE_FRAMEWORK_HINTS: frozenset[str] = frozenset({
-    "fastapi", "flask", "starlette", "django", "uvicorn", "gunicorn",
-    "express", "koa", "hapi", "nestjs",
-    "Microsoft.AspNetCore", "Microsoft.AspNetCore.App",
-    "actix-web", "axum", "rocket",
-    "gin", "echo", "fiber",
-    "spring-boot", "spring-webmvc",
-})
-_CLI_FRAMEWORK_HINTS: frozenset[str] = frozenset({
-    "click", "typer", "argparse", "fire",
-    "commander", "yargs", "oclif",
-    "cobra", "urfave/cli",
-    "clap", "structopt",
-})
-_PIPELINE_HINTS: frozenset[str] = frozenset({
-    "celery", "airflow", "prefect", "dagster",
-    "apache-beam", "kafka", "rabbitmq",
-})
+_SERVICE_FRAMEWORK_HINTS: frozenset[str] = frozenset(
+    {
+        "fastapi",
+        "flask",
+        "starlette",
+        "django",
+        "uvicorn",
+        "gunicorn",
+        "express",
+        "koa",
+        "hapi",
+        "nestjs",
+        "Microsoft.AspNetCore",
+        "Microsoft.AspNetCore.App",
+        "actix-web",
+        "axum",
+        "rocket",
+        "gin",
+        "echo",
+        "fiber",
+        "spring-boot",
+        "spring-webmvc",
+    }
+)
+_CLI_FRAMEWORK_HINTS: frozenset[str] = frozenset(
+    {
+        "click",
+        "typer",
+        "argparse",
+        "fire",
+        "commander",
+        "yargs",
+        "oclif",
+        "cobra",
+        "urfave/cli",
+        "clap",
+        "structopt",
+    }
+)
+_PIPELINE_HINTS: frozenset[str] = frozenset(
+    {
+        "celery",
+        "airflow",
+        "prefect",
+        "dagster",
+        "apache-beam",
+        "kafka",
+        "rabbitmq",
+    }
+)
 
 
 @dataclass
@@ -55,6 +94,7 @@ class FlowTrace:
     entry_point: str
     hops: list[str] = field(default_factory=list)
     score: float = 0.0
+    lifecycle_breadth: int = 0
 
 
 @dataclass
@@ -79,12 +119,20 @@ def _classify_archetype(signals: OnboardingSignals) -> tuple[Archetype, list[str
     cli_hits = dep_names & _CLI_FRAMEWORK_HINTS
     pipeline_hits = dep_names & _PIPELINE_HINTS
 
-    api_contract_count = sum(
-        1 for pf in signals.parsed_files if pf.file_info.is_api_contract
-    )
+    api_contract_count = sum(1 for pf in signals.parsed_files if pf.file_info.is_api_contract)
+    # Read from the code, so it holds where no dependency manifest was inventoried.
+    # A sample main under examples/ demonstrates the system rather than being it.
+    app_mains = [
+        p
+        for p in getattr(signals.repo_structure, "application_mains", None) or []
+        if not is_example_path(p)
+    ]
 
-    # Service tilt wins if we have either framework deps or API contract files.
-    if service_hits or api_contract_count > 0:
+    # Service tilt wins on framework deps, API contract files or an application main.
+    if service_hits or api_contract_count > 0 or app_mains:
+        if app_mains:
+            more = f" and {len(app_mains) - 1} more" if len(app_mains) > 1 else ""
+            evidence.append(f"application main: `{app_mains[0]}`{more}")
         if service_hits:
             evidence.append(f"service framework(s) detected: {', '.join(sorted(service_hits))}")
         if api_contract_count:
@@ -101,7 +149,9 @@ def _classify_archetype(signals: OnboardingSignals) -> tuple[Archetype, list[str
 
     # Entry-point shape — `__main__.py` or `bin/` is CLI-shaped.
     entry_points = list(getattr(signals.repo_structure, "entry_points", []))
-    if any(ep.endswith("__main__.py") or "/bin/" in ep or ep.startswith("bin/") for ep in entry_points):
+    if any(
+        ep.endswith("__main__.py") or "/bin/" in ep or ep.startswith("bin/") for ep in entry_points
+    ):
         evidence.append("entry point shape suggests a CLI (__main__ or bin/)")
         return "cli", evidence
 
@@ -119,24 +169,72 @@ def _collect_flows(signals: OnboardingSignals) -> list[FlowTrace]:
     """Pull execution flows from the graph builder (best-effort)."""
     try:
         report = signals.graph_builder.execution_flows()
-    except Exception:
+    except Exception as exc:
+        log.warning(
+            "how_it_works_execution_flows_unavailable",
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
         return []
     if not report or not hasattr(report, "flows"):
         return []
 
-    flows: list[FlowTrace] = []
-    for flow in getattr(report, "flows", [])[:_TOP_FLOWS]:
+    flows: list[tuple[int, int, int, float, str, FlowTrace]] = []
+    layers = file_layer_map(signals)
+    repo_structure = getattr(signals, "repo_structure", None)
+    declared_entry_points = (
+        set(orientation_entry_points(repo_structure, limit=12))
+        if repo_structure is not None
+        else set()
+    )
+    # ``ExecutionFlow`` names these ``entry_point_id`` and
+    # ``entry_point_score``. Read as ``entry_point`` / ``score`` the getattr
+    # defaults applied instead of raising, so every page ever generated
+    # carried an empty entry point and a zero score on every flow.
+    for flow in getattr(report, "flows", [])[:_FLOW_CANDIDATE_LIMIT]:
         trace = list(getattr(flow, "trace", []) or [])
         if len(trace) < _MIN_TRACE_HOPS:
             continue
+        entry_point = str(getattr(flow, "entry_point_id", ""))
+        entry_path = entry_point.split("::", 1)[0]
+        paths = [str(hop).split("::", 1)[0].removeprefix("file:") for hop in trace]
+        lifecycle_regions = {
+            layers.get(path) or (path.split("/", 1)[0] if "/" in path else "<root>")
+            for path in paths
+            if path
+        }
+        candidate = FlowTrace(
+            entry_point=entry_point,
+            hops=trace[:_TRACE_DISPLAY_HOPS],
+            score=float(getattr(flow, "entry_point_score", 0.0) or 0.0),
+            lifecycle_breadth=len(lifecycle_regions),
+        )
         flows.append(
-            FlowTrace(
-                entry_point=str(getattr(flow, "entry_point", "")),
-                hops=trace[:_TRACE_DISPLAY_HOPS],
-                score=float(getattr(flow, "score", 0.0) or 0.0),
+            (
+                1 if entry_path in declared_entry_points else 0,
+                candidate.lifecycle_breadth,
+                len(trace),
+                candidate.score,
+                candidate.entry_point,
+                candidate,
             )
         )
-    return flows
+    flows.sort(key=lambda item: (-item[0], -item[1], -item[2], -item[3], item[4]))
+    selected = [item[-1] for item in flows[:_TOP_FLOWS]]
+    if selected:
+        log.info(
+            "onboarding.how_it_works_flows_ranked",
+            candidates=len(flows),
+            chosen=[
+                {
+                    "entry_point": flow.entry_point,
+                    "lifecycle_breadth": flow.lifecycle_breadth,
+                    "score": flow.score,
+                }
+                for flow in selected
+            ],
+        )
+    return selected
 
 
 def _normalize_tour_step(step: dict) -> dict:
@@ -172,9 +270,21 @@ def _build(signals: OnboardingSignals) -> HowItWorksContext | None:
         archetype=archetype,
         archetype_evidence=evidence,
         flows=flows,
-        entry_points=list(getattr(signals.repo_structure, "entry_points", []))[:5],
+        entry_points=orientation_entry_points(signals.repo_structure, limit=5),
         kg_tour_steps=kg_tour[:8],
     )
+
+
+def _evidence_references(ctx: object) -> tuple[str, ...]:
+    """Return distinct symbols shown in detected execution flows."""
+    if not isinstance(ctx, HowItWorksContext):
+        return ()
+    references: list[str] = []
+    for flow in ctx.flows:
+        if flow.entry_point:
+            references.append(flow.entry_point)
+        references.extend(hop for hop in flow.hops if hop)
+    return tuple(dict.fromkeys(references))
 
 
 register(
@@ -183,5 +293,6 @@ register(
         title=SLOT_TITLES[SLOT_HOW_IT_WORKS],
         template="how_it_works.j2",
         build_context=_build,
+        evidence_references=_evidence_references,
     )
 )

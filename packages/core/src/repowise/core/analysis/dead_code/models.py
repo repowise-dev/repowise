@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
+
+from .risk_factors import RISK_CAP_CONFIDENCE, SAFE_CONFIDENCE_THRESHOLD
 
 
 class DeadCodeKind(StrEnum):
@@ -24,8 +27,9 @@ class DeadCodeFindingData:
     reason: str
     last_commit_at: datetime | None
     commit_count_90d: int
-    lines: int
-    package: str | None
+    # Physical lines the finding covers; ``None`` when it could not be
+    # counted (the evidence says why) — never an estimate.
+    lines: int | None
     evidence: list[str]
     safe_to_delete: bool
     primary_owner: str | None
@@ -38,6 +42,30 @@ class DeadCodeFindingData:
     # only; file/package-kind findings leave both None).
     start_line: int | None = None
     end_line: int | None = None
+    # An unused export its own file uses: only the ``export`` is unneeded, so
+    # no line of it is deletable. Capped below the stored floor, so only a live
+    # run (the CLI below ``--min-confidence 0.4``) ever shows one.
+    export_only: bool = False
+
+    @property
+    def is_spanned_symbol(self) -> bool:
+        """A named symbol finding whose declaration lines are known."""
+        return (
+            self.kind in (DeadCodeKind.UNUSED_EXPORT, DeadCodeKind.UNUSED_INTERNAL)
+            and bool(self.symbol_name)
+            and self.start_line is not None
+            and self.end_line is not None
+        )
+
+
+def drop_used(
+    findings: list[DeadCodeFindingData],
+    candidates: list[DeadCodeFindingData],
+    is_used: Callable[[DeadCodeFindingData], bool],
+) -> list[DeadCodeFindingData]:
+    """*findings* without the *candidates* that *is_used* holds for. Returns a new list."""
+    dropped = {id(f) for f in candidates if is_used(f)}
+    return [f for f in findings if id(f) not in dropped]
 
 
 @dataclass
@@ -48,3 +76,35 @@ class DeadCodeReport:
     findings: list[DeadCodeFindingData]
     deletable_lines: int
     confidence_summary: dict  # {"high": N, "medium": N, "low": N}
+    #: Number of findings produced by the analyzers but dropped because their
+    #: confidence is below ``min_confidence``.  Exposed so the CLI can print a
+    #: "N findings hidden; pass --min-confidence 0.0 to see them" footer
+    #: without changing what the buckets mean or what the report returns.
+    hidden_below_threshold: int = 0
+    #: The file paths this report is allowed to speak for, or ``None`` for
+    #: "all of them". Confidence is scored from per-file git metadata, and a
+    #: file with no metadata is indistinguishable from one with no commits —
+    #: it scores 0.7 with ``safe_to_delete=True`` however active it is. The
+    #: incremental path can only obtain metadata for some files, so it sets
+    #: this to the set it actually has, and persistence leaves every other
+    #: file's stored verdict alone rather than overwriting it with a guess.
+    #: A full run has metadata for everything and leaves this ``None``.
+    authoritative_paths: frozenset[str] | None = None
+
+    @classmethod
+    def from_findings(
+        cls, findings: list[DeadCodeFindingData], *, hidden_below_threshold: int = 0
+    ) -> DeadCodeReport:
+        """The report over *findings*, already cut at the confidence floor."""
+        high = sum(1 for f in findings if f.confidence >= SAFE_CONFIDENCE_THRESHOLD)
+        low = sum(1 for f in findings if f.confidence < RISK_CAP_CONFIDENCE)
+        return cls(
+            repo_id="",
+            analyzed_at=datetime.now(UTC),
+            total_findings=len(findings),
+            findings=findings,
+            # Sum of the known counts: a lower bound when any count is unknown.
+            deletable_lines=sum(f.lines or 0 for f in findings if f.safe_to_delete),
+            confidence_summary={"high": high, "medium": len(findings) - high - low, "low": low},
+            hidden_below_threshold=hidden_below_threshold,
+        )

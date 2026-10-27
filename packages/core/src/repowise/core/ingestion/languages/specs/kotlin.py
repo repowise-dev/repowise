@@ -10,7 +10,7 @@ SPEC = LanguageSpec(
     # roots — the "src/*Test" wildcard covers multiplatform/custom test
     # sourcesets (src/commonTest, src/jvmTest, src/integrationTest, …).
     test_camel_suffixes=("Test", "Tests", "Spec"),
-    test_dir_paths=("src/test/kotlin", "src/*Test"),
+    test_dir_paths=("src/test/kotlin", "src/testfixtures/kotlin", "src/*Test"),
     entry_point_patterns=("Main.kt", "Application.kt"),
     extensions=frozenset({".kt", ".kts"}),
     grammar_package="tree_sitter_kotlin",
@@ -41,6 +41,12 @@ SPEC = LanguageSpec(
             "also",
             "apply",
             "with",
+            "repeat",
+            "synchronized",
+            "buildList",
+            "buildString",
+            "buildMap",
+            "takeIf",
         }
     ),
     builtin_parents=frozenset(
@@ -54,6 +60,32 @@ SPEC = LanguageSpec(
             "Comparable",
             "Iterable",
             "Serializable",
+        }
+    ),
+    builtin_types=frozenset(
+        {
+            # Kotlin primitives (kotlin package, auto-imported)
+            "Boolean", "Byte", "Short", "Int", "Long", "Float", "Double", "Char",
+            "String", "Unit", "Nothing", "Any", "Number",
+            "Array", "IntArray", "LongArray", "ByteArray", "ShortArray",
+            "FloatArray", "DoubleArray", "CharArray", "BooleanArray",
+            "List", "MutableList", "ArrayList",
+            "Map", "MutableMap", "HashMap", "LinkedHashMap",
+            "Set", "MutableSet", "HashSet", "LinkedHashSet",
+            "Collection", "MutableCollection",
+            "Iterable", "MutableIterable", "Iterator", "MutableIterator",
+            "Sequence", "Pair", "Triple", "Result",
+            "Comparable", "Comparator",
+            "Throwable", "Exception", "RuntimeException", "Error",
+            "IllegalArgumentException", "IllegalStateException",
+            "NullPointerException", "UnsupportedOperationException",
+            "IndexOutOfBoundsException", "ClassCastException",
+            "Lazy", "Regex", "Range", "IntRange", "LongRange", "CharRange",
+            "Enum", "Annotation",
+            # kotlin.io / kotlin.text / kotlin.collections ubiquitous
+            "Reader", "Writer", "BufferedReader", "BufferedWriter",
+            # Coroutines + JVM common
+            "Object", "Function", "Runnable", "Class", "Void",
         }
     ),
     color_hex="#A97BFF",

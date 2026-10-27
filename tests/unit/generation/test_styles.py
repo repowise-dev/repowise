@@ -252,6 +252,56 @@ async def test_style_change_moves_a_file_page_reuse_hash(
     assert base_page.metadata["render_key"] != other_page.metadata["render_key"]
 
 
+async def test_a_symbol_spotlight_stores_a_render_key(
+    sample_parsed_file, sample_graph, graph_metrics, sample_source_bytes
+):
+    """A spotlight has no model path either, so it needs the same salt.
+
+    Without a stored key there is nothing for a later run to disagree with, so
+    an improved spotlight template can never be shown not to have landed, and
+    the page keeps whatever it said when it was first written.
+    """
+    _, gen = _make_gen(GenerationConfig(), sample_source_bytes)
+    page = await gen.generate_symbol_spotlight(
+        sample_parsed_file.symbols[0],
+        sample_parsed_file,
+        graph_metrics["pagerank"],
+        sample_graph,
+        {sample_parsed_file.file_info.path: sample_source_bytes},
+    )
+
+    assert page.metadata.get("render_key")
+
+
+async def test_a_spotlight_render_key_moves_when_its_template_does(
+    sample_parsed_file, sample_graph, graph_metrics, sample_source_bytes
+):
+    """The key is only worth storing if a template edit actually moves it."""
+    from repowise.core.generation.page_generator.structural import (
+        SYMBOL_SPOTLIGHT_TEMPLATE,
+        structural_content_hash,
+        structural_fingerprint,
+    )
+
+    _, gen = _make_gen(GenerationConfig(), sample_source_bytes)
+    page = await gen.generate_symbol_spotlight(
+        sample_parsed_file.symbols[0],
+        sample_parsed_file,
+        graph_metrics["pagerank"],
+        sample_graph,
+        {sample_parsed_file.file_info.path: sample_source_bytes},
+    )
+
+    subject = sample_parsed_file.content_hash
+    current = structural_content_hash(subject, structural_fingerprint(SYMBOL_SPOTLIGHT_TEMPLATE))
+    older = structural_content_hash(
+        subject, structural_fingerprint(SYMBOL_SPOTLIGHT_TEMPLATE, source="# an older template")
+    )
+
+    assert page.metadata["render_key"] == current
+    assert page.metadata["render_key"] != older
+
+
 async def test_onboarding_page_type_constant_matches_system_prompts():
     """ONBOARDING_PAGE_TYPE must match the key used by the onboarding generators."""
     from repowise.core.generation.page_generator import SYSTEM_PROMPTS

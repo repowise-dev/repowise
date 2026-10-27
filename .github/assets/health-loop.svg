@@ -11,7 +11,7 @@
 
   <!-- top: the engine -->
   <rect x="330" y="28" width="540" height="48" rx="24" fill="#F8FAFC" stroke="#E2E8F0"/>
-  <text x="600" y="52" text-anchor="middle" fill="#0F172A" font-size="16" font-weight="700">25 deterministic biomarkers</text>
+  <text x="600" y="52" text-anchor="middle" fill="#0F172A" font-size="16" font-weight="700">49 deterministic detectors</text>
   <text x="600" y="69" text-anchor="middle" fill="#94A3B8" font-size="12">tree-sitter + git history &#183; zero LLM &#183; under 30s</text>
 
   <!-- fan-out connectors -->

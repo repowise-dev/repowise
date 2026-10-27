@@ -35,6 +35,71 @@ def emit_stage(progress: Any, stage: str) -> None:
         fn(stage)
 
 
+def emit_item(progress: Any, phase: str, label: str) -> None:
+    """Name the item ``phase`` just finished (a file path, a page), for a display.
+
+    Optional like :func:`emit_stage`: headless callbacks never grew
+    ``on_item_label``. Never raises.
+    """
+    if progress is None:
+        return
+    fn = getattr(progress, "on_item_label", None)
+    if fn is None:
+        return
+    try:
+        fn(phase, label)
+    except Exception:  # a display callback must never break the pipeline
+        logger.debug("progress_item_emit_failed", phase=phase, exc_info=True)
+
+
+def emit_phase_failed(progress: Any, phase: str) -> None:
+    """Close ``phase`` on screen without marking it done; its warning says why.
+
+    Optional like :func:`emit_stage`. Never raises.
+    """
+    fn = getattr(progress, "on_phase_failed", None)
+    if fn is None:
+        return
+    try:
+        fn(phase)
+    except Exception:  # a display callback must never break the pipeline
+        logger.debug("progress_phase_failed_emit_failed", phase=phase, exc_info=True)
+
+
+def emit_warning(progress: Any, text: str) -> None:
+    """Report a degradation on the one channel a default run actually shows.
+
+    ``logger.warning`` is invisible in every CLI run: ``configure_cli_logging``
+    pins ``repowise.core`` to ERROR unless ``--verbose``, and the structlog
+    filtering bound logger drops the record before it is formatted. So a phase
+    could fail completely — three decision sources returning nothing, the parse
+    pool dying and falling back to sequential — and the run printed nothing at
+    all. ``vector_store/_base.py`` already reached this conclusion and logs its
+    truncation report at ``error`` to get around it; that works, but it makes
+    the level describe the plumbing rather than the severity.
+
+    ``on_message`` is the channel the CLI renders, and it survives a non-TTY:
+    Rich's ``Live`` passes renderables straight through when the console is not
+    interactive, so a piped or CI run still gets the line (asserted in
+    ``tests/unit/cli/test_progress_non_tty.py`` — that is the load-bearing
+    assumption here, not an incidental detail).
+
+    Call this *in addition to* the structured ``logger.warning``, not instead
+    of it: the log keeps the machine-readable key and fields, this carries the
+    sentence a human or an agent reads. Never raises — a reporting failure must
+    not abort a run that was otherwise fine.
+    """
+    if progress is None:
+        return
+    fn = getattr(progress, "on_message", None)
+    if fn is None:
+        return
+    try:
+        fn("warning", text)
+    except Exception:
+        logger.debug("progress_warning_emit_failed", text=text, exc_info=True)
+
+
 @runtime_checkable
 class ProgressCallback(Protocol):
     """Protocol for pipeline progress reporting."""
@@ -56,7 +121,12 @@ class ProgressCallback(Protocol):
         ...
 
     def on_message(self, level: str, text: str) -> None:
-        """Emit a free-form message. *level* is 'info', 'warning', or 'error'."""
+        """Emit a free-form message.
+
+        *level* is 'info', 'notice', 'warning', or 'error'. 'notice' is shown
+        prominently but is not a degradation (size-skip lines, progress tips);
+        only 'warning' and 'error' are persisted as ``state["degraded"]``.
+        """
         ...
 
     def on_stage(self, stage: str) -> None:
@@ -80,7 +150,7 @@ class LoggingProgressCallback:
         logger.info("phase_done", phase=phase)
 
     def on_message(self, level: str, text: str) -> None:
-        getattr(logger, level, logger.info)(text)
+        getattr(logger, "info" if level == "notice" else level, logger.info)(text)
 
     def on_stage(self, stage: str) -> None:
         logger.info("stage_start", stage=stage)

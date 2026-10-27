@@ -31,6 +31,9 @@ from pathlib import Path, PurePosixPath
 
 import structlog
 
+from repowise.core.fs_walk import WalkSnapshot
+
+from ..languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
 from .base import ExternalSystemRecord
 
 log = structlog.get_logger(__name__)
@@ -109,7 +112,12 @@ _SET_RHS_TERMINATORS: frozenset[str] = frozenset({
 
 _VAR_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
-_HEADER_EXTS: tuple[str, ...] = (".h", ".hpp", ".hxx", ".hh", ".h++", ".inc")
+# Include fragments bucket with the headers: a target that lists one is
+# shipping it as part of its interface, not compiling it on its own.
+_HEADER_EXTS: tuple[str, ...] = (
+    ".h", ".hpp", ".hxx", ".hh", ".h++", ".inc",
+    *sorted(INCLUDE_FRAGMENT_EXTENSIONS),
+)
 _SOURCE_EXTS: tuple[str, ...] = (".c", ".cc", ".cpp", ".cxx", ".c++", ".cppm", ".ixx", ".mxx")
 
 
@@ -589,6 +597,7 @@ def discover_cmake_reactor(
     repo_root: Path,
     *,
     max_files: int = 2000,
+    snapshot: WalkSnapshot | None = None,
 ) -> list[CMakeFile]:
     """Walk the repo from ``repo_root`` following ``add_subdirectory`` links.
 
@@ -631,9 +640,9 @@ def discover_cmake_reactor(
     skip_dirs = {".git", "build", "_build", "out", "_deps", "cmake-build-debug",
                  "cmake-build-release", "node_modules", ".venv", "venv"}
     if len(out) < max_files:
-        from repowise.core.fs_walk import iter_glob
+        from repowise.core.fs_walk import glob_via
 
-        for cml in iter_glob(repo_root, "CMakeLists.txt"):
+        for cml in glob_via(snapshot, repo_root, "CMakeLists.txt"):
             try:
                 rel = cml.resolve().relative_to(repo_root).as_posix()
             except ValueError:

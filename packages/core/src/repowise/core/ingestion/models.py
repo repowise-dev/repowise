@@ -22,12 +22,18 @@ LanguageTag = Literal[
     "python",
     "typescript",
     "javascript",
+    # Single-file components — parsed as TypeScript via sfc_source.
+    "svelte",
+    "vue",
+    "astro",
     "go",
     "rust",
     "java",
     "cpp",
     "c",
     "csharp",
+    # Razor / Blazor markup, projected to C# via sfc_source (byte-scan).
+    "razor",
     "ruby",
     "php",
     "swift",
@@ -35,6 +41,11 @@ LanguageTag = Literal[
     "scala",
     "luau",
     "dart",
+    "pascal",
+    "cobol",
+    "gdscript",
+    "vbnet",
+    "apex",
     # Passthrough code languages (no AST parser yet — empty ParsedFile,
     # files enter the graph via the generic resolver). Before these tags
     # existed the traverser silently skipped such files as unknown, so e.g.
@@ -68,6 +79,26 @@ LanguageTag = Literal[
     "sql",
     "openapi",
     "xaml",
+    # Markup with no symbols, but <script src>/<link href> are real edges.
+    "html",
+    # Salesforce Visualforce (.page/.component): markup that names its Apex controller.
+    "visualforce",
+    # Lightweight: qmldir-declared module imports and quoted references.
+    "qml",
+    # Godot .tscn/.tres/.escn + project.godot: data with no symbols, but
+    # [ext_resource path=...] and [autoload] are how a Godot project reaches
+    # its scripts at all.
+    "godot_resource",
+    # Salesforce Aura markup: no symbols, read for the names it wires.
+    "aura",
+    # Salesforce flows: one symbol per flow.
+    "salesforce_flow",
+    # Salesforce object and field metadata, and saved SOQL queries.
+    "salesforce_object",
+    "soql",
+    "jcl",
+    "bms",
+    "csd",
     "unknown",
 ]
 
@@ -93,6 +124,12 @@ SPECIAL_FILENAMES: dict[str, LanguageTag] = {
     if tag in _LANGUAGE_TAG_VALUES
 }
 
+NAME_SUFFIX_TO_LANGUAGE: dict[str, LanguageTag] = {
+    sfx: tag  # type: ignore[misc]
+    for sfx, tag in _REGISTRY.all_name_suffixes().items()
+    if tag in _LANGUAGE_TAG_VALUES
+}
+
 # ---------------------------------------------------------------------------
 # Symbol kinds
 # ---------------------------------------------------------------------------
@@ -112,6 +149,13 @@ SymbolKind = Literal[
     "module",
     "macro",
     "variable",
+    # Rust's ``field_declaration`` only. Every other language maps its fields
+    # and properties to ``variable``; Rust keeps them separate, and the call
+    # resolver relies on that to refuse a field as a bare-name call target
+    # (``_NON_CALLABLE_KINDS``). Normalising this to ``variable`` would make
+    # Rust fields indistinguishable from callable values and silently undo
+    # that refusal, so it is declared here rather than mapped away.
+    "property",
 ]
 
 # ---------------------------------------------------------------------------
@@ -133,6 +177,16 @@ class FileInfo:
     is_config: bool
     is_api_contract: bool
     is_entry_point: bool
+    # Named by a package manifest (package.json bin/main/exports["."],
+    # pyproject scripts, a distribution's package ``__init__``): the strongest
+    # entry evidence, ranked above every filename guess.
+    is_manifest_entry: bool = False
+    # Reached from outside the import graph (a runner or loader starts it), so
+    # dead-code analysis never flags it. Read through ``is_reachability_root``.
+    is_reachability_root: bool = False
+    # Starts a framework application (``SpringApplication.run``): ranked with
+    # the manifest entries, but not a public API the way those are.
+    is_application_main: bool = False
 
 
 @dataclass
@@ -144,6 +198,8 @@ class PackageInfo:
     language: LanguageTag
     entry_points: list[str]
     manifest_file: str  # pyproject.toml | package.json | Cargo.toml | go.mod
+    # A member of a root workspace declaration (pnpm/npm/yarn, Cargo, uv, go.work).
+    declared: bool = False
 
 
 @dataclass
@@ -156,13 +212,18 @@ class RepoStructure:
     total_files: int
     total_loc: int
     entry_points: list[str]
+    # The entry points that start a framework application, which make the repo
+    # a service and lead the orientation list.
+    application_mains: list[str] = field(default_factory=list)
 
 
 @dataclass
 class Symbol:
     """A code symbol (function, class, method, …) extracted from a file."""
 
-    id: str  # "<rel_path>::<name>" or "<rel_path>::<class>::<method>"
+    # "<rel_path>::<name>" or "<rel_path>::<class>::<method>", plus a
+    # discriminator when a scope declares the name twice (see symbol_identity).
+    id: str
     name: str
     qualified_name: str  # dotted full name, e.g. "myapp.calc.Calculator.add"
     kind: SymbolKind
@@ -180,6 +241,36 @@ class Symbol:
     # ``__declspec(dllexport)`` / ``__attribute__((visibility("default")))``).
     # Used by dead-code analysis to whitelist exported entry points.
     is_exported_symbol: bool = False
+    # True when this record is a bodiless declaration — a C/C++ forward
+    # declaration in a header. The definition carrying the same name lives in
+    # a .cpp and is the symbol a call should attach to; the call resolver
+    # redirects onto it, and the dead-code pass never reports a declaration,
+    # since a declaration is not independently deletable. Python ``@overload``
+    # stubs and TypeScript overload signatures are declarations too: they share
+    # the implementation's id, and the implementation is the symbol to serve.
+    is_declaration: bool = False
+    # C# type declarations only: how many type parameters it declares, which is
+    # what tells ``IFoo<T>`` from a same-named ``IFoo``. None elsewhere.
+    type_parameter_count: int | None = None
+    # Kotlin functions only: the bare type an extension dispatches on (``Byte``
+    # for ``fun Byte.toHexString()``), None for a receiver that is its own type
+    # parameter; and the receiver as the id spells it, nullable mark and type
+    # parameter kept (``Byte?``, ``T``), which tells same-named extensions apart.
+    extension_receiver: str | None = None
+    written_receiver: str | None = None
+    # Keyword modifiers the declaration writes, lowercased (``override``,
+    # ``static``, ``abstract``...), for languages whose ``LanguageConfig``
+    # names its modifier nodes. Access keywords land here too; ``visibility``
+    # stays the field to read for those.
+    modifiers: tuple[str, ...] = ()
+    # The bare name this symbol is a plain alias of (``s`` in ``s = widget``,
+    # or ``s`` and ``attributes`` in ``s = attributes = widget``), else None.
+    # Set only when an assignment's right-hand side is, at any depth of a
+    # chain, a bare identifier — never for a call, an attribute access, or any
+    # other expression. The call resolver redirects a call through the alias
+    # onto whatever ``alias_of`` resolves to in the same file, the same way it
+    # redirects a C/C++ declaration onto its definition (#2791).
+    alias_of: str | None = None
 
 
 @dataclass
@@ -196,6 +287,11 @@ class NamedBinding:
     is_module_alias: bool = False  # True for "import x" / "import * as ns"
     is_global: bool = False  # C# `global using` — applies to every file in the project
     is_static_import: bool = False  # C# `using static` / Java static import — pulls members
+    # Position of the local name (1-based line, byte column), set where a
+    # binding can sit inside a function body (``require``, ``import()``), so
+    # it is not read as a shadowing local.
+    line: int | None = None
+    column: int | None = None
 
 
 @dataclass
@@ -209,6 +305,50 @@ class Import:
     resolved_file: str | None  # absolute path if successfully resolved
     bindings: list[NamedBinding] = field(default_factory=list)
     is_reexport: bool = False  # True for `pub use` (Rust) or re-export patterns
+    # Rust ``mod child;``: declares the child module, uses nothing from it.
+    is_module_declaration: bool = False
+    type_only: bool = False  # True when the statement is purely type-level (e.g. TypeScript import type)
+    # Inside a function or lambda body: runs on first call, not at module load.
+    deferred: bool = False
+
+    @property
+    def local_names(self) -> list[str]:
+        """The names this statement writes into the importing file's namespace.
+
+        ``imported_names`` carries names as they exist in the *source* module,
+        because that is what reachability matches against — under an alias
+        (``import { A as B }``, ``from m import a as b``) the two differ. A
+        caller that wants to recognise an identifier *as it appears in this
+        file* — a router DSL naming a handler, an exclusion list for call
+        resolution — must read the bindings instead, and this is that read.
+
+        Falls back to ``imported_names`` for the languages whose extractors
+        emit no bindings, where the two are the same list by construction. For
+        a re-export nothing is truly bound locally; the alias is returned,
+        being the token that appears in this file.
+        """
+        return [b.local_name for b in self.bindings] or list(self.imported_names)
+
+
+@dataclass
+class CallReceiver:
+    """A call expression used as the receiver of another call.
+
+    Keeping this AST-derived fact separate from ``receiver_name`` prevents a
+    chained call from being mistaken for an unqualified/free call.
+    """
+
+    target_name: str
+    receiver_name: str | None
+    argument_count: int | None
+
+
+#: What a resolved call site becomes in the graph. A syntactic form that names
+#: a symbol without invoking it still runs the call tiers -- deciding which
+#: symbol a name means is the same problem -- but must not reach the graph as
+#: ``calls``. Both members are ``EdgeType`` members; this is the subset a call
+#: site may produce.
+CallSiteEdgeType = Literal["calls", "references"]
 
 
 @dataclass
@@ -223,9 +363,36 @@ class CallSite:
     caller_symbol_id: str | None  # enclosing symbol ID (e.g. "src/app.py::main")
     line: int  # 1-indexed line number of the call
     argument_count: int | None  # number of arguments (None if unknown)
+    receiver_call: CallReceiver | None = None  # set only for a captured chained call
+    # C++ `Ns::f()` / `Class::m()`: the qualifier as written. Kept apart from
+    # ``receiver_name`` because that field routes to the member strategies,
+    # and cpp has none -- a scoped call must stay on the free-call path. Java
+    # writes the ``S`` of ``S.super.m()`` here.
+    scope_name: str | None = None
+    edge_type: CallSiteEdgeType = "calls"  # see ``CallSiteEdgeType``
+    supplied_props: set[str] | None = None  # prop names supplied in JSX element (None if unknown/spread)
+    # The grammar's bare-call pattern also matched this member call (Java
+    # ``obj.m()``, Ruby ``obj.m(x)``). Its bare-name reading is asked only
+    # when no receiver strategy answers, never beside one.
+    bare_name_fallback: bool = False
+    # Handed straight to a task scheduler (``asyncio.create_task(f())``): it runs
+    # later, beside its caller, so the caller neither waits for it nor repeats it.
+    spawned: bool = False
+    # COBOL ``CALL`` / ``LINK`` / ``XCTL``: names a PROGRAM-ID, never a paragraph.
+    program_call: bool = False
+    # Java: each argument's type where it is a literal (``"String"``, ``"int"``,
+    # ``"null"``), else None; None overall when no argument is one.
+    argument_types: tuple[str | None, ...] | None = None
+    # Java: each argument that is a bare name (``start``), else None; None overall
+    # when no argument is one. The resolver reads its declared type.
+    argument_names: tuple[str | None, ...] | None = None
 
 
-HeritageKind = Literal["extends", "implements", "trait_impl", "mixin"]
+# Raw extractor kinds, not the TS ``HeritageKind`` (a different payload);
+# test_wire_vocabulary_parity pins the difference.
+HeritageKind = Literal["extends", "implements", "trait_impl", "mixin", "derive"]
+
+HERITAGE_KIND_VALUES: frozenset[str] = frozenset(get_args(HeritageKind))
 
 
 @dataclass
@@ -246,26 +413,309 @@ class HeritageRelation:
 # Edge types used in the symbol-level dependency graph
 # ---------------------------------------------------------------------------
 
+# The vocabulary is exhaustive and *true*: every member is emitted by some
+# producer, and no producer emits anything outside it. Both halves are load
+# bearing. A declared-but-never-emitted member is what let a dozen consumers
+# each write a set against a type that does not exist, and an emitted-but-
+# undeclared type is what made every one of those sets silently incomplete.
+#
+# `tests/unit/ingestion/test_edge_type_vocabulary.py` holds both directions
+# shut: it AST-walks every `add_edge` call in the packages and fails on a
+# literal that is not a member here.
+#
+# Removed 2026-08-14, each measured at 0 rows across 42 local indexes with no
+# producer anywhere in the tree: `has_property` (only `defines` and
+# `has_method` are emitted for containment), `method_overrides` (a
+# `HeritageKind`, never an edge type — the TS mirror in
+# `packages/types/src/symbols.ts` still declares it as a heritage kind, which
+# is correct), and bare `dynamic`.
 EdgeType = Literal[
     "imports",
     "defines",
     "calls",
     "has_method",
-    "has_property",
     "extends",
     "implements",
-    "method_overrides",
     "method_implements",
+    # Base method → an implementation that can answer for it. Named for what
+    # it asserts rather than for a heritage relation: the pass matches by
+    # method name and compares no signature, so it is a possible dispatch
+    # target, not a proven override. `method_implements` could not be reused —
+    # it runs implementor → interface, and this edge has to point the other
+    # way for a traversal starting at the base to reach the implementation.
+    "dispatches_to",
     "co_changes",
     "framework",
-    "dynamic",
+    # The symbol-level sibling of `framework`, emitted when a handler can name
+    # both ends as symbols. Deliberately not `calls`: nothing here is a call the
+    # parser could have seen, and letting it read as one would put an inferred
+    # wiring hop into an execution flow as if it were source.
+    "framework_binds",
+    # A data reference rather than a call, file → file: C# member access and
+    # Salesforce schema references. It used to name two unrelated things — the Express route wiring emitted it
+    # symbol → symbol — which is why one consumer set could not say which layer
+    # it meant. That producer now emits `framework_binds`.
+    "reads",
+    # Dynamic-dispatch hints. `dynamic_hints` extractors emit a `DynamicKind`
+    # sub-type and `EdgesMixin.add_dynamic_edges` prefixes it, so `url_route`
+    # reaches the graph as `dynamic_url_route` and never as itself. Consumers
+    # matching bare `"dynamic"` — three of them did — match none of these.
+    "dynamic_uses",
+    "dynamic_imports",
+    "dynamic_url_route",
     # Synthesised file-to-file edge emitted from constructor / method /
     # delegate / record parameter type references in statically-typed
     # languages (currently C#; see type_ref_resolution.py). Distinct
     # from ``imports`` so analyses can weight it lower and so the
     # persistence layer can surface provenance for these edges.
     "type_use",
+    # A function named without being called: a dispatch-table entry, a
+    # callback field, an argument to a registration macro (currently C/C++;
+    # see the ``@reference.name`` captures). Symbol → symbol, and deliberately
+    # not ``calls`` — nothing here proves the function is ever invoked, only
+    # that something holds a handle to it, which is enough to make deleting it
+    # unsafe.
+    "references",
 ]
+
+# Runtime mirror of the Literal, for the places that must test membership
+# rather than annotate. Derived, never hand-written — a second hand-written
+# copy is the exact failure this phase exists to remove.
+EDGE_TYPE_VALUES: frozenset[str] = frozenset(get_args(EdgeType))
+
+# Which resolution strategy produced a `calls` / `references` edge. Same
+# closed-vocabulary discipline as `EdgeType`, held shut by the same test.
+#
+# An edge is not a fact. `global_unique` binds a name to the only symbol
+# carrying it anywhere in the repo, which is a guess; `same_file` is a
+# certainty. Both used to reach a consumer as an unlabelled arrow, so an agent
+# reading a flow could not tell which it was looking at.
+#
+# Every origin has exactly one confidence (see `CallResolver`), so the origin
+# distribution and the confidence histogram are two views of the same data —
+# which is what makes the stamping checkable against the existing numbers.
+# NULL on an edge means the row predates this vocabulary, not "unknown origin".
+ResolutionOrigin = Literal[
+    "same_file",  # 0.95 — defined in the calling file
+    "self_scope",  # 0.95 — self/this, method on the caller's own class
+    "enclosing_class",  # 0.95 — bare call, bound to the caller's own class
+    "receiver_same_file",  # 0.93 — receiver names a class in this file
+    "same_package",  # 0.90 — Go/JVM sibling file, no import needed
+    "import_scoped",  # 0.90 — the name was imported from the defining file
+    "receiver_same_package",  # 0.90 — receiver is a same-package class (JVM)
+    "package_alias",  # 0.88 — Go pkg.Func, resolved across the whole package
+    "module_alias",  # 0.88 — receiver is an imported module
+    "crate_root",  # 0.88 — Rust crate-scoped reference
+    "receiver_import",  # 0.88 — receiver class found in an imported file
+    "import_merged",  # 0.85 — in *some* imported file; which one is unattributed
+    # 0.93 — C/C++ `Qualifier::name()`. The class is written at the call
+    # site and declares the method, so nothing is inferred; it ranks with
+    # `receiver_same_file` because both rest on a class NAME matching, and
+    # two namespaces may spell one class name.
+    "scoped_name",
+    "same_target",  # 0.85 — C/C++ sibling TU of the same build target
+    # 0.75 — the (class, method) pair exists somewhere in the repo. The member
+    # analogue of `global_unique`, and no more than that: the strategy is
+    # named for Rust trait impls but is gated on no language.
+    "receiver_global",
+    "global_unique",  # 0.50 — the name is unique repo-wide. A guess.
+    # The four below reach the same scopes as their untyped twins, but through
+    # a receiver whose type was read off its declaration rather than written at
+    # the call. They share their twin's confidence deliberately: the inferred
+    # type had to declare the method before an edge was emitted, so the
+    # evidence is no weaker — what differs is how the receiver was named, and
+    # that is precisely what an origin is for.
+    "receiver_typed_same_file",  # 0.93
+    "receiver_typed_same_package",  # 0.90 (JVM)
+    "receiver_typed_import",  # 0.88
+    "receiver_typed_global",  # 0.75
+    # The same four scopes again, for a receiver typed from the enclosing
+    # class's fields rather than from the calling body. Kept apart from the
+    # four above because they are a different scan over a different scope, and
+    # an origin that cannot separate them cannot be audited.
+    "receiver_field_same_file",  # 0.93
+    "receiver_field_same_package",  # 0.90 (JVM)
+    "receiver_field_import",  # 0.88
+    "receiver_field_global",  # 0.75
+    # The same four scopes once more, for a receiver a framework decorator
+    # retyped — `@shared_task def add` is a `Task`, so `add.s()` is `Task::s`.
+    # Separate because the evidence is a decorator table, not a declaration.
+    "receiver_framework_same_file",  # 0.93
+    "receiver_framework_same_package",  # 0.90
+    "receiver_framework_import",  # 0.88
+    "receiver_framework_global",  # 0.75
+    # A C# extension method, reached through the type its ``this`` parameter
+    # names rather than the static class holding it. One family, not a fourth
+    # set of four: no same-package tier reaches the extension index. Separable
+    # because the holder class is a file no call site names.
+    "receiver_extension_same_file",  # 0.93
+    "receiver_extension_import",  # 0.88 — the holder class's file is imported
+    "receiver_extension_global",  # 0.75 — declared somewhere; a name match
+    # A dotted receiver (`this.a.b.m()`) typed hop by hop through each class's
+    # declared fields. No global tier: every hop's type must be bound by an
+    # import or declared in the file that wrote it, and the tier is the
+    # weakest hop's.
+    "receiver_chain_same_file",  # 0.93
+    "receiver_chain_import",  # 0.88
+    # Chained receiver typed from the inner callee's declared return type.
+    "return_type_same_file",  # 0.93
+    "return_type_same_package",  # 0.90 (JVM)
+    "return_type_import",  # 0.88
+    "return_type_global",  # 0.75
+    # 0.90 — the caller's own class does not declare the method but exactly one
+    # of its ancestors does. Below the two same-class origins because the walk
+    # compares no signature and reads no visibility, so it can reach a method
+    # the language would not actually dispatch to.
+    "self_inherited",  # 0.90 — explicit self/this receiver, or Python super()
+    "enclosing_inherited",  # 0.90 — implicit receiver, bare call
+]
+
+RESOLUTION_ORIGIN_VALUES: frozenset[str] = frozenset(get_args(ResolutionOrigin))
+
+# What a dynamic-hint extractor reports, *before* `add_dynamic_edges` prefixes
+# it. Deliberately a separate vocabulary from `EdgeType`: `url_route` is a
+# legal hint kind and never a legal graph edge type, and conflating the two is
+# what put `url_route` in the plan for this phase as an edge type to declare
+# when the graph has never held one.
+DynamicKind = Literal["dynamic_uses", "dynamic_imports", "url_route"]
+
+# Structural containment, not reference. ``defines`` is file → symbol and
+# ``has_method`` is class symbol → member symbol, so both endpoints describe
+# the same code rather than one depending on the other. Their target is a
+# ``path::Name`` symbol node, which is why a consumer that keys on file paths
+# gets nothing usable out of them.
+CONTAINMENT_EDGE_TYPES: frozenset[str] = frozenset({"defines", "has_method"})
+
+# Evidence from history rather than from code: two files move together in
+# commits, not one referencing the other. This is the one that bites, because
+# a co-change edge fed back in as a dependency makes every co-change partner
+# look like an import of its own subject.
+TEMPORAL_EDGE_TYPES: frozenset[str] = frozenset({"co_changes"})
+
+# Edge types that are *not* code dependencies, and so must be excluded by any
+# consumer answering "what depends on this?" about FILES.
+#
+# Excluding containment is right for that question and wrong for traversal.
+# Containment is the only bridge between the two layers of the graph: files are
+# joined to each other by ``imports`` / ``type_use``, symbols to each other by
+# ``calls`` / ``extends`` / ``implements``, and nothing points from a symbol
+# back to a file. Drop ``defines`` and a caller can no longer walk from a file
+# to the functions it declares, so anything traversing the graph wants
+# ``TEMPORAL_EDGE_TYPES`` and a ``node_type`` check instead.
+NON_DEPENDENCY_EDGE_TYPES: frozenset[str] = CONTAINMENT_EDGE_TYPES | TEMPORAL_EDGE_TYPES
+
+# ---------------------------------------------------------------------------
+# The named views. Ask for the one that matches your question.
+# ---------------------------------------------------------------------------
+#
+# Before these existed, thirteen modules each kept a private set answering some
+# version of "which edges count as a dependency", and no two were identical:
+# `type_use` was a dependency in five and absent from four, `reads` appeared in
+# one of thirteen, and three tested for a bare `"dynamic"` that no producer has
+# ever emitted — so they matched none of the 6,153 real `dynamic_*` edges.
+#
+# The split below is not a taste call. Measured across 42 local indexes, every
+# edge type lands on one side 100% of the time, with a single exception noted
+# on `reads`. Add a member here, not a set of your own, and say which view you
+# want at the call site.
+
+# File → file code references: static imports, C#-style type references,
+# synthesised framework wiring, and dispatch the parser cannot see statically.
+# This is the right view for anything building a *file*-level subgraph —
+# communities, dependency cycles, coupling. Note what is absent: `co_changes`
+# is history rather than code, and symbol-level types put both endpoints on
+# nodes a file-keyed consumer cannot resolve.
+FILE_DEPENDENCY_EDGE_TYPES: frozenset[str] = frozenset(
+    {
+        "imports",
+        "type_use",
+        "framework",
+        "dynamic_uses",
+        "dynamic_imports",
+        "dynamic_url_route",
+        # C# member access (`var x = new T(); x.Prop`) resolves to the file
+        # declaring the type, so this is a real file-level reference, as is a
+        # SOQL query or DML statement naming an object the repository defines.
+        "reads",
+    }
+)
+
+# Symbol → symbol references. "Something reaches this symbol", so containment
+# is excluded: a class containing a method is not the method being used.
+SYMBOL_USE_EDGE_TYPES: frozenset[str] = frozenset(
+    {
+        "calls",
+        "extends",
+        "implements",
+        "method_implements",
+        # An implementation is used by every call written against the base it
+        # answers for, and that call lands on the base. Without this the whole
+        # implementation side of an interface reads as called by nobody.
+        "dispatches_to",
+        # A fixture nobody calls and a collaborator nobody constructs are both
+        # used — by the container, which no parser sees.
+        "framework_binds",
+        # Naming a function is using it. A handler sitting in a dispatch table
+        # is never called anywhere a parser can see, and treating that as "no
+        # use" reported entire registration layers as safe to delete (#1602).
+        "references",
+    }
+)
+
+
+# Symbol → symbol edges along which control can actually reach the target, for
+# the question "would running this test execute that code?". The reachability
+# view minus the one that records a mention rather than a transfer of control:
+# `references` is a name sitting in a dispatch table and does not run the thing
+# it names. Narrower than SYMBOL_USE_EDGE_TYPES on purpose — dead code asks
+# "is this used", which a mention answers, and the inferred test map asks "is
+# this run", which it does not.
+EXECUTION_EDGE_TYPES: frozenset[str] = SYMBOL_USE_EDGE_TYPES - {"references"}
+
+
+# "Does anything use this symbol at all?" — the reachability view. Adds
+# ``type_use`` to the symbol set: a C#-style type reference is a real use, and
+# the dead-code analyzer and the C/C++ reachability pass both asked for exactly
+# this union with their own private copy.
+REACHABILITY_USE_EDGE_TYPES: frozenset[str] = SYMBOL_USE_EDGE_TYPES | {"type_use"}
+
+
+# ``hint_source`` of a ``references`` edge from a registering decorator to a
+# function it decorates (see ``python_registrars``). The fact sits on the
+# decorated (target) side, so incremental persistence rewrites these edges by
+# target file, and role seeding skips them: a registry says nothing about how
+# the function runs.
+REGISTRATION_HINT = "decorator_registration"
+TARGET_OWNED_HINTS: frozenset[str] = frozenset({REGISTRATION_HINT})
+
+
+def is_dynamic_edge(edge_type: str | None) -> bool:
+    """Whether *edge_type* is a dynamic-dispatch hint.
+
+    Prefix-matched on purpose. The sub-type is open — ``add_dynamic_edges``
+    mints ``dynamic_<kind>`` from whatever a hint extractor reports — so a set
+    membership test here is what goes stale when a new hint kind lands, and
+    three separate consumers matching a bare ``"dynamic"`` is how that failure
+    already shipped. The trailing underscore is load bearing: without it a
+    future ``dynamically_*`` type would match by accident.
+    """
+    return edge_type is not None and edge_type.startswith("dynamic_")
+
+
+def combine_load_kinds(
+    first: tuple[bool, bool], second: tuple[bool, bool]
+) -> tuple[bool, bool]:
+    """``(type_only, deferred)`` for two imports of one target folded together.
+
+    Each side is runtime ``R`` (neither flag), type-only ``T`` or deferred
+    ``D``; the result is the one that runs earliest::
+
+        T + T -> T      T + D -> D      D + T -> D
+        D + D -> D      D + R -> R      R + D -> R      T + R -> R
+    """
+    type_only = first[0] and second[0]
+    deferred = not type_only and any(first) and any(second)
+    return type_only, deferred
 
 
 @dataclass
@@ -281,11 +731,34 @@ class TypeReference:
     type_name: str  # head identifier (e.g. "IBasketService" from "IBasketService<T>")
     line: int  # 1-indexed source line
     origin: Literal[
-        "ctor_param", "method_param", "delegate_param",  # C#
-        "param_type", "field_type", "composite_literal",  # Go
-        "return_type", "type_alias", "generic_constraint",  # TS/JS
-        "extends", "implements",  # TS heritage clauses (file-level type_use)
+        "ctor_param",
+        "method_param",
+        "delegate_param",  # C#
+        "param_type",
+        "field_type",
+        "composite_literal",  # Go
+        "return_type",
+        "type_alias",
+        "generic_constraint",  # TS/JS
+        "extends",
+        "implements",  # TS heritage clauses (file-level type_use)
     ] = "ctor_param"
+
+
+@dataclass(frozen=True)
+class SchemaReference:
+    """A Salesforce SObject, or a field path on one, named in a file.
+
+    ``path`` is empty for the object itself; otherwise the dotted field path
+    as written after it (``("Parent__r", "Name")`` for ``Parent__r.Name``),
+    resolved hop by hop through lookup metadata. Names keep their written case;
+    Salesforce compares them case-insensitively.
+    """
+
+    source_symbol_id: str  # the method, trigger or field that names it
+    object_name: str
+    line: int
+    path: tuple[str, ...] = ()
 
 
 @dataclass
@@ -296,6 +769,11 @@ class ParsedFile:
     symbols: list[Symbol]
     imports: list[Import]
     exports: list[str]  # names exported by this file
+    # ``{exported name: local name}`` where a TS/JS module publishes a symbol
+    # it declares under a different name (``export { stringType as string }``).
+    # Empty for every other language and for the far commoner clause that does
+    # not rename, where the symbol table already answers.
+    export_aliases: dict[str, str] = field(default_factory=dict)
     calls: list[CallSite] = field(default_factory=list)
     heritage: list[HeritageRelation] = field(default_factory=list)
     docstring: str | None = None  # module/file-level docstring
@@ -308,6 +786,37 @@ class ParsedFile:
     # Python only; lets the dead-code unused-export pass rescue symbols whose
     # only use is intra-module. See ``python_local_refs``.
     local_refs: frozenset[str] = field(default_factory=frozenset)
+    # Top-level functions that store and return the function they decorate
+    # (Python only); see ``python_registrars``.
+    registrars: frozenset[str] = field(default_factory=frozenset)
+    # C/C++ sites that name a function without calling it: a dispatch table
+    # entry, a callback field, an argument to a registration macro. Reuses
+    # ``CallSite`` because resolving one is the identical problem — a name, the
+    # symbol enclosing it, and a line — and it lets these ride the same
+    # resolution tiers. They become ``references`` edges, not ``calls``.
+    references: list[CallSite] = field(default_factory=list)
+    # Salesforce objects and fields this file names (see ``salesforce_schema``).
+    schema_refs: list[SchemaReference] = field(default_factory=list)
+    # Parsed without its language's grammar (not installed, or a download
+    # failed): a stand-in the parse cache must not keep once the grammar loads.
+    grammar_missing: bool = False
+
+    @property
+    def symbol_count(self) -> int:
+        """Distinct symbols. An overload set or a re-declaration shares one id,
+        and the graph and ``wiki_symbols`` both store it once."""
+        return len({sym.id for sym in self.symbols})
+
+
+def symbol_id_language(parsed_files: dict[str, ParsedFile], symbol_id: str) -> str | None:
+    """Language of the file a symbol ID belongs to, or ``None`` if unparsed.
+
+    Lives beside the ID vocabulary rather than in either resolver — both need
+    it for the same cross-language rejection.
+    """
+    file_path = symbol_id.split("::")[0] if "::" in symbol_id else symbol_id
+    parsed = parsed_files.get(file_path)
+    return parsed.file_info.language if parsed else None
 
 
 def compute_content_hash(source: bytes) -> str:

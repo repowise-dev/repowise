@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 
 import pytest
+from structlog.testing import capture_logs
 
 from repowise.core.generation.context_assembler import ContextAssembler
 from repowise.core.generation.models import (
@@ -32,7 +33,6 @@ from .conftest import _make_file_info, _make_symbol
 EXPECTED_PAGE_TYPES = [
     "module_page",
     "repo_overview",
-    "architecture_diagram",
     "onboarding",
 ]
 
@@ -216,6 +216,142 @@ async def test_invalid_provider_output_raises_and_is_not_cached(sample_config):
             await generator._call_provider("module_page", "Document this module.", "request-id")
 
     assert provider.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# The corrective retry
+#
+# A rejected page is a page already paid for, so one re-ask is cheaper than
+# losing it. The bound matters as much as the retry: a page that fails twice
+# must fall through to the caller's stub path rather than loop.
+# ---------------------------------------------------------------------------
+
+_BANNED_PHRASING = "# Queue status\n\nThe supplied material describes a queue reader."
+_CLEAN_PAGE = "# Queue status\n\n`QueueStatus` reports the active queue."
+
+
+def _page(content: str) -> GeneratedResponse:
+    return GeneratedResponse(content=content, input_tokens=10, output_tokens=20)
+
+
+async def test_artifact_violation_is_retried_once_and_recovers(sample_config):
+    provider = MockProvider(responses=[_page(_BANNED_PHRASING), _page(_CLEAN_PAGE)])
+    generator = PageGenerator(provider, ContextAssembler(sample_config), sample_config)
+
+    response = await generator._call_provider(
+        "module_page", "Document this module.", "request-id"
+    )
+
+    assert response.content == _CLEAN_PAGE
+    assert provider.call_count == 2
+
+
+async def test_corrective_retry_names_the_broken_rule_and_keeps_the_request(sample_config):
+    provider = MockProvider(responses=[_page(_BANNED_PHRASING), _page(_CLEAN_PAGE)])
+    generator = PageGenerator(provider, ContextAssembler(sample_config), sample_config)
+
+    await generator._call_provider("module_page", "Document this module.", "request-id")
+
+    retry_prompt = provider.calls[1]["user_prompt"]
+    assert "supplied_context" in retry_prompt
+    # The whole page is being rewritten, so the original request has to survive.
+    assert "Document this module." in retry_prompt
+    # The offending words must not be handed back: quoting them re-plants the
+    # vocabulary the retry exists to remove.
+    assert "supplied material" not in retry_prompt
+    # A byte-identical system prompt is what keeps the retry eligible for the
+    # provider's prefix cache.
+    assert provider.calls[1]["system_prompt"] == provider.calls[0]["system_prompt"]
+
+
+async def test_retry_carries_the_discarded_attempt_s_tokens(sample_config):
+    """The rejected attempt was billed, so the run report has to count it.
+
+    Only the retry's content survives, but dropping the first attempt's tokens
+    would make the reported total smaller than what the provider charged for.
+    """
+    first = GeneratedResponse(
+        content=_BANNED_PHRASING, input_tokens=100, output_tokens=200, cached_tokens=10
+    )
+    second = GeneratedResponse(
+        content=_CLEAN_PAGE, input_tokens=7, output_tokens=11, cached_tokens=3
+    )
+    provider = MockProvider(responses=[first, second])
+    generator = PageGenerator(provider, ContextAssembler(sample_config), sample_config)
+
+    response = await generator._call_provider(
+        "module_page", "Document this module.", "request-id"
+    )
+
+    assert response.content == _CLEAN_PAGE
+    assert response.input_tokens == 107
+    assert response.output_tokens == 211
+    assert response.cached_tokens == 13
+
+
+async def test_a_repaired_page_is_marked_as_self_repaired(sample_config):
+    """Fills the report's "Self-repaired pages" row.
+
+    The artifact tallies count rejections, which a recovered page and a lost
+    page both produce. This is what tells them apart.
+    """
+    provider = MockProvider(responses=[_page(_BANNED_PHRASING), _page(_CLEAN_PAGE)])
+    generator = PageGenerator(provider, ContextAssembler(sample_config), sample_config)
+
+    response = await generator._call_provider(
+        "module_page", "Document this module.", "request-id"
+    )
+    page = generator._build_generated_page(
+        "module_page", "pkg/mod.py", "Mod", response, "source-hash", 3
+    )
+
+    assert page.metadata.get("self_repair") is True
+
+
+async def test_a_first_time_page_is_not_marked_as_self_repaired(sample_config):
+    provider = MockProvider(responses=[_page(_CLEAN_PAGE)])
+    generator = PageGenerator(provider, ContextAssembler(sample_config), sample_config)
+
+    response = await generator._call_provider(
+        "module_page", "Document this module.", "request-id"
+    )
+    page = generator._build_generated_page(
+        "module_page", "pkg/mod.py", "Mod", response, "source-hash", 3
+    )
+
+    assert "self_repair" not in page.metadata
+
+
+async def test_second_violation_gives_up_rather_than_looping(sample_config):
+    # MockProvider repeats its last response, so every attempt violates.
+    provider = MockProvider(responses=[_page(_BANNED_PHRASING)])
+    generator = PageGenerator(provider, ContextAssembler(sample_config), sample_config)
+
+    with pytest.raises(InvalidGeneratedContentError, match="supplied_context"):
+        await generator._call_provider("module_page", "Document this module.", "request-id")
+
+    assert provider.call_count == 2
+
+
+async def test_token_limit_is_not_retried(sample_config):
+    """Re-asking with the same ``max_tokens`` truncates again and bills twice."""
+    provider = MockProvider(
+        responses=[
+            GeneratedResponse(
+                content="# Queue status\n\nIncomplete",
+                input_tokens=10,
+                output_tokens=20,
+                stop_reason="max_tokens",
+                provider_stop_reason="length",
+            )
+        ]
+    )
+    generator = PageGenerator(provider, ContextAssembler(sample_config), sample_config)
+
+    with pytest.raises(InvalidGeneratedContentError, match="token limit"):
+        await generator._call_provider("module_page", "Document this module.", "request-id")
+
+    assert provider.call_count == 1
 
 
 def test_generated_page_retains_completion_stop_metadata(sample_config):
@@ -481,6 +617,50 @@ async def test_generate_all_returns_pages():
     assert len(pages) >= 1
 
 
+async def test_generate_all_reports_evidence_skipped_when_onboarding_is_disabled():
+    config = GenerationConfig(
+        max_tokens=256,
+        token_budget=500,
+        max_concurrency=2,
+        enable_onboarding=False,
+        source_evidence_files={"onboarding/how_it_works": ("docs/flow.md",)},
+    )
+    gen = PageGenerator(MockProvider(), ContextAssembler(config), config)
+    fi = _make_file_info("pkg/main.py", language="python")
+    parsed = ParsedFile(
+        file_info=fi,
+        symbols=[_make_symbol(file_path="pkg/main.py")],
+        imports=[],
+        exports=[],
+        docstring=None,
+        parse_errors=[],
+    )
+    repo = RepoStructure(
+        is_monorepo=False,
+        packages=[],
+        root_language_distribution={"python": 1.0},
+        total_files=1,
+        total_loc=20,
+        entry_points=[],
+    )
+
+    with capture_logs() as logs:
+        await gen.generate_all(
+            [parsed],
+            {"pkg/main.py": b"def main(): pass", "docs/flow.md": b"flow"},
+            _make_builder_with([parsed]),
+            repo,
+            "test-repo",
+        )
+
+    assert {
+        "event": "source_evidence.skipped",
+        "page_key": "onboarding/how_it_works",
+        "skipped": [{"path": "docs/flow.md", "reason": "onboarding_disabled"}],
+        "log_level": "warning",
+    } in logs
+
+
 async def test_generate_all_level_values_in_range():
     config = GenerationConfig(max_tokens=256, token_budget=500, max_concurrency=2)
     provider = MockProvider()
@@ -514,11 +694,7 @@ async def test_generate_all_level_values_in_range():
 
 
 def _gen(language: str = "en") -> PageGenerator:
-    # Harvest disabled here so these assert the language-prefix logic in
-    # isolation; the harvest-directive suffix is covered in test_decision_harvest.
-    config = GenerationConfig(
-        max_tokens=256, token_budget=500, max_concurrency=1, harvest_decisions=False
-    )
+    config = GenerationConfig(max_tokens=256, token_budget=500, max_concurrency=1)
     provider = MockProvider()
     assembler = ContextAssembler(config)
     return PageGenerator(provider, assembler, config, language=language)
@@ -555,7 +731,7 @@ def test_language_defaults_from_config_when_arg_omitted():
     # Callers that only build a GenerationConfig (server regenerate, pipeline
     # fallback) must still get the configured output language.
     config = GenerationConfig(
-        max_tokens=256, token_budget=500, max_concurrency=1, harvest_decisions=False, language="ru"
+        max_tokens=256, token_budget=500, max_concurrency=1, language="ru"
     )
     gen = PageGenerator(MockProvider(), ContextAssembler(config), config)
     prompt = gen._build_system_prompt("module_page")

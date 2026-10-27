@@ -23,6 +23,7 @@ from repowise.core.analysis.health.biomarkers.string_concat_in_loop import (
     StringConcatInLoopDetector,
 )
 from repowise.core.analysis.health.complexity import PerfHit, walk_file
+from repowise.core.analysis.health.perf.io_boundaries import collect_io_names
 from repowise.core.analysis.health.scoring import score_file
 
 _FIXTURE_DIR = Path(__file__).resolve().parents[2] / "fixtures" / "lang_samples"
@@ -52,6 +53,31 @@ _CASES = [
         b"        session.execute(select(r))\n",
         [("io_in_loop", "db")],
         "db execute in a data-dependent loop",
+    ),
+    (
+        "python",
+        b"def f(client, queries):\n"
+        b"    for q in queries:\n"
+        b"        client.request(q).execute()\n"
+        b"        client.scalar(q)\n",
+        [],
+        "execute / scalar with no db evidence is an SDK verb, not a DB sink",
+    ),
+    (
+        "python",
+        b"def f(cur, ids):\n"
+        b"    for i in ids:\n"
+        b"        cur.execute('SELECT * FROM t WHERE id = %s', (i,))\n",
+        [("io_in_loop", "db")],
+        "a SQL statement argument is db evidence without an import",
+    ),
+    (
+        "python",
+        b"def f(client, ids):\n"
+        b"    for i in ids:\n"
+        b"        client.table('t').select('*').eq('id', i).execute()\n",
+        [("io_in_loop", "db")],
+        "a PostgREST table chain is db evidence without an import",
     ),
     (
         "python",
@@ -88,6 +114,55 @@ _CASES = [
         b"        subprocess.run(e)\n",
         [],
         "ALL_CAPS named-constant collection is skipped",
+    ),
+    (
+        "python",
+        b"import sqlite3\n"
+        b"def f(conn):\n"
+        b"    for (t,) in conn.execute('SELECT name FROM sqlite_master').fetchall():\n"
+        b"        conn.execute(f'DROP TABLE \"{t}\"')\n"
+        b"    for t in conn.execute('SELECT name FROM t').fetchall():\n"
+        b"        sql = f'ALTER TABLE {t} ADD COLUMN c'\n"
+        b"        conn.execute(sql)\n"
+        b"        conn.execute(text('CREATE INDEX i ON t (c)'))\n",
+        [],
+        "a schema statement runs once per schema object, not per row",
+    ),
+    (
+        "python",
+        b"import sqlite3\n"
+        b"def f(conn, ids):\n"
+        b"    for i in ids:\n"
+        b"        conn.execute('SELECT * FROM t WHERE id = ?', (i,))\n"
+        b"        conn.execute(f'UPDATE t SET n = 1 WHERE id = {i}')\n",
+        [("io_in_loop", "db"), ("io_in_loop", "db")],
+        "a data statement in the same shape stays a sink",
+    ),
+    (
+        "python",
+        b"import sqlite3\n"
+        b'_SCHEMA = """CREATE TABLE a (x); CREATE TABLE b (y)"""\n'
+        b"def f(conn):\n"
+        b"    for statement in _SCHEMA.split(';'):\n"
+        b"        conn.execute(statement)\n"
+        b"    for name in 'a b'.split():\n"
+        b"        conn.execute(name)\n",
+        [],
+        "a split of a module string literal is a constant loop",
+    ),
+    (
+        "python",
+        b"import sqlite3\n"
+        b"_ROWS = load()\n"
+        b"def f(conn, text):\n"
+        b"    for line in _ROWS.split():\n"
+        b"        conn.execute(line)\n"
+        b"    for line in text.split():\n"
+        b"        conn.execute(line)\n"
+        b"    for line in f'{text}'.split():\n"
+        b"        conn.execute(line)\n",
+        [("io_in_loop", "db"), ("io_in_loop", "db"), ("io_in_loop", "db")],
+        "a split of a name not bound to a literal is not constant",
     ),
     (
         "python",
@@ -183,6 +258,123 @@ _CASES = [
         [],
         "sync helpers on an imported I/O pkg (isCancel/create) are not sinks",
     ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nimplementation\n"
+        b"procedure F(Names: TStringList);\nvar I: Integer;\nbegin\n"
+        b"  for I := 0 to Names.Count - 1 do\n"
+        b"    CopyFile(PChar(Names[I]), PChar('dest'), False);\n"
+        b"end;\nend.\n",
+        [("io_in_loop", "filesystem")],
+        "bare CopyFile in a data-dependent loop",
+    ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nimplementation\n"
+        b"procedure F(Names: TStringList; FS: TFileStream);\nvar I: Integer;\nbegin\n"
+        b"  for I := 0 to Names.Count - 1 do\n"
+        b"    FS.SaveToFile(Names[I]);\n"
+        b"end;\nend.\n",
+        [("io_in_loop", "filesystem")],
+        "attribute-call stream I/O (SaveToFile) in a loop",
+    ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nimplementation\n"
+        b"procedure F(Items: TStringList);\nvar I: Integer;\nbegin\n"
+        b"  for I := 0 to Items.Count - 1 do\n"
+        b"    WinExec(PAnsiChar(Items[I]), 0);\n"
+        b"end;\nend.\n",
+        [("io_in_loop", "subprocess")],
+        "process spawn per iteration",
+    ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nimplementation\n"
+        b"procedure F(S: string; Items: TStringList);\nvar I: Integer; T: string;\nbegin\n"
+        b"  for I := 0 to Items.Count - 1 do\n"
+        b"  begin\n"
+        b"    T := Copy(S, 1, I);\n"
+        b"    DoNormalWork(T);\n"
+        b"  end;\n"
+        b"end;\nend.\n",
+        [],
+        "built-in substring Copy() is not TFile.Copy -- ordinary computation",
+    ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nuses SysUtils, FireDAC.Comp.Client;\nimplementation\n"
+        b"procedure F(Q: TFDQuery; Ids: TStringList);\nvar I: Integer;\nbegin\n"
+        b"  for I := 0 to Ids.Count - 1 do\n"
+        b"    Q.Open();\n"
+        b"end;\nend.\n",
+        [("io_in_loop", "db")],
+        "DB dataset .Open() in a loop, gated by a FireDAC uses-clause import",
+    ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nuses SysUtils, IdHTTP;\nimplementation\n"
+        b"procedure F(Http: TIdHTTP; Urls: TStringList);\nvar I: Integer;\nbegin\n"
+        b"  for I := 0 to Urls.Count - 1 do\n"
+        b"    Http.Get(Urls[I]);\n"
+        b"end;\nend.\n",
+        [("io_in_loop", "network")],
+        "HTTP client .Get() in a loop, gated by an IdHTTP uses-clause import",
+    ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nimplementation\n"
+        b"procedure F(Q: TFDQuery; Ids: TStringList);\nvar I: Integer;\nbegin\n"
+        b"  for I := 0 to Ids.Count - 1 do\n"
+        b"    Q.Open();\n"
+        b"end;\nend.\n",
+        [],
+        "the same .Open() call with no uses-clause DB evidence is not a sink",
+    ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nimplementation\n"
+        b"procedure F(L: TStringList; Ids: TStringList);\nvar I: Integer;\nbegin\n"
+        b"  for I := 0 to Ids.Count - 1 do\n"
+        b"    L.Delete(0);\n"
+        b"end;\nend.\n",
+        [],
+        "TStringList.Delete is not a DB verb even with no uses evidence",
+    ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nuses SysUtils, FireDAC.Comp.Client;\nimplementation\n"
+        b"procedure F(Q: TFDQuery; Ids: TStringList);\nvar I: Integer;\nbegin\n"
+        b"  for I := 0 to Ids.Count - 1 do\n"
+        b"    Q.Open;\n"
+        b"end;\nend.\n",
+        [("io_in_loop", "db")],
+        "parenless .Open (no exprCall node at all) is still a DB sink",
+    ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nimplementation\n"
+        b"procedure F(Items: TStringList);\nvar I: Integer;\nbegin\n"
+        b"  for I := 0 to Items.Count - 1 do\n"
+        b"    FindClose;\n"
+        b"end;\nend.\n",
+        [("io_in_loop", "filesystem")],
+        "parenless bare FindClose is still a filesystem sink",
+    ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nuses SysUtils, FireDAC.Comp.Client;\nimplementation\n"
+        b"procedure F(Q: TFDQuery; Ids: TStringList);\nvar I: Integer;\nbegin\n"
+        b"  for I := 0 to Ids.Count - 1 do\n"
+        b"  begin\n"
+        b"    if I = 0 then Exit;\n"
+        b"    inherited;\n"
+        b"    Q.Open;\n"
+        b"  end;\n"
+        b"end;\nend.\n",
+        [("io_in_loop", "db")],
+        "bare Exit/inherited in the same statement-wrapper shape do not false-fire",
+    ),
 ]
 
 
@@ -208,6 +400,132 @@ def test_python_fixture_counts():
     assert boundaries == {"db", "subprocess", "network", "filesystem"}
     # The import bridge resolved the I/O libraries.
     assert {"requests", "httpx", "subprocess"} <= set(fc.io_boundary_names)
+
+
+@pytest.mark.parametrize(
+    "use_block",
+    [b"use {std::fs, reqwest::Client};\n", b"use {reqwest::Client, std::fs};\n"],
+)
+def test_a_use_block_naming_two_io_modules_keeps_each_members_own_kind(use_block):
+    # #2894: a grouped use statement no longer lets the first classifying
+    # module win the whole group. Each member keeps its own kind, in either
+    # source order.
+    fc = walk_file("t.rs", "rust", use_block + b"fn f() {}\n")
+    assert fc.io_boundary_names["fs"] == "filesystem"
+    assert fc.io_boundary_names["Client"] == "network"
+
+
+def test_a_use_block_naming_two_different_filesystem_and_collection_members():
+    # The in-group name a module resolves through (``fs``) never binds a
+    # sibling member's unrelated name (``collections``/``HashMap``).
+    fc = walk_file(
+        "t.rs", "rust", b"use std::{fs::File, collections::HashMap};\nfn f() {}\n"
+    )
+    assert fc.io_boundary_names["fs"] == "filesystem"
+    assert fc.io_boundary_names["File"] == "filesystem"
+    assert "collections" not in fc.io_boundary_names
+    assert "HashMap" not in fc.io_boundary_names
+
+
+def test_a_nested_use_group_classifies_each_leaf_on_its_own():
+    fc = walk_file(
+        "t.rs", "rust", b"use tokio::{fs, net::TcpStream};\nfn f() {}\n"
+    )
+    assert fc.io_boundary_names["fs"] == "filesystem"
+
+
+def test_a_use_alias_binds_only_the_local_alias_name():
+    fc = walk_file("t.rs", "rust", b"use reqwest::Client as C;\nfn f() {}\n")
+    assert fc.io_boundary_names == {"C": "network"}
+
+
+def test_io_in_loop_fires_regardless_of_grouped_use_order():
+    # The issue's own repro: a db execute sink must be found whichever order
+    # the grouped use's two modules are written in.
+    for use_block in (b"use {std::fs, sqlx::PgPool};\n", b"use {sqlx::PgPool, std::fs};\n"):
+        src = use_block + b"fn f(c: &PgPool, xs: &[i32]) { for i in xs { c.execute(i); } }\n"
+        fc = walk_file("t.rs", "rust", src)
+        assert ("io_in_loop", "db") in {(h.kind, h.detail) for h in fc.perf_hits}
+
+
+def test_a_ts_module_string_binds_no_name_of_its_own():
+    # A local named like the package (``ws``) is a loop variable, not the import.
+    src = (
+        b'import { type WebSocket, WebSocketServer } from "ws";\n'
+        b"function broadcast(sockets: Set<WebSocket>) {\n"
+        b'  for (const ws of sockets) { ws.send("reload"); }\n'
+        b"}\n"
+    )
+    fc = walk_file("t.ts", "typescript", src)
+    assert fc.io_boundary_names == {"WebSocket": "network", "WebSocketServer": "network"}
+    assert not fc.perf_hits
+
+
+def test_a_hyphenated_ts_module_path_names_no_library():
+    # ``provider-http`` is a local helper module, not the ``http`` package.
+    fc = walk_file(
+        "t.ts",
+        "typescript",
+        b'import { readBody } from "openclaw/plugin-sdk/provider-http";\n'
+        b'import { request } from "./client.js";\n',
+    )
+    assert fc.io_boundary_names == {}
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (b'import http from "node:http";\n', {"http": "network"}),
+        (b'import x = require("axios");\n', {"x": "network"}),
+        (b'import * as fs from "node:fs/promises";\n', {"fs": "filesystem"}),
+        (b'import { PrismaClient } from "@prisma/client";\n', {"PrismaClient": "db"}),
+        (b'import type { Pool } from "pg";\n', {"Pool": "db"}),
+        (b'import ws from "ws";\n', {"ws": "network"}),
+        (b'import "ws";\n', {}),
+        (b'import cfg from "./c.json" with { type: "http" };\n', {}),
+        (b'import cfg from "./c.json" assert { type: "pg" };\n', {}),
+        (b'import { Pool } from "pg" with { type: "json" };\n', {"Pool": "db"}),
+    ],
+)
+def test_a_ts_import_binds_only_its_clause_names(source: bytes, expected: dict[str, str]):
+    assert walk_file("t.ts", "typescript", source).io_boundary_names == expected
+
+
+@pytest.mark.parametrize(
+    ("path", "language", "source", "expected"),
+    [
+        (
+            "t.go",
+            "go",
+            b'package p\nimport h "net/http"\n',
+            {"h": "network", "net": "network", "http": "network"},
+        ),
+        ("t.rb", "ruby", b'require "net/http"\n', {"net": "network", "http": "network"}),
+    ],
+)
+def test_go_and_ruby_still_bind_through_the_quoted_path(path, language, source, expected):
+    assert walk_file(path, language, source).io_boundary_names == expected
+
+
+class _FakeImportNode:
+    def __init__(self, node_type: str, text: bytes, children: list[_FakeImportNode] | None = None):
+        self.type = node_type
+        self.text = text
+        self.children = children or []
+
+
+def test_rust_local_use_paths_are_not_io_boundaries():
+    root = _FakeImportNode(
+        "source_file",
+        b"",
+        [
+            _FakeImportNode("use_declaration", b"use crate::request::Foo;"),
+            _FakeImportNode("use_declaration", b"use super::http::fetch;"),
+            _FakeImportNode("use_declaration", b"use self::fs::helper;"),
+        ],
+    )
+
+    assert collect_io_names(root, "rust") == {}
 
 
 def test_typescript_fixture_counts():
@@ -256,6 +574,60 @@ def test_detectors_only_consume_their_own_kind():
     assert len(BlockingSyncInAsyncDetector().detect(ctx)) == 1
 
 
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [("src/render.ts", 1), ("src/__tests__/render.spec.ts", 0), ("tests/test_render.py", 0)],
+)
+def test_string_concat_not_reported_in_test_files(path, expected):
+    ctx = _ctx([PerfHit("string_concat_in_loop", 2, "f", "")])
+    ctx.file_path = path
+    assert len(StringConcatInLoopDetector().detect(ctx)) == expected
+
+
+def test_string_concat_one_finding_per_loop_and_string():
+    """A loop's appends to one string are one edit, so one finding on the first."""
+    ctx = _ctx(
+        [
+            PerfHit("string_concat_in_loop", 9, "f", "", 3, loop_line=7, subject="out"),
+            PerfHit("string_concat_in_loop", 8, "f", "", 3, loop_line=7, subject="out"),
+            PerfHit("string_concat_in_loop", 12, "f", "", 3, loop_line=7, subject="out"),
+            # Another string in the same loop, and the same string in another loop.
+            PerfHit("string_concat_in_loop", 10, "f", "", 3, loop_line=7, subject="log"),
+            PerfHit("string_concat_in_loop", 15, "f", "", 3, loop_line=14, subject="out"),
+        ]
+    )
+    findings = sorted(StringConcatInLoopDetector().detect(ctx), key=lambda f: f.line_start)
+    # ``line_end`` stays on the first append, so an unanchored row's id is stable.
+    assert [(f.line_start, f.line_end) for f in findings] == [(8, 8), (10, 10), (15, 15)]
+    assert findings[0].details["lines"] == [8, 9, 12]
+    assert "lines" not in findings[1].details
+
+
+def test_string_concat_unnamed_targets_in_one_loop_stay_apart():
+    """``buf[0] +=`` and ``other[i] +=`` keep no name, so nothing says they are one string."""
+    ctx = _ctx(
+        [
+            PerfHit("string_concat_in_loop", 8, "f", "", 3, loop_line=7),
+            PerfHit("string_concat_in_loop", 9, "f", "", 3, loop_line=7),
+            PerfHit("string_concat_in_loop", 10, "f", "", 3, loop_line=7, subject="self.a"),
+            PerfHit("string_concat_in_loop", 11, "f", "", 3, loop_line=7, subject="self.b"),
+        ]
+    )
+    findings = StringConcatInLoopDetector().detect(ctx)
+    assert sorted(f.line_start for f in findings) == [8, 9, 10, 11]
+
+
+def test_string_concat_unnamed_targets_on_one_line_stay_apart():
+    """``a[0] += x; b[0] += y`` on one line: two unnamed targets, two findings."""
+    ctx = _ctx(
+        [
+            PerfHit("string_concat_in_loop", 8, "f", "", 3, loop_line=7),
+            PerfHit("string_concat_in_loop", 8, "f", "", 3, loop_line=7),
+        ]
+    )
+    assert len(StringConcatInLoopDetector().detect(ctx)) == 2
+
+
 def test_no_perf_hits_yields_no_findings():
     assert IoInLoopDetector().detect(_ctx([])) == []
 
@@ -275,3 +647,127 @@ def test_perf_findings_score_performance_not_defect():
     assert scores["performance"] < 10.0
     # Every perf finding carries 0 defect-pillar impact.
     assert all(d == 0.0 for d in deductions)
+
+
+@pytest.mark.parametrize(
+    ("header", "chunked"),
+    [
+        ("for start in range(0, len(ids), CHUNK):", True),
+        ("for batch in itertools.batched(ids, 50):", True),
+        ("for start in range(0, len(ids), 1):", False),
+        ("for i in ids:", False),
+    ],
+)
+def test_a_sink_in_a_chunked_loop_carries_the_fact(header: str, chunked: bool):
+    source = (
+        "async def f(client, ids):\n"
+        f"    {header}\n"
+        "        await client.table('t').select('*').execute()\n"
+    ).encode()
+    fc = walk_file("f.py", "python", source)
+    loop_hits = [h for h in fc.perf_hits if h.kind in {"io_in_loop", "serial_await_in_loop"}]
+    assert loop_hits
+    assert all((h.loop is not None and h.loop.chunked) is chunked for h in loop_hits)
+    finding = IoInLoopDetector().detect(_ctx(loop_hits))[0]
+    assert finding.details.get("chunked_iteration", False) is chunked
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        # A function bound to a name is named for it.
+        (
+            "const build = (parts: string[]) => {\n"
+            "  for (const p of parts) {\n"
+            "    fs.readFileSync(p)\n"
+            "  }\n"
+            "}\n",
+            "build",
+        ),
+        # A callback is named for the call it is passed to, as the walker names it.
+        (
+            "it('reads', () => {\n"
+            "  for (const p of parts) {\n"
+            "    fs.readFileSync(p)\n"
+            "  }\n"
+            "})\n",
+            "it callback",
+        ),
+        # A lambda inside a named function keeps that function's name.
+        (
+            "function render(parts: string[]) {\n"
+            "  return parts.map((p) => {\n"
+            "    for (const c of p) {\n"
+            "      fs.readFileSync(c)\n"
+            "    }\n"
+            "  })\n"
+            "}\n",
+            "render",
+        ),
+        # Top-level script code has no function to name.
+        ("for (const p of parts) {\n  fs.readFileSync(p)\n}\n", None),
+    ],
+)
+def test_a_hit_is_named_for_its_enclosing_function(source: str, expected: str | None):
+    fc = walk_file("f.ts", "typescript", source.encode())
+    hits = [h for h in fc.perf_hits if h.kind == "io_in_loop"]
+    if not hits:
+        pytest.skip("typescript grammar unavailable")
+    assert {h.function for h in hits} == {expected}
+
+
+_BATCHED_CLEAR = (
+    b"from sqlalchemy import select\n"
+    b"async def clear(session, repository_id, paths):\n"
+    b"    for i in range(0, len(paths), _BATCH_SIZE):\n"
+    b"        rows = await session.execute(\n"
+    b"            select(Row).where(Row.path.in_(paths[i : i + _BATCH_SIZE]))\n"
+    b"        )\n"
+    b"        for row in rows.scalars().all():\n"
+    b"            row.score = None\n"
+)
+
+_N_PLUS_ONE = (
+    b"from sqlalchemy import select\n"
+    b"async def clear(session, repository_id, paths):\n"
+    b"    for path in paths:\n"
+    b"        rows = await session.execute(select(Row).where(Row.path == path))\n"
+    b"        for row in rows.scalars().all():\n"
+    b"            row.score = None\n"
+)
+
+
+def _loop_hits(source: bytes):
+    fc = walk_file("f.py", "python", source)
+    return [h for h in fc.perf_hits if h.kind == "io_in_loop"]
+
+
+def test_reading_a_result_inside_a_chunked_loop_is_already_batched():
+    """The chunk loop steps by a batch size and queries ``.in_`` over one slice; the
+    inner ``for row in rows.scalars().all()`` runs once per chunk, not once per row."""
+    hits = _loop_hits(_BATCHED_CLEAR)
+    assert {h.line for h in hits} == {4, 7}
+    assert all(h.loop is not None and h.loop.chunked for h in hits)
+    findings = IoInLoopDetector().detect(_ctx(hits))
+    assert findings and all(f.details.get("chunked_iteration") for f in findings)
+
+
+def test_a_per_item_query_still_reports_as_not_batched():
+    hits = _loop_hits(_N_PLUS_ONE)
+    assert {h.line for h in hits} == {4, 5}
+    assert not any(h.loop is not None and h.loop.chunked for h in hits)
+    findings = IoInLoopDetector().detect(_ctx(hits))
+    assert findings and not any(f.details.get("chunked_iteration") for f in findings)
+
+
+def test_a_query_in_the_header_of_an_inner_loop_belongs_to_the_outer_loop():
+    source = (
+        b"from sqlalchemy import select\n"
+        b"async def f(session, users):\n"
+        b"    for u in users:\n"
+        b"        for r in (await session.execute(select(T).where(T.id == u.id))).scalars().all():\n"
+        b"            r.x = 1\n"
+    )
+    hits = _loop_hits(source)
+    assert hits and all(h.loop_line == 3 for h in hits)
+    assert not any(h.loop is not None and h.loop.chunked for h in hits)

@@ -18,17 +18,21 @@
  */
 
 import Link from "next/link";
-import { FileCode, ScanSearch, X } from "lucide-react";
+import { BookOpen, FileCode, ScanSearch, X } from "lucide-react";
 import type { ZoomNode, ZoomRelation } from "@repowise-dev/ui/zoom";
 import {
   describeCap,
   describeRelations,
   healthBandLabel,
+  KIND_LABEL,
   nodeRoles,
   summarizeRelations,
 } from "@repowise-dev/ui/zoom";
-import { bandForScore } from "@repowise-dev/types/health";
+import { bandForScore, formatScore } from "@repowise-dev/types/health";
+import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
+import { pageHref } from "@/lib/utils/page-href";
 import { healthBandTextColor } from "@repowise-dev/ui/health";
+import { useTranslations } from "next-intl";
 
 interface ZoomDetailPanelProps {
   node: ZoomNode;
@@ -36,25 +40,15 @@ interface ZoomDetailPanelProps {
   /** Relations incident to this node, in either direction. */
   relations: ZoomRelation[];
   /** The verb the map is currently filtered to, or null for all of them. */
-  relationVerb: string | null;
+  relationVerbs: ReadonlySet<string> | null;
   onClose: () => void;
   onZoom: (id: string) => void;
 }
 
-/** Route to a file's own page. Segments are encoded but the slashes are kept so
- *  the `/files/[...path]` catch-all receives the real path. */
+/** Route to a file's own page. */
 function fileHref(repoId: string, path: string): string {
-  const encoded = path.split("/").map(encodeURIComponent).join("/");
-  return `/repos/${repoId}/files/${encoded}`;
+  return fileEntityPath(`/repos/${repoId}`, path);
 }
-
-const KIND_LABEL: Record<ZoomNode["kind"], string> = {
-  system: "System",
-  layer: "Layer",
-  group: "Group",
-  folder: "Folder",
-  file: "File",
-};
 
 /** A micro-label: mono, because it labels something a machine produced. */
 function Micro({ children }: { children: React.ReactNode }) {
@@ -101,15 +95,14 @@ export function ZoomDetailPanel({
   node,
   repoId,
   relations,
-  relationVerb,
+  relationVerbs,
   onClose,
   onZoom,
 }: ZoomDetailPanelProps) {
+  const t = useTranslations("zoom");
   const m = node.metrics;
   const isFile = node.kind === "file";
-  // The canonical 3-band scale, so the panel agrees with the dot on the card
-  // beside it. The 5-step Excellent/Good ladder the scan surfaces use would
-  // call a 6.9 "Good" while the card paints it amber.
+  // The shared bands, so the panel agrees with the dot on the card beside it.
   const band = healthBandLabel(node.health_score);
   const bandClass =
     node.health_score === null ? "" : healthBandTextColor(bandForScore(node.health_score));
@@ -119,7 +112,7 @@ export function ZoomDetailPanel({
   // "the 10 strongest" while two arrows are on screen.
   const summary = summarizeRelations(relations);
   const drawn = summarizeRelations(
-    relationVerb === null ? relations : relations.filter((r) => r.label === relationVerb),
+    relationVerbs === null ? relations : relations.filter((r) => relationVerbs.has(r.label)),
   );
   const cap = describeCap(drawn);
 
@@ -156,7 +149,7 @@ export function ZoomDetailPanel({
         <button
           type="button"
           onClick={onClose}
-          aria-label="Close details"
+          aria-label={t("detail.close")}
           className="shrink-0 rounded p-1 text-[var(--color-text-muted)] hover:bg-[var(--color-bg-wash-hover)] hover:text-[var(--color-text-primary)]"
         >
           <X className="h-4 w-4" />
@@ -168,14 +161,15 @@ export function ZoomDetailPanel({
           <div className="border-t border-[var(--color-border-default)] pt-3">
             <div className={`flex items-baseline gap-2 ${bandClass}`}>
               <span className="text-[32px] font-bold leading-none tabular-nums">
-                {node.health_score.toFixed(1)}
+                {formatScore(node.health_score)}
               </span>
               <span className="text-[15px] font-medium">{band}</span>
             </div>
             {/* A figure alone is not readable. Say what it measures. */}
             <p className="mt-1.5 text-[13px] leading-relaxed text-[var(--color-text-secondary)]">
-              Code health out of 10
-              {isFile ? "" : ", averaged across this subtree weighted by size"}.
+              {isFile
+                ? t("detail.healthOutOfTen")
+                : t("detail.healthOutOfTenSubtree")}
             </p>
           </div>
         )}
@@ -187,26 +181,32 @@ export function ZoomDetailPanel({
         )}
 
         <div className="mt-3">
-          {!isFile && <Row label="Files" value={m.file_count} />}
+          {!isFile && <Row label={t("detail.files")} value={m.file_count} />}
           {m.hotspot_count > 0 && (
-            <Row label="Hotspots" value={m.hotspot_count} tone="text-[var(--color-risk-high)]" />
+            <Row
+              label={t("detail.hotspots")}
+              value={m.hotspot_count}
+              tone="text-[var(--color-risk-high)]"
+            />
           )}
           {m.entry_point_count > 0 && (
             <Row
-              label="Entry points"
+              label={t("detail.entryPoints")}
               value={m.entry_point_count}
               tone="text-[var(--color-success)]"
             />
           )}
-          {m.on_flow_count > 0 && <Row label="On flow" value={m.on_flow_count} />}
-          {m.dead_count > 0 && <Row label="Dead" value={m.dead_count} />}
+          {m.on_flow_count > 0 && (
+            <Row label={t("detail.onFlow")} value={m.on_flow_count} />
+          )}
+          {m.dead_count > 0 && <Row label={t("detail.dead")} value={m.dead_count} />}
         </div>
 
         {/* What the arrows mean. The verb was on the wire and drawn nowhere,
             so nothing on this surface said whether a line meant "imports" or
             "changes at the same time as". */}
         <div className="mt-3 border-t border-[var(--color-border-default)] pt-3">
-          <Micro>Relations</Micro>
+          <Micro>{t("detail.relations")}</Micro>
           <p className="mt-1.5 text-[13px] leading-relaxed text-[var(--color-text-secondary)] tabular-nums">
             {describeRelations(summary)}
           </p>
@@ -214,29 +214,41 @@ export function ZoomDetailPanel({
             /* A surface that bounds its own coverage has to say so, or the
                partial view reads as the whole one. */
             <p className="mt-1 text-[12px] text-[var(--color-text-tertiary)] tabular-nums">
-              {cap} on the map.
+              {t("detail.capSuffix", { cap })}
             </p>
           )}
         </div>
 
         {node.language && (
           <div className="mt-3 border-t border-[var(--color-border-default)] pt-3 text-[13px] text-[var(--color-text-secondary)]">
-            <Micro>Language</Micro> <span className="ml-1">{node.language}</span>
+            <Micro>{t("detail.language")}</Micro>{" "}
+            <span className="ml-1">{node.language}</span>
           </div>
         )}
       </div>
 
-      {(node.children.length > 0 || isFile) && (
+      {(node.children.length > 0 || isFile || node.page_id) && (
         <footer className="flex flex-col gap-2 border-t border-[var(--color-border-default)] p-3">
           {node.children.length > 0 && (
             <button
               type="button"
               onClick={() => onZoom(node.id)}
-              className="flex w-full items-center justify-center gap-1.5 rounded-md bg-[var(--color-accent-primary)] px-3 py-2 text-[13px] font-medium text-[var(--color-text-on-accent)] hover:opacity-90"
+              className="flex w-full items-center justify-center gap-1.5 rounded-md bg-[var(--color-action-primary)] px-3 py-2 text-[13px] font-medium text-[var(--color-text-on-action)] hover:bg-[var(--color-action-primary-hover)]"
             >
               <ScanSearch className="h-3.5 w-3.5" />
-              Zoom in
+              {t("detail.zoomIn")}
             </button>
+          )}
+          {/* This card is named after a module page, so the page it is named
+              after has to be reachable from it. */}
+          {node.page_id && (
+            <Link
+              href={pageHref(repoId, node.page_id)}
+              className="flex w-full items-center justify-center gap-1.5 rounded-md border border-[var(--color-border-default)] px-3 py-2 text-[13px] font-medium text-[var(--color-text-primary)] hover:bg-[var(--color-bg-wash-hover)]"
+            >
+              <BookOpen className="h-3.5 w-3.5" />
+              {t("detail.readModule")}
+            </Link>
           )}
           {isFile && node.path && (
             <Link
@@ -244,7 +256,7 @@ export function ZoomDetailPanel({
               className="flex w-full items-center justify-center gap-1.5 rounded-md border border-[var(--color-border-default)] px-3 py-2 text-[13px] font-medium text-[var(--color-text-primary)] hover:bg-[var(--color-bg-wash-hover)]"
             >
               <FileCode className="h-3.5 w-3.5" />
-              Open file page
+              {t("detail.openFile")}
             </Link>
           )}
         </footer>

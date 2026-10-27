@@ -1,8 +1,8 @@
 """Tests for the unified cross-detector ranking (rank.py).
 
 One ranking is imposed over every refactoring type so the surfaces show the
-most valuable suggestion first regardless of kind. The key blends recovered
-impact, target centrality, and blast radius, weighted by confidence.
+most valuable suggestion first regardless of kind. Benefit and leverage raise
+priority; effort, blast-radius risk, weak evidence, and validation gaps lower it.
 """
 
 from __future__ import annotations

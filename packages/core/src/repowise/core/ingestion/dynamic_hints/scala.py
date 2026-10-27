@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from ..type_names import bare_type_name
 from .base import DynamicEdge, DynamicHintExtractor
 
 _SKIP_DIRS = {"target", "project", ".bloop", ".metals", "node_modules", ".git"}
@@ -46,9 +47,6 @@ class ScalaDynamicHints(DynamicHintExtractor):
             for match in _TYPE_DECL_RE.finditer(text):
                 type_to_file.setdefault(match.group(1), rel)
 
-        def _short(name: str) -> str:
-            return name.rsplit(".", 1)[-1]
-
         for src, text in sources:
             try:
                 rel = src.resolve().relative_to(repo_root.resolve()).as_posix()
@@ -56,7 +54,7 @@ class ScalaDynamicHints(DynamicHintExtractor):
                 continue
 
             for match in _CLASS_FORNAME_RE.finditer(text):
-                target = type_to_file.get(_short(match.group(1)))
+                target = type_to_file.get(bare_type_name(match.group(1)))
                 if target and target != rel:
                     edges.append(DynamicEdge(
                         source=rel, target=target,

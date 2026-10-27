@@ -90,3 +90,27 @@ def _now() -> float:
     import time
 
     return time.time()
+
+
+def test_cli_cached_does_not_persist_failure(monkeypatch, tmp_path):
+    """A transient failure must not pin the CLI cache to None for the TTL."""
+    _redirect_global_dir(monkeypatch, tmp_path)
+    calls = {"n": 0}
+
+    def _live(timeout=2.0):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _fake_check(latest=None, error="offline")
+        return _fake_check()
+
+    monkeypatch.setattr(uc, "get_cli_update_check", _live)
+
+    first = get_cli_update_check_cached(ttl_hours=1)
+    assert first.latest_version is None
+    assert not (tmp_path / "update-check.json").exists()  # failure not cached
+
+    # Second call within TTL must retry (not serve cached None).
+    second = get_cli_update_check_cached(ttl_hours=1)
+    assert calls["n"] == 2
+    assert second.latest_version == "9.9.9"
+    assert (tmp_path / "update-check.json").exists()  # success is cached

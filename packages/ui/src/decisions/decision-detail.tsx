@@ -22,6 +22,7 @@ import {
   Flame,
   GitCommitHorizontal,
 } from "lucide-react";
+import type { ChatContext } from "@repowise-dev/types/chat";
 import type {
   DecisionRecord,
   DecisionStatus,
@@ -39,9 +40,11 @@ import {
 
 import { ModuleLinkEditor } from "./module-link-editor";
 import { VerificationBadge } from "./verification-badge";
+import { AskAboutThis } from "../chat/ask-about-this";
 import { DecisionStatusMark } from "./decision-status-mark";
 import { DecisionEvidenceDrawer } from "./decision-evidence-drawer";
 import { DecisionLineage } from "./decision-lineage";
+import { describeRecordStaleness } from "./decision-staleness";
 import type {
   DecisionDetailAdapter,
   DecisionLinkComponent,
@@ -58,6 +61,8 @@ const SOURCE_LABEL: Record<string, string> = {
   adr: "ADR",
   changelog: "Changelog",
   session: "Session",
+  agent: "Agent",
+  conventions: "Convention",
 };
 
 const MICRO_LABEL =
@@ -80,6 +85,13 @@ const CONFIRM_COPY: Record<
     confirmLabel: "Deprecate",
     destructive: true,
   },
+  dismissed: {
+    title: "Dismiss decision?",
+    description:
+      "This proposal will be hidden from the list and indexing will not raise it again. Nothing in your code changes.",
+    confirmLabel: "Dismiss",
+    destructive: true,
+  },
 };
 
 export interface DecisionDetailProps {
@@ -100,6 +112,23 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
   // Which AI-prompt flavor the modal shows: verification ("is this decision
   // still true?") or enforcement ("make the code conform to it").
   const [promptMode, setPromptMode] = React.useState<"verify" | "enforce" | null>(null);
+  // One subject for both the chat control and the prompt modal's "Ask in chat".
+  const chatContext: ChatContext = {
+    kind: "decision",
+    label: stripMarkdown(decision.title),
+    target: decision.id,
+    targetKind: "decision",
+  };
+
+  // Read from `decision.affected_files` and not from `linkedFiles`, which the
+  // editor below mutates locally. `staleness_score` is a proportion the server
+  // computed against the *stored* scope, so pairing it with an unsaved scope
+  // would print a count derived from one file set over a fraction derived from
+  // another, and the sentence would drift the moment somebody typed.
+  const staleness = React.useMemo(
+    () => describeRecordStaleness(decision),
+    [decision],
+  );
 
   // Lineage: cheap, load eagerly so the Evolution timeline renders when present.
   const { data: lineage } = useSWR(
@@ -269,26 +298,22 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
             {decision.verification && (
               <VerificationBadge verification={decision.verification} />
             )}
+            <AskAboutThis
+              context={chatContext}
+              question={`Why was this decision made, what evidence supports it, and has later work conflicted with it?`}
+              label="Ask about this decision"
+            />
           </div>
         </div>
 
-        {/* One mono ribbon, tabular, instead of four sans sentences. Staleness
-            is a percentage here and a percentage in the table; it used to be
-            "0.42" on one surface and "42%" on the other. */}
+        {/* One mono ribbon, tabular, instead of four sans sentences.
+            Staleness left the ribbon: a proportion has no reading at a glance,
+            and the thing a reader wants from it is a sentence, which is now
+            below. Confidence left with it, being source rank times
+            verification, so it restated the Source cell beside it as a
+            percentage and every record from one source carried one number. */}
         <dl className="flex flex-wrap gap-x-8 gap-y-2">
           <MetaItem label="Source" value={SOURCE_LABEL[decision.source] ?? decision.source} />
-          <MetaItem label="Confidence" value={`${Math.round(decision.confidence * 100)}%`} />
-          <MetaItem
-            label="Staleness"
-            value={
-              decision.staleness_score > 0
-                ? `${Math.round(decision.staleness_score * 100)}%`
-                : "—"
-            }
-            {...(decision.staleness_score > 0.5
-              ? { valueClassName: "text-[var(--color-error)]" }
-              : {})}
-          />
           <MetaItem label="Recorded" value={formatDateOrDash(decision.created_at)} />
         </dl>
 
@@ -319,19 +344,39 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
         </div>
       </div>
 
-      {/* Stale warning. A line, not a filled panel: a tinted ground plus a
-          border plus coloured text says the same thing three times, and it
-          outweighed the record it was warning about. Same argument as the
-          status marks. */}
-      {decision.staleness_score > 0.5 && (
-        <p className="flex items-start gap-2 text-sm text-[var(--color-warning)]">
+      {/* What has happened to the code underneath this record, as a fact.
+          A line, not a filled panel: a tinted ground plus a border plus
+          coloured text says the same thing three times, and it outweighed the
+          record it was warning about.
+
+          It renders in all three states rather than only above a threshold,
+          because the two quiet states are not the same state. A record naming
+          no files scored 0.0 and rendered exactly like a record whose code had
+          not moved, so the reader who correctly read one was taught a rule
+          that made them wrong about the other. Only the moved case is marked,
+          and it is marked in warning rather than error: the arithmetic says
+          the files changed, which is a reason to re-read a record, not a
+          verdict that it expired. Three confirmed working rules on a live
+          index sat at a red 100% while being true. */}
+      {/* No band colour. The table cell on the list page is deliberately
+          uncoloured because a file-change count is not a health reading, and
+          amber here is the same category error one hue down. It would also
+          make this the third mark on one record drawing from one colour
+          vocabulary with no key: the status mark paints `active` green and
+          `deprecated` red, and the verification badge paints `fuzzy` amber.
+          The icon carries "look at this"; the sentence carries what it is. */}
+      <p
+        className={`flex items-start gap-2 text-sm ${
+          staleness.kind === "moved"
+            ? "text-[var(--color-text-secondary)]"
+            : "text-[var(--color-text-tertiary)]"
+        }`}
+      >
+        {staleness.kind === "moved" && (
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
-          <span>
-            Affected files have changed significantly since this was recorded,
-            so it may no longer describe the code.
-          </span>
-        </p>
-      )}
+        )}
+        <span>{staleness.sentence}</span>
+      </p>
 
       {/* Evolution / lineage chain */}
       {lineage && lineage.length > 1 && (
@@ -440,15 +485,22 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
               <button
                 onClick={() => handleStatusChange("active")}
                 disabled={loading}
-                // Accent, not a filled green: green/amber/red are reserved for
+                // Ink, not a filled green: green/amber/red are reserved for
                 // health readouts where they carry a band. This is the page's
-                // one primary action, which is what the accent is for.
-                className="rounded-md bg-[var(--color-accent-primary)] px-3 py-1.5 text-sm font-medium text-[var(--color-text-on-accent)] hover:opacity-90 disabled:opacity-50"
+                // one primary action, and primary actions are ink.
+                className="rounded-md bg-[var(--color-action-primary)] px-3 py-1.5 text-sm font-medium text-[var(--color-text-on-action)] hover:bg-[var(--color-action-primary-hover)] disabled:opacity-50"
               >
                 Confirm
               </button>
+              {/* Dismissing a proposal and deprecating a decision are not the
+                  same act, and this button used to send `deprecated` for both.
+                  A dismissal says the proposal was never right, so the engine
+                  never raises it again; deprecation says a real decision has
+                  been retired, and the record keeps being re-derived and keeps
+                  its row. Sending the wrong one meant a dismissed proposal came
+                  back on the next index. */}
               <button
-                onClick={() => handleStatusChange("deprecated")}
+                onClick={() => handleStatusChange("dismissed")}
                 disabled={loading}
                 className="rounded-md border border-[var(--color-border-default)] px-3 py-1.5 text-sm text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] disabled:opacity-50"
               >
@@ -469,8 +521,8 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
         {status === "proposed" && (
           <p className="text-xs text-[var(--color-text-tertiary)]">
             Confirm marks this as an accurate, current decision for your team.
-            Dismiss hides it from the active list as inaccurate or no longer
-            relevant. Neither changes any code.
+            Dismiss hides it and stops indexing from raising it again, for a
+            proposal that was never right. Neither changes any code.
           </p>
         )}
         {status === "active" && (
@@ -527,6 +579,7 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
           })
         }
         filePath={stripMarkdown(decision.title)}
+        chatContext={chatContext}
         title={
           promptMode === "enforce"
             ? "AI decision enforcement"
@@ -542,23 +595,14 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
   );
 }
 
-function MetaItem({
-  label,
-  value,
-  valueClassName,
-}: {
-  label: string;
-  value: string;
-  valueClassName?: string;
-}) {
+function MetaItem({ label, value }: { label: string; value: string }) {
+  // `valueClassName` went with the Staleness item, its only caller: it existed
+  // to paint that percentage red above 0.5, which is the thing this change
+  // removed. Module-private, so nothing outside can be relying on it.
   return (
     <div>
       <dt className={MICRO_LABEL}>{label}</dt>
-      <dd
-        className={`mt-0.5 font-mono text-xs tabular-nums text-[var(--color-text-secondary)] ${
-          valueClassName ?? ""
-        }`}
-      >
+      <dd className="mt-0.5 font-mono text-xs tabular-nums text-[var(--color-text-secondary)]">
         {value}
       </dd>
     </div>

@@ -62,8 +62,9 @@ async def test_mcp_lifespan_uses_cli_database_env_var(monkeypatch):
     async def fake_load_vector_stores(repo_path: str | None) -> None:
         return None
 
-    def fake_create_engine(url: str) -> DummyEngine:
+    def fake_create_engine(url: str, **kwargs) -> DummyEngine:
         captured["url"] = url
+        captured["short_lived"] = kwargs.get("short_lived")
         return DummyEngine()
 
     monkeypatch.setenv("REPOWISE_DB_URL", "sqlite+aiosqlite:///tmp/from-cli.db")
@@ -88,6 +89,7 @@ async def test_mcp_lifespan_uses_cli_database_env_var(monkeypatch):
     try:
         async with mcp_server._lifespan(mcp_server.mcp):
             assert captured["url"] == "sqlite+aiosqlite:///tmp/from-cli.db"
+            assert captured["short_lived"] is False
     finally:
         _state._repo_path = original_repo_path
         _state._vector_store = original_vector_store

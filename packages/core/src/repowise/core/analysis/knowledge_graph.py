@@ -16,6 +16,9 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from repowise.core.generation.entry_points import orientation_entry_points
+from repowise.core.support_paths import CONFIG_EXTENSIONS, DOC_EXTENSIONS, classification_token
+
 _log = logging.getLogger(__name__)
 
 #: Schema version of the ``knowledge-graph.json`` artifact. Bump whenever a
@@ -145,10 +148,7 @@ class KnowledgeGraphResult:
 # Node classification helpers
 # ---------------------------------------------------------------------------
 
-_CONFIG_EXTENSIONS = frozenset({
-    ".yaml", ".yml", ".toml", ".json", ".env", ".ini", ".cfg", ".conf",
-    ".properties", ".xml",
-})
+_CONFIG_EXTENSIONS = CONFIG_EXTENSIONS
 
 _INFRA_EXTENSIONS = frozenset({
     ".dockerfile", ".tf", ".hcl",
@@ -161,16 +161,17 @@ _INFRA_NAMES = frozenset({
 
 _INFRA_LANGUAGES = frozenset({"dockerfile", "makefile"})
 
-_DOC_EXTENSIONS = frozenset({
-    ".md", ".rst", ".txt", ".adoc",
-})
+_DOC_EXTENSIONS = DOC_EXTENSIONS
 
 
 def _classify_file_type(path: str, language: str, is_config: bool) -> str:
-    ext = PurePosixPath(path).suffix.lower()
-    stem = PurePosixPath(path).stem.lower()
+    p = PurePosixPath(path)
+    ext = p.suffix.lower()
+    stem = p.stem.lower()
 
-    if is_config or ext in _CONFIG_EXTENSIONS:
+    # `classification_token` covers dotfiles: `.env` has no suffix, so the
+    # suffix-only check below never matched the entry that names it (#2379).
+    if is_config or classification_token(path) in _CONFIG_EXTENSIONS:
         return "config"
     # Infra names only count for extension-less files (Dockerfile, Makefile)
     # or when ingestion parsed the file as an infra language — a Python module
@@ -203,14 +204,54 @@ def _slugify(text: str) -> str:
 # Edge type mapping
 # ---------------------------------------------------------------------------
 
+# Bump when the builder or the curation pass changes what it emits from an
+# unchanged graph — a wider `_EDGE_TYPE_MAP`, a different entry-point ranking,
+# a new node field. Folded into `compute_kg_fingerprint`, which otherwise only
+# measures the input graph and would let an existing store serve the old
+# artifact indefinitely. See that function for why one bump is one rebuild.
+#
+# "2": `_EDGE_TYPE_MAP` gained six types and `_curate_entry_points` changed its
+# ranking, neither of which moves a node or edge count.
+# "3": `references` joined the map, so C/C++ dispatch tables and registration
+# macros reach the export instead of being dropped.
+# "4": `framework_binds` joined the map, so a container-wired symbol pair
+# reaches the export instead of being dropped.
+# "5": which files are tests changed (``repowise.core.test_paths``), moving the
+# ``test`` tag on file nodes without moving a node or edge count.
+# "6": a test-named Python module that pytest's config does not collect is no
+# longer a test, moving its ``test`` tag.
+# "7": a JavaScript-family file under a ``tests/`` folder inside a ``src`` tree
+# is not a test by that folder alone, moving its ``test`` tag.
+KG_BUILDER_VERSION = "7"
+
+# An unmapped type is dropped from the export entirely (see the
+# `if not kg_type: continue` below), which is silent. Six real types used to be
+# missing — framework, the three dynamic_* kinds, reads and method_implements —
+# so framework-wired and dynamically-dispatched relations never reached the
+# knowledge graph at all. `test_edge_type_map_covers_the_vocabulary` keeps this
+# total over every dependency type.
+#
+# `co_changes` is the one deliberate omission: it is git history, not a code
+# reference, and the export has no relation kind that would keep that
+# distinction downstream. Admitting it here is how a co-change partner starts
+# looking like an import.
 _EDGE_TYPE_MAP: dict[str, str] = {
     "imports": "imports",
     "type_use": "imports",
+    "framework": "imports",
+    "dynamic_imports": "imports",
+    "dynamic_uses": "depends_on",
+    "dynamic_url_route": "depends_on",
     "defines": "contains",
     "has_method": "contains",
     "calls": "depends_on",
     "extends": "depends_on",
     "implements": "depends_on",
+    "method_implements": "depends_on",
+    "dispatches_to": "depends_on",
+    "framework_binds": "depends_on",
+    "reads": "depends_on",
+    "references": "depends_on",
 }
 
 
@@ -243,7 +284,11 @@ def build_knowledge_graph_skeleton(
         "name": repo_path.name if repo_path else "",
         "is_monorepo": repo_structure.is_monorepo if repo_structure else False,
         "total_files": repo_structure.total_files if repo_structure else len(parsed_files),
-        "entry_points": list(repo_structure.entry_points) if repo_structure else [],
+        "entry_points": orientation_entry_points(repo_structure),
+        "packages": [
+            {"name": p.name, "path": p.path, "declared": p.declared}
+            for p in getattr(repo_structure, "packages", None) or []
+        ],
         "tech_stack": tech_stack[:20],
     }
 
@@ -391,10 +436,41 @@ def build_knowledge_graph_skeleton(
 
 
 def compute_kg_fingerprint(graph_builder: Any) -> str:
-    """Compute a fingerprint from the graph state for incremental skip logic."""
+    """Compute a fingerprint from the graph state for incremental skip logic.
+
+    The four graph measures describe the *input* graph. They cannot see a
+    change in how this module turns that graph into an export, and the export
+    is not total: :data:`_EDGE_TYPE_MAP` drops every unmapped edge type. So
+    widening that map — six types in 0.43.0 — changes what the knowledge graph
+    contains while all four measures hold still, and the stored artifact would
+    keep the narrower edge set until some unrelated commit happened to move a
+    node or edge count. Same for the ordering the curation pass applies to
+    ``project.entry_points``, which every orientation surface reads.
+
+    :data:`KG_BUILDER_VERSION` closes that: bump it in the same commit as a
+    change to what the builder or the curation pass emits, and every existing
+    store rebuilds its knowledge graph once, on its next ``repowise update``
+    that has work to do. Two limits on that sentence, both deliberate:
+
+    * An update with nothing to do returns ``NOOP`` before the refresh is
+      reached, so a repo with no new commits stays on its old artifact until
+      something changes. That is the right trade — the alternative is making
+      every quiet repo in the world re-curate on a version bump — but it does
+      mean this is not a hard guarantee of "everyone, once".
+    * The rebuild itself is deterministic and model-free (skeleton plus
+      curation over a graph the run already holds, betweenness served from its
+      disk cache). On a **docs** update the non-``None`` result then also
+      triggers one KG layer-enrichment LLM call per five layers, which is real
+      spend the caller pays for a graph whose shape did not change. Index-only
+      and keyless runs never reach it.
+
+    One rebuild and not a loop: the new value is stored as the artifact's
+    fingerprint, so the next run matches and skips.
+    """
     g = graph_builder.graph()
     cd = graph_builder.community_detection()
     parts = [
+        KG_BUILDER_VERSION,
         str(g.number_of_nodes()),
         str(g.number_of_edges()),
         str(len(set(cd.values()))),

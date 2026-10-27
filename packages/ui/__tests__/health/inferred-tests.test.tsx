@@ -1,0 +1,416 @@
+/**
+ * The Tests tab on the inferred basis.
+ *
+ * These are mostly *negative* assertions, and deliberately so. The graph-inferred
+ * test map over-claims by construction and carries no line attribution, so the
+ * failure mode this tab has to be protected from is not "renders wrong" but
+ * "renders convincingly as a measurement": a percentage, a progress bar, or a
+ * health-band colour on data that has no band. Each of those is one convenience
+ * change away at any time, so each is asserted directly.
+ */
+
+import { describe, it, expect, vi } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
+import { SWRConfig } from "swr";
+import type {
+  HealthCoverageResponse,
+  HealthFinding,
+  InferredTestMap,
+  ReachedFileRow,
+  TestsReachingFile,
+} from "@repowise-dev/types/health";
+
+import { RiskCoverageScatter } from "../../src/health/risk-coverage-scatter.js";
+import { CoverageView } from "../../src/health/coverage-view.js";
+import type { CodeHealthAdapter } from "../../src/health/code-health-adapter.js";
+import {
+  InferredTestsView,
+  UNREACHED_TITLE,
+} from "../../src/health/inferred-tests-view.js";
+import { TestsReachingList } from "../../src/health/tests-reaching-list.js";
+
+function row(
+  partial: Partial<ReachedFileRow> & { file_path: string },
+): ReachedFileRow {
+  return { reached: false, health_score: 5, nloc: 100, ...partial };
+}
+
+function response(map: Partial<InferredTestMap> = {}): HealthCoverageResponse {
+  const files = map.files ?? [
+    row({ file_path: "src/a.py", reached: true, health_score: 8 }),
+    row({ file_path: "src/b.py", reached: false, health_score: 3 }),
+  ];
+  return {
+    basis: "inferred",
+    summary: {
+      file_count: 0,
+      covered_lines: 0,
+      total_lines: 0,
+      line_coverage_pct: null,
+      branch_coverage_pct: null,
+      source_format: null,
+      source_formats: [],
+      mapping_partial: null,
+      ingested_at: null,
+      ingested_commit_sha: null,
+      report_paths: null,
+      freshness: null,
+    },
+    files: [],
+    modules: [],
+    modules_total: 0,
+    inferred: {
+      files,
+      files_total: files.length,
+      files_reached: files.filter((f) => f.reached).length,
+      files_not_reached: files.filter((f) => !f.reached).length,
+      test_file_count: 12,
+      ...map,
+    },
+  };
+}
+
+describe("RiskCoverageScatter, inferred basis", () => {
+  const points = [
+    { file_path: "src/a.py", health_score: 8, line_coverage_pct: null, nloc: 50, reached: true },
+    { file_path: "src/b.py", health_score: 3, line_coverage_pct: null, nloc: 90, reached: false },
+  ];
+
+  it("names the two columns instead of a percentage axis", () => {
+    render(<RiskCoverageScatter basis="inferred" points={points} />);
+
+    expect(screen.getByText("no test reaches it")).toBeInTheDocument();
+    expect(screen.getByText("a test reaches it")).toBeInTheDocument();
+    // The measured axis ticks must not survive the collapse: a "%" anywhere on
+    // this chart is the claim the basis is not allowed to make.
+    expect(screen.queryByText("50%")).not.toBeInTheDocument();
+    expect(screen.queryByText("100%")).not.toBeInTheDocument();
+  });
+
+  it("keeps the measured axis when no basis is passed", () => {
+    render(<RiskCoverageScatter points={[{ ...points[0]!, line_coverage_pct: 80 }]} />);
+
+    expect(screen.getByText("100%")).toBeInTheDocument();
+    expect(screen.queryByText("a test reaches it")).not.toBeInTheDocument();
+  });
+
+  it("keeps dots neutral and colours only weak files nothing reaches", () => {
+    const { container } = render(
+      <RiskCoverageScatter basis="inferred" points={points} />,
+    );
+    const classOf = (path: string) =>
+      container.querySelector(`circle[data-file="${path}"]`)?.getAttribute("class") ?? "";
+
+    // src/a.py is reached by a test: quiet neutral mark.
+    expect(classOf("src/a.py")).toContain("--color-text-tertiary");
+    // src/b.py scores 3 and nothing reaches it: the one coloured kind.
+    expect(classOf("src/b.py")).toContain("--color-error");
+    expect(container.innerHTML).not.toContain("--color-success");
+  });
+
+  it("separates the columns and keeps each file's position stable across renders", () => {
+    // The jitter is seeded off the path precisely so a re-render does not move
+    // the field. Random jitter would pass a single-render test and fail a user.
+    const { container, rerender } = render(
+      <RiskCoverageScatter basis="inferred" points={points} />,
+    );
+    const cxOf = (path: string) =>
+      Number(
+        container.querySelector(`circle[data-file="${path}"]`)?.getAttribute("cx"),
+      );
+
+    const firstA = cxOf("src/a.py");
+    const firstB = cxOf("src/b.py");
+    expect(firstA).toBeGreaterThan(firstB);
+
+    rerender(<RiskCoverageScatter basis="inferred" points={[...points]} />);
+
+    expect(cxOf("src/a.py")).toBe(firstA);
+    expect(cxOf("src/b.py")).toBe(firstB);
+  });
+});
+
+describe("InferredTestsView", () => {
+  it("leads with the count of weak files no test reaches, as a floor", () => {
+    render(
+      <InferredTestsView
+        data={response()}
+        untestedFindings={[]}
+        onOpenFile={vi.fn()}
+      />,
+    );
+
+    // The hero and the list title make the same floor statement.
+    expect(screen.getAllByText(UNREACHED_TITLE)).toHaveLength(2);
+    // src/b.py alone: unreached and under the at-risk score. src/a.py is
+    // reached, and an unreached file scoring well is not the headline. The
+    // singular unit is the assertion — it can only render from a count of one.
+    expect(screen.getByText("weak file")).toBeInTheDocument();
+    // The list's known blind spot is named, not left for the reader to find.
+    expect(screen.getByText(/misses code a framework invokes/)).toBeInTheDocument();
+  });
+
+  it("counts the hero from the listed rows, not from the findings", () => {
+    // A finding for a reached file, and one for a well-scored unreached file:
+    // neither may move the count, which describes the list below it.
+    const findings = [
+      { file_path: "src/a.py" },
+      { file_path: "src/c.py" },
+    ] as HealthFinding[];
+    const data = response({
+      files: [
+        row({ file_path: "src/a.py", reached: true, health_score: 3 }),
+        row({ file_path: "src/b.py", reached: false, health_score: 3 }),
+        row({ file_path: "src/c.py", reached: false, health_score: 9 }),
+      ],
+    });
+    const { container } = render(
+      <InferredTestsView data={data} untestedFindings={findings} onOpenFile={vi.fn()} />,
+    );
+
+    expect(screen.getByText("weak file")).toBeInTheDocument();
+    // The flagged file still leads the list.
+    const rows = [...container.querySelectorAll("span[title]")].map((el) =>
+      el.getAttribute("title"),
+    );
+    expect(rows.indexOf("src/c.py")).toBeLessThan(rows.indexOf("src/b.py"));
+    expect(rows).not.toContain("src/a.py");
+  });
+
+  it("renders no percentage and no progress bar anywhere", () => {
+    const { container } = render(
+      <InferredTestsView
+        data={response()}
+        untestedFindings={[]}
+        onOpenFile={vi.fn()}
+      />,
+    );
+
+    expect(container.textContent).not.toMatch(/\d+(\.\d+)?%/);
+    // A bar is a percentage drawn. The measured tab renders one per row; this
+    // one must not, whatever it is styled from.
+    expect(container.querySelector('[role="progressbar"]')).toBeNull();
+    expect(container.querySelector(".rounded-full")).toBeNull();
+  });
+
+  it("states the split as two counts against the repository total", () => {
+    render(
+      <InferredTestsView
+        data={response()}
+        untestedFindings={[]}
+        onOpenFile={vi.fn()}
+      />,
+    );
+
+    // Both sides named, and the denominator is files rather than lines: there
+    // is no line-level evidence behind this basis to count.
+    expect(screen.getByText("1 of 2 files")).toBeInTheDocument();
+    expect(screen.getByText(/The graph finds no test for the other\s+1/)).toBeInTheDocument();
+  });
+
+  it("says the ranking was trimmed rather than letting it read as the repo", () => {
+    const data = response({ files_total: 900 });
+    render(
+      <InferredTestsView data={data} untestedFindings={[]} onOpenFile={vi.fn()} />,
+    );
+
+    expect(screen.getByText(/of 900 files, capped/)).toBeInTheDocument();
+  });
+
+  it("frames a report as added resolution, not as a prerequisite", () => {
+    render(
+      <InferredTestsView
+        data={response()}
+        untestedFindings={[]}
+        onOpenFile={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText(/Sharpen this with a coverage report/)).toBeInTheDocument();
+    expect(screen.getByText(/needs no setup/)).toBeInTheDocument();
+    // The old dead-end line, which stopped being true once the graph answered.
+    expect(screen.queryByText(/Nothing is inferred/)).not.toBeInTheDocument();
+  });
+});
+
+describe("TestsReachingList", () => {
+  const answer = (partial: Partial<TestsReachingFile> = {}): TestsReachingFile => ({
+    file_path: "src/a.py",
+    basis: "inferred",
+    reached: true,
+    tests: ["tests/test_a.py", "tests/test_b.py"],
+    via: "call-graph",
+    ...partial,
+  });
+
+  it("states the relationship and names the tests", async () => {
+    render(
+      <TestsReachingList
+        filePath="src/a.py"
+        cacheKey="k1"
+        fetcher={async () => answer()}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByText("2 test files")).toBeInTheDocument(),
+    );
+    expect(screen.getByText("tests/test_a.py")).toBeInTheDocument();
+    expect(screen.getByText(/run into this file/)).toBeInTheDocument();
+  });
+
+  it("says an import-only answer is the weaker claim", async () => {
+    render(
+      <TestsReachingList
+        filePath="src/a.py"
+        cacheKey="k2"
+        fetcher={async () => answer({ via: "import-graph" })}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByText(/import this file/)).toBeInTheDocument(),
+    );
+    expect(screen.getByText(/without necessarily running any of it/)).toBeInTheDocument();
+  });
+
+  it("names the indirect tier instead of saying nothing imports the file", async () => {
+    render(
+      <TestsReachingList
+        filePath="src/a.py"
+        cacheKey="k7"
+        fetcher={async () => answer({ via: "indirect-import" })}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(/import a file that imports this one/),
+      ).toBeInTheDocument(),
+    );
+    expect(screen.getByText(/indirect import/)).toBeInTheDocument();
+  });
+
+  it("says when the only tests reaching the file replace it", async () => {
+    render(
+      <TestsReachingList
+        filePath="src/a.py"
+        cacheKey="k9"
+        fetcher={async () => answer({ via: "mocked-only" })}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByText(/replace it with a double/)).toBeInTheDocument(),
+    );
+    expect(screen.getByText(/only tests that replace it/)).toBeInTheDocument();
+  });
+
+  it("says the answer is unknown when the server could not compute it", async () => {
+    render(
+      <TestsReachingList
+        filePath="src/a.py"
+        cacheKey="k8"
+        fetcher={async () =>
+          answer({ basis: "unavailable", reached: false, tests: [], via: null })
+        }
+      />,
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(/could not load which tests reach this file/i),
+      ).toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/No test reaches this file/)).not.toBeInTheDocument();
+  });
+
+  it("names the static limits when nothing reaches the file", async () => {
+    render(
+      <TestsReachingList
+        filePath="src/lonely.py"
+        cacheKey="k3"
+        fetcher={async () => answer({ reached: false, tests: [], via: null })}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByText(/No test reaches this file through the graph/)).toBeInTheDocument(),
+    );
+    // The caveat is the point: framework-invoked code is invisible to a static
+    // walk, and claiming "untested" without saying so would overstate the evidence.
+    expect(screen.getByText(/Code a framework invokes/)).toBeInTheDocument();
+  });
+
+  it("names the true total when the list was cut, not the length shown", async () => {
+    // The cap is an alphabetical slice, so printing tests.length would state
+    // the cap as the answer and hide which evidence was dropped.
+    render(
+      <TestsReachingList
+        filePath="src/a.py"
+        cacheKey="k5"
+        fetcher={async () => answer({ total: 124, truncated: true })}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByText("124 test files")).toBeInTheDocument(),
+    );
+    expect(screen.getByText(/listing 2 of 124/)).toBeInTheDocument();
+  });
+
+  it("renders nothing when the host has not wired the endpoint", () => {
+    const { container } = render(
+      <TestsReachingList filePath="src/a.py" cacheKey="k4" />,
+    );
+
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it("shows an error state instead of the empty answer when the fetch rejects", async () => {
+    // A rejected fetch must not be mapped to the same sentence as a real
+    // "nothing reaches this file" answer: the reader needs to know the
+    // request failed, not that the file is untested.
+    render(
+      <TestsReachingList
+        filePath="src/a.py"
+        cacheKey="k6"
+        fetcher={async () => {
+          throw new Error("HTTP 500");
+        }}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(/could not load which tests reach this file/i),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByText(/No test reaches this file/),
+    ).not.toBeInTheDocument();
+  });
+});
+
+describe("CoverageView, unavailable basis", () => {
+  it("says the walk failed instead of claiming no tests were found", async () => {
+    const adapter = {
+      cacheKey: "unavailable-test",
+      getCoverage: vi.fn().mockResolvedValue({ ...response(), basis: "unavailable", inferred: undefined }),
+      listFindings: vi.fn().mockResolvedValue([]),
+      navigate: vi.fn(),
+      fileHref: (p: string) => `/files/${p}`,
+    } as unknown as CodeHealthAdapter;
+
+    render(
+      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+        <CoverageView adapter={adapter} />
+      </SWRConfig>,
+    );
+
+    expect(
+      await screen.findByText("Couldn't work out which files tests reach"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/found no\s+test files/)).not.toBeInTheDocument();
+  });
+});

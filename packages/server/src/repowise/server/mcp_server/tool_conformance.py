@@ -14,6 +14,7 @@ from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._helpers import _is_workspace_mode
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._meta import persisted_analysis_meta as _analysis_meta
 
 #: Inline caps so the agent payload stays tight; true counts are reported and the
 #: full set is on the REST endpoint.
@@ -21,7 +22,14 @@ _MCP_VIOLATION_LIMIT = 25
 _MCP_CYCLE_LIMIT = 25
 
 
-@mcp.tool(default=False, requires_workspace=True)
+@mcp.tool(
+    default=False,
+    requires_workspace=True,
+    surface_order=250,
+    trust_kind="structural",
+    artifact_type="conformance",
+    presentation="conformance",
+)
 async def get_conformance(repo: str | None = None) -> dict[str, Any]:
     """Architecture conformance — dependency-rule violations + cycles.
 
@@ -51,21 +59,64 @@ async def get_conformance(repo: str | None = None) -> dict[str, Any]:
             "_meta": _build_meta(),
         }
 
+    # A report with no timestamp is one nothing ever wrote a result into. Its
+    # zeros are the absence of a check, not the absence of findings, and an
+    # agent told "no violations" would act on that.
+    ran = bool(report.get("generated_at"))
+    if not ran:
+        return {
+            "error": (
+                "The conformance check has not run for this workspace. Its stored "
+                "report has no result in it, so its zero counts mean nothing. Run "
+                "`repowise update --workspace` to produce one."
+            ),
+            "_meta": _build_meta(),
+        }
+
+    graph = enricher.get_system_graph() or {}
+    analysis_commits = {
+        alias: provenance.get("head")
+        for alias, provenance in graph.get("repo_provenance", {}).items()
+        if provenance.get("head")
+    }
+    payload = conformance_payload(report, repo)
+    payload["_meta"] = _build_meta(extra=_analysis_meta(report.get("generated_at"), analysis_commits))
+    return payload
+
+
+def conformance_payload(report: dict[str, Any], repo: str | None = None) -> dict[str, Any]:
+    """The ``get_conformance`` answer over a *report* that ran, without ``_meta``."""
+    from repowise.core.workspace.cycles import cycle_total
+    from repowise.core.workspace.reads import conformance_for_repo
+
     if repo:
-        scoped = enricher.get_conformance_for_repo(repo)
+        scoped = conformance_for_repo(report, repo)
         violations = scoped["violations"]
         cycles = scoped["cycles"]
+        # Scoping picks from the already-capped stored list, so the pre-cap
+        # workspace total does not describe this subset.
+        total_cycles = len(cycles)
+        total_capped = False
     else:
         violations = report.get("violations", [])
         cycles = report.get("cycles", [])
+        total_cycles = report.get("total_cycles", len(cycles))
+        total_capped = bool(report.get("total_capped", False))
 
     shown_violations = violations[:_MCP_VIOLATION_LIMIT]
     shown_cycles = cycles[:_MCP_CYCLE_LIMIT]
 
+    evidence = report.get("evidence") or {}
     if violations or cycles:
         summary = (
-            f"{len(violations)} architecture rule violation(s) and {len(cycles)} "
+            f"{len(violations)} architecture rule violation(s) and "
+            f"{cycle_total(total_cycles, total_capped)} "
             f"dependency cycle(s) from {report.get('rules_evaluated', 0)} declared rule(s)."
+        )
+    elif report.get("cycles_determined") is False:
+        summary = (
+            f"{report.get('rules_evaluated', 0)} declared rule(s), no violation; dependency "
+            f"cycles not determined: {evidence.get('summary')}."
         )
     elif report.get("rules_evaluated", 0):
         summary = "No conformance violations or dependency cycles detected."
@@ -81,7 +132,14 @@ async def get_conformance(repo: str | None = None) -> dict[str, Any]:
         "cycles": shown_cycles,
         "cycles_truncated": max(0, len(cycles) - len(shown_cycles)),
         "violation_count": len(violations),
+        # ``cycle_count`` is what this response lists; ``total_cycles`` is how
+        # many the workspace has, which the stored report may itself have cut.
         "cycle_count": len(cycles),
+        "total_cycles": total_cycles,
+        # True when the enumeration budget stopped the count: "at least" total_cycles.
+        "total_capped": total_capped,
+        "checked_at": report.get("generated_at"),
+        "cycles_determined": report.get("cycles_determined"),
+        "evidence": evidence or None,
         "summary": summary,
-        "_meta": _build_meta(),
     }

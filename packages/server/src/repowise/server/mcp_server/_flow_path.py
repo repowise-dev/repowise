@@ -40,7 +40,12 @@ from sqlalchemy import select
 
 from repowise.core.persistence.models import GraphEdge, Page, WikiSymbol
 from repowise.core.test_paths import is_test_related_path
-from repowise.server.mcp_server.tool_answer.retrieval import _question_terms
+from repowise.server.mcp_server._graph_files import (
+    file_ext,
+    keep_projected_edge,
+    node_to_file,
+    per_index,
+)
 
 # Edge kinds that form the file-level dependency graph. ``imports`` is
 # file-to-file already; ``calls`` is symbol-to-symbol and gets projected to
@@ -48,11 +53,6 @@ from repowise.server.mcp_server.tool_answer.retrieval import _question_terms
 # are either not directed dependency flow or not answer-bearing, so they stay
 # out of the path search.
 _FLOW_EDGE_TYPES = ("imports", "calls")
-
-# Confidence floor for ``calls`` edges. Imports are always 1.0; calls average
-# 0.90 but have a low-confidence tail (heuristic resolution). 0.5 keeps every
-# genuine call and drops the noise. Imports are never filtered.
-_FLOW_CALLS_CONF_FLOOR = 0.5
 
 # Depth cap for the path search. Endpoints connect in 2-4 hops on the measured
 # graph; past 4 a "path" is a coincidence, not a flow.
@@ -93,12 +93,6 @@ def _basename_stem(path: str) -> str:
     base = os.path.basename(path)
     stem = base.rsplit(".", 1)[0] if "." in base else base
     return stem.lower()
-
-
-def _ext(path: str) -> str:
-    """Lower-case file extension (``retrieval.py`` -> ``py``), ``""`` if none."""
-    base = os.path.basename(path)
-    return base.rsplit(".", 1)[1].lower() if "." in base else ""
 
 
 def _is_plumbing(path: str) -> bool:
@@ -154,11 +148,15 @@ async def _resolve_question_anchors(
     # Named symbols -> defining files.
     if question_ids:
         res = await session.execute(
-            select(WikiSymbol.file_path).where(
+            select(WikiSymbol.file_path)
+            .where(
                 WikiSymbol.repository_id == repo_id,
-                WikiSymbol.name.in_(list(question_ids)),
+                WikiSymbol.name.in_(sorted(question_ids)),
                 WikiSymbol.kind.in_(("function", "method", "class", "interface")),
             )
+            # Insertion order here decides which anchors survive the
+            # _FLOW_MAX_ANCHORS cap, so it must not be the engine's whim.
+            .order_by(WikiSymbol.file_path)
         )
         for (fp,) in res.all():
             if fp:
@@ -166,13 +164,23 @@ async def _resolve_question_anchors(
 
     # Module-name matches. Build a stem -> file_page paths map once, then keep
     # tokens that resolve tightly (not the generic ones).
-    tokens = {t for t in _question_terms(question) if len(t) >= 4}
+    # Sorted for the same reason as the query above: this loop's order is the
+    # anchor insertion order.
+    # Imported here, not at module scope: `tool_answer.retrieval` pulls in the
+    # `tool_answer` package, whose __init__ imports `answer`, which imports this
+    # module. At module scope that cycle makes this file unimportable first.
+    from repowise.server.mcp_server.tool_answer.retrieval import _question_terms
+
+    tokens = sorted({t for t in _question_terms(question) if len(t) >= 4})
     if tokens:
         res = await session.execute(
-            select(Page.target_path).where(
+            select(Page.target_path)
+            .where(
                 Page.repository_id == repo_id,
                 Page.page_type == "file_page",
             )
+            # Same reason as the symbol query: this feeds anchor insertion order.
+            .order_by(Page.target_path)
         )
         stem_to_paths: dict[str, list[str]] = {}
         for (tp,) in res.all():
@@ -191,12 +199,17 @@ async def _resolve_question_anchors(
     return anchors
 
 
-async def _load_file_adjacency(session: Any, repo_id: str) -> dict[str, set[str]]:
+async def _load_file_adjacency(session: Any, repo_id: str) -> dict[str, list[str]]:
     """Undirected file-level adjacency from imports + projected calls edges.
 
     Both directions are added: a flow can be read caller->callee or the reverse,
     and the endpoints are anchored, not oriented. ``calls`` edges are projected
     from symbol node_ids onto their files and self-loops dropped.
+
+    Neighbours come back **sorted**. Built as sets to dedupe, returned as lists
+    because BFS walks them: set iteration order over strings moves with the
+    per-process hash seed, so which of several equal-length paths was found
+    changed between runs on identical data.
     """
     res = await session.execute(
         select(
@@ -211,29 +224,31 @@ async def _load_file_adjacency(session: Any, repo_id: str) -> dict[str, set[str]
     )
     adj: dict[str, set[str]] = {}
     for src, tgt, etype, conf in res.all():
-        if etype == "calls":
-            if (conf or 0.0) < _FLOW_CALLS_CONF_FLOOR:
-                continue
-            src = src.split("::", 1)[0]
-            tgt = tgt.split("::", 1)[0]
-        if not src or not tgt or src == tgt:
-            continue
-        # A flow the answer traverses is single-language: cross-extension edges
-        # (a Python module and a same-named TypeScript re-export, a test that
-        # imports both ends) are graph coincidences, not dependency flow. Keeping
-        # them lets BFS stitch unrelated files across package boundaries.
-        if _ext(src) != _ext(tgt):
+        src = node_to_file(src or "")
+        tgt = node_to_file(tgt or "")
+        if not keep_projected_edge(src, tgt, etype, conf):
             continue
         adj.setdefault(src, set()).add(tgt)
         adj.setdefault(tgt, set()).add(src)
-    return adj
+    return {node: sorted(neighbours) for node, neighbours in adj.items()}
 
 
-def _bfs_path(adj: dict[str, set[str]], src: str, dst: str, max_depth: int) -> list[str] | None:
+async def file_adjacency(session: Any, repo_id: str) -> dict[str, list[str]]:
+    """:func:`_load_file_adjacency`, built once per index state. Read-only."""
+    return await per_index(
+        session, repo_id, "file_adjacency", lambda: _load_file_adjacency(session, repo_id)
+    )
+
+
+def _bfs_path(adj: dict[str, list[str]], src: str, dst: str, max_depth: int) -> list[str] | None:
     """Shortest file path between ``src`` and ``dst`` (inclusive), or None.
 
     Bidirectional BFS bounded to ``max_depth`` hops and ``_FLOW_MAX_VISITED``
     nodes. Returns the node sequence ``[src, ..., dst]``.
+
+    Frontiers are lists, not sets: with several shortest paths the one found is
+    whichever neighbour is reached first, so the walk has to be ordered for the
+    result to be. ``parents`` already dedupes, so no node is queued twice.
     """
     if src == dst:
         return [src]
@@ -247,8 +262,8 @@ def _bfs_path(adj: dict[str, set[str]], src: str, dst: str, max_depth: int) -> l
     # forward side would never close a path longer than the forward reach.
     fwd: dict[str, Any] = {src: None}
     bwd: dict[str, Any] = {dst: None}
-    fwd_frontier = {src}
-    bwd_frontier = {dst}
+    fwd_frontier = [src]
+    bwd_frontier = [dst]
     fwd_depth = 0
     bwd_depth = 0
     visited = 0
@@ -258,7 +273,7 @@ def _bfs_path(adj: dict[str, set[str]], src: str, dst: str, max_depth: int) -> l
             frontier, parents, other = fwd_frontier, fwd, bwd
         else:
             frontier, parents, other = bwd_frontier, bwd, fwd
-        nxt: set[str] = set()
+        nxt: list[str] = []
         for node in frontier:
             for nb in adj.get(node, ()):
                 if nb in parents:
@@ -267,7 +282,7 @@ def _bfs_path(adj: dict[str, set[str]], src: str, dst: str, max_depth: int) -> l
                 visited += 1
                 if nb in other:
                     return _stitch(fwd, bwd, nb)
-                nxt.add(nb)
+                nxt.append(nb)
             if visited > _FLOW_MAX_VISITED:
                 return None
         if expand_fwd:
@@ -323,21 +338,28 @@ async def expand_via_flow_path(
     # language (``symbols.ts`` for a ``symbols.py`` question) is not an endpoint.
     # Dropping off-language anchors here keeps the pairwise BFS from stitching
     # two coincidental cross-package matches of a generic token.
-    primary_ext = _ext(top_hit) if top_hit else ""
+    primary_ext = file_ext(top_hit) if top_hit else ""
     if primary_ext:
-        anchors = {p: src for p, src in anchors.items() if _ext(p) == primary_ext}
+        anchors = {p: src for p, src in anchors.items() if file_ext(p) == primary_ext}
     if len(anchors) < _FLOW_MIN_QUESTION_ANCHORS:
         return hits, []
 
     # Endpoints to connect: the question-derived anchors, plus the confident top
     # hit as a bridge (a question often names one endpoint and the top hit is
     # the other). Cap the set so the pairwise BFS stays cheap.
-    endpoints = list(anchors)
+    #
+    # Retrieval rank decides who survives the cap. The anchors arrive in path
+    # order, so a plain cap would keep the six alphabetically-first files — a
+    # stable bias toward whichever package sorts early. A file retrieval already
+    # ranked is the better endpoint, and unranked anchors keep path order behind
+    # them, which leaves the whole thing deterministic either way.
+    rank = {h.get("target_path"): i for i, h in enumerate(hits) if h.get("target_path")}
+    endpoints = sorted(anchors, key=lambda p: (rank.get(p, len(hits)), p))
     if top_hit and top_hit not in anchors:
         endpoints.append(top_hit)
     endpoints = endpoints[:_FLOW_MAX_ANCHORS]
 
-    adj = await _load_file_adjacency(session, repo_id)
+    adj = await file_adjacency(session, repo_id)
 
     paths: list[list[str]] = []
     for i in range(len(endpoints)):
@@ -354,8 +376,10 @@ async def expand_via_flow_path(
     # coincidental basename match is rejected), but injecting it as extra hits
     # just hands the agent pass-through files to drill into for a two-file
     # question. Shortest paths first so a direct neighbor beats a 4-hop
-    # coincidence; capped at _FLOW_MAX_INJECT.
-    paths.sort(key=len)
+    # coincidence; capped at _FLOW_MAX_INJECT. The path itself breaks a length
+    # tie, so `flow_path` and the injected node order do not depend on which of
+    # two equally short paths happened to be enumerated first.
+    paths.sort(key=lambda p: (len(p), p))
     path_nodes: list[str] = []
     seen_nodes: set[str] = set()
     for path in paths:

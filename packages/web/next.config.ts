@@ -1,7 +1,15 @@
+import path from "path";
 import type { NextConfig } from "next";
+import createNextIntlPlugin from "next-intl/plugin";
+
+// i18n. The request config resolves the locale from the `NEXT_LOCALE` cookie
+// on every request; there is deliberately no `/{locale}/...` prefix routing, so
+// existing links, bookmarks and uptime probes keep resolving unchanged.
+const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
 
 const nextConfig: NextConfig = {
   output: "standalone",
+  outputFileTracingRoot: path.join(__dirname, "../../"),
   transpilePackages: ["@repowise-dev/ui", "@repowise-dev/types", "@repowise-dev/api-client"],
   experimental: {
     optimizePackageImports: ["lucide-react", "recharts"],
@@ -26,4 +34,4 @@ const nextConfig: NextConfig = {
   },
 };
 
-export default nextConfig;
+export default withNextIntl(nextConfig);

@@ -25,6 +25,9 @@ def test_zombie_package_detected():
     """A package with no incoming inter-package imports should be flagged as zombie."""
     g = _build_graph(
         nodes={
+            # A package declares itself with a manifest.
+            "pkgA/pyproject.toml": {"language": "toml", "symbols": []},
+            "pkgB/pyproject.toml": {"language": "toml", "symbols": []},
             "pkgA/mod1.py": {
                 "is_entry_point": False,
                 "is_test": False,
@@ -65,7 +68,9 @@ def test_zombie_package_detected():
     )
 
     zombie = [f for f in report.findings if f.kind == DeadCodeKind.ZOMBIE_PACKAGE]
-    pkgs = [f.package for f in zombie]
+    # file_path *is* the package on a zombie finding; the separate `package`
+    # column duplicated it and was dropped.
+    pkgs = [f.file_path for f in zombie]
     # Both pkgA and pkgB are zombie since neither has inter-package importers
     assert "pkgA" in pkgs
     assert "pkgB" in pkgs
@@ -91,6 +96,9 @@ def _zombie_graph() -> object:
     """
     return _build_graph(
         nodes={
+            # A package declares itself with a manifest.
+            "pkgA/pyproject.toml": {"language": "toml", "symbols": []},
+            "pkgB/pyproject.toml": {"language": "toml", "symbols": []},
             "pkgA/alpha.py": {
                 "is_entry_point": False,
                 "is_test": False,
@@ -145,6 +153,28 @@ def _run_zombie_only(git_meta: dict) -> list:
         for f in report.findings
         if f.kind == DeadCodeKind.ZOMBIE_PACKAGE and f.file_path == "pkgA"
     ]
+
+
+def test_co_change_is_not_a_cross_package_importer():
+    """A file only ever committed alongside pkgA does not keep pkgA alive."""
+
+    def zombies(g) -> set[str]:
+        report = DeadCodeAnalyzer(g, git_meta_map={}).analyze(
+            {
+                "detect_unreachable_files": False,
+                "detect_unused_exports": False,
+                "detect_unused_internals": False,
+                "min_confidence": 0.0,
+            }
+        )
+        return {f.file_path for f in report.findings if f.kind == DeadCodeKind.ZOMBIE_PACKAGE}
+
+    g = _zombie_graph()
+    g.add_edge("pkgB/sentinel.py", "pkgA/alpha.py", edge_type="co_changes")
+    assert "pkgA" in zombies(g)
+
+    g.add_edge("pkgB/sentinel.py", "pkgA/beta.py", edge_type="imports")
+    assert "pkgA" not in zombies(g)
 
 
 def test_zombie_package_primary_owner_from_git_meta():
@@ -208,6 +238,7 @@ def test_zombie_package_commit_count_summed_from_git_meta():
         f"Expected commit_count_90d=12, got {finding.commit_count_90d}. "
         "Likely caused by getattr() being used instead of dict.get() on git_meta_map values."
     )
+
 
 
 def test_zombie_package_last_commit_at_from_git_meta():

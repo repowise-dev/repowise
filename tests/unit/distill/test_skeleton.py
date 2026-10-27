@@ -16,7 +16,6 @@ from repowise.core.distill.skeleton import (
     SkeletonResult,
     SkeletonSymbol,
     build_skeleton,
-    estimate_skeleton_tokens,
 )
 
 
@@ -211,33 +210,89 @@ class TestSignatureEndHeuristics:
         assert "x = 1" not in sigs.text
 
 
-class TestEstimate:
-    def test_estimate_tracks_real_skeleton(self, python_case) -> None:
-        source, symbols = python_case
-        real = build_skeleton(source, symbols, mode="signatures")
-        est = estimate_skeleton_tokens(
-            [(s.start_line, s.end_line) for s in symbols],
-            file_size_bytes=len(source.encode("utf-8")),
-            total_lines=len(source.splitlines()),
-        )
-        # Within 2x either way — good enough for a "~M tokens vs K" nudge.
-        assert real.skeleton_tokens / 2 <= est <= real.skeleton_tokens * 2
-
-    def test_estimate_empty_bounds(self) -> None:
-        assert estimate_skeleton_tokens([], file_size_bytes=4000) == 1000
-
-    def test_estimate_is_below_full(self, python_case) -> None:
-        source, symbols = python_case
-        size = len(source.encode("utf-8"))
-        est = estimate_skeleton_tokens(
-            [(s.start_line, s.end_line) for s in symbols], file_size_bytes=size
-        )
-        assert est < size // 4
-
-
 class TestResultShape:
     def test_pct_of_full(self) -> None:
         r = SkeletonResult(
             text="x", mode="signatures", full_tokens=200, skeleton_tokens=30, symbol_count=3
         )
         assert r.pct_of_full == 15.0
+
+
+# Bounds that start on an annotation line, as some parsers persist them.
+_ANNOTATED = [
+    (
+        "@decorator\ndef run(a, b):\n    x = a\n    y = b\n    z = x + y\n    return z\n",
+        "def run(a, b):",
+    ),
+    (
+        "@Override\npublic String toString() {\n    String s = \"x\";\n    s = s + 1;\n"
+        "    s = s + 2;\n    return s;\n}\n",
+        "public String toString() {",
+    ),
+    (
+        "#[inline]\nfn top(a: u32) -> u32 {\n    let s = a;\n    let t = s * 2;\n"
+        "    let u = t + 1;\n    u\n}\n",
+        "fn top(a: u32) -> u32 {",
+    ),
+]
+
+
+@pytest.mark.parametrize("mode", ["smart", "signatures"])
+@pytest.mark.parametrize(("source", "signature"), _ANNOTATED)
+def test_a_signature_after_an_annotation_line_is_kept(mode, source, signature) -> None:
+    total = len(source.splitlines())
+    sym = SkeletonSymbol(name="f", kind="function", start_line=1, end_line=total)
+    result = build_skeleton(source, [sym], mode=mode)
+    assert result.text.splitlines()[:2] == source.splitlines()[:2]
+    assert signature in result.text
+    assert "... " in result.text  # the body itself is still elided
+
+
+_FOCUS_SOURCE = '''"""Display helpers."""
+from datetime import datetime
+
+
+def format_timestamp(value: str) -> str:
+    """Format a timestamp."""
+    dt = datetime.fromisoformat(value)
+    if dt.tzinfo is not None:
+        dt = dt.astimezone()
+    out = dt.strftime("%b %d")
+    return out
+
+
+def format_file_size(size: float) -> str:
+    """Format a file size."""
+    # ----------
+    if size < 1024:
+        return f"{int(size)} B"
+    size /= 1024
+    return f"{size:.1f} KB"
+'''
+
+
+def _focus_symbols(focus: str | None) -> list[SkeletonSymbol]:
+    bounds = {"format_timestamp": (5, 11, 1.0), "format_file_size": (14, 20, 0.1)}
+    return [
+        SkeletonSymbol(name, "function", start, end, importance=rank, focus=name == focus)
+        for name, (start, end, rank) in bounds.items()
+    ]
+
+
+class TestFocus:
+    @pytest.mark.parametrize("mode", ["smart", "plus"])
+    def test_keeps_only_the_focused_body(self, mode) -> None:
+        result = build_skeleton(_FOCUS_SOURCE, _focus_symbols("format_file_size"), mode=mode)
+        lines = _FOCUS_SOURCE.splitlines()
+        # The focused symbol is whole, decorative comment included.
+        for line in lines[13:20]:
+            assert line in result.text
+        # The other symbol, though higher-ranked, is reduced to its signature.
+        assert "def format_timestamp(value: str) -> str:" in result.text
+        assert "dt.strftime" not in result.text
+        assert result.bodies_kept == ("format_file_size",)
+        assert "from datetime import datetime" in result.text
+
+    def test_without_focus_smart_ranks_bodies(self) -> None:
+        result = build_skeleton(_FOCUS_SOURCE, _focus_symbols(None), mode="smart")
+        assert "format_timestamp" in result.bodies_kept

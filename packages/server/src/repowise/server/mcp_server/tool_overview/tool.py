@@ -1,0 +1,377 @@
+"""The get_overview tool: assembles the single-repo overview from its blocks."""
+
+from __future__ import annotations
+
+import asyncio
+import functools
+from collections.abc import Awaitable
+from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.pool import StaticPool
+
+from repowise.core.persistence.crud import code_file_rows
+from repowise.core.persistence.crud.analysis.plain_rows import plain_rows
+from repowise.core.persistence.database import get_session
+from repowise.core.persistence.models import GitMetadata
+from repowise.core.registry import mcp_tool_registry as mcp
+from repowise.server.mcp_server import _state
+from repowise.server.mcp_server._budget import OmissionCollector
+from repowise.server.mcp_server._changes import overview_changes
+from repowise.server.mcp_server._components import component_list
+from repowise.server.mcp_server._helpers import (
+    _get_exclude_spec,
+    _get_repo,
+    _resolve_repo_context,
+    attach_ignored_arguments,
+    filter_rows_by_attr,
+    resolve_enum_argument,
+)
+from repowise.server.mcp_server._meta import MCP_CONTRACT_VERSION
+from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._meta import (
+    build_meta_with_full_scope as _build_meta_with_full_scope,
+)
+from repowise.server.mcp_server.tool_overview.actions import _build_next_actions
+from repowise.server.mcp_server.tool_overview.decisions import _build_key_decisions
+from repowise.server.mcp_server.tool_overview.graph import (
+    _build_architecture,
+    _build_commands,
+    _build_community_summary,
+    _build_package_dependencies,
+    _load_community_nodes,
+    _package_roots,
+)
+from repowise.server.mcp_server.tool_overview.health import _build_code_health
+from repowise.server.mcp_server.tool_overview.history import (
+    _build_git_health,
+    _build_knowledge_map,
+)
+from repowise.server.mcp_server.tool_overview.outline import _build_outline, _load_tree_rows
+from repowise.server.mcp_server.tool_overview.pages import (
+    _capped_entry_points,
+    _grouped_by_package,
+    _load_module_pages,
+    _load_overview_page,
+    _overview_content,
+    _resolve_entry_point_ids,
+    _resolve_title,
+)
+from repowise.server.mcp_server.tool_overview.surface import _tool_surface_guide
+from repowise.server.mcp_server.tool_overview.tour import (
+    _build_guided_tour,
+    _build_reading_order,
+)
+from repowise.server.mcp_server.tool_overview.workspace import (
+    _build_workspace_footer,
+    _workspace_overview,
+)
+
+#: The ``include`` values get_overview serves; anything else is named, not applied.
+_INCLUDE_BLOCKS = frozenset(
+    {
+        "content",
+        "outline",
+        "tour",
+        "decisions",
+        "graph",
+        "ownership",
+        "components",
+        "changes",
+        "tools",
+        "actions",
+        "scope",
+    }
+)
+
+
+@mcp.tool(surface_order=80, artifact_type="overview", presentation="overview")
+async def get_overview(repo: str | None = None, include: list[str] | None = None) -> dict:
+    """Orientation for an unfamiliar repo: packages, entry points, riskiest files, top actions.
+
+    Once per session; then use ``get_context`` or ``get_answer``.
+    Compact by default: ``content_md`` is the essay's summary section and
+    ``next_actions`` the week's top three; other blocks ship on request,
+    named in ``more``.
+
+    Defaults fit 24,000 chars; nonempty ``include`` uses 32,000. Reductions
+    carry counts and recovery status in ``_meta``.
+    Include-gated blocks are projections, not omissions.
+
+    In a workspace, omit ``repo`` for the default repo, ``repo='<alias>'`` for
+    another, ``repo='all'`` for cross-repo links.
+
+    Args:
+        repo: Repository alias, path, or ID, or ``"all"``.
+        include: Opt-in extras, any combination of:
+            ``"content"`` — the full overview essay instead of its summary.
+            ``"outline"`` — the stored wiki page tree, two rungs deep.
+            ``"tour"`` — ``guided_tour`` + ``reading_order`` onboarding walks.
+            ``"decisions"`` — ``key_decisions``; ``get_why`` is richer.
+            ``"graph"`` — ``community_summary``, code-community clusters.
+            ``"ownership"`` — ``knowledge_map``: top 3 owners by files owned.
+            ``"components"`` — component list with file counts.
+            ``"changes"`` — changes by category, week and source, with coverage.
+            ``"tools"`` — ``tool_surface``: enabled tools, opt-ins, recipes.
+            ``"actions"`` — ``next_actions`` for the quarter too, with ``done_when``.
+            ``"scope"`` — the whole ``_meta.index_scope`` (provider, coverage).
+    """
+    ignored: list[dict[str, Any]] = []
+    want = {
+        k
+        for k in include or []
+        if resolve_enum_argument(k, _INCLUDE_BLOCKS, argument="include", ignored=ignored)
+    }
+    if repo == "all":
+        result = await _workspace_overview(tools="tools" in want)
+        for k in sorted(want - {"tools"}):  # single-repo blocks
+            resolve_enum_argument(k, {"tools"}, argument="include", ignored=ignored)
+        attach_ignored_arguments(result, ignored)
+        return result
+
+    ctx = await _resolve_repo_context(repo)
+    exclude_spec = _get_exclude_spec(ctx.path)
+    # Entries beyond the response caps below are persisted, not silently
+    # dropped — the response carries an expandable [repowise#<ref>] marker.
+    collector = OmissionCollector("get_overview", repo_root=ctx.path)
+    async with get_session(ctx.session_factory) as session:
+        repository = await _get_repo(session)
+        result = await _repo_overview(
+            session,
+            ctx.session_factory,
+            repository,
+            exclude_spec,
+            want,
+            collector,
+            ctx.path,
+            alias=ctx.alias,
+        )
+        if "components" in want:
+            result["components"] = await component_list(
+                session,
+                repository,
+                repo_root=ctx.path,
+                alias=ctx.alias,
+                exclude_spec=exclude_spec,
+                collector=collector,
+            )
+        if "changes" in want:
+            result["changes"] = await overview_changes(session, repository)
+
+        # The whole scope that every compact projection points at ships on
+        # request; by default the overview carries the same digest as the rest.
+        if "scope" in want:
+            result["_meta"] = _build_meta_with_full_scope(repository=repository)
+        else:
+            result["_meta"] = {
+                "contract_version": MCP_CONTRACT_VERSION,
+                **_build_meta(repository=repository),
+            }
+        collector.attach(result)
+        attach_ignored_arguments(result, ignored)
+        return result
+
+
+async def _repo_overview(
+    session: Any,
+    session_factory: Any,
+    repository: Any,
+    exclude_spec: Any,
+    want: set[str],
+    collector: OmissionCollector,
+    repo_root: Any = None,
+    alias: str | None = None,
+) -> dict[str, Any]:
+    """Every single-repo block, in payload order; empty optional blocks are left out.
+
+    Code health and the next actions are the slow reads and need nothing else
+    here, so each runs on its own read session while the rest is read.
+    """
+    slow = _slow_reads(
+        session, session_factory, repository, full_actions="actions" in want, alias=alias
+    )
+    try:
+        overview_page = await _load_overview_page(session, repository)
+        package_roots = await _package_roots(session, repository, exclude_spec)
+        module_rows = await _load_module_pages(session, repository, collector, package_roots)
+        entry_point_ids = await _resolve_entry_point_ids(session, repository, exclude_spec)
+        all_git = await _load_git_rows(session, repository, exclude_spec)
+        architecture = await _build_architecture(session, repository, package_roots)
+        dependencies = await _build_package_dependencies(session, repository, exclude_spec)
+        if dependencies:
+            architecture = {**architecture, "dependencies": dependencies}
+        requested = await _requested_blocks(session, repository, exclude_spec, all_git, want)
+        sections, outline = await _load_outline(session, repository, want, collector)
+    except BaseException:
+        await _abandon(slow)
+        raise
+    content_md, content_hint = _overview_content(overview_page, "content" in want)
+    code_health, (next_actions, next_actions_reason) = await slow
+
+    result: dict[str, Any] = {
+        "title": _resolve_title(overview_page, repository),
+        "content_md": content_md,
+        "code_health": code_health,
+        # The stored actions the web app's "Do next" ranks, so the agent and
+        # the UI agree on what comes first.
+        **({"next_actions": next_actions} if next_actions else {}),
+        **({"next_actions_reason": next_actions_reason} if next_actions_reason else {}),
+        # Names and paths only. get_context(path) carries the prose, and
+        # section indexes into include=["outline"].
+        "key_modules": module_rows,
+        "entry_points": _capped_entry_points(
+            _grouped_by_package(entry_point_ids, package_roots), collector
+        ),
+        "git_health": _build_git_health(all_git, repo_root),
+        "more": (
+            'get_overview(include=[...]) also serves: "outline" (the wiki '
+            'page tree), "tour" (guided_tour + reading_order), "decisions", '
+            '"graph" (code communities), "ownership" (top owners, silos), '
+            '"content" (the full essay), "actions" (the quarter), "tools" '
+            '(the tool surface), "scope" (the whole index scope).'
+        ),
+    }
+    optional = {
+        "knowledge_map": requested["knowledge_map"],
+        "community_summary": requested["community_summary"],
+        "content_hint": content_hint,
+        "outline": outline,
+        "outline_hint": _OUTLINE_HINT if outline else None,
+        "architecture": architecture,
+        "commands": _build_commands(repo_root, package_roots),
+        "key_decisions": requested["key_decisions"],
+        "reading_order": requested["reading_order"],
+        "reading_order_hint": _READING_ORDER_HINT if requested["reading_order"] else None,
+    }
+    result.update((key, block) for key, block in optional.items() if block)
+
+    # The guided tour is persisted on the overview page's metadata at generation.
+    if overview_page:
+        _build_guided_tour(overview_page, result, sections, "tour" in want)
+
+    # Append workspace context footer when in workspace mode
+    ws_footer = _build_workspace_footer()
+    if ws_footer:
+        result["workspace"] = ws_footer
+
+    if "tools" in want:
+        result["tool_surface"] = _tool_surface_guide(is_workspace=_state._registry is not None)
+    return result
+
+
+def _slow_reads(
+    session: Any,
+    session_factory: Any,
+    repository: Any,
+    *,
+    full_actions: bool = False,
+    alias: str | None = None,
+) -> Awaitable[Any]:
+    """``(code health, next actions)``: started now on their own sessions, or,
+    on a store whose sessions share one connection, read later on *session*."""
+    actions = functools.partial(_build_next_actions, full=full_actions, alias=alias)
+    if not _own_connections(session_factory):
+        return _in_turn(session, repository, actions)
+
+    async def apart(build: Any) -> Any:
+        async with get_session(session_factory) as own:
+            return await build(own, repository)
+
+    return asyncio.gather(apart(_build_code_health), apart(actions))
+
+
+async def _in_turn(session: Any, repository: Any, actions: Any) -> tuple[Any, Any]:
+    return (
+        await _build_code_health(session, repository),
+        await actions(session, repository),
+    )
+
+
+async def _abandon(slow: Any) -> None:
+    """Stop the slow reads when the rest failed, so no task outlives the call."""
+    if isinstance(slow, asyncio.Future):
+        slow.cancel()
+        await asyncio.gather(slow, return_exceptions=True)
+    else:
+        slow.close()  # an in-turn read that never started
+
+
+def _own_connections(session_factory: Any) -> bool:
+    """Whether each session gets its own connection, so two can read at once.
+
+    A ``StaticPool`` (in-memory SQLite) hands every session the same one, where
+    their savepoints would collide.
+    """
+    bind = session_factory.kw.get("bind")
+    return bind is not None and not isinstance(bind.sync_engine.pool, StaticPool)
+
+
+_OUTLINE_HINT = (
+    "The stored page tree — the same outline the web app and the "
+    "editor extension render. Every 'section' in this response "
+    "indexes into it, and 'descendants' is how much sits below an "
+    "entry. Two rungs deep; get_context on an entry's target_path "
+    "to read it."
+)
+
+_READING_ORDER_HINT = (
+    "Canonical onboarding sequence — read these page_ids in order "
+    "via get_context/get_symbol to understand the repo the way a "
+    "new contributor would."
+)
+
+
+#: What git health and the ownership map read off each row. Every code file
+#: has one, so hydrating whole rows (their JSON history columns included) cost
+#: most of a warm overview on a large repository.
+_GIT_ROW_COLUMNS = (
+    GitMetadata.file_path,
+    GitMetadata.is_hotspot,
+    GitMetadata.commit_count_30d,
+    GitMetadata.commit_count_90d,
+    GitMetadata.primary_owner_email,
+    GitMetadata.primary_owner_name,
+    GitMetadata.bug_magnet,
+    GitMetadata.fix_mass,
+    GitMetadata.churn_percentile,
+)
+
+
+async def _load_git_rows(session: Any, repository: Any, exclude_spec: Any) -> list[Any]:
+    """Git metadata rows outside the exclude rules, the source of git health and ownership."""
+    git_res = await session.execute(select(*_GIT_ROW_COLUMNS).where(code_file_rows(repository.id)))
+    return filter_rows_by_attr(plain_rows(git_res), "file_path", exclude_spec)
+
+
+async def _requested_blocks(
+    session: Any, repository: Any, exclude_spec: Any, all_git: list, want: set[str]
+) -> dict[str, Any]:
+    """Gated blocks: not built at all unless asked for."""
+    community_summary: list[dict[str, Any]] = []
+    if "graph" in want:
+        all_nodes = await _load_community_nodes(session, repository, exclude_spec, all_git)
+        community_summary = _build_community_summary(all_nodes)
+    return {
+        "knowledge_map": _build_knowledge_map(all_git) if "ownership" in want else {},
+        "community_summary": community_summary,
+        "reading_order": (
+            await _build_reading_order(session, repository) if "tour" in want else []
+        ),
+        "key_decisions": (
+            await _build_key_decisions(session, repository, exclude_spec)
+            if "decisions" in want
+            else []
+        ),
+    }
+
+
+async def _load_outline(
+    session: Any, repository: Any, want: set[str], collector: OmissionCollector
+) -> tuple[dict[str, str | None], dict[str, Any]]:
+    """Section labels by page id for the tour, and the outline when it was asked for."""
+    if not want & {"outline", "tour"}:
+        return {}, {}
+    tree_rows = await _load_tree_rows(session, repository)
+    sections = {r.id: r.section_number for r in tree_rows}
+    outline = _build_outline(tree_rows, 2, collector) if "outline" in want else {}
+    return sections, outline

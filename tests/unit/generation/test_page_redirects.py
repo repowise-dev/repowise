@@ -5,10 +5,13 @@ from __future__ import annotations
 import pytest
 
 from repowise.core.generation.page_redirects import (
+    RETIRED_IDS,
     SUPERSEDED_IDS,
+    SUPERSEDED_IDS_TO_REPO_WIDE,
     SUPERSEDED_TYPES,
     SupersededCycleError,
     SupersededTargetError,
+    repo_wide_successor_type,
     resolve_superseded,
 )
 
@@ -177,6 +180,20 @@ class TestShippedTables:
         for retired_type, successor in SUPERSEDED_TYPES.items():
             assert retired_type != successor
 
+    def test_every_retired_id_resolves_somewhere(self):
+        """Whichever table names it, a retired id must not dead-end.
+
+        Walks ``RETIRED_IDS`` rather than either table on its own, so an id
+        added to one of them cannot be left with no destination.
+        """
+        for retired_id in sorted(RETIRED_IDS):
+            landed = resolve_superseded(retired_id) or repo_wide_successor_type(retired_id)
+            assert landed, f"{retired_id} is retired but resolves to nothing"
+
+    def test_the_two_id_tables_do_not_both_claim_an_id(self):
+        """One id, one destination — two rules for it is a table bug."""
+        assert not set(SUPERSEDED_IDS) & set(SUPERSEDED_IDS_TO_REPO_WIDE)
+
 
 # ---------------------------------------------------------------------------
 # The architecture map moved onto the overview
@@ -195,3 +212,51 @@ class TestArchitectureDiagramRetirement:
     def test_the_overview_itself_is_not_redirected(self):
         assert resolve_superseded("repo_overview:repowise") is None
 
+
+# ---------------------------------------------------------------------------
+# Three orientation pages retired onto the overview
+# ---------------------------------------------------------------------------
+
+
+RETIRED_ORIENTATION_IDS = [
+    "onboarding:onboarding/guided_tour",
+    "onboarding:onboarding/codebase_map",
+    "onboarding:onboarding/development_guide",
+]
+
+SURVIVING_ORIENTATION_IDS = [
+    "onboarding:onboarding/getting_started",
+    "onboarding:onboarding/key_concepts",
+    "onboarding:onboarding/how_it_works",
+    "onboarding:onboarding/active_landscape",
+    "onboarding:onboarding/glossary",
+]
+
+
+class TestOrientationRetirement:
+    """The id-keyed repo-wide shape, which these three are the first users of.
+
+    The successor is the overview, whose id carries the repository name, so it
+    cannot be written as a literal successor id.  And the retired pages share
+    ``page_type='onboarding'`` with the five that survive, so the rule cannot
+    be keyed on type either.  Both halves are asserted here because getting
+    either wrong silently takes out the whole orientation collection.
+    """
+
+    @pytest.mark.parametrize("page_id", RETIRED_ORIENTATION_IDS)
+    def test_a_retired_slot_hands_off_to_the_overview(self, page_id):
+        assert repo_wide_successor_type(page_id) == "repo_overview"
+
+    @pytest.mark.parametrize("page_id", RETIRED_ORIENTATION_IDS)
+    def test_a_retired_slot_has_no_literal_successor(self, page_id):
+        """It resolves repo-wide instead, which the serving layer handles."""
+        assert resolve_superseded(page_id) is None
+
+    @pytest.mark.parametrize("page_id", SURVIVING_ORIENTATION_IDS)
+    def test_a_surviving_slot_is_not_redirected(self, page_id):
+        """The regression that a type-keyed rule would cause."""
+        assert repo_wide_successor_type(page_id) is None
+        assert resolve_superseded(page_id) is None
+
+    def test_the_retired_set_is_exactly_these_three(self):
+        assert sorted(RETIRED_IDS) == sorted(RETIRED_ORIENTATION_IDS)

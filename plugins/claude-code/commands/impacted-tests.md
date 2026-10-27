@@ -1,6 +1,6 @@
 ---
 description: Print the tests whose coverage intersects a change's changed lines — for a commit, base..head range, or staged diff.
-allowed-tools: Bash, Read
+allowed-tools: Bash(repowise impacted-tests:*), Read
 ---
 
 # Repowise Impacted Tests
@@ -26,6 +26,9 @@ an index lookup. Useful as a pre-merge / CI gate ("run these 40, not all 4,000")
 Useful flags:
 - `--format list` — test ids one per line (pipe to `xargs pytest`)
 - `--format json` — full report
+- `--format args` — one line of runner arguments, or `:all` when the whole suite
+  must run; reasons go to stderr. `--runner pytest|go|jest|files|auto` picks the
+  argument shape
 - `--path <dir>` — point at a different repo
 
 ```
@@ -34,13 +37,19 @@ repowise impacted-tests main..HEAD --format list | xargs pytest
 
 ## Notes
 
-- Requires a per-test map from `repowise coverage add` on a report with
-  contexts. If none is ingested, the command prompts to run
-  `/repowise:coverage` / `repowise coverage add` — it does **not** invent an
-  empty "no tests needed" result.
-- A changed file with no coverage rows may get a filename-pattern **guess**
-  labelled as a guess — never present guesses as coverage-backed.
-- A brand-new file with neither coverage nor a paired test is "unknown, run
-  the full suite".
-- For a whole-change defect-risk score, use `/repowise:risk`. For per-file
+- Line-precise answers need a per-test map from `repowise coverage add` on a
+  report with contexts. If none is ingested, the command still prompts to run
+  `/repowise:coverage` / `repowise coverage add`. It does **not** invent an empty
+  "no tests needed" result.
+- A changed file with no coverage rows gets *candidates* instead, in a table
+  headed "NOT coverage-backed", each carrying a `via` marker: `changed-test`
+  (the changed file is itself a test), `call-graph` or `import-graph` (a test
+  file that reaches it, no ingest needed), or `filename-pattern` (a name-shaped
+  guess). Report them as candidates. Only `via: coverage` proves a test
+  executed the change.
+- A file none of those can speak to is "unknown, run the full suite".
+- In CI, `--format args` prints `:all` whenever the selection is not certain
+  (lockfiles, build or CI config, a changed file no test reaches, an index built
+  at neither end of the change). Run everything when you see it.
+- For a whole-change repo-relative review priority, use `/repowise:risk`. For per-file
   blast radius / `tests_to_run`, use the `get_risk` MCP tool.

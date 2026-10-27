@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from repowise.server.services.c4_builder.models import (
     ArchEdge,
     ArchitectureView,
@@ -11,7 +13,7 @@ from repowise.server.services.c4_builder.models import (
     ArchTourStep,
 )
 from repowise.server.services.zoom_builder import assemble_zoom_map
-from repowise.server.services.zoom_builder.layout import lay_out
+from repowise.server.services.zoom_builder.calls import keep_projected_edge
 from repowise.server.services.zoom_builder.metrics import rollup_health, rollup_metrics
 from repowise.server.services.zoom_builder.models import ZoomNode
 from repowise.server.services.zoom_builder.relations import aggregate_relations
@@ -24,6 +26,7 @@ from repowise.server.services.zoom_builder.tree import (
     GroupSpec,
     LayerSpec,
     LeafInfo,
+    ModuleInfo,
     build_tree,
     file_id,
     folder_id,
@@ -77,6 +80,100 @@ def test_build_tree_compresses_single_child_folder_chains():
     assert folders[0].name == "a/b/c"
     assert folders[0].path == "a/b/c"
     assert len(folders[0].children) == 2
+
+
+def test_build_tree_names_a_folder_after_the_module_page_documenting_it():
+    layers = [
+        LayerSpec(
+            id="layer:core",
+            name="Core",
+            display_order=0,
+            node_ids=["src/resolvers/a.py", "src/parsers/b.py"],
+        ),
+    ]
+    modules = {
+        "src/resolvers": ModuleInfo(
+            title="Symbol Resolution", summary="Cross-language lookup.", page_id="pg1"
+        ),
+    }
+    _root, nodes = build_tree("proj", layers, {}, modules)
+    named = next(n for n in nodes.values() if n.path == "src/resolvers")
+    assert named.name == "Symbol Resolution"
+    assert named.summary == "Cross-language lookup."
+    assert named.page_id == "pg1"
+    # A directory no page documents keeps the name the filesystem gave it, and
+    # says nothing it cannot back up.
+    plain = next(n for n in nodes.values() if n.path == "src/parsers")
+    assert plain.name == "parsers"
+    assert plain.summary == ""
+    assert plain.page_id == ""
+
+
+def test_build_tree_prefers_the_deepest_documented_rung_of_a_compressed_chain():
+    layers = [
+        LayerSpec(
+            id="layer:core",
+            name="Core",
+            display_order=0,
+            node_ids=["a/b/c/f1.py", "a/b/c/f2.py"],
+        ),
+    ]
+    # The chain a -> a/b -> a/b/c is one card. Both ends are documented, and the
+    # deeper page describes it more precisely.
+    modules = {"a": ModuleInfo(title="Broad"), "a/b/c": ModuleInfo(title="Precise")}
+    _root, nodes = build_tree("proj", layers, {}, modules)
+    folders = [n for n in nodes.values() if n.kind == "folder"]
+    assert len(folders) == 1
+    assert folders[0].name == "Precise"
+
+
+def test_build_tree_names_a_chain_from_a_rung_compression_swallowed():
+    layers = [
+        LayerSpec(
+            id="layer:core",
+            name="Core",
+            display_order=0,
+            node_ids=["a/b/c/f1.py", "a/b/c/f2.py"],
+        ),
+    ]
+    # Only the head of the chain is documented. It is still a real directory,
+    # and it is the one this card stands for, so the name applies. A repository
+    # laid out as packages/<x>/src/<pkg> collapses nearly every documented
+    # directory into a chain like this, so matching the deepest rung alone would
+    # name almost nothing.
+    modules = {"a/b": ModuleInfo(title="Middle Rung")}
+    _root, nodes = build_tree("proj", layers, {}, modules)
+    folders = [n for n in nodes.values() if n.kind == "folder"]
+    assert len(folders) == 1
+    assert folders[0].name == "Middle Rung"
+    # The path still describes what the card actually contains.
+    assert folders[0].path == "a/b/c"
+
+
+def test_build_tree_module_names_do_not_move_any_file():
+    layers = [
+        LayerSpec(
+            id="layer:core",
+            name="Core",
+            display_order=0,
+            node_ids=["src/resolvers/a.py", "src/parsers/b.py"],
+        ),
+    ]
+    modules = {"src/resolvers": ModuleInfo(title="Symbol Resolution")}
+    _root, plain = build_tree("proj", layers, {})
+    _root2, named = build_tree("proj", layers, {}, modules)
+    # Naming is a label change: same ids, same parents, same children.
+    assert set(plain) == set(named)
+    assert {i: n.parent_id for i, n in plain.items()} == {
+        i: n.parent_id for i, n in named.items()
+    }
+    assert {i: n.children for i, n in plain.items()} == {
+        i: n.children for i, n in named.items()
+    }
+    # ...and only the documented folder reads differently.
+    renamed = {i for i in plain if plain[i].name != named[i].name}
+    assert renamed == {i for i, n in named.items() if n.path == "src/resolvers"}
+    assert all(plain[i].path == named[i].path for i in plain)
 
 
 def test_build_tree_subgroups_and_ungrouped_files():
@@ -285,43 +382,6 @@ def test_rollup_health_none_when_no_scored_descendant():
 
 
 # ---------------------------------------------------------------------------
-# layout
-# ---------------------------------------------------------------------------
-
-
-def test_layout_is_deterministic_and_within_unit_box():
-    layers = [
-        LayerSpec(
-            id="layer:service",
-            name="Service",
-            display_order=0,
-            node_ids=[f"pkg/f{i}.py" for i in range(6)],
-        ),
-    ]
-    leaf_info = {f"pkg/f{i}.py": LeafInfo() for i in range(6)}
-    root_id, nodes = build_tree("proj", layers, leaf_info)
-    nodes = score_tree(root_id, nodes, compute_file_signals(
-        [FileStat(path=f"pkg/f{i}.py", degree=i) for i in range(6)], [], [], set()
-    ))
-    a = lay_out(root_id, nodes)
-    b = lay_out(root_id, nodes)
-
-    for nid, node in a.items():
-        assert node.layout == b[nid].layout  # deterministic
-        rect = node.layout
-        assert rect is not None
-        assert -1e-6 <= rect.x <= 1.0 + 1e-6
-        assert -1e-6 <= rect.y <= 1.0 + 1e-6
-        assert rect.x + rect.w <= 1.0 + 1e-6
-        assert rect.y + rect.h <= 1.0 + 1e-6
-
-    # children of a parent tile its unit box (areas sum ~ 1)
-    folder = next(n for n in a.values() if n.children and n.kind != "system")
-    total = sum(a[c].layout.w * a[c].layout.h for c in folder.children)
-    assert abs(total - 1.0) < 1e-3
-
-
-# ---------------------------------------------------------------------------
 # relations
 # ---------------------------------------------------------------------------
 
@@ -478,9 +538,24 @@ def test_assemble_zoom_map_full():
     # the entry-point file is the top-ranked sibling under its parent
     main = zoom.nodes[file_id("pkg/main.py")]
     assert main.is_entry_point and main.sibling_rank == 1
-    # layout assigned everywhere
-    assert all(n.layout is not None for n in zoom.nodes.values())
     assert not zoom.truncated
+    # every file the view knows about landed in a layer, so nothing is hidden
+    assert zoom.unclaimed_files == 0
+
+
+def test_assemble_zoom_map_counts_files_no_layer_claimed():
+    # A file the view knows about but that curation assigned to no layer is on
+    # no tree at all, so total_files cannot see it. Report it separately rather
+    # than letting an incomplete map read as complete.
+    view = _view()
+    orphan = _node("pkg/core/orphan.py", pagerank_percentile=5.0)
+    view = replace(view, nodes=[*view.nodes, orphan], total_files=4)
+
+    zoom = assemble_zoom_map(view)
+
+    assert zoom.total_files == 3
+    assert zoom.unclaimed_files == 1
+    assert file_id("pkg/core/orphan.py") not in zoom.nodes
 
 
 def test_assemble_zoom_map_health_rolls_up():
@@ -545,3 +620,93 @@ def _has_ancestor(nodes: dict[str, ZoomNode], node_id: str, ancestor_id: str) ->
             return True
         cur = nodes[cur].parent_id
     return False
+
+
+# --- the projected call graph ----------------------------------------------
+
+
+def test_keep_projected_edge_guards():
+    # A genuine cross-file pair in one language survives.
+    assert keep_projected_edge("a/x.py", "a/y.py")
+    # Every intra-file call projects onto a self-loop, which has no sibling to
+    # point at, and those outnumber the real ones.
+    assert not keep_projected_edge("a/x.py", "a/x.py")
+    # Across a language boundary the pair is more often a same-name coincidence
+    # than a call.
+    assert not keep_projected_edge("a/x.py", "a/x.ts")
+    assert not keep_projected_edge("", "a/y.py")
+
+
+def test_assemble_zoom_map_projected_calls_relabel_an_existing_pair():
+    # main.py -> engine.py is already drawn as "imports". A projected call over
+    # the same pair must not add a second arrow; it must upgrade the verb, since
+    # "calls" outranks "imports" and is the more precise claim about the pair.
+    view = _view()
+    before = {(r.source_id, r.target_id): r for r in assemble_zoom_map(view).relations}
+    after = {
+        (r.source_id, r.target_id): r
+        for r in assemble_zoom_map(
+            view, call_edges=[("pkg/main.py", "pkg/core/engine.py", "calls")]
+        ).relations
+    }
+
+    assert set(before) == set(after), "a relabelled pair must not become a new arrow"
+    # Under the layer, main.py's folder points at the group holding engine.py.
+    key = ("zm:D:zm:L:layer:service:pkg", "zm:G:layer:service:core")
+    assert before[key].label == "imports"
+    assert after[key].label == "calls"
+    assert after[key].edge_count == before[key].edge_count + 1
+
+
+def test_assemble_zoom_map_projected_calls_add_a_pair_no_import_covers():
+    # util.py never imports main.py, so a call between them is an arrow the map
+    # could not draw before — this is the part of the projection that is new
+    # information rather than a better word for old information.
+    view = _view()
+    before = {(r.source_id, r.target_id) for r in assemble_zoom_map(view).relations}
+    zoom = assemble_zoom_map(
+        view, call_edges=[("pkg/core/util.py", "pkg/main.py", "dispatches_to")]
+    )
+    added = {(r.source_id, r.target_id) for r in zoom.relations} - before
+
+    # The only edge under the layer ran folder -> group; this is the reverse
+    # direction, which nothing imported into existence.
+    pair = ("zm:G:layer:service:core", "zm:D:zm:L:layer:service:pkg")
+    assert added == {pair}
+    new = next(r for r in zoom.relations if (r.source_id, r.target_id) == pair)
+    assert new.label == "dispatches to"
+
+
+def test_assemble_zoom_map_call_edges_default_to_none():
+    # The pure assembly still runs without them: the hosted builder calls it
+    # directly and has no symbol graph in its artifacts.
+    assert assemble_zoom_map(_view()).relations == assemble_zoom_map(
+        _view(), call_edges=None
+    ).relations
+
+
+def test_compute_file_signals_reaches_over_calls_as_well_as_imports():
+    # b.py is imported by nobody, so the dependency graph alone cannot reach it;
+    # a call from the entry point does. The union is what makes "on flow" mean
+    # execution rather than "appears in an import header somewhere".
+    stats = [FileStat(path=p) for p in ("a.py", "b.py")]
+    imports_only = compute_file_signals(
+        stats, [], entry_points=["a.py"], tour_paths=set()
+    )
+    assert imports_only["b.py"].on_flow is False
+
+    with_calls = compute_file_signals(
+        stats, [("a.py", "b.py", "calls")], entry_points=["a.py"], tour_paths=set()
+    )
+    assert with_calls["b.py"].on_flow is True
+    assert with_calls["b.py"].entry_dist == 1
+
+
+def test_compute_file_signals_keeps_import_reachability_when_calls_are_absent():
+    # The union must not cost anything where there is no call graph: a hosted
+    # build with no projected edges has to reach exactly what it reached before.
+    stats = [FileStat(path=p) for p in ("a.py", "b.py")]
+    signals = compute_file_signals(
+        stats, [("a.py", "b.py", "imports")], entry_points=["a.py"], tour_paths=set()
+    )
+    assert signals["b.py"].on_flow is True

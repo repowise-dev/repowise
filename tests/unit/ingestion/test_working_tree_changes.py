@@ -1,0 +1,380 @@
+"""Working-tree change detection — what ``repowise watch`` runs on.
+
+``get_changed_files`` diffs commit to commit, so a repo whose only changes are
+uncommitted reads as unchanged: the watcher fired an update per file save and
+every one of them was a no-op. These cover the source that answers the other
+question — what is on disk that ``HEAD`` does not have.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import git as gitpython
+import pytest
+
+from repowise.core.ingestion.change_detector import (
+    ChangeDetector,
+    FileDiff,
+    has_working_tree_changes,
+    merge_file_diffs,
+)
+from repowise.core.ingestion.traverser import is_candidate_source_path
+
+
+@pytest.fixture
+def repo(tmp_path: Path) -> Path:
+    """A one-commit git repo with two python files."""
+    r = gitpython.Repo.init(tmp_path)
+    with r.config_writer() as cw:
+        cw.set_value("user", "name", "Alice")
+        cw.set_value("user", "email", "alice@example.com")
+    (tmp_path / "main.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+    (tmp_path / "util.py").write_text("def helper():\n    return 2\n", encoding="utf-8")
+    r.index.add(["main.py", "util.py"])
+    r.index.commit("init")
+    r.close()
+    return tmp_path
+
+
+def _by_path(diffs: list[FileDiff]) -> dict[str, FileDiff]:
+    return {d.path: d for d in diffs}
+
+
+class TestGetWorkingTreeChanges:
+    def test_clean_tree_reports_nothing(self, repo: Path) -> None:
+        assert ChangeDetector(repo).get_working_tree_changes() == []
+
+    def test_unstaged_edit_is_a_modification(self, repo: Path) -> None:
+        (repo / "main.py").write_text(
+            "def alpha():\n    return 1\n\n\ndef beta():\n    return 2\n", encoding="utf-8"
+        )
+
+        diffs = _by_path(ChangeDetector(repo).get_working_tree_changes())
+
+        assert diffs["main.py"].status == "modified"
+        # The new side is read from disk, so the symbol the user just typed
+        # is in the diff — this is the content the index has to pick up.
+        assert diffs["main.py"].new_parsed is not None
+        assert {s.name for s in diffs["main.py"].new_parsed.symbols} == {"alpha", "beta"}
+        assert [s.name for s in diffs["main.py"].symbol_diff.added] == ["beta"]
+
+    def test_staged_edit_is_reported_too(self, repo: Path) -> None:
+        (repo / "main.py").write_text("def gamma():\n    return 3\n", encoding="utf-8")
+        r = gitpython.Repo(repo)
+        r.index.add(["main.py"])
+        r.close()
+
+        diffs = _by_path(ChangeDetector(repo).get_working_tree_changes())
+
+        assert diffs["main.py"].status == "modified"
+
+    def test_untracked_source_file_is_an_addition(self, repo: Path) -> None:
+        (repo / "brand_new.py").write_text("def fresh():\n    return 4\n", encoding="utf-8")
+
+        diffs = _by_path(ChangeDetector(repo).get_working_tree_changes())
+
+        assert diffs["brand_new.py"].status == "added"
+        assert diffs["brand_new.py"].old_parsed is None
+        assert [s.name for s in diffs["brand_new.py"].symbol_diff.added] == ["fresh"]
+
+    def test_deleted_file_is_a_deletion(self, repo: Path) -> None:
+        (repo / "util.py").unlink()
+
+        diffs = _by_path(ChangeDetector(repo).get_working_tree_changes())
+
+        assert diffs["util.py"].status == "deleted"
+        assert diffs["util.py"].new_parsed is None
+
+    def test_untracked_paths_the_index_would_skip_are_dropped(self, repo: Path) -> None:
+        # repowise's own state dir is the one that matters: it changes on every
+        # update, so letting it through would make each update schedule the next.
+        (repo / ".repowise").mkdir()
+        (repo / ".repowise" / "state.json").write_text("{}", encoding="utf-8")
+        (repo / "node_modules" / "dep").mkdir(parents=True)
+        (repo / "node_modules" / "dep" / "index.js").write_text("x", encoding="utf-8")
+        (repo / "app.log").write_text("noise", encoding="utf-8")
+
+        paths = {d.path for d in ChangeDetector(repo).get_working_tree_changes()}
+
+        assert paths == set()
+
+    def test_gitignored_files_never_appear(self, repo: Path) -> None:
+        (repo / ".gitignore").write_text("secret.py\n", encoding="utf-8")
+        (repo / "secret.py").write_text("KEY = 'x'\n", encoding="utf-8")
+        (repo / "visible.py").write_text("KEY = 'y'\n", encoding="utf-8")
+
+        paths = {d.path for d in ChangeDetector(repo).get_working_tree_changes()}
+
+        assert paths == {"visible.py"}
+
+    def test_non_git_directory_is_empty_not_an_error(self, tmp_path: Path) -> None:
+        (tmp_path / "loose.py").write_text("x = 1\n", encoding="utf-8")
+
+        assert ChangeDetector(tmp_path).get_working_tree_changes() == []
+
+    def test_tracked_changes_the_index_would_skip_are_dropped(self, repo: Path) -> None:
+        # A tracked lockfile churning must not mark the repo dirty: it would
+        # drive a full graph rebuild with nothing to index at the end of it.
+        (repo / "uv.lock").write_text("v = 1\n", encoding="utf-8")
+        r = gitpython.Repo(repo)
+        r.index.add(["uv.lock"])
+        r.index.commit("add lock")
+        r.close()
+        (repo / "uv.lock").write_text("v = 2\n", encoding="utf-8")
+
+        assert ChangeDetector(repo).get_working_tree_changes() == []
+
+
+class TestHasWorkingTreeChanges:
+    def test_false_on_a_clean_tree(self, repo: Path) -> None:
+        assert has_working_tree_changes(repo) is False
+
+    def test_true_for_a_tracked_edit(self, repo: Path) -> None:
+        (repo / "main.py").write_text("def alpha():\n    return 99\n", encoding="utf-8")
+
+        assert has_working_tree_changes(repo) is True
+
+    def test_true_for_an_untracked_source_file(self, repo: Path) -> None:
+        (repo / "new.py").write_text("x = 1\n", encoding="utf-8")
+
+        assert has_working_tree_changes(repo) is True
+
+    def test_ignorable_untracked_noise_does_not_count(self, repo: Path) -> None:
+        (repo / ".repowise").mkdir()
+        (repo / ".repowise" / "state.json").write_text("{}", encoding="utf-8")
+
+        assert has_working_tree_changes(repo) is False
+
+    def test_agrees_with_the_detector_on_ignorable_tracked_churn(self, repo: Path) -> None:
+        # The two must not disagree: a "clean" verdict here followed by a
+        # non-empty diff there is how a staleness gate skips real work.
+        (repo / "uv.lock").write_text("v = 1\n", encoding="utf-8")
+        r = gitpython.Repo(repo)
+        r.index.add(["uv.lock"])
+        r.index.commit("add lock")
+        r.close()
+        (repo / "uv.lock").write_text("v = 2\n", encoding="utf-8")
+
+        assert has_working_tree_changes(repo) is False
+        assert ChangeDetector(repo).get_working_tree_changes() == []
+
+    def test_false_on_a_non_git_directory(self, tmp_path: Path) -> None:
+        assert has_working_tree_changes(tmp_path) is False
+
+    def test_repowise_editor_file_is_not_the_users_change(self, repo: Path) -> None:
+        # init writes .claude/CLAUDE.md untracked; counting it marked every
+        # repo with editor setup dirty on every run.
+        _write_claude_md(repo, "")
+
+        assert has_working_tree_changes(repo) is False
+        assert ChangeDetector(repo).get_working_tree_changes() == []
+
+    def test_refreshed_block_in_a_tracked_editor_file_does_not_count(self, repo: Path) -> None:
+        _write_claude_md(repo, "Team notes.\n\n", block="Last indexed: monday")
+        r = gitpython.Repo(repo)
+        r.index.add([".claude/CLAUDE.md"])
+        r.index.commit("add claude md")
+        r.close()
+        _write_claude_md(repo, "Team notes.\n\n", block="Last indexed: tuesday")
+
+        assert has_working_tree_changes(repo) is False
+        assert ChangeDetector(repo).get_working_tree_changes() == []
+
+    def test_users_edit_of_an_editor_file_still_counts(self, repo: Path) -> None:
+        _write_claude_md(repo, "Always run the linter.\n\n")
+
+        assert has_working_tree_changes(repo) is True
+        assert [d.path for d in ChangeDetector(repo).get_working_tree_changes()] == [
+            ".claude/CLAUDE.md"
+        ]
+
+
+def _write_claude_md(repo: Path, user_text: str, block: str = "Last indexed: today") -> None:
+    """``.claude/CLAUDE.md`` as the generator writes it, with *user_text* above the block."""
+    from repowise.core.generation.editor_files.base import BaseEditorFileGenerator as Gen
+    from repowise.core.generation.editor_files.claude_md import ClaudeMdGenerator
+
+    tag = ClaudeMdGenerator.marker_tag
+    text = (
+        (user_text or ClaudeMdGenerator.user_placeholder)
+        + Gen.MARKER_START_FMT.format(tag=tag)
+        + f"\n{block}\n"
+        + Gen.MARKER_END_FMT.format(tag=tag)
+        + "\n"
+    )
+    (repo / ".claude").mkdir(exist_ok=True)
+    (repo / ".claude" / "CLAUDE.md").write_text(text, encoding="utf-8")
+
+
+def _diff(path: str, status: str) -> FileDiff:
+    return FileDiff(
+        path=path,
+        status=status,  # type: ignore[arg-type]
+        old_path=None,
+        old_parsed=None,
+        new_parsed=None,
+        symbol_diff=None,
+    )
+
+
+class TestMergeFileDiffs:
+    def test_first_source_wins_for_a_path_in_both(self) -> None:
+        commit_side = _diff("a.py", "modified")
+        working_side = _diff("a.py", "added")
+
+        merged = merge_file_diffs([commit_side], [working_side])
+
+        # The commit-range entry is baselined at the last indexed commit; the
+        # working-tree one only reaches back to HEAD.
+        assert merged == [commit_side]
+
+    def test_paths_from_either_source_are_kept(self) -> None:
+        merged = merge_file_diffs([_diff("a.py", "modified")], [_diff("b.py", "added")])
+
+        assert {d.path for d in merged} == {"a.py", "b.py"}
+
+    def test_a_deletion_loses_to_a_later_source_that_has_the_file(self) -> None:
+        # Committed `git rm foo.py`, then recreated in the working tree.
+        # Keeping the deletion would tombstone a file that exists on disk.
+        merged = merge_file_diffs([_diff("foo.py", "deleted")], [_diff("foo.py", "added")])
+
+        assert [d.status for d in merged] == ["added"]
+
+    def test_a_deletion_still_wins_over_a_later_deletion(self) -> None:
+        commit_side = _diff("foo.py", "deleted")
+        merged = merge_file_diffs([commit_side], [_diff("foo.py", "deleted")])
+
+        assert merged == [commit_side]
+
+
+class TestStaleWorkingTreeDiffs:
+    """Undoing working-tree work the index has already taken in."""
+
+    def test_a_deleted_untracked_file_comes_back_as_a_deletion(self, repo: Path) -> None:
+        # Indexed while it existed; now gone, and nothing else would ever
+        # mention it again.
+        diffs = ChangeDetector(repo).stale_working_tree_diffs(["gone.py"], set())
+
+        assert [(d.path, d.status) for d in diffs] == [("gone.py", "deleted")]
+
+    def test_a_reverted_edit_is_re_read_from_disk(self, repo: Path) -> None:
+        # main.py was indexed with an uncommitted edit that has since been
+        # reverted: the index holds symbols the file no longer has.
+        diffs = ChangeDetector(repo).stale_working_tree_diffs(["main.py"], set())
+
+        assert [(d.path, d.status) for d in diffs] == [("main.py", "modified")]
+        assert [s.name for s in diffs[0].new_parsed.symbols] == ["alpha"]
+
+    def test_paths_still_dirty_are_left_alone(self, repo: Path) -> None:
+        assert ChangeDetector(repo).stale_working_tree_diffs(["main.py"], {"main.py"}) == []
+
+
+class TestIsCandidateSourcePath:
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "src/app.py",
+            "packages/ui/index.ts",
+            "Dockerfile",
+            "README.md",
+            "deep/nested/mod.go",
+        ],
+    )
+    def test_source_paths(self, path: str) -> None:
+        assert is_candidate_source_path(path) is True
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            ".repowise/state.json",
+            ".git/index",
+            "node_modules/left-pad/index.js",
+            "dist/bundle.js",
+            "build/out.js",
+            ".venv/lib/x.py",
+            "package-lock.json",
+            "uv.lock",
+            "app.pyc",
+            "notes.txt.bak",
+            "logo.png",
+        ],
+    )
+    def test_non_source_paths(self, path: str) -> None:
+        assert is_candidate_source_path(path) is False
+
+    def test_windows_separators_are_understood(self) -> None:
+        assert is_candidate_source_path(r"src\app.py") is True
+        assert is_candidate_source_path(r".repowise\state.json") is False
+
+    def test_empty_path(self) -> None:
+        assert is_candidate_source_path("") is False
+
+    def test_output_named_dirs_are_listed_given_the_root(self, tmp_path: Path) -> None:
+        # A source package named like a report dir passes; a bundle dir does not.
+        (tmp_path / "pkg" / "coverage").mkdir(parents=True)
+        (tmp_path / "pkg" / "coverage" / "parsers.py").write_text("x = 1\n", encoding="utf-8")
+        (tmp_path / "dist").mkdir()
+        (tmp_path / "dist" / "bundle.js").write_text("var a;\n", encoding="utf-8")
+
+        assert is_candidate_source_path("pkg/coverage/parsers.py", tmp_path) is True
+        assert is_candidate_source_path("dist/bundle.js", tmp_path) is False
+        # No root to list: the conservative answer.
+        assert is_candidate_source_path("pkg/coverage/parsers.py") is False
+        # A deleted package still surfaces its deletions.
+        assert is_candidate_source_path("gone/coverage/parsers.py", tmp_path) is True
+
+    def test_a_shared_cache_lists_each_output_dir_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from repowise.core.ingestion import traverser
+
+        (tmp_path / "dist").mkdir()
+        for i in range(5):
+            (tmp_path / "dist" / f"chunk{i}.js").write_text("var a;\n", encoding="utf-8")
+        listed: list[Path] = []
+        real = traverser.is_output_dir
+        monkeypatch.setattr(traverser, "is_output_dir", lambda d: listed.append(d) or real(d))
+        cache: dict[Path, bool] = {}
+
+        for i in range(5):
+            assert is_candidate_source_path(f"dist/chunk{i}.js", tmp_path, cache) is False
+        assert listed == [tmp_path / "dist"]
+
+        # A hand-written file landing in it later is seen despite the cache.
+        (tmp_path / "dist" / "cli.py").write_text("x = 1\n", encoding="utf-8")
+        assert is_candidate_source_path("dist/cli.py", tmp_path, cache) is True
+
+    def test_reincluded_dir_is_candidate_source_path(self, tmp_path: Path) -> None:
+        (tmp_path / "src" / "build").mkdir(parents=True)
+        (tmp_path / "src" / "build" / "index.js").write_text("var a = 1;\n", encoding="utf-8")
+        (tmp_path / "src" / "build" / "node_modules").mkdir(parents=True)
+        (tmp_path / "src" / "build" / "node_modules" / "x.js").write_text(
+            "var b = 2;\n", encoding="utf-8"
+        )
+
+        # Without negation rule, build holding only JS is rejected as output.
+        assert is_candidate_source_path("src/build/index.js", tmp_path) is False
+
+        # With !src/build/, index.js is accepted, but node_modules/x.js remains blocked.
+        (tmp_path / ".repowiseIgnore").write_text("!src/build/\n", encoding="utf-8")
+        assert is_candidate_source_path("src/build/index.js", tmp_path) is True
+        assert is_candidate_source_path("src/build/node_modules/x.js", tmp_path) is False
+
+        # Also via extra_exclude_patterns.
+        assert (
+            is_candidate_source_path(
+                "dist/tool.js", tmp_path, extra_exclude_patterns=["!dist/"]
+            )
+            is True
+        )
+
+        # Also via custom extra_ignore_filename
+        (tmp_path / ".repowiseIgnore").unlink()
+        (tmp_path / ".customIgnore").write_text("!src/build/\n", encoding="utf-8")
+        assert (
+            is_candidate_source_path(
+                "src/build/index.js", tmp_path, extra_ignore_filename=".customIgnore"
+            )
+            is True
+        )
