@@ -159,6 +159,8 @@ class TestParityGoldens:
 _FULL = {
     # astro projects its frontmatter and <script> bodies to TypeScript
     # through the same SFC pass as svelte, so its imports are ordinary ESM.
+    # Markup <script src>/<link href> are imports too, via resolvers/astro.py:
+    # a /-rooted value under the nearest public/, then /src/... from the root.
     "astro",
     "c",
     # COPY members resolve to copybooks by stem, nearest first.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 
+from .models import TS_JS_LANGUAGES
 from .type_names import bare_type_name, written_type_key
 
 _NULLISH_UNION = re.compile(r"\s*\|\s*(?:null|undefined)\b")
@@ -138,7 +139,7 @@ def normalize_return_type(raw: str, language: str) -> str | None:
     """
 
     value = raw.strip()
-    if language in ("typescript", "javascript", "svelte", "vue", "astro"):
+    if language in TS_JS_LANGUAGES:
         value = _NULLISH_UNION.sub("", value).strip()
     if language == "csharp":
         value = value.removeprefix("global::").rstrip("?").strip()

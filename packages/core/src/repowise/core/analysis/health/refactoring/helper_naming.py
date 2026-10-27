@@ -12,6 +12,7 @@ import itertools
 from collections.abc import Iterable, Iterator
 from typing import TYPE_CHECKING, Any
 
+from ....ingestion.models import TS_JS_LANGUAGES
 from ..complexity.ast_utils import _find_function_entry_name
 from ..dataflow.bindings import binding_target, bound_names, imported_names
 from .naming import join_identifier
@@ -30,12 +31,9 @@ NAME_CONVENTION: dict[str, str] = {
     "go": "camelCase",
     "java": "camelCase",
     "apex": "camelCase",
-    "typescript": "camelCase",
+    **dict.fromkeys(TS_JS_LANGUAGES, "camelCase"),
     "tsx": "camelCase",
-    "javascript": "camelCase",
     "jsx": "camelCase",
-    "svelte": "camelCase",
-    "vue": "camelCase",
 }
 _SNAKE_CASE = "snake_case"
 

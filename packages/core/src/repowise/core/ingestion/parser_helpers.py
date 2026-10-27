@@ -56,6 +56,7 @@ from .lang_helpers.type_heads import (
     _rust_head_type_identifier,
     _rust_shadowed_by_type_param,
 )
+from .models import TS_JS_LANGUAGES
 from .type_names import kotlin_extension_receiver
 
 log = structlog.get_logger(__name__)
@@ -203,7 +204,7 @@ _TS_JS_FUNCTION_SCOPES = frozenset(
 )
 _LOAD_DEFERRING_SCOPES: dict[str, frozenset[str]] = {
     "python": frozenset({"function_definition", "lambda"}),
-    **dict.fromkeys(("typescript", "javascript", "svelte", "vue"), _TS_JS_FUNCTION_SCOPES),
+    **dict.fromkeys(TS_JS_LANGUAGES, _TS_JS_FUNCTION_SCOPES),
 }
 # Statements that can be ``import type`` / ``export type``; only these are
 # asked, since a ``require`` assignment may bind a variable named ``type``.

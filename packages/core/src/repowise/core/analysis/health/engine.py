@@ -106,16 +106,16 @@ log = structlog.get_logger(__name__)
 # Not a licence to move a calibrated scoring weight — those are frozen
 # independently of this stamp.
 #
-# v43: the code-origin classifier moved for several path shapes: a nested
-# ``tools/`` folder is production (only a repo-root or engineering ``tools/``
-# stays tooling), Python ``_vendor/`` folders and Salesforce static-resource
-# libraries read as vendored, and prefixed migration folders under ``db/`` read
-# as migrations. Stored origins decide health and dead-code scope, so those
-# files re-score.
+# v44: Astro joins the TypeScript family in constant-flag gating, Extract Method
+# plans (render and helper naming) and the move-destination language family. The
+# Astro projection the walker parses changed too: a string or comment in a markup
+# ``{expr}`` (``{"<style>"}``) no longer blanks a later ``<script>`` function. The
+# walk cache keys on file bytes, so unchanged ``.astro`` files re-score only on
+# this stamp.
 #
 # Earlier bumps and their reasons: ``git log -S"HEALTH_ANALYZER_VERSION =" -p``
 # on this file.
-HEALTH_ANALYZER_VERSION = 43
+HEALTH_ANALYZER_VERSION = 44
 
 
 def _log_duplication_diagnostics(report: DuplicationReport) -> None:

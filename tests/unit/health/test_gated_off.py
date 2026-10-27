@@ -164,6 +164,11 @@ def test_typescript_const_false_gates_and_let_or_true_does_not() -> None:
     assert _gated("typescript", "/tmp/store.ts", _TS) == {"guarded", "wholly", "strict"}
 
 
+def test_an_astro_frontmatter_const_false_gates_as_in_typescript() -> None:
+    source = f"---{_TS}---\n<p>hi</p>\n"
+    assert _gated("astro", "/tmp/Store.astro", source) == {"guarded", "wholly", "strict"}
+
+
 def test_the_dogfood_function_is_gated() -> None:
     import pathlib
 

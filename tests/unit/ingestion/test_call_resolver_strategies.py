@@ -1960,6 +1960,28 @@ class TestModuleAliasReachesTopLevelOnly:
         }
         assert callees == {f"{module}::{'Build' if lang == 'go' else 'build'}"}
 
+    def test_an_astro_frontmatter_alias_reaches_the_top_level_function(
+        self, tmp_path: Path
+    ) -> None:
+        """Astro frontmatter is TypeScript, so its namespace import names a module."""
+        module, module_src, _, _ = _MODULE_ONLY_ALIAS_CASES["typescript"]
+        caller = "Page.astro"
+        caller_src = (
+            "---\nimport * as util from './util';\n\n"
+            "function run(): number {\n  return util.build();\n}\n---\n<p>hi</p>\n"
+        )
+        parsed = _parse_all(
+            tmp_path, {module: ("typescript", module_src), caller: ("astro", caller_src)}
+        )
+        _link_imports(parsed, {caller: {"./util": module}})
+        import_targets = {caller: {module}, module: set()}
+        callees = {
+            callee
+            for src, callee, _, _ in _edges(parsed, tmp_path, import_targets)
+            if src == f"{caller}::run"
+        }
+        assert callees == {f"{module}::build"}
+
     def test_a_csharp_type_alias_still_reaches_the_type_s_members(
         self, tmp_path: Path
     ) -> None:

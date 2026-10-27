@@ -639,8 +639,8 @@ same clean projection the ingestion parser does.
 ### The locator registry
 
 Only step 1 differs per language, so it lives behind `_LOCATORS`, a dict of
-`Locator(grammar_module, visit, component_name)` for a grammar-backed markup
-language, or `Locator(byte_scan, component_name)` when no grammar exists and
+`Locator(grammar_module, visit)` for a grammar-backed markup
+language, or `Locator(byte_scan)` when no grammar exists and
 the regions are found by walking the bytes. The blanking, fencing, caching
 and offset invariants are shared; adding a markup language means adding a
 `Locator`, not a second copy of the walker.
@@ -650,8 +650,8 @@ and offset invariants are shared; adding a markup language means adding a
 | Grammar | `tree-sitter-svelte` | `tree-sitter-html` | none; byte scan, projected to C# | none; byte scan, projected to TS |
 | Expression nodes | `svelte_raw_text` under `expression` / `if_start` / `key_start` / `html_tag` | `attribute_value` inside `quoted_attribute_value`; `{{ … }}` scanned inside `text` | brace-matched `@code { }`, `@functions { }`, `@{ }` interiors | the `---` frontmatter and every JS `<script>` body (plain, `is:inline`, `type="module"`, `define:vars`); markup `{expr}` is blanked |
 | Fence bytes | the surrounding `{` `}` | the surrounding `"` or `'` | the surrounding `{` `}` | the `>` of each `<script>` opening tag |
-| Skipped binding forms | `{#each}`, `{#await}` heads | `v-for`, `v-slot` / `#default` | `@using`, `@inject`, `@bind`, `@on*`, `@model`, inline `@expr` | markup `{expr}` |
-| Non-component tags | the `svelte:*` namespace | `<KeepAlive>`, `<Transition>`, `<RouterView>`, … in either spelling | lowercase elements; anything inside `@* *@` or `<!-- -->` | lowercase elements, `<Fragment>`; anything inside `<!-- -->` or a `<script>` |
+| Skipped binding forms | `{#each}`, `{#await}` heads | `v-for`, `v-slot` / `#default` | `@using`, `@inject`, `@bind`, `@on*`, `@model`, inline `@expr` | none; markup `{expr}` is plain JS, just not projected |
+| Non-component tags | the `svelte:*` namespace | `<KeepAlive>`, `<Transition>`, `<RouterView>`, … in either spelling | lowercase elements; anything inside `@* *@` or `<!-- -->` | lowercase elements, `<Fragment>`; anything inside `<!-- -->`, a `<script>`, or a string or comment of a markup `{expr}` |
 
 There is no `tree-sitter-vue` on PyPI. The HTML grammar parses a Vue SFC cleanly
 anyway, because `<template>`, `<script>` and `<style>` are ordinary elements to
@@ -674,6 +674,43 @@ into TypeScript: the leading `---` frontmatter and every JS `<script>` body keep
 their bytes, a `<script>` whose `type` is data (`application/ld+json`) or that
 sits in an HTML comment is blanked, and PascalCase tags mint component call edges.
 Frontmatter imports are ordinary ESM, so an Astro file does carry import edges.
+
+Inside a markup `{expr}` the scan skips JS strings and comments, so
+`{"<style>"}` or `{ /* <script src="./a.ts"> */ }` hides nothing after it and
+reads no import. A `<script>` in the expression still opens a script
+(`{cond && <script>…</script>}`), and any other element opened there holds
+markup again until its end tag (`{ok && <p>Don't</p>}`). An `is:raw` body is
+text, where a lone `{` is legal, so it is skipped to its end tag like a
+`<style>` body. The ceiling: a regex literal or a `${…}` inside a template string is not read as JS,
+and an element left open in an expression (`<br>`) holds markup until its `}`.
+A TS generic (`Array<Foo>`) or `a<b` also reads as a tag, so `{i<n && <Card />}`
+loses its `Card`.
+
+Markup `<script src>` and `<link href>` (any `rel`) are imports too. The
+projection blanks them, so the same scan reads each `src` / `href` value as it
+passes the opening tag; a `{url}` value is an expression and reads as nothing.
+The parser passes the values through `ref_imports` in
+`lightweight_imports/html.py`, the one filter plain HTML uses, which drops
+`https://`, `//cdn` and templated values. A ref the frontmatter also imports
+stays: the graph merges the two edges, and the page's runtime load wins over a
+type-only or lazy import. Astro bundles a `<script>` whose only attribute is `src`
+as `import "<src>"`, so its value is kept as written, like a frontmatter
+import. A tsconfig alias (`@/scripts/menu.ts`) resolves, and a bare value can
+name a package. Any other markup value (a `<link href>`, a `<script>` with
+`is:inline`, `type` or another attribute) is a URL relative to the page, never
+a package name: a bare `favicon.ico` becomes `./favicon.ico`. A `/`-rooted value
+(an `is:inline` script, an icon) is served from `public/`, so
+`ingestion/resolvers/astro.py` looks for it under the nearest `public/` above
+the page, walking up to the repository root. Vite resolves and serves any
+`/src/...` value (an import, a `<script src>`, a `<link href>`) from the project
+root, so it is tried under each folder above the page after that, exactly as
+written. Vite also probes extensions (`/src/lib/format` → `format.ts`), but this
+lookup does not. A `/`-rooted tsconfig `paths` alias (`/@/*`) is tried last,
+as in a `.ts` file. A URL takes it too, so a catch-all `*` alias can bind a
+missed URL into `src/`. A miss is no node at all. Astro's `base` prefix and a custom
+`publicDir` or `srcDir` are not read, so those values miss.
+Anything else takes the TS/JS resolver, whose `./site.css` → `site.ts` fallback
+is the known ceiling for a relative `href`.
 
 **Plain HTML deliberately has no locator.** It reuses the same grammar but not
 the projection, and the distinction is the point: a projection exists to turn a

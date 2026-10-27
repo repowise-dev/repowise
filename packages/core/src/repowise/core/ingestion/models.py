@@ -102,6 +102,11 @@ LanguageTag = Literal[
     "unknown",
 ]
 
+# TypeScript, JavaScript and the single-file components whose script blocks
+# ``sfc_source`` projects into a TS buffer at identical offsets, so every TS/JS
+# code path applies to them verbatim.
+TS_JS_LANGUAGES: frozenset[str] = frozenset({"typescript", "javascript", "svelte", "vue", "astro"})
+
 # ---------------------------------------------------------------------------
 # Extension → language map (used by FileTraverser and ASTParser)
 #

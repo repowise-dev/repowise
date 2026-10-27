@@ -50,7 +50,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from .cohesion import OWN_TYPE_NAME_HINT, withdraw_declaration_hint
-from .models import ParsedFile
+from .models import TS_JS_LANGUAGES, ParsedFile
 from .symbol_identity import symbol_id_path
 
 if TYPE_CHECKING:
@@ -163,7 +163,7 @@ def _names_only_own_types(data: dict[str, Any], own: set[str]) -> bool:
 
 # Language families a type name can resolve into by file name. A stem match
 # outside the family is a coincidence of names, never a definition.
-_TS_TYPE_LANGUAGES: frozenset[str] = frozenset({"typescript", "javascript", "vue", "svelte"})
+_TS_TYPE_LANGUAGES: frozenset[str] = TS_JS_LANGUAGES
 _C_TYPE_LANGUAGES: frozenset[str] = frozenset({"c", "cpp"})
 
 

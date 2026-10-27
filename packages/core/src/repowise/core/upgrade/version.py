@@ -116,7 +116,25 @@ STORE_FORMAT_VERSION: int = 2
 #: public API follows Ruby visibility forms, Ansible playbooks and roles get
 #: dependency edges, Scala gets dataflow, and Postgres catalog tables are not
 #: workspace consumers.
-PARSER_SCHEMA_VERSION: int = 10
+#:
+#: v11: an Astro page's markup ``<script src>`` and ``<link href>`` are imports.
+#: A ``<script>`` with only ``src`` keeps its value as written, as Astro bundles
+#: it (``@/x.ts`` takes the tsconfig alias); any other bare one (``favicon.ico``)
+#: is page-relative (``./favicon.ico``), and a ``/``-rooted one resolves to the
+#: file under the nearest ``public/`` folder (any ``/src/...`` one also from the
+#: project root), then through a tsconfig ``paths`` alias (``/@/*``), or to
+#: nothing, never an ``external:`` node. A markup ref the frontmatter also imports
+#: is kept: the graph merges the edges, and the runtime load wins.
+#: An Astro ``is:raw`` body is text, skipped like a ``<style>`` body.
+#: An Astro import carries ``type_only`` (``import type``, ``typeof import()``) and
+#: ``deferred`` (an import inside a function) as a TypeScript one does.
+#: A ``<script>``, path or tag inside a string or comment of an Astro markup
+#: ``{expr}`` (``{"<script src='./a.ts'>"}``) is no longer read.
+#: An Astro tag inside a quoted attribute value (``<div title="<Card />">``) is no
+#: component call, and a hyphenated PascalCase tag (``<Foo-Bar />``) is one name.
+#: A self-closing ``<link ... />`` in a plain HTML file
+#: (``<link rel="stylesheet" href="a.css" />``) now yields its ``href`` as an import.
+PARSER_SCHEMA_VERSION: int = 11
 
 #: state.json key holding the store format version that wrote the store.
 STORE_FORMAT_VERSION_KEY = "store_format_version"

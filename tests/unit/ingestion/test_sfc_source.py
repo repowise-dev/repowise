@@ -542,6 +542,13 @@ class TestRazorComments:
         tags = dict(scan("razor", src).component_tags)
         assert tags == {"Live": 4}
 
+    def test_razor_comment_before_a_code_block_keeps_its_generics_hidden(self) -> None:
+        # The tag pass gets C# regions and comments in one list; a comment
+        # first must still hide ``List<Order>`` and count lines past the block.
+        src = b"@* header *@\n<A />\n@code {\n  List<Order> orders;\n}\n<B />\n"
+        tags = dict(scan("razor", src).component_tags)
+        assert tags == {"A": 2, "B": 6}
+
     def test_razor_comment_keeps_offsets(self) -> None:
         src = b"@* one\ntwo *@\n@code { var x = 1; }\n"
         prepared = prepare_source("razor", src)

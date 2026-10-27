@@ -128,7 +128,6 @@ _REPO_METADATA_DIR = ".github"
 # a whole ``test(s)/`` folder by default. Ceiling: an AVA or Mocha run pointed at
 # a ``src/**/tests/`` folder of plainly named files reads as production; reading
 # the runner config's globs would settle that case.
-_JS_FAMILY_TAGS: tuple[str, ...] = ("javascript", "typescript", "vue", "svelte", "astro")
 _SOURCE_TREE = "src"
 _FEATURE_NAMED_TESTS_DIR = "tests"
 
@@ -260,6 +259,7 @@ def _conventions() -> _Conventions:
     no prefix, and dropping it would unclassify RSpec-style ``spec_foo.rb``.
     """
     from .ingestion.languages.registry import REGISTRY
+    from .ingestion.models import TS_JS_LANGUAGES
 
     return _Conventions(
         stem_prefixes=tuple(sorted({*REGISTRY.test_stem_prefixes(), "spec_"})),
@@ -289,7 +289,7 @@ def _conventions() -> _Conventions:
         ),
         lang_dir_tokens=REGISTRY.test_dir_tokens_by_language(),
         manifest_names=REGISTRY.package_manifest_filenames(),
-        js_family_exts=REGISTRY.extensions_for(_JS_FAMILY_TAGS),
+        js_family_exts=REGISTRY.extensions_for(TS_JS_LANGUAGES),
     )
 
 

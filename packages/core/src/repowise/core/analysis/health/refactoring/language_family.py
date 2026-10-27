@@ -21,13 +21,10 @@ from __future__ import annotations
 
 from pathlib import PurePosixPath
 
-from ....ingestion.models import EXTENSION_TO_LANGUAGE
+from ....ingestion.models import EXTENSION_TO_LANGUAGE, TS_JS_LANGUAGES
 
 _FAMILY: dict[str, str] = {
-    "typescript": "js",
-    "javascript": "js",
-    "vue": "js",
-    "svelte": "js",
+    **dict.fromkeys(TS_JS_LANGUAGES, "js"),
     "c": "c",
     "cpp": "c",
     "objectivec": "c",

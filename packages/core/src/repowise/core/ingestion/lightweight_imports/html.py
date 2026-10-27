@@ -17,6 +17,10 @@ navigation between pages rather than a dependency, and ``<img src>`` is an
 asset with no code in it; minting edges for either would inflate the graph
 without saying anything about how the code fits together.
 
+An Astro page's markup refs are read by its byte scan in ``sfc_source`` (the
+HTML grammar mis-reads Astro's ``{expr}`` attributes), then filtered by the same
+:func:`ref_imports`, so both drop external and templated values alike.
+
 Template dialects are the known ceiling. ``{% extends "base.html" %}``,
 ``{{ template "x" }}`` and ``<%= render %>`` are ordinary text to an HTML
 grammar, so a Django or Hugo template parses cleanly and yields nothing here.
@@ -25,6 +29,7 @@ That is a property of the tier, not a bug in it — see the ``html`` spec.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 from ..models import Import
@@ -67,7 +72,7 @@ def _attributes(start_tag: Node) -> dict[str, str]:
 
 
 def _start_tag(node: Node) -> Node | None:
-    return next((c for c in node.children if c.type == "start_tag"), None)
+    return next((c for c in node.children if c.type in ("start_tag", "self_closing_tag")), None)
 
 
 def _walk(node: Node, out: list[tuple[str, str]]) -> None:
@@ -105,7 +110,15 @@ def extract_html_imports(text: str) -> list[Import]:
 
     refs: list[tuple[str, str]] = []
     _walk(tree.root_node, refs)
+    return ref_imports(refs)
 
+
+def ref_imports(refs: Iterable[tuple[str, str]]) -> list[Import]:
+    """One ``Import`` per local ``(tag, value)`` ref, in order, each path once per call.
+
+    Shared with Astro, whose refs ``sfc_source`` reads in its own markup scan. Astro
+    passes one ref per call, so its paths can repeat and the graph merges them.
+    """
     imports: list[Import] = []
     seen: set[str] = set()
     for tag, value in refs:

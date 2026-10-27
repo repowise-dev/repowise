@@ -91,6 +91,7 @@ from .language_data import (
 )
 from .languages.receiver_types import external_type_name, holds_function
 from .models import (
+    TS_JS_LANGUAGES,
     CallReceiver,
     CallSite,
     Import,
@@ -125,9 +126,7 @@ _IMPLICIT_RECEIVER_LANGUAGES = frozenset({"java", "csharp", "cpp", "kotlin", "ap
 # JS/TS (and the single-file components parsed as TypeScript): a member is only
 # reachable as ``this.foo()`` or ``obj.foo()``, so a bare ``foo()`` inside a
 # class method never means a member of that class, whatever the file declares.
-_BARE_CALL_SKIPS_MEMBERS_LANGUAGES = frozenset(
-    {"javascript", "typescript", "svelte", "vue", "astro"}
-)
+_BARE_CALL_SKIPS_MEMBERS_LANGUAGES = TS_JS_LANGUAGES
 
 # Languages where a call the caller's own class cannot answer is looked for on
 # its ancestors, for an explicit ``self``/``this`` receiver and an implicit one.
@@ -161,9 +160,7 @@ _NAMED_IMPORT_SCOPE_LANGUAGES = _LEXICAL_BARE_NAME_LANGUAGES | {"rust"}
 # may alias a type, whose members it does reach. C, C++ and Ruby are absent
 # because their "alias" is an included file's stem, which a call can only match
 # by coinciding with a variable's name.
-_MODULE_ONLY_ALIAS_LANGUAGES = frozenset(
-    {"python", "typescript", "javascript", "svelte", "vue", "dart", "go", "rust", "swift"}
-)
+_MODULE_ONLY_ALIAS_LANGUAGES = TS_JS_LANGUAGES | {"python", "dart", "go", "rust", "swift"}
 
 # The sentinel an import that binds a whole module's public names carries.
 _WILDCARD_IMPORTED_NAMES = ["*"]

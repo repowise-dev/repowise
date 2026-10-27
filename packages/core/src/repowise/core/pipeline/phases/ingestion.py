@@ -434,9 +434,6 @@ def _read_sources(
 # Languages ``skip_infra`` drops from the parse set.
 _INFRA_LANGUAGES = ("dockerfile", "makefile", "terraform", "shell")
 
-# TS/JS-family languages whose presence wires the tsconfig path-alias resolver.
-_TS_LANGUAGES = frozenset({"typescript", "javascript", "svelte", "vue", "astro"})
-
 
 @dataclass(frozen=True)
 class _WalkOptions:
@@ -776,7 +773,9 @@ def _wire_tsconfig(
     Its own phase label: on large TS monorepos it indexes hundreds of tsconfig
     files, which otherwise shows as a silent gap right after parsing.
     """
-    if not any(pf.file_info.language in _TS_LANGUAGES for pf in parsed_files):
+    from repowise.core.ingestion.models import TS_JS_LANGUAGES
+
+    if not any(pf.file_info.language in TS_JS_LANGUAGES for pf in parsed_files):
         return
     if progress:
         progress.on_phase_start("tsconfig", None)

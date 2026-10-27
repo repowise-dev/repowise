@@ -5,7 +5,8 @@ markup and ``<style>`` so the ``---`` frontmatter and every ``<script>`` body
 sit at byte-identical offsets in a valid TS buffer. Hence
 ``shares_grammar_with`` and ``scm_file`` both point at typescript. There is no
 tree-sitter-astro on PyPI, so the regions are located by a byte scan, as for
-Razor.
+Razor. The same scan reads markup ``<script src>`` and ``<link href>`` values,
+which are emitted as imports and resolved by ``resolvers/astro.py``.
 """
 
 from ..spec import LanguageSpec

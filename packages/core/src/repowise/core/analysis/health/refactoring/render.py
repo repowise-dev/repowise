@@ -55,6 +55,7 @@ _FAMILY: dict[str, str] = {
     "jsx": "js",
     "svelte": "js",
     "vue": "js",
+    "astro": "js",
     "go": "go",
     "java": "java",
     "apex": "apex",

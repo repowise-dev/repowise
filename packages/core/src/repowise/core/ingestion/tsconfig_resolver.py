@@ -29,6 +29,8 @@ from typing import Any
 
 import structlog
 
+from .models import TS_JS_LANGUAGES
+
 log = structlog.get_logger(__name__)
 
 # Extensions probed in TypeScript module resolution order. The SFC extensions
@@ -692,13 +694,11 @@ def wire_tsconfig_resolver(
 
     Needs to be called after add_file() but before build().
     """
-    # Svelte counts: a SvelteKit app's aliases live in its tsconfig, and a
-    # .svelte component's imports go through the same TS/JS resolver.
-    _ts_langs = {"typescript", "javascript", "svelte", "vue", "astro"}
-
     # We duck-type graph_builder to avoid circular imports. It has ._parsed_files.
     parsed_files = graph_builder._parsed_files.values()
-    if not any(pf.file_info.language in _ts_langs for pf in parsed_files):
+    # Svelte counts: a SvelteKit app's aliases live in its tsconfig, and a
+    # .svelte component's imports go through the same TS/JS resolver.
+    if not any(pf.file_info.language in TS_JS_LANGUAGES for pf in parsed_files):
         return
 
     try:
