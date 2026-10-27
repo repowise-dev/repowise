@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 
+from ..extractors.synthetic_symbols.cpp_macros import _FAST_REJECT_TOKENS as _SYNTHESIZED_MACROS
+
 _PASCAL_USES_IN_CLAUSE_RE = re.compile(rb"\bin\b[ \t]*'(?:[^'\r\n]|'')*'")
 
 
@@ -165,6 +167,50 @@ _CPP_TRAILING_ANNOTATION_RE = re.compile(
     re.MULTILINE,
 )
 
+# An attribute macro before a constructor (``FMT_CONSTEXPR Foo(int x) : x_(x)
+# {}``). The grammar reads the macro as a return type, a typed function may not
+# have a member-initializer list, and recovery then leaves the class open to
+# the end of the file, so every later function loses its symbol. Group 1 is
+# the macro run; the ``: init`` after the parameter list, checked in code, is
+# what makes the declaration a constructor and not ``TYPE var(args);``.
+_CPP_CTOR_MACRO_RE = re.compile(
+    rb"^[ \t]*(?:(?:constexpr|explicit|inline)[ \t]+)*"
+    rb"((?:[A-Z][A-Z0-9_]+[ \t]+)+)"
+    rb"(?:(?:constexpr|explicit|inline)[ \t]+)*[A-Za-z_]\w*[ \t]*\(",
+    re.MULTILINE,
+)
+_CPP_CTOR_INIT_RE = re.compile(rb"\s*(?:noexcept\b\s*(?:\([^()]*\))?\s*)?:(?!:)")
+
+# A macro alone on its line (``FMT_BEGIN_NAMESPACE``, ``FMT_EXPORT``, ``Q_OBJECT``,
+# ``FMT_PRAGMA_CLANG(diagnostic push)``) expands to a namespace opener, an
+# attribute or nothing. With no ``;`` the grammar reads it as the type of the
+# declaration after it, which renames or swallows that declaration. Group 1 is
+# a bare name at any indent; group 2 is a call-shaped one at column 0 that a
+# declaration follows, so an indented ``LOG(x)`` statement, a ``TEST(a, b)``
+# opening a body and a last enumerator before ``}`` all stay. Neither is
+# blanked before a typeless function head (``BOOL\nWINAPI\nDllMain(...)``),
+# where the macro is the return type, nor is a registration macro whose
+# text the synthetic-symbol pass reads (``NAPI_MODULE(name, Init)``). A head
+# has a lowercase letter, so another macro line (``FMT_PRAGMA(x)``) is none.
+# A call-shaped macro the file defines itself stays too: it may wrap a
+# ``push_macro``/``pop_macro`` pragma the macro-state pass reads.
+_CPP_TYPELESS_HEAD = (
+    rb"[ \t]*\r?\n(?:[\r\n \t]*[A-Z][A-Z0-9_]+[ \t]*\r?\n)*"
+    rb"[\r\n \t]*~?(?=[\w:]*[a-z])[A-Za-z_][\w:]*[ \t]*\("
+)
+_CPP_MACRO_LINE_RE = re.compile(
+    rb"^(?<!\\\n)(?<!\\\r\n)(?:[ \t]*([A-Z][A-Z0-9_]+)(?=[ \t]*\r?\n[\r\n \t]*[A-Za-z_#/])"
+    rb"|(?!" + b"|".join(re.escape(t.encode()) for t in _SYNTHESIZED_MACROS) + rb")"
+    rb"(([A-Z][A-Z0-9_]+)\((?:[^()\r\n]|\([^()\r\n]*\))*\))(?=[ \t]*\r?\n[\r\n \t]*[A-Za-z_]))"
+    rb"(?!" + _CPP_TYPELESS_HEAD + rb")",
+    re.MULTILINE,
+)
+_CPP_FUNCTION_MACRO_DEFINE_RE = re.compile(rb"^[ \t]*#[ \t]*define[ \t]+(\w+)\(", re.MULTILINE)
+# The same macros written ahead of a template on its line (``FMT_EXPORT template <...>``).
+_CPP_TEMPLATE_PREFIX_MACRO_RE = re.compile(
+    rb"^[ \t]*((?:[A-Z][A-Z0-9_]+[ \t]+)+)(?=template\b)", re.MULTILINE
+)
+
 # Words that put a following ``RELEASE(p)`` in statement position, where it
 # is a real call and must stay.
 _CPP_STATEMENT_WORDS = frozenset(
@@ -202,6 +248,38 @@ def _open_paren_of(source: bytes, close: int) -> int:
             if depth == 0:
                 return i
     return -1
+
+
+def _close_paren_of(source: bytes, open_: int) -> int:
+    """Index of the ``)`` matching the ``(`` at *open_*, or -1."""
+    depth = 0
+    for i in range(open_, min(open_ + _CPP_PAREN_SCAN_LIMIT, len(source))):
+        if source[i] == ord("("):
+            depth += 1
+        elif source[i] == ord(")"):
+            depth -= 1
+            if depth == 0:
+                return i
+    return -1
+
+
+def _ctor_macro_spans(source: bytes) -> list[tuple[int, int]]:
+    """Macro runs before a constructor that has a member-initializer list."""
+    spans = []
+    for m in _CPP_CTOR_MACRO_RE.finditer(source):
+        close = _close_paren_of(source, m.end() - 1)
+        if close >= 0 and _CPP_CTOR_INIT_RE.match(source, close + 1):
+            spans.append(m.span(1))
+    return spans
+
+
+def _macro_line_spans(source: bytes) -> list[tuple[int, int]]:
+    """Macro-only lines, less call-shaped ones naming a macro this file defines."""
+    matches = list(_CPP_MACRO_LINE_RE.finditer(source))
+    if not matches:
+        return []
+    local = set(_CPP_FUNCTION_MACRO_DEFINE_RE.findall(source))
+    return [m.span(1) if m.group(1) else m.span(2) for m in matches if m.group(3) not in local]
 
 
 def _ends_declarator(source: bytes, end: int) -> bool:
@@ -245,14 +323,19 @@ def cpp_class_head_macros(source: bytes) -> frozenset[str]:
 
 
 def prepare_cpp_source(source: bytes) -> bytes:
-    """Blank class-head export macros and trailing thread-safety annotations.
+    """Blank class-head export macros, constructor attribute macros,
+    macro-only lines and trailing thread-safety annotations.
 
-    Both are macros the grammar cannot see expanded, and both make it build
-    the wrong tree: a missing class and a lost first method, or a hidden field
-    and a method named after the annotation. Spans are blanked in place, so
-    offsets and line numbers outside them are unchanged.
+    All are macros the grammar cannot see expanded, and all make it build the
+    wrong tree: a missing class and a lost first method, a class left open
+    over the rest of the file, a declaration read as typed by the macro before
+    it, or a hidden field and a method named after the annotation. Spans are
+    blanked in place, so offsets and line numbers outside them are unchanged.
     """
     spans = [m.span(1) for m in _CPP_CLASS_HEAD_MACRO_RE.finditer(source)]
+    spans += _ctor_macro_spans(source)
+    spans += _macro_line_spans(source)
+    spans += [m.span(1) for m in _CPP_TEMPLATE_PREFIX_MACRO_RE.finditer(source)]
     spans += [
         m.span()
         for m in _CPP_TRAILING_ANNOTATION_RE.finditer(source)

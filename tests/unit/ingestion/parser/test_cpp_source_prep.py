@@ -1,4 +1,4 @@
-"""C++ source sanitizer: class-head export macros and thread-safety annotations."""
+"""C++ source sanitizer: macros the grammar misreads and thread-safety annotations."""
 
 from __future__ import annotations
 
@@ -30,6 +30,50 @@ ANNOTATED_CLASS = b"""class DBImpl {
 };
 """
 
+MACRO_CONSTRUCTOR = b"""struct size_padding {
+  unsigned size;
+
+  FMT_CONSTEXPR size_padding(int num_digits, unsigned prefix)
+      : size(prefix + num_digits) {
+    if (size > 0) size = 1;
+  }
+};
+
+template <typename T> auto write_int(T out, int value) -> T {
+  return out;
+}
+
+class buffer {
+ public:
+  FMT_CONSTEXPR20 buffer(buffer&& other) noexcept : size_(other.size_) {}
+  auto size() const -> int { return size_; }
+
+ private:
+  int size_;
+};
+"""
+
+MACRO_LINES = b"""FMT_BEGIN_NAMESPACE
+FMT_PRAGMA_CLANG(diagnostic push)
+
+FMT_EXPORT
+template <typename Char> class basic_string_view {
+ public:
+  auto size() const -> int { return size_; }
+
+ private:
+  int size_;
+};
+
+FMT_EXPORT
+enum class align { none, left };
+
+namespace detail {
+template <typename T> auto to_unsigned(T value) -> unsigned { return value; }
+}  // namespace detail
+FMT_END_NAMESPACE
+"""
+
 
 def _symbols(parser: ASTParser, source: bytes) -> set[tuple[str | None, str, str]]:
     result = parser.parse_file(_make_file_info("cpp_pkg/db.h", "cpp"), source)
@@ -49,6 +93,17 @@ class TestCppSourcePrep:
         assert "EXCLUSIVE_LOCKS_REQUIRED" not in names
         assert "GUARDED_BY" not in names
 
+    def test_macro_constructor_with_initializers_closes_its_class(self, parser: ASTParser) -> None:
+        symbols = _symbols(parser, MACRO_CONSTRUCTOR)
+        assert (None, "write_int", "function") in symbols
+        assert ("buffer", "size", "method") in symbols
+
+    def test_macro_lines_do_not_type_the_next_declaration(self, parser: ASTParser) -> None:
+        symbols = _symbols(parser, MACRO_LINES)
+        assert ("basic_string_view", "size", "method") in symbols
+        assert any(name == "to_unsigned" for _, name, _ in symbols)
+        assert not any(name.startswith("FMT_") for _, name, _ in symbols)
+
     @pytest.mark.parametrize(
         ("source", "macro"),
         [
@@ -60,6 +115,17 @@ class TestCppSourcePrep:
             (b"  void F() const REQUIRES(a, f(b));", b"REQUIRES(a, f(b))"),
             (b"  void F() NO_THREAD_SAFETY_ANALYSIS {", b"NO_THREAD_SAFETY_ANALYSIS"),
             (b"  Foo* p ABSL_PT_GUARDED_BY(mu) = nullptr;", b"ABSL_PT_GUARDED_BY(mu)"),
+            (b"  FMT_CONSTEXPR Pad(int n) : n_(n) {}", b"FMT_CONSTEXPR "),
+            (b"  constexpr FMT_INLINE Args(const S& s)\n      : d_(s) {}", b"FMT_INLINE "),
+            (b"  A_API B_INLINE explicit Buf(Buf&& o) noexcept\n  : base(o) {", b"A_API B_INLINE "),
+            (b"FMT_BEGIN_NAMESPACE\nnamespace detail {", b"FMT_BEGIN_NAMESPACE"),
+            (b"  Q_OBJECT\n public:", b"Q_OBJECT"),
+            (b"FMT_EXPORT\r\ntemplate <typename T> struct F;", b"FMT_EXPORT"),
+            (b"FMT_EXPORT template <typename T> class S {", b"FMT_EXPORT "),
+            (
+                b'FMT_PRAGMA_CLANG(diagnostic error "-Wx")\n\nenum class E {};',
+                b'FMT_PRAGMA_CLANG(diagnostic error "-Wx")',
+            ),
         ],
     )
     def test_blanks_macro_spans_in_place(self, source: bytes, macro: bytes) -> None:
@@ -84,6 +150,29 @@ class TestCppSourcePrep:
             b"  struct TM tm{0};",
             b"  int NO_THREAD_SAFETY_ANALYSIS_X;",
             b"#define F(x) RELEASE(x)",
+            # A macro-typed declaration without an initializer list stays.
+            b"  FMT_CONSTEXPR Pad(int n) {}",
+            b"  HANDLE h(open(path));",
+            b"  FOO_T x(1); y = c ? a : b;",
+            b"  MACRO_T Make(int n) const;",
+            b"  Base::Base(int n) : n_(n) {}",
+            b"  Q_INVOKABLE T f(int n) :: x;",
+            # A macro line that opens a body, ends the file, continues an
+            # expression, or sits in a statement is left alone.
+            b"TEST(Suite, Name)\n{",
+            b"  Py_BEGIN_ALLOW_THREADS\n  {",
+            b"NAPI_MODULE(addon, Init)\n}",
+            b"NAPI_MODULE(addon, Init)\n",
+            b"  LOG_STATE(x)\n  run();",
+            b"REGISTER_OP(Foo)\n    .Input(x);",
+            b"#define A \\\n  B_MACRO \\\n  c",
+            b"  int x = FLAG_A |\n    FLAG_B;",
+            b"enum E {\n  RED,\n  BLUE\n};",
+            b"BOOL\nWINAPI\nDllMain(HINSTANCE h)\n{",
+            b"HRESULT\r\nFoo::Open(int x) {",
+            b"NAPI_MODULE(addon, Init)\nstatic int later;",
+            b"#undef A\\\nPI\nstruct API Fwd;",
+            b'#define POP() _Pragma("pop_macro(\\"API\\")")\nPOP()\nstruct API Fwd;',
             # A ``)`` with no ``(`` in reach is not a declarator.
             b"  x) GUARDED_BY(mu_);",
             b"  void F(" + b"a," * 2100 + b"b) REQUIRES(mu);",
