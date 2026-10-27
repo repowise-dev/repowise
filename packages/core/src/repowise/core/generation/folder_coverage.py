@@ -41,17 +41,7 @@ def parse_folder_coverage(
 
     rules: list[tuple[str, float]] = []
     for entry in raw:
-        if isinstance(entry, (tuple, list)) and len(entry) == 2:
-            glob_pattern, pct_raw = entry
-            if not isinstance(glob_pattern, _STR):
-                raise ValueError(f"folder_coverage entry {entry!r}: the glob must be a string")
-        elif isinstance(entry, _STR) and "=" in entry:
-            glob_pattern, _, pct_raw = entry.partition("=")
-        else:
-            raise ValueError(
-                f"folder_coverage entry {entry!r} must be 'glob=pct' "
-                "(e.g. 'src/core=1.0') or a (glob, pct) pair"
-            )
+        glob_pattern, pct_raw = _split_entry(entry)
         # Repo paths are relative, so the issue's "./src/core" means "src/core".
         glob_pattern = glob_pattern.strip().strip('"').strip("'").removeprefix("./")
         if not glob_pattern:
@@ -70,3 +60,19 @@ def parse_folder_coverage(
             )
         rules.append((glob_pattern, pct))
     return tuple(rules)
+
+
+def _split_entry(entry: Any) -> tuple[str, Any]:
+    """``(glob, raw pct)`` from a ``"glob=pct"`` string or a ``(glob, pct)`` pair."""
+    if isinstance(entry, (tuple, list)) and len(entry) == 2:
+        glob_pattern, pct_raw = entry
+        if not isinstance(glob_pattern, _STR):
+            raise ValueError(f"folder_coverage entry {entry!r}: the glob must be a string")
+        return glob_pattern, pct_raw
+    if isinstance(entry, _STR) and "=" in entry:
+        glob_pattern, _, pct_raw = entry.partition("=")
+        return glob_pattern, pct_raw
+    raise ValueError(
+        f"folder_coverage entry {entry!r} must be 'glob=pct' "
+        "(e.g. 'src/core=1.0') or a (glob, pct) pair"
+    )
