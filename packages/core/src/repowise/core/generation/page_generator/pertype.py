@@ -52,19 +52,9 @@ from ..overview_tables import (
 )
 from ..page_sources import lint_sources
 from ..structural_labels import structural_page_title
-from .reuse import model_reuse_key
+from .reuse import files_digest, model_reuse_key
 
 log = structlog.get_logger(__name__)
-
-
-def _onboarding_bytes_hash(raw: bytes | None) -> str:
-    """Stable digest of one onboarding evidence file's bytes.
-
-    A missing file hashes to the empty string (stable, not an error): the
-    slot's page is then keyed on the files that do exist, which is the
-    subject the prompt actually carried.
-    """
-    return hashlib.sha256(raw or b"").hexdigest()
 
 
 def _stub_fallback(page: GeneratedPage, page_type: str, exc: Exception) -> GeneratedPage:
@@ -400,14 +390,17 @@ class PerTypeGenerationMixin:
             page = self._stub_module_page(ctx, page_target, title)
             return _stamp_concept(_with_digest(page))
         user_prompt = self._render("module_page.j2", ctx=ctx)
-        # The page's subject is its group's membership. ``structural_key``
-        # hashes exactly that (the grouper minted it), so a group that
-        # survives the next run byte-identically reuses its prose instead of
-        # re-billing it (issue #1089). Folded with the renderer fingerprint,
-        # so a prompt/template/style upgrade still forces a one-time regen.
+        # The page's subject is its group: the membership ``structural_key``
+        # hashes, plus each member file's bytes, so an unchanged group reuses
+        # its prose across RAG drift while an edited member regenerates it
+        # (issue #1089). Folded with the renderer fingerprint, so a
+        # prompt/template/style upgrade still forces a one-time regen.
+        member_files = files_digest(
+            members or [fc.file_path for fc in file_contexts], source_map or {}
+        )
         reuse_key = model_reuse_key(
             self,
-            structural_key,
+            structural_key and f"{structural_key}|{member_files}",
             "module_page",
             "module_page.j2",
         )
@@ -539,12 +532,16 @@ class PerTypeGenerationMixin:
         user_prompt, evidence = self._append_source_evidence(
             user_prompt, "repo_overview", source_map or {}
         )
-        # The overview's subject is the repository itself. Its name is stable
-        # across runs, so an unchanged repo reuses its overview prose instead
-        # of re-billing it on every full run (issue #1089).
+        # The overview's subject is the repository: its name, the system map it
+        # names, and the source evidence it quotes. RAG drift alone reuses the
+        # prose; a changed map or evidence file regenerates it (issue #1089).
+        map_digest = hashlib.sha256(
+            (naming_payload(system_map) if system_map else "").encode()
+        ).hexdigest()
+        evidence_files = files_digest((item.path for item in evidence.included), source_map or {})
         reuse_key = model_reuse_key(
             self,
-            repo_name or "",
+            f"{repo_name}|{map_digest}|{evidence_files}",
             "repo_overview",
             "repo_overview.j2",
         )
@@ -708,13 +705,12 @@ class PerTypeGenerationMixin:
         # stable across runs when unchanged — the one part of the prompt that
         # must not silently age out (issue #1089). The slot's own name rides
         # along so two slots sharing a file still get distinct keys.
-        _subject_parts = [
-            f"{item.path}:{_onboarding_bytes_hash(signals.source_map.get(item.path))}"
-            for item in evidence.included
-        ]
+        evidence_files = files_digest(
+            (item.path for item in evidence.included), signals.source_map
+        )
         reuse_key = model_reuse_key(
             self,
-            spec.slot + "|" + "\x1f".join(sorted(_subject_parts)),
+            spec.slot + "|" + evidence_files,
             "onboarding",
             template_name,
         )

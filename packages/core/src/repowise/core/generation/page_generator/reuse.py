@@ -11,6 +11,7 @@ file, group or repo.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 
 import jinja2
@@ -31,6 +32,16 @@ if TYPE_CHECKING:
 # source is hashed), so this only covers the cases hashing cannot see, the
 # same convention as ``STRUCTURAL_GENERATION_VERSION``.
 MODEL_PAGE_GENERATION_VERSION = "1"
+
+
+def files_digest(paths: Iterable[str], source_map: Mapping[str, bytes]) -> str:
+    """``path:sha256(bytes)`` per file, sorted and joined: a page's file subject.
+
+    A file missing from *source_map* hashes as empty (stable, not an error),
+    so the key covers the files the prompt actually carried.
+    """
+    parts = {f"{p}:{hashlib.sha256(source_map.get(p) or b'').hexdigest()}" for p in paths}
+    return "\x1f".join(sorted(parts))
 
 
 def model_reuse_key(generator: Any, material: str, page_type: str, template: str) -> str:
