@@ -220,6 +220,9 @@ def register_provider(name: str, factory: Callable[..., BaseProvider]) -> None:
             "Choose a different name."
         )
     _custom_providers[name] = factory
+    from repowise.core.registry.plugins import note_registration
+
+    note_registration("llm-provider", name)
 
 
 def get_provider(
@@ -258,6 +261,11 @@ def get_provider(
         )
         response = await provider.generate(system_prompt="...", user_prompt="...")
     """
+    if name not in _custom_providers and name not in PROVIDER_SPECS:
+        # Deferred: a built-in name never pays plugin discovery.
+        from repowise.core.registry.plugins import load_plugins
+
+        load_plugins()  # a plugin package may register it
     if name in _custom_providers:
         return _custom_providers[name](**kwargs)
 
@@ -290,6 +298,9 @@ def list_providers() -> list[str]:
 
     Includes both built-in and runtime-registered custom providers.
     """
+    from repowise.core.registry.plugins import load_plugins
+
+    load_plugins()
     return sorted(set(_BUILTIN_PROVIDERS) | set(_custom_providers))
 
 

@@ -332,6 +332,80 @@ async def test_index_checkpoint_is_timed(sf, monkeypatch):
     assert recorder._inner.phases == [("start", "checkpoint.index"), ("done", "checkpoint.index")]
 
 
+async def test_index_checkpoint_times_the_scan_and_the_change_rebuild(sf, monkeypatch):
+    """The security scan and the git walk get their own keys inside the checkpoint.
+
+    They ran under ``persist.checkpoint`` with no name, so a 12 s "saving" row
+    was mostly a scan and a history walk. The real persisters run here; only
+    the heavy bodies are stubbed.
+    """
+    from types import SimpleNamespace
+
+    import networkx as nx
+
+    from repowise.core.pipeline.phase_timing import PhaseTimingRecorder
+
+    repo_id = await _make_repo(sf)
+    scanned: list[bool] = []
+    rebuilt: list[bool] = []
+
+    async def _noop(*_a: object, **_k: object) -> None:
+        return None
+
+    async def _scan(*_a: object, **_k: object) -> None:
+        scanned.append(True)
+
+    async def _rebuild(*_a: object, **_k: object) -> None:
+        rebuilt.append(True)
+
+    monkeypatch.setattr("repowise.core.pipeline.persist.persist_graph_nodes", _noop)
+    monkeypatch.setattr("repowise.core.pipeline.persist.persist_security_findings", _scan)
+    monkeypatch.setattr("repowise.core.pipeline.persist.git._rebuild_changes", _rebuild)
+
+    recorder = PhaseTimingRecorder(_RecordingProgress())
+    await ResumeController(sf, repo_id, resume=False).checkpoint_index(
+        parsed_files=[],
+        graph_builder=SimpleNamespace(graph=nx.DiGraph),
+        git_metadata_list=[],
+        git_summary=SimpleNamespace(),
+        progress=recorder,
+    )
+
+    assert scanned and rebuilt, "the checkpoint no longer ran the scan or the rebuild"
+    assert "persist.security_scan" in recorder.timings
+    assert "persist.changes" in recorder.timings
+    assert "persist.checkpoint" in recorder.timings
+
+
+async def test_security_scan_runs_off_the_event_loop(monkeypatch):
+    """``scan_source_map`` is CPU-bound; it must not block the loop thread."""
+    import threading
+    from types import SimpleNamespace
+
+    from repowise.core.pipeline.persist.security import persist_security_findings
+
+    seen: dict[str, int] = {}
+
+    def _scan(parsed_files, source_map):
+        seen["thread"] = threading.get_ident()
+        return {}, []
+
+    class _Scanner:
+        def __init__(self, *_a: object, **_k: object) -> None: ...
+
+        async def replace_findings(self, *_a: object, **_k: object) -> None:
+            return None
+
+    monkeypatch.setattr("repowise.core.analysis.security_scan.scan_source_map", _scan)
+    monkeypatch.setattr("repowise.core.analysis.security_scan.SecurityScanner", _Scanner)
+
+    await persist_security_findings(
+        SimpleNamespace(parsed_files=[], source_map={}), object(), "repo-1"
+    )
+
+    assert seen["thread"] != threading.get_ident()
+
+
 async def test_failed_symbol_analysis_reconciliation_keeps_analysis_retryable(sf, monkeypatch):
     """ANALYSIS cannot complete while post-health symbol state is stale."""
     repo_id = await _make_repo(sf)

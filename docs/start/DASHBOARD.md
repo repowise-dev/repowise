@@ -53,7 +53,7 @@ If a job is in flight, the progress and log stream here.
 
 **Answers:** how does this system work, in prose someone can read?
 
-<img src="../../.github/assets/dashboard/docs-page.png" alt="Repowise docs reader: page tree on the left, generated wiki page with confidence and freshness badges in the center" width="100%" />
+<img src="../../.github/assets/dashboard/docs-page.png" alt="Repowise docs reader: page tree on the left, the generated repository overview in the center, with its outline and related pages on the right" width="100%" />
 
 The generated wiki: a page tree on the left, the rendered page in the middle
 with mermaid diagrams, code blocks that link into the file views, a confidence
@@ -115,7 +115,7 @@ regenerating everything.
 
 **Answers:** what talks to what?
 
-<img src="../../.github/assets/dashboard/architecture-page.png" alt="Repowise dependency graph: detected communities laid out on the module map, sized by how much code each holds" width="100%" />
+<img src="../../.github/assets/dashboard/architecture-page.png" alt="Repowise architecture map: every file grouped into the communities it depends on most, with a band for each strong link between communities" width="100%" />
 
 Four tabs, with the view in `?view=`:
 
@@ -157,7 +157,7 @@ zoomed on one node. The older `/c4` and `/zoom` URLs redirect here.
 
 **Answers:** which files have the strongest defect indicators, and why?
 
-<img src="../../.github/assets/dashboard/code-health.png" alt="Repowise code health: the three co-equal pillars, the health band distribution, KPI cards and the code health map" width="100%" />
+<img src="../../.github/assets/dashboard/code-health.png" alt="Repowise code health: the overall score, how it ranks against real bug-fix history, and KPI cards for files, maintainability, performance and hotspot health" width="100%" />
 
 Tabs behind `?tab=` (the label shown, then the id):
 
@@ -301,7 +301,7 @@ tried that" answer from being lost.
 
 `/repos/<id>/chat`
 
-<img src="../../.github/assets/dashboard/chat-page.png" alt="Repowise chat: a question answered against the index, with citations to the pages and files it came from and an artifacts panel" width="100%" />
+<img src="../../.github/assets/dashboard/chat-page.png" alt="Repowise chat: asked which files are riskiest to change, it answers with a table of files and the reason each is risky" width="100%" />
 
 Ask questions against the indexed repo. Answers cite the pages and files they
 came from, an artifacts panel collects code the answer produced, and you can

@@ -25,7 +25,9 @@ a later one instead of staying "not analysed" until a full index.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+from pathlib import Path
 from typing import Any
 
 import structlog
@@ -63,6 +65,19 @@ def commit_limit() -> int:
 
 def budget_seconds(default: float = DEFAULT_BUDGET_SECONDS) -> float:
     return _env_number("REPOWISE_COMMIT_HEALTH_BUDGET_SECONDS", default)
+
+
+def _is_fast_index(repo_path: str) -> bool:
+    """Whether the index was built with ``--mode fast`` (essential git tier).
+
+    Fast mode exists to skip the expensive per-commit and per-file git signals,
+    so an update on such an index must not buy them back one commit at a time.
+    """
+    try:
+        state = json.loads((Path(repo_path) / ".repowise" / "state.json").read_text("utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(state, dict) and state.get("git_tier") == "essential"
 
 
 def recent_shas(commit_rows: list[dict] | None) -> list[str]:
@@ -202,7 +217,7 @@ async def refresh_commit_health_after_update(
 
     limit = commit_limit()
     nothing = dict.fromkeys(("candidates", "scanned", "skipped", "stored", "findings"), 0)
-    if limit <= 0:
+    if limit <= 0 or _is_fast_index(repo_path):
         return nothing
     try:
         async with get_session(session_factory) as session:

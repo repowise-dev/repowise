@@ -16,6 +16,7 @@ from repowise.core.analysis.health.perf.coverage import PerfCoverage
 from repowise.core.analysis.health.ranking import worst_kpis
 from repowise.core.analysis.health.rows import split_tests
 from repowise.core.analysis.health.scoring import (
+    headline_split,
     hotspot_health,
     nloc_weighted_attr,
     nloc_weighted_score,
@@ -160,6 +161,13 @@ def _avg(metrics: list[HealthFileMetric], attr: str) -> float | None:
     return round(value, 2) if value is not None else None
 
 
+def _split_kpis(metrics: list[HealthFileMetric]) -> dict[str, float | None]:
+    """The headline's code-shape and history halves, in deduction points."""
+    halves = headline_split(metrics)
+    keys = ("structure_average", "history_average")
+    return {k: round(v, 2) if v is not None else None for k, v in zip(keys, halves, strict=True)}
+
+
 def _compute_kpis(
     metrics: list[HealthFileMetric],
     *,
@@ -224,9 +232,7 @@ def _compute_kpis(
         # ``None`` until the pillar is measured.
         "maintainability_average": _avg(metrics, "maintainability_score"),
         "performance_average": _avg(metrics, "performance_score"),
-        # The headline's code-shape and history halves, in deduction points.
-        "structure_average": _avg(metrics, "structure_deduction"),
-        "history_average": _avg(metrics, "history_deduction"),
+        **_split_kpis(metrics),
         # Performance leads with the causes worth fixing now and coverage, not the diluted /10.
         **_perf_kpis(performance_causes, coverage),
     }

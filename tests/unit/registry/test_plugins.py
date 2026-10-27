@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import importlib
 import importlib.metadata
 import json
 import os
+import re
 import subprocess
 import sys
 import textwrap
 import uuid
+from pathlib import Path
 
 import click
 import pytest
@@ -16,7 +19,14 @@ from click.testing import CliRunner
 
 from repowise.cli._instrumented_group import InstrumentedGroup
 from repowise.core import registry as registry_pkg
-from repowise.core.registry import CLIRegistry, plugins
+from repowise.core.providers.embedding import registry as embedders
+from repowise.core.providers.llm import registry as llm_providers
+from repowise.core.registry import (
+    CLIRegistry,
+    MCPToolRegistry,
+    PipelineHookRegistry,
+    plugins,
+)
 from repowise.core.registry.plugins import SeamRegistry, load_plugins
 
 
@@ -35,8 +45,8 @@ def make_module(tmp_path, monkeypatch):
     """Write a uniquely named module onto sys.path and return its name."""
     monkeypatch.syspath_prepend(str(tmp_path))
 
-    def make(body: str) -> str:
-        name = f"rw_test_plugin_{uuid.uuid4().hex[:8]}"
+    def make(body: str, prefix: str = "rw_test_plugin") -> str:
+        name = f"{prefix}_{uuid.uuid4().hex[:8]}"
         (tmp_path / f"{name}.py").write_text(textwrap.dedent(body), encoding="utf-8")
         return name
 
@@ -267,16 +277,18 @@ def test_plugins_command_json_and_table(monkeypatch, make_module):
     result = CliRunner().invoke(plugins_command, ["--format", "json"])
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
+    assert payload["api_version"] == plugins.PLUGIN_API_VERSION == registry_pkg.PLUGIN_API_VERSION
     assert [(p["name"], p["status"], p["seams"]) for p in payload["plugins"]] == [
         (f"{good}:register", "loaded", ["demo:acme"]),
         ("no_such_module_xyz", "failed", []),
     ]
-    assert payload["seams"] == {"demo": {"default": "acme", "implementations": ["local", "acme"]}}
+    assert payload["seams"]["demo"] == {"default": "acme", "implementations": ["local", "acme"]}
 
     table = CliRunner().invoke(plugins_command, [])
     assert table.exit_code == 0, table.output
     assert "loaded" in table.output and "failed" in table.output
     assert "seam demo: acme" in table.output
+    assert f"plugin API version {plugins.PLUGIN_API_VERSION}" in table.output
 
 
 def test_plugins_command_with_nothing_installed():
@@ -285,6 +297,52 @@ def test_plugins_command_with_nothing_installed():
     result = CliRunner().invoke(plugins_command, [])
     assert result.exit_code == 0
     assert "No plugins loaded" in result.output
+
+
+def _fail_import_of(monkeypatch, target, error):
+    from repowise.cli.commands import plugins_cmd
+
+    real = importlib.import_module
+
+    def broken(name, *args, **kwargs):
+        if name == target:
+            raise error
+        return real(name, *args, **kwargs)
+
+    monkeypatch.setattr(plugins_cmd.importlib, "import_module", broken)
+    return plugins_cmd.plugins_command
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ImportError("cannot import name 'CloudEvent' from 'repowise.core.events.model'"),
+        ModuleNotFoundError("No module named 'repowise.core.gone'", name="repowise.core.gone"),
+    ],
+)
+def test_plugins_command_fails_when_a_builtin_module_is_broken(monkeypatch, error):
+    command = _fail_import_of(monkeypatch, "repowise.core.events.sinks", error)
+    result = CliRunner().invoke(command, ["--format", "json"])
+    assert result.exit_code != 0
+    assert result.exception is error
+
+
+def test_plugins_command_fails_on_a_third_party_import_error_that_is_not_a_missing_package(
+    monkeypatch,
+):
+    error = ImportError("cannot import name 'x' from 'fastapi'", name="fastapi")
+    command = _fail_import_of(monkeypatch, "repowise.server.auth", error)
+    result = CliRunner().invoke(command, ["--format", "json"])
+    assert result.exit_code != 0
+    assert result.exception is error
+
+
+def test_plugins_command_skips_a_builtin_module_missing_a_third_party_package(monkeypatch):
+    error = ModuleNotFoundError("No module named 'fastapi'", name="fastapi")
+    command = _fail_import_of(monkeypatch, "repowise.server.auth", error)
+    result = CliRunner().invoke(command, ["--format", "json"])
+    assert result.exit_code == 0, result.output
+    assert "seams" in json.loads(result.output)
 
 
 def test_dispatching_a_builtin_command_never_runs_discovery():
@@ -299,3 +357,163 @@ def test_dispatching_a_builtin_command_never_runs_discovery():
     )
     out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=True)
     assert out.stdout.strip().splitlines()[-1] == "True"
+
+
+def test_all_returns_every_implementation_after_loading_plugins(monkeypatch, make_module):
+    seam = SeamRegistry("demo")
+    seam.register("local", "LOCAL")
+    monkeypatch.setenv(plugins.ENV_VAR, f"{make_module(_REGISTER_ACME)}:register")
+
+    assert seam.all() == [("local", "LOCAL"), ("acme", "ACME")]
+    assert plugins._records is not None
+
+
+_REGISTER_EVERYTHING = """
+    from repowise.core import registry
+    from repowise.core.providers.embedding import registry as embedders
+    from repowise.core.providers.llm import registry as llm_providers
+    from repowise.core.registry.plugins import seams
+
+    async def acme_tool() -> dict:
+        return {}
+
+    def register():
+        seams()["demo"].register("acme", "ACME")
+        registry.cli_registry.register_lazy("acme-hello", "acme.cli:hello")
+        registry.mcp_tool_registry.register()(acme_tool)
+        registry.pipeline_hooks.register("parse", lambda phase: None, when="post")
+        llm_providers.register_provider("acme-llm", lambda **kw: "LLM")
+        embedders.register_embedder("acme-embed", lambda **kw: "EMBED")
+"""
+
+
+@pytest.fixture
+def isolated_registries(monkeypatch):
+    for attr, cls in (
+        ("cli_registry", CLIRegistry),
+        ("mcp_tool_registry", MCPToolRegistry),
+        ("pipeline_hooks", PipelineHookRegistry),
+    ):
+        monkeypatch.setattr(registry_pkg, attr, cls())
+    monkeypatch.setattr(llm_providers, "_custom_providers", {})
+    monkeypatch.setattr(embedders, "_custom_embedders", {})
+
+
+def test_every_registration_kind_is_recorded_while_a_plugin_loads(
+    monkeypatch, make_module, isolated_registries
+):
+    SeamRegistry("demo")
+    monkeypatch.setenv(plugins.ENV_VAR, f"{make_module(_REGISTER_EVERYTHING)}:register")
+
+    [record] = load_plugins()
+    assert record.status == "loaded", record.error
+    assert record.seams == [
+        "demo:acme",
+        "cli-command:acme-hello",
+        "mcp-tool:acme_tool",
+        "pipeline-hook:parse.post",
+        "llm-provider:acme-llm",
+        "embedder:acme-embed",
+    ]
+    registry_pkg.pipeline_hooks.register("graph", lambda phase: None)
+    assert record.seams[-1] == "embedder:acme-embed"  # outside a load, nothing is recorded
+
+
+def test_a_plugin_provider_resolves_by_name(monkeypatch, make_module, isolated_registries):
+    monkeypatch.setenv(plugins.ENV_VAR, f"{make_module(_REGISTER_EVERYTHING)}:register")
+    SeamRegistry("demo")
+
+    assert llm_providers.get_provider("acme-llm") == "LLM"
+    assert embedders.get_embedder("acme-embed") == "EMBED"
+    assert "acme-llm" in llm_providers.list_providers()
+    assert "acme-embed" in embedders.list_embedders()
+    with pytest.raises(ValueError, match="acme-llm"):
+        llm_providers.get_provider("no-such-llm")
+    with pytest.raises(ValueError, match="acme-embed"):
+        embedders.get_embedder("no-such-embedder")
+
+
+def test_a_builtin_provider_never_runs_discovery(isolated_registries):
+    llm_providers.get_provider("mock", with_rate_limiter=False)
+    embedders.get_embedder("mock")
+    assert plugins._records is None
+
+
+_IMPORTS_A_BUILTIN = """
+    from repowise.core.registry import pipeline_hooks
+    from repowise.core.registry.plugins import seams
+
+    def register():
+        import repowise.core.events.sinks as sinks  # first import registers jsonl, stdout
+        from repowise.core.report.model import Section
+
+        sinks.event_sinks.register("acme", object())
+        # An instance of a repowise class, still the plugin's own.
+        seams()["report-section"].register("acme", Section(title="t", summary="s", collect=None))
+        pipeline_hooks.register("parse", lambda phase: None)
+"""
+
+
+def test_builtins_imported_while_a_plugin_loads_are_not_its_own(
+    monkeypatch, make_module, isolated_registries
+):
+    import repowise.core.events as events_pkg
+
+    # Unload the built-in so the plugin's import runs its registrations again.
+    monkeypatch.setattr(events_pkg, "sinks", importlib.import_module("repowise.core.events.sinks"))
+    monkeypatch.delitem(sys.modules, "repowise.core.events.sinks")
+    SeamRegistry("report-section")
+    monkeypatch.setenv(plugins.ENV_VAR, f"{make_module(_IMPORTS_A_BUILTIN)}:register")
+
+    [record] = load_plugins()
+    assert record.status == "loaded", record.error
+    assert record.seams == ["event-sink:acme", "report-section:acme", "pipeline-hook:parse.post"]
+    assert plugins.seams()["event-sink"].names == ["jsonl", "stdout", "acme"]
+
+
+def test_a_plugin_package_named_like_repowise_is_still_recorded(monkeypatch, make_module):
+    SeamRegistry("demo")
+    body = """
+        from repowise.core.registry.plugins import seams
+        seams()["demo"].register("hello", "HELLO")
+    """
+    monkeypatch.setenv(plugins.ENV_VAR, make_module(body, prefix="repowise_hello"))
+
+    [record] = load_plugins()
+    assert record.seams == ["demo:hello"]
+
+
+_REPO = Path(__file__).resolve().parents[3]
+_SEAM_DEFINITION = re.compile(r"=\s*SeamRegistry(?:\[[^\]]*\])?\(\s*[\"']([^\"']+)[\"']")
+
+
+@pytest.fixture(scope="module")
+def plugins_json() -> dict:
+    """``repowise plugins --format json`` in a fresh process with no plugins."""
+    probe = (
+        "from click.testing import CliRunner; "
+        "from repowise.cli.commands.plugins_cmd import plugins_command; "
+        "print(CliRunner().invoke(plugins_command, ['--format', 'json']).output)"
+    )
+    env = {k: v for k, v in os.environ.items() if k != plugins.ENV_VAR}
+    out = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=True, env=env
+    )
+    return json.loads(out.stdout)
+
+
+def test_plugins_command_lists_builtin_implementations(plugins_json):
+    seams = plugins_json["seams"]
+    assert {"bus-factor", "hotspots"} <= set(seams["report-section"]["implementations"])
+    assert seams["event-sink"] == {"default": "jsonl", "implementations": ["jsonl", "stdout"]}
+
+
+def test_plugins_command_imports_every_seam_defined_in_packages(plugins_json):
+    defined = {
+        m.group(1)
+        for path in (_REPO / "packages").glob("*/src/**/*.py")
+        for m in _SEAM_DEFINITION.finditer(path.read_text(encoding="utf-8"))
+    }
+    assert "report-section" in defined
+    missing = defined - set(plugins_json["seams"])
+    assert not missing, f"add the modules defining {sorted(missing)} to BUILTIN_SEAM_MODULES"

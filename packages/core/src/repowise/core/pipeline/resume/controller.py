@@ -188,10 +188,14 @@ class ResumeController:
         try:
             # On a large repo this write runs for minutes; without its own
             # timing it is missing from the totals.
-            with timed(getattr(progress, "table", None), "persist.checkpoint"):
+            timings = getattr(progress, "table", None)
+            with timed(timings, "persist.checkpoint"):
                 async with get_session(self._sf) as session:
-                    await persist_ingestion(view, session, self._repo_id)
-                    await persist_git(view, session, self._repo_id)
+                    # The scan and the change rebuild inside these writes time
+                    # themselves (persist.security_scan, persist.changes) so
+                    # the checkpoint total is not mistaken for pure writes.
+                    await persist_ingestion(view, session, self._repo_id, timings=timings)
+                    await persist_git(view, session, self._repo_id, timings=timings)
         except Exception as exc:
             logger.warning("resume_checkpoint_index_failed", error=str(exc))
             # The CLI tells the user their index was saved and that

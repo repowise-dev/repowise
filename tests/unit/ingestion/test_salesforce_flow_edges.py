@@ -45,6 +45,9 @@ _APP = {
     "sfdx-project.json": '{"packageDirectories": [{"path": "force-app"}], "namespace": "acme"}\n',
     f"{_D}/flows/Main_Flow.flow-meta.xml": _MAIN_FLOW,
     f"{_D}/flows/Child_Flow.flow-meta.xml": _flow("    <processType>AutoLaunchedFlow</processType>\n"),
+    f"{_D}/flows/Onboard.flow-meta.xml": _flow("    <processType>AutoLaunchedFlow</processType>\n"),
+    f"{_D}/flows/With_Inputs.flow-meta.xml": _flow("    <processType>AutoLaunchedFlow</processType>\n"),
+    f"{_D}/flows/Vf_Flow.flow-meta.xml": _flow("    <processType>AutoLaunchedFlow</processType>\n"),
     f"{_D}/classes/Mailer.cls": (
         "public with sharing class Mailer {\n"
         "    @InvocableMethod(label='Send')\n"
@@ -112,10 +115,31 @@ _APP = {
         '<aura:component implements="lightning:availableForFlowScreens"/>\n'
     ),
     f"{_D}/aura/markupAura/markupAuraController.js": "({ init: function (c, e, h) {} })\n",
+    f"{_D}/aura/flowHost/flowHost.cmp": (
+        '<aura:component><lightning:flow aura:id="flow"/></aura:component>\n'
+    ),
+    f"{_D}/aura/flowHost/flowHostController.js": (
+        "({ start: function(cmp) {\n"
+        '    cmp.find("flow").startFlow("Onboard");\n'
+        '    cmp.find("flow").startFlow("With_Inputs", inputVariables);\n'
+        '    // cmp.find("flow").startFlow("Child_Flow");\n'
+        "    var example = '.startFlow(\"Child_Flow\")';\n"
+        '    cmp.find("flow").startFlow(dynamicName);\n'
+        '    cmp.find("flow").startFlow("Missing_Flow");\n'
+        "} })\n"
+    ),
+    f"{_D}/pages/Intake.page": (
+        '<apex:page><flow:interview name="Vf_Flow"/>'
+        '<!-- <flow:interview name="Child_Flow"/> -->\n</apex:page>\n'
+    ),
     f"{_D}/flexipages/Home.flexipage-meta.xml": (
         f"<FlexiPage {_NS}><flexiPageRegions><itemInstances><componentInstance>"
         "<componentName>acme:onPage</componentName></componentInstance>"
         "<componentInstance><componentName>force:detailPanel</componentName></componentInstance>"
+        "<componentInstanceProperties><name>flowName</name><value>Child_Flow</value>"
+        "</componentInstanceProperties>"
+        "<!-- <componentInstanceProperties><name>flowName</name><value>Onboard</value>"
+        "</componentInstanceProperties> -->"
         "</itemInstances></flexiPageRegions></FlexiPage>\n"
     ),
     f"{_D}/tabs/On_Tab.tab-meta.xml": f"<CustomTab {_NS}><lwcComponent>onTab</lwcComponent></CustomTab>\n",
@@ -220,6 +244,24 @@ def test_flows_are_symbols_linked_to_apex_flows_and_components(tmp_path: Path) -
     targets = {t for _, t in graph.out_edges(f"{lwc}/host/host.html")}
     assert main not in targets
 
+    # Aura and Visualforce launch flows from literal references; comments and
+    # dynamic Aura names do not add edges.
+    aura_controller = f"{_D}/aura/flowHost/flowHostController.js"
+    onboard = f"{_D}/flows/Onboard.flow-meta.xml"
+    with_inputs = f"{_D}/flows/With_Inputs.flow-meta.xml"
+    vf_page = f"{_D}/pages/Intake.page"
+    vf_flow = f"{_D}/flows/Vf_Flow.flow-meta.xml"
+    assert edge(aura_controller, onboard) == "framework"
+    assert edge(aura_controller, with_inputs) == "framework"
+    assert edge(f"{aura_controller}::__module__", f"{onboard}::Onboard") == "framework_binds"
+    assert edge(vf_page, vf_flow) == "framework"
+    assert edge(f"{vf_page}::__module__", f"{vf_flow}::Vf_Flow") == "framework_binds"
+    assert not graph.has_edge(aura_controller, child)
+    assert not graph.has_edge(vf_page, child)
+    assert {t for _, t in graph.out_edges(aura_controller) if "/flows/" in t} == {
+        onboard, with_inputs
+    }
+
     # Placement metadata anchors what it names, and nothing it merely grants.
     anchored = {t for _, t in graph.out_edges("framework:salesforce")}
     assert anchored == {
@@ -228,6 +270,7 @@ def test_flows_are_symbols_linked_to_apex_flows_and_components(tmp_path: Path) -
         f"{lwc}/onAction/onAction.js",
         f"{lwc}/onSite/onSite.js",
         f"{cls}/InboundHandler.cls",
+        child,
     }
     assert graph.nodes[f"{lwc}/onPage/onPage.js"]["is_entry_point"] is True
 

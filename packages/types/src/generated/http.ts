@@ -3463,7 +3463,7 @@ export interface ProviderEntry {
   local_model?: boolean;
   env_vars?: string[];
   setup_hint?: string;
-  detected?: "signed_in" | "env" | "saved" | null;
+  detected?: "signed_in" | "installed" | "env" | "saved" | null;
 }
 
 export interface ProviderModelEntry {

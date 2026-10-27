@@ -363,6 +363,90 @@ def _edge_row(source: str, target: str, data: dict) -> dict:
     }
 
 
+async def prune_absent_graph_rows(
+    session: Any,
+    repo_id: str,
+    node_ids: set[str],
+    edge_rows: list[dict],
+) -> tuple[int, int]:
+    """Delete this repo's ``graph_edges`` / ``graph_nodes`` the fresh graph lacks.
+
+    :func:`persist_graph_nodes` and :func:`batch_upsert_graph_edges` only
+    upsert, so a full re-index over an existing store kept every row an earlier
+    run wrote: an import removed from source stayed visible to MCP callers /
+    dependents, flow paths and change health, and a superseded
+    ``external:...`` target sat beside its resolved edge. Full runs only: the
+    authority is "absent from this run's complete graph", the same rule as
+    :func:`_prune_stale_file_rows`. Incremental updates use the file-scoped
+    reconcilers instead and never call this.
+
+    Runs in the caller's session, so the prune commits or rolls back together
+    with the upsert it follows. Edges go before nodes (no FK cascade between
+    the tables). An empty graph is treated as a broken run and prunes nothing,
+    matching the rest of the full-run pruning.
+
+    Returns ``(edges_deleted, nodes_deleted)``.
+    """
+    from sqlalchemy import delete, select
+
+    from repowise.core.persistence.models import GraphEdge, GraphNode
+
+    if not node_ids:
+        return 0, 0
+
+    fresh_edges = {
+        (r["source_node_id"], r["target_node_id"], r.get("edge_type", "imports")) for r in edge_rows
+    }
+
+    # Diff in Python so each IN (...) is bounded by the stale set, not the whole
+    # repo (SQLite host-parameter limit) — same approach as _prune_stale_file_rows.
+    edge_rows_db = (
+        await session.execute(
+            select(
+                GraphEdge.id,
+                GraphEdge.source_node_id,
+                GraphEdge.target_node_id,
+                GraphEdge.edge_type,
+            ).where(GraphEdge.repository_id == repo_id)
+        )
+    ).all()
+    stale_edge_ids = [
+        edge_id
+        for edge_id, source, target, edge_type in edge_rows_db
+        if (source, target, edge_type) not in fresh_edges
+    ]
+    for i in range(0, len(stale_edge_ids), _PRUNE_CHUNK):
+        await session.execute(
+            delete(GraphEdge).where(
+                GraphEdge.repository_id == repo_id,
+                GraphEdge.id.in_(stale_edge_ids[i : i + _PRUNE_CHUNK]),
+            )
+        )
+
+    node_rows_db = (
+        await session.execute(
+            select(GraphNode.id, GraphNode.node_id).where(GraphNode.repository_id == repo_id)
+        )
+    ).all()
+    stale_node_ids = [row_id for row_id, node_id in node_rows_db if node_id not in node_ids]
+    for i in range(0, len(stale_node_ids), _PRUNE_CHUNK):
+        await session.execute(
+            delete(GraphNode).where(
+                GraphNode.repository_id == repo_id,
+                GraphNode.id.in_(stale_node_ids[i : i + _PRUNE_CHUNK]),
+            )
+        )
+
+    if stale_edge_ids or stale_node_ids:
+        logger.info(
+            "graph_rows_full_prune",
+            repo_id=repo_id,
+            edges=len(stale_edge_ids),
+            nodes=len(stale_node_ids),
+        )
+    return len(stale_edge_ids), len(stale_node_ids)
+
+
 async def _edges_predate_cohesion(session: Any, repo_id: str, graph_builder: Any) -> bool:
     """True when ``graph_edges`` was written before edge cohesion was recorded.
 
@@ -442,15 +526,9 @@ async def stamp_edges_parser_fingerprint(session: Any, repo_id: str, fingerprint
     """Record the parser build that just wrote this repo's ``graph_edges``.
 
     Written by :func:`persist_incremental_edges` after a widen, and by the full
-    :func:`persist_ingestion` path only when the store held no edges before it.
-    That path upserts edges (:func:`batch_upsert_graph_edges`) and prunes only
-    the nodes of files that vanished, so a re-index over an existing store adds
-    the new build's edges without removing the old build's surplus ones.
-    Stamping such a store would mark it parser-current and permanently suppress
-    the delete-then-insert reconcile that is the only thing which clears them;
-    it stays unstamped, and the first update widens. A fresh store has no
-    surplus, so it is stamped: unstamped, the next parser change could not be
-    told apart from "already up to date" on a quiet checkout.
+    :func:`persist_ingestion` path after it has pruned the store down to the
+    fresh graph (:func:`prune_absent_graph_rows`). Either way the table holds
+    exactly the running build's edges, so it is parser-current.
     """
     from sqlalchemy import update
 
@@ -562,7 +640,9 @@ async def _prune_vanished_symbol_nodes(
             )
         )
         await session.execute(
-            delete(GraphNode).where(GraphNode.repository_id == repo_id, GraphNode.node_id.in_(batch))
+            delete(GraphNode).where(
+                GraphNode.repository_id == repo_id, GraphNode.node_id.in_(batch)
+            )
         )
     if stale:
         logger.info("graph_nodes_parser_prune", repo_id=repo_id, nodes=len(stale))

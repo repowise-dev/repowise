@@ -165,6 +165,16 @@ _JAVA_CASES = [
         [],
         "a shared repository verb on a non-repository receiver is not db",
     ),
+    (
+        "class A{void m(java.util.List<X> xs){for(X x:xs){ synchronized(x){ } x.lock.lock(); }}}",
+        [],
+        "the loop element's own lock is a different lock each pass, nothing to hoist",
+    ),
+    (
+        "class A{void m(java.util.List<X> xs){for(X x:xs){ synchronized(this){ } }}}",
+        [("lock_in_loop", "")],
+        "a shared lock taken per element still fires",
+    ),
 ]
 
 
@@ -216,6 +226,28 @@ _GO_CASES = [
         "func f(urls []string){ for _, u := range urls { http.Get(u) } }",
         [("io_in_loop", "network")],
         "net/http Get in a range loop",
+    ),
+    (
+        "package p\nfunc f(us []*U) {\n\tfor _, u := range us {\n\t\tu.mu.RLock()\n\t\tu.mu.RUnlock()\n\t}\n}\n",
+        [],
+        "the range element's own mutex is a different lock each pass",
+    ),
+    (
+        "package p\nfunc f(us []*U) {\n\tfor _, u := range us {\n\t\tmu.Lock()\n\t\tmu.Unlock()\n\t}\n}\n",
+        [("lock_in_loop", "")],
+        "a shared mutex locked per element still fires",
+    ),
+    (
+        "package p\nfunc f(s *S) {\n\tfor {\n\t\tselect {\n\t\tcase <-s.t.C:\n"
+        "\t\t\tmu.Lock()\n\t\t\tmu.Unlock()\n\t\t}\n\t}\n}\n",
+        [],
+        "a lock per event in a for-select event loop has nothing to hoist",
+    ),
+    (
+        "package p\nfunc f(xs []int) {\n\tfor _, x := range xs {\n\t\tselect {\n"
+        "\t\tcase ch <- x:\n\t\t\tmu.Lock()\n\t\t}\n\t}\n}\n",
+        [("lock_in_loop", "")],
+        "a select inside a range loop still locks per element",
     ),
 ]
 
@@ -289,6 +321,16 @@ _CSHARP_CASES = [
         " System.Threading.Tasks.Task SaveChangesAsync() => null; }",
         [],
         "a bare SaveChangesAsync is the class's own method, not a DbContext call",
+    ),
+    (
+        "class A{void M(List<X> xs){foreach(var item in xs){ lock(item){ } }}}",
+        [],
+        "locking the foreach element is a different lock each pass",
+    ),
+    (
+        "class A{void M(List<X> xs){foreach(var item in xs){ lock(gate){ } }}}",
+        [("lock_in_loop", "")],
+        "a shared gate locked per element still fires",
     ),
 ]
 
@@ -401,6 +443,16 @@ def test_rust_fs_in_async_blocks():
     # tokio::fs::read is always awaited -> never read as a blocking sync call.
     awaited = "async fn f(p: String){ let _ = tokio::fs::read(&p).await; }"
     assert not any(k == "blocking_sync_in_async" for k, _ in _hits("rust", awaited))
+
+
+def test_rust_console_io_in_async_is_not_fs():
+    """``std::io::stdin().read(..)`` roots at ``std`` but is console IO, not ``fs::read``."""
+    stdin = "async fn f(){ let _ = std::io::stdin().read(&mut []); }"
+    stderr = 'async fn f(){ let _ = std::io::stderr().write(b"x"); }'
+    assert not any(k == "blocking_sync_in_async" for k, _ in _hits("rust", stdin))
+    assert not any(k == "blocking_sync_in_async" for k, _ in _hits("rust", stderr))
+    sleep = "async fn f(d: Duration){ std::thread::sleep(d); }"
+    assert ("blocking_sync_in_async", "thread::sleep") in _hits("rust", sleep)
 
 
 # ---------------------------------------------------------------------------
@@ -717,6 +769,39 @@ def test_python_list_insert_zero_vs_variable_index():
     assert not any(k == "list_insert_zero_in_loop" for k, _ in _hits("python", reset))
 
 
+_INSERT_ZERO = "def f(xs, out, ok):\n    for x in xs:\n{body}"
+
+
+@pytest.mark.parametrize(
+    "body,fires",
+    [
+        ("        out.insert(0, x)\n        return\n", False),
+        ("        if ok:\n            out.insert(0, x)\n            return\n", False),
+        ("        out.insert(0, x)\n        log(x)\n        break\n", False),
+        ("        out.insert(0, x)\n        raise ValueError(x)\n", False),
+        # A conditional exit, or a ``continue`` that can skip the exit, still repeats.
+        ("        out.insert(0, x)\n        if ok:\n            break\n", True),
+        ("        out.insert(0, x)\n        if ok:\n            continue\n        break\n", True),
+        # The exit comes before the insert, not after it.
+        ("        if ok:\n            break\n        out.insert(0, x)\n", True),
+        # ``break`` leaves only the inner loop of a nest.
+        ("        for y in x:\n            out.insert(0, y)\n            break\n", True),
+        ("        for y in x:\n            out.insert(0, y)\n            return\n", False),
+        # A ``raise`` an ``except`` in the same iteration can catch.
+        (
+            "        try:\n            out.insert(0, x)\n            raise ValueError\n"
+            "        except ValueError:\n            pass\n",
+            True,
+        ),
+        # A flag-driven exit is not followed (click's ``stop = True``).
+        ("        out.insert(0, x)\n        stop = True\n        if stop:\n            break\n", True),
+    ],
+)
+def test_python_list_insert_zero_before_loop_exit(body, fires):
+    kinds = [k for k, _ in _hits("python", _INSERT_ZERO.format(body=body))]
+    assert ("list_insert_zero_in_loop" in kinds) is fires
+
+
 def test_ts_json_parse_only_deep_clone_idiom():
     """Bare ``JSON.parse(x.payload)`` of a distinct per-iteration payload is
     necessary work (Phase-7d: bare parse/stringify was 0% precision)."""
@@ -756,16 +841,59 @@ def test_python_pathlib_round_trips_are_filesystem_sinks():
     Python's filesystem lexicon recognised only the bare ``open(...)`` builtin,
     so the idiom the whole ecosystem actually uses was invisible: a loop full of
     ``Path.read_text()`` scored a perfect 10/10 on the performance dimension.
-    Matched on the method name alone because only a ``pathlib.Path`` spells
-    these — the receiver is usually a plain local (``src_path.read_text()``),
-    so there is no import to classify.
     """
     for method in ("read_text", "read_bytes", "write_text", "write_bytes"):
-        src = f"def f(ps):\n    for p in ps:\n        p.{method}()\n"
+        src = f"def f(d):\n    for p in d.glob('*'):\n        p.{method}()\n"
         assert ("io_in_loop", "filesystem") in _hits("python", src), method
     # The constructor-receiver form resolves the same way.
     ctor = "from pathlib import Path\ndef f(ps):\n    for p in ps:\n        Path(p).read_text()\n"
     assert ("io_in_loop", "filesystem") in _hits("python", ctor)
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        "def f(d, names):\n    for n in names:\n        (d / n).read_text()\n",
+        "def f(d, names):\n    for n in names:\n        t = d / n\n        t.write_text('x')\n",
+        "def f(xs):\n    for x in xs:\n        x.config_file.read_bytes()\n",
+        "from pathlib import Path\ndef f(xs: list[Path]):\n    for x in xs:\n        x.read_text()\n",
+        "def f(d):\n    srcs = [d / 'a.py', d / 'b.py']\n    for s in srcs:\n        s.write_text('x')\n",
+        "def f(d, ns):\n    for s in sorted(d / n for n in ns):\n        s.read_bytes()\n",
+        "def f(d):\n    for p in (q for q in d.glob('*') if q.is_file()):\n        p.read_text()\n",
+        "import pathlib\ndef f(ns):\n    for n in ns:\n        pathlib.Path(n).read_text()\n",
+        "def f(xs):\n    for x in xs:\n        x.srcPath.read_text()\n",
+    ],
+)
+def test_python_path_receivers_stay_filesystem_sinks(src):
+    assert ("io_in_loop", "filesystem") in _hits("python", src)
+
+
+def test_python_awaited_path_read_is_a_serial_filesystem_await():
+    src = (
+        "import anyio\nasync def f(ns):\n    for n in ns:\n"
+        "        await anyio.Path(n).read_text()\n"
+    )
+    assert ("serial_await_in_loop", "filesystem") in _hits("python", src)
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        # tornado ``IOStream.read_bytes``: a socket read, not a file.
+        "class C:\n    async def f(self, n):\n        while n:\n"
+        "            await self.stream.read_bytes(n)\n",
+        # rich's terminal writer.
+        "def f(term, parts):\n    for t in parts:\n        term.write_text(t)\n",
+        # An unknown receiver is no sink: streams and terminals spell these names too.
+        "def f(ps):\n    for p in ps:\n        p.read_text()\n",
+        # A name that only ends in the letters ``file``.
+        "def f(profile, ns):\n    for n in ns:\n        profile.read_bytes(n)\n",
+        # A binding that never settles on a path.
+        "def f(ns):\n    a = a\n    for n in ns:\n        a.read_text()\n",
+    ],
+)
+def test_python_non_path_receivers_are_not_filesystem_sinks(src):
+    assert not any(detail == "filesystem" for _, detail in _hits("python", src))
 
 
 def test_python_metadata_syscalls_are_not_filesystem_sinks():
@@ -889,7 +1017,7 @@ def test_python_point_reads_do_not_become_hot_path_candidates():
     assert [f.bare_sink_kind for f in fc.perf_fn_facts] == ["filesystem"]
     # Still a per-iteration finding when it IS in a loop.
     assert ("io_in_loop", "filesystem") in _hits(
-        "python", "def f(ps):\n    for p in ps:\n        p.write_text('x')\n"
+        "python", "def f(paths):\n    for p in paths:\n        p.write_text('x')\n"
     )
 
 
@@ -1395,6 +1523,22 @@ _KOTLIN_CASES = [
         "a dynamic pattern may legitimately vary - not hoistable",
     ),
     (
+        'fun m(xs: List<String>) {\n    for (x in xs) {\n        val r = "^a".toRegex()\n    }\n}\n',
+        [("regex_compile_in_loop", "")],
+        "literal.toRegex() recompiled per iteration",
+    ),
+    (
+        "fun m(xs: List<P>) {\n"
+        '    for (x in xs) {\n        val r = "${x.id}.*".toRegex()\n    }\n}\n',
+        [],
+        "an interpolated toRegex() receiver varies per iteration - not hoistable",
+    ),
+    (
+        'fun m(xs: List<String>) {\n    for (x in xs) {\n        val r = "$x.*".toRegex()\n    }\n}\n',
+        [],
+        "a bare $name template receiver is not hoistable either",
+    ),
+    (
         "fun m(xs: List<String>) {\n    for (x in xs) {\n        lock.lock()\n    }\n}\n",
         [("lock_in_loop", "")],
         "a lock taken every iteration is a contention site",
@@ -1409,6 +1553,26 @@ _KOTLIN_CASES = [
         "class A {\n    fun lock(ks: List<Any>) {\n        for (k in ks) {\n            locks[k].lock()\n        }\n    }\n}\n",
         [("lock_in_loop", "")],
         "an iterating lock() is not a retry loop",
+    ),
+    (
+        "fun f(items: List<S>) {\n    items.forEach { it.withLock { } }\n}\n",
+        [],
+        "the forEach element's own lock via implicit it",
+    ),
+    (
+        "fun f(ss: List<S>) {\n    for (s in ss) s.withLock { }\n    ss.forEach { x -> x.lock.lock() }\n}\n",
+        [],
+        "the for element and a named lambda parameter own their locks",
+    ),
+    (
+        "fun f(m: Map<K, S>) {\n    for ((k, s) in m) synchronized(s) { }\n}\n",
+        [],
+        "a destructured element passed to synchronized",
+    ),
+    (
+        "fun f(ss: List<S>) {\n    ss.forEach { lock.withLock { } }\n    for (s in ss) synchronized(this) { }\n}\n",
+        [("lock_in_loop", ""), ("lock_in_loop", "")],
+        "a shared lock taken per element still fires",
     ),
 ]
 
@@ -1554,6 +1718,25 @@ _CPP_CASES = [
         "void m(std::vector<int> v) {\n    for (auto x : v) {\n        mu.lock();\n    }\n}\n",
         [("lock_in_loop", "")],
         "the explicit acquire form of the same site",
+    ),
+    (
+        "void m() {\n    while (active_) {\n        std::unique_lock<std::mutex> lock(mu_);\n"
+        "        if (cv_.wait_for(lock, iv_, [this] { return !active_; })) {\n"
+        "            return;\n        }\n        tick();\n    }\n}\n",
+        [],
+        "a guard handed to a condition-variable wait is the wait idiom",
+    ),
+    (
+        "void m() {\n    for (;;) {\n        std::unique_lock<std::mutex> lk{mu};\n"
+        "        while (q.empty()) cv->wait(lk);\n        q.pop();\n    }\n}\n",
+        [],
+        "a wait loop nested under the guard's loop",
+    ),
+    (
+        "void m() {\n    while (active_) {\n        std::unique_lock<std::mutex> lock(mu_);\n"
+        "        cv_.wait(other);\n        tick();\n    }\n}\n",
+        [("lock_in_loop", "")],
+        "a wait on another lock leaves the guard per iteration",
     ),
     (
         "void m() {\n    for (auto x : load_all()) {\n        use(x);\n    }\n}\n",

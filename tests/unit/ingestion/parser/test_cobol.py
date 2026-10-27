@@ -396,3 +396,31 @@ class TestCobolCallScope:
            EXEC CICS XCTL PROGRAM('COCRDLIC') END-EXEC.
 """
         assert self._resolve(parser, {"cocrdlic.cbl": caller}, {}) == set()
+
+
+class TestCobolFreeFormat:
+    def test_free_format_program_parses_symbols_and_calls(self, parser: ASTParser) -> None:
+        source = (
+            b">>SOURCE FORMAT FREE\n"
+            b"IDENTIFICATION DIVISION.\n"
+            b"PROGRAM-ID. HELLO.\n"
+            b"DATA DIVISION.\n"
+            b"WORKING-STORAGE SECTION.\n"
+            b"01 WS-A PIC 9. *> a counter\n"
+            b"PROCEDURE DIVISION.\n"
+            b"MAIN-PARA.\n"
+            b"    PERFORM SHOW-PARA\n"
+            b"    STOP RUN.\n"
+            b"SHOW-PARA.\n"
+            b"    DISPLAY \"HI\". *> greet\n"
+        )
+        parsed = parser.parse_file(_cobol("HELLO.cbl"), source)
+        assert parsed.parse_errors == []
+        assert {s.name: s.kind for s in parsed.symbols} == {
+            "HELLO": "module",
+            "WS-A": "variable",
+            "MAIN-PARA": "function",
+            "SHOW-PARA": "function",
+        }
+        assert [c.target_name for c in parsed.calls] == ["SHOW-PARA"]
+

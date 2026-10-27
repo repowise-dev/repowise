@@ -147,7 +147,7 @@ Every id with its threshold and weight:
 
 | Family | Detectors | Cap | Catches |
 |---|---:|---|---|
-| Structural complexity | 6 | 2.5 | Deep nesting, brain methods (listed, not scored), god classes, low cohesion, repeated nesting, complex conditions |
+| Structural complexity | 6 | 2.5 | Deep nesting, god classes, low cohesion, complex conditions; brain methods and repeated nesting are listed, not scored |
 | Size and complexity | 3 | 1.5 | Long or high-CCN functions, primitive obsession |
 | Duplication | 1 | 1.0 | Cloned blocks |
 | Error handling | 1 | 0.5 | Swallowed or catch-all handlers, `unwrap`/panic, discarded Go errors |

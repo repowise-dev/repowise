@@ -7,7 +7,7 @@ tests reach it, or neither), and the finding says so and never quotes a
 percentage. Severity: medium from 30, high from 50, critical from 100, the
 upper bands for measured coverage only. A function with complexity of 30 or
 more stays above the bar at full coverage, so its finding asks for a
-refactor rather than tests. Test files are exempt.
+refactor rather than tests. Test files and code that does not ship are exempt.
 """
 
 from __future__ import annotations
@@ -64,7 +64,7 @@ class UntestedComplexityDetector:
     category = "test_coverage"
 
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
-        if ctx.is_test_material or ctx.reexport_only or not ctx.all_functions:
+        if ctx.outside_coverage_scope or ctx.reexport_only or not ctx.all_functions:
             return []
         out: list[BiomarkerResult] = []
         for fn, measured in zip(ctx.all_functions, _measured(ctx), strict=True):

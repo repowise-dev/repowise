@@ -86,7 +86,7 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
     label: BIOMARKER_LABELS.repeated_nesting,
     category: "structural_complexity",
     description:
-      "A function with several separate nested blocks stitched together. No single block is bad, but the whole reads as a sequence of mini-functions.",
+      "A function with several separate nested blocks stitched together. No single block is bad, but the whole reads as a sequence of mini-functions. Advisory: it costs this file no points.",
   },
   complex_method: {
     label: BIOMARKER_LABELS.complex_method,
@@ -338,7 +338,7 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
     label: BIOMARKER_LABELS.hot_path_sync_io,
     category: "performance",
     description:
-      "A blocking subprocess or filesystem call in one of the repo's most-called functions, even outside a loop. Every call through the function waits for it. Advisory: a latency signal ranked by call-graph centrality, not proof of a request path, and not always a defect. Tests, tooling, examples, and generated or vendored code are not flagged.",
+      "A blocking subprocess or filesystem call in a function with at least as many callers as 80% of the repo's called functions, even outside a loop. Every call through the function waits for it. Advisory: a latency signal ranked by call-graph centrality, not proof of a request path, and not always a defect. Tests, tooling, examples, and generated or vendored code are not flagged.",
   },
   blocking_io_under_lock: {
     label: BIOMARKER_LABELS.blocking_io_under_lock,
@@ -481,6 +481,7 @@ export const ADVISORY_HOME_BIOMARKERS: ReadonlySet<string> = new Set([
   "mock_saturated_test",
   "hidden_coupling",
   "brain_method",
+  "repeated_nesting",
   "untested_complexity",
   "apex_soql_injection",
   "apex_missing_sharing",

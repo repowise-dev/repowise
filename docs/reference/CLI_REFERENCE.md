@@ -2126,7 +2126,7 @@ repowise plugins --format json
 |------|--------------|---------|
 | `--format` | `table` or `json`. | `table` |
 
-See [pluggable storage and capability seams](../architecture/pluggable-storage.md).
+See the [plugin author guide](PLUGINS.md).
 
 ### `repowise attribution`
 

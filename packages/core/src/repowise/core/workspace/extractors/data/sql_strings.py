@@ -15,7 +15,6 @@ Precision rules (this is where the false links would come from):
 
 from __future__ import annotations
 
-import logging
 import re
 from typing import TYPE_CHECKING
 
@@ -39,6 +38,7 @@ _STRING_RE = re.compile(
     r'"""(?P<t1>.*?)"""'
     r"|'''(?P<t2>.*?)'''"
     r"|`(?P<bt>[^`]*)`"
+    r'|(?:\$@|@\$|@)"(?P<verb>(?:[^"]|"")*)"'
     r'|"(?P<dq>(?:[^"\\\n]|\\.)*)"'
     r"|'(?P<sq>(?:[^'\\\n]|\\.)*)'",
     re.DOTALL,
@@ -188,9 +188,12 @@ class SqlStringsDialect:
             from sqlglot import exp
         except ImportError:
             return None
-        logging.getLogger("sqlglot").setLevel(logging.ERROR)
+        from repowise.core.ingestion.sql_parse import parse_sql
+
         try:
-            statements = sqlglot.parse(literal, error_level=sqlglot.ErrorLevel.RAISE)
+            statements = parse_sql(
+                literal, error_level=sqlglot.ErrorLevel.RAISE, psql_meta_commands=False
+            )
         except Exception:
             return None
         found: list[tuple[str, str]] = []

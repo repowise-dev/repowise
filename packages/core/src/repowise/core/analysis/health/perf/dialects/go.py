@@ -118,6 +118,24 @@ def _single_identifier(node: Node | None) -> bytes | None:
 _GO_FN_KINDS: frozenset[str] = frozenset({"function_declaration", "method_declaration", "func_literal"})
 
 
+def _in_event_loop_case(node: Node) -> bool:
+    """*node* sits in a ``select`` case of a bare ``for { select { ... } }`` event loop.
+
+    The case runs once per received event and the loop blocks between events,
+    so there is no lock to hoist.
+    """
+    in_case = False
+    cur = node.parent
+    while cur is not None and cur.type not in _GO_FN_KINDS:
+        if cur.type == "communication_case":
+            in_case = True
+        elif cur.type == "for_statement":
+            # A bare ``for {`` has its body as its only named child.
+            return in_case and len(cur.named_children) == 1
+        cur = cur.parent
+    return False
+
+
 def _go_bindings(node: Node) -> list[tuple[bytes, Node]]:
     """What *node* binds: ``x := v`` / ``x = v`` / ``var x = v`` (one call
     answering several names counts for each), or a read filling ``&x`` (GORM
@@ -282,7 +300,7 @@ class GoPerfDialect(IterableSources):
         # ``mu.Lock()`` / ``mu.RLock()`` — a method on a receiver (the package-
         # level ``sync.Lock`` does not exist, so the attribute gate is a guard).
         if method in GO_LOCK_METHODS and self.callee_is_attribute(node):
-            return "lock_in_loop"
+            return None if _in_event_loop_case(node) else "lock_in_loop"
         return None
 
     def defers_body(self, fn: Node) -> bool:
@@ -458,47 +476,32 @@ class GoPerfDialect(IterableSources):
     )
 
     def _defer_runs_once_per_entry(self, defer_node: Node) -> bool:
-        """True when the statement right after the defer leaves every loop.
+        """True when a later statement in the defer's block leaves every loop.
 
-        A ``defer`` immediately followed by a ``return``, or by a ``break``
-        that exits the loop, can only be reached once before control leaves
-        the loop, so the deferred call is registered at most once and the
-        ``defer_in_loop`` leak does not apply. A ``break`` inside a
-        ``switch``/``select`` case leaves the case (loop keeps running), a
-        labeled ``break`` only counts when the label names a statement at or
-        outside the loop, and in a loop nest the exit must leave the OUTERMOST
-        loop — otherwise each outer iteration re-enters and registers the
-        defer again.
+        A ``defer`` followed in its own block by a ``return``, or by a
+        ``break`` that exits the loop, with no ``continue``/``goto`` in
+        between, can only be reached once before control leaves the loop, so
+        the deferred call is registered at most once and the ``defer_in_loop``
+        leak does not apply. A ``break`` inside a ``switch``/``select`` case
+        leaves the case (loop keeps running), a labeled ``break`` only counts
+        when the label names a statement at or outside the loop, and in a loop
+        nest the exit must leave the OUTERMOST loop — otherwise each outer
+        iteration re-enters and registers the defer again. Ceiling: a ``goto``
+        never counts as an exit.
         """
-        nxt = self._next_statement(defer_node)
-        if nxt is None:
-            return False
-        if nxt.type == "return_statement":
+        return self._exit_follows(
+            defer_node, self._leaves_all_loops, frozenset({"continue_statement", "goto_statement"})
+        )
+
+    def _leaves_all_loops(self, stmt: Node) -> bool:
+        if stmt.type == "return_statement":
             # ``return`` exits the whole function — unless a func literal or
             # method sits between the loop and this statement, in which case it
             # only exits that inner scope and the loop continues.
-            return self._scope_below_loop(defer_node) is None
-        if nxt.type == "break_statement":
-            return self._break_exits_all_loops(nxt)
+            return self._scope_below_loop(stmt) is None
+        if stmt.type == "break_statement":
+            return self._break_exits_all_loops(stmt)
         return False
-
-    @staticmethod
-    def _next_statement(node: Node) -> Node | None:
-        """The first sibling statement after ``node`` in the same block."""
-        parent = node.parent
-        if parent is None:
-            return None
-        seen = False
-        for child in parent.children:
-            if not seen:
-                if child == node:
-                    seen = True
-                continue
-            # Skip trailing comments and punctuation (the ``;`` separator of
-            # single-line bodies is an unnamed child of the statement list).
-            if child.is_named and child.type != "comment":
-                return child
-        return None
 
     def _scope_below_loop(self, node: Node) -> Node | None:
         """The nearest func-like scope between ``node`` and its loop, if any."""
