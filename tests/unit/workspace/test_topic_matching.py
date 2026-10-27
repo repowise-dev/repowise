@@ -272,6 +272,9 @@ class TestTransports:
             ("laravel", "bullmq", False),
             ("redis", "bullmq", False),
             ("bullmq", "bullmq", True),
+            ("asyncapi", "kafka", True),
+            ("rabbitmq", "asyncapi", True),
+            ("asyncapi", "bullmq", False),
         ],
     )
     def test_which_brokers_meet(self, provider: str, consumer: str, linked: bool) -> None:

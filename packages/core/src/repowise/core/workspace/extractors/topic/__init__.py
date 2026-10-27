@@ -11,6 +11,7 @@ from __future__ import annotations
 from repowise.core.workspace.contracts import TOPIC_NAMES_UNRESOLVED_STAT
 
 from ..dialect import ContractDialect, DialectExtractor
+from .asyncapi import ASYNCAPI
 from .aws import SNS, SQS
 from .azure_servicebus import AZURE_SERVICE_BUS
 from .bullmq import BULLMQ
@@ -38,6 +39,7 @@ DIALECTS: tuple[ContractDialect, ...] = (
     AZURE_SERVICE_BUS,
     NESTJS,
     LARAVEL_QUEUES,
+    ASYNCAPI,
     CSHARP_EVENTS,
     JMS,
 )
