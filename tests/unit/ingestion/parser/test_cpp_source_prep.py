@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from repowise.core.ingestion.lang_helpers.source_prep import prepare_cpp_source
+from repowise.core.ingestion.lang_helpers.source_prep import _close_paren_of, prepare_cpp_source
 from repowise.core.ingestion.parser import ASTParser
 from tests.unit.ingestion.parser._helpers import _make_file_info
 
@@ -187,3 +187,25 @@ class TestCppSourcePrep:
             assert len(out) == len(source)
             assert out.splitlines() != source.splitlines()
             assert out.count(b"\n") == source.count(b"\n")
+
+
+class TestCloseParenOf:
+    def test_returns_the_matching_close(self) -> None:
+        src = b"Pad(int n) : n_(n) {}"
+        assert _close_paren_of(src, src.index(b"(")) == src.index(b")")
+
+    def test_nested_parens_return_the_outer_close(self) -> None:
+        src = b"Pad(f(g(x))) : n_(1) {}"
+        assert _close_paren_of(src, src.index(b"(")) == src.index(b"))) ") + 2
+
+    def test_unterminated_paren_returns_minus_one(self) -> None:
+        src = b"FMT_CONSTEXPR Pad(int n"
+        assert _close_paren_of(src, src.index(b"(")) == -1
+
+    def test_close_beyond_the_scan_limit_returns_minus_one(self) -> None:
+        src = b"Pad(" + b"a," * 2100 + b"b)"
+        assert _close_paren_of(src, 3) == -1
+
+    def test_unterminated_ctor_macro_run_blanks_nothing(self) -> None:
+        src = b"FMT_CONSTEXPR Pad(int n"
+        assert prepare_cpp_source(src) is src
