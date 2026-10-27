@@ -769,6 +769,24 @@ class TestDapr:
         c = _one(_extract(tmp_path, "pos.py", src), "provider")
         assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
 
+    def test_python_publish_event_is_read_with_only_the_grpc_import(self, tmp_path: Path) -> None:
+        src = (
+            "from dapr.ext.grpc import App\n"
+            "client.publish_event(pubsub_name='pubsub', topic_name='orders', data=d)\n"
+        )
+        c = _one(_extract(tmp_path, "grpc_only.py", src), "provider")
+        assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
+
+    def test_python_subscribe_is_read_with_only_the_clients_import(self, tmp_path: Path) -> None:
+        src = (
+            "from dapr.clients import DaprClient\n"
+            "@app.subscribe(pubsub_name='pubsub', topic='orders')\n"
+            "def handle(event):\n"
+            "    pass\n"
+        )
+        c = _one(_extract(tmp_path, "clients_only.py", src), "consumer")
+        assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
+
     _GO_IMPORT = (
         "import (\n"
         '  dapr "github.com/dapr/go-sdk/client"\n'

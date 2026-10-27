@@ -89,7 +89,7 @@ binding site itself is linked. A publish to the default exchange
 
 Two ends link only when they can be one broker's destination. The same broker
 always can. A Dapr, Laravel or NestJS name runs over a transport configured
-outside the code, so it meets any broker but BullMQ — whose queue is Redis keys
+outside the code, so it meets any broker but BullMQ, whose queue is Redis keys
 only BullMQ reads. Any other pair must be the same broker: a Kafka topic and a
 RabbitMQ queue of one name are two things.
 
