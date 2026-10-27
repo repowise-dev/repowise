@@ -270,7 +270,9 @@ def _jsx_supplied_props(site_node: Node, src: str) -> frozenset[str] | None:
     return frozenset(props_set)
 
 
-def _fold_receiverless_twins(calls: list[tuple[tuple[int, int, str], CallSite]]) -> list[CallSite]:
+def _fold_receiverless_twins(
+    calls: list[tuple[tuple[int, int, str], CallSite]],
+) -> list[tuple[tuple[int, int, str], CallSite]]:
     """Fold the receiver-less copy of a member call into the copy with a receiver.
 
     A grammar's bare-call pattern that leaves the object unconstrained (Java's
@@ -282,15 +284,15 @@ def _fold_receiverless_twins(calls: list[tuple[tuple[int, int, str], CallSite]])
     """
     member_sites = {site for site, call in calls if not _is_bare(call)}
     bare_sites = {site for site, call in calls if site in member_sites and _is_bare(call)}
-    folded: list[CallSite] = []
+    folded: list[tuple[tuple[int, int, str], CallSite]] = []
     for site, call in calls:
         if _is_bare(call):
             if site not in member_sites:
-                folded.append(call)
+                folded.append((site, call))
         elif call.receiver_name and site in bare_sites:
-            folded.append(replace(call, bare_name_fallback=True))
+            folded.append((site, replace(call, bare_name_fallback=True)))
         else:
-            folded.append(call)
+            folded.append((site, call))
     return folded
 
 
@@ -298,15 +300,18 @@ def _is_bare(call: CallSite) -> bool:
     return not (call.receiver_name or call.receiver_call)
 
 
-def _dedupe_calls(calls: list[CallSite]) -> list[CallSite]:
-    """One call per ``(line, target, receiver)``, keeping the richest record.
+def _dedupe_calls(calls: list[tuple[tuple[int, int, str], CallSite]]) -> list[CallSite]:
+    """One call per ``(site, receiver)``, keeping the richest record.
 
     Two scoped-call patterns can match the same two-part call (one keeps the
     qualifier), so the richer record wins whichever order they arrive in.
+    Keyed on the call node, not the line: ``f(a, f(b))`` holds two calls, and
+    so does ``.add(x).add(x, y)`` even across lines, since every link of a
+    chain reports the chain's first line. Each may bind a different overload.
     """
-    deduplicated: dict[tuple[int, str, str | None], CallSite] = {}
-    for call in calls:
-        key = (call.line, call.target_name, call.receiver_name)
+    deduplicated: dict[tuple[tuple[int, int, str], str | None], CallSite] = {}
+    for site, call in calls:
+        key = (site, call.receiver_name)
         existing = deduplicated.get(key)
         if (
             existing is None

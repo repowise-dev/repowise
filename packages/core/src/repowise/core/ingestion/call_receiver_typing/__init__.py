@@ -1526,11 +1526,12 @@ class ReceiverTypingMixin(
         sites = self._call_sites.get(file_path)
         if sites is None:
             parsed = self._parsed_files.get(file_path)
-            sites = {
-                (c.line, c.receiver_name, c.target_name): c
-                for c in (parsed.calls if parsed else ())
-                if c.caller_symbol_id and c.receiver_call is None
-            }
+            sites = {}
+            # The first of same-named calls on a line is the outer one, the
+            # call an assignment holds: ``x = f(a, f(b))``.
+            for c in parsed.calls if parsed else ():
+                if c.caller_symbol_id and c.receiver_call is None:
+                    sites.setdefault((c.line, c.receiver_name, c.target_name), c)
             _store_capped(self._call_sites, file_path, sites, _SOURCE_CACHE_FILES)
         return sites
 

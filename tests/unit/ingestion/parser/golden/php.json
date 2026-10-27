@@ -1067,6 +1067,22 @@
         "argument_names": null
       },
       {
+        "target_name": "array_map",
+        "receiver_name": null,
+        "caller_symbol_id": "lang_samples/php/nested.php::lambda_and_arrow",
+        "line": 48,
+        "argument_count": 2,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
         "target_name": "file_get_contents",
         "receiver_name": null,
         "caller_symbol_id": "lang_samples/php/nested.php::try_catch_finally",

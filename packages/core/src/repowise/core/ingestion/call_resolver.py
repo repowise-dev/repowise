@@ -1311,18 +1311,18 @@ class CallResolver(
         as its own site on the chain's first line, so the hop below is read
         off the site *inner* names. Apex, C#, Dart, Go, Java and Kotlin read it, so a
         builder chain types each link from the one before; elsewhere an inner call
-        is still typed as if nothing were chained under it.
+        is still typed as if nothing were chained under it. A name repeated in
+        one chain (``a().b().b()``) keeps its first link, the innermost.
         """
         if language not in ("apex", "csharp", "dart", "go", "java", "kotlin"):
             return None
         sites = self._chained_sites.get(file_path)
         if sites is None:
             parsed = self._parsed_files.get(file_path)
-            sites = {
-                (c.line, c.receiver_name, c.target_name): c.receiver_call
-                for c in (parsed.calls if parsed else ())
-                if c.receiver_call is not None
-            }
+            sites = {}
+            for c in parsed.calls if parsed else ():
+                if c.receiver_call is not None:
+                    sites.setdefault((c.line, c.receiver_name, c.target_name), c.receiver_call)
             _store_capped(self._chained_sites, file_path, sites, _SOURCE_CACHE_FILES)
         return sites.get((line, inner.receiver_name, inner.target_name))
 
