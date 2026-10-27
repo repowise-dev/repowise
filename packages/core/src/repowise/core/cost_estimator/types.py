@@ -12,6 +12,8 @@ class PageTypePlan:
     page_type: str
     count: int
     level: int
+    # file_page only: ``(glob, documented, eligible)`` per folder-coverage rule.
+    folder_coverage: list[tuple[str, int, int]] = field(default_factory=list)
 
 
 @dataclass

@@ -148,6 +148,8 @@ class Selection:
     # cap that actually sliced it. These are reporting facts, not selectors.
     eligible_file_pages: int = 0
     effective_file_page_cap: int | None = None
+    # ``(glob, documented, eligible)`` per folder-coverage rule (issue #633).
+    folder_coverage: list[tuple[str, int, int]] = field(default_factory=list)
 
     def counts(self) -> dict[str, int]:
         """Per-page-type counts of the pages this run will emit.
@@ -923,6 +925,7 @@ def select_pages(inputs: SelectionInputs) -> Selection:
     pinned = _folder_coverage_pins(inputs, scored_files)
     if pinned:
         selected_paths = list(dict.fromkeys(selected_paths + pinned))
+    folder_coverage = _folder_coverage_report(inputs, scored_files, selected_paths)
 
     sel = Selection(
         file_page_paths=selected_paths,
@@ -936,9 +939,25 @@ def select_pages(inputs: SelectionInputs) -> Selection:
         emit_repo_overview=True,
         eligible_file_pages=eligible_file_pages,
         effective_file_page_cap=effective_file_page_cap,
+        folder_coverage=folder_coverage,
     )
-    log.info("page_selection.complete", counts=sel.counts())
+    log.info("page_selection.complete", counts=sel.counts(), folder_coverage=folder_coverage)
     return sel
+
+
+def _folder_rules(inputs: SelectionInputs) -> tuple[tuple[str, float], ...]:
+    return tuple(getattr(inputs.config, "folder_coverage", ()) or ())
+
+
+def _under_glob(path: str, glob_pattern: str) -> bool:
+    """Shell-style match on the repo-relative path, or a path under the folder.
+
+    ``src/core`` matches everything below ``src/core``. ``fnmatch``'s ``*``
+    also crosses ``/``, so ``src/*`` matches the whole ``src`` subtree.
+    """
+    import fnmatch
+
+    return fnmatch.fnmatch(path, glob_pattern) or path.startswith(glob_pattern.rstrip("/") + "/")
 
 
 def _folder_coverage_pins(
@@ -952,36 +971,47 @@ def _folder_coverage_pins(
     already-scored candidate list. Files already selected globally are kept
     (the union dedups), so a rule only ever *adds* pages for files that scored
     below the global cutoff — a floor, never a displacement (issue #633).
-
-    Glob match uses shell-style matching against the repo-relative path
-    (``src/core`` matches ``src/core`` itself and everything under it;
-    ``src/*`` matches one level). Empty rules and non-positive fractions are
-    ignored.
+    Empty rules and non-positive fractions are ignored.
     """
-    import fnmatch
     import math
 
-    rules = tuple(getattr(inputs.config, "folder_coverage", ()) or ())
+    rules = _folder_rules(inputs)
     if not rules:
         return []
 
-    scored = {p: s for s, p in files}  # path -> score (code files only)
+    # ``files`` is already ranked (score desc, then path), the order the
+    # global budget uses, so each rule's matches come out highest-score first.
     pinned: list[str] = []
+    seen: set[str] = set()
     for glob_pattern, pct in rules:
         if not glob_pattern or pct is None or pct <= 0:
             continue
-        matches = [
-            p for p in scored if fnmatch.fnmatch(p, glob_pattern) or p.startswith(glob_pattern.rstrip("/") + "/")
-        ]
+        matches = [p for _, p in files if _under_glob(p, glob_pattern)]
         if not matches:
             continue
         want = max(1, math.ceil(pct * len(matches)))  # ceil, at least 1
-        # Highest score first — same ordering the global budget uses.
-        ranked = sorted(matches, key=lambda p: (-scored[p], p))
-        for p in ranked[:want]:
-            if p not in pinned:
+        for p in matches[:want]:
+            if p not in seen:
+                seen.add(p)
                 pinned.append(p)
     return pinned
+
+
+def _folder_coverage_report(
+    inputs: SelectionInputs,
+    files: list[tuple[float, str]],
+    selected: list[str],
+) -> list[tuple[str, int, int]]:
+    """``(glob, documented, eligible)`` per rule, for the run to show its floors."""
+    rules = _folder_rules(inputs)
+    if not rules:
+        return []
+    chosen = set(selected)
+    report: list[tuple[str, int, int]] = []
+    for glob_pattern, _pct in rules:
+        matches = [p for _, p in files if _under_glob(p, glob_pattern)]
+        report.append((glob_pattern, sum(p in chosen for p in matches), len(matches)))
+    return report
 
 
 def summarize_selection(sel: Selection) -> dict[str, int]:

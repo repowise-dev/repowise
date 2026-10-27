@@ -22,6 +22,7 @@ from .generation import (
     cost_gate_declined,
     embedding_note,
     estimate_generation,
+    folder_coverage_lines,
     folder_coverage_override,
     page_type_label,
     run_repo_generation,
@@ -82,6 +83,8 @@ def _print_structural_plan(
     table.add_section()
     table.add_row("[bold]Total[/bold]", f"[bold]{total:,}[/bold]")
     console.print(table)
+    for line in folder_coverage_lines(plans):
+        console.print(f"  [dim]{line}[/dim]")
     console.print("  Dry run: every page above is built from code. No documentation written.")
 
 
@@ -210,6 +213,8 @@ def _print_generation_plan(
         f"[bold]{model_pages:,} by model, {est.total_pages - model_pages:,} from code[/bold]",
     )
     console.print(table)
+    for line in folder_coverage_lines(est.plans):
+        console.print(f"  [dim]{line}[/dim]")
 
     # Language breakdown
     lang_dist = result.repo_structure.root_language_distribution

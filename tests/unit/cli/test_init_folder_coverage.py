@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from typing import Any
+
 from click.testing import CliRunner
 
-from repowise.cli.commands.init_cmd import command as init_cmd
+from repowise.cli.commands.init_cmd import _generate
 from repowise.cli.main import cli
 
 
@@ -14,27 +17,40 @@ def test_init_help_lists_folder_coverage() -> None:
     assert "--folder-coverage" in result.output
 
 
-def test_folder_coverage_rules_parse_and_reach_generation_config(monkeypatch) -> None:
-    """The repeatable flag parses to rules and lands in the GenerationConfig."""
-    import click
-
-    def fake_resolve_repo_path(*a, **k):
-        return "/tmp/repo"
-
-    def fake_config_flow(*a, **k):
-        raise click.ClickException("stop after config")
-
-    # Stub through the command until the generation phase would be reached.
-    monkeypatch.setattr(init_cmd, "resolve_repo_path", fake_resolve_repo_path)
-
-    # Parse-only check: the raw strings must produce the expected rules.
-    from repowise.core.generation.folder_coverage import parse_folder_coverage
-
-    rules = parse_folder_coverage(("src/core=1.0", "src/legacy=0.5"))
-    assert rules == (("src/core", 1.0), ("src/legacy", 0.5))
+def test_malformed_rule_is_a_usage_error(tmp_path: Any) -> None:
+    result = CliRunner().invoke(cli, ["init", str(tmp_path), "--folder-coverage", "src/core"])
+    assert result.exit_code == 2
+    assert "glob=pct" in result.output
+    assert not (tmp_path / ".repowise").exists()
 
 
-def test_config_round_trip_persists_rules(monkeypatch, tmp_path) -> None:
+def test_flag_rules_override_config_in_generation_config(tmp_path: Any, monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(_generate, "load_config", lambda _p: {"folder_coverage": ["lib=0.5"]})
+    monkeypatch.setattr(_generate, "run_repo_generation", lambda **kw: captured.update(kw))
+
+    def run(rules: tuple[str, ...]) -> Any:
+        _generate._run_deterministic_generation_phase(
+            repo_path=tmp_path,
+            result=SimpleNamespace(repo_name="demo"),
+            total_phases=3,
+            concurrency=1,
+            language="en",
+            onboarding=True,
+            wiki_style="comprehensive",
+            max_file_pages=None,
+            embedder_name_resolved="mock",
+            embedder_was_requested=False,
+            resume=False,
+            folder_coverage_rules=rules,
+        )
+        return captured["gen_config"].folder_coverage
+
+    assert run(("src/core=1.0",)) == (("src/core", 1.0),)
+    assert run(()) == (("lib", 0.5),)
+
+
+def test_config_round_trip_persists_rules(tmp_path: Any) -> None:
     """save_config_partial must record folder_coverage as a list of strings."""
     import yaml
 

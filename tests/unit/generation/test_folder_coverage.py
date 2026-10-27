@@ -192,3 +192,25 @@ def test_config_yaml_parse_rejects_bad_rules() -> None:
         GenerationConfig.from_repo_config({"folder_coverage": ["src/core=high"]})
     with pytest.raises(ValueError, match=r"pct must be in \[0, 1\]"):
         GenerationConfig.from_repo_config({"folder_coverage": ["src/core=1.5"]})
+
+
+def test_overlapping_rules_pin_each_file_once_and_report_per_folder() -> None:
+    parsed, pagerank, betweenness, community = _build_synthetic_repo(50)
+    cfg = GenerationConfig(
+        max_file_pages=5, folder_coverage=(("pkg0", 1.0), ("pkg0/*", 1.0), ("pkg1", 0.5))
+    )
+    sel = select_pages(_inputs(parsed, pagerank, betweenness, community, cfg))
+
+    assert len(sel.file_page_paths) == len(set(sel.file_page_paths))
+    assert sel.folder_coverage == [("pkg0", 25, 25), ("pkg0/*", 25, 25), ("pkg1", 13, 25)]
+
+
+def test_parse_accepts_dot_slash_and_pairs_and_rejects_nan() -> None:
+    import pytest
+
+    from repowise.core.generation.folder_coverage import parse_folder_coverage
+
+    assert parse_folder_coverage(["./src/core=1"]) == (("src/core", 1.0),)
+    assert parse_folder_coverage([("src/core", 0.5)]) == (("src/core", 0.5),)
+    with pytest.raises(ValueError, match=r"pct must be in \[0, 1\]"):
+        parse_folder_coverage(["src/core=nan"])

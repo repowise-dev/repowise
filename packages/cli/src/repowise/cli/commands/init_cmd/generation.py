@@ -167,6 +167,15 @@ def folder_coverage_override(rules: tuple[str, ...]) -> dict[str, Any]:
     return {"folder_coverage": parse_folder_coverage(rules)}
 
 
+def folder_coverage_lines(plans: list[Any]) -> list[str]:
+    """One ``src/core: 12 of 12 files get a page`` line per folder floor (#633)."""
+    return [
+        f"{glob}: {documented:,} of {eligible:,} files get a page"
+        for plan in plans
+        for glob, documented, eligible in getattr(plan, "folder_coverage", None) or []
+    ]
+
+
 def structural_page_summary(plans: list[Any]) -> str:
     """Return e.g. ``"3622 pages rendered from structure, free: 2947 file, ..."``.
 

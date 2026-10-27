@@ -165,6 +165,8 @@ class TestBuildGenerationPlan:
         assert unset_count == 5
         assert pinned_count > unset_count
         assert pinned_count == 20  # every code file under src/core gets a page
+        file_plan = next(p for p in pinned if p.page_type == "file_page")
+        assert file_plan.folder_coverage == [("src/core", 20, 20)]
 
 
 class TestEstimateCost:
