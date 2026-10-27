@@ -100,6 +100,23 @@ def _common_dir(git_dir: Path) -> Path:
     return git_dir / path
 
 
+def git_common_dir(local_path: str | Path | None) -> Path | None:
+    """The checkout's common git directory (shared across worktrees), without spawning git.
+
+    Returns the absolute path to the common ``.git`` directory, or ``None``
+    when *local_path* is not a git repository or checkout.
+    """
+    if not local_path:
+        return None
+    try:
+        git_dir = resolve_git_dir(local_path)
+        if git_dir is None or not git_dir.exists():
+            return None
+        return _common_dir(git_dir).resolve()
+    except OSError:
+        return None
+
+
 def _resolve_symbolic_ref(git_dir: Path, ref_rel: str) -> str | None:
     """The SHA *ref_rel* names under *git_dir*'s common dir, or ``None``.
 

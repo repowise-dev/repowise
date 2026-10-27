@@ -62,6 +62,7 @@ def full_meta(tool: str | None = None) -> bool:
         return True
     return os.environ.get(DEBUG_META_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
 
+
 # Only warn about age when we have no other signal AND the index is genuinely
 # old. A short threshold here would nag on every call and train the agent to
 # ignore the field — defeating the point. 90 days is a deliberate floor: by
@@ -78,11 +79,23 @@ def served_root(repository: Any, ctx_path: str | Path | None = None) -> str | No
     repo keeps the old value, so reads through it see another tree. A
     single-repo server's own path wins for the row its own store identifies
     (``_state._served_repo_id``) when that path holds ``.repowise/`` and
-    ``.git`` (a file in a worktree). Any other row, such as another repo in a
-    shared store, keeps its stored path; *ctx_path* stands in only when the
-    row has none. The row is never rewritten.
+    ``.git`` (a file in a worktree). When *ctx_path* is a linked worktree of
+    *repository*, *ctx_path* wins so tools read the worktree's files and HEAD.
+    Any other row, such as another repo in a shared store, keeps its stored
+    path; *ctx_path* stands in only when the row has none. The row is never
+    rewritten.
     """
     from repowise.server.mcp_server import _state
+
+    if ctx_path:
+        ctx_p = Path(ctx_path)
+        if (ctx_p / ".git").is_file():
+            base = getattr(repository, "local_path", None) or _state._repo_path
+            if base:
+                from repowise.core.git_head import git_common_dir
+
+                if git_common_dir(ctx_p) == git_common_dir(base):
+                    return str(ctx_p.resolve())
 
     served = _state._repo_path
     if (
@@ -133,10 +146,7 @@ def _canonical_scope_requested() -> bool:
     no way yet to ask for it by name. Read per call, so turning it on does not
     need a restart of a server a client spawned.
     """
-    return (
-        os.environ.get(INDEX_SCOPE_ENV, "").strip().lower()
-        == CANONICAL_INDEX_SCOPE_PROJECTION
-    )
+    return os.environ.get(INDEX_SCOPE_ENV, "").strip().lower() == CANONICAL_INDEX_SCOPE_PROJECTION
 
 
 def _full_scope_hint() -> str:
@@ -443,8 +453,7 @@ def reverted_targets(local_path: str | None, targets: list[str] | None) -> list[
             continue
         key = _fold(path)
         if any(
-            (rec == key or rec.startswith(key + "/")) and not _still_dirty(rec)
-            for rec in record[0]
+            (rec == key or rec.startswith(key + "/")) and not _still_dirty(rec) for rec in record[0]
         ):
             out.append(path)
     return out
@@ -954,14 +963,8 @@ def answer_hint(
         # to remove, and strong retrieval without an anchored body is an ordinary
         # outcome here (a prose question naming no identifier).
         if has_bodies:
-            return (
-                "Synthesis is what is missing here, not retrieval. Answer from "
-                "symbol_bodies."
-            )
-        return (
-            "Synthesis is what is missing here, not retrieval. Start from the "
-            "first ranked hit."
-        )
+            return "Synthesis is what is missing here, not retrieval. Answer from symbol_bodies."
+        return "Synthesis is what is missing here, not retrieval. Start from the first ranked hit."
     if confidence == "low":
         return (
             "Low confidence. Read the top evidence row or candidate_files to "

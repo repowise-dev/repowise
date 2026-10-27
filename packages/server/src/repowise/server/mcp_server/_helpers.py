@@ -110,6 +110,30 @@ def embed_timeout_s() -> float:
 # ---------------------------------------------------------------------------
 
 
+async def _find_repo_by_worktree(session: AsyncSession, candidate: Path) -> Repository | None:
+    """Find a known Repository whose common git dir matches *candidate*, or None."""
+    if not candidate.is_dir() or not (candidate / ".git").is_file():
+        return None
+    from repowise.core.git_head import git_common_dir
+
+    candidate_common = git_common_dir(candidate)
+    if candidate_common is None:
+        return None
+    if (
+        _state._repo_path
+        and _state._served_repo_id
+        and git_common_dir(_state._repo_path) == candidate_common
+    ):
+        obj = await session.get(Repository, _state._served_repo_id)
+        if obj:
+            return obj
+    all_repos = (await session.execute(select(Repository))).scalars().all()
+    for r in all_repos:
+        if r.local_path and git_common_dir(r.local_path) == candidate_common:
+            return r
+    return None
+
+
 async def _get_repo(session: AsyncSession, repo: str | None = None) -> Repository:
     """Resolve a repository — by path, by ID, or return the first one."""
     if repo:
@@ -130,6 +154,10 @@ async def _get_repo(session: AsyncSession, repo: str | None = None) -> Repositor
         # Try by name
         result = await session.execute(select(Repository).where(Repository.name == repo))
         obj = result.scalar_one_or_none()
+        if obj:
+            return obj
+        # Try linked git worktree of a known repository
+        obj = await _find_repo_by_worktree(session, Path(repo))
         if obj:
             return obj
         raise LookupError(f"Repository not found: {repo}")
@@ -193,16 +221,32 @@ async def _resolve_repo_context(repo: str | None = None) -> Any:
 
     registry = _state._registry
     if registry is None:
+        worktree_path: Path | None = None
         # Single-repo mode — validate the repo param against the DB if given
         if repo is not None:
             from repowise.core.persistence.database import get_session as _get_session
 
             async with _get_session(_state._session_factory) as session:
-                await _get_repo(session, repo)  # raises LookupError if invalid
+                r = await _get_repo(session, repo)  # raises LookupError if invalid
+                candidate = Path(repo)
+                if candidate.is_dir() and (candidate / ".git").is_file():
+                    from repowise.core.git_head import git_common_dir
 
+                    candidate_resolved = candidate.resolve()
+                    base = Path(r.local_path).resolve() if r.local_path else None
+                    if (
+                        base is not None
+                        and candidate_resolved != base
+                        and git_common_dir(candidate) == git_common_dir(base)
+                    ):
+                        worktree_path = candidate_resolved
+
+        resolved_path = worktree_path or (
+            Path(_state._repo_path) if _state._repo_path else Path.cwd()
+        )
         return RepoContext(
             alias="default",
-            path=Path(_state._repo_path) if _state._repo_path else Path.cwd(),
+            path=resolved_path,
             session_factory=_state._session_factory,
             fts=_state._fts,
             vector_store=_state._vector_store,
@@ -527,11 +571,7 @@ def _alignment_score(
     if accepted:
         return _active_alignment(accepted, dir_path, sibling_coverage)
     if deprecated:
-        trailer = (
-            f" {len(candidates)} proposed candidate(s) await review."
-            if candidates
-            else ""
-        )
+        trailer = f" {len(candidates)} proposed candidate(s) await review." if candidates else ""
         return "low", (
             "Every accepted decision here is deprecated/superseded, or names only "
             "files that no longer exist. "
@@ -588,17 +628,11 @@ def _compute_alignment(
     # person accepted and still binds, what they accepted and then withdrew,
     # and what nobody has reviewed.
     accepted = [d for d in governing if is_governing(currencies.get(d["id"], ""))]
-    deprecated = [
-        d
-        for d in governing
-        if currencies.get(d["id"]) in HISTORY_CURRENCIES
-    ]
+    deprecated = [d for d in governing if currencies.get(d["id"]) in HISTORY_CURRENCIES]
     # Repository-wide, not scoped to the matched records: the sibling
     # denominator is drawn from decisions naming *other* files in the same
     # directory, none of which appear in ``governing``.
-    accepted_ids = {
-        did for did, currency in currencies.items() if is_governing(currency)
-    }
+    accepted_ids = {did for did, currency in currencies.items() if is_governing(currency)}
     # ``needs_review`` is the derived answer to "have the files it names
     # moved", which is the same 0.5 threshold this used to apply by hand.
     stale = [d for d in accepted if currencies.get(d["id"]) == "needs_review"]
@@ -612,9 +646,7 @@ def _compute_alignment(
     dir_path = "/".join(file_path.split("/")[:-1])
     # Scoped to accepted records for the same reason the score is: a sibling
     # pattern established only by candidates is not an established pattern.
-    sibling_coverage = _sibling_coverage(
-        file_path, accepted, all_decisions, accepted_ids
-    )
+    sibling_coverage = _sibling_coverage(file_path, accepted, all_decisions, accepted_ids)
 
     score, explanation = _alignment_score(
         accepted, deprecated, stale, candidates, dir_path, sibling_coverage
