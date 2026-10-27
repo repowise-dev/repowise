@@ -116,11 +116,12 @@ def matching_keys(consumer: Contract, provider_index: dict[str, list[Contract]])
 
 
 # Brokers that meet only their own kind: a BullMQ queue is a set of Redis keys
-# only BullMQ reads. Laravel and NestJS name a queue or pattern whose transport
+# only BullMQ reads, and a Temporal task queue is polled only by Temporal
+# workers, never a message topic of the same name. Laravel and NestJS name a queue or pattern whose transport
 # is configured outside the code (RabbitMQ, SQS, Redis, Kafka, NATS), so either
 # meets any broker but those. Every other pair must be the same broker: a Kafka
 # topic and a RabbitMQ queue that share a name are two things.
-_OWN_KIND_ONLY = frozenset({"bullmq"})
+_OWN_KIND_ONLY = frozenset({"bullmq", "temporal"})
 _ANY_TRANSPORT = frozenset({"laravel", "nestjs"})
 
 

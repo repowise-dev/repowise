@@ -272,6 +272,13 @@ class TestTransports:
             ("laravel", "bullmq", False),
             ("redis", "bullmq", False),
             ("bullmq", "bullmq", True),
+            ("temporal", "temporal", True),
+            ("temporal", "kafka", False),
+            ("kafka", "temporal", False),
+            ("temporal", "bullmq", False),
+            ("temporal", "nestjs", False),
+            ("nestjs", "temporal", False),
+            ("laravel", "temporal", False),
         ],
     )
     def test_which_brokers_meet(self, provider: str, consumer: str, linked: bool) -> None:

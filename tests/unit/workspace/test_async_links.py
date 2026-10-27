@@ -75,6 +75,38 @@ def test_a_bullmq_queue_is_not_a_laravel_queue_of_the_same_name(tmp_path: Path) 
     assert _links(api, worker) == set()
 
 
+def test_temporal_client_reaches_worker_across_languages(tmp_path: Path) -> None:
+    api = _repo(
+        tmp_path,
+        "api",
+        {
+            "c.ts": "import { Client } from '@temporalio/client';\n"
+            "await client.workflow.start(placeOrder, { taskQueue: 'orders', workflowId });\n"
+        },
+    )
+    worker = _repo(
+        tmp_path,
+        "worker",
+        {"w.py": 'from temporalio.worker import Worker\nWorker(client, task_queue="orders")\n'},
+    )
+    assert _links(api, worker) == {("api", "worker", "topic::orders")}
+
+
+def test_a_temporal_queue_is_not_a_kafka_topic_of_the_same_name(tmp_path: Path) -> None:
+    api = _repo(
+        tmp_path,
+        "api",
+        {
+            "c.ts": "import { Client } from '@temporalio/client';\n"
+            "await client.workflow.start(f, { taskQueue: 'orders' });\n"
+        },
+    )
+    consumer = _repo(
+        tmp_path, "consumer", {"k.java": '@KafkaListener(topics = "orders")\nvoid f() {}\n'}
+    )
+    assert _links(api, consumer) == set()
+
+
 def test_a_nats_wildcard_subscription(tmp_path: Path) -> None:
     api = _repo(
         tmp_path, "api", {"p.go": 'import "github.com/nats-io/nats.go"\nnc.Publish("orders.created", d)\n'}

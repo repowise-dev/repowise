@@ -1277,7 +1277,7 @@ workspace/extractors/
   grpc/              #   proto.py + languages.py (one table of stub shapes)
   calls.py           #   call_sites / call_chain / decorated_member: the table reader every type shares
   topic/             #   dialect.py (TopicCall table) + kafka.py rabbitmq.py nats.py redis.py
-                     #   bullmq.py aws.py nestjs.py laravel.py (a repo pass: dispatch <-> job class)
+                     #   bullmq.py temporal.py aws.py nestjs.py laravel.py (a repo pass: dispatch <-> job class)
   socket/            #   dialect.py (SocketCall table) + dotnet.py python.py socketio.py broadcasting.py
   data/              #   table providers (DDL / ORM entities) <-> SQL consumers
 workspace/matching/  # shared exact pass + per-type passes (http.py, topic.py, data.py)

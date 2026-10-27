@@ -474,6 +474,100 @@ class TestBullMq:
         assert _one(_extract(tmp_path, "f.ts", src), "provider").contract_id == "topic::renders"
 
 
+class TestTemporal:
+    @staticmethod
+    def _ids(rows) -> set[tuple[str, str]]:
+        assert all(c.meta["broker"] == "temporal" and c.meta["kind"] == "queue" for c in rows)
+        return {(c.role, c.contract_id) for c in rows}
+
+    def test_typescript_worker_and_client(self, tmp_path: Path) -> None:
+        worker = (
+            "import { Worker } from '@temporalio/worker';\n"
+            "await Worker.create({ taskQueue: 'orders', workflowsPath, activities });\n"
+        )
+        client = (
+            "import { Client } from '@temporalio/client';\n"
+            "await client.workflow.start(placeOrder, { taskQueue: 'orders', workflowId });\n"
+        )
+        assert self._ids(_extract(tmp_path / "worker", "w.ts", worker)) == {
+            ("consumer", "topic::orders")
+        }
+        assert self._ids(_extract(tmp_path / "api", "c.ts", client)) == {
+            ("provider", "topic::orders")
+        }
+
+    def test_typescript_child_workflow_names_its_queue(self, tmp_path: Path) -> None:
+        src = (
+            "import { executeChild } from '@temporalio/workflow';\n"
+            "await executeChild(refund, { taskQueue: 'refunds' });\n"
+        )
+        assert self._ids(_extract(tmp_path, "w.ts", src)) == {("provider", "topic::refunds")}
+
+    def test_go_worker_and_client(self, tmp_path: Path) -> None:
+        src = (
+            'import "go.temporal.io/sdk/worker"\n'
+            'w := worker.New(c, "orders", worker.Options{})\n'
+            'opts := client.StartWorkflowOptions{ID: "id", TaskQueue: "billing"}\n'
+        )
+        assert self._ids(_extract(tmp_path, "main.go", src)) == {
+            ("consumer", "topic::orders"),
+            ("provider", "topic::billing"),
+        }
+
+    def test_java_worker_and_client(self, tmp_path: Path) -> None:
+        src = (
+            "import io.temporal.worker.WorkerFactory;\n"
+            'Worker w = factory.newWorker("orders");\n'
+            'WorkflowOptions.newBuilder().setTaskQueue("billing").build();\n'
+        )
+        assert self._ids(_extract(tmp_path, "A.java", src)) == {
+            ("consumer", "topic::orders"),
+            ("provider", "topic::billing"),
+        }
+
+    def test_python_worker_and_client(self, tmp_path: Path) -> None:
+        src = (
+            "from temporalio.worker import Worker\n"
+            'w = Worker(client, task_queue="orders", workflows=[W])\n'
+            'await client.start_workflow(W.run, id="i", task_queue="billing")\n'
+        )
+        assert self._ids(_extract(tmp_path, "m.py", src)) == {
+            ("consumer", "topic::orders"),
+            ("provider", "topic::billing"),
+        }
+
+    def test_dotnet_worker_and_client(self, tmp_path: Path) -> None:
+        src = (
+            "using Temporalio.Worker;\n"
+            'var w = new TemporalWorker(c, new TemporalWorkerOptions("orders"));\n'
+            "await c.StartWorkflowAsync(W.Run,\n"
+            '    new WorkflowOptions(id: "i", taskQueue: "billing"));\n'
+        )
+        assert self._ids(_extract(tmp_path, "P.cs", src)) == {
+            ("consumer", "topic::orders"),
+            ("provider", "topic::billing"),
+        }
+
+    def test_a_queue_named_by_a_constant_folds(self, tmp_path: Path) -> None:
+        src = (
+            "import { Worker } from '@temporalio/worker';\n"
+            "const QUEUE = 'orders';\n"
+            "await Worker.create({ taskQueue: QUEUE });\n"
+        )
+        assert self._ids(_extract(tmp_path, "w.ts", src)) == {("consumer", "topic::orders")}
+
+    def test_a_file_not_importing_temporal_is_not_read(self, tmp_path: Path) -> None:
+        assert _extract(tmp_path, "w.ts", "await Worker.create({ taskQueue: 'orders' });\n") == []
+        assert _extract(tmp_path, "w.py", 'w = Worker(client, task_queue="orders")\n') == []
+
+    def test_a_queue_from_the_environment_is_refused(self, tmp_path: Path) -> None:
+        src = (
+            "import { Worker } from '@temporalio/worker';\n"
+            "await Worker.create({ taskQueue: process.env.QUEUE });\n"
+        )
+        assert _extract(tmp_path, "w.ts", src) == []
+
+
 class TestAws:
     def test_sqs_queue_url_names_its_last_segment(self, tmp_path: Path) -> None:
         src = (

@@ -23,6 +23,7 @@ from .nats import NATS
 from .nestjs import NESTJS
 from .rabbitmq import RABBITMQ
 from .redis import REDIS
+from .temporal import TEMPORAL
 
 # Order settles which broker names a call two dialects read alike: the first
 # contract per file, id and role is kept, so in a file importing both a Redis
@@ -33,6 +34,7 @@ DIALECTS: tuple[ContractDialect, ...] = (
     REDIS,
     NATS,
     BULLMQ,
+    TEMPORAL,
     SQS,
     SNS,
     AZURE_SERVICE_BUS,
