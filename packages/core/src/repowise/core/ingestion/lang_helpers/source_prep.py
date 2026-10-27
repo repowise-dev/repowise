@@ -138,10 +138,11 @@ def prepare_apex_source(source: bytes) -> bytes:
 # followed by the real name (template arguments allowed) and a body or base
 # clause, so ``class DB {``, ``class DB final {`` and a bodyless forward
 # declaration, which already parses, never match. Call-shaped forms like
-# ``CAPABILITY("mutex")`` qualify too.
+# ``CAPABILITY("mutex")`` qualify too. The body brace must follow whitespace,
+# so a brace-initialized variable (``struct TM tm{0};``) keeps its type.
 _CPP_CLASS_HEAD_MACRO_RE = re.compile(
     rb"\b(?:class|struct)[ \t]+((?:[A-Z][A-Z0-9_]*(?:\([^()\r\n]*\))?[ \t]+)+)"
-    rb"(?!final\b)[A-Za-z_]\w*(?:<[^;{}]*>)?(?:[ \t]+final)?(?=\s*(?:\{|:(?!:)))"
+    rb"(?!final\b)[A-Za-z_]\w*(?:<[^;{}]*>)?(?:[ \t]+final)?(?=\s+\{|\s*:(?!:))"
 )
 
 # Clang thread-safety annotations written after a declarator
@@ -159,18 +160,20 @@ _CPP_TRAILING_ANNOTATION_RE = re.compile(
     rb"|SHARED_TRYLOCK_FUNCTION|ASSERT_CAPABILITY|ASSERT_SHARED_CAPABILITY"
     rb"|ASSERT_EXCLUSIVE_LOCK|ASSERT_SHARED_LOCK|RETURN_CAPABILITY|LOCK_RETURNED)"
     rb"\((?:[^()\r\n]|\([^()\r\n]*\))*\)"
-    rb"|NO_THREAD_SAFETY_ANALYSIS)"
+    rb"|NO_THREAD_SAFETY_ANALYSIS\b)"
     rb"(?=[ \t]*(?:[;{=,:\w]|//|/\*|\r?$))",
     re.MULTILINE,
 )
 
 # Words that put a following ``RELEASE(p)`` in statement position, where it
-# is a real call, or make it the macro's own ``#define``. Both must stay.
+# is a real call and must stay.
 _CPP_STATEMENT_WORDS = frozenset(
     {b"return", b"else", b"do", b"case", b"throw", b"co_return", b"co_yield", b"goto"}
     | {b"if", b"while", b"for", b"switch", b"catch", b"sizeof", b"new", b"delete"}
-    | {b"define", b"undef", b"ifdef", b"ifndef", b"elif", b"defined"}
 )
+# How far back a ``)`` looks for its ``(``: longer than any parameter list,
+# short enough that a stray paren in a comment cannot scan the whole file.
+_CPP_PAREN_SCAN_LIMIT = 4096
 
 
 def _skip_space_back(source: bytes, end: int) -> int:
@@ -191,7 +194,7 @@ def _word_before(source: bytes, end: int) -> bytes:
 def _open_paren_of(source: bytes, close: int) -> int:
     """Index of the ``(`` matching the ``)`` at *close*, or -1."""
     depth = 0
-    for i in range(close, -1, -1):
+    for i in range(close, max(close - _CPP_PAREN_SCAN_LIMIT, -1), -1):
         if source[i] == ord(")"):
             depth += 1
         elif source[i] == ord("("):
@@ -206,9 +209,12 @@ def _ends_declarator(source: bytes, end: int) -> bool:
 
     ``void F() REQUIRES(mu)`` and ``int x_ GUARDED_BY(mu)`` qualify;
     ``if (p) RELEASE(p);`` and ``return RELEASE(p);`` do not, and neither
-    does a macro at the start of a statement. The annotation may sit on the
-    line after its declarator.
+    does a macro at the start of a statement or on a preprocessor line. The
+    annotation may sit on the line after its declarator.
     """
+    line_start = source.rfind(b"\n", 0, end) + 1
+    if source[line_start:end].lstrip().startswith(b"#"):
+        return False
     end = _skip_space_back(source, end)
     if end == 0:
         return False

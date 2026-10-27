@@ -81,6 +81,9 @@ class TestCppSourcePrep:
             b"#define GUARDED_BY(x) __attribute__((guarded_by(x)))",
             b"#ifndef NO_THREAD_SAFETY_ANALYSIS",
             b"  int x_ MY_GUARD(mu_);",
+            b"  struct TM tm{0};",
+            b"  int NO_THREAD_SAFETY_ANALYSIS_X;",
+            b"#define F(x) RELEASE(x)",
         ],
     )
     def test_leaves_real_code_alone(self, source: bytes) -> None:
