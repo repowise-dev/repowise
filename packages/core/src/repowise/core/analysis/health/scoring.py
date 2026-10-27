@@ -982,15 +982,14 @@ def headline_split(rows: Sequence[Any]) -> tuple[float | None, float | None]:
     The stored halves are unclamped, so a file under the floor holds more
     points than its score lost. Each file's halves are scaled to its floored
     deficit (``SCORE_MAX - score``) so the two always add up to ``SCORE_MAX``
-    minus the headline. ``(None, None)`` until files carry the split.
+    minus the headline. ``(None, None)`` until every scored file carries the
+    split: halves over a subset would not add up to the headline.
     """
-    split = [
-        r
-        for r in scored_rows(rows)
-        if field(r, "structure_deduction", None) is not None
-        or field(r, "history_deduction", None) is not None
-    ]
-    if not split:
+    split = scored_rows(rows)
+    if not split or any(
+        field(r, "structure_deduction", None) is None and field(r, "history_deduction", None) is None
+        for r in split
+    ):
         return None, None
     structure = history = 0.0
     for r in split:

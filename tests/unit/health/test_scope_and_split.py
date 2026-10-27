@@ -170,6 +170,7 @@ def test_the_split_is_unknown_before_files_carry_it() -> None:
         file_path="a.py", score=5.0, max_ccn=1, max_nesting=1, nloc=10, has_test_file=False
     )
     assert headline_split([legacy]) == (None, None)
+    assert headline_split([legacy, _row("b.py", 8.0, 1.5, 0.5)]) == (None, None)
 
 
 def test_a_floored_file_still_shows_its_depth() -> None:
