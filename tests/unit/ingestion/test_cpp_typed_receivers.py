@@ -208,3 +208,61 @@ class TestFieldReceivers:
         callees = _callees(_build(tmp_path), "lib/host.cc::Host::Run")
         assert "lib/peer.cc::Stranger::sendMessage" in callees
         assert "lib/peer.cc::Peer::sendMessage" not in callees
+
+
+class TestTypedCalleeOnHeaderDeclarations:
+    """A typed call lands on a header declaration only where no body could be missing."""
+
+    @staticmethod
+    def _callee(symbols, decl_to_def, sym_id, caller_id, text=""):
+        from types import SimpleNamespace
+
+        from repowise.core.ingestion.call_receiver_typing.cpp import CppFieldOwners
+
+        owner = SimpleNamespace(
+            _symbols_by_id=symbols,
+            _decl_to_def=decl_to_def,
+            _pure_virtuals={},
+            _symbol_paths_by_id={sym_id: "a.h"},
+            _text_of=lambda _path: text,
+        )
+        return CppFieldOwners._typed_callee(owner, sym_id, caller_id)
+
+    @staticmethod
+    def _decl(sym_id):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(is_declaration=True, language="cpp", start_line=1, end_line=1)
+
+    def test_an_unpaired_non_virtual_declaration_is_no_callee(self) -> None:
+        sym = "a.h::P::f"
+        assert self._callee({sym: self._decl(sym)}, {}, sym, "c.cc::Run", "int f(int n);") is None
+
+    def test_an_unpaired_pure_virtual_is_the_callee(self) -> None:
+        sym = "a.h::P::f"
+        text = "virtual int f(int n) = 0;"
+        assert self._callee({sym: self._decl(sym)}, {}, sym, "c.cc::Run", text) == sym
+
+    def test_a_declaration_paired_with_the_callers_own_body_is_the_caller(self) -> None:
+        sym = "a.h::P::f"
+        assert (
+            self._callee({sym: self._decl(sym)}, {sym: "c.cc::Run"}, sym, "c.cc::Run")
+            == "c.cc::Run"
+        )
+
+    def test_a_declaration_paired_with_another_body_is_kept(self) -> None:
+        sym = "a.h::P::f"
+        assert self._callee({sym: self._decl(sym)}, {sym: "p.cc::P::f"}, sym, "c.cc::Run") == sym
+
+    def test_a_typed_call_onto_an_unpaired_declaration_yields_no_edge(self, tmp_path: Path) -> None:
+        (tmp_path / "lone.h").write_text("#pragma once\nclass Lone {\n public:\n  int run(int n);\n};\n")
+        (tmp_path / "caller.cc").write_text(
+            '#include "lone.h"\nint Go() {\n  Lone* l;\n  return l->run(1);\n}\n'
+        )
+        assert _call_targets(_build(tmp_path), "caller.cc") == set()
+
+    def test_a_typed_call_onto_a_paired_declaration_lands_on_the_definition(
+        self, tmp_path: Path
+    ) -> None:
+        _repo(tmp_path, "  Peer* peer;\n  return peer->get(1);")
+        assert _call_targets(_build(tmp_path), "lib/caller.cc") == {"lib/peer.cc::Peer::get"}
