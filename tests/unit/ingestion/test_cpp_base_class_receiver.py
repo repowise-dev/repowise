@@ -109,3 +109,9 @@ class TestCppBaseClassReceiver:
         _repo(tmp_path, specs_h)
         targets = _call_targets(_build(tmp_path), "lib/parse.cc::parse_align")
         assert not any(t.endswith("::set_align") for t in targets)
+
+    def test_a_method_no_base_declares_yields_no_edge(self, tmp_path: Path) -> None:
+        specs_h = _SPECS_H.replace("  void set_align(int a) { align_ = a; }\n", "")
+        _repo(tmp_path, specs_h)
+        targets = _call_targets(_build(tmp_path), "lib/parse.cc::parse_align")
+        assert not any(t.endswith("::set_align") for t in targets)
