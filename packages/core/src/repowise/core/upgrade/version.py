@@ -116,7 +116,11 @@ STORE_FORMAT_VERSION: int = 2
 #: public API follows Ruby visibility forms, Ansible playbooks and roles get
 #: dependency edges, Scala gets dataflow, and Postgres catalog tables are not
 #: workspace consumers.
-PARSER_SCHEMA_VERSION: int = 10
+#:
+#: v11: a Java method's symbol carries its keyword modifiers
+#: (``public static``), and a Kotlin ``object`` /
+#: ``companion object`` function carries ``static``.
+PARSER_SCHEMA_VERSION: int = 11
 
 #: state.json key holding the store format version that wrote the store.
 STORE_FORMAT_VERSION_KEY = "store_format_version"

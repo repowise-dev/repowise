@@ -254,6 +254,9 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         import_node_types=["import_declaration"],
         export_node_types=[],
         visibility_fn=java_visibility,
+        # ``public static`` etc. land in ``Symbol.modifiers`` (annotations in
+        # the same node are decorators and are skipped by the reader).
+        modifier_node_types=frozenset({"modifiers"}),
         parent_extraction="nesting",
         parent_class_types=frozenset(
             {

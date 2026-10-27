@@ -321,6 +321,41 @@ def _declared_modifiers(def_node: Node, node_types: frozenset[str], src: str) ->
     return tuple(words)
 
 
+# Kotlin has no ``static`` keyword: a member of an ``object`` or of a
+# ``companion object`` is the language's static member.
+_KOTLIN_STATIC_OWNERS = frozenset({"companion_object", "object_declaration"})
+_KOTLIN_CLASS_OWNERS = frozenset({"class_declaration", "object_literal"})
+
+
+def _declared_or_implied_modifiers(
+    def_node: Node, node_types: frozenset[str], language: str, src: str
+) -> tuple[str, ...]:
+    """``_declared_modifiers`` plus ``static`` for a Kotlin ``object`` /
+    ``companion object`` function, which the grammar does not spell out."""
+    modifiers = _declared_modifiers(def_node, node_types, src)
+    if (
+        language == "kotlin"
+        and def_node.type == "function_declaration"
+        and "static" not in modifiers
+        and _in_kotlin_static_owner(def_node)
+    ):
+        return (*modifiers, "static")
+    return modifiers
+
+
+def _in_kotlin_static_owner(def_node: Node) -> bool:
+    """Whether the nearest enclosing type of *def_node* is an ``object`` or a
+    ``companion object`` (so the function has no instance of its own)."""
+    node = def_node.parent
+    while node is not None:
+        if node.type in _KOTLIN_STATIC_OWNERS:
+            return True
+        if node.type in _KOTLIN_CLASS_OWNERS:
+            return False
+        node = node.parent
+    return False
+
+
 def _rust_outer_attributes(def_node: Node, src: str) -> list[str]:
     """Rust: outer attributes (#[...]) are preceding siblings of the item."""
     attrs: list[str] = []

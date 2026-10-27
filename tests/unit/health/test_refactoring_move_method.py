@@ -585,3 +585,207 @@ def test_a_target_in_the_same_language_family_still_moves():
         g.nodes[node].update(file_path="T.js", language="javascript")
     out = _detect_in(g, "C.tsx", "typescript")
     assert [s.plan["to_file"] for s in out] == ["T.js"]
+
+
+# ---- static utilities and dependency direction -----------------------------
+
+
+def _java_in(root: str, file_name: str, cls: str, methods: list[str], g: nx.DiGraph) -> str:
+    path = f"{root}/{file_name}"
+    _add_class(g, path, cls, methods)
+    for node in g.nodes:
+        if node.startswith(f"{path}::") and g.nodes[node].get("kind") in ("class", "method"):
+            g.nodes[node]["language"] = "java"
+    return path
+
+
+def _static_graph(
+    members: list[str], *, static: bool = True, declared: tuple[str, ...] = ()
+) -> nx.DiGraph:
+    """``util/K.gen`` calls every member of ``entity/T``; ``gen`` is static.
+
+    *declared* members exist on ``T`` but are not called (a constructor).
+    """
+    g = nx.DiGraph()
+    util = _java_in("app/util", "K.java", "K", ["gen"], g)
+    target = _java_in("app/entity", "T.java", "T", [*declared, *members], g)
+    for m in members:
+        _call(g, f"{util}::K.gen", f"{target}::T.{m}")
+    if static:
+        g.nodes[f"{util}::K.gen"]["modifiers"] = ("public", "static")
+    return g
+
+
+def _detect_static(g: nx.DiGraph, language: str = "java") -> list:
+    ctx = RefactoringContext(file_path="app/util/K.java", language=language, nloc=40, graph=g)
+    return [s for s in detect_refactorings(ctx) if s.refactoring_type == "move_method"]
+
+
+_GETTERS = ["getAppId", "getClusterName", "getNamespaceName", "setAppId"]
+_BEHAVIOUR = ["validate", "apply", "merge", "reset"]
+
+
+def test_static_method_reading_getters_never_moves_into_the_data_holder():
+    assert _detect_static(_static_graph(_GETTERS)) == []
+    assert _detect_static(_static_graph(["isActive", "getName", "getId"])) == []
+
+
+def test_static_method_calling_behaviour_still_moves():
+    out = _detect_static(_static_graph(_BEHAVIOUR))
+    assert [(s.target_symbol, s.plan["to_class"]) for s in out] == [("K.gen", "T")]
+
+
+def test_instance_method_reading_getters_is_not_changed_by_the_static_rule():
+    assert len(_detect_static(_static_graph(_GETTERS, static=False))) == 1
+
+
+def test_one_behaviour_call_makes_the_target_more_than_a_data_holder():
+    # ``validate`` is not an accessor, so the target is not only a data holder.
+    assert len(_detect_static(_static_graph(["getAppId", "getName", "validate"]))) == 1
+
+
+def test_get_alone_and_lowercase_prefixes_are_not_accessors():
+    # ``get(k)`` is a lookup and ``settle`` / ``issue`` only start like setters.
+    assert len(_detect_static(_static_graph(["get", "settle", "issue"]))) == 1
+
+
+def test_record_components_are_accessors_for_a_static_method():
+    g = _static_graph(["appId", "clusterName"], declared=("T",))
+    g.nodes["app/entity/T.java::T.T"]["signature"] = "public T(String appId, String clusterName)"
+    for m in ("appId", "clusterName"):
+        g.nodes[f"app/entity/T.java::T.{m}"]["signature"] = f"public String {m}()"
+    assert _detect_static(g) == []
+    # The same names are behaviour when they take arguments.
+    for m in ("appId", "clusterName"):
+        g.nodes[f"app/entity/T.java::T.{m}"]["signature"] = f"public void {m}(int n)"
+    assert len(_detect_static(g)) == 1
+
+
+def test_constructor_parameters_with_generics_and_defaults_are_read():
+    g = _static_graph(["ids", "name"], declared=("T",))
+    g.nodes["app/entity/T.java::T.T"]["signature"] = (
+        "T(Map<String, List<Integer>> ids, String name)"
+    )
+    for m in ("ids", "name"):
+        g.nodes[f"app/entity/T.java::T.{m}"]["signature"] = f"{m}() -> Object"
+    assert _detect_static(g) == []
+
+
+def test_kotlin_companion_function_reading_properties_never_moves():
+    g = _static_graph(["getAppId", "getName", "getId"])
+    assert _detect_static(g, "kotlin") == []
+
+
+def test_python_staticmethod_handling_is_unchanged():
+    g = _static_graph(_GETTERS, static=False)
+    g.nodes["app/util/K.java::K.gen"]["decorators"] = ["@staticmethod"]
+    assert len(_detect_static(g, "python")) == 1
+
+
+def _reversal_graph(*, target_dir: str = "app/entity") -> nx.DiGraph:
+    """``util/K.gen`` calls three behaviours of ``T`` and ``util/Base.generate``."""
+    g = nx.DiGraph()
+    util = _java_in("app/util", "K.java", "K", ["gen"], g)
+    base = _java_in("app/util", "Base.java", "Base", ["generate"], g)
+    target = _java_in(target_dir, "T.java", "T", ["validate", "apply", "merge"], g)
+    for m in ("validate", "apply", "merge"):
+        _call(g, f"{util}::K.gen", f"{target}::T.{m}")
+    _call(g, f"{util}::K.gen", f"{base}::Base.generate")
+    return g
+
+
+def test_move_whose_other_callee_the_target_cannot_see_is_refused():
+    assert _detect_static(_reversal_graph()) == []
+
+
+def test_move_is_allowed_when_the_target_imports_or_shares_a_package_with_the_callee():
+    g = _reversal_graph()
+    g.add_edge("app/entity/T.java", "app/util/Base.java", edge_type="imports")
+    assert len(_detect_static(g)) == 1
+    assert len(_detect_static(_reversal_graph(target_dir="app/util"))) == 1
+    g = _reversal_graph()
+    g.add_edge("app/entity/T.java", "app/util/Base.java", edge_type="calls")
+    assert _detect_static(g) == []  # a call edge is not a visibility edge
+
+
+def test_dependency_direction_is_only_judged_where_imports_decide_visibility():
+    assert len(_detect_static(_reversal_graph(), "python")) == 1
+
+
+def test_a_callee_without_a_file_does_not_block_a_move():
+    g = _reversal_graph()
+    g.add_node("external::lib.fn", node_type="symbol", kind="method", name="fn")
+    _call(g, "app/util/K.java::K.gen", "external::lib.fn")
+    g.add_edge("app/entity/T.java", "app/util/Base.java", edge_type="imports")
+    assert len(_detect_static(g)) == 1
+
+
+_ISSUE_FILES = {
+    "src/main/java/app/entity/Namespace.java": """package app.entity;
+public class Namespace {
+  private String appId; private String clusterName; private String namespaceName;
+  public String getAppId() { return appId; }
+  public String getClusterName() { return clusterName; }
+  public String getNamespaceName() { return namespaceName; }
+  public void setAppId(String appId) { this.appId = appId; }
+}
+""",
+    "src/main/java/app/util/KeyGenerator.java": """package app.util;
+public class KeyGenerator {
+  protected static String generate(Object... args) { return null; }
+}
+""",
+    "src/main/java/app/util/ReleaseKeyGenerator.java": """package app.util;
+import app.entity.Namespace;
+public class ReleaseKeyGenerator extends KeyGenerator {
+  public static String generateReleaseKey(Namespace namespace) {
+    return generate(namespace.getAppId(), namespace.getClusterName(), namespace.getNamespaceName());
+  }
+}
+""",
+}
+
+
+def _plans_from_source(tmp_path, files: dict[str, str], file_path: str) -> list:
+    from repowise.core.pipeline.incremental.graph import build_repo_graph
+
+    for rel, text in files.items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(text, encoding="utf-8")
+    _, _, builder, _, _ = build_repo_graph(
+        tmp_path, [], collect_sources=True, log=lambda *a, **k: None, read_only=True
+    )
+    graph = builder.graph()
+    method = next(n for n in graph.nodes if n.endswith("::generateReleaseKey"))
+    assert "static" in graph.nodes[method]["modifiers"]
+    ctx = RefactoringContext(file_path=file_path, language="java", nloc=200, graph=graph)
+    return [s for s in detect_refactorings(ctx) if s.refactoring_type == "move_method"]
+
+
+def test_issue_3830_key_generator_is_not_moved_into_the_entity(tmp_path):
+    path = "src/main/java/app/util/ReleaseKeyGenerator.java"
+    assert _plans_from_source(tmp_path, _ISSUE_FILES, path) == []
+
+
+def test_static_method_calling_behaviour_from_source_still_moves(tmp_path):
+    files = dict(_ISSUE_FILES)
+    files["src/main/java/app/util/ReleaseKeyGenerator.java"] = """package app.util;
+import app.entity.Namespace;
+public class ReleaseKeyGenerator {
+  public static String generateReleaseKey(Namespace namespace) {
+    namespace.validate(); namespace.apply(); return namespace.merge();
+  }
+}
+"""
+    files["src/main/java/app/entity/Namespace.java"] = """package app.entity;
+public class Namespace {
+  public void validate() {}
+  public void apply() {}
+  public String merge() { return null; }
+}
+"""
+    path = "src/main/java/app/util/ReleaseKeyGenerator.java"
+    out = _plans_from_source(tmp_path, files, path)
+    assert [(s.target_symbol, s.plan["to_class"]) for s in out] == [
+        ("ReleaseKeyGenerator.generateReleaseKey", "Namespace")
+    ]
