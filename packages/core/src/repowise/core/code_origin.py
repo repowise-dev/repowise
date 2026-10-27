@@ -129,6 +129,9 @@ _PARSER_TOOL_BANNER_RE = re.compile(
 # ``#line N "grammar.rl"`` directive near the top. A ``#line`` to a C file is
 # not one: hand-written code can carry that.
 _GRAMMAR_LINE_RE = re.compile(r'^#\s*line\s+\d+\s+"[^"]*\.(?:rl|y|yy|l|ll)"')
+# Ragel's Java host writes the same back-reference as a line comment. Only
+# a Ragel grammar target counts, not an ordinary ``// line N "Foo.java"``.
+_JAVA_GRAMMAR_LINE_RE = re.compile(r'^//\s*line\s+\d+\s+"[^"]*\.rl"')
 _GRAMMAR_LINE_LINES = 10
 _GENERATED_SENTENCE_LINES = 40
 _PREAMBLE_PREFIXES = ("package ", "import ", "from ", "using ")
@@ -210,11 +213,15 @@ def _says_generated(text: str) -> bool:
 
 
 def _from_grammar(name: str, header: str) -> bool:
-    """A C or C++ file whose head points back at the grammar it was made from."""
-    if not name.lower().endswith(_deps_suffixes()):
+    """A C, C++ or Java file whose head points back at its source grammar."""
+    if name.lower().endswith(".java"):
+        pattern = _JAVA_GRAMMAR_LINE_RE
+    elif name.lower().endswith(_deps_suffixes()):
+        pattern = _GRAMMAR_LINE_RE
+    else:
         return False
     lines = header.splitlines()[:_GRAMMAR_LINE_LINES]
-    return any(_GRAMMAR_LINE_RE.match(line.strip()) for line in lines)
+    return any(pattern.match(line.strip()) for line in lines)
 
 
 def _above_import(lines: list[str], i: int) -> bool:

@@ -493,6 +493,50 @@ def test_parser_generator_output_is_generated(path: str, text: str) -> None:
 @pytest.mark.parametrize(
     "text",
     [
+        '\n// line 1 "ext/puma_http11/http11_parser.java.rl"\npackage org.jruby.puma;\n',
+        '// line 42 "parser.rl"\nclass Parser {}\n',
+        '\t//\tline\t2\t"parser.rl"\r\nclass Parser {}\r\n',
+        "\n" * 9 + '// line 1 "parser.rl"\n',
+    ],
+)
+def test_ragel_java_output_is_generated(text: str) -> None:
+    assert code_origin("ext/puma_http11/org/jruby/puma/Http11Parser.java", text) == "generated"
+    assert not is_generated_header(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "package app;\nclass Parser {}\n",
+        '// line 1 "Foo.java"\nclass Parser {}\n',
+        '// line 1 "parser.y"\nclass Parser {}\n',
+        '// line 1 "parser.l"\nclass Parser {}\n',
+        '// line 1 "parser.rl.bak"\nclass Parser {}\n',
+        '// See line 1 "parser.rl"\nclass Parser {}\n',
+        r'String marker = "// line 1 \"parser.rl\"";',
+        '#line 1 "parser.rl"\nclass Parser {}\n',
+        "\n" * 10 + '// line 1 "parser.rl"\n',
+        "// filler\n" * 410 + '// line 1 "parser.rl"\n',
+    ],
+)
+def test_java_without_ragel_header_stays_production(text: str) -> None:
+    assert code_origin("src/Parser.java", text) == "production"
+
+
+@pytest.mark.parametrize("path", ["src/parser.c", "src/parser.kt", "src/parser.py"])
+def test_ragel_line_comment_is_java_only(path: str) -> None:
+    assert code_origin(path, '// line 1 "parser.rl"\n') == "production"
+
+
+@pytest.mark.parametrize("path", ["src/parser.c", "src/parser.cc"])
+@pytest.mark.parametrize("suffix", ["rl", "y", "yy", "l", "ll"])
+def test_c_and_cpp_grammar_directives_stay_generated(path: str, suffix: str) -> None:
+    assert code_origin(path, f'#line 1 "parser.{suffix}"\n') == "generated"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
         '#line 1 "src/parser.c"\nint parse(void) { return 0; }\n',
         '#line 40 "util.h"\nint helper(void);\n',
         "int a;\n" * 12 + '#line 1 "late.rl"\n',
