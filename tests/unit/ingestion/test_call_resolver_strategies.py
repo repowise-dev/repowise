@@ -2479,6 +2479,30 @@ class TestPythonNameAliasAssignment:
             ("app.py::via_name", "pkg/_make.py::attrs"),
         }
 
+    def test_a_class_level_alias_of_an_imported_name_is_not_linked(
+        self, tmp_path: Path
+    ) -> None:
+        """Only a module-level alias is linked; ``class C: s = attrs`` is left alone."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "pkg/_make.py": ("python", "def attrs():\n    pass\n"),
+                "pkg/__init__.py": (
+                    "python",
+                    "from pkg._make import attrs\n\nclass C:\n    s = attrs\n",
+                ),
+                "app.py": ("python", "from pkg import C\n\ndef run():\n    C.s()\n"),
+            },
+        )
+        _link_imports(
+            parsed,
+            {
+                "app.py": {"pkg": "pkg/__init__.py"},
+                "pkg/__init__.py": {"pkg._make": "pkg/_make.py"},
+            },
+        )
+        assert ("app.py::run", "pkg/_make.py::attrs") not in self._app_edges(parsed, tmp_path)
+
     def test_an_alias_of_a_renamed_import_resolves_to_its_definition(
         self, tmp_path: Path
     ) -> None:
