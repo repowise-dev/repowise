@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from datetime import UTC, datetime
 
 import pytest
@@ -169,19 +170,20 @@ async def test_unindexed_edit_naming_the_symbol_is_listed_and_incomplete(
 
     out = await reference_edit_set(session, repo_id, tmp_path, node)
 
-    assert ("app/new.py", 1, "reference") in _sites(out)
+    # Its graph lines are unknown, so a call is read from the text.
+    assert ("app/new.py", 1, "call") in _sites(out)
     assert out["complete"] is False
 
 
 @pytest.mark.asyncio
-async def test_same_package_language_is_never_complete(session, repo_id, tmp_path):
-    node = await _seed(session, repo_id, tmp_path, language="java")
+async def test_swift_module_visibility_is_never_complete(session, repo_id, tmp_path):
+    node = await _seed(session, repo_id, tmp_path, language="swift")
 
     out = await reference_edit_set(session, repo_id, tmp_path, node)
 
     assert (_USER, 9, "call") in _sites(out)
     assert out["complete"] is False
-    assert "java: same-package use is not scanned" in out["reasons"]
+    assert "swift: same-package use is not scanned" in out["reasons"]
 
 
 @pytest.mark.asyncio
@@ -696,3 +698,280 @@ async def test_get_context_collapses_a_flood_into_recoverable_counts(setup_mcp, 
 def test_alias_member_access_on_an_export_line_is_incomplete(line: str) -> None:
     lines = ['import { pick as choose } from "./d";', line]
     assert _edit_sites._aliases_leave("u.ts", lines, {"choose"}, {1})
+
+
+async def _seed_package(
+    session, repo_id, tmp_path, files: dict[str, str], language: str, symbol, git: bool = True
+):
+    """Write *files* and index *symbol* ``(path, name, start, end)``; files are not indexed,
+    as only the live tree decides which share its package."""
+    if git:
+        # JVM package files are found by git grep.
+        subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    for rel, text in files.items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(text, encoding="utf-8")
+    path, name, start, end = symbol
+    node = GraphNode(
+        id="pkg_sym",
+        repository_id=repo_id,
+        node_id=f"{path}::{name}",
+        node_type="symbol",
+        name=name,
+        file_path=path,
+        kind="function" if language == "go" else "class",
+        language=language,
+        start_line=start,
+        end_line=end,
+        created_at=_NOW,
+    )
+    session.add(node)
+    await session.flush()
+    return node
+
+
+_MODEL = "src/main/java/org/sp/petclinic/model"
+_BASE_ENTITY = "package org.sp.petclinic.model;\n\npublic class BaseEntity {\n}\n"
+
+
+def _model(cls: str, parent: str, package: str = "org.sp.petclinic.model") -> str:
+    return f"package {package};\n\npublic class {cls} extends {parent} {{\n}}\n"
+
+
+@pytest.mark.asyncio
+async def test_java_same_package_subclasses_are_listed_and_complete(session, repo_id, tmp_path):
+    node = await _seed_package(
+        session,
+        repo_id,
+        tmp_path,
+        {
+            f"{_MODEL}/BaseEntity.java": _BASE_ENTITY,
+            f"{_MODEL}/NamedEntity.java": _model("NamedEntity", "BaseEntity"),
+            f"{_MODEL}/Person.java": _model("Person", "BaseEntity"),
+            # Same package under the test root: visible without an import.
+            "src/test/java/org/sp/petclinic/model/EntityTests.java": (
+                "package org.sp.petclinic.model;\n\nclass EntityTests {\n"
+                "    BaseEntity e = new BaseEntity();\n}\n"
+            ),
+            # Another package naming it fully qualified, with no import.
+            "src/main/java/org/sp/petclinic/vet/Vet.java": (
+                "package org.sp.petclinic.vet;\n\n"
+                "class Vet extends org.sp.petclinic.model.BaseEntity {\n}\n"
+            ),
+            # A subpackage holding another BaseEntity is not a use.
+            f"{_MODEL}/sub/Other.java": _model("BaseEntity", "Object", "org.sp.petclinic.model.sub"),
+        },
+        "java",
+        (f"{_MODEL}/BaseEntity.java", "BaseEntity", 3, 4),
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    sites = _sites(out)
+    assert (f"{_MODEL}/BaseEntity.java", 3, "definition") in sites
+    assert (f"{_MODEL}/NamedEntity.java", 3, "reference") in sites
+    assert (f"{_MODEL}/Person.java", 3, "reference") in sites
+    assert ("src/test/java/org/sp/petclinic/model/EntityTests.java", 4, "reference") in sites
+    assert ("src/main/java/org/sp/petclinic/vet/Vet.java", 3, "reference") in sites
+    assert out["complete"] is True, out.get("reasons")
+
+
+@pytest.mark.asyncio
+async def test_java_package_without_git_to_search_is_incomplete(session, repo_id, tmp_path):
+    node = await _seed_package(
+        session,
+        repo_id,
+        tmp_path,
+        {f"{_MODEL}/BaseEntity.java": _BASE_ENTITY},
+        "java",
+        (f"{_MODEL}/BaseEntity.java", "BaseEntity", 3, 4),
+        git=False,
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    assert out["complete"] is False
+    assert "java: could not search for package org.sp.petclinic.model" in out["reasons"]
+
+
+_LEGACY = "package cobra\n\nfunc legacyArgs(args []string) error {\n\treturn nil\n}\n"
+
+
+@pytest.mark.asyncio
+async def test_go_package_is_its_live_directory(session, repo_id, tmp_path):
+    node = await _seed_package(
+        session,
+        repo_id,
+        tmp_path,
+        {
+            "args.go": _LEGACY,
+            "command.go": "package cobra\n\nfunc run(a []string) error {\n\treturn legacyArgs(a)\n}\n",
+            # A file the index skipped (generated, build-tagged) still shares the package.
+            "zz_generated.go": "package cobra\n\nvar f = legacyArgs\n",
+            # The external test package beside it imports it like any other.
+            "args_test.go": 'package cobra_test\n\nimport "testing"\n',
+            "doc/gen.go": "package doc\n\nfunc legacyArgs() {}\n",
+        },
+        "go",
+        ("args.go", "legacyArgs", 3, 5),
+        git=False,
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    assert ("command.go", 4, "reference") in _sites(out)
+    assert ("zz_generated.go", 3, "reference") in _sites(out)
+    assert not any(p == "doc/gen.go" for p, _n, _k in _sites(out))
+    assert out["complete"] is True, out.get("reasons")
+
+
+@pytest.mark.asyncio
+async def test_go_directory_holding_another_package_is_incomplete(session, repo_id, tmp_path):
+    node = await _seed_package(
+        session,
+        repo_id,
+        tmp_path,
+        {"args.go": _LEGACY, "gen.go": "//go:build ignore\n\npackage main\n"},
+        "go",
+        ("args.go", "legacyArgs", 3, 5),
+        git=False,
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    assert out["complete"] is False
+    assert "go: another package shares its directory: gen.go" in out["reasons"]
+
+
+@pytest.mark.asyncio
+async def test_kotlin_same_package_in_another_directory_is_listed(session, repo_id, tmp_path):
+    node = await _seed_package(
+        session,
+        repo_id,
+        tmp_path,
+        {
+            "src/com/ex/Util.kt": "package com.ex\n\nclass Helper {\n}\n",
+            "src/com/ex/Main.kt": "package com.ex\n\nval h = Helper()\n",
+            # Kotlin does not tie a package to its directory.
+            "app/misc/Extra.kt": "package com.ex\n\nval e = Helper()\n",
+        },
+        "kotlin",
+        ("src/com/ex/Util.kt", "Helper", 3, 4),
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    assert ("src/com/ex/Main.kt", 3, "reference") in _sites(out)
+    assert ("app/misc/Extra.kt", 3, "reference") in _sites(out)
+    assert out["complete"] is True, out.get("reasons")
+
+
+_FIND = (
+    "package cobra\n\nfunc run(args []string) error {\n\treturn Find(args)\n}\n\n"
+    "func Find(args []string) error {\n\treturn nil\n}\n"
+)
+
+
+@pytest.mark.asyncio
+async def test_dirty_file_labels_a_shifted_call_as_a_call(session, repo_id, tmp_path, monkeypatch):
+    node = await _seed_package(
+        session, repo_id, tmp_path, {"find.go": _FIND}, "go", ("find.go", "Find", 7, 9), git=False
+    )
+    session.add(_edge(1, repo_id, "find.go::run", "find.go::Find", "calls", call_lines_json="[4]"))
+    await session.flush()
+    # Three lines inserted above both: the call lands on Find's indexed line.
+    edited = _FIND.replace("\n\nfunc run", "\n\n// a\n// b\n// c\nfunc run", 1)
+    (tmp_path / "find.go").write_text(edited, encoding="utf-8")
+    _dirty(monkeypatch, frozenset({"find.go"}))
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    assert _sites(out) == [("find.go", 10, "definition"), ("find.go", 7, "call")]
+    assert not any(r.startswith("stale") for r in out.get("reasons", []))
+
+
+_OP = """package p;
+
+enum Op {
+    PLUS {
+        int apply(int a) { return a; }
+    };
+    abstract int apply(int a);
+}
+
+class Box {
+    void put(int x) {}
+    void put(String s) {}
+}
+"""
+
+
+@pytest.mark.parametrize(
+    ("symbol_id", "parent", "line"),
+    [("p/Op.java::Box::put#1(String)", "Box", 13), ("p/Op.java::Op::PLUS::apply", "Op", 6)],
+)
+def test_live_definition_relocates_overloads_and_enum_constant_members(
+    tmp_path, symbol_id, parent, line
+):
+    (tmp_path / "p").mkdir()
+    # One line inserted at the top moves every symbol down by one.
+    (tmp_path / "p" / "Op.java").write_text("// edited\n" + _OP, encoding="utf-8")
+    node = GraphNode(
+        node_id=symbol_id, file_path="p/Op.java", start_line=1, end_line=1, parent_symbol_id=parent
+    )
+
+    name = _edit_sites._bare_name(node)
+
+    assert _edit_sites._live_definition(tmp_path, node, name, "java") == (line, line)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("header", "facade"), [("", "UtilKt"), ('@file:JvmName("Tools")\n', "Tools")]
+)
+async def test_java_callers_of_a_kotlin_top_level_function_are_listed(
+    session, repo_id, tmp_path, header, facade
+):
+    node = await _seed_package(
+        session,
+        repo_id,
+        tmp_path,
+        {
+            "src/com/ex/Util.kt": f"{header}package com.ex\n\nfun foo() = 1\n",
+            "src/app/A.java": (
+                f"package app;\n\nimport com.ex.{facade};\n\n"
+                f"class A {{ int a = {facade}.foo(); }}\n"
+            ),
+            "src/app/B.java": (
+                f"package app;\n\nimport static com.ex.{facade}.foo;\n\nclass B {{ int b = foo(); }}\n"
+            ),
+        },
+        "kotlin",
+        ("src/com/ex/Util.kt", "foo", 3 + bool(header), 3 + bool(header)),
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    sites = _sites(out)
+    assert ("src/app/A.java", 5, "reference") in sites
+    assert ("src/app/B.java", 3, "import") in sites
+    assert ("src/app/B.java", 5, "reference") in sites
+    assert out["complete"] is True, out.get("reasons")
+
+
+@pytest.mark.asyncio
+async def test_oversize_package_file_is_incomplete(session, repo_id, tmp_path):
+    node = await _seed_package(
+        session,
+        repo_id,
+        tmp_path,
+        {"args.go": _LEGACY, "big.go": "package cobra\n" + "// x\n" * 500_000},
+        "go",
+        ("args.go", "legacyArgs", 3, 5),
+        git=False,
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    assert out["complete"] is False
+    assert "unreadable: big.go" in out["reasons"]

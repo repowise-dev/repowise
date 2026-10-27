@@ -28,9 +28,9 @@ def test_folder_coverage_rules_parse_and_reach_generation_config(monkeypatch) ->
     monkeypatch.setattr(init_cmd, "resolve_repo_path", fake_resolve_repo_path)
 
     # Parse-only check: the raw strings must produce the expected rules.
-    from repowise.core.generation.folder_coverage import _parse_folder_coverage
+    from repowise.core.generation.folder_coverage import parse_folder_coverage
 
-    rules = _parse_folder_coverage(("src/core=1.0", "src/legacy=0.5"))
+    rules = parse_folder_coverage(("src/core=1.0", "src/legacy=0.5"))
     assert rules == (("src/core", 1.0), ("src/legacy", 0.5))
 
 

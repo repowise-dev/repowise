@@ -83,4 +83,68 @@ describe("GeneralForm", () => {
       "true",
     );
   });
+
+  describe("autosave", () => {
+    it("has no Save button and saves a text field on blur, with a Saved tick", async () => {
+      const onSubmit = vi.fn().mockResolvedValue(undefined);
+      render(<GeneralForm value={baseValue} onSubmit={onSubmit} autosave />);
+      expect(screen.queryByRole("button", { name: /Save changes/i })).not.toBeInTheDocument();
+
+      const name = screen.getByLabelText("Repository name");
+      fireEvent.change(name, { target: { value: "renamed" } });
+      expect(onSubmit).not.toHaveBeenCalled();
+      fireEvent.blur(name);
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+      expect(onSubmit.mock.calls[0]![0]).toMatchObject({ name: "renamed", default_branch: "main" });
+      expect(await screen.findByText("Saved")).toBeInTheDocument();
+    });
+
+    it("does not save an unchanged or emptied text field", () => {
+      const onSubmit = vi.fn().mockResolvedValue(undefined);
+      render(<GeneralForm value={baseValue} onSubmit={onSubmit} autosave />);
+      const branch = screen.getByLabelText("Default branch");
+      fireEvent.blur(branch);
+      fireEvent.change(branch, { target: { value: "  " } });
+      fireEvent.keyDown(branch, { key: "Enter" });
+      expect(onSubmit).not.toHaveBeenCalled();
+      expect(branch).toHaveValue("main");
+    });
+
+    it("saves a style on click and rolls it back when the write fails", async () => {
+      const onSubmit = vi.fn().mockRejectedValue(new Error("nope"));
+      render(<GeneralForm value={baseValue} onSubmit={onSubmit} autosave />);
+      fireEvent.click(screen.getByRole("radio", { name: /Caveman/i }));
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+      expect(onSubmit.mock.calls[0]![0]).toMatchObject({ wiki_style: "caveman" });
+      await waitFor(() =>
+        expect(screen.getByRole("radio", { name: /Comprehensive/i })).toHaveAttribute("aria-checked", "true"),
+      );
+      expect(screen.getByText("Could not save")).toBeInTheDocument();
+    });
+
+    it("keeps a superseded write that succeeded when a newer one fails", async () => {
+      let releaseFirst: () => void = () => {};
+      const onSubmit = vi
+        .fn()
+        .mockImplementationOnce(() => new Promise<void>((r) => (releaseFirst = r)))
+        .mockRejectedValueOnce(new Error("nope"));
+      render(<GeneralForm value={baseValue} onSubmit={onSubmit} autosave />);
+      fireEvent.click(screen.getByRole("radio", { name: /Caveman/i }));
+      fireEvent.click(screen.getByRole("button", { name: "+ vendor/" }));
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(2));
+      releaseFirst();
+      await waitFor(() => expect(screen.getByText("Could not save")).toBeInTheDocument());
+      // The style write landed; only the path write rolls back.
+      expect(screen.getByRole("radio", { name: /Caveman/i })).toHaveAttribute("aria-checked", "true");
+      expect(screen.queryByText("vendor/")).not.toBeInTheDocument();
+    });
+
+    it("saves an excluded path as soon as it is added", async () => {
+      const onSubmit = vi.fn().mockResolvedValue(undefined);
+      render(<GeneralForm value={baseValue} onSubmit={onSubmit} autosave />);
+      fireEvent.click(screen.getByRole("button", { name: "+ vendor/" }));
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+      expect(onSubmit.mock.calls[0]![0].exclude_patterns).toEqual(["node_modules/", "vendor/"]);
+    });
+  });
 });

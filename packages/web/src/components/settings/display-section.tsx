@@ -1,8 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
-import { OverviewSection } from "@repowise-dev/ui/overview";
 import {
   Select,
   SelectContent,
@@ -10,12 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@repowise-dev/ui/ui/select";
-import {
-  SettingsRow,
-  SettingsRows,
-  SaveIndicator,
-  type SaveState,
-} from "@repowise-dev/ui/settings";
+import { SettingsRow, SettingsRows, useSaveState } from "@repowise-dev/ui/settings";
 import { Switch } from "@repowise-dev/ui/ui/switch";
 import { DEFAULT_WEEKEND_PRESET, WEEKEND_PRESETS } from "@repowise-dev/ui/stats";
 import {
@@ -61,9 +55,8 @@ export function DisplaySection() {
     ask: true,
     selection: true,
   });
-  const [tipsShown, setTipsShown] = useState(true);
-  const [saveState, setSaveState] = useState<SaveState>("idle");
-  const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [savedRow, setSavedRow] = useState<string | null>(null);
+  const save = useSaveState();
   const t = useTranslations("settings");
   /** The three switches, with their copy taken from the active locale. */
   const chatSwitches: {
@@ -100,7 +93,6 @@ export function DisplaySection() {
   // Read after mount so SSR and the first client render agree.
   useEffect(() => {
     setWeekend(config.getWeekend() || DEFAULT_WEEKEND_PRESET.id);
-    setTipsShown(!config.getHostedTipsHidden());
   }, []);
 
   // The same two listeners the affordances themselves use: `storage` covers
@@ -122,30 +114,20 @@ export function DisplaySection() {
     };
   }, []);
 
-  useEffect(
-    () => () => {
-      if (savedTimer.current) clearTimeout(savedTimer.current);
-    },
-    [],
-  );
-
-  function markSaved() {
-    setSaveState("saved");
-    if (savedTimer.current) clearTimeout(savedTimer.current);
-    savedTimer.current = setTimeout(() => setSaveState("idle"), 2000);
+  /** These write to this browser and cannot fail; the tick says it took. */
+  function markSaved(row: string) {
+    setSavedRow(row);
+    void save.track(() => Promise.resolve());
   }
+
+  const tick = (row: string) => (savedRow === row ? { saveState: save.state } : {});
 
   function handleChange(v: string) {
     setWeekend(v);
     config.setWeekend(v);
-    markSaved();
+    markSaved("weekend");
   }
 
-  function handleTipsChange(shown: boolean) {
-    setTipsShown(shown);
-    config.setHostedTipsHidden(!shown);
-    markSaved();
-  }
 
   function handleChatChange(
     entry: { key: ChatSwitchKey; write: (shown: boolean) => void },
@@ -156,22 +138,19 @@ export function DisplaySection() {
     // also drives this component's own sync, so there is no optimistic state
     // that could drift from storage.
     entry.write(shown);
-    markSaved();
+    markSaved(entry.key);
   }
 
   return (
-    <OverviewSection
-      title={t("display.title")}
-      description={t("display.description")}
-      action={<SaveIndicator state={saveState} />}
-    >
       <SettingsRows>
         <SettingsRow
           label={t("display.weekendLabel")}
+          htmlFor="weekend-preset"
           hint={t("display.weekendHint")}
+          {...tick("weekend")}
         >
           <Select value={weekend} onValueChange={handleChange}>
-            <SelectTrigger className="w-full sm:w-64">
+            <SelectTrigger id="weekend-preset" className="w-full sm:w-64">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -190,6 +169,8 @@ export function DisplaySection() {
           return (
             <SettingsRow
               key={entry.key}
+              inline
+              {...tick(entry.key)}
               label={entry.label}
               hint={
                 gated
@@ -206,17 +187,6 @@ export function DisplaySection() {
             </SettingsRow>
           );
         })}
-        <SettingsRow
-          label="Show repowise.dev tips"
-          hint="An occasional one-line tip about what repowise.dev adds, at most one per page. Never shown once you have signed in with repowise login."
-        >
-          <Switch
-            checked={tipsShown}
-            onCheckedChange={handleTipsChange}
-            aria-label="Show repowise.dev tips"
-          />
-        </SettingsRow>
       </SettingsRows>
-    </OverviewSection>
   );
 }

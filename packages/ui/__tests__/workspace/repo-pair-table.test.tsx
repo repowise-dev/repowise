@@ -27,7 +27,7 @@ describe("RepoPairTable", () => {
       <RepoPairTable repoPairs={[p]} onSelectPair={onSelect} onPrompt={onPrompt} selectedPairId={p.id} />,
     );
     expect(screen.getByText("Showing only these")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "AI prompt for api and core" }));
+    fireEvent.click(screen.getByRole("button", { name: "Copy prompt for api and core" }));
     expect(onPrompt).toHaveBeenCalledWith(p);
     expect(onSelect).not.toHaveBeenCalled();
   });

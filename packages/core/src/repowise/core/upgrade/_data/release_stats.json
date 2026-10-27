@@ -1,0 +1,82 @@
+{
+  "0.56.0": {
+    "since": "0.55.0",
+    "days": 8,
+    "prs": 311,
+    "contributors": 41,
+    "first_time_contributors": 25,
+    "files_changed": 1475,
+    "lines_added": 117442,
+    "lines_removed": 21293,
+    "types": {
+      "fixes": 165,
+      "features": 89,
+      "perf": 10,
+      "refactors": 28,
+      "docs": 6
+    },
+    "test_files_touched": 492,
+    "test_files_new": 158,
+    "issues_closed": 76
+  },
+  "0.57.0": {
+    "since": "0.56.0",
+    "days": 3,
+    "prs": 264,
+    "contributors": 41,
+    "first_time_contributors": 25,
+    "files_changed": 1421,
+    "lines_added": 123474,
+    "lines_removed": 15118,
+    "types": {
+      "fixes": 192,
+      "features": 51,
+      "perf": 3,
+      "refactors": 5,
+      "docs": 7
+    },
+    "test_files_touched": 504,
+    "test_files_new": 168,
+    "issues_closed": 53
+  },
+  "0.58.0": {
+    "since": "0.57.0",
+    "days": 5,
+    "prs": 278,
+    "contributors": 35,
+    "first_time_contributors": 19,
+    "files_changed": 1609,
+    "lines_added": 157134,
+    "lines_removed": 64952,
+    "types": {
+      "fixes": 92,
+      "features": 80,
+      "perf": 9,
+      "refactors": 79,
+      "docs": 7
+    },
+    "test_files_touched": 462,
+    "test_files_new": 181,
+    "issues_closed": 58
+  },
+  "0.59.0": {
+    "since": "0.58.0",
+    "days": 4,
+    "prs": 251,
+    "contributors": 37,
+    "first_time_contributors": 26,
+    "files_changed": 1720,
+    "lines_added": 117289,
+    "lines_removed": 16849,
+    "types": {
+      "fixes": 110,
+      "features": 116,
+      "perf": 13,
+      "refactors": 0,
+      "docs": 4
+    },
+    "test_files_touched": 552,
+    "test_files_new": 207,
+    "issues_closed": 42
+  }
+}

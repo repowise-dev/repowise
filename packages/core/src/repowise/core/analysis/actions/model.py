@@ -7,6 +7,7 @@ fails when the two disagree.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Literal, get_args
 
@@ -15,7 +16,7 @@ from repowise.core.analysis.next_call import ActionCommand
 
 #: Bumped when a rule's output changes meaning or shape; stored views built
 #: under another version are rebuilt.
-ACTIONS_MODEL_VERSION = 1
+ACTIONS_MODEL_VERSION = 2
 
 ActionRule = Literal[
     "live_secret",
@@ -88,6 +89,17 @@ RULE_RANK: dict[str, int] = {rule: i for i, rule in enumerate(ACTION_RULES)}
 SEVERITY_VALUE: dict[str, int] = {"critical": 4, "high": 3, "medium": 2, "low": 1}
 
 
+def evidence_severity(severities: Iterable[str | None], default: str) -> str:
+    """An action's severity from the findings it rests on: the worst of them,
+    held at high (critical is a live credential's, see :attr:`Action.severity`).
+    ``default`` when it rests on none, so a row and its evidence never disagree."""
+    known = [s for s in severities if s in SEVERITY_VALUE]
+    if not known:
+        return default
+    worst = max(known, key=SEVERITY_VALUE.__getitem__)
+    return "high" if worst == "critical" else worst
+
+
 def effective_value(value: int | None, severity: str) -> int:
     """An action's value: its own, else its severity's (also for a view
     stored before actions carried one)."""
@@ -149,6 +161,9 @@ class Action:
     rule: ActionRule
     tier: ActionTier
     horizons: tuple[Horizon, ...]
+    #: Critical is for work that is both urgent and certain enough to drop
+    #: other work for: a credential in the working tree. Code-health work tops
+    #: out at high however many of its findings a detector tags critical.
     severity: str
     #: Verb first. Paths and symbols are wrapped in backticks, which every
     #: renderer sets in mono: "Raise test coverage on `a/b.py` from 62%".

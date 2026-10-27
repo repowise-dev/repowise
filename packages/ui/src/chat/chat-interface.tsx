@@ -32,10 +32,11 @@ import { Button } from "../ui/button";
 import { ActivityDot } from "../ui/activity-dot";
 import { ScrollArea } from "../ui/scroll-area";
 import { cn } from "../lib/cn";
-import { ChatMessage } from "./chat-message";
+import { ChatMessage, type UnverifiedFigureCopy } from "./chat-message";
 import { ArtifactPanel } from "./artifact-panel";
 import { ChatContextIndicator } from "./chat-context-indicator";
 import {
+  EMPTY_CHAT_SUGGESTIONS,
   getChatContextPresentation,
   type ChatContext,
 } from "./chat-context";
@@ -49,14 +50,9 @@ import { ChatComposer } from "./chat-composer";
 import { ChatSuggestions } from "./chat-suggestions";
 import { useChatScroll } from "./use-chat-scroll";
 
-const DEFAULT_SUGGESTIONS: readonly ChatSuggestion[] = [
-  "Give me an overview of this codebase",
-  "Which files have the worst code health?",
-  "Score the change risk of HEAD",
-  "What dead code can be safely removed?",
-  "What architectural decisions have been made?",
-  "Search for authentication-related code",
-].map((text) => ({ text, source: "static" as const }));
+const DEFAULT_SUGGESTIONS: readonly ChatSuggestion[] = EMPTY_CHAT_SUGGESTIONS.map(
+  (text) => ({ text, source: "static" as const }),
+);
 
 // Radix wraps viewport content in an inline `display: table` div that grows
 // to its widest child, so one wide table or code line widened the whole
@@ -125,6 +121,8 @@ export interface ChatInterfaceProps {
   onDraftChange?: (draft: string) => void;
   onContextRemove?: () => void;
   composerRef?: RefObject<HTMLTextAreaElement | null>;
+  /** Copy for figures the numeric check flagged; English by default. */
+  unverifiedFigureCopy?: UnverifiedFigureCopy;
   /** Focus the composer on mount. The dock and the full page both do; a host
    *  embedding chat below other content should not. */
   autoFocus?: boolean;
@@ -154,6 +152,7 @@ export function ChatInterface({
   historySlot,
   buildCitationHref,
   linkPrefix,
+  unverifiedFigureCopy,
   suggestions,
   placeholder,
   statusSlot,
@@ -337,10 +336,12 @@ export function ChatInterface({
   const column = cn("mx-auto w-full", dock ? "max-w-full px-4" : "max-w-[720px] px-[var(--page-pad)]");
 
   return (
-    <div className="flex h-full min-h-0 flex-col" data-chat-variant={variant}>
+    // Printed, the transcript is the document: chrome and composer drop out
+    // and the scroll region unclips so the answer flows across pages.
+    <div className="flex h-full min-h-0 flex-col print:block print:h-auto" data-chat-variant={variant}>
       {/* Header controls. Always mounted at a fixed height so the transcript
           never shifts when the first artifact arrives. */}
-      <div className={cn("flex h-11 shrink-0 items-center justify-between gap-2", dock ? "px-3" : "px-[var(--page-pad)]")}>
+      <div className={cn("flex h-11 shrink-0 items-center justify-between gap-2 print:hidden", dock ? "px-3" : "px-[var(--page-pad)]")}>
         <div className="flex min-w-0 items-center gap-2">{historySlot}</div>
         <Button
           variant="ghost"
@@ -396,9 +397,9 @@ export function ChatInterface({
           </ScrollArea>
         ) : (
           <ScrollArea
-            className="h-full"
+            className="h-full print:h-auto print:overflow-visible"
             viewportRef={viewportRef}
-            viewportClassName={cn(VIEWPORT_BLOCK, "[overflow-anchor:auto]")}
+            viewportClassName={cn(VIEWPORT_BLOCK, "[overflow-anchor:auto] print:h-auto print:overflow-visible!")}
           >
             <div
               ref={contentRef}
@@ -420,6 +421,7 @@ export function ChatInterface({
                   {...(onEditAndResend ? { onEditAndResend } : {})}
                   {...(buildCitationHref ? { buildCitationHref } : {})}
                   {...(linkPrefix ? { linkPrefix } : {})}
+                  {...(unverifiedFigureCopy ? { unverifiedFigureCopy } : {})}
                 />
                 );
               })}
@@ -444,7 +446,7 @@ export function ChatInterface({
                     <button
                       type="button"
                       onClick={() => void onRetry(lastMessage)}
-                      className="inline-flex h-8 items-center rounded-md px-2 text-xs font-medium hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                      className="inline-flex h-8 items-center rounded-md px-2 text-xs font-medium hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
                     >
                       Retry
                     </button>
@@ -461,7 +463,7 @@ export function ChatInterface({
             aria-pressed={isFollowingLive}
             aria-label="Jump to latest"
             title="Jump to latest"
-            className="absolute bottom-3 left-1/2 z-10 flex h-8 w-8 -translate-x-1/2 items-center justify-center rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)] text-[var(--color-text-secondary)] shadow-[var(--shadow-sm)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+            className="absolute bottom-3 left-1/2 z-10 flex h-8 w-8 print:hidden -translate-x-1/2 items-center justify-center rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)] text-[var(--color-text-secondary)] shadow-[var(--shadow-sm)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
           >
             <ArrowDown className="h-4 w-4" />
           </button>
@@ -474,7 +476,7 @@ export function ChatInterface({
 
       <div
         className={cn(
-          "shrink-0",
+          "shrink-0 print:hidden",
           dock ? "pb-3 pt-1" : "pb-[max(1.25rem,env(safe-area-inset-bottom))] pt-2",
         )}
       >

@@ -9,6 +9,8 @@ test. The diff parser and CRUD line-intersection are tested separately.
 
 from __future__ import annotations
 
+import pytest
+
 from repowise.core.analysis.health.coverage import TestCoverage
 from repowise.core.analysis.test_collection import empty_result as _empty_result
 from repowise.core.analysis.test_collection import resolve_impacted as _resolve_impacted
@@ -243,6 +245,33 @@ async def test_graph_candidates_are_not_capped(async_session) -> None:
     assert set(_pairs(out, "src/hub.py")) == tests
 
 
+async def test_a_package_init_reaching_the_change_reaches_every_module_under_it(
+    async_session,
+) -> None:
+    """Importing ``pkg.a.leaf`` runs ``pkg/__init__.py`` and ``pkg/a/__init__.py`` first."""
+    repo = await insert_repo(async_session)
+    await _graph(
+        async_session,
+        repo.id,
+        tests={"tests/test_leaf.py", "tests/test_other.py", "tests/test_core.py"},
+        files={"pkg/__init__.py", "pkg/a/__init__.py", "pkg/a/leaf.py", "pkg/core.py", "other/x.py"},
+        imports=[
+            ("pkg/__init__.py", "pkg/core.py"),
+            ("tests/test_leaf.py", "pkg/a/leaf.py"),
+            ("tests/test_other.py", "other/x.py"),
+            ("tests/test_core.py", "pkg/core.py"),
+        ],
+    )
+
+    out = _empty_result(1)
+    await _resolve_impacted(async_session, repo.id, {"pkg/core.py": {1}}, set(), out)
+
+    assert _pairs(out, "pkg/core.py") == {
+        "tests/test_core.py": "import-graph",
+        "tests/test_leaf.py": "package-init",
+    }
+
+
 async def test_a_file_level_lookup_also_asks_the_graph(async_session) -> None:
     """Matched by file (a deleted file, a stale map), coverage alone is not enough."""
     repo = await _seed(async_session)
@@ -432,7 +461,124 @@ async def test_a_conftest_only_patching_the_route_runs_one_import_check(async_se
     assert _pairs(out, "src/app/util.py") == {"tests/test_a.py": "conftest-import-check"}
 
 
-async def _add_edge(session, repo_id, source, target, edge_type, hint=None) -> None:
+async def test_an_autouse_fixture_reading_a_constant_reaches_only_the_defining_module(
+    async_session,
+) -> None:
+    """``store.SIZE`` is store's text: a change behind store runs the import check only."""
+    repo = await insert_repo(async_session)
+    await _conftest_graph(async_session, repo.id, stamped=True)
+    source = (
+        "import pytest\nfrom app import store\n\n\n@pytest.fixture(autouse=True)\n"
+        "def _size():\n    assert store.SIZE\n"
+    )
+    files = {"src/app/store.py": "from app import util\n\nSIZE = 3\n"}
+
+    picks = {}
+    for changed in ("src/app/util.py", "src/app/store.py"):
+        out = _empty_result(1)
+        await _resolve_impacted(
+            async_session,
+            repo.id,
+            {changed: None},
+            set(),
+            out,
+            pytest_texts={"tests/conftest.py": source},
+            read_source=files.get,
+        )
+        picks[changed] = _pairs(out, changed)
+
+    assert picks["src/app/util.py"] == {"tests/test_a.py": "conftest-import-check"}
+    # The change is in the module the constant is read from.
+    assert "tests/conftest.py" in picks["src/app/store.py"]
+
+
+@pytest.mark.parametrize(
+    ("body", "narrowed"),
+    [("_seen.clear()", True), ("util.flush()", False)],
+)
+async def test_an_autouse_fixture_calling_a_function_reaches_only_what_the_function_uses(
+    async_session, body: str, narrowed: bool
+) -> None:
+    """``store.reset()`` reaches a change behind store only when reset uses what store imports."""
+    repo = await insert_repo(async_session)
+    await _conftest_graph(async_session, repo.id, stamped=True)
+    source = (
+        "import pytest\nfrom app import store\n\n\n@pytest.fixture(autouse=True)\n"
+        "def _fresh():\n    store.reset()\n"
+    )
+    store = f"from app import util\n\n_seen = {{}}\n\ndef reset():\n    {body}\n"
+    files = {"src/app/store.py": store}
+
+    out = _empty_result(1)
+    await _resolve_impacted(
+        async_session,
+        repo.id,
+        {"src/app/util.py": None},
+        set(),
+        out,
+        pytest_texts={"tests/conftest.py": source},
+        read_source=files.get,
+    )
+
+    picks = _pairs(out, "src/app/util.py")
+    if narrowed:
+        assert picks == {"tests/test_a.py": "conftest-import-check"}
+    else:
+        # A behavioural route keeps every test, each labelled as the conftest's broadcast.
+        assert picks == {
+            "tests/conftest.py": "import-graph",
+            **dict.fromkeys(
+                ["tests/test_a.py", "tests/test_b.py", "tests/test_c.py"], "conftest-broadcast"
+            ),
+        }
+
+
+@pytest.mark.parametrize("where", ["top", "fixture"])
+async def test_an_autouse_fixture_reading_a_re_exported_constant_runs_one_import_check(
+    async_session, where: str
+) -> None:
+    """``store`` re-exports ``NAMES`` from ``names``, which the change is not in."""
+    repo = await insert_repo(async_session)
+    await _conftest_graph(async_session, repo.id, stamped=True)
+    imports, body = "from app.store import NAMES", "assert list(NAMES)"
+    if where == "fixture":
+        imports, body = "", f"{imports}\n    {body}"
+    source = f"import pytest\n{imports}\n\n\n@pytest.fixture(autouse=True)\ndef _n():\n    {body}\n"
+    files = {
+        "src/app/store.py": "from app import util\nfrom app.names import NAMES as NAMES\n",
+        "src/app/names.py": "NAMES = ('a', 'b')\n",
+    }
+
+    out = _empty_result(1)
+    await _resolve_impacted(
+        async_session,
+        repo.id,
+        {"src/app/util.py": None},
+        set(),
+        out,
+        pytest_texts={"tests/conftest.py": source},
+        read_source=files.get,
+    )
+
+    assert _pairs(out, "src/app/util.py") == {"tests/test_a.py": "conftest-import-check"}
+
+
+async def test_a_conftest_route_that_cannot_be_judged_keeps_every_test(async_session) -> None:
+    """No text for the conftest: unknown runs more, never fewer."""
+    repo = await insert_repo(async_session)
+    await _conftest_graph(async_session, repo.id, stamped=True)
+
+    out = _empty_result(1)
+    await _resolve_impacted(
+        async_session, repo.id, {"src/app/util.py": None}, set(), out, pytest_texts={}
+    )
+
+    picks = _pairs(out, "src/app/util.py")
+    assert {"tests/test_a.py", "tests/test_b.py", "tests/test_c.py"} <= set(picks)
+    assert any("tests/conftest.py could not be read" in n for n in out["conftest_notes"])
+
+
+async def _add_edge(session, repo_id, source, target, edge_type, hint=None, **flags) -> None:
     from repowise.core.persistence.models import GraphEdge
 
     session.add(
@@ -442,6 +588,7 @@ async def _add_edge(session, repo_id, source, target, edge_type, hint=None) -> N
             target_node_id=target,
             edge_type=edge_type,
             hint_source=hint,
+            **flags,
         )
     )
     await session.commit()
@@ -484,6 +631,36 @@ async def test_an_unresolved_conftest_import_keeps_every_test(async_session) -> 
     repo = await insert_repo(async_session)
     await _conftest_graph(async_session, repo.id, stamped=True)
     await _add_edge(async_session, repo.id, "tests/test_c.py", "external:conftest", "imports")
+
+    out = await _narrowed(async_session, repo.id)
+
+    assert "tests/conftest.py" in _pairs(out, "src/app/util.py")
+    assert any("could not resolve" in n for n in out["conftest_notes"])
+
+
+async def test_an_unresolved_type_only_conftest_import_keeps_the_narrowing(
+    async_session,
+) -> None:
+    """An import under ``if TYPE_CHECKING:`` never runs, so it hides no importer."""
+    repo = await insert_repo(async_session)
+    await _conftest_graph(async_session, repo.id, stamped=True)
+    await _add_edge(
+        async_session, repo.id, "tests/test_c.py", "external:conftest", "imports", type_only=True
+    )
+
+    out = await _narrowed(async_session, repo.id)
+
+    assert "tests/conftest.py" not in _pairs(out, "src/app/util.py")
+    assert not any("could not resolve" in n for n in out["conftest_notes"])
+
+
+async def test_an_unresolved_deferred_conftest_import_keeps_every_test(async_session) -> None:
+    """A function-body import does run, so it still blocks the narrowing."""
+    repo = await insert_repo(async_session)
+    await _conftest_graph(async_session, repo.id, stamped=True)
+    await _add_edge(
+        async_session, repo.id, "tests/test_c.py", "external:conftest", "imports", deferred=True
+    )
 
     out = await _narrowed(async_session, repo.id)
 
@@ -632,3 +809,54 @@ async def test_the_ranking_orders_by_the_hops_the_collection_measures(async_sess
         ("tests/test_near.py", "direct", 1),
         ("tests/test_far.py", "transitive", 2),
     ]
+
+
+_CONTROLLER = "src/main/java/org/x/owner/OwnerController.java"
+_SLICE_TEST = "src/test/java/org/x/owner/OwnerControllerTests.java"
+_BOOT_TEST = "src/test/java/org/x/PetClinicIntegrationTests.java"
+_SPRING = "it loads the whole Spring application context (@SpringBootTest)"
+
+
+async def _spring_graph(session, repo_id, *, slice_reason, boot_reason) -> dict:
+    """A slice test importing the controller; a boot test reaching it only by URL."""
+    from sqlalchemy import update
+
+    from repowise.core.analysis.test_collection import _place_tests
+    from repowise.core.persistence.models import GraphNode
+
+    await _graph(
+        session,
+        repo_id,
+        tests={_SLICE_TEST, _BOOT_TEST},
+        files={_CONTROLLER, "src/main/java/org/x/App.java"},
+        imports=[(_SLICE_TEST, _CONTROLLER), (_BOOT_TEST, "src/main/java/org/x/App.java")],
+    )
+    for node_id, reason in ((_SLICE_TEST, slice_reason), (_BOOT_TEST, boot_reason)):
+        await session.execute(
+            update(GraphNode)
+            .where(GraphNode.repository_id == repo_id, GraphNode.node_id == node_id)
+            .values(always_run_reason=reason)
+        )
+    await session.commit()
+    out = _empty_result(1)
+    await _resolve_impacted(session, repo_id, {_CONTROLLER: {1}}, set(), out)
+    await _place_tests(session, repo_id, out)
+    return out
+
+
+async def test_a_spring_boot_test_is_read_back_as_always_run(async_session) -> None:
+    repo = await insert_repo(async_session)
+    out = await _spring_graph(async_session, repo.id, slice_reason="", boot_reason=_SPRING)
+    assert _pairs(out, _CONTROLLER) == {_SLICE_TEST: "import-graph"}
+    assert out["always_run_tests"] == {_BOOT_TEST: _SPRING}
+    assert out["index_problem"] is None
+
+
+async def test_an_index_that_never_judged_its_jvm_tests_asks_for_an_update(async_session) -> None:
+    repo = await insert_repo(async_session)
+    out = await _spring_graph(async_session, repo.id, slice_reason=None, boot_reason=None)
+    assert out["always_run_tests"] == {}
+    assert out["index_problem"] == (
+        f"The index has not checked 2 test file(s) for reaching code outside their imports "
+        f"(e.g. {_BOOT_TEST}); run `repowise update`."
+    )

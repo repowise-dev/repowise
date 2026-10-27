@@ -43,7 +43,7 @@ const TEXTAREA_CLASS =
   "box-border min-w-0 flex w-full rounded-md border border-[var(--color-border-default)] " +
   "bg-[var(--color-bg-surface)] px-3 py-2 text-sm text-[var(--color-text-primary)] " +
   "transition-colors placeholder:text-[var(--color-text-tertiary)] focus-visible:outline-none " +
-  "focus-visible:ring-1 focus-visible:ring-[var(--color-accent-primary)] " +
+  "focus-visible:ring-1 focus-visible:ring-[var(--color-focus-ring)] " +
   "disabled:cursor-not-allowed disabled:opacity-50";
 
 export interface DecisionCreateFormProps {

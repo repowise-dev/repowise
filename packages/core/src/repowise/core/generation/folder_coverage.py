@@ -20,7 +20,7 @@ from typing import Any
 _STR = str
 
 
-def _parse_folder_coverage(
+def parse_folder_coverage(
     raw: Any,
 ) -> tuple[tuple[str, float], ...]:
     """Validate and normalize ``folder_coverage`` into ``((glob, pct), ...)``.
@@ -43,6 +43,8 @@ def _parse_folder_coverage(
     for entry in raw:
         if isinstance(entry, (tuple, list)) and len(entry) == 2:
             glob_pattern, pct_raw = entry
+            if not isinstance(glob_pattern, _STR):
+                raise ValueError(f"folder_coverage entry {entry!r}: the glob must be a string")
         elif isinstance(entry, _STR) and "=" in entry:
             glob_pattern, _, pct_raw = entry.partition("=")
         else:
@@ -50,17 +52,19 @@ def _parse_folder_coverage(
                 f"folder_coverage entry {entry!r} must be 'glob=pct' "
                 "(e.g. 'src/core=1.0') or a (glob, pct) pair"
             )
-        glob_pattern = glob_pattern.strip().strip('"').strip("'")
+        # Repo paths are relative, so the issue's "./src/core" means "src/core".
+        glob_pattern = glob_pattern.strip().strip('"').strip("'").removeprefix("./")
         if not glob_pattern:
             raise ValueError("folder_coverage entries need a non-empty glob")
-        pct_raw = pct_raw.strip().strip('"').strip("'")
+        if isinstance(pct_raw, _STR):
+            pct_raw = pct_raw.strip().strip('"').strip("'")
         try:
             pct = float(pct_raw)
         except (TypeError, ValueError):
             raise ValueError(
                 f"folder_coverage entry {entry!r}: {pct_raw!r} is not a number"
             ) from None
-        if pct < 0 or pct > 1:
+        if not 0 <= pct <= 1:  # also rejects nan
             raise ValueError(
                 f"folder_coverage entry {entry!r}: pct must be in [0, 1]"
             )

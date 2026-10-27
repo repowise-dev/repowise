@@ -7,9 +7,9 @@ compound assignments (both an ``assignment_expression``, told apart by the
 ``operator`` token ``=`` vs ``+=``, as in Java and Go), update expressions
 (``x++`` / ``--x``, read-modify-write), the binder of a range-``for``
 (``for (auto& v : xs)``) and the C-style ``for`` initializer. A ``catch``
-clause's exception variable is deliberately NOT a def: the CFG never records a
-handler binder as a head in any language, so it stays an unmatched *use* — the
-conservative direction, matching the Java and Python dialects.
+clause's exception variable (``catch (const std::exception& e)``) is a def
+scoped to the handler block, recorded through ``handler_def_use`` as the
+handler's head; ``catch (...)`` and an unnamed ``catch (int)`` bind nothing.
 
 Field targets (``obj.f = …`` / ``this->f = …``) and subscript targets
 (``arr[i] = …``) bind no *local*, so their base identifiers are reads — the
@@ -60,6 +60,8 @@ _ASSIGN_KINDS = frozenset({"assignment_expression"})
 _UPDATE_KINDS = frozenset({"update_expression"})  # ``x++`` / ``--x``
 _DECL_KINDS = frozenset({"declaration"})
 _INIT_DECLARATOR = "init_declarator"
+_CATCH = "catch_clause"
+_CATCH_PARAM = "parameter_declaration"  # ``catch (const std::exception& e)``
 _RANGE_FOR = "for_range_loop"
 
 _CALL = "call_expression"
@@ -77,6 +79,14 @@ _CONDITIONAL_KINDS = frozenset({"switch_statement", "conditional_expression"})
 _SCOPE_BOUNDARIES = frozenset({"lambda_expression"})
 # Callee node kinds that name a function, not a variable.
 _CALLEE_NAME_KINDS = frozenset({"identifier", "qualified_identifier", "template_function"})
+
+
+def _is_static(declaration: Node) -> bool:
+    """Whether a ``declaration`` carries the ``static`` storage class."""
+    return any(
+        child.type == "storage_class_specifier" and child.text == b"static"
+        for child in declaration.children
+    )
 
 
 def _declarator_name(fn_node: Node) -> Node | None:
@@ -233,7 +243,23 @@ class CppDefUseDialect(BaseDefUseDialect):
                     return found
         return None
 
-    # -- head (loop clause / if condition / catch binder) ---------------------
+    def handler_def_use(self, handler: Node) -> StatementDefUse:
+        """``catch (const std::exception& e)`` binds ``e`` for the handler
+        block only. The binder is read off the parameter's ``declarator``, so
+        the type is never mistaken for it, and ``catch (...)`` or an unnamed
+        ``catch (int)`` (no declarator) binds nothing."""
+        defs: list[Occurrence] = []
+        params = handler.child_by_field_name("parameters")
+        children = params.named_children if params is not None else []
+        decl = next((c for c in children if c.type == _CATCH_PARAM), None)
+        declarator = decl.child_by_field_name("declarator") if decl is not None else None
+        binder = self._binder_identifier(declarator) if declarator is not None else None
+        if decl is not None and binder is not None:
+            defs.append(self._occ(binder))
+            self._declare(defs, 0, decl)
+        return StatementDefUse(defs=tuple(defs), uses=())
+
+    # -- head (loop clause / if condition) ----------------------------------
 
     def _head(
         self, node: Node, lmap: LanguageNodeMap, defs: list[Occurrence], uses: list[Occurrence]
@@ -251,11 +277,9 @@ class CppDefUseDialect(BaseDefUseDialect):
             self._process(node.child_by_field_name("update"), defs, uses)
         elif t in lmap.branch_kinds:
             self._process(node.child_by_field_name("condition"), defs, uses)
-        # NB: a C++ ``try`` has no head. The CFG records a try head only for the
-        # ``resources`` field (Java's try-with-resources), and a ``catch``
-        # clause's binder is never recorded as a head in any language — so an
-        # exception variable is an unmatched *use*, the conservative direction,
-        # exactly as in the Java and Python dialects.
+        # NB: a C++ ``try`` has no head, and a ``catch`` clause's binder does not
+        # come through here: the CFG records the handler as its own head and
+        # ``handler_def_use`` answers for it.
         else:
             self._process(node, defs, uses)
 
@@ -265,6 +289,12 @@ class CppDefUseDialect(BaseDefUseDialect):
         if node is None:
             return
         t = node.type
+        if t == _CATCH:  # a handler walked whole (inside a lambda or a ``switch`` arm)
+            sdu = self.handler_def_use(node)
+            defs.extend(sdu.defs)
+            uses.extend(sdu.uses)
+            self._process(node.child_by_field_name("body"), defs, uses)
+            return
         if t in _ASSIGN_KINDS:
             left = node.child_by_field_name("left")
             self._targets(left, defs, uses)
@@ -279,6 +309,17 @@ class CppDefUseDialect(BaseDefUseDialect):
             self.collect_reads(arg, uses)
             return
         if t in _DECL_KINDS:
+            val = node.child_by_field_name("value")
+            if val is not None:
+                start = len(defs)
+                decl = node.child_by_field_name("declarator")
+                binder = self._binder_identifier(decl)
+                if binder is not None:
+                    defs.append(self._occ(binder))
+                self._declare(defs, start, node)
+                self._process(val, defs, uses)
+                return
+
             for child in node.named_children:
                 start = len(defs)
                 if child.type == _INIT_DECLARATOR:
@@ -289,10 +330,11 @@ class CppDefUseDialect(BaseDefUseDialect):
                     self._process(child.child_by_field_name("value"), defs, uses)
                 elif child.type in self.identifier_kinds or child.type in _DECLARATOR_WRAPPERS:
                     # ``int x;`` / ``int* p;`` — a binding with no initialiser.
+                    # A ``static`` one is zero-initialised, which is a value.
                     binder = self._binder_identifier(child)
                     if binder is not None:
                         defs.append(self._occ(binder))
-                    self._declare(defs, start, child)
+                    self._declare(defs, start, child, valueless=not _is_static(node))
             return
         if t == _CALL:
             self.collect_reads(node, uses)

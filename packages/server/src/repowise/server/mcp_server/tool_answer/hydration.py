@@ -50,13 +50,20 @@ def _stem(token: str) -> str:
     return token
 
 
+def _text_words(text: str) -> dict[str, str]:
+    """Stemmed content tokens of *text*, hump- and separator-split, each mapped
+    to the first word it came from (for quoting a stem back to a reader)."""
+    words: dict[str, str] = {}
+    for tok in re.split(r"[^A-Za-z0-9]+", split_humps(text)):
+        low = tok.lower()
+        if len(tok) >= 3 and low not in _STOPWORDS:
+            words.setdefault(_stem(low), low)
+    return words
+
+
 def _text_stems(text: str) -> set[str]:
     """Stemmed content tokens of *text*, hump- and separator-split."""
-    return {
-        _stem(tok.lower())
-        for tok in re.split(r"[^A-Za-z0-9]+", split_humps(text))
-        if len(tok) >= 3 and tok.lower() not in _STOPWORDS
-    }
+    return set(_text_words(text))
 
 
 def _stem_hit(term: str, tokens: set[str]) -> bool:

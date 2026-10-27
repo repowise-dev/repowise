@@ -16,10 +16,11 @@ The orchestration below holds no policy of its own.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from ...execution_roles import hottest_role
+from ...execution_roles import ENTRY_ROLES, hottest_role
 from ..worth import dormant
 from .actionability import (
     ActionabilityState,
@@ -46,6 +47,7 @@ from .causal import (
     model_state,
     opportunity_id_for_finding,
     opportunity_id_model_version,
+    settled_context,
     shared_path_suffix,
     stable_id,
 )
@@ -55,6 +57,7 @@ from .opportunity_rank import (
     change_risk,
     dominant_marker,
     exposure,
+    growth_source,
     leverage,
     loop_magnitude,
     may_lead,
@@ -173,6 +176,7 @@ class _Reading:
     role: str
     sinks: tuple[str, ...]
     magnitude: str
+    growth: str
 
 
 def _read_live(members: list[Any]) -> _Reading:
@@ -188,6 +192,7 @@ def _read_live(members: list[Any]) -> _Reading:
     marker = dominant_marker(markers)
     sites = {facts.site for facts in live}
     role = hottest_role(facts.execution_role for facts in live)
+    owners = [f for f in live if hottest_role((f.execution_role,)) == role]
     return _Reading(
         live=live,
         markers=markers,
@@ -195,12 +200,15 @@ def _read_live(members: list[Any]) -> _Reading:
         sites=sites,
         files={site[0] for site in sites},
         provenance=weakest_provenance({facts.provenance for facts in live}),
-        reachable=_reachability({facts.reliable_entry_reachability for facts in live}),
+        # A hot role is an entry reaching the group, a handler a framework
+        # registers included, which the entry-file walk does not see.
+        reachable=True
+        if role in ENTRY_ROLES
+        else _reachability({facts.reliable_entry_reachability for facts in live}),
         role=role,
         sinks=tuple(sorted({facts.terminal_sink for facts in live if facts.terminal_sink})),
-        magnitude=loop_magnitude(
-            marker, [f.details for f in live if hottest_role((f.execution_role,)) == role]
-        ),
+        magnitude=loop_magnitude(marker, [f.details for f in owners]),
+        growth=growth_source(marker, owners),
     )
 
 
@@ -212,20 +220,25 @@ def _facets(r: _Reading, confidence: str) -> dict[str, str]:
         "leverage": leverage(len(r.sites)),
         "change_risk": change_risk(len(r.files)),
         "loop_magnitude": r.magnitude,
+        "growth_source": r.growth,
         "execution_role": r.role,
     }
 
 
-def _assemble(key: Any, members: list[Any], cap: int) -> PerformanceOpportunity:
+def _assemble(
+    key: Any, members: list[Any], cap: int, origins: Mapping[str, str | None]
+) -> PerformanceOpportunity:
     """Read one group's answers off its owners. Decides nothing itself.
 
     Context, boundary, and intervention are kernel inputs, so the group
     already agrees on them by construction. Taking them off the key keeps one
-    owner for each instead of reclassifying a representative row. Sinks are
-    members' facts, so they are listed rather than assumed shared. Everything
-    else comes from :func:`_read_live`; inert members are listed last.
+    owner for each instead of reclassifying a representative row. A stored
+    origin may settle an ``unknown`` context; the id keeps the key's. Sinks
+    are members' facts, so they are listed rather than assumed shared.
+    Everything else comes from :func:`_read_live`; inert members are listed
+    last.
     """
-    context = key_context(key)
+    context = settled_context(key_context(key), {facts.file_path for facts in members}, origins)
     boundary = key_boundary(key)
     r = _read_live(members)
     evidence_confidence = provenance_confidence(r.provenance)
@@ -296,14 +309,21 @@ def _assemble(key: Any, members: list[Any], cap: int) -> PerformanceOpportunity:
 
 
 def build_performance_opportunities(
-    findings: list[Any], *, evidence_limit: int = 8
+    findings: list[Any],
+    *,
+    evidence_limit: int = 8,
+    origins: Mapping[str, str | None] | None = None,
 ) -> list[PerformanceOpportunity]:
-    """Group, link, and rank performance rows in one deterministic pass."""
+    """Group, link, and rank performance rows in one deterministic pass.
+
+    *origins* is each file's stored ``code_origin``, which settles an
+    ``unknown`` context (:func:`.causal.settled_context`).
+    """
     cap = max(0, evidence_limit)
     opportunities: list[PerformanceOpportunity] = []
     sites: dict[str, set[Any]] = {}
     for key, members in group_observations(findings).items():
-        opportunity = _assemble(key, members, cap)
+        opportunity = _assemble(key, members, cap, origins or {})
         opportunities.append(opportunity)
         sites[opportunity.opportunity_id] = {facts.site for facts in members}
     return link_siblings(opportunities, sites, rank_sort_key)

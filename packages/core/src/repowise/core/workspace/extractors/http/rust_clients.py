@@ -17,6 +17,8 @@ import re
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
+from repowise.core.workspace.origins import ContractOrigin
+
 from ..langs import RUST
 from ..strings import RUST_SYNTAX
 from .client_calls import ClientCallMatch, consumer_contracts, matches_in
@@ -37,13 +39,13 @@ _METHOD_FMT_RE = re.compile(rf"""\.({_VERBS})\s*\(\s*&?\s*(format!\s*\(\s*"[^"]*
 # reqwest::get(format!("...", ...))
 _FREE_FMT_RE = re.compile(rf"""\breqwest::({_VERBS})\s*\(\s*&?\s*(format!\s*\(\s*"[^"]*")""")
 
-_CONFIDENCE = 0.65
+_ORIGIN = ContractOrigin.NAME_HEURISTIC  # `.get(` on any receiver
 
 
 def reqwest_calls(content: str) -> Iterator[ClientCallMatch]:
     for rx in (_METHOD_LIT_RE, _FREE_LIT_RE):
         yield from matches_in(
-            content, rx, client="reqwest", url_group=2, method_group=1, confidence=_CONFIDENCE
+            content, rx, client="reqwest", url_group=2, method_group=1, origin=_ORIGIN
         )
     for rx in (_METHOD_FMT_RE, _FREE_FMT_RE):
         for m in rx.finditer(content):
@@ -54,13 +56,14 @@ def reqwest_calls(content: str) -> Iterator[ClientCallMatch]:
                 url=m.group(2) + ")",
                 offset=m.start(),
                 method=m.group(1).upper(),
-                confidence=_CONFIDENCE,
+                origin=_ORIGIN,
             )
 
 
 class RustClientsDialect:
     name = "rust-clients"
     extensions = RUST
+    requires = (".get", ".post", ".put", ".delete", ".patch", ".head", "reqwest")
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         # `.get("key")` on a map has no slash; the receiver is anyone's.

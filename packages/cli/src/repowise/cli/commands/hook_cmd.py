@@ -101,11 +101,12 @@ def hook_install(path: str | None, workspace: bool, no_workspace: bool, security
     help="Force single-repo mode even when invoked from a workspace.",
 )
 def hook_uninstall(path: str | None, workspace: bool, no_workspace: bool) -> None:
-    """Remove everything repowise installed: the post-commit hook and the security block."""
+    """Remove everything repowise installed: the post-commit hook, the security block, the health gate."""
     from repowise.cli.hooks import uninstall, uninstall_security
 
     target = _hook_target(path, workspace, no_workspace)
     _run_security_action(target, uninstall_security)
+    _apply_health_gate(target, enabled=False, quiet=True)
     _run_post_commit_action(target, uninstall, action="uninstalled")
 
 
@@ -647,6 +648,86 @@ def read_reread_status(path: str | None, workspace: bool, no_workspace: bool) ->
             console.print(
                 "      [dim]`repowise saved` shows what this would have saved "
                 "if it were on.[/dim]"
+            )
+
+
+@hook_group.group("health-gate")
+def health_gate_group() -> None:
+    """Manage the opt-in health gate on agent commits and pushes (Claude Code).
+
+    When on, a `git commit` or `git push` that Claude Code runs in this repo
+    first runs `repowise health check` on what it would record (the staged
+    change, or the commits the push sends) and is blocked when the gate
+    fails. Anything that keeps the check from running lets the command
+    through. Off by default: `repowise init` and `upgrade` never turn it on.
+
+    `install` sets `hooks.health_gate: true` in .repowise/config.yaml and adds
+    a PreToolUse entry to the repo's .claude/settings.local.json; `uninstall`
+    removes both. Plain `git commit` in a terminal is not gated.
+    """
+
+
+@health_gate_group.command("install")
+@click.argument("path", required=False, default=None)
+@click.option("--workspace", "-w", is_flag=True, default=False, help="Force workspace mode.")
+@click.option("--no-workspace", is_flag=True, default=False, help="Force single-repo mode.")
+def health_gate_install(path: str | None, workspace: bool, no_workspace: bool) -> None:
+    """Gate agent commits and pushes on `repowise health check` in this repo."""
+    _apply_health_gate(_hook_target(path, workspace, no_workspace), enabled=True)
+
+
+@health_gate_group.command("uninstall")
+@click.argument("path", required=False, default=None)
+@click.option("--workspace", "-w", is_flag=True, default=False, help="Force workspace mode.")
+@click.option("--no-workspace", is_flag=True, default=False, help="Force single-repo mode.")
+def health_gate_uninstall(path: str | None, workspace: bool, no_workspace: bool) -> None:
+    """Stop gating agent commits and pushes in this repo."""
+    _apply_health_gate(_hook_target(path, workspace, no_workspace), enabled=False)
+
+
+def _apply_health_gate(target, *, enabled: bool, quiet: bool = False) -> None:
+    """Write ``hooks.health_gate`` and the repo-local Claude Code entry together.
+
+    *quiet* reports only repos where something was removed (``hook uninstall``).
+    """
+    from repowise.cli.commands.augment_cmd._shared import hook_flag_enabled
+    from repowise.cli.editor_integrations.claude_config import set_repo_health_gate_hook
+    from repowise.cli.helpers import save_hook_surface_enabled
+
+    repos = _target_repo_paths(target)
+    for repo_path in repos:
+        was_on = hook_flag_enabled(repo_path, "health_gate")
+        if enabled or was_on:
+            save_hook_surface_enabled(repo_path, "health_gate", enabled=enabled)
+        changed = set_repo_health_gate_hook(repo_path, enabled)
+        if quiet and not (was_on or changed):
+            continue
+        word = "[green]on[/green]" if enabled else "[yellow]off[/yellow]"
+        console.print(f"  Health gate on agent commits and pushes: {word} ({repo_path})")
+    if not repos and not quiet:
+        console.print("  [yellow]No indexed repo here — run `repowise init` first.[/yellow]")
+
+
+@health_gate_group.command("status")
+@click.argument("path", required=False, default=None)
+@click.option("--workspace", "-w", is_flag=True, default=False, help="Force workspace mode.")
+@click.option("--no-workspace", is_flag=True, default=False, help="Force single-repo mode.")
+def health_gate_status(path: str | None, workspace: bool, no_workspace: bool) -> None:
+    """Report whether agent commits and pushes are gated, and whether the entry is in place."""
+    from repowise.cli.commands.augment_cmd._shared import hook_flag_enabled
+    from repowise.cli.editor_integrations.claude_config import repo_health_gate_hook_installed
+
+    target = _hook_target(path, workspace, no_workspace)
+    for repo_path in _target_repo_paths(target):
+        on = hook_flag_enabled(repo_path, "health_gate")
+        entry = repo_health_gate_hook_installed(repo_path)
+        icon = "[green]✓[/green]" if on and entry else "[dim]✗[/dim]"
+        console.print(f"  {icon} health gate: {'on' if on and entry else 'off'} ({repo_path})")
+        if on != entry:
+            missing = "the Claude Code entry" if on else "hooks.health_gate: true"
+            console.print(
+                f"      [yellow]{missing} is missing, so nothing is gated; "
+                "`repowise hook health-gate install` sets both.[/yellow]"
             )
 
 

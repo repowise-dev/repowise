@@ -84,6 +84,24 @@ identical downstream, which is the one thing this type exists to prevent.
 
 ---
 
+## Reusing work across comparisons
+
+The health comparison keeps each file's parse and complexity walk by content,
+so a file seen in an earlier comparison (the same base on a re-run, or the
+previous commit's head in a scan) is not parsed or walked again. With a
+checkout that has a `.repowise` directory the cache lives in
+`.repowise/change_health/`. Elsewhere there is none unless you name a writable
+directory, and the results are the same either way:
+
+```python
+from repowise.core.analysis.change_health import ChangeHealthDeltaService
+
+delta_service = ChangeHealthDeltaService(source, cache_dir="/tmp/repowise-cache")
+bundle = ChangeReviewService(source, delta_service=delta_service).review(ChangeReviewRequest())
+```
+
+---
+
 ## Evidence status: the part to read first
 
 A lane that was never consulted and a lane that found nothing are different

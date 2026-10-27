@@ -9,8 +9,10 @@ Constructors get a small grace allowance — wide dataclass-style ctors are an
 idiomatic pattern, not a smell. A constructor is known by its node kind or by
 carrying its type's name, so a Java or C# constructor gets it too.
 
-Two narrowings keep the finding to signatures someone can actually fix:
+These narrowings keep the finding to signatures someone can actually fix:
 
+- Test material is skipped. Its wide signatures are fixture builders and
+  fakes shaped by the code under test.
 - A signature set by another declaration is skipped: an override, an
   interface or trait implementation, a native binding. Its parameters belong
   to the base method, the interface or the foreign ABI, and an SPI hook with
@@ -19,16 +21,20 @@ Two narrowings keep the finding to signatures someone can actually fix:
   scalars or strings. A wide list of rich domain types is already the value
   objects this smell asks for. Untyped parameters are left out of that
   majority, and a wholly untyped signature (unannotated Python or JavaScript)
-  is judged on the count alone, as before.
+  is judged on the count alone.
+- A parameter a framework binds by annotation (``@PathVariable``) is the
+  route's or the data format's, so only the remaining ones are counted.
+- A keyword-only parameter is left out too: every call site names it, so it
+  carries none of the argument-order hazard a long positional list does.
+- A Click or Typer command's parameters mirror its CLI options, and a Python
+  method overriding a base class in the same file keeps the base's
+  parameters; both count as a signature set elsewhere.
 
 A wide signature only counts as obsession in a file with enough substance to
 *have* a design (`_MIN_FILE_NLOC`). In a tiny module a long parameter list is
 almost always an idiomatic config/builder/forwarder entry point rather than a
-value object that wants extracting — and an empirical defect-prediction analysis
-across a 13-repo corpus confirmed the firing is anti-predictive there (it flags
-clean small utility files), inverting discrimination on the small-file size
-band. The floor keeps the smell where it carries signal without touching its
-scoring weight; larger modules and the per-function param logic are unchanged.
+value object that wants extracting, and on a 13-repo defect corpus the firing
+there was anti-predictive.
 """
 
 from __future__ import annotations
@@ -39,10 +45,7 @@ from .base import BiomarkerResult, FileContext
 
 _PARAM_THRESHOLD = 5
 _CTOR_GRACE = 2  # constructors get +2 free params before the smell trips
-# A wide signature in a module below this many non-blank lines is idiomatic
-# (config/builder/DTO), not a design smell — empirically anti-predictive of
-# defects on small files. Tuned on the defect benchmark's small-file size band.
-_MIN_FILE_NLOC = 60
+_MIN_FILE_NLOC = 60  # see the module docstring
 
 
 class PrimitiveObsessionDetector:
@@ -50,7 +53,7 @@ class PrimitiveObsessionDetector:
     category = "size_and_complexity"
 
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
-        if ctx.nloc < _MIN_FILE_NLOC:
+        if ctx.nloc < _MIN_FILE_NLOC or ctx.is_test_material:
             return []
         out: list[BiomarkerResult] = []
         for fn in ctx.all_functions:
@@ -62,7 +65,7 @@ class PrimitiveObsessionDetector:
             out.append(
                 BiomarkerResult(
                     biomarker_type=self.name,
-                    severity=_severity(fn.param_count, threshold),
+                    severity=_severity(_counted(fn), threshold),
                     function_name=fn.name,
                     line_start=fn.start_line,
                     line_end=fn.end_line,
@@ -70,9 +73,13 @@ class PrimitiveObsessionDetector:
                         "param_count": fn.param_count,
                         "typed_param_count": typed,
                         "primitive_param_count": primitive,
+                        "bound_param_count": fn.bound_param_count,
+                        "keyword_only_param_count": fn.keyword_only_param_count,
                     },
                     reason=(
                         f"long parameter list: {fn.name} takes {fn.param_count} parameters"
+                        + (f", {fn.bound_param_count} bound by the framework" if fn.bound_param_count else "")
+                        + (f", {fn.keyword_only_param_count} keyword-only" if fn.keyword_only_param_count else "")
                         + (f", {primitive} of {typed} typed ones scalars or strings" if typed else "")
                     ),
                 )
@@ -87,12 +94,17 @@ def _threshold(fn: FunctionComplexity) -> int | None:
     if fn.is_test_case or fn.signature_fixed:
         return None
     threshold = _PARAM_THRESHOLD + (_CTOR_GRACE if fn.is_constructor else 0)
-    if fn.param_count < threshold:
+    if _counted(fn) < threshold:
         return None
     typed = fn.typed_param_count
     if typed and fn.primitive_param_count * 2 <= typed:
         return None
     return threshold
+
+
+def _counted(fn: FunctionComplexity) -> int:
+    """Parameters a caller passes by position: framework-bound and keyword-only ones left out."""
+    return fn.param_count - fn.bound_param_count - fn.keyword_only_param_count
 
 
 def _severity(param_count: int, threshold: int) -> Severity:

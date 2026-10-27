@@ -29,7 +29,7 @@ log = structlog.get_logger(__name__)
 
 _CACHE_FILENAME = "health_walk_cache.pkl"
 #: Bump when the walker's output for the same bytes changes.
-_CACHE_VERSION = 1
+_CACHE_VERSION = 2
 
 
 class HealthWalkCache:

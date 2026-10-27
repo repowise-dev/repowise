@@ -243,6 +243,27 @@ async def test_generate_estimate_no_pages(client: AsyncClient) -> None:
     assert body["provider"]["error"] is not None
 
 
+@pytest.mark.asyncio
+async def test_generate_estimate_prices_a_provider_override(client: AsyncClient) -> None:
+    """``?provider=`` prices a provider the repo has not chosen yet."""
+    repo = await create_test_repo(client)
+    llm = SimpleNamespace(provider_name="anthropic", model_name="claude-haiku-4-5")
+    with patch(
+        "repowise.server.provider_config.get_chat_provider_instance", return_value=llm
+    ) as build:
+        resp = await client.post(
+            f"/api/repos/{repo['id']}/generate/estimate?provider=anthropic",
+            json={"selection": {"kind": "unwritten"}},
+        )
+    assert resp.status_code == 200, resp.text
+    assert build.call_args.kwargs["provider_override"] == "anthropic"
+    assert resp.json()["provider"] == {
+        "name": "anthropic",
+        "model": "claude-haiku-4-5",
+        "error": None,
+    }
+
+
 # ---------------------------------------------------------------------------
 # generate job execution (shared core engine)
 # ---------------------------------------------------------------------------

@@ -53,7 +53,8 @@ import functools
 import json as _json  # noqa: F401  — re-exported: a test patches answer._json.dumps
 import logging
 import time
-from typing import NamedTuple
+from dataclasses import dataclass
+from typing import Any, NamedTuple
 
 from repowise.core.persistence.database import get_session
 from repowise.core.registry import ToolRecipe
@@ -132,12 +133,14 @@ from repowise.server.mcp_server.tool_answer.callers import (
     is_caller_question,
     is_impact_question,
 )
+from repowise.server.mcp_server.tool_answer.citations import answer_files
 from repowise.server.mcp_server.tool_answer.confidence import (
     _agreement_dominant,
     _grade_answer,
     _is_value_question,
     _retrieval_quality,
     dominance_reason,
+    uncovered_terms,
 )
 from repowise.server.mcp_server.tool_answer.config import (  # noqa: F401
     _GATED_EXCERPT_CHARS,
@@ -195,6 +198,7 @@ from repowise.server.mcp_server.tool_answer.symbols import (
     _extract_value_answer,
     _hydrate_candidate_defines,
     _hydrate_symbols_for_hits,
+    drop_ruled_out_files,
     lead_with_files,
     place_named_files,
 )
@@ -299,6 +303,7 @@ async def _run_retrieval_pipeline(
                     hits,
                     repo_root=_anchor_root,
                     session_factory=ctx.session_factory,
+                    question=question,
                 )
     # Concept anchoring: a why/value question pinning a number to a behaviour
     # anchors the file whose source comment justifies that number.
@@ -352,6 +357,7 @@ async def _run_retrieval_pipeline(
             hits = lead_with_files(hits, traced)
         if named := _in_scope(issue.named):
             hits = place_named_files(hits, named)
+    hits = drop_ruled_out_files(hits, question)
     # The pre-cap ranking feeds ``candidates``: files below the synthesis cut
     # are still the best answer to "where do I look next".
     resolved_pool = list(hits)
@@ -372,6 +378,314 @@ async def _run_retrieval_pipeline(
     return _Retrieved(hits, resolved_pool, question_ids, homonyms, flow_paths)
 
 
+@dataclass(frozen=True)
+class _Ask:
+    """One ``get_answer`` call once its repository is resolved."""
+
+    question: str
+    ctx: Any
+    repository: Any
+    repo_id: str
+    exclude_spec: Any
+    t0: float
+
+
+def _empty_question_payload(t0: float) -> dict:
+    from repowise.server.mcp_server._savings.interaction import note_error_reason
+
+    note_error_reason("invalid_args")
+    return {
+        "answer": "",
+        "citations": [],
+        "confidence": "low",
+        "fallback_targets": [],
+        "retrieval": [],
+        "error": "question is required",
+        "_meta": _build_meta(timing_ms=(time.perf_counter() - t0) * 1000),
+    }
+
+
+async def _data_shape_answer(question: str, ctx, repository, t0: float) -> dict | None:
+    """The data-shape reply, mined from live source, or ``None`` when not grounded.
+
+    Runs before cache and retrieval: retrieval scatters across every consumer
+    of the blob.
+    """
+    ds_ids = _extract_question_identifiers(question)
+    if not _is_data_shape_question(question, ds_ids):
+        return None
+    grounded = await asyncio.to_thread(mine_data_shape, getattr(ctx, "path", None), ds_ids)
+    if grounded is None:
+        return None
+    return build_data_shape_payload(grounded, t0, repository)
+
+
+async def _graph_callers(ask: _Ask, retrieved: _Retrieved):
+    """The graph's callers as evidence for a caller question; no query otherwise."""
+    if not is_caller_question(ask.question, retrieved.question_ids):
+        return NO_EVIDENCE
+    try:
+        async with get_session(ask.ctx.session_factory) as session:
+            return await caller_evidence(
+                session,
+                ask.repo_id,
+                ask.question,
+                retrieved.question_ids,
+                retrieved.hits,
+                ask.exclude_spec,
+                repo_root=_repo_root(ask.ctx),
+            )
+    except Exception:
+        _log.warning("get_answer: graph caller lookup failed", exc_info=True)
+        return NO_EVIDENCE
+
+
+def _agreement(hits: list[dict]) -> bool:
+    """Symbol-agreement dominance, read from the leg status rather than the capped hits."""
+    if not _agreement_confidence_enabled():
+        return False
+    return _agreement_dominant(
+        hits,
+        vector_leg_keyless=(
+            _symbol_agreement_enabled() and _retrieval_legs().get("vector") == "keyless"
+        ),
+    )
+
+
+async def _pre_synthesis_reply(
+    ask: _Ask, retrieved: _Retrieved, agreement_dominant: bool, graph_callers, neighbors
+) -> dict | None:
+    """The qualified-miss, answer-by-union or no-hits reply, before any page is read."""
+    hits = retrieved.hits
+    missed = retrieved.homonyms.get("qualified_miss")
+    if missed:
+        # ``Parent.leaf`` found only under OTHER parents: not-found, never a
+        # confidently-wrong answer from a same-named symbol elsewhere.
+        return _no_answer_payload(
+            f"No indexed definition matches the qualified name(s) {missed}. "
+            "The base name is defined elsewhere, but not under the "
+            "class/module you named, so this is not returning a same-named "
+            "symbol from another file, to avoid a confidently-wrong answer. "
+            'Re-check the qualifier, or call search_codebase mode="symbol" '
+            "on the base name to see every definition. The files retrieval "
+            "ranked for this question are in candidate_files.",
+            repository=ask.repository,
+            t0=ask.t0,
+        )
+    union_payload = _union_answer_payload(
+        ask.question,
+        retrieved.question_ids,
+        retrieved.homonyms,
+        ask.ctx,
+        ask.repository,
+        ask.t0,
+        _retrieval_quality(hits, agreement_dominant, ask.question),
+        hits,
+    )
+    if union_payload is not None:
+        return await neighbors(attach_graph_callers(union_payload, graph_callers))
+    if not hits:
+        return _no_answer_payload(
+            "No wiki hits for this question. Rephrase around the code "
+            "concept. " + _NO_HITS_RECOVERY_HINT,
+            repository=ask.repository,
+            t0=ask.t0,
+        )
+    return None
+
+
+def _fallback_targets(hits: list[dict]) -> list[str]:
+    """Readable paths of the top hits, for the agent to verify."""
+    return [
+        h["target_path"]
+        for h in hits
+        if h.get("target_path") and _is_readable_path(h["target_path"])
+    ]
+
+
+async def _attach_excerpts(hits: list[dict], ctx) -> None:
+    """Page content for the top hits, before anything branches on retrieval quality.
+
+    Gating it on dominance starves the confident answers of prose; the cost is
+    one indexed SELECT over at most five rows.
+    """
+    missing = await _attach_page_excerpts(hits, ctx)
+    if missing:
+        _log.warning(
+            "get_answer: %d of %d top hits have no page content; those hits "
+            "reach synthesis as a one-line summary only",
+            missing,
+            min(len(hits), _PAGE_EXCERPT_HITS),
+        )
+
+
+async def _gated_reply(
+    ask: _Ask,
+    retrieved: _Retrieved,
+    dominance,
+    fallback_targets: list[str],
+    graph_callers,
+    neighbors,
+) -> dict | None:
+    """The abstain reply without dominance, or the verbatim value for a value question.
+
+    Under always-synthesize, dominance only feeds the grade and the ratings. A
+    value-shaped question with a question-matched constant in the top hits is
+    answered by that assignment line, read live by the hydrator.
+    """
+    hits = retrieved.hits
+    if not _always_synthesize() and dominance is None:
+        abstain = await build_abstain_payload(
+            question=ask.question,
+            ctx=ask.ctx,
+            hits=hits,
+            fallback_targets=fallback_targets,
+            repository=ask.repository,
+            t0=ask.t0,
+        )
+        return await neighbors(attach_graph_callers(abstain, graph_callers))
+    # No second gate on question shape: relational failures already show as low
+    # dominance, and a shape gate over-fires on dominant relational questions.
+    if _is_value_question(ask.question) and retrieved.question_ids:
+        extraction = _extract_value_answer(hits, retrieved.question_ids, ask.question)
+        if extraction is not None:
+            return build_value_payload(
+                extraction=extraction,
+                hits=hits,
+                fallback_targets=fallback_targets,
+                repository=ask.repository,
+                t0=ask.t0,
+            )
+    return None
+
+
+async def _user_prompt(ask: _Ask, hits: list[dict], graph_callers) -> str:
+    """The synthesis prompt; decisions (why questions) and prelude drop out when empty."""
+    top_paths = [h["target_path"] for h in hits if h.get("target_path")]
+    decisions: list[dict] = []
+    if _is_why_question(ask.question) and top_paths:
+        with contextlib.suppress(Exception):
+            decisions = await _fetch_relevant_decisions(ask.ctx, ask.repo_id, top_paths)
+    prelude = ""
+    with contextlib.suppress(Exception):
+        prelude = await _build_structured_prelude(hits, decisions, ask.ctx, ask.repo_id)
+    if graph_callers.rows:
+        graph_block = "Callers from the call graph:\n" + "\n".join(
+            f"- {line}" for line in caller_lines(graph_callers.rows)
+        )
+        prelude = f"{prelude}\n\n{graph_block}" if prelude else graph_block
+    return _USER_TEMPLATE.format(
+        question=ask.question.strip(),
+        n=len(hits),
+        context=_build_context_block_v2(hits, prelude=prelude, decisions=decisions),
+    )
+
+
+async def _graded_payload(
+    ask: _Ask,
+    retrieved: _Retrieved,
+    answer_text: str,
+    fallback_targets: list[str],
+    agreement_dominant: bool,
+    dominance,
+) -> tuple[dict, str, list[str]]:
+    """Grade the synthesized answer and build its payload: ``(payload, confidence, citations)``."""
+    hits = retrieved.hits
+    cited = answer_files(
+        answer_text, hits, retrieved.resolved_pool, fallback_targets, _repo_root(ask.ctx)
+    )
+    citations = cited.citations
+    quotes = [q for q in build_quotes(hits, answer_text) if q["path"] not in cited.ruled_out]
+    # ``served_named_body``: the question-named symbol's live body is inlined and
+    # carries what was asked, so the response is content-grounded even when
+    # synthesis hedges.
+    symbol_bodies, served_named_body = _build_symbol_bodies(
+        _gather_body_candidates(hits, answer_text),
+        _repo_root(ask.ctx),
+        question=ask.question,
+        hits=hits,
+    )
+    # One coverage measurement for the grade and the retrieval rating.
+    uncovered = uncovered_terms(ask.question, hits)
+    grade = _grade_answer(
+        question=ask.question,
+        question_ids=retrieved.question_ids,
+        answer_text=answer_text,
+        hits=hits,
+        citations=citations,
+        symbol_bodies=symbol_bodies,
+        served_named_body=served_named_body,
+        dominance=dominance,
+        uncovered=uncovered,
+        lead_off_top=cited.drops_top_hit(hits, answer_text),
+    )
+    payload = await build_synthesized_payload(
+        question=ask.question,
+        answer_text=answer_text,
+        citations=citations,
+        grade=grade,
+        retrieval_quality=_retrieval_quality(hits, agreement_dominant, ask.question, uncovered),
+        hits=hits,
+        fallback_targets=fallback_targets,
+        symbol_bodies=symbol_bodies,
+        served_named_body=served_named_body,
+        quotes=quotes,
+        dominant=dominance is not None,
+        ctx=ask.ctx,
+        repository=ask.repository,
+        exclude_spec=ask.exclude_spec,
+    )
+    return payload, grade.confidence, citations
+
+
+async def _cache_and_stamp(
+    payload: dict,
+    ask: _Ask,
+    *,
+    write_cache: bool,
+    qhash: str,
+    provider,
+    confidence: str,
+    targets: list[str],
+) -> None:
+    """Write the cache row, then stamp ``_meta`` and the episode on the live reply.
+
+    Only the trust-relevant retrieval state is cached; the cache read rebuilds
+    timing and freshness. The episode is attached after the write, so it never
+    reaches the cache row.
+    """
+    degraded = _degraded_legs(_retrieval_legs())
+    if degraded:
+        payload["_retrieval_degraded"] = degraded
+    if write_cache:
+        await _write_answer_cache(
+            payload,
+            ctx=ask.ctx,
+            question=ask.question,
+            repository=ask.repository,
+            repo_id=ask.repo_id,
+            qhash=qhash,
+            legacy_qhash=_hash_question(ask.question),
+            provider=provider,
+        )
+    payload.pop("_retrieval_degraded", None)
+    payload["_meta"] = _build_meta(
+        timing_ms=(time.perf_counter() - ask.t0) * 1000,
+        hint=_answer_hint(confidence),
+        repository=ask.repository,
+        targets=targets,
+    )
+    # Legs are best-effort, so a lexical-only answer would otherwise look whole.
+    if degraded:
+        payload["_meta"]["retrieval_degraded"] = degraded
+    await _attach_episode(
+        payload,
+        question=ask.question,
+        repo_path=getattr(ask.ctx, "path", None),
+        repo_name=getattr(ask.repository, "name", None),
+    )
+
+
 async def get_answer(
     question: str,
     scope: str | None = None,
@@ -388,9 +702,9 @@ async def get_answer(
     whose named mechanism is absent from the retrieved source is downgraded
     to medium (the rationale may be conflated). Low confidence returns
     best_guesses with one-line justifications instead of an empty answer.
-    retrieval_quality separately rates the retrieval that fed synthesis; when
-    it reads "weak" beside confidence=high, the note says what the confidence
-    rests on instead of the ranking, and that is the claim to trust.
+    confidence is the one trust signal: it also asks whether the top hit
+    covers what was asked. retrieval_quality, the rating of the retrieval
+    alone, is served only under ``include=["diagnostics"]``.
     When the answer names a function/method/class, ``symbol_bodies`` carries
     its full live body — read that instead of a follow-up get_symbol.
     ``episodes``, when present, is a dated fact recorded about this checkout
@@ -405,7 +719,8 @@ async def get_answer(
         question: developer question.
         scope: optional path-prefix filter (e.g. "src/pkg/").
         repo: usually omitted.
-        include: optional ``["evidence"]`` expanded projection.
+        include: optional ``["evidence"]`` expanded projection;
+            ``["diagnostics"]`` adds ``retrieval_quality``.
     """
     if repo == "all":
         return _unsupported_repo_all("get_answer")
@@ -413,30 +728,17 @@ async def get_answer(
     t0 = time.perf_counter()
     ctx = await _resolve_repo_context(repo)
     exclude_spec = _get_exclude_spec(ctx.path)
-
     if not question or not question.strip():
-        return {
-            "answer": "",
-            "citations": [],
-            "confidence": "low",
-            "fallback_targets": [],
-            "retrieval": [],
-            "error": "question is required",
-            "_meta": _build_meta(timing_ms=(time.perf_counter() - t0) * 1000),
-        }
+        return _empty_question_payload(t0)
 
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
         repo_id = repository.id
+    ask = _Ask(question, ctx, repository, repo_id, exclude_spec, t0)
 
-    # --- Data-shape fast path ----------------------------------------------
-    # Before cache and retrieval: deterministic from live source, and retrieval
-    # scatters across every consumer of the blob. Falls through unless grounded.
-    ds_ids = _extract_question_identifiers(question)
-    if _is_data_shape_question(question, ds_ids):
-        grounded = await asyncio.to_thread(mine_data_shape, getattr(ctx, "path", None), ds_ids)
-        if grounded is not None:
-            return build_data_shape_payload(grounded, t0, repository)
+    shaped = await _data_shape_answer(question, ctx, repository, t0)
+    if shaped is not None:
+        return shaped
 
     # Normalize once, then use the same value for retrieval and cache identity.
     # The versioned identity deliberately misses legacy question-only rows.
@@ -448,7 +750,7 @@ async def get_answer(
             ctx=ctx,
             question=question,
             repository=repository,
-            repo_id=repo_id,
+            repo_id=ask.repo_id,
             qhash=qhash,
             exclude_spec=exclude_spec,
             t0=t0,
@@ -457,169 +759,42 @@ async def get_answer(
             return served
 
     retrieved = await _run_retrieval_pipeline(
-        question, ctx, scope=normalized_scope, exclude_spec=exclude_spec, repo_id=repo_id
+        question, ctx, scope=normalized_scope, exclude_spec=exclude_spec, repo_id=ask.repo_id
     )
     hits = retrieved.hits
     resolved_pool = retrieved.resolved_pool
-    question_ids = retrieved.question_ids
-    homonyms = retrieved.homonyms
-    flow_paths = retrieved.flow_paths
-
-    # Caller questions get the graph's callers as evidence; every other
-    # question skips this without a query.
-    graph_callers = NO_EVIDENCE
-    if is_caller_question(question, question_ids):
-        try:
-            async with get_session(ctx.session_factory) as session:
-                graph_callers = await caller_evidence(
-                    session,
-                    repo_id,
-                    question,
-                    question_ids,
-                    hits,
-                    exclude_spec,
-                    repo_root=_repo_root(ctx),
-                )
-        except Exception:
-            _log.warning("get_answer: graph caller lookup failed", exc_info=True)
-
+    graph_callers = await _graph_callers(ask, retrieved)
     # Impact questions the caller lookup left unanswered get the users of the
     # file the answer leads with, once that file is known.
     _neighbors = functools.partial(
         _attach_neighbors,
-        wanted=not graph_callers.rows and is_impact_question(question, question_ids),
+        wanted=not graph_callers.rows and is_impact_question(question, retrieved.question_ids),
         ctx=ctx,
-        repo_id=repo_id,
+        repo_id=ask.repo_id,
         hits=hits,
         exclude_spec=exclude_spec,
     )
+    # Above the early returns: they rate retrieval too.
+    agreement_dominant = _agreement(hits)
 
-    # Computed once, above the early returns (they rate retrieval too). The leg
-    # status is read, not inferred from the capped `hits`; see _agreement_dominant.
-    agreement_dominant = (
-        _agreement_dominant(
-            hits,
-            vector_leg_keyless=(
-                _symbol_agreement_enabled() and _retrieval_legs().get("vector") == "keyless"
-            ),
-        )
-        if _agreement_confidence_enabled()
-        else False
+    # Every return from here on goes through ``_with_candidates`` (or the
+    # degraded path, which does) so the ranked pool is never dropped.
+    early = await _pre_synthesis_reply(
+        ask, retrieved, agreement_dominant, graph_callers, _neighbors
     )
+    if early is not None:
+        return _with_candidates(early, resolved_pool)
 
-    # --- Qualified-miss guard ----------------------------------------------
-    # ``Parent.leaf`` found only under OTHER parents: not-found, never a
-    # confidently-wrong answer from a same-named symbol elsewhere.
-    if homonyms.get("qualified_miss"):
-        missed = homonyms["qualified_miss"]
-        return _with_candidates(
-            _no_answer_payload(
-                f"No indexed definition matches the qualified name(s) {missed}. "
-                "The base name is defined elsewhere, but not under the "
-                "class/module you named, so this is not returning a same-named "
-                "symbol from another file, to avoid a confidently-wrong answer. "
-                'Re-check the qualifier, or call search_codebase mode="symbol" '
-                "on the base name to see every definition. The files retrieval "
-                "ranked for this question are in candidate_files.",
-                repository=repository,
-                t0=t0,
-            ),
-            resolved_pool,
-        )
-
-    union_payload = _union_answer_payload(
-        question,
-        question_ids,
-        homonyms,
-        ctx,
-        repository,
-        t0,
-        _retrieval_quality(hits, agreement_dominant),
-    )
-    if union_payload is not None:
-        return _with_candidates(
-            await _neighbors(attach_graph_callers(union_payload, graph_callers)), resolved_pool
-        )
-
-    fallback_targets = [
-        h["target_path"]
-        for h in hits
-        if h.get("target_path") and _is_readable_path(h["target_path"])
-    ]
-
-    if not hits:
-        # The pool is empty here, but every post-retrieval return goes through
-        # ``_with_candidates`` so a later reordering cannot skip it.
-        return _with_candidates(
-            _no_answer_payload(
-                "No wiki hits for this question. Rephrase around the code "
-                "concept. " + _NO_HITS_RECOVERY_HINT,
-                repository=repository,
-                t0=t0,
-            ),
-            resolved_pool,
-        )
-
-    # Page content for the top hits, unconditionally, before anything branches
-    # on retrieval quality: gating it on dominance starves the confident
-    # answers of prose. The cost is one indexed SELECT over at most five rows.
-    hits_without_page_content = await _attach_page_excerpts(hits, ctx)
-    if hits_without_page_content:
-        _log.warning(
-            "get_answer: %d of %d top hits have no page content; those hits "
-            "reach synthesis as a one-line summary only",
-            hits_without_page_content,
-            min(len(hits), _PAGE_EXCERPT_HITS),
-        )
-
-    # --- Retrieval dominance -----------------------------------------------
-    # Under always-synthesize, dominance feeds the grade, the retrieval rating
-    # and the ambiguity evidence rather than deciding whether to synthesize.
-    # The grade takes the TIER so its note quotes only the measurement made.
-    always_synthesize = _always_synthesize()
+    fallback_targets = _fallback_targets(hits)
+    await _attach_excerpts(hits, ctx)
+    # The grade takes the dominance TIER so its note quotes only the measurement made.
     dominance = dominance_reason(hits, agreement_dominant=agreement_dominant)
-    dominant = dominance is not None
+    gated = await _gated_reply(
+        ask, retrieved, dominance, fallback_targets, graph_callers, _neighbors
+    )
+    if gated is not None:
+        return _with_candidates(gated, resolved_pool)
 
-    if not always_synthesize and not dominant:
-        return _with_candidates(
-            await _neighbors(
-                attach_graph_callers(
-                    await build_abstain_payload(
-                        question=question,
-                        ctx=ctx,
-                        hits=hits,
-                        fallback_targets=fallback_targets,
-                        repository=repository,
-                        t0=t0,
-                    ),
-                    graph_callers,
-                )
-            ),
-            resolved_pool,
-        )
-
-    # No second gate on question shape (e.g. relational connectives): hard
-    # relational failures already show as low dominance, and a shape gate
-    # over-fires on dominant relational questions.
-
-    # --- Value-extraction fast path ----------------------------------------
-    # Value-shaped question + a question-matched constant in the top hits →
-    # the verbatim assignment line (read live by the hydrator) IS the answer.
-    if _is_value_question(question) and question_ids:
-        extraction = _extract_value_answer(hits, question_ids)
-        if extraction is not None:
-            return _with_candidates(
-                build_value_payload(
-                    extraction=extraction,
-                    hits=hits,
-                    fallback_targets=fallback_targets,
-                    repository=repository,
-                    t0=t0,
-                ),
-                resolved_pool,
-            )
-
-    # --- Synthesis (LLM) ---------------------------------------------------
     # Both ways synthesis can go missing share one payload; they differ only in
     # the reason and the note.
     async def _degrade(reason: str, note: str) -> dict:
@@ -632,7 +807,7 @@ async def get_answer(
             repository=repository,
             t0=t0,
             ctx=ctx,
-            question_ids=question_ids,
+            question_ids=retrieved.question_ids,
             exclude_spec=exclude_spec,
             agreement_dominant=agreement_dominant,
             resolved_pool=resolved_pool,
@@ -657,134 +832,36 @@ async def get_answer(
             "Synthesis is unavailable; local retrieval and source evidence remain usable.",
         )
 
-    # Decision fusion (why questions only) and the structured prelude are both
-    # dropped when empty, so the prompt never carries hollow scaffolding.
-    top_paths = [h["target_path"] for h in hits if h.get("target_path")]
-    decisions: list[dict] = []
-    if _is_why_question(question) and top_paths:
-        with contextlib.suppress(Exception):
-            decisions = await _fetch_relevant_decisions(ctx, repo_id, top_paths)
-    prelude = ""
-    with contextlib.suppress(Exception):
-        prelude = await _build_structured_prelude(hits, decisions, ctx, repo_id)
-    if graph_callers.rows:
-        graph_block = "Callers from the call graph:\n" + "\n".join(
-            f"- {line}" for line in caller_lines(graph_callers.rows)
-        )
-        prelude = f"{prelude}\n\n{graph_block}" if prelude else graph_block
-
-    user_prompt = _USER_TEMPLATE.format(
-        question=question.strip(),
-        n=len(hits),
-        context=_build_context_block_v2(hits, prelude=prelude, decisions=decisions),
-    )
-
     # Budgets its own timeout per provider: a remote API needs seconds, a CLI
     # subprocess or local model needs minutes.
     answer_text, failure_note = await synthesize(
         provider,
         _SYSTEM_PROMPT,
-        user_prompt,
+        await _user_prompt(ask, hits, graph_callers),
         reasoning=_resolve_reasoning_for_answer(getattr(ctx, "path", None)),
         session_factory=getattr(ctx, "session_factory", None),
-        repo_id=repo_id,
+        repo_id=ask.repo_id,
     )
     if failure_note is not None:
         return await _degrade("synthesis-failed", failure_note)
 
-    citations = [
-        h["target_path"] for h in hits if h.get("target_path") and h["target_path"] in answer_text
-    ]
-    if not citations:
-        # Fall back to top-2 retrieval paths so the agent always has something to verify.
-        citations = fallback_targets[:2]
-
-    quotes = build_quotes(hits, answer_text)
-
-    # ``served_named_body``: the question-named symbol's live body is inlined, so
-    # the response is content-grounded even when synthesis hedges.
-    repo_root = _repo_root(ctx)
-    symbol_bodies, served_named_body = _build_symbol_bodies(
-        _gather_body_candidates(hits, answer_text), repo_root
+    payload, confidence, citations = await _graded_payload(
+        ask, retrieved, answer_text, fallback_targets, agreement_dominant, dominance
     )
-
-    grade = _grade_answer(
-        question=question,
-        question_ids=question_ids,
-        answer_text=answer_text,
-        hits=hits,
-        citations=citations,
-        symbol_bodies=symbol_bodies,
-        served_named_body=served_named_body,
-        dominance=dominance,
-    )
-    confidence = grade.confidence
-    retrieval_quality = _retrieval_quality(hits, agreement_dominant)
-
-    payload = await build_synthesized_payload(
-        question=question,
-        answer_text=answer_text,
-        citations=citations,
-        grade=grade,
-        retrieval_quality=retrieval_quality,
-        hits=hits,
-        fallback_targets=fallback_targets,
-        symbol_bodies=symbol_bodies,
-        served_named_body=served_named_body,
-        quotes=quotes,
-        dominant=dominant,
-        ctx=ctx,
-        repository=repository,
-        exclude_spec=exclude_spec,
-    )
-
     attach_graph_callers(payload, graph_callers)
     await _neighbors(payload)
-    if flow_paths:
-        payload["flow_path"] = [" -> ".join(p) for p in flow_paths[:2]]
-
-    # Where to look next, always: navigation, not evidence, so it survives the
-    # shrinking of ``retrieval`` on high-confidence answers.
+    if retrieved.flow_paths:
+        payload["flow_path"] = [" -> ".join(p) for p in retrieved.flow_paths[:2]]
+    # Navigation, not evidence: it survives the shrinking of ``retrieval``.
     _with_candidates(payload, resolved_pool)
-
-    # Persist only the trust-relevant retrieval state. The cache read rebuilds
-    # timing/freshness metadata for the current request, then restores this
-    # synthesis-time fact so fresh and cached envelopes mean the same thing.
-    degraded = _degraded_legs(_retrieval_legs())
-    if degraded:
-        payload["_retrieval_degraded"] = degraded
-
-    if answer_text and not cache_disabled:
-        await _write_answer_cache(
-            payload,
-            ctx=ctx,
-            question=question,
-            repository=repository,
-            repo_id=repo_id,
-            qhash=qhash,
-            legacy_qhash=_hash_question(question),
-            provider=provider,
-        )
-
-    payload.pop("_retrieval_degraded", None)
-
-    payload["_meta"] = _build_meta(
-        timing_ms=(time.perf_counter() - t0) * 1000,
-        hint=_answer_hint(confidence),
-        repository=repository,
-        targets=[*citations, *fallback_targets],
-    )
-    # Legs are best-effort, so a lexical-only answer would otherwise look whole.
-    # Named only when a leg fell over.
-    if degraded:
-        payload["_meta"]["retrieval_degraded"] = degraded
-    # After the cache write on purpose: the episode never reaches the cache row,
-    # so it needs no _ANSWER_SCHEMA_VERSION bump.
-    await _attach_episode(
+    await _cache_and_stamp(
         payload,
-        question=question,
-        repo_path=getattr(ctx, "path", None),
-        repo_name=getattr(repository, "name", None),
+        ask,
+        write_cache=bool(answer_text) and not cache_disabled,
+        qhash=qhash,
+        provider=provider,
+        confidence=confidence,
+        targets=[*citations, *fallback_targets],
     )
     return payload
 
@@ -830,7 +907,8 @@ async def get_answer(
         question: Developer question.
         scope: Optional repository-relative path prefix.
         repo: Usually omitted; a workspace alias when needed.
-        include: Optional ``["evidence"]`` expanded projection.
+        include: Optional ``["evidence"]`` expanded projection;
+            ``["diagnostics"]`` adds ``retrieval_quality``.
     """
     return await _projected_get_answer(
         question=question,

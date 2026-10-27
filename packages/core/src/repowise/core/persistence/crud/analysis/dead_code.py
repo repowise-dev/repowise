@@ -6,21 +6,24 @@ import json
 from collections.abc import Sequence
 from typing import Any
 
-from sqlalchemy import select, text
+from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.dead_code.deletion_gate import effective_safe_to_delete
 from repowise.core.analysis.dead_code.models import DeadCodeFindingData, DeadCodeKind
-from repowise.core.analysis.dead_code.risk_factors import (
-    RISK_CAP_CONFIDENCE,
-    SAFE_CONFIDENCE_THRESHOLD,
-    path_risk_factors,
+from repowise.core.analysis.dead_code.risk_factors import path_risk_factors
+from repowise.core.analysis.dead_code.serving import (
+    CrossRepoLookup,
+    is_safe,
+    serve_findings,
+    tier_of,
 )
 from repowise.core.analysis.finding_registry import excluded_types
 
 from ...models import DeadCodeFinding, _new_uuid
-from .._shared import _BATCH_SIZE, _finding_file_path
+from .._shared import _BATCH_SIZE, _batch_delete_in, _finding_file_path
 from ..repository import stamp_analysis_ran
+from .shown import gated_counts, shown, ungated
 
 
 def _dead_code_row_kwargs(finding: Any, repository_id: str) -> dict:
@@ -124,15 +127,12 @@ async def save_dead_code_findings(
     findings: list[dict],
 ) -> None:
     """Persist dead code findings, replacing any existing open findings for the repo."""
-    # Delete existing open findings for this repo before saving new ones
-    existing = await session.execute(
-        select(DeadCodeFinding).where(
+    await session.execute(
+        delete(DeadCodeFinding).where(
             DeadCodeFinding.repository_id == repository_id,
             DeadCodeFinding.status == "open",
         )
     )
-    for row in existing.scalars().all():
-        await session.delete(row)
 
     null_lines_as_zero = await _lines_column_rejects_null(session)
     for i in range(0, len(findings), _BATCH_SIZE):
@@ -195,18 +195,7 @@ async def replace_dead_code_findings(
     delete-then-insert with the surviving keys filtered out in Python rather
     than an ``ON CONFLICT`` upsert.
     """
-    existing = await session.execute(
-        select(DeadCodeFinding).where(DeadCodeFinding.repository_id == repository_id)
-    )
-    acted_on: set[tuple] = set()
-    for row in existing.scalars().all():
-        if scope is not None and row.file_path not in scope:
-            continue
-        if row.status == "open":
-            await session.delete(row)
-        else:
-            acted_on.add((row.file_path, row.kind, row.symbol_name))
-    await session.flush()
+    acted_on = await _replace_open_rows(session, repository_id, scope)
 
     writable = [
         f
@@ -222,6 +211,31 @@ async def replace_dead_code_findings(
     await stamp_analysis_ran(session, repository_id, "dead_code")
 
 
+async def _replace_open_rows(
+    session: AsyncSession, repository_id: str, scope: frozenset[str] | set[str] | None
+) -> set[tuple]:
+    """Delete the open rows in *scope*; return the (file, kind, symbol) of its acted-on rows.
+
+    Acted-on rows are few, so they are read repo-wide and scoped here.
+    """
+    repo = DeadCodeFinding.repository_id == repository_id
+    acted = await session.execute(
+        select(DeadCodeFinding.file_path, DeadCodeFinding.kind, DeadCodeFinding.symbol_name).where(
+            repo, DeadCodeFinding.status != "open"
+        )
+    )
+    acted_on = {tuple(r) for r in acted if scope is None or r[0] in scope}
+    is_open = DeadCodeFinding.status == "open"
+    if scope is None:
+        await session.execute(delete(DeadCodeFinding).where(repo, is_open))
+    else:
+        await _batch_delete_in(
+            session, DeadCodeFinding, DeadCodeFinding.file_path, scope, prefilter=(repo, is_open)
+        )
+    await session.flush()
+    return acted_on
+
+
 async def get_dead_code_findings(
     session: AsyncSession,
     repository_id: str,
@@ -232,12 +246,15 @@ async def get_dead_code_findings(
     safe_to_delete: bool | None = None,
     limit: int | None = None,
     include_withheld: bool = False,
+    include_unverified: bool = False,
     file_paths: Sequence[str] | None = None,
 ) -> list[DeadCodeFinding]:
     """Return dead code findings filtered by kind, confidence, and status.
 
     Kinds the finding-type registry withholds are left out unless
     ``include_withheld``; naming a provisional ``kind`` is an explicit request.
+    Files of a language the registry gates for dead code are left out unless
+    ``include_unverified``, which also opts into every provisional kind.
 
     ``safe_to_delete`` and ``limit`` exist so a caller that wants a short
     preview does not have to load every open finding in the repository and
@@ -253,7 +270,15 @@ async def get_dead_code_findings(
     if kind is not None:
         q = q.where(DeadCodeFinding.kind == kind)
     if not include_withheld:
-        q = q.where(DeadCodeFinding.kind.not_in(excluded_types(requested=[kind] if kind else ())))
+        q = q.where(
+            shown(
+                "dead_code",
+                DeadCodeFinding.kind,
+                DeadCodeFinding.file_path,
+                requested=[kind] if kind else (),
+                include_unverified=include_unverified,
+            )
+        )
     if safe_to_delete is not None:
         q = q.where(DeadCodeFinding.safe_to_delete.is_(safe_to_delete))
     if file_paths is not None:
@@ -282,28 +307,52 @@ async def update_dead_code_status(
     return finding
 
 
-async def get_dead_code_summary(session: AsyncSession, repository_id: str) -> dict:
-    """Return aggregate dead code statistics."""
+async def get_dead_code_summary(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    include_unverified: bool = False,
+    lookup: CrossRepoLookup | None = None,
+    alias: str | None = None,
+) -> dict:
+    """Return aggregate dead code statistics over the findings a surface shows.
+
+    ``gated`` counts the open findings a language gate held back, by language.
+    In a workspace, *lookup* and *alias* apply the cross-repo cut first, so the
+    counts match the list (:func:`serve_findings`).
+    """
+    scope = (
+        DeadCodeFinding.repository_id == repository_id,
+        DeadCodeFinding.status == "open",
+        DeadCodeFinding.kind.not_in(excluded_types(include_provisional=include_unverified)),
+    )
     result = await session.execute(
         select(DeadCodeFinding).where(
-            DeadCodeFinding.repository_id == repository_id,
-            DeadCodeFinding.status == "open",
-            DeadCodeFinding.kind.not_in(excluded_types()),
+            *scope,
+            ungated(
+                "dead_code",
+                DeadCodeFinding.file_path,
+                DeadCodeFinding.kind,
+                include_unverified=include_unverified,
+            ),
         )
     )
-    findings = list(result.scalars().all())
+    findings = serve_findings(list(result.scalars().all()), lookup, alias)
+    gated = await gated_counts(
+        session,
+        "dead_code",
+        DeadCodeFinding,
+        *scope,
+        kind_col=DeadCodeFinding.kind,
+        include_unverified=include_unverified,
+    )
 
     summary: dict[str, int] = {"high": 0, "medium": 0, "low": 0}
     total_lines = 0
     by_kind: dict[str, int] = {}
 
     for f in findings:
-        if f.confidence >= SAFE_CONFIDENCE_THRESHOLD:
-            summary["high"] += 1
-        elif f.confidence >= RISK_CAP_CONFIDENCE:
-            summary["medium"] += 1
-        else:
-            summary["low"] += 1
+        summary[tier_of(f.confidence)] += 1
         total_lines += f.lines or 0
         by_kind[f.kind] = by_kind.get(f.kind, 0) + 1
 
@@ -312,16 +361,15 @@ async def get_dead_code_summary(session: AsyncSession, repository_id: str) -> di
     # risk-factor logic existed (or in a config/bootstrap/database/environment
     # file the allowlist missed) are not counted as deletion-ready.
     # Totals sum the known counts; an unknown (NULL) count adds nothing.
-    deletable_lines = sum(
-        f.lines or 0
-        for f in findings
-        if effective_safe_to_delete(f.confidence, f.file_path, f.safe_to_delete, f.kind)
-    )
+    deletable = [f for f in findings if is_safe(f)]
+    deletable_lines = sum(f.lines or 0 for f in deletable)
 
     return {
         "total_findings": len(findings),
         "confidence_summary": summary,
         "deletable_lines": deletable_lines,
+        "safe_to_delete_count": len(deletable),
         "total_lines": total_lines,
         "by_kind": by_kind,
+        "gated": gated,
     }

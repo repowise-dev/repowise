@@ -112,6 +112,100 @@ def test_reader_prefers_the_pinned_embedder_over_a_detected_key(
     assert providers.resolve_embedder_for_repo(tmp_path) == "mock"
 
 
+# --- reindex, the writer that adds semantic search, skips a mock pin --------
+
+
+def _no_embedder_anywhere(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _clear_embedder_env(monkeypatch)
+    monkeypatch.setattr(
+        "repowise.core.providers.embedding.resolve.global_config_path",
+        lambda: tmp_path / "no-global.yaml",
+    )
+
+
+def test_reindex_replaces_a_mock_pin_when_a_key_is_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pin a reader trusts is the one reindex rewrites: mock is no choice."""
+    from repowise.core.providers.embedding.resolve import (
+        embedder_reason,
+        resolve_reindex_embedder,
+    )
+
+    _no_embedder_anywhere(monkeypatch, tmp_path)
+    _write_config(tmp_path, embedder="mock")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    name, source = resolve_reindex_embedder(tmp_path)
+    assert (name, source) == ("openai", "autodetect")
+    assert embedder_reason(name, source, repo_path=tmp_path) == "OPENAI_API_KEY is set"
+    assert providers.semantic_search_command(tmp_path) == "repowise reindex --embedder openai"
+
+
+def test_reindex_keeps_a_real_pin_over_another_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from repowise.core.providers.embedding.resolve import resolve_reindex_embedder
+
+    _no_embedder_anywhere(monkeypatch, tmp_path)
+    _write_config(tmp_path, embedder="gemini")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    assert resolve_reindex_embedder(tmp_path) == ("gemini", "config.yaml")
+
+
+def test_an_exported_mock_still_means_mock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from repowise.core.providers.embedding.resolve import resolve_reindex_embedder
+
+    _no_embedder_anywhere(monkeypatch, tmp_path)
+    _write_config(tmp_path, embedder="mock")
+    monkeypatch.setenv("REPOWISE_EMBEDDER", "mock")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    assert resolve_reindex_embedder(tmp_path) == ("mock", "env:REPOWISE_EMBEDDER")
+
+
+def test_with_no_embedder_the_command_names_the_local_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from repowise.core.providers.embedding.resolve import resolve_reindex_embedder
+
+    _no_embedder_anywhere(monkeypatch, tmp_path)
+    _write_config(tmp_path, embedder="mock")
+
+    assert resolve_reindex_embedder(tmp_path) == ("mock", "config.yaml")
+    assert providers.semantic_search_command(tmp_path) == "repowise reindex --embedder ollama"
+    # A real embedder that failed is the one to retry, whatever is detectable.
+    assert (
+        providers.semantic_search_command(tmp_path, "gemini")
+        == "repowise reindex --embedder gemini"
+    )
+
+
+def test_a_model_run_states_its_embedder_and_why(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _no_embedder_anywhere(monkeypatch, tmp_path)
+    monkeypatch.setenv("GEMINI_API_KEY", "g-test")
+
+    assert providers.model_run_embedder("mock") == (
+        "gemini",
+        "gemini (GEMINI_API_KEY is set, replacing the keyless mock)",
+        True,
+    )
+    assert providers.model_run_embedder("openai") == (
+        "openai",
+        "openai (pinned in .repowise/config.yaml)",
+        False,
+    )
+    monkeypatch.delenv("GEMINI_API_KEY")
+    assert providers.model_run_embedder(None) == (
+        None,
+        "mock (no embedder key found, semantic search off)",
+        False,
+    )
+
+
 def test_an_explicit_env_override_still_beats_the_pin(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -178,6 +272,24 @@ def test_serve_seeds_a_mock_pin_into_the_environment(
     serve_cmd._load_local_provider_config()
 
     assert os.environ.get("REPOWISE_EMBEDDER") == "mock"
+
+
+def test_serve_leaves_the_chat_provider_to_the_shared_resolver(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Chat reads config.yaml per repo, so serve no longer copies it into env vars."""
+    from repowise.cli.commands import serve_cmd
+
+    _write_config(tmp_path, provider="openai", model="qwen3", embedder="mock")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("REPOWISE_PROVIDER", raising=False)
+    monkeypatch.delenv("REPOWISE_MODEL", raising=False)
+    monkeypatch.setenv("REPOWISE_EMBEDDER", "mock")
+
+    serve_cmd._load_local_provider_config()
+
+    assert "REPOWISE_PROVIDER" not in os.environ
+    assert "REPOWISE_MODEL" not in os.environ
 
 
 def test_reader_falls_back_to_the_environment_when_nothing_is_pinned(
@@ -860,6 +972,15 @@ def test_template_run_embedder_downgrades_only_an_unasked_hosted_backend(
 ) -> None:
     """``init`` predicts this answer to build the run's store before the pipeline."""
     assert providers.template_run_embedder(resolved, requested) == expected
+
+
+@pytest.mark.parametrize(
+    ("name", "free"),
+    [("mock", True), ("ollama", True), ("openai", False), ("gemini", False), ("edenai", False)],
+)
+def test_is_free_embedder_names_only_the_backends_that_cannot_bill(name: str, free: bool) -> None:
+    """``update --full`` skips its cost gate for these, so a hosted one must not slip in."""
+    assert providers.is_free_embedder(name) is free
 
 
 # --- the recorded width: the steady state never imports lancedb -------------

@@ -316,7 +316,7 @@ export function CouplingTable({
         <div className="flex items-center gap-2 min-w-[100px]">
           <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-[var(--color-bg-inset)]">
             <div
-              className="h-full rounded-full bg-[var(--color-accent-primary)]"
+              className="h-full rounded-full bg-[var(--color-progress-fill)]"
               style={{ width: `${Math.max(6, Math.round((e.strength / maxStrength) * 100))}%` }}
             />
           </div>

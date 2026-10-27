@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import inspect
+import shutil
 import subprocess
 from datetime import UTC, datetime
 
 import pytest
 
-from repowise.core.persistence.models import GraphEdge, GraphNode
-from repowise.server.mcp_server import _edit_sites, _line_hits, _meta
+from repowise.core.persistence.models import GraphEdge, GraphNode, Page
+from repowise.server.mcp_server import _edit_sites, _line_hits, _meta, _state
 from repowise.server.mcp_server._budget import enforce_response_budget
 from repowise.server.mcp_server.tool_search import search_codebase
 
@@ -25,8 +26,12 @@ _FILES = {
         "    print('hello there')\n"
         "    return backend_of('m')\n"
         "x = 147821\n"
+        'USER_AGENT = "acme-cli/0.1.0"\n'
     ),
 }
+
+
+_REAL_DIRTY = _meta._working_tree_dirty_paths
 
 
 def _dirty(monkeypatch, paths: frozenset[str]) -> None:
@@ -134,11 +139,98 @@ async def test_literal_number_is_scanned_with_definition_first(tree):
 
 
 @pytest.mark.asyncio
+async def test_slash_literal_falls_back_from_path_mode(tree):
+    out = await search_codebase("acme-cli/0.1.0")
+
+    assert _rows(out) == [("app/widget.py", 8, "definition")]
+    assert out["complete"] is True
+
+
+@pytest.mark.asyncio
+async def test_slash_literal_is_scanned_in_hybrid_mode(tree):
+    out = await search_codebase("acme-cli/0.1.0", mode="hybrid")
+
+    assert _rows(out) == [("app/widget.py", 8, "definition")]
+    assert out["complete"] is True
+
+
+@pytest.mark.asyncio
+async def test_matching_path_query_does_not_add_line_hits(tree, session, setup_mcp):
+    # Path mode matches indexed file pages, so the file needs one to be found.
+    session.add(
+        Page(
+            id="file_page:app/widget.py",
+            repository_id=setup_mcp,
+            page_type="file_page",
+            title="Widget",
+            content="# Widget",
+            target_path="app/widget.py",
+            source_hash="widget",
+            model_name="mock",
+            provider_name="mock",
+            generation_level=2,
+            confidence=0.8,
+            freshness_status="fresh",
+            metadata_json="{}",
+            created_at=_NOW,
+            updated_at=_NOW,
+        )
+    )
+    await session.commit()
+    out = await search_codebase("app/widget.py", mode="path")
+
+    assert any(result["path"] == "app/widget.py" for result in out["results"])
+    assert "lines" not in out
+
+
+@pytest.mark.parametrize("query", ["SomeName", "./", "../"])
+@pytest.mark.asyncio
+async def test_unmatched_path_query_only_falls_back_for_slash_literals(tree, query):
+    out = await search_codebase(query, mode="path")
+
+    assert out["results"] == []
+    assert "lines" not in out
+
+
+@pytest.mark.asyncio
 async def test_quoted_string_is_scanned_as_a_substring(tree):
     out = await search_codebase('"hello there"')
 
     assert _rows(out) == [("pkg/catalog.py", 2, "definition"), ("app/widget.py", 5, "match")]
     assert out["complete"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_name_with_no_symbol_but_live_lines_is_not_reported_missing(tree):
+    """The symbol stage's miss advice is written before any line is read.
+
+    Next to the lines it found, "recheck the spelling" and "grep the name" say
+    the opposite of what the reply holds; ``exact_match`` still says no symbol.
+    """
+    out = await search_codebase("connect", mode="symbol")
+
+    assert _rows(out) == [("app/widget.py", 4, "match")]
+    assert out["complete"] is True
+    assert out["exact_match"] is False
+    assert "grep_hint" not in out
+    assert "note" not in out
+
+
+def test_fuzzy_results_beside_literal_lines_keep_a_short_label():
+    out = {"results": [{"name": "connect_pool"}], "exact_match": False, "note": "x", "grep_hint": "y"}
+
+    _line_hits._reconcile_symbol_miss(out, literal_scan=True)
+
+    assert "grep_hint" not in out
+    assert "other symbols" in out["note"]
+
+
+@pytest.mark.asyncio
+async def test_a_name_with_no_symbol_and_no_lines_keeps_its_miss_advice(tree):
+    out = await search_codebase("disconnect", mode="symbol")
+
+    assert "lines" not in out or out["lines"] == []
+    assert "grep_hint" in out
 
 
 @pytest.mark.asyncio
@@ -168,6 +260,29 @@ async def test_uncommitted_unindexed_file_is_scanned(tree):
 
     assert ("app/new.py", 1, "match") in _rows(out)
     assert out["complete"] is True
+
+
+@pytest.mark.asyncio
+async def test_unindexed_file_is_read_from_the_served_checkout(
+    tree, setup_mcp, tmp_path_factory, monkeypatch
+):
+    # The stored local_path (tree) is an older copy; the server serves another.
+    tree_repo_id = setup_mcp
+    for module in (_edit_sites, _meta):
+        monkeypatch.setattr(module, "_working_tree_dirty_paths", _REAL_DIRTY)
+    served = tmp_path_factory.mktemp("served") / "repo"
+    shutil.copytree(tree, served)
+    (served / ".repowise").mkdir()
+    (served / "app" / "later.py").write_text(
+        "from pkg.catalog import backend_of\n\nbackend_of('x')\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(_state, "_repo_path", str(served))
+    monkeypatch.setattr(_state, "_served_repo_id", tree_repo_id)
+    _meta._dirty_paths_cache.clear()
+
+    out = await search_codebase("backend_of", mode="symbol")
+
+    assert {"app/later.py", "app/widget.py"} <= {r["path"] for r in out["lines"]}
 
 
 @pytest.mark.asyncio
@@ -643,3 +758,43 @@ def test_token_nowhere_in_the_repo_is_complete_and_empty(scan_repo):
 @pytest.mark.parametrize("needle", ["a\nb", "a\0b", "-e", "café"])
 def test_needles_git_cannot_take_as_one_argument_use_the_python_scan(scan_repo, needle):
     assert _line_hits._files_holding(scan_repo, needle) is None
+
+
+@pytest.mark.parametrize(
+    "query, expected",
+    [
+        ("@pytest.mark.anyio", ("@pytest.mark.anyio", False)),
+        ("def send(", ("def send(", False)),
+        ('copy_with(path="/echo_headers")', ('copy_with(path="/echo_headers")', False)),
+        ('@GetMapping("/owners/{ownerId}")', ('@GetMapping("/owners/{ownerId}")', False)),
+        ("copy_with", ("copy_with", True)),
+        ('"x y"', ("x y", False)),
+        ("Add (optional) support", None),
+        ("how does foo(x) work", None),
+        ("what is x=1?", None),
+        ("two words", None),
+    ],
+)
+def test_literal_reads_code_punctuation_as_a_substring(query, expected):
+    assert _line_hits._literal(query) == expected
+
+
+@pytest.mark.asyncio
+async def test_punctuated_literals_return_their_lines(tree):
+    (tree / "app" / "svc.py").write_text(
+        "@pytest.mark.anyio\nasync def test_x():\n    pass\n\nclass C:\n    def send(self):\n        pass\n",
+        encoding="utf-8",
+    )
+    git = ["git", "-C", str(tree), "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run([*git, "add", "app/svc.py"], check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "svc"], check=True)
+
+    deco = await search_codebase("@pytest.mark.anyio")
+    assert [(r["path"], r["line"]) for r in deco["lines"]] == [("app/svc.py", 1)]
+
+    head = await search_codebase("def send(")
+    assert [(r["path"], r["line"]) for r in head["lines"]] == [("app/svc.py", 6)]
+
+    # An identifier inside the literal (``backend_of``) does not turn it into a symbol query.
+    call = await search_codebase("backend_of('m')")
+    assert [(r["path"], r["line"]) for r in call["lines"]] == [("app/widget.py", 6)]

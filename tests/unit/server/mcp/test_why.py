@@ -127,9 +127,24 @@ async def test_get_why_file_no_git_metadata(setup_mcp):
     assert alignment["candidate_count"] >= 1
 
 
+def _write(root, path: str) -> None:
+    """Put *path* in the checkout, so path mode treats it as a real file."""
+    (root / path).parent.mkdir(parents=True, exist_ok=True)
+    (root / path).write_text("x = 1\n", encoding="utf-8")
+
+
 @pytest.mark.asyncio
-async def test_get_why_file_ungoverned(setup_mcp):
+async def test_get_why_file_ungoverned(session, setup_mcp, tmp_path):
+    from repowise.core.persistence.crud.authority import accept_decision
+    from repowise.core.persistence.models import DecisionRecord
     from repowise.server.mcp_server import get_why
+
+    # An accepted decision exists, just not one naming this file.
+    await accept_decision(
+        session, await session.get(DecisionRecord, "dec2"), accepter="test", evidence=["pr#1"]
+    )
+    await session.flush()
+    _write(tmp_path, "src/other/utils.py")
 
     # Use a path that has no decisions — triggers git archaeology fallback
     result = await get_why("src/other/utils.py")
@@ -148,8 +163,55 @@ async def test_get_why_file_ungoverned(setup_mcp):
 
 
 @pytest.mark.asyncio
-async def test_get_why_fallback_with_cross_references(setup_mcp):
+async def test_get_why_says_when_the_index_has_no_accepted_decisions(setup_mcp, tmp_path):
+    """With nothing accepted anywhere, "ungoverned" would blame the file."""
     from repowise.server.mcp_server import get_why
+
+    _write(tmp_path, "src/other/utils.py")
+    result = await get_why("src/other/utils.py")
+
+    explanation = result["alignment"]["explanation"]
+    assert "holds no accepted decisions" in explanation
+    assert "ungoverned" not in explanation
+
+
+@pytest.mark.asyncio
+async def test_get_why_path_not_found_skips_archaeology(setup_mcp):
+    """A path in neither the checkout nor git history gets a short answer."""
+    from repowise.server.mcp_server import get_why
+
+    result = await get_why("src/nowhere/typo.py")
+
+    assert result["mode"] == "path"
+    assert "Path not found" in result["error"]
+    assert "git_archaeology" not in result
+    assert "alignment" not in result
+
+
+def test_a_path_outside_the_checkout_is_not_on_disk(tmp_path):
+    """Absolute paths, ``..`` escapes and symlinks out are not in the checkout."""
+    from repowise.server.mcp_server.tool_why.path_mode import _maybe_on_disk
+
+    root = tmp_path / "repo"
+    _write(root, "src/a.py")
+    _write(tmp_path, "outside.py")
+
+    assert _maybe_on_disk(root, "src/a.py")
+    assert not _maybe_on_disk(root, str(tmp_path / "outside.py"))
+    assert not _maybe_on_disk(root, "../outside.py")
+    try:
+        (root / "link.py").symlink_to(tmp_path / "outside.py")
+    except OSError:
+        pytest.skip("symlinks need privileges on this platform")
+    assert not _maybe_on_disk(root, "link.py")
+
+
+@pytest.mark.asyncio
+async def test_get_why_fallback_with_cross_references(setup_mcp, tmp_path):
+    from repowise.server.mcp_server import get_why
+
+    # A new file with no history yet: on disk, absent from git metadata.
+    _write(tmp_path, "src/auth/new_handler.py")
 
     # src/auth/service.py has git metadata with commits mentioning "auth"
     # Query a nonexistent auth file — cross-references should find commits
@@ -248,6 +310,66 @@ async def test_get_why_module_path(setup_mcp):
     assert result["mode"] == "path"
     assert len(result["candidates"]) >= 1
     assert any(d["title"] == "SQLAlchemy as ORM" for d in result["candidates"])
+
+
+@pytest.mark.asyncio
+async def test_get_why_directory_origin_rolls_up_its_files(setup_mcp):
+    """A directory has no git row of its own; its files' rows are its history."""
+    from repowise.server.mcp_server import get_why
+
+    origin = (await get_why("src/"))["origin_story"]
+    assert origin["available"] is True
+    assert origin["scope"] == "directory"
+    assert origin["files_with_history"] == 2
+    assert (origin["first_commit"], origin["last_commit"]) == ("2025-01-01", "2026-03-15")
+    assert [c["sha"] for c in origin["key_commits"]] == ["abc1234", "def5678", "111aaa"]
+    # Per-file totals and owners do not add up to a directory's, so none is claimed.
+    assert "total_commits" not in origin and "primary_author" not in origin
+    assert "No git history" not in origin["summary"]
+
+
+@pytest.mark.asyncio
+async def test_get_why_target_cards_roll_up_a_directory(setup_mcp):
+    from repowise.server.mcp_server import get_why
+
+    result = await get_why(targets=["src/db", "src/auth/service.py"])
+    db = result["target_context"]["src/db"]["origin"]
+    assert db["scope"] == "directory"
+    assert db["files_with_history"] == 1
+    assert result["target_context"]["src/auth/service.py"]["origin"]["total_commits"] == 42
+
+
+def test_directory_origin_lists_a_shared_commit_once():
+    from types import SimpleNamespace
+
+    from repowise.server.mcp_server._directory import _build_directory_origin
+
+    shared = '[{"sha": "s1", "date": "2026-01-02", "message": "m", "author": "a"}]'
+    metas = [
+        SimpleNamespace(first_commit_at=None, last_commit_at=None, significant_commits_json=shared)
+        for _ in range(2)
+    ]
+    origin = _build_directory_origin("pkg", metas, [])
+    assert len(origin["key_commits"]) == 1
+    assert origin["first_commit"] == "unknown"
+    assert _build_directory_origin("pkg", [], [])["available"] is False
+
+
+def test_directory_rows_skip_excluded_files_and_sibling_prefixes():
+    from types import SimpleNamespace
+
+    import pathspec
+
+    from repowise.server.mcp_server._directory import _rows_under
+
+    rows = [
+        SimpleNamespace(file_path=p)
+        for p in ("src/db/models.py", "src/dbx/other.py", "src/db/vendor/lib.py")
+    ]
+    spec = pathspec.PathSpec.from_lines("gitwildmatch", ["vendor/"])
+    for query in ("src/db", "src/db/", "./src/db", r"src\db"):
+        assert [m.file_path for m in _rows_under(query, rows, spec)] == ["src/db/models.py"]
+    assert len(_rows_under(".", rows, None)) == 3
 
 
 @pytest.mark.asyncio
@@ -544,7 +666,7 @@ async def test_get_why_asks_git_about_the_top_record_only(session, setup_mcp, mo
 
     calls: list[tuple] = []
 
-    def _fake(root, *, created_at, nodes):
+    def _fake(root, *, created_at, nodes, evidence_commits=(), accepted_at=None):
         calls.append((root, tuple(nodes)))
         return "nothing in the 1 file it governs has changed since 2026-01-01"
 
@@ -729,6 +851,7 @@ async def test_get_why_targets_do_not_bind_a_record_whose_files_are_gone(session
             id=f"gone{flag}",
             repository_id=setup_mcp,
             title=f"Legacy rule {flag}",
+            decision="keep the legacy path",
             rationale="why",
             affected_files_json=json.dumps([path]),
             source="pr",
@@ -746,3 +869,98 @@ async def test_get_why_targets_do_not_bind_a_record_whose_files_are_gone(session
 
     governing = result["target_context"][path]["governing_decisions"]
     assert [d["id"] for d in governing] == ["goneFalse"]
+
+
+_OFF_TOPIC = "why does the connection pool retry on timeout"
+
+
+async def _accept_dec2(session) -> None:
+    from repowise.core.persistence.crud.authority import accept_decision
+    from repowise.core.persistence.models import DecisionRecord
+
+    await accept_decision(
+        session, await session.get(DecisionRecord, "dec2"), accepter="test", evidence=["pr#1"]
+    )
+    await session.flush()
+
+
+@pytest.mark.asyncio
+async def test_get_why_target_under_a_records_module_is_not_governed(session, setup_mcp):
+    """dec2 names src/db/models.py; its module is only that file's folder.
+
+    A sibling shares the folder, not the decision, and path mode agrees.
+    """
+    from repowise.server.mcp_server import get_why
+
+    await _accept_dec2(session)
+    sibling = "src/db/session.py"
+
+    result = await get_why(_OFF_TOPIC, targets=[sibling])
+
+    assert result["target_context"][sibling]["governing_decisions"] == []
+    assert result.get("answer_basis") != "decision"
+    path_result = await get_why(sibling)
+    assert not path_result.get("decisions")
+
+
+@pytest.mark.asyncio
+async def test_get_why_governed_target_reason_agrees_with_the_basis(session, setup_mcp):
+    """An off-topic question on a governed file still serves its rule.
+
+    The reason must then say so, not that no record covers the call.
+    """
+    from repowise.server.mcp_server import get_why
+
+    await _accept_dec2(session)
+    path = "src/db/models.py"
+
+    result = await get_why(_OFF_TOPIC, targets=[path])
+
+    governing = result["target_context"][path]["governing_decisions"]
+    assert [d["id"] for d in governing] == ["dec2"]
+    assert result["answer_basis"] == "decision"
+    assert "No decision record covers" not in result["reason"]
+    assert "binds it whatever the question" in result["reason"]
+    assert "try_instead" not in result
+
+
+@pytest.mark.asyncio
+async def test_a_question_naming_one_file_anchors_on_it(setup_mcp):
+    from repowise.server.mcp_server import get_why
+
+    result = await get_why("why is Service.py shaped this way?")
+    assert result["mode"] == "search"
+    assert list(result["target_context"]) == ["src/auth/service.py"]
+    assert result["anchored_on"] == "src/auth/service.py"
+    # Passed targets are the caller's own: nothing is inferred over them.
+    passed = await get_why("why is service.py shaped this way?", targets=["src/db/models.py"])
+    assert list(passed["target_context"]) == ["src/db/models.py"]
+    assert "anchored_on" not in passed
+
+
+@pytest.mark.asyncio
+async def test_a_file_name_two_indexed_files_carry_anchors_nothing(setup_mcp, factory):
+    from repowise.core.persistence.models import GraphNode
+    from repowise.server.mcp_server import get_why
+
+    async with factory() as session:
+        session.add(
+            GraphNode(
+                id="gn-dup",
+                repository_id=setup_mcp,
+                node_id="src/billing/models.py",
+                node_type="file",
+                language="python",
+            )
+        )
+        await session.commit()
+    assert "target_context" not in await get_why("why is models.py shaped this way?")
+    exact = await get_why("why is src/db/models.py shaped this way?")
+    assert list(exact["target_context"]) == ["src/db/models.py"]
+
+
+@pytest.mark.asyncio
+async def test_a_question_naming_no_indexed_file_stays_unanchored(setup_mcp):
+    from repowise.server.mcp_server import get_why
+
+    assert "target_context" not in await get_why("why is nowhere.py shaped this way?")

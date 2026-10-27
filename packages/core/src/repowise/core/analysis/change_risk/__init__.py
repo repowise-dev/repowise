@@ -26,6 +26,7 @@ from .fix_history import (
     clear_fix_pressure_cache,
     fix_density_percentile,
     fix_pressure,
+    fixes_reachable_from,
     hot_files,
 )
 from .model import SCORE_MEASURES, SCORE_UNIT, ChangeRisk, RiskDriver, score_change
@@ -64,6 +65,7 @@ __all__ = [
     "features_from_file_changes",
     "fix_density_percentile",
     "fix_pressure",
+    "fixes_reachable_from",
     "hot_files",
     "normalize_extensions",
     "range_anchor",

@@ -6,7 +6,7 @@ import re
 
 import pytest
 
-from repowise.core.analysis.health.fix_first import FixFirstQueue, build_fix_first
+from repowise.core.analysis.health.fix_first import FixFirstQueue, build_fix_first, text
 from repowise.core.analysis.health.queue.eligibility import LOW_VALUE_KINDS
 from repowise.core.analysis.health.refactoring.performance_fix import fix_steps
 from tests.unit.health.fix_first_rows import FINDINGS, METRICS, _perf
@@ -125,7 +125,8 @@ def _validated(magnitude: str, via: str, dependents: int) -> FixFirstQueue:
 @pytest.mark.parametrize("magnitude", ["n/a", "grows_with_data", "unknown"])
 def test_no_text_field_carries_an_internal_token(via: str, magnitude: str) -> None:
     queue = _validated(magnitude, via, dependents=1)
-    assert len(queue.items) == 2
+    # A loop nobody measured is no item: only the finding is left to read.
+    assert len(queue.items) == (1 if magnitude == "unknown" else 2)
     for item in queue.items:
         for line in _texts(item):
             assert not _RAW.search(line), line
@@ -133,4 +134,5 @@ def test_no_text_field_carries_an_internal_token(via: str, magnitude: str) -> No
 
 def test_one_importer_reads_in_the_singular() -> None:
     item = next(i for i in _validated("unknown", "mixed", 1).items if i.kind == "finding")
-    assert item.risk.text == "Touches 1 file; 1 file imports it."
+    assert item.risk.text == "Touches 1 file; its file is imported by 1 file."
+    assert text.imports_it(1) == "1 file imports it"

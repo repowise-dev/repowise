@@ -41,6 +41,9 @@ class FactKinds:
     awaits: frozenset[str] = frozenset()
     await_scopes: frozenset[str] = frozenset()
     lambdas: frozenset[str] = frozenset()
+    #: Exits that leave the enclosing function from inside a lambda (Scala
+    #: ``return``): a jump, though the lambda is otherwise a scope of its own.
+    lambda_exits: frozenset[str] = frozenset()
     receiver: frozenset[str] = frozenset()
     # Every kind above: a walk that sees every node skips the rest with one lookup.
     watched: frozenset[str] = field(init=False)
@@ -55,6 +58,7 @@ class FactKinds:
             | self.awaits
             | self.await_scopes
             | self.lambdas
+            | self.lambda_exits
             | self.receiver
         )
         object.__setattr__(self, "watched", watched)
@@ -98,6 +102,7 @@ def step(tally: BodyTally, node: Node, scope: int) -> int:
     if t in kinds.lambdas:
         return scope | IN_LAMBDA
     if scope & IN_LAMBDA:
+        tally.jump = tally.jump or t in kinds.lambda_exits
         return scope
     tally.decisions += t in kinds.decisions
     macro = is_exit_macro(node, kinds.exit_macros)

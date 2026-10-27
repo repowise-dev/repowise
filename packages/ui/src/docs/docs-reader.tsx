@@ -126,6 +126,77 @@ interface DocsReaderProps {
    * on AI-written pages so only auto pages advertise the upgrade.
    */
   upgradeSlot?: React.ReactNode;
+  /**
+   * The page's own model action ("Write this page with AI" / "Rewrite with
+   * AI"), rendered at the end of the metadata row under the title. Host owns
+   * the launch and decides which pages can be written; omit it elsewhere.
+   */
+  pageActionSlot?: React.ReactNode;
+  /**
+   * Where the "out of date" mark in the metadata row links (the host's doc
+   * drift view). Without it the mark is plain text. A fresh page shows no mark.
+   */
+  freshnessHref?: string | undefined;
+  /** Overrides for the out-of-date wording, for a host translating it. */
+  freshnessLabels?: FreshnessLabels | undefined;
+}
+
+export interface FreshnessLabels {
+  /** `freshness_status: "stale"`: the code moved since the page was written. */
+  stale?: string;
+  /** `freshness_status: "outdated"`. */
+  outdated?: string;
+}
+
+const DEFAULT_FRESHNESS_LABELS: Required<FreshnessLabels> = {
+  stale: "May be out of date",
+  outdated: "Out of date",
+};
+
+/**
+ * Freshness as metadata: nothing when the page is fresh (the quiet default),
+ * a warning dot and a word when it is not. Keyed on the stored status only;
+ * the confidence score is not a freshness signal for pages built from the
+ * index, so it is never used as a fallback here.
+ */
+function FreshnessMark({
+  status,
+  href,
+  labels,
+  LinkComponent,
+}: {
+  status: string | undefined;
+  href?: string | undefined;
+  labels?: FreshnessLabels | undefined;
+  LinkComponent: ReaderLinkComponent;
+}) {
+  if (status !== "stale" && status !== "outdated") return null;
+  const text = labels?.[status] ?? DEFAULT_FRESHNESS_LABELS[status];
+  const inner = (
+    <>
+      <span
+        aria-hidden
+        className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--color-warning)]"
+      />
+      {text}
+    </>
+  );
+  const cls = "inline-flex items-center gap-1.5 text-[var(--color-text-secondary)]";
+  return (
+    <>
+      {href ? (
+        <LinkComponent
+          href={href}
+          className={cn(cls, "hover:text-[var(--color-text-primary)] hover:underline")}
+        >
+          {inner}
+        </LinkComponent>
+      ) : (
+        <span className={cls}>{inner}</span>
+      )}
+      <span aria-hidden className="opacity-40">&middot;</span>
+    </>
+  );
 }
 
 export function DocsReader({
@@ -144,6 +215,9 @@ export function DocsReader({
   intelligenceSlot,
   versionHistorySlot,
   upgradeSlot,
+  pageActionSlot,
+  freshnessHref,
+  freshnessLabels,
 }: DocsReaderProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -217,6 +291,9 @@ export function DocsReader({
       intelligenceSlot={intelligenceSlot}
       versionHistorySlot={versionHistorySlot}
       upgradeSlot={upgradeSlot}
+      pageActionSlot={pageActionSlot}
+      freshnessHref={freshnessHref}
+      freshnessLabels={freshnessLabels}
     />
   );
 }
@@ -273,6 +350,9 @@ function DocsReaderBody({
   intelligenceSlot,
   versionHistorySlot,
   upgradeSlot,
+  pageActionSlot,
+  freshnessHref,
+  freshnessLabels,
 }: {
   page: DocPage;
   pages: DocPageSummary[];
@@ -287,6 +367,9 @@ function DocsReaderBody({
   intelligenceSlot?: React.ReactNode;
   versionHistorySlot?: React.ReactNode;
   upgradeSlot?: React.ReactNode;
+  pageActionSlot?: React.ReactNode;
+  freshnessHref?: string | undefined;
+  freshnessLabels?: FreshnessLabels | undefined;
 }) {
   const nav = useMemo(() => computeDocNav(page, pages), [page, pages]);
   const wikiLinks = useMemo(() => getWikiLinks(page.metadata), [page.metadata]);
@@ -492,11 +575,9 @@ function DocsReaderBody({
             </h1>
 
             {/* One quiet provenance line: what kind of page this is, who wrote
-                it, and when. Previously this row carried an accent-filled
-                "Regenerate" pill immediately beside the h1, which read as a
-                statement about the page rather than an action on it and
-                out-shouted the title. The upgrade affordance now sits at the
-                end of the content, where a reader has seen the page is thin.
+                it, when, and whether it fell behind its code. A host's page
+                action (`pageActionSlot`) ends the row as plain model-coloured
+                text, so it never competes with the title.
 
                 "Written by <model>" / "Built from the index" is the Overview
                 page's vocabulary, deliberately: a page can lack prose because
@@ -515,6 +596,12 @@ function DocsReaderBody({
                     : "Written by a model"}
               </span>
               <span aria-hidden className="opacity-40">&middot;</span>
+              <FreshnessMark
+                status={page.freshness_status}
+                href={freshnessHref}
+                labels={freshnessLabels}
+                LinkComponent={LinkComponent}
+              />
               <span title={page.updated_at}>
                 updated {formatRelativeTime(page.updated_at)}
               </span>
@@ -572,6 +659,7 @@ function DocsReaderBody({
                   Open file page <span aria-hidden>&rarr;</span>
                 </LinkComponent>
               )}
+              {pageActionSlot}
             </div>
 
             {/* What this page was written from. The rail carried this as

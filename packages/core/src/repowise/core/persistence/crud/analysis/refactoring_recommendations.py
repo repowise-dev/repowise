@@ -17,7 +17,11 @@ from typing import Any
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.health.refactoring.commands import JsPackages, js_test_packages
+from repowise.core.analysis.health.refactoring.commands import (
+    TestRuns,
+    js_root_runs,
+    runs_for_tests,
+)
 from repowise.core.analysis.health.refactoring.models import RefactoringSuggestion
 from repowise.core.analysis.health.refactoring.recommendations import (
     DEFAULT_TEST_LIMIT,
@@ -51,6 +55,7 @@ from repowise.core.analysis.test_reachability import (
 from repowise.core.ingestion.package_roots import scan_package_manifests
 
 from ...models import GraphMetric, GraphNode, HealthFileMetric, Repository
+from .._shared import _BATCH_SIZE
 from ..graph import get_graph_metrics
 from .coverage_map import tests_covering_files
 from .function_facts import tests_in_files
@@ -80,7 +85,7 @@ async def hydrate_recommendations(
     read never rebuilds it and serves the plan-level answer. Finalize also
     passes the repository's *findings*, so a plan that leaves a function at
     the break-up bar is marked and ranked after the rest. Index-time callers
-    pass the *checkout*, so each JS/TS test's command runs from its package.
+    pass the *checkout*, so each test's command runs from its package.
     """
     if not rows:
         return []
@@ -170,8 +175,8 @@ async def validation_inputs(
     """Measured coverage and the tiered reachability walk for every plan's files.
 
     *in_degree* is the stored fan-in a caller already read; without it, read here.
-    With the *checkout*, each JS/TS test's package is read, for the plans to
-    store; without it, commands run from the repository root.
+    With the *checkout*, each test's package is read, for the plans to store;
+    without it, JS/TS tests run from the repository root and others get no command.
     """
     measured = await tests_covering_files(session, repository_id, set(target_files))
 
@@ -208,6 +213,7 @@ async def validation_inputs(
         path: _expand_scopes(path, reached, narrowed[path]) for path, reached in inferred.items()
     }
     hub_targets = [path for path in target_files if path in hubs]
+    runs = await _test_runs(checkout, test_files)
     evidence = await _validation_evidence(
         session,
         repository_id,
@@ -221,7 +227,7 @@ async def validation_inputs(
             siblings=_siblings(in_degree),
             symbols=await _symbol_spans(session, repository_id, target_files),
             function_tests=await tests_in_files(session, repository_id, target_files),
-            js_packages=await _js_packages(checkout, test_files),
+            test_runs=runs,
         ),
     )
     return ValidationInputs(
@@ -267,30 +273,38 @@ async def repository_checkout(session: AsyncSession, repository_id: str) -> str 
     return await session.scalar(select(Repository.local_path).where(Repository.id == repository_id))
 
 
-async def _js_packages(checkout: str | None, test_files: set[str]) -> JsPackages | None:
+async def _test_runs(checkout: str | None, test_files: set[str]) -> TestRuns:
+    """Where each test runs, from one scan of the checkout's package roots."""
     root = Path(checkout) if checkout else None
     if root is None or not root.is_dir():
-        return None
+        return js_root_runs(test_files)
     # The health pass already scanned this commit's package roots; this reuses it.
     manifests = await asyncio.to_thread(scan_package_manifests, root)
-    return await asyncio.to_thread(js_test_packages, root, manifests, test_files)
+    return await asyncio.to_thread(runs_for_tests, root, manifests, test_files)
 
 
 async def _symbol_spans(
     session: AsyncSession, repository_id: str, files: Sequence[str]
 ) -> dict[str, list[SymbolSpan]]:
-    """Each file's symbol ids with their line spans, in one statement."""
+    """Each file's symbol ids with their line spans, in bounded statements."""
     if not files:
         return {}
-    rows = await session.execute(
-        select(GraphNode.file_path, GraphNode.node_id, GraphNode.start_line, GraphNode.end_line)
-        .where(GraphNode.repository_id == repository_id)
-        .where(GraphNode.node_type == "symbol")
-        .where(GraphNode.file_path.in_(list(files)))
-    )
     spans: dict[str, list[SymbolSpan]] = {}
-    for file_path, node_id, start, end in rows:
-        spans.setdefault(file_path, []).append((node_id, int(start or 0), int(end or 0)))
+    # The finalize ranks every plan at once, so *files* can be the whole
+    # repository. The statement is issued in fixed-size pieces to stay under the
+    # bound-parameter cap; a file appears in one piece, so its order is kept.
+    paths = sorted(set(files))
+    for start in range(0, len(paths), _BATCH_SIZE):
+        rows = await session.execute(
+            select(GraphNode.file_path, GraphNode.node_id, GraphNode.start_line, GraphNode.end_line)
+            .where(GraphNode.repository_id == repository_id)
+            .where(GraphNode.node_type == "symbol")
+            .where(GraphNode.file_path.in_(paths[start : start + _BATCH_SIZE]))
+        )
+        for file_path, node_id, start_line, end_line in rows:
+            spans.setdefault(file_path, []).append(
+                (node_id, int(start_line or 0), int(end_line or 0))
+            )
     return spans
 
 

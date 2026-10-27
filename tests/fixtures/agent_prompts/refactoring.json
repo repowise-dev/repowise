@@ -22,7 +22,7 @@
           "returns": [
             "config"
           ],
-          "suggested_name": "_read_config",
+          "suggested_name": "_extracted_helper",
           "needs_async": true,
           "async_host": true,
           "new_symbol": {
@@ -48,7 +48,7 @@
                 "type": "<type>"
               }
             ],
-            "signature_text": "async def _read_config(self, path: Path, strict) -> <type>:",
+            "signature_text": "async def _extracted_helper(self, path: Path, strict) -> <type>:",
             "notes": [
               "The return type is not named in the code."
             ]
@@ -58,7 +58,7 @@
               "start": 61,
               "end": 78
             },
-            "new_text": "config = await self._read_config(path, strict)"
+            "new_text": "config = await self._extracted_helper(path, strict)"
           }
         },
         "evidence": {
@@ -134,7 +134,7 @@
           "returns": [
             "totals"
           ],
-          "suggested_name": "_sum_rows",
+          "suggested_name": "_extracted_helper",
           "needs_async": false,
           "new_symbol": {
             "kind": "function",
@@ -155,7 +155,7 @@
                 "type": null
               }
             ],
-            "signature_text": "def _sum_rows(rows):",
+            "signature_text": "def _extracted_helper(rows):",
             "return_text": "return totals"
           },
           "call_site": {
@@ -163,7 +163,7 @@
               "start": 14,
               "end": 30
             },
-            "new_text": "totals = _sum_rows(rows)"
+            "new_text": "totals = _extracted_helper(rows)"
           },
           "anchors": {
             "first": "    for row in rows:",
@@ -181,7 +181,7 @@
               "returns": [
                 "totals"
               ],
-              "suggested_name": "_sum_rows",
+              "suggested_name": "_extracted_helper",
               "needs_async": false,
               "new_symbol": {
                 "kind": "function",
@@ -202,7 +202,7 @@
                     "type": null
                   }
                 ],
-                "signature_text": "def _sum_rows(rows):",
+                "signature_text": "def _extracted_helper(rows):",
                 "return_text": "return totals"
               },
               "call_site": {
@@ -210,7 +210,7 @@
                   "start": 14,
                   "end": 30
                 },
-                "new_text": "totals = _sum_rows(rows)"
+                "new_text": "totals = _extracted_helper(rows)"
               },
               "anchors": {
                 "first": "    for row in rows:",
@@ -231,7 +231,7 @@
               "returns": [
                 "out"
               ],
-              "suggested_name": "_format_totals",
+              "suggested_name": "_extracted_helper_2",
               "needs_async": false,
               "new_symbol": {
                 "kind": "function",
@@ -252,7 +252,7 @@
                     "type": null
                   }
                 ],
-                "signature_text": "def _format_totals(totals):",
+                "signature_text": "def _extracted_helper_2(totals):",
                 "return_text": "return out"
               },
               "call_site": {
@@ -260,7 +260,7 @@
                   "start": 32,
                   "end": 51
                 },
-                "new_text": "out = _format_totals(totals)"
+                "new_text": "out = _extracted_helper_2(totals)"
               },
               "anchors": {
                 "first": "    if not totals:\n        return None",
@@ -542,7 +542,7 @@
         "mechanical_steps": 1,
         "judgment_steps": 1,
         "recoverable_health": 2.5,
-        "ordering_note": "A step carrying `relocated_by` names a symbol an earlier step moves.",
+        "ordering_note": "A step marked 'Moved by an earlier step' names a symbol an earlier step relocates.",
         "steps": [
           {
             "plan_id": "refac4_aaaaaaaaaaaaaaaaaaaa",

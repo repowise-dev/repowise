@@ -77,8 +77,12 @@ _CODE_EXTENSIONS = frozenset(
         "clj",
         "vue",
         "svelte",
+        "astro",
         "m",
         "mm",
+        "cls",
+        "trigger",
+        "apex",
     }
 )
 _DOCUMENT_EXTENSIONS = frozenset(

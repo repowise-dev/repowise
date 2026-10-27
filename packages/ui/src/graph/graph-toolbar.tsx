@@ -11,6 +11,8 @@ import {
 } from "lucide-react";
 import { memo, useState } from "react";
 import { Popover, PopoverTrigger, PopoverContent } from "../ui/popover";
+import { FIELD_CLASS } from "../ui/input";
+import { cn } from "../lib/cn";
 
 /**
  * No "risk" member. There was one, and it painted `pagerank * 3` through
@@ -154,11 +156,11 @@ const NODE_FILTERS: { id: Overlay | "all"; icon?: typeof Skull; label: string; h
 // type and hairline border. It was a 10px tertiary glyph-and-word, which is
 // the size and tone the contrast audit fails.
 const itemActiveClass =
-  "border-[var(--color-accent-primary)]/40 bg-[var(--color-accent-primary)]/15 text-[var(--color-accent-primary)]";
+  "border-[var(--color-selection-border)] bg-[var(--color-selection-wash)] text-[var(--color-text-primary)]";
 const itemIdleClass =
   "border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-wash-hover)] hover:text-[var(--color-text-primary)]";
 const itemClass =
-  "flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]";
+  "flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]";
 
 /** Segmented control, matching `coupling-explorer`'s: counts live inside the
  *  segments rather than in a caption beside them. */
@@ -222,7 +224,7 @@ export function GraphNodeFilter({
             }
             className={`${segmentClass} ${
               isActive
-                ? "bg-[var(--color-accent-primary)]/15 text-[var(--color-accent-primary)]"
+                ? "bg-[var(--color-selection-wash)] text-[var(--color-text-primary)]"
                 : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-wash-hover)] hover:text-[var(--color-text-primary)]"
             }`}
           >
@@ -315,7 +317,7 @@ export const GraphToolbar = memo(function GraphToolbar({
                 aria-pressed={showPathFinder}
                 className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs transition-colors hover:bg-[var(--color-bg-wash-hover)] ${
                   showPathFinder
-                    ? "text-[var(--color-accent-primary)]"
+                    ? "bg-[var(--color-selection-wash)] font-medium text-[var(--color-text-primary)]"
                     : "text-[var(--color-text-primary)]"
                 }`}
               >
@@ -332,7 +334,7 @@ export const GraphToolbar = memo(function GraphToolbar({
               aria-pressed={showFlows}
               className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs transition-colors hover:bg-[var(--color-bg-wash-hover)] ${
                 showFlows
-                  ? "text-[var(--color-accent-primary)]"
+                  ? "bg-[var(--color-selection-wash)] font-medium text-[var(--color-text-primary)]"
                   : "text-[var(--color-text-primary)]"
               }`}
             >
@@ -354,7 +356,7 @@ export const GraphToolbar = memo(function GraphToolbar({
           onKeyDown={onSearchKeyDown}
           placeholder="Search nodes…"
           aria-label="Search graph nodes"
-          className="w-40 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] py-1.5 pl-7 pr-14 text-xs text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)] focus:border-[var(--color-border-hover)] sm:w-36 lg:w-48"
+          className={cn(FIELD_CLASS, "w-40 py-1.5 pl-7 pr-14 text-xs sm:w-36 lg:w-48")}
         />
         <span className="absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-1">
           {searchQuery && searchMatchCount != null && searchTotalCount != null && (

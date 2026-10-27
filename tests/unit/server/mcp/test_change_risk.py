@@ -79,14 +79,12 @@ async def test_get_change_risk_honors_riskignore_and_request_filters(tmp_path, m
         "entropy": 0.0,
         "exp": 1,
     }
-    assert diagnostics["risk_authority"]["primary_fields"] == [
-        "risk_percentile",
-        "classification",
-    ]
+    assert diagnostics["risk_authority"]["primary_fields"] == ["risk_percentile"]
     assert result["exclude_patterns"] == ["tests/", "docs/"]
     assert result["risk_percentile"] is None
-    assert result["review_priority"] is None
-    assert result["classification"] is None
+    # The tercile and its label repeat the percentile, so they wait for scales.
+    assert "review_priority" not in result
+    assert "classification" not in result
     assert diagnostics["fallback_band"] in {"low", "moderate", "high"}
     assert diagnostics["baseline_sample_size"] == 0
     # The per-field dictionary is identical on every call, so it is opt-in.
@@ -97,6 +95,8 @@ async def test_get_change_risk_honors_riskignore_and_request_filters(tmp_path, m
     scales = {scale["field"]: scale for scale in expanded["risk_scales"]}
     assert scales["score"]["authoritative"] is False
     assert scales["risk_percentile"]["authoritative"] is True
+    assert scales["classification"]["authoritative"] is False
+    assert expanded["review_priority"] is None
     assert scales["features.la|features.ld"]["unit"] == "lines"
     assert scales["drivers[].contribution"]["unit"] == "logit_points"
     # Live-git responses carry a _meta envelope flagged as index-independent.
@@ -127,7 +127,7 @@ async def test_get_change_risk_labels_the_priority_tercile_as_diff_size(tmp_path
 
     monkeypatch.setattr(module, "_resolve_repo_context", _context)
     monkeypatch.setattr(module, "change_risk_payload", _ranked)
-    result = await module.get_change_risk("HEAD", baseline=0)
+    result = await module.get_change_risk("HEAD", baseline=0, include=["scales"])
 
     assert result["review_priority"] == "high"
     assert result["classification"] == "Above-typical diff size"
@@ -175,6 +175,40 @@ async def test_get_change_risk_empty_diff_warns(tmp_path, monkeypatch) -> None:
     assert "score" not in result
     assert "no counted file changes" in result["warning"].lower()
     assert result["scored_repo"]["root"] == str(repo)
+
+
+@pytest.mark.asyncio
+async def test_get_change_risk_names_the_checkout_and_commit_it_scored(tmp_path, monkeypatch) -> None:
+    """``HEAD`` resolves in the served checkout, so a worktree caller sees whose HEAD it was."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q", "-b", "main"], repo)
+    _commit(repo, {"README.md": "# seed\n"}, "chore: seed")
+    _git(["worktree", "add", "-q", "-b", "feature", str(tmp_path / "wt")], repo)
+    _commit(tmp_path / "wt", {"app.py": "value = 1\n"}, "feat: on the worktree branch")
+    _commit(repo, {"main.py": "value = 2\n"}, "feat: on main")
+
+    def sha(ref: str) -> str:
+        return subprocess.run(
+            ["git", "rev-parse", ref], cwd=repo, check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+    module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
+
+    async def _context(_: str | None) -> SimpleNamespace:
+        return SimpleNamespace(path=str(repo))
+
+    monkeypatch.setattr(module, "_resolve_repo_context", _context)
+    served = await module.get_change_risk("HEAD~1..HEAD", baseline=0)
+    branch = await module.get_change_risk(f"HEAD~1..{sha('feature')}", baseline=0)
+
+    assert served["scored_repo"] == {"root": str(repo), "head": sha("main")[:12]}
+    assert branch["scored_repo"] == {"root": str(repo), "head": sha("feature")[:12]}
+
+    # Uncommitted work is marked, so its head does not read as the scored change.
+    (repo / "main.py").write_text("value = 3\n", encoding="utf-8")
+    dirty = await module.get_change_risk(baseline=0)
+    assert dirty["scored_repo"] == {"root": str(repo), "head": sha("main")[:12], "working_tree": True}
 
 
 @pytest.mark.asyncio
@@ -401,7 +435,8 @@ async def test_impacted_tests_falls_back_to_the_graph_without_a_map(tmp_path, mo
         return SimpleNamespace(path=str(repo), session_factory=factory)
 
     monkeypatch.setattr(module, "_resolve_repo_context", _context)
-    it = (await module.get_change_risk(baseline=0))["impacted_tests"]
+    assert "why" not in (await module.get_change_risk(baseline=0))["impacted_tests"]
+    it = (await module.get_change_risk(baseline=0, include=["tests"]))["impacted_tests"]
 
     assert it["status"] == "selected"
     assert it["basis"] == "inferred"
@@ -412,7 +447,105 @@ async def test_impacted_tests_falls_back_to_the_graph_without_a_map(tmp_path, mo
     # when the weaker tier is allowed to speak.
     assert it["why"] == {"tests/test_round_trips.py": "src/app.py changed (import-graph)"}
     assert "line_coverage" not in it
-    assert it["summary"].startswith("1 test(s) to run for this change")
+    # The only test file there is: a whole-suite selection never reads as targeted.
+    assert it["summary"] == "1 test(s) to run for this change, every test file there is."
+
+
+async def test_a_test_file_the_change_edits_leads_the_inferred_run_list(tmp_path, monkeypatch):
+    """Twelve broad tests import both changed sources; the one test file the
+    change edits imports one. It still leads, inside the ten shown."""
+    from repowise.core.persistence.models import GraphEdge, GraphNode
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q"], repo)
+    generic = [f"tests/test_aaa_generic_{i:02}.py" for i in range(12)]
+    edited = "tests/test_duplication.py"
+    _commit(
+        repo,
+        {
+            "src/dup.py": "a\n",
+            "src/tok.py": "a\n",
+            edited: "from src import dup\n",
+            **dict.fromkeys(generic, "from src import dup, tok\n"),
+        },
+        "chore: seed",
+    )
+    _commit(
+        repo,
+        {"src/dup.py": "a\nb\n", "src/tok.py": "a\nb\n", edited: "from src import dup\n\n"},
+        "feat: edit",
+    )
+
+    factory = await _factory_with_repo(None, head_commit=_sha(repo, "HEAD~1"))
+    async with factory() as s:
+        for path in (*generic, edited, "src/dup.py", "src/tok.py"):
+            is_test = path.startswith("tests/")
+            s.add(
+                GraphNode(
+                    repository_id="repo1",
+                    node_id=path,
+                    node_type="file",
+                    is_test=is_test,
+                    always_run_reason="" if is_test else None,
+                )
+            )
+        imports = [(edited, "src/dup.py")]
+        imports += [(t, src) for t in generic for src in ("src/dup.py", "src/tok.py")]
+        for source, target in imports:
+            s.add(
+                GraphEdge(
+                    repository_id="repo1",
+                    source_node_id=source,
+                    target_node_id=target,
+                    edge_type="imports",
+                )
+            )
+        await s.commit()
+
+    module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
+
+    async def _context(_: str | None) -> SimpleNamespace:
+        return SimpleNamespace(path=str(repo), session_factory=factory)
+
+    monkeypatch.setattr(module, "_resolve_repo_context", _context)
+    it = (await module.get_change_risk(baseline=0))["impacted_tests"]
+
+    assert it["basis"] == "inferred"
+    assert it["tests_to_run"][0] == edited
+    assert len(it["tests_to_run"]) == 10
+
+
+@pytest.mark.parametrize(
+    ("files", "summary"),
+    [
+        (
+            ("tests/test_a.py",),
+            "2 test(s) to run for this change (1 of 4 test files); the rest can be skipped.",
+        ),
+        (
+            ("tests/test_a.py", "tests/test_b.py", "tests/test_c.py", "tests/test_d.py"),
+            "2 test(s) to run for this change, every test file there is.",
+        ),
+        # As many files as the suite holds is not the suite: one is not a known test.
+        (
+            ("tests/test_a.py", "tests/test_b.py", "tests/test_c.py", "other/test_x.py"),
+            "2 test(s) to run for this change (3 of 4 test files); the rest can be skipped.",
+        ),
+    ],
+)
+def test_a_selection_summary_says_how_much_of_the_suite_it_is(files, summary) -> None:
+    from repowise.core.analysis.test_selection import Selection
+    from repowise.server.mcp_server._test_selection import _summary
+
+    selection = Selection(
+        run_all=False,
+        reasons=(),
+        tests=("t1", "t2"),
+        test_files=files,
+        known_tests=("tests/test_a.py", "tests/test_b.py", "tests/test_c.py", "tests/test_d.py"),
+    )
+    assert _summary(selection, 2, 0, 10) == summary
 
 
 @pytest.mark.asyncio
@@ -542,10 +675,12 @@ async def test_get_change_risk_drops_request_echoes_and_empty_fields(tmp_path, m
     assert "working_tree" not in result
     assert "is_fix" not in result
     assert "density" not in result["fix_history"]
-    assert "percentile" in result["fix_history"]
+    # One percentile on the default response: the size rank, not the fix rank.
+    assert "percentile" not in result["fix_history"]
 
     diagnostics = await module.get_change_risk("HEAD", baseline=0, include=["diagnostics"])
     assert "density" in diagnostics["fix_history"]
+    assert "percentile" in diagnostics["fix_history"]
 
 
 @pytest.mark.asyncio
@@ -568,6 +703,77 @@ async def test_get_change_risk_keeps_working_tree_without_a_revspec(tmp_path, mo
 
 
 @pytest.mark.asyncio
+async def test_get_change_risk_untracked_only_tree_is_one_change(tmp_path, monkeypatch) -> None:
+    """Score, manifest and delta read one file set; repowise's own output drops out."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q"], repo)
+    _commit(repo, {"README.md": "# seed\n"}, "chore: seed")
+    (repo / "app.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    (repo / ".github").mkdir()
+    from repowise.cli.agent_targets.instructions import DISTILL_MARKER_END, DISTILL_MARKER_START
+
+    (repo / ".github" / "copilot-instructions.md").write_text(
+        f"{DISTILL_MARKER_START}\nx\n{DISTILL_MARKER_END}\n", encoding="utf-8"
+    )
+
+    module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
+
+    async def _context(_: str | None) -> SimpleNamespace:
+        return SimpleNamespace(path=str(repo))
+
+    monkeypatch.setattr(module, "_resolve_repo_context", _context)
+    result = await module.get_change_risk(baseline=0, include=["diagnostics"])
+
+    assert result["working_tree"] is True
+    assert result["features"]["nf"] == 1
+    assert result["health_delta"]["scope"]["changed"] == 1
+    assert result["exclude_patterns"] == ["/.github/copilot-instructions.md"]
+
+
+@pytest.mark.parametrize(("user_text", "selected"), [("# Mine\n", False), ("# Mine, edited\n", True)])
+@pytest.mark.asyncio
+async def test_impacted_tests_skip_a_managed_file_only_repowise_changed(
+    tmp_path, monkeypatch, user_text, selected
+) -> None:
+    """A refreshed managed block leaves test selection; the user's edit beside it does not."""
+    from repowise.cli.agent_targets.instructions import DISTILL_MARKER_END, DISTILL_MARKER_START
+    from repowise.core.analysis import changed_lines
+
+    def block(body: str) -> str:
+        return f"\n{DISTILL_MARKER_START}\n{body}\n{DISTILL_MARKER_END}\n"
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q"], repo)
+    _commit(repo, {"src/app.py": "a = 1\n", "AGENTS.md": "# Mine\n" + block("v1")}, "chore: seed")
+    (repo / "src" / "app.py").write_text("a = 1\nb = 2\n", encoding="utf-8")
+    (repo / "AGENTS.md").write_text(user_text + block("v2"), encoding="utf-8")
+
+    seen: dict = {}
+    real = changed_lines.change_set
+
+    def _spy(*args, **kwargs):
+        change = real(*args, **kwargs)
+        seen["files"] = set(change.files)
+        return change
+
+    monkeypatch.setattr(changed_lines, "change_set", _spy)
+    factory = await _factory_with_repo(None)
+    module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
+
+    async def _context(_: str | None) -> SimpleNamespace:
+        return SimpleNamespace(path=str(repo), session_factory=factory)
+
+    monkeypatch.setattr(module, "_resolve_repo_context", _context)
+    result = await module.get_change_risk(baseline=0)
+
+    assert result["working_tree"] is True
+    assert "src/app.py" in seen["files"]
+    assert ("AGENTS.md" in seen["files"]) is selected
+
+
+@pytest.mark.asyncio
 async def test_get_change_risk_keeps_is_fix_when_true(tmp_path, monkeypatch) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -584,3 +790,190 @@ async def test_get_change_risk_keeps_is_fix_when_true(tmp_path, monkeypatch) -> 
     result = await module.get_change_risk("HEAD", baseline=0)
 
     assert result["is_fix"] is True
+
+
+@pytest.mark.asyncio
+async def test_evidence_include_adds_the_checklist_and_nothing_else(tmp_path, monkeypatch) -> None:
+    from repowise.core.changes.evidence import KINDS
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q"], repo)
+    _commit(repo, {"README.md": "# seed\n"}, "chore: seed")
+    _commit(repo, {"src/app.py": "def value():\n    return 1\n"}, "feat: app")
+
+    module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
+
+    async def _context(_: str | None) -> SimpleNamespace:
+        return SimpleNamespace(path=str(repo))
+
+    monkeypatch.setattr(module, "_resolve_repo_context", _context)
+    default = await module.get_change_risk("HEAD", baseline=0)
+    assert "evidence" not in default
+    asked = await module.get_change_risk("HEAD", baseline=0, include=["evidence"])
+    assert set(asked) - set(default) == {"evidence"}
+
+    evidence = asked["evidence"]
+    assert evidence["schema_version"] == 1 and evidence["revspec"] == "HEAD"
+    by = {i["kind"]: i for i in evidence["items"]}
+    assert list(by) == list(KINDS)
+    # No index here: the index-backed items say so instead of reading as clear.
+    assert by["owners"]["details"] == [{"reason": "the repository has no index"}]
+    assert by["health_delta"]["basis"] == "measured"
+    # baseline=0 ranks nothing, so the one risk row is unknown, never a verdict.
+    assert by["risk_score"]["status"] == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_evidence_for_a_stored_change_is_its_kept_record(tmp_path, monkeypatch, factory) -> None:
+    import json
+    from datetime import UTC, datetime
+
+    from sqlalchemy.exc import OperationalError
+
+    from repowise.core.components.catalog import catalog_digest
+    from repowise.core.persistence import upsert_repository
+    from repowise.core.persistence.crud import upsert_changes
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q"], repo)
+    _commit(repo, {"README.md": "# seed\n"}, "chore: seed")
+    _commit(repo, {"src/app.py": "def value():\n    return 1\n"}, "feat: app (#3)")
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    kept = {
+        "schema_version": 1,
+        "change_id": "pr-3",
+        "revspec": head,
+        "generated_at": "2026-10-14T00:00:00+00:00",
+        "index_commit": None,
+        "items": [],
+        # Resolved under the catalog on disk, so components are not read again.
+        "catalog_digest": catalog_digest(repo),
+    }
+    async with factory() as session:
+        row = await upsert_repository(session, name="repo", local_path=str(repo))
+        await upsert_changes(
+            session,
+            row.id,
+            [
+                {
+                    "change_id": "pr-3",
+                    "identity_kind": "pr",
+                    "identity_value": "3",
+                    "shape": "squash",
+                    "title": "feat: app (#3)",
+                    "merged_at": datetime(2026, 3, 1, tzinfo=UTC),
+                    "head_sha": head,
+                    "commit_shas_json": json.dumps([head]),
+                    "evidence_json": json.dumps(kept),
+                }
+            ],
+        )
+        await session.commit()
+
+    module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
+
+    async def _context(_: str | None) -> SimpleNamespace:
+        return SimpleNamespace(path=str(repo), session_factory=factory)
+
+    async def _repo(session):
+        from repowise.core.persistence.crud import get_repository_by_path
+
+        return await get_repository_by_path(session, str(repo))
+
+    monkeypatch.setattr(module, "_resolve_repo_context", _context)
+    monkeypatch.setattr(module, "_get_repo", _repo)
+    # No filters of the caller's own: the same record `changes show` serves.
+    same = await module.get_change_risk("HEAD", include=["evidence"])
+    # Kept as it was, but for the outcomes item, which follows HEAD.
+    items = same["evidence"].pop("items")
+    assert same["evidence"] == {k: v for k, v in kept.items() if k != "items"}
+    assert [i["kind"] for i in items] == ["outcomes"]
+
+    async def _broken(_session):
+        raise OperationalError("SELECT 1", {}, Exception("database is locked"))
+
+    monkeypatch.setattr(module, "_get_repo", _broken)
+    degraded = await module.get_change_risk("HEAD", baseline=0, include=["evidence"])
+    owners = {i["kind"]: i for i in degraded["evidence"]["items"]}["owners"]
+    assert "database is locked" in owners["details"][0]["reason"]
+
+
+async def test_a_scored_range_is_reused_until_its_inputs_move(tmp_path, monkeypatch) -> None:
+    from datetime import UTC, datetime
+
+    from sqlalchemy import update
+
+    from repowise.core.persistence.models import Repository
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q"], repo)
+    _commit(repo, {"src/app.py": "def f():\n    return 1\n"}, "chore: seed")
+    _commit(repo, {"src/app.py": "def f():\n    return 2\n"}, "feat: two")
+    factory = await _factory_with_repo(None, head_commit=_sha(repo))
+    module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
+    scores: list[str | None] = []
+    real = module.score_live_change
+
+    def _counting(path, revspec=None, **kwargs):
+        scores.append(revspec)
+        return real(path, revspec, **kwargs)
+
+    async def _context(_: str | None) -> SimpleNamespace:
+        return SimpleNamespace(path=str(repo), session_factory=factory)
+
+    monkeypatch.setattr(module, "_resolve_repo_context", _context)
+    monkeypatch.setattr(module, "score_live_change", _counting)
+
+    first = await module.get_change_risk("HEAD~1..HEAD", baseline=0)
+    again = await module.get_change_risk("HEAD~1..HEAD", baseline=0)
+    assert len(scores) == 1 and again["_meta"]["cached"] is True
+    assert set(again["_meta"]) - {"cached"} == set(first["_meta"])
+    assert {k: v for k, v in again.items() if k != "_meta"} == {
+        k: v for k, v in first.items() if k != "_meta"
+    }
+    # A drill-down of the range just scored, known id or not, reads the kept delta.
+    missing = await module.get_change_risk("HEAD~1..HEAD", baseline=0, finding_id="nope")
+    assert "error" in missing and len(scores) == 1
+    # Other filters are another question.
+    await module.get_change_risk("HEAD~1..HEAD", baseline=0, extensions=[".py"])
+    assert len(scores) == 2
+
+    async with factory() as session:
+        await session.execute(update(Repository).values(updated_at=datetime.now(UTC)))
+        await session.commit()
+    await module.get_change_risk("HEAD~1..HEAD", baseline=0)
+    assert len(scores) == 3
+
+    _commit(repo, {"src/app.py": "def f():\n    return 3\n"}, "feat: three")
+    await module.get_change_risk("HEAD~1..HEAD", baseline=0)
+    assert len(scores) == 4
+
+
+async def test_uncommitted_work_is_never_served_from_the_cache(tmp_path, monkeypatch) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q"], repo)
+    _commit(repo, {"src/app.py": "value = 1\n"}, "chore: seed")
+    module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
+    scores: list[str | None] = []
+    real = module.score_live_change
+
+    def _counting(path, revspec=None, **kwargs):
+        scores.append(revspec)
+        return real(path, revspec, **kwargs)
+
+    async def _context(_: str | None) -> SimpleNamespace:
+        return SimpleNamespace(path=str(repo))
+
+    monkeypatch.setattr(module, "_resolve_repo_context", _context)
+    monkeypatch.setattr(module, "score_live_change", _counting)
+    (repo / "src" / "app.py").write_text("value = 2\n", encoding="utf-8")
+    await module.get_change_risk(baseline=0)
+    second = await module.get_change_risk(baseline=0)
+
+    assert scores == [None, None] and "cached" not in second["_meta"]

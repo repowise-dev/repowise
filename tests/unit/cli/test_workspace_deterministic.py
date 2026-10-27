@@ -12,7 +12,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
-from repowise.cli.commands.init_cmd import command as init_command
+from repowise.cli.commands.init_cmd import _generate as init_command
 from repowise.cli.commands.init_cmd import workspace as ws
 
 
@@ -119,7 +119,7 @@ def test_single_repo_deterministic_generation_loads_source_evidence_config(
         embedder_name_resolved="mock",
         embedder_was_requested=False,
         resume=False,
-        folder_coverage=(),
+        folder_coverage_rules=(),
     )
 
     config = captured["gen_config"]

@@ -1,22 +1,10 @@
 import * as React from "react";
 import type { OverviewAttentionAreaRow } from "@repowise-dev/types/overview";
-import {
-  attentionSourceHref,
-  attentionSourceLabel,
-  type AttentionSeverity,
-} from "../dashboard/attention-href";
+import { attentionSourceHref, attentionSourceLabel } from "../dashboard/attention-href";
 import { biomarkerLabel } from "../health/biomarker-glossary";
+import { SeverityMark } from "../health/severity-mark";
+import { FilePath } from "../shared/file-path";
 import { formatNumber } from "../lib/format";
-
-const SEVERITY_COLOR: Record<AttentionSeverity, string> = {
-  // Critical and high share the one red. The palette has a single "this is
-  // bad" hue and a second would spend the distinction on nothing: the band is
-  // already named in the screen-reader text and carried by the row order.
-  critical: "var(--color-error)",
-  high: "var(--color-error)",
-  medium: "var(--color-warning)",
-  low: "var(--color-text-tertiary)",
-};
 
 /** What to call the lead item's kind. Health findings name their biomarker. */
 function leadKind(lead: NonNullable<OverviewAttentionAreaRow["lead"]>): string {
@@ -43,14 +31,16 @@ function leadKind(lead: NonNullable<OverviewAttentionAreaRow["lead"]>): string {
  *
  * Fixed order, never re-sorted by severity. These are stable subjects, and a
  * list whose rows move between visits cannot be scanned by position — you have
- * to re-read it every time. Severity is carried by the dot and by the lead.
+ * to re-read it every time. The worst item's severity sits beside the lead as
+ * a dot and a word, read once by sight and once by a screen reader.
  */
 export function AttentionAreas({
   areas,
   prefix,
   LinkComponent,
 }: {
-  areas: OverviewAttentionAreaRow[];
+  /** `unit` names what the count is in, e.g. "open findings". */
+  areas: InventoryArea[];
   prefix: string;
   LinkComponent?: React.ElementType | undefined;
 }) {
@@ -64,54 +54,25 @@ export function AttentionAreas({
   return (
     <ul className="m-0 list-none divide-y divide-[var(--color-border-default)] border-t border-[var(--color-border-default)] p-0">
       {areas.map((area) => {
-        const kind = area.lead ? leadKind(area.lead) : "";
         return (
           <li key={area.key}>
             <A
               href={attentionSourceHref(area.key, prefix)}
               className="group flex flex-col gap-1 py-3 text-xs no-underline sm:flex-row sm:items-baseline sm:gap-4"
             >
-              <span className="flex shrink-0 items-center gap-2 sm:w-40">
-                <span
-                  aria-hidden
-                  className="h-1.5 w-1.5 shrink-0 rounded-full"
-                  style={{ background: SEVERITY_COLOR[area.severity] }}
-                />
-                {/* The dot is nothing at all to a screen reader, and to anyone
-                    who cannot separate the hues. The text equivalent goes here
-                    rather than into a `title`, which assistive tech reads
-                    inconsistently. */}
-                <span className="sr-only">worst item is {area.severity} severity. </span>
-                <span className="font-medium text-[var(--color-text-primary)] group-hover:text-[var(--color-accent-primary)]">
-                  {attentionSourceLabel(area.key)}
-                </span>
+              <span className="shrink-0 font-medium text-[var(--color-text-primary)] group-hover:text-[var(--color-accent-primary)] sm:w-32">
+                {attentionSourceLabel(area.key)}
               </span>
 
-              <span className="shrink-0 font-mono tabular-nums text-[var(--color-text-secondary)] sm:w-24">
-                {formatNumber(area.total)}
+              <span className="shrink-0 text-[var(--color-text-tertiary)] sm:w-48">
+                <span className="font-mono tabular-nums text-[var(--color-text-secondary)]">
+                  {formatNumber(area.total)}
+                </span>
+                {area.unit && ` ${area.unit}`}
               </span>
 
               <span className="min-w-0 flex-1 text-[var(--color-text-tertiary)]">
-                {area.lead ? (
-                  <>
-                    {kind && <span className="text-[var(--color-text-secondary)]">{kind} · </span>}
-                    <span className="text-[var(--color-text-secondary)]">{area.lead.title}</span>
-                    <span className="mt-0.5 block truncate text-[11px] [text-wrap:pretty]">
-                      {/* The composition wins the second line where there is
-                          one: knowing that most of a security count is git
-                          history rather than the working tree changes what the
-                          number means, and changes it more than one more
-                          example would. */}
-                      {area.detail || area.lead.description}
-                    </span>
-                  </>
-                ) : (
-                  area.detail && (
-                    <span className="block truncate text-[11px] [text-wrap:pretty]">
-                      {area.detail}
-                    </span>
-                  )
-                )}
+                <AreaLead area={area} />
               </span>
 
               <span
@@ -125,5 +86,40 @@ export function AttentionAreas({
         );
       })}
     </ul>
+  );
+}
+
+type InventoryArea = OverviewAttentionAreaRow & { unit?: string };
+
+/** The worst item in an area, its severity, and what the count is made of. */
+function AreaLead({ area }: { area: InventoryArea }) {
+  const lead = area.lead;
+  if (!lead) {
+    return area.detail ? (
+      <span className="block truncate text-[11px] [text-wrap:pretty]">{area.detail}</span>
+    ) : null;
+  }
+  const kind = leadKind(lead);
+  const isPath = !!lead.target_id && lead.title === lead.target_id;
+  return (
+    <>
+      <SeverityMark severity={area.severity} className="mr-2" />
+      {kind && <span className="text-[var(--color-text-secondary)]">{kind} · </span>}
+      {isPath ? (
+        <FilePath
+          path={lead.title}
+          fold
+          className="min-w-0 align-baseline text-[var(--color-text-secondary)]"
+        />
+      ) : (
+        <span className="text-[var(--color-text-secondary)]">{lead.title}</span>
+      )}
+      {/* The composition wins the second line where there is one: knowing that
+          most security matches sit in tests and docs changes what the number
+          means more than one more example would. */}
+      <span className="mt-0.5 block truncate text-[11px] [text-wrap:pretty]">
+        {area.detail || lead.description}
+      </span>
+    </>
   );
 }

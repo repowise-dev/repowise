@@ -1,0 +1,97 @@
+{#- Shared body of claude_md.j2 and agents_md.j2; each sets `read_note` first. -#}
+{% set s = data.sections %}
+## Codebase Intelligence for {{ data.repo_name }} (Repowise)
+
+Last indexed: {{ data.indexed_at }}{% if data.indexed_commit %} (commit {{ data.indexed_commit }}){% endif %}.
+{% if data.scope_gaps %}
+Scope: {{ data.scope_gaps | join(' · ') }}. Missing evidence is not a negative finding.{% if data.upgrade_pending %} Run `repowise update --full` to continue the model-backed upgrade (cost is previewed before generation).{% endif %}
+
+{% endif %}
+{% if 'architecture' in s and data.architecture_summary %}
+
+### Architecture
+{{ data.architecture_summary }}
+{% endif %}
+{% if 'key_modules' in s and data.key_modules %}
+
+### Key modules
+{% for mod in data.key_modules %}
+- `{{ mod.name }}`{% if mod.purpose %}: {{ mod.purpose }}{% endif %}
+
+{% endfor %}
+{% endif %}
+{% if 'entry_points' in s and data.entry_points %}
+
+### Entry points
+{% for ep in data.entry_points[:6] %}
+- `{{ ep }}`
+{% endfor %}
+{% endif %}
+{% if 'hotspots' in s and data.hotspots %}
+
+### Files that need care (bug-fix history first, then churn; check `get_risk` before editing)
+{% for h in data.hotspots %}
+- `{{ h.path }}`: {% if h.fix_count and h.last_fix_date %}{{ h.fix_count }} bug fix{{ 'es' if h.fix_count != 1 else '' }} in {{ h.fix_window }}, last fix {{ h.last_fix_date }}{% if h.bug_magnet %} (bug magnet){% endif %}; {% endif %}{{ h.commit_count_90d }} commits/90d
+{% endfor %}
+{% endif %}
+{% set ch = data.code_health %}
+{% set fix_first = ch.fix_first if ch and 'fix_first' in s else [] %}
+{% if ch and ('health' in s or 'code_health' in s or fix_first) %}
+
+### Code health
+{% if 'code_health' in s %}
+Three co-equal signals: code health {{ ch.average_health }}/10 avg{% if ch.band or ch.analysed_note %} ({{ [ch.band, ch.analysed_note] | select | join(', ') }}){% endif %}, hotspot health {{ ch.hotspot_health }}/10{% if ch.hotspot_trend %} ({{ ch.hotspot_trend }}){% endif %}{% if ch.worst_path %}, worst `{{ ch.worst_path }}` at {{ ch.worst_score }}/10{% endif %}{% if ch.maintainability_average is not none %} · maintainability {{ ch.maintainability_average }}/10{% endif %}{% set perf = ch.performance_causes %}{% if ch.performance_average is not none and perf %} · performance {{ perf.now }} cause{{ 's' if perf.now != 1 else '' }} worth fixing now ({{ perf.production }} open in production code, {{ perf.all }} overall){% endif %}. Detail: `get_health()`.
+{% elif 'health' in s %}
+{{ ch.average_health }}/10 avg{% if ch.band or ch.analysed_note %} ({{ [ch.band, ch.analysed_note] | select | join(', ') }}){% endif %}{% if ch.worst_path %}, worst `{{ ch.worst_path }}` at {{ ch.worst_score }}/10{% endif %}. Detail: `get_health()`.
+{% endif %}
+{% if fix_first %}
+
+Fix first:
+{% for f in fix_first %}
+- {{ f.title }} (`{{ f.where }}`): {{ f.why }}
+{% endfor %}
+{% endif %}
+{% endif %}
+{% if 'decisions' in s and data.decisions %}
+
+### Standing decisions (ask `get_why` before diverging)
+{% for d in data.decisions[:3] %}
+- {{ d.title }}{{ d.signed_by }}
+{% endfor %}
+{% endif %}
+{% if 'how_to_work_full' in s %}
+
+### How to work in this repo
+
+- **Trust the index.** `verified: true` and `_meta.complete` mean the bytes were checked against the live tree, so never re-read them. Re-read only what `bounds: "approximate"` names. When `_meta.stale_warning` is set, Read the files that response served. After a batch of uncommitted edits, `repowise update --working-tree` refreshes the index. `confidence` rates the prose, not the evidence: on `low` read the top evidence row or the `candidate_files` the reply names, and run `repowise update` and ask again if `_meta.hint` says the index is behind HEAD. `index_behind: true` alone is informational.
+{% if data.keyless %}
+- **No model on this index.** `get_answer` replies are low confidence by design, so open its top `best_guesses` / `candidate_files` rows; `search_codebase` is full-text only, so `[fts]` hits are normal. The user adds a model with a provider key and `{{ data.model_command }}`; suggest it, do not run it.
+{% endif %}
+- **A zero carries its basis.** An empty `callers`/`callees`/`used_by` comes with a `*_basis` saying how much of that language's calls the graph resolved, so read it before concluding nothing calls a symbol. On `get_answer`, `_meta.scope_hint` names the areas the answer did not touch.
+- **Pre-edit, not instead-of-edit.** These tools decide *which* files to read and edit. {{ read_note }}
+- **Noisy commands** (tests, builds, `git log`/`diff`, searches, listings): prefer `repowise distill <cmd>`, the same command with its exit code preserved and errors-first output. A `[repowise#<ref>: N lines omitted]` marker is recoverable via `repowise expand <ref>` (add `-q <regex>` to filter); never re-run the command to see omitted output.
+- **Recording a decision** you had to reason out: `repowise decision add --agent <your slug> --title T --decision D --rationale '<why, what you rejected>' --affects <path>` records it without prompting and prints the id (`--format json` to parse it back); the slug names you, e.g. `claude_code`. It lands as a candidate for review and never governs until accepted. You may review and accept candidates: `repowise decision candidates` lists what each still needs, `repowise decision confirm <id> --agent <your slug>` accepts one (add `--reason`, `--scope`, `--evidence` or `--decision` for a missing part), and `dismiss`, `merge` and `deprecate` take `--agent` too. Acceptances are signed as yours; a repository with agent acceptance off refuses them.
+{% elif 'how_to_work' in s %}
+
+### How to work in this repo
+
+- **Pre-edit, not instead-of-edit.** These tools decide *which* files to read and edit. {{ read_note }} Bytes marked `verified: true` need no re-read; re-read only what `bounds: "approximate"` names. An empty `callers`/`used_by` comes with a `*_basis`: read it before concluding nothing calls a symbol.
+{% if data.keyless %}
+- **No model on this index.** `get_answer` replies are low confidence by design, so open its top `best_guesses` / `candidate_files` rows; `search_codebase` is full-text only, so `[fts]` hits are normal. The user adds a model with a provider key and `{{ data.model_command }}`; suggest it, do not run it.
+{% endif %}
+- **Noisy commands** (tests, builds, `git log`/`diff`): prefer `repowise distill <cmd>`, same exit code, errors first. Recover a `[repowise#<ref>: N lines omitted]` marker with `repowise expand <ref>` (`-q <regex>` filters); never re-run the command.
+- **Record a decision** you reasoned out: `repowise decision add --agent <your slug> --title T --decision D --rationale '<why>' --affects <path>` (lands as a candidate; accept candidates with `repowise decision confirm <id> --agent <your slug> --evidence <commit|file>`).
+{% endif %}
+{% if 'tools' in s %}
+
+### Tools
+
+{{ data.tool_table_md }}
+{% endif %}
+{% if 'commands' in s and data.build_commands %}
+
+### Commands
+{% for label, cmd in data.build_commands.items() %}
+- {{ label | capitalize }}: `{{ cmd }}`
+{% endfor %}
+{% endif %}

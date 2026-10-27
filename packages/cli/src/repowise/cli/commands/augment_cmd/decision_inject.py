@@ -257,7 +257,7 @@ def _collect_seeds(repo_path: Path) -> tuple[list[str], str]:
     dirty, branch = _dirty_files_and_branch(repo_path)
     seen: dict[str, None] = {}
     for f in dirty + _branch_changed_files(repo_path, branch) + _previous_session_edits(repo_path):
-        norm = f.replace("\\", "/").lstrip("./")
+        norm = f.replace("\\", "/").removeprefix("./")
         if norm:
             seen.setdefault(norm, None)
     return list(seen)[:_MAX_SEEDS], branch
@@ -585,12 +585,13 @@ _ACCEPTED_HEADER = (
     "(accumulated from prior sessions; follow them unless the user says otherwise):"
 )
 
-#: Candidates are mined, not agreed. The header carries the whole of that
+#: Candidates are proposed, not agreed. The header carries the whole of that
 #: distinction in the transcript, so it says it in words rather than leaving an
-#: agent to infer a lane from a blank line.
+#: agent to infer a lane from a blank line. Source-neutral: candidates come
+#: from PRs, commits, comments and agents as well as sessions.
 _CANDIDATE_HEADER = (
-    "[repowise] Proposed but NOT accepted - mined from prior sessions and "
-    "awaiting review. Weigh these; do not treat them as rules:"
+    "[repowise] Candidate decisions awaiting review, NOT accepted; weigh them, "
+    "do not treat them as rules. Review and accept or dismiss: repowise decision candidates"
 )
 
 
@@ -849,7 +850,7 @@ def _edit_decision_notice(repo_path: Path, rel: str, session_id: str, state: dic
     if why:
         line += f" because {why}"
     if sessions_n >= 2:
-        line += f" (confirmed across {sessions_n} sessions)"
+        line += f" (seen in {sessions_n} sessions)"
     line += "."
 
     if session_id:
@@ -877,15 +878,7 @@ _FIX_NOTICE_MIN_COUNT = 3
 
 
 def _humanize_age(days: int) -> str:
-    """Render an age as "2 weeks ago" / "3 months ago", never as a bare count.
-
-    Deliberately duplicated by ``editor_files/fetcher.py``, which renders the
-    same recency phrasing into CLAUDE.md. Sharing it would mean this hook
-    importing ``repowise.core``, and the cheapest module that could host it
-    costs ~660ms to import (``analysis.health.__init__`` builds the whole
-    HealthAnalyzer) against this module's sub-100ms budget. Ten lines of copy
-    is the cheaper trade; keep the two phrasings in step by hand.
-    """
+    """Render an age as "2 weeks ago" / "3 months ago", never as a bare count."""
     if days <= 1:
         return "today" if days <= 0 else "yesterday"
     if days < 14:

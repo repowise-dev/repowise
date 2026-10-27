@@ -82,6 +82,13 @@ class Occurrence:
     #: can still be the one a later read sees, so reaching definitions lets it
     #: add to what reaches and hide nothing.
     may: bool = False
+    #: A declaration with no initializer, in a language where that leaves the
+    #: name without a value to read (Java's ``List<T> xs;``, TypeScript's
+    #: ``let x: T;``): the compiler rejects a read it cannot prove assigned. It
+    #: still declares the name, but it is no value a later read can be handed.
+    #: Never set for Go, whose zero value is a value, nor for a JavaScript
+    #: ``let x;``, which holds ``undefined``.
+    valueless: bool = False
 
 
 @dataclass(frozen=True)
@@ -259,21 +266,28 @@ class BaseDefUseDialect:
         )
 
     def _declare(
-        self, defs: list[Occurrence], start: int, declarator: Node, *, binds: bool = True
+        self,
+        defs: list[Occurrence],
+        start: int,
+        declarator: Node,
+        *,
+        binds: bool = True,
+        valueless: bool = False,
     ) -> None:
         """Mark ``defs[start:]`` as names *declarator* declares.
 
         ``declared_at`` is set where the declarator ends on the def's own line;
         ``declares`` is set on every one of them when *binds* (False for a
-        declaration that creates no block-scoped binding, a TS/JS ``var``).
-        Call it right after the declarator's targets are collected and before
-        its initializer is walked, so a write nested in the initializer is not
-        taken for a declaration.
+        declaration that creates no block-scoped binding, a TS/JS ``var``);
+        ``valueless`` when the declarator has no initializer and the language
+        gives such a name no value. Call it right after the declarator's
+        targets are collected and before its initializer is walked, so a write
+        nested in the initializer is not taken for a declaration.
         """
         end_row, end_col = declarator.end_point
         for i in range(start, len(defs)):
             at = end_col if defs[i].line == end_row + 1 else None
-            defs[i] = replace(defs[i], declared_at=at, declares=binds)
+            defs[i] = replace(defs[i], declared_at=at, declares=binds, valueless=valueless)
 
     @staticmethod
     def _loop_scoped(defs: list[Occurrence], start: int) -> None:

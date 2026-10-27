@@ -7,6 +7,7 @@ import type {
 } from "@repowise-dev/types/refactoring";
 
 import { planBlurb, typeMeta } from "../../refactoring/meta";
+import { humanizeBiomarker } from "../../refactoring/opportunity";
 import { blastFiles } from "../../refactoring/types";
 import {
   LINE_RULE_TEXT,
@@ -206,10 +207,10 @@ export interface BuildRefactoringOpportunityPromptOptions {
 function stepApplicabilityLine(step: OpportunityStep): string {
   const classification =
     step.applicability.classification === "mechanical" ? "Mechanical" : "Judgment";
-  const reasons = step.applicability.reasons.map((r) => r.replace(/_/g, " ")).join("; ");
+  const reasons = step.applicability.reasons.map(humanizeBiomarker).join("; ");
   const unknowns = step.applicability.unknowns.length
     ? ` Not established: ${step.applicability.unknowns
-        .map((u) => u.replace(/_/g, " "))
+        .map(humanizeBiomarker)
         .join(", ")}.`
     : "";
   return `${classification}${reasons ? ` — ${reasons}` : ""}.${unknowns}`;
@@ -352,7 +353,7 @@ function opportunityFacts(opportunity: RefactoringOpportunityDetailResolved): st
     `Opportunity: \`${opportunity.opportunity_id}\``,
     `File: \`${opportunity.file_path}\``,
     opportunity.lead_biomarker
-      ? `Leading cause: ${opportunity.lead_biomarker.replace(/_/g, " ")}.`
+      ? `Leading cause: ${humanizeBiomarker(opportunity.lead_biomarker)}.`
       : null,
     `${opportunity.step_count} step${pluralS(opportunity.step_count)}: ${opportunity.mechanical_steps} mechanical, ${opportunity.judgment_steps} judgment.`,
     opportunity.recoverable_health > 0

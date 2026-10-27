@@ -62,22 +62,28 @@ filters for type, confidence and effort. A plan's drawer explains its rank, show
 the tests that reach the code and the command to run them, and can export the
 structured plan for an agent. The page never edits code or runs tests on its own.
 
+### Tests and commands
+
 A plan lists the tests closest to the change first: measured coverage, then
 tests named for the file, then the call graph. Tests that reach the file only
 through a widely imported hub module are left out. When the plan changes known
 functions, it quotes the few test functions nearest each one as runnable
 selectors (`tests/test_orders.py::test_total`), and its command runs only the
-files they live in. When no test reaches the change, the plan has no command and
-asks for a characterization test first; it also asks when tests reach the file
-but none reaches the changed function.
-A JavaScript or TypeScript test runs from the package whose `package.json`
-declares its `test` script (`npm --prefix ui-tui test -- src/a.test.ts`), and a
-test that no package can run gets no command.
+files they live in.
+
+When no test reaches the change, the plan has no command and asks for a
+characterization test first; it also asks when tests reach the file but none
+reaches the changed function. JavaScript, TypeScript, Go, Rust, Java, Kotlin,
+Ruby and C# tests get a command for the package or project that owns them; a
+test whose build file or runner the repository does not have gets no command. Per-language rules:
+[architecture/refactoring.md](../architecture/refactoring.md#test-commands).
 
 In a plan with several steps, such as a performance fix at several call sites,
 plan detail adds a `verify` to each step whose tests differ from the plan's: the
 tests that reach that step's lines and the command to run them. A step without
 one is checked by the plan's own command.
+
+### Recipes
 
 Any plan can be read as a recipe: what must hold before the edit (tests that
 pass, a characterization test to add, a decision to read), the edits in order,
@@ -86,7 +92,7 @@ dashboard's copy-prompt, `repowise health --plan`, plan detail with
 `include=recipe` and code generation all read that same recipe, so an agent sees
 one set of steps wherever it starts. The recipe and the prompt name the plan by
 the public id `get_health(plan_id=...)` takes; REST plan detail's own `id` field
-stays the storage id it has always served.
+is the storage id.
 
 ## Reading the results
 
@@ -116,49 +122,51 @@ rows of their own.
 
 Plan detail also lists `risks`, one sentence each, to read before applying the
 plan: an accepted decision that governs the file, callers or importers of what
-the plan moves, a target nothing reaches (delete it instead), and recent commits
+the plan moves, a target nothing reaches (delete it instead), recent commits
 on the same lines, and a test the plan runs that asserts on the function's own
 source text. When the plan changes a symbol a package exports to its consumers,
-the risk names the file exporting it. A governed plan's steps are `judgment`, and its
-`blast_radius.co_change_partners` names the files that usually change with it.
-A newly accepted decision shows here after the next index or update.
+the risk names the file exporting it. A governed plan's steps are `judgment`, and
+its `blast_radius.co_change_partners` names the files that usually change with
+it. A newly accepted decision shows here after the next index or update.
 
 A plan the index stops detecting is resolved, and its detail then carries a
 `payoff` with the target's size before and after and the commit that resolved
 it. `applied` means the measures are consistent with the plan being applied: the
 target lost at least half the predicted complexity and a function the size of
-the extracted span appeared beside it (Extract Method only, so far). The other
-outcomes are `file_deleted`, `superseded` (the same plan found again under a new
-id), `target_changed` (renamed or rewritten another way) and `unknown`.
+the extracted span appeared beside it (computed for Extract Method only). The
+other outcomes are `file_deleted`, `superseded` (the same plan found again under
+a new id), `target_changed` (renamed or rewritten another way) and `unknown`.
+
+Plans and opportunities on Java, C#, C and C++ files are served as a preview:
+they are listed and counted like any other, and each one carries the
+measurement behind it, as `preview` on a REST row, in `_meta.preview` on
+`get_health`, and as a dim line under the CLI list. A language gated instead is
+left out unless the caller passes `include_unverified`, and counted in `gated`.
+
+Plans and opportunities on test files are held back the same way on every plan
+surface, `scope=all` included, as Fix first already leaves them out. They are
+counted in `gated` under `test`.
 
 Break Cycle is advisory. Its plan names edges to cut, not which symbols cross
-them or how to move them, so an opportunity carries it as `evidence` rather than
+them or how to move them, so an opportunity carries it as `evidence` instead of
 as a numbered step: it never leads, and never reaches Fix first. The plan itself
-stays in the plan list. Cycles are found over runtime imports only: an import
-under `if TYPE_CHECKING:` or a TypeScript `import type` / `typeof import()` is
-type-only, and an import inside a function body is deferred (it runs on first
-call, the usual way to break a cycle on purpose). Neither closes a cycle. Only a
-plain `TYPE_CHECKING` or `module.TYPE_CHECKING` condition counts; a negated or
-aliased flag is read as a runtime import.
-
-Every plan is counted once: the rollup's `plans_total` is the steps, plus
-`evidence_total`, plus `unattached_plans_total` (plans in no opportunity, such as
-a file whose only plan is a cycle). The plan list's `structural_total` leaves
-Break Cycle out, matching the opportunities; `by_type` still counts it.
+stays in the plan list. Cycles are found over runtime imports only; type-only and
+deferred imports do not close a cycle
+([rules](../architecture/refactoring.md#break-cycle-imports)). How the rollup
+counts plans: [architecture/refactoring.md](../architecture/refactoring.md#counting).
 
 Names are never invented. A suggested helper or file name is `null` when nothing
 in the code anchors one. A Split File or Extract Class plan with an unnamed group
 is held as `needs_design`, like a cycle: it is not a step and never reaches Fix
 first. A plan led by Move Method or Extract Class stays in the full list but is
 kept out of Fix first and the default scope, counted as not yet audited, until
-that kind passes a per-language review. When such a step follows another lead, the
-Fix first item leaves it out and says how many steps it held back; the full plan
-keeps them. Code only moves within a language family,
-so Java, Kotlin and Scala are separate. A callback is named after the call it is
-passed to. An Extract Method helper is named from a stage label, a banner comment,
-or `compute_<value>` when the span has no outside effects; otherwise it is the host
-function's name plus what the span handles, such as `render_card_directive`. A
-name already taken where the helper lands is skipped for the next candidate.
+that kind passes a per-language review. When such a step follows another lead,
+the Fix first item leaves it out and says how many steps it held back; the full
+plan keeps them. Code only moves within a language family, so Java, Kotlin and
+Scala are separate. A callback is named after the call it is passed to. An
+Extract Method helper gets the placeholder name `extracted_helper`, since the
+code rarely says what a block is for; the plan and its prompt ask you to rename
+it for what it returns or does when you apply it.
 
 An empty list means no detector found work that clears its gates. It does not mean
 the code needs no attention: check the findings in
@@ -181,7 +189,7 @@ after production files.
 
 ## Code generation
 
-Code generation is **off by default**, only runs when you ask for it, and never
+Code generation is off by default, only runs when you ask for it, and never
 runs during indexing. Turn it on with the code-generation switch on the repo
 Settings page or in an open plan, or with `refactoring.llm.enabled: true`. The
 switch names the provider and model it will use, so there is nothing else to
@@ -235,74 +243,38 @@ Most plans answer a health finding, so per-path marker rules in
 
 - Plans are suggestions for review. Nothing is applied automatically, and
   generated code comes back as a diff.
-- Extract Method offers a span only when it can show the extraction keeps behavior
-  (every returned value written on every path, no state carried across loop
-  iterations, no local a closure shares across the span's edge, no write to a
-  `global` name without its declaration). A staged plan also leaves out a stage
-  whose inputs or outputs depend on a `switch` or `match` arm's write. A span or
-  stage never changes which handler catches an error or what it sees: it is not
-  offered when it would split a `try` from its handlers, write a value a handler
-  or `finally` reads, or move a Go `defer`. Spans it
-  cannot prove are dropped, so it under-reports by design. A value the span writes
-  is returned whenever any path can carry it to a later read, including past a
-  later write in an `else` arm or a `try` body that may raise first.
-- Extract Method skips spans too small to matter and spans that would carry the
-  original finding into the helper. A component whose branching is mostly in its
-  markup gets no extraction, and neither does a function that only fills one
-  value field by field behind independent guards (summary rows, query
-  parameters, optional settings), since splitting it simplifies neither half.
-  Its finding records why in `details.extract_method_refused`.
-- An Extract Method span must remove at least two decision points, hold at least
-  8 code lines, cover at most 60% of the function's lines, and not start on the
-  docstring. When the best span misses one of these, only a span that does not
-  overlap it is offered, never a slightly smaller copy of it. Estimated gain
-  never exceeds the share of decision points removed.
-- An Extract Method span that awaits (Python `await`, `async with`, `async for`;
-  TypeScript and JavaScript `await`, `for await`; Rust `.await`; C++ `co_await`)
-  carries `needs_async: true`: the helper is async and its call is awaited. An
-  await inside a nested function, closure or Rust `async` block does not count.
-  When the function holding the span is not declared async (a C++ coroutine), the
-  step is a judgment call with reason `async_helper_unexpressible`.
-- An Extract Method plan says whether the helper must be a method on the same
-  object (the span uses `self`, `this` or a Go receiver) and which of the
-  object's fields the span assigns directly, under `new_symbol`. A span that uses `this`
-  outside a class, or writes fields of a Go value receiver, is a judgment call
-  (`receiver_unbound`, `receiver_copy_written`).
+- Extract Method offers a span only when it can show the extraction keeps
+  behavior, so it under-reports by design. Spans that would split a `try` from
+  its handlers, move a Go `defer`, or carry the original finding into the
+  helper are not offered. Full gates:
+  [architecture/refactoring.md](../architecture/refactoring.md#extract-method-gates).
+- A span must remove at least two decision points, hold at least 8 code lines
+  and cover at most 60% of the function's lines. Estimated gain never exceeds
+  the share of decision points removed.
+- When Extract Method declines a function, its finding records why in
+  `details.extract_method_refused`.
 - An Extract Method plan writes out the new helper's header and the line that
-  replaces the span, in the file's language, with parameter types where the code
-  declares them. In TypeScript, an optional parameter is written `T | undefined`,
-  and a type an earlier guard narrows (`if (!x) return;`) is written narrowed, or
-  a note asks for the narrowed type. Plan detail shows both with a copy button.
-  Where the code names no helper or type, the text reads `<name>` or `<type>` for
-  you to fill in.
+  replaces the span, in the file's language, with parameter types where the
+  code declares them; `<type>` marks a type for you to fill in. It flags an
+  awaiting span with `needs_async: true` and a receiver-bound helper under
+  `new_symbol`.
+- A TypeScript span is not offered when the helper would lose a narrowing the span
+  relies on (`if (!tc.result) continue;` before `tc.result.id`), or would assign an
+  outer name without taking or returning it; the finding records `narrowing_lost` or
+  `outer_declaration` in `details.extract_method_stage_refused`. A narrowed parameter gets a note to type it
+  as narrowed.
+- A step Repowise cannot express mechanically is a judgment call with a reason
+  code: `async_helper_unexpressible`, `receiver_unbound` or
+  `receiver_copy_written`.
 - A Python, TypeScript or JavaScript function too complex for one helper can
-  get a staged plan instead: several helpers the function calls in order, each
-  small enough to leave the finding behind. Plan detail lists them as steps,
-  with a shared parameter object when many values pass between them, and the
-  plan's estimated gain is the whole drop in the function's complexity. The
-  plan's own span, header and call are its first stage. When the work sits
-  inside one loop or `if`, the stages are cut from its body and the function
-  keeps the loop and calls them each time round. A stage running across several
-  labelled sections is named after them. When a function moves
-  between a single helper and a staged plan, or its stages change, the plan
-  gets a new id.
-- Every Extract Method step, and every stage of a staged plan, shows the exact
-  first and last lines of its span, so an agent finds it by its text after
-  earlier stages have moved its lines; the line numbers are only a hint. The
-  plan asks for each stage as a direct edit to the file, one at a time, never a
-  script that rewrites it. A staged plan whose stages cannot all be pinned down
-  that way falls back to a single helper, and a function with neither gets no plan.
-- A staged plan with more than five stages comes in batches of at most five.
-  Each batch names the tests to run before the next one, and a batch whose
-  tests fail stops the plan there. The code runs after every batch, so a
-  failure points at the stages just applied.
-- An Extract Method plan that would still leave the function, or one of its new
-  helpers, above the break-up bar says so, for example "leaves build_from_json
-  at CCN 83, still above the break-up bar; more stages needed". The plan and
-  its file's opportunity rank after the work that finishes the job. The mark is
-  set when the repository is indexed, so a plan ranked live is not marked.
-- Move Method never targets a class the method only instantiates, or an ancestor of
-  its own class.
+  get a staged plan: several helpers called in order, applied as direct edits
+  one stage at a time, in batches of at most five with tests between batches.
+- A plan that would leave the function or a new helper above the break-up bar
+  says so ("still above the break-up bar; more stages needed") and ranks after
+  work that finishes the job. The mark is set at index time, so a plan ranked
+  live is not marked.
+- Move Method never targets a class the method only instantiates, or an
+  ancestor of its own class.
 - Split File works on any language with call resolution and suggests a split only
   when the groups are clearly separable. Python and TypeScript splits usually need
   a re-export shim, flagged as `shim_required`.
@@ -330,5 +302,5 @@ Most plans answer a health finding, so per-path marker rules in
 
 - [CODE_HEALTH.md](CODE_HEALTH.md): the findings and health signals plans are built on, and Fix first.
 - [INTELLIGENCE_LAYERS.md](INTELLIGENCE_LAYERS.md): how code health fits the rest of the index.
-- [architecture/refactoring.md](../architecture/refactoring.md): detector algorithms, ranking, plan ids and REST routes.
+- [architecture/refactoring.md](../architecture/refactoring.md): detector algorithms, Extract Method gates, test commands, ranking, plan ids and REST routes.
 - [architecture/code-health.md](../architecture/code-health.md): health pipeline internals.

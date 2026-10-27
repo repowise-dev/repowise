@@ -164,3 +164,89 @@ def test_json_marks_an_export_its_own_file_uses_as_export_only(indexed_repo):
     assert site["safe_to_delete"] is False
     (link,) = [f for f in findings if f["symbol_name"] == "link"]
     assert link["export_only"] is False
+
+
+def _md(root: Path, *args: str) -> str:
+    result = CliRunner().invoke(
+        dead_code_command, [str(root), "--format", "md", "--no-workspace", *args]
+    )
+    assert result.exit_code == 0, result.output
+    return result.output
+
+
+def test_safe_only_says_why_it_is_empty(indexed_repo, monkeypatch):
+    monkeypatch.setattr(dead_code_cmd, "_analyze_live", None)
+    assert "none deletion-ready" not in _md(indexed_repo, "--safe-only")
+
+    unproven = {**_STORED_ONLY, "confidence": 0.6, "safe_to_delete": False}
+    run_async(_store(indexed_repo, [unproven]))
+    out = _md(indexed_repo, "--safe-only")
+    assert "1 finding(s), none deletion-ready" in out
+    assert "none deletion-ready" not in _md(indexed_repo)
+
+
+def test_safe_only_rereads_a_stored_safe_flag_through_the_gate(indexed_repo, monkeypatch):
+    # Stored safe, but a runtime-loaded config path: the read surfaces'
+    # gate downgrades it, so --safe-only hides it and explains why.
+    monkeypatch.setattr(dead_code_cmd, "_analyze_live", None)
+    risky = {**_STORED_ONLY, "file_path": "gone/settings.py"}
+    run_async(_store(indexed_repo, [risky]))
+
+    out = _md(indexed_repo, "--safe-only")
+    assert "gone/settings.py" not in out
+    assert "1 finding(s), none deletion-ready" in out
+
+
+def test_footer_names_the_tier_counts_as_findings(indexed_repo, monkeypatch):
+    monkeypatch.setattr(dead_code_cmd, "_analyze_live", None)
+
+    result = CliRunner().invoke(dead_code_command, [str(indexed_repo), "--no-workspace"])
+
+    assert result.exit_code == 0, result.output
+    assert "Cleanup-candidate lines:" in result.output
+    assert "findings by confidence: high 1" in result.output
+    assert "confidence)" not in result.output
+
+
+class _HttpConsumed:
+    def has_cross_repo_consumers(self, repo_alias, file_path):
+        return []
+
+    def get_repos_depending_on(self, repo_alias):
+        return []
+
+    def get_package_consumers(self, repo_alias):
+        return []
+
+    def get_contract_links_as_provider(self, repo_alias, file_path):
+        return [{"consumer_repo": "web"}]
+
+
+def test_a_workspace_consumer_lowers_the_stored_finding(indexed_repo, monkeypatch):
+    analyze_live = dead_code_cmd._analyze_live
+    monkeypatch.setattr(dead_code_cmd, "_analyze_live", None)
+    monkeypatch.setattr(
+        dead_code_cmd,
+        "cross_repo_cut_inputs",
+        lambda *_a: {"lookup": _HttpConsumed(), "alias": "api"},
+    )
+    # 0.9 * 0.3 = 0.27, under the default floor the other surfaces apply too.
+    assert _json(indexed_repo) == []
+    assert "1 finding(s) hidden below threshold" in _md(indexed_repo)
+    # The live path takes the same cut.
+    monkeypatch.setattr(dead_code_cmd, "_analyze_live", analyze_live)
+    live = _json(indexed_repo, "--min-confidence", "0.0")
+    assert live and all(f["confidence"] <= 0.3 and not f["safe_to_delete"] for f in live)
+
+
+def test_cross_repo_inputs_resolve_the_alias_of_a_member(tmp_path, monkeypatch):
+    from repowise.cli.helpers import cross_repo_cut_inputs
+    from repowise.core.workspace.config import RepoEntry, WorkspaceConfig
+    from repowise.server.mcp_server._enrichment import CrossRepoEnricher
+
+    monkeypatch.setattr(CrossRepoEnricher, "for_workspace", classmethod(lambda cls, root: root))
+    WorkspaceConfig(repos=[RepoEntry(path="api", alias="api")]).save(tmp_path)
+    member = tmp_path / "api"
+    assert cross_repo_cut_inputs(member, tmp_path) == {"lookup": tmp_path, "alias": "api"}
+    assert cross_repo_cut_inputs(member, None) == {"lookup": None, "alias": None}
+    assert cross_repo_cut_inputs(tmp_path / "other", tmp_path) == {"lookup": None, "alias": None}

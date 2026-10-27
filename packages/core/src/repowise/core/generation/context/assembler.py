@@ -874,13 +874,14 @@ class ContextAssembler:
         execution_flows_list: list[dict] = []
         if graph_builder is not None:
             try:
-                for ci in graph_builder.community_info():
+                # ``community_info()`` maps community id to ``CommunityInfo``.
+                for info in graph_builder.community_info().values():
                     communities_list.append(
                         {
-                            "id": ci.id,
-                            "label": ci.label,
-                            "size": ci.size,
-                            "cohesion": round(ci.cohesion, 2),
+                            "id": info.community_id,
+                            "label": info.label,
+                            "size": info.size,
+                            "cohesion": round(info.cohesion, 2),
                         }
                     )
                 # Id, not label: two same-size communities can carry the same
@@ -1148,6 +1149,7 @@ def _symbol_to_dict(symbol: Symbol) -> dict[str, Any]:
         "complexity_estimate": symbol.complexity_estimate,
         "decorators": symbol.decorators,
         "parent_name": symbol.parent_name,
+        "language": symbol.language,
         "start_line": symbol.start_line,
         "end_line": symbol.end_line,
     }

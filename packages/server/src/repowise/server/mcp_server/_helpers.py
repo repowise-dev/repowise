@@ -152,9 +152,28 @@ async def _get_repo(session: AsyncSession, repo: str | None = None) -> Repositor
 # ---------------------------------------------------------------------------
 
 
+def clean_signature(signature: str | None) -> str:
+    """Collapse a stored signature onto one line.
+
+    Signatures indexed from CRLF files carry literal ``\\r\\n`` plus the
+    original indentation. Whitespace runs collapse to single spaces; the text
+    is unchanged otherwise.
+    """
+    return " ".join((signature or "").split())
+
+
 def _is_workspace_mode() -> bool:
     """Return True if the MCP server is running in workspace mode."""
     return _state._registry is not None
+
+
+def _cross_repo_cut(alias: str | None) -> dict:
+    """``lookup`` and ``alias`` for the dead-code cross-repo cut
+    (``serve_findings``) on the repo *alias* names; both ``None`` outside
+    workspace mode, and an empty artifact simply cuts nothing."""
+    if not _is_workspace_mode():
+        return {"lookup": None, "alias": None}
+    return {"lookup": _state._cross_repo_enricher, "alias": alias}
 
 
 async def _resolve_repo_context(repo: str | None = None) -> Any:
@@ -197,28 +216,16 @@ async def _resolve_repo_context(repo: str | None = None) -> Any:
     if isinstance(resolved, list):
         raise ValueError(
             "repo='all' must be handled explicitly by each tool. "
-            "Use _resolve_all_contexts() instead."
+            "Fan out with _federation.Federation instead."
         )
     return await registry.get(resolved)
 
 
-async def _resolve_all_contexts() -> list[Any]:
-    """Return ``RepoContext`` objects for all repos in the workspace.
-
-    In single-repo mode, returns a single-element list wrapping ``_state``.
-    """
-    registry = _state._registry
-    if registry is None:
-        ctx = await _resolve_repo_context(None)
-        return [ctx]
-    contexts = []
-    for alias in registry.get_all_aliases():
-        contexts.append(await registry.get(alias))
-    return contexts
-
-
 def _unsupported_repo_all(tool_name: str) -> dict:
     """Return an error dict for tools that don't support ``repo='all'``."""
+    from repowise.server.mcp_server._savings.interaction import note_error_reason
+
+    note_error_reason("invalid_args")
     registry = _state._registry
     available = registry.get_all_aliases() if registry is not None else []
     return {
@@ -395,7 +402,7 @@ def _build_origin_story(
     if git_meta is None:
         return {
             "available": False,
-            "summary": f"No git history available for {file_path}.",
+            "summary": f"No git history is indexed for {file_path}.",
         }
 
     authors = json.loads(git_meta.top_authors_json) if git_meta.top_authors_json else []
@@ -556,12 +563,19 @@ def _compute_alignment(
     reachable from any caller that forgot it.
     """
     if not governing:
+        # With nothing accepted anywhere, "ungoverned" describes the index, not
+        # this file, so say that instead.
+        reason = (
+            "This file is ungoverned — it may be an outlier or simply undocumented."
+            if currencies
+            else "This index holds no accepted decisions, so no file is governed "
+            "yet; review `repowise decision candidates` and accept one with "
+            "`repowise decision confirm <id> --agent <your slug>`, adding "
+            "`--evidence <commit|file>` or `--reason` if it lacks them."
+        )
         return {
             "score": "none",
-            "explanation": (
-                f"No architectural decisions govern {file_path}. "
-                "This file is ungoverned — it may be an outlier or simply undocumented."
-            ),
+            "explanation": f"No architectural decisions govern {file_path}. {reason}",
             "governing_count": 0,
             "active_count": 0,
             "candidate_count": 0,

@@ -17,7 +17,7 @@ vi.mock("@/lib/api/platform", () => ({ publishRepo: mocks.publishRepo }));
 import { config } from "@/lib/config";
 import { HostedNudgeSlot } from "./hosted-nudge-slot";
 
-const MCP = "Use this repo inside Claude.ai or ChatGPT. Local MCP only works in desktop tools.";
+const MCP = "Use this repo from Claude.ai or ChatGPT too.";
 const DOCS = "Want AI-written docs without an API key? repowise.dev includes the model.";
 
 beforeEach(() => {

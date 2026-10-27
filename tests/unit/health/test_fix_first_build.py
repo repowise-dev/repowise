@@ -64,6 +64,10 @@ def test_each_exclusion_is_counted_by_reason() -> None:
         "kind_unaudited": 0,
         "terminal_flow": 0,
         "moderate_quiet": 0,
+        "unmeasured_cost": 0,
+        "cold_role": 0,
+        "background_unproven": 0,
+        "unconfirmed_cost": 0,
     }
     assert queue.totals.dormant == 0
     assert queue.totals.eligible == 3
@@ -94,12 +98,12 @@ def test_history_never_leads_and_rides_along_as_context() -> None:
 def test_text_quotes_the_stored_numbers() -> None:
     core = next(i for i in _build().items if i.kind == "refactor")
     assert core.title == (
-        "Start breaking up run (CCN 44, 50 lines): first lift lines 20-35 into sum_rows"
+        "Start breaking up run (CCN 44, 50 lines): first lift lines 20-35"
     )
     # The size is a fact; the why says why it matters here.
     assert core.why == (
-        "run has many independent paths through it; 9 files import it, "
-        "changed 12 times in 90 days."
+        "run has many paths; easier to read and change once split; "
+        "its file is imported by 9 files, changed 12 times in 90 days."
     )
     assert ("size", "CCN 44, 50 lines, nests 4 deep") in [(f.label, f.value) for f in core.facts]
     assert core.action.steps[0].text == "Extract lines 20-35 of run into sum_rows(rows, limit) -> total"
@@ -126,7 +130,7 @@ def test_an_excluded_plan_leaves_the_files_findings_to_compete() -> None:
 def test_tiers_follow_value_confidence_and_readiness() -> None:
     by_kind = {i.kind: i for i in _build().items}
     assert by_kind["refactor"].tier == "now"
-    assert by_kind["perf_fix"].tier == "next"  # advisory plan: needs judgment
+    assert by_kind["perf_fix"].tier == "now"  # a plan-ready cause with a proven plan
     assert by_kind["finding"].tier == "later"
     assert all(i.why_ranked[-1].factor == "tier" for i in by_kind.values())
 
@@ -157,10 +161,13 @@ def test_no_kind_takes_more_than_three_of_the_first_five() -> None:
         row["file_path"] = f"src/core{n}.py"
         row["details"]["steps"] = row["details"]["steps"][:1]
         refactors.append(row)
-    # A loop that grows but no request, message or job is known to run:
-    # worth doing, ranked below the refactors' value.
+    # A loop that grows, reached from an entry point, but no request, message
+    # or job is known to run: worth doing, ranked below the refactors' value.
     perf = _perf("perf2_a", "s", execution_role="unknown")
-    perf["details"] = {**perf["details"], "facets": {"loop_magnitude": "grows_with_data"}}
+    perf["details"] = {**perf["details"], "facets": {
+        "loop_magnitude": "grows_with_data", "growth_source": "loop",
+        "exposure": "entry_reachable",
+    }}
     queue = _build(refactoring=refactors, performance=[perf], findings=[])
     # The fourth place goes to the perf fix; the fifth back to a refactor,
     # since no other kind has anything left at value 2 or above.
@@ -201,6 +208,15 @@ def test_cli_code_ships_for_code_shape_but_not_for_performance() -> None:
     assert [i.target.file_path for i in queue.items] == [path]
 
 
+def test_a_production_file_under_a_samples_package_is_eligible() -> None:
+    path = "src/main/java/org/springframework/samples/petclinic/owner/PetController.java"
+    row = {**METRICS[0], "file_path": path, "code_origin": "production"}
+    finding = {**FINDINGS[1], "file_path": path}
+    queue = _build(metrics=[row], findings=[finding], refactoring=[], performance=[])
+    assert queue.totals.eligible > 0
+    assert [i.target.file_path for i in queue.items] == [path]
+
+
 def test_value_leads_tier_and_a_huge_function_says_so() -> None:
     """A function far past every bar outranks tidy work that is safer to start."""
     huge = {**FINDINGS[1], "file_path": "src/plain.py", "function_name": "walk",
@@ -214,7 +230,7 @@ def test_value_leads_tier_and_a_huge_function_says_so() -> None:
     big = {**FINDINGS[1], "details": {"ccn": 120, "nloc": 900, "max_nesting": 6}}
     planned = _build(findings=[big], performance=[]).lead
     assert planned.title == (
-        "Start breaking up run (CCN 120, 900 lines): first lift lines 20-35 into sum_rows"
+        "Start breaking up run (CCN 120, 900 lines): first lift lines 20-35"
     )
 
 
@@ -447,7 +463,7 @@ def test_malformed_stages_never_crash_or_say_one_helper(stages, orchestrator) ->
 def test_an_unstaged_plan_reads_as_before() -> None:
     core = next(i for i in _build().items if i.kind == "refactor")
     assert core.title == (
-        "Start breaking up run (CCN 44, 50 lines): first lift lines 20-35 into sum_rows"
+        "Start breaking up run (CCN 44, 50 lines): first lift lines 20-35"
     )
     assert core.action.steps[0].text == "Extract lines 20-35 of run into sum_rows(rows, limit) -> total"
 
@@ -553,3 +569,178 @@ def test_plans_without_above_bar_facts_read_as_before() -> None:
             (i.id, i.tier, [s.text for s in i.action.steps]) for i in before.items
         ]
     assert all("This plan alone" not in s.text for i in before.items for s in i.action.steps)
+
+
+def _hidden_plan(plans: list | None = None) -> tuple[list, list]:
+    """The function's Extract Method plan is stored and open, but its
+    opportunity recovers too little health to be an item of its own."""
+    plans = copy.deepcopy(PLANS) if plans is None else plans
+    plans[0].update(file_path="src/core.py", target_symbol="src/core.py::run")
+    small = {**REFACTORING[1], "opportunity_id": "refop2_core_small", "file_path": "src/core.py"}
+    return plans, [small]
+
+
+def _run(plans: list, refactoring: list):
+    queue = _build(plans=plans, refactoring=refactoring, performance=[])
+    return next(i for i in queue.items if i.target.symbol == "run")
+
+
+def test_a_finding_whose_plan_is_below_the_worth_floor_leads_with_that_plan() -> None:
+    plans, refactoring = _hidden_plan()
+    queue = _build(plans=plans, refactoring=refactoring, performance=[])
+    run = next(i for i in queue.items if i.target.symbol == "run")
+    assert queue.totals.excluded["below_min_worth"] == 1 and run.kind == "finding"
+    assert run.title == (
+        "Start breaking up run (CCN 44, 50 lines): first lift lines 20-35"
+    )
+    assert run.action.steps[0].text == (
+        "Extract lines 20-35 of run into sum_rows(rows, limit) -> total"
+    )
+    assert run.source.plan_ids == ("refac2_big",)
+    assert run.source.finding_ids == ("finding_c1",)
+    assert run.next_call.tool == "get_health"
+    assert run.next_call.arguments == {"plan_id": "refac2_big"}
+    assert run.next_call.cli == "repowise health --plan refac2_big"
+    assert "stored plan" not in run.confidence.reason + run.effort.basis
+    # Ranked as the finding was: only what it says about its plan changes.
+    before = _run(PLANS, refactoring)
+    assert (run.id, run.rank, run.tier, run.value) == (
+        before.id,
+        before.rank,
+        before.tier,
+        before.value,
+    )
+
+
+def _object_plans(**obj_over) -> list:
+    """A staged plan whose first stage reads three values off ``ctx``."""
+    plans = _staged_plans()
+    body = plans[0]["plan"]
+    body["params"] = ["ctx", "rows"]
+    body["new_symbol"] = {
+        "signature_text": "def sum_rows(ctx: _RunContext, rows):",
+        "notes": ["Read a, b, limit in the helper as ctx.a, ctx.b, ctx.limit."],
+    }
+    body["call_site"] = {"new_text": "total = sum_rows(ctx, rows)"}
+    body["parameter_object"] = {
+        "name": "_RunContext", "var": "ctx",
+        "declaration_text": "@dataclass(frozen=True)\nclass _RunContext:\n    a: int",
+        "construct_text": "ctx = _RunContext(a=a, b=b, limit=limit)",
+        "notes": ["Import dataclass from dataclasses."],
+        **obj_over,
+    }
+    return plans
+
+
+def test_a_step_reading_the_parameter_object_declares_and_builds_it() -> None:
+    # Without them the call names a variable and a type that do not exist.
+    core = next(i for i in _build(plans=_object_plans()).items if i.kind == "refactor")
+    step = core.action.steps[0]
+    assert step.signature == (
+        "@dataclass(frozen=True)\nclass _RunContext:\n    a: int\n\n"
+        "def sum_rows(ctx: _RunContext, rows):"
+    )
+    assert step.call == "ctx = _RunContext(a=a, b=b, limit=limit)\ntotal = sum_rows(ctx, rows)"
+    assert step.notes == (
+        "Add the _RunContext declaration above the helper, and the line building ctx just before "
+        "the call, as shown.",
+        "Import dataclass from dataclasses.",
+        "Read a, b, limit in the helper as ctx.a, ctx.b, ctx.limit.",
+    )
+    # The compact row stays the edit only.
+    assert set(core.compact()["first_step"]) == {"action", "line"}
+
+
+def test_a_step_whose_parameter_object_cannot_be_written_is_not_offered() -> None:
+    queue = _build(plans=_object_plans(declaration_text=None))
+    assert "refac2_big" not in {p for i in queue.items for p in i.source.plan_ids}
+    plans = _object_plans(construct_text="")
+    plans[0].update(file_path="src/core.py", target_symbol="src/core.py::run")
+    lone = _build(plans=plans, refactoring=[], performance=[]).lead
+    assert lone.action.steps[0].call is None
+
+
+def test_a_staged_plan_leading_a_finding_names_its_helpers() -> None:
+    run = _run(*_hidden_plan(_staged_plans()))
+    assert run.title == "Split run into 3 helpers"
+    assert run.action.steps[0].text.startswith("Stage 1 of 3: ")
+
+
+def test_a_led_title_says_when_the_plan_leaves_the_function_above_the_bar() -> None:
+    plans, refactoring = _hidden_plan(_staged_plans())
+    plans[0]["rank_json"] = (
+        '{"leaves_above_bar": "leaves run at CCN 40, still above the break-up bar; '
+        'more stages needed"}'
+    )
+    run = _run(plans, refactoring)
+    assert run.title == "Split run into 3 helpers (more stages needed)"
+    assert run.source.plan_ids == ("refac2_big",)
+
+
+def test_a_plan_that_does_not_lower_the_function_leaves_the_finding_as_it_was() -> None:
+    plans, refactoring = _hidden_plan()
+    # Lifting all of run's complexity into one helper moves the problem, not shrinks it.
+    plans[0]["evidence"] = {"slice_nloc": 45, "ccn_removed": 44}
+    run = _run(plans, refactoring)
+    assert run.title == "Break up run (CCN 44, 50 lines)"
+    assert run.source.plan_ids == ()
+    assert run.next_call.arguments == {"targets": ["src/core.py"], "include": ["biomarkers"]}
+
+
+def test_a_dismissed_plan_never_gives_a_finding_its_step() -> None:
+    plans, refactoring = _hidden_plan()
+    plans[0]["status"] = "resolved"
+    run = _run(plans, refactoring)
+    assert run.title == "Break up run (CCN 44, 50 lines)"
+    assert run.source.plan_ids == () and "Extract" not in run.action.steps[0].text
+
+
+def _hotspot(function: str, commits: int) -> dict:
+    return {
+        "file_path": "src/core.py", "biomarker_type": "function_hotspot", "severity": "medium",
+        "function_name": function, "health_impact": 0.4, "public_id": f"finding_fh_{function}",
+        "dimension": "defect", "details": {"modification_count": commits},
+    }
+
+
+def test_a_function_item_shows_its_own_history_never_another_functions() -> None:
+    findings = [*FINDINGS, _hotspot("Client.__init__", 7), _hotspot("Engine.run", 9)]
+    core = next(i for i in _build(findings=findings).items if i.kind == "refactor")
+    values = [c.value for c in core.context]
+    assert "Engine.run changed in 9 commits" in values
+    assert not any("__init__" in v for v in values)
+    # File-level history still rides along.
+    assert ("recent changes", "changed 12 times in 90 days") in [
+        (c.label, c.value) for c in core.context
+    ]
+
+
+def test_a_function_item_says_its_file_is_imported_not_that_it_is() -> None:
+    core = next(i for i in _build().items if i.kind == "refactor")
+    assert core.why.endswith("its file is imported by 9 files, changed 12 times in 90 days.")
+    assert core.risk.text == "Touches 1 file; its file is imported by 9 files."
+    assert ("files that import its file", "9") in [(f.label, f.value) for f in core.facts]
+
+
+def test_history_matches_the_items_qualified_symbol() -> None:
+    from repowise.core.analysis.health.fix_first.build import _about
+
+    # Same method name in two classes: only the item's own class.
+    assert _about("Engine.run", "src/core.py::Engine.run")
+    assert not _about("Other.run", "src/core.py::Engine.run")
+    # A class item keeps its members, not a class sharing its prefix.
+    assert _about("Engine.run", "Engine")
+    assert not _about("EngineTest.run", "Engine")
+    # File-level rows and items keep everything; a bare name matches by name.
+    assert _about(None, "Engine.run") and _about("Other.run", None)
+    assert _about("run", "Engine.run") and not _about("walk", "Engine.run")
+
+
+def test_a_plan_targets_its_symbol_span_like_a_finding_does() -> None:
+    """The target is the function's own span for every kind; the first edit's
+    line belongs to the first step."""
+    by_kind = {i.kind: i for i in _build(limit=None).items}
+    refactor, finding = by_kind["refactor"], by_kind["finding"]
+    assert (refactor.target.line_start, refactor.target.line_end) == (10, 60)
+    assert refactor.action.steps[0].line == 20
+    assert (finding.target.line_start, finding.target.line_end) == (5, 40)

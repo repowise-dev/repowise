@@ -10,6 +10,7 @@ import sys
 
 import pytest
 
+from repowise.core.pipeline import parse_pool
 from repowise.core.pipeline.phases import ingestion as ing
 
 
@@ -122,18 +123,24 @@ class TestParsePoolWorkers:
 class TestBothCallSitesAreBounded:
     """The bound has to reach the executor on the init *and* resume paths.
 
-    Grepping the source is what this guards: the two paths carried a duplicated
-    ``min(os.cpu_count(), ...)`` expression and only one would have been noticed
-    if a future edit reverted it.
+    Grepping the source is what this guards: both paths parse through
+    ``_parse_stage``, and its pool is sized by the shared helper, never by
+    ``os.cpu_count()``.
     """
 
-    @pytest.mark.parametrize("func", ["_run_ingestion", "reparse_for_resume"])
-    def test_call_site_uses_the_shared_helper(self, func):
+    def test_pool_uses_the_shared_helper(self):
         import inspect
 
-        target = getattr(ing, func)
-        src = inspect.getsource(target)
-        assert "parse_pool_workers(" in src, f"{func} must size its pool via the shared helper"
+        src = inspect.getsource(ing.parse_guarded)
+        assert "parse_pool_workers(" in src, "the parse pool must be sized via the shared helper"
+        assert "os.cpu_count()" not in src, "the pool must not be sized from the host core count"
+
+    @pytest.mark.parametrize("func", ["_run_ingestion", "reparse_for_resume"])
+    def test_call_site_parses_through_the_shared_stage(self, func):
+        import inspect
+
+        src = inspect.getsource(getattr(ing, func))
+        assert "_parse_stage(" in src, f"{func} must parse via the shared stage"
         assert "os.cpu_count()" not in src, f"{func} must not size its pool from the host core count"
 
     async def test_the_bound_reaches_the_real_executor(self, tmp_path, monkeypatch):
@@ -150,7 +157,7 @@ class TestBothCallSitesAreBounded:
             (tmp_path / f"mod_{i}.py").write_text(f"def f_{i}(x):\n    return x + {i}\n")
 
         seen: list[int | None] = []
-        real = ing.ProcessPoolExecutor
+        real = parse_pool.ProcessPoolExecutor
 
         def recording(*args, **kwargs):
             seen.append(kwargs.get("max_workers"))
@@ -160,7 +167,7 @@ class TestBothCallSitesAreBounded:
             kwargs["max_workers"] = 1
             return real(*args, **kwargs)
 
-        monkeypatch.setattr(ing, "ProcessPoolExecutor", recording)
+        monkeypatch.setattr(parse_pool, "ProcessPoolExecutor", recording)
 
         parsed, *_ = await ing._run_ingestion(
             tmp_path,

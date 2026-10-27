@@ -20,6 +20,7 @@ import pytest
 from click.testing import CliRunner
 
 from repowise.cli.commands import serve_cmd
+from repowise.cli.commands.serve_cmd import _embedder, _lock, _ports
 
 SENTINEL = "sqlite+aiosqlite:///:memory:"
 
@@ -28,10 +29,10 @@ SENTINEL = "sqlite+aiosqlite:///:memory:"
 def stub_serve(monkeypatch) -> None:
     """Everything `serve` would really do, except touching the database."""
     monkeypatch.setattr("uvicorn.run", lambda _app, **_kwargs: None)
-    monkeypatch.setattr(serve_cmd, "_load_local_provider_config", lambda: None)
-    monkeypatch.setattr(serve_cmd, "_setup_embedder", lambda: None)
-    monkeypatch.setattr(serve_cmd, "_serve_lock_path", lambda: None)
-    monkeypatch.setattr(serve_cmd, "_find_free_port", lambda _host, port, _label: port)
+    monkeypatch.setattr(_embedder, "_load_local_provider_config", lambda: None)
+    monkeypatch.setattr(_embedder, "_setup_embedder", lambda: None)
+    monkeypatch.setattr(_lock, "_serve_lock_path", lambda: None)
+    monkeypatch.setattr(_ports, "_find_free_port", lambda _host, port, _label: port)
     monkeypatch.delenv("REPOWISE_API_KEY", raising=False)
     monkeypatch.setenv("REPOWISE_HOST", "127.0.0.1")
 

@@ -254,7 +254,7 @@ def test_workspace_footer_is_absent_outside_a_workspace_and_for_a_lone_repo(monk
     assert ov._build_workspace_footer() is None
 
 
-def test_workspace_footer_names_siblings_and_carries_cross_repo_summaries(monkeypatch):
+def test_workspace_footer_names_siblings_and_points_at_the_cross_repo_view(monkeypatch):
     enricher = SimpleNamespace(
         has_data=True,
         has_contract_data=True,
@@ -268,23 +268,9 @@ def test_workspace_footer_names_siblings_and_carries_cross_repo_summaries(monkey
     assert footer["default_repo"] == "api"
     assert footer["other_repos"] == ["web", "worker"]
     assert footer["workspace_root"] == "/ws"
-    assert "web, worker" in footer["hint"]
-    assert footer["cross_repo"] == {"co_changes": 4}
-    assert footer["contract_links"] == {"links": 2}
-
-
-def test_workspace_footer_omits_contract_links_without_contract_data(monkeypatch):
-    enricher = SimpleNamespace(
-        has_data=True,
-        has_contract_data=False,
-        get_cross_repo_summary=lambda: {"co_changes": 1},
-    )
-    monkeypatch.setattr(_state, "_registry", _registry(["api", "web"]))
-    monkeypatch.setattr(_state, "_cross_repo_enricher", enricher)
-
-    footer = ov._build_workspace_footer()
-    assert footer["cross_repo"] == {"co_changes": 1}
-    assert "contract_links" not in footer
+    assert "repo='all'" in footer["hint"]
+    # The links themselves are what repo="all" serves.
+    assert "cross_repo" not in footer and "contract_links" not in footer
 
 
 # ---------------------------------------------------------------------------
@@ -333,3 +319,14 @@ async def test_key_decisions_survive_corrupt_affected_files(session, populated_d
     assert [d["id"] for d in block["top_active"]] == ["dec1"]
     assert block["top_active"][0]["affected_files"] == []
     assert block["recent_reversals"] == []
+
+
+def test_production_average_needs_tests_in_the_reading():
+    from repowise.server.mcp_server.tool_overview.health import _production_average
+
+    prod = SimpleNamespace(file_path="a.py", score=6.0, nloc=10, is_test=False)
+    test = SimpleNamespace(file_path="t.py", score=10.0, nloc=10, is_test=True)
+
+    assert _production_average([prod, test]) == 6.0
+    # With no tests it would only repeat the headline.
+    assert _production_average([prod]) is None

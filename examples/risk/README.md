@@ -23,12 +23,11 @@ repowise risk main..HEAD      # whole branch / PR as one change
 repowise risk HEAD~5..HEAD    # recent local work
 ```
 
-The headline is **fix history**: which of the touched files have needed bug
-fixes before, recency-weighted, and where that sits among this repo's own
-recent commits. Below it, the diff shape — percentile and review priority
-(`Below typical` / `Typical` / `Elevated`) among recent commits, and the 0–10
-score, which measures how large and spread out the change is rather than how
-dangerous.
+The headline is **size and spread**: the change's percentile among this
+repo's recent commits by diff size, not a bug predictor. Below it, the **fix
+history**: which of the touched files have needed bug fixes before,
+recency-weighted. Then the 0–10 score, which measures how large and spread out
+the change is rather than how dangerous.
 
 ## 2. Narrow what counts
 
@@ -51,7 +50,7 @@ repowise risk main..HEAD --format json
 
 | Step | Expected |
 |------|----------|
-| `repowise risk` | Table led by percentile/review priority, with a supporting diff-shape score |
+| `repowise risk` | Table led by the size-and-spread percentile, with a supporting diff-shape score |
 | `repowise risk main..HEAD` | Same shape for the range (or a clear revspec error) |
 | `repowise risk --format json` | JSON object; no API key needed |
 

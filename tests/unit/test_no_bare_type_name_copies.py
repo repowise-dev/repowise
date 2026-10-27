@@ -57,7 +57,10 @@ _SCOPE = (
     _INGESTION / "lang_helpers",
     _INGESTION / "type_ref_resolution.py",
     _INGESTION / "call_resolver.py",
-    _INGESTION / "call_receiver_typing.py",
+    _INGESTION / "call_overload_selection.py",
+    _INGESTION / "call_barrel_forwarding.py",
+    _INGESTION / "call_inheritance.py",
+    _INGESTION / "call_receiver_typing",
     _INGESTION / "heritage_resolver.py",
     # Holds the shared symbol-ID splitter both resolvers used to keep a copy
     # of; in scope so moving it did not move it out of reach.
@@ -75,15 +78,18 @@ _KNOWN: dict[str, int] = {
     # be answering about a type where these ask about an ID. `models.py` holds
     # the one both resolvers used to duplicate. In each call resolver module
     # one site is an import's module path, which is a module name and not a
-    # type: `call_receiver_typing.py` takes its tail and `call_resolver.py`
+    # type: `call_receiver_typing/__init__.py` takes its tail and `call_resolver.py`
     # its head, to ask whether the package it names is one of ours. The rest
-    # are symbol IDs, except one `call_receiver_typing.py` site that walks a
+    # are symbol IDs, except one `call_receiver_typing/__init__.py` site that walks a
     # dotted receiver (`this.a.b`) hop by hop: an instance path, where every
-    # segment is a variable or a field and none is discarded, and one that
+    # segment is a variable or a field and none is discarded, and the `go.py` one that
     # reads the head of a go return type (`pkg.T`) to find the package the
     # callee's file imports as `pkg`; its tail comes from the shared helper.
-    _PREFIX + "call_resolver.py": 6,
-    _PREFIX + "call_receiver_typing.py": 4,
+    _PREFIX + "call_resolver.py": 3,
+    # Symbol IDs: a type node's file and name, and a method's enclosing class.
+    _PREFIX + "call_inheritance.py": 3,
+    _PREFIX + "call_receiver_typing/__init__.py": 3,
+    _PREFIX + "call_receiver_typing/go.py": 1,
     _PREFIX + "models.py": 1,
     # Reads the head to decide whether taking a bare name is safe at all: a
     # qualifier that is a type rather than a package must not be discarded.
@@ -114,6 +120,10 @@ _KNOWN: dict[str, int] = {
     _PREFIX + "framework_edges/rust.py": 1,
     _PREFIX + "framework_edges/go.py": 1,
     _PREFIX + "framework_edges/flask.py": 1,
+    # Takes the head of an `import a.b` path (twice: the module's bound names and
+    # a test body rebinding a parameter): the name the import binds, a module
+    # name, not a type.
+    _PREFIX + "framework_edges/pytest_edges.py": 2,
     # Takes the qualifier HEAD of `OrderHandlers.GetOrder` to reach the
     # declaring type. It does want a type, but the shared helper returns the
     # trailing segment, which is the member — the opposite end, the same reason
@@ -126,7 +136,6 @@ _KNOWN: dict[str, int] = {
     _PREFIX + "framework_edges/micronaut.py": 2,
     _PREFIX + "framework_edges/spring.py": 4,
     _PREFIX + "parser_helpers.py": 1,
-    _PREFIX + "languages/go_interface_satisfaction.py": 1,
 }
 
 # Builtin-type lists are language identity data and belong on the spec beside

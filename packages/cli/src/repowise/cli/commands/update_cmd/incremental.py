@@ -218,6 +218,7 @@ def _run_partial_analysis(
     stored_performance_callers: set[str] | None = None,
     repo_function_mod_p80: int | None = None,
     timings: PhaseTimings | None = None,
+    dead_code: bool = True,
 ) -> tuple[Any, Any]:
     """Run partial code-health + repo-wide dead-code analysis.
 
@@ -248,6 +249,7 @@ def _run_partial_analysis(
         coverage_map=coverage_map,
         log=console.print,
         timings=timings,
+        dead_code=dead_code,
     )
 
 

@@ -22,6 +22,7 @@ import json
 import re
 from typing import Any
 
+from ..biomarker_names import identity_biomarker
 from ..rows import field
 
 REFACTORING_MODEL_VERSION = 4
@@ -229,7 +230,7 @@ def refactoring_kernel(suggestion: Any) -> RefactoringKernel:
     """
     kind = str(field(suggestion, "refactoring_type") or "")
     file_path = str(field(suggestion, "file_path") or "")
-    biomarker = str(field(suggestion, "source_biomarker") or "")
+    biomarker = identity_biomarker(str(field(suggestion, "source_biomarker") or ""))
 
     if kind == "performance_fix":
         # The performance layer already owns a versioned causal id for this

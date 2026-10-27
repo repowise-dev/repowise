@@ -2,28 +2,49 @@
 
 from __future__ import annotations
 
-from collections import Counter, defaultdict
+from collections import defaultdict
+from pathlib import Path
 from typing import Any
 
-from repowise.core.analysis.health.aggregation import module_label
+#: Riskiest files the overview names; get_risk / get_health carry the rest.
+_RISKIEST_FILES = 5
 
 
-def _build_git_health(all_git: list) -> dict[str, Any]:
-    """Repo-wide git health summary (hotspots, bus factor, churn trend, top modules)."""
+def _build_git_health(all_git: list, repo_root: Path | str | None = None) -> dict[str, Any]:
+    """Repo-wide git health: hotspot count, churn trend and the riskiest files."""
     if not all_git:
         return {}
-
-    bus_factors = [getattr(g, "bus_factor", 0) or 0 for g in all_git]
     return {
-        # Files with git history, not the parsed total: vendored, generated
-        # and new files have none, so the two counts can differ.
-        "files_git_attributed": len(all_git),
         "hotspot_count": sum(1 for g in all_git if g.is_hotspot),
-        "avg_bus_factor": round(sum(bus_factors) / len(bus_factors), 1),
-        "files_with_bus_factor_1": sum(1 for b in bus_factors if b == 1),
         "churn_trend": _churn_trend(all_git),
-        "top_churn_modules": _top_churn_modules(all_git),
+        "riskiest_files": _riskiest_files(all_git, repo_root),
     }
+
+
+def _riskiest_files(all_git: list, repo_root: Path | str | None) -> list[str]:
+    """Hotspots and bug magnets in the order the generated CLAUDE.md lists them.
+
+    Bug magnets first, then fix mass, then churn, as ``files that need care``
+    ranks them in the editor files. A row can outlive its file when the
+    deleted-file prune skips a run, so with *repo_root* only live files count.
+    """
+    candidates = sorted(
+        (g for g in all_git if g.is_hotspot or getattr(g, "bug_magnet", False)),
+        key=lambda g: (
+            not getattr(g, "bug_magnet", False),
+            -(getattr(g, "fix_mass", 0) or 0),
+            -(getattr(g, "churn_percentile", 0) or 0),
+            g.file_path,
+        ),
+    )
+    root = Path(repo_root) if repo_root else None
+    out: list[str] = []
+    for g in candidates:
+        if len(out) >= _RISKIEST_FILES:
+            break
+        if root is None or (root / g.file_path).exists():
+            out.append(g.file_path)
+    return out
 
 
 def _churn_trend(all_git: list) -> str:
@@ -36,14 +57,6 @@ def _churn_trend(all_git: list) -> str:
     if ratio > 1.5:
         return "increasing"
     return "decreasing" if ratio < 0.5 else "stable"
-
-
-def _top_churn_modules(all_git: list) -> list[str]:
-    """Five busiest modules by 90-day commits, on the module axis every count uses."""
-    module_churn: Counter = Counter()
-    for g in all_git:
-        module_churn[module_label(g.file_path)] += g.commit_count_90d or 0
-    return [m for m, _ in module_churn.most_common(5) if module_churn[m] > 0]
 
 
 def _owner_display_name(name: str | None, email: str) -> str:

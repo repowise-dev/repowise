@@ -269,6 +269,10 @@ class TestTransports:
             ("laravel", "rabbitmq", True),
             ("rabbitmq", "laravel", True),
             ("nestjs", "kafka", True),
+            ("dapr", "kafka", True),
+            ("rabbitmq", "dapr", True),
+            ("dapr", "dapr", True),
+            ("dapr", "bullmq", False),
             ("laravel", "bullmq", False),
             ("redis", "bullmq", False),
             ("bullmq", "bullmq", True),
@@ -289,6 +293,20 @@ class TestTransports:
         ]
         assert len(match_contracts(same)) == 1
         assert match_contracts(other) == []
+
+    def test_a_laravel_job_class_reads_only_a_laravel_dispatch(self) -> None:
+        job = _on("laravel", "consumer", "api", job="App\\Jobs\\NotifyTicketSold")
+        dispatch = _on("laravel", "provider", "web", job="App\\Jobs\\NotifyTicketSold")
+        # amqplib sendToQueue on a queue of the same name is not the job's envelope.
+        assert match_contracts([_on("rabbitmq", "provider", "events"), job]) == []
+        assert len(match_contracts([dispatch, job])) == 1
+        # Nor through an exchange binding onto the job's queue.
+        reader = _queue_consumer("api", "emails")
+        reader.meta.update(broker="laravel", job="App\\Jobs\\NotifyTicketSold")
+        bound = [_publisher(), _binding("api", "emails", "#", file="bind.ts"), reader]
+        assert [lk.consumer_file for lk in match_contracts(bound)] == []
+        # A Laravel dispatch still reaches a raw consumer of its queue.
+        assert len(match_contracts([dispatch, _on("rabbitmq", "consumer", "events")])) == 1
 
     def test_a_name_that_only_looks_like_a_pattern_is_exact(self) -> None:
         contracts = [

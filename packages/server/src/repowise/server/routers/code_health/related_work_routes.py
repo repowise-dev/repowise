@@ -9,16 +9,18 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.dead_code.serving import serve_findings
+from repowise.core.analysis.finding_registry import GateLayer, preview_label
 from repowise.core.analysis.related_work import related_work
 from repowise.core.persistence import crud
 from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
 from repowise.core.persistence.crud.analysis.performance import (
     list_performance_opportunities,
 )
-from repowise.server.deps import get_db_session
+from repowise.server.deps import cross_repo_cut_inputs, get_db_session
 from repowise.server.repo_paths import normalize_target_path
 from repowise.server.schemas import RelatedWorkRequest, RelatedWorkResponse
 
@@ -72,6 +74,7 @@ def _validated(raw: list[str]) -> list[str]:
 async def get_related_work(
     repo_id: str,
     payload: RelatedWorkRequest,
+    request: Request,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
     """Per file, what findings, Fix first, refactoring, performance and dead
@@ -100,14 +103,30 @@ async def get_related_work(
     dead_code = await crud.get_dead_code_findings(
         session, repo_id, file_paths=paths, limit=_ROWS_CEILING
     )
-    return related_work(
+    body = related_work(
         paths,
         findings=findings,
         fix_first=queue.items,
         refactoring=refactoring,
         performance=performance,
-        dead_code=dead_code,
+        dead_code=serve_findings(dead_code, **cross_repo_cut_inputs(request, repo_id)),
     ).as_dict()
+    # One file's rows share its language, so a lens carries one label. Fix
+    # first mixes layers, so it carries none.
+    for entry in body["files"]:
+        for lens, block in entry["lenses"].items():
+            layer = _LENS_LAYER.get(lens)
+            if layer and (note := preview_label(layer, entry["file_path"])):
+                block["preview"] = note
+    return body
+
+
+_LENS_LAYER: dict[str, GateLayer] = {
+    "findings": "health",
+    "refactoring": "refactoring",
+    "performance": "performance",
+    "dead_code": "dead_code",
+}
 
 
 __all__ = ["get_related_work"]

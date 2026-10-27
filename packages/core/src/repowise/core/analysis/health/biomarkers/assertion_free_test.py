@@ -38,7 +38,6 @@ per-language precision and the false positives it does not separate.
 from __future__ import annotations
 
 from ..asserts.predicate import checks_something
-from ..coverage import is_test_file
 from ..models import Severity
 from .base import BiomarkerResult, FileContext
 
@@ -62,7 +61,7 @@ class AssertionFreeTestDetector:
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
         if ctx.language not in SHIPPING_LANGUAGES:
             return []
-        if not is_test_file(ctx.file_path):
+        if not ctx.is_test_material:
             return []
         out: list[BiomarkerResult] = []
         oracles = _asserting_names(ctx)

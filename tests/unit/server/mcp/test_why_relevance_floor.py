@@ -327,3 +327,143 @@ async def get_why_search(query: str, targets: list[str] | None = None) -> dict:
     from repowise.server.mcp_server import get_why
 
     return await get_why(query, targets=targets)
+
+
+# --- Commit lanes on a target card -----------------------------------------
+
+
+def _commit(sha: str, message: str) -> dict:
+    return {"sha": sha, "message": message}
+
+
+def test_prose_terms_name_an_identifier_by_its_parts():
+    """No commit subject spells a private helper, so the compound is not a term."""
+    from repowise.server.mcp_server._why_relevance import question_terms, word_set
+
+    terms = question_terms("why does argsMinusFirstX skip _flag_values", prose=True)
+
+    assert "argsminusfirstx" not in terms and "_flag_values" not in terms
+    assert {"arg", "minu", "first", "skip", "flag", "value"} <= set(terms)
+    assert "tie" not in word_set("the entire tier")
+    assert "managed" in word_set("withManagedSignal")
+
+
+def test_a_question_naming_code_keeps_the_commit_that_answers_it():
+    """The decision floor served no commit for a question naming code, and none
+    at all on a store without records. The card's best commit is served."""
+    from repowise.server.mcp_server.tool_why.search import _focus_archaeology
+
+    arch = {
+        "file_commits": [
+            _commit("aaaaaaa1", "fix: don't remove flag value that matches subcommand name"),
+            _commit("bbbbbbb2", "docs: update README"),
+        ],
+        "git_log": [_commit("ccccccc3", "chore: bump flag parser")],
+    }
+    _focus_archaeology(arch, "why does argsMinusFirstX skip the value of a flag", "recall")
+
+    assert [c["sha"] for c in arch["file_commits"]] == ["aaaaaaa1"]
+    assert arch["git_log_omitted"]["suppressed"] == 1
+
+
+def test_a_card_whose_commits_share_one_word_serves_none():
+    from repowise.server.mcp_server.tool_why.search import _focus_archaeology
+
+    arch = {"git_log": [_commit("aaaaaaa1", "fix flag parsing"), _commit("b2", "add tests")]}
+    _focus_archaeology(arch, "why is the mousetrap splash shown for a flag", "recall")
+
+    assert "git_log" not in arch
+    assert arch["git_log_omitted"] == {
+        "suppressed": 2,
+        "reason": "query-irrelevant",
+        "recover_with": "recall",
+    }
+
+
+def test_a_commit_in_two_lanes_is_served_once():
+    """The indexed lane and the live log abbreviate one sha to different lengths."""
+    from repowise.server.mcp_server.tool_why.search import _focus_archaeology
+
+    message = "Allow running persistent run hooks of all parents"
+    full = "4cafa37a1b2c" + "0" * 28
+    arch = {
+        "file_commits": [_commit("4cafa37a", message)],
+        "git_log": [{**_commit("4cafa37a1b2c", message), "commit": full}],
+    }
+    _focus_archaeology(arch, "why do persistent hooks of all parents run", "recall")
+
+    assert [c["sha"] for c in arch["file_commits"]] == ["4cafa37a"]
+    # Not suppressed: the commit was served from the other lane.
+    assert "git_log" not in arch and "git_log_omitted" not in arch
+
+
+def test_commits_sharing_a_short_prefix_stay_distinct():
+    """Two commits whose shas share seven characters are two commits."""
+    from repowise.server.mcp_server.tool_why.search import _commit_keys
+
+    a, b = "abcdef1" + "1" * 33, "abcdef1" + "2" * 33
+    rows = [{**_commit(a[:12], "one"), "commit": a}, {**_commit(b[:12], "two"), "commit": b}]
+    keys = _commit_keys({"git_log": rows})
+
+    assert len(set(keys.values())) == 2
+
+
+def test_an_abbreviated_sha_resolves_to_the_full_one_it_prefixes():
+    from repowise.server.mcp_server.tool_why.search import _commit_keys
+
+    full = "abcdef12" + "3" * 32
+    indexed = _commit("abcdef12", "one")
+    live = {**_commit(full[:12], "one"), "commit": full}
+    keys = _commit_keys({"file_commits": [indexed], "git_log": [live]})
+
+    assert keys[id(indexed)] == keys[id(live)] == full
+
+
+def test_rows_without_a_sha_are_never_merged():
+    from repowise.server.mcp_server.tool_why.search import _focus_archaeology
+
+    arch = {
+        "git_log": [
+            {"message": "Allow running persistent run hooks of all parents"},
+            {"message": "Allow running persistent run hooks of all parents"},
+            {"message": "docs: update README"},
+        ]
+    }
+    _focus_archaeology(arch, "why do persistent hooks of all parents run", "recall")
+
+    # Two tied commits, not one row standing for both.
+    assert len(arch["git_log"]) == 2
+
+
+def test_a_near_tie_between_commits_serves_none():
+    """Two commits each carrying two question words at almost the same weight:
+    the question does not single either out."""
+    from repowise.server.mcp_server.tool_why.search import _focus_archaeology
+
+    arch = {
+        "git_log": [
+            _commit("aaaaaaa1", "Delay fetch in tests"),
+            _commit("bbbbbbb2", "Retry body before reading"),
+            _commit("ccccccc3", "Retry before reading"),
+            _commit("ddddddd4", "docs: update README"),
+        ]
+    }
+    _focus_archaeology(arch, "why delay the retry before the fetch body", "recall")
+
+    assert "git_log" not in arch
+    assert arch["git_log_omitted"]["suppressed"] == 4
+
+
+def test_tied_best_commits_are_both_served():
+    from repowise.server.mcp_server.tool_why.search import _focus_archaeology
+
+    arch = {
+        "git_log": [
+            _commit("aaaaaaa1", "Make detection for test-binary more universal"),
+            _commit("bbbbbbb2", 'Revert "Make detection for test-binary more universal"'),
+            _commit("ccccccc3", "docs: update README"),
+        ]
+    }
+    _focus_archaeology(arch, "why is the test binary detected by name", "recall")
+
+    assert [c["sha"] for c in arch["git_log"]] == ["aaaaaaa1", "bbbbbbb2"]

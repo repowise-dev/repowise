@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from repowise.core.analysis.health.coverage import (
     file_coverage,
@@ -24,6 +27,7 @@ from repowise.core.analysis.patch_coverage import (
     headline,
     render_markdown,
 )
+from repowise.core.analysis.patch_coverage.compute import PatchCoverage
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "coverage"
 
@@ -184,6 +188,37 @@ def test_no_changed_line_branching_is_nothing_to_judge() -> None:
         "Branches on changed lines: no changed executable line has branches. "
         "The 80.0% branch gate was not applied."
     )
+
+
+def _gate(flat, risky, branch, project):
+    """PatchCoverage.gate on stand-in sub-verdicts, so only the precedence is tested."""
+    fake = SimpleNamespace(
+        flat_gate=flat,
+        risky_gate=risky,
+        branch_gate=branch,
+        project=None if project == "not_set" else SimpleNamespace(gate=project),
+        failing_path_gates=[],
+    )
+    return PatchCoverage.gate.fget(fake)
+
+
+@pytest.mark.parametrize(
+    ("flat", "risky", "branch", "project", "expected"),
+    [
+        # An unapplied gate ahead of the project gives way to it (#2860).
+        ("not_set", "no_data", "not_set", "pass", "pass"),  # the reported bug
+        ("no_data", "not_set", "not_set", "pass", "pass"),
+        ("no_data", "no_data", "no_data", "pass", "pass"),
+        # Unchanged behaviour.
+        ("not_set", "no_data", "not_set", "not_set", "no_data"),  # no project gate
+        ("not_set", "no_data", "not_set", "no_data", "no_data"),  # project unapplied too
+        ("pass", "no_data", "not_set", "pass", "pass"),
+        ("fail", "no_data", "not_set", "pass", "fail"),  # a real failure is never demoted
+        ("not_set", "no_data", "not_set", "fail", "fail"),  # a failing project wins
+    ],
+)
+def test_unapplied_gates_ahead_of_the_project_give_way(flat, risky, branch, project, expected):
+    assert _gate(flat, risky, branch, project) == expected
 
 
 def test_coverage_without_per_line_branch_data_says_so() -> None:

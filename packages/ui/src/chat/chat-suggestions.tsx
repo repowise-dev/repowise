@@ -46,7 +46,7 @@ export function ChatSuggestions({
             type="button"
             data-chat-suggestion={suggestion.source}
             onClick={() => onSelect(suggestion)}
-            className="rounded-full border border-[var(--color-border-default)] px-2.5 py-1 text-left text-xs text-[var(--color-text-tertiary)] hover:border-[var(--color-border-hover)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+            className="rounded-full border border-[var(--color-border-default)] px-2.5 py-1 text-left text-xs text-[var(--color-text-tertiary)] hover:border-[var(--color-border-hover)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
           >
             {suggestion.text}
           </button>
@@ -71,7 +71,7 @@ export function ChatSuggestions({
             <button
               type="button"
               data-chat-suggestion={suggestion.source}
-              className="group flex w-full items-center gap-3 border-b border-[var(--color-border-default)] py-3 text-left text-[15px] text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+              className="group flex w-full items-center gap-3 border-b border-[var(--color-border-default)] py-3 text-left text-[15px] text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
               onClick={() => onSelect(suggestion)}
             >
               <span className="min-w-0 flex-1">{suggestion.text}</span>

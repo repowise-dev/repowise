@@ -130,6 +130,7 @@ def agent_rows() -> list[dict]:
                 "host": by_manager["host"],
                 "hook_adapter": target.hook_adapter,
                 "session_adapter": target.session_adapter,
+                "capture_adapter": target.capture_adapter,
                 "indexing_provider": identity.indexing_provider if identity else None,
             }
         )
@@ -238,6 +239,7 @@ _COLUMNS: tuple[tuple[str, str], ...] = (
     ("Instructions", "instructions"),
     ("Transcripts", "session_adapter"),
     ("Indexing", "indexing_provider"),
+    ("Attribution", "capture_adapter"),
 )
 
 
@@ -321,6 +323,15 @@ def render() -> str:
         "for that agent. `Indexing` is `Yes` when the agent's own CLI can run as the",
         "LLM that writes the index, selected by its provider id (`claude_cli`, for",
         "example). It is separate from the tier: it says nothing about the session.",
+        "`init` offers a logged-in agent CLI but uses it only when you pick it or pass",
+        "`--provider`. An agent CLI has no embedder, so semantic search needs an",
+        "embedder key of its own: see",
+        "[Embeddings](../reference/CONFIG.md#embeddings-for-semantic-search).",
+        "",
+        "`Attribution` is `Yes` when repowise can record the agent's edits as they",
+        "happen, an opt-in set by `attribution.capture` and `attribution.agents`. Every",
+        "agent's own git-ai notes, Agent Trace files and commit trailers are read",
+        "either way.",
         "",
         _matrix_table(rows),
         "",

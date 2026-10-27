@@ -253,11 +253,10 @@ class TestRemixRefusals:
         )
         assert _providers(tmp_path) == {}
 
-    def test_the_root_route_is_not_a_contract(self, tmp_path: Path) -> None:
-        # A stated ceiling: a path that normalises to bare `/` carries nothing
-        # to match on, and the shared builder drops it for every framework.
+    def test_the_root_route_is_a_contract(self, tmp_path: Path) -> None:
+        # The index route serves `/`, which a gateway or a resolved host can reach.
         _write(tmp_path, "app/routes/_index.tsx", HEALTHCHECK_TSX)
-        assert _providers(tmp_path) == {}
+        assert set(_providers(tmp_path)) == {"http::GET::/"}
 
 
 # ---------------------------------------------------------------------------

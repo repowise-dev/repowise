@@ -26,6 +26,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from ...entry_candidacy import KOTLIN_RUN_APPLICATION_RE, SPRING_BOOT_RUN_RE
 from ..type_names import bare_type_name
 from .base import DynamicEdge, DynamicHintExtractor
 
@@ -45,10 +46,10 @@ _MOCKK_RE = re.compile(r"\b(?:mockk|spyk)\s*<\s*([A-Z]\w*)\s*>")
 # MapStruct: Mappers.getMapper(XMapper.class)
 _MAPSTRUCT_RE = re.compile(r"Mappers\.getMapper\s*\(\s*([A-Z]\w*)\s*\.class")
 
-# Spring Boot entry: SpringApplication.run(MyApp.class, args)
-_BOOT_RUN_RE = re.compile(r"SpringApplication\.run\s*\(\s*([A-Z]\w*)\s*\.class")
-# Kotlin: runApplication<MyApp>(*args)
-_KOTLIN_RUN_APP_RE = re.compile(r"\brunApplication\s*<\s*([A-Z]\w*)\s*>")
+# Spring Boot entry: SpringApplication.run(MyApp.class, args) and Kotlin's
+# runApplication<MyApp>(*args), shared with ingestion's entry-point rule.
+_BOOT_RUN_RE = SPRING_BOOT_RUN_RE
+_KOTLIN_RUN_APP_RE = KOTLIN_RUN_APPLICATION_RE
 
 # Jackson / Gson: objectMapper.readValue(json, X.class) / gson.fromJson(json, X.class)
 _JSON_READ_RE = re.compile(

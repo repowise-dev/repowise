@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { useMemo, useState, type ReactNode, type ComponentType } from "react";
+import { useEffect, useMemo, useState, type ReactNode, type ComponentType } from "react";
 import { RefreshCw, Trash2, AlertTriangle, Zap, MoreHorizontal } from "lucide-react";
 import { Button } from "../ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
@@ -108,6 +108,11 @@ export interface QuickActionsProps {
    * the same weight made the destructive one as easy to hit as the safe one.
    */
   variant?: "row" | "header";
+  /** Open an action as if its button were clicked, confirm step included (a
+   *  retry after a failure). The shell calls `onConfirmRequestHandled` once
+   *  it has, so the host can clear the request. */
+  confirmRequest?: QuickActionKey | null;
+  onConfirmRequestHandled?: () => void;
 }
 
 export function QuickActions({
@@ -121,11 +126,22 @@ export function QuickActions({
   costPer1k,
   activeJobSlot,
   variant = "row",
+  confirmRequest,
+  onConfirmRequestHandled,
 }: QuickActionsProps) {
   const [internalLoading, setInternalLoading] = useState<QuickActionKey | null>(null);
   const [pendingAction, setPendingAction] = useState<QuickActionDef | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const loading = loadingKey !== undefined ? loadingKey : internalLoading;
+
+  useEffect(() => {
+    if (!confirmRequest) return;
+    const action = actions.find((a) => a.key === confirmRequest);
+    onConfirmRequestHandled?.();
+    if (action) handleClick(action);
+    // Fires per request; `handleClick` is recreated every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [confirmRequest]);
 
   const estimate = useMemo(() => {
     if (!pendingAction || pendingAction.key === "dead-code" || pageCount <= 0 || !costPer1k) {
@@ -155,6 +171,12 @@ export function QuickActions({
   }
 
   if (activeJobSlot) {
+    // In the header the panel sits in a slot that does not shrink, beside the
+    // repo identity. Unbounded, it took the width of its longest log line and
+    // squeezed the repo name down to one character per line.
+    if (variant === "header") {
+      return <div className="w-full min-w-0 sm:w-80 lg:w-96">{activeJobSlot}</div>;
+    }
     return <div className="mb-2">{activeJobSlot}</div>;
   }
 
