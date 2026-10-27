@@ -112,6 +112,7 @@ _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
     "java": replace(
         _JVM_STRATEGIES,
         free=("_resolve_java_same_package_unique",),
+        member=("_resolve_java_member_type_call", "_resolve_jvm_receiver_same_package"),
         member_fallback=_TYPED_RECEIVER,
         member_bare_fallback=False,
         inherited_typed_receiver=True,
@@ -566,6 +567,34 @@ class LanguageStrategiesMixin:
         if sym_id is None:
             return None
         return ResolvedCall(caller_id, sym_id, 0.90, call.line, "receiver_same_package")
+
+    def _resolve_java_member_type_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """``Outer.Inner.method()``: the method of the type the whole path names.
+
+        The path is read as Java reads it from the caller, so the ``Inner`` of
+        another imported type that also nests one is never taken, and a type
+        that lacks the method answers nothing. A path naming no repository
+        type (an enum constant, an external type) is resolved as its
+        receiver-less copy was before the grammar captured the path.
+        """
+        receiver = call.receiver_name or ""
+        if "." not in receiver:
+            return None
+        type_id = self._java_written_type(file_path, caller_id, receiver)
+        if type_id is None:
+            return self._resolve_one(file_path, replace(call, receiver_name=None))
+        found = self._java_member_target(file_path, call, caller_id, type_id)
+        if found is None:
+            return None
+        sym_id, scope = found
+        # ``receiver_same_file`` / ``_same_package`` / ``_import``: the type is written here.
+        confidence = {"same_file": 0.93, "same_package": 0.90}.get(scope, 0.88)
+        return ResolvedCall(caller_id, sym_id, confidence, call.line, f"receiver_{scope}")
 
     def _resolve_go_package_call(
         self,

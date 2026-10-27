@@ -24,6 +24,10 @@ from ..python_tasks import is_fire_and_forget
 
 _node_text = node_text
 
+# ``Outer.Inner``: capitalised names, each after the first holding a lower-case
+# letter, so ``X.CONST`` is not one. Same shape as the java.scm member-type pattern.
+_JAVA_MEMBER_TYPE_PATH = re.compile(r"[A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*[a-z][A-Za-z0-9_]*)+")
+
 def _call_receiver_from_node(node: Node, src: str) -> CallReceiver | None:
     """Describe an inner call captured as another call's receiver.
 
@@ -63,6 +67,17 @@ def _call_receiver_from_node(node: Node, src: str) -> CallReceiver | None:
     if receiver is not None and receiver.type in ("identifier", "this"):
         receiver_name = _node_text(receiver, src).strip() or None
     return CallReceiver(target_name, receiver_name, argument_count)
+
+
+def _java_member_type_receiver(node: Node, inner: CallReceiver, src: str) -> CallReceiver:
+    """*inner* with its ``Outer.Inner`` receiver, as the chain head ``Outer.Inner.m()`` writes it."""
+    obj = node.child_by_field_name("object")
+    if obj is None or obj.type != "field_access":
+        return inner
+    path = "".join(_node_text(obj, src).split())
+    if not _JAVA_MEMBER_TYPE_PATH.fullmatch(path):
+        return inner
+    return replace(inner, receiver_name=path)
 
 
 def _kotlin_call_receiver(call: Node, src: str) -> CallReceiver | None:
@@ -199,7 +214,12 @@ def _dart_receiver_path(head: Node, target: Node, src: str) -> str | None:
 # queries widen only these two), and what a plain dotted path of names looks
 # like once whitespace is gone.
 _PATH_RECEIVERS = frozenset(
-    {("typescript", "member_expression"), ("python", "attribute"), ("apex", "field_access")}
+    {
+        ("typescript", "member_expression"),
+        ("python", "attribute"),
+        ("apex", "field_access"),
+        ("java", "field_access"),
+    }
 )
 _DOTTED_PATH = re.compile(r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+")
 
@@ -382,6 +402,8 @@ def _call_from_match(
         if receiver_call_nodes
         else None
     )
+    if language == "java" and receiver_call is not None and receiver_call.receiver_name is None:
+        receiver_call = _java_member_type_receiver(receiver_call_nodes[0], receiver_call, src)
     if receiver_call_nodes and receiver_call is None and language == "kotlin":
         # Avoid resolving an unsupported chained call by its bare name.
         return None

@@ -1771,6 +1771,80 @@ class TestJavaMemberTypes:
             assert callees == ["c/Inner.java::Inner::y", "c/Inner.java::Inner::z"]
 
 
+class TestJavaQualifiedTypeReceiver:
+    """``B.Create.make()`` is ``B``'s nested ``Create``, though ``A`` nests one too."""
+
+    @staticmethod
+    def _outer(name: str, extra: str = "") -> str:
+        return (
+            f"package p;\npublic interface {name} {{\n    class Create {{\n"
+            "        public static Create make() { return null; }\n"
+            f"        public void run() {{}}\n{extra}    }}\n}}\n"
+        )
+
+    def _targets(self, tmp_path: Path, body: str, imports: str) -> list[tuple[str, str]]:
+        files = {
+            "p/A.java": self._outer("A", "        public void onlyInA() {}\n"),
+            "p/B.java": self._outer("B"),
+            "u/Use.java": f"package u;\n{imports}class Use {{\n    void go() {{\n"
+            f"        {body}\n    }}\n}}\n",
+        }
+        parsed = _parse_all(tmp_path, {k: ("java", v) for k, v in files.items()})
+        _link_imports(parsed, {"u/Use.java": {"p.A": "p/A.java", "p.B": "p/B.java"}})
+        imported = {"u/Use.java": {"p/A.java", "p/B.java"}, "p/A.java": set(), "p/B.java": set()}
+        resolver = CallResolver(parsed, imported, repo_path=str(tmp_path))
+        calls = parsed["u/Use.java"].calls
+        return sorted((rc.callee_id, rc.origin) for rc in resolver.resolve_file("u/Use.java", calls))
+
+    @pytest.mark.parametrize(
+        "imports", ["import p.A;\nimport p.B;\n", "import p.B;\nimport p.A;\n"], ids=["ab", "ba"]
+    )
+    def test_the_whole_path_names_the_type(self, tmp_path: Path, imports: str) -> None:
+        assert self._targets(tmp_path, "B.Create.make();", imports) == [
+            ("p/B.java::Create::make", "receiver_import")
+        ]
+
+    def test_a_chain_types_its_head_by_the_whole_path(self, tmp_path: Path) -> None:
+        imports = "import p.A;\nimport p.B;\n"
+        assert self._targets(tmp_path, "B.Create.make().run();", imports) == [
+            ("p/B.java::Create::make", "receiver_import"),
+            ("p/B.java::Create::run", "return_type_import"),
+        ]
+
+    def test_a_type_that_lacks_the_method_answers_nothing(self, tmp_path: Path) -> None:
+        """Only ``A.Create`` declares ``onlyInA``; the last segment alone would bind it."""
+        assert self._targets(tmp_path, "B.Create.onlyInA();", "import p.A;\nimport p.B;\n") == []
+
+    @pytest.mark.parametrize("receiver", ["X.CONST", "a.b", "X.inner"])
+    def test_a_path_that_is_not_a_member_type_stays_bare(
+        self, tmp_path: Path, receiver: str
+    ) -> None:
+        source = f"class Use {{\n    void go() {{\n        {receiver}.m();\n    }}\n}}\n"
+        parsed = _parse_all(tmp_path, {"Use.java": ("java", source)})
+        assert [c.receiver_name for c in parsed["Use.java"].calls] == [None]
+
+    def test_a_path_written_across_lines_is_read_whole(self, tmp_path: Path) -> None:
+        body = "B\n            .Create\n            .make()\n            .run();"
+        assert self._targets(tmp_path, body, "import p.A;\nimport p.B;\n") == [
+            ("p/B.java::Create::make", "receiver_import"),
+            ("p/B.java::Create::run", "return_type_import"),
+        ]
+
+    def test_a_path_naming_no_type_keeps_its_bare_reading(self, tmp_path: Path) -> None:
+        """``Color.Red`` is an enum constant: ``m`` binds as it did before the path was read."""
+        files = {
+            "p/Color.java": "package p;\npublic enum Color {\n    Red;\n    public void m() {}\n}\n",
+            "p/Use.java": "package p;\nclass Use {\n    void go() {\n        Color.Red.m();\n    }\n}\n",
+        }
+        parsed = _parse_all(tmp_path, {k: ("java", v) for k, v in files.items()})
+        resolver = CallResolver(parsed, {k: set() for k in parsed}, repo_path=str(tmp_path))
+        calls = parsed["p/Use.java"].calls
+        assert [c.receiver_name for c in calls] == ["Color.Red"]
+        assert [rc.callee_id for rc in resolver.resolve_file("p/Use.java", calls)] == [
+            "p/Color.java::Color::m"
+        ]
+
+
 class TestOwnerAwareModuleTier:
     """The module and import-name tiers pick an owner, not just a file.
 
