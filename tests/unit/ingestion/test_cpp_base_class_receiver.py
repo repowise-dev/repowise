@@ -205,8 +205,13 @@ def test_an_alias_cannot_borrow_a_type_from_an_unincluded_file(tmp_path: Path) -
     assert _call_targets(_build(tmp_path), "a.cpp::f") == set()
 
 
-@pytest.mark.parametrize("declaration", ["auto v = IV().other();", "auto v = IV(make()).other();"])
-def test_a_cpp_constructor_chain_does_not_type_its_result(tmp_path: Path, declaration: str) -> None:
+@pytest.mark.parametrize(
+    "declaration",
+    ["auto v = IV().other();", "auto v = IV(make()).other();", "auto v = IV() + other;"],
+)
+def test_a_cpp_constructor_expression_does_not_type_its_result(
+    tmp_path: Path, declaration: str
+) -> None:
     (tmp_path / "a.cpp").write_text(
         "struct V {\n  void run() {}\n};\nusing IV = V;\n"
         "void f() {\n  " + declaration + "\n  v.run();\n}\n"

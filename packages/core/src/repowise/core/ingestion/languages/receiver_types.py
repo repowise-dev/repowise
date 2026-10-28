@@ -318,7 +318,7 @@ _CPP_DECLARATION = re.compile(
 # no evidence that the local has the named type.
 _CPP_CONSTRUCTED = re.compile(
     r"\bauto\s+(?P<name>[a-z_]\w*)\s*=\s*(?P<type>[A-Za-z_]\w*)"
-    r"\s*(?:\(\s*\)|\{\s*\})(?!\s*(?:\.|->))"
+    r"\s*(?:\(\s*\)|\{\s*\})(?=\s*;)"
 )
 
 
