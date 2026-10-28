@@ -84,6 +84,7 @@ async def index_repo_full(
                     session,
                     repo.id,
                     replace_full_git_history=require_git_success,
+                    scan_commit_health=False,
                 )
                 or []
             )
@@ -91,6 +92,10 @@ async def index_repo_full(
             from repowise.core.persistence.crud.analysis.actions import write_read_snapshots
 
             await write_read_snapshots(session, repo.id)
+        # After commit, so the scan never holds the write lock; the rest drains in the background.
+        from repowise.core.pipeline.commit_health import refresh_commit_health_after_update
+
+        await refresh_commit_health_after_update(sf, repo.id, str(repo_path), background=True)
         await refresh_planner_stats(engine)
 
         from repowise.core.pipeline.cleanup_debt import (

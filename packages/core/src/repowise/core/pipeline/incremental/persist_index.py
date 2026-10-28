@@ -638,7 +638,9 @@ async def _write(ctx: IncrementalPersist) -> None:
         from repowise.core.pipeline.commit_health import refresh_commit_health_after_update
 
         with timed(timings, "persist.commit_health"):
-            await refresh_commit_health_after_update(sf, ctx.repo_id, str(ctx.repo_path))
+            await refresh_commit_health_after_update(
+                sf, ctx.repo_id, str(ctx.repo_path), background=True
+            )
 
         from repowise.core.pipeline.cleanup_debt import load_cleanup_debt
 

@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 import repowise.core.analysis.change_health.commit_scan as scan_mod
+import repowise.core.pipeline.commit_health_drain as drain_mod
 import repowise.core.pipeline.incremental.persist_index as incremental_mod
 from repowise.core.analysis.change_health.commit_scan import (
     CommitHealthScan,
@@ -28,7 +29,6 @@ from repowise.core.persistence import (
     upsert_repository,
 )
 from repowise.core.persistence.crud import (
-    delete_commit_health,
     get_commit_health,
     upsert_commit_health_bulk,
     upsert_git_commits_bulk,
@@ -40,6 +40,12 @@ from repowise.core.pipeline.commit_health import (
     refresh_commit_health_after_update,
 )
 from repowise.core.pipeline.incremental import persist_incremental_index
+from repowise.core.update_lock import (
+    release_commit_health_lock,
+    release_update_lock,
+    try_acquire_commit_health_lock,
+    try_acquire_update_lock,
+)
 from tests.unit.persistence.helpers import insert_repo
 
 _BASE = datetime(2026, 1, 1, tzinfo=UTC)
@@ -209,15 +215,25 @@ async def test_commits_a_budget_skipped_are_scanned_by_the_next_update(
         await engine.dispose()
 
 
-async def test_update_budget_is_smaller_than_the_full_index(repo, monkeypatch) -> None:
-    assert UPDATE_BUDGET_SECONDS < DEFAULT_BUDGET_SECONDS
+async def _store_with_commits(repo: Path):
     engine = create_engine(f"sqlite+aiosqlite:///{repo / '.repowise' / 'wiki.db'}")
     await init_db(engine)
     sf = create_session_factory(engine)
+    async with get_session(sf) as session:
+        repo_id = (await insert_repo(session)).id
+        await upsert_git_commits_bulk(session, repo_id, _commit_rows())
+    return engine, sf, repo_id
+
+
+async def _stored_in(sf, repo_id: str) -> set[str]:
+    async with get_session(sf) as session:
+        return {sha for sha in _SHAS if await get_commit_health(session, repo_id, sha) is not None}
+
+
+async def test_update_budget_is_smaller_than_the_full_index(repo, monkeypatch) -> None:
+    assert UPDATE_BUDGET_SECONDS < DEFAULT_BUDGET_SECONDS
+    engine, sf, repo_id = await _store_with_commits(repo)
     try:
-        async with get_session(sf) as session:
-            repo_id = (await insert_repo(session)).id
-            await upsert_git_commits_bulk(session, repo_id, _commit_rows())
         seen: list = []
         monkeypatch.setattr(scan_mod, "scan_commits", _scanner(str(repo), 0, seen))
 
@@ -236,32 +252,123 @@ async def test_update_budget_is_smaller_than_the_full_index(repo, monkeypatch) -
         await engine.dispose()
 
 
-async def test_rows_from_an_older_analyzer_get_the_full_budget(repo, monkeypatch) -> None:
-    """A re-pended backlog drains at the full index's pace; new commits keep the short one."""
-    engine = create_engine(f"sqlite+aiosqlite:///{repo / '.repowise' / 'wiki.db'}")
-    await init_db(engine)
-    sf = create_session_factory(engine)
+async def test_an_older_analyzers_backlog_keeps_the_inline_budget(repo, monkeypatch) -> None:
+    """A re-pended backlog no longer buys minutes inline; the background drain takes it."""
+    engine, sf, repo_id = await _store_with_commits(repo)
     try:
         async with get_session(sf) as session:
-            repo_id = (await insert_repo(session)).id
-            await upsert_git_commits_bulk(session, repo_id, _commit_rows())
             stale = {**_delta_row(_SHAS[0], str(repo)), "analyzer_version": 0}
             await upsert_commit_health_bulk(session, repo_id, [stale], [])
         seen: list = []
         monkeypatch.setattr(scan_mod, "scan_commits", _scanner(str(repo), 0, seen))
 
         await refresh_commit_health_after_update(sf, repo_id, str(repo))
-        monkeypatch.setenv("REPOWISE_COMMIT_HEALTH_BUDGET_SECONDS", "7")
-        await refresh_commit_health_after_update(sf, repo_id, str(repo))
-        async with get_session(sf) as session:
-            await delete_commit_health(session, repo_id)
-        monkeypatch.delenv("REPOWISE_COMMIT_HEALTH_BUDGET_SECONDS")
-        await refresh_commit_health_after_update(sf, repo_id, str(repo))
 
-        assert [budget for _shas, budget in seen] == [
-            DEFAULT_BUDGET_SECONDS,
-            7.0,
-            UPDATE_BUDGET_SECONDS,
-        ]
+        assert [budget for _shas, budget in seen] == [UPDATE_BUDGET_SECONDS]
     finally:
+        await engine.dispose()
+
+
+@pytest.fixture
+def spawned(monkeypatch) -> list:
+    calls: list = []
+    monkeypatch.setattr(
+        drain_mod, "start_background_drain", lambda path, repo_id: calls.append((path, repo_id))
+    )
+    return calls
+
+
+@pytest.mark.parametrize(
+    ("per_run", "background", "expected"), [(2, True, 1), (None, True, 0), (2, False, 0)]
+)
+async def test_only_a_spent_budget_hands_off_to_the_background(
+    repo, monkeypatch, spawned, per_run, background, expected
+) -> None:
+    engine, sf, repo_id = await _store_with_commits(repo)
+    try:
+        monkeypatch.setattr(scan_mod, "scan_commits", _scanner(str(repo), per_run))
+
+        stats = await refresh_commit_health_after_update(
+            sf, repo_id, str(repo), background=background
+        )
+
+        assert stats["exhausted"] == int(per_run is not None)
+        assert spawned == [(str(repo), repo_id)] * expected
+    finally:
+        await engine.dispose()
+
+
+async def test_a_held_lock_skips_the_inline_scan_and_queues_a_drain(
+    repo, monkeypatch, spawned
+) -> None:
+    """One scanner per repo: the update defers to a running drain instead of racing it."""
+    engine, sf, repo_id = await _store_with_commits(repo)
+    seen: list = []
+    monkeypatch.setattr(scan_mod, "scan_commits", _scanner(str(repo), None, seen))
+    assert try_acquire_commit_health_lock(repo) is None
+    try:
+        stats = await refresh_commit_health_after_update(sf, repo_id, str(repo), background=True)
+        assert stats["deferred"] == 1
+        assert seen == []
+        assert spawned == [(str(repo), repo_id)]
+        assert drain_mod.wait_for_turn(repo, timeout=0) is False
+    finally:
+        release_commit_health_lock(repo)
+        await engine.dispose()
+    assert drain_mod.wait_for_turn(repo, timeout=0) is True
+    release_commit_health_lock(repo)
+
+
+async def test_the_inline_scan_releases_its_lock(repo, monkeypatch) -> None:
+    engine, sf, repo_id = await _store_with_commits(repo)
+    try:
+        monkeypatch.setattr(scan_mod, "scan_commits", _scanner(str(repo), 2))
+        await refresh_commit_health_after_update(sf, repo_id, str(repo))
+        assert try_acquire_commit_health_lock(repo) is None
+        release_commit_health_lock(repo)
+    finally:
+        await engine.dispose()
+
+
+async def test_a_running_update_holds_the_drain_back(repo) -> None:
+    assert try_acquire_update_lock(repo, None) is None
+    try:
+        assert drain_mod.wait_for_turn(repo, timeout=0) is False
+    finally:
+        release_update_lock(repo)
+
+
+async def test_the_drain_fills_what_the_inline_budget_left(repo, monkeypatch, spawned) -> None:
+    engine, sf, repo_id = await _store_with_commits(repo)
+    try:
+        seen: list = []
+        monkeypatch.setattr(scan_mod, "scan_commits", _scanner(str(repo), 2, seen))
+        await refresh_commit_health_after_update(sf, repo_id, str(repo), background=True)
+        assert await _stored_in(sf, repo_id) == set(_SHAS[-2:])
+        assert spawned
+
+        stored = await drain_mod.drain(sf, repo_id, repo, total=60, round_seconds=5)
+
+        assert stored == 3
+        assert await _stored_in(sf, repo_id) == set(_SHAS)
+        assert [budget for _shas, budget in seen[1:]] == [5, 5]
+    finally:
+        await engine.dispose()
+
+
+async def test_the_drain_stops_between_rounds_when_an_update_starts(repo, monkeypatch) -> None:
+    engine, sf, repo_id = await _store_with_commits(repo)
+    seen: list = []
+    inner = _scanner(str(repo), 1, seen)
+
+    def scan(path, shas, **kwargs):
+        try_acquire_update_lock(repo, None)
+        return inner(path, shas, **kwargs)
+
+    monkeypatch.setattr(scan_mod, "scan_commits", scan)
+    try:
+        assert await drain_mod.drain(sf, repo_id, repo, total=60) == 1
+        assert len(seen) == 1
+    finally:
+        release_update_lock(repo)
         await engine.dispose()
