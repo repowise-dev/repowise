@@ -11,12 +11,14 @@ import asyncio
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import structlog
 
 from ._constants import _DEFAULT_CO_CHANGE_COMMIT_LIMIT, _MAX_PARTNERS_PER_FILE
 from .co_change import CoChangeWalk, compute_co_changes_and_entropy
+from .fix_shape_cache import FixShapeCache
 from .prior_defects import PriorDefects, compute_prior_defects
 from .records import _CommitRec
 
@@ -36,6 +38,9 @@ class SignalPass:
     timings: Any
     # Shuts the private pool and closes the repo when a stage is cancelled.
     abort: Callable[[], None]
+    # Where run-to-run caches live; ``None`` keeps them in memory only.
+    cache_dir: Path | None = None
+    cache_writable: bool = False
 
 
 @dataclass(frozen=True)
@@ -110,7 +115,12 @@ def prior_defect_stage(
 
     try:
         with timed(sp.timings, "rebuild.git.prior_defects"):
-            prior_defects = compute_prior_defects(sp.repo, counted_paths, as_of_ts=sp.as_of_ts)
+            shape_cache = FixShapeCache.load(sp.cache_dir)
+            prior_defects = compute_prior_defects(
+                sp.repo, counted_paths, as_of_ts=sp.as_of_ts, shape_cache=shape_cache
+            )
+            if sp.cache_writable:
+                shape_cache.save()
         apply_prior_defects(code_results, prior_defects)
     except Exception as exc:
         logger.debug("prior_defect_pass_failed", error=str(exc))

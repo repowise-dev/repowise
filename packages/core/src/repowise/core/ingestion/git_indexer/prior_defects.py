@@ -45,6 +45,7 @@ if TYPE_CHECKING:
     # Type-only: ``analysis.change_risk`` imports back into this package, so a
     # runtime import would close an import cycle.
     from ...analysis.changed_lines import FileDiff
+    from .fix_shape_cache import FixShapeCache
 
 logger = structlog.get_logger(__name__)
 
@@ -143,6 +144,7 @@ def collect_fix_commits(
     as_of_ts: float | None,
     window_days: int = PRIOR_DEFECT_WINDOW_DAYS,
     skip_shas: set[str] | None = None,
+    shape_cache: FixShapeCache | None = None,
 ) -> FixWalk:
     """Walk the trailing window's fix commits and open each one's diff.
 
@@ -155,6 +157,10 @@ def collect_fix_commits(
     is the part that costs real time, and an update with no new fix commits
     should not pay for it. Counting callers must not pass it - a skipped commit
     is missing from the walk entirely, not merely un-diffed.
+
+    *shape_cache* takes each cached commit's shape instead of opening its diff,
+    so those commits carry no *files*: only counting callers may pass it. Fresh
+    shapes are added to it, and shapes of commits outside the window dropped.
 
     Ceiling: the returned walk holds every fix commit's parsed patch, changed
     line text included, plus a byte-capped copy of its message, for as long as
@@ -181,13 +187,18 @@ def collect_fix_commits(
     if not fixes:
         return FixWalk(oldest_fix_ts=oldest, shas=shas)
 
-    diffs = _parse_fix_diffs(repo, [f.sha for f in fixes])
+    known = shape_cache.shapes if shape_cache is not None else {}
+    diffs = _parse_fix_diffs(repo, [f.sha for f in fixes if f.sha not in known])
+    fresh = {sha: classify_fix_shape(files) for sha, files in diffs.items()}
+    if shape_cache is not None:
+        shape_cache.retain(shas)
+        shape_cache.shapes.update(fresh)
     resolved_fixes = [
         FixCommit(
             sha=fix.sha,
             ts=fix.ts,
             paths=fix.paths,
-            shape_kind=classify_fix_shape(diffs[fix.sha]) if fix.sha in diffs else "code_fix",
+            shape_kind=known.get(fix.sha) or fresh.get(fix.sha, "code_fix"),
             files=diffs.get(fix.sha, {}),
             subject=fix.subject,
             body=fix.body,
@@ -205,6 +216,7 @@ def compute_prior_defects(
     as_of_ts: float | None,
     window_days: int = PRIOR_DEFECT_WINDOW_DAYS,
     walk: FixWalk | None = None,
+    shape_cache: FixShapeCache | None = None,
 ) -> PriorDefects:
     """Return per-file bug-fix counts over the trailing window.
 
@@ -214,11 +226,16 @@ def compute_prior_defects(
     Files outside *indexable_files* are ignored.
 
     *walk* lets a caller that already ran :func:`collect_fix_commits` reuse it
-    instead of paying for a second walk and diff pass.
+    instead of paying for a second walk and diff pass. *shape_cache* (see
+    :func:`collect_fix_commits`) spares the diffs of already classified commits.
     """
     if walk is None:
         walk = collect_fix_commits(
-            repo, indexable_files, as_of_ts=as_of_ts, window_days=window_days
+            repo,
+            indexable_files,
+            as_of_ts=as_of_ts,
+            window_days=window_days,
+            shape_cache=shape_cache,
         )
     if not walk.fixes:
         return PriorDefects()
