@@ -219,6 +219,29 @@ def test_a_cpp_constructor_expression_does_not_type_its_result(
     assert "a.cpp::V::run" not in _call_targets(_build(tmp_path), "a.cpp::f")
 
 
+@pytest.mark.parametrize("scope", ["namespace ns", "void other()"])
+def test_a_scoped_cpp_alias_does_not_hide_an_unrelated_global_class(
+    tmp_path: Path, scope: str
+) -> None:
+    (tmp_path / "a.cpp").write_text(
+        "struct Peer {\n  void run() {}\n};\n"
+        + scope + " {\n  using Peer = External;\n}\n"
+        + "void f(Peer& peer) {\n  peer.run();\n}\n"
+    )
+    assert _call_targets(_build(tmp_path), "a.cpp::f") == {"a.cpp::Peer::run"}
+
+
+@pytest.mark.parametrize("scoped", [False, True])
+def test_an_in_scope_cpp_alias_cannot_borrow_a_global_class(
+    tmp_path: Path, scoped: bool
+) -> None:
+    body = "void f() {\n  using Peer = External;\n  Peer peer;\n  peer.run();\n}\n"
+    if scoped:
+        body = "namespace ns {\n" + body + "}\n"
+    (tmp_path / "a.cpp").write_text("struct Peer {\n  void run() {}\n};\n" + body)
+    assert "a.cpp::Peer::run" not in _call_targets(_build(tmp_path), "a.cpp::f")
+
+
 class TestOtherLanguagesSkipTheCppBranch:
     def test_python_typed_receiver_never_asks_the_cpp_base_class_rule(
         self, tmp_path: Path, monkeypatch
