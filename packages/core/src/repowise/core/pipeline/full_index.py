@@ -88,14 +88,16 @@ async def index_repo_full(
                 )
                 or []
             )
-            # Every store is final: the views the overview and dashboard read.
-            from repowise.core.persistence.crud.analysis.actions import write_read_snapshots
-
-            await write_read_snapshots(session, repo.id)
         # After commit, so the scan never holds the write lock; the rest drains in the background.
         from repowise.core.pipeline.commit_health import refresh_commit_health_after_update
 
         await refresh_commit_health_after_update(sf, repo.id, str(repo_path), background=True)
+        # Every store is final: the views the overview and dashboard read. Written
+        # after the commit-health rows, whose commit would otherwise drop them.
+        from repowise.core.persistence.crud.analysis.actions import write_read_snapshots
+
+        async with get_session(sf) as session:
+            await write_read_snapshots(session, repo.id)
         await refresh_planner_stats(engine)
 
         from repowise.core.pipeline.cleanup_debt import (
