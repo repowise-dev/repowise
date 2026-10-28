@@ -129,7 +129,7 @@ class TestCppBaseClassReceiver:
 
 
 @pytest.mark.parametrize("alias", ["using IV = V<int>;", "typedef V<int> IV;"])
-@pytest.mark.parametrize("header", [False, True, "guarded"])
+@pytest.mark.parametrize("header", [False, True, "guarded", "unparsed guard"])
 @pytest.mark.parametrize("declaration", ["auto v = IV();", "auto v = IV{};", "IV v;"])
 def test_a_cpp_type_alias_reaches_an_inherited_method(
     tmp_path: Path, alias: str, header: bool | str, declaration: str
@@ -140,7 +140,11 @@ def test_a_cpp_type_alias_reaches_an_inherited_method(
     )
     prefix = types
     if header:
-        if header == "guarded":
+        if header == "unparsed guard":
+            # A class head split across #if/#else makes tree-sitter wrap the
+            # whole guard in an ERROR node, as it does for fmt/format.h.
+            types += "#if X\nstruct C {\n#else\nstruct C : B {\n#endif\n  void g();\n};\n"
+        if header in ("guarded", "unparsed guard"):
             types = "#ifndef TYPES_H\n#define TYPES_H\n" + types + "#endif\n"
         (tmp_path / "types.h").write_text(types)
         prefix = '#include "types.h"\n'

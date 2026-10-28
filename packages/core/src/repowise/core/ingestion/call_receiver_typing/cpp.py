@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import NamedTuple
 
-from tree_sitter import Node, Parser
+from tree_sitter import Node, Parser, Query
 
 from ..models import Symbol
 from ..type_names import strip_type_arguments
@@ -17,6 +17,13 @@ _PURE_VIRTUAL = re.compile(r"=\s*0\s*;")
 # Alias facts are a few tuples per file, and a header is read again for every
 # file that includes it, so they outlive the four-file source caches.
 _CPP_FACT_FILES = 1024
+
+# Matched in C rather than walked node by node in Python.
+_CPP_FACT_PATTERNS = """
+[(alias_declaration) (type_definition)] @alias
+[(declaration) (field_declaration) (parameter_declaration) (optional_parameter_declaration)] @declaration
+"""
+_CPP_FACT_QUERY: list[Query] = []
 
 
 class _CppAlias(NamedTuple):
@@ -46,10 +53,14 @@ class CppFieldOwners:
         Byte offsets distinguish parameters, aliases and calls on the same
         physical line. A field is read in its class, not in the calling method.
         """
+        facts = self._cpp_type_facts(path)
+        # Only a namespace or body alias depends on where the type was read.
+        if all(alias.scope is None for alias in facts.aliases):
+            return 0
         owner, _ = self._typing_scope(path, caller_id, "cpp", name)
         spans = self._spans_for(path)
         start, end = spans.get(owner, (1, 0))
-        declarations = self._cpp_type_facts(path).declarations
+        declarations = facts.declarations
         found = [d.position for d in declarations if d.name == name and start <= d.line <= end]
         if not found:
             _, class_id = self._field_owner(path, caller_id, "cpp")
@@ -114,6 +125,7 @@ class CppFieldOwners:
             return cached
         # Local import: the parser also imports the receiver-typing modules.
         from ..parser import _get_language
+        from ..parser_helpers import _run_query
 
         text = self._text_of(path)
         # Most files declare no alias; skip their second parse.
@@ -125,15 +137,16 @@ class CppFieldOwners:
         declarations: list[_CppBinding] = []
         if language is None:
             return _CppFacts()
+        if not _CPP_FACT_QUERY:
+            _CPP_FACT_QUERY.append(Query(language, _CPP_FACT_PATTERNS))
         root = Parser(language).parse(text.encode("utf-8")).root_node
-        stack = [root]
-        while stack:
-            node = stack.pop()
-            alias = _cpp_alias(node)
-            if alias is not None:
-                aliases.append(alias)
-            declarations.extend(_cpp_declarations(node))
-            stack.extend(reversed(node.named_children))
+        for match in _run_query(_CPP_FACT_QUERY[0], root):
+            for node in match.get("alias", ()):
+                alias = _cpp_alias(node)
+                if alias is not None:
+                    aliases.append(alias)
+            for node in match.get("declaration", ()):
+                declarations.extend(_cpp_declarations(node))
         facts = _CppFacts(tuple(aliases), tuple(declarations))
         _store_capped(self._cpp_type_aliases, path, facts, _CPP_FACT_FILES)
         return facts
@@ -249,9 +262,13 @@ def _cpp_alias(node: Node) -> _CppAlias | None:
 
 
 def _cpp_alias_scope(node: Node) -> tuple[int, int] | None:
-    """Preprocessor guards wrap file scope; namespaces and function bodies do not."""
+    """Preprocessor guards wrap file scope; namespaces and function bodies do not.
+
+    One ``#if`` that splits a class head turns the whole include guard into an
+    ``ERROR`` node (fmt/format.h), so recovery nodes are looked through too.
+    """
     parent = node.parent
-    while parent is not None and parent.type.startswith("preproc_"):
+    while parent is not None and (parent.type.startswith("preproc_") or parent.type == "ERROR"):
         parent = parent.parent
     if parent is None or parent.type == "translation_unit":
         return None
