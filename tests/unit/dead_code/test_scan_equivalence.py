@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import random
 import re
+from pathlib import Path
 
 from repowise.core.analysis.dead_code import DeadCodeAnalyzer, DeadCodeKind
+from repowise.core.analysis.dead_code.file_reachability import is_file_reachable
 from repowise.core.analysis.dead_code.name_occurrences import (
     _PATH_TOKEN_RE,
     IDENTIFIER_RE,
@@ -19,6 +21,7 @@ from repowise.core.analysis.dead_code.name_occurrences import (
     occurrence_files,
 )
 from repowise.core.analysis.dead_code.passes.unreachable_files import UnreachableFilePass
+from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 from tests.unit.dead_code._helpers import _build_graph, _old_date
 
 _REFERENCE_PATH_TOKEN_RE = re.compile(rb"[A-Za-z0-9_@~+\-]*[./][A-Za-z0-9_.@~+\-/]*")
@@ -83,3 +86,31 @@ def test_unreachable_file_pass_judges_files_not_symbols():
     report = analyzer.analyze({"detect_unused_exports": False, "detect_unused_internals": False})
     unreachable = [f.file_path for f in report.findings if f.kind is DeadCodeKind.UNREACHABLE_FILE]
     assert unreachable == ["lonely.py"]
+
+
+_BUILT = {
+    "pkg/a.py": "def used():\n    return 1\n\nclass Box:\n    def method(self):\n        return used()\n",
+    "pkg/b.py": "from pkg.a import used\n\ndef _private():\n    return used()\n",
+    "src/main.go": "package main\n\nfunc helper() int { return 1 }\n\nfunc main() { helper() }\n",
+    "web/app.ts": "export function render(): number { return 1 }\nfunction local() { return 2 }\n",
+}
+
+
+def test_builder_symbols_never_reach_the_file_passes(tmp_path: Path):
+    # Why skipping symbols changes no finding: in a built graph every symbol is
+    # reached through its file's ``defines`` edge and defines nothing itself.
+    for rel, text in _BUILT.items():
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    parser = ASTParser()
+    builder = GraphBuilder(repo_path=tmp_path)
+    for fi in FileTraverser(tmp_path).traverse():
+        builder.add_file(parser.parse_file(fi, Path(fi.abs_path).read_bytes()))
+    graph = builder.build()
+    analyzer = DeadCodeAnalyzer(graph, git_meta_map={})
+    symbols = [n for n, d in graph.nodes(data=True) if d.get("node_type") == "symbol"]
+    assert len(symbols) > len(_BUILT)
+    for node in symbols:
+        assert is_file_reachable(node, graph)
+        assert analyzer._defined_symbols(node) == []
