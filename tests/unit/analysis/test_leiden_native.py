@@ -8,6 +8,7 @@ the heavy package out of the CLI and community-detection import paths.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import subprocess
 import sys
@@ -18,7 +19,9 @@ import pytest
 
 from repowise.core.analysis._leiden import leiden_partition
 
-pytest.importorskip("graspologic_native")
+_HAS_NATIVE = importlib.util.find_spec("graspologic_native") is not None
+
+needs_native = pytest.mark.skipif(not _HAS_NATIVE, reason="graph-extra not installed")
 
 _SRC_DIRS = [
     str(Path(__file__).resolve().parents[3] / "packages" / pkg / "src")
@@ -42,6 +45,7 @@ def _graphs() -> list[nx.Graph]:
     return [named, weighted, partly_weighted, with_self_loop, view]
 
 
+@needs_native
 @pytest.mark.parametrize("graph", _graphs())
 def test_partition_matches_the_graspologic_wrapper(graph: nx.Graph) -> None:
     partition_module = pytest.importorskip("graspologic.partition")
@@ -49,11 +53,13 @@ def test_partition_matches_the_graspologic_wrapper(graph: nx.Graph) -> None:
     assert leiden_partition(graph, seed=42) == expected
 
 
+@needs_native
 def test_directed_graphs_are_rejected() -> None:
     with pytest.raises(ValueError):
         leiden_partition(nx.DiGraph([("a", "b")]), seed=42)
 
 
+@needs_native
 def test_colliding_node_names_are_rejected() -> None:
     with pytest.raises(ValueError):
         leiden_partition(nx.Graph([(1, "1"), ("1", "x")]), seed=42)
@@ -65,7 +71,8 @@ def test_cli_and_community_detection_do_not_import_graspologic() -> None:
         "import sys, networkx as nx; "
         "import repowise.cli.main, repowise.cli.commands.update_cmd.command; "
         "from repowise.core.analysis.communities import _partition; "
-        "assert _partition(nx.connected_caveman_graph(3, 4))[1] == 'leiden'; "
+        "algo = _partition(nx.connected_caveman_graph(3, 4))[1]; "
+        f"assert algo == ('leiden' if {_HAS_NATIVE} else 'louvain'), algo; "
         "print(sorted({m.split('.')[0] for m in sys.modules} "
         "& {'graspologic', 'umap', 'pynndescent', 'sklearn'}))"
     )
