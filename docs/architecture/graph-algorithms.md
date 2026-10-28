@@ -112,15 +112,11 @@ though someone had written it.
   smaller graphs. Recall leads in three of the seven cells. Most misses are
   dynamic dispatch, which no tool in the comparison resolves without emitting
   several wrong edges for each right one.
-- **Against compiler indexes for more languages.** Java reads 0.725 to 0.781
-  precision against javac across three repositories (0.781 on jsoup). C on git,
-  a repository held out from all tuning, reads 0.979 precision at 0.83 recall.
-  C#, C++, Rust and Python (against jedi, a static analyser) are in the same
-  table.
-- **Hand-graded across nine languages.** 280 call edges per tool, 560 in all,
-  each read with its imports and enclosing scope open: 240 of 280 correct for
-  repowise (85.7%) against 164 of 280 for CodeGraph 1.5.0 (58.6%), with
-  disjoint intervals. Errors concentrate in Rust, C++ and Java.
+- **Against compiler indexes for more languages.** Java reads {{P:lo-java}} to
+  {{P:hi-java}} precision against javac across seven repositories. C on git,
+  a repository held out from all tuning, reads {{P:git}} precision at
+  {{R:git}} recall. Dart, Kotlin, C#, C++, Rust and Python (against jedi, a
+  static analyser) are in the same table.
 
 Unused methods are not reported for any language because method-level precision
 does not hold up under this measurement, and reporting them would mean
