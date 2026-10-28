@@ -177,6 +177,17 @@ def test_an_unresolved_cpp_alias_invents_no_method_edge(tmp_path: Path, aliases:
     assert _call_targets(_build(tmp_path), "a.cpp::f") == set()
 
 
+@pytest.mark.parametrize("target", ["std::chrono::weekday", "Missing"])
+def test_a_preprocessor_alias_keeps_its_fallback_class(tmp_path: Path, target: str) -> None:
+    # fmt/chrono.h: the alias and the class are the two sides of one #if.
+    (tmp_path / "a.cpp").write_text(
+        "#if defined(HAS_WEEKDAY)\nusing weekday = " + target + ";\n#else\n"
+        "class weekday {\n public:\n  unsigned c_encoding() const { return 0; }\n};\n#endif\n"
+        "unsigned f(weekday wd) {\n  return wd.c_encoding();\n}\n"
+    )
+    assert _call_targets(_build(tmp_path), "a.cpp::f") == {"a.cpp::weekday::c_encoding"}
+
+
 def test_a_cpp_alias_chain_has_a_depth_limit(tmp_path: Path) -> None:
     aliases = "".join(f"using A{i} = A{i + 1};\n" for i in range(20))
     (tmp_path / "a.cpp").write_text(

@@ -9,10 +9,14 @@ from tree_sitter import Node, Parser
 
 from ..models import Symbol
 from ..type_names import strip_type_arguments
-from ._shared import _SOURCE_CACHE_FILES, _store_capped
+from ._shared import _store_capped
 
 # ``virtual void f() = 0;``, a trailing ``const``/``override`` included.
 _PURE_VIRTUAL = re.compile(r"=\s*0\s*;")
+
+# Alias facts are a few tuples per file, and a header is read again for every
+# file that includes it, so they outlive the four-file source caches.
+_CPP_FACT_FILES = 1024
 
 
 class _CppAlias(NamedTuple):
@@ -85,10 +89,20 @@ class CppFieldOwners:
         return None
 
     def _cpp_aliases_in(self, path: str, position: int = 0) -> dict[str, str | None]:
-        """File bindings plus unsupported aliases visible at the type declaration."""
+        """File bindings plus unsupported aliases visible at the type declaration.
+
+        A file-scope alias in a file that also declares a class of that name
+        is the other side of a preprocessor branch (``#if`` ``using weekday =
+        std::chrono::weekday;`` ``#else`` ``class weekday``): the class keeps
+        its ordinary lookup.
+        """
         aliases: dict[str, str | None] = {}
         for alias in self._cpp_type_facts(path).aliases:
             if alias.scope is not None and not alias.scope[0] <= position < alias.scope[1]:
+                continue
+            if alias.scope is None and any(
+                declared == path for declared, _, _ in self._declared_types_named(alias.name)
+            ):
                 continue
             aliases[alias.name] = alias.target if alias.name not in aliases else None
         return aliases
@@ -101,12 +115,17 @@ class CppFieldOwners:
         # Local import: the parser also imports the receiver-typing modules.
         from ..parser import _get_language
 
+        text = self._text_of(path)
+        # Most files declare no alias; skip their second parse.
+        if "using" not in text and "typedef" not in text:
+            _store_capped(self._cpp_type_aliases, path, _CppFacts(), _CPP_FACT_FILES)
+            return _CppFacts()
         language = _get_language("cpp")
         aliases: list[_CppAlias] = []
         declarations: list[_CppBinding] = []
         if language is None:
             return _CppFacts()
-        root = Parser(language).parse(self._text_of(path).encode("utf-8")).root_node
+        root = Parser(language).parse(text.encode("utf-8")).root_node
         stack = [root]
         while stack:
             node = stack.pop()
@@ -116,7 +135,7 @@ class CppFieldOwners:
             declarations.extend(_cpp_declarations(node))
             stack.extend(reversed(node.named_children))
         facts = _CppFacts(tuple(aliases), tuple(declarations))
-        _store_capped(self._cpp_type_aliases, path, facts, _SOURCE_CACHE_FILES)
+        _store_capped(self._cpp_type_aliases, path, facts, _CPP_FACT_FILES)
         return facts
 
     def _field_owner(self, file_path: str, caller_id: str, language: str) -> tuple[str, str]:
