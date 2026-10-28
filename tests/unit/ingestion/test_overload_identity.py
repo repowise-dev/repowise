@@ -808,8 +808,12 @@ class TestKotlinOverloads:
         "package app\n\nclass ByteString\n\nclass Buf {\n"
         "  fun write(b: ByteString): Buf = this\n  fun write(b: ByteArray): Buf = this\n"
         "  fun put(a: Long, b: Int) { }\n  fun put(a: Int, b: Long) { }\n"
-        "  fun mark(s: String?) { }\n  fun mark(f: Boolean) { }\n}\n\n"
-        "fun use(b: Buf, bytes: ByteArray, text: ByteString, n: Int, maybe: String?) {\n"
+        "  fun mark(s: String?) { }\n  fun mark(f: Boolean) { }\n"
+        "  fun each(b: ByteString, f: () -> Unit) { }\n  fun each(b: ByteArray, f: () -> Unit) { }\n"
+        "  fun fill(b: ByteString, vararg n: Int) { }\n  fun fill(b: ByteArray, vararg n: Int) { }\n"
+        "  fun see(s: String) { }\n  fun see(a: Any) { }\n"
+        "  fun scan(bytes: ByteString) { }\n  fun scan(bytes: ByteArray) { }\n}\n\n"
+        "fun use(b: Buf, bytes: ByteArray, text: ByteString, n: Int, maybe: String?, nums: IntArray, any: Any) {\n"
     )
 
     @pytest.mark.parametrize(
@@ -826,6 +830,12 @@ class TestKotlinOverloads:
             ("b.write(b = bytes)", "write#1(ByteString)"),
             ("b.put(1, 2)", "put#2(Long,Int)"),
             ("b.put(n, n)", "put#2(Long,Int)"),
+            # A named argument, a trailing lambda or a spread leaves positions unread.
+            ("b.scan(bytes = text)", "scan#1(ByteString)"),
+            ("b.each(bytes) { }", "each#2(ByteString,Function0)"),
+            ("b.fill(bytes, *nums)", "fill#2(ByteString,Int[])"),
+            # A smart cast may have narrowed an Any argument, so its declared type decides nothing.
+            ("b.see(any)", "see#1(String)"),
         ],
     )
     def test_a_typed_argument_picks_the_overload_of_exactly_its_type(

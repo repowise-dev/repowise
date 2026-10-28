@@ -481,10 +481,7 @@ def _kotlin_positional_arguments(arg_nodes: list[Node]) -> list[Node]:
     position does not say, so such a call is not read.
     """
     arguments = arg_nodes[0] if arg_nodes else None
-    if arguments is None or arguments.type != "value_arguments":
-        return []
-    call = arguments.parent
-    if call is not None and any(c.type == "annotated_lambda" for c in call.children):
+    if arguments is None or arguments.type != "value_arguments" or _kotlin_trailing_lambda(arguments):
         return []
     found = []
     for argument in arguments.named_children:
