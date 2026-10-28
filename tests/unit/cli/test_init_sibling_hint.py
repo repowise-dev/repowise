@@ -54,6 +54,18 @@ def test_repos_in_the_home_folder_get_no_hint(
     assert _sibling_hint.sibling_repo_count(backend) == 0
 
 
+def test_an_unreadable_sibling_gives_no_hint_and_no_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    backend = _repo(tmp_path / "backend")
+
+    def _denied(*_a: object, **_k: object) -> None:
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(_sibling_hint, "scan_for_repos", _denied)
+    assert _sibling_hint.sibling_repo_count(backend) == 0
+
+
 def test_the_hint_names_the_parent_folder(tmp_path: Path, out: io.StringIO) -> None:
     backend = _repo(tmp_path / "backend")
     _repo(tmp_path / "frontend")

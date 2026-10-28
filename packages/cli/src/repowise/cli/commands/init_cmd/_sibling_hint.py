@@ -20,7 +20,11 @@ def sibling_repo_count(repo_path: Path) -> int:
         return 0
     if find_workspace_root(repo_path) is not None:
         return 0  # already a workspace member; init handles that case itself
-    repos = scan_for_repos(parent, max_depth=1).repos
+    try:
+        repos = scan_for_repos(parent, max_depth=1).repos
+    except OSError:
+        return 0  # an unreadable sibling must not fail an init this note only advises
+
     return len(repos) if len(repos) > 1 else 0
 
 
