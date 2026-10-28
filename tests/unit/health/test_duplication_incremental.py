@@ -323,8 +323,8 @@ def test_corrupt_artifact_falls_back(tmp_path: Path):
     assert _key(report) == _key(_full(parsed))
 
 
-def test_truncated_state_refuses_to_splice(tmp_path: Path):
-    """A window-budget-hit run persists a flag that blocks splicing."""
+def test_truncated_state_splices_to_the_same_cut(tmp_path: Path):
+    """A window-budget-hit run splices only to the result a full run gives."""
     # Budget admits the first file's windows but trips on the second, so
     # the run persists a truncated state (an empty-window run would
     # return before persisting anything).
@@ -337,7 +337,6 @@ def test_truncated_state_refuses_to_splice(tmp_path: Path):
     (tmp_path / "a.py").write_text(_BODY.replace("doit", "edited"))
     parsed = _parsed(tmp_path)
     report = _incremental(parsed, cache_dir, {"a.py"}, limits=lim)
-    assert "incremental" not in report.diagnostics
     assert _key(report) == _key(_full(parsed, limits=lim))
 
 

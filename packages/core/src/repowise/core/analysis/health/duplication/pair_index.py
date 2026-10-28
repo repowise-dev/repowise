@@ -18,8 +18,10 @@ The artifact stores:
   rows. Multiset, not set: ``_merge_adjacent_pairs`` accumulates
   ``token_count`` per merged pair, so multiplicity matters.
 * ``total_windows`` plus the guard flags, so the incremental path can
-  re-evaluate the repo-wide window budget and refuse to splice a
-  truncated state.
+  re-evaluate the repo-wide window budget.
+* ``budget_stop`` and ``unread`` for a run the window budget cut short:
+  the file collection stopped at and the files after it, so a splice can
+  check that the same cut would fall in the same place.
 
 Validity is keyed on (version, window size, limits fingerprint); any
 mismatch -- or any load/save error -- degrades to a full re-detect,
@@ -40,7 +42,7 @@ from .limits import DuplicationLimits
 
 log = structlog.get_logger(__name__)
 
-_INDEX_VERSION = 3
+_INDEX_VERSION = 4
 _INDEX_FILENAME = "duplication_pairs.pkl"
 
 # One raw-pair multiset entry as a path-id row:
@@ -78,11 +80,16 @@ class DuplicationPairIndex:
     total_windows: int = 0
     window_budget_hit: bool = False
     timed_out: bool = False
+    # Where a window-budget cut fell; ``None`` when the run was not cut.
+    budget_stop: str | None = None
+    unread: set[str] = field(default_factory=set)
 
     @property
     def spliceable(self) -> bool:
-        """A truncated or deadline-cut state cannot be spliced safely."""
-        return not (self.window_budget_hit or self.timed_out)
+        """A deadline-cut state, or a budget cut with no recorded position, cannot be spliced."""
+        if self.timed_out:
+            return False
+        return not self.window_budget_hit or self.budget_stop is not None
 
 
 def load_pair_index(
@@ -110,6 +117,8 @@ def load_pair_index(
             total_windows=payload["total_windows"],
             window_budget_hit=payload["window_budget_hit"],
             timed_out=payload["timed_out"],
+            budget_stop=payload["budget_stop"],
+            unread=payload["unread"],
         )
     except FileNotFoundError:
         return None
@@ -133,6 +142,8 @@ def save_pair_index(cache_dir: Path, index: DuplicationPairIndex) -> None:
             "total_windows": index.total_windows,
             "window_budget_hit": index.window_budget_hit,
             "timed_out": index.timed_out,
+            "budget_stop": index.budget_stop,
+            "unread": index.unread,
         }
         dump_sealed_pickle(path, payload, domain=_INDEX_FILENAME)
     except Exception as exc:
