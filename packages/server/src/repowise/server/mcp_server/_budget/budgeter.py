@@ -505,9 +505,10 @@ def _fit_target(
 ) -> None:
     """Degrade one target toward *share* chars.
 
-    Symbols trim to their entitled floor, then optional blocks go largest
-    first, then symbols trim to one. A target that still exceeds its share
-    after that is only its identity card, and stage 3 decides.
+    Symbols trim to their entitled floor and a module's files from their tail,
+    then optional blocks go largest first, then symbols trim to one. A target
+    that still exceeds its share after that is only its identity card, and
+    stage 3 decides.
     """
     docs = tgt.get("docs") if isinstance(tgt.get("docs"), dict) else None
     symbols = docs.get("symbols") if docs is not None else None
@@ -517,6 +518,7 @@ def _fit_target(
         # The floor is the whole list's, so a later pass cannot erode it.
         floor = entitled_floor(max(len(ordered), int(docs.get("symbols_total") or 0)))
         _trim_symbols(result, name, tgt, ordered, share, floor, collector, record_counts)
+    _trim_files(result, name, tgt, share, collector, record_counts)
 
     def cost() -> int:
         return len(json.dumps(tgt, separators=(",", ":"), default=str))
@@ -552,6 +554,59 @@ def _fit_target(
                 collector.add(f"{name} :: {head.get('name')} docstring", docstring)
             docs["symbols"][0] = {**head, "docstring": docstring[:200]}
             result["truncated"] = True
+
+
+def _trim_files(
+    result: dict[str, Any],
+    name: str,
+    tgt: dict[str, Any],
+    share: int,
+    collector: OmissionCollector | None,
+    record_counts: bool,
+) -> None:
+    """Cut a module's ``docs.files`` from the tail toward *share*, never below its floor.
+
+    The rows arrive most central first, so the head is what stays. Dropping the
+    list whole left a large module with no files while most of the budget sat
+    unused.
+    """
+
+    docs = tgt.get("docs")
+    files = docs.get("files") if isinstance(docs, dict) else None
+    if not isinstance(files, list) or not files:
+        return
+
+    def cost() -> int:
+        return len(json.dumps(tgt, separators=(",", ":"), default=str))
+
+    floor = entitled_floor(max(len(files), int(docs.get("files_total") or 0)))
+    costs = [len(json.dumps(f, separators=(",", ":"), default=str)) for f in files]
+    docs["files"] = []
+    keep = _rows_within(costs, share - cost(), floor)
+    docs["files"] = kept = files[:keep]
+    if keep == len(files):
+        return
+    result["truncated"] = True
+    if record_counts:
+        _record_reduction(result, docs, f"targets.{name}.docs.files", "files", files, emitted=keep)
+        # The counts take room of their own.
+        while len(kept) > floor and cost() > share:
+            kept.pop()
+            docs["files_emitted"] = len(kept)
+            docs["files_omitted"] = docs["files_total"] - len(kept)
+    if collector is not None:
+        collector.add(f"{name} :: docs.files", files[len(kept) :])
+
+
+def _rows_within(costs: list[int], room: int, floor: int) -> int:
+    """How many leading rows fit in *room* chars with their commas, never fewer than *floor*."""
+    keep = used = 0
+    for row_cost in costs:
+        if keep >= floor and used + row_cost + keep > room:
+            break
+        keep += 1
+        used += row_cost
+    return keep
 
 
 def _trim_symbols(

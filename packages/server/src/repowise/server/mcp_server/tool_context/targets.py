@@ -416,6 +416,9 @@ async def _module_docs(card: CardState, docs: dict[str, Any]) -> None:
         )
     )
     file_pages = res.scalars().all()
+    # Most central first: a budget cut keeps the head of this list.
+    rank = await _file_ranks(card, {f.target_path for f in file_pages})
+    file_pages = sorted(file_pages, key=lambda f: (-rank[f.target_path], f.target_path))
     docs["files"] = filter_dicts_by_key(
         [
             {
@@ -516,11 +519,11 @@ async def _symbol_user_files(
 
 
 async def _file_ranks(card: CardState, user_files: set[str]) -> dict[str, float]:
-    """PageRank per using file, 0.0 when the graph has no node for it.
+    """PageRank per file (a symbol's users, a module's files), 0.0 without a node.
 
     Looked up by the folded path, not joined: a source whose symbol node is
     missing has no file to join through and would rank 0.0. Chunked because
-    this binds one parameter per using file.
+    this binds one parameter per file.
     """
     best_rank: dict[str, float] = {p: 0.0 for p in user_files}
     ordered = sorted(user_files)
