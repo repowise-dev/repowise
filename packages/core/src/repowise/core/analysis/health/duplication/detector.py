@@ -36,6 +36,7 @@ from repowise.core.cancellation import check_cancelled
 from repowise.core.co_change import parse_partners
 from repowise.core.code_origin import code_origin
 
+from ..source_fingerprint import grammar_failed
 from .limits import DuplicationDiagnostics, DuplicationLimits, looks_minified
 from .rabin_karp import WindowHash, index_by_hash
 from .token_entry import tokenize_entry
@@ -429,7 +430,8 @@ def _collect_windows(
                 diag.skipped_token_cap += 1
                 continue
             kinds, names, nloc, window_tuples = entry
-            if cache is not None:
+            # An unloadable grammar tokenizes to nothing; that is not the file's entry.
+            if cache is not None and not grammar_failed(grammar):
                 cache.put(content_hash, kinds, names, nloc, window_tuples)
         windows = [
             WindowHash(file_path=path, hash_value=h, start_index=si, start_line=sl, end_line=el)

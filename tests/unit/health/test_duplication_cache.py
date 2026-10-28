@@ -185,3 +185,19 @@ def test_an_analyzer_bump_keeps_tokens_and_re_derives_pairs(tmp_path: Path, monk
     assert "incremental" not in report.diagnostics
     assert misses == [0]
     assert _report_key(report) == _report_key(baseline)
+
+
+def test_a_file_whose_grammar_failed_is_not_cached(tmp_path: Path, monkeypatch):
+    import hashlib
+
+    from repowise.core.ingestion.parser import grammars
+
+    parsed = _setup(tmp_path)
+    cache_dir = tmp_path / ".repowise"
+    monkeypatch.setitem(grammars._GRAMMAR_FAILURES, "python", "not installed")
+    detect_clones(parsed, window_tokens=20, min_lines=4, cache_dir=cache_dir)
+
+    cache = DuplicationTokenCache(cache_dir, 20)
+    cache.load()
+    digest = hashlib.sha256((tmp_path / "a.py").read_bytes()).hexdigest()
+    assert cache.get(digest) is None

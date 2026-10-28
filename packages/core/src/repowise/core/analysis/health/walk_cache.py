@@ -27,7 +27,7 @@ import structlog
 
 from repowise.core.cache_seal import dump_sealed_pickle, load_sealed_pickle
 
-from .source_fingerprint import PARSE_INPUTS, grammar_choices, source_fingerprint
+from .source_fingerprint import PARSE_INPUTS, grammar_choices, grammar_failed, source_fingerprint
 
 log = structlog.get_logger(__name__)
 
@@ -133,6 +133,10 @@ class HealthWalkCache:
         return value
 
     def put(self, key: str, value: Any) -> None:
+        # A walk whose grammar did not load is empty for want of the grammar,
+        # not because of the file; the key's first term is that grammar.
+        if grammar_failed(key.partition(":")[0]):
+            return
         try:
             self._fresh[key] = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
         except Exception as exc:  # an unpicklable walk result is simply not cached

@@ -8,9 +8,9 @@ without anyone remembering to bump a version.
 ``tests/unit/health/test_cache_source_inputs.py`` keeps each set closed over
 its imports.
 
-Ceiling: the installed tree-sitter grammar wheels' versions are not hashed,
-the same ceiling the parse cache has, so upgrading a wheel in place keeps
-cached values. Hashing distribution versions is the upgrade path.
+The installed tree-sitter and sqlglot distributions shape values too, so their
+versions join the fingerprint. A grammar that fails to load yields an empty
+value that says nothing about the file, so callers do not cache it.
 """
 
 from __future__ import annotations
@@ -39,11 +39,12 @@ PARSE_INPUTS: tuple[str, ...] = (
 
 @lru_cache(maxsize=8)
 def source_fingerprint(patterns: tuple[str, ...], extra: str = "") -> str:
-    """sha256 of the files *patterns* match under ``repowise/core``, plus *extra*.
+    """sha256 of the files *patterns* match under ``repowise/core``, plus *extra*
+    and the parser dependencies' versions.
 
     Line endings are normalised so a CRLF checkout and an LF wheel agree.
     """
-    h = hashlib.sha256(extra.encode())
+    h = hashlib.sha256(extra.encode() + dependency_versions().encode())
     files = sorted({path for pattern in patterns for path in _CORE.glob(pattern)})
     if not files:
         # Sources not shipped: a release change is the only change we can see.
@@ -54,6 +55,25 @@ def source_fingerprint(patterns: tuple[str, ...], extra: str = "") -> str:
         h.update(path.relative_to(_CORE).as_posix().encode() + b"\0")
         h.update(path.read_bytes().replace(b"\r\n", b"\n") + b"\0")
     return h.hexdigest()
+
+
+@lru_cache(maxsize=1)
+def dependency_versions() -> str:
+    """Installed tree-sitter bindings, grammar wheels and sqlglot, with versions."""
+    from importlib.metadata import distributions
+
+    names = (
+        ((dist.metadata["Name"] or "").lower().replace("_", "-"), dist.version)
+        for dist in distributions()
+    )
+    return repr(sorted({row for row in names if row[0].startswith(("tree-sitter", "sqlglot"))}))
+
+
+def grammar_failed(tag: str) -> bool:
+    """Whether the grammar for *tag* was tried this process and did not load."""
+    from repowise.core.ingestion.parser.grammars import _GRAMMAR_FAILURES
+
+    return tag in _GRAMMAR_FAILURES
 
 
 def grammar_choices() -> str:

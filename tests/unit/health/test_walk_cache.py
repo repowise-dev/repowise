@@ -232,3 +232,14 @@ def test_a_sql_file_keys_on_its_configured_dialect(tmp_path: Path) -> None:
     config.write_text("sql_dialect: mysql\n")
     HealthAnalyzer._walk(analyzer, pf, vocab)
     assert (cache.misses, cache.hits) == (2, 1)
+
+
+def test_a_walk_without_its_grammar_is_not_cached(tmp_path: Path, monkeypatch) -> None:
+    # Empty for want of the grammar, so installing it later must walk the file.
+    from repowise.core.ingestion.parser import grammars
+
+    monkeypatch.setitem(grammars._GRAMMAR_FAILURES, "python", "not installed")
+    cache = HealthWalkCache(tmp_path)
+    key = HealthWalkCache.key("python", compute_content_hash(_SRC))
+    cache.put(key, _walk(tmp_path))
+    assert cache.get(key) is None
