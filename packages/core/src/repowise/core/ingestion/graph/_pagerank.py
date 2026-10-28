@@ -46,7 +46,7 @@ def cached_pagerank(
                 log.debug("pagerank_reused_from_cache", kind=kind, nodes=len(hit))
                 return hit
         except Exception as exc:
-            log.debug("pagerank_cache_lookup_failed", kind=kind, error=str(exc))
+            log.warning("pagerank_cache_lookup_failed", kind=kind, error=str(exc))
             signature = None
 
     values = _compute(g, alpha, kind)
@@ -54,5 +54,5 @@ def cached_pagerank(
         try:
             cache.put_pagerank(kind, signature=signature, alpha=alpha, values=values)
         except Exception as exc:
-            log.debug("pagerank_cache_store_failed", kind=kind, error=str(exc))
+            log.warning("pagerank_cache_store_failed", kind=kind, error=str(exc))
     return values
