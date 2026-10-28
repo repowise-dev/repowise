@@ -80,6 +80,7 @@ from .repo_tests import _path_basenames as _path_basenames
 from .scope import scores_language
 from .scoring import compute_kpis
 from .source_reader import SourceReader, disk_source_reader
+from .sql_complexity import configured_sql_dialect
 from .walk_cache import HealthWalkCache
 
 if TYPE_CHECKING:
@@ -91,7 +92,8 @@ log = structlog.get_logger(__name__)
 # — a new or removed biomarker, a changed attribution rule, a different finding
 # shape. ``repowise update`` compares it against the value stored in state.json
 # and re-scores on mismatch (see ``update_cmd.persistence.full_rescore_due``),
-# instead of waiting out the 7-day decay timer.
+# instead of waiting out the 7-day decay timer. Cached walks and token streams
+# do not read it: they key on their own code (``walk_cache.WALK_INPUTS``).
 #
 # Reach: a single-repo ``repowise update`` checks it before the "already up to
 # date" return, so a checkout with no new commits re-scores on its next update
@@ -290,13 +292,13 @@ class HealthAnalyzer:
         # pass then re-tokenizes everything, exactly as before.
         self.duplication_cache_dir = duplication_cache_dir
         # The walk result for a file is a function of its bytes, its language
-        # and the walker's version, so it is kept beside the index like the
+        # and the walker's code, so it is kept beside the index like the
         # parse trees and the clone windows are. Absent without a cache dir.
         # A *walk_cache* passed in is the caller's: it loads and saves it, so
         # several passes (both sides of a comparison) share one file.
         self._owns_walk_cache = walk_cache is None
         self._walk_cache: HealthWalkCache | None = walk_cache or (
-            HealthWalkCache(duplication_cache_dir, HEALTH_ANALYZER_VERSION)
+            HealthWalkCache(duplication_cache_dir)
             if duplication_cache_dir is not None
             else None
         )
@@ -899,6 +901,7 @@ class HealthAnalyzer:
         if source is None:
             return FileComplexity(functions=[], classes=[])
         self._origins[pf.file_info.path] = self._origin(pf, source)
+        sql_dialect = configured_sql_dialect(pf.file_info)
         key = None
         if self._walk_cache is not None:
             from repowise.core.ingestion import compute_content_hash
@@ -907,7 +910,10 @@ class HealthAnalyzer:
             # The grammar, not the language: a .tsx file and a byte-identical
             # .ts file are walked by different grammars and must key apart.
             key = HealthWalkCache.key(
-                grammar_tag_for(language, path), compute_content_hash(source), vocab.key
+                grammar_tag_for(language, path),
+                compute_content_hash(source),
+                vocab.key,
+                sql_dialect or "",
             )
             cached = self._walk_cache.get(key)
             if cached is not None:
@@ -917,7 +923,7 @@ class HealthAnalyzer:
             # produces routine CCN + the sql_* smell hits instead.
             from .sql_complexity import walk_sql_file
 
-            fcx = walk_sql_file(pf.file_info, source)
+            fcx = walk_sql_file(source, sql_dialect)
         else:
             fcx = walk_file(path, language, source, vocab.names)
         if key is not None and self._walk_cache is not None:

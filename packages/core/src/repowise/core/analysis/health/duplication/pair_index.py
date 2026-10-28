@@ -21,10 +21,12 @@ The artifact stores:
   re-evaluate the repo-wide window budget and refuse to splice a
   truncated state.
 
-Validity is keyed on (version, window size, limits fingerprint); any
-mismatch -- or any load/save error -- degrades to a full re-detect,
+Validity is keyed on (version, window size, limits fingerprint, analyzer
+stamp); any mismatch -- or any load/save error -- degrades to a full re-detect,
 which rewrites the artifact. Best-effort by design, like the token
-cache next to it.
+cache next to it. The analyzer stamp stands in for the clone verifier's
+code: the pairs depend on it, and the token cache no longer goes cold when
+the stamp moves.
 """
 
 from __future__ import annotations
@@ -49,6 +51,13 @@ _INDEX_FILENAME = "duplication_pairs.pkl"
 # geometry) always merge together downstream, so multiplicity is all the
 # merge stage needs from them.
 PairRow = tuple[int, int, int, int, int, int, int]
+
+
+def _analyzer_version() -> int:
+    # Imported at call time: engine imports the duplication package.
+    from ..engine import HEALTH_ANALYZER_VERSION
+
+    return HEALTH_ANALYZER_VERSION
 
 
 def limits_fingerprint(limits: DuplicationLimits) -> tuple:
@@ -98,6 +107,7 @@ def load_pair_index(
             payload.get("version") != _INDEX_VERSION
             or payload.get("window_tokens") != window_tokens
             or tuple(payload.get("limits_key", ())) != limits_fingerprint(limits)
+            or payload.get("analyzer_version") != _analyzer_version()
         ):
             return None
         return DuplicationPairIndex(
@@ -126,6 +136,7 @@ def save_pair_index(cache_dir: Path, index: DuplicationPairIndex) -> None:
             "version": _INDEX_VERSION,
             "window_tokens": index.window_tokens,
             "limits_key": index.limits_key,
+            "analyzer_version": _analyzer_version(),
             "files": index.files,
             "nonsurvivors": index.nonsurvivors,
             "paths": index.paths,

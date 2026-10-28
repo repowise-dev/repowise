@@ -27,7 +27,6 @@ import time
 from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from itertools import accumulate
 from pathlib import Path
 from typing import Any
 
@@ -38,8 +37,9 @@ from repowise.core.co_change import parse_partners
 from repowise.core.code_origin import code_origin
 
 from .limits import DuplicationDiagnostics, DuplicationLimits, looks_minified
-from .rabin_karp import WindowHash, WindowRow, index_by_hash, window_rows
-from .tokenizer import decision_lines, tokenize_file_rows
+from .rabin_karp import WindowHash, index_by_hash
+from .token_entry import tokenize_entry
+from .tokenizer import decision_lines
 
 log = structlog.get_logger(__name__)
 
@@ -48,8 +48,6 @@ log = structlog.get_logger(__name__)
 DEFAULT_WINDOW_TOKENS = 50
 DEFAULT_MIN_LINES = 6
 
-# A window above this share of literal/punctuation tokens is a data literal.
-_MAX_NOISE_SHARE = 0.8
 # Same shape with mostly different names is not copied code.
 _MIN_NAME_JACCARD = 0.5
 
@@ -138,18 +136,6 @@ def _co_change_score(
     return max(_partner_support(a_meta, file_b), _partner_support(b_meta, file_a))
 
 
-def _is_noise(kind: str) -> bool:
-    return kind == "LIT" or not any(ch.isalnum() for ch in kind)
-
-
-def _informative_windows(windows: list[WindowRow], kinds: list[str], window: int) -> list[WindowRow]:
-    """Drop windows that are more than ``_MAX_NOISE_SHARE`` literals/punctuation."""
-    noisy = {kind: _is_noise(kind) for kind in set(kinds)}
-    noise = list(accumulate((noisy[k] for k in kinds), initial=0))
-    limit = _MAX_NOISE_SHARE * window
-    return [w for w in windows if noise[w[1] + window] - noise[w[1]] <= limit]
-
-
 def _merge_adjacent_pairs(raw: list[ClonePair]) -> list[ClonePair]:
     """Merge overlapping/adjacent clone windows in the same (a, b) pair.
 
@@ -230,12 +216,9 @@ def detect_clones(
 
     cache = None
     if cache_dir is not None:
-        from ..engine import HEALTH_ANALYZER_VERSION
         from .token_cache import DuplicationTokenCache
 
-        # Imported at call time: engine imports this module. By the time a
-        # caller reaches here the constant is loaded.
-        cache = DuplicationTokenCache(cache_dir, window_tokens, HEALTH_ANALYZER_VERSION)
+        cache = DuplicationTokenCache(cache_dir, window_tokens)
         cache.load()
 
     parsed_list = list(parsed_files)
@@ -346,7 +329,6 @@ def clones_against_index(
     ``None`` when the index's pair state cannot be spliced (missing, from
     another analyzer version, truncated, or too many files moved).
     """
-    from ..engine import HEALTH_ANALYZER_VERSION
     from .pair_index import load_pair_index
     from .token_cache import DuplicationTokenCache
 
@@ -354,7 +336,7 @@ def clones_against_index(
     index = load_pair_index(cache_dir, window_tokens, lim)
     if index is None:
         return None
-    cache = DuplicationTokenCache(cache_dir, window_tokens, HEALTH_ANALYZER_VERSION)
+    cache = DuplicationTokenCache(cache_dir, window_tokens)
     cache.load()
     parsed_list = list(parsed_files)
     return _detect_clones_incremental(
@@ -440,19 +422,13 @@ def _collect_windows(
         if cached is not None:
             kinds, names, nloc, window_tuples = cached
         else:
-            rows = tokenize_file_rows(language, source, path)
-            if len(rows) > limits.max_tokens_per_file:
+            entry = tokenize_entry(
+                language, source, path, window_tokens, limits.max_tokens_per_file
+            )
+            if entry is None:
                 diag.skipped_token_cap += 1
                 continue
-            kinds, start_lines, end_lines, names = [], [], [], []
-            if rows:
-                kinds, start_lines, end_lines, _, _, names = map(list, zip(*rows, strict=True))
-            del rows
-            nloc = _nloc(source)
-            window_tuples = _informative_windows(
-                window_rows(kinds, start_lines, end_lines, window_tokens), kinds, window_tokens
-            )
-            del start_lines, end_lines
+            kinds, names, nloc, window_tuples = entry
             if cache is not None:
                 cache.put(content_hash, kinds, names, nloc, window_tuples)
         windows = [
@@ -1089,11 +1065,3 @@ def union_line_count(ranges: list[tuple[int, int]]) -> int:
         elif end > cur_end:
             cur_end = end
     return merged_total + (cur_end - cur_start + 1)
-
-
-def _nloc(source: bytes) -> int:
-    try:
-        text = source.decode("utf-8", errors="replace")
-    except Exception:
-        return 0
-    return sum(1 for line in text.splitlines() if line.strip())
