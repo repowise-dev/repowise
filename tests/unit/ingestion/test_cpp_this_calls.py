@@ -89,10 +89,10 @@ class TestOtherNestedReceiversUnchanged:
         calls, _ = _parse_and_build(tmp_path)
         assert not any(c.target_name == "Run" for c in calls)
 
-    def test_a_this_call_to_the_caller_itself_draws_no_self_edge(self, tmp_path: Path) -> None:
+    def test_a_this_call_to_the_caller_itself_draws_a_self_edge(self, tmp_path: Path) -> None:
         _write(tmp_path, "return this->step(n - 1);")
         _, graph = _parse_and_build(tmp_path)
-        assert not graph.has_edge("lib/s.cc::S::step", "lib/s.cc::S::step")
+        assert graph.has_edge("lib/s.cc::S::step", "lib/s.cc::S::step")
 
     def test_a_plain_receiver_is_unchanged(self, tmp_path: Path) -> None:
         _write(tmp_path, "s_->Run(1); return 0;")
