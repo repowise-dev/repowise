@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 
 
@@ -124,6 +126,92 @@ class TestCppBaseClassReceiver:
         _repo(tmp_path, specs_h)
         targets = _call_targets(_build(tmp_path), "lib/parse.cc::parse_align")
         assert not any(t.endswith("::set_align") for t in targets)
+
+
+@pytest.mark.parametrize("alias", ["using IV = V<int>;", "typedef V<int> IV;"])
+@pytest.mark.parametrize("header", [False, True, "guarded"])
+@pytest.mark.parametrize("declaration", ["auto v = IV();", "auto v = IV{};", "IV v;"])
+def test_a_cpp_type_alias_reaches_an_inherited_method(
+    tmp_path: Path, alias: str, header: bool | str, declaration: str
+) -> None:
+    types = (
+        "struct B {\n  int size() const { return 1; }\n};\n"
+        "template <class T> struct V : B {};\n" + alias + "\n"
+    )
+    prefix = types
+    if header:
+        if header == "guarded":
+            types = "#ifndef TYPES_H\n#define TYPES_H\n" + types + "#endif\n"
+        (tmp_path / "types.h").write_text(types)
+        prefix = '#include "types.h"\n'
+    (tmp_path / "a.cpp").write_text(prefix + "void f() {\n  " + declaration + "\n  v.size();\n}\n")
+    owner = "types.h" if header else "a.cpp"
+    assert owner + "::B::size" in _call_targets(_build(tmp_path), "a.cpp::f")
+
+
+@pytest.mark.parametrize("target", ["V", "V<int>"])
+def test_a_cpp_alias_chain_reaches_the_target_class(tmp_path: Path, target: str) -> None:
+    (tmp_path / "a.cpp").write_text(
+        "template <class T = int> struct V {\n  void run() {}\n};\n"
+        f"using First = {target};\nusing Second = First;\ntypedef Second Last;\n"
+        "void f() {\n  Last v;\n  v.run();\n}\n"
+    )
+    assert _call_targets(_build(tmp_path), "a.cpp::f") == {"a.cpp::V::run"}
+
+
+@pytest.mark.parametrize(
+    "aliases",
+    [
+        "using IV = std::string;",
+        "using IV = Missing;",
+        "using IV = Other;\nusing Other = IV;",
+        "using IV = IV;",
+    ],
+)
+def test_an_unresolved_cpp_alias_invents_no_method_edge(tmp_path: Path, aliases: str) -> None:
+    (tmp_path / "a.cpp").write_text(
+        "struct string {\n  void size() {}\n};\n"
+        "struct Other {\n  void size() {}\n};\n"
+        + aliases + "\nvoid f() {\n  IV v;\n  v.size();\n}\n"
+    )
+    assert _call_targets(_build(tmp_path), "a.cpp::f") == set()
+
+
+def test_a_cpp_alias_chain_has_a_depth_limit(tmp_path: Path) -> None:
+    aliases = "".join(f"using A{i} = A{i + 1};\n" for i in range(20))
+    (tmp_path / "a.cpp").write_text(
+        "struct A20 {\n  void run() {}\n};\n" + aliases
+        + "void f() {\n  A0 v;\n  v.run();\n}\n"
+    )
+    assert _call_targets(_build(tmp_path), "a.cpp::f") == set()
+
+
+def test_two_headers_declaring_the_same_cpp_alias_refuse(tmp_path: Path) -> None:
+    for name in ("A", "B"):
+        (tmp_path / f"{name}.h").write_text(
+            f"struct {name} {{\n  void run() {{}}\n}};\nusing IV = {name};\n"
+        )
+    (tmp_path / "a.cpp").write_text(
+        '#include "A.h"\n#include "B.h"\nvoid f() {\n  IV v;\n  v.run();\n}\n'
+    )
+    assert _call_targets(_build(tmp_path), "a.cpp::f") == set()
+
+
+def test_an_alias_cannot_borrow_a_type_from_an_unincluded_file(tmp_path: Path) -> None:
+    (tmp_path / "other.h").write_text("struct Missing {\n  void run() {}\n};\n")
+    (tmp_path / "a.cpp").write_text(
+        "using IV = Missing;\nvoid f() {\n  IV v;\n  v.run();\n}\n"
+    )
+    assert _call_targets(_build(tmp_path), "a.cpp::f") == set()
+
+
+@pytest.mark.parametrize("declaration", ["auto v = IV().other();", "auto v = IV(make()).other();"])
+def test_a_cpp_constructor_chain_does_not_type_its_result(tmp_path: Path, declaration: str) -> None:
+    (tmp_path / "a.cpp").write_text(
+        "struct V {\n  void run() {}\n};\nusing IV = V;\n"
+        "void f() {\n  " + declaration + "\n  v.run();\n}\n"
+    )
+    assert "a.cpp::V::run" not in _call_targets(_build(tmp_path), "a.cpp::f")
 
 
 class TestOtherLanguagesSkipTheCppBranch:

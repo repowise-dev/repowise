@@ -314,6 +314,13 @@ _CPP_DECLARATION = re.compile(
     rf"(?:\s*[*&]{{1,2}}\s*|\s+)(?P<name>[a-z_]\w*)\s*(?=(?P<closer>[=;,){{]))"
 )
 
+# Direct construction only: a member/factory call or a chained result carries
+# no evidence that the local has the named type.
+_CPP_CONSTRUCTED = re.compile(
+    r"\bauto\s+(?P<name>[a-z_]\w*)\s*=\s*(?P<type>[A-Za-z_]\w*)"
+    r"\s*(?:\(\s*\)|\{\s*\})(?!\s*(?:\.|->))"
+)
+
 
 # Rust annotates after the name: parameters, `let x: Foo`, closure parameters.
 # A path is kept only when it starts inside the crate (`crate::`, `self::`,
@@ -366,7 +373,7 @@ _TS_FAMILY = (_TS_ANNOTATED, _TS_PARAMETER_PROPERTY, _TS_CONSTRUCTED)
 _LANGUAGE_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
     # Apex declares Java's way (``Foo foo``) and has no ``var``.
     "apex": (_TYPED_DECLARATION,),
-    "cpp": (_CPP_DECLARATION,),
+    "cpp": (_CPP_DECLARATION, _CPP_CONSTRUCTED),
     "csharp": (*_C_FAMILY, _CS_MEMBER),
     "dart": _DART_FAMILY,
     "go": _GO_FAMILY,

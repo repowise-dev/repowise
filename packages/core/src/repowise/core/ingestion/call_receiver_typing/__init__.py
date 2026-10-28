@@ -230,6 +230,7 @@ class ReceiverTypingMixin(
         self._method_name_set: frozenset[str] | None = None
         # C++: {(file, class name): (header, class id) or None}, {declaration id: pure virtual}.
         self._cpp_declaring_classes: dict[tuple[str, str], tuple[str, str] | None] = {}
+        self._cpp_type_aliases: dict[str, dict[str, str | None]] = {}
         self._pure_virtuals: dict[str, bool] = {}
         self._pure_virtual_name_set: frozenset[str] | None = None
         self._framework_name_set: frozenset[str] | None = None
@@ -348,6 +349,20 @@ class ReceiverTypingMixin(
         return language
 
     def _typed_receiver_target(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+        type_name: str,
+    ) -> tuple[str, str] | None:
+        """Read a C++ alias before asking which class declares the member."""
+        if self._language_of(file_path) == "cpp":
+            type_name = self._cpp_aliased_type(file_path, type_name)
+            if type_name is None:
+                return None
+        return self._typed_receiver_class_target(file_path, call, caller_id, type_name)
+
+    def _typed_receiver_class_target(
         self,
         file_path: str,
         call: CallSite,

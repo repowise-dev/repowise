@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import re
 
+from tree_sitter import Node, Parser
+
 from ..models import Symbol
 from ..type_names import strip_type_arguments
+from ._shared import _SOURCE_CACHE_FILES, _store_capped
 
 # ``virtual void f() = 0;``, a trailing ``const``/``override`` included.
 _PURE_VIRTUAL = re.compile(r"=\s*0\s*;")
@@ -13,6 +16,58 @@ _PURE_VIRTUAL = re.compile(r"=\s*0\s*;")
 
 class CppFieldOwners:
     """The class a C++ method body reads its fields from, and the callee a typed call lands on."""
+
+    def _cpp_aliased_type(self, file_path: str, name: str) -> str | None:
+        """Follow a file-level C++ alias from its declaration's include scope.
+
+        A chain is bounded to sixteen aliases; cycles, ambiguous declarations
+        and qualified/external targets decline rather than borrowing a local
+        class with the same bare name. A non-alias keeps the ordinary lookup.
+        """
+        seen: set[tuple[str, str]] = set()
+        for _ in range(16):
+            paths = {file_path, *self._import_targets.get(file_path, ())}
+            local = self._cpp_aliases_in(file_path)
+            sites = [(file_path, local[name])] if name in local else [
+                (path, aliases[name])
+                for path in sorted(paths - {file_path})
+                if name in (aliases := self._cpp_aliases_in(path))
+            ]
+            if not sites:
+                declared = self._declared_types_named(name) if seen else ()
+                return name if not seen or any(path in paths for path, _, _ in declared) else None
+            if len(sites) != 1:
+                return None
+            path, target = sites[0]
+            if target is None or (path, name) in seen:
+                return None
+            seen.add((path, name))
+            file_path, name = path, target
+        return None
+
+    def _cpp_aliases_in(self, path: str) -> dict[str, str | None]:
+        """Aliases read once from syntax, never from comment or string text."""
+        cached = self._cpp_type_aliases.get(path)
+        if cached is not None:
+            return cached
+        # Local import: the parser also imports the receiver-typing modules.
+        from ..parser import _get_language
+
+        language = _get_language("cpp")
+        aliases: dict[str, str | None] = {}
+        if language is None:
+            return aliases
+        root = Parser(language).parse(self._text_of(path).encode("utf-8")).root_node
+        stack = [root]
+        while stack:
+            node = stack.pop()
+            alias = _cpp_alias(node)
+            if alias is not None:
+                name, target = alias
+                aliases[name] = target if name not in aliases else None
+            stack.extend(reversed(node.named_children))
+        _store_capped(self._cpp_type_aliases, path, aliases, _SOURCE_CACHE_FILES)
+        return aliases
 
     def _field_owner(self, file_path: str, caller_id: str, language: str) -> tuple[str, str]:
         """``(file, class id)`` whose fields *caller_id* reads by bare name.
@@ -103,6 +158,32 @@ class CppFieldOwners:
                 names.update(sym.name for sym in candidates if _is_pure(lines, sym))
             self._pure_virtual_name_set = frozenset(names)
         return self._pure_virtual_name_set
+
+
+def _cpp_alias(node: Node) -> tuple[str, str | None] | None:
+    """A plain alias and its safe target; unsupported aliases still bind their name."""
+    if node.type not in ("alias_declaration", "type_definition"):
+        return None
+    key = node.child_by_field_name("name" if node.type == "alias_declaration" else "declarator")
+    target = node.child_by_field_name("type")
+    if key is None or key.type != "type_identifier" or target is None:
+        return None
+    # ``typedef struct { ... } S`` defines a class already held in the index.
+    if target.child_by_field_name("body") is not None:
+        return None
+    name = key.text.decode("utf-8")
+    written = strip_type_arguments(target.text.decode("utf-8")).strip()
+    # Namespaces and local scopes are not preserved in the class index. Do
+    # not flatten their aliases or qualified targets into file scope.
+    return name, written if _cpp_file_scope(node) and written.isidentifier() else None
+
+
+def _cpp_file_scope(node: Node) -> bool:
+    """Preprocessor guards wrap file scope; namespaces and function bodies do not."""
+    parent = node.parent
+    while parent is not None and parent.type.startswith("preproc_"):
+        parent = parent.parent
+    return parent is not None and parent.type == "translation_unit"
 
 
 def _is_pure(lines: list[str], symbol: Symbol) -> bool:
