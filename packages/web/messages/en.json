@@ -1373,6 +1373,123 @@
     "graph": {
       "communitiesDescription": "Files that depend on each other more than on the rest of the repo, detected automatically. Circle size is how much code a group holds, and the nearer the centre, the nearer an entry point. Double-click a group to see the files inside it and what they depend on.",
       "filesDescription": "Every file, grouped into the communities it depends on most, with a band for each strong link between communities. Hover or select a file to see exactly what it imports and what imports it."
+    },
+    "map": {
+      "communityFallback": "Community {id}",
+      "allCommunities": "All communities",
+      "insideCommunity": "How the files in this group depend on each other.",
+      "openFileHint": "Double-click a file to open it.",
+      "truncation": {
+        "showing": "Showing the <shown></shown> most-connected files of <total></total>.",
+        "slowerHint": " Loading more will be slower.",
+        "seeAllGrouped": "See all of them grouped",
+        "loadMore": "Load {count} more"
+      },
+      "scope": {
+        "label": "Graph scope",
+        "communities": "Communities",
+        "communitiesHint": "One circle per detected community",
+        "files": "Files",
+        "filesHint": "Individual files and how they depend on each other",
+        "tree": "Tree",
+        "treeHint": "The same files as an outline, with what each one imports"
+      },
+      "narrowing": {
+        "showing": "Showing",
+        "allFiles": "All files",
+        "community": "Community",
+        "module": "Module",
+        "smallerModules": "Smaller modules"
+      },
+      "nodeFilter": {
+        "label": "Node filter",
+        "all": "All",
+        "allHint": "Show every node",
+        "hot": "Hot",
+        "hotHint": "High-churn files",
+        "dead": "Dead",
+        "deadHint": "Dead-code files"
+      },
+      "toolbar": {
+        "trace": "Trace",
+        "traceTitle": "Trace a dependency path or an execution flow",
+        "traceTitleFlowsOnly": "Trace an execution flow",
+        "traceAriaPathOpen": "Trace: dependency path open",
+        "traceAriaFlowsOpen": "Trace: execution flows open",
+        "findPath": "Find dependency path",
+        "executionFlows": "Execution flows",
+        "searchPlaceholder": "Search nodes…",
+        "searchLabel": "Search graph nodes",
+        "clearSearch": "Clear search"
+      },
+      "population": {
+        "allCounted": "All {total, plural, one {# file} other {# files}}",
+        "someCounted": "{visible, number} of {total, plural, one {# file} other {# files}}",
+        "allFiles": "All files",
+        "productionFiles": "Production files",
+        "ariaLabel": "Files counted: {summary}",
+        "popoverLabel": "Files counted",
+        "explainer": "Production code is always counted. Turning a kind on re-sizes and re-ranks every group.",
+        "tests": "Tests",
+        "examples": "Examples and benchmarks",
+        "docs": "Docs and config"
+      },
+      "legend": {
+        "communities": "{count, plural, one {# community} other {# communities}}",
+        "noCommunities": "No communities detected",
+        "smallerNotListed": "+{count, number} smaller not listed",
+        "notGrouped": "Not grouped",
+        "notGroupedTitle": "Files with no dependency on the rest of the repo",
+        "scopedFiles": "{count, plural, one {# file} other {# files}}",
+        "scopedOutside": "{count, number} outside",
+        "scopedEdges": "{count, plural, one {# edge} other {# edges}} shown",
+        "outsideGroup": "Outside this group",
+        "overviewFiles": "{count, plural, one {# file} other {# files}}",
+        "overviewThirdParty": "{count, number} third-party",
+        "overviewDependencies": "{count, plural, one {# dependency} other {# dependencies}}",
+        "nodesEdges": "{nodes, plural, one {# node} other {# nodes}} · {edges, plural, one {# edge} other {# edges}}",
+        "thirdPartyShown": "Third-party modules shown",
+        "thirdPartyHidden": "{count, plural, one {# third-party module} other {# third-party modules}} hidden",
+        "show": "Show",
+        "hide": "Hide",
+        "showThirdParty": "Show third-party modules",
+        "hideThirdParty": "Hide third-party modules",
+        "unlinkedNotDrawn": "{count, plural, one {# unlinked file} other {# unlinked files}} not drawn",
+        "unlinkedTitle": "Files with no dependency edge to anything drawn have no place in the layout and nothing to reveal on hover.",
+        "weakerLinksNotDrawn": "{count, plural, one {# weaker community link} other {# weaker community links}} not drawn",
+        "weakerLinksTitle": "Pairs of communities with too few dependencies between them to band. Their edges still show on a hovered or selected file.",
+        "languageGroup": "Language",
+        "communityGroup": "Community",
+        "edgesGroup": "Edges",
+        "focusGroup": "Hover or select a file",
+        "configLanguage": "Config",
+        "otherLanguage": "Other",
+        "deselectAll": "Deselect all",
+        "selectAll": "Select all",
+        "edgeKinds": {
+          "crossCommunity": "Cross-community",
+          "internal": "Internal",
+          "dynamic": "Co-change",
+          "lowConfidence": "Low confidence"
+        },
+        "scopedEdgeKinds": {
+          "internal": "Within this group",
+          "crossCommunity": "Leaving this group"
+        },
+        "overviewEdgeKinds": {
+          "crossCommunity": "Between communities",
+          "internal": "Within a community"
+        },
+        "imports": "imports",
+        "importedBy": "imported by",
+        "toggleEdges": "Toggle {label} edges",
+        "toggleCommunity": "Toggle community {label}",
+        "viewCaptions": {
+          "dead": "Showing unreachable files",
+          "hotfiles": "Most-committed files (30d)",
+          "unified": "Dead and high-churn files"
+        }
+      }
     }
   },
   "modelUpgrade": {
@@ -1708,6 +1825,174 @@
       "worstFile": "What makes {path} the lowest-scoring file?",
       "decision": "Why did we decide \"{title}\"?",
       "trend": "How has code health moved since the previous index?"
+    },
+    "identity": {
+      "lines": "{lines} lines",
+      "synced": "synced {when}"
+    },
+    "ago": {
+      "now": "just now",
+      "s": "{value}s ago",
+      "m": "{value}m ago",
+      "h": "{value}h ago",
+      "d": "{value}d ago",
+      "w": "{value}w ago",
+      "mo": "{value}mo ago",
+      "y": "{value}y ago"
+    },
+    "quickActions": {
+      "sync": "Sync",
+      "resync": "Full Re-index",
+      "deadCode": "Dead Code Scan"
+    },
+    "body": {
+      "exploreTitle": "Explore this codebase",
+      "exploreMore": "Also"
+    },
+    "changeLine": {
+      "since": "Since the previous index, {when}",
+      "files": "{count, plural, one {file} other {files}}",
+      "codeHealth": "code health",
+      "hotspotHealth": "hotspot health"
+    },
+    "healthLede": {
+      "label": "Code health",
+      "unit": "out of 10",
+      "reportLink": "Full health report",
+      "empty": "Health scores land with the first index: complexity, duplication, coverage, churn and ownership across every file.",
+      "hint": "Average code health of every scored file, from 1 to 10.",
+      "hintHotspots": "Average code health of every scored file, from 1 to 10. Hotspots are the {hotspots} of {files} files that git history changes and fixes most.",
+      "hotspotsHealthy": "Hotspots average <score></score>, as healthy as the rest of the code.",
+      "hotspotsPayoff": "Hotspots average <score></score>, the place fixes pay off most."
+    },
+    "reads": {
+      "docsLabel": "Documentation",
+      "docsUnit": "pages",
+      "docsSplit": "{prose, number} with model-written prose, {withoutProse, number} built from the index",
+      "docsModules": "Across {modules, number} modules",
+      "docsProseBar": "Pages with model-written prose",
+      "docsIndexBar": "Pages built from the index alone"
+    },
+    "cards": {
+      "health": "Code health map",
+      "ownership": "Ownership",
+      "architecture": "Architecture",
+      "decisions": "Decisions",
+      "refactoring": "Refactoring",
+      "tests": "Tests",
+      "healthScored": "files scored",
+      "healthHotspots": "{hotspots, plural, one {hotspot} other {hotspots}} across {files, number} files",
+      "ownershipEmpty": "Who knows each file, and what depends on them",
+      "ownershipSole": "sole-owned {files, plural, one {file} other {files}}: one author, no second reader",
+      "architectureModules": "{modules, plural, one {module} other {modules}}, {entryPoints, number} entry points",
+      "decisionsEmpty": "No decisions recorded yet",
+      "decisionsRecorded": "recorded, of which {accepted, number} accepted and {candidates, number} awaiting review",
+      "refactoringEmpty": "No refactoring analysis yet",
+      "refactoringOpen": "open {count, plural, one {opportunity} other {opportunities}}, one per file",
+      "testsCoverage": "line coverage from the latest report",
+      "testsUnknown": "Coverage and the tests that reach each file",
+      "testsNone": "No coverage report yet. Run your tests with coverage on, then add the report:"
+    },
+    "explore": {
+      "labels": {
+        "docs": "Docs",
+        "chat": "Chat",
+        "files": "Files",
+        "architecture": "Architecture",
+        "codeHealth": "Code health",
+        "knowledgeGraph": "Knowledge graph",
+        "coupling": "Change coupling",
+        "commits": "Commits",
+        "decisions": "Decisions",
+        "contributors": "Contributors",
+        "stats": "Stats",
+        "costs": "Costs"
+      },
+      "docs": "{pages, number} pages across {modules, number} modules",
+      "files": "{files, number} files with per-file docs, health and history",
+      "architecture": "Dependency graph, layers, and {entryPoints, number} entry points",
+      "codeHealth": "Per-file scores, {findings, number} open findings, coverage and refactoring targets",
+      "chat": "Ask this codebase a question and get an answer with its sources.",
+      "knowledgeGraph": "Entities, communities, and the paths between them",
+      "coupling": "Files that keep changing together, mined from commit history",
+      "commits": "Change-risk ranked history with agent provenance",
+      "decisions": "Why the code is shaped this way, from decision records and git history",
+      "contributors": "Bus factor, per-file maintainers, and the human/agent split",
+      "stats": "Size class, origin, lifetime churn, rhythm and records",
+      "costs": "What indexing this snapshot cost, by model and by run."
+    },
+    "attention": {
+      "title": "Needs attention",
+      "description": "Each area of work, led by the worst thing in it.",
+      "inventoryTitle": "Everything we found",
+      "inventoryDescription": "Every detector's open count by area. The actions above are the part worth doing.",
+      "scopeAreas": "{count, plural, one {# area} other {# areas}}",
+      "scopeOpen": "{count, number} open",
+      "empty": "Nothing needs attention right now.",
+      "areas": {
+        "security": "Security",
+        "health": "Code health",
+        "refactoring": "Refactoring",
+        "doc_drift": "Doc drift",
+        "decisions": "Decisions",
+        "ownership": "Ownership",
+        "dead_code": "Dead code"
+      },
+      "severity": {
+        "critical": "Critical",
+        "high": "High",
+        "medium": "Medium",
+        "low": "Low"
+      },
+      "healthUnit": "open findings",
+      "securityUnit": "in shipped source",
+      "securityElsewhere": "{count, number} more in tests and docs",
+      "refactoringUnit": "open opportunities",
+      "decisionsUnit": "to review",
+      "decisionsDetail": "{awaiting, number} awaiting review, {drifting, number} drifting from the code",
+      "ownershipUnit": "sole-owned files",
+      "ownershipDetail": "One author, no second reader"
+    },
+    "next": {
+      "title": "Do next",
+      "titleCount": "Do next · {count, number}",
+      "timeFrame": "Time frame",
+      "week": "This week",
+      "weekHint": "What the last 7 days of commits changed",
+      "quarter": "This quarter",
+      "quarterHint": "What the last 90 days say is worth planning",
+      "tier": {
+        "act_now": "Now",
+        "plan": "Worth planning",
+        "improve_signal": "Improve what Repowise can see"
+      },
+      "allAnswered": "You have answered everything listed here. Answers are kept until the facts change.",
+      "showFewer": "Show fewer",
+      "showAll": "Show all {count, number}",
+      "listing": "Listing {shown, number} of {total, number}.",
+      "answered": "{count, plural, one {# action} other {# actions}} answered (done, snoozed or dismissed).",
+      "notChecked": "Not checked: {checks}.",
+      "runUpdate": "Run <code>repowise update</code> to include them.",
+      "emptyChecks": "Repowise ran {count, plural, one {# check} other {# checks}} over this index and none of them produced work for this time frame.",
+      "undo": "Undo",
+      "undoFailed": "Could not undo",
+      "saveFailed": "Could not save that; the action is back in the list",
+      "openDetails": "Open details",
+      "markDone": "Mark done",
+      "markedDone": "Marked done. It returns if the facts change.",
+      "snooze": "Snooze for 14 days",
+      "snoozed": "Snoozed for 14 days",
+      "dismiss": "Dismiss",
+      "dismissed": "Dismissed. It returns if the facts change.",
+      "effort": {
+        "S": "Small effort",
+        "M": "Medium effort",
+        "L": "Large effort"
+      },
+      "worthCheck": "worth a check",
+      "inferred": "(inferred)",
+      "openRow": "Open {title}",
+      "moreFor": "More for {title}"
     }
   },
   "risk": {

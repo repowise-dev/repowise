@@ -1373,6 +1373,123 @@
     "graph": {
       "communitiesDescription": "相互依赖程度高于对代码仓库其余部分的文件组，自动检出。圆的大小表示该组包含的代码量，越靠近中心越接近入口点。双击一个组即可查看其中的文件以及它们依赖什么。",
       "filesDescription": "每个文件按它最依赖的社区分组，社区之间的每条强连接用一条带表示。把鼠标悬停或选中某个文件，即可看到它导入了什么、又被谁导入。"
+    },
+    "map": {
+      "communityFallback": "社区 {id}",
+      "allCommunities": "全部社区",
+      "insideCommunity": "本组文件之间的依赖关系。",
+      "openFileHint": "双击文件即可打开。",
+      "truncation": {
+        "showing": "当前显示连接最多的 <shown></shown> 个文件（共 <total></total> 个）。",
+        "slowerHint": "继续加载会更慢。",
+        "seeAllGrouped": "按分组查看全部",
+        "loadMore": "再加载 {count} 个"
+      },
+      "scope": {
+        "label": "视图范围",
+        "communities": "社区",
+        "communitiesHint": "每个检测到的社区显示为一个圆",
+        "files": "文件",
+        "filesHint": "各个文件及其相互依赖",
+        "tree": "树形",
+        "treeHint": "以大纲形式查看同一批文件，以及每个文件导入的内容"
+      },
+      "narrowing": {
+        "showing": "显示",
+        "allFiles": "全部文件",
+        "community": "社区",
+        "module": "模块",
+        "smallerModules": "较小的模块"
+      },
+      "nodeFilter": {
+        "label": "节点筛选",
+        "all": "全部",
+        "allHint": "显示所有节点",
+        "hot": "热点",
+        "hotHint": "高频变更的文件",
+        "dead": "死代码",
+        "deadHint": "含死代码的文件"
+      },
+      "toolbar": {
+        "trace": "追踪",
+        "traceTitle": "追踪依赖路径或执行流",
+        "traceTitleFlowsOnly": "追踪执行流",
+        "traceAriaPathOpen": "追踪：依赖路径已打开",
+        "traceAriaFlowsOpen": "追踪：执行流已打开",
+        "findPath": "查找依赖路径",
+        "executionFlows": "执行流",
+        "searchPlaceholder": "搜索节点…",
+        "searchLabel": "搜索图中的节点",
+        "clearSearch": "清除搜索"
+      },
+      "population": {
+        "allCounted": "全部 {total, number} 个文件",
+        "someCounted": "{visible, number} / {total, number} 个文件",
+        "allFiles": "全部文件",
+        "productionFiles": "生产代码文件",
+        "ariaLabel": "统计范围：{summary}",
+        "popoverLabel": "统计范围",
+        "explainer": "生产代码始终计入。开启某一类文件后，所有分组的大小和排名都会重新计算。",
+        "tests": "测试",
+        "examples": "示例与基准测试",
+        "docs": "文档与配置"
+      },
+      "legend": {
+        "communities": "{count, plural, other {# 个社区}}",
+        "noCommunities": "未检测到社区",
+        "smallerNotListed": "另有 {count, number} 个较小的社区未列出",
+        "notGrouped": "未分组",
+        "notGroupedTitle": "与仓库其余部分没有依赖关系的文件",
+        "scopedFiles": "{count, plural, other {# 个文件}}",
+        "scopedOutside": "组外 {count, number} 个",
+        "scopedEdges": "已显示 {count, plural, other {# 条边}}",
+        "outsideGroup": "组外",
+        "overviewFiles": "{count, plural, other {# 个文件}}",
+        "overviewThirdParty": "{count, number} 个第三方模块",
+        "overviewDependencies": "{count, plural, other {# 条依赖}}",
+        "nodesEdges": "{nodes, plural, other {# 个节点}} · {edges, plural, other {# 条边}}",
+        "thirdPartyShown": "已显示第三方模块",
+        "thirdPartyHidden": "已隐藏 {count, plural, other {# 个第三方模块}}",
+        "show": "显示",
+        "hide": "隐藏",
+        "showThirdParty": "显示第三方模块",
+        "hideThirdParty": "隐藏第三方模块",
+        "unlinkedNotDrawn": "{count, plural, other {# 个孤立文件未显示}}",
+        "unlinkedTitle": "这些文件与图中其他内容之间没有依赖边，无法参与布局，悬停时也没有可显示的关系。",
+        "weakerLinksNotDrawn": "{count, plural, other {# 条较弱的社区连接未显示}}",
+        "weakerLinksTitle": "这些社区之间的依赖太少，不足以绘制连接带。悬停或选中文件时，仍会显示它们之间的边。",
+        "languageGroup": "语言",
+        "communityGroup": "社区",
+        "edgesGroup": "边",
+        "focusGroup": "悬停或选中文件时",
+        "configLanguage": "配置",
+        "otherLanguage": "其他",
+        "deselectAll": "取消全选",
+        "selectAll": "全选",
+        "edgeKinds": {
+          "crossCommunity": "跨社区",
+          "internal": "内部",
+          "dynamic": "共同变更",
+          "lowConfidence": "低置信度"
+        },
+        "scopedEdgeKinds": {
+          "internal": "组内",
+          "crossCommunity": "指向组外"
+        },
+        "overviewEdgeKinds": {
+          "crossCommunity": "社区之间",
+          "internal": "社区内部"
+        },
+        "imports": "导入",
+        "importedBy": "被导入",
+        "toggleEdges": "显示/隐藏「{label}」边",
+        "toggleCommunity": "显示/隐藏社区「{label}」",
+        "viewCaptions": {
+          "dead": "显示不可达的文件",
+          "hotfiles": "近 30 天提交最多的文件",
+          "unified": "死代码与高频变更文件"
+        }
+      }
     }
   },
   "modelUpgrade": {
@@ -1708,6 +1825,174 @@
       "worstFile": "{path} 为什么是得分最低的文件？",
       "decision": "我们为什么决定「{title}」？",
       "trend": "自上次索引以来，代码健康度有什么变化？"
+    },
+    "identity": {
+      "lines": "{lines} 行",
+      "synced": "{when}同步"
+    },
+    "ago": {
+      "now": "刚刚",
+      "s": "{value} 秒前",
+      "m": "{value} 分钟前",
+      "h": "{value} 小时前",
+      "d": "{value} 天前",
+      "w": "{value} 周前",
+      "mo": "{value} 个月前",
+      "y": "{value} 年前"
+    },
+    "quickActions": {
+      "sync": "同步",
+      "resync": "全量重新索引",
+      "deadCode": "死代码扫描"
+    },
+    "body": {
+      "exploreTitle": "探索代码库",
+      "exploreMore": "更多："
+    },
+    "changeLine": {
+      "since": "较上次索引（{when}）",
+      "files": "个文件",
+      "codeHealth": "代码健康",
+      "hotspotHealth": "热点健康"
+    },
+    "healthLede": {
+      "label": "代码健康",
+      "unit": "/ 10",
+      "reportLink": "查看完整健康报告",
+      "empty": "首次索引完成后即可看到健康分，涵盖每个文件的复杂度、重复度、覆盖率、变更频率和所有权。",
+      "hint": "所有已评分文件的平均代码健康分，范围 1 到 10。",
+      "hintHotspots": "所有已评分文件的平均代码健康分，范围 1 到 10。热点是 git 历史中改动和修复最多的 {hotspots} 个文件（共 {files} 个文件）。",
+      "hotspotsHealthy": "热点平均 <score></score> 分，和其余代码一样健康。",
+      "hotspotsPayoff": "热点平均 <score></score> 分，修复这里收益最大。"
+    },
+    "reads": {
+      "docsLabel": "文档",
+      "docsUnit": "页",
+      "docsSplit": "{prose, number} 页由模型撰写，{withoutProse, number} 页直接从索引生成",
+      "docsModules": "覆盖 {modules, number} 个模块",
+      "docsProseBar": "由模型撰写的页面",
+      "docsIndexBar": "仅从索引生成的页面"
+    },
+    "cards": {
+      "health": "代码健康地图",
+      "ownership": "代码所有权",
+      "architecture": "架构",
+      "decisions": "决策",
+      "refactoring": "重构",
+      "tests": "测试",
+      "healthScored": "个文件已评分",
+      "healthHotspots": "个热点，共 {files, number} 个文件",
+      "ownershipEmpty": "每个文件谁最熟悉，又有哪些代码依赖它",
+      "ownershipSole": "个文件只有一位作者，没有第二个人熟悉",
+      "architectureModules": "个模块，{entryPoints, number} 个入口点",
+      "decisionsEmpty": "还没有记录任何决策",
+      "decisionsRecorded": "条已记录，其中 {accepted, number} 条已接受，{candidates, number} 条待审阅",
+      "refactoringEmpty": "还没有重构分析",
+      "refactoringOpen": "条待处理的重构机会，每个文件一条",
+      "testsCoverage": "最新报告中的行覆盖率",
+      "testsUnknown": "覆盖率，以及覆盖每个文件的测试",
+      "testsNone": "还没有覆盖率报告。运行带覆盖率的测试，然后添加报告："
+    },
+    "explore": {
+      "labels": {
+        "docs": "文档",
+        "chat": "对话",
+        "files": "文件",
+        "architecture": "架构",
+        "codeHealth": "代码健康",
+        "knowledgeGraph": "知识图谱",
+        "coupling": "变更耦合",
+        "commits": "提交",
+        "decisions": "决策",
+        "contributors": "贡献者",
+        "stats": "统计",
+        "costs": "成本"
+      },
+      "docs": "{modules, number} 个模块，共 {pages, number} 页文档",
+      "files": "{files, number} 个文件，每个都有文档、健康度和历史",
+      "architecture": "依赖图、分层和 {entryPoints, number} 个入口点",
+      "codeHealth": "逐文件评分、{findings, number} 个未解决问题、覆盖率和重构目标",
+      "chat": "向代码库提问，回答会附上出处。",
+      "knowledgeGraph": "实体、社区及其之间的路径",
+      "coupling": "从提交历史中找出总是一起改动的文件",
+      "commits": "按变更风险排序的提交历史，标注智能体来源",
+      "decisions": "从决策记录和 git 历史看代码为何这样设计",
+      "contributors": "巴士系数、各文件维护者，以及人和智能体的分工",
+      "stats": "规模、来源、累计变更、提交节奏和纪录",
+      "costs": "索引这个快照花了多少钱，按模型和运行拆分。"
+    },
+    "attention": {
+      "title": "需要关注",
+      "description": "按工作领域分组，每组先列出最严重的一项。",
+      "inventoryTitle": "全部发现",
+      "inventoryDescription": "各检测器按领域统计的未解决数量。真正值得做的是上面的行动项。",
+      "scopeAreas": "{count, number} 个领域",
+      "scopeOpen": "{count, number} 项未解决",
+      "empty": "目前没有需要关注的事项。",
+      "areas": {
+        "security": "安全",
+        "health": "代码健康",
+        "refactoring": "重构",
+        "doc_drift": "文档漂移",
+        "decisions": "决策",
+        "ownership": "代码所有权",
+        "dead_code": "死代码"
+      },
+      "severity": {
+        "critical": "严重",
+        "high": "高",
+        "medium": "中",
+        "low": "低"
+      },
+      "healthUnit": "个未解决问题",
+      "securityUnit": "处位于发布代码中",
+      "securityElsewhere": "另有 {count, number} 处位于测试和文档中",
+      "refactoringUnit": "条待处理的重构机会",
+      "decisionsUnit": "条待审阅",
+      "decisionsDetail": "{awaiting, number} 条待审阅，{drifting, number} 条与代码不一致",
+      "ownershipUnit": "个单一作者文件",
+      "ownershipDetail": "只有一位作者，没有第二个人熟悉"
+    },
+    "next": {
+      "title": "下一步",
+      "titleCount": "下一步 · {count, number}",
+      "timeFrame": "时间范围",
+      "week": "本周",
+      "weekHint": "最近 7 天的提交带来了哪些变化",
+      "quarter": "本季度",
+      "quarterHint": "根据最近 90 天的情况，值得规划的事项",
+      "tier": {
+        "act_now": "立即处理",
+        "plan": "值得规划",
+        "improve_signal": "让 Repowise 看得更全"
+      },
+      "allAnswered": "这里列出的事项都已处理。在相关情况变化之前，处理结果会一直保留。",
+      "showFewer": "收起",
+      "showAll": "显示全部 {count, number} 项",
+      "listing": "显示 {shown, number} 项，共 {total, number} 项。",
+      "answered": "{count, number} 项已处理（完成、暂缓或忽略）。",
+      "notChecked": "未检查：{checks}。",
+      "runUpdate": "运行 <code>repowise update</code> 后即可纳入。",
+      "emptyChecks": "Repowise 在此索引上运行了 {count, number} 项检查，这个时间范围内没有需要处理的事项。",
+      "undo": "撤销",
+      "undoFailed": "撤销失败",
+      "saveFailed": "保存失败，该事项已放回列表",
+      "openDetails": "查看详情",
+      "markDone": "标记为完成",
+      "markedDone": "已标记为完成。相关情况变化时会重新出现。",
+      "snooze": "暂缓 14 天",
+      "snoozed": "已暂缓 14 天",
+      "dismiss": "忽略",
+      "dismissed": "已忽略。相关情况变化时会重新出现。",
+      "effort": {
+        "S": "工作量小",
+        "M": "工作量中等",
+        "L": "工作量大"
+      },
+      "worthCheck": "建议核实",
+      "inferred": "（推断）",
+      "openRow": "打开：{title}",
+      "moreFor": "{title} 的更多操作"
     }
   },
   "risk": {
