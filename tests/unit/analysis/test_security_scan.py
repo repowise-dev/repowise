@@ -620,6 +620,32 @@ class TestScanFile:
         findings = scan_source("client.py", source)
         assert bool([f for f in findings if f["kind"] == "tls_verify_false"]) is expected
 
+
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            (
+                "import requests\n"
+                "requests = object()\n"
+                "requests.get(url, verify=False)\n"
+            ),
+            (
+                "import requests\n"
+                "class Worker:\n"
+                "    def run(self):\n"
+                "        self.database.get('key', verify=False)\n"
+            ),
+        ],
+    )
+    def test_tls_verify_false_ignores_unrelated_receivers(self, source: str) -> None:
+        findings = scan_source("client.py", source)
+        tls_findings = [
+            f for f in findings if f["kind"] == "tls_verify_false"
+        ]
+        assert tls_findings == []
+
+
     def test_tls_verify_false_keeps_the_line_match_when_python_does_not_parse(self) -> None:
         findings = scan_source("client.py", "def broken(:\nload(x, verify=False)\n")
         assert [f["line"] for f in findings if f["kind"] == "tls_verify_false"] == [2]

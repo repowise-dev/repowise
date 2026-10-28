@@ -618,9 +618,44 @@ def _tls_verify_off_lines(source: str) -> set[int] | None:
         tree = ast.parse(source)
     except SyntaxError:
         return None
+
     bound = _http_bindings(tree)
     if not bound:
         return set()
+
+    def is_shadowed(name: str, call_line: int) -> bool:
+        """Check whether a module-level assignment replaced a bound name."""
+        latest_import = -1
+        latest_assignment = -1
+
+        for statement in tree.body:
+            if isinstance(statement, ast.Import):
+                if any(
+                    (alias.asname or alias.name.split(".")[0]) == name
+                    for alias in statement.names
+                ):
+                    latest_import = statement.lineno
+
+            elif (
+                isinstance(statement, ast.Assign)
+                and statement.lineno < call_line
+                and any(
+                    isinstance(target, ast.Name) and target.id == name
+                    for target in statement.targets
+                )
+            ):
+                # Do not treat an HTTP client created from a known
+                # HTTP library as an unrelated reassignment.
+                if (
+                    isinstance(statement.value, ast.Call)
+                    and _dotted(_root(statement.value)) in bound
+                ):
+                    continue
+
+                latest_assignment = statement.lineno
+
+        return latest_assignment > latest_import
+
     found: set[int] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
@@ -632,15 +667,32 @@ def _tls_verify_off_lines(source: str) -> set[int] | None:
                 reaches = (
                     _dotted(receiver) in bound
                     or _dotted(func.value) in bound
-                    or not isinstance(receiver, ast.Name)
-                    or receiver.id in ("self", "cls")
+                    or (
+                        isinstance(receiver, ast.Name)
+                        and receiver.id in ("self", "cls")
+                        and isinstance(func.value, ast.Attribute)
+                        and func.value.attr.lower() in ("http", "https", "client", "session")
+                    )
+                    or (
+                        isinstance(func.value, ast.Call)
+                        and _dotted(_root(func.value)) in bound
+                    )
                 )
+
             elif isinstance(func, ast.Name):
                 name, reaches = func.id, func.id in bound
             else:
                 continue
-            if name in _HTTP_CALLS and reaches:
-                found.update(
+            if (
+                name in _HTTP_CALLS
+                and reaches
+                and not (
+                    isinstance(func, ast.Attribute)
+                    and isinstance(receiver, ast.Name)
+                    and is_shadowed(receiver.id, node.lineno)
+                )
+            ):
+                found.update (
                     kw.lineno
                     for kw in node.keywords
                     if kw.arg == "verify"
