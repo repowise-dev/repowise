@@ -102,6 +102,17 @@ async def _drain_store(repo_path: Path, repo_id: str) -> None:
         await engine.dispose()
 
 
+def _log_failure(repo_path: Path) -> None:
+    # Detached with stdio on DEVNULL, so the traceback goes to a file.
+    try:
+        import traceback
+
+        with (repo_path / ".repowise" / "commit_health_drain.log").open("a", encoding="utf-8") as f:
+            f.write(traceback.format_exc() + "\n")
+    except OSError:
+        pass
+
+
 def main(argv: list[str]) -> int:
     from repowise.core.update_lock import release_commit_health_lock
 
@@ -111,6 +122,7 @@ def main(argv: list[str]) -> int:
     try:
         asyncio.run(_drain_store(repo_path, repo_id))
     except Exception:
+        _log_failure(repo_path)
         return 1
     finally:
         release_commit_health_lock(repo_path)
