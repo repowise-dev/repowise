@@ -1632,6 +1632,13 @@ class CallResolver(
             if sym_id is not None:
                 return ResolvedCall(caller_id, sym_id, 0.95, call.line, "enclosing_class")
 
+        # In a Kotlin extension a bare name is a member of the extended type
+        # first: it beats every package, import and repo-wide match below.
+        if declared and not call.receiver_name:
+            hit = self._extension_receiver_member_call(file_path, call, caller_id)
+            if hit is not None:
+                return hit
+
         # A language may see names no import mentions (a package sibling, a
         # C/C++ build target), and those beat the import and global tiers.
         if declared:

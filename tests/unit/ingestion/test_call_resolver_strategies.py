@@ -2995,3 +2995,96 @@ class TestJsBareCallSkipsClassMembers:
             0.95,
             "self_scope",
         ) in _edges(parsed, tmp_path)
+
+
+class TestKotlinExtensionReceiverMember:
+    """A bare call in ``fun A.run()`` is ``this.go()`` on ``A``, ahead of any import."""
+
+    _A = "class A {\n    fun go() = 1\n}\n"
+    _B = "class B {\n    fun go() = 2\n}\n"
+    _U = "import B\n\nfun A.run() = go()\n"
+
+    def _targets(
+        self,
+        tmp_path: Path,
+        files: dict[str, str],
+        parents: dict[str, set[str]] | None = None,
+    ) -> list[str]:
+        parsed = _parse_all(tmp_path, {k: ("kotlin", v) for k, v in files.items()})
+        graph = {k: set() for k in parsed} | {"U.kt": {"B.kt"}}
+        resolver = CallResolver(
+            parsed, graph, repo_path=str(tmp_path), heritage_parents=parents or {}
+        )
+        return [
+            rc.callee_id for rc in resolver.resolve_file("U.kt", parsed["U.kt"].calls)
+            if rc.caller_id == "U.kt::run"
+        ]
+
+    def test_the_extended_types_member_beats_an_imported_one(self, tmp_path: Path) -> None:
+        files = {"A.kt": self._A, "B.kt": self._B, "U.kt": self._U}
+        assert self._targets(tmp_path, files) == ["A.kt::A::go"]
+
+    def test_a_receiver_without_the_member_keeps_the_import_edge(self, tmp_path: Path) -> None:
+        files = {"A.kt": "class A\n", "B.kt": self._B, "U.kt": self._U}
+        assert self._targets(tmp_path, files) == ["B.kt::B::go"]
+
+    def test_an_ancestor_of_the_receiver_answers(self, tmp_path: Path) -> None:
+        files = {
+            "A.kt": "open class A {\n    fun go() = 1\n}\n",
+            "C.kt": "class C : A()\n",
+            "B.kt": self._B,
+            "U.kt": "import B\n\nfun C.run() = go()\n",
+        }
+        parents = {"C.kt::C": {"A.kt::A"}}
+        assert self._targets(tmp_path, files, parents) == ["A.kt::A::go"]
+
+    def test_a_plain_function_still_binds_to_the_import(self, tmp_path: Path) -> None:
+        files = {
+            "A.kt": self._A,
+            "B.kt": self._B,
+            "U.kt": "import B\n\nfun run() = go()\n",
+        }
+        assert self._targets(tmp_path, files) == ["B.kt::B::go"]
+
+    def test_a_call_inside_a_lambda_keeps_the_import_edge(self, tmp_path: Path) -> None:
+        # A lambda may rebind ``this``, which a text scan cannot type, so the
+        # receiver's member is not preferred there.
+        files = {
+            "A.kt": self._A,
+            "B.kt": self._B,
+            "U.kt": "import B\n\nfun A.run() = listOf(1).map { go() }\n",
+        }
+        assert self._targets(tmp_path, files) == ["B.kt::B::go"]
+
+    def test_two_classes_sharing_the_receivers_name_give_no_edge(self, tmp_path: Path) -> None:
+        # ``A`` names two repo classes, so neither is known to be the receiver.
+        files = {
+            "one/A.kt": self._A,
+            "two/A.kt": self._A,
+            "U.kt": "fun A.run() = go()\n",
+        }
+        assert self._targets(tmp_path, files) == []
+
+    def test_a_top_level_extension_of_the_receiver_is_not_its_member(
+        self, tmp_path: Path
+    ) -> None:
+        # ``fun A.go()`` is not a member of ``A``; the call keeps the import edge.
+        files = {
+            "A.kt": "class A\n",
+            "E.kt": "fun A.go() = 3\n",
+            "B.kt": self._B,
+            "U.kt": self._U,
+        }
+        assert self._targets(tmp_path, files) == ["B.kt::B::go"]
+
+    def test_a_member_extension_inside_the_receiver_is_not_its_member(
+        self, tmp_path: Path
+    ) -> None:
+        # ``class A { fun B.go() }`` is indexed under ``A`` but needs a ``B`` as
+        # ``this``, which ``fun A.run()`` does not have: the import edge stays.
+        files = {
+            "A.kt": "class A {\n    fun B.go() = 3\n}\n",
+            "B.kt": self._B,
+            "U.kt": self._U,
+        }
+        assert self._targets(tmp_path, files) == ["B.kt::B::go"]

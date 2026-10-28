@@ -1139,6 +1139,48 @@ class LanguageStrategiesMixin:
             _store_capped(self._dart_constructors, class_id, found, _BODY_TYPE_CACHE_ENTRIES)
         return found
 
+    def _extension_receiver_member_call(
+        self, file_path: str, call: CallSite, caller_id: str
+    ) -> ResolvedCall | None:
+        """A bare call in a Kotlin extension, read as ``this.name(..)`` on the extended type.
+
+        Inside ``fun A.run() = go()`` the implicit ``this`` is an ``A``, and a
+        member of ``A`` (or of one of its ancestors) beats any top-level name an
+        import brings in. Only a repo class the name resolves to uniquely is
+        asked, and only outside a lambda, whose receiver a text scan cannot
+        type. A receiver with no such member answers nothing, so the later
+        tiers run as before.
+        """
+        if call.receiver_name or call.receiver_call is not None or call.scope_name:
+            return None
+        caller = self._symbols_by_id.get(caller_id)
+        if caller is None or caller.language != "kotlin" or caller.kind not in _FUNCTION_KINDS:
+            return None
+        receiver = self._kotlin_receiver(caller)
+        if receiver is None or self._call_in_lambda(file_path, call, caller):
+            return None
+        class_ids = {
+            sym_id
+            for sym_id in self._global_symbols.get(receiver, ())
+            if (symbol := self._symbols_by_id.get(sym_id)) is not None
+            and symbol.kind in _TYPE_KINDS
+        }
+        if len(class_ids) != 1:
+            return None
+        class_id = next(iter(class_ids))
+        own = self._declares(class_id, call.target_name)
+        if self._is_member(own, caller_id):
+            return ResolvedCall(caller_id, own, 0.95, call.line, "enclosing_class")
+        inherited = self._ancestor_method(class_id, call.target_name, caller_id)
+        if self._is_member(inherited, caller_id):
+            return ResolvedCall(caller_id, inherited, 0.90, call.line, "enclosing_inherited")
+        return None
+
+    def _is_member(self, sym_id: str | None, caller_id: str) -> bool:
+        """Is *sym_id* a real member, not the caller or an extension of the type?"""
+        symbol = self._symbols_by_id.get(sym_id or "")
+        return symbol is not None and sym_id != caller_id and not symbol.extension_receiver
+
     def _lacks_extension_receiver(self, file_path: str, call: CallSite, callee_id: str) -> bool:
         """Is *callee_id* a Kotlin extension this bare call has no receiver for?
 
