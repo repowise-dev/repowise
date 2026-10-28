@@ -8,6 +8,7 @@ rows newest first and files older commits under each file's current name (see
 from __future__ import annotations
 
 import functools
+import itertools
 import json
 from collections import Counter
 from collections.abc import Callable, Iterator
@@ -194,12 +195,12 @@ def _window_records(
         return _log_records(repo, f"-{depth}")
 
     try:
-        records = _cached_window_records(repo, cache_path, head, depth)
+        records, current = _cached_window_records(repo, cache_path, head, depth)
     except Exception:
-        records = None
+        records, current = None, False
     if records is None:
         records = _log_records(repo, f"-{depth}")
-    if cache_writable:
+    if cache_writable and not current:
         _write_window_cache(cache_path, head, depth, records)
     return records
 
@@ -237,8 +238,9 @@ def _log_records(repo: object, *revisions: str) -> list[str]:
 
 def _cached_window_records(
     repo: object, cache_path: Path, head: str, depth: int
-) -> list[str] | None:
-    """The cached window brought forward to *head*, or ``None`` when it cannot serve.
+) -> tuple[list[str] | None, bool]:
+    """The cached window brought forward to *head* (``None`` when it cannot serve),
+    and whether the cache was already taken at *head*.
 
     Raises on an unreadable cache or a cached head that is not an ancestor of
     *head*; the caller treats both as a miss.
@@ -249,20 +251,31 @@ def _cached_window_records(
         or cached.get("depth") != depth
         or not isinstance(cached.get("records"), list)
     ):
-        return None
+        return None, False
     cached_head = str(cached.get("head") or "")
     if cached_head == head:
-        return list(cached["records"])
+        return list(cached["records"]), True
     if not cached_head:
-        return None
+        return None, False
     # Raises when the cached head is unknown to this repository or
     # not behind HEAD, which is exactly when the cache is stale.
     repo.git.merge_base("--is-ancestor", cached_head, head)  # type: ignore[attr-defined]
-    merged = _log_records(repo, f"{cached_head}..{head}") + list(cached["records"])
+    fresh = _log_records(repo, f"{cached_head}..{head}")
+    cached_records = list(cached["records"])
+    # Git walks newest committer time first, so the time sort below is git's
+    # order only when neither part is out of time order (clock skew).
+    if not (_newest_first(fresh) and _newest_first(cached_records)):
+        return None, False
+    merged = fresh + cached_records
     # Stable, so a fresh record stays ahead of a cached one at the
     # same second, which is where the full walk puts it too.
     merged.sort(key=_record_ts, reverse=True)
-    return merged[:depth]
+    return merged[:depth], False
+
+
+def _newest_first(records: list[str]) -> bool:
+    stamps = [_record_ts(record) for record in records]
+    return all(a >= b for a, b in itertools.pairwise(stamps))
 
 
 def _report(stats_sink: dict[str, int | bool] | None, *, succeeded: bool, commits: int) -> None:

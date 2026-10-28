@@ -124,10 +124,44 @@ def test_decay_meta_matches_index_file_for_decay_fields(tmp_path) -> None:
 
 def test_shape_cache_from_another_classifier_is_discarded(tmp_path) -> None:
     cache = FixShapeCache.load(tmp_path)
-    cache.shapes["a" * 40] = "code_fix"
+    cache.update({"a" * 40: ("code_fix", 5)}, oldest_ts=0)
     cache.save()
-    assert FixShapeCache.load(tmp_path).shapes == {"a" * 40: "code_fix"}
+    assert FixShapeCache.load(tmp_path).kinds() == {"a" * 40: "code_fix"}
 
     path = tmp_path / "fix_shape_cache.json"
     path.write_text(path.read_text().replace(cache._fingerprint, "stale"))
     assert FixShapeCache.load(tmp_path).shapes == {}
+
+
+def _sampled(repo, cache_dir: Path | None) -> dict[str, list[tuple]]:
+    sample = git_commit_index.load_sampled_commit_index(
+        repo, 3, {"a.py"}, deep_limit=50, deep_threshold=1, cache_dir=cache_dir
+    )
+    return {p: [(r.sha, r.ts, r.added) for r in recs] for p, recs in sample.commits.items()}
+
+
+def test_skewed_commit_times_fall_back_to_a_fresh_walk(tmp_path) -> None:
+    """A child older than its parent puts git's walk out of time order."""
+    import git as gitpython
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    repo = gitpython.Repo.init(root)
+    with repo.config_writer() as cw:
+        cw.set_value("user", "name", "Alice")
+        cw.set_value("user", "email", "alice@example.com")
+    cache_dir = root / ".repowise"
+    cache_dir.mkdir()
+    for i, ts in enumerate((100, 300, 200, 400)):  # the third commit is skewed
+        (root / "a.py").write_text(f"x = {i}\n" * (i + 1))
+        repo.index.add(["a.py"])
+        stamp = f"{1_700_000_000 + ts} +0000"
+        repo.index.commit(f"c{i}", author_date=stamp, commit_date=stamp)
+    _sampled(repo, cache_dir)
+    stamp = f"{1_700_000_500} +0000"
+    (root / "a.py").write_text("y = 9\n")
+    repo.index.add(["a.py"])
+    repo.index.commit("c4", author_date=stamp, commit_date=stamp)
+
+    assert _sampled(repo, cache_dir) == _sampled(repo, None)
+    repo.close()

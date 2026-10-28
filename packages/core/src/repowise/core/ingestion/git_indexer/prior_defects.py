@@ -160,7 +160,7 @@ def collect_fix_commits(
 
     *shape_cache* takes each cached commit's shape instead of opening its diff,
     so those commits carry no *files*: only counting callers may pass it. Fresh
-    shapes are added to it, and shapes of commits outside the window dropped.
+    shapes are added to it, and shapes older than the oldest fix walked dropped.
 
     Ceiling: the returned walk holds every fix commit's parsed patch, changed
     line text included, plus a byte-capped copy of its message, for as long as
@@ -188,20 +188,21 @@ def collect_fix_commits(
         return FixWalk(oldest_fix_ts=oldest, shas=shas)
 
     return FixWalk(
-        fixes=_with_shapes(repo, fixes, shas, shape_cache), oldest_fix_ts=oldest, shas=shas
+        fixes=_with_shapes(repo, fixes, oldest, shape_cache), oldest_fix_ts=oldest, shas=shas
     )
 
 
 def _with_shapes(
-    repo: Any, fixes: list[FixCommit], shas: frozenset[str], shape_cache: FixShapeCache | None
+    repo: Any, fixes: list[FixCommit], oldest_ts: int, shape_cache: FixShapeCache | None
 ) -> list[FixCommit]:
     """*fixes* with their diff and shape; cached shapes skip the diff."""
-    known = shape_cache.shapes if shape_cache is not None else {}
+    known = shape_cache.kinds() if shape_cache is not None else {}
     diffs = _parse_fix_diffs(repo, [f.sha for f in fixes if f.sha not in known])
     fresh = {sha: classify_fix_shape(files) for sha, files in diffs.items()}
     if shape_cache is not None:
-        shape_cache.retain(shas)
-        shape_cache.shapes.update(fresh)
+        shape_cache.update(
+            {f.sha: (fresh[f.sha], f.ts) for f in fixes if f.sha in fresh}, oldest_ts=oldest_ts
+        )
     return [
         FixCommit(
             sha=fix.sha,

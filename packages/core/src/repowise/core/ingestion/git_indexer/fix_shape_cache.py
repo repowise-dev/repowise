@@ -41,9 +41,11 @@ def _classifier_fingerprint() -> str:
 
 
 class FixShapeCache:
-    """``sha -> shape_kind`` for fix commits whose diff was classified."""
+    """``sha -> (shape_kind, committer ts)`` for fix commits whose diff was classified."""
 
-    def __init__(self, path: Path | None, shapes: dict[str, str], fingerprint: str) -> None:
+    def __init__(
+        self, path: Path | None, shapes: dict[str, tuple[str, int]], fingerprint: str
+    ) -> None:
         self._path = path
         self._fingerprint = fingerprint
         self.shapes = shapes
@@ -53,23 +55,33 @@ class FixShapeCache:
         """The cache under *cache_dir*; empty when absent, unreadable or stale."""
         try:
             fingerprint = _classifier_fingerprint()
-        except OSError:
+        except (OSError, TypeError):
             # Sources not on disk (e.g. a zipped install): run without a cache.
             return cls(None, {}, "")
         path = Path(cache_dir) / _CACHE_NAME if cache_dir is not None else None
-        shapes: dict[str, str] = {}
+        shapes: dict[str, tuple[str, int]] = {}
         if path is not None and path.is_file():
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
-                if data.get("fingerprint") == fingerprint and isinstance(data.get("shapes"), dict):
-                    shapes = {str(k): str(v) for k, v in data["shapes"].items()}
-            except (OSError, ValueError, AttributeError) as exc:
+                if data.get("fingerprint") == fingerprint:
+                    shapes = {
+                        str(sha): (str(kind), int(ts)) for sha, (kind, ts) in data["shapes"].items()
+                    }
+            except (OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
                 logger.debug("fix_shape_cache_read_failed", error=str(exc))
         return cls(path, shapes, fingerprint)
 
-    def retain(self, shas: frozenset[str]) -> None:
-        """Drop shapes of commits no longer in the window, so the file stays bounded."""
-        self.shapes = {sha: kind for sha, kind in self.shapes.items() if sha in shas}
+    def kinds(self) -> dict[str, str]:
+        return {sha: kind for sha, (kind, _) in self.shapes.items()}
+
+    def update(self, fresh: dict[str, tuple[str, int]], *, oldest_ts: int) -> None:
+        """Add *fresh* shapes and drop those older than the walk's oldest fix.
+
+        Evicting by time, not by the walk's shas, keeps fixes a narrower file
+        set skipped this run; the window's trailing edge bounds the file.
+        """
+        kept = {sha: entry for sha, entry in self.shapes.items() if entry[1] >= oldest_ts}
+        self.shapes = {**kept, **fresh}
 
     def save(self) -> None:
         if self._path is None:
