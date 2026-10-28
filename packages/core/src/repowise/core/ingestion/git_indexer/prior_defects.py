@@ -187,13 +187,22 @@ def collect_fix_commits(
     if not fixes:
         return FixWalk(oldest_fix_ts=oldest, shas=shas)
 
+    return FixWalk(
+        fixes=_with_shapes(repo, fixes, shas, shape_cache), oldest_fix_ts=oldest, shas=shas
+    )
+
+
+def _with_shapes(
+    repo: Any, fixes: list[FixCommit], shas: frozenset[str], shape_cache: FixShapeCache | None
+) -> list[FixCommit]:
+    """*fixes* with their diff and shape; cached shapes skip the diff."""
     known = shape_cache.shapes if shape_cache is not None else {}
     diffs = _parse_fix_diffs(repo, [f.sha for f in fixes if f.sha not in known])
     fresh = {sha: classify_fix_shape(files) for sha, files in diffs.items()}
     if shape_cache is not None:
         shape_cache.retain(shas)
         shape_cache.shapes.update(fresh)
-    resolved_fixes = [
+    return [
         FixCommit(
             sha=fix.sha,
             ts=fix.ts,
@@ -206,7 +215,6 @@ def collect_fix_commits(
         )
         for fix in fixes
     ]
-    return FixWalk(fixes=resolved_fixes, oldest_fix_ts=oldest, shas=shas)
 
 
 def compute_prior_defects(

@@ -51,7 +51,11 @@ class FixShapeCache:
     @classmethod
     def load(cls, cache_dir: Path | None) -> FixShapeCache:
         """The cache under *cache_dir*; empty when absent, unreadable or stale."""
-        fingerprint = _classifier_fingerprint()
+        try:
+            fingerprint = _classifier_fingerprint()
+        except OSError:
+            # Sources not on disk (e.g. a zipped install): run without a cache.
+            return cls(None, {}, "")
         path = Path(cache_dir) / _CACHE_NAME if cache_dir is not None else None
         shapes: dict[str, str] = {}
         if path is not None and path.is_file():
@@ -59,7 +63,7 @@ class FixShapeCache:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 if data.get("fingerprint") == fingerprint and isinstance(data.get("shapes"), dict):
                     shapes = {str(k): str(v) for k, v in data["shapes"].items()}
-            except Exception as exc:
+            except (OSError, ValueError, AttributeError) as exc:
                 logger.debug("fix_shape_cache_read_failed", error=str(exc))
         return cls(path, shapes, fingerprint)
 
@@ -77,5 +81,5 @@ class FixShapeCache:
                 self._path,
                 json.dumps({"fingerprint": self._fingerprint, "shapes": self.shapes}),
             )
-        except Exception as exc:
+        except OSError as exc:
             logger.debug("fix_shape_cache_write_failed", error=str(exc))
