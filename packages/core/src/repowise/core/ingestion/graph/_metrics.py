@@ -486,19 +486,11 @@ class MetricsMixin:
             # Seeded: k-sampling is the one randomized kernel left in the
             # pipeline. Unseeded it made every large-repo index emit a
             # different betweenness ranking (typst's entry-point order
-            # flapped between runs).
-            #
-            # The seed alone is not enough. NetworkX samples from
-            # ``list(G.nodes())``, so a fixed seed over a population in a
-            # different order still draws a different 500 nodes, and that is a
-            # different ranking rather than a rounding difference. Re-inserting
-            # the nodes in sorted order is what makes the sample reproducible.
-            # The copy costs one pass over a graph we are about to run 500
-            # shortest-path trees on.
-            ordered = nx.DiGraph() if g.is_directed() else nx.Graph()
-            ordered.add_nodes_from(sorted(g.nodes()))
-            ordered.add_edges_from(g.edges())
-            values = nx.betweenness_centrality(ordered, k=k, normalized=True, seed=42)
+            # flapped between runs). The kernel also fixes the population
+            # order the sample is drawn from.
+            from ._sampled_betweenness import sampled_betweenness_centrality
+
+            values = sampled_betweenness_centrality(g, k=k, seed=42)
         elif kind == "symbol":
             values = _exact_symbol_betweenness(g)
         else:
