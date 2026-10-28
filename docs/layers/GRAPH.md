@@ -69,8 +69,8 @@ capture queries are in
 | Answer key | Scope | Result |
 |---|---|---|
 | Compiler (Go RTA call graph, `tsc`) | Go and TypeScript, 7 cells over 5 repositories, 37,853 compiler edges | Precision 0.976 to 0.995 |
-| javac | Java, 7 repositories (3 held out) | Precision {{P:lo-java}} to {{P:hi-java}} |
-| Compiler index | C on git, held out from all tuning | Precision {{P:git}} at {{R:git}} recall |
+| javac | Java, 7 repositories (3 held out) | Precision 0.898 to 1.000 |
+| Compiler index | C on git, held out from all tuning | Precision 0.979 at 0.837 recall |
 
 In all seven Go and TypeScript cells, no tool in the five-tool comparison that
 finds as much of the call graph gets more of it right; two tools post higher
@@ -263,7 +263,7 @@ and a 1-10 architecture score; see
   precision is too low to recommend deletions.
 - Recall is lower than the leading tool in four of seven compiler-graded cells.
 - The graph keeps one node per overload set, so on Java and C# a call can land
-  on the wrong overload. C# reads {{P:lo-csharp}} to {{P:hi-csharp}} against
+  on the wrong overload. C# reads 0.780 to 0.942 against
   the compiler.
 - Precision is published for eleven languages. Go, TypeScript, Dart, Python, C,
   C++, Java, Kotlin, C# and Rust are graded against a compiler or analyser;

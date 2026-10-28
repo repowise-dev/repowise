@@ -15,7 +15,7 @@ can rerun it.
 | **Points at the right code** | **88%** of the files a real fix needed, against **61%** for the next tool | Before an agent edits, it has to find the right files. Repowise finds most of them in one call. [Details](#1-finding-the-right-files) |
 | **Up to 99% less noise** | `npm ci` **99.5%**, `git log` **89%**, `git diff` **86%**, test runs **61%** smaller | Command output is trimmed before the agent reads it, and every error line is kept. [Details](#4-command-output-compression) |
 | **Finds the code that will break** | **2.3x** as many later-buggy files as CodeScene, in the same review budget | Its health score flags the files that go on to need bug fixes, across 21 open-source projects. [Details](#5-code-health-predicts-defects) |
-| **A map the compiler agrees with** | **{{P%:lo-core}} to {{P%:hi-core}}** of the calls it draws are confirmed by the language's own compiler | Go, TypeScript, Dart, C and Python, each graded by its own toolchain. [Details](#accuracy-by-language) |
+| **A map the compiler agrees with** | **93.8% to 99.8%** of the calls it draws are confirmed by the language's own compiler | Go, TypeScript, Dart, C and Python, each graded by its own toolchain. [Details](#accuracy-by-language) |
 | **Knows which tests matter** | **97.5%** correct on which tests to run for a change, with no coverage run | Teams can run the tests a change touches instead of the whole suite. [Details](#test-intelligence) |
 | **Runs on a laptop at any size** | **15 million lines** (dotnet/runtime) indexed on one laptop, with no API key | Updates after that take seconds. Building the map uses **10x less memory** than the next tool. [Details](#scale) |
 
@@ -263,47 +263,49 @@ The judge is each language's own compiler, which resolves every call exactly.
 Measured October 2026 on repowise main, each repository freshly indexed, every
 row published.
 
-**What we found.** Precision is **{{P:lo-core}} to {{P:hi-core}}** on Go,
-TypeScript, Dart, C and Python, **{{P:lo-java}} to {{P:hi-java}}** on Java, and
-**{{P:lo-rest}} to {{P:hi-rest}}** on Kotlin, C#, C++ and Rust. Applications are
+**What we found.** Precision is **0.938 to 0.998** on Go,
+TypeScript, Dart, C and Python, **0.898 to 1.000** on Java, and
+**0.780 to 0.975** on Kotlin, C#, C++ and Rust, where Polly (0.780) is the
+one row under 0.84. Applications are
 in the table: a Spring Boot service (eclipse-hawkbit), an ASP.NET Core shop
 (eShopOnWeb) and a C++ build tool (ninja). Held-out repositories read close to
-the dev ones.
+the dev ones: none sits more than 0.04 below its language's lowest dev row, and
+git and dart_style read above theirs.
 
 | Language | Repository | Set | Answer key | Precision | Recall | Edges |
 |---|---|---|---|---:|---:|---:|
-| Go | gitleaks | dev | scip-go (Go compiler) | **{{P:gitleaks}}** | {{R:gitleaks}} | {{N:gitleaks}} |
-| Go | goldmark | held out | scip-go (Go compiler) | **{{P:goldmark}}** | {{R:goldmark}} | {{N:goldmark}} |
-| TypeScript | zod | dev | `tsc` | **{{P:zod}}** | {{R:zod}} | {{N:zod}} |
-| TypeScript | hono | dev | `tsc` | **{{P:hono}}** | {{R:hono}} | {{N:hono}} |
-| Dart | pub | dev | Dart analyzer | **{{P:pub}}** | {{R:pub}} | {{N:pub}} |
-| Dart | dart_style | held out | Dart analyzer | **{{P:dart_style}}** | {{R:dart_style}} | {{N:dart_style}} |
-| Python | httpx | dev | jedi | **{{P:httpx}}** | {{R:httpx}} | {{N:httpx}} |
-| Python | click | dev | jedi | **{{P:click}}** | {{R:click}} | {{N:click}} |
-| Python | attrs | dev | jedi | **{{P:attrs}}** | {{R:attrs}} | {{N:attrs}} |
-| Python | typer | held out | jedi | **{{P:typer}}** | {{R:typer}} | {{N:typer}} |
-| Python | alembic | held out | jedi | **{{P:alembic}}** | {{R:alembic}} | {{N:alembic}} |
-| C | redis | dev | scip-clang (clang) | **{{P:redis}}** | {{R:redis}} | {{N:redis}} |
-| C | git | held out | scip-clang (clang) | **{{P:git}}** | {{R:git}} | {{N:git}} |
-| C++ | fmt | dev | scip-clang (clang) | **{{P:fmt}}** | {{R:fmt}} | {{N:fmt}} |
-| C++ | ninja | dev | scip-clang (clang) | **{{P:ninja}}** | {{R:ninja}} | {{N:ninja}} |
-| C++ | yaml-cpp | held out | scip-clang (clang) | **{{P:yaml-cpp}}** | {{R:yaml-cpp}} | {{N:yaml-cpp}} |
-| Java | jsoup | dev | scip-java (javac) | **{{P:jsoup}}** | {{R:jsoup}} | {{N:jsoup}} |
-| Java | gson | dev | scip-java (javac) | **{{P:gson}}** | {{R:gson}} | {{N:gson}} |
-| Java | eclipse-hawkbit (Spring Boot application) | dev | scip-java (javac) | **{{P:hawkbit}}** | {{R:hawkbit}} | {{N:hawkbit}} |
-| Java | spring-petclinic-rest | dev | scip-java (javac) | **{{P:petclinic}}** | {{R:petclinic}} | {{N:petclinic}} |
-| Java | javapoet | held out | scip-java (javac) | **{{P:javapoet}}** | {{R:javapoet}} | {{N:javapoet}} |
-| Java | jackson-core | held out | scip-java (javac) | **{{P:jackson-core}}** | {{R:jackson-core}} | {{N:jackson-core}} |
-| Java | joda-time | held out | scip-java (javac) | **{{P:joda-time}}** | {{R:joda-time}} | {{N:joda-time}} |
-| Kotlin | nowinandroid | dev | Kotlin K2 compiler | **{{P:nowinandroid}}** | {{R:nowinandroid}} | {{N:nowinandroid}} |
-| Kotlin | ktor-samples | dev | Kotlin K2 compiler | **{{P:ktor-samples}}** | {{R:ktor-samples}} | {{N:ktor-samples}} |
-| Kotlin | okio (JVM) | dev | Kotlin K2 compiler | **{{P:okio}}** | {{R:okio}} | {{N:okio}} |
-| C# | FluentValidation | dev | scip-dotnet (Roslyn) | **{{P:FluentValidation}}** | {{R:FluentValidation}} | {{N:FluentValidation}} |
-| C# | Polly (4 projects) | dev | scip-dotnet (Roslyn) | **{{P:Polly}}** | {{R:Polly}} | {{N:Polly}} |
-| C# | eShopOnWeb (ASP.NET Core application) | dev | scip-dotnet (Roslyn) | **{{P:eShopOnWeb}}** | {{R:eShopOnWeb}} | {{N:eShopOnWeb}} |
-| C# | AutoMapper | held out | scip-dotnet (Roslyn) | **{{P:AutoMapper}}** | {{R:AutoMapper}} | {{N:AutoMapper}} |
-| Rust | fd | dev | rust-analyzer | **{{P:fd}}** | {{R:fd}} | {{N:fd}} |
-| Rust | ripgrep | dev | rust-analyzer | **{{P:ripgrep}}** | {{R:ripgrep}} | {{N:ripgrep}} |
+| Go | gitleaks | dev | scip-go (Go compiler) | **0.996** | 0.986 | 1,596 |
+| Go | goldmark | held out | scip-go (Go compiler) | **0.994** | 0.781 | 1,712 |
+| TypeScript | zod | dev | `tsc` | **0.995** | 0.796 | 1,269 |
+| TypeScript | hono | dev | `tsc` | **0.976** | 0.806 | 706 |
+| Dart | pub | dev | Dart analyzer | **0.994** | 0.885 | 2,311 |
+| Dart | dart_style | held out | Dart analyzer | **0.998** | 0.870 | 2,571 |
+| Python | httpx | dev | jedi | **0.994** | 0.839 | 1,752 |
+| Python | click | dev | jedi | **0.959** | 0.746 | 2,246 |
+| Python | attrs | dev | jedi | **0.942** | 0.757 | 1,472 |
+| Python | typer | held out | jedi | **0.963** | 0.847 | 2,099 |
+| Python | alembic | held out | jedi | **0.991** | 0.696 | 1,319 |
+| C | redis | dev | scip-clang (clang) | **0.938** | 0.717 | 34,209 |
+| C | git | held out | scip-clang (clang) | **0.979** | 0.837 | 28,104 |
+| C++ | fmt | dev | scip-clang (clang) | **0.858** | 0.615 | 1,414 |
+| C++ | ninja | dev | scip-clang (clang) | **0.944** | 0.714 | 1,047 |
+| C++ | yaml-cpp | held out | scip-clang (clang) | **0.841** | 0.634 | 1,172 |
+| Java | jsoup | dev | scip-java (javac) | **0.980** | 0.943 | 4,332 |
+| Java | gson | dev | scip-java (javac) | **0.958** | 0.949 | 1,760 |
+| Java | eclipse-hawkbit (Spring Boot application) | dev | scip-java (javac) | **0.937** | 0.845 | 5,977 |
+| Java | spring-petclinic-rest | dev | scip-java (javac) | **1.000** | 0.966 | 355 |
+| Java | javapoet | held out | scip-java (javac) | **0.950** | 0.917 | 698 |
+| Java | jackson-core | held out | scip-java (javac) | **0.963** | 0.933 | 4,832 |
+| Java | joda-time | held out | scip-java (javac) | **0.898** | 0.866 | 8,164 |
+| Kotlin | nowinandroid | dev | Kotlin K2 compiler | **0.975** | 0.801 | 643 |
+| Kotlin | ktor-samples | dev | Kotlin K2 compiler | **0.973** | 0.821 | 347 |
+| Kotlin | okio (JVM) | dev | Kotlin K2 compiler | **0.901** | 0.654 | 1,468 |
+| C# | FluentValidation | dev | scip-dotnet (Roslyn) | **0.942** | 0.633 | 621 |
+| C# | Polly (4 projects) | dev | scip-dotnet (Roslyn) | **0.780** | 0.436 | 962 |
+| C# | eShopOnWeb (ASP.NET Core application) | dev | scip-dotnet (Roslyn) | **0.877** | 0.773 | 185 |
+| C# | AutoMapper | held out | scip-dotnet (Roslyn) | **0.866** | 0.347 | 3,074 |
+| Rust | fd | dev | rust-analyzer | **0.917** | 0.661 | 233 |
+| Rust | ripgrep | dev | rust-analyzer | **0.863** | 0.546 | 4,567 |
 | Apex | 7 public Salesforce repositories | dev | census of literal references, 90 hand-graded edges | **90/90** | 0.999 | 40,907 |
 
 **Held out means never tuned on.** Dev repositories are the ones accuracy work
@@ -326,10 +328,11 @@ prove, such as dynamic and interface dispatch, rather than draw several edges
 where one is right. Recall also depends on how many entry points a codebase has,
 so compare it within a language.
 
-**Reading the lower rows.** okio ({{P:okio}}) is a multiplatform library whose
-`expect` and `actual` declarations share names with the standard library.
-Polly ({{P:Polly}}) defines many overloads of each policy method, so much of
-what remains is the choice between overloads of the right method.
+**Reading the lower rows.** Polly (0.780) defines many overloads of each
+policy method, so much of what remains is the choice between overloads of the
+right method. fmt (0.858) is the same choice in C++, among templates and
+overloads that take the same number of arguments. ripgrep (0.863) spans ten
+crates in which many unrelated types share method names.
 
 Reference versions: scip-go 0.2.7, scip-java 0.13.1, scip-dotnet 0.2.14,
 scip-clang 0.3.1, rust-analyzer 1.96.0, jedi 0.20.0, Dart analyzer 14.5.0,

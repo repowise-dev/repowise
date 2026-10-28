@@ -391,7 +391,7 @@ advertised surface, against answer keys we did not write.
 | **Work saved in an agent loop** | 3.8 tool calls instead of 7.2, 3.0 files opened instead of 7.2, **31.6% less output**. The best of five context tools. *n=43, p<0.0001* |
 | **Finding the right files** | **0.876** of the files a fix needed, against 0.610 for the next tool, on a sealed set. *n=42, p=0.00004* |
 | **Command output** | Up to **99.5%** smaller (`npm ci`), 89% for `git log`, 86% for `git diff`, no error line lost |
-| **Call graph the compiler agrees with** | **{{P%:lo-core}} to {{P%:hi-core}}** precision on Go, TypeScript, Dart, C and Python, graded by each language's own toolchain. Against four other tools, none that finds as much of the graph gets more of it right, in 7 of 7 cells |
+| **Call graph the compiler agrees with** | **93.8% to 99.8%** precision on Go, TypeScript, Dart, C and Python, graded by each language's own toolchain. Against four other tools, none that finds as much of the graph gets more of it right, in 7 of 7 cells |
 | **Health that predicts bugs** | **2.3x** CodeScene's recall of later-buggy files at the same review budget. *2,770 files, p=0.003* |
 | **Scale** | **15 million lines** (dotnet/runtime) on one laptop. Building the call graph takes **75 MB**, 10x less than the next tool |
 

@@ -112,10 +112,10 @@ though someone had written it.
   smaller graphs. Recall leads in three of the seven cells. Most misses are
   dynamic dispatch, which no tool in the comparison resolves without emitting
   several wrong edges for each right one.
-- **Against compiler indexes for more languages.** Java reads {{P:lo-java}} to
-  {{P:hi-java}} precision against javac across seven repositories. C on git,
-  a repository held out from all tuning, reads {{P:git}} precision at
-  {{R:git}} recall. Dart, Kotlin, C#, C++, Rust and Python (against jedi, a
+- **Against compiler indexes for more languages.** Java reads 0.898 to
+  1.000 precision against javac across seven repositories. C on git,
+  a repository held out from all tuning, reads 0.979 precision at
+  0.837 recall. Dart, Kotlin, C#, C++, Rust and Python (against jedi, a
   static analyser) are in the same table.
 
 Unused methods are not reported for any language because method-level precision
