@@ -63,16 +63,10 @@ class CppFieldOwners:
             return 0
         owner, _ = self._typing_scope(path, caller_id, "cpp", name)
         spans = self._spans_for(path)
-        start, end = spans.get(owner, (1, 0))
-        declarations = facts.declarations
-        found = [d.position for d in declarations if d.name == name and start <= d.line <= end]
+        found = _declared_in(facts.declarations, name, spans.get(owner, (1, 0)))
         if not found:
             _, class_id = self._field_owner(path, caller_id, "cpp")
-            start, end = spans.get(class_id, (1, 0))
-            found = [
-                d.position for d in declarations
-                if d.field and d.name == name and start <= d.line <= end
-            ]
+            found = _declared_in(facts.declarations, name, spans.get(class_id, (1, 0)), fields=True)
         if len(found) > 1:
             return None
         return found[0] if found else 0
@@ -244,6 +238,17 @@ class CppFieldOwners:
                 names.update(sym.name for sym in candidates if _is_pure(lines, sym))
             self._pure_virtual_name_set = frozenset(names)
         return self._pure_virtual_name_set
+
+
+def _declared_in(
+    declarations: tuple[_CppBinding, ...], name: str, span: tuple[int, int], *, fields: bool = False
+) -> list[int]:
+    """Byte positions where *name* is declared within the line *span*."""
+    start, end = span
+    return [
+        d.position for d in declarations
+        if d.name == name and start <= d.line <= end and (d.field or not fields)
+    ]
 
 
 def _cpp_facts_of(text: str) -> _CppFacts:
