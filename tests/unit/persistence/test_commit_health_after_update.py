@@ -8,6 +8,7 @@ never scanned again until a full index.
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -372,3 +373,35 @@ async def test_the_drain_stops_between_rounds_when_an_update_starts(repo, monkey
     finally:
         release_update_lock(repo)
         await engine.dispose()
+
+
+async def test_the_drain_process_entry_scans_the_repo_store_and_frees_the_lock(
+    repo, monkeypatch
+) -> None:
+    engine, sf, repo_id = await _store_with_commits(repo)
+    try:
+        monkeypatch.setattr(scan_mod, "scan_commits", _scanner(str(repo), 2))
+
+        assert await asyncio.to_thread(drain_mod.main, [str(repo), repo_id]) == 0
+
+        assert await _stored_in(sf, repo_id) == set(_SHAS)
+        assert try_acquire_commit_health_lock(repo) is None
+        release_commit_health_lock(repo)
+    finally:
+        await engine.dispose()
+
+
+def test_the_drain_is_spawned_isolated_from_the_repo_cwd(repo, monkeypatch) -> None:
+    import repowise.core.spawn as spawn_mod
+
+    calls: list = []
+    monkeypatch.setattr(spawn_mod, "spawn_detached", lambda argv, cwd: calls.append((argv, cwd)))
+    monkeypatch.setenv(drain_mod.BACKGROUND_ENV, "1")
+    drain_mod.start_background_drain(str(repo), "rid")
+    monkeypatch.setenv(drain_mod.BACKGROUND_ENV, "0")
+    drain_mod.start_background_drain(str(repo), "rid")
+
+    assert len(calls) == 1
+    argv, cwd = calls[0]
+    assert argv[1:] == ["-P", "-m", drain_mod.__name__, str(repo), "rid"]
+    assert cwd == str(repo)

@@ -37,7 +37,8 @@ def start_background_drain(repo_path: str, repo_id: str) -> None:
         return
     from repowise.core.spawn import spawn_detached
 
-    argv = [sys.executable, "-m", __name__, str(repo_path), repo_id]
+    # -P: the cwd is the user's repo, and a top-level module there must not shadow ours.
+    argv = [sys.executable, "-P", "-m", __name__, str(repo_path), repo_id]
     with contextlib.suppress(OSError):
         spawn_detached(argv, str(repo_path))
 
