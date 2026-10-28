@@ -81,10 +81,10 @@ class TestOwnClassAcrossFiles:
         # The same file's derived-class bodies are not the caller's class.
         assert "disk.cc::RealDiskInterface::MakeDir" not in calls
 
-    def test_recursion_through_the_header_draws_no_edge(self, tmp_path: Path) -> None:
+    def test_recursion_is_a_self_edge_never_the_header_declaration(self, tmp_path: Path) -> None:
         graph = _build(tmp_path, {"disk.h": _DISK_H, "disk.cc": _DISK_CC})
         calls = _calls(graph, "disk.cc::DiskInterface::MakeDirs")
-        assert not any(t.endswith("::MakeDirs") for t in calls)
+        assert [t for t in calls if t.endswith("::MakeDirs")] == ["disk.cc::DiskInterface::MakeDirs"]
 
     def test_inline_body_reaches_a_member_defined_out_of_line(self, tmp_path: Path) -> None:
         header = (
