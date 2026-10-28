@@ -44,7 +44,9 @@ _STORED = [
 ]
 
 _FRESH = [
-    _edge("a.py", "b.py"),
+    # None takes the column default, so this still matches the stored row.
+    _edge("a.py", "b.py", confidence=None),
+    _edge("a.py", "b.py", "dynamic_imports", type_only=True, deferred=True),  # new
     _edge("a.py::f", "b.py::g", "calls", confidence=0.9, call_lines_json="[3, 7]"),
     _edge("a.py", "external:os", resolution_origin="import"),  # new
     _edge("c.py::reg", "a.py::f", "references", hint_source=REGISTRATION_HINT, confidence=1.0),
