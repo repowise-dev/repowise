@@ -314,11 +314,6 @@ def _fold_receiverless_twins(calls: list[tuple[tuple[int, int, str], CallSite]])
     return folded
 
 
-def _on_unnamed_object(call: CallSite) -> bool:
-    """A Java call on an object no pattern names, kept only as a fallback reading."""
-    return call.bare_name_fallback and _is_bare(call)
-
-
 def _is_bare(call: CallSite) -> bool:
     return not (call.receiver_name or call.receiver_call)
 
@@ -345,7 +340,7 @@ def _richer(call: CallSite, existing: CallSite) -> bool:
     if existing.scope_name is None and call.scope_name is not None:
         return True
     # A bare ``m()`` beside ``a.b.m()`` on its line keeps every tier.
-    return _on_unnamed_object(existing) and not _on_unnamed_object(call)
+    return existing.on_unnamed_object and not call.on_unnamed_object
 
 
 def _extract_calls(
@@ -453,8 +448,11 @@ def _call_from_match(
 def _java_object_is_unnamed(site_node: Node) -> bool:
     """Does this Java call have an object, other than a qualified ``this``?
 
-    Seen only on the bare pattern's copy, so no receiver pattern named the
-    object. ``Outer.this.m()`` is an implicit receiver, read as bare.
+    Asked only of a match with no receiver, so true only on the bare pattern's
+    copy. Where a receiver pattern names the object (``a.m()``, ``this.m()``),
+    ``_fold_receiverless_twins`` drops this copy and sets ``bare_name_fallback``
+    on the named one, which then means a bare-name fallback, not this.
+    ``Outer.this.m()`` is an implicit receiver, read as bare.
     """
     if site_node.type != "method_invocation":
         return False

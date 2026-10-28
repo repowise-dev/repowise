@@ -1615,16 +1615,30 @@ class TestJavaUnnamedObjectCall:
 
     _OTHER = "package p;\npublic class Other {\n    public void m(int x) {}\n}\n"
 
-    def _targets(self, tmp_path: Path, body: str, other: str | None = None) -> list[str]:
+    def _targets(
+        self,
+        tmp_path: Path,
+        body: str,
+        other: str | None = None,
+        *,
+        base: str | None = None,
+        heritage: bool = True,
+    ) -> list[str]:
+        """Callees of ``Use.go``; a *base* body puts ``p.Base`` above ``Use``."""
+        extends = "" if base is None else " extends Base"
         files = {
-            "p/Use.java": "package p;\nimport p.Other;\nclass Use {\n    Holder a;\n"
+            "p/Use.java": f"package p;\nimport p.Other;\nclass Use{extends} {{\n    Holder a;\n"
             f"    void m(int x) {{}}\n    void go() {{\n        {body}\n    }}\n}}\n",
             "p/Other.java": self._OTHER if other is None else other,
         }
+        parents: dict[str, set[str]] = {}
+        if base is not None:
+            files["p/Base.java"] = f"package p;\npublic class Base {{\n{base}\n}}\n"
+            if heritage:
+                parents["p/Use.java::Use"] = {"p/Base.java::Base"}
         parsed = _parse_all(tmp_path, {k: ("java", v) for k, v in files.items()})
-        resolver = CallResolver(
-            parsed, {"p/Use.java": {"p/Other.java"}, "p/Other.java": set()}, repo_path=str(tmp_path)
-        )
+        graph = {k: set() for k in parsed} | {"p/Use.java": {"p/Other.java"}}
+        resolver = CallResolver(parsed, graph, repo_path=str(tmp_path), heritage_parents=parents)
         calls = parsed["p/Use.java"].calls
         return sorted(rc.callee_id for rc in resolver.resolve_file("p/Use.java", calls))
 
@@ -1646,6 +1660,19 @@ class TestJavaUnnamedObjectCall:
         """``this`` is a named receiver, so ``Other.m`` is no rival of the caller's own."""
         assert self._targets(tmp_path, "this.m(1);") == ["p/Use.java::Use::m"]
 
+    def test_a_local_of_the_callers_type_binds_through_its_type(self, tmp_path: Path) -> None:
+        """A named receiver resolves by its type before ``Other.m`` is weighed."""
+        assert self._targets(tmp_path, "Use u = this; u.m(1);") == ["p/Use.java::Use::m"]
+
+    def test_super_binds_the_superclass_method_in_another_file(self, tmp_path: Path) -> None:
+        base = "    void m(int x) {}"
+        assert self._targets(tmp_path, "super.m(1);", base=base) == ["p/Base.java::Base::m"]
+
+    def test_super_without_heritage_data_binds_nothing(self, tmp_path: Path) -> None:
+        """``super`` never falls to a bare-name tier, so ``Use.m`` and ``Other.m`` stay out."""
+        base = "    void m(int x) {}"
+        assert self._targets(tmp_path, "super.m(1);", base=base, heritage=False) == []
+
     @pytest.mark.parametrize(
         ("body", "flagged"),
         [
@@ -1663,10 +1690,12 @@ class TestJavaUnnamedObjectCall:
     ) -> None:
         source = f"class Use {{\n    void go() {{\n        {body}\n    }}\n}}\n"
         (call,) = _parse_all(tmp_path, {"Use.java": ("java", source)})["Use.java"].calls
-        # A named receiver's copy carries the flag as its member call's fallback.
+        # A named receiver's bare twin is folded into it as ``bare_name_fallback``,
+        # a fallback reading; only the receiver-less flag marks an unnamed object.
         assert call.bare_name_fallback is flagged
         named = ("a.m(1);", "this.m(1);", "super.m(1);")
         assert (call.receiver_name is None) is (body not in named)
+        assert call.on_unnamed_object is (body == "a.b.m(1);")
 
 
 class TestJavaReceiverRecall:

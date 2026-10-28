@@ -1044,7 +1044,7 @@ class CallResolver(
             return self._with_props(hit, call)
         if receiver_call is not None and not (bare_fallback and strategies.chain_bare_fallback):
             return None
-        if call.bare_name_fallback:
+        if call.on_unnamed_object:
             # A call on an object no pattern names: a tier keyed on the
             # caller's file, class or imports would read the method as theirs.
             return self._with_props(self._global_unique_call(file_path, call, caller_id), call)

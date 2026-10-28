@@ -373,9 +373,8 @@ class CallSite:
     supplied_props: set[str] | None = None  # prop names supplied in JSX element (None if unknown/spread)
     # The grammar's bare-call pattern also matched this member call (Java
     # ``obj.m()``, Ruby ``obj.m(x)``). Its bare-name reading is asked only
-    # when no receiver strategy answers, never beside one. Set with no
-    # receiver, it is a Java call on an object no pattern names (``a.b.m()``,
-    # ``arr[0].m()``), which only repo-wide uniqueness binds.
+    # when no receiver strategy answers, never beside one. With no receiver
+    # it means ``on_unnamed_object`` instead.
     bare_name_fallback: bool = False
     # Handed straight to a task scheduler (``asyncio.create_task(f())``): it runs
     # later, beside its caller, so the caller neither waits for it nor repeats it.
@@ -390,6 +389,14 @@ class CallSite:
     # Java and C#: each argument that is a bare name (``start``), else None; None overall
     # when no argument is one. The resolver reads its declared type.
     argument_names: tuple[str | None, ...] | None = None
+
+    @property
+    def on_unnamed_object(self) -> bool:
+        """A Java call on an object no pattern names (``a.b.m()``, ``arr[0].m()``).
+
+        Only repo-wide uniqueness binds it. A call with a receiver never is one.
+        """
+        return self.bare_name_fallback and not (self.receiver_name or self.receiver_call)
 
 
 # Raw extractor kinds, not the TS ``HeritageKind`` (a different payload);
