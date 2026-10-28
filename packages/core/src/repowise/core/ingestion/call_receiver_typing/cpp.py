@@ -273,9 +273,10 @@ def _cpp_facts_of(text: str) -> _CppFacts:
 
 
 def _cpp_alias(node: Node) -> _CppAlias | None:
-    """A plain alias and its safe target; unsupported aliases still bind their name."""
-    if node.type not in ("alias_declaration", "type_definition"):
-        return None
+    """A plain alias and its safe target; unsupported aliases still bind their name.
+
+    *node* is an ``alias_declaration`` or ``type_definition`` capture.
+    """
     key = node.child_by_field_name("name" if node.type == "alias_declaration" else "declarator")
     target = node.child_by_field_name("type")
     if key is None or key.type != "type_identifier" or target is None:
@@ -307,10 +308,6 @@ def _cpp_alias_scope(node: Node) -> tuple[int, int] | None:
 
 def _cpp_declarations(node: Node) -> list[_CppBinding]:
     """Named variables/parameters, excluding function declarators and initializer uses."""
-    if node.type not in (
-        "declaration", "field_declaration", "parameter_declaration", "optional_parameter_declaration"
-    ):
-        return []
     found = []
     for declarator in node.children_by_field_name("declarator"):
         name = _cpp_declarator_name(declarator)

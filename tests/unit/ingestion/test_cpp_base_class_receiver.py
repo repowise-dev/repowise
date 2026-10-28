@@ -302,6 +302,38 @@ def test_a_redeclared_cpp_local_without_a_matching_alias_keeps_its_edge(tmp_path
     assert _call_targets(_build(tmp_path), "a.cpp::f") == {"a.cpp::Peer::run"}
 
 
+def test_cpp_alias_facts_record_target_and_scope() -> None:
+    from repowise.core.ingestion.call_receiver_typing.cpp import _cpp_facts_of
+
+    text = (
+        "#ifndef A_H\n#define A_H\nusing IV = V<int>;\n#endif\n"
+        "typedef struct {\n  int x;\n} Point;\n"
+        "typedef void (*Callback)(int);\n"
+        "namespace ns {\nusing Local = W;\n}\n"
+        "void f(Peer peer) {\n  using Body = W;\n}\n"
+    )
+    facts = _cpp_facts_of(text)
+    aliases = {alias.name: alias for alias in facts.aliases}
+
+    # A guarded file-scope alias keeps its target; a struct typedef is the
+    # class itself and a function-pointer typedef names no class.
+    assert aliases["IV"].target == "V" and aliases["IV"].scope is None
+    assert "Point" not in aliases and "Callback" not in aliases
+    # Namespace and body aliases bind their name only from their own start.
+    assert aliases["Local"].target is None
+    assert aliases["Body"].target is None
+    assert aliases["Body"].scope[0] == text.index("using Body")
+    assert "peer" in {binding.name for binding in facts.declarations}
+
+
+def test_a_cpp_typedef_struct_keeps_its_class_edges(tmp_path: Path) -> None:
+    (tmp_path / "a.cpp").write_text(
+        "typedef struct Peer {\n  void run() {}\n} Peer;\n"
+        "void f() {\n  Peer peer;\n  peer.run();\n}\n"
+    )
+    assert _call_targets(_build(tmp_path), "a.cpp::f") == {"a.cpp::Peer::run"}
+
+
 class TestOtherLanguagesSkipTheCppBranch:
     def test_python_typed_receiver_never_asks_the_cpp_base_class_rule(
         self, tmp_path: Path, monkeypatch
