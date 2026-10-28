@@ -1,6 +1,6 @@
 """Community detection on dependency graphs.
 
-Uses Leiden (graspologic) when available, falls back to Louvain (networkx).
+Uses Leiden (graspologic's native core) when available, falls back to Louvain (networkx).
 Supports both file-level and symbol-level community detection with:
 - Oversized community splitting (second pass on communities >25% of graph)
 - Cohesion scoring (intra-community edge density)
@@ -21,6 +21,7 @@ from typing import Any
 import networkx as nx
 import structlog
 
+from repowise.core.analysis._leiden import leiden_partition
 from repowise.core.analysis.kg_curation import GENERIC_ORG_SEGMENTS, dominant_segments
 from repowise.core.ids import is_external
 from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES, SYMBOL_USE_EDGE_TYPES
@@ -147,17 +148,12 @@ def _directory_fallback(nodes: list[str]) -> dict[str, int]:
 def _partition(graph: nx.Graph) -> tuple[dict, str]:
     """Run community detection. Returns ({node: community_id}, algorithm_name).
 
-    Tries Leiden (graspologic) first, falls back to Louvain (networkx),
+    Tries Leiden (graspologic_native) first, falls back to Louvain (networkx),
     then to directory-based grouping as a last resort.
     """
     try:
-        from graspologic.partition import leiden
-
-        leiden_kwargs: dict = {}
-        if "random_seed" in inspect.signature(leiden).parameters:
-            leiden_kwargs["random_seed"] = 42  # determinism (matches louvain's seed)
         with _suppress_graspologic_output():
-            result = leiden(graph, **leiden_kwargs)
+            result = leiden_partition(graph, seed=42)  # determinism (matches louvain's seed)
         return result, "leiden"
     except ImportError:
         pass
