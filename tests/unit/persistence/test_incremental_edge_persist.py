@@ -461,3 +461,16 @@ async def test_complete_co_change_refresh_syncs_pairs_between_unchanged_files(
     gb.co_change_edges_complete = True
     await persist_incremental_edges(async_session, repo.id, gb, parsed, [])
     assert await _co_change_rows(async_session, repo.id) == {("b.py", "c.py")}
+
+    # A row stored the other way round (older builds) converges to the graph's direction.
+    async_session.add(
+        GraphEdge(
+            repository_id=repo.id,
+            source_node_id="c.py",
+            target_node_id="b.py",
+            edge_type="co_changes",
+        )
+    )
+    await async_session.flush()
+    await persist_incremental_edges(async_session, repo.id, gb, parsed, [])
+    assert await _co_change_rows(async_session, repo.id) == {("b.py", "c.py")}
