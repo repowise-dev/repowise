@@ -21,6 +21,7 @@ from repowise.core.analysis.dead_code.name_occurrences import (
     occurrence_files,
 )
 from repowise.core.analysis.dead_code.passes.unreachable_files import UnreachableFilePass
+from repowise.core.analysis.dead_code.passes.unused_exports import UnusedExportPass
 from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 from tests.unit.dead_code._helpers import _build_graph, _old_date
 
@@ -86,6 +87,17 @@ def test_unreachable_file_pass_judges_files_not_symbols():
     report = analyzer.analyze({"detect_unused_exports": False, "detect_unused_internals": False})
     unreachable = [f.file_path for f in report.findings if f.kind is DeadCodeKind.UNREACHABLE_FILE]
     assert unreachable == ["lonely.py"]
+
+
+def test_unused_export_pass_skips_symbol_nodes_but_judges_files():
+    symbol = {"name": "f", "kind": "function", "visibility": "public", "language": "python"}
+    g = _build_graph({"lonely.py": {"symbols": [symbol]}})
+    meta = {"lonely.py": {"commit_count_90d": 0, "last_commit_at": _old_date(400)}}
+    export_pass = UnusedExportPass(DeadCodeAnalyzer(g, git_meta_map=meta))
+    assert export_pass._export_file_context("lonely.py::f", set()) is None
+    assert export_pass._export_file_context("lonely.py", set()) is not None
+    findings = export_pass.run((), set())
+    assert [(f.file_path, f.symbol_name) for f in findings] == [("lonely.py", "f")]
 
 
 _BUILT = {
