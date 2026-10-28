@@ -8,7 +8,9 @@ would fall on the same file; otherwise the run falls back to the full pipeline.
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
+from repowise.core.analysis.health.duplication.budget_cut import splice_scope
 from repowise.core.analysis.health.duplication.detector import clones_against_index
 from repowise.core.analysis.health.duplication.limits import DuplicationLimits
 from repowise.core.analysis.health.duplication.pair_index import load_pair_index
@@ -102,6 +104,34 @@ def test_an_unchanged_file_crossing_the_cut_falls_back(tmp_path: Path):
 def test_read_only_splice_refuses_a_cut_state(tmp_path: Path):
     cache_dir = _seed_cut(tmp_path)
     parsed = [pf for pf in _parsed(tmp_path) if pf.file_info.path == "a.py"]
-    assert (
-        clones_against_index(parsed, None, cache_dir, window_tokens=WINDOW, limits=CUT) is None
+    assert clones_against_index(parsed, None, cache_dir, window_tokens=WINDOW, limits=CUT) is None
+
+
+def _scope(changed: set[str], unread: set[str], stop: str = "c.py"):
+    index = SimpleNamespace(
+        budget_stop=stop,
+        files={p: "h" for p in ("a.py", "b.py", "c.py", "d.py")},
+        nonsurvivors=set(),
+        unread=unread,
     )
+    parsed = [
+        SimpleNamespace(file_info=SimpleNamespace(path=p)) for p in ("a.py", "b.py", "c.py", "d.py")
+    ]
+    return splice_scope(index, parsed, changed)
+
+
+def test_splice_scope_keeps_a_cut_that_holds():
+    scope = _scope({"a.py"}, {"d.py"})
+    assert scope is not None
+    files, cut = scope
+    assert [pf.file_info.path for pf in files] == ["a.py", "b.py"]
+    assert cut.stop.file_info.path == "c.py" and cut.unread == {"d.py"}
+
+
+def test_splice_scope_refuses_a_changed_stop_file():
+    assert _scope({"c.py"}, {"d.py"}) is None
+
+
+def test_splice_scope_refuses_an_unchanged_file_that_moved_across_the_cut():
+    assert _scope(set(), {"b.py", "d.py"}) is None  # was unread, now before the stop
+    assert _scope(set(), set()) is None  # was read, now after the stop
