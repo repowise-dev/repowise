@@ -1642,10 +1642,21 @@ class TestJavaUnnamedObjectCall:
     def test_a_bare_call_beside_it_keeps_every_tier(self, tmp_path: Path, body: str) -> None:
         assert self._targets(tmp_path, body) == ["p/Use.java::Use::m"]
 
+    def test_a_this_call_keeps_the_callers_class(self, tmp_path: Path) -> None:
+        """``this`` is a named receiver, so ``Other.m`` is no rival of the caller's own."""
+        assert self._targets(tmp_path, "this.m(1);") == ["p/Use.java::Use::m"]
+
     @pytest.mark.parametrize(
         ("body", "flagged"),
-        [("a.b.m(1);", True), ("m(1);", False), ("Use.this.m(1);", False), ("a.m(1);", True)],
-        ids=["field-path", "bare", "qualified-this", "named-receiver"],
+        [
+            ("a.b.m(1);", True),
+            ("m(1);", False),
+            ("Use.this.m(1);", False),
+            ("a.m(1);", True),
+            ("this.m(1);", True),
+            ("super.m(1);", True),
+        ],
+        ids=["field-path", "bare", "qualified-this", "named-receiver", "this", "super"],
     )
     def test_only_an_unnamed_object_is_flagged(
         self, tmp_path: Path, body: str, flagged: bool
@@ -1654,7 +1665,8 @@ class TestJavaUnnamedObjectCall:
         (call,) = _parse_all(tmp_path, {"Use.java": ("java", source)})["Use.java"].calls
         # A named receiver's copy carries the flag as its member call's fallback.
         assert call.bare_name_fallback is flagged
-        assert (call.receiver_name is None) is (body != "a.m(1);")
+        named = ("a.m(1);", "this.m(1);", "super.m(1);")
+        assert (call.receiver_name is None) is (body not in named)
 
 
 class TestJavaReceiverRecall:
