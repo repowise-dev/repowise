@@ -357,7 +357,11 @@ class ReceiverTypingMixin(
     ) -> tuple[str, str] | None:
         """Read a C++ alias before asking which class declares the member."""
         if self._language_of(file_path) == "cpp":
-            position = self._cpp_receiver_position(file_path, caller_id, call.receiver_name or "")
+            position = self._cpp_receiver_position(
+                file_path, caller_id, call.receiver_name or "", type_name
+            )
+            if position is None:
+                return None
             type_name = self._cpp_aliased_type(file_path, type_name, position)
             if type_name is None:
                 return None

@@ -281,6 +281,27 @@ def test_a_cpp_field_keeps_the_type_bound_before_a_method_alias(tmp_path: Path) 
     assert _call_targets(_build(tmp_path), "a.cpp::Host::f") == {"a.cpp::Peer::run"}
 
 
+def test_a_redeclared_cpp_local_under_a_body_alias_declines(tmp_path: Path) -> None:
+    # Two `peer`s: only the one in the aliased block calls run().
+    (tmp_path / "a.cpp").write_text(
+        "struct Peer {\n  void run() {}\n};\n"
+        "void f(bool c) {\n"
+        "  if (c) {\n    Peer peer;\n    (void)peer;\n  } else {\n"
+        "    using Peer = External;\n    Peer peer;\n    peer.run();\n  }\n}\n"
+    )
+    assert _call_targets(_build(tmp_path), "a.cpp::f") == set()
+
+
+def test_a_redeclared_cpp_local_without_a_matching_alias_keeps_its_edge(tmp_path: Path) -> None:
+    (tmp_path / "a.cpp").write_text(
+        "struct Peer {\n  void run() {}\n};\n"
+        "void f(bool c) {\n"
+        "  if (c) {\n    Peer peer;\n    (void)peer;\n  } else {\n"
+        "    using Other = External;\n    Peer peer;\n    peer.run();\n  }\n}\n"
+    )
+    assert _call_targets(_build(tmp_path), "a.cpp::f") == {"a.cpp::Peer::run"}
+
+
 class TestOtherLanguagesSkipTheCppBranch:
     def test_python_typed_receiver_never_asks_the_cpp_base_class_rule(
         self, tmp_path: Path, monkeypatch

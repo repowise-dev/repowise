@@ -47,15 +47,19 @@ class _CppFacts(NamedTuple):
 class CppFieldOwners:
     """The class a C++ method body reads its fields from, and the callee a typed call lands on."""
 
-    def _cpp_receiver_position(self, path: str, caller_id: str, name: str) -> int:
+    def _cpp_receiver_position(
+        self, path: str, caller_id: str, name: str, type_name: str
+    ) -> int | None:
         """Read a receiver's type where it was declared, before any body alias.
 
         Byte offsets distinguish parameters, aliases and calls on the same
         physical line. A field is read in its class, not in the calling method.
+        ``None`` when the receiver is declared more than once and a scoped
+        alias of its type could apply to either declaration.
         """
         facts = self._cpp_type_facts(path)
-        # Only a namespace or body alias depends on where the type was read.
-        if all(alias.scope is None for alias in facts.aliases):
+        # Only a namespace or body alias of this type depends on where it was read.
+        if not any(a.scope is not None and a.name == type_name for a in facts.aliases):
             return 0
         owner, _ = self._typing_scope(path, caller_id, "cpp", name)
         spans = self._spans_for(path)
@@ -69,7 +73,9 @@ class CppFieldOwners:
                 d.position for d in declarations
                 if d.field and d.name == name and start <= d.line <= end
             ]
-        return found[0] if len(found) == 1 else 0
+        if len(found) > 1:
+            return None
+        return found[0] if found else 0
 
     def _cpp_aliased_type(self, file_path: str, name: str, position: int) -> str | None:
         """Follow a file-level C++ alias from its declaration's include scope.
@@ -80,16 +86,9 @@ class CppFieldOwners:
         """
         seen: set[tuple[str, str]] = set()
         for _ in range(16):
-            paths = {file_path, *self._import_targets.get(file_path, ())}
-            local = self._cpp_aliases_in(file_path, position)
-            sites = [(file_path, local[name])] if name in local else [
-                (path, aliases[name])
-                for path in sorted(paths - {file_path})
-                if name in (aliases := self._cpp_aliases_in(path))
-            ]
+            sites = self._cpp_alias_sites(file_path, name, position)
             if not sites:
-                declared = self._declared_types_named(name) if seen else ()
-                return name if not seen or any(path in paths for path, _, _ in declared) else None
+                return self._cpp_chain_end(file_path, name, followed=bool(seen))
             if len(sites) != 1:
                 return None
             path, target = sites[0]
@@ -98,6 +97,33 @@ class CppFieldOwners:
             seen.add((path, name))
             file_path, name, position = path, target, 0
         return None
+
+    def _cpp_alias_sites(
+        self, file_path: str, name: str, position: int
+    ) -> list[tuple[str, str | None]]:
+        """``(file, target)`` for each alias of *name* visible from *file_path*.
+
+        An alias in the file itself wins; otherwise each directly included
+        file that binds the name is a candidate.
+        """
+        local = self._cpp_aliases_in(file_path, position)
+        if name in local:
+            return [(file_path, local[name])]
+        included = set(self._import_targets.get(file_path, ())) - {file_path}
+        return [
+            (path, aliases[name])
+            for path in sorted(included)
+            if name in (aliases := self._cpp_aliases_in(path))
+        ]
+
+    def _cpp_chain_end(self, file_path: str, name: str, *, followed: bool) -> str | None:
+        """A name no alias binds: kept as is, or, at the end of a chain, only
+        when a class of that name is declared in a file *file_path* can see."""
+        if not followed:
+            return name
+        paths = {file_path, *self._import_targets.get(file_path, ())}
+        declared = self._declared_types_named(name)
+        return name if any(path in paths for path, _, _ in declared) else None
 
     def _cpp_aliases_in(self, path: str, position: int = 0) -> dict[str, str | None]:
         """File bindings plus unsupported aliases visible at the type declaration.
