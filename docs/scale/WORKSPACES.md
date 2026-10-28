@@ -61,6 +61,10 @@ repos and the primary repo (the default for MCP queries), and `m` adds a model.
 It then indexes each repo, runs the cross-repo analysis, and registers the MCP
 server with your editors.
 
+Run `repowise init` inside one repo whose folder holds other git repos and it
+indexes that repo alone, with a note naming `repowise init "<parent folder>"`
+for the workspace. `--no-workspace` hides the note.
+
 To skip the screen, `--repos api,web` indexes only those repos (by alias,
 directory name, or relative path). In a new workspace the first one listed is
 primary; an existing workspace keeps its primary. `--yes`, `--all` or a piped
