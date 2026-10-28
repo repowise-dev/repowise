@@ -44,11 +44,12 @@ from ..languages.receiver_types import (
 )
 from ..models import STRING_LITERAL_RECEIVER, CallSite, NamedBinding, ParsedFile, Symbol
 from ..resolved_call import ResolvedCall
-from ..return_types import declared_return_type, signature_parameter_count
+from ..return_types import declared_return_type, normalize_return_type, signature_parameter_count
 from ..symbol_identity import id_segment_name
 from ..type_names import (
     POINTER_LIKE_MEMBERS,
     bare_type_name,
+    is_resolvable_type_name,
     type_qualifier,
 )
 
@@ -119,6 +120,7 @@ _NOT_A_TYPE = frozenset({"return", "throw", "new", "else", "case", "yield", "ass
 # ``this``. Go has no such name: its receiver is a parameter, typed from the
 # body, and a ``pkg.Var`` head types nothing, so it cannot pass for ``s.field``.
 _CHAIN_SELF: dict[str, str | None] = {
+    "csharp": "this",
     "python": "self",
     "typescript": "this",
     "go": None,
@@ -885,9 +887,13 @@ class ReceiverTypingMixin(
             if symbol is None or symbol.kind not in _TYPE_KINDS:
                 return None
             return file_path, class_id, "same_file"
-        type_name, _, typing_file = self._receiver_type_and_scope(
+        type_name, scope, typing_file = self._receiver_type_and_scope(
             file_path, caller_id, language, head, line
         )
+        if language == "csharp" and scope == "field":
+            _, owner = self._field_owner(file_path, caller_id, language)
+            if self._csharp_qualified_field_type(owner, head):
+                return None
         if type_name is not None and language == "python" and "::" in type_name:
             return self._located(file_path, type_name)  # typed from a call
         return None if type_name is None else self._class_named(typing_file, type_name, caller_id)
@@ -902,6 +908,8 @@ class ReceiverTypingMixin(
         declared return type.
         """
         class_file, class_id, tier = found
+        if language == "csharp" and self._csharp_qualified_field_type(class_id, field):
+            return None
         fields = self._field_types_in(class_file, language).get(class_id, {})
         if field in fields:
             type_name = fields[field]
@@ -915,6 +923,12 @@ class ReceiverTypingMixin(
         if hop is None:
             return None
         return hop[0], hop[1], max(tier, hop[2], key=_CHAIN_TIER_RANK.__getitem__)
+
+    def _csharp_qualified_field_type(self, class_id: str, field: str) -> bool:
+        """A qualified field type cannot be proved by a chain's bare-name lookup."""
+        symbol = self._symbols_by_id.get(f"{class_id}::{field}")
+        raw = declared_return_type(symbol.signature or "") if symbol is not None else None
+        return raw is not None and bool(type_qualifier(raw))
 
     def _dart_getter_type_id(self, class_file: str, class_id: str, name: str) -> str | None:
         """The class the Dart getter *name* of *class_id* is declared to return.
@@ -1558,8 +1572,54 @@ class ReceiverTypingMixin(
             by_class = self._class_scope_types(
                 file_path, self._declarations_for(file_path, language), language
             )
+            if language == "csharp":
+                self._add_csharp_declared_fields(file_path, by_class)
             _store_capped(self._field_types, file_path, by_class, _SOURCE_CACHE_FILES)
         return by_class
+
+    def _add_csharp_declared_fields(
+        self, file_path: str, by_class: dict[str, dict[str, str | None]]
+    ) -> None:
+        """Read C# property and field types the AST kept, regardless of line layout."""
+        parsed = self._parsed_files.get(file_path)
+        symbols = parsed.symbols if parsed else ()
+        generic_scopes = tuple(f"{s.id}::" for s in symbols if s.type_parameter_count)
+        for symbol in symbols:
+            declared = self._csharp_declared_field_type(file_path, symbol, generic_scopes)
+            if declared is not None:
+                owner, type_name = declared
+                record_type(by_class.setdefault(owner, {}), symbol.name, type_name)
+
+    def _csharp_declared_field_type(
+        self, file_path: str, symbol: Symbol, generic_scopes: tuple[str, ...]
+    ) -> tuple[str, str] | None:
+        """The declaring class and usable type of an AST-backed C# field/property."""
+        owner = _enclosing_id(symbol.id)
+        owner_symbol = self._symbols_by_id.get(owner)
+        raw = declared_return_type(symbol.signature or "")
+        if symbol.kind != "variable" or raw is None or owner_symbol is None:
+            return None
+        if owner_symbol.kind not in _TYPE_KINDS or type_qualifier(raw):
+            return None
+        type_name = normalize_return_type(raw, "csharp")
+        if type_name is None or not self._csharp_nominal_field_type(
+            file_path, symbol.id, type_name, generic_scopes
+        ):
+            return None
+        return owner, type_name
+
+    def _csharp_nominal_field_type(
+        self, file_path: str, symbol_id: str, type_name: str, generic_scopes: tuple[str, ...]
+    ) -> bool:
+        """A resolvable name, or a proven same-file S/U outside generic scopes."""
+        if is_resolvable_type_name(type_name, "csharp"):
+            return True
+        return (
+            len(type_name) == 1
+            and type_name.isupper()
+            and self._only_type_in(file_path, type_name) is not None
+            and not any(symbol_id.startswith(scope) for scope in generic_scopes)
+        )
 
     def _class_scope_types(
         self, file_path: str, declarations: tuple[Declaration, ...], language: str
