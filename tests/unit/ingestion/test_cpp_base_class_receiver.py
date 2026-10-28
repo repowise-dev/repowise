@@ -242,6 +242,30 @@ def test_an_in_scope_cpp_alias_cannot_borrow_a_global_class(
     assert "a.cpp::Peer::run" not in _call_targets(_build(tmp_path), "a.cpp::f")
 
 
+@pytest.mark.parametrize("before", [False, True])
+@pytest.mark.parametrize("compact", [False, True])
+def test_a_cpp_parameter_keeps_the_type_bound_before_a_body_alias(
+    tmp_path: Path, before: bool, compact: bool
+) -> None:
+    body = ["using Peer = External;", "peer.run();"]
+    if not before:
+        body.reverse()
+    function = "void f(Peer& peer) {\n" + "\n".join(body) + "\n}\n"
+    if compact:
+        function = function.replace("\n", " ")
+    (tmp_path / "a.cpp").write_text("struct Peer {\n  void run() {}\n};\n" + function)
+    assert _call_targets(_build(tmp_path), "a.cpp::f") == {"a.cpp::Peer::run"}
+
+
+def test_a_cpp_field_keeps_the_type_bound_before_a_method_alias(tmp_path: Path) -> None:
+    (tmp_path / "a.cpp").write_text(
+        "struct Peer {\n  void run() {}\n};\n"
+        "struct Host {\n  Peer peer;\n  void f() {\n"
+        "    using Peer = External;\n    peer.run();\n  }\n};\n"
+    )
+    assert _call_targets(_build(tmp_path), "a.cpp::Host::f") == {"a.cpp::Peer::run"}
+
+
 class TestOtherLanguagesSkipTheCppBranch:
     def test_python_typed_receiver_never_asks_the_cpp_base_class_rule(
         self, tmp_path: Path, monkeypatch

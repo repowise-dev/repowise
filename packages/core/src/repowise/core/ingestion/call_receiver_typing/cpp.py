@@ -21,10 +21,42 @@ class _CppAlias(NamedTuple):
     scope: tuple[int, int] | None
 
 
+class _CppBinding(NamedTuple):
+    name: str
+    position: int
+    line: int
+    field: bool
+
+
+class _CppFacts(NamedTuple):
+    aliases: tuple[_CppAlias, ...] = ()
+    declarations: tuple[_CppBinding, ...] = ()
+
+
 class CppFieldOwners:
     """The class a C++ method body reads its fields from, and the callee a typed call lands on."""
 
-    def _cpp_aliased_type(self, file_path: str, name: str, line: int) -> str | None:
+    def _cpp_receiver_position(self, path: str, caller_id: str, name: str) -> int:
+        """Read a receiver's type where it was declared, before any body alias.
+
+        Byte offsets distinguish parameters, aliases and calls on the same
+        physical line. A field is read in its class, not in the calling method.
+        """
+        owner, _ = self._typing_scope(path, caller_id, "cpp", name)
+        spans = self._spans_for(path)
+        start, end = spans.get(owner, (1, 0))
+        declarations = self._cpp_type_facts(path).declarations
+        found = [d.position for d in declarations if d.name == name and start <= d.line <= end]
+        if not found:
+            _, class_id = self._field_owner(path, caller_id, "cpp")
+            start, end = spans.get(class_id, (1, 0))
+            found = [
+                d.position for d in declarations
+                if d.field and d.name == name and start <= d.line <= end
+            ]
+        return found[0] if len(found) == 1 else 0
+
+    def _cpp_aliased_type(self, file_path: str, name: str, position: int) -> str | None:
         """Follow a file-level C++ alias from its declaration's include scope.
 
         A chain is bounded to sixteen aliases; cycles, ambiguous declarations
@@ -34,7 +66,7 @@ class CppFieldOwners:
         seen: set[tuple[str, str]] = set()
         for _ in range(16):
             paths = {file_path, *self._import_targets.get(file_path, ())}
-            local = self._cpp_aliases_in(file_path, line)
+            local = self._cpp_aliases_in(file_path, position)
             sites = [(file_path, local[name])] if name in local else [
                 (path, aliases[name])
                 for path in sorted(paths - {file_path})
@@ -49,20 +81,20 @@ class CppFieldOwners:
             if target is None or (path, name) in seen:
                 return None
             seen.add((path, name))
-            file_path, name, line = path, target, 0
+            file_path, name, position = path, target, 0
         return None
 
-    def _cpp_aliases_in(self, path: str, line: int = 0) -> dict[str, str | None]:
-        """File bindings plus unsupported scoped bindings visible at this call."""
+    def _cpp_aliases_in(self, path: str, position: int = 0) -> dict[str, str | None]:
+        """File bindings plus unsupported aliases visible at the type declaration."""
         aliases: dict[str, str | None] = {}
-        for alias in self._cpp_alias_facts(path):
-            if alias.scope is not None and not alias.scope[0] <= line <= alias.scope[1]:
+        for alias in self._cpp_type_facts(path).aliases:
+            if alias.scope is not None and not alias.scope[0] <= position < alias.scope[1]:
                 continue
             aliases[alias.name] = alias.target if alias.name not in aliases else None
         return aliases
 
-    def _cpp_alias_facts(self, path: str) -> tuple[_CppAlias, ...]:
-        """Aliases read once from syntax, never from comment or string text."""
+    def _cpp_type_facts(self, path: str) -> _CppFacts:
+        """Aliases and declaration positions, read once from syntax."""
         cached = self._cpp_type_aliases.get(path)
         if cached is not None:
             return cached
@@ -71,8 +103,9 @@ class CppFieldOwners:
 
         language = _get_language("cpp")
         aliases: list[_CppAlias] = []
+        declarations: list[_CppBinding] = []
         if language is None:
-            return ()
+            return _CppFacts()
         root = Parser(language).parse(self._text_of(path).encode("utf-8")).root_node
         stack = [root]
         while stack:
@@ -80,8 +113,9 @@ class CppFieldOwners:
             alias = _cpp_alias(node)
             if alias is not None:
                 aliases.append(alias)
+            declarations.extend(_cpp_declarations(node))
             stack.extend(reversed(node.named_children))
-        facts = tuple(aliases)
+        facts = _CppFacts(tuple(aliases), tuple(declarations))
         _store_capped(self._cpp_type_aliases, path, facts, _SOURCE_CACHE_FILES)
         return facts
 
@@ -202,7 +236,38 @@ def _cpp_alias_scope(node: Node) -> tuple[int, int] | None:
         parent = parent.parent
     if parent is None or parent.type == "translation_unit":
         return None
-    return parent.start_point.row + 1, parent.end_point.row + 1
+    return node.start_byte, parent.end_byte
+
+
+def _cpp_declarations(node: Node) -> list[_CppBinding]:
+    """Named variables/parameters, excluding function declarators and initializer uses."""
+    if node.type not in (
+        "declaration", "field_declaration", "parameter_declaration", "optional_parameter_declaration"
+    ):
+        return []
+    found = []
+    for declarator in node.children_by_field_name("declarator"):
+        name = _cpp_declarator_name(declarator)
+        if name is not None:
+            found.append(_CppBinding(
+                name.text.decode("utf-8"), name.start_byte, name.start_point.row + 1,
+                node.type == "field_declaration",
+            ))
+    return found
+
+
+def _cpp_declarator_name(node: Node | None) -> Node | None:
+    """Unwrap a variable declarator without walking into a function or its value."""
+    while node is not None:
+        if node.type in ("identifier", "field_identifier"):
+            return node
+        if node.type not in (
+            "init_declarator", "pointer_declarator", "reference_declarator",
+            "parenthesized_declarator", "array_declarator",
+        ):
+            return None
+        node = node.child_by_field_name("declarator") or next(iter(node.named_children), None)
+    return None
 
 
 def _is_pure(lines: list[str], symbol: Symbol) -> bool:

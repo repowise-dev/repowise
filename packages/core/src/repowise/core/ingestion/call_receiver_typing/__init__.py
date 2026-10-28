@@ -61,7 +61,7 @@ from ._shared import (  # noqa: F401
     _store_capped,
 )
 from .callbacks import CallbackParameterTypes, _TypedCallback
-from .cpp import CppFieldOwners, _CppAlias
+from .cpp import CppFieldOwners, _CppFacts
 from .framework import FrameworkReceiverTypes
 from .go import GoReturnTypes
 from .java import _JAVA_TYPE_PARAMETERS, JavaTypeVisibility, _header_type_parameters  # noqa: F401
@@ -230,7 +230,7 @@ class ReceiverTypingMixin(
         self._method_name_set: frozenset[str] | None = None
         # C++: {(file, class name): (header, class id) or None}, {declaration id: pure virtual}.
         self._cpp_declaring_classes: dict[tuple[str, str], tuple[str, str] | None] = {}
-        self._cpp_type_aliases: dict[str, tuple[_CppAlias, ...]] = {}
+        self._cpp_type_aliases: dict[str, _CppFacts] = {}
         self._pure_virtuals: dict[str, bool] = {}
         self._pure_virtual_name_set: frozenset[str] | None = None
         self._framework_name_set: frozenset[str] | None = None
@@ -357,7 +357,8 @@ class ReceiverTypingMixin(
     ) -> tuple[str, str] | None:
         """Read a C++ alias before asking which class declares the member."""
         if self._language_of(file_path) == "cpp":
-            type_name = self._cpp_aliased_type(file_path, type_name, call.line)
+            position = self._cpp_receiver_position(file_path, caller_id, call.receiver_name or "")
+            type_name = self._cpp_aliased_type(file_path, type_name, position)
             if type_name is None:
                 return None
         return self._typed_receiver_class_target(file_path, call, caller_id, type_name)
