@@ -53,6 +53,9 @@ class UnreachableFilePass:
                 continue
 
             node_data = self.graph.nodes[node]
+            # The question is about files, and most graph nodes are symbols.
+            if node_data.get("node_type") == "symbol":
+                continue
             # These skips are scoping, not reachability; every reachability
             # rule lives in :func:`is_file_reachable`, which the overview
             # assembler shares so the two cannot disagree.
