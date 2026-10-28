@@ -9,7 +9,12 @@ from typing import Any
 import pytest
 from rich.console import Console
 
-from repowise.cli.git_exclude import HEADER, add_to_exclude, keep_out_candidates
+from repowise.cli.git_exclude import (
+    HEADER,
+    add_to_exclude,
+    keep_out_candidates,
+    keep_workspace_data_out,
+)
 from repowise.cli.ui.plan_screen import PlanState, render_plan
 from repowise.cli.ui.repo_scanner import RepoScanInfo
 from repowise.core.owned_paths import MACHINE_SPECIFIC_FILES, MANAGED_FILES
@@ -129,6 +134,42 @@ def test_outside_git_nothing_is_offered_or_written(tmp_path: Path) -> None:
     _write(tmp_path, ".claude/CLAUDE.md")
     assert keep_out_candidates(tmp_path) == ()
     assert add_to_exclude(tmp_path, [".claude/CLAUDE.md"]) == []
+
+
+# -- the workspace data directory ---------------------------------------------
+
+
+def test_workspace_files_are_kept_out_once(repo: Path) -> None:
+    _write(repo, ".repowise-workspace/workspace.db", ".repowise-workspace.yaml")
+    added = ["/.repowise-workspace.yaml", "/.repowise-workspace/"]
+    assert keep_workspace_data_out(repo) == added
+    assert keep_workspace_data_out(repo) == []
+    exclude = (repo / ".git" / "info" / "exclude").read_text(encoding="utf-8")
+    assert [line for line in exclude.splitlines() if "repowise-workspace" in line] == added
+    assert _status(repo) == ""
+    assert not (repo / ".gitignore").exists()
+
+
+def test_a_workspace_path_already_gitignored_gets_no_line(repo: Path) -> None:
+    (repo / ".gitignore").write_text(".repowise-workspace/\n", encoding="utf-8")
+    assert keep_workspace_data_out(repo) == ["/.repowise-workspace.yaml"]
+
+
+def test_a_workspace_root_outside_git_writes_nothing(tmp_path: Path) -> None:
+    assert keep_workspace_data_out(tmp_path) == []
+
+
+def test_workspace_init_keeps_its_data_out_of_a_git_root(repo: Path) -> None:
+    from types import SimpleNamespace
+
+    from repowise.cli.commands.init_cmd._workspace_config import WorkspacePick
+    from repowise.cli.commands.init_cmd.workspace import _workspace_config
+
+    member = SimpleNamespace(path=(repo / "api").resolve(), alias="api", name="api")
+    member.path.mkdir()
+    pick = WorkspacePick([member], repo.resolve(), "api", member, False)
+    _workspace_config(pick, ask=False, dry_run=False)
+    assert "/.repowise-workspace/" in (repo / ".git" / "info" / "exclude").read_text("utf-8")
 
 
 # -- the plan screen ----------------------------------------------------------
