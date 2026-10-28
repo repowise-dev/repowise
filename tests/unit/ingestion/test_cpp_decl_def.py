@@ -158,14 +158,14 @@ class TestCallAttachesToDefinition:
         assert _callers_of(graph, "sub-posix.cc::Sub::Finish") == set()
         assert _callers_of(graph, "sub-win32.cc::Sub::Finish") == set()
 
-    def test_recursion_through_the_prototype_draws_no_edge(self, tmp_path: Path) -> None:
+    def test_recursion_through_the_prototype_is_a_self_edge(self, tmp_path: Path) -> None:
         (tmp_path / "walk.h").write_text("int walk(int n);\n")
         (tmp_path / "walk.c").write_text(
             '#include "walk.h"\nint walk(int n) { return n ? walk(n - 1) : 0; }\n'
         )
         graph = _build(tmp_path)
         assert _callers_of(graph, "walk.h::walk") == set()
-        assert _callers_of(graph, "walk.c::walk") == set()
+        assert _callers_of(graph, "walk.c::walk") == {"walk.c::walk"}
 
 
 class TestHeaderDefaultsReachTheDefinition:
