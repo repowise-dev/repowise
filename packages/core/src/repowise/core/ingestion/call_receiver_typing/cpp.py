@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 
+from ..models import Symbol
 from ..type_names import strip_type_arguments
 
 # ``virtual void f() = 0;``, a trailing ``const``/``override`` included.
@@ -76,6 +77,35 @@ class CppFieldOwners:
         pure = self._pure_virtuals.get(sym_id)
         if pure is None:
             path = self._symbol_paths_by_id.get(sym_id, "")
-            lines = self._text_of(path).splitlines()[max(symbol.start_line - 1, 0) : symbol.end_line]
-            pure = self._pure_virtuals[sym_id] = bool(_PURE_VIRTUAL.search(" ".join(lines)))
+            pure = self._pure_virtuals[sym_id] = _is_pure(self._text_of(path).splitlines(), symbol)
         return sym_id if pure else None
+
+    def _pure_virtual_names(self) -> frozenset[str]:
+        """Method names a C/C++ pure virtual declares and no body defines, built once.
+
+        Those are the only bodiless names a member call may reach: a plain
+        declaration nothing defines is no callee (see ``_typed_callee``), so
+        admitting its name would let a receiver-name match land on it.
+        """
+        if self._pure_virtual_name_set is None:
+            names: set[str] = set()
+            for path, parsed in self._parsed_files.items():
+                candidates = [
+                    sym
+                    for sym in parsed.symbols
+                    if sym.is_declaration
+                    and sym.parent_name
+                    and sym.language in ("c", "cpp")
+                    and sym.name not in self._global_symbols
+                    and sym.name not in names
+                ]
+                lines = self._text_of(path).splitlines() if candidates else []
+                names.update(sym.name for sym in candidates if _is_pure(lines, sym))
+            self._pure_virtual_name_set = frozenset(names)
+        return self._pure_virtual_name_set
+
+
+def _is_pure(lines: list[str], symbol: Symbol) -> bool:
+    """Whether *symbol*'s declaration lines end in ``= 0;``."""
+    span = lines[max(symbol.start_line - 1, 0) : symbol.end_line]
+    return bool(_PURE_VIRTUAL.search(" ".join(span)))

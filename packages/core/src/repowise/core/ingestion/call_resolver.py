@@ -122,10 +122,6 @@ log = structlog.get_logger(__name__)
 # bare call there is a free function and this tier would resolve it wrongly.
 _IMPLICIT_RECEIVER_LANGUAGES = frozenset({"java", "csharp", "cpp", "kotlin", "apex"})
 
-# Languages whose interface methods may be bodiless everywhere (a Go method
-# spec, a C++ pure virtual), so a member call is admitted on the method index.
-_BODILESS_INTERFACE_LANGUAGES = frozenset({"go", "cpp"})
-
 # JS/TS (and the single-file components parsed as TypeScript): a member is only
 # reachable as ``this.foo()`` or ``obj.foo()``, so a bare ``foo()`` inside a
 # class method never means a member of that class, whatever the file declares.
@@ -1729,12 +1725,8 @@ class CallResolver(
 
         # Every strategy below ends in a lookup keyed on the method name, so a
         # name the repo declares nowhere cannot resolve.
-        # A Go interface method spec and a C++ pure virtual are bodiless, so
-        # ``_global_symbols`` leaves them out; the method index holds them, and
-        # they are what an interface-typed receiver binds to.
-        if method_name not in self._global_symbols and not (
-            self._language_of(file_path) in _BODILESS_INTERFACE_LANGUAGES
-            and method_name in self._method_names()
+        if method_name not in self._global_symbols and not self._bodiless_callee_named(
+            file_path, method_name
         ):
             return False, None
 
@@ -1781,6 +1773,18 @@ class CallResolver(
             # The method is the external type's: refused, not left to a name match.
             return True, None
         return hit is not None, hit
+
+    def _bodiless_callee_named(self, file_path: str, method_name: str) -> bool:
+        """Whether a bodiless method ``_global_symbols`` leaves out can be the callee.
+
+        A Go interface method spec and a C++ pure virtual are what an
+        interface-typed receiver binds to. A C++ declaration nothing defines
+        is not, so only pure virtual names are admitted there.
+        """
+        language = self._language_of(file_path)
+        if language == "go":
+            return method_name in self._method_names()
+        return language == "cpp" and method_name in self._pure_virtual_names()
 
     def _go_receiver_is_variable(self, file_path: str, call: CallSite, caller_id: str) -> bool:
         """Whether a Go call's receiver is a typed local, parameter or ``var`` of the caller."""

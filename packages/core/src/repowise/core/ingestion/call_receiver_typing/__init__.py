@@ -230,6 +230,7 @@ class ReceiverTypingMixin(
         # C++: {(file, class name): (header, class id) or None}, {declaration id: pure virtual}.
         self._cpp_declaring_classes: dict[tuple[str, str], tuple[str, str] | None] = {}
         self._pure_virtuals: dict[str, bool] = {}
+        self._pure_virtual_name_set: frozenset[str] | None = None
         self._framework_name_set: frozenset[str] | None = None
 
     def _merged_extension_methods_for(self, file_path: str) -> dict[tuple[str, str], str]:

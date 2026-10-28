@@ -266,3 +266,35 @@ class TestTypedCalleeOnHeaderDeclarations:
     ) -> None:
         _repo(tmp_path, "  Peer* peer;\n  return peer->get(1);")
         assert _call_targets(_build(tmp_path), "lib/caller.cc") == {"lib/peer.cc::Peer::get"}
+
+
+def _receiver_named_like_a_class_repo(root: Path, declaration: str) -> None:
+    """A ``Sink`` parameter named ``buffer``, and a class ``buffer`` declaring ``flush``."""
+    (root / "lib").mkdir(parents=True, exist_ok=True)
+    (root / "lib" / "buffer.h").write_text(
+        "#pragma once\nclass buffer {\n public:\n  " + declaration + "\n};\n"
+        "class Sink {\n public:\n  void write();\n};\n"
+    )
+    (root / "lib" / "sink.cc").write_text('#include "lib/buffer.h"\nvoid Sink::write() {}\n')
+    (root / "lib" / "caller.cc").write_text(
+        '#include "lib/buffer.h"\nvoid Run(Sink& buffer) {\n  buffer.flush();\n}\n'
+    )
+
+
+class TestBodilessMemberNames:
+    """A method name only a bodiless C++ declaration carries reaches a member call as a pure virtual only."""
+
+    def test_a_declared_never_defined_method_gets_no_edge_from_an_unrelated_receiver(
+        self, tmp_path: Path
+    ) -> None:
+        """``buffer`` is a ``Sink``; the receiver-name tier must not land on ``buffer::flush``."""
+        _receiver_named_like_a_class_repo(tmp_path, "void flush();")
+        assert _call_targets(_build(tmp_path), "lib/caller.cc") == set()
+
+    def test_a_pure_virtual_name_is_still_admitted(self, tmp_path: Path) -> None:
+        """The control: an interface pointer still binds the pure virtual nothing defines."""
+        _receiver_named_like_a_class_repo(tmp_path, "virtual void flush() = 0;")
+        (tmp_path / "lib" / "caller.cc").write_text(
+            '#include "lib/buffer.h"\nvoid Run(buffer* out) {\n  out->flush();\n}\n'
+        )
+        assert _call_targets(_build(tmp_path), "lib/caller.cc") == {"lib/buffer.h::buffer::flush"}
