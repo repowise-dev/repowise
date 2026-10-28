@@ -535,6 +535,46 @@ class TestFieldTypedReceiver:
         )
         assert not [e for e in _edges(parsed, tmp_path) if e[0] == "V.cs::V::Run"]
 
+    @pytest.mark.parametrize(
+        "holder",
+        [
+            "void Run()\n    {\n        Result Check = Compute();\n    }",
+            "public int P\n    {\n        get\n        {\n            Result Check = Compute();\n"
+            "            return 1;\n        }\n    }",
+            "Action A = () =>\n    {\n        Result Check = Compute();\n    };",
+        ],
+        ids=["method", "accessor", "lambda"],
+    )
+    def test_a_csharp_body_local_types_no_receiver_elsewhere(
+        self, tmp_path: Path, holder: str
+    ) -> None:
+        """``Result Check = ..`` inside a body is that body's local, not a field."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "V.cs": ("csharp", f"class V\n{{\n    {holder}\n    void Other() {{ Check.Go(); }}\n}}\n"),
+                "Result.cs": ("csharp", "public class Result\n{\n    public void Go() { }\n}\n"),
+            },
+        )
+        assert not [e for e in _edges(parsed, tmp_path) if e[1] == "Result.cs::Result::Go"]
+
+    def test_a_csharp_field_beside_an_accessor_local_still_types(self, tmp_path: Path) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "V.cs": (
+                    "csharp",
+                    "namespace N\n{\n    record V\n    {\n        Result Check = Compute();\n"
+                    "        public int P { get { Other Check = null; return 1; } }\n"
+                    "        void Run() { Check.Go(); }\n    }\n}\n",
+                ),
+                "Result.cs": ("csharp", "public class Result\n{\n    public void Go() { }\n}\n"),
+            },
+        )
+        assert [e[0] for e in _edges(parsed, tmp_path) if e[1] == "Result.cs::Result::Go"] == [
+            "V.cs::V::Run"
+        ]
+
     def test_a_capitalised_parameter_shadows_the_property(self, tmp_path: Path) -> None:
         parsed = _parse_all(
             tmp_path,

@@ -1028,23 +1028,28 @@ def _inside_parentheses(cleaned: str) -> Callable[[int], bool]:
     return inside
 
 
-# Kotlin and Swift run code at class scope that is not a function: an ``init``
-# block, a lambda or closure a property holds. A declaration there is a local
-# of that block, so only one directly in a type's body may be a field.
-_TYPE_BODY_SCOPED_LANGUAGES = frozenset({"kotlin", "swift"})
+# Kotlin, Swift and C# run code at class scope that is not a function: an
+# ``init`` block, a lambda or closure a property holds, a property accessor. A
+# declaration there is a local of that block, so only one directly in a type's
+# body may be a field. C# has its own keywords: ``object`` is a type there.
 _BRACE = re.compile(r"[{};]")
 # A function, accessor or initialiser declared after a bodiless type.
 _CODE_HEADER = re.compile(r"\b(?:fun|func|init|get|set)\b")
 _TYPE_HEADER = re.compile(r"\b(?:class|object|interface|struct|enum|extension|protocol|actor)\b")
+_TYPE_HEADERS: dict[str, re.Pattern[str]] = {
+    "csharp": re.compile(r"\b(?:class|interface|struct|enum|record)\b"),
+    "kotlin": _TYPE_HEADER,
+    "swift": _TYPE_HEADER,
+}
 
 
-def _opens_type_body(header: str) -> bool:
+def _opens_type_body(header: str, type_header: re.Pattern[str]) -> bool:
     """Does a ``{`` after *header* open a type's body?
 
     The last type keyword decides, unless an expression leads into it:
     ``val f = object : T {`` is an anonymous object, not a declared type.
     """
-    keywords = list(_TYPE_HEADER.finditer(header))
+    keywords = list(type_header.finditer(header))
     if not keywords:
         return False
     before = header[: keywords[-1].start()].rstrip()
@@ -1052,7 +1057,7 @@ def _opens_type_body(header: str) -> bool:
     return not before.endswith(("=", "(", ",", "return")) and not _CODE_HEADER.search(after)
 
 
-def _in_type_body(cleaned: str) -> Callable[[int], bool]:
+def _in_type_body(cleaned: str, type_header: re.Pattern[str]) -> Callable[[int], bool]:
     """Is the innermost ``{`` open at an offset of *cleaned* a type's body (or none)?
 
     None counts: a primary constructor's ``val`` parameters sit before any brace.
@@ -1068,7 +1073,7 @@ def _in_type_body(cleaned: str) -> Callable[[int], bool]:
     for match in _BRACE.finditer(cleaned):
         char = match.group()
         if char == "{":
-            stack.append(_opens_type_body(cleaned[segment_start : match.start()]))
+            stack.append(_opens_type_body(cleaned[segment_start : match.start()], type_header))
         elif char == "}" and stack:
             stack.pop()
         segment_start = match.end()
@@ -1098,7 +1103,8 @@ def scan_declarations(text: str, language: str) -> tuple[Declaration, ...]:
     resolved: dict[str, tuple[str | None, bool]] = {}
     found: list[Declaration] = []
     inside = _inside_parentheses(cleaned) if language in _PARAMETERS_AT_CLASS_SCOPE else None
-    in_type_body = _in_type_body(cleaned) if language in _TYPE_BODY_SCOPED_LANGUAGES else None
+    type_header = _TYPE_HEADERS.get(language)
+    in_type_body = _in_type_body(cleaned, type_header) if type_header else None
     for pattern in patterns:
         for match in pattern.finditer(cleaned):
             if pattern is _KT_CONSTRUCTED_LAMBDA and not _ends_statement(
