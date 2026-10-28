@@ -235,6 +235,7 @@ _PATH_RECEIVERS = frozenset(
         ("python", "attribute"),
         ("apex", "field_access"),
         ("java", "field_access"),
+        ("csharp", "member_access_expression"),
     }
 )
 _DOTTED_PATH = re.compile(r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+")

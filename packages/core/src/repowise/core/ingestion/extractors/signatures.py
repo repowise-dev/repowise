@@ -7,7 +7,15 @@ from tree_sitter import Node
 from .helpers import node_text
 
 
-def build_signature(node_type: str, name: str, params_text: str, def_node: Node, src: str) -> str:
+def build_signature(
+    node_type: str,
+    name: str,
+    params_text: str,
+    def_node: Node,
+    src: str,
+    *,
+    language: str | None = None,
+) -> str:
     """Build a human-readable signature string."""
 
     # Helper: try multiple field names for "return type", fall back gracefully.
@@ -24,6 +32,11 @@ def build_signature(node_type: str, name: str, params_text: str, def_node: Node,
                     text = text[1:].lstrip()
                 return f" -> {text}"
         return ""
+
+    if language == "csharp" and (
+        member := _csharp_member_signature(node_type, name, def_node, src)
+    ) is not None:
+        return member
 
     if node_type == "function_definition":
         # C/C++ share this node name with Python but expose the declared type
@@ -135,6 +148,20 @@ def build_signature(node_type: str, name: str, params_text: str, def_node: Node,
         return f"{name}{params_text}"
     # Fallback
     return f"{name}{params_text}"
+
+
+def _csharp_member_signature(node_type: str, name: str, node: Node, src: str) -> str | None:
+    """Keep the declared type of a C# field or property without reading its body."""
+    if node_type == "property_declaration":
+        declared_type = node.child_by_field_name("type")
+    elif node_type == "field_declaration":
+        declaration = next(
+            (child for child in node.named_children if child.type == "variable_declaration"), None
+        )
+        declared_type = declaration.child_by_field_name("type") if declaration else None
+    else:
+        return None
+    return f"{name} -> {node_text(declared_type, src)}" if declared_type is not None else None
 
 
 def _kotlin_return(def_node: Node, src: str) -> str:

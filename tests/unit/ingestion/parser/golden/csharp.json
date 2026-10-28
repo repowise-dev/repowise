@@ -385,6 +385,22 @@
     "export_aliases": {},
     "calls": [
       {
+        "target_name": "ToListAsync",
+        "receiver_name": "ctx.Users",
+        "caller_symbol_id": "lang_samples/csharp/PerfIoInLoop.cs::PerfIoInLoop::EfAsyncN1",
+        "line": 21,
+        "argument_count": 0,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
         "target_name": "GetAsync",
         "receiver_name": "c",
         "caller_symbol_id": "lang_samples/csharp/PerfIoInLoop.cs::PerfIoInLoop::HttpInLoop",
@@ -435,6 +451,22 @@
         "argument_names": [
           "p"
         ]
+      },
+      {
+        "target_name": "ToList",
+        "receiver_name": "ctx.Users",
+        "caller_symbol_id": "lang_samples/csharp/PerfIoInLoop.cs::PerfIoInLoop::SyncLinqInLoop",
+        "line": 53,
+        "argument_count": 0,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
       },
       {
         "target_name": "Wait",
@@ -953,7 +985,7 @@
         "name": "total",
         "qualified_name": "lang_samples.csharp.classes.Cohesive.total",
         "kind": "variable",
-        "signature": "total",
+        "signature": "total -> int",
         "start_line": 6,
         "end_line": 6,
         "docstring": null,
@@ -976,7 +1008,7 @@
         "name": "count",
         "qualified_name": "lang_samples.csharp.classes.Cohesive.count",
         "kind": "variable",
-        "signature": "count",
+        "signature": "count -> int",
         "start_line": 7,
         "end_line": 7,
         "docstring": null,
@@ -1122,7 +1154,7 @@
         "name": "a",
         "qualified_name": "lang_samples.csharp.classes.Splintered.a",
         "kind": "variable",
-        "signature": "a",
+        "signature": "a -> int",
         "start_line": 34,
         "end_line": 34,
         "docstring": null,
@@ -1145,7 +1177,7 @@
         "name": "b",
         "qualified_name": "lang_samples.csharp.classes.Splintered.b",
         "kind": "variable",
-        "signature": "b",
+        "signature": "b -> int",
         "start_line": 35,
         "end_line": 35,
         "docstring": null,

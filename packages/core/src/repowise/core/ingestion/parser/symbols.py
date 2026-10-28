@@ -377,7 +377,7 @@ def _symbol_from_match(capture_dict: dict, file: _SymbolPass) -> tuple[Symbol, N
         qualified_name=_build_qualified_name(file_info.path, scope, name),
         kind=_method_or_kind(kind, parent_name, def_node, language),  # type: ignore[arg-type]
         signature=_normalize_newlines(
-            build_signature(node_type, name, params_text, def_node, src)
+            build_signature(node_type, name, params_text, def_node, src, language=language)
         ) or "",
         start_line=start_line,
         end_line=end_line,

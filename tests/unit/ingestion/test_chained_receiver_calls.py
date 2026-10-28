@@ -11,6 +11,8 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+
 from repowise.core.ingestion.call_resolver import CallResolver
 from repowise.core.ingestion.models import CallReceiver, FileInfo, ParsedFile
 from repowise.core.ingestion.parser import parse_file
@@ -629,3 +631,93 @@ class TestGoChainedFieldCalls:
             "func (f *File) WriteString(s string) {\n\tf.fd.Write([]byte(s))\n}\n"
         )
         assert _chained(_edges(tmp_path, {"sftpfs/file.go": ("go", source)})) == []
+
+
+class TestCsChainedFieldCalls:
+    @pytest.mark.parametrize(
+        ("parameter", "local", "receiver"),
+        [
+            ("", "", "this._s.Users"),
+            ("", "", "_s.Users"),
+            ("Store store", "", "store.Users"),
+            ("", "var store = new Store();", "store.Users"),
+        ],
+    )
+    @pytest.mark.parametrize("member", ["public U Users { get; }", "public U Users;", "public U Users => null;"])
+    def test_fields_and_properties_type_each_hop(
+        self, tmp_path: Path, parameter: str, local: str, receiver: str, member: str
+    ) -> None:
+        source = (
+            "class U {\n  public void Get() {}\n}\n"
+            f"class Store {{\n  {member}\n}}\n"
+            "class Other {\n  public void Get() {}\n}\n"
+            f"class C {{\n  Store _s;\n  void Run({parameter}) {{\n"
+            f"    {local}\n    {receiver}.Get();\n  }}\n}}\n"
+        )
+        parsed = _parse_all(tmp_path, {"A.cs": ("csharp", source)})
+        calls = [c for c in parsed["A.cs"].calls if c.target_name == "Get"]
+        assert [c.receiver_name for c in calls] == [receiver]
+        edges = _edges(tmp_path, {"A.cs": ("csharp", source)})
+        assert [e for e in edges if e[0] == "A.cs::C::Run" and e[1].endswith("::Get")] == [
+            ("A.cs::C::Run", "A.cs::U::Get", 0.93, "receiver_chain_same_file")
+        ]
+
+    @pytest.mark.parametrize("receiver", ["this._s.Users", "_s.Users"])
+    def test_a_property_written_on_its_class_line_types_a_hop(
+        self, tmp_path: Path, receiver: str
+    ) -> None:
+        source = (
+            "class U {\n  public void Get() {}\n}\n"
+            "class S { public U Users { get; } }\n"
+            f"class C {{\n  S _s;\n  void Run() {{ {receiver}.Get(); }}\n}}\n"
+        )
+        edges = _edges(tmp_path, {"A.cs": ("csharp", source)})
+        assert [e[:2] for e in _chained(edges)] == [("A.cs::C::Run", "A.cs::U::Get")]
+
+    def test_an_external_hop_does_not_use_another_types_method(self, tmp_path: Path) -> None:
+        source = (
+            "class U {\n  public void Get() {}\n}\n"
+            "class S {\n  public External Users { get; }\n}\n"
+            "class C {\n  S _s;\n  void Run() { this._s.Users.Get(); }\n}\n"
+        )
+        parsed = _parse_all(tmp_path, {"A.cs": ("csharp", source)})
+        assert [c.receiver_name for c in parsed["A.cs"].calls] == ["this._s.Users"]
+        assert not _edges(tmp_path, {"A.cs": ("csharp", source)})
+
+    def test_a_type_parameter_is_not_a_same_named_nominal_type(self, tmp_path: Path) -> None:
+        source = (
+            "class T {\n  public void Get() {}\n}\n"
+            "class C<T> {\n  public T Users { get; }\n"
+            "  void Run() { this.Users.Get(); }\n}\n"
+        )
+        assert not _edges(tmp_path, {"A.cs": ("csharp", source)})
+
+    def test_a_qualified_external_type_is_not_a_same_named_local_type(self, tmp_path: Path) -> None:
+        source = (
+            "class Users {\n  public void Get() {}\n}\n"
+            "class Store {\n  public External.Users Users { get; }\n}\n"
+            "class C {\n  Store _s;\n  void Run() { this._s.Users.Get(); }\n}\n"
+        )
+        assert not _edges(tmp_path, {"A.cs": ("csharp", source)})
+
+    @pytest.mark.parametrize(
+        "receiver", ["items[0].Users", "Make().Users", "((S) obj).Users", "store?.Users"]
+    )
+    def test_non_path_receivers_mint_no_member_site(self, tmp_path: Path, receiver: str) -> None:
+        source = f"class C {{\n  void Run() {{ {receiver}.Get(); }}\n}}\n"
+        parsed = _parse_all(tmp_path, {"A.cs": ("csharp", source)})
+        assert not [c for c in parsed["A.cs"].calls if c.target_name == "Get"]
+
+    @pytest.mark.parametrize("receiver", ["_root.A.B.Leaf", "this._root.A.B.Leaf"])
+    def test_the_three_field_depth_limit_applies(self, tmp_path: Path, receiver: str) -> None:
+        source = (
+            "class Leaf {\n  public void Get() {}\n}\n"
+            "class B {\n  public Leaf Leaf { get; }\n}\n"
+            "class A {\n  public B B { get; }\n}\n"
+            "class Root {\n  public A A { get; }\n}\n"
+            "class C {\n  Root _root;\n"
+            f"  void Run() {{ {receiver}.Get(); }}\n}}\n"
+        )
+        edges = _chained(_edges(tmp_path, {"A.cs": ("csharp", source)}))
+        expected = [] if receiver.startswith("this.") else [("A.cs::C::Run", "A.cs::Leaf::Get")]
+        assert [e[:2] for e in edges] == expected
