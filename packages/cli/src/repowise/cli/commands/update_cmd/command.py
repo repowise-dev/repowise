@@ -90,6 +90,7 @@ from .reporting import (
     render_header,
     show_full_completion,
 )
+from .stale_targets import load_actionable_stale_targets
 from .workspace import _workspace_update
 
 log = structlog.get_logger(__name__)
@@ -906,7 +907,7 @@ def _repair_before_detection(opts: UpdateOptions, run: UpdateRun) -> None:
         bind_repo(Path(run.repo_path))
 
 
-def _assess_staleness(run: UpdateRun) -> None:
+def _assess_staleness(opts: UpdateOptions, run: UpdateRun) -> None:
     """Decide whether git, the analyzers or the store leave anything to do."""
     state = run.state
     run.analyzer_changed = health_analyzer_changed(state)
@@ -936,11 +937,7 @@ def _assess_staleness(run: UpdateRun) -> None:
         )
     # Pages stale for reasons no commit explains; read only when git is current.
     if run.git_is_current:
-        from repowise.core.persistence import load_stale_update_targets
-
-        run.stale_db_paths, run.stale_deterministic_ids = load_stale_update_targets(
-            run.repo_path
-        )
+        run.stale_pages_deferred = load_actionable_stale_targets(run, opts)
 
 
 def _announce_rework(run: UpdateRun) -> None:
@@ -975,6 +972,11 @@ def _already_up_to_date(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
         console.print(
             "[dim]Documentation is built from code. "
             "Run [bold]repowise generate[/bold] to write pages with a model.[/dim]"
+        )
+    if run.stale_pages_deferred:
+        console.print(
+            f"[dim]{run.stale_pages_deferred} stale page(s) wait for a model run: "
+            "[bold]repowise generate --stale[/bold].[/dim]"
         )
     if not opts.dry_run:
         _heal_up_to_date_store(opts, run)
@@ -1038,7 +1040,7 @@ def _heal_up_to_date_store(opts: UpdateOptions, run: UpdateRun) -> None:
         release_update_lock(repo_path)
 
 
-def _detect_changes(run: UpdateRun) -> None:
+def _detect_changes(opts: UpdateOptions, run: UpdateRun) -> None:
     """The diffed files since the base, plus stale pages whose files are gone."""
     from repowise.core.ingestion.change_detector import merge_file_diffs
 
@@ -1051,11 +1053,7 @@ def _detect_changes(run: UpdateRun) -> None:
     # Loaded already when git is current; otherwise load now so old structural
     # debt is carried forward.
     if not run.git_is_current:
-        from repowise.core.persistence import load_stale_update_targets
-
-        run.stale_db_paths, run.stale_deterministic_ids = load_stale_update_targets(
-            run.repo_path
-        )
+        run.stale_pages_deferred = load_actionable_stale_targets(run, opts)
 
     # A stale page whose file is gone goes through the deletion path.
     if run.stale_db_paths:
@@ -2144,7 +2142,7 @@ def run_update(
     _check_config_and_renderer(run)
     _collect_working_tree(opts, run)
     _repair_before_detection(opts, run)
-    _assess_staleness(run)
+    _assess_staleness(opts, run)
     if run.git_is_current and not run.stale_db_paths and not run.stale_deterministic_ids:
         return _already_up_to_date(opts, run)
 
@@ -2154,7 +2152,7 @@ def run_update(
     _prepare_locked_run(opts, run)
 
     _stage(run, "detect_changes")
-    _detect_changes(run)
+    _detect_changes(opts, run)
     if _nothing_to_do(run):
         return _no_changed_files(opts, run)
 
