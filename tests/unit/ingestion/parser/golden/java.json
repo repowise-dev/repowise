@@ -626,7 +626,7 @@
       },
       {
         "target_name": "of",
-        "receiver_name": null,
+        "receiver_name": "java.nio.file.Path",
         "caller_symbol_id": "lang_samples/java/PerfIoInLoop.java::PerfIoInLoop::filesInLoop",
         "line": 30,
         "argument_count": 1,
