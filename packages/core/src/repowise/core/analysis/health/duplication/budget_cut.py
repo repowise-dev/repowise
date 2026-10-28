@@ -33,16 +33,19 @@ def cut_of_run(paths: list[str], files_considered: int, budget_hit: bool) -> tup
 
 
 def splice_scope(
-    index: Any, parsed_files: list[Any], changed: set[str]
+    index: Any, parsed_files: list[Any], changed: set[str], persist: bool = True
 ) -> tuple[list[Any], BudgetCut | None] | None:
     """The files a splice reads and the cut it must keep; ``None`` when the cut moved.
 
     An uncut state reads every file. For a cut state, an edited or new file
-    after the stop is not read, as the full run would not read it.
+    after the stop is not read, as the full run would not read it. A read-only
+    splice is handed a few files, so it cannot place a cut at all.
     """
     stop_path = index.budget_stop
     if stop_path is None:
         return parsed_files, None
+    if not persist:
+        return None
     paths = [pf.file_info.path for pf in parsed_files]
     if stop_path not in paths or stop_path in changed:
         return None
@@ -54,6 +57,17 @@ def splice_scope(
         if (i > pos) != (path in index.unread):
             return None
     return parsed_files[:pos], BudgetCut(parsed_files[pos], frozenset(paths[pos + 1 :]))
+
+
+def persisted_cut(cut: BudgetCut | None) -> dict[str, Any]:
+    """The pair-index fields that record *cut*."""
+    if cut is None:
+        return {"window_budget_hit": False, "budget_stop": None, "unread": set()}
+    return {
+        "window_budget_hit": True,
+        "budget_stop": cut.stop.file_info.path,
+        "unread": set(cut.unread),
+    }
 
 
 def cut_holds(prefix_windows: int, stop_windows: int, stop_alone_overflows: bool, limit: int) -> bool:

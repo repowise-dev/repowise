@@ -640,12 +640,11 @@ def _detect_clones_incremental(
     """
     from collections import Counter
 
-    from .budget_cut import splice_scope
+    from .budget_cut import persisted_cut, splice_scope
 
-    # Read-only is handed a few files, so it cannot place a budget cut.
-    if not index.spliceable or (index.budget_stop is not None and not persist):
+    if not index.spliceable:
         return None
-    scope = splice_scope(index, parsed_files, changed_files)
+    scope = splice_scope(index, parsed_files, changed_files, persist)
     if scope is None:
         return None
     read_files, cut = scope
@@ -836,9 +835,7 @@ def _detect_clones_incremental(
                 if count > 0
             ],
             total_windows=new_total,
-            window_budget_hit=cut is not None,
-            budget_stop=cut.stop.file_info.path if cut is not None else None,
-            unread=set(cut.unread) if cut is not None else set(),
+            **persisted_cut(cut),
         ),
     )
     cache.save()
