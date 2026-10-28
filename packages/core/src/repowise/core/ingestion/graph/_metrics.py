@@ -38,6 +38,12 @@ _LARGE_REPO_THRESHOLD = 30_000  # nodes — above this, algorithms are expensive
 # they were scored at.
 _CHURN_BUDGET_FRACTION = 0.002
 
+# Brandes cost (~nodes x edges) below which a graph keeps exact-signature-only
+# reuse. Sequential NetworkX on a fully reachable graph took 0.7 s at 1.2e6,
+# 2 s at 4e6 and 45 s at 3.2e7, so mid graphs under the parallel threshold
+# were paying tens of seconds for every added call edge.
+_CHURN_BUDGET_MIN_COST = 1e6
+
 
 def is_test_to_test_edge(g: nx.DiGraph, u: str, v: str) -> bool:
     """Whether both ends are test material; such edges carry no centrality."""
@@ -281,17 +287,14 @@ class MetricsMixin:
         """Return PageRank scores for file nodes only (cached)."""
         if self._pagerank_cache is not None:
             return self._pagerank_cache
-        filtered = self.centrality_subgraph()
-        if filtered.number_of_nodes() == 0:
-            self._pagerank_cache = {}
-            return self._pagerank_cache
+        from ._pagerank import cached_pagerank
 
-        try:
-            self._pagerank_cache = nx.pagerank(filtered, alpha=alpha)
-        except nx.PowerIterationFailedConvergence:
-            log.warning("PageRank did not converge, using uniform scores")
-            n = filtered.number_of_nodes()
-            self._pagerank_cache = {node: 1.0 / n for node in filtered.nodes()}
+        self._pagerank_cache = cached_pagerank(
+            self.centrality_subgraph(),
+            kind="file",
+            alpha=alpha,
+            cache=getattr(self, "_centrality_cache", None),
+        )
         return self._pagerank_cache
 
     def betweenness_centrality(self) -> dict[str, float]:
@@ -383,16 +386,18 @@ class MetricsMixin:
         """
         if self._symbol_pagerank_cache is not None:
             return self._symbol_pagerank_cache
+        from ._pagerank import cached_pagerank
+
         sub = self.symbol_subgraph()
         if sub.number_of_nodes() == 0:
             self._symbol_pagerank_cache = {}
             return self._symbol_pagerank_cache
-        try:
-            self._symbol_pagerank_cache = nx.pagerank(sub, alpha=alpha)
-        except nx.PowerIterationFailedConvergence:
-            log.warning("Symbol PageRank did not converge, using uniform scores")
-            n = sub.number_of_nodes()
-            self._symbol_pagerank_cache = {node: 1.0 / n for node in sub.nodes()}
+        self._symbol_pagerank_cache = cached_pagerank(
+            sub,
+            kind="symbol",
+            alpha=alpha,
+            cache=getattr(self, "_centrality_cache", None),
+        )
         self._release_symbol_subgraph()
         return self._symbol_pagerank_cache
 
@@ -431,19 +436,14 @@ class MetricsMixin:
     def _churn_budget(self, g: nx.DiGraph) -> int:
         """How far *g* may drift from its last exact scoring before rescoring.
 
-        Zero below the cost threshold that already decides whether exact
-        Brandes is worth parallelising: under it the recompute is fast enough
-        that trading accuracy for it buys nothing, so those graphs keep the
-        exact-signature-only behaviour they had before. Above it, proportional
-        to the graph, because the same absolute delta perturbs a large ranking
-        far less than a small one.
+        Zero below :data:`_CHURN_BUDGET_MIN_COST`: there the recompute takes
+        under a second, so trading accuracy for it buys nothing and small graphs
+        keep exact-signature-only reuse. Above it, proportional to the graph,
+        because the same absolute delta perturbs a large ranking far less than
+        a small one.
         """
-        from . import _betweenness
-
         n, e = g.number_of_nodes(), g.number_of_edges()
-        # Read through the module so the tests that lower the threshold reach
-        # this decision too.
-        if n * e < _betweenness._PARALLEL_COST_THRESHOLD:
+        if n * e < _CHURN_BUDGET_MIN_COST:
             return 0
         return int((n + e) * _CHURN_BUDGET_FRACTION)
 
@@ -460,12 +460,8 @@ class MetricsMixin:
         signature: str | None = None
         if cache is not None:
             try:
-                from ._centrality_cache import subgraph_signature
-
-                signature = subgraph_signature(g)
-                hit = cache.lookup(
-                    kind, g, signature=signature, max_churn=self._churn_budget(g)
-                )
+                signature = cache.signature(kind, g)
+                hit = cache.lookup(kind, g, signature=signature, max_churn=self._churn_budget(g))
                 if hit is not None:
                     log.info(
                         "betweenness_reused_from_cache",
