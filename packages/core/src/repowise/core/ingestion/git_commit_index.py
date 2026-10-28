@@ -14,7 +14,7 @@ from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 import structlog
 
@@ -195,12 +195,13 @@ def _window_records(
         return _log_records(repo, f"-{depth}")
 
     try:
-        records, current = _cached_window_records(repo, cache_path, head, depth)
+        window = _cached_window_records(repo, cache_path, head, depth)
     except Exception:
-        records, current = None, False
+        window = _CachedWindow(None, at_head=False)
+    records = window.records
     if records is None:
         records = _log_records(repo, f"-{depth}")
-    if cache_writable and not current:
+    if cache_writable and not window.at_head:
         _write_window_cache(cache_path, head, depth, records)
     return records
 
@@ -236,11 +237,15 @@ def _log_records(repo: object, *revisions: str) -> list[str]:
     return [rec for rec in raw.split(_RECORD_SEP) if rec.strip()]
 
 
+class _CachedWindow(NamedTuple):
+    records: list[str] | None  # None: the cache cannot serve
+    at_head: bool  # the cache was already taken at HEAD, so nothing to rewrite
+
+
 def _cached_window_records(
     repo: object, cache_path: Path, head: str, depth: int
-) -> tuple[list[str] | None, bool]:
-    """The cached window brought forward to *head* (``None`` when it cannot serve),
-    and whether the cache was already taken at *head*.
+) -> _CachedWindow:
+    """The cached window brought forward to *head*.
 
     Raises on an unreadable cache or a cached head that is not an ancestor of
     *head*; the caller treats both as a miss.
@@ -251,12 +256,12 @@ def _cached_window_records(
         or cached.get("depth") != depth
         or not isinstance(cached.get("records"), list)
     ):
-        return None, False
+        return _CachedWindow(None, at_head=False)
     cached_head = str(cached.get("head") or "")
     if cached_head == head:
-        return list(cached["records"]), True
+        return _CachedWindow(list(cached["records"]), at_head=True)
     if not cached_head:
-        return None, False
+        return _CachedWindow(None, at_head=False)
     # Raises when the cached head is unknown to this repository or
     # not behind HEAD, which is exactly when the cache is stale.
     repo.git.merge_base("--is-ancestor", cached_head, head)  # type: ignore[attr-defined]
@@ -265,12 +270,12 @@ def _cached_window_records(
     # Git walks newest committer time first, so the time sort below is git's
     # order only when neither part is out of time order (clock skew).
     if not (_newest_first(fresh) and _newest_first(cached_records)):
-        return None, False
+        return _CachedWindow(None, at_head=False)
     merged = fresh + cached_records
     # Stable, so a fresh record stays ahead of a cached one at the
     # same second, which is where the full walk puts it too.
     merged.sort(key=_record_ts, reverse=True)
-    return merged[:depth], False
+    return _CachedWindow(merged[:depth], at_head=False)
 
 
 def _newest_first(records: list[str]) -> bool:
