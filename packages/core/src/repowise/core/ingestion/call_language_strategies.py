@@ -714,7 +714,7 @@ class LanguageStrategiesMixin:
         receiver-less copy was before the grammar captured the path.
         """
         receiver = call.receiver_name or ""
-        if "." not in receiver:
+        if "." not in receiver or not receiver[:1].isupper():
             return None
         type_id = self._java_written_type(file_path, caller_id, receiver)
         if type_id is None:

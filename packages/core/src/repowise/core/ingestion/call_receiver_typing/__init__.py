@@ -123,6 +123,7 @@ _CHAIN_SELF: dict[str, str | None] = {
     "typescript": "this",
     "go": None,
     "dart": "this",
+    "java": "this",
 }
 # Fields walked after the head, at most: ``h.f1.f2.f3.m()``.
 _MAX_CHAIN_FIELDS = 3
