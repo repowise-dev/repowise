@@ -379,6 +379,7 @@ async def rebuild_graph_and_git(
             git_meta_map = {m["file_path"]: m for m in updated_meta}
             label_co_change_structure(graph_builder, git_meta_map)
             graph_builder.update_co_change_edges(git_meta_map)
+            graph_builder.co_change_edges_complete = True
         else:
             changed_paths = build_filtered_changed_paths(file_diffs, exclude_patterns)
             # The full tracked-file set lets the indexer re-run the repo-wide
@@ -409,6 +410,9 @@ async def rebuild_graph_and_git(
                         for fp, partners in co_change_full.items()
                     }
                 )
+                # Every pair is in the graph, so persistence may sync the stored
+                # pairs repo-wide; the fallback below holds the changed files' only.
+                graph_builder.co_change_edges_complete = True
             else:
                 graph_builder.update_co_change_edges(git_meta_map)
     except Exception as exc:

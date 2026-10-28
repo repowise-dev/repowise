@@ -610,11 +610,11 @@ class GitIndexer:
         ``index_file``'s empty defaults overwrite the init-computed partners
         on every update, blanking exactly the files that change most.
 
-        ``co_change_sink``, when provided, receives the FULL per-file partner
-        map that walk produces (every tracked file, not just the changed
-        ones). The update path uses it to rebuild the graph's ``co_changes``
-        edges for the whole repo so the update-built graph converges with the
-        init-built one.
+        ``co_change_sink``, when provided, receives the walk's partner lists
+        for every code file, not just the changed ones (history-tier files get
+        none, as in a full index). The update path uses it to rebuild the
+        graph's ``co_changes`` edges for the whole repo so the update-built
+        graph converges with the init-built one.
 
         ``idle_decay_sink``, when provided (with ``all_files`` and a co-change
         tier), receives a decay-only partial metadata row for every *idle*

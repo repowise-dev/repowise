@@ -18,7 +18,7 @@ import structlog
 from ._constants import _DEFAULT_CO_CHANGE_COMMIT_LIMIT, _MAX_PARTNERS_PER_FILE
 from .co_change import CoChangeWalk, compute_co_changes_and_entropy
 from .prior_defects import PriorDefects, compute_prior_defects
-from .records import _CommitRec
+from .records import _CommitRec, _should_skip_index
 
 if TYPE_CHECKING:
     from .indexer import GitIndexer
@@ -118,6 +118,19 @@ def prior_defect_stage(
     return prior_defects
 
 
+def _code_partners(walk: CoChangeWalk, history_files: set[str]) -> dict[str, list[dict]]:
+    """The walk's partner lists for the files a full index gives partners to.
+
+    A full index keeps partners on code rows only (history-tier and skipped files
+    carry none), and its graph's co-change edges are read from those rows.
+    """
+    return {
+        fp: partners
+        for fp, partners in walk.partners.items()
+        if fp not in history_files and not _should_skip_index(fp)
+    }
+
+
 async def co_change_stage(
     indexer: GitIndexer,
     sp: SignalPass,
@@ -150,7 +163,7 @@ async def co_change_stage(
             )
         apply_co_change(code_results, walk)
         if co_change_sink is not None:
-            co_change_sink.update(walk.partners)
+            co_change_sink.update(_code_partners(walk, idle.history_files))
         if idle.paths:
             await _idle_decay_stage(indexer, sp, idle, walk)
     except Exception as exc:

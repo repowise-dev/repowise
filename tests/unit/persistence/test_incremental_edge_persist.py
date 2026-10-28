@@ -436,3 +436,28 @@ async def test_a_registration_edge_follows_the_decorated_file(async_session, tmp
         await persist_incremental_edges(async_session, repo.id, gb, parsed, ["b.py"])
         await async_session.commit()
         assert (edge in await _db_edge_set(async_session, repo.id)) is expected
+
+
+async def _co_change_rows(session, repo_id: str) -> set[tuple[str, str]]:
+    return {(s, t) for s, t, kind in await _db_edge_set(session, repo_id) if kind == "co_changes"}
+
+
+async def test_complete_co_change_refresh_syncs_pairs_between_unchanged_files(
+    async_session, tmp_path: Path
+) -> None:
+    """History moves pairs between files no commit touched; the stored set follows."""
+    for name in ("a", "b", "c"):
+        (tmp_path / f"{name}.py").write_text(f"def {name}():\n    return 1\n", encoding="utf-8")
+    repo = await insert_repo(async_session, local_path=str(tmp_path))
+    gb, parsed = _build_graph(tmp_path)
+    gb._graph.add_edge("a.py", "b.py", edge_type="co_changes")
+    await _seed_full(async_session, repo.id, gb)
+
+    gb._graph.remove_edge("a.py", "b.py")
+    gb._graph.add_edge("b.py", "c.py", edge_type="co_changes")
+    await persist_incremental_edges(async_session, repo.id, gb, parsed, [])
+    assert await _co_change_rows(async_session, repo.id) == {("a.py", "b.py")}
+
+    gb.co_change_edges_complete = True
+    await persist_incremental_edges(async_session, repo.id, gb, parsed, [])
+    assert await _co_change_rows(async_session, repo.id) == {("b.py", "c.py")}

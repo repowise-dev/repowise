@@ -23,7 +23,11 @@ import structlog
 
 from repowise.core.analysis.kg_curation import GENERIC_ORG_SEGMENTS, dominant_segments
 from repowise.core.ids import is_external
-from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES, SYMBOL_USE_EDGE_TYPES
+from repowise.core.ingestion.models import (
+    FILE_DEPENDENCY_EDGE_TYPES,
+    SYMBOL_USE_EDGE_TYPES,
+    TEMPORAL_EDGE_TYPES,
+)
 from repowise.core.support_paths import is_example_path
 from repowise.core.test_paths import is_test_related_path
 
@@ -519,9 +523,18 @@ def _assign_tests_to_communities(
         # The community most of the linked production files belong to, one
         # vote per linked file, either direction. Ties break on community id:
         # edge iteration order is insertion order and varies between runs.
+        # Co-change is history, not a link, and init adds it after this runs.
         votes: Counter[int] = Counter()
-        linked = {t for _, t in graph.out_edges(test_path) if t in prod_assignment}
-        linked |= {s for s, _ in graph.in_edges(test_path) if s in prod_assignment}
+        linked = {
+            t
+            for _, t, kind in graph.out_edges(test_path, data="edge_type")
+            if t in prod_assignment and kind not in TEMPORAL_EDGE_TYPES
+        }
+        linked |= {
+            s
+            for s, _, kind in graph.in_edges(test_path, data="edge_type")
+            if s in prod_assignment and kind not in TEMPORAL_EDGE_TYPES
+        }
         for prod_path in linked:
             votes[prod_assignment[prod_path]] += 1
 
