@@ -38,6 +38,7 @@ from .call_barrel_forwarding import (  # noqa: F401
     _renames_on_the_way,
 )
 from .call_cobol import CobolCallsMixin
+from .call_cpp_class_scope import CppClassScopeMixin
 from .call_inheritance import (  # noqa: F401
     _EXTERNAL_PREFIX,
     _MAX_ANCESTOR_EXPAND_DEPTH,
@@ -293,6 +294,7 @@ class CallResolver(
     OverloadSelectionMixin,
     BarrelForwardingMixin,
     InheritanceMixin,
+    CppClassScopeMixin,
 ):
     """Resolve raw CallSites to symbol-level edges.
 
@@ -334,6 +336,9 @@ class CallResolver(
             else return_type_chain_languages
         )
         self._ancestors: dict[str, tuple[str, ...]] = {}
+        # C++: {file: files its includes reach}, {class id: template parameter names}.
+        self._cpp_include_closures: dict[str, frozenset[str]] = {}
+        self._cpp_template_names: dict[str, frozenset[str]] = {}
         self._mros: dict[str, tuple[str, ...] | None] = {}
         # {type name: [(file, identity, arity)]}, filled by ``_declared_types_named``.
         self._declared_types: dict[str, list[tuple[str, tuple[str, ...], int]]] = {}
@@ -1442,6 +1447,13 @@ class CallResolver(
         # A parameter or local of that name hides every tier below.
         if self._shadowed_by_local(file_path, call, caller_id):
             return None
+        # A C++ class member hides a same-named function, so the caller's class
+        # and its bases answer ahead of the flat same-file table. A qualified
+        # ``ns::f()`` names its scope, not the caller's class.
+        if not call.receiver_name and not call.scope_name:
+            own = self._cpp_class_member_call(file_path, call, caller_id, bare=True)
+            if own is not None:
+                return own
 
         # Tier 1: same-file
         handled, resolved = self._same_file_free_call(file_path, call, caller_id)
@@ -1997,6 +2009,10 @@ class CallResolver(
         """
         if call.receiver_name not in ("self", "this"):
             return None
+        if self._language_of(file_path) == "cpp":
+            if call.receiver_name != "this":
+                return None
+            return self._cpp_class_member_call(file_path, call, caller_id, bare=False)
         if self._language_of(file_path) not in _INHERITED_LANGUAGES:
             return None
         sym_id = self._inherited_method(caller_id, call.target_name)

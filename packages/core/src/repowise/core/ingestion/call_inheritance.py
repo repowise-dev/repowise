@@ -238,6 +238,13 @@ class InheritanceMixin:
         file_path, _, name = class_id.partition("::")
         return self._file_methods.get(file_path, {}).get((name.rpartition("::")[2], method_name))
 
+    def _followed_parents(self, type_id: str) -> list[str]:
+        """*type_id*'s resolved parents a walk follows, sorted."""
+        parents = self._heritage_parents.get(type_id, set())
+        if getattr(self._symbols_by_id.get(type_id), "language", None) == "cpp":
+            return self._cpp_followed_parents(type_id, parents)
+        return sorted(parents)
+
     def _ancestors_of(self, class_id: str) -> tuple[str, ...]:
         got = self._ancestors.get(class_id)
         if got is None:
@@ -247,7 +254,7 @@ class InheritanceMixin:
             # branch order decides the result and must be stable.
             reached = heritage_ancestors(
                 class_id,
-                lambda t: sorted(self._heritage_parents.get(t, ())),
+                self._followed_parents,
                 max_expand_depth=_MAX_ANCESTOR_EXPAND_DEPTH,
             )
             reached.discard(class_id)
