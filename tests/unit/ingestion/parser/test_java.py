@@ -108,20 +108,17 @@ class TestJavaParser:
         assert by_target["findAll"].receiver_name == "owners"
         assert by_target["record"].receiver_name == "audit"
 
-    def test_other_objects_field_is_not_a_receiver(self, parser: ASTParser) -> None:
-        """Only a name in the caller's own scope may be captured.
+    def test_other_objects_field_keeps_the_complete_path(self, parser: ASTParser) -> None:
+        """A field path is typed hop by hop, never by its last name alone.
 
-        ``items`` in ``this.basket.items.size()`` is a field of ``Basket``, and
-        the receiver strategies type a field against the *caller's* class — so
-        capturing it would offer it to be bound to a same-named field of the
-        caller. ``Outer.this.m()`` is a real implicit receiver and keeps none.
+        ``Outer.this.m()`` is a real implicit receiver and keeps none.
         """
         fi = _make_file_info("java_pkg/Calculator.java", "java")
         result = parser.parse_file(fi, FIELD_RECEIVER_SOURCE)
-        for target in ("size", "reset"):
-            assert all(
-                c.receiver_name is None for c in result.calls if c.target_name == target
-            ), target
+        assert [c.receiver_name for c in result.calls if c.target_name == "size"] == [
+            "this.basket.items"
+        ]
+        assert all(c.receiver_name is None for c in result.calls if c.target_name == "reset")
 
 
 TWIN_SOURCE = b"""package com.repowise.sample;
