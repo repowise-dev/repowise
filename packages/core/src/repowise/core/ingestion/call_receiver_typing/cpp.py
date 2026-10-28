@@ -123,31 +123,9 @@ class CppFieldOwners:
         cached = self._cpp_type_aliases.get(path)
         if cached is not None:
             return cached
-        # Local import: the parser also imports the receiver-typing modules.
-        from ..parser import _get_language
-        from ..parser_helpers import _run_query
-
         text = self._text_of(path)
         # Most files declare no alias; skip their second parse.
-        if "using" not in text and "typedef" not in text:
-            _store_capped(self._cpp_type_aliases, path, _CppFacts(), _CPP_FACT_FILES)
-            return _CppFacts()
-        language = _get_language("cpp")
-        aliases: list[_CppAlias] = []
-        declarations: list[_CppBinding] = []
-        if language is None:
-            return _CppFacts()
-        if not _CPP_FACT_QUERY:
-            _CPP_FACT_QUERY.append(Query(language, _CPP_FACT_PATTERNS))
-        root = Parser(language).parse(text.encode("utf-8")).root_node
-        for match in _run_query(_CPP_FACT_QUERY[0], root):
-            for node in match.get("alias", ()):
-                alias = _cpp_alias(node)
-                if alias is not None:
-                    aliases.append(alias)
-            for node in match.get("declaration", ()):
-                declarations.extend(_cpp_declarations(node))
-        facts = _CppFacts(tuple(aliases), tuple(declarations))
+        facts = _cpp_facts_of(text) if "using" in text or "typedef" in text else _CppFacts()
         _store_capped(self._cpp_type_aliases, path, facts, _CPP_FACT_FILES)
         return facts
 
@@ -240,6 +218,27 @@ class CppFieldOwners:
                 names.update(sym.name for sym in candidates if _is_pure(lines, sym))
             self._pure_virtual_name_set = frozenset(names)
         return self._pure_virtual_name_set
+
+
+def _cpp_facts_of(text: str) -> _CppFacts:
+    """Parse *text* and collect its aliases and named declarations."""
+    # Local import: the parser also imports the receiver-typing modules.
+    from ..parser import _get_language
+    from ..parser_helpers import _run_query
+
+    language = _get_language("cpp")
+    if language is None:
+        return _CppFacts()
+    if not _CPP_FACT_QUERY:
+        _CPP_FACT_QUERY.append(Query(language, _CPP_FACT_PATTERNS))
+    root = Parser(language).parse(text.encode("utf-8")).root_node
+    aliases: list[_CppAlias] = []
+    declarations: list[_CppBinding] = []
+    for match in _run_query(_CPP_FACT_QUERY[0], root):
+        aliases.extend(a for a in map(_cpp_alias, match.get("alias", ())) if a is not None)
+        for node in match.get("declaration", ()):
+            declarations.extend(_cpp_declarations(node))
+    return _CppFacts(tuple(aliases), tuple(declarations))
 
 
 def _cpp_alias(node: Node) -> _CppAlias | None:
