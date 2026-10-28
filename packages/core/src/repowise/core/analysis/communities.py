@@ -9,10 +9,7 @@ Supports both file-level and symbol-level community detection with:
 
 from __future__ import annotations
 
-import contextlib
 import inspect
-import io
-import sys
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import PurePosixPath
@@ -105,27 +102,6 @@ class CommunityInfo:
 
 
 # ---------------------------------------------------------------------------
-# Output suppression (Windows PowerShell 5.1 ANSI fix)
-# ---------------------------------------------------------------------------
-
-
-@contextlib.contextmanager
-def _suppress_graspologic_output():
-    """Suppress stdout/stderr during graspologic calls.
-
-    graspologic's leiden() emits ANSI escape sequences that corrupt
-    PowerShell 5.1's scroll buffer on Windows.
-    """
-    old_stderr = sys.stderr
-    try:
-        sys.stderr = io.StringIO()
-        with contextlib.redirect_stdout(io.StringIO()):
-            yield
-    finally:
-        sys.stderr = old_stderr
-
-
-# ---------------------------------------------------------------------------
 # Partition (Leiden / Louvain)
 # ---------------------------------------------------------------------------
 
@@ -152,8 +128,7 @@ def _partition(graph: nx.Graph) -> tuple[dict, str]:
     then to directory-based grouping as a last resort.
     """
     try:
-        with _suppress_graspologic_output():
-            result = leiden_partition(graph, seed=42)  # determinism (matches louvain's seed)
+        result = leiden_partition(graph, seed=42)  # determinism (matches louvain's seed)
         return result, "leiden"
     except ImportError:
         pass
