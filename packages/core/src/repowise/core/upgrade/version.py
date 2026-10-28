@@ -116,7 +116,19 @@ STORE_FORMAT_VERSION: int = 2
 #: public API follows Ruby visibility forms, Ansible playbooks and roles get
 #: dependency edges, Scala gets dataflow, and Postgres catalog tables are not
 #: workspace consumers.
-PARSER_SCHEMA_VERSION: int = 10
+#:
+#: v11: C++ attribute and namespace macro lines no longer hide declarations,
+#: an out-of-line template member is a member of its class (no template
+#: arguments or newlines in the id), and ``this->m()`` calls are call sites. C#
+#: overloads that differ only in generic arity get their own ids, and C#, Java
+#: and Kotlin call sites record argument shapes and literal types for overload
+#: choice. Lombok members sit on javac's lines with return types, ``@SuperBuilder``
+#: builders inherit, and Java and Kotlin record and data class methods carry
+#: return types. A Java ``Outer.Inner`` path is a receiver, and a call on an
+#: unnamed object is marked. Kotlin calls under a unary operator or on a string
+#: literal are call sites. A Python class rebound by assignment keeps its
+#: symbol. Calls sharing a line each keep their own call site.
+PARSER_SCHEMA_VERSION: int = 11
 
 #: state.json key holding the store format version that wrote the store.
 STORE_FORMAT_VERSION_KEY = "store_format_version"
