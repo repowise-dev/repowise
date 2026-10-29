@@ -414,6 +414,41 @@ describe("DocsTree", () => {
     expect(indexOfRow("Alpha API")).toBeLessThan(indexOfRow("api/routes"));
   });
 
+  it("orders layer rows by the stored page order when it disagrees with the spine", () => {
+    render(
+      <DocsTree
+        pages={[
+          layeredRoot({ layer_order_ids: SPINE_IDS }),
+          stampedModule(
+            "module_page:runtime/engine",
+            "Module: runtime/engine",
+            { layer_id: "layer:runtime", layer_name: "Zebra Runtime" },
+            5,
+          ),
+          stampedModule(
+            "module_page:api/routes",
+            "Module: api/routes",
+            { layer_id: "layer:api", layer_name: "Alpha API" },
+            2,
+          ),
+          stampedModule(
+            "module_page:api/auth",
+            "Module: api/auth",
+            { layer_id: "layer:api", layer_name: "Alpha API" },
+            1,
+          ),
+        ]}
+        selectedPageId={null}
+        onSelectPage={() => {}}
+      />,
+    );
+    // The spine puts runtime first; the stored order puts an api page first.
+    expect(indexOfRow("Alpha API")).toBeLessThan(indexOfRow("Zebra Runtime"));
+    // Pages inside a layer follow the stored order too, not the input order.
+    expect(indexOfRow("api/auth")).toBeLessThan(indexOfRow("api/routes"));
+    expect(indexOfRow("api/routes")).toBeLessThan(indexOfRow("Zebra Runtime"));
+  });
+
   it("opens every layer row on load, and closes one on a click", () => {
     render(
       <DocsTree

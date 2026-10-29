@@ -549,7 +549,7 @@ function reportLayerGrouping(
   if (spine.length > 0 && grouping.offSpine.length > 0) {
     console.warn(
       `[docs-tree] ${grouping.offSpine.length} layers are stamped on pages but absent from ` +
-        `the overview's spine, so they sort last: ${grouping.offSpine.join(", ")}`,
+        `the overview's spine, so they sort after it wherever page order ties: ${grouping.offSpine.join(", ")}`,
     );
   }
 }
