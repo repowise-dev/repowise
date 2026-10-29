@@ -11,6 +11,11 @@ from repowise.core.registry import mcp_tool_registry as mcp
 
 # Patchable names are read off the package at call time so patches reach them.
 from repowise.server.mcp_server import tool_search as _pkg
+from repowise.server.mcp_server._answer_pipeline.leg_record import (
+    begin_leg_record,
+    degraded_legs,
+    retrieval_legs,
+)
 from repowise.server.mcp_server._federation import Federation
 from repowise.server.mcp_server._helpers import (
     _get_repo,
@@ -252,6 +257,7 @@ async def search_codebase(
             "_meta": _build_meta(),
         }
     kind, mode = _resolve_kind_and_mode(kind, mode, ignored)
+    begin_leg_record()
     # One fan-out state for the whole call: a repo that fails one stage is
     # skipped by the next and reported once.
     fed = Federation() if repo == "all" else None
@@ -267,7 +273,7 @@ async def search_codebase(
         _pkg._lead_candidates(structured, issue, limit)
         await attach_line_hits(structured, query, resolved_mode, names, repo)
         attach_ignored_arguments(structured, ignored)
-        return structured
+        return _flag_degraded_legs(structured)
 
     if fed is not None:
         # kind is filtered per repo before each repo's limit cut, so the fused
@@ -276,7 +282,7 @@ async def search_codebase(
         if grep_hint and not federated.get("results"):
             federated["grep_hint"] = grep_hint
         attach_ignored_arguments(federated, ignored)
-        return federated
+        return _flag_degraded_legs(federated)
 
     response, ctx = await _concept_search(query, limit, page_type, kind, repo, issue, grep_hint)
     await attach_line_hits(response, query, resolved_mode, names, repo)
@@ -284,4 +290,11 @@ async def search_codebase(
     # Last, so nothing above has to know the field is on its way out.
     _slim_served_rows(response["results"], {None: _page_language(ctx)})
     _serve_snippets(response["results"])
+    return _flag_degraded_legs(response)
+
+
+def _flag_degraded_legs(response: dict) -> dict:
+    """Name the retrieval legs this reply ran without, as get_answer does."""
+    if degraded := degraded_legs(retrieval_legs()):
+        response.setdefault("_meta", {})["retrieval_degraded"] = degraded
     return response
