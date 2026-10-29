@@ -148,7 +148,7 @@ def _build_generation_config(repo_path: Path, config: dict, wiki_style: str) -> 
     from repowise.core.generation import GenerationConfig
     from repowise.core.generation.styles import resolve_style
     from repowise.core.reasoning import resolve_reasoning
-    from repowise.core.repo_config import load_repo_config
+    from repowise.core.repo_config import load_repo_config, resolve_language
 
     repo_cfg = load_repo_config(repo_path)
     effective_style = resolve_style(config.get("style") or wiki_style, repo_path=repo_path).name
@@ -156,7 +156,7 @@ def _build_generation_config(repo_path: Path, config: dict, wiki_style: str) -> 
         repo_cfg,
         reasoning=resolve_reasoning(config=repo_cfg),
         wiki_style=effective_style,
-        language=repo_cfg.get("language", "en"),
+        language=resolve_language(repo_path, config=repo_cfg),
         enable_onboarding=bool(repo_cfg.get("enable_onboarding", True)),
         max_concurrency=int(config.get("concurrency") or 12),
     )

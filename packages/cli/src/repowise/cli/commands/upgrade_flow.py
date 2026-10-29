@@ -60,6 +60,7 @@ from repowise.cli.helpers import (
 from repowise.cli.providers import is_free_embedder
 from repowise.core.decision_lanes import plan_decision_lanes
 from repowise.core.index_scope import FAST_TO_FULL_COMMAND, file_page_scope
+from repowise.core.repo_config import resolve_language
 from repowise.core.update_lock import release_update_lock, try_acquire_update_lock
 
 
@@ -794,7 +795,7 @@ def upgrade_to_full(
         cfg,
         deterministic=keyless,
         max_concurrency=concurrency,
-        language=cfg.get("language", "en"),
+        language=resolve_language(repo_path, config=cfg),
         reasoning=resolve_reasoning(reasoning, cfg),
         enable_onboarding=bool(cfg.get("enable_onboarding", True)),
         # A whole-repo selection, so the file-page cap chosen at init applies

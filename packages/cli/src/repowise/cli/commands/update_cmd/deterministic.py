@@ -23,6 +23,7 @@ from repowise.cli.helpers import console, run_async
 from repowise.core.persistence import (
     load_stale_structural_file_paths as load_stale_structural_file_paths,
 )
+from repowise.core.repo_config import resolve_language
 
 
 def deterministic_embedder_name(cfg: dict) -> str:
@@ -231,7 +232,7 @@ def _render_pages(
             deterministic=True,
             file_pages_only=not complete_context,
             max_concurrency=concurrency,
-            language=cfg.get("language", "en"),
+            language=resolve_language(repo_path, config=cfg),
             enable_onboarding=bool(cfg.get("enable_onboarding", True)),
             wiki_style=cfg.get("wiki_style", "comprehensive"),
         )

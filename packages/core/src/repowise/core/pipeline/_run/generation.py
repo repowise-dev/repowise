@@ -91,7 +91,7 @@ def _resolve_generation_config(run: PipelineRun) -> Any:
     if config is None:
         from repowise.core.generation import GenerationConfig
         from repowise.core.reasoning import resolve_reasoning
-        from repowise.core.repo_config import load_repo_config
+        from repowise.core.repo_config import load_repo_config, resolve_language
 
         _cfg = load_repo_config(run.repo_path)
         # Wiki style precedence: explicit param > repo config.yaml > default.
@@ -101,7 +101,7 @@ def _resolve_generation_config(run: PipelineRun) -> Any:
             max_concurrency=run.concurrency,
             reasoning=resolve_reasoning(config=_cfg),
             wiki_style=_style,
-            language=_cfg.get("language", "en"),
+            language=resolve_language(run.repo_path, config=_cfg),
         )
     # The mode decides how pages render: a DETERMINISTIC run with an
     # LLM-shaped config would still prompt.
