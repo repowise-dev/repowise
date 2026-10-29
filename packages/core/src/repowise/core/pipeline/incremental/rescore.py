@@ -148,7 +148,7 @@ async def rescore_health_from_store(
                 f"[yellow]{len(report.findings)} findings[/yellow]"
             )
             await _save_rescore(
-                session, repo, repo_path, graph_builder, report, coverage, log, stage_timings
+                session, repo, repo_path, graph_builder, report, coverage, stage_timings
             )
     finally:
         await engine.dispose()
@@ -260,14 +260,12 @@ async def _save_rescore(
     graph_builder: Any,
     report: Any,
     coverage: RescoreCoverage,
-    log: LogFn,
     stage_timings: Any,
 ) -> None:
     """Write the report with the full-index writer, then what it derives from."""
     from repowise.core.persistence.crud import upsert_git_function_blame_bulk
     from repowise.core.pipeline.persist import (
         persist_graph_nodes,
-        refresh_governance_findings,
         save_full_health_report,
     )
     from repowise.core.pipeline.phase_timing import timed
@@ -281,7 +279,9 @@ async def _save_rescore(
     # Same writer the index's analysis phase uses, so a re-score leaves the
     # derived queues agreeing with the findings it just replaced. HEAD comes
     # off disk: this pass scored the working tree, and the stored column is
-    # written by a step whose ordering is not guaranteed.
+    # written by a step whose ordering is not guaranteed. It replaces every
+    # open finding, the governance ones too, and rebuilds those before folding
+    # the refactoring queue once.
     with timed(stage_timings, "persist.health"):
         await save_full_health_report(
             session,
@@ -289,14 +289,8 @@ async def _save_rescore(
             report,
             analyzed_commit=get_head_commit(Path(repo_path)),
             repo_path=repo_path,
+            refresh_governance=True,
         )
-    # That writer replaced every open finding, the governance ones too,
-    # and only the governance pass produces those.
-    try:
-        with timed(stage_timings, "persist.governance"):
-            await refresh_governance_findings(session, repo.id)
-    except Exception as exc:
-        log(f"[yellow]Governance findings skipped: {exc}[/yellow]")
     # Rows for the files blamed above, so the next re-score reads them.
     if report.function_blame_rows:
         await upsert_git_function_blame_bulk(session, repo.id, report.function_blame_rows)

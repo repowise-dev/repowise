@@ -272,6 +272,43 @@ class TestRescoreKeepsGovernanceFindings:
 
         assert "ungoverned_hotspot" in await _finding_types(git_repo, repo_id)
 
+    async def test_the_refactoring_queue_is_folded_once(self, git_repo: Path, monkeypatch):
+        # Governance rows are rebuilt inside the health writer, before the
+        # queue is composed, rather than recomposing it a second time after.
+        from repowise.core.persistence import crud
+
+        await _seed_history(git_repo)
+        calls = []
+        real = crud.finalize_refactoring_opportunities
+
+        async def _count(*args, **kwargs):
+            calls.append(1)
+            return await real(*args, **kwargs)
+
+        monkeypatch.setattr(crud, "finalize_refactoring_opportunities", _count)
+
+        await _rescore_health_from_db(git_repo, _EmptyGraphBuilder(), [_parsed_file(git_repo)], [])
+
+        assert len(calls) == 1
+
+    async def test_a_failed_governance_rebuild_keeps_the_health_rows(
+        self, git_repo: Path, monkeypatch
+    ):
+        from repowise.core.pipeline import persist
+
+        repo_id = await _seed_history(git_repo)
+
+        async def _boom(*_args, **_kwargs):
+            raise RuntimeError("governance down")
+
+        monkeypatch.setattr(persist, "refresh_governance_findings", _boom)
+
+        await _rescore_health_from_db(git_repo, _EmptyGraphBuilder(), [_parsed_file(git_repo)], [])
+
+        types = await _finding_types(git_repo, repo_id)
+        assert {"prior_defect", "co_change_scatter"} <= types
+        assert "ungoverned_hotspot" not in types
+
 
 class TestRescoreTimings:
     async def test_stages_record_under_the_rescore_prefix(self, git_repo: Path):
