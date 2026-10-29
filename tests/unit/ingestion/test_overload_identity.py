@@ -1436,6 +1436,63 @@ class TestJavaLiteralArguments:
             "app/NotFound.java::NotFound::of", "app/NotFound.java::NotFound::NotFound#2(Class?,Object)"
         ) in edges
 
+    @pytest.mark.parametrize(
+        ("argument", "member"),
+        [
+            ("final Long id", "get#1(long)"),
+            ("final String id", "get#1(CharSequence)"),
+            ("final java.util.List<Long> id", "get#1(Collection)"),
+        ],
+    )
+    def test_a_box_or_string_reaches_no_type_it_does_not_extend(
+        self, tmp_path: Path, argument: str, member: str
+    ) -> None:
+        """``get(id)`` with a ``Long id`` unboxes to ``get(long)``: a Long is no Collection."""
+        repo = (
+            "package app;\nimport java.util.Collection;\npublic interface Repo {\n"
+            "  void get(Collection<Long> ids);\n  void get(long id);\n"
+            "  void get(CharSequence s);\n}\n"
+        )
+        user = (
+            "package app;\npublic class U {\n  private Repo repo;\n"
+            f"  void use({argument}) {{\n    repo.get(id);\n  }}\n}}\n"
+        )
+        edges = _edges(tmp_path, {"app/Repo.java": ("java", repo), "app/U.java": ("java", user)})
+        assert ("app/U.java::U::use", f"app/Repo.java::Repo::{member}") in edges
+
+    @pytest.mark.parametrize(
+        ("arguments", "member"),
+        [
+            ('"Target", id + ":" + key', "NotFound#2(String,Object)"),
+            ("5, 7", "NotFound#2(Object,Integer)"),
+        ],
+    )
+    def test_a_string_or_literal_skips_a_repository_or_throwable_parameter(
+        self, tmp_path: Path, arguments: str, member: str
+    ) -> None:
+        """A String is no Throwable and an int boxes to no repository class."""
+        text = (
+            "package app;\nclass Entity { }\npublic class NotFound extends RuntimeException {\n"
+            "  public NotFound(String message, Throwable cause) { }\n"
+            "  public NotFound(String type, Object id) { }\n"
+            "  public NotFound(Entity e, Integer n) { }\n"
+            "  public NotFound(Object o, Integer n) { }\n"
+            "  static NotFound of(Long id, String key) {\n"
+            f"    return new NotFound({arguments});\n  }}\n}}\n"
+        )
+        edges = _edges(tmp_path, {"app/NotFound.java": ("java", text)})
+        assert ("app/NotFound.java::NotFound::of", f"app/NotFound.java::NotFound::{member}") in edges
+
+    def test_a_type_variable_parameter_still_takes_a_box(self, tmp_path: Path) -> None:
+        """``T`` may be ``Long``, so ``put(T)`` stays a candidate beside ``put(Collection)``."""
+        text = (
+            "package app;\nimport java.util.Collection;\npublic class Box<T> {\n"
+            "  void put(Collection<T> all) { }\n  void put(T one) { }\n"
+            "  static void use(Box<Long> box, Long id) {\n    box.put(id);\n  }\n}\n"
+        )
+        edges = _edges(tmp_path, {"app/Box.java": ("java", text)})
+        assert ("app/Box.java::Box::use", "app/Box.java::Box::put#1(T)") in edges
+
     def test_a_body_that_suits_both_still_takes_a_void_interface(self, tmp_path: Path) -> None:
         """``run(() -> n++, 1)``: the lambda suits Runnable, so the literal decides."""
         text = (
