@@ -159,3 +159,9 @@ def test_azure_line_range_ends_on_the_line_after_the_last() -> None:
 def test_a_one_line_range_is_a_single_line_anchor() -> None:
     ref = _ref("https://github.com/acme/app.git")
     assert get_forge(ref.forge).blob_url(ref, SHA, "a.py", 7, 7).endswith("#L7")
+
+
+@pytest.mark.parametrize("end_line", [3, None])
+def test_a_reversed_or_missing_end_line_is_a_single_line_anchor(end_line: int | None) -> None:
+    ref = _ref("https://github.com/acme/app.git")
+    assert get_forge(ref.forge).blob_url(ref, SHA, "a.py", 7, end_line).endswith("#L7")
