@@ -6,6 +6,7 @@ import posixpath
 import re
 from bisect import bisect_left, bisect_right
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import NamedTuple, TypeVar
@@ -129,6 +130,7 @@ _CHAIN_SELF: dict[str, str | None] = {
     "go": None,
     "dart": "this",
     "kotlin": "this",
+    "rust": "self",
 }
 # Fields walked after the head, at most: ``h.f1.f2.f3.m()``.
 _MAX_CHAIN_FIELDS = 3
@@ -207,12 +209,37 @@ def _enclosing_id(symbol_id: str) -> str:
     return symbol_id.rpartition("::")[0]
 
 
+def _type_symbols(symbols: Sequence[Symbol]) -> list[Symbol]:
+    """The types *symbols* declare, less an ``impl`` of a type declared beside it.
+
+    A Rust ``impl Foo`` shares ``Foo``'s id and adds methods, never a second
+    type or a field, so the struct alone answers for the name and its span.
+    The parser already drops a Swift ``extension`` of a same-file type.
+    """
+    declared = {s.id for s in symbols if s.kind in _TYPE_KINDS and s.kind != "impl"}
+    return [
+        s for s in symbols if s.kind in _TYPE_KINDS and (s.kind != "impl" or s.id not in declared)
+    ]
+
+
+def _rust_own_type_names(parsed: ParsedFile | None) -> frozenset[str]:
+    """The types a Rust file declares, which no `use` of its module may also bind.
+
+    Rust refuses a `use` of a name its module declares, so beside a same-file
+    type that `use` sits in a nested module (`use super::T`). An `impl` of an
+    imported type declares none. Ceiling: a nested module's own `use` of a name
+    the file declares at top level is read as the file's type.
+    """
+    if parsed is None or parsed.file_info.language != "rust":
+        return frozenset()
+    return frozenset(s.name for s in parsed.symbols if s.kind in _TYPE_KINDS and s.kind != "impl")
+
+
 def _types_by_name(parsed: ParsedFile) -> dict[str, list[str]]:
     """``{name: [type symbol ids]}`` for the types one file declares."""
     by_name: dict[str, list[str]] = {}
-    for symbol in parsed.symbols:
-        if symbol.kind in _TYPE_KINDS:
-            by_name.setdefault(symbol.name, []).append(symbol.id)
+    for symbol in _type_symbols(parsed.symbols):
+        by_name.setdefault(symbol.name, []).append(symbol.id)
     return by_name
 
 
@@ -1349,7 +1376,7 @@ class ReceiverTypingMixin(
             bound = (*imp.local_names, imp.module_path.rsplit(".", 1)[-1])
             found.update(name for name in bound if name and name != "*")
 
-        names = frozenset(found)
+        names = frozenset(found) - _rust_own_type_names(parsed)
         _store_capped(self._external_names, file_path, names, _SOURCE_CACHE_FILES)
         return names
 
@@ -1648,7 +1675,7 @@ class ReceiverTypingMixin(
         symbols = parsed.symbols if parsed else ()
         return types_by_class(
             declarations,
-            {s.id: (s.start_line, s.end_line) for s in symbols if s.kind in _TYPE_KINDS},
+            {s.id: (s.start_line, s.end_line) for s in _type_symbols(symbols)},
             [(s.start_line, s.end_line) for s in symbols if s.kind in _FUNCTION_KINDS],
             language,
         )

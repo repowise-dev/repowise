@@ -331,7 +331,7 @@ _CPP_DECLARATION = re.compile(
 _RUST_TYPE = r"(?:(?:crate|self|super)::(?:\w+::)*)?[A-Z]\w*"
 _RUST_ANNOTATED = re.compile(
     rf"(?<![\w.:'])(?P<name>[a-z_]\w*)\s*:\s*(?:&(?:'\w+\s+)?(?:mut\s+)?)?(?P<box>Box<)?"
-    rf"(?P<type>{_RUST_TYPE}(?:<(?:[^<>]|<[^<>]*>)*>)?)(?(box)>)\s*(?=[=,;)|])"
+    rf"(?P<type>{_RUST_TYPE}(?:<(?:[^<>]|<[^<>]*>)*>)?)(?(box)>)\s*(?=(?P<closer>[=,;)|]))"
 )
 
 # `let x = Foo::new(..)` and the other constructor-named associated functions,
@@ -967,6 +967,8 @@ _LANGUAGE_FIELD_CLOSERS: dict[str, frozenset[str]] = {
     "csharp": frozenset({";", "=", "{"}),
     "kotlin": frozenset({"=", "\n", ",", ")"}),
     "python": frozenset({"=", "\n"}),
+    # A struct field, ``name: Type,``: parameters and ``let`` sit in function spans.
+    "rust": frozenset({","}),
     "swift": frozenset({"=", "\n", "{"}),
     "typescript": frozenset({";", "=", "\n"}),
 }
