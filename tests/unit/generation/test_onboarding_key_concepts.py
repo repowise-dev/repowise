@@ -28,6 +28,7 @@ from repowise.core.generation.onboarding.subkinds.key_concepts import (
     ConceptRelation,
     ConceptSymbol,
     KeyConceptsContext,
+    _name_key,
     _prose_hits,
 )
 from repowise.core.ingestion.models import (
@@ -249,8 +250,11 @@ def test_key_concepts_spreads_across_clusters() -> None:
     assert core_count <= 3  # half-the-page cap on a single cluster
 
 
-def test_key_concepts_keeps_a_lifecycle_boundary_ahead_of_graph_only_rank() -> None:
-    """A representative concept set needs the path into the system, not only its hub."""
+def test_key_concepts_keeps_a_lifecycle_entry_beside_the_central_hub() -> None:
+    """A representative concept set needs the path into the system, not only its hub.
+
+    Centrality leads (the hub every worker calls comes first), and the entry
+    point still beats the uncalled classes that tie with it on callers."""
     import dataclasses
 
     files = [
@@ -274,7 +278,7 @@ def test_key_concepts_keeps_a_lifecycle_boundary_ahead_of_graph_only_rank() -> N
 
     assert ctx is not None
     assert ctx.lifecycle_entry_points == ["app/main.py"]
-    assert ctx.concept_symbols[0].name == "Application"
+    assert [c.name for c in ctx.concept_symbols[:2]] == ["CentralStore", "Application"]
 
 
 def test_key_concepts_grounds_relationships_from_edges() -> None:
@@ -466,26 +470,28 @@ def _rank(*, house_terms=(), scaffold_doc: str = "The vector store.") -> list[st
     return [c.name for c in ctx.concept_symbols]
 
 
-def test_a_symbol_the_documents_name_outranks_one_the_graph_merely_calls() -> None:
-    """A class the team writes about beats a class with nine callers.
+def test_the_documents_order_symbols_of_the_same_centrality() -> None:
+    """Centrality leads; what the team writes about breaks ties within a tier.
 
-    The four original keys all measure how much code leans on a symbol. None
-    of them can see whether a human thought it worth explaining.
+    ``Reader`` (5 callers) and ``Writer`` (4) share a tier, so the documents
+    decide between them. ``BlastRadius`` (1 caller) stays below ``ChangeRisk``
+    (2) however much is written about it: a name that merely contains a
+    documented phrase must not outrank what the rest of the code depends on.
     """
     graph_only = _rank()
-    assert graph_only.index("VectorStore") < graph_only.index("BlastRadius")
+    assert graph_only[0] == "VectorStore"
+    assert graph_only.index("Reader") < graph_only.index("Writer")
 
-    with_prose = _rank(house_terms=[_term("Blast radius", docs=3), _term("Change risk", docs=2)])
-    assert with_prose.index("BlastRadius") < with_prose.index("VectorStore")
-    # Two documents beat one, so the ranking reads the count and not just the
-    # fact of a match.
-    assert with_prose.index("BlastRadius") < with_prose.index("ChangeRisk")
+    with_prose = _rank(house_terms=[_term("Writer", docs=3), _term("Blast radius", docs=3)])
+    assert with_prose[0] == "VectorStore"
+    assert with_prose.index("Writer") < with_prose.index("Reader")
+    assert with_prose.index("ChangeRisk") < with_prose.index("BlastRadius")
 
 
 def test_a_mined_term_matches_however_the_code_spells_it() -> None:
     """The documents write "blast radius"; the code writes ``BlastRadius``."""
-    assert _rank(house_terms=[_term("blast radius")]).index("BlastRadius") == 0
-    assert _rank(house_terms=[_term("Blast Radius")]).index("BlastRadius") == 0
+    assert _prose_hits("BlastRadius", {_name_key("blast radius"): 1}) == 1
+    assert _prose_hits("BlastRadius", {_name_key("Blast Radius"): 1}) == 1
 
 
 def test_a_term_matches_the_type_named_after_it() -> None:
@@ -1007,3 +1013,13 @@ def test_grounding_does_not_promote_a_basename_alias_to_a_file_link() -> None:
 
     assert cleaned == "Read another file."
     assert repaired == ["C:/tmp/elsewhere/foo.py"]
+
+
+def test_a_concept_lists_its_public_members_from_the_symbol_id():
+    """Read off ``path::Class::method``, which fresh and rehydrated graphs share."""
+    from repowise.core.generation.onboarding.subkinds.key_concepts import _record_member
+
+    members: dict[str, list[str]] = {}
+    for node in ("a.py::Store::put", "a.py::Store::_evict", "a.py::helper"):
+        _record_member(members, node, node.rsplit("::", 1)[1])
+    assert members == {"a.py::Store": ["put"]}

@@ -84,6 +84,11 @@ class ConceptSymbol:
     docstring: str = ""
     cluster: str = ""
     cross_file_callers: int = 0
+    #: The declaration line and, for a type, its public methods: what the
+    #: definition on the page is written from, so it describes the symbol
+    #: rather than a role guessed from its name.
+    signature: str = ""
+    members: list[str] = field(default_factory=list)
 
 
 # One verb per edge type the relations list can carry, so both templates print
@@ -179,6 +184,7 @@ class _GraphSignals:
     pagerank: dict[str, float] = field(default_factory=dict)
     nodes: dict[str, dict] = field(default_factory=dict)
     test_files: set[str] = field(default_factory=set)
+    members: dict[str, list[str]] = field(default_factory=dict)
 
 
 def _symbol_signals(graph_builder: Any) -> _GraphSignals:
@@ -212,24 +218,54 @@ def _symbol_signals(graph_builder: Any) -> _GraphSignals:
             "visibility": data.get("visibility", "public"),
             "docstring": (data.get("docstring") or "").strip()[:300],
             "is_exported": bool(data.get("is_exported_symbol", False)),
+            "signature": " ".join(str(data.get("signature") or "").split())[:160],
         }
+        _record_member(out.members, node_id, data.get("name", ""))
 
-    # Cross-file caller count = in-edges of a call/heritage type whose source
-    # lives in a different file. "Many OTHER files depend on it" is the
-    # signal that separates a concept from a busy local helper.
-    for src, dst, data in graph.edges(data=True):
-        if data.get("edge_type") not in _CONCEPT_EDGE_TYPES:
-            continue
-        if src not in file_of or dst not in file_of:
-            continue
-        if file_of[src] != file_of[dst]:
-            out.callers[dst] = out.callers.get(dst, 0) + 1
-
+    out.callers = _cross_file_callers(graph, file_of, out.test_files)
     try:
         out.pagerank = dict(graph_builder.symbol_pagerank())
     except Exception:
         out.pagerank = {}
     return out
+
+
+def _cross_file_callers(graph: Any, file_of: dict[str, str], test_files: set[str]) -> dict[str, int]:
+    """In-edges of a call/heritage type per symbol, from a different file.
+
+    "Many OTHER files depend on it" is the signal that separates a concept
+    from a busy local helper. Callers in tests are not the system depending on
+    it: counting them ranked a mock provider among the core concepts.
+    """
+    callers: dict[str, int] = {}
+    for src, dst, data in graph.edges(data=True):
+        if data.get("edge_type") not in _CONCEPT_EDGE_TYPES:
+            continue
+        src_file, dst_file = file_of.get(src), file_of.get(dst)
+        if src_file is None or dst_file is None or src_file in test_files:
+            continue
+        if src_file != dst_file:
+            callers[dst] = callers.get(dst, 0) + 1
+    return callers
+
+
+#: Public members listed per concept: enough to say what a type is for.
+_MAX_MEMBERS = 8
+
+
+def _record_member(members: dict[str, list[str]], node_id: str, name: str) -> None:
+    """Note *name* as a public member of its enclosing symbol, up to :data:`_MAX_MEMBERS`.
+
+    The enclosing symbol is read off the id (``path::Class::method``), which a
+    freshly built graph and a rehydrated one spell the same way; the parent
+    attribute is not (``parent_name`` on one, ``parent_symbol_id`` on the other).
+    """
+    parent, _, _ = node_id.rpartition("::")
+    if "::" not in parent or not name or name.startswith("_"):
+        return
+    listed = members.setdefault(parent, [])
+    if len(listed) < _MAX_MEMBERS:
+        listed.append(name)
 
 
 def _relations_among(
@@ -361,6 +397,12 @@ def _is_scaffolding(docstring: str) -> bool:
     return any(phrase in folded for phrase in _SCAFFOLD_PHRASES)
 
 
+def _centrality_tier(cross_file_callers: int) -> int:
+    """Cross-file callers on a log2 scale: symbols an order apart rank apart,
+    neighbours tie and leave the order to the repository's own vocabulary."""
+    return cross_file_callers.bit_length()
+
+
 def _is_trivial(name: str, kind: str) -> bool:
     """Drop dunders, constructors, tiny names, and trivial accessors."""
     if name.startswith("__") and name.endswith("__"):
@@ -459,6 +501,7 @@ def _iter_raw_symbols(signals: OnboardingSignals, gs: _GraphSignals) -> list[dic
                     "visibility": getattr(sym, "visibility", "public"),
                     "docstring": (getattr(sym, "docstring", "") or "").strip()[:300],
                     "is_exported": bool(getattr(sym, "is_exported_symbol", False)),
+                    "signature": " ".join(str(getattr(sym, "signature", "") or "").split())[:160],
                 }
             )
     return raw
@@ -491,7 +534,7 @@ def _build(signals: OnboardingSignals) -> KeyConceptsContext | None:
     candidates: list[ConceptSymbol] = []
     id_by_name: dict[str, str] = {}
     seen_names: set[str] = set()
-    scored: list[tuple[int, int, int, int, float, int, int, ConceptSymbol]] = []
+    scored: list[tuple[int, int, int, int, int, float, int, int, ConceptSymbol]] = []
     any_symbol_signal = False
     document_frequency = _document_frequency(signals)
     lifecycle_entry_points = orientation_entry_points(signals.repo_structure, limit=8)
@@ -522,6 +565,8 @@ def _build(signals: OnboardingSignals) -> KeyConceptsContext | None:
             docstring=raw["docstring"],
             cluster=cluster_of(path),
             cross_file_callers=xcallers,
+            signature=raw.get("signature", ""),
+            members=list(gs.members.get(sym_id, ())),
         )
         prose_hits = _prose_hits(name, document_frequency)
         lifecycle_hit = 1 if path in entry_paths else 0
@@ -533,6 +578,7 @@ def _build(signals: OnboardingSignals) -> KeyConceptsContext | None:
         scored.append(
             (
                 0 if is_scaffolding else 1,
+                _centrality_tier(xcallers),
                 prose_hits,
                 lifecycle_hit,
                 xcallers,
@@ -547,33 +593,33 @@ def _build(signals: OnboardingSignals) -> KeyConceptsContext | None:
     if not scored:
         return None
 
-    # Two signals lead, and both are about what the repository says rather than
-    # what its graph does.
-    #
     # Scaffolding sorts last because a symbol that describes itself as existing
     # for tests is not the mental model, however many callers it has — and one
     # such symbol was shipped as a core concept of this system for exactly that
     # reason. It is a demotion and not a filter: a genuinely central helper can
     # still fill a slot the concepts left empty.
     #
-    # Then how many of the repository's own documents name the symbol. A class
-    # the team writes about outranks a class the graph merely calls, which the
-    # remaining four keys cannot express: they measure how much code leans on a
-    # symbol, and never whether a human found it worth explaining.
+    # Then centrality, in tiers: how many other files reach for the symbol, on
+    # a log scale so 236 and 248 callers tie. Within a tier, how many of the
+    # repository's own documents name it, so a class the team writes about
+    # outranks one the graph merely calls. Prose used to lead outright, and it
+    # filled the page with names that merely contain a documented phrase
+    # (``ExtractMethodDetector`` for "extract method") ahead of the parser,
+    # graph and store every other file uses.
     if any_symbol_signal:
-        # Then cross-file callers, symbol PageRank, export marker, and the
-        # presence of a docstring (a deliberate public surface).
+        # Then entry-point files, cross-file callers, symbol PageRank, export
+        # marker, and the presence of a docstring (a deliberate public surface).
         scored.sort(key=lambda t: t[:-1], reverse=True)
     else:
         # No resolved symbol edges (thin / rehydrated graph): fall back to the
-        # file's PageRank so a page still generates on small repos. The two
-        # prose signals still lead — a thin graph is the case where they carry
-        # the most, because everything they sit above is close to noise.
+        # file's PageRank so a page still generates on small repos. The centrality
+        # tier is zero for every symbol here, so the prose signals lead — a thin
+        # graph is the case where they carry the most.
         scored.sort(
             key=lambda t: (
                 t[0],
-                t[1],
                 t[2],
+                t[3],
                 signals.pagerank.get(t[-1].file_path, 0.0),
                 t[-2],
             ),

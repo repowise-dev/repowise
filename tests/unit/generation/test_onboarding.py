@@ -1247,7 +1247,9 @@ def test_subkind_template_renders(subkind_slot: str, ctx_factory: Any) -> None:
     ctx = ctx_factory()
     assert ctx is not None, f"gate failed for {subkind_slot}"
     env = _jinja_env()
-    template = env.get_template(f"onboarding/{spec.template}")
+    # A deterministic subkind has no prompt; its page template is the page.
+    folder = "stub/onboarding" if spec.deterministic else "onboarding"
+    template = env.get_template(f"{folder}/{spec.template}")
     rendered = template.render(ctx=ctx, slot=subkind_slot)
     assert rendered.strip()  # non-empty
     assert "{{" not in rendered  # no unrendered Jinja

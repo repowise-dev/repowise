@@ -16,6 +16,7 @@ from repowise.core.analysis.dead_code.file_reachability import (
     file_dependency_neighbors,
     is_file_reachable,
 )
+from repowise.core.analysis.execution_flows import rank_by_importance
 from repowise.core.ids import file_path_of, is_external
 from repowise.core.ingestion.models import ParsedFile, RepoStructure, Symbol
 from repowise.core.ingestion.package_roots import (
@@ -900,12 +901,9 @@ class ContextAssembler:
             try:
                 flow_report = graph_builder.execution_flows()
                 if flow_report and hasattr(flow_report, "flows"):
-                    # Highest-scoring first: the templates render the first
+                    # Most important first: the templates render the first
                     # five, so the order here is the selection.
-                    ranked = sorted(
-                        flow_report.flows,
-                        key=lambda f: (-f.entry_point_score, f.entry_point_id),
-                    )
+                    ranked = rank_by_importance(flow_report.flows)
                     flow_graph = graph_builder.graph()
                     # The package map is supplied, so a Go / JVM / C-C++ file
                     # is answered for rather than assumed reachable. It used to

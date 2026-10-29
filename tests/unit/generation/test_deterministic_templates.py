@@ -92,7 +92,6 @@ def test_active_landscape_renders(generator):
             HotFile(
                 path="src/core.py",
                 commit_count_90d=30,
-                primary_owner="Ada",
                 is_hotspot=True,
                 age_days=400,
             )
@@ -100,6 +99,7 @@ def test_active_landscape_renders(generator):
         hot_dirs=[HotDir(path="src", total_commits_90d=90, hotspot_count=2, file_count=20)],
         dead_code_in_hot_files=[{"symbol_name": "old_fn", "file_path": "src/core.py"}],
         stable_file_count=8,
+        as_of="2026-10-29",
     )
     page = generator._stub_onboarding_page(
         _onboarding_spec("active_landscape", "active_landscape.j2"),
@@ -107,9 +107,10 @@ def test_active_landscape_renders(generator):
         "onboarding/active_landscape",
     )
 
-    assert "120 commits touched 45 files" in page.content
+    assert "45 files changed, 120 times in all" in page.content
     assert "`src/core.py`" in page.content
-    assert "Ada" in page.content
+    assert "up to 2026-10-29" in page.content
+    assert "Owner" not in page.content  # names no people
     assert "old_fn" in page.content
 
 

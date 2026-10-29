@@ -32,7 +32,7 @@ from ..architecture_mermaid import (
     system_map_section,
 )
 from ..context.assembler import build_concept_index
-from ..context.module_facts import module_base
+from ..context.module_facts import CONNECTIONS_HEADING, connections_markdown, module_base
 from ..context_assembler import FilePageContext
 from ..models import (
     GENERATION_LEVELS,
@@ -49,8 +49,10 @@ from ..overview_tables import (
     build_package_table,
     embed_capability_table,
     embed_package_table,
+    embed_section,
 )
 from ..page_sources import lint_sources
+from ..prose import unwrap_markdown_links
 from ..structural_labels import structural_page_title
 from .reuse import files_digest, group_material, model_reuse_key
 
@@ -424,11 +426,14 @@ class PerTypeGenerationMixin:
         # Citations of a missing file, or one its section never names, go.
         # Diagrams are checked for every page of the run in ``sanitize_pages``.
         page.content = lint_sources(
-            page.content,
+            unwrap_markdown_links(page.content),
             base=module_base(ctx.files),
             members=ctx.files,
             known_paths=[n for n in graph if "::" not in n],
             symbols_by_file={fc.file_path: [s["name"] for s in fc.symbols] for fc in file_contexts},
+        )
+        page.content = embed_section(
+            page.content, CONNECTIONS_HEADING, connections_markdown(ctx.facts or {})
         )
         return _stamp_concept(_with_digest(page))
 

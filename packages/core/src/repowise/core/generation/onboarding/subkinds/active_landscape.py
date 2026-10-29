@@ -8,12 +8,19 @@ hot areas, and stable counter-balance.
 Gate: ≥ 50 commits in the last 90 days across the indexed corpus AND
 ≥ 10 distinct files touched. Without that floor the page reads like
 nervous twitching about a fresh repo.
+
+Rendered from git history on every run, with no model (``deterministic``):
+the page is nothing but counts, and a model-written copy was reused across
+runs on a subject digest that does not cover git history, so its numbers
+drifted from ``git log`` while the page still stated them as current. It names
+no people: who touched a file is not what a contributor needs to pick a task.
 """
 
 from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import PurePosixPath
 
 from ..registry import SubkindSpec, register
@@ -30,7 +37,6 @@ _TOP_HOT_DIRS = 6
 class HotFile:
     path: str
     commit_count_90d: int
-    primary_owner: str = ""
     is_hotspot: bool = False
     age_days: int = 0
 
@@ -54,11 +60,30 @@ class ActiveLandscapeContext:
     # actionable callout a reader can get on day one.
     dead_code_in_hot_files: list[dict] = field(default_factory=list)
     stable_file_count: int = 0
+    #: Date of the newest commit the counts include, ``""`` when unknown.
+    as_of: str = ""
 
 
-def _top_level_dir(path: str) -> str:
-    parts = PurePosixPath(path).parts
-    return parts[0] if len(parts) > 1 else "(root)"
+def _directory(path: str) -> str:
+    """The directory holding *path*: where a reader would go to look.
+
+    Not the top-level directory: in a monorepo that is ``packages`` for nearly
+    every hot file, which says nothing about where the work is.
+    """
+    parent = str(PurePosixPath(path).parent)
+    return "(root)" if parent == "." else parent
+
+
+def _latest_commit_date(git_meta_map: dict[str, dict]) -> str:
+    """ISO date of the newest ``last_commit_at`` in *git_meta_map*, or ``""``."""
+    latest = ""
+    for meta in git_meta_map.values():
+        value = meta.get("last_commit_at")
+        if isinstance(value, datetime):
+            value = value.isoformat()
+        if isinstance(value, str) and value[:10] > latest:
+            latest = value[:10]
+    return latest
 
 
 def _build(signals: OnboardingSignals) -> ActiveLandscapeContext | None:
@@ -86,7 +111,6 @@ def _build(signals: OnboardingSignals) -> ActiveLandscapeContext | None:
         HotFile(
             path=path,
             commit_count_90d=int(meta.get("commit_count_90d", 0) or 0),
-            primary_owner=str(meta.get("primary_owner_name", "") or ""),
             is_hotspot=bool(meta.get("is_hotspot", False)),
             age_days=int(meta.get("age_days", 0) or 0),
         )
@@ -104,7 +128,7 @@ def _build(signals: OnboardingSignals) -> ActiveLandscapeContext | None:
     dir_hotspots: dict[str, int] = defaultdict(int)
     dir_files: dict[str, int] = defaultdict(int)
     for hf in hot_files_all:
-        d = _top_level_dir(hf.path)
+        d = _directory(hf.path)
         dir_commits[d] += hf.commit_count_90d
         dir_files[d] += 1
         if hf.is_hotspot:
@@ -148,6 +172,7 @@ def _build(signals: OnboardingSignals) -> ActiveLandscapeContext | None:
         hot_dirs=hot_dirs,
         dead_code_in_hot_files=dead_code_in_hot[:15],
         stable_file_count=stable_file_count,
+        as_of=_latest_commit_date(git_meta_map),
     )
 
 
@@ -157,5 +182,6 @@ register(
         title=SLOT_TITLES[SLOT_ACTIVE_LANDSCAPE],
         template="active_landscape.j2",
         build_context=_build,
+        deterministic=True,
     )
 )

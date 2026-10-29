@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter, defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Literal, get_args
 
@@ -117,6 +118,17 @@ class FlowConfig:
     max_flows: int = 50
     min_fan_out: int = 2
     deduplicate: bool = True
+    # Extra flows traced from the candidates that reach the most code, beyond
+    # the ``max_flows`` that look most like entry points. The entry-point score
+    # rates route handlers and commands alike, so its top ``max_flows`` can
+    # miss the operations a reader cares about (`init`, `update`, an answer
+    # tool) entirely; those are the ones whose calls fan out furthest.
+    max_important_flows: int = 12
+    # Call hops counted when measuring how much code a candidate reaches, and
+    # the count at which the walk stops: reach only ranks, so past this a
+    # hub is simply "large", and walking on costs time on a huge graph.
+    reach_depth: int = 4
+    reach_cap: int = 1000
     # Minimum number of call hops (trace nodes - 1) for a flow to be reported.
     # A single call (depth 1) is not a meaningful "flow"; the onboarding
     # "How It Works" page already gates at >= 3 trace nodes.
@@ -139,6 +151,9 @@ class ExecutionFlow:
     termination: FlowTermination
     # For ``confidence_filtered`` only: {resolution_origin: count}.
     termination_detail: dict[str, int] = field(default_factory=dict)
+    # Distinct symbols reachable within ``FlowConfig.reach_depth`` call hops:
+    # how much of the system this operation drives. See ``rank_by_importance``.
+    reach: int = 0
 
 
 @dataclass
@@ -389,6 +404,59 @@ def _bfs_trace(
 
 
 # ---------------------------------------------------------------------------
+# Importance
+# ---------------------------------------------------------------------------
+
+
+def _reach(
+    entry_id: str,
+    graph: nx.DiGraph,
+    out_deg: dict[str, int],
+    depth: int,
+    memo: dict[str, list[str]],
+    cap: int,
+) -> int:
+    """Distinct symbols reachable from *entry_id* within *depth* walkable call hops.
+
+    *memo* holds each node's walkable successors across calls: candidates share
+    most of their callees, so one run over all of them reads each node once.
+    """
+    seen = {entry_id}
+    frontier = [entry_id]
+    for _ in range(depth):
+        if len(seen) > cap:
+            break
+        reached: list[str] = []
+        for node in frontier:
+            if node not in memo:
+                memo[node] = _get_call_successors(node, graph, out_deg).walkable
+            new = [target for target in memo[node] if target not in seen]
+            seen.update(new)
+            reached.extend(new)
+        frontier = reached
+    return min(len(seen) - 1, cap)
+
+
+def rank_by_importance(flows: Iterable[ExecutionFlow]) -> list[ExecutionFlow]:
+    """*flows* ordered for a reader: the operations that drive the most code first.
+
+    The one ordering every documentation page uses to pick "the" flow to draw
+    or walk through. ``entry_point_score`` says how much a symbol looks like an
+    entry point, not how much it matters: a niche command and the main update
+    command both score about 0.8, while the update command reaches five times
+    as much code. Score and id break ties so the order is total.
+    """
+    return sorted(
+        flows,
+        key=lambda f: (
+            -getattr(f, "reach", 0),
+            -float(getattr(f, "entry_point_score", 0.0) or 0.0),
+            str(getattr(f, "entry_point_id", "")),
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Deduplication
 # ---------------------------------------------------------------------------
 
@@ -464,7 +532,15 @@ def trace_execution_flows(
     # whether it produced a long enough trace below.
     entry_point_scores = {node_id: score for node_id, score in candidates}
 
+    memo: dict[str, list[str]] = {}
+    reach = {
+        node_id: _reach(node_id, graph, out_deg, config.reach_depth, memo, config.reach_cap)
+        for node_id, _ in candidates
+    }
     top_candidates = candidates[: config.max_flows]
+    chosen = {node_id for node_id, _ in top_candidates}
+    by_reach = sorted(candidates, key=lambda c: (-reach[c[0]], -c[1], c[0]))
+    top_candidates += [c for c in by_reach if c[0] not in chosen][: config.max_important_flows]
 
     # Trace from each candidate
     flows: list[ExecutionFlow] = []
@@ -472,6 +548,7 @@ def trace_execution_flows(
         flow = _bfs_trace(node_id, graph, community_map, config, out_deg)
         if flow is not None and flow.depth >= config.min_flow_depth:
             flow.entry_point_score = score
+            flow.reach = reach[node_id]
             flows.append(flow)
 
     # Deduplicate

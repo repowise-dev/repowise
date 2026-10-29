@@ -55,6 +55,7 @@ from .structural import (
 from .validation import (
     InvalidGeneratedContentError,
     InvalidMermaidError,
+    PageShapeError,
     reset_artifact_check_counts,
     validate_generated_response,
 )
@@ -63,6 +64,10 @@ if TYPE_CHECKING:
     from pathlib import Path as _Path  # noqa: F401
 
 log = structlog.get_logger(__name__)
+
+# Failures that leave a usable page when the re-ask fails too: a diagram that
+# will not render (dropped) and a page over its template's shape budget (kept).
+_KEPT_AFTER_RETRY = (InvalidMermaidError, PageShapeError)
 
 
 def _attach_file_provenance(page: GeneratedPage, ctx: FilePageContext) -> None:
@@ -454,7 +459,7 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
             cache_hints=cache_hints,
         )
         try:
-            validate_generated_response(response)
+            validate_generated_response(response, page_type)
         except InvalidGeneratedContentError as first_failure:
             # One corrective re-ask. Without it a single banned phrase anywhere
             # in a finished page discards the whole thing with the tokens
@@ -482,15 +487,17 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
             )
             # A second failure raises, so the caller's stub-fallback path is
             # reached exactly as it was before the retry existed. A page lost
-            # only to a diagram is kept without it: the retry when its own
-            # failure is a diagram, else the first attempt when that one was.
-            # The retry's token counts stay either way; both were billed.
+            # only to a diagram or to its shape rules is kept (without the
+            # diagram): the retry when its own failure is one of those, else
+            # the first attempt when that one was. The final check leaves the
+            # shape rules out, since they have had their retry. The retry's
+            # token counts stay either way; both were billed.
             try:
-                validate_generated_response(response)
+                validate_generated_response(response, page_type)
             except InvalidGeneratedContentError as second_failure:
-                if isinstance(second_failure, InvalidMermaidError):
+                if isinstance(second_failure, _KEPT_AFTER_RETRY):
                     salvage = response
-                elif isinstance(first_failure, InvalidMermaidError):
+                elif isinstance(first_failure, _KEPT_AFTER_RETRY):
                     salvage = discarded
                 else:
                     raise
