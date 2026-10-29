@@ -117,10 +117,12 @@ _JVM_STRATEGIES = _LanguageCallStrategies(
 # `obj->m()` is looked for in the caller's own file, in what it includes, and
 # then in the global pair index. `c` shares this object and is excluded a layer
 # up instead: it is absent from `_LANGUAGE_PATTERNS`, and a struct declares no
-# method for the pair index to hold.
+# method for the pair index to hold. A field a base class declares types a
+# receiver as an own one does (``lexer_.ReadToken()`` in a derived parser).
 _CPP_STRATEGIES = _LanguageCallStrategies(
     free=("_resolve_cpp_scoped_call", "_resolve_cpp_same_target"),
     member_fallback=_TYPED_RECEIVER,
+    inherited_fields=True,
 )
 
 # Rust's crate-root strategy is deliberately absent: it runs for every language

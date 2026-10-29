@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
-from .models import CallSite
+from .models import CallSite, Symbol
 from .resolved_call import ResolvedCall
 from .symbol_identity import outer_scope
 
@@ -45,6 +45,12 @@ def _c3_merge(sequences: list[tuple[str, ...]]) -> list[str] | None:
         merged.append(head)
         pending = [rest for seq in pending if (rest := seq[1:] if seq[0] == head else seq)]
     return merged
+
+
+def _is_class(symbol: Symbol | None) -> bool:
+    """A class, or a C++ ``struct``, which differs from one only in default access."""
+    kind = getattr(symbol, "kind", None)
+    return kind == "class" or (kind == "struct" and symbol.language == "cpp")
 
 
 def _extract_class_id(symbol_id: str) -> str | None:
@@ -212,14 +218,14 @@ class InheritanceMixin:
         """*class_id*'s superclasses, nearest first.
 
         The walk stops where a type has no class parent, more than one, or
-        one already seen.
+        one already seen. A C++ ``struct`` is a class.
         """
         node, seen = class_id, {class_id}
         while True:
             parents = [
                 p
                 for p in self._heritage_parents.get(node, ())
-                if getattr(self._symbols_by_id.get(p), "kind", None) == "class"
+                if _is_class(self._symbols_by_id.get(p))
             ]
             if len(parents) != 1 or parents[0] in seen:
                 return
