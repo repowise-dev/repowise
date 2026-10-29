@@ -415,7 +415,15 @@ async def _module_docs(card: CardState, docs: dict[str, Any]) -> None:
             "target_path",
             exclude_spec,
         )
-    # Child file pages
+    await _module_file_docs(card, page, docs)
+
+
+async def _module_file_docs(card: CardState, page: Page, docs: dict[str, Any]) -> None:
+    """The module's file pages, ranked by PageRank and capped.
+
+    A large module's whole file list outweighs its page, so uncapped it cost
+    the page body and digest their room in the budget.
+    """
     res = await card.session.execute(
         select(Page).where(
             Page.repository_id == card.repo_id,
@@ -435,10 +443,8 @@ async def _module_docs(card: CardState, docs: dict[str, Any]) -> None:
             for f in file_pages
         ],
         "path",
-        exclude_spec,
+        card.query.exclude_spec,
     )
-    # A large module's whole file list outweighs its page: capped and ranked by
-    # PageRank, the page body and digest keep their room in the budget.
     rank = await _file_ranks(card, {row["path"] for row in rows})
     rows.sort(key=lambda row: (-rank[row["path"]], row["path"]))
     _cap_file_rows(card, docs, rows)
