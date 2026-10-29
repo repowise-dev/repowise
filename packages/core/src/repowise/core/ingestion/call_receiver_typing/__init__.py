@@ -110,7 +110,8 @@ _JAVA_ANY_TYPE = r"[\w$]+(?:\.[\w$]+)*(?:<[^;{}()]*>)?(?:\[\])*(?:\.\.\.)?"
 _JAVA_ANY_DECLARATION = re.compile(
     rf"(?<![\w.@$])(?P<type>{_JAVA_ANY_TYPE})\s+(?P<name>[\w$]+)\s*(?=[=;,):])"
 )
-_NOT_A_TYPE = frozenset({"return", "throw", "new", "else", "case", "yield", "assert"})
+# ``in``: ``foreach (var x in Items)`` declares no ``Items``.
+_NOT_A_TYPE = frozenset({"return", "throw", "new", "else", "case", "yield", "assert", "in"})
 
 
 # Languages whose grammar mints ``a.b.c.m()`` with the dotted path as its
@@ -1314,7 +1315,7 @@ class ReceiverTypingMixin(
         else:
             types = types_in_span(declarations, *span)
             if language in RANGE_LANGUAGES:
-                self._type_range_variables(file_path, language, span, types)
+                self._type_range_variables(file_path, language, span, types, caller_id)
 
         _store_capped(self._body_types, key, types, _BODY_TYPE_CACHE_ENTRIES)
         if span is not None and language in CALL_TYPED_LANGUAGES:
