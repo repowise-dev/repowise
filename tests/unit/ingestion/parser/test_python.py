@@ -186,7 +186,7 @@ class TestPythonParser:
         # Regression (D8): orchestrator-style helpers defined inside an
         # async method (e.g. ``_on_start``, ``_on_done``, ``_step``) were
         # flattened to the top-level symbol list and read as unused public
-        # exports. Only module-top-level + class-body members should appear.
+        # exports. Retain their lexical owner and private visibility instead.
         src = (
             b"async def run():\n"
             b"    def _on_start():\n"
@@ -202,11 +202,13 @@ class TestPythonParser:
         )
         fi = _make_file_info("pkg/orchestrator.py", "python")
         result = parser.parse_file(fi, src)
-        names = {s.name for s in result.symbols}
-        assert names == {"run", "Worker", "perform"}
-        assert "_on_start" not in names
-        assert "_step" not in names
-        assert "_on_done" not in names
+        public_names = {s.name for s in result.symbols if s.visibility == "public"}
+        assert public_names == {"run", "Worker", "perform"}
+        nested = {s.name: s for s in result.symbols if s.name.startswith("_")}
+        assert {name: s.parent_name for name, s in nested.items()} == {
+            "_on_start": "run", "_step": "run", "_on_done": "Worker::perform",
+        }
+        assert all(s.kind == "function" and s.visibility == "private" for s in nested.values())
 
     def test_nested_class_inside_function_not_extracted(self, parser: ASTParser) -> None:
         src = b"def make():\n    class Helper:\n        def m(self): pass\n"

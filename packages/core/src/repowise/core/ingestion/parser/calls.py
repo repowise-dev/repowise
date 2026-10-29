@@ -8,6 +8,7 @@ from dataclasses import replace
 from tree_sitter import Node
 
 from ..extractors import node_text
+from ..lang_helpers.python import definition_time_scopes
 from ..language_configs import LanguageConfig
 from ..models import STRING_LITERAL_RECEIVER, CallReceiver, CallSite, FileInfo, Symbol
 from ..parser_helpers import (
@@ -438,6 +439,10 @@ def _call_from_match(
         return None
     scope_nodes = capture_dict.get("call.scope", [])
     line = site_node.start_point[0] + 1
+    if language == "python":
+        defining = definition_time_scopes(site_node)
+        if defining:
+            symbol_ranges = [span for span in symbol_ranges if span[:2] not in defining]
     on_unnamed_object = (
         language == "java"
         and receiver_name is None

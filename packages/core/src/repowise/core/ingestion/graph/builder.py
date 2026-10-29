@@ -389,7 +389,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
             if module is None:
                 module = PurePosixPath(path).with_suffix("").as_posix().replace("/", ".")
             for sym in parsed.symbols:
-                prefix = f"{module}.{sym.parent_name}" if sym.parent_name else module
+                prefix = f"{module}.{sym.parent_name.replace('::', '.')}" if sym.parent_name else module
                 sym.qualified_name = f"{prefix}.{sym.name}"
                 if sym.id in self._graph:
                     self._graph.nodes[sym.id]["qualified_name"] = sym.qualified_name

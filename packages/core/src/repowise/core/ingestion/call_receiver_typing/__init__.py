@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import NamedTuple, TypeVar
 
 from ..lang_helpers.anonymous_classes import is_anonymous_member
+from ..lang_helpers.python import is_nested_function
 from ..languages.receiver_types import (
     BINDING_LANGUAGES,
     CALL_SHADOW_LANGUAGES,
@@ -136,7 +137,7 @@ _T = TypeVar("_T", bound=tuple)
 
 
 class _Scope(NamedTuple):
-    """What one symbol's span binds, less the symbol's own name."""
+    """What one symbol's span binds, including a Python closure's own rebinding."""
 
     first_bound: dict[str, int]  # name -> first line a positional binding binds it
     hoisted: frozenset[str]
@@ -153,7 +154,9 @@ def _scope_of(symbol: Symbol, bindings: tuple[tuple[int, str], ...], marks: Scop
     start, end, own = symbol.start_line, symbol.end_line, symbol.name
     first_bound: dict[str, int] = {}
     for line, name in _in_lines(bindings, start, end):
-        if name != own:
+        # A closure's name is defined in its parent, so an own-name parameter
+        # or assignment here shadows that binding rather than declaring it.
+        if name != own or is_nested_function(symbol):
             first_bound.setdefault(name, line)
     return _Scope(
         first_bound,
@@ -826,10 +829,28 @@ class ReceiverTypingMixin(
         chains = {}
         open_functions: list[tuple[Symbol, _Scope]] = []
         symbols = sorted(parsed.symbols if parsed else (), key=lambda s: (s.start_line, -s.end_line))
+        nested_spans: dict[str, list[tuple[int, int]]] = {}
+        for symbol in symbols:
+            if is_nested_function(symbol):
+                parent = f"{file_path}::{symbol.parent_name}"
+                nested_spans.setdefault(parent, []).append((symbol.start_line, symbol.end_line))
         for symbol in symbols:
             while open_functions and open_functions[-1][0].end_line < symbol.start_line:
                 open_functions.pop()
-            own = _scope_of(symbol, bindings, marks)
+            children = merge_spans(nested_spans.get(symbol.id, ()))
+            if children:
+                # A closure's parameters, assignments and ``global`` statements
+                # belong to that closure, not to its enclosing function.
+                own_bindings = tuple(
+                    b for b in _in_lines(bindings, symbol.start_line, symbol.end_line)
+                    if not in_spans(children, b[0])
+                )
+                own_marks = marks._replace(
+                    escaped=tuple(m for m in marks.escaped if not in_spans(children, m[0]))
+                )
+                own = _scope_of(symbol, own_bindings, own_marks)
+            else:
+                own = _scope_of(symbol, bindings, marks)
             enclosing = tuple(
                 scope for outer, scope in reversed(open_functions) if symbol.end_line <= outer.end_line
             )
@@ -1055,6 +1076,8 @@ class ReceiverTypingMixin(
         whose id carries a signature the holder segment does not, answers None.
         """
         caller = self._symbols_by_id.get(caller_id)
+        if caller is not None and is_nested_function(caller):
+            return _enclosing_id(caller_id)
         if caller is None or not is_anonymous_member(caller):
             return None
         scope = _enclosing_id(caller_id)
@@ -1076,6 +1099,9 @@ class ReceiverTypingMixin(
         body) has none, so both keep the prefix.
         """
         caller = self._symbols_by_id.get(caller_id)
+        while caller is not None and is_nested_function(caller):
+            caller_id = _enclosing_id(caller_id)
+            caller = self._symbols_by_id.get(caller_id)
         file_path = self._symbol_paths_by_id.get(caller_id)
         if caller is not None and caller.parent_name and file_path is not None:
             class_id = self._only_type_in(file_path, caller.parent_name)

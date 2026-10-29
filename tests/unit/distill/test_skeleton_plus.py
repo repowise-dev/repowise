@@ -210,7 +210,12 @@ def test_plus_keeps_everything_but_function_bodies(path: str) -> None:
     assert elided == _runs(body)
     for sym in parsed.symbols:
         if sym.kind in ("function", "method"):
-            assert any(i in kept for i in range(sym.start_line, sym.start_line + 2)), sym.name
+            if sym.start_line in body:
+                # A nested function is indexed, but its declaration and body
+                # still belong to the enclosing function's elided body.
+                assert not any(i in kept for i in range(sym.start_line, sym.end_line + 1)), sym.name
+            else:
+                assert any(i in kept for i in range(sym.start_line, sym.start_line + 2)), sym.name
 
 
 def test_an_unknown_mode_still_reports_signatures() -> None:

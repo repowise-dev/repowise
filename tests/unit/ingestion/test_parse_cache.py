@@ -147,6 +147,43 @@ def test_fingerprint_mismatch_invalidates(repo, tmp_path):
     assert cache.misses == 1
 
 
+
+def test_v11_cache_reparses_python_closures_with_their_own_callers(repo, monkeypatch):
+    """Updating must not keep a pre-closure ParsedFile for unchanged bytes."""
+    from dataclasses import replace
+
+    from repowise.core.ingestion.parser import parse_file
+    from repowise.core.upgrade import version
+
+    source = b"from util import helper\n\ndef outer():\n    def inner():\n        return helper(1)\n    return inner()\n"
+    (repo / "main.py").write_bytes(source)
+    file_info = _make_file_info(repo / "main.py", "main.py")
+    old = parse_file(file_info, source)
+    old.symbols = [s for s in old.symbols if s.parent_name is None]
+    old.calls = [
+        replace(call, caller_symbol_id="main.py::outer")
+        if call.caller_symbol_id == "main.py::outer::inner" else call
+        for call in old.calls
+    ]
+    try:
+        with monkeypatch.context() as previous_version:
+            previous_version.setattr(version, "PARSER_SCHEMA_VERSION", 11)
+            parser_fingerprint.cache_clear()
+            cache = ParseCache(repo / ".repowise")
+            cache.put(old, compute_content_hash(source))
+            cache.save()
+        parser_fingerprint.cache_clear()
+
+        parsed, graph = _build(repo)
+        main = next(p for p in parsed if p.file_info.path == "main.py")
+        assert "main.py::outer::inner" in {s.id for s in main.symbols}
+        assert graph.has_edge("main.py::outer", "main.py::outer::inner")
+        assert graph.has_edge("main.py::outer::inner", "util.py::helper")
+        assert not graph.has_edge("main.py::outer", "util.py::helper")
+    finally:
+        parser_fingerprint.cache_clear()
+
+
 def test_dataclass_schema_change_invalidates_cache(repo, monkeypatch):
     """A ParsedFile (or nested dataclass) field change must self-invalidate.
 

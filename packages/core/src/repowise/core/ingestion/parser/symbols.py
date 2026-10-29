@@ -27,6 +27,7 @@ from ..extractors.cobol import cobol_condition_parent
 from ..extractors.synthetic_symbols import extract_synthetic_symbols
 from ..extractors.synthetic_symbols.csharp_extension_blocks import drop_extension_block_symbols
 from ..extractors.visibility import py_module_all_names, ts_deferred_export_names
+from ..lang_helpers.python import nested_function_parent
 from ..lang_helpers.source_prep import cpp_class_head_macros
 from ..language_configs import LanguageConfig
 from ..models import FileInfo, Symbol
@@ -330,7 +331,10 @@ def _symbol_from_match(capture_dict: dict, file: _SymbolPass) -> tuple[Symbol, N
         if language in _TS_JS_LANGUAGES
         else None
     )
-    spanned = _kind_and_end_line(def_node, name, export_type, object_owner is not None, file)
+    function_owner = nested_function_parent(def_node) if language == "python" else None
+    spanned = _kind_and_end_line(
+        def_node, name, export_type, object_owner is not None or function_owner is not None, file
+    )
     if spanned is None:
         return None
     kind, end_line = spanned
@@ -346,7 +350,7 @@ def _symbol_from_match(capture_dict: dict, file: _SymbolPass) -> tuple[Symbol, N
         src,
     )
 
-    parent_name = object_owner or _resolve_parent_name(
+    parent_name = function_owner or object_owner or _resolve_parent_name(
         def_node,
         config,
         capture_dict.get("symbol.receiver", []),
@@ -375,7 +379,7 @@ def _symbol_from_match(capture_dict: dict, file: _SymbolPass) -> tuple[Symbol, N
         id=sym_id,
         name=name,
         qualified_name=_build_qualified_name(file_info.path, scope, name),
-        kind=_method_or_kind(kind, parent_name, def_node, language),  # type: ignore[arg-type]
+        kind=kind if function_owner else _method_or_kind(kind, parent_name, def_node, language),  # type: ignore[arg-type]
         signature=_normalize_newlines(
             build_signature(node_type, name, params_text, def_node, src)
         ) or "",
@@ -388,7 +392,7 @@ def _symbol_from_match(capture_dict: dict, file: _SymbolPass) -> tuple[Symbol, N
             [m for m in modifier_texts if m.startswith("@")]
             + _attribute_decorators(def_node, language, src)
         ),
-        visibility=visibility,  # type: ignore[arg-type]
+        visibility="private" if function_owner else visibility,  # type: ignore[arg-type]
         is_async=_is_async_node(def_node, src),
         language=language,
         parent_name=parent_name,
@@ -407,7 +411,7 @@ def _kind_and_end_line(
     def_node: Node,
     name: str,
     export_type: _CppExportType | None,
-    has_object_owner: bool,
+    has_lexical_owner: bool,
     file: _SymbolPass,
 ) -> tuple[str, int] | None:
     """``(kind, end_line)`` of a match, or None when it is not a symbol here."""
@@ -420,7 +424,7 @@ def _kind_and_end_line(
         file.cpp_exports.container_ids,
         # An anonymous class member is a method of its own class, even
         # inside another method's body; ``_find_parent`` names it.
-        keep_nested=has_object_owner or in_anonymous_class(def_node, config.anonymous_class_types),
+        keep_nested=has_lexical_owner or in_anonymous_class(def_node, config.anonymous_class_types),
     )
     if kind is None:
         return None
