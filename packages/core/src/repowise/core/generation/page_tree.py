@@ -24,17 +24,10 @@ The shape follows what the readers were already doing:
 
 A rung only appears when the pages for it exist.
 
-Layers are the one grouping that is *not* a rung here. They used to be: a
-module said it belonged to the Analysis layer by being parented onto the
-Analysis layer page, which forced eleven near-identical pages to exist purely
-to hold the structure. Those pages retired, so the layer is recorded on each
-module and cycle page instead (``layer_id`` for joining, ``layer_name`` for
-display) and a reader-facing tree builds the layer rows from that — the same
+Layers are the one grouping that is *not* a rung here. The layer is recorded
+on each module and cycle page (``layer_id`` for joining, ``layer_name`` for
+display) and a reader-facing tree builds the layer rows from that, the same
 way the Onboarding folder is built from a slot stamped on its members.
-
-Indexes written before the retirement still hold layer pages. Those are placed
-under the overview like any other page, so an old store rebuilds without
-losing rows.
 
 Everything is ordered by a total sort key, never by dict insertion, because a
 tree that reshuffles between two runs of the same commit is the same defect as
@@ -74,7 +67,6 @@ class TreeNode:
 _TYPE_RANK: dict[str, int] = {
     "onboarding": 0,
     "architecture_diagram": 1,
-    "layer_page": 2,
     "module_page": 3,
     "scc_page": 4,
     "api_contract": 5,
@@ -159,7 +151,7 @@ def _onboarding_rank(page: GeneratedPage) -> int:
         return len(ONBOARDING_ORDER)
 
 
-def _sort_key(page: GeneratedPage, layer_rank: dict[str, int]) -> tuple:
+def _sort_key(page: GeneratedPage) -> tuple:
     """Total order among siblings.
 
     Ends in the page id so two pages that tie on every meaningful signal still
@@ -167,8 +159,6 @@ def _sort_key(page: GeneratedPage, layer_rank: dict[str, int]) -> tuple:
     """
     if page.page_type == "onboarding":
         rank = _onboarding_rank(page)
-    elif page.page_type == "layer_page":
-        rank = layer_rank.get(page.target_path, len(layer_rank))
     elif page.page_type == "module_page":
         rank = _concept_rank(page)
     else:
@@ -233,9 +223,7 @@ def _nearest_module(path: str, module_paths: list[str]) -> str:
     return ""
 
 
-def assign_page_tree(
-    pages: list[GeneratedPage] | list[TreeNode], layer_order_ids: list[str] | None = None
-) -> None:
+def assign_page_tree(pages: list[GeneratedPage] | list[TreeNode]) -> None:
     """Fill in ``parent_page_id``, ``display_order`` and ``section_number``.
 
     Mutates the pages in place. Every parent it assigns is a page in the set:
@@ -255,9 +243,6 @@ def assign_page_tree(
     root = overviews[0] if overviews else None
     root_id = root.page_id if root is not None else None
 
-    layer_rank = {lid: i for i, lid in enumerate(layer_order_ids or [])}
-    layer_ids = {p.target_path for p in by_type.get("layer_page", [])}
-
     # A file's layer comes from the provenance stamped on it at generation
     # time. Keyed on layer_id, never the display name, which drifts.
     layer_of_file: dict[str, str] = {}
@@ -272,9 +257,6 @@ def assign_page_tree(
             name = page.metadata.get("layer_name")
             if isinstance(name, str) and name:
                 layer_name_by_id.setdefault(lid, name)
-
-    def layer_parent(layer_id: str) -> str | None:
-        return f"layer_page:{layer_id}" if layer_id in layer_ids else root_id
 
     def stamp_layer(page: TreeNode, layer_id: str) -> None:
         """Record which layer a page belongs to, on the page itself.
@@ -321,9 +303,6 @@ def assign_page_tree(
         mod = _nearest_module(path, module_paths)
         if mod:
             return f"module_page:{mod}"
-        layer = layer_of_file.get(path)
-        if layer:
-            return layer_parent(layer)
         return root_id
 
     for page_type in ("file_page", "api_contract", "infra_page"):
@@ -392,7 +371,7 @@ def assign_page_tree(
         # Stamped either way: the reader-facing tree groups by this, and a page
         # that has found a chapter still belongs to a layer.
         stamp_layer(page, module_layer)
-        page.parent_page_id = nearest_chapter(page.target_path) or layer_parent(module_layer)
+        page.parent_page_id = nearest_chapter(page.target_path) or root_id
 
     # A spotlight belongs to the file it documents: "path/to/file.py::Symbol".
     # The file's own page may not exist: selection can spotlight a symbol in a
@@ -414,9 +393,6 @@ def assign_page_tree(
         members = [m for m in members if isinstance(m, str)]
         scc_layer = _dominant_layer(members, layer_of_file)
         stamp_layer(page, scc_layer)
-        page.parent_page_id = layer_parent(scc_layer)
-
-    for page in by_type.get("layer_page", []):
         page.parent_page_id = root_id
     for page_type in ("onboarding", "architecture_diagram"):
         for page in by_type.get(page_type, []):
@@ -435,20 +411,19 @@ def assign_page_tree(
         if page.parent_page_id is not None and page.parent_page_id not in known:
             page.parent_page_id = root_id if page.page_id != root_id else None
 
-    _number(pages, root_id, layer_rank)
+    _number(pages, root_id)
 
 
 def _number(
     pages: list[GeneratedPage] | list[TreeNode],
     root_id: str | None,
-    layer_rank: dict[str, int],
 ) -> None:
     """Assign sibling order and dotted section numbers by walking the tree."""
     children: dict[str | None, list[GeneratedPage]] = {}
     for page in pages:
         children.setdefault(page.parent_page_id, []).append(page)
     for siblings in children.values():
-        siblings.sort(key=lambda p: _sort_key(p, layer_rank))
+        siblings.sort(key=_sort_key)
 
     numbered: set[str] = set()
 

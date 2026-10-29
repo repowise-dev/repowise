@@ -192,7 +192,7 @@ class TestEstimateCost:
         assert est.estimated_output_tokens > 0
 
     def test_structural_page_types_cost_nothing(self):
-        # The six types rendered from structure make no provider call, so
+        # The five types rendered from structure make no provider call, so
         # however many are produced they price to zero. Counted as pages,
         # billed as nothing.
         plans = [
@@ -201,10 +201,9 @@ class TestEstimateCost:
             PageTypePlan("api_contract", 20, 0),
             PageTypePlan("infra_page", 10, 7),
             PageTypePlan("scc_page", 5, 3),
-            PageTypePlan("layer_page", 8, 5),
         ]
         est = estimate_cost(plans, "anthropic", "claude-sonnet-4-6")
-        assert est.total_pages == 843
+        assert est.total_pages == 835
         assert est.estimated_cost_usd == 0.0
         assert est.estimated_input_tokens == 0
         assert est.estimated_output_tokens == 0

@@ -33,7 +33,6 @@ PageType = Literal[
     "file_page",
     "scc_page",
     "module_page",
-    "layer_page",
     "repo_overview",
     "architecture_diagram",
     "infra_page",
@@ -50,7 +49,6 @@ GENERATION_LEVELS: dict[str, int] = {
     "file_page": 2,
     "scc_page": 3,
     "module_page": 4,
-    "layer_page": 5,
     "repo_overview": 6,
     "architecture_diagram": 6,
     "infra_page": 7,
@@ -593,7 +591,7 @@ def compute_page_id(page_type: str, target_path: str) -> str:
 # stamps ``structural_key`` on these pages, and the persist layer sweeps them,
 # because an identity that can move strands the old row as a duplicate on the
 # next index. A new page type of this shape belongs here and nowhere else.
-STRUCTURALLY_KEYED_PAGE_TYPES: tuple[str, ...] = ("module_page", "layer_page", "scc_page")
+STRUCTURALLY_KEYED_PAGE_TYPES: tuple[str, ...] = ("module_page", "scc_page")
 
 # The page types a model writes as prose. Every other type renders from
 # structure and is permanently ``provider_name='template'``, so "does this page

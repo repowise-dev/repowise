@@ -142,7 +142,6 @@ _PAGE_TYPE_LABELS: tuple[tuple[str, str, str], ...] = (
     ("api_contract", "API contract pages", "API"),
     ("symbol_spotlight", "Symbol spotlights", "symbol"),
     ("scc_page", "Dependency cycle pages", "cycle"),
-    ("layer_page", "Layer pages", "layer"),
     ("infra_page", "Infrastructure pages", "infra"),
 )
 

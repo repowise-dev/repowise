@@ -904,7 +904,7 @@ class _GenerationRun:
                 try:
                     from ..page_tree import assign_page_tree
 
-                    assign_page_tree(all_pages, self.layer_order_ids)
+                    assign_page_tree(all_pages)
                 except Exception as exc:
                     log.debug("page_tree.failed", error=str(exc))
 
