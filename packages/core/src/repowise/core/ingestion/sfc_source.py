@@ -58,6 +58,8 @@ import structlog
 if TYPE_CHECKING:
     from tree_sitter import Language, Node
 
+    from ..models import Import
+
 log = structlog.get_logger(__name__)
 
 # ``svelte_raw_text`` parents whose body is a plain JS expression. ``each_start``
@@ -672,9 +674,6 @@ def _astro_record_scripts(source: bytes, pos: int, state: dict) -> list[tuple[in
             pos = end
             continue
         tag, attrs = opener.group(2), opener.group(3)
-        # shortcut: a <script src="./x.ts"> mints no import, so a file loaded
-        # only that way reads as unreachable; emit an Import as
-        # lightweight_imports/html.py does once a site needs it.
         if tag is None or attrs.rstrip().endswith(b"/"):  # another tag, or <script src="..." />
             pos = opener.end()
             continue
@@ -686,6 +685,61 @@ def _astro_record_scripts(source: bytes, pos: int, state: dict) -> list[tuple[in
         hidden.append((opener.start(), end))
         pos = close_match.end()
     return hidden
+
+
+def extract_astro_markup_imports(source: bytes) -> list[Import]:
+    """Extract ``<script src>`` and ``<link href>`` imports from Astro markup."""
+    from .lightweight_imports.html import extract_html_imports
+
+    buf = bytearray(source)
+    frontmatter = _ASTRO_FRONTMATTER.match(source)
+    markup_start = 0
+    if frontmatter:
+        markup_start = frontmatter.end()
+        buf[:markup_start] = b" " * markup_start
+
+    pos = markup_start
+    while (opener := _ASTRO_OPENER.search(source, pos)) is not None:
+        if opener.group(1) is not None:
+            close_bytes = _ASTRO_COMMENT_CLOSE[opener.group(1)]
+            close = source.find(close_bytes, opener.end())
+            if close < 0:
+                end = len(source)
+            else:
+                end = (
+                    close + 3
+                    if opener.group(1) == b"{/*" and source[close : close + 3] == b"*/}"
+                    else close + len(close_bytes)
+                )
+            buf[opener.start() : end] = b" " * (end - opener.start())
+            pos = end
+            continue
+        tag, attrs = opener.group(2), opener.group(3)
+        if tag == b"style":
+            if attrs and attrs.rstrip().endswith(b"/"):
+                buf[opener.start() : opener.end()] = b" " * (opener.end() - opener.start())
+                pos = opener.end()
+                continue
+            close_match = _ASTRO_CLOSE[b"style"].search(source, opener.end())
+            end = close_match.end()
+            buf[opener.start() : end] = b" " * (end - opener.start())
+            pos = end
+            continue
+        if tag == b"script":
+            if attrs and attrs.rstrip().endswith(b"/"):
+                pos = opener.end()
+                continue
+            close_match = _ASTRO_CLOSE[b"script"].search(source, opener.end())
+            buf[opener.end() : close_match.start()] = b" " * (close_match.start() - opener.end())
+            # `\Z` means the body ran to EOF. The HTML grammar drops `src` on an
+            # element that never closes, so supply a closer after the blanked body.
+            if close_match.start() == close_match.end():
+                buf.extend(b"</script>")
+            pos = close_match.end()
+            continue
+        pos = opener.end()
+
+    return extract_html_imports(buf.decode("utf-8", errors="replace"), case_sensitive=True)
 
 
 def _astro_is_js_script(tag: bytes, attrs: bytes) -> bool:
