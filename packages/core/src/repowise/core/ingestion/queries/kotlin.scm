@@ -96,6 +96,20 @@
   ] @call.arguments
 ) @call.site
 
+; Superclass call: super.m(args), and super<I>.m(args) naming the supertype
+; whose ``m`` is meant. The resolver walks the caller's ancestors, as for
+; Java's ``super.m()``; ``super@Outer`` is dropped by the parser.
+(call_expression
+  (navigation_expression
+    (super_expression (user_type)? @call.scope) @call.receiver
+    (identifier) @call.target
+  )
+  [
+    (value_arguments)
+    (annotated_lambda)
+  ] @call.arguments
+) @call.site
+
 ; Call chained on another call: a.b().c(args), a?.b()?.c(args), B.Builder().c().
 ; The inner call is captured whole as ``@call.receiver_call``; the grammar
 ; names no fields on either node, so ``parser._kotlin_call_receiver`` reads its

@@ -253,6 +253,9 @@ def _receiver_text(language: str, node: Node, src: str) -> str | None:
         return None
     if language == "kotlin" and node.type in _KOTLIN_STRING_LITERALS:
         return STRING_LITERAL_RECEIVER
+    if language == "kotlin" and node.type == "super_expression":
+        # ``super<I>`` keeps ``I`` as the call's scope; ``super@Outer`` is dropped.
+        return None if "@" in _node_text(node, src) else "super"
     text = _node_text(node, src).strip()
     if (language, node.type) not in _PATH_RECEIVERS:
         return text

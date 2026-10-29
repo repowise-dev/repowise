@@ -19,8 +19,8 @@ _MAX_ANCESTOR_EXPAND_DEPTH = 3
 
 
 def _is_super_call(call: CallSite, language: str) -> bool:
-    """Python's ``super().m()`` (a chained call), or Java's and Apex's ``super.m()``."""
-    if language in ("java", "apex"):
+    """Python's ``super().m()`` (a chained call), or Java's, Apex's and Kotlin's ``super.m()``."""
+    if language in ("java", "apex", "kotlin"):
         return call.receiver_name == "super"
     receiver = call.receiver_call
     return (
@@ -64,7 +64,8 @@ class InheritanceMixin:
     def _super_call(self, call: CallSite, caller_id: str) -> ResolvedCall | None:
         """``super().m()``: the first class after the caller's own in its MRO to declare ``m``.
 
-        Java's ``super.m()`` arrives here too, with ``super`` as its receiver.
+        Java's and Kotlin's ``super.m()`` arrive here too, with ``super`` as
+        their receiver.
 
         Never handed to the bare-name tiers, which answered with whichever
         same-named method the file declared last. A base outside the
@@ -89,16 +90,18 @@ class InheritanceMixin:
         return None
 
     def _qualified_super(self, caller_id: str, qualifier: str) -> tuple[str | None, int]:
-        """Where Java's ``S.super.m()`` starts its walk, and how many classes it skips.
+        """Where ``S.super.m()`` (Java) or ``super<S>.m()`` (Kotlin) starts its walk.
 
-        ``S`` names an enclosing class, whose superclass is meant, or a direct
-        superinterface of the caller's class, whose own ``m`` is.
+        Also how many classes it skips. Java's ``S`` names an enclosing class,
+        whose superclass is meant, or a direct superinterface of the caller's
+        class, whose own ``m`` is. Kotlin's ``S`` is always a direct supertype.
         """
         def named(type_id: str) -> bool:
             return getattr(self._symbols_by_id.get(type_id), "name", None) == qualifier
 
         class_id = self._caller_class_id(caller_id)
-        node = class_id
+        kotlin = getattr(self._symbols_by_id.get(caller_id), "language", None) == "kotlin"
+        node = "" if kotlin else class_id
         while "::" in node:
             if named(node):
                 return node, 1
