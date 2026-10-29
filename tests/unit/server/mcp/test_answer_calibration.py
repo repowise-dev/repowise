@@ -1445,3 +1445,25 @@ def test_a_statement_about_the_code_is_not_an_admitted_gap() -> None:
 
     assert _admitted_gap("The header is not included in the checksum.") is None
     assert _admitted_gap("The builder isn't shown, but the renderer is.") is not None
+
+
+async def test_the_payload_quotes_the_admitted_gap() -> None:
+    from repowise.server.mcp_server.tool_answer.confidence import _Grade
+    from repowise.server.mcp_server.tool_answer.payload import _graded_payload
+
+    gap = "The code that builds regenerate_paths is not included."
+    grade = _Grade(
+        confidence="medium", hedged=False, ratio=1.5, top_score=3.0, second_score=2.0,
+        high_reason=None, ungrounded_values=[], uncovered=[], frame_unsupported=[],
+        exclusivity_over_truncated=False, withheld_implicated=[], lookup_body_truncated=False,
+        named_body_cut=None, admitted_gap=gap,
+    )
+    payload = await _graded_payload(
+        question="how are pages picked", answer_text=f"Pages render. {gap}",
+        citations=["src/render.py"], grade=grade, retrieval_quality="dominant", hits=[],
+        fallback_targets=["src/select.py"], symbol_bodies=[], quotes=[], ctx=None,
+        repository=None, exclude_spec=None,
+    )
+    assert payload["confidence"] == "medium"
+    assert gap in payload["note"]
+    assert "src/select.py" in payload["note"]
