@@ -3,17 +3,11 @@ the neighbours section, and which traced flow a page draws."""
 
 from __future__ import annotations
 
-from itertools import pairwise
 from types import SimpleNamespace
 
-import networkx as nx
 import pytest
 
-from repowise.core.analysis.execution_flows import (
-    FlowConfig,
-    rank_by_importance,
-    trace_execution_flows,
-)
+from repowise.core.analysis.execution_flows import rank_by_importance
 from repowise.core.generation.context.module_facts import connections_markdown
 from repowise.core.generation.context_assembler import ContextAssembler
 from repowise.core.generation.overview_tables import embed_section
@@ -165,37 +159,3 @@ def test_flows_rank_by_how_much_code_they_drive():
         "cli/update.py::update",
         "cli/restyle.py::restyle",
     ]
-
-
-def _symbol(graph: nx.DiGraph, node: str) -> None:
-    path, _, name = node.partition("::")
-    graph.add_node(
-        node, node_type="symbol", kind="function", name=name, file_path=path, visibility="public"
-    )
-
-
-def test_a_deep_operation_is_traced_even_when_its_entry_score_is_low():
-    """``drive`` has a caller, which costs it entry-point score, so the
-    score-ranked budget alone traces only ``wrapper``; ``drive`` reaches the
-    most code and is traced as well."""
-    graph = nx.DiGraph()
-    helpers = [f"lib/h{i}.py::h{i}" for i in range(8)]
-    for node in ["app/drive.py::drive", "app/cli.py::wrapper", *helpers]:
-        _symbol(graph, node)
-
-    def call(a: str, b: str) -> None:
-        graph.add_edge(a, b, edge_type="calls", confidence=1.0)
-
-    call("app/cli.py::wrapper", "app/drive.py::drive")
-    call("app/cli.py::wrapper", helpers[0])
-    for helper in helpers:
-        call("app/drive.py::drive", helper)
-    for a, b in pairwise(helpers):
-        call(a, b)  # a chain, so each trace is deep enough to keep
-
-    by_score_only = trace_execution_flows(graph, {}, FlowConfig(max_flows=1, max_important_flows=0))
-    with_reach = trace_execution_flows(graph, {}, FlowConfig(max_flows=1, max_important_flows=1))
-
-    assert [f.entry_point_id for f in by_score_only.flows] == ["app/cli.py::wrapper"]
-    reach = {f.entry_point_id: f.reach for f in with_reach.flows}
-    assert reach == {"app/cli.py::wrapper": 9, "app/drive.py::drive": 8}

@@ -482,6 +482,41 @@ def _deduplicate_flows(flows: list[ExecutionFlow]) -> list[ExecutionFlow]:
 # ---------------------------------------------------------------------------
 
 
+def _scored_candidates(
+    graph: nx.DiGraph,
+    community_map: dict[str, int],
+    config: FlowConfig,
+    out_deg: dict[str, int],
+    in_deg: dict[str, int],
+) -> list[tuple[str, float]]:
+    """Functions and methods with enough fan-out, scored as entry points, best first."""
+    candidates: list[tuple[str, float]] = []
+    for node_id, data in graph.nodes(data=True):
+        if data.get("node_type") != "symbol" or data.get("kind", "") not in ("function", "method"):
+            continue
+        # Must have minimum fan-out to be interesting
+        if out_deg.get(node_id, 0) < config.min_fan_out:
+            continue
+        score = _score_entry_point(node_id, graph, community_map, out_deg, in_deg)
+        if score >= _MIN_ENTRY_POINT_SCORE:
+            candidates.append((node_id, score))
+    candidates.sort(key=lambda x: -x[1])
+    return candidates
+
+
+def _candidates_to_trace(
+    candidates: list[tuple[str, float]], reach: dict[str, int], config: FlowConfig
+) -> list[tuple[str, float]]:
+    """The ``max_flows`` best-scored candidates, then up to ``max_important_flows``
+    of the rest by reach (score, then id, breaking ties)."""
+    chosen = candidates[: config.max_flows]
+    taken = {node_id for node_id, _ in chosen}
+    by_reach = sorted(
+        (c for c in candidates if c[0] not in taken), key=lambda c: (-reach[c[0]], -c[1], c[0])
+    )
+    return chosen + by_reach[: config.max_important_flows]
+
+
 def trace_execution_flows(
     graph: nx.DiGraph,
     community_map: dict[str, int],
@@ -509,24 +544,7 @@ def trace_execution_flows(
 
     out_deg, in_deg = _build_call_degree_maps(graph)
 
-    # Score all symbol nodes that are functions/methods
-    candidates: list[tuple[str, float]] = []
-    for node_id, data in graph.nodes(data=True):
-        if data.get("node_type") != "symbol":
-            continue
-        kind = data.get("kind", "")
-        if kind not in ("function", "method"):
-            continue
-
-        # Must have minimum fan-out to be interesting
-        if out_deg.get(node_id, 0) < config.min_fan_out:
-            continue
-
-        score = _score_entry_point(node_id, graph, community_map, out_deg, in_deg)
-        if score >= _MIN_ENTRY_POINT_SCORE:
-            candidates.append((node_id, score))
-
-    candidates.sort(key=lambda x: -x[1])
+    candidates = _scored_candidates(graph, community_map, config, out_deg, in_deg)
 
     # Every scored candidate is a persistable entry point, independent of
     # whether it produced a long enough trace below.
@@ -537,10 +555,7 @@ def trace_execution_flows(
         node_id: _reach(node_id, graph, out_deg, config.reach_depth, memo, config.reach_cap)
         for node_id, _ in candidates
     }
-    top_candidates = candidates[: config.max_flows]
-    chosen = {node_id for node_id, _ in top_candidates}
-    by_reach = sorted(candidates, key=lambda c: (-reach[c[0]], -c[1], c[0]))
-    top_candidates += [c for c in by_reach if c[0] not in chosen][: config.max_important_flows]
+    top_candidates = _candidates_to_trace(candidates, reach, config)
 
     # Trace from each candidate
     flows: list[ExecutionFlow] = []

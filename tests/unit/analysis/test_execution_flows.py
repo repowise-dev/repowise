@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from itertools import pairwise
+
 import networkx as nx
 
 from repowise.core.analysis.execution_flows import (
@@ -244,3 +246,53 @@ class TestWhatCountsAsAnExcludedNode:
         from repowise.core.analysis.execution_flows import _is_excluded_node
 
         assert not _is_excluded_node(self._graph("external:pytest"), "external:pytest")
+
+
+# ---------------------------------------------------------------------------
+# Reach-ranked selection
+# ---------------------------------------------------------------------------
+
+
+def _reach_graph(drivers: int = 1) -> nx.DiGraph:
+    """``wrapper`` calls ``drive0`` and one helper, so it outscores every
+    ``driveN`` (each has a caller). Each ``driveN`` calls ``8 - N`` helpers of a
+    chain, so reach falls with N and every trace is deep enough to keep."""
+    g = nx.DiGraph()
+    helpers = [f"lib/h{i}.py::h{i}" for i in range(8)]
+    drives = [f"app/d{n}.py::drive{n}" for n in range(drivers)]
+    for node in ["app/cli.py::wrapper", *drives, *helpers]:
+        _sym(g, node, node.rsplit("::", 1)[1])
+    _call(g, "app/cli.py::wrapper", helpers[0])
+    for n, drive in enumerate(drives):
+        _call(g, "app/cli.py::wrapper", drive)
+        for helper in helpers[: 8 - n]:
+            _call(g, drive, helper)
+    for a, b in pairwise(helpers):
+        _call(g, a, b)
+    return g
+
+
+def test_the_highest_reach_candidate_is_traced_beyond_the_score_budget():
+    by_score = trace_execution_flows(_reach_graph(), {}, FlowConfig(max_flows=1, max_important_flows=0))
+    with_reach = trace_execution_flows(_reach_graph(), {}, FlowConfig(max_flows=1, max_important_flows=1))
+
+    assert [f.entry_point_id for f in by_score.flows] == ["app/cli.py::wrapper"]
+    assert {f.entry_point_id: f.reach for f in with_reach.flows} == {
+        "app/cli.py::wrapper": 9,
+        "app/d0.py::drive0": 8,
+    }
+
+
+def test_reach_selection_is_capped_and_takes_the_largest_first():
+    report = trace_execution_flows(
+        _reach_graph(drivers=3), {}, FlowConfig(max_flows=1, max_important_flows=2)
+    )
+    traced = {f.entry_point_id for f in report.flows}
+    assert traced == {"app/cli.py::wrapper", "app/d0.py::drive0", "app/d1.py::drive1"}
+
+
+def test_reach_stops_counting_at_the_cap():
+    report = trace_execution_flows(
+        _reach_graph(), {}, FlowConfig(max_flows=1, max_important_flows=1, reach_cap=3)
+    )
+    assert max(f.reach for f in report.flows) == 3
