@@ -253,51 +253,37 @@ def test_assemble_file_page_private_undocumented_dropped_first():
 # ---------------------------------------------------------------------------
 
 
-def test_assemble_symbol_spotlight_callers(
-    sample_config, sample_parsed_file, sample_graph, graph_metrics
+def test_spotlight_lists_production_calls_and_counts_test_calls(
+    sample_config, sample_parsed_file, sample_graph
 ):
     assembler = ContextAssembler(sample_config)
     symbol = sample_parsed_file.symbols[0]  # Calculator class
-    # Add caller
     graph = sample_graph.copy()
-    graph.add_edge("caller.py", sample_parsed_file.file_info.path)
-    ctx = assembler.assemble_symbol_spotlight(
-        symbol, sample_parsed_file, graph_metrics["pagerank"], graph
+    graph.add_node("main.py", node_type="file")
+    graph.add_node("tests/test_calc.py", node_type="file", is_test=True)
+    graph.add_node("main.py::run", node_type="symbol", name="run", file_path="main.py")
+    graph.add_node(
+        "tests/test_calc.py::test_add",
+        node_type="symbol",
+        name="test_add",
+        file_path="tests/test_calc.py",
     )
-    assert "caller.py" in ctx.callers
+    graph.add_node(symbol.id, node_type="symbol", name=symbol.name)
+    graph.add_edge("main.py::run", symbol.id, edge_type="calls", confidence=1.0)
+    graph.add_edge("tests/test_calc.py::test_add", symbol.id, edge_type="calls", confidence=1.0)
+
+    ctx = assembler.assemble_symbol_spotlight(symbol, sample_parsed_file, graph)
+
+    assert [s["caller"] for s in ctx.call_sites] == ["run"]
+    assert ctx.test_call_sites == 1
 
 
-def test_spotlight_importers_match_the_file_page(
-    sample_config, sample_parsed_file, graph_metrics, sample_source_bytes
-):
-    """One importer count per file: co-change and containment edges count on neither."""
-    graph = _semantic_edge_graph(sample_parsed_file.file_info.path)
-    assembler = ContextAssembler(sample_config)
-    file_ctx = assembler.assemble_file_page(
-        sample_parsed_file,
-        graph,
-        graph_metrics["pagerank"],
-        graph_metrics["betweenness"],
-        graph_metrics["community"],
-        sample_source_bytes,
-    )
-    spot_ctx = assembler.assemble_symbol_spotlight(
-        sample_parsed_file.symbols[0], sample_parsed_file, graph_metrics["pagerank"], graph
-    )
-
-    assert spot_ctx.callers == file_ctx.dependents == ["importer.py", "framework_entrypoint.py"]
-
-
-def test_assemble_symbol_spotlight_no_callers(
-    sample_config, sample_parsed_file, sample_graph, graph_metrics
-):
+def test_assemble_symbol_spotlight_no_callers(sample_config, sample_parsed_file, sample_graph):
     assembler = ContextAssembler(sample_config)
     symbol = sample_parsed_file.symbols[0]
-    ctx = assembler.assemble_symbol_spotlight(
-        symbol, sample_parsed_file, graph_metrics["pagerank"], sample_graph
-    )
-    # calculator.py is not imported by any file in sample_graph
-    assert isinstance(ctx.callers, list)
+    ctx = assembler.assemble_symbol_spotlight(symbol, sample_parsed_file, sample_graph)
+    assert ctx.call_sites == []
+    assert ctx.test_call_sites == 0
 
 
 # ---------------------------------------------------------------------------
@@ -655,3 +641,25 @@ def test_coupled_modules_exclude_pairs_the_graph_explains(sample_config):
     )
 
     assert coupled_modules == []
+
+
+def test_spotlight_uses_skip_the_defining_files_own_top_level(
+    sample_config, sample_parsed_file, sample_graph
+):
+    """``module.exports = fn`` in the defining file is an export, not a use;
+    another file's top-level call is a use, and selection counts the same."""
+    from repowise.core.ingestion.graph import symbol_use
+
+    symbol = sample_parsed_file.symbols[0]
+    home = sample_parsed_file.file_info.path
+    graph = sample_graph.copy()
+    graph.add_node(symbol.id, node_type="symbol", name=symbol.name, file_path=home)
+    for path in (home, "app.py"):
+        node = f"{path}::__module__"
+        graph.add_node(node, node_type="symbol", kind="module", name="__module__", file_path=path)
+        graph.add_edge(node, symbol.id, edge_type="references" if path == home else "calls")
+
+    ctx = ContextAssembler(sample_config).assemble_symbol_spotlight(symbol, sample_parsed_file, graph)
+
+    assert [(s["caller"], s["caller_file"]) for s in ctx.call_sites] == [("__module__", "app.py")]
+    assert symbol_use(graph, symbol.id).cross_file == 1

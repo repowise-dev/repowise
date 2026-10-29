@@ -64,9 +64,7 @@ def build_level01_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     level1 = [
         (
             compute_page_id("symbol_spotlight", f"{pf.file_info.path}::{sym.name}"),
-            gen.generate_symbol_spotlight(
-                sym, pf, run.pagerank, run.graph, source_map=run.source_map
-            ),
+            gen.generate_symbol_spotlight(sym, pf, run.graph),
         )
         for sym, pf in top_symbols
         if run._emit(compute_page_id("symbol_spotlight", f"{pf.file_info.path}::{sym.name}"))

@@ -32,6 +32,7 @@ from typing import Any
 
 import structlog
 
+from ....ingestion.graph import symbol_use_counts
 from ....ingestion.models import SYMBOL_USE_EDGE_TYPES
 from ...entry_points import orientation_entry_points
 from ...page_generator.helpers import rank_decisions
@@ -205,7 +206,6 @@ def _symbol_signals(graph_builder: Any) -> _GraphSignals:
     except Exception:
         return out
 
-    file_of: dict[str, str] = {}
     for node_id, data in graph.nodes(data=True):
         node_type = data.get("node_type")
         if node_type == "file":
@@ -215,7 +215,6 @@ def _symbol_signals(graph_builder: Any) -> _GraphSignals:
         if node_type != "symbol":
             continue
         path = data.get("file_path", "")
-        file_of[node_id] = path
         out.nodes[node_id] = {
             "name": data.get("name", ""),
             "kind": str(data.get("kind", "symbol")),
@@ -227,31 +226,16 @@ def _symbol_signals(graph_builder: Any) -> _GraphSignals:
         }
         _record_member(out.members, node_id, data.get("name", ""))
 
-    out.callers = _cross_file_callers(graph, file_of, out.test_files)
+    # Cross-file production callers: "many OTHER files depend on it" is the
+    # signal that separates a concept from a busy local helper, and tests
+    # reaching for a fake are not the system depending on it.
+    out.callers = {n: u.cross_file for n, u in symbol_use_counts(graph).items() if u.cross_file}
+
     try:
         out.pagerank = dict(graph_builder.symbol_pagerank())
     except Exception:
         out.pagerank = {}
     return out
-
-
-def _cross_file_callers(graph: Any, file_of: dict[str, str], test_files: set[str]) -> dict[str, int]:
-    """In-edges of a call/heritage type per symbol, from a different file.
-
-    "Many OTHER files depend on it" is the signal that separates a concept
-    from a busy local helper. Callers in tests are not the system depending on
-    it: counting them ranked a mock provider among the core concepts.
-    """
-    callers: dict[str, int] = {}
-    for src, dst, data in graph.edges(data=True):
-        if data.get("edge_type") not in _CONCEPT_EDGE_TYPES:
-            continue
-        src_file, dst_file = file_of.get(src), file_of.get(dst)
-        if src_file is None or dst_file is None or src_file in test_files:
-            continue
-        if src_file != dst_file:
-            callers[dst] = callers.get(dst, 0) + 1
-    return callers
 
 
 #: Public members listed per concept: enough to say what a type is for.

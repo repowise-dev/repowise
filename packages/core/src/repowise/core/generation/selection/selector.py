@@ -15,6 +15,7 @@ from typing import Any
 
 import structlog
 
+from repowise.core.ingestion.graph import NO_SYMBOL_USE, SymbolUse
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 from repowise.core.ingestion.package_roots import package_manifest_names, package_roots_from_paths
 
@@ -198,6 +199,10 @@ class SelectionInputs:
     # concept group. Absent or partial degrades the grouping's taste, never
     # its coverage, because the partition itself needs no KG input.
     kg_modules: list[dict] | None = None
+    # Production callers per symbol id (``GraphBuilder.symbol_uses``), the
+    # signal spotlight selection ranks by. Absent, every symbol scores as
+    # unused and ranks on size and complexity alone.
+    symbol_uses: dict[str, SymbolUse] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -434,52 +439,89 @@ def _build_symbol_candidates(
     return ranked[:keep]
 
 
+# The most spotlights one file keeps. A file whose every symbol is heavily used
+# is a hub, and its file page already lists them all; past this many its
+# spotlights crowd out the load-bearing symbols of every other file.
+SPOTLIGHTS_PER_FILE = 8
+
+
+def _first_per_target(
+    scored: list[tuple[float, tuple[str, str]]],
+) -> list[tuple[float, tuple[str, str]]]:
+    """Keep the highest-scoring occurrence of each ``(file_path, name)`` pair.
+
+    A spotlight page is keyed by the pair, but one file can declare it twice:
+    two classes in the same Java file each with a ``toString``, two Rust impl
+    blocks each with a ``new``. Left in, the duplicates generate the same page
+    id twice. *scored* is sorted, so first wins.
+    """
+    seen: set[tuple[str, str]] = set()
+    out: list[tuple[float, tuple[str, str]]] = []
+    for score, target in scored:
+        if target not in seen:
+            seen.add(target)
+            out.append((score, target))
+    return out
+
+
+def _capped_per_file(
+    scored: list[tuple[float, tuple[str, str]]],
+) -> list[tuple[float, tuple[str, str]]]:
+    """Drop each file's candidates past :data:`SPOTLIGHTS_PER_FILE`, keeping order."""
+    taken: Counter[str] = Counter()
+    out: list[tuple[float, tuple[str, str]]] = []
+    for score, target in scored:
+        if taken[target[0]] < SPOTLIGHTS_PER_FILE:
+            taken[target[0]] += 1
+            out.append((score, target))
+    return out
+
+
+# Spotlights a small repository keeps whatever its percentile says, so a
+# library of a few hundred symbols still gets pages for its most-used ones.
+MIN_SPOTLIGHTS = 10
+
+
+def _spotlight_keep(eligible: int, pct: float) -> int:
+    """How many of *eligible* ranked spotlight candidates selection keeps."""
+    if pct <= 0:
+        return 0
+    if pct >= 1.0:
+        return eligible
+    return min(eligible, max(MIN_SPOTLIGHTS, int(eligible * pct)))
+
+
 def rank_symbol_candidates(
     inputs: SelectionInputs,
 ) -> tuple[list[tuple[float, tuple[str, str]]], int]:
-    """Every production spotlight candidate in rank order, and how many selection keeps."""
+    """Every production spotlight candidate in rank order, and how many selection keeps.
+
+    Ranked by the symbol's own use (see :func:`score_symbol`), held to
+    :data:`SPOTLIGHTS_PER_FILE` per file. A spotlight repeats what its file's
+    page already renders, so the bucket is the strongest
+    ``top_symbol_percentile`` of the symbols that clear the floors.
+    """
     max_pr = max(inputs.pagerank.values(), default=0.0)
+    uses = inputs.symbol_uses or {}
     test_paths = {p.file_info.path for p in inputs.parsed_files if p.file_info.is_test}
     scored: list[tuple[float, tuple[str, str]]] = []
     for p in inputs.parsed_files:
         file_pr = inputs.pagerank.get(p.file_info.path, 0.0)
         for sym in p.symbols:
-            if sym.visibility != "public":
-                continue
-            s = score_symbol(sym, file_pr, max_pr)
+            s = score_symbol(sym, uses.get(sym.id, NO_SYMBOL_USE), file_pr, max_pr)
             if s > 0.0:
                 scored.append((s, (p.file_info.path, sym.name)))
     scored.sort(key=lambda x: (-x[0], x[1]))
-    # A spotlight page is keyed by ``(file_path, symbol_name)``, but one file
-    # can declare that pair twice: two classes in the same Java file each
-    # with a ``toString``, two Rust impl blocks each with a ``new``. Left in,
-    # the duplicates generate the same page id twice (the second silently
-    # overwriting the first, having spent a full LLM call to do it). Keep the
-    # highest-scoring occurrence; the list is already sorted, so first wins.
-    seen: set[tuple[str, str]] = set()
-    deduped: list[tuple[float, tuple[str, str]]] = []
-    for score, target in scored:
-        if target in seen:
-            continue
-        seen.add(target)
-        deduped.append((score, target))
-    # A spotlight repeats what its file's page already renders: the signature,
-    # the docstring, the importer list. Taking every public symbol would bury
-    # the pages that say something new, so the bucket is held to the strongest
-    # slice by PageRank. This used to fall out of the coverage budget's 0.15
-    # share; with nothing costing tokens there is no budget to fall out of, so
-    # the percentile that always existed on the config now does the bounding.
+    eligible = _first_per_target(scored)
     # Fallback tracks GenerationConfig.top_symbol_percentile; a config object
     # predating the field must not silently select a wider slice than the
     # declared default.
-    pct = getattr(inputs.config, "top_symbol_percentile", 0.10) or 0.0
-    # At least one, so a repo with few public symbols still gets a spotlight.
-    keep = len(deduped) if pct >= 1.0 else max(1, int(len(deduped) * pct))
-    if pct <= 0:
-        keep = 0
-    # Sized on the whole pool so production never loses a slot it had; tests only
-    # hand theirs to the next production symbol.
-    return [c for c in deduped if c[1][0] not in test_paths], keep
+    pct = getattr(inputs.config, "top_symbol_percentile", 0.12) or 0.0
+    keep = _spotlight_keep(len(eligible), pct)
+    # Sized before tests and the per-file cap leave the pool, so production
+    # never loses a slot it had; those only hand theirs to the next symbol.
+    ranked = _capped_per_file([c for c in eligible if c[1][0] not in test_paths])
+    return ranked, keep
 
 
 def _layer_map_from_kg(

@@ -354,6 +354,7 @@ class _GenerationRun:
                 # map that steers concept grouping, so absence costs taste and
                 # never coverage.
                 kg_modules=self.kg_modules or self.kg_ctx.get_modules() or None,
+                symbol_uses=self.graph_builder.symbol_uses(),
             )
         )
 

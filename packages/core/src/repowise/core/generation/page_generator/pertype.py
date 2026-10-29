@@ -193,17 +193,9 @@ class PerTypeGenerationMixin:
         self,
         symbol: Any,
         parsed: ParsedFile,
-        pagerank: dict[str, float],
         graph: Any,
-        source_map: dict[str, bytes] | None = None,
     ) -> GeneratedPage:
-        ctx = self._assembler.assemble_symbol_spotlight(
-            symbol,
-            parsed,
-            pagerank,
-            graph,
-            source_bytes=(source_map or {}).get(parsed.file_info.path, b""),
-        )
+        ctx = self._assembler.assemble_symbol_spotlight(symbol, parsed, graph)
         target = f"{parsed.file_info.path}::{symbol.name}"
         # The subject is the defining file's bytes — the same subject the file
         # page uses. A spotlight renders a symbol out of that file, so when the

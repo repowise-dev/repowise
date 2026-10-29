@@ -399,6 +399,7 @@ async def sweep_deselected_pages(
                 sccs=[],
                 git_meta_map={},
                 config=config,
+                symbol_uses=graph_builder.symbol_uses(),
             )
         )
         kept = {target for _, target in ranked[: int(keep * SPOTLIGHT_RETIRE_MARGIN)]}

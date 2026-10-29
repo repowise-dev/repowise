@@ -18,6 +18,7 @@ from repowise.core.analysis.dead_code.file_reachability import (
 )
 from repowise.core.analysis.execution_flows import rank_by_importance
 from repowise.core.ids import file_path_of, is_external
+from repowise.core.ingestion.graph import is_test_caller, symbol_use, symbol_use_edges
 from repowise.core.ingestion.models import ParsedFile, RepoStructure, Symbol
 from repowise.core.ingestion.package_roots import (
     module_for,
@@ -30,6 +31,7 @@ from ...co_change import STRUCTURAL_UNEXPLAINED, parse_partners
 from ..categories import file_category
 from ..entry_points import orientation_entry_points, rank_entry_point_paths
 from ..models import GenerationConfig
+from ..public_api import is_public_api
 from .contexts import (
     ApiContractContext,
     FilePageContext,
@@ -74,10 +76,6 @@ _MAX_TOP_FILES = 20
 # public surface.
 _MAX_CONCEPT_ROWS = 40
 
-# The graph gives every file a synthetic symbol that owns its module-scope
-# calls. It is not a caller anyone can look up, and the importer list already
-# covers import-time use.
-_MODULE_SCOPE_NODE = "__module__"
 
 # How many co-change partners a file page names. Past a handful the list
 # stops being "and this other thing moves with it" and becomes a second,
@@ -197,34 +195,29 @@ def build_concept_index(
     straight from the assembled symbol data, which is why the table can be
     trusted where the surrounding prose has to be read as a summary.
 
-    Only top-level public symbols. Methods would multiply the table by the size
-    of the classes without adding a name a reader would search for on its own,
-    and a private symbol is not a route into the module.
+    Only top-level public API (``is_public_api``: no ``log``, no dunders).
+    Methods would multiply the table by the size of the classes without adding
+    a name a reader would search for on its own, and a private symbol is not a
+    route into the module. Most-called first, so the cap drops the symbols
+    nothing uses; ties keep the files' PageRank and declaration order.
     """
-    ranked = sorted(file_contexts, key=lambda fc: fc.pagerank_score, reverse=True)
-    rows: list[dict[str, str]] = []
-    total = 0
-    for fc in ranked:
+    candidates: list[tuple[int, str, str]] = []
+    for fc in sorted(file_contexts, key=lambda fc: fc.pagerank_score, reverse=True):
         for symbol in sorted(fc.symbols, key=lambda s: s.get("start_line") or 0):
             name = (symbol.get("name") or "").strip()
-            if not name or name.startswith("_"):
-                continue
-            if symbol.get("visibility") != "public":
+            if not name or name.startswith("_") or symbol.get("visibility") != "public":
                 continue
             # A method's own name is rarely what a reader searches for, and
             # including them turns a 40-row cap into 40 rows of one class.
-            if symbol.get("parent_name"):
+            if symbol.get("parent_name") or not is_public_api(symbol):
                 continue
-            total += 1
-            if len(rows) < _MAX_CONCEPT_ROWS:
-                rows.append(
-                    {
-                        "concept": concept_wording(name),
-                        "symbol": name,
-                        "file": fc.file_path,
-                    }
-                )
-    return rows, total - len(rows)
+            candidates.append((symbol.get("callers") or 0, name, fc.file_path))
+    candidates.sort(key=lambda c: -c[0])
+    rows = [
+        {"concept": concept_wording(name), "symbol": name, "file": path}
+        for _, name, path in candidates[:_MAX_CONCEPT_ROWS]
+    ]
+    return rows, len(candidates) - len(rows)
 
 
 def _flow_entry_is_reachable(flow: Any, graph: Any, rescues: ReachabilityRescues) -> bool:
@@ -340,7 +333,11 @@ class ContextAssembler:
         selected_private, used = items_within_budget(
             private_documented + private_undocumented, used, budget, sig_cost
         )
-        sym_dicts = [_symbol_to_dict(s) for s in selected_public + selected_private]
+        # Production callers per symbol, so the page lists the used API first.
+        sym_dicts = [
+            _symbol_to_dict(s, callers=symbol_use(graph, s.id).callers)
+            for s in selected_public + selected_private
+        ]
 
         # Imports (truncate to _MAX_IMPORTS)
         raw_imports = [imp.raw_statement for imp in parsed.imports]
@@ -454,40 +451,23 @@ class ContextAssembler:
         self,
         symbol: Symbol,
         parsed: ParsedFile,
-        pagerank: dict[str, float],
         graph: Any,  # nx.DiGraph
-        source_bytes: bytes = b"",
     ) -> SymbolSpotlightContext:
         """Assemble context for the symbol_spotlight template."""
-        path = parsed.file_info.path
-        # The file page's own importer list, so the two pages report one count.
-        callers = file_dependency_neighbors(graph, path, incoming=True)
-
-        call_sites = _resolved_call_sites(symbol, graph)
-
-        # Extract source body for the symbol
-        source_body = None
-        if source_bytes and symbol.start_line and symbol.end_line:
-            lines = source_bytes.decode("utf-8", errors="replace").splitlines()
-            body_lines = lines[symbol.start_line - 1 : symbol.end_line]
-            body = "\n".join(body_lines)
-            if len(body) > 8000:
-                body = body[:8000] + "\n...[truncated]"
-            source_body = body
-
+        sites = _resolved_call_sites(symbol, graph)
+        production = [s for s in sites if not s["from_test"]]
         return SymbolSpotlightContext(
             symbol_name=symbol.name,
             qualified_name=symbol.qualified_name,
             kind=symbol.kind,
             signature=symbol.signature,
             docstring=symbol.docstring,
-            file_path=path,
+            file_path=parsed.file_info.path,
             decorators=symbol.decorators,
             is_async=symbol.is_async,
             complexity_estimate=symbol.complexity_estimate,
-            callers=callers,
-            source_body=source_body,
-            call_sites=call_sites,
+            call_sites=production,
+            test_call_sites=len(sites) - len(production),
         )
 
     # ------------------------------------------------------------------
@@ -1145,8 +1125,11 @@ def _infra_targets(parsed: ParsedFile, source_text: str) -> list[str]:
     return []
 
 
-def _symbol_to_dict(symbol: Symbol) -> dict[str, Any]:
-    """Convert a Symbol to a plain dict for template rendering."""
+def _symbol_to_dict(symbol: Symbol, callers: int = 0) -> dict[str, Any]:
+    """Convert a Symbol to a plain dict for template rendering.
+
+    *callers* is its production caller count (``symbol_use``), 0 when unknown.
+    """
     return {
         "name": symbol.name,
         "qualified_name": symbol.qualified_name,
@@ -1161,45 +1144,34 @@ def _symbol_to_dict(symbol: Symbol) -> dict[str, Any]:
         "language": symbol.language,
         "start_line": symbol.start_line,
         "end_line": symbol.end_line,
+        "callers": callers,
     }
 
 
 def _resolved_call_sites(symbol: Symbol, graph: Any) -> list[dict]:
-    """Calls the resolver actually resolved to *symbol*, most confident first.
+    """The uses the resolver resolved to *symbol*, most confident first.
 
-    A spotlight's ``callers`` list is the files importing the defining module,
-    which for a constant like ``PRUNED_DIRS`` means thirty-seven files that
-    may never touch it. The call graph knows better wherever the resolver
-    reached a verdict, and ``Symbol.id`` is the graph's own node key, so this
-    is an in-edge scan on one node rather than a walk.
+    The same edges ``symbol_use`` counts for spotlight selection, so a page
+    chosen for its callers lists them. Each site carries ``from_test`` so the
+    page can list production users and count the rest; a file's top-level
+    code is named by the module-scope node's ``__module__``.
 
-    Uncapped: the template slices what it prints and reports the true total,
-    the way the importer list already does. A count that was silently the cap
-    would tell a reader with nine hundred callers that it had twenty-five.
-
-    Empty when nothing resolved, which is the common case for data and for
-    dynamically dispatched languages — the template then keeps the honest
-    import-level wording.
+    Uncapped: the template slices what it prints and reports the true total.
+    A count that was silently the cap would tell a reader with nine hundred
+    callers that it had twenty-five.
     """
     try:
-        if symbol.id not in graph:
-            return []
-        scored: list[tuple[float, dict]] = []
-        for source, _, edata in graph.in_edges(symbol.id, data=True):
-            if edata.get("edge_type") != "calls":
-                continue
-            data = graph.nodes.get(source, {})
-            if data.get("name") == _MODULE_SCOPE_NODE:
-                continue
-            scored.append(
-                (
-                    float(edata.get("confidence") or 0.0),
-                    {
-                        "caller": data.get("name", source),
-                        "caller_file": data.get("file_path", ""),
-                    },
-                )
+        scored = [
+            (
+                float(edata.get("confidence") or 0.0),
+                {
+                    "caller": data.get("name", source),
+                    "caller_file": data.get("file_path", ""),
+                    "from_test": is_test_caller(graph, data),
+                },
             )
+            for source, data, edata in symbol_use_edges(graph, symbol.id)
+        ]
     except Exception:
         return []
     scored.sort(key=lambda s: (-s[0], s[1]["caller_file"], s[1]["caller"]))

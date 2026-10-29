@@ -35,7 +35,25 @@ Internal layout (kept under the 400-line ceiling):
 
 from __future__ import annotations
 
+from ._metrics import (
+    NO_SYMBOL_USE,
+    SymbolUse,
+    is_test_caller,
+    symbol_use,
+    symbol_use_counts,
+    symbol_use_edges,
+)
 from ._stem import _stem_priority, build_stem_map
 from .builder import GraphBuilder
 
-__all__ = ["GraphBuilder", "_stem_priority", "build_stem_map"]
+__all__ = [
+    "NO_SYMBOL_USE",
+    "GraphBuilder",
+    "SymbolUse",
+    "_stem_priority",
+    "build_stem_map",
+    "is_test_caller",
+    "symbol_use",
+    "symbol_use_counts",
+    "symbol_use_edges",
+]

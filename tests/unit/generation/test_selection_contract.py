@@ -22,6 +22,8 @@ from repowise.core.generation.selection import (
     select_pages,
 )
 from repowise.core.generation.selection.scoring import score_file
+from repowise.core.generation.selection.selector import SPOTLIGHTS_PER_FILE, rank_symbol_candidates
+from repowise.core.ingestion.graph import SymbolUse
 from repowise.core.test_paths import is_test_related_path
 
 # ---------------------------------------------------------------------------
@@ -53,11 +55,18 @@ class FakeSymbol:
     kind: str = "function"
     visibility: str = "public"
     signature: str = "()"
-    docstring: str | None = None
+    # A docstring past its first sentence, so the symbol has something to add
+    # beyond its file page even with no resolved caller.
+    docstring: str | None = "Do one thing. Then another."
     decorators: list[str] = field(default_factory=list)
     is_async: bool = False
     complexity_estimate: int = 1
     parent_name: str | None = None
+    # A symbol id, language and a non-trivial span, so spotlight floors pass.
+    id: str = ""
+    language: str = "python"
+    start_line: int = 1
+    end_line: int = 10
 
     def __post_init__(self) -> None:
         if not self.qualified_name:
@@ -271,23 +280,85 @@ def test_spotlights_are_bounded_by_the_percentile():
     assert tenth.symbol_spotlights == half.symbol_spotlights[: len(tenth.symbol_spotlights)]
 
 
-def test_default_config_takes_the_top_symbol_decile():
+def test_default_config_takes_the_top_spotlight_share():
     """The stock default is the bound large repos actually get.
 
-    A 5.3k-file monorepo produced 4,996 spotlights inside a 14,027-page wiki at
-    the old 0.20. The bucket restates what each symbol's file page already says,
-    so the default keeps the strongest decile.
+    The bucket restates what each symbol's file page already says, so the
+    default keeps the most-used 12% of the eligible symbols.
     """
     parsed, pagerank, betweenness, community = _build_synthetic_repo(100)
     total_symbols = sum(len(p.symbols) for p in parsed)
 
     sel = select_pages(_inputs(parsed, pagerank, betweenness, community, GenerationConfig()))
 
-    assert len(sel.symbol_spotlights) == int(total_symbols * 0.10)
+    assert len(sel.symbol_spotlights) == int(total_symbols * 0.12)
+
+
+def _one_file(*symbols: FakeSymbol) -> list[FakeParsedFile]:
+    return [FakeParsedFile(file_info=FakeFileInfo(path="pkg/a.py"), symbols=list(symbols))]
+
+
+def _spotlights(parsed, uses=None, pct: float = 1.0) -> list[str]:
+    inputs = _inputs(parsed, {"pkg/a.py": 1.0}, {}, {}, GenerationConfig(top_symbol_percentile=pct))
+    inputs.symbol_uses = uses
+    ranked, keep = rank_symbol_candidates(inputs)
+    return [name for _, (_, name) in ranked[:keep]]
+
+
+def test_spotlights_rank_the_symbol_not_its_file():
+    """A symbol called from many files outranks one in a higher-PageRank file."""
+    hub = FakeFileInfo(path="pkg/hub.py")
+    leaf = FakeFileInfo(path="pkg/leaf.py")
+    parsed = [
+        FakeParsedFile(file_info=hub, symbols=[FakeSymbol(name="idle", id="pkg/hub.py::idle")]),
+        FakeParsedFile(file_info=leaf, symbols=[FakeSymbol(name="used", id="pkg/leaf.py::used")]),
+    ]
+    inputs = _inputs(parsed, {"pkg/hub.py": 1.0, "pkg/leaf.py": 0.01}, {}, {}, GenerationConfig())
+    inputs.symbol_uses = {"pkg/leaf.py::used": SymbolUse(12, 12)}
+    ranked, _ = rank_symbol_candidates(inputs)
+    assert [name for _, (_, name) in ranked] == ["used", "idle"]
+
+
+def test_dunders_and_module_state_never_get_a_spotlight():
+    parsed = _one_file(
+        FakeSymbol(name="__init__", kind="method", parent_name="A", id="pkg/a.py::A::__init__"),
+        FakeSymbol(name="__all__", kind="variable", id="pkg/a.py::__all__"),
+        FakeSymbol(name="log", kind="variable", id="pkg/a.py::log"),
+        FakeSymbol(name="run", id="pkg/a.py::run"),
+    )
+    uses = {f"pkg/a.py::{n}": SymbolUse(50, 50) for n in ("A::__init__", "__all__", "log")}
+    assert _spotlights(parsed, uses) == ["run"]
+
+
+def test_values_and_trivial_bodies_need_heavy_use():
+    """A constant or a three-line body is printed whole on the file page."""
+    const = FakeSymbol(name="LIMIT", kind="constant", id="pkg/a.py::LIMIT", end_line=1)
+    tiny = FakeSymbol(name="tiny", id="pkg/a.py::tiny", end_line=3)
+    assert _spotlights(_one_file(const, tiny)) == []
+    heavy = {"pkg/a.py::LIMIT": SymbolUse(5, 5), "pkg/a.py::tiny": SymbolUse(5, 1)}
+    assert sorted(_spotlights(_one_file(const, tiny), heavy)) == ["LIMIT", "tiny"]
+
+
+def test_a_symbol_must_add_something_to_its_file_page():
+    """Uncalled, with a one-sentence docstring: the file page already says it all."""
+    bare = FakeSymbol(name="bare", id="pkg/a.py::bare", docstring="Do one thing.")
+    called = FakeSymbol(name="called", id="pkg/a.py::called", docstring=None)
+    documented = FakeSymbol(name="documented", id="pkg/a.py::documented")
+    uses = {"pkg/a.py::called": SymbolUse(1, 1)}
+    assert sorted(_spotlights(_one_file(bare, called, documented), uses)) == [
+        "called",
+        "documented",
+    ]
+
+
+def test_one_file_keeps_at_most_the_per_file_cap():
+    symbols = [FakeSymbol(name=f"f{i}", id=f"pkg/a.py::f{i}") for i in range(SPOTLIGHTS_PER_FILE + 4)]
+    uses = {s.id: SymbolUse(20, 20) for s in symbols}
+    assert len(_spotlights(_one_file(*symbols), uses)) == SPOTLIGHTS_PER_FILE
 
 
 def test_small_repo_still_gets_a_spotlight_at_the_default():
-    """The floor of one keeps a tiny repo from losing the bucket entirely."""
+    """MIN_SPOTLIGHTS keeps a tiny repo from losing the bucket entirely."""
     parsed, pagerank, betweenness, community = _build_synthetic_repo(1)
     sel = select_pages(_inputs(parsed, pagerank, betweenness, community, GenerationConfig()))
     assert len(sel.symbol_spotlights) >= 1

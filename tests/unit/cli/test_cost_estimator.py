@@ -36,6 +36,11 @@ class FakeSymbol:
     end_line: int = 10
     qualified_name: str = "main.my_func"
     signature: str = "def my_func():"
+    id: str = ""
+    docstring: str | None = "Do one thing. Then another."
+    language: str = "python"
+    parent_name: str | None = None
+    complexity_estimate: int = 1
 
 
 @dataclass
@@ -70,6 +75,7 @@ def _make_graph_builder(files: list[FakeParsedFile]):
     builder.pagerank.return_value = {f.file_info.path: 1.0 / max(len(files), 1) for f in files}
     builder.betweenness_centrality.return_value = {f.file_info.path: 0.0 for f in files}
     builder.strongly_connected_components.return_value = []
+    builder.symbol_uses.return_value = {}
     return builder
 
 

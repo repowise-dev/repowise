@@ -87,6 +87,7 @@ def _neighbours(paths: list[str]) -> dict[str, Any]:
     return {
         "count": len(paths),
         "tests": len(tests),
+        "code_paths": code,
         "listed": [code_span(p) for p in sorted(paths)] if len(paths) <= _LIST_IN_FULL else [],
         "directory": code_span(directory) if directory else "",
         "share": share,
@@ -122,12 +123,21 @@ def file_facts(ctx: Any) -> dict[str, Any]:
     }
 
 
-def _entry(declared: str, doc: str = "") -> dict[str, Any]:
-    return {"declared": code_span(declared), "doc": doc, "members": []}
+def _entry(declared: str, doc: str = "", callers: int = 0) -> dict[str, Any]:
+    return {"declared": code_span(declared), "doc": doc, "members": [], "callers": callers}
+
+
+def _by_use(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """*entries* most-used first (a type counts its members' callers), ties in
+    declaration order; members ranked the same way under their type."""
+    for entry in entries:
+        entry["members"] = sorted(entry["members"], key=lambda m: -m["callers"])
+    return sorted(entries, key=lambda e: -(e["callers"] + sum(m["callers"] for m in e["members"])))
 
 
 def symbol_entries(symbols: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """The API list: one entry per symbol, members nested under their type.
+    """The API list: one entry per symbol, members nested under their type,
+    the symbols other code calls most first.
 
     A method whose class the API does not list is nested under that class's
     bare name, so it neither reads as a module function nor leaves the page.
@@ -141,23 +151,24 @@ def symbol_entries(symbols: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]
         if name not in declared:
             declared = f"{name}: {declared}"
         doc = first_sentence(sym.get("docstring")) if sym.get("docstring") else ""
+        callers = sym.get("callers") or 0
         parent_name = sym.get("parent_name") or ""
         if parent_name:
             parent = by_name.get(parent_name)
             if parent is None:
                 parent = by_name[parent_name] = _entry(parent_name)
                 entries.append(parent)
-            parent["members"].append(_entry(declared, doc))
+            parent["members"].append(_entry(declared, doc, callers))
             continue
         if sym.get("kind") == "impl" and name in by_name:
             continue
         if name in by_name and not by_name[name]["doc"] and by_name[name]["declared"] == code_span(name):
             # A stand-in made for members seen before their type: fill it in.
-            by_name[name].update(declared=code_span(declared), doc=doc)
+            by_name[name].update(declared=code_span(declared), doc=doc, callers=callers)
             continue
-        by_name[name] = _entry(declared, doc)
+        by_name[name] = _entry(declared, doc, callers)
         entries.append(by_name[name])
-    return entries
+    return _by_use(entries)
 
 
 def with_subject(sentences: Iterable[str], first: str, rest: str) -> list[str]:

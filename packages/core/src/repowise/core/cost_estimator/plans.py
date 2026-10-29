@@ -70,6 +70,7 @@ def build_generation_plan(
             git_meta_map=None,
             config=config,
             kg_modules=kg_modules,
+            symbol_uses=graph_builder.symbol_uses(),
         )
     )
 

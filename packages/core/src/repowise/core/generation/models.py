@@ -208,7 +208,7 @@ class GenerationConfig:
         cache_enabled:            In-memory SHA256 prompt deduplication.
         staleness_threshold_days: Days before a page is considered stale.
         expiry_threshold_days:    Days before a page is considered expired.
-        top_symbol_percentile:    Top N% by PageRank → symbol_spotlight.
+        top_symbol_percentile:    Top N% of eligible symbols by use → symbol_spotlight.
         jobs_dir:                 Directory for job checkpoint JSON files.
     """
 
@@ -235,18 +235,16 @@ class GenerationConfig:
     coverage_pct: float = 0.20
     max_pages_pct: float = 0.20
     #
-    # The fraction of public symbols, highest PageRank first, that get a
-    # ``symbol_spotlight``. A spotlight repeats what its file's page already
+    # The fraction of spotlight-eligible symbols, most used first, that get a
+    # ``symbol_spotlight`` (ranking and floors: selection/scoring.py
+    # ``score_symbol``). A spotlight repeats what its file's page already
     # says, so taking all of them buries the pages that say something new.
-    # This bound used to be a side effect of the budget's 0.15 share.
     #
-    # Lowered 0.20 -> 0.10 on the evidence of a large monorepo: a 5.3k-file
-    # repo produced 4,996 spotlights inside a 14,027-page wiki. Doubling down
-    # on the strongest decile keeps the pages that say something new and drops
-    # the ones that restate their file's page. Small repos are unaffected in
-    # practice: the selector floors the bucket at one, so a repo with few
-    # public symbols still gets a spotlight.
-    top_symbol_percentile: float = 0.10
+    # Eligible means the symbol adds something to its file page: resolved
+    # production callers or a docstring past its first sentence. 0.12 of that
+    # pool is ~1.7k pages on a 54k-public-symbol monorepo (5.3k under the old
+    # file-PageRank top decile). A small repository keeps ``MIN_SPOTLIGHTS``.
+    top_symbol_percentile: float = 0.12
     # The most ``file_page`` pages a run will emit, highest importance score
     # first. Three states, resolved in selection/selector.py:
     #
