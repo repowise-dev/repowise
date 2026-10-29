@@ -74,6 +74,10 @@ from .ranges import RangeVariableTypes, _is_its_own_container  # noqa: F401
 
 # Languages whose extensions the extension index holds, keyed on the type extended.
 _EXTENSION_LANGUAGES = frozenset({"csharp", "kotlin"})
+# Bitwise members of Kotlin's ``Int`` and ``Long`` and the parameter type each
+# takes (None: the receiver's own). A member beats a same-named extension
+# wherever it accepts the argument, so ``i and 0x3f`` is ``Int.and(Int)``.
+_KOTLIN_BITWISE_MEMBERS = {"and": None, "or": None, "xor": None, "shl": "Int", "shr": "Int", "ushr": "Int"}
 # Members an extension of the same name can never beat: those of Kotlin's
 # ``Any``, which every type has, and the common ones of the builtin types a
 # library declares, which the repo's index cannot see. Not exhaustive.
@@ -1191,6 +1195,8 @@ class ReceiverTypingMixin(
     ) -> ResolvedCall | None:
         if language not in _EXTENSION_LANGUAGES:
             return None
+        if language == "kotlin" and _kotlin_member_applies(type_name, call):
+            return None
         # Extensions are indexed by the type they name, written without arity.
         key = (id_segment_name(type_name), call.target_name)
         extension = self._extension_target(file_path, key)
@@ -1743,3 +1749,17 @@ class ReceiverTypingMixin(
 
         _store_capped(self._source_text, file_path, text, _SOURCE_CACHE_FILES)
         return text
+
+
+def _kotlin_member_applies(type_name: str, call: CallSite) -> bool:
+    """Would a member of the builtin *type_name* take this call over an extension?
+
+    An argument of unknown type may fit the member, so it counts as fitting.
+    """
+    if type_name not in ("Int", "Long") or call.target_name not in _KOTLIN_BITWISE_MEMBERS:
+        return False
+    # An integer literal also fits a ``Long`` parameter: ``n and 0xff`` is ``Long.and``.
+    wanted = _KOTLIN_BITWISE_MEMBERS[call.target_name] or type_name
+    fits = {None, wanted, "Int"} if wanted == "Long" else {None, wanted}
+    argument = (call.argument_types or (None,))[0]
+    return call.argument_count == 1 and argument in fits
