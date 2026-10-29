@@ -127,6 +127,16 @@ def _entry(declared: str, doc: str = "", callers: int = 0) -> dict[str, Any]:
     return {"declared": code_span(declared), "doc": doc, "members": [], "callers": callers}
 
 
+def _symbol_entry(sym: Mapping[str, Any]) -> dict[str, Any]:
+    """One API-list entry: the declaration, its first docstring sentence, its callers."""
+    name = sym["name"]
+    declared = signature(sym.get("signature") or "") or name
+    if name not in declared:
+        declared = f"{name}: {declared}"
+    doc = first_sentence(sym.get("docstring")) if sym.get("docstring") else ""
+    return _entry(declared, doc, sym.get("callers") or 0)
+
+
 def _by_use(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """*entries* most-used first (a type counts its members' callers), ties in
     declaration order; members ranked the same way under their type."""
@@ -147,27 +157,23 @@ def symbol_entries(symbols: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]
     by_name: dict[str, dict[str, Any]] = {}
     for sym in api_symbols(symbols):
         name = sym["name"]
-        declared = signature(sym.get("signature") or "") or name
-        if name not in declared:
-            declared = f"{name}: {declared}"
-        doc = first_sentence(sym.get("docstring")) if sym.get("docstring") else ""
-        callers = sym.get("callers") or 0
+        entry = _symbol_entry(sym)
         parent_name = sym.get("parent_name") or ""
         if parent_name:
             parent = by_name.get(parent_name)
             if parent is None:
                 parent = by_name[parent_name] = _entry(parent_name)
                 entries.append(parent)
-            parent["members"].append(_entry(declared, doc, callers))
+            parent["members"].append(entry)
             continue
         if sym.get("kind") == "impl" and name in by_name:
             continue
         if name in by_name and not by_name[name]["doc"] and by_name[name]["declared"] == code_span(name):
             # A stand-in made for members seen before their type: fill it in.
-            by_name[name].update(declared=code_span(declared), doc=doc, callers=callers)
+            by_name[name].update({k: entry[k] for k in ("declared", "doc", "callers")})
             continue
-        by_name[name] = _entry(declared, doc, callers)
-        entries.append(by_name[name])
+        by_name[name] = entry
+        entries.append(entry)
     return _by_use(entries)
 
 
