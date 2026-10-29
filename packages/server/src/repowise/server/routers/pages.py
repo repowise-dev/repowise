@@ -151,9 +151,7 @@ async def list_pages(
             status_code=400,
             detail=f"Unknown fields '{fields}'. Valid: full, summary.",
         )
-    pages = await crud.list_pages(
-        session,
-        repo_id,
+    listing = dict(
         page_type=page_type,
         has_prose=has_prose,
         limit=limit,
@@ -164,7 +162,9 @@ async def list_pages(
     # response_model is off on this route: the two shapes are serialized by the
     # models themselves, so FastAPI can't coerce a summary back into a full row.
     if fields == "summary":
-        return [PageSummaryResponse.from_orm(p) for p in pages]
+        rows = await crud.list_page_summaries(session, repo_id, **listing)
+        return [PageSummaryResponse.from_row(r) for r in rows]
+    pages = await crud.list_pages(session, repo_id, **listing)
     return [PageResponse.from_orm(p) for p in pages]
 
 

@@ -10,7 +10,7 @@ import json
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import (
@@ -666,7 +666,110 @@ async def list_pages(
     reader-facing count or listing, where a tombstoned page (its file is gone)
     should not be shown or counted.
     """
-    q = select(Page).where(Page.repository_id == repository_id)
+    q = _filter_page_listing(
+        select(Page),
+        repository_id,
+        page_type=page_type,
+        has_prose=has_prose,
+        include_tombstones=include_tombstones,
+        limit=limit,
+        offset=offset,
+        sort_by=sort_by,
+        order=order,
+    )
+    result = await session.execute(q)
+    return list(result.scalars().all())
+
+
+# The columns a page listing sends, without the two heavy ones.
+_SUMMARY_COLUMNS = (
+    Page.id,
+    Page.repository_id,
+    Page.page_type,
+    Page.title,
+    Page.target_path,
+    Page.source_hash,
+    Page.model_name,
+    Page.provider_name,
+    Page.input_tokens,
+    Page.output_tokens,
+    Page.cached_tokens,
+    Page.generation_level,
+    Page.version,
+    Page.confidence,
+    Page.freshness_status,
+    Page.human_notes,
+    Page.parent_page_id,
+    Page.display_order,
+    Page.section_number,
+    Page.structural_key,
+    Page.created_at,
+    Page.updated_at,
+)
+# The metadata keys a summary row promotes; only blobs that mention one are read.
+SUMMARY_METADATA_KEYS = ("layer_id", "is_chapter")
+
+
+async def list_page_summaries(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    page_type: str | None = None,
+    has_prose: bool | None = None,
+    include_tombstones: bool = True,
+    limit: int = 100,
+    offset: int = 0,
+    sort_by: str = "updated_at",
+    order: str = "desc",
+) -> list[Any]:
+    """:func:`list_pages` as column rows, without ``content``.
+
+    Each row carries ``content_chars`` (the body's length, counted by the
+    database) and ``metadata_json`` only when the blob holds a key in
+    :data:`SUMMARY_METADATA_KEYS`, else ``None``. No ORM entities are built:
+    on an 8.8k-page wiki loading full pages to drop their bodies cost
+    seconds per listing.
+    """
+    # The window is picked over ids first: sorting the full rows would carry
+    # every page's length and metadata blob through the sort on every trip.
+    window = _filter_page_listing(
+        select(Page.id),
+        repository_id,
+        page_type=page_type,
+        has_prose=has_prose,
+        include_tombstones=include_tombstones,
+        limit=limit,
+        offset=offset,
+        sort_by=sort_by,
+        order=order,
+    )
+    mentions_key = or_(*(Page.metadata_json.contains(k) for k in SUMMARY_METADATA_KEYS))
+    q = (
+        select(
+            *_SUMMARY_COLUMNS,
+            func.length(Page.content).label("content_chars"),
+            case((mentions_key, Page.metadata_json), else_=None).label("metadata_json"),
+        )
+        .where(Page.id.in_(window.scalar_subquery()))
+        .order_by(*_listing_order(sort_by, order))
+    )
+    return list((await session.execute(q)).all())
+
+
+def _filter_page_listing(
+    q: Any,
+    repository_id: str,
+    *,
+    page_type: str | None,
+    has_prose: bool | None,
+    include_tombstones: bool,
+    limit: int,
+    offset: int,
+    sort_by: str,
+    order: str,
+) -> Any:
+    """The filters, order and window shared by both page listings."""
+    q = q.where(Page.repository_id == repository_id)
     if page_type is not None:
         q = q.where(Page.page_type == page_type)
     if not include_tombstones:
@@ -679,16 +782,17 @@ async def list_pages(
             q = q.where(Page.provider_name != "template")
         else:
             q = q.where(Page.provider_name == "template")
-    _sort_cols = {
+    return q.order_by(*_listing_order(sort_by, order)).limit(limit).offset(offset)
+
+
+def _listing_order(sort_by: str, order: str) -> tuple[Any, Any]:
+    """The listing's sort, with the id breaking ties so pages never overlap."""
+    sort_col = {
         "updated_at": Page.updated_at,
         "confidence": Page.confidence,
         "created_at": Page.created_at,
-    }
-    sort_col = _sort_cols.get(sort_by, Page.updated_at)
-    q = q.order_by(sort_col.asc() if order == "asc" else sort_col.desc())
-    q = q.limit(limit).offset(offset)
-    result = await session.execute(q)
-    return list(result.scalars().all())
+    }.get(sort_by, Page.updated_at)
+    return (sort_col.asc() if order == "asc" else sort_col.desc(), Page.id.asc())
 
 
 async def get_page_versions(
