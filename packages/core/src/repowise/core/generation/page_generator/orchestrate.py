@@ -1106,8 +1106,9 @@ async def _new_vectors_only(run: Any, items: list, pages: list) -> list:
     """*items* minus pages whose stored vector already embeds the same page.
 
     An update re-renders a changed file's neighbours, which mostly come out
-    byte-identical to their stored rows. Only a page the store already holds
-    is skipped, so a fresh or rebuilt store still gets every vector.
+    byte-identical to their stored rows. Only a page the store already holds,
+    at the running embedder's width, is skipped, so a fresh store or one the
+    embedder change is about to rebuild still gets every vector.
     """
     if not getattr(run.vector_store, "persists_across_runs", False):
         return items
@@ -1119,7 +1120,10 @@ async def _new_vectors_only(run: Any, items: list, pages: list) -> list:
     if not same:
         return items
     if run._stored_vector_ids is None:
-        run._stored_vector_ids = await run.vector_store.list_page_ids()
+        current_width = await run.vector_store.holds_current_vectors()
+        run._stored_vector_ids = (
+            await run.vector_store.list_page_ids() if current_width else set()
+        )
     current = same & run._stored_vector_ids
     return [item for item in items if item[0] not in current]
 

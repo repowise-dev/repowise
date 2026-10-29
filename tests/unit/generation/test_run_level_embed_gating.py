@@ -99,9 +99,13 @@ def test_ephemeral_store_still_embeds_reused_pages() -> None:
 
 
 class _StoreHolding(_RecordingStore):
-    def __init__(self, ids: set[str]) -> None:
+    def __init__(self, ids: set[str], *, current_width: bool = True) -> None:
         super().__init__(persists=True)
         self.ids = ids
+        self.current_width = current_width
+
+    async def holds_current_vectors(self) -> bool:
+        return self.current_width
 
     async def list_page_ids(self) -> set[str]:
         return self.ids
@@ -132,6 +136,12 @@ def test_byte_identical_rerender_keeps_its_stored_vector() -> None:
 
 def test_changed_rerender_is_embedded() -> None:
     assert _rerender(_StoreHolding({"same.py"}), "# older body") == ["same.py"]
+
+
+def test_identical_page_is_embedded_after_an_embedder_change() -> None:
+    """Vectors of another width are dropped on the next write; none are kept."""
+    store = _StoreHolding({"same.py"}, current_width=False)
+    assert _rerender(store, "# same.py") == ["same.py"]
 
 
 def test_identical_page_missing_from_the_store_is_embedded() -> None:
@@ -262,3 +272,19 @@ def test_the_keyless_embedder_gets_no_embedding_step() -> None:
     display.on_embed(2, True)
     display.close_embedding()
     assert progress.events == []
+
+
+def test_lancedb_store_compares_its_recorded_width(tmp_path) -> None:
+    from repowise.core.persistence.vector_store.lancedb_store import (
+        LanceDBVectorStore,
+        record_vector_dim,
+    )
+
+    embedder = SimpleNamespace(dimensions=1536)
+    store = LanceDBVectorStore(str(tmp_path), embedder)
+    (tmp_path / f"{store._table_name}.lance").mkdir()
+
+    record_vector_dim(tmp_path, store._table_name, 768)
+    assert asyncio.run(store.holds_current_vectors()) is False
+    record_vector_dim(tmp_path, store._table_name, 1536)
+    assert asyncio.run(store.holds_current_vectors()) is True
