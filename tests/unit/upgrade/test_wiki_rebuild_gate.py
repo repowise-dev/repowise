@@ -31,20 +31,25 @@ def with_rebuild(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(mgr, "STORE_FORMAT_VERSION", 3)
 
 
+def _assess(state: dict):
+    # ``assess`` binds the build's version as a default, so name the patched one.
+    return assess(state, current_store_version=3)
+
+
 def _store(version: int, docs_mode: str = "deterministic", **extra: object) -> dict:
     return {"store_format_version": version, "docs_mode": docs_mode, **extra}
 
 
 def test_rebuild_is_owed_after_the_upgrade(with_rebuild: None) -> None:
     assert pending_wiki_rebuilds(_store(2)) == (_REBUILD,)
-    verdict = assess(_store(2))
+    verdict = _assess(_store(2))
     assert verdict.rebuilds_wiki
     assert verdict.tier == UpgradeTier.AUTO
 
 
 def test_a_store_without_pages_owes_nothing(with_rebuild: None) -> None:
     assert pending_wiki_rebuilds(_store(2, docs_mode="none")) == ()
-    assert not assess(_store(2, docs_mode="none")).rebuilds_wiki
+    assert not _assess(_store(2, docs_mode="none")).rebuilds_wiki
     # And a routine persist moves it straight past the migration.
     assert stamp(_store(2, docs_mode="none"), package_version=None)["store_format_version"] == 3
 
@@ -61,7 +66,7 @@ def test_recorded_rebuild_lets_the_persist_advance(with_rebuild: None) -> None:
     stamp(state, package_version="0.60.0")
     assert state["store_format_version"] == 3
     assert pending_wiki_rebuilds(state) == ()
-    assert assess(state).is_noop
+    assert _assess(state).is_noop
 
 
 def test_rebuild_never_skips_a_reindex_gate(with_rebuild: None) -> None:
@@ -69,7 +74,7 @@ def test_rebuild_never_skips_a_reindex_gate(with_rebuild: None) -> None:
     mark_wiki_rebuilt(state)
     stamp(state, package_version="0.60.0")
     assert state["store_format_version"] == 1
-    assert assess(state).reindex_recommended
+    assert _assess(state).reindex_recommended
 
 
 def test_full_index_satisfies_everything(with_rebuild: None) -> None:
@@ -90,6 +95,6 @@ async def test_apply_auto_leaves_the_rebuild_to_the_update(with_rebuild: None) -
             self.calls.append("drop")
 
     ctx = _Ctx()
-    ran = await apply_auto(assess(_store(2)), ctx)
+    ran = await apply_auto(_assess(_store(2)), ctx)
     assert ran == []
     assert ctx.calls == []
