@@ -131,11 +131,9 @@ def _dead_code_in(hot_files: list[HotFile], signals: OnboardingSignals) -> list[
     a hash order kept fifteen arbitrary findings of the hot set rather than the
     fifteen in the files moving most.
     """
-    found = [
-        {"file_path": hot.path, **finding}
-        for hot in hot_files
-        for finding in signals.dead_code_by_file.get(hot.path, [])
-    ]
+    found: list[dict] = []
+    for hot in hot_files:
+        found.extend({"file_path": hot.path, **f} for f in signals.dead_code_by_file.get(hot.path, []))
     return found[:_MAX_DEAD_CODE]
 
 
