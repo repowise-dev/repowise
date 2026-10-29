@@ -1918,7 +1918,11 @@ def _rescore_after_persist(run: UpdateRun) -> None:
     if health_changed or run.extraction_changed or full_rescore_due(run.state, run.head_ts):
         with timed(run.timings, "rescore"):
             rescored = run_decay_health_rescore(
-                run.repo_path, run.graph_builder, run.parsed_files, run.exclude_patterns
+                run.repo_path,
+                run.graph_builder,
+                run.parsed_files,
+                run.exclude_patterns,
+                timings=run.timings,
             )
     if rescored:
         # No timestamp (git unavailable): keep the existing stamp.

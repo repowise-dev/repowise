@@ -419,7 +419,11 @@ def _rescore_stale_findings(
     if force_full_rescore or full_rescore_due(state, head_ts):
         with timed(timings, "rescore"):
             rescored = run_decay_health_rescore(
-                repo_path, graph_builder, parsed_files or [], exclude_patterns or []
+                repo_path,
+                graph_builder,
+                parsed_files or [],
+                exclude_patterns or [],
+                timings=timings,
             )
     if rescored:
         # Only the time gate reads this, and it treats a non-numeric value as
@@ -983,11 +987,87 @@ async def _persist_full_update_async(
     return await write_full_update(ctx)
 
 
+async def _load_rescore_inputs(
+    session: Any,
+    repo_id: str,
+    repo_path: Any,
+    parsed_files: list,
+    exclude_spec: Any,
+) -> tuple[dict, dict[str, list[Any]], RescoreCoverage]:
+    """Git metadata, stored blame findings and coverage a full re-score reads.
+
+    Drops the git_metadata rows of excluded files from the DB as it reads.
+    """
+    from sqlalchemy import delete, select
+
+    from repowise.core.analysis.health.history_refresh import (
+        BLAME_MARKERS,
+        git_meta_rows_to_map,
+    )
+    from repowise.core.persistence.models import GitMetadata, HealthFinding
+    from repowise.core.pipeline.resume.rehydrate import (
+        attach_commit_set_blame,
+        attach_stored_commit_shas,
+    )
+
+    gm_result = await session.execute(
+        select(GitMetadata).where(GitMetadata.repository_id == repo_id)
+    )
+    git_rows = list(gm_result.scalars().all())
+    excluded_git_paths = [
+        gm.file_path
+        for gm in git_rows
+        if exclude_spec is not None and exclude_spec.match_file(gm.file_path)
+    ]
+    if excluded_git_paths:
+        await session.execute(
+            delete(GitMetadata).where(
+                GitMetadata.repository_id == repo_id,
+                GitMetadata.file_path.in_(excluded_git_paths),
+            )
+        )
+        await session.flush()
+
+    # Every stored column, so a gate added with a new column reaches the
+    # detectors here as it does on a full index.
+    git_meta_map = git_meta_rows_to_map(
+        gm
+        for gm in git_rows
+        if exclude_spec is None or not exclude_spec.match_file(gm.file_path)
+    )
+    # No blame index here, so Split File reads the stored commit sets,
+    # and blames once the candidates stored before the sets existed.
+    await attach_stored_commit_shas(session, repo_id, git_meta_map)
+    attach_commit_set_blame(
+        repo_path,
+        git_meta_map,
+        parsed_files,
+        git_tier=load_state(Path(repo_path)).get("git_tier"),
+    )
+    stored_blame_findings: dict[str, list[HealthFinding]] = {}
+    for finding in (
+        await session.execute(
+            select(HealthFinding).where(
+                HealthFinding.repository_id == repo_id,
+                HealthFinding.biomarker_type.in_(BLAME_MARKERS),
+            )
+        )
+    ).scalars():
+        stored_blame_findings.setdefault(finding.file_path, []).append(finding)
+
+    # Coverage rows persist across a re-score: reload them (and optionally
+    # re-discover a fresh report) so the analyzer does not null them.
+    coverage = await _coverage_for_rescore(session, repo_id, repo_path, parsed_files)
+    return git_meta_map, stored_blame_findings, coverage
+
+
 async def _rescore_health_from_db(
     repo_path: Any,
     graph_builder: Any,
     parsed_files: list,
     exclude_patterns: list[str],
+    *,
+    timings: PhaseTimings | None = None,
 ) -> None:
     """Full-replace health re-score reading git metadata from the DB.
 
@@ -1000,26 +1080,22 @@ async def _rescore_health_from_db(
     full-replaced so rows for newly-excluded files disappear.
 
     The caller supplies an already-built *graph_builder* / *parsed_files* so the
-    graph is rebuilt at most once per update.
+    graph is rebuilt at most once per update. Stages record ``rescore.*`` rows
+    in *timings*, apart from the update's own ``analysis.health.*`` pass.
     """
     import pathspec
 
     exclude_spec = (
         pathspec.PathSpec.from_lines("gitwildmatch", exclude_patterns) if exclude_patterns else None
     )
+    stage_timings = timings.scoped("rescore.") if timings is not None else None
 
     async def _rescore() -> None:
-        from sqlalchemy import delete, select
-
         from repowise.cli.helpers import get_db_url_for_repo
         from repowise.core.analysis.communities import file_community_labels
         from repowise.core.analysis.health import HealthAnalyzer
         from repowise.core.analysis.health.config import HealthConfig
         from repowise.core.analysis.health.coverage import measurement_commit
-        from repowise.core.analysis.health.history_refresh import (
-            BLAME_MARKERS,
-            git_meta_rows_to_map,
-        )
         from repowise.core.persistence import (
             create_engine,
             create_session_factory,
@@ -1031,15 +1107,10 @@ async def _rescore_health_from_db(
             save_coverage_files,
             upsert_git_function_blame_bulk,
         )
-        from repowise.core.persistence.models import GitMetadata, HealthFinding
         from repowise.core.pipeline.persist import (
             persist_graph_nodes,
             refresh_governance_findings,
             save_full_health_report,
-        )
-        from repowise.core.pipeline.resume.rehydrate import (
-            attach_commit_set_blame,
-            attach_stored_commit_shas,
         )
         from repowise.core.workspace.update import get_head_commit
 
@@ -1052,57 +1123,10 @@ async def _rescore_health_from_db(
             repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
             repo_id = repo.id
 
-            gm_result = await session.execute(
-                select(GitMetadata).where(GitMetadata.repository_id == repo_id)
-            )
-            git_rows = list(gm_result.scalars().all())
-            excluded_git_paths = [
-                gm.file_path
-                for gm in git_rows
-                if exclude_spec is not None and exclude_spec.match_file(gm.file_path)
-            ]
-            if excluded_git_paths:
-                await session.execute(
-                    delete(GitMetadata).where(
-                        GitMetadata.repository_id == repo_id,
-                        GitMetadata.file_path.in_(excluded_git_paths),
-                    )
+            with timed(stage_timings, "inputs"):
+                git_meta_map, stored_blame_findings, coverage = await _load_rescore_inputs(
+                    session, repo_id, repo_path, parsed_files, exclude_spec
                 )
-                await session.flush()
-
-            # Every stored column, so a gate added with a new column reaches the
-            # detectors here as it does on a full index.
-            git_meta_map = git_meta_rows_to_map(
-                gm
-                for gm in git_rows
-                if exclude_spec is None or not exclude_spec.match_file(gm.file_path)
-            )
-            # No blame index here, so Split File reads the stored commit sets,
-            # and blames once the candidates stored before the sets existed.
-            await attach_stored_commit_shas(session, repo_id, git_meta_map)
-            attach_commit_set_blame(
-                repo_path,
-                git_meta_map,
-                parsed_files,
-                git_tier=load_state(Path(repo_path)).get("git_tier"),
-            )
-            stored_blame_findings: dict[str, list[HealthFinding]] = {}
-            for finding in (
-                await session.execute(
-                    select(HealthFinding).where(
-                        HealthFinding.repository_id == repo_id,
-                        HealthFinding.biomarker_type.in_(BLAME_MARKERS),
-                    )
-                )
-            ).scalars():
-                stored_blame_findings.setdefault(finding.file_path, []).append(finding)
-
-            # Preserve coverage across a re-score. The previous behaviour
-            # rebuilt the analyzer with no coverage_map, nulling every file's
-            # line/branch coverage even though the coverage_files rows still
-            # existed. Reload them (and optionally re-discover a fresh report)
-            # so coverage survives `repowise update`.
-            coverage = await _coverage_for_rescore(session, repo_id, repo_path, parsed_files)
 
             analyzer = HealthAnalyzer(
                 graph_builder.graph(),
@@ -1120,7 +1144,7 @@ async def _rescore_health_from_db(
                 if (hcfg.disabled_biomarkers or hcfg.rules)
                 else None
             )
-            report = analyzer.analyze(analyzer_config)
+            report = analyzer.analyze(analyzer_config, timings=stage_timings)
 
             console.print(
                 f"Health re-score: [cyan]{len(parsed_files)} files[/cyan], "
@@ -1129,24 +1153,27 @@ async def _rescore_health_from_db(
 
             # Graph nodes first: the plan annotations the writer below stores
             # read each symbol's ``public_api`` from them.
-            await persist_graph_nodes(session, repo_id, graph_builder)
+            with timed(stage_timings, "persist.graph_nodes"):
+                await persist_graph_nodes(session, repo_id, graph_builder)
 
             # Same writer the index's analysis phase uses, so a re-score leaves
             # the derived queues agreeing with the findings it just replaced
             # rather than describing the set it deleted. Read HEAD off disk:
             # this pass just scored the working tree, and the stored column is
             # written by a different step whose ordering is not guaranteed.
-            await save_full_health_report(
-                session,
-                repo_id,
-                report,
-                analyzed_commit=get_head_commit(Path(repo_path)),
-                repo_path=repo_path,
-            )
+            with timed(stage_timings, "persist.health"):
+                await save_full_health_report(
+                    session,
+                    repo_id,
+                    report,
+                    analyzed_commit=get_head_commit(Path(repo_path)),
+                    repo_path=repo_path,
+                )
             # That writer replaced every open finding, the governance ones too,
             # and only the governance pass produces those.
             try:
-                await refresh_governance_findings(session, repo_id)
+                with timed(stage_timings, "persist.governance"):
+                    await refresh_governance_findings(session, repo_id)
             except Exception as exc:
                 console.print(f"[yellow]Governance findings skipped: {exc}[/yellow]")
             # Rows for the files blamed above, so the next re-score reads them.
@@ -1222,7 +1249,9 @@ def _run_full_health_rescore(
     try:
         with timed(timings, "rescore"):
             run_async(
-                _rescore_health_from_db(repo_path, graph_builder, parsed_files, exclude_patterns)
+                _rescore_health_from_db(
+                    repo_path, graph_builder, parsed_files, exclude_patterns, timings=timings
+                )
             )
     except Exception as exc:
         # Return without advancing the fingerprint so the next update retries.
@@ -1421,6 +1450,8 @@ def run_decay_health_rescore(
     graph_builder: Any,
     parsed_files: list,
     exclude_patterns: list[str],
+    *,
+    timings: PhaseTimings | None = None,
 ) -> bool:
     """Periodic full health re-score off the already-built graph (#728).
 
@@ -1431,7 +1462,11 @@ def run_decay_health_rescore(
     is logged and leaves the stamp so the next update retries.
     """
     try:
-        run_async(_rescore_health_from_db(repo_path, graph_builder, parsed_files, exclude_patterns))
+        run_async(
+            _rescore_health_from_db(
+                repo_path, graph_builder, parsed_files, exclude_patterns, timings=timings
+            )
+        )
         return True
     except Exception as exc:
         console.print(f"[yellow]Idle-file health re-score skipped: {exc}[/yellow]")

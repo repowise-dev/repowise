@@ -33,6 +33,7 @@ from repowise.core.persistence.models import (
     PerformanceOpportunity,
     PerformanceSummary,
 )
+from repowise.core.pipeline import PhaseTimings
 
 
 class _EmptyGraphBuilder:
@@ -270,3 +271,23 @@ class TestRescoreKeepsGovernanceFindings:
         await _rescore_health_from_db(git_repo, _EmptyGraphBuilder(), [_parsed_file(git_repo)], [])
 
         assert "ungoverned_hotspot" in await _finding_types(git_repo, repo_id)
+
+
+class TestRescoreTimings:
+    async def test_stages_record_under_the_rescore_prefix(self, git_repo: Path):
+        await _seed_history(git_repo)
+        timings = PhaseTimings()
+
+        await _rescore_health_from_db(
+            git_repo, _EmptyGraphBuilder(), [_parsed_file(git_repo)], [], timings=timings
+        )
+
+        names = set(timings.totals)
+        assert {
+            "rescore.inputs",
+            "rescore.analysis.health.walk",
+            "rescore.persist.graph_nodes",
+            "rescore.persist.health",
+        } <= names
+        # Kept apart from the update's own changed-files health pass.
+        assert not any(name.startswith("analysis.") for name in names)
