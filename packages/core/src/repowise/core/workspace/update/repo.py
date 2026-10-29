@@ -287,7 +287,9 @@ async def _incremental_repo_update(
                 file_count=file_count,
                 dead_code_report=dead_code_report,
                 doc_drift_report=doc_drift_report,
-                health_report=rescored_report or partial_health_report,
+                health_report=(
+                    rescored_report if rescored_report is not None else partial_health_report
+                ),
                 knowledge_graph_result=kg,
             )
         )
