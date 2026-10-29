@@ -2995,3 +2995,59 @@ class TestJsBareCallSkipsClassMembers:
             0.95,
             "self_scope",
         ) in _edges(parsed, tmp_path)
+
+
+class TestJavaStaticImport:
+    def test_a_static_import_binds_the_member_of_the_named_type(self, tmp_path: Path) -> None:
+        """``import static a.Ex.afterCommit`` means ``Ex.afterCommit``, not a nested type's one."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "a/Ex.java": (
+                    "java",
+                    "package a;\npublic class Ex {\n"
+                    "  public static void afterCommit(Runnable r) { r.run(); }\n"
+                    "  private static class Sync {\n"
+                    "    private void afterCommit(Runnable r) { }\n  }\n}\n",
+                ),
+                "b/User.java": (
+                    "java",
+                    "package b;\nimport static a.Ex.afterCommit;\npublic class User {\n"
+                    "  void go(Runnable r) { afterCommit(r); }\n}\n",
+                ),
+            },
+        )
+        _link_imports(parsed, {"b/User.java": {"a.Ex.afterCommit": "a/Ex.java"}})
+        callees = {
+            callee
+            for src, callee, _, _ in _edges(parsed, tmp_path, {"b/User.java": {"a/Ex.java"}})
+            if src == "b/User.java::User::go"
+        }
+        assert callees == {"a/Ex.java::Ex::afterCommit"}
+
+    def test_a_static_import_of_a_nested_type_member_binds_that_type(self, tmp_path: Path) -> None:
+        """``import static a.Ex.Sync.flush`` names the nested type's member, not the outer one's."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "a/Ex.java": (
+                    "java",
+                    "package a;\npublic class Ex {\n"
+                    "  public static class Sync {\n"
+                    "    public static void flush() { }\n  }\n"
+                    "  public static void flush() { }\n}\n",
+                ),
+                "b/User.java": (
+                    "java",
+                    "package b;\nimport static a.Ex.Sync.flush;\npublic class User {\n"
+                    "  void go() { flush(); }\n}\n",
+                ),
+            },
+        )
+        _link_imports(parsed, {"b/User.java": {"a.Ex.Sync.flush": "a/Ex.java"}})
+        callees = {
+            callee
+            for src, callee, _, _ in _edges(parsed, tmp_path, {"b/User.java": {"a/Ex.java"}})
+            if src == "b/User.java::User::go"
+        }
+        assert callees == {"a/Ex.java::Sync::flush"}

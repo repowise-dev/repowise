@@ -1818,6 +1818,9 @@ class CallResolver(
         lookup_name = binding.exported_name or name
         if lookup_name in barrel:
             source_file = barrel[lookup_name]
+        if binding.member_of:
+            # A static import names the member's type; a nested type's same-named member is another.
+            return self._published_by(source_file, binding.member_of, lookup_name)
         return self._published(source_file, lookup_name)
 
     def _link_imported_aliases(self) -> None:
