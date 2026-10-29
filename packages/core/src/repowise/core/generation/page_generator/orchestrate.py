@@ -933,12 +933,7 @@ class _GenerationRun:
 
             # Post-generation: point every cited span at the commit it was read
             # at, and at the forge when the repository has a known remote.
-            try:
-                from ..page_sources import attach_source_links
-
-                attach_source_links(all_pages, self.repo_path)
-            except Exception as exc:
-                log.debug("source_links.failed", error=str(exc))
+            link_sources(all_pages, self.repo_path)
 
             # Post-generation: graph-derived related pages. Runs AFTER
             # interlinking so prose-derived wiki_links win dedup and related
@@ -1041,6 +1036,21 @@ def _stamp_structural_keys(pages: list[GeneratedPage]) -> None:
                 f"{page.page_type!r}): it has no member list and no target "
                 f"path, so there is nothing to identify it by."
             )
+
+
+def link_sources(pages: list[GeneratedPage], repo_path: Any) -> None:
+    """Pin the run's citations to their commit; a failure is said out loud.
+
+    Links are stamped page by page, so a failure partway leaves some pages
+    pinned and others not. That is worth a warning naming how many pages were
+    in hand, not a debug line nobody reads.
+    """
+    from ..page_sources import attach_source_links
+
+    try:
+        attach_source_links(pages, repo_path)
+    except Exception as exc:
+        log.warning("source_links.failed", pages=len(pages), error=str(exc))
 
 
 def _compute_kg_file_scores(kg_ctx: Any) -> dict[str, float]:

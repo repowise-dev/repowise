@@ -185,3 +185,20 @@ def test_a_dotted_path_keeps_its_leading_dot_and_a_port_is_not_a_citation():
     out, cited = ground_span_citations("`.github/ci.py:2-3` on `localhost:8080`", spans)
     assert out == "`.github/ci.py:1-9` on `localhost:8080`"
     assert len(cited) == 1
+
+
+def test_a_failed_link_pass_is_a_warning_naming_the_pages(monkeypatch):
+    from structlog.testing import capture_logs
+
+    from repowise.core.generation import page_sources
+    from repowise.core.generation.page_generator.orchestrate import link_sources
+
+    def boom(_pages, _repo):
+        raise OSError("unreadable .git")
+
+    monkeypatch.setattr(page_sources, "attach_source_links", boom)
+    with capture_logs() as logs:
+        link_sources([SimpleNamespace(metadata={}), SimpleNamespace(metadata={})], "repo")
+    assert [(e["log_level"], e["event"], e["pages"]) for e in logs] == [
+        ("warning", "source_links.failed", 2)
+    ]
