@@ -69,7 +69,7 @@ from .python import PythonReturnTypes
 from .ranges import RangeVariableTypes, _is_its_own_container  # noqa: F401
 
 # Languages whose extensions the extension index holds, keyed on the type extended.
-_EXTENSION_LANGUAGES = frozenset({"csharp", "kotlin"})
+_EXTENSION_LANGUAGES = frozenset({"csharp", "kotlin", "dart"})
 # Members an extension of the same name can never beat: those of Kotlin's
 # ``Any``, which every type has, and the common ones of the builtin types a
 # library declares, which the repo's index cannot see. Not exhaustive.
@@ -251,10 +251,41 @@ class ReceiverTypingMixin(
         Same three scopes as ``_receiver_pair_match``, over the extension index.
         Kotlin has no global one: see ``_kotlin_extension_scope``.
         """
+        type_name, method_name = key
+        lang = self._language_of(file_path)
+        if lang == "dart":
+            if self._reaches_a_member(type_name, method_name):
+                return None
+            repo_types = [
+                path
+                for path, _, _ in self._declared_types_named(type_name)
+                if self._language_of(path) == "dart"
+            ]
+            if len(repo_types) > 1:
+                return None
+            own = getattr(self, "_dart_file_extension_methods", {}).get(file_path, {})
+            if key in own:
+                ext_path, sym_id = file_path, own[key]
+                if not self._writes_one_type(file_path, ext_path, type_name):
+                    return None
+                return sym_id, "same_file"
+            visible = self._visible_files(file_path)
+            matches = [
+                (p, sym_id)
+                for p in visible
+                if (sym_id := getattr(self, "_dart_file_extension_methods", {}).get(p, {}).get(key))
+                is not None
+            ]
+            if len(matches) == 1:
+                ext_path, sym_id = matches[0]
+                if not self._writes_one_type(file_path, ext_path, type_name):
+                    return None
+                return sym_id, "import"
+            return None
+
         site = self._extension_methods.get(key)
         if site is None:
             return None
-        type_name, method_name = key
         if not self._writes_one_type(file_path, site[0], type_name):
             return None
         if self._reaches_a_member(type_name, method_name):
@@ -262,7 +293,7 @@ class ReceiverTypingMixin(
         own = self._file_extension_methods.get(file_path, {})
         if key in own:
             return own[key], "same_file"
-        if self._language_of(file_path) == "kotlin":
+        if lang == "kotlin":
             return self._kotlin_extension_scope(file_path, site, method_name)
         merged = self._merged_extension_methods_for(file_path)
         if key in merged:

@@ -372,6 +372,7 @@ class CallResolver(
         # site the instance method the language dispatches to should own.
         self._extension_methods: dict[tuple[str, str], tuple[str, str]] = {}
         self._file_extension_methods: dict[str, dict[tuple[str, str], str]] = {}
+        self._dart_file_extension_methods: dict[str, dict[tuple[str, str], str]] = {}
         self._merged_import_extensions: dict[str, dict[tuple[str, str], str]] = {}
 
         # Global symbol index: {name: [symbol_ids]} — for Tier 3
@@ -582,7 +583,7 @@ class CallResolver(
                 self._global_methods[key].append((path, index_id))
 
             extended = (
-                self._csharp_extended_type(sym)
+                self._csharp_extended_type(sym) or self._dart_extended_type(sym)
                 if sym.parent_name
                 else self._kotlin_extended_type(sym)
             )
@@ -620,6 +621,23 @@ class CallResolver(
         if extended is None or not is_resolvable_type_name(extended, "csharp"):
             return None
         return extended if extended in self._csharp_type_names else None
+
+    def _dart_extended_type(self, sym: Symbol) -> str | None:
+        """The bare type a Dart extension method extends, or None."""
+        if sym.language != "dart" or not sym.parent_name:
+            return None
+        parent_id = _extract_class_id(sym.id)
+        if not parent_id:
+            return None
+        parent = self._symbols_by_id.get(parent_id)
+        if parent is None or not parent.signature.startswith("extension "):
+            return None
+        _, _, after_on = parent.signature.partition(" on ")
+        if not after_on:
+            return None
+        raw_type = after_on.strip().rstrip("?")
+        bare = bare_type_name(raw_type) or raw_type
+        return bare.rstrip("?") or None
 
     def _kotlin_extended_type(self, sym: Symbol) -> str | None:
         """The type a top-level Kotlin extension function extends, a library one included.
@@ -688,6 +706,9 @@ class CallResolver(
         across files is, and stays refused.
         """
         for key, sites in candidates.items():
+            for path, sym_id in sites:
+                if self._language_of(path) == "dart":
+                    self._dart_file_extension_methods.setdefault(path, {})[key] = sym_id
             if len({sym_id for _, sym_id in sites}) != 1:
                 continue
             path, sym_id = next(iter(sites))
