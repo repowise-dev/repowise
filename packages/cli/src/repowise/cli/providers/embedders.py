@@ -11,6 +11,24 @@ from repowise.cli.providers.keys import (
     resolve_embedder_api_key,
 )
 
+#: Once-per-invocation gate for the degradation warning in ``build_embedder``.
+#: One ``repowise update`` builds the embedder for its decision store and again
+#: for the deterministic page path, and a workspace run builds one per repo, so
+#: printing the full warning at every site stacks the same sentence over and
+#: over and buries the signal. The first fallback in a process reports it.
+_degradation_warned = False
+
+
+def reset_degradation_warning() -> None:
+    """Clear the once-per-invocation gate.
+
+    The gate is process-wide so the warning survives every build inside one CLI
+    invocation, but a process that runs several logical invocations (tests, an
+    embedded runner) needs a way to arm it again.
+    """
+    global _degradation_warned
+    _degradation_warned = False
+
 
 def _embedder_kwargs(embedder_name: str, repo_path: Any = None) -> dict[str, Any]:
     """Constructor kwargs, from the resolver the servers share."""
@@ -250,11 +268,15 @@ def build_embedder(embedder_name_resolved: str, repo_path: Any = None) -> Any:
                 places = "\n".join(f"  · {place}" for place in lookup.searched)
                 searched = f"\nNo API key was found in any of:\n{places}"
 
-        err_console.print(
-            f"[yellow]Embedder '{embedder_name_resolved}' could not be built:[/yellow] "
-            f"{type(exc).__name__}: {exc}{searched}\n"
-            "Falling back to keyless embeddings, which means [bold]no semantic search[/bold] "
-            "for this run.\nFull-text and symbol search are unaffected. Fix the key or "
-            "endpoint and run [cyan]repowise reindex[/cyan]\nto restore semantic search."
-        )
+        # Once per invocation, not per site: see ``_degradation_warned``.
+        global _degradation_warned
+        if not _degradation_warned:
+            _degradation_warned = True
+            err_console.print(
+                f"[yellow]Embedder '{embedder_name_resolved}' could not be built:[/yellow] "
+                f"{type(exc).__name__}: {exc}{searched}\n"
+                "Falling back to keyless embeddings, which means [bold]no semantic search[/bold] "
+                "for this run.\nFull-text and symbol search are unaffected. Fix the key or "
+                "endpoint and run [cyan]repowise reindex[/cyan]\nto restore semantic search."
+            )
         return KeylessEmbedder()
