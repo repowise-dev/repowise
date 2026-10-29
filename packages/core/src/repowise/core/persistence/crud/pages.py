@@ -7,6 +7,7 @@ every public name, so existing imports are unaffected.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -639,6 +640,19 @@ async def set_page_pinned(session: AsyncSession, page_id: str, pinned: bool) -> 
     return page
 
 
+@dataclass(frozen=True)
+class PageListing:
+    """Which pages a listing returns, and in what order and window."""
+
+    page_type: str | None = None
+    has_prose: bool | None = None
+    include_tombstones: bool = True
+    limit: int = 100
+    offset: int = 0
+    sort_by: str = "updated_at"
+    order: str = "desc"
+
+
 async def list_pages(
     session: AsyncSession,
     repository_id: str,
@@ -666,9 +680,7 @@ async def list_pages(
     reader-facing count or listing, where a tombstoned page (its file is gone)
     should not be shown or counted.
     """
-    q = _filter_page_listing(
-        select(Page),
-        repository_id,
+    listing = PageListing(
         page_type=page_type,
         has_prose=has_prose,
         include_tombstones=include_tombstones,
@@ -677,6 +689,7 @@ async def list_pages(
         sort_by=sort_by,
         order=order,
     )
+    q = _filter_page_listing(select(Page), repository_id, listing)
     result = await session.execute(q)
     return list(result.scalars().all())
 
@@ -711,16 +724,7 @@ SUMMARY_METADATA_KEYS = ("layer_id", "is_chapter")
 
 
 async def list_page_summaries(
-    session: AsyncSession,
-    repository_id: str,
-    *,
-    page_type: str | None = None,
-    has_prose: bool | None = None,
-    include_tombstones: bool = True,
-    limit: int = 100,
-    offset: int = 0,
-    sort_by: str = "updated_at",
-    order: str = "desc",
+    session: AsyncSession, repository_id: str, listing: PageListing
 ) -> list[Any]:
     """:func:`list_pages` as column rows, without ``content``.
 
@@ -732,17 +736,7 @@ async def list_page_summaries(
     """
     # The window is picked over ids first: sorting the full rows would carry
     # every page's length and metadata blob through the sort on every trip.
-    window = _filter_page_listing(
-        select(Page.id),
-        repository_id,
-        page_type=page_type,
-        has_prose=has_prose,
-        include_tombstones=include_tombstones,
-        limit=limit,
-        offset=offset,
-        sort_by=sort_by,
-        order=order,
-    )
+    window = _filter_page_listing(select(Page.id), repository_id, listing)
     mentions_key = or_(*(Page.metadata_json.contains(k) for k in SUMMARY_METADATA_KEYS))
     q = (
         select(
@@ -751,38 +745,28 @@ async def list_page_summaries(
             case((mentions_key, Page.metadata_json), else_=None).label("metadata_json"),
         )
         .where(Page.id.in_(window.scalar_subquery()))
-        .order_by(*_listing_order(sort_by, order))
+        .order_by(*_listing_order(listing.sort_by, listing.order))
     )
     return list((await session.execute(q)).all())
 
 
-def _filter_page_listing(
-    q: Any,
-    repository_id: str,
-    *,
-    page_type: str | None,
-    has_prose: bool | None,
-    include_tombstones: bool,
-    limit: int,
-    offset: int,
-    sort_by: str,
-    order: str,
-) -> Any:
+def _filter_page_listing(q: Any, repository_id: str, listing: PageListing) -> Any:
     """The filters, order and window shared by both page listings."""
     q = q.where(Page.repository_id == repository_id)
-    if page_type is not None:
-        q = q.where(Page.page_type == page_type)
-    if not include_tombstones:
+    if listing.page_type is not None:
+        q = q.where(Page.page_type == listing.page_type)
+    if not listing.include_tombstones:
         q = q.where(Page.freshness_status != "tombstone")
-    if has_prose is not None:
+    if listing.has_prose is not None:
         from repowise.core.generation.models import MODEL_WRITTEN_PAGE_TYPES
 
         q = q.where(Page.page_type.in_(sorted(MODEL_WRITTEN_PAGE_TYPES)))
-        if has_prose:
+        if listing.has_prose:
             q = q.where(Page.provider_name != "template")
         else:
             q = q.where(Page.provider_name == "template")
-    return q.order_by(*_listing_order(sort_by, order)).limit(limit).offset(offset)
+    order = _listing_order(listing.sort_by, listing.order)
+    return q.order_by(*order).limit(listing.limit).offset(listing.offset)
 
 
 def _listing_order(sort_by: str, order: str) -> tuple[Any, Any]:
