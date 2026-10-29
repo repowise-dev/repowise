@@ -133,7 +133,8 @@ class RepoUpdateResult:
     git_history_refreshed: bool = False
     # Why the update could not apply, set only when the caller turned off the
     # full-index fallback: "not_indexed", "config_changed", "base_missing" or
-    # "update_failed". ``skipped_reason`` is then "full_index_required".
+    # "update_failed". ``skipped_reason`` is then "full_index_required", and
+    # ``error`` carries the exception on "update_failed".
     full_index_reason: str | None = None
     # True when every file's health was re-scored this run, so the caller can
     # stamp ``last_full_rescore_at`` / ``health_analyzer_version``.
@@ -512,8 +513,9 @@ async def update_single_repo_index(
         )
 
     reason = _full_index_reason(repo_path, drift, base_ref, has_persisted_index)
+    update_error: str | None = None
     if reason is None:
-        incremental_result = await _try_incremental_update(
+        incremental_result, update_error = await _try_incremental_update(
             repo_path,
             state,
             str(base_ref),
@@ -533,6 +535,7 @@ async def update_single_repo_index(
             updated=False,
             skipped_reason="full_index_required",
             full_index_reason=reason,
+            error=update_error,
         )
 
     return await _full_index_update(
@@ -612,10 +615,7 @@ def _drift_requirements(
     )
     require_health_success = requires_full_reindex and (
         changed_dependencies is None
-        or bool(
-            {"traversal", "git_history", "health", "other"}
-            & (changed_dependencies or set())
-        )
+        or bool({"traversal", "git_history", "health", "other"} & (changed_dependencies or set()))
     )
     return _ConfigDrift(requires_full_reindex, require_git_success, require_health_success)
 
@@ -629,10 +629,10 @@ async def _try_incremental_update(
     *,
     products_sink: list[UpdateProducts] | None = None,
     rescore_health: bool = False,
-) -> RepoUpdateResult | None:
-    """The incremental update's result, or ``None`` to fall back to the full pipeline."""
+) -> tuple[RepoUpdateResult | None, str | None]:
+    """The incremental update's result, or ``None`` and the error to fall back on."""
     try:
-        return await _incremental_repo_update(
+        result = await _incremental_repo_update(
             repo_path,
             state=state,
             base_ref=base_ref,
@@ -642,13 +642,14 @@ async def _try_incremental_update(
             products_sink=products_sink,
             rescore_health=rescore_health,
         )
-    except Exception:
+    except Exception as exc:
         _log.warning(
             "Incremental update failed for %s — falling back to the full pipeline",
             repo_path,
             exc_info=True,
         )
-    return None
+        return None, f"{type(exc).__name__}: {exc}"
+    return result, None
 
 
 async def _full_index_update(

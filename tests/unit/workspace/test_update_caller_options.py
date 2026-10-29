@@ -130,7 +130,10 @@ def test_no_fallback_reports_full_index_needed(
     assert result.updated is False
     assert result.skipped_reason == "full_index_required"
     assert result.full_index_reason == reason
-    assert result.error is None
+    if setup == "update_failed":
+        assert result.error == "RuntimeError: incremental exploded"
+    else:
+        assert result.error is None
     assert sink == []
 
 
