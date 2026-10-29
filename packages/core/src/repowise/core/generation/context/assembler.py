@@ -1174,13 +1174,7 @@ def _resolved_call_sites(symbol: Symbol, graph: Any) -> list[dict]:
         ]
     except Exception:
         return []
+    # One entry per using symbol (the graph keeps one edge per pair), so the
+    # count matches what ``symbol_use`` ranked the symbol by.
     scored.sort(key=lambda s: (-s[0], s[1]["caller_file"], s[1]["caller"]))
-    seen: set[tuple[str, str]] = set()
-    unique: list[dict] = []
-    for _, site in scored:
-        key = (site["caller_file"], site["caller"])
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(site)
-    return unique
+    return [site for _, site in scored]
