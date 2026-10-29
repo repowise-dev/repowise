@@ -545,3 +545,35 @@ def test_a_client_hanging_up_is_not_an_error_exit(monkeypatch, tmp_path: Path) -
 
     assert result.exit_code == 0
     assert "Traceback" not in result.output
+
+
+def test_mcp_cli_sse_transport_prints_deprecation_notice(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """SSE still starts, and says what replaces it before it does."""
+    (tmp_path / ".repowise").mkdir()
+    monkeypatch.setattr("repowise.server.mcp_server.run_mcp", lambda **kwargs: None)
+
+    result = CliRunner().invoke(cli, ["mcp", str(tmp_path), "--transport", "sse"])
+
+    assert result.exit_code == 0
+    # Normalised because rich wraps the notice to the console width.
+    flat = " ".join(result.output.split())
+    assert "sse is deprecated" in flat
+    assert "use --transport streamable-http" in flat
+
+
+def test_mcp_cli_streamable_http_prints_no_deprecation_notice(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    (tmp_path / ".repowise").mkdir()
+    monkeypatch.setattr("repowise.server.mcp_server.run_mcp", lambda **kwargs: None)
+
+    result = CliRunner().invoke(
+        cli, ["mcp", str(tmp_path), "--transport", "streamable-http"]
+    )
+
+    assert result.exit_code == 0
+    assert "deprecated" not in result.output
