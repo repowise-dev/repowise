@@ -23,8 +23,7 @@ def _native_edges(graph: Any) -> tuple[list[tuple[str, str, float]], dict[str, A
         return key
 
     edges = [
-        (encode(u), encode(v), float(w))
-        for u, v, w in graph.edges(data="weight", default=1.0)
+        (encode(u), encode(v), float(w)) for u, v, w in graph.edges(data="weight", default=1.0)
     ]
     return edges, originals
 
@@ -34,10 +33,10 @@ def leiden_partition(graph: Any, seed: int) -> dict[Any, int]:
 
     Raises ImportError when ``graspologic_native`` is not installed.
     """
-    import graspologic_native
-
     if graph.is_directed() or graph.is_multigraph():
         raise ValueError("Only undirected non-multi-graph networkx graphs are supported")
+    import graspologic_native
+
     edges, originals = _native_edges(graph)
     _quality, partition = graspologic_native.leiden(edges=edges, seed=seed)
     return {originals[key]: community for key, community in partition.items()}

@@ -17,7 +17,7 @@ from pathlib import Path
 import networkx as nx
 import pytest
 
-from repowise.core.analysis._leiden import leiden_partition
+from repowise.core.analysis._leiden import _native_edges, leiden_partition
 
 _HAS_NATIVE = importlib.util.find_spec("graspologic_native") is not None
 
@@ -53,10 +53,23 @@ def test_partition_matches_the_graspologic_wrapper(graph: nx.Graph) -> None:
     assert leiden_partition(graph, seed=42) == expected
 
 
-@needs_native
 def test_directed_graphs_are_rejected() -> None:
     with pytest.raises(ValueError):
         leiden_partition(nx.DiGraph([("a", "b")]), seed=42)
+
+
+def test_edges_are_encoded_as_strings_with_a_default_weight() -> None:
+    graph = nx.Graph()
+    graph.add_edge(1, 2, weight=3)
+    graph.add_edge(2, (3, 4))
+    edges, originals = _native_edges(graph)
+    assert sorted(edges) == [("1", "2", 3.0), ("2", "(3, 4)", 1.0)]
+    assert originals == {"1": 1, "2": 2, "(3, 4)": (3, 4)}
+
+
+def test_nodes_with_the_same_str_are_rejected() -> None:
+    with pytest.raises(ValueError, match="collision"):
+        _native_edges(nx.Graph([(1, "1")]))
 
 
 @needs_native
