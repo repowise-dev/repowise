@@ -30,7 +30,7 @@ function page(sources: unknown[]): DocPage {
     metadata: { sources, sources_commit: "0123456789abcdef" },
     created_at: "2026-08-01T00:00:00Z",
     updated_at: "2026-08-01T00:00:00Z",
-  } as DocPage;
+  } as unknown as DocPage;
 }
 
 function renderReader(p: DocPage, pages: DocPage[] = []) {
