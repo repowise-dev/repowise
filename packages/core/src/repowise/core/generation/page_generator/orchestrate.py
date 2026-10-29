@@ -118,6 +118,9 @@ class _GenerationRun:
         self.gen = gen
         self.config = gen._config
         self.vector_store = gen._vector_store
+        # The page ids the store holds, read once on first need. See
+        # ``_new_vectors_only``.
+        self._stored_vector_ids: set[str] | None = None
         # Scoped generation: when set, a level emits a page only if its id is
         # in this set (and not already completed). None means "every page the
         # selection allows", the historical behaviour. The whole repo is still
@@ -774,6 +777,8 @@ class _GenerationRun:
                 # swallow here hid a 300k-token request rejection that silently lost
                 # every file-page embedding on init (`repowise reindex` repairs).
                 if embed_items and self.vector_store is not None:
+                    embed_items = await _new_vectors_only(self, embed_items, results)
+                if embed_items and self.vector_store is not None:
                     if self.on_embed is not None:
                         self.on_embed(len(embed_items), False)
                     with timed(self.timings, "generation.embed"):
@@ -1095,6 +1100,38 @@ def _compute_kg_file_scores(kg_ctx: Any) -> dict[str, float]:
                     if bonus > scores.get(fp, 0.0):
                         scores[fp] = bonus
     return scores
+
+
+async def _new_vectors_only(run: Any, items: list, pages: list) -> list:
+    """*items* minus pages whose stored vector already embeds the same page.
+
+    An update re-renders a changed file's neighbours, which mostly come out
+    byte-identical to their stored rows. Only a page the store already holds
+    is skipped, so a fresh or rebuilt store still gets every vector.
+    """
+    if not getattr(run.vector_store, "persists_across_runs", False):
+        return items
+    same = {
+        page.page_id
+        for page in pages
+        if isinstance(page, GeneratedPage) and _same_as_prior(page, run.gen)
+    }
+    if not same:
+        return items
+    if run._stored_vector_ids is None:
+        run._stored_vector_ids = await run.vector_store.list_page_ids()
+    current = same & run._stored_vector_ids
+    return [item for item in items if item[0] not in current]
+
+
+def _same_as_prior(page: GeneratedPage, gen: Any) -> bool:
+    """Whether *page* rendered byte-identical to its stored row."""
+    prior = gen._prior_pages.get(page.page_id)
+    return (
+        prior is not None
+        and prior.content == page.content
+        and (prior.digest or "") == (page.digest or "")
+    )
 
 
 def _embed_item(page: GeneratedPage) -> tuple[str, str, dict] | None:

@@ -111,7 +111,7 @@ def generate_pages(opts: UpdateOptions, run: UpdateRun, docs: DocsPass) -> None:
                 repo_name,
                 on_page_done=progress.on_page_done,
                 on_total_known=progress.on_total_known,
-                git_meta_map=run.git_meta_map,
+                git_meta_map=run.render_git_meta,
                 repo_path=repo_path,
                 on_page_ready=checkpointer.on_page_ready,
                 on_warning=_generation_warning_handler(
@@ -196,7 +196,7 @@ def render_stale_structure(opts: UpdateOptions, run: UpdateRun, docs: DocsPass) 
                 source_map=run.source_map,
                 graph_builder=run.graph_builder,
                 repo_structure=run.repo_structure,
-                git_meta_map=run.git_meta_map,
+                git_meta_map=run.render_git_meta,
                 page_ids=page_ids,
                 cfg=run.cfg,
                 concurrency=opts.concurrency,

@@ -485,3 +485,18 @@ async def test_decision_extraction_completion_tracking(sf, monkeypatch):
 
     assert await ctrl2.has_completed_decision_extraction() is True
 
+
+
+async def test_rehydrate_git_meta_map_narrows_to_paths(sf):
+    repo_id = await _make_repo(sf)
+    async with get_session(sf) as session:
+        await upsert_git_metadata_bulk(
+            session,
+            repo_id,
+            [{"file_path": "src/a.py"}, {"file_path": "src/b.py"}],
+        )
+
+    async with get_session(sf) as session:
+        meta = await rehydrate_git_meta_map(session, repo_id, ["src/b.py", "src/gone.py"])
+
+    assert set(meta) == {"src/b.py"}

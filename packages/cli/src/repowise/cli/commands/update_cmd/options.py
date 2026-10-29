@@ -88,6 +88,8 @@ class UpdateRun:
     repo_structure: Any = None
     file_count: int = 0
     git_meta_map: Any = None
+    # git_meta_map plus the stored rows of every re-rendered file; render only.
+    render_git_meta: Any = None
     cascade_budget: int | None = None
     affected: Any = None
     partial_health_report: Any = None

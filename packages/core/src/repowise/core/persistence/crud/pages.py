@@ -19,7 +19,7 @@ from ..models import (
     _new_uuid,
     _now_utc,
 )
-from ._shared import _parse_dt
+from ._shared import _BATCH_SIZE, _parse_dt
 
 # ---------------------------------------------------------------------------
 # Page CRUD (with versioning)
@@ -320,6 +320,7 @@ async def upsert_page(
 async def load_prior_pages(
     session: AsyncSession,
     repository_id: str,
+    page_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """Return a ``page_id → PriorPage`` map for cross-run cache reuse.
 
@@ -330,16 +331,15 @@ async def load_prior_pages(
     nothing has been generated yet. Rows a model never wrote (``template``
     provider — keyless stubs, or stubs left by failed provider calls) carry
     their ``provider_name`` so the reuse gate can refuse to copy them
-    (issue #1089).
+    (issue #1089). *page_ids* narrows the read to those pages.
     """
     # Import lazily — keeps persistence independent of generation models at
     # module-load time.
     from repowise.core.generation.models import STUB_FALLBACK_ERROR
     from repowise.core.generation.page_generator import PriorPage
 
-    result = await session.execute(select(Page).where(Page.repository_id == repository_id))
     prior: dict[str, Any] = {}
-    for row in result.scalars():
+    for row in await _prior_rows(session, repository_id, page_ids):
         try:
             metadata = json.loads(row.metadata_json or "{}")
         except (TypeError, ValueError):
@@ -362,6 +362,20 @@ async def load_prior_pages(
             provider_name=row.provider_name,
         )
     return prior
+
+
+async def _prior_rows(
+    session: AsyncSession, repository_id: str, page_ids: list[str] | None
+) -> list[Page]:
+    query = select(Page).where(Page.repository_id == repository_id)
+    if page_ids is None:
+        return list((await session.execute(query)).scalars())
+    rows: list[Page] = []
+    unique = list(dict.fromkeys(page_ids))
+    for i in range(0, len(unique), _BATCH_SIZE):
+        batch = query.where(Page.id.in_(unique[i : i + _BATCH_SIZE]))
+        rows.extend((await session.execute(batch)).scalars())
+    return rows
 
 
 async def upsert_page_from_generated(

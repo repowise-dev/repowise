@@ -1382,6 +1382,15 @@ def _add_stale_pages(run: UpdateRun, stale_renderer_paths: list[str]) -> None:
     stale_extra = list(dict.fromkeys([*stale_renderer_paths, *run.stale_db_paths]))
     if stale_extra:
         run.affected.regenerate = list(dict.fromkeys([*run.affected.regenerate, *stale_extra]))
+        _drop_from_decay(run.affected, set(stale_extra))
+
+
+def _drop_from_decay(affected, rendered: set[str]) -> None:
+    """A page re-rendered this run is current; decaying it would mark it stale."""
+    # The budget overflow leads decay_only; keep its count in step.
+    overflow = affected.decay_only[: affected.stale_due_to_budget]
+    affected.stale_due_to_budget -= sum(p in rendered for p in overflow)
+    affected.decay_only = [p for p in affected.decay_only if p not in rendered]
 
 
 def _widen_for_full_render(run: UpdateRun) -> None:
@@ -1425,8 +1434,8 @@ def _report_page_plan(run: UpdateRun) -> None:
 
 def _analyze_changes(run: UpdateRun) -> None:
     """Partial health, dead code and doc drift over the changed files."""
-    # Unchanged files' pages need the complexity only the store still holds.
-    from .deterministic import hydrate_symbol_complexity
+    # Unchanged files' pages need the complexity and git rows only the store still holds.
+    from .deterministic import hydrate_symbol_complexity, with_stored_git_meta
 
     hydrate_symbol_complexity(
         run.repo_path,
@@ -1444,6 +1453,9 @@ def _analyze_changes(run: UpdateRun) -> None:
     drop_transient_git_signals(list(run.git_meta_map.values()))
     # No new commit: an empty map keeps the persist from walking for commits.
     run.persisted_git_meta = {} if run.working_tree_only else run.git_meta_map
+    run.render_git_meta = with_stored_git_meta(
+        run.repo_path, run.git_meta_map, run.affected.regenerate
+    )
 
 
 def _run_partial_analyses(run: UpdateRun) -> None:
@@ -1599,7 +1611,7 @@ def _render_template_pages(opts: UpdateOptions, run: UpdateRun, out: _TemplatePa
     )
 
     _stage(run, "generate")
-    prior_ids = load_prior_page_ids(run.repo_path)
+    prior_ids = load_prior_page_ids(run.repo_path, content_paths=run.affected.regenerate)
     full_scope = run.full_generation or run.renderer_changed
 
     degraded = run.degraded
@@ -1648,7 +1660,7 @@ def _render_template_page_set(
         source_map=run.source_map,
         graph_builder=run.graph_builder,
         repo_structure=run.repo_structure,
-        git_meta_map=run.git_meta_map,
+        git_meta_map=run.render_git_meta,
         regenerate_paths=run.affected.regenerate,
         cfg=run.cfg,
         concurrency=opts.concurrency,
@@ -1670,7 +1682,7 @@ def _render_template_page_set(
                 source_map=run.source_map,
                 graph_builder=run.graph_builder,
                 repo_structure=run.repo_structure,
-                git_meta_map=run.git_meta_map,
+                git_meta_map=run.render_git_meta,
                 page_ids=structure_ids,
                 cfg=run.cfg,
                 concurrency=opts.concurrency,
