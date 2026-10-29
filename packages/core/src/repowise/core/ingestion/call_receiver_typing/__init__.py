@@ -44,7 +44,11 @@ from ..languages.receiver_types import (
 )
 from ..models import STRING_LITERAL_RECEIVER, CallSite, NamedBinding, ParsedFile, Symbol
 from ..resolved_call import ResolvedCall
-from ..return_types import declared_return_type, signature_parameter_count
+from ..return_types import (
+    declared_return_type,
+    signature_parameter_count,
+    signature_parameter_range,
+)
 from ..symbol_identity import id_segment_name
 from ..type_names import (
     POINTER_LIKE_MEMBERS,
@@ -170,6 +174,15 @@ def _body_depth(marks: ScopeMarks, start_line: int) -> int:
     """The brace depth of the statements directly in the body opening on *start_line*."""
     depths = marks.line_depths
     return (depths[start_line] if start_line < len(depths) else 0) + 1
+
+
+def _admits(symbol: Symbol, argument_count: int | None) -> bool:
+    """Could *symbol*'s parameters take *argument_count* arguments? Unknown counts could."""
+    admitted = signature_parameter_range(symbol.signature or "", symbol.language)
+    if argument_count is None or admitted is None:
+        return True
+    fewest, most = admitted
+    return fewest <= argument_count and (most is None or argument_count <= most)
 
 
 def _enclosing_id(symbol_id: str) -> str:
@@ -387,6 +400,37 @@ class ReceiverTypingMixin(
             return self._cpp_base_class_target(call, caller_id, bare)
         return found
 
+    def _member_target(
+        self, typing_file: str, call: CallSite, caller_id: str, type_name: str, language: str
+    ) -> tuple[str, str] | None:
+        """``_typed_receiver_target``, then for C# the method a base type declares."""
+        found = self._typed_receiver_target(typing_file, call, caller_id, type_name)
+        if found is None and language == "csharp":
+            return self._csharp_base_type_target(typing_file, call, caller_id, type_name)
+        return found
+
+    def _csharp_base_type_target(
+        self, file_path: str, call: CallSite, caller_id: str, type_name: str
+    ) -> tuple[str, str] | None:
+        """The one ancestor method a typed C# receiver reaches when its type lacks it.
+
+        C# binds an applicable inherited instance method before any extension.
+        Only for the repository's one type of that name, unbound by an external
+        import, and refused when that type declares the method itself: its own
+        overloads were what the tiers above asked for. Two ancestors declaring
+        it (an override among them) refuse. A chain reaches ancestors through
+        ``_csharp_chain_member`` instead.
+        """
+        if id_segment_name(type_name) in self._externally_bound_names(file_path):
+            return None
+        type_id = self._unique_type_id(type_name, "csharp")
+        if type_id is None or self._declares(type_id, call.target_name) is not None:
+            return None
+        hit = self._ancestor_method(type_id, call.target_name, caller_id)
+        if hit is None or not _admits(self._symbols_by_id[hit], call.argument_count):
+            return None
+        return hit, "global"
+
     def _cpp_base_class_target(
         self, call: CallSite, caller_id: str, bare: str
     ) -> tuple[str, str] | None:
@@ -515,7 +559,7 @@ class ReceiverTypingMixin(
         if self._means_the_wrapper(file_path, caller_id, language, call, receiver_name, scope):
             return None
 
-        found = self._typed_receiver_target(typing_file, call, caller_id, type_name)
+        found = self._member_target(typing_file, call, caller_id, type_name, language)
         if found is None:
             # Last, because C# and Kotlin prefer a member to an extension.
             return self._extension_call(file_path, call, caller_id, type_name)[1]
