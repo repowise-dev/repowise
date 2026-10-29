@@ -316,31 +316,51 @@ def nearest_head(target_path: str, heads: Container[str]) -> str | None:
     return None
 
 
-def _reader_ranks(
+# Where a top-level chapter's import balance is kept between runs. Measured
+# where the import graph is already in memory (a full generation) and reused by
+# every later rebuild, which then needs no edge read: the top-level chapters
+# only change when module pages do, and module pages only change in generation.
+_BALANCE_KEY = "chapter_import_balance"
+
+
+def _chapter_balances(
     top: dict[str, tuple[list[str], str]],
-    import_edges: Iterable[tuple[str, str]],
+    pages: dict[str, TreeNode | GeneratedPage],
+    import_edges: Iterable[tuple[str, str]] | None,
+) -> dict[str, int]:
+    """Each runtime top-level chapter's import balance, measured or stored.
+
+    With *import_edges*, measured and stamped on the page. Without, read back
+    from the stamp; a page that never had one counts as balanced (zero).
+    """
+    runtime = {pid: files for pid, (files, layer) in top.items() if not is_support_layer(layer)}
+    if import_edges is None:
+        return {pid: int(pages[pid].metadata.get(_BALANCE_KEY) or 0) for pid in runtime}
+    balance = import_balance(
+        {f: pid for pid, files in runtime.items() for f in files}, import_edges
+    )
+    for pid in runtime:
+        pages[pid].metadata[_BALANCE_KEY] = balance[pid]
+    return {pid: balance[pid] for pid in runtime}
+
+
+def _reader_ranks(
+    top: dict[str, tuple[list[str], str]], balance: dict[str, int]
 ) -> dict[str, tuple[int, ...]]:
     """Sort keys for the top-level chapters, in the order a reader wants them.
 
-    *top* maps each top-level module page to its files and its layer. The path
-    order this replaces read a repository's engine fifteenth, after its editor
-    extension. A reader wants the opposite of a dependency diagram: what
-    everything else is built on first, then what is built on it, then support
-    material (tests, docs, tooling) last. "Built on" is measured from the
-    import edges between these chapters' files, the same balance the layer
-    spine is ordered by. Within a tie the larger chapter comes first, since it
-    is the one a newcomer meets most.
+    *top* maps each top-level module page to its files and its layer;
+    *balance* holds the runtime ones' import balance (see
+    :func:`_chapter_balances`). The path order this replaces read a
+    repository's engine fifteenth, after its editor extension. A reader wants
+    the opposite of a dependency diagram: what everything else is built on
+    first, then what is built on it, then support material (tests, docs,
+    tooling) last. "Built on" is the import balance between these chapters'
+    files, the same measure the layer spine is ordered by. Within a tie the
+    larger chapter comes first, since it is the one a newcomer meets most.
     """
-    runtime = {pid: v for pid, v in top.items() if not is_support_layer(v[1])}
-    balance = import_balance(
-        {f: pid for pid, (files, _layer) in runtime.items() for f in files}, import_edges
-    )
     return {
-        pid: (
-            int(pid not in runtime),
-            -balance[pid],
-            -len(files),
-        )
+        pid: (int(pid not in balance), -balance.get(pid, 0), -len(files))
         for pid, (files, _layer) in top.items()
     }
 
@@ -359,7 +379,7 @@ def _subtree_files(target_path: str, members: list[str], file_targets: list[str]
 
 def assign_page_tree(
     pages: list[GeneratedPage] | list[TreeNode],
-    import_edges: Iterable[tuple[str, str]] = (),
+    import_edges: Iterable[tuple[str, str]] | None = None,
 ) -> None:
     """Fill in ``parent_page_id``, ``display_order`` and ``section_number``.
 
@@ -371,7 +391,8 @@ def assign_page_tree(
 
     *import_edges* are ``(src, dst)`` file import edges. They order the
     top-level chapters for a reader (see :func:`_reader_ranks`) and nothing
-    else; without them the top level keeps the namer's order, by size.
+    else. Pass them where the graph is in memory; without them the balance
+    stamped by the last run that had them is reused.
     """
     by_type: dict[str, list[GeneratedPage]] = {}
     for page in pages:
@@ -488,7 +509,8 @@ def assign_page_tree(
         page.parent_page_id = head_at[head] if head else root_id
         if page.parent_page_id == root_id:
             top[page.page_id] = (members, module_layer)
-    reader_rank = _reader_ranks(top, import_edges)
+    by_id = {page.page_id: page for page in module_pages}
+    reader_rank = _reader_ranks(top, _chapter_balances(top, by_id, import_edges))
 
     # A spotlight belongs to the file it documents: "path/to/file.py::Symbol".
     # The file's own page may not exist: selection can spotlight a symbol in a

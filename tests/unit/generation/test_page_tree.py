@@ -552,6 +552,26 @@ class TestReaderOrder:
         assign_page_tree(pages)
         assert self._top(pages) == ["apps/web", "apps/cli", "lib/engine", "lib/small", "scripts"]
 
+    def test_a_rebuild_without_edges_keeps_the_measured_order(self):
+        """``update`` rebuilds from stored metadata and reads no edges."""
+        import json
+
+        from repowise.core.generation.page_tree import TreeNode
+
+        pages = self._pages()
+        assign_page_tree(pages, list(self.EDGES))
+        nodes = [
+            TreeNode(
+                page_id=p.page_id,
+                page_type=p.page_type,
+                target_path=p.target_path,
+                metadata=json.loads(json.dumps(p.metadata)),
+            )
+            for p in pages
+        ]
+        assign_page_tree(nodes)
+        assert self._top(nodes) == self._top(pages)
+
     def test_onboarding_still_leads(self):
         pages = self._pages()
         assign_page_tree(pages, list(self.EDGES))

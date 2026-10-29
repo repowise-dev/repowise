@@ -27,13 +27,11 @@ async def rebuild_page_tree(session: Any, repo_id: str) -> int:
 
     Returns the number of rows whose placement changed. Safe to call after any
     write to wiki_pages, and cheap enough to call unconditionally: it reads
-    four small columns plus metadata and the file import edges, and writes only
-    what moved.
+    four small columns plus metadata and writes only what moved.
     """
     from sqlalchemy import select
 
     from repowise.core.generation.page_tree import TreeNode, assign_page_tree
-    from repowise.core.persistence.crud.graph import get_file_import_edges
     from repowise.core.persistence.models import Page
 
     rows = (
@@ -81,7 +79,7 @@ async def rebuild_page_tree(session: Any, repo_id: str) -> int:
             )
         )
 
-    assign_page_tree(nodes, await get_file_import_edges(session, repo_id))
+    assign_page_tree(nodes)
 
     placed = {n.page_id: (n.parent_page_id, n.display_order, n.section_number) for n in nodes}
     changed = 0
