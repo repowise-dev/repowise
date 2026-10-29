@@ -429,9 +429,10 @@ async def upsert_pages_from_generated(
     :func:`_apply_page_upsert` (version snapshot on content change, no-op touch
     on metadata-only change, insert on new).
 
-    NOT a drop-in for the per-page durability sinks: this flushes once at the
-    end, so an interrupt mid-batch persists nothing. The ``on_page_ready``
-    streaming sinks must keep calling :func:`upsert_page_from_generated`.
+    It flushes once at the end, so an interrupt mid-batch persists nothing of
+    the batch. A streaming sink that commits per page must keep calling
+    :func:`upsert_page_from_generated`; one that commits per batch (init's
+    incremental sink) can call this.
 
     Assumes ``generated_pages`` carries no duplicate ``page_id`` (true by
     construction: ids are deterministic, one page per target).
