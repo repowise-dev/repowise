@@ -621,3 +621,30 @@ def test_whole_run_drops_files_deleted_since_the_index(tmp_path: Path):
     assert _key(report) == _key(_full(parsed))
     index = load_pair_index(cache_dir, WINDOW, LIMITS)
     assert "gone.py" not in index.files and "tiny.py" not in index.nonsurvivors
+
+
+def test_whole_run_through_another_revisions_reader_recomputes(tmp_path: Path):
+    # The index keys the working tree; a reader serving another revision must
+    # not be compared against it.
+    from repowise.core.analysis.health.source_reader import MappingSourceReader
+
+    cache_dir = _seed(tmp_path, {"a.py": _BODY, "b.py": _BODY, "c.py": _OTHER})
+    parsed = _parsed(tmp_path)
+    revision = {pf.file_info.abs_path: _OTHER.encode() for pf in parsed}
+    report = detect_clones(
+        parsed,
+        window_tokens=WINDOW,
+        min_lines=MIN_LINES,
+        limits=LIMITS,
+        cache_dir=cache_dir,
+        source_reader=MappingSourceReader(revision),
+    )
+    assert report.diagnostics.get("incremental") is not True
+    oracle = detect_clones(
+        parsed,
+        window_tokens=WINDOW,
+        min_lines=MIN_LINES,
+        limits=LIMITS,
+        source_reader=MappingSourceReader(revision),
+    )
+    assert _key(report) == _key(oracle)

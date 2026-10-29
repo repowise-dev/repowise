@@ -37,6 +37,7 @@ from repowise.core.co_change import parse_partners
 from repowise.core.code_origin import code_origin
 
 from ..source_fingerprint import grammar_failed
+from ..source_reader import reads_working_tree
 from .limits import DuplicationDiagnostics, DuplicationLimits, looks_minified
 from .rabin_karp import WindowHash, index_by_hash
 from .token_entry import tokenize_entry
@@ -278,7 +279,8 @@ def detect_clones(
     pair multiset is spliced instead of recomputed: only hash buckets
     touched by a changed/deleted file are re-verified. *changed_files*
     names the moved files on an incremental ``repowise update``; without
-    it, they are the files whose bytes differ from what the index read.
+    it, a working-tree run takes the files whose bytes differ from what the
+    index read, and any other reader recomputes in full.
     Any validity miss falls back to this full pipeline, which rewrites the
     artifact.
     """
@@ -300,12 +302,12 @@ def detect_clones(
 
         index = load_pair_index(cache_dir, window_tokens, lim)
         moved = None
-        if index is not None:
-            moved = (
-                set(changed_files)
-                if changed_files is not None
-                else _moved_since_index(index, parsed_list, source_reader)
-            )
+        if index is not None and changed_files is not None:
+            moved = set(changed_files)
+        elif index is not None and reads_working_tree(source_reader):
+            # The index keys the working tree's bytes; another revision's
+            # reader recomputes in full rather than compare against them.
+            moved = _moved_since_index(index, parsed_list, source_reader)
         if moved is not None:
             report = _detect_clones_incremental(
                 parsed_list,
