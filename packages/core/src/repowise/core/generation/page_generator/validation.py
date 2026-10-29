@@ -74,11 +74,23 @@ class InvalidMermaidError(InvalidGeneratedContentError):
 
 @dataclass(frozen=True)
 class ArtifactRule:
-    """One phrasing that must never reach a reader, and why."""
+    """One phrasing that must never reach a reader, why, and what to write instead.
+
+    ``remedy`` goes into the corrective re-ask only. It says what the page
+    should do in place of the rejected sentence without quoting it, because a
+    retry told only which rule it broke tends to rephrase the same sentence
+    into the same rule.
+    """
 
     name: str
     pattern: re.Pattern[str]
     explanation: str
+    remedy: str
+
+    @property
+    def retry_hint(self) -> str:
+        """The complaint and its remedy, without the phrase that broke the rule."""
+        return f"{self.name}: {self.explanation}. {self.remedy}"
 
 
 GENERATION_ARTIFACT_RULES: tuple[ArtifactRule, ...] = (
@@ -102,6 +114,7 @@ GENERATION_ARTIFACT_RULES: tuple[ArtifactRule, ...] = (
             re.IGNORECASE,
         ),
         explanation="offers the reader further work, which no page can deliver",
+        remedy="End the page on its last fact about the code and offer nothing further.",
     ),
     ArtifactRule(
         name="first_person",
@@ -128,19 +141,40 @@ GENERATION_ARTIFACT_RULES: tuple[ArtifactRule, ...] = (
             r"|\bmyself\b"
         ),
         explanation="speaks as the generator rather than describing the code",
+        remedy="Write in the third person about the code, with no narrator.",
     ),
     ArtifactRule(
         name="supplied_context",
         # The model narrating the shape of its own prompt.  The reader has no
         # idea what was "provided" and cannot go and look at it.
+        #
+        # Only nouns that name prompt material.  "the supplied input", "the
+        # given data", "the provided list" and "the given files" describe a
+        # function's arguments in plain English, and rejecting them cost whole
+        # pages.  "context", "code", "files", "snippet" and "documentation"
+        # count only after a reasoning frame ("based on the provided code",
+        # "not shown in the given context"): "runs in the given context" is a
+        # Go ``context.Context`` argument and "executes the provided code" is
+        # a sandbox's.
         pattern=re.compile(
             r"\bthe (?:provided|supplied|given|attached|above) "
-            r"(?:information|context|data|input|material|details|excerpt|"
-            r"snippet|list|files?|documents?)\b"
-            r"|\byou (?:provided|supplied|gave|listed)\b",
+            r"(?:information|material|excerpts)\b"
+            r"|\b(?:based on|according to|judging (?:by|from)) the "
+            r"(?:provided|supplied|given|attached|above) "
+            r"(?:context|code|source|files?|details|snippets?|documentation)\b"
+            r"|\b(?:not|never) (?:shown|visible|included|present|defined|described|specified) "
+            r"(?:in|within) the (?:provided|supplied|given|attached|above)\b"
+            r"|\b(?:provided|supplied|shared|pasted|attached) above\b"
+            r"|\byou (?:provided|supplied|gave|listed|shared|pasted|attached)\b"
+            r"|\byou were (?:given|shown|provided|supplied)\b",
             re.IGNORECASE,
         ),
         explanation="refers to the prompt, which the reader cannot see",
+        remedy=(
+            "State what the code does. Where a detail is unknown, either leave it "
+            "out or say it about the code (for example: the caller of a function is "
+            "not traced here), never about what this request did or did not include."
+        ),
     ),
 )
 
@@ -169,8 +203,8 @@ def _artifact_detail(content: str) -> tuple[str, str] | None:
     """Describe the first generation artifact in ``content``, if any.
 
     Returns ``(detail, retry_hint)``: the first quotes the offending phrase for
-    the log, the second names only the rule so a re-ask built from it does not
-    repeat the words that failed.
+    the log, the second names the rule and its remedy but not the phrase, so a
+    re-ask built from it does not repeat the words that failed.
     """
     prose = prose_text(content)
     for rule in GENERATION_ARTIFACT_RULES:
@@ -179,7 +213,7 @@ def _artifact_detail(content: str) -> tuple[str, str] | None:
             _artifact_check_counts["rejected"] += 1
             _artifact_check_counts[f"rejected:{rule.name}"] += 1
             detail = f"{rule.name}: {rule.explanation} ({match.group(0).strip()!r})"
-            return detail, f"{rule.name}: {rule.explanation}"
+            return detail, rule.retry_hint
     return None
 
 

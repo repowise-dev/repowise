@@ -471,7 +471,7 @@ def _gaps(run: InitRun) -> list[str]:
 
     result = run.result
     return run.gaps + run_gaps(
-        failed_pages=len(getattr(result, "failed_page_ids", None) or []),
+        failed_page_ids=list(getattr(result, "failed_page_ids", None) or []),
         embed_error=embed_failure_message(
             run.scope_embedder, getattr(result, "embed_failed_pages", 0)
         ),
