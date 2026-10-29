@@ -781,3 +781,25 @@ def test_a_root_container_chapter_is_named_for_what_it_holds():
     from repowise.core.generation.concept_tree.naming import chapter_title
 
     assert chapter_title("src") == "Source Overview"
+
+
+def test_sibling_runs_count_where_a_gathered_page_files_sit():
+    from repowise.core.generation.concept_tree.grouping import ConceptGroup
+    from repowise.core.generation.concept_tree.naming import sibling_runs
+
+    gathered = ConceptGroup(
+        members=["s/_x/a.py", "s/big/b.py", "s/big/c.py", "s/big/deep/d.py"],
+        dirs=["s/_x", "s/big", "s/big/deep"],
+        target_path="s/_x",
+    )
+    assert sibling_runs(gathered) == [("s/big", 3), ("s/_x", 1)]
+    # A subtree its target contains is not gathered from siblings.
+    subtree = ConceptGroup(members=["s/big/b.py", "s/big/deep/d.py"], dirs=["s/big", "s/big/deep"], target_path="s/big")
+    assert sibling_runs(subtree) == []
+
+
+def test_spelling_index_prefers_a_single_word_over_a_pair():
+    from repowise.core.generation.concept_tree.naming import _respell, _spelling_index
+
+    index = _spelling_index(["VS Code Webview", "Database Layer", "Data Base Notes", "helpers for ui", "UI Kit"])
+    assert _respell("Vscode Database Ui", index) == "VS Code Database UI"
