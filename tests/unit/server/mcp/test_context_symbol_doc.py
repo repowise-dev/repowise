@@ -139,6 +139,14 @@ def test_the_entry_keeps_its_nested_rows_and_stops_at_a_sibling() -> None:
     assert _file_page_entry(_FILE_PAGE, "app") is None
 
 
+def test_the_entry_is_the_bullet_that_declares_the_name() -> None:
+    """A name inside another entry's parameters is a use, not the declaration."""
+    page = "- `def paint(shape: Circle) -> None`: Paint it.\n- `class Circle`: Round.\n"
+    assert _file_page_entry(page, "Circle") == "- `class Circle`: Round."
+    assert _file_page_entry(page, "paint") == "- `def paint(shape: Circle) -> None`: Paint it."
+    assert _file_page_entry("- `class Hono<E extends Env>`: App.", "Env") is None
+
+
 async def test_a_large_module_caps_its_files_and_keeps_its_body(
     session, repository, populated_db
 ) -> None:

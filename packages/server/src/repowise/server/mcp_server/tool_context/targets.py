@@ -526,19 +526,22 @@ async def _spotlight_page(card: CardState, sym: Any) -> Page | None:
 
 _BULLET_SPAN_RE = re.compile(r"^(\s*)- `([^`]*)`")
 
+# Where a rendered declaration stops naming itself: its parameters, type,
+# value, generics or base list.
+_DECLARATION_HEAD_END_RE = re.compile(r"[(:=<\[{]|\s(?:extends|implements)\s")
+_IDENTIFIER_RE = re.compile(r"[\w$]+")
+
 
 def _file_page_entry(content: str, name: str) -> str | None:
     """The file page's list entry for *name*, with its nested rows.
 
-    Matches a bullet whose leading code span names the symbol, as the file
-    page's API list renders it; a span holding a path is a file reference,
-    not an entry. ``None`` when the page lists no such entry.
+    Matches a bullet whose leading code span declares the symbol, as the file
+    page's API list renders it. ``None`` when the page lists no such entry.
     """
-    named = re.compile(rf"(?<![\w$]){re.escape(name)}(?![\w$])")
     lines = content.splitlines()
     for start, line in enumerate(lines):
         match = _BULLET_SPAN_RE.match(line)
-        if match is None or "/" in match.group(2) or not named.search(match.group(2)):
+        if match is None or _declared_name(match.group(2)) != name:
             continue
         depth = len(match.group(1))
         end = start + 1
@@ -546,6 +549,17 @@ def _file_page_entry(content: str, name: str) -> str | None:
             end += 1
         return "\n".join(lines[start:end])
     return None
+
+
+def _declared_name(span: str) -> str | None:
+    """The name a rendered declaration declares: the last word before its
+    parameters, type or value (``def area(self)`` -> ``area``). A path
+    (``src/app.py``) declares nothing."""
+    if "/" in span:
+        return None
+    head = _DECLARATION_HEAD_END_RE.split(span, maxsplit=1)[0]
+    words = _IDENTIFIER_RE.findall(head)
+    return words[-1] if words else None
 
 
 def _nested_under(line: str, depth: int) -> bool:
