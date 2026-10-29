@@ -11,6 +11,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from typing import Any
 
+from .call_inheritance import _EXTERNAL_PREFIX
 from .call_receiver_typing import (
     _BODY_TYPE_CACHE_ENTRIES,
     _FUNCTION_KINDS,
@@ -408,10 +409,11 @@ class LanguageStrategiesMixin:
         shares the name. A bare ``count(..)`` in a function outside every class
         cannot reach a member function either: with no ``this`` and no
         qualifier, only a free function or a ``using namespace`` import answers.
-        A constructor is still reached (``Slice(s)``). A caller named in
-        capitals is a macro body (``TEST_F``), which may sit inside a class,
-        and a caller that is not a function may be a class whose member bodies
-        the parse folded in, so both are left alone.
+        Nor can one in a member function of a class that neither is, derives
+        from nor nests in the callee's class. A constructor is still reached
+        (``Slice(s)``). A caller named in capitals is a macro body (``TEST_F``),
+        which may sit inside a class, and a caller that is not a function may
+        be a class whose member bodies the parse folded in, so both are left alone.
         """
         if self._language_of(file_path) not in ("c", "cpp"):
             return False
@@ -422,7 +424,70 @@ class LanguageStrategiesMixin:
             return False
         callee = self._symbols_by_id.get(callee_id)
         caller = self._symbols_by_id.get(call.caller_symbol_id or "")
-        return _is_free_function(caller) and self._is_cpp_member_function(callee)
+        if not self._is_cpp_member_function(callee):
+            return False
+        assert callee is not None
+        if _is_free_function(caller):
+            return True
+        # C has no member functions: a C "member" caller is a macro the parse misread.
+        if self._language_of(file_path) != "cpp" or not _is_member_function(caller):
+            return False
+        return not self._cpp_class_reaches(
+            file_path, caller, bare_type_name(callee.parent_name or "")
+        )
+
+    def _cpp_class_reaches(self, file_path: str, caller: Symbol | None, owner: str) -> bool:
+        """May a bare call in member *caller* name a member of class *owner*?
+
+        Yes when the caller's class is *owner*, derives from it or nests in it,
+        and whenever that class or a base on its way up is unsettled.
+        """
+        assert caller is not None
+        _, class_id = self._field_owner(file_path, caller.id, "cpp")
+        if getattr(self._symbols_by_id.get(class_id), "kind", None) not in _TYPE_KINDS:
+            return True
+        ancestors = self._ancestors_of(class_id)
+        names = set(self._cpp_scope_names(class_id))
+        names.update(self._symbols_by_id[a].name for a in ancestors)
+        for type_id in (class_id, *ancestors):
+            bases = self._declared_bases(type_id)
+            if bases is None:
+                return True
+            names.update(bare_type_name(base.removeprefix(_EXTERNAL_PREFIX)) for base in bases)
+        return owner in names
+
+    def _cpp_scope_names(self, class_id: str) -> Iterator[str]:
+        """The bare names of *class_id* and every class it nests in."""
+        scope = class_id
+        while "::" in scope:
+            yield bare_type_name(scope)
+            scope = outer_scope(scope)
+
+    def _cpp_free_rival(
+        self, file_path: str, call: CallSite, caller_id: str
+    ) -> ResolvedCall | None:
+        """The one free function of the call's name the caller's file or its includes declare.
+
+        Asked when the flat tiers answered an unqualified call with a member it
+        cannot reach, since that member may have hidden a free one there.
+        Ceiling: namespaces are recorded on no symbol, so a free function in a
+        namespace the caller never opens still answers, as in the flat tiers.
+        """
+        if call.scope_name:
+            return None
+        found = [
+            sym_id
+            for path in self._cpp_include_closure(file_path)
+            if (sym_id := self._file_top_level.get(path, {}).get(call.target_name))
+            and getattr(self._symbols_by_id.get(sym_id), "kind", None) == "function"
+        ]
+        settled = self._collapse_declarations(found)
+        if len(settled) != 1 or caller_id in settled:
+            return None
+        sym_id = settled.pop()
+        if self._symbol_paths_by_id.get(sym_id) == file_path:
+            return ResolvedCall(caller_id, sym_id, 0.95, call.line, "same_file")
+        return ResolvedCall(caller_id, sym_id, 0.85, call.line, "import_merged")
 
     def _is_cpp_member_function(self, symbol: Symbol | None) -> bool:
         """Is *symbol* a member function a bare call from outside its class cannot reach?
@@ -433,19 +498,23 @@ class LanguageStrategiesMixin:
         only a body inside its class, or one whose own line writes
         ``Parent::name``: a macro before a C return type
         (``INLINE rtree_t\\nrtree_read(..)``) can parse as a member of that type.
+        Nor a ``#define`` written inside a class body, which has no scope.
         """
         if not _is_member_function(symbol):
             return False
         assert symbol is not None
         parent = bare_type_name(symbol.parent_name or "")
-        if not self._declared_types_named(parent):
+        declared = self._declared_types_named(parent)
+        if not declared:
             return False
         path = self._symbol_paths_by_id.get(symbol.id, "")
         lines = self._text_of(path).splitlines()
         head = lines[symbol.start_line - 1] if 0 < symbol.start_line <= len(lines) else ""
-        if _FRIEND.search(head):
+        if _FRIEND.search(head) or head.lstrip().startswith("#"):
             return False
-        span = self._spans_for(path).get(self._only_type_in(path, parent) or "")
+        # A class template is two symbols under one id: its template head and the class.
+        owners = {identity[0] for owner_path, identity, _ in declared if owner_path == path}
+        span = self._spans_for(path).get(owners.pop()) if len(owners) == 1 else None
         return f"::{symbol.name}" in head or (
             span is not None and span[0] <= symbol.start_line <= span[1]
         )
