@@ -100,6 +100,19 @@ def build_generation_plan(
                 )
             )
 
+    # Flow pages come from the call graph, by the selection generation runs.
+    from repowise.core.generation.flow_pages import plans_for_index
+
+    flow_count = len(plans_for_index(graph_builder, files))
+    if flow_count:
+        plans.append(
+            PageTypePlan(
+                page_type="flow_page",
+                count=flow_count,
+                level=GENERATION_LEVELS["flow_page"],
+            )
+        )
+
     # Onboarding count comes from the registry (curated, gated at
     # generation time); the budget allocator does not touch it.
     if getattr(config, "enable_onboarding", True):

@@ -14,7 +14,7 @@ from ..languages import SUPPORTED_LANGUAGES  # noqa: F401
 # ---------------------------------------------------------------------------
 # System prompts, one per page type that a model writes.
 #
-# Only three are left. The page types whose facts a parser knows exactly are
+# Only four are left. The page types whose facts a parser knows exactly are
 # rendered from structure and never reach a provider, so a system prompt for
 # one of them would be a string nothing sends.
 # ---------------------------------------------------------------------------
@@ -34,6 +34,16 @@ SYSTEM_PROMPTS: dict[str, str] = {
         # rule in validation.py rejects, which the model would echo into the page.
         "Ground every claim in the structural facts listed below: never invent "
         "components, files, edges or rationale that are not there."
+    ),
+    "flow_page": (
+        "You are repowise, writing one walkthrough page of an engineering wiki. "
+        "The page follows a single operation through the code from the function "
+        "that starts it to the work it hands off, so a newcomer can trace it in "
+        "the source. Explain what each step decides or produces and why the "
+        "operation needs it, in short plain sentences. Output markdown only. "
+        "\n"
+        "Ground every claim in the traced steps listed below: never invent "
+        "functions, files, calls or rationale that are not there."
     ),
     "repo_overview": (
         "You are repowise, an expert technical documentation generator. "

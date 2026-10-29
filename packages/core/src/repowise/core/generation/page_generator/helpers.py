@@ -367,3 +367,15 @@ def build_decision_maps(
             for fp in d.affected_files or []:
                 decisions_by_file.setdefault(fp, []).append(payload)
     return decisions_by_file, decisions_all
+
+
+def indexed_parsed_files(graph_builder: Any, parsed_files: list[Any]) -> dict[str, Any]:
+    """``path -> ParsedFile`` for the whole indexed set, not one run's slice.
+
+    Re-exports and package roots reach files an incremental run did not parse,
+    so the builder's own map wins when it has one.
+    """
+    parsed_by_path = getattr(graph_builder, "_parsed_files", None)
+    if not isinstance(parsed_by_path, dict) or not parsed_by_path:
+        parsed_by_path = {p.file_info.path: p for p in parsed_files}
+    return parsed_by_path

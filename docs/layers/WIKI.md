@@ -35,6 +35,7 @@ another is generated after it.
 | 2 | `file_page` | eligible source file | structure |
 | 3 | `scc_page` | dependency cycle | structure |
 | 4 | `module_page` | subsystem in the concept tree | model, structure when keyless |
+| 5 | `flow_page` | operation walked end to end (3 to 6 per repo) | model, structure when keyless |
 | 6 | `repo_overview` | repository | model, structure when keyless |
 | 7 | `infra_page` | Dockerfile, Makefile, Terraform file or container entrypoint script | structure |
 | 8 | `onboarding` | slot | model, structure when keyless |
@@ -43,6 +44,13 @@ The onboarding slots are Project Overview, Getting Started, Key Concepts, How It
 Works, Active Landscape and Glossary. Project Overview is not generated
 separately, the repository overview is tagged into that slot, and Glossary is
 rendered from mined terms with no model in every run, keyed or not.
+
+A flow page follows one operation, such as a CLI command, a route handler or
+an MCP tool, from the function that starts it through the calls that carry it.
+The operations and their steps are traced from the call graph, so a keyed and a
+keyless index pick the same ones; a model explains each step, and a keyless run
+lists the steps with their line spans. Every step is cited as `path:start-end`,
+and an edit to any step's file marks the page stale.
 
 Layers are grouping rows in the docs tree, built from provenance stamped on
 their members, not pages of their own. The repository overview carries the
@@ -69,8 +77,8 @@ index of the same commit agree about which files have pages.
 
 ## What a model writes
 
-Three page types are model-written when a provider is configured: `module_page`,
-`repo_overview` and `onboarding`. These pages explain how the codebase fits
+Four page types are model-written when a provider is configured: `module_page`,
+`flow_page`, `repo_overview` and `onboarding`. These pages explain how the codebase fits
 together above the file level. Everything else is rendered from the parse, the
 import graph and git history, and no model ever sees it.
 

@@ -734,6 +734,12 @@ _FILE_SCOPED_PAGE_TYPES = frozenset({"file_page", "symbol_spotlight"})
 # retired and swept independently.
 _UPDATE_WIDE_DETERMINISTIC_PAGE_TYPES = frozenset({"scc_page"})
 
+# Model-written whole-repository pages an update re-renders only while they are
+# still the keyless rendering: refreshing one costs no tokens and writes over
+# no prose. Once a model has written one it waits for ``generate --stale``,
+# like every other page a model writes.
+_UPDATE_WIDE_STUB_PAGE_TYPES = frozenset({"flow_page"})
+
 
 async def get_stale_update_targets(
     session: AsyncSession,
@@ -747,17 +753,25 @@ async def get_stale_update_targets(
     from one query keeps the up-to-date fast path to a single store read.
     """
     result = await session.execute(
-        select(Page.id, Page.page_type, Page.target_path).where(
+        select(Page.id, Page.page_type, Page.target_path, Page.provider_name).where(
             Page.repository_id == repository_id,
             Page.page_type.in_(
-                sorted(_FILE_SCOPED_PAGE_TYPES | _UPDATE_WIDE_DETERMINISTIC_PAGE_TYPES)
+                sorted(
+                    _FILE_SCOPED_PAGE_TYPES
+                    | _UPDATE_WIDE_DETERMINISTIC_PAGE_TYPES
+                    | _UPDATE_WIDE_STUB_PAGE_TYPES
+                )
             ),
             Page.freshness_status.in_(["stale", "expired"]),
         )
     )
     stale_paths: list[str] = []
     deterministic_ids: set[str] = set()
-    for page_id, page_type, target_path in result:
+    for page_id, page_type, target_path, provider_name in result:
+        if page_type in _UPDATE_WIDE_STUB_PAGE_TYPES:
+            if provider_name == "template":
+                deterministic_ids.add(page_id)
+            continue
         if page_type in _UPDATE_WIDE_DETERMINISTIC_PAGE_TYPES:
             deterministic_ids.add(page_id)
             continue

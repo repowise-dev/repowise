@@ -44,6 +44,7 @@ from ..models import (
 from ..report import reset_house_terms
 from ..structural_labels import resolve_structural_labels, structural_page_title
 from ..styles import ONBOARDING_PAGE_TYPE, resolve_style
+from .flow import FlowPageMixin
 from .helpers import _extract_summary, _now_iso, collapse_empty_duplicate_headings
 from .pertype import PerTypeGenerationMixin
 from .prompts import CORRECTIVE_RETRY_DIRECTIVE, SUPPORTED_LANGUAGES, SYSTEM_PROMPTS
@@ -155,7 +156,7 @@ class PriorPage:
     provider_name: str = ""
 
 
-class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
+class PageGenerator(PerTypeGenerationMixin, FlowPageMixin, StructuralRenderMixin):
     """Generate wiki pages by rendering prompts and calling an LLM provider.
 
     Args:

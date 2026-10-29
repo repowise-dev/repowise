@@ -23,7 +23,7 @@ from ..concept_tree.grouping import package_file_counts
 from ..context_assembler import FilePageContext
 from ..models import compute_page_id
 from ..page_tree import is_module_head, nearest_head
-from .helpers import _is_infra_file, decisions_for_files, rank_decisions
+from .helpers import _is_infra_file, decisions_for_files, indexed_parsed_files, rank_decisions
 
 if TYPE_CHECKING:
     from ..concept_tree.vocabulary import HouseTerm
@@ -268,10 +268,7 @@ def build_level4_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     """Level 4 (module_page), allow-set filtered."""
     gen = run.gen
     coros: list[tuple[str, Any]] = []
-    # The whole indexed set, not this run's slice: re-exports reach unchanged files.
-    parsed_by_path = getattr(run.graph_builder, "_parsed_files", None)
-    if not isinstance(parsed_by_path, dict) or not parsed_by_path:
-        parsed_by_path = {p.file_info.path: p for p in run.parsed_files}
+    parsed_by_path = indexed_parsed_files(run.graph_builder, run.parsed_files)
     package_roots = package_roots_from_paths(set(parsed_by_path))
     flows = _execution_flows(run.graph_builder)
     for mg in run.sel_module_groups:
@@ -489,6 +486,38 @@ async def build_level6_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
             )
         )
     return coros
+
+
+def flow_module_index(module_groups: list[Any]) -> dict[str, tuple[str, str]]:
+    """``file -> (module page id, title)``: the page a flow step points at.
+
+    A file's documenting page is the group that claims it in ``file_paths``,
+    the same ownership rule the docs tree places file pages by.
+    """
+    index: dict[str, tuple[str, str]] = {}
+    for mg in module_groups:
+        page_id = compute_page_id("module_page", mg.key)
+        for path in mg.file_paths:
+            index.setdefault(path, (page_id, mg.display))
+    return index
+
+
+def build_flow_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
+    """Level 5 (flow_page): one walkthrough per selected operation."""
+    plans = run.flow_plans()
+    emitted = [plan for plan in plans if run._emit(plan.page_id)]
+    if not emitted:
+        return []
+    modules = flow_module_index(run.sel_module_groups)
+    return [
+        (
+            plan.page_id,
+            run.gen.generate_flow_page(
+                plan, graph=run.graph, modules=modules, source_map=run.source_map
+            ),
+        )
+        for plan in emitted
+    ]
 
 
 def build_level7_coros(run: _GenerationRun) -> list[tuple[str, Any]]:

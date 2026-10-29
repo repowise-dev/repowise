@@ -610,10 +610,12 @@ def split_cascade_overflow(rows: list[Any], skipped_paths: list[str]) -> tuple[i
     """``(model_pages, structural_pages)`` that budget-skipped files decay.
 
     ``rows`` are ``(page_type, target_path, metadata_json)``. Mirrors the
-    ``none`` cascade the persist step applies: each file's page, the module and
-    SCC pages that cover it, and the repo-wide pages.
+    ``none`` cascade the persist step applies: each file's page, the module,
+    flow and SCC pages that cover it, and the repo-wide pages.
     """
     import json
+
+    from repowise.core.generation.models import MODEL_WRITTEN_PAGE_TYPES
 
     skipped = set(skipped_paths)
     model = structural = 0
@@ -629,7 +631,7 @@ def split_cascade_overflow(rows: list[Any], skipped_paths: list[str]) -> tuple[i
                 continue
             members = meta.get("file_paths") or meta.get("files") or []
             if skipped.intersection(members):
-                if page_type == "module_page":
+                if page_type in MODEL_WRITTEN_PAGE_TYPES:
                     model += 1
                 else:
                     structural += 1
@@ -659,7 +661,7 @@ async def _load_cascade_overflow_split(
             rows = await session.execute(
                 sa_select(Page.page_type, Page.target_path, Page.metadata_json).where(
                     Page.page_type.in_(
-                        ["file_page", "module_page", "scc_page", *_REPO_WIDE_MODEL_TYPES]
+                        ["file_page", "module_page", "flow_page", "scc_page", *_REPO_WIDE_MODEL_TYPES]
                     ),
                     Page.freshness_status != "tombstone",
                 )

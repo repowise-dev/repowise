@@ -1359,6 +1359,9 @@ def _plan_pages(opts: UpdateOptions, run: UpdateRun) -> None:
     # Pages an older renderer wrote: the cascade only reaches changed files.
     stale_renderer_paths = _stale_renderer_paths(run.repo_path, run.parsed_files)
     run.timings.stop("plan_pages")
+    from .stale_targets import stale_flow_pages
+
+    stale_flow_pages(run)
     _add_stale_pages(run, stale_renderer_paths)
     _widen_for_full_render(run)
     _report_page_plan(run)

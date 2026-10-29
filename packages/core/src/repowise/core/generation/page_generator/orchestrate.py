@@ -225,10 +225,29 @@ class _GenerationRun:
         self.sel_infra_paths: set[str] = set()
         self.sel_module_groups: list[Any] = []
         self.sel_scc_groups: list[Any] = []
+        self._flow_plans: list[Any] | None = None
 
     # ------------------------------------------------------------------
     # Setup
     # ------------------------------------------------------------------
+
+    def flow_plans(self) -> list[Any]:
+        """The operations this run's flow pages walk, computed once.
+
+        Read off the call graph only, so a keyed and a keyless run, and the
+        update cascade, choose the same pages.
+        """
+        if self._flow_plans is None:
+            from ..flow_pages import plans_for_index
+
+            self._flow_plans = plans_for_index(self.graph_builder, self.parsed_files)
+        return self._flow_plans
+
+    def _flow_page_count(self) -> int:
+        """Flow pages this run will emit; none on a file-pages-only update."""
+        if getattr(self.config, "file_pages_only", False):
+            return 0
+        return sum(1 for plan in self.flow_plans() if self._emit(plan.page_id))
 
     def _setup_job(self) -> None:
         """Create the resume job and, on resume, seed completed page ids."""
@@ -529,6 +548,7 @@ class _GenerationRun:
             + int(self.selection.emit_repo_overview)
             + counts["infra_page"]
             + onboarding_page_count
+            + self._flow_page_count()
         )
         # Split the total across the two progress bars. One bar counting both
         # tiers reads as frozen: the free levels run first, so it reaches ~97%
@@ -849,10 +869,12 @@ class _GenerationRun:
         # page belongs to is stamped on the page itself, so the docs tree can
         # group by it without a page to hang the group off.
         #
-        # Levels 6 (repo_overview), 7 (infra_page), and 8 (onboarding) share
-        # no data dependencies — run merged.
+        # Levels 5 (flow_page), 6 (repo_overview), 7 (infra_page) and 8
+        # (onboarding) share no data dependencies — run merged. Flow pages
+        # need only the module groups' names, which naming settled above.
         final = (
-            await _levels.build_level6_coros(self)
+            _levels.build_flow_coros(self)
+            + await _levels.build_level6_coros(self)
             + _levels.build_level7_coros(self)
             + await _levels.build_level8_coros(self)
         )

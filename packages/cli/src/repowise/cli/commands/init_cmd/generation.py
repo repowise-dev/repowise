@@ -135,6 +135,7 @@ def concept_page_count(plans: list[Any]) -> int:
 # in the mode panel was the old state.
 _PAGE_TYPE_LABELS: tuple[tuple[str, str, str], ...] = (
     ("module_page", "Subsystem pages", "subsystem"),
+    ("flow_page", "Walkthrough pages", "walkthrough"),
     ("repo_overview", "Repo overview", "overview"),
     ("architecture_diagram", "Architecture diagram", "diagram"),
     ("onboarding", "Onboarding pages", "onboarding"),

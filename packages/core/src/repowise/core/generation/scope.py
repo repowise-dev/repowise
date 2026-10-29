@@ -171,7 +171,23 @@ def build_dependencies(
         module_groups=selection.module_groups,
         scc_groups=selection.scc_groups,
         repo_wide_ids=repo_wide_ids,
+        flow_pages_of=_flow_dependencies(parsed_files, graph_builder),
     )
+
+
+def _flow_dependencies(parsed_files: list[Any], graph_builder: Any) -> dict[str, tuple[str, ...]]:
+    """``file -> flow page ids`` from the same selection generation runs.
+
+    Never raises: a graph that cannot be walked costs the flow pages their
+    staleness signal, not the update.
+    """
+    from repowise.core.generation.flow_pages import flow_pages_of_files, plans_for_index
+
+    try:
+        plans = plans_for_index(graph_builder, parsed_files)
+    except Exception:
+        return {}
+    return flow_pages_of_files(plans)
 
 
 def selection_page_ids(sel: Selection, repo_name: str) -> set[str]:
