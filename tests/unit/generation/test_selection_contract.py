@@ -23,7 +23,7 @@ from repowise.core.generation.selection import (
 )
 from repowise.core.generation.selection.scoring import score_file
 from repowise.core.generation.selection.selector import SPOTLIGHTS_PER_FILE, rank_symbol_candidates
-from repowise.core.ingestion.graph import SymbolUse
+from repowise.core.ingestion.symbol_use import SymbolUse
 from repowise.core.test_paths import is_test_related_path
 
 # ---------------------------------------------------------------------------

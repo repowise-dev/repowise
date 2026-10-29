@@ -32,8 +32,8 @@ from typing import Any
 
 import structlog
 
-from ....ingestion.graph import symbol_use_counts
 from ....ingestion.models import SYMBOL_USE_EDGE_TYPES
+from ....ingestion.symbol_use import symbol_use_counts
 from ...entry_points import orientation_entry_points
 from ...page_generator.helpers import rank_decisions
 from ..registry import SubkindSpec, register

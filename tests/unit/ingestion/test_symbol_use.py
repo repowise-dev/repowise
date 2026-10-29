@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import networkx as nx
 
-from repowise.core.ingestion.graph import (
+from repowise.core.ingestion.symbol_use import (
     NO_SYMBOL_USE,
     SymbolUse,
     is_test_caller,

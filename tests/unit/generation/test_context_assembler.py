@@ -648,7 +648,7 @@ def test_spotlight_uses_skip_the_defining_files_own_top_level(
 ):
     """``module.exports = fn`` in the defining file is an export, not a use;
     another file's top-level call is a use, and selection counts the same."""
-    from repowise.core.ingestion.graph import symbol_use
+    from repowise.core.ingestion.symbol_use import symbol_use
 
     symbol = sample_parsed_file.symbols[0]
     home = sample_parsed_file.file_info.path

@@ -18,7 +18,6 @@ from repowise.core.analysis.dead_code.file_reachability import (
 )
 from repowise.core.analysis.execution_flows import rank_by_importance
 from repowise.core.ids import file_path_of, is_external
-from repowise.core.ingestion.graph import is_test_caller, symbol_use, symbol_use_edges
 from repowise.core.ingestion.models import ParsedFile, RepoStructure, Symbol
 from repowise.core.ingestion.package_roots import (
     module_for,
@@ -26,6 +25,7 @@ from repowise.core.ingestion.package_roots import (
     scan_package_roots,
 )
 from repowise.core.ingestion.special_handlers import iter_docker_stages
+from repowise.core.ingestion.symbol_use import is_test_caller, symbol_use, symbol_use_edges
 
 from ...co_change import STRUCTURAL_UNEXPLAINED, parse_partners
 from ..categories import file_category

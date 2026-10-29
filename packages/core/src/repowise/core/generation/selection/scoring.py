@@ -16,7 +16,7 @@ import math
 from pathlib import Path
 from typing import Any
 
-from repowise.core.ingestion.graph import SymbolUse
+from repowise.core.ingestion.symbol_use import SymbolUse
 from repowise.core.test_paths import is_test_support_path
 
 from ..public_api import is_public_api

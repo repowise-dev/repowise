@@ -15,9 +15,9 @@ from typing import Any
 
 import structlog
 
-from repowise.core.ingestion.graph import NO_SYMBOL_USE, SymbolUse
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 from repowise.core.ingestion.package_roots import package_manifest_names, package_roots_from_paths
+from repowise.core.ingestion.symbol_use import NO_SYMBOL_USE, SymbolUse
 
 from ..concept_tree.grouping import ConceptGroup, group_files
 from ..concept_tree.naming import (

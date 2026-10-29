@@ -8,7 +8,7 @@ import pytest
 
 from repowise.core.generation.models import GenerationConfig, compute_page_id
 from repowise.core.generation.selection.selector import file_page_eligible
-from repowise.core.ingestion.graph import SymbolUse
+from repowise.core.ingestion.symbol_use import SymbolUse
 from repowise.core.persistence.models import Page
 from repowise.core.pipeline.persist import sweep_deselected_pages
 from tests.unit.persistence.helpers import insert_repo, make_page_kwargs
