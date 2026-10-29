@@ -40,6 +40,7 @@ from repowise.core.cost_estimator import STRUCTURAL_PAGE_TYPES
 from repowise.core.decision_lanes import set_pending_decision_lanes
 from repowise.core.docs_mode import docs_mode_state_fields, resolve_docs_mode
 from repowise.core.generation.page_selection import PageSelectionIntent
+from repowise.core.repo_config import resolve_language
 
 from ..decision_lanes import print_lane_estimate
 from .engine import NO_DOCUMENTATION_MESSAGE, has_documentation, run_scoped_generation
@@ -307,7 +308,7 @@ def generate_command(
     config = GenerationConfig.from_repo_config(
         cfg,
         max_concurrency=concurrency,
-        language=cfg.get("language", "en"),
+        language=resolve_language(repo_path, config=cfg),
         reasoning=resolve_reasoning(reasoning, cfg),
         enable_onboarding=bool(cfg.get("enable_onboarding", True)),
         wiki_style=cfg.get("wiki_style", "comprehensive"),
