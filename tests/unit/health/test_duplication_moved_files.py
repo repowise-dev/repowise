@@ -16,7 +16,7 @@ from repowise.core.analysis.health.duplication.detector import (
     _content_key,
     _moved_since_index,
     _nonsurvivor_keys,
-    _spliced_nonsurvivor_keys,
+    _spliced_gated_fields,
 )
 from repowise.core.analysis.health.duplication.limits import (
     DuplicationDiagnostics,
@@ -98,13 +98,17 @@ class TestNonsurvivorKeys:
 
     def test_a_splice_updates_the_stored_keys_with_the_live_ones(self):
         stored = {"a.py": "old", "b.py": "same"}
-        assert _spliced_nonsurvivor_keys({"a.py", "b.py"}, None, stored, {"a.py": "new"}) == {
-            "a.py": "new",
-            "b.py": "same",
+        fields = _spliced_gated_fields(
+            {"a.py", "b.py", "kept.py"}, {"kept.py"}, None, stored, {"a.py": "new"}
+        )
+        assert fields == {
+            "nonsurvivors": {"a.py", "b.py"},
+            "nonsurvivor_keys": {"a.py": "new", "b.py": "same"},
         }
 
     def test_a_cut_splice_records_no_keys(self):
-        assert _spliced_nonsurvivor_keys({"a.py"}, object(), {"a.py": "k"}, {}) is None
+        fields = _spliced_gated_fields({"a.py"}, set(), object(), {"a.py": "k"}, {})
+        assert fields == {"nonsurvivors": {"a.py"}, "nonsurvivor_keys": None}
 
 
 class TestCollectWindowsKeys:

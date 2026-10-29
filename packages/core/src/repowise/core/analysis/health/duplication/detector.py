@@ -163,18 +163,22 @@ def _nonsurvivor_keys(
     return {p: merged[p] for p in nonsurvivors}
 
 
-def _spliced_nonsurvivor_keys(
-    nonsurvivors: set[str],
+def _spliced_gated_fields(
+    paths: set[str],
+    survivors: set[str],
     cut: Any,
     stored: dict[str, str] | None,
     live: dict[str, str],
-) -> dict[str, str] | None:
-    """The gated files' keys a splice persists: the stored ones, updated by the
-    files it read live. ``None`` under a window-budget cut, which leaves files
-    unread and their keys unknown."""
-    if cut is not None:
-        return None
-    return _nonsurvivor_keys(nonsurvivors, stored, live)
+) -> dict[str, Any]:
+    """The pair-index fields a splice persists for its gated files.
+
+    Their keys are the stored ones, updated by the files it read live, and
+    ``None`` under a window-budget cut, which leaves files unread and their
+    keys unknown.
+    """
+    nonsurvivors = paths - survivors
+    keys = None if cut is not None else _nonsurvivor_keys(nonsurvivors, stored, live)
+    return {"nonsurvivors": nonsurvivors, "nonsurvivor_keys": keys}
 
 
 def _partner_support(meta: dict[str, Any], partner_path: str) -> int:
@@ -874,16 +878,18 @@ def _detect_clones_incremental(
     new_files.update(new_hash)
     new_paths_table = sorted(new_files)
     pid = {p: i for i, p in enumerate(new_paths_table)}
-    nonsurvivors = {pf.file_info.path for pf in parsed_files} - set(new_files)
     save_pair_index(
         cache_dir,
         DuplicationPairIndex(
             window_tokens=window_tokens,
             limits_key=limits_fingerprint(lim),
             files=new_files,
-            nonsurvivors=nonsurvivors,
-            nonsurvivor_keys=_spliced_nonsurvivor_keys(
-                nonsurvivors, cut, index.nonsurvivor_keys, live_keys
+            **_spliced_gated_fields(
+                {pf.file_info.path for pf in parsed_files},
+                set(new_files),
+                cut,
+                index.nonsurvivor_keys,
+                live_keys,
             ),
             paths=new_paths_table,
             pairs=[

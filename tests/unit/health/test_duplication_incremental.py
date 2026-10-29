@@ -566,3 +566,40 @@ def test_whole_run_over_a_budget_cut_index_recomputes(tmp_path: Path):
     report = _whole(parsed, cache_dir, limits=lim)
     assert report.diagnostics.get("incremental") is not True
     assert _key(report) == _key(_full(parsed, limits=lim))
+
+
+def _keys_of_a_fresh_full_run(tmp_path: Path, files: dict[str, str], limits=LIMITS):
+    """The gated-file keys a full run over *files* records, in a scratch copy."""
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    _seed(fresh, files, limits=limits)
+    return load_pair_index(fresh / ".repowise", WINDOW, limits).nonsurvivor_keys
+
+
+def test_a_clean_splice_persists_the_keys_a_full_run_would(tmp_path: Path):
+    cache_dir = _seed(tmp_path, {"a.py": _BODY, "c.py": _OTHER, "tiny.py": "x = 1\n"})
+    after = {"a.py": _OTHER.replace("other", "edited"), "c.py": _OTHER, "tiny.py": "y = 2\n"}
+    for rel, body in after.items():
+        (tmp_path / rel).write_text(body)
+
+    parsed = _parsed(tmp_path)
+    report = _incremental(parsed, cache_dir, {"a.py", "tiny.py"})
+    assert report.diagnostics.get("incremental") is True
+    assert _key(report) == _key(_full(parsed))
+    index = load_pair_index(cache_dir, WINDOW, LIMITS)
+    assert index.nonsurvivors == {"tiny.py"}
+    assert index.nonsurvivor_keys == _keys_of_a_fresh_full_run(tmp_path, after)
+
+
+def test_a_cut_splice_matches_the_oracle_and_records_no_keys(tmp_path: Path):
+    lim = DuplicationLimits(time_budget_secs=0, max_total_windows=35)
+    cache_dir = _seed(tmp_path, {"a.py": _BODY, "b.py": _BODY, "c.py": _BODY}, limits=lim)
+    (tmp_path / "a.py").write_text(_BODY.replace("doit", "edited"))
+
+    parsed = _parsed(tmp_path)
+    report = _incremental(parsed, cache_dir, {"a.py"}, limits=lim)
+    assert report.diagnostics.get("incremental") is True
+    assert _key(report) == _key(_full(parsed, limits=lim))
+    index = load_pair_index(cache_dir, WINDOW, lim)
+    assert index.budget_stop is not None
+    assert index.nonsurvivor_keys is None
