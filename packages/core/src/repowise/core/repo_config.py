@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -113,6 +114,26 @@ def load_repo_config(repo_path: Path | str) -> dict[str, Any]:
         # user's provider/model/coverage settings would silently vanish and
         # every run would use defaults. Name the file and the parse error.
         raise RepoConfigError(f"Could not parse {config_path}: {exc}") from exc
+
+
+def resolve_language(
+    repo_path: Path | str | None = None,
+    config: dict[str, Any] | None = None,
+) -> str:
+    """Generation language, in precedence order (issue #1756).
+
+    repo-local ``config.yaml`` > ``REPOWISE_LANGUAGE`` env (so a Docker or UI
+    deploy can pin the language without a CLI flag) > default ``"en"``.
+
+    Lives here, beside :func:`load_repo_config`, because every path that answers
+    this question must answer it the same way. Wiring it into generation alone
+    made the variable stop working one click later: the UI's initial index
+    honoured it and the regenerate button did not.
+    """
+    if config is None and repo_path is not None:
+        config = load_repo_config(repo_path)
+    language = (config or {}).get("language") or os.environ.get("REPOWISE_LANGUAGE")
+    return str(language or "en")
 
 
 def save_repo_config(repo_path: Path | str, config: dict[str, Any]) -> None:
