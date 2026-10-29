@@ -59,7 +59,14 @@ class Forge(Protocol):
 
     def commit_url(self, ref: RemoteRef, sha: str) -> str: ...
     def change_url(self, ref: RemoteRef, number: int) -> str: ...
-    def blob_url(self, ref: RemoteRef, rev: str, path: str, line: int | None = None) -> str: ...
+    def blob_url(
+        self,
+        ref: RemoteRef,
+        rev: str,
+        path: str,
+        line: int | None = None,
+        end_line: int | None = None,
+    ) -> str: ...
     def compare_url(self, ref: RemoteRef, base: str, head: str) -> str: ...
     def format_change_ref(self, number: int) -> str: ...
     def parse_change_refs(
@@ -229,7 +236,9 @@ class BaseForge:
     def change_url(self, ref: RemoteRef, number: int) -> str:
         raise NotImplementedError
 
-    def blob_url(self, ref: RemoteRef, rev: str, path: str, line: int | None = None) -> str:
+    def blob_url(
+        self, ref: RemoteRef, rev: str, path: str, line: int | None = None, end_line: int | None = None
+    ) -> str:
         raise NotImplementedError
 
     def compare_url(self, ref: RemoteRef, base: str, head: str) -> str:

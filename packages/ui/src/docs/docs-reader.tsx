@@ -12,6 +12,7 @@ import type { DocPage, DocPageSummary } from "@repowise-dev/types/docs";
 import { cn } from "../lib/cn";
 import { formatRelativeTime, formatTokens } from "../lib/format";
 import { getPageLabel, isStubFallbackPage } from "../lib/page-types";
+import { citationKey, citationLabel, readCitations } from "./citations";
 import { computeDocNav } from "./doc-nav";
 import { filterMarkdownByPersona, type ReaderPersona } from "./reader-persona";
 import { ModuleHistory } from "./module-history";
@@ -534,16 +535,12 @@ function DocsReaderBody({
   );
 
   const sources = useMemo(() => {
-    const raw = page.metadata?.sources;
-    if (!Array.isArray(raw)) return [];
-    const byPath = new Map(pages.map((p) => [p.target_path, p]));
-    return (raw as Array<{ path?: string; kind?: string }>)
-      .map((s) => {
-        const path = typeof s?.path === "string" ? s.path : "";
-        return { path, kind: s?.kind ?? "", pageId: byPath.get(path)?.id };
-      })
-      .filter((s) => s.path);
+    const byPath = new Map(pages.map((p) => [p.target_path, p.id]));
+    return readCitations(page.metadata?.sources, (path) => byPath.get(path));
   }, [page.metadata, pages]);
+  // The commit the cited lines were read at; spans link to the forge at it.
+  const sourcesCommit =
+    typeof page.metadata?.sources_commit === "string" ? page.metadata.sources_commit.slice(0, 7) : "";
 
   // Resolved wiki link: a real href (middle-click opens in a new tab) with
   // plain clicks intercepted for in-app nav.
@@ -736,32 +733,43 @@ function DocsReaderBody({
                   <span className="ml-auto truncate font-mono text-[10px] text-[var(--color-text-tertiary)]">
                     {sources
                       .slice(0, 3)
-                      .map((s) => s.path.split("/").pop())
+                      .map((s) => citationLabel({ ...s, path: s.path.split("/").pop() ?? s.path }))
                       .join(", ")}
                     {sources.length > 3 && " …"}
                   </span>
                 </summary>
                 <ul className="flex flex-col gap-1 border-t border-[var(--color-border-default)] px-3.5 py-2.5">
-                  {sources.map((s) => (
-                    <li key={s.path} className="text-xs">
-                      {s.pageId ? (
-                        <button
-                          onClick={() => goToPageId(s.pageId!)}
-                          className="block w-full truncate text-left font-mono text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-accent-primary)]"
-                          title={`${s.path} (${s.kind})`}
-                        >
-                          {s.path}
-                        </button>
-                      ) : (
-                        <span
-                          className="block truncate font-mono text-[var(--color-text-tertiary)]"
-                          title={`${s.path} (${s.kind})`}
-                        >
-                          {s.path}
-                        </span>
-                      )}
-                    </li>
-                  ))}
+                  {sources.map((s) => {
+                    const label = citationLabel(s);
+                    const title = `${label}${s.symbol ? ` ${s.symbol}` : ""} (${s.kind})${sourcesCommit ? ` @ ${sourcesCommit}` : ""}`;
+                    const linkClass =
+                      "block w-full truncate text-left font-mono text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-accent-primary)]";
+                    const fileHref = buildFileHref?.(s.path);
+                    return (
+                      <li key={citationKey(s)} className="text-xs">
+                        {s.pageId && !s.lines ? (
+                          <button onClick={() => goToPageId(s.pageId!)} className={linkClass} title={title}>
+                            {label}
+                          </button>
+                        ) : s.url ? (
+                          <a href={s.url} target="_blank" rel="noopener noreferrer" className={linkClass} title={title}>
+                            {label}
+                          </a>
+                        ) : fileHref ? (
+                          <LinkComponent href={fileHref} className={linkClass} title={title}>
+                            {label}
+                          </LinkComponent>
+                        ) : (
+                          <span
+                            className="block truncate font-mono text-[var(--color-text-tertiary)]"
+                            title={title}
+                          >
+                            {label}
+                          </span>
+                        )}
+                      </li>
+                    );
+                  })}
                 </ul>
               </details>
             )}

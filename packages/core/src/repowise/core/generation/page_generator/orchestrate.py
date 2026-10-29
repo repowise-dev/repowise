@@ -931,6 +931,15 @@ class _GenerationRun:
             except Exception as exc:
                 log.debug("interlinking.failed", error=str(exc))
 
+            # Post-generation: point every cited span at the commit it was read
+            # at, and at the forge when the repository has a known remote.
+            try:
+                from ..page_sources import attach_source_links
+
+                attach_source_links(all_pages, self.repo_path)
+            except Exception as exc:
+                log.debug("source_links.failed", error=str(exc))
+
             # Post-generation: graph-derived related pages. Runs AFTER
             # interlinking so prose-derived wiki_links win dedup and related
             # entries only fill the gaps.

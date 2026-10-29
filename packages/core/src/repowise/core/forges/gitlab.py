@@ -76,8 +76,12 @@ class GitLab(BaseForge):
     def change_url(self, ref: RemoteRef, number: int) -> str:
         return f"{ref.web_base}/-/merge_requests/{number}"
 
-    def blob_url(self, ref: RemoteRef, rev: str, path: str, line: int | None = None) -> str:
+    def blob_url(
+        self, ref: RemoteRef, rev: str, path: str, line: int | None = None, end_line: int | None = None
+    ) -> str:
         anchor = f"#L{line}" if line else ""
+        if line and end_line and end_line > line:
+            anchor += f"-{end_line}"
         return f"{ref.web_base}/-/blob/{quote_path(rev)}/{quote_path(path)}{anchor}"
 
     def compare_url(self, ref: RemoteRef, base: str, head: str) -> str:

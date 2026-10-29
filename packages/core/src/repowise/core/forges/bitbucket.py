@@ -103,11 +103,14 @@ class Bitbucket(BaseForge):
         suffix = "/overview" if ref.is_self_hosted else ""
         return f"{ref.web_base}/pull-requests/{number}{suffix}"
 
-    def blob_url(self, ref: RemoteRef, rev: str, path: str, line: int | None = None) -> str:
+    def blob_url(
+        self, ref: RemoteRef, rev: str, path: str, line: int | None = None, end_line: int | None = None
+    ) -> str:
+        ranged = bool(line and end_line and end_line > line)
         if ref.is_self_hosted:
-            anchor = f"#{line}" if line else ""
+            anchor = f"#{line}-{end_line}" if ranged else (f"#{line}" if line else "")
             return f"{ref.web_base}/browse/{quote_path(path)}?at={quote(rev, safe='')}{anchor}"
-        anchor = f"#lines-{line}" if line else ""
+        anchor = f"#lines-{line}:{end_line}" if ranged else (f"#lines-{line}" if line else "")
         return f"{ref.web_base}/src/{quote_path(rev)}/{quote_path(path)}{anchor}"
 
     def compare_url(self, ref: RemoteRef, base: str, head: str) -> str:

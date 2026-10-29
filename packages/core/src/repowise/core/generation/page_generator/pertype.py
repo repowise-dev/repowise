@@ -51,7 +51,7 @@ from ..overview_tables import (
     embed_package_table,
     embed_section,
 )
-from ..page_sources import lint_sources
+from ..page_sources import lint_sources, module_page_sources
 from ..prose import unwrap_markdown_links
 from ..structural_labels import structural_page_title
 from .reuse import files_digest, group_material, model_reuse_key
@@ -425,13 +425,21 @@ class PerTypeGenerationMixin:
         )
         # Citations of a missing file, or one its section never names, go.
         # Diagrams are checked for every page of the run in ``sanitize_pages``.
+        known_paths = [n for n in graph if "::" not in n]
         page.content = lint_sources(
             unwrap_markdown_links(page.content),
             base=module_base(ctx.files),
             members=ctx.files,
-            known_paths=[n for n in graph if "::" not in n],
+            known_paths=known_paths,
             symbols_by_file={fc.file_path: [s["name"] for s in fc.symbols] for fc in file_contexts},
         )
+        # The functions each surviving citation is about, with their spans.
+        cited = module_page_sources(
+            page.content, base=module_base(ctx.files), members=ctx.files,
+            known_paths=known_paths, file_contexts=file_contexts,
+        )
+        if cited:
+            page.metadata["sources"] = cited
         page.content = embed_section(
             page.content, CONNECTIONS_HEADING, connections_markdown(ctx.facts or {})
         )

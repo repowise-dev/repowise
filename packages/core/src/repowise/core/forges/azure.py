@@ -104,12 +104,15 @@ class Azure(BaseForge):
     def change_url(self, ref: RemoteRef, number: int) -> str:
         return f"{ref.web_base}/pullrequest/{number}"
 
-    def blob_url(self, ref: RemoteRef, rev: str, path: str, line: int | None = None) -> str:
+    def blob_url(
+        self, ref: RemoteRef, rev: str, path: str, line: int | None = None, end_line: int | None = None
+    ) -> str:
         # The shape Azure's own "copy link to line" produces.
         url = f"{ref.web_base}?path=/{quote_path(path)}&version={_version(rev)}"
         if line:
+            last = end_line if end_line and end_line > line else line
             url += (
-                f"&line={line}&lineEnd={line + 1}"
+                f"&line={line}&lineEnd={last + 1}"
                 "&lineStartColumn=1&lineEndColumn=1&lineStyle=plain"
             )
         return url + "&_a=contents"
