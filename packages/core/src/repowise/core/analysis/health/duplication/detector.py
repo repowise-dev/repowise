@@ -112,6 +112,57 @@ def _read_source(abs_path: str, read_source: Any | None = None) -> bytes | None:
         return None
 
 
+def _content_key(source: bytes, grammar: str, language: str) -> str:
+    """The token cache and pair index key for a file's bytes.
+
+    The grammar joins the key where it is not the language tag: a .tsx file and
+    a byte-identical .ts file tokenize differently. Every other file keys on
+    its hash alone.
+    """
+    from repowise.core.ingestion import compute_content_hash
+
+    digest = compute_content_hash(source)
+    return f"{grammar}:{digest}" if grammar != language else digest
+
+
+def _moved_since_index(
+    index: Any, parsed_files: list[Any], read_source: Any | None
+) -> set[str] | None:
+    """Files whose bytes differ from what *index* last read, new files included.
+
+    ``None`` when the index cannot answer: it recorded no non-survivor keys, or
+    a window-budget cut left files it never read.
+    """
+    from repowise.core.ingestion.parser import grammar_tag_for
+
+    if index.budget_stop is not None or index.nonsurvivor_keys is None:
+        return None
+    known = {**index.nonsurvivor_keys, **index.files}
+    moved: set[str] = set()
+    for pf in parsed_files:
+        check_cancelled()
+        path, language = pf.file_info.path, pf.file_info.language
+        source = _read_source(pf.file_info.abs_path, read_source)
+        key = "" if source is None else _content_key(source, grammar_tag_for(language, path), language)
+        if known.get(path) != key:
+            moved.add(path)
+    return moved
+
+
+def _nonsurvivor_keys(
+    nonsurvivors: set[str], *known: dict[str, str] | None
+) -> dict[str, str] | None:
+    """Content keys for *nonsurvivors* from *known* maps; ``None`` if any is missing."""
+    merged: dict[str, str] = {}
+    for keys in known:
+        if keys is None:
+            return None
+        merged.update(keys)
+    if not nonsurvivors <= merged.keys():
+        return None
+    return {p: merged[p] for p in nonsurvivors}
+
+
 def _partner_support(meta: dict[str, Any], partner_path: str) -> int:
     """Commits *meta*'s file shares with *partner_path*.
 
@@ -205,11 +256,13 @@ def detect_clones(
     repo shape (minified bundles, generated tables) can wedge the run —
     see issue #341.
 
-    When *changed_files* is given (incremental ``repowise update`` runs)
-    and a persisted pair index from a previous run validates, the raw
+    When a persisted pair index from a previous run validates, the raw
     pair multiset is spliced instead of recomputed: only hash buckets
-    touched by a changed/deleted file are re-verified. Any validity miss
-    falls back to this full pipeline, which rewrites the artifact.
+    touched by a changed/deleted file are re-verified. *changed_files*
+    names the moved files on an incremental ``repowise update``; without
+    it, they are the files whose bytes differ from what the index read.
+    Any validity miss falls back to this full pipeline, which rewrites the
+    artifact.
     """
     meta_map = git_meta_map or {}
     lim = limits or DuplicationLimits()
@@ -224,15 +277,22 @@ def detect_clones(
 
     parsed_list = list(parsed_files)
 
-    if changed_files is not None and cache is not None:
+    if cache is not None:
         from .pair_index import load_pair_index
 
         index = load_pair_index(cache_dir, window_tokens, lim)
+        moved = None
         if index is not None:
+            moved = (
+                set(changed_files)
+                if changed_files is not None
+                else _moved_since_index(index, parsed_list, source_reader)
+            )
+        if moved is not None:
             report = _detect_clones_incremental(
                 parsed_list,
                 meta_map,
-                set(changed_files),
+                moved,
                 window_tokens,
                 min_lines,
                 lim,
@@ -247,8 +307,9 @@ def detect_clones(
         # Fall through to the full pipeline; it refreshes the artifact.
         diag = DuplicationDiagnostics()
 
+    content_keys: dict[str, str] = {}
     per_file_streams, per_file_nloc, windows_by_grammar, per_file_hash = _collect_windows(
-        parsed_list, window_tokens, lim, diag, cache, source_reader
+        parsed_list, window_tokens, lim, diag, cache, source_reader, content_keys
     )
     if cache is not None:
         cache.save()
@@ -287,6 +348,7 @@ def detect_clones(
             per_file_hash,
             raw_pairs,
             [pf.file_info.path for pf in parsed_list],
+            content_keys,
         )
 
     # Neither structure participates in merge/finalize/aggregation. Drop
@@ -367,6 +429,7 @@ def _collect_windows(
     diag: DuplicationDiagnostics,
     cache: Any | None = None,
     read_source: Any | None = None,
+    content_keys: dict[str, str] | None = None,
 ) -> tuple[dict[str, _Stream], dict[str, int], dict[str, list[WindowHash]], dict[str, str]]:
     """Tokenize each file once and emit its informative rolling-hash windows.
 
@@ -381,9 +444,9 @@ def _collect_windows(
     gate above still re-evaluates live against the cached lengths. The
     returned hash map (path -> content hash, gate survivors only) feeds
     the persisted pair index; it is empty when no cache is supplied.
+    *content_keys*, when given, collects every considered file's content
+    key ("" for an unreadable one), survivors and gated files alike.
     """
-    import hashlib
-
     from repowise.core.ingestion.parser import grammar_tag_for
 
     per_file_streams: dict[str, _Stream] = {}
@@ -399,25 +462,22 @@ def _collect_windows(
 
         source = _read_source(pf.file_info.abs_path, read_source)
         if source is None:
+            if content_keys is not None:
+                content_keys[path] = ""
             diag.skipped_unreadable += 1
             continue
+
+        grammar = grammar_tag_for(language, path)
+        content_hash = ""
+        if cache is not None or content_keys is not None:
+            content_hash = _content_key(source, grammar, language)
+        if content_keys is not None:
+            content_keys[path] = content_hash
         if looks_minified(source, limits):
             diag.skipped_minified += 1
             continue
 
-        grammar = grammar_tag_for(language, path)
-
-        cached = None
-        content_hash = ""
-        if cache is not None:
-            content_hash = hashlib.sha256(source).hexdigest()
-            # The grammar joins the key where it is not the language tag: a
-            # .tsx file and a byte-identical .ts file tokenize differently now,
-            # and this cache and the pair index below both key on this value.
-            # Every other file keys exactly as before and no entry ages out.
-            if grammar != language:
-                content_hash = f"{grammar}:{content_hash}"
-            cached = cache.get(content_hash)
+        cached = cache.get(content_hash) if cache is not None else None
 
         if cached is not None:
             kinds, names, nloc, window_tuples = cached
@@ -645,8 +705,9 @@ def _detect_clones_incremental(
     # 1. Collect the changed files live (read, gates, tokenize, windows).
     #    Sorted for deterministic window-budget behaviour.
     changed_pfs = [current[p] for p in sorted(changed)]
+    live_keys: dict[str, str] = {}
     new_streams, new_nloc, new_windows_by_grammar, new_hash = _collect_windows(
-        changed_pfs, window_tokens, lim, diag, cache, read_source
+        changed_pfs, window_tokens, lim, diag, cache, read_source, live_keys
     )
     new_windows = [w for ws in new_windows_by_grammar.values() for w in ws]
     if diag.window_budget_hit:
@@ -799,13 +860,18 @@ def _detect_clones_incremental(
     new_files.update(new_hash)
     new_paths_table = sorted(new_files)
     pid = {p: i for i, p in enumerate(new_paths_table)}
+    nonsurvivors = {pf.file_info.path for pf in parsed_files} - set(new_files)
     save_pair_index(
         cache_dir,
         DuplicationPairIndex(
             window_tokens=window_tokens,
             limits_key=limits_fingerprint(lim),
             files=new_files,
-            nonsurvivors={pf.file_info.path for pf in parsed_files} - set(new_files),
+            nonsurvivors=nonsurvivors,
+            # A cut leaves files unread, so their keys are unknown.
+            nonsurvivor_keys=None
+            if cut is not None
+            else _nonsurvivor_keys(nonsurvivors, index.nonsurvivor_keys, live_keys),
             paths=new_paths_table,
             pairs=[
                 (pid[key[0]], pid[key[1]], key[2], key[3], key[4], key[5], count)
@@ -911,10 +977,12 @@ def _persist_pair_index(
     per_file_hash: dict[str, str],
     raw_pairs: list[ClonePair],
     paths: list[str],
+    content_keys: dict[str, str],
 ) -> None:
     """Persist the full run's raw pairs for the next incremental splice.
 
-    *paths* are every file the run was given, in collection order.
+    *paths* are every file the run was given, in collection order;
+    *content_keys* the content key of every file it read.
     """
     from collections import Counter
 
@@ -937,6 +1005,7 @@ def _persist_pair_index(
             limits_key=limits_fingerprint(lim),
             files=files,
             nonsurvivors=set(paths) - set(files),
+            nonsurvivor_keys=_nonsurvivor_keys(set(paths) - set(files), content_keys),
             paths=paths_table,
             pairs=[
                 (pid[key[0]], pid[key[1]], key[2], key[3], key[4], key[5], count)

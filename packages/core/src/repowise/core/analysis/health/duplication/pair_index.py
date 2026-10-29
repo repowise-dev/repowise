@@ -92,6 +92,9 @@ class DuplicationPairIndex:
     # Where a window-budget cut fell; ``None`` when the run was not cut.
     budget_stop: str | None = None
     unread: set[str] = field(default_factory=set)
+    # path -> content key of each non-survivor ("" when unreadable), so a
+    # whole-repo run can tell which files moved; ``None`` when not recorded.
+    nonsurvivor_keys: dict[str, str] | None = None
 
     @property
     def spliceable(self) -> bool:
@@ -129,6 +132,7 @@ def load_pair_index(
             timed_out=payload["timed_out"],
             budget_stop=payload["budget_stop"],
             unread=payload["unread"],
+            nonsurvivor_keys=payload.get("nonsurvivor_keys"),
         )
     except FileNotFoundError:
         return None
@@ -155,6 +159,7 @@ def save_pair_index(cache_dir: Path, index: DuplicationPairIndex) -> None:
             "timed_out": index.timed_out,
             "budget_stop": index.budget_stop,
             "unread": index.unread,
+            "nonsurvivor_keys": index.nonsurvivor_keys,
         }
         dump_sealed_pickle(path, payload, domain=_INDEX_FILENAME)
     except Exception as exc:
