@@ -85,12 +85,23 @@ unless you ask for it.
 
 ### `safe_to_delete`
 
-A finding is deletion-ready (the CLI's "Ready?" column) only when its
-confidence is `0.7` or higher and its path carries no runtime-load risk factor
-(config, environment, bootstrap, database, script or served-asset paths).
-Unreachable files, zombie packages and unused internals are never marked
-deletion-ready, whatever their confidence. In practice `safe_to_delete` means
-"an unused export with strong evidence".
+A finding is deletion-ready (the CLI's "Ready?" column) only when no blocker
+below applies. Each blocker that fires adds an evidence line naming it, and
+none changes confidence or tier. In practice `safe_to_delete` means "an unused
+export with strong evidence".
+
+- **Kind:** unreachable files, zombie packages and unused internals, whatever
+  their confidence.
+- **Confidence** below `0.7`.
+- **Runtime-load path:** config, environment, bootstrap, database, script,
+  served-asset or Salesforce Aura bundle paths.
+- **Docs or example code:** a docs build can include a file by path or line
+  range.
+- **Export only:** the symbol's own file uses it, so only the `export` is
+  unneeded.
+- **Weak resolution for the language in this repository:** the language is
+  unknown to the graph, its import support is not full, none of its call edges
+  has a recorded resolution, or more than half of them are name matches.
 
 ### Exempt by construction
 
