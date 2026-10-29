@@ -122,12 +122,24 @@ def collapse_empty_duplicate_headings(content: str) -> str:
 
 
 def _is_infra_file(parsed: ParsedFile) -> bool:
-    """Return True if the file is an infrastructure file."""
-    lang = parsed.file_info.language
-    if lang in _INFRA_LANGUAGES:
-        return True
-    name = Path(parsed.file_info.path).name
-    return name in _INFRA_FILENAMES
+    """Whether a file is documented as infrastructure rather than as code.
+
+    The one definition selection, generation and the sweeps share. Build and
+    deploy definitions (Dockerfile, Makefile, Terraform) are infrastructure. A
+    shell script is code like any other, so a lint or release script competes
+    for a file page, unless it is a container entrypoint: the script the
+    deployment itself runs. Tests are never infrastructure.
+    """
+    fi = parsed.file_info
+    if fi.is_test:
+        return False
+    name = Path(fi.path).name
+    if fi.language == "shell":
+        # Ceiling: matched by name. A script a Dockerfile runs under another
+        # name (``CMD ["./start.sh"]``) stays code; reading the Dockerfile's
+        # ENTRYPOINT/CMD would catch it at the cost of a cross-file pass.
+        return "entrypoint" in name.lower()
+    return fi.language in _INFRA_LANGUAGES or name in _INFRA_FILENAMES
 
 
 def _is_significant_file(

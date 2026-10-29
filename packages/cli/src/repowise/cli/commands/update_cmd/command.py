@@ -90,7 +90,7 @@ from .reporting import (
     render_header,
     show_full_completion,
 )
-from .stale_targets import load_actionable_stale_targets
+from .stale_targets import load_actionable_stale_targets, structure_ids_to_render
 from .wiki_rebuild import record_wiki_rebuilt, resolve_wiki_rebuild
 from .workspace import _workspace_update
 
@@ -1658,7 +1658,8 @@ def _render_template_page_set(
         # fatal before stamping its fingerprint. Do not embed them twice.
         embed_during_generation=not run.config.generation_changed,
     )
-    if run.stale_deterministic_ids and not full_scope:
+    structure_ids = set() if full_scope else structure_ids_to_render(run, prior_ids)
+    if structure_ids:
         pages.extend(
             regenerate_deterministic_page_ids(
                 repo_path=run.repo_path,
@@ -1667,7 +1668,7 @@ def _render_template_page_set(
                 graph_builder=run.graph_builder,
                 repo_structure=run.repo_structure,
                 git_meta_map=run.git_meta_map,
-                page_ids=run.stale_deterministic_ids,
+                page_ids=structure_ids,
                 cfg=run.cfg,
                 concurrency=opts.concurrency,
                 degraded=run.degraded,

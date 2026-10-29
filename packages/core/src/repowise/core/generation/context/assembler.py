@@ -24,6 +24,7 @@ from repowise.core.ingestion.package_roots import (
     package_roots_from_paths,
     scan_package_roots,
 )
+from repowise.core.ingestion.special_handlers import iter_docker_stages
 
 from ...co_change import STRUCTURAL_UNEXPLAINED, parse_partners
 from ..categories import file_category
@@ -1033,13 +1034,11 @@ class ContextAssembler:
         remaining = self._config.token_budget
         raw_content = self._trim_to_budget(source_text, remaining)
 
-        targets = [sym.name for sym in parsed.symbols]
-
         return InfraPageContext(
             file_path=parsed.file_info.path,
             language=parsed.file_info.language,
             raw_content=raw_content,
-            targets=targets,
+            targets=_infra_targets(parsed, source_text),
         )
 
     # ------------------------------------------------------------------
@@ -1132,6 +1131,18 @@ class ContextAssembler:
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _infra_targets(parsed: ParsedFile, source_text: str) -> list[str]:
+    """What a reader can build from an infra file by name: Makefile targets or
+    Dockerfile stages. Other formats declare no targets; their source shows the rest.
+    """
+    language = parsed.file_info.language
+    if language == "makefile":
+        return [sym.name for sym in parsed.symbols]
+    if language == "dockerfile":
+        return list(iter_docker_stages(source_text))
+    return []
 
 
 def _symbol_to_dict(symbol: Symbol) -> dict[str, Any]:

@@ -30,13 +30,13 @@ another is generated after it.
 
 | Level | Page type | One per | Written by |
 |-------|-----------|---------|------------|
-| 0 | `api_contract` | file classified as an API surface | structure |
+| 0 | `api_contract` | API spec (OpenAPI, proto, GraphQL) or FastAPI / ASP.NET route module | structure |
 | 1 | `symbol_spotlight` | selected public symbol | structure |
 | 2 | `file_page` | eligible source file | structure |
 | 3 | `scc_page` | dependency cycle | structure |
 | 4 | `module_page` | subsystem in the concept tree | model, structure when keyless |
 | 6 | `repo_overview` | repository | model, structure when keyless |
-| 7 | `infra_page` | infrastructure file (Dockerfile, CI, IaC) | structure |
+| 7 | `infra_page` | Dockerfile, Makefile, Terraform file or container entrypoint script | structure |
 | 8 | `onboarding` | slot | model, structure when keyless |
 
 The onboarding slots are Project Overview, Getting Started, Key Concepts, How It
@@ -98,7 +98,7 @@ Each page records two separate facts:
 
 - **`provider_name`** answers *has a model written this page yet*. It is what
   the docs tree's "not written yet" marker and the reader's upgrade affordance
-  read.
+  read. A page rendered from structure carries no `model_name`.
 - **`confidence`** answers *how far should a reader trust the statements*. A
   structure-rendered page is `1.0`, because everything on it is extracted from
   the code. A model-written page is `0.8`: grounded in the assembled material
@@ -149,6 +149,11 @@ Two mechanisms decide what is stale:
 
 So a new Repowise release that edits a template re-renders every page of that
 type once. That is intended, not drift.
+
+Cycle, API-contract and infra pages follow the rebuilt graph on every update: a
+new cycle or newly selected file gets its page, a changed infra file is
+re-rendered, and a page selection no longer picks is removed. A deleted file's
+page stays as a tombstone for 30 days, a renamed file's as a redirect.
 
 `--cascade-budget N` caps how many pages a single update may regenerate from
 cascading changes. It is adaptive when unset, which is what you want except on a

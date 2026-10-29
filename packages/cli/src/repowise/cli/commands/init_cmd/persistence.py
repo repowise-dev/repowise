@@ -157,7 +157,7 @@ async def persist_result(
         timed,
         tombstone_absent_file_pages,
     )
-    from repowise.core.pipeline.persist import persist_symbol_analysis
+    from repowise.core.pipeline.persist import persist_symbol_analysis, sweep_store_hygiene
 
     engine, sf, _repo_id = await open_repo_db(repo_path, repo_name=result.repo_name)
 
@@ -226,6 +226,9 @@ async def persist_result(
                 result.generated_pages,
                 getattr(result, "authoritative_page_types", None),
                 getattr(result, "preserved_page_ids", None),
+            )
+            swept_page_ids += await sweep_store_hygiene(
+                session, repo.id, getattr(result, "parsed_files", None)
             )
         else:
             swept_page_ids = await persist_pipeline_result(

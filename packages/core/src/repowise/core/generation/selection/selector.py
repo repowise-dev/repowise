@@ -11,7 +11,6 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
-from pathlib import Path
 from typing import Any
 
 import structlog
@@ -28,7 +27,8 @@ from ..concept_tree.naming import (
     deterministic_title,
     disambiguate_titles,
 )
-from ..models import member_structural_key, scc_page_slug
+from ..models import compute_page_id, member_structural_key, scc_page_slug
+from ..page_generator.helpers import _is_infra_file
 from .scoring import (
     is_test_spec,
     score_api_contract,
@@ -40,8 +40,6 @@ from .scoring import (
 
 log = structlog.get_logger(__name__)
 
-_INFRA_LANGUAGES = _LANG_REGISTRY.infra_languages()
-_INFRA_FILENAMES = frozenset({"Dockerfile", "Makefile", "GNUmakefile"})
 _CODE_LANGUAGES = _LANG_REGISTRY.code_languages()
 
 # Top-level directories whose contents document or illustrate the repository
@@ -205,13 +203,6 @@ class SelectionInputs:
 # ---------------------------------------------------------------------------
 # Helpers — file classification
 # ---------------------------------------------------------------------------
-
-
-def _is_infra_file(parsed: Any) -> bool:
-    fi = parsed.file_info
-    if fi.language in _INFRA_LANGUAGES:
-        return True
-    return Path(fi.path).name in _INFRA_FILENAMES
 
 
 def _is_code_file(parsed: Any) -> bool:
@@ -845,9 +836,9 @@ def _build_rollup_groups(
     return rollups
 
 
-def _build_api_candidates(inputs: SelectionInputs) -> list[tuple[float, str]]:
+def _build_api_candidates(parsed_files: Iterable[Any]) -> list[tuple[float, str]]:
     scored: list[tuple[float, str]] = []
-    for p in inputs.parsed_files:
+    for p in parsed_files:
         if not p.file_info.is_api_contract:
             continue
         scored.append((score_api_contract(p), p.file_info.path))
@@ -855,9 +846,9 @@ def _build_api_candidates(inputs: SelectionInputs) -> list[tuple[float, str]]:
     return scored
 
 
-def _build_infra_candidates(inputs: SelectionInputs) -> list[tuple[float, str]]:
+def _build_infra_candidates(parsed_files: Iterable[Any]) -> list[tuple[float, str]]:
     scored: list[tuple[float, str]] = []
-    for p in inputs.parsed_files:
+    for p in parsed_files:
         if not _is_infra_file(p):
             continue
         scored.append((score_infra(p), p.file_info.path))
@@ -866,10 +857,10 @@ def _build_infra_candidates(inputs: SelectionInputs) -> list[tuple[float, str]]:
 
 
 def _build_scc_candidates(
-    inputs: SelectionInputs,
+    sccs: Iterable[Any],
 ) -> list[tuple[float, tuple[str, list[str]]]]:
     scored: list[tuple[float, tuple[str, list[str]]]] = []
-    for scc in inputs.sccs:
+    for scc in sccs:
         files = sorted(scc)
         s = score_scc(cycle_size=len(files))
         if s <= 0.0:
@@ -913,9 +904,9 @@ def select_pages(inputs: SelectionInputs) -> Selection:
     symbols = _build_symbol_candidates(inputs)
     concepts = _build_module_groups(inputs)
     modules = concepts.scored
-    apis = _build_api_candidates(inputs)
-    infras = _build_infra_candidates(inputs)
-    sccs = _build_scc_candidates(inputs)
+    apis = _build_api_candidates(inputs.parsed_files)
+    infras = _build_infra_candidates(inputs.parsed_files)
+    sccs = _build_scc_candidates(inputs.sccs)
 
     selected_paths = [p for _, p in files]
     # Folder-specific documentation floors (issue #633). Each rule promises
@@ -946,6 +937,53 @@ def select_pages(inputs: SelectionInputs) -> Selection:
     )
     log.info("page_selection.complete", counts=sel.counts(), folder_coverage=folder_coverage)
     return sel
+
+
+def selected_file_keyed_paths(parsed_files: Iterable[Any]) -> dict[str, set[str]]:
+    """``page type -> selected paths`` for the pages one file earns on its own.
+
+    The same builders :func:`select_pages` uses, so a stored row can be asked
+    "would this run still pick you" without running the whole selection. Route
+    detection runs first (it is idempotent): a run that skipped generation never
+    flagged its route files, and judging them unflagged would retire their pages.
+    """
+    from ..api_contract_detector import detect_code_api_contracts
+
+    parsed = list(parsed_files)
+    detect_code_api_contracts(parsed)
+    return {
+        "api_contract": {path for _, path in _build_api_candidates(parsed)},
+        "infra_page": {path for _, path in _build_infra_candidates(parsed)},
+    }
+
+
+def selected_cycle_page_ids(sccs: Iterable[Any]) -> set[str]:
+    """Page ids of the cycles :func:`select_pages` gives a page."""
+    return {compute_page_id("scc_page", slug) for _, (slug, _) in _build_scc_candidates(sccs)}
+
+
+def structure_ids_for_incremental_run(
+    parsed_files: Iterable[Any],
+    sccs: Iterable[Any],
+    existing_ids: Iterable[str],
+    rendered_paths: Iterable[str],
+) -> set[str]:
+    """Structure-only page ids an incremental run renders by id.
+
+    Its file-scoped pass renders the changed files' pages (*rendered_paths*,
+    API contracts included) and stops below the levels that hold cycles and
+    infrastructure. So a selected cycle, API contract or infra page the store
+    lacks is rendered by id, as is the infra page of a file that changed:
+    otherwise a new cycle never gets a page and an edited Dockerfile's page
+    never moves.
+    """
+    rendered = set(rendered_paths)
+    selected = selected_file_keyed_paths(parsed_files)
+    wanted = selected_cycle_page_ids(sccs)
+    wanted |= {compute_page_id("api_contract", p) for p in selected["api_contract"] - rendered}
+    wanted |= {compute_page_id("infra_page", p) for p in selected["infra_page"]}
+    changed_infra = {compute_page_id("infra_page", p) for p in selected["infra_page"] & rendered}
+    return (wanted - set(existing_ids)) | changed_infra
 
 
 def _folder_rules(inputs: SelectionInputs) -> tuple[tuple[str, float], ...]:

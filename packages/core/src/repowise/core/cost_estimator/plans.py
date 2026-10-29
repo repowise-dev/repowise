@@ -46,7 +46,7 @@ def build_generation_plan(
     if skip_tests:
         files = [p for p in files if not p.file_info.is_test]
     if skip_infra:
-        from repowise.core.generation.selection.selector import _is_infra_file
+        from repowise.core.generation.page_generator.helpers import _is_infra_file
 
         files = [p for p in files if not _is_infra_file(p)]
 

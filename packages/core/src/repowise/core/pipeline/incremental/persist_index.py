@@ -103,11 +103,13 @@ async def sweep_retired(ctx: IncrementalPersist) -> None:
         sweep_absent_cycle_pages,
         sweep_absent_symbol_spotlights,
         sweep_deselected_pages,
-        sweep_retired_pages,
+        sweep_store_hygiene,
     )
 
     with timed(ctx.timings, "persist.sweeps"):
-        ctx.swept_page_ids = await sweep_retired_pages(ctx.session, ctx.repo_id)
+        # File-keyed pages among these may carry embeddings, hence both lists.
+        hygiene = await sweep_store_hygiene(ctx.session, ctx.repo_id, ctx.parsed_files)
+        ctx.swept_page_ids = list(hygiene)
         # Same reasoning as the retirement sweep above: this path never
         # regenerates a cycle page, so asking the rebuilt graph whether the
         # cycle still exists is the only way a fixed cycle's page can ever be
@@ -120,7 +122,7 @@ async def sweep_retired(ctx: IncrementalPersist) -> None:
             ctx.session, ctx.repo_id, ctx.graph_builder
         )
         # Unlike the pages above, these may carry embeddings.
-        ctx.deselected_page_ids = await sweep_deselected_pages(
+        deselected = await sweep_deselected_pages(
             ctx.session,
             ctx.repo_id,
             ctx.parsed_files,
@@ -128,7 +130,8 @@ async def sweep_retired(ctx: IncrementalPersist) -> None:
             _generation_config(ctx.repo_path),
             ctx.git_meta_map,
         )
-        ctx.swept_page_ids += ctx.deselected_page_ids
+        ctx.swept_page_ids += deselected
+        ctx.deselected_page_ids = hygiene + deselected
 
 
 def _generation_config(repo_path: Any) -> Any:

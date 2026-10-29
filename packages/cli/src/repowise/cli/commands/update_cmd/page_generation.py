@@ -11,6 +11,7 @@ from repowise.cli.ui import make_progress
 from repowise.core.pipeline import timed
 
 from .options import DocsPass, UpdateOptions, UpdateRun
+from .stale_targets import structure_ids_to_render
 
 
 def _generation_warning_handler(
@@ -178,10 +179,14 @@ def _load_prior_pages(run: UpdateRun) -> dict[str, object]:
 
 
 def render_stale_structure(opts: UpdateOptions, run: UpdateRun, docs: DocsPass) -> None:
-    """Re-render stale structural pages from the full graph (no model calls)."""
-    if not run.stale_deterministic_ids or run.full_generation:
+    """Render stale and missing structure pages from the full graph (no model calls)."""
+    if run.full_generation:
         return
     from .deterministic import regenerate_deterministic_page_ids
+
+    page_ids = structure_ids_to_render(run, docs.prior_pages)
+    if not page_ids:
+        return
 
     with timed(run.timings, "render.structure"):
         docs.generated_pages.extend(
@@ -192,7 +197,7 @@ def render_stale_structure(opts: UpdateOptions, run: UpdateRun, docs: DocsPass) 
                 graph_builder=run.graph_builder,
                 repo_structure=run.repo_structure,
                 git_meta_map=run.git_meta_map,
-                page_ids=run.stale_deterministic_ids,
+                page_ids=page_ids,
                 cfg=run.cfg,
                 concurrency=opts.concurrency,
                 degraded=run.degraded,

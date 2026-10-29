@@ -36,3 +36,21 @@ def load_actionable_stale_targets(run: UpdateRun, opts: UpdateOptions) -> int:
     absent = [path for path in paths if not (run.repo_path / path).exists()]
     run.stale_db_paths, run.stale_deterministic_ids = absent, set()
     return len(paths) - len(absent) + len(page_ids)
+
+
+def structure_ids_to_render(run: UpdateRun, existing_ids: object) -> set[str]:
+    """The whole-repo structure pages a rendering update renders by id.
+
+    The stale ones, plus the cycle, API-contract and infra pages the rebuilt
+    graph selects that the store (*existing_ids*) lacks or whose file changed.
+    """
+    from repowise.core.generation.selection.selector import structure_ids_for_incremental_run
+
+    try:
+        sccs = run.graph_builder.strongly_connected_components()
+    except Exception:  # no graph to read cycles from: heal only what is stale
+        sccs = []
+    rendered = run.affected.regenerate if run.affected is not None else []
+    return set(run.stale_deterministic_ids) | structure_ids_for_incremental_run(
+        run.parsed_files or [], sccs, existing_ids or (), rendered
+    )

@@ -285,6 +285,12 @@ pass reads the sources.
 
     _add_synthetic_edges(repo_path, graph_builder, file_infos, source_map, log, timings)
 
+    # The flag init sets after its graph build, so an update renders and keeps
+    # a route-declaring file's api_contract page instead of demoting it.
+    from repowise.core.generation import detect_code_api_contracts
+
+    detect_code_api_contracts(parsed_files)
+
     return parsed_files, source_map, graph_builder, repo_structure, len(file_infos)
 
 
