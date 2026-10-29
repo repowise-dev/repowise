@@ -28,6 +28,7 @@ from repowise.core.persistence.crud import (
     get_kg_layers,
     get_kg_tour_steps,
 )
+from repowise.core.persistence.crud.tombstoned_pages import announces_deletion
 from repowise.core.persistence.decision_graph import get_governing_decisions
 from repowise.core.persistence.models import (
     DecisionRecord,
@@ -175,7 +176,7 @@ def _tombstone_section(card: CardState) -> bool:
     """The file was deleted or renamed since indexing: write the redirect
     rather than a misleading card, and say the card ends here."""
     page = card.page
-    if page is None or getattr(page, "freshness_status", "") != "tombstone":
+    if page is None or not announces_deletion(page):
         return False
     try:
         successors = json.loads(page.metadata_json or "{}").get("successor_paths") or []

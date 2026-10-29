@@ -11,6 +11,13 @@ from typing import Any
 
 import structlog
 
+from repowise.core.generation.interlinking import FILE_BACKED_PAGE_TYPES
+from repowise.core.persistence.crud.tombstoned_pages import (
+    TOMBSTONE_DELETED,
+    TOMBSTONE_REASON_KEY,
+    TOMBSTONE_RETIRED,
+)
+
 # Patchable steps are looked up on the package at call time, so a patch on
 # ``repowise.core.pipeline.persist`` reaches this module too.
 from repowise.core.pipeline import persist as _persist
@@ -53,10 +60,11 @@ def _metadata(metadata_json: str | None) -> dict:
     return meta if isinstance(meta, dict) else {}
 
 
-def _tombstone(page: Any, successors: list[str]) -> None:
-    """Mark one page a tombstone, recording where its file went and when."""
+def _tombstone(page: Any, successors: list[str], reason: str = TOMBSTONE_DELETED) -> None:
+    """Mark one page a tombstone, recording why, where its file went and when."""
     page.freshness_status = "tombstone"
     meta = _metadata(page.metadata_json)
+    meta[TOMBSTONE_REASON_KEY] = reason
     meta["successor_paths"] = successors
     meta[TOMBSTONED_AT_KEY] = datetime.now(UTC).isoformat()
     page.metadata_json = json.dumps(meta)
@@ -104,7 +112,13 @@ async def mark_tombstone_pages(
 
     from repowise.core.persistence.models import Page
 
-    page_ids = {f"file_page:{path}": (path, successors) for path, successors in candidates}
+    # Every page documenting the file: a live API contract or infra page left
+    # behind would otherwise read as the file still being there.
+    page_ids = {
+        f"{page_type}:{path}": (path, successors)
+        for path, successors in candidates
+        for page_type in FILE_BACKED_PAGE_TYPES
+    }
     pages = list(
         (
             await session.execute(
@@ -183,6 +197,8 @@ async def tombstone_file_pages_outside_scope(
         source_path = target.split("::", 1)[0] if page.page_type == "symbol_spotlight" else target
         if source_path in current_file_paths:
             continue
+        # Deleted and excluded files both leave the traversal, and nothing here
+        # tells them apart, so the page keeps the deletion reading.
         _tombstone(page, [])
         marked.append(page.id)
     return marked
@@ -239,7 +255,7 @@ async def tombstone_pages_outside_generation(
     for page in pages:
         if page.id in current_page_ids:
             continue
-        _tombstone(page, [])
+        _tombstone(page, [], TOMBSTONE_RETIRED)
         marked.append(page.id)
     return marked
 
@@ -276,7 +292,7 @@ async def tombstone_absent_file_pages(
     res = await session.execute(
         select(Page).where(
             Page.repository_id == repo_id,
-            Page.page_type == "file_page",
+            Page.page_type.in_(FILE_BACKED_PAGE_TYPES),
             Page.freshness_status != "tombstone",
         )
     )

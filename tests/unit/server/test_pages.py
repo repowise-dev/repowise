@@ -505,6 +505,48 @@ async def test_live_page_is_not_redirected(client: AsyncClient, app) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_retired_file_page_serves_the_page_that_superseded_it(
+    client: AsyncClient, app
+) -> None:
+    """A file page the build replaced with an API contract page leads there;
+    a deleted file's page is still served as its own tombstone."""
+    from repowise.core.persistence.models import Page
+    from repowise.core.pipeline.persist import (
+        mark_tombstone_pages,
+        tombstone_pages_outside_generation,
+    )
+
+    repo_id, page_id = await _create_page(client, app.state.session_factory)
+    contract_id = "api_contract:src/main.py"
+    async with get_session(app.state.session_factory) as session:
+        await crud.upsert_page(
+            session,
+            page_id=contract_id,
+            repository_id=repo_id,
+            page_type="api_contract",
+            title="API Contract: src/main.py",
+            content="# Routes",
+            target_path="src/main.py",
+            source_hash="def456",
+            model_name="mock",
+            provider_name="mock",
+        )
+        await tombstone_pages_outside_generation(session, repo_id, {contract_id})
+    resp = await client.get(f"/api/pages/{page_id}")
+    assert resp.status_code == 200
+    assert resp.json()["id"] == contract_id
+    assert resp.headers["x-repowise-redirected-from"] == page_id
+
+    async with get_session(app.state.session_factory) as session:
+        await session.delete(await session.get(Page, contract_id))
+        await mark_tombstone_pages(session, repo_id, [("src/main.py", [])])
+    resp = await client.get(f"/api/pages/{page_id}")
+    assert resp.json()["id"] == page_id
+    assert resp.json()["freshness_status"] == "tombstone"
+    assert "x-repowise-redirected-from" not in resp.headers
+
+
+@pytest.mark.asyncio
 async def test_unknown_page_id_still_404s(client: AsyncClient, app) -> None:
     """Nothing in the redirect path may turn a genuine miss into a success."""
     await _create_page(client, app.state.session_factory)

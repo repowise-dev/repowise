@@ -24,6 +24,7 @@ from repowise.core.ingestion.models import (
     NON_DEPENDENCY_EDGE_TYPES,
     SYMBOL_USE_EDGE_TYPES,
 )
+from repowise.core.persistence.crud.tombstoned_pages import TOMBSTONE, file_backed_page
 from repowise.core.persistence.models import (
     GraphEdge,
     GraphNode,
@@ -428,6 +429,7 @@ async def _module_file_docs(card: CardState, page: Page, docs: dict[str, Any]) -
         select(Page).where(
             Page.repository_id == card.repo_id,
             Page.page_type == "file_page",
+            Page.freshness_status != TOMBSTONE,
             Page.target_path.like(f"{escape_like(page.target_path)}/%", escape=LIKE_ESCAPE),
         )
     )
@@ -468,7 +470,9 @@ async def _symbol_docs(card: CardState, docs: dict[str, Any]) -> None:
         if value:
             docs[key] = clean_signature(value) if attr == "signature" else value
     # File page summary (full content gated behind include=["full_doc"])
-    sym_page = await card.session.get(Page, f"file_page:{sym.file_path}")
+    sym_page = await file_backed_page(card.session, card.repo_id, sym.file_path)
+    if sym_page is not None and sym_page.freshness_status == TOMBSTONE:
+        sym_page = None
     if sym_page is not None:
         docs["file_summary"] = sym_page.summary or ""
     if card.wants("full_doc"):
@@ -514,7 +518,9 @@ async def _spotlight_page(card: CardState, sym: Any) -> Page | None:
     page = await card.session.get(
         Page, compute_page_id("symbol_spotlight", f"{sym.file_path}::{sym.name}")
     )
-    if page is None:
+    # A tombstoned spotlight was deselected or its file is gone; either way its
+    # body is no longer this symbol's documentation.
+    if page is None or page.freshness_status == TOMBSTONE:
         return None
     key = (sym.file_path, sym.name)
     owner = (await spotlight_owners(card.session, card.repo_id, {key})).get(key)

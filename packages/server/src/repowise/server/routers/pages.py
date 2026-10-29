@@ -18,6 +18,7 @@ from repowise.core.generation.page_redirects import (
     resolve_superseded,
 )
 from repowise.core.persistence import crud
+from repowise.core.persistence.crud.tombstoned_pages import retired_page_successor
 from repowise.core.persistence.models import _now_utc
 from repowise.server.deps import get_db_session, scoped_repo_id, verify_api_key
 from repowise.server.schemas import (
@@ -82,7 +83,12 @@ async def _get_page_or_successor(session: AsyncSession, page_id: str, response: 
     """
     page = await crud.get_page(session, page_id)
     if page is not None:
-        return page
+        successor = await retired_page_successor(session, page)
+        if successor is None:
+            return page
+        logger.info("page_redirect_served", page_id=page_id, successor_id=successor.id)
+        response.headers[REDIRECTED_FROM_HEADER] = page_id
+        return successor
 
     try:
         successor_id = resolve_superseded(page_id)
