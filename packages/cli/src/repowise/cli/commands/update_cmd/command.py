@@ -1164,7 +1164,6 @@ def _assess_store_upgrade(opts: UpdateOptions, run: UpdateRun) -> None:
     repo_path = run.repo_path
     try:
         from repowise.cli.upgrade import apply_upgrade, assess_store
-        from repowise.core.upgrade import UpgradeActionKind
 
         verdict = assess_store(repo_path)
         if not verdict.is_noop:
@@ -1172,16 +1171,22 @@ def _assess_store_upgrade(opts: UpdateOptions, run: UpdateRun) -> None:
                 repo_path, verdict, emitter=run.emitter, dry_run=opts.dry_run
             )
             if verdict.actions and not opts.dry_run:
-                for action in verdict.actions:
-                    # The wiki rebuild announced itself when this run took it on.
-                    if action.kind != UpgradeActionKind.REBUILD_WIKI:
-                        console.print(f"[dim]Upgrade: {action.reason}[/dim]")
+                _announce_upgrade_actions(verdict)
                 run_async(apply_upgrade(repo_path, verdict))
         # Interactive terminals only, so the post-commit hook never prints it.
         if console.is_terminal and run.emitter is None:
             _surface_release_news(written_by=verdict.written_by)
     except Exception as exc:  # never block a routine update on the upgrade layer
         log.debug("store_upgrade_skipped", error=str(exc))
+
+
+def _announce_upgrade_actions(verdict) -> None:
+    """One line per automatic upgrade step; the wiki rebuild announced itself already."""
+    from repowise.core.upgrade import UpgradeActionKind
+
+    for action in verdict.actions:
+        if action.kind != UpgradeActionKind.REBUILD_WIKI:
+            console.print(f"[dim]Upgrade: {action.reason}[/dim]")
 
 
 def _nothing_to_do(run: UpdateRun) -> bool:
