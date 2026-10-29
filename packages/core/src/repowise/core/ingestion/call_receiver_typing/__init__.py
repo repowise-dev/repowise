@@ -123,6 +123,7 @@ _CHAIN_SELF: dict[str, str | None] = {
     "typescript": "this",
     "go": None,
     "dart": "this",
+    "kotlin": "this",
 }
 # Fields walked after the head, at most: ``h.f1.f2.f3.m()``.
 _MAX_CHAIN_FIELDS = 3
@@ -966,21 +967,26 @@ class ReceiverTypingMixin(
             return None
         class_id = self._only_type_in(file_path, type_name)
         if class_id is None:
-            return self._dart_class_seen(file_path, type_name, scope_id)
+            return self._class_seen_unimported(file_path, type_name, scope_id)
         return file_path, class_id, "same_file"
 
-    def _dart_class_seen(
+    def _class_seen_unimported(
         self, file_path: str, type_name: str, scope_id: str | None
     ) -> tuple[str, str, str] | None:
-        """``_class_named`` for a Dart class a whole-library import brings in.
+        """``_class_named`` for a class no import names: Dart's whole-library
+        import, or a Kotlin package sibling.
 
-        ``import 'repo.dart';`` binds no names, so the file's own free-call
-        tiers say which class a written name means. A nullable ``T?`` is the
-        class ``T``; a generic or prefixed spelling types nothing.
+        Neither binds the name, so the file's own free-call tiers say which
+        class a written name means. A nullable ``T?`` is the class ``T``; a
+        generic or prefixed spelling types nothing.
         """
         scope = self._symbols_by_id.get(scope_id or "")
         written = type_name.rstrip("?")
-        if scope is None or scope.language != "dart" or not written.isidentifier():
+        if (
+            scope is None
+            or scope.language not in ("dart", "kotlin")
+            or not written.isidentifier()
+        ):
             return None
         found = self._class_seen_from(file_path, scope.id, written, scope.start_line)
         return None if found is None else self._located(file_path, found.callee_id)
