@@ -1058,3 +1058,32 @@ async def test_sync_job_without_a_health_report_keeps_the_stored_stamp(session_f
 
     state = json.loads((tmp_path / ".repowise" / "state.json").read_text(encoding="utf-8"))
     assert state["health_analyzer_version"] == 1
+
+
+@pytest.mark.asyncio
+async def test_stale_structure_lookup_degrades_only_on_a_store_failure(session_factory):
+    """An unreachable store means nothing to heal this sync; a bug still raises."""
+    from sqlalchemy.exc import OperationalError
+
+    from repowise.server.job_incremental import _stale_structure_ids
+
+    with patch(
+        "repowise.core.persistence.get_stale_update_targets",
+        AsyncMock(side_effect=OperationalError("select", {}, Exception("locked"))),
+    ):
+        assert await _stale_structure_ids(session_factory, "repo-id") == set()
+
+    with (
+        patch(
+            "repowise.core.persistence.get_stale_update_targets",
+            AsyncMock(side_effect=KeyError("bug")),
+        ),
+        pytest.raises(KeyError),
+    ):
+        await _stale_structure_ids(session_factory, "repo-id")
+
+    with patch(
+        "repowise.core.persistence.get_stale_update_targets",
+        AsyncMock(return_value=([], {"scc_page:scc-1"})),
+    ):
+        assert await _stale_structure_ids(session_factory, "repo-id") == {"scc_page:scc-1"}

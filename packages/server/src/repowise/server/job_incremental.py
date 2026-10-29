@@ -114,16 +114,22 @@ async def _stale_page_ages(session_factory: Any | None, repo_id: str | None) -> 
 
 
 async def _stale_structure_ids(session_factory: Any | None, repo_id: str | None) -> set[str]:
-    """Stale whole-repo structure page ids (cycles), which only an id render heals."""
+    """Stale whole-repo structure page ids (cycles), which only an id render heals.
+
+    An unreachable store degrades to "nothing stale": the missing-page render
+    still runs and the next sync retries. Any other error is a bug and raises.
+    """
     if session_factory is None or repo_id is None:
         return set()
-    try:
-        from repowise.core.persistence import get_session, get_stale_update_targets
+    from sqlalchemy.exc import SQLAlchemyError
 
+    from repowise.core.persistence import get_session, get_stale_update_targets
+
+    try:
         async with get_session(session_factory) as session:
             _paths, page_ids = await get_stale_update_targets(session, repo_id)
             return page_ids
-    except Exception as exc:  # pragma: no cover - defensive
+    except (SQLAlchemyError, OSError) as exc:
         logger.warning("incremental_structure_stale_lookup_failed", error=str(exc))
         return set()
 
