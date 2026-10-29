@@ -955,32 +955,9 @@ function TreeItem({
         )}
         style={{ paddingLeft: `${depth * 16 + 8}px` }}
       >
-        {hasChildren ? (
-          isExpanded ? (
-            <ChevronDown className="h-3 w-3 shrink-0 opacity-50" />
-          ) : (
-            <ChevronRight className="h-3 w-3 shrink-0 opacity-50" />
-          )
-        ) : (
-          <span className="w-3 shrink-0" />
-        )}
+        <DirChevron hasChildren={hasChildren} isExpanded={isExpanded} />
         <SectionNumber show={numbered} section={node.section} />
-        {node.path === ONBOARDING_DIR_KEY ? (
-          <Compass className="h-3.5 w-3.5 shrink-0 text-[var(--color-accent-primary)]" />
-        ) : hidesTreeIcon(node.page) ? null : node.page ? (
-          // A layer keeps its section icon as the anchor for its group; a
-          // concept content dir (a module with children) drops its folder
-          // glyph so the outline is not a column of identical icons. The
-          // chevron already marks it as expandable.
-          <PageIcon
-            pageType={node.page.page_type}
-            className="h-3.5 w-3.5 shrink-0 text-[var(--color-accent-primary)]"
-          />
-        ) : isOutlineGroupRow(node.path) ? null : isExpanded ? (
-          <FolderOpen className="h-3.5 w-3.5 shrink-0 text-[var(--color-accent-primary)] opacity-70" />
-        ) : (
-          <Folder className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)]" />
-        )}
+        <DirIcon node={node} isExpanded={isExpanded} />
         <span
           className={cn(
             // Wraps rather than truncates. A section title cut to
@@ -1062,6 +1039,37 @@ function TreeItem({
       <span className="min-w-0 text-left [overflow-wrap:anywhere]">{node.name}</span>
       <RowMarkers page={node.page} showFreshness={showFreshness} stubTitle={stubTitle} />
     </button>
+  );
+}
+
+function DirChevron({ hasChildren, isExpanded }: { hasChildren: boolean; isExpanded: boolean }) {
+  if (!hasChildren) return <span className="w-3 shrink-0" />;
+  const Icon = isExpanded ? ChevronDown : ChevronRight;
+  return <Icon className="h-3 w-3 shrink-0 opacity-50" />;
+}
+
+/** The glyph on a row that holds other rows. A layer keeps its section icon as
+ *  the anchor for its group; a concept content dir (a module with children)
+ *  drops its folder glyph so the outline is not a column of identical icons.
+ *  The chevron already marks it as expandable. */
+function DirIcon({ node, isExpanded }: { node: TreeNode; isExpanded: boolean }) {
+  if (node.path === ONBOARDING_DIR_KEY) {
+    return <Compass className="h-3.5 w-3.5 shrink-0 text-[var(--color-accent-primary)]" />;
+  }
+  if (hidesTreeIcon(node.page)) return null;
+  if (node.page) {
+    return (
+      <PageIcon
+        pageType={node.page.page_type}
+        className="h-3.5 w-3.5 shrink-0 text-[var(--color-accent-primary)]"
+      />
+    );
+  }
+  if (isOutlineGroupRow(node.path)) return null;
+  return isExpanded ? (
+    <FolderOpen className="h-3.5 w-3.5 shrink-0 text-[var(--color-accent-primary)] opacity-70" />
+  ) : (
+    <Folder className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)]" />
   );
 }
 
@@ -1292,52 +1300,16 @@ export function DocsTree({
     <div className={cn("flex flex-col h-full", className)}>
       {/* Search + filter bar */}
       <div className="p-3 space-y-2 border-b border-[var(--color-border-default)]">
-        <div className="flex items-center gap-2">
-          <div className="flex-1 flex items-center gap-1.5 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-1.5">
-            <Search className="h-3.5 w-3.5 text-[var(--color-text-tertiary)] shrink-0" />
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder={c.searchPlaceholder}
-              aria-label={c.searchPlaceholder}
-              className="flex-1 min-w-0 bg-transparent text-xs text-[var(--color-text-primary)] placeholder:text-[var(--color-text-tertiary)] outline-none"
-            />
-          </div>
-          {/* View switch — domain is the default reading spine; folder is the
-              power-user escape hatch, so it rides as a single quiet toggle
-              rather than a full-width band. */}
-          <button
-            onClick={() => setViewMode((m) => (m === "domain" ? "folder" : "domain"))}
-            aria-label={viewMode === "domain" ? c.switchToFolderView : c.switchToDomainView}
-            title={viewMode === "domain" ? c.folderView : c.domainView}
-            className="rounded-md p-1.5 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-secondary)]"
-          >
-            {viewMode === "domain" ? (
-              <FolderTree className="h-3.5 w-3.5" />
-            ) : (
-              <Network className="h-3.5 w-3.5" />
-            )}
-          </button>
-          <button
-            onClick={() => setShowFilters((s) => !s)}
-            aria-label={c.toggleFilters}
-            aria-expanded={showFilters}
-            className={cn(
-              "relative rounded-md p-1.5 transition-colors",
-              showFilters || activeFilterCount > 0
-                ? "bg-[var(--color-selection-wash)] text-[var(--color-text-primary)]"
-                : "text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-secondary)]",
-            )}
-          >
-            <Filter className="h-3.5 w-3.5" />
-            {activeFilterCount > 0 && (
-              <span className="absolute -top-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-[var(--color-accent-fill)] text-[10px] font-semibold text-[var(--color-text-on-accent)]">
-                {activeFilterCount}
-              </span>
-            )}
-          </button>
-        </div>
+        <TreeSearchBar
+          copy={c}
+          search={search}
+          setSearch={setSearch}
+          viewMode={viewMode}
+          toggleViewMode={() => setViewMode((m) => (m === "domain" ? "folder" : "domain"))}
+          showFilters={showFilters}
+          toggleFilters={() => setShowFilters((on) => !on)}
+          activeFilterCount={activeFilterCount}
+        />
 
         {showFilters && (
           <TreeFilters
@@ -1364,42 +1336,21 @@ export function DocsTree({
         />
       </div>
 
-      {/* Tree */}
-      <div className="flex-1 overflow-y-auto p-1.5">
-        {rows.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-32 text-xs text-[var(--color-text-tertiary)]">
-            <p>{c.noMatches}</p>
-          </div>
-        ) : (
-          <div className="space-y-1">
-            {rows.map((node) => (
-              <TreeItem
-                key={node.path}
-                node={node}
-                depth={0}
-                selectedPageId={selectedPageId}
-                expandedDirs={expandedDirs}
-                toggleDir={toggleDir}
-                onSelectPage={onSelectPage}
-                forceExpand={searching}
-                showFreshness={showFreshness || freshnessFilter !== "all"}
-                stubTitle={c.stubTitle}
-              />
-            ))}
-            {remaining > 0 && (
-              <button
-                type="button"
-                onClick={() =>
-                  setExtraRows({ key: resultKey, rows: rowLimit })
-                }
-                className="w-full rounded-md px-2 py-1.5 text-left text-xs text-[var(--color-accent-primary)] hover:bg-[var(--color-bg-elevated)]"
-              >
-                {c.showMore(Math.min(SEARCH_ROW_PAGE, remaining), remaining)}
-              </button>
-            )}
-          </div>
-        )}
-      </div>
+      <TreeRows
+        copy={c}
+        rows={rows}
+        remaining={remaining}
+        onShowMore={() => setExtraRows({ key: resultKey, rows: rowLimit })}
+        item={{
+          selectedPageId,
+          expandedDirs,
+          toggleDir,
+          onSelectPage,
+          forceExpand: searching,
+          showFreshness: showFreshness || freshnessFilter !== "all",
+          stubTitle: c.stubTitle,
+        }}
+      />
     </div>
   );
 }
@@ -1512,6 +1463,119 @@ function StatusSummary({
           </button>
         </span>
       ))}
+    </div>
+  );
+}
+
+/** The search box and the two view toggles above the tree. */
+function TreeSearchBar({
+  copy: c,
+  search,
+  setSearch,
+  viewMode,
+  toggleViewMode,
+  showFilters,
+  toggleFilters,
+  activeFilterCount,
+}: {
+  copy: DocsTreeCopy;
+  search: string;
+  setSearch: (q: string) => void;
+  viewMode: ViewMode;
+  toggleViewMode: () => void;
+  showFilters: boolean;
+  toggleFilters: () => void;
+  activeFilterCount: number;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <div className="flex-1 flex items-center gap-1.5 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-1.5">
+        <Search className="h-3.5 w-3.5 text-[var(--color-text-tertiary)] shrink-0" />
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder={c.searchPlaceholder}
+          aria-label={c.searchPlaceholder}
+          className="flex-1 min-w-0 bg-transparent text-xs text-[var(--color-text-primary)] placeholder:text-[var(--color-text-tertiary)] outline-none"
+        />
+      </div>
+      {/* View switch — domain is the default reading spine; folder is the
+          power-user escape hatch, so it rides as a single quiet toggle
+          rather than a full-width band. */}
+      <button
+        onClick={toggleViewMode}
+        aria-label={viewMode === "domain" ? c.switchToFolderView : c.switchToDomainView}
+        title={viewMode === "domain" ? c.folderView : c.domainView}
+        className="rounded-md p-1.5 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-secondary)]"
+      >
+        {viewMode === "domain" ? (
+          <FolderTree className="h-3.5 w-3.5" />
+        ) : (
+          <Network className="h-3.5 w-3.5" />
+        )}
+      </button>
+      <button
+        onClick={toggleFilters}
+        aria-label={c.toggleFilters}
+        aria-expanded={showFilters}
+        className={cn(
+          "relative rounded-md p-1.5 transition-colors",
+          showFilters || activeFilterCount > 0
+            ? "bg-[var(--color-selection-wash)] text-[var(--color-text-primary)]"
+            : "text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-secondary)]",
+        )}
+      >
+        <Filter className="h-3.5 w-3.5" />
+        {activeFilterCount > 0 && (
+          <span className="absolute -top-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-[var(--color-accent-fill)] text-[10px] font-semibold text-[var(--color-text-on-accent)]">
+            {activeFilterCount}
+          </span>
+        )}
+      </button>
+    </div>
+  );
+}
+
+type TreeItemShared = Omit<Parameters<typeof TreeItem>[0], "node" | "depth" | "numbered">;
+
+/** The rendered outline, or the empty state, plus the row that pages a capped
+ *  search result forward. */
+function TreeRows({
+  copy: c,
+  rows,
+  remaining,
+  onShowMore,
+  item,
+}: {
+  copy: DocsTreeCopy;
+  rows: TreeNode[];
+  remaining: number;
+  onShowMore: () => void;
+  item: TreeItemShared;
+}) {
+  return (
+    <div className="flex-1 overflow-y-auto p-1.5">
+      {rows.length === 0 ? (
+        <div className="flex flex-col items-center justify-center h-32 text-xs text-[var(--color-text-tertiary)]">
+          <p>{c.noMatches}</p>
+        </div>
+      ) : (
+        <div className="space-y-1">
+          {rows.map((node) => (
+            <TreeItem key={node.path} node={node} depth={0} {...item} />
+          ))}
+          {remaining > 0 && (
+            <button
+              type="button"
+              onClick={onShowMore}
+              className="w-full rounded-md px-2 py-1.5 text-left text-xs text-[var(--color-accent-primary)] hover:bg-[var(--color-bg-elevated)]"
+            >
+              {c.showMore(Math.min(SEARCH_ROW_PAGE, remaining), remaining)}
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

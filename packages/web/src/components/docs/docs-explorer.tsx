@@ -403,24 +403,7 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
               className="hidden sm:inline-flex"
             />
           )}
-          {selectedPage && (
-            <>
-              {/* A field where the bar has room for one, the icon where it
-                  does not; both hand the page to chat as its context. */}
-              <AskAboutThisField
-                context={askContext(selectedPage)}
-                question={t("explorer.askQuestion", { title: selectedPage.title })}
-                placeholder={t("explorer.askPlaceholder")}
-                className="hidden w-56 lg:flex"
-              />
-              <AskAboutThis
-                context={askContext(selectedPage)}
-                question={t("explorer.askQuestion", { title: selectedPage.title })}
-                label={t("explorer.askLabel", { title: selectedPage.title })}
-                className="shrink-0 lg:hidden"
-              />
-            </>
-          )}
+          {selectedPage && <PageAsk page={selectedPage} />}
           <BulkWriteButton
             count={stubCount}
             running={bulk.jobId != null}
@@ -487,12 +470,33 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
   );
 }
 
-/** The page being read, as the subject a chat question is about. */
-function askContext(page: { id: string; title: string }) {
-  return {
+/**
+ * Ask about the page being read: a field where the bar has room for one, the
+ * icon where it does not. Both hand the page to chat as its context.
+ */
+function PageAsk({ page }: { page: { id: string; title: string } }) {
+  const t = useTranslations("docs");
+  const context = {
     kind: "documentation",
     label: page.title,
     target: page.id,
     targetKind: "documentation",
   } as const;
+  const question = t("explorer.askQuestion", { title: page.title });
+  return (
+    <>
+      <AskAboutThisField
+        context={context}
+        question={question}
+        placeholder={t("explorer.askPlaceholder")}
+        className="hidden w-56 lg:flex"
+      />
+      <AskAboutThis
+        context={context}
+        question={question}
+        label={t("explorer.askLabel", { title: page.title })}
+        className="shrink-0 lg:hidden"
+      />
+    </>
+  );
 }
