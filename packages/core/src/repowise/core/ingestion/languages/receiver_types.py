@@ -548,6 +548,32 @@ def _listed_bindings(
     return found
 
 
+# A `class` statement inside a function binds its name as a local, so no other
+# file's class of that name is called. One in a class body is a member symbol.
+_PY_NESTED_CLASS = re.compile(r"(?m)^(?P<indent>[ \t]+)class\s+(?P<name>[A-Za-z_]\w*)")
+_PY_STATEMENT_HEAD = re.compile(r"(?P<indent>[ \t]*)(?P<word>[A-Za-z_]\w*)")
+
+
+def _in_function_body(cleaned: str, start: int, indent: int) -> bool:
+    """Is the statement at *start*, *indent* deep, inside a ``def`` before any ``class``?
+
+    Walks up the lines, each shallower statement being the next enclosing block.
+    """
+    end = start
+    while end > 0:
+        line_start = cleaned.rfind("\n", 0, end - 1) + 1
+        head = _PY_STATEMENT_HEAD.match(cleaned, line_start, end)
+        end = line_start
+        if head is None or len(head.group("indent")) >= indent:
+            continue
+        if head.group("word") in ("def", "async"):
+            return True
+        if head.group("word") == "class":
+            return False
+        indent = len(head.group("indent"))
+    return False
+
+
 def _python_target_bindings(cleaned: str) -> set[tuple[int, str]]:
     found: set[tuple[int, str]] = set()
     for pattern in _PY_TARGET_LISTS:
@@ -557,6 +583,9 @@ def _python_target_bindings(cleaned: str) -> set[tuple[int, str]]:
                 name = target.strip()
                 if _PY_IDENTIFIER.match(name):
                     found.add((match.start("lhs"), name))
+    for match in _PY_NESTED_CLASS.finditer(cleaned):
+        if _in_function_body(cleaned, match.start(), len(match.group("indent"))):
+            found.add((match.start("name"), match.group("name")))
     return found
 
 
