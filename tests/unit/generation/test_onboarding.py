@@ -719,6 +719,44 @@ def test_how_it_works_prefers_declared_broad_lifecycle_over_narrow_high_score() 
     assert ctx.flows[0].lifecycle_breadth == 4
 
 
+def test_how_it_works_walks_the_flow_that_drives_the_most_code() -> None:
+    """Reach leads the order, ahead of a declared entry point and breadth; a
+    declared entry point then beats breadth when reach ties."""
+    spec = onboarding.get_spec(SLOT_HOW_IT_WORKS)
+    assert spec is not None
+
+    def flow(entry: str, hops: list[str], reach: int) -> ExecutionFlow:
+        return ExecutionFlow(
+            entry_point_id=entry,
+            entry_point_name=entry.rsplit("::", 1)[1],
+            entry_point_score=0.9,
+            trace=[entry, *hops],
+            depth=len(hops),
+            crosses_community=False,
+            communities_visited=[0],
+            termination="no_callees",
+            reach=reach,
+        )
+
+    view = flow("ui/view.py::render", ["ui/a.py::a", "lib/b.py::b", "db/c.py::c"], reach=20)
+    update = flow("cli/update.py::run_update", ["cli/x.py::x", "cli/y.py::y"], reach=500)
+    entry = flow("cli/main.py::main", ["cli/p.py::p", "cli/q.py::q"], reach=20)
+    signals = _signals(
+        files=[_file("cli/main.py", is_entry_point=True)],
+        entry_points=["cli/main.py"],
+        flows=(view, entry, update),
+    )
+
+    ctx = spec.build_context(signals)
+
+    assert ctx is not None
+    assert [f.entry_point for f in ctx.flows] == [
+        "cli/update.py::run_update",
+        "cli/main.py::main",
+        "ui/view.py::render",
+    ]
+
+
 def test_how_it_works_treats_flat_repo_files_as_one_region() -> None:
     spec = onboarding.get_spec(SLOT_HOW_IT_WORKS)
     assert spec is not None

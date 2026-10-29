@@ -1023,3 +1023,23 @@ def test_a_concept_lists_its_public_members_from_the_symbol_id():
     for node in ("a.py::Store::put", "a.py::Store::_evict", "a.py::helper"):
         _record_member(members, node, node.rsplit("::", 1)[1])
     assert members == {"a.py::Store": ["put"]}
+
+
+def test_callers_in_test_files_do_not_count_toward_centrality():
+    """Tests reaching for a fake are not the system depending on it."""
+    from repowise.core.generation.onboarding.subkinds.key_concepts import _cross_file_callers
+
+    graph = nx.DiGraph()
+    file_of = {
+        "app/a.py::use": "app/a.py",
+        "tests/test_store.py::test_put": "tests/test_store.py",
+        "app/store.py::Store": "app/store.py",
+        "app/store.py::helper": "app/store.py",
+    }
+    graph.add_edge("app/a.py::use", "app/store.py::Store", edge_type="calls")
+    graph.add_edge("tests/test_store.py::test_put", "app/store.py::Store", edge_type="calls")
+    graph.add_edge("app/store.py::helper", "app/store.py::Store", edge_type="calls")
+
+    callers = _cross_file_callers(graph, file_of, test_files={"tests/test_store.py"})
+
+    assert callers == {"app/store.py::Store": 1}
