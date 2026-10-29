@@ -663,3 +663,26 @@ def test_spotlight_uses_skip_the_defining_files_own_top_level(
 
     assert [(s["caller"], s["caller_file"]) for s in ctx.call_sites] == [("__module__", "app.py")]
     assert symbol_use(graph, symbol.id).cross_file == 1
+
+
+def test_file_page_symbols_carry_their_production_callers(
+    sample_config, sample_parsed_file, sample_graph, graph_metrics, sample_source_bytes
+):
+    symbol = sample_parsed_file.symbols[0]
+    graph = sample_graph.copy()
+    graph.add_node(symbol.id, node_type="symbol", name=symbol.name,
+                   file_path=sample_parsed_file.file_info.path)
+    graph.add_node("main.py::run", node_type="symbol", name="run", file_path="main.py")
+    graph.add_edge("main.py::run", symbol.id, edge_type="calls")
+
+    ctx = ContextAssembler(sample_config).assemble_file_page(
+        sample_parsed_file,
+        graph,
+        graph_metrics["pagerank"],
+        graph_metrics["betweenness"],
+        graph_metrics["community"],
+        sample_source_bytes,
+    )
+
+    by_name = {s["name"]: s for s in ctx.symbols}
+    assert by_name[symbol.name]["callers"] == 1

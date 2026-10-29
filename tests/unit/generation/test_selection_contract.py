@@ -526,3 +526,29 @@ def test_count_documentable_files_matches_the_floor():
         betweenness[extra] = 0.0
         community[extra] = 0
     assert count_documentable_files(parsed) == 20
+
+
+def test_the_keep_count_honours_zero_all_and_the_small_repo_floor():
+    from repowise.core.generation.selection.selector import MIN_SPOTLIGHTS, _spotlight_keep
+
+    assert _spotlight_keep(500, 0.0) == 0
+    assert _spotlight_keep(500, 1.0) == 500
+    assert _spotlight_keep(500, 0.12) == 60
+    assert _spotlight_keep(30, 0.12) == MIN_SPOTLIGHTS
+    assert _spotlight_keep(4, 0.12) == 4
+
+
+def test_a_name_declared_twice_in_one_file_keeps_its_best_occurrence():
+    from repowise.core.generation.selection.selector import _first_per_target
+
+    ranked = [(3.0, ("a.py", "new")), (2.0, ("a.py", "run")), (1.0, ("a.py", "new"))]
+    assert _first_per_target(ranked) == [(3.0, ("a.py", "new")), (2.0, ("a.py", "run"))]
+
+
+def test_a_symbol_with_no_recorded_span_is_trivial():
+    """No line range reads as a zero-line body, so it needs heavy use."""
+    from repowise.core.generation.selection.scoring import spotlight_eligible
+
+    unranged = FakeSymbol(name="f", id="pkg/a.py::f", start_line=0, end_line=0)
+    assert not spotlight_eligible(unranged, SymbolUse(4, 4))
+    assert spotlight_eligible(unranged, SymbolUse(5, 5))
