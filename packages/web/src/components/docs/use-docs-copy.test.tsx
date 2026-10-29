@@ -100,9 +100,19 @@ describe("docs copy", () => {
 
   it("explains a keyless index once, with the write action beside it", () => {
     const onClick = vi.fn();
-    inLocale("en", enMessages, <NoProseNotice count={83} running={false} onClick={onClick} />);
+    inLocale("en", enMessages, <NoProseNotice pages={PAGES} count={83} running={false} onClick={onClick} />);
     expect(screen.getByText(/has not written the prose for 83 pages yet/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Write with AI" }));
     expect(onClick).toHaveBeenCalledTimes(1);
+  });
+
+  it("stays silent once any page carries model prose", () => {
+    const written = page({ id: "module_page:x", page_type: "module_page", provider_name: "openai" });
+    const { container } = inLocale(
+      "en",
+      enMessages,
+      <NoProseNotice pages={[...PAGES, written]} count={1} running={false} onClick={vi.fn()} />,
+    );
+    expect(container.textContent).toBe("");
   });
 });

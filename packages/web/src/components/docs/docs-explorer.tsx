@@ -32,7 +32,7 @@ import { useDocsTreeCopy } from "./use-docs-copy";
 import { buildDocsMenuGroups } from "./docs-menu";
 import { useBulkGenerate } from "@/lib/hooks/use-bulk-generate";
 import { HostedNudgeSlot } from "@/components/hosted/hosted-nudge-slot";
-import { isStubPage, isWrittenByModel } from "@repowise-dev/ui/lib/page-types";
+import { isStubPage } from "@repowise-dev/ui/lib/page-types";
 import { search as searchPages } from "@/lib/api/search";
 import { getPageById, listAllPages } from "@/lib/api/pages";
 import { downloadTextFile } from "@/lib/utils/download";
@@ -112,12 +112,6 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
     [pages],
   );
   const hasStubs = stubCount > 0;
-  // No page carries model prose at all: an index built without a key. The
-  // landing says so once, beside the action that changes it.
-  const noProse = useMemo(
-    () => hasStubs && !pages.some((p) => isWrittenByModel(p)),
-    [hasStubs, pages],
-  );
   const bulk = useBulkGenerate(repoId);
   const treeCopy = useDocsTreeCopy();
 
@@ -437,8 +431,9 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
           className="mx-3 mt-2 sm:mx-6"
         />
 
-        {noProse && selectedPage?.page_type === "repo_overview" && (
+        {selectedPage?.page_type === "repo_overview" && (
           <NoProseNotice
+            pages={pages}
             count={stubCount}
             running={bulk.jobId != null}
             onClick={bulk.open}

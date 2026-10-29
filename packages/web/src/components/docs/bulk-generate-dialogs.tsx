@@ -1,7 +1,9 @@
 "use client";
 
 import { Sparkles } from "lucide-react";
+import { useMemo } from "react";
 import { cn } from "@/lib/utils/cn";
+import { isWrittenByModel } from "@repowise-dev/ui/lib/page-types";
 import { Spinner } from "@repowise-dev/ui/ui/spinner";
 import { BulkGenerateConfirm } from "./bulk-generate-confirm";
 import { BulkGenerateProgress } from "./bulk-generate-progress";
@@ -47,17 +49,23 @@ export function BulkWriteButton({
  * meets the question rather than only in the header.
  */
 export function NoProseNotice({
+  pages,
   count,
   running,
   onClick,
   className,
 }: {
+  /** The page list; the line renders only while none carries model prose. */
+  pages: readonly { page_type?: string; provider_name?: string; metadata?: Record<string, unknown> }[];
+  /** Pages still waiting for prose. */
   count: number;
   running: boolean;
   onClick: () => void;
   className?: string;
 }) {
   const t = useTranslations("docs");
+  const noProse = useMemo(() => count > 0 && !pages.some(isWrittenByModel), [count, pages]);
+  if (!noProse) return null;
   return (
     <div
       className={cn(
