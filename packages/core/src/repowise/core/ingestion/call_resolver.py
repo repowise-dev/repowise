@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter, defaultdict
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import PurePosixPath
 from typing import Any
@@ -293,6 +294,16 @@ def _same_translation_unit(decl_file: str, def_file: str) -> bool:
         decl_file == def_file
         or PurePosixPath(decl_file).stem == PurePosixPath(def_file).stem
     )
+
+
+def _generator_template(path: str, parsed_files: Mapping[str, object]) -> bool:
+    """Is *path* a ``name.in.cc`` a generator writes ``name.cc`` from, with that file present?
+
+    The template is never compiled: the generated file holds the definitions.
+    """
+    file = PurePosixPath(path)
+    stem = PurePosixPath(file.stem)
+    return stem.suffix == ".in" and str(file.with_name(stem.stem + file.suffix)) in parsed_files
 
 
 class CallResolver(
@@ -769,7 +780,8 @@ class CallResolver(
         list in its own source file or in a file including it, directly or
         not, come first when there are any: a file including the header
         directly may define a same-named function of another namespace.
-        Platform variants defining one signature in two files stay unlinked.
+        Platform variants defining one signature in two files stay unlinked. A
+        generator's template (``lexer.in.cc``) beside its output is no candidate.
         """
         # A same-file definition shares the prototype's id: already defined.
         if any(sym.id == decl.id for _f, _i, sym in rows):
@@ -780,6 +792,7 @@ class CallResolver(
             if index_id != decl_index
             and (def_file == decl_file or index_id not in self._tu_local_ids)
         ]
+        rows = [row for row in rows if not _generator_template(row[0], self._parsed_files)]
         candidates = self._signature_candidates(decl_file, decl, rows)
         defined = self._defining_set(decl_file, decl.parent_name, candidates)
         if defined is None:
