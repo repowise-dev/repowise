@@ -19,6 +19,7 @@ from .base import (
     RemoteRef,
     collect_refs,
     join_url,
+    line_anchor,
     quote_path,
     quote_segment,
 )
@@ -106,11 +107,10 @@ class Bitbucket(BaseForge):
     def blob_url(
         self, ref: RemoteRef, rev: str, path: str, line: int | None = None, end_line: int | None = None
     ) -> str:
-        ranged = bool(line and end_line and end_line > line)
         if ref.is_self_hosted:
-            anchor = f"#{line}-{end_line}" if ranged else (f"#{line}" if line else "")
+            anchor = line_anchor(line, end_line, "#{line}", "#{line}-{end}")
             return f"{ref.web_base}/browse/{quote_path(path)}?at={quote(rev, safe='')}{anchor}"
-        anchor = f"#lines-{line}:{end_line}" if ranged else (f"#lines-{line}" if line else "")
+        anchor = line_anchor(line, end_line, "#lines-{line}", "#lines-{line}:{end}")
         return f"{ref.web_base}/src/{quote_path(rev)}/{quote_path(path)}{anchor}"
 
     def compare_url(self, ref: RemoteRef, base: str, head: str) -> str:

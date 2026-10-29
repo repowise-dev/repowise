@@ -137,11 +137,18 @@ def test_every_kind_is_registered() -> None:
         ("https://github.com/acme/app.git", "#L7-L12"),
         ("https://gitlab.com/acme/app.git", "#L7-12"),
         ("https://bitbucket.org/acme/app.git", "#lines-7:12"),
+        ("https://bitbucket.corp.com/scm/PROJ/repo.git", "#7-12"),
     ],
 )
 def test_blob_url_cites_a_line_range(url: str, anchor: str) -> None:
     ref = _ref(url)
     assert get_forge(ref.forge).blob_url(ref, SHA, "a.py", 7, 12).endswith(anchor)
+
+
+def test_self_hosted_bitbucket_cites_a_range_on_its_browse_path() -> None:
+    ref = _ref(BBDC_REF)
+    url = get_forge(ref.forge).blob_url(ref, SHA, "a.py", 7, 12)
+    assert "/browse/a.py?at=" in url and url.endswith("#7-12")
 
 
 def test_azure_line_range_ends_on_the_line_after_the_last() -> None:

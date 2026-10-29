@@ -101,6 +101,20 @@ def split_host_port(authority: str) -> tuple[str, str] | None:
 _SHA_RE = re.compile(r"[0-9a-fA-F]{7,64}")
 
 
+def line_anchor(line: int | None, end_line: int | None, single: str, span: str) -> str:
+    """A blob URL's line fragment: ``""`` without a line, else *single* or *span*.
+
+    The one place a range is normalised: *span* applies only when *end_line*
+    is past *line*. Both templates may use ``{line}``, ``{end}`` and
+    ``{after}`` (the line after the last), which is what each forge spells.
+    """
+    if not line:
+        return ""
+    end = end_line if end_line and end_line > line else line
+    template = span if end > line else single
+    return template.format(line=line, end=end, after=end + 1)
+
+
 def looks_like_sha(rev: str) -> bool:
     return bool(_SHA_RE.fullmatch(rev))
 

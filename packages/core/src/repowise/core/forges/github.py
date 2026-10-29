@@ -13,6 +13,7 @@ from .base import (
     RemoteRef,
     collect_refs,
     join_url,
+    line_anchor,
     quote_path,
     quote_segment,
 )
@@ -82,9 +83,7 @@ class GitHub(BaseForge):
     def blob_url(
         self, ref: RemoteRef, rev: str, path: str, line: int | None = None, end_line: int | None = None
     ) -> str:
-        anchor = f"#L{line}" if line else ""
-        if line and end_line and end_line > line:
-            anchor += f"-L{end_line}"
+        anchor = line_anchor(line, end_line, "#L{line}", "#L{line}-L{end}")
         return f"{ref.web_base}/blob/{quote_path(rev)}/{quote_path(path)}{anchor}"
 
     def compare_url(self, ref: RemoteRef, base: str, head: str) -> str:
