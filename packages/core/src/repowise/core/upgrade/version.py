@@ -31,7 +31,8 @@ from __future__ import annotations
 #: Current on-disk store format, stamped into ``state.json`` on every persist
 #: (a store without it is version 0). v2 is reachable only by a full re-index,
 #: so :func:`stamp` clamps a routine persist below it until the user re-indexes.
-STORE_FORMAT_VERSION: int = 2
+#: v3 is reached by the update that rebuilds the wiki once (``REBUILD_WIKI``).
+STORE_FORMAT_VERSION: int = 3
 
 #: Current parser/extractor schema, folded into the parse-cache fingerprint in
 #: place of the package version (see :mod:`repowise.core.ingestion.parse_cache`).
