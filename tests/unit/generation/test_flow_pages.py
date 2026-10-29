@@ -127,3 +127,33 @@ def test_a_reused_page_keeps_one_diagram():
     diagram = flow_diagram(plan, {})
     once = embed_flow_diagram("# T\n\nOpening.\n\n## Phase\n\nText.\n", diagram)
     assert embed_flow_diagram(once, diagram).count("```mermaid") == 1
+
+
+def test_a_graph_that_cannot_be_walked_warns_and_leaves_no_dependencies():
+    from structlog.testing import capture_logs
+
+    from repowise.core.generation.scope import _flow_dependencies
+
+    class Broken:
+        def __init__(self) -> None:
+            self._parsed_files = {"a.py": None}
+
+        def graph(self):
+            raise ValueError("graph not built")
+
+    with capture_logs() as logs:
+        assert _flow_dependencies([], Broken()) == {}
+    assert [(e["log_level"], e["event"]) for e in logs] == [
+        ("warning", "cascade.flow_dependencies_failed")
+    ]
+
+
+def test_flow_dependencies_map_each_step_file_to_its_page():
+    from types import SimpleNamespace
+
+    from repowise.core.generation.scope import _flow_dependencies
+
+    g = _graph(_CALLS)
+    builder = SimpleNamespace(graph=lambda: g, _parsed_files={})
+    deps = _flow_dependencies([], builder)
+    assert deps["store/write.py"] == ("flow_page:cli/run.py::run_command",)

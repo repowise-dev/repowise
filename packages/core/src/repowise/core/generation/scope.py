@@ -17,6 +17,8 @@ import json
 from dataclasses import dataclass, replace
 from typing import Any
 
+import structlog
+
 from repowise.core.cost_estimator.types import PageTypePlan
 from repowise.core.generation.cascade import (
     CascadeMode,
@@ -32,6 +34,8 @@ from repowise.core.generation.page_selection import (
     resolve_page_selection,
 )
 from repowise.core.generation.selection import Selection, SelectionInputs, select_pages
+
+log = structlog.get_logger(__name__)
 
 # Page types that describe the whole repository (as opposed to one file/module).
 _REPO_WIDE_TYPES = frozenset({"repo_overview", "onboarding"})
@@ -178,14 +182,16 @@ def build_dependencies(
 def _flow_dependencies(parsed_files: list[Any], graph_builder: Any) -> dict[str, tuple[str, ...]]:
     """``file -> flow page ids`` from the same selection generation runs.
 
-    Never raises: a graph that cannot be walked costs the flow pages their
-    staleness signal, not the update.
+    A graph that cannot be walked costs the flow pages their staleness signal,
+    not the update, and says so: a silent empty map would leave every flow page
+    looking current.
     """
     from repowise.core.generation.flow_pages import flow_pages_of_files, plans_for_index
 
     try:
         plans = plans_for_index(graph_builder, parsed_files)
-    except Exception:
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        log.warning("cascade.flow_dependencies_failed", error=str(exc))
         return {}
     return flow_pages_of_files(plans)
 
