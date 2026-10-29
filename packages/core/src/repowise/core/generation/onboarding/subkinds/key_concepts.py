@@ -13,6 +13,11 @@ whole leaf clusters (every method of one registry class) as "the core
 concepts"; symbol-level signals surface the types the rest of the system
 actually reaches for.
 
+Ranking is centrality first, in log2 tiers of cross-file callers (test
+callers excluded); within a tier the repository's own documents break ties.
+Each concept reaches the model with its declaration and public members, and
+the prompt asks it to define the concept from those alone.
+
 Gate: at least 4 symbols survive filtering and ranking. Below that, the
 page would be guessing at "core concepts."
 """

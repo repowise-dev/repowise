@@ -210,6 +210,37 @@ def test_active_landscape_skipped_below_threshold() -> None:
     assert spec.build_context(sig) is None
 
 
+def test_active_landscape_is_dated_by_its_newest_commit_and_groups_by_directory() -> None:
+    """``last_commit_at`` arrives as a datetime from a fresh index and as an
+    ISO string from a rehydrated one; the newest of either kind dates the page.
+    A root-level file groups under ``(root)``, a nested one under its own
+    directory, not the top-level one."""
+    from datetime import UTC, datetime
+
+    spec = onboarding.get_spec(SLOT_ACTIVE_LANDSCAPE)
+    assert spec is not None
+    paths = ["setup.py", *(f"pkg/core/f{i}.py" for i in range(11))]
+    git_meta = {
+        path: {
+            "commit_count_90d": 10,
+            "is_hotspot": path == "setup.py",
+            "last_commit_at": datetime(2026, 3, 1, tzinfo=UTC),
+        }
+        for path in paths
+    }
+    git_meta["pkg/core/f3.py"]["last_commit_at"] = "2026-05-22T10:00:00+00:00"
+    git_meta["pkg/core/f4.py"]["last_commit_at"] = "2026-04-01 09:00:00"
+    sig = _signals(files=[_file(p) for p in paths], git_meta=git_meta)
+
+    ctx = spec.build_context(sig)
+
+    assert ctx is not None
+    assert ctx.as_of == "2026-05-22"
+    dirs = {d.path: (d.total_commits_90d, d.file_count, d.hotspot_count) for d in ctx.hot_dirs}
+    assert dirs == {"pkg/core": (110, 11, 0), "(root)": (10, 1, 1)}
+    assert ctx.hot_dirs[0].path == "pkg/core"
+
+
 def test_active_landscape_fires_above_threshold() -> None:
     spec = onboarding.get_spec(SLOT_ACTIVE_LANDSCAPE)
     assert spec is not None
