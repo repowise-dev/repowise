@@ -494,18 +494,19 @@ async def _symbol_docs(card: CardState, docs: dict[str, Any]) -> None:
 async def _symbol_documentation(
     card: CardState, sym: Any, file_page: Page | None, docs: dict[str, Any]
 ) -> None:
-    """The symbol's own page, else its entry on the file page, else the file page.
+    """The symbol's own page, else its entry on the file page, else nothing.
 
     A spotlight is the page written about this symbol; the file page is shared
     by every symbol in the file, so serving it whole repeats it per symbol.
+    ``file_summary`` still names the file; its page is one file target away.
     """
     spotlight = await _spotlight_page(card, sym)
     if spotlight is not None:
         docs["documentation"] = spotlight.content
         return
-    if file_page is None:
-        return
-    docs["documentation"] = _file_page_entry(file_page.content or "", sym.name) or file_page.content
+    entry = _file_page_entry(file_page.content or "", sym.name) if file_page else None
+    if entry:
+        docs["documentation"] = entry
 
 
 async def _spotlight_page(card: CardState, sym: Any) -> Page | None:

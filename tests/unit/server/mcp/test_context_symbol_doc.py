@@ -92,6 +92,7 @@ async def shapes(session, populated_db) -> None:
     session.add(_symbol(rid, "Square", "class", 10))
     session.add(_symbol(rid, "area", "method", 14, "Square::area"))
     session.add(_symbol(rid, "make", "function", 20))
+    session.add(_symbol(rid, "_helper", "function", 30))
     await session.flush()
 
 
@@ -110,6 +111,14 @@ async def test_without_a_spotlight_the_file_page_entry_is_served(
 ) -> None:
     docs = await _docs(session, repository, f"{_FILE}::Square")
     assert docs["documentation"] == "- `class Square`: A square shape."
+
+
+async def test_a_symbol_the_file_page_does_not_list_gets_no_file_page_copy(
+    session, repository, shapes
+) -> None:
+    docs = await _docs(session, repository, f"{_FILE}::_helper")
+    assert "documentation" not in docs
+    assert "file_summary" in docs
 
 
 async def test_a_later_same_named_symbol_does_not_take_the_spotlight(

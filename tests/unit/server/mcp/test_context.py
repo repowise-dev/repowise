@@ -185,7 +185,9 @@ async def test_get_context_single_symbol(setup_mcp):
     assert t["docs"]["kind"] == "class"
     assert t["docs"]["signature"] == "class AuthService"
     assert t["docs"]["file_path"] == "src/auth/service.py"
-    assert t["docs"]["documentation"]  # Has content from file page
+    # No spotlight and no entry on the file page: the file page is not copied in.
+    assert "documentation" not in t["docs"]
+    assert "file_summary" in t["docs"]
 
 
 @pytest.mark.asyncio
