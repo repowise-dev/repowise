@@ -91,6 +91,7 @@ from .reporting import (
     show_full_completion,
 )
 from .stale_targets import load_actionable_stale_targets
+from .wiki_rebuild import record_wiki_rebuilt, resolve_wiki_rebuild
 from .workspace import _workspace_update
 
 log = structlog.get_logger(__name__)
@@ -918,6 +919,7 @@ def _assess_staleness(opts: UpdateOptions, run: UpdateRun) -> None:
         and run.head == run.base_ref
         and not run.config.changed
         and not run.renderer_changed
+        and not run.wiki_rebuild
         and not run.working_tree_diffs
         and not run.analyzer_changed
         and not run.history_stale
@@ -1162,6 +1164,7 @@ def _assess_store_upgrade(opts: UpdateOptions, run: UpdateRun) -> None:
     repo_path = run.repo_path
     try:
         from repowise.cli.upgrade import apply_upgrade, assess_store
+        from repowise.core.upgrade import UpgradeActionKind
 
         verdict = assess_store(repo_path)
         if not verdict.is_noop:
@@ -1170,7 +1173,9 @@ def _assess_store_upgrade(opts: UpdateOptions, run: UpdateRun) -> None:
             )
             if verdict.actions and not opts.dry_run:
                 for action in verdict.actions:
-                    console.print(f"[dim]Upgrade: {action.reason}[/dim]")
+                    # The wiki rebuild announced itself when this run took it on.
+                    if action.kind != UpgradeActionKind.REBUILD_WIKI:
+                        console.print(f"[dim]Upgrade: {action.reason}[/dim]")
                 run_async(apply_upgrade(repo_path, verdict))
         # Interactive terminals only, so the post-commit hook never prints it.
         if console.is_terminal and run.emitter is None:
@@ -1184,6 +1189,7 @@ def _nothing_to_do(run: UpdateRun) -> bool:
         run.file_diffs
         or run.config.changed
         or run.renderer_changed
+        or run.wiki_rebuild
         or run.analyzer_changed
         or run.extraction_changed
         or run.history_stale
@@ -1229,7 +1235,7 @@ def _config_change_only(run: UpdateRun) -> bool:
     """A config edit with no commits to index; those fall through to the full path."""
     config = run.config
     return config.changed and not (
-        run.file_diffs or config.git_changed or config.generation_changed or run.history_stale
+        run.file_diffs or config.git_changed or run.full_generation or run.history_stale
     )
 
 
@@ -1297,7 +1303,9 @@ def _rebuild_index(run: UpdateRun) -> None:
         include_nested_repos=bool(run.state.get("include_nested_repos", False)),
         idle_decay_sink=None if run.working_tree_only else run.git_decay_map,
         # A full re-render quotes every file's history, as init does.
-        force_full_git=run.config.git_changed or run.history_stale or run.renderer_changed,
+        force_full_git=(
+            run.config.git_changed or run.history_stale or run.renderer_changed or run.wiki_rebuild
+        ),
         git_summary_sink=run.full_git_summaries,
         timings=run.timings,
     )
@@ -1311,7 +1319,7 @@ def _working_tree_only(run: UpdateRun) -> bool:
         and run.head == run.base_ref
         and not (
             run.config.health_changed
-            or run.config.generation_changed
+            or run.full_generation
             or run.renderer_changed
             or run.analyzer_changed
             or run.extraction_changed
@@ -1370,10 +1378,10 @@ def _add_stale_pages(run: UpdateRun, stale_renderer_paths: list[str]) -> None:
 
 def _widen_for_full_render(run: UpdateRun) -> None:
     affected = run.affected
-    if run.config.generation_changed or run.renderer_changed:
-        # A generation-config or renderer change re-renders the full page set.
+    if run.full_generation or run.renderer_changed:
+        # A generation-config, renderer or upgrade rebuild re-renders the full page set.
         affected.regenerate = [pf.file_info.path for pf in run.parsed_files]
-    if run.renderer_changed and not run.config.generation_changed and not run.index_only:
+    if run.renderer_changed and not run.full_generation and not run.index_only:
         # A model wiki: model-written levels are only marked stale, for an opt-in
         # `generate --stale`.
         from .deterministic import load_cascade_overflow_split
@@ -1479,6 +1487,7 @@ def _dead_code_unchanged(run: UpdateRun) -> bool:
         run.analyzer_changed
         or run.extraction_changed
         or run.renderer_changed
+        or run.wiki_rebuild
         or run.history_stale
         or config.changed
     ):
@@ -1519,7 +1528,7 @@ def _refresh_knowledge_graph_stage(run: UpdateRun) -> None:
                 "Configuration-driven knowledge-graph refresh failed; the previous "
                 "fingerprint was retained so the next update retries."
             ) from exc
-    elif run.renderer_changed:
+    elif run.renderer_changed or run.wiki_rebuild:
         # A file's layer comes from the KG.
         from repowise.cli.state_persistence import save_knowledge_graph_json
 
@@ -1583,13 +1592,13 @@ def _render_template_pages(opts: UpdateOptions, run: UpdateRun, out: _TemplatePa
 
     _stage(run, "generate")
     prior_ids = load_prior_page_ids(run.repo_path)
-    full_scope = run.config.generation_changed or run.renderer_changed
+    full_scope = run.full_generation or run.renderer_changed
 
     degraded = run.degraded
     degraded_before_render = len(degraded)
     with timed(run.timings, "render"):
         out.pages = _render_template_page_set(opts, run, out, prior_ids, full_scope)
-    out.renderer_render_ok = not run.renderer_changed or (
+    out.renderer_render_ok = not (run.renderer_changed or run.wiki_rebuild) or (
         bool(out.pages) and len(degraded) == degraded_before_render
     )
     if run.config.generation_changed and len(degraded) > degraded_before_render:
@@ -1674,6 +1683,8 @@ def _persist_index_only(run: UpdateRun, pages: _TemplatePages) -> None:
         else [fd.path for fd in run.file_diffs]
     )
     config_vector_store = _config_vector_store(run, pages, template_wiki)
+    if template_wiki and pages.renderer_render_ok:
+        record_wiki_rebuilt(run)
     _persist_index_only_update(
         run.repo_path,
         run.graph_builder,
@@ -1731,7 +1742,7 @@ def _full_generation_page_ids(
 ) -> set[str] | None:
     """Page ids of a complete template render, which retires every page outside it."""
     full_render = run.config.generation_changed or (
-        run.renderer_changed and pages.renderer_render_ok
+        (run.renderer_changed or run.wiki_rebuild) and pages.renderer_render_ok
     )
     if template_wiki and full_render:
         return {page.page_id for page in pages.pages}
@@ -1810,6 +1821,7 @@ def _start_docs_pass(opts: UpdateOptions, run: UpdateRun) -> DocsPass:
 
     cfg = run.cfg
     generation_changed = run.config.generation_changed
+    full_generation = run.full_generation
     language = cfg.get("language", "en")
     enable_onboarding_cfg = bool(cfg.get("enable_onboarding", True))
     config = GenerationConfig.from_repo_config(
@@ -1821,7 +1833,7 @@ def _start_docs_pass(opts: UpdateOptions, run: UpdateRun) -> DocsPass:
         wiki_style=cfg.get("wiki_style", "comprehensive"),
         cache_enabled=not generation_changed,
         # Levels 3+ describe the whole repo; a changed-file slice would truncate them.
-        file_pages_only=not generation_changed,
+        file_pages_only=not full_generation,
     )
 
     # Prompts for a provider only in an interactive terminal.
@@ -1898,7 +1910,7 @@ def _persist_docs(run: UpdateRun, docs: DocsPass) -> None:
             git_decay_map=run.git_decay_map,
             full_git_summary=(run.full_git_summaries[0] if run.full_git_summaries else None),
             reconcile_full_scope=config.traversal_changed,
-            reconcile_full_generation=config.generation_changed,
+            reconcile_full_generation=run.full_generation,
             require_config_rebuild_success=config.rebuild_required,
             require_decision_persist_success=config.git_changed,
             history_window_changed=config.git_changed,
@@ -1957,6 +1969,7 @@ def _save_docs_state(run: UpdateRun, docs: DocsPass) -> None:
         state["last_docs_commit"] = head
     # The DB total; regeneration upserts existing pages.
     state["total_pages"] = docs.db_total_pages
+    record_wiki_rebuilt(run, clean=not docs.failed_steps)
     state["config_fingerprint"] = config_fingerprint(repo_path)
     state["config_dependency_fingerprints"] = run.config.curr_dependency_fps
     state["renderer_fingerprint"] = _current_renderer_fingerprint(repo_path)
@@ -2144,6 +2157,7 @@ def run_update(
         return _full_upgrade(opts, run)
     _load_sync_base(opts, run)
     _check_config_and_renderer(run)
+    resolve_wiki_rebuild(opts, run)
     _collect_working_tree(opts, run)
     _repair_before_detection(opts, run)
     _assess_staleness(opts, run)

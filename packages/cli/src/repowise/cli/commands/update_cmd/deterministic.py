@@ -16,6 +16,7 @@ enrichment. All three are prompting, and this path has no model.
 from __future__ import annotations
 
 import os
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -46,8 +47,8 @@ def deterministic_embedder_name(cfg: dict) -> str:
     return resolved if resolved in ("mock", "ollama") else "mock"
 
 
-def load_prior_page_ids(repo_path: Path) -> dict:
-    """Every page id already in the wiki, mapped to a placeholder.
+def load_prior_page_ids(repo_path: Path, page_types: Iterable[str] | None = None) -> dict:
+    """Every page id already in the wiki (of *page_types*, when given), mapped to a placeholder.
 
     Interlinking and related-pages resolve references against this, so a
     re-rendered page can still link to the pages this run did not touch.
@@ -55,10 +56,10 @@ def load_prior_page_ids(repo_path: Path) -> dict:
     content, and nothing here needs the bodies since template pages never go
     through the content-reuse gate.
     """
-    return run_async(_load_prior_page_ids(repo_path))
+    return run_async(_load_prior_page_ids(repo_path, page_types))
 
 
-async def _load_prior_page_ids(repo_path: Path) -> dict:
+async def _load_prior_page_ids(repo_path: Path, page_types: Iterable[str] | None = None) -> dict:
     from repowise.cli.helpers import get_db_url_for_repo
     from repowise.core.persistence import create_engine, create_session_factory, get_session
 
@@ -69,7 +70,10 @@ async def _load_prior_page_ids(repo_path: Path) -> dict:
         from repowise.core.persistence.models import Page
 
         async with get_session(create_session_factory(engine)) as session:
-            rows = await session.execute(sa_select(Page.id))
+            query = sa_select(Page.id)
+            if page_types is not None:
+                query = query.where(Page.page_type.in_(tuple(page_types)))
+            rows = await session.execute(query)
             return dict.fromkeys((r[0] for r in rows), None)
     except Exception:
         return {}

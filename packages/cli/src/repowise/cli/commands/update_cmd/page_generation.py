@@ -179,7 +179,7 @@ def _load_prior_pages(run: UpdateRun) -> dict[str, object]:
 
 def render_stale_structure(opts: UpdateOptions, run: UpdateRun, docs: DocsPass) -> None:
     """Re-render stale structural pages from the full graph (no model calls)."""
-    if not run.stale_deterministic_ids or run.config.generation_changed:
+    if not run.stale_deterministic_ids or run.full_generation:
         return
     from .deterministic import regenerate_deterministic_page_ids
 

@@ -57,6 +57,8 @@ class UpdateRun:
     prev_renderer_fp: str | None = None
     curr_renderer_fp: str = ""
     renderer_changed: bool = False
+    # An upgrade asked this run to rebuild the wiki once (see wiki_rebuild.py).
+    wiki_rebuild: bool = False
 
     # Change detection.
     detector: Any = None
@@ -93,6 +95,11 @@ class UpdateRun:
     doc_drift_report: Any = None
     persisted_git_meta: Any = None
     knowledge_graph_result: Any = None
+
+    @property
+    def full_generation(self) -> bool:
+        """Whether this run regenerates the whole page set, every level included."""
+        return bool(self.config and self.config.generation_changed) or self.wiki_rebuild
 
 
 @dataclass

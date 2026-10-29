@@ -254,6 +254,16 @@ def _store_format_row(repo_path: _DoctorPath) -> DoctorCheck:
                 warn=True,
                 fix=verdict.reindex_command,
             )
+        if verdict.rebuilds_wiki:
+            # Owed until an update rebuilds the wiki; a model wiki waits on the cost question.
+            return _check(
+                name,
+                True,
+                "The wiki is due a one-time rebuild for this release. Run: repowise update --yes",
+                check_id=check_id,
+                warn=True,
+                fix="repowise update --yes",
+            )
         return _check(name, True, "Current", check_id=check_id)
     except Exception as e:
         return _check(name, True, f"Could not check: {e}", check_id=check_id, warn=True)

@@ -47,10 +47,15 @@ WRITTEN_BY_VERSION_KEY = "written_by_version"
 #: state.json key holding the embedding model id the vectors were built with.
 EMBEDDING_MODEL_KEY = "embedding_model"
 
+#: state.json key holding the store format version whose wiki rebuild has run,
+#: so a routine persist may advance past a ``REBUILD_WIKI`` migration.
+WIKI_REBUILT_VERSION_KEY = "wiki_rebuilt_store_version"
+
 __all__ = [
     "EMBEDDING_MODEL_KEY",
     "PARSER_SCHEMA_VERSION",
     "STORE_FORMAT_VERSION",
     "STORE_FORMAT_VERSION_KEY",
+    "WIKI_REBUILT_VERSION_KEY",
     "WRITTEN_BY_VERSION_KEY",
 ]

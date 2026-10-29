@@ -118,6 +118,7 @@ def _state_at(repo: Path, head: str) -> None:
             "renderer_fingerprint": _current_renderer_fingerprint(repo),
             **CURRENT_GIT_HISTORY,
         },
+        full_index=True,
     )
 
 
