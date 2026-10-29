@@ -757,6 +757,71 @@ def test_how_it_works_walks_the_flow_that_drives_the_most_code() -> None:
     ]
 
 
+def test_collect_flows_ranks_filters_and_limits_the_candidates() -> None:
+    """End to end over ``_collect_flows``: a trace under ``_MIN_TRACE_HOPS`` is
+    dropped, only the ``_FLOW_CANDIDATE_LIMIT`` highest-reach flows are
+    considered, and the top ``_TOP_FLOWS`` come back in reach order."""
+    from repowise.core.generation.onboarding.subkinds import how_it_works as hiw
+
+    def flow(i: int, reach: int, hops: int = 3) -> ExecutionFlow:
+        entry = f"pkg/m{i}.py::f{i}"
+        trace = [entry, *(f"pkg/h{i}_{k}.py::h" for k in range(hops - 1))]
+        return ExecutionFlow(
+            entry_point_id=entry,
+            entry_point_name=f"f{i}",
+            entry_point_score=0.5,
+            trace=trace,
+            depth=len(trace) - 1,
+            crosses_community=False,
+            communities_visited=[0],
+            termination="no_callees",
+            reach=reach,
+        )
+
+    short = flow(0, reach=10_000, hops=2)  # most reach, but too short to walk
+    ranked = [flow(i, reach=1_000 - i) for i in range(1, hiw._FLOW_CANDIDATE_LIMIT + 5)]
+    signals = _signals(files=[_file("pkg/m1.py")], flows=(short, *reversed(ranked)))
+
+    chosen = hiw._collect_flows(signals)
+
+    assert [f.entry_point for f in chosen] == [
+        f"pkg/m{i}.py::f{i}" for i in range(1, hiw._TOP_FLOWS + 1)
+    ]
+    assert all(len(f.hops) >= hiw._MIN_TRACE_HOPS for f in chosen)
+
+
+def test_collect_flows_looks_only_at_the_candidate_limit() -> None:
+    """A flow past the limit by reach is never considered, even if it would
+    win a later tie-break."""
+    from repowise.core.generation.onboarding.subkinds import how_it_works as hiw
+
+    def flow(entry: str, reach: int) -> ExecutionFlow:
+        return ExecutionFlow(
+            entry_point_id=entry,
+            entry_point_name=entry.rsplit("::", 1)[1],
+            entry_point_score=0.5,
+            trace=[entry, "lib/a.py::a", "lib/b.py::b"],
+            depth=2,
+            crosses_community=False,
+            communities_visited=[0],
+            termination="no_callees",
+            reach=reach,
+        )
+
+    inside = [flow(f"pkg/m{i}.py::f{i}", reach=100) for i in range(hiw._FLOW_CANDIDATE_LIMIT)]
+    outside = flow("cli/main.py::main", reach=1)  # declared entry point, lowest reach
+    signals = _signals(
+        files=[_file("cli/main.py", is_entry_point=True)],
+        entry_points=["cli/main.py"],
+        flows=(outside, *inside),
+    )
+
+    chosen = hiw._collect_flows(signals)
+
+    assert "cli/main.py::main" not in {f.entry_point for f in chosen}
+    assert len(chosen) == hiw._TOP_FLOWS
+
+
 def test_how_it_works_treats_flat_repo_files_as_one_region() -> None:
     spec = onboarding.get_spec(SLOT_HOW_IT_WORKS)
     assert spec is not None
