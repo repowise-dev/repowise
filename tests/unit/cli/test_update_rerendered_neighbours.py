@@ -140,3 +140,32 @@ def test_changed_file_outranks_more_central_importers(tmp_path: Path) -> None:
 
     assert result.regenerate == ["utils.py", "imp5.py"]
     assert "utils.py" not in result.decay_only
+
+
+def test_an_unreadable_store_is_not_read_as_no_history(tmp_path: Path) -> None:
+    # A wiki.db that is not a database: the read fails rather than coming back empty.
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / "wiki.db").write_bytes(b"not a database" * 100)
+
+    assert with_stored_git_meta(tmp_path, {"a.py": {}}, ["a.py", "b.py"]) is None
+
+
+def test_neighbours_keep_their_pages_when_git_rows_are_unreadable() -> None:
+    from repowise.cli.commands.update_cmd import command
+
+    run = SimpleNamespace(
+        repo_path=Path("."),
+        git_meta_map={"changed.py": {"commit_count_total": 1}},
+        file_diffs=[SimpleNamespace(path="changed.py"), SimpleNamespace(path="new.py")],
+        affected=AffectedPages(
+            regenerate=["changed.py", "new.py", "neighbour.py"], rename_patch=[], decay_only=[]
+        ),
+        degraded=[],
+        render_git_meta=None,
+    )
+
+    command._keep_pages_without_git(run)
+
+    assert run.affected.regenerate == ["changed.py", "new.py"]
+    assert run.render_git_meta == run.git_meta_map
+    assert run.degraded and "1 page(s) kept" in run.degraded[0]

@@ -1456,6 +1456,20 @@ def _analyze_changes(run: UpdateRun) -> None:
     run.render_git_meta = with_stored_git_meta(
         run.repo_path, run.git_meta_map, run.affected.regenerate
     )
+    if run.render_git_meta is None:
+        _keep_pages_without_git(run)
+
+
+def _keep_pages_without_git(run: UpdateRun) -> None:
+    """The store's git rows could not be read: leave the pages that need them as stored."""
+    # This run's own rows and changed files render; only neighbours wait.
+    current = set(run.git_meta_map) | {fd.path for fd in run.file_diffs}
+    kept = [p for p in run.affected.regenerate if p not in current]
+    run.affected.regenerate = [p for p in run.affected.regenerate if p in current]
+    run.render_git_meta = run.git_meta_map
+    message = f"Stored git history unreadable: {len(kept)} page(s) kept as they were"
+    console.print(f"[yellow]{message}[/yellow]")
+    run.degraded.append(message)
 
 
 def _run_partial_analyses(run: UpdateRun) -> None:

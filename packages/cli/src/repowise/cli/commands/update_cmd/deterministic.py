@@ -567,37 +567,36 @@ async def _load_symbol_complexity(repo_path: Path) -> dict[str, int]:
         await engine.dispose()
 
 
-def with_stored_git_meta(repo_path: Path, git_meta_map: dict, paths: list[str]) -> dict:
+def with_stored_git_meta(repo_path: Path, git_meta_map: dict, paths: list[str]) -> dict | None:
     """*git_meta_map* plus the stored git rows of the *paths* it lacks.
 
     An update re-indexes git for the changed files only, but re-renders their
     neighbours too. Without their stored rows those pages lose every
-    history-driven section. Fresh rows win over stored ones. Best effort: an
-    unreadable store leaves the map as it was.
+    history-driven section. Fresh rows win over stored ones. ``None`` when the
+    store could not be read: rendering then would strip history it holds.
     """
     missing = [p for p in dict.fromkeys(paths) if p not in git_meta_map]
     if not missing:
         return git_meta_map
     stored = run_async(_load_git_meta(repo_path, missing))
-    return {**stored, **git_meta_map} if stored else git_meta_map
+    return None if stored is None else {**stored, **git_meta_map}
 
 
-async def _load_git_meta(repo_path: Path, paths: list[str]) -> dict[str, dict]:
+async def _load_git_meta(repo_path: Path, paths: list[str]) -> dict[str, dict] | None:
+    from sqlalchemy.exc import SQLAlchemyError
+
     from repowise.cli.helpers import get_db_url_for_repo
     from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.crud import get_repository_by_path
+    from repowise.core.pipeline.resume.rehydrate import stored_git_meta_for
 
     engine = create_engine(get_db_url_for_repo(repo_path))
     try:
-        from repowise.core.persistence.crud import get_repository_by_path
-        from repowise.core.pipeline.resume.rehydrate import rehydrate_git_meta_map
-
         async with get_session(create_session_factory(engine)) as session:
             repo = await get_repository_by_path(session, str(repo_path))
-            if repo is None:
-                return {}
-            return await rehydrate_git_meta_map(session, repo.id, paths)
-    except Exception:
-        return {}
+            return None if repo is None else await stored_git_meta_for(session, repo.id, paths)
+    except (SQLAlchemyError, OSError):
+        return None
     finally:
         await engine.dispose()
 

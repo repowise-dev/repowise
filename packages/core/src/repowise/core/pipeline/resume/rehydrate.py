@@ -34,6 +34,7 @@ __all__ = [
     "rehydrate_decision_report",
     "rehydrate_git_meta_map",
     "rehydrate_graph_builder",
+    "stored_git_meta_for",
 ]
 
 
@@ -55,25 +56,33 @@ def _git_metadata_to_dict(row: Any) -> dict[str, Any]:
     return out
 
 
-async def rehydrate_git_meta_map(
-    session: Any, repo_id: str, paths: list[str] | None = None
-) -> dict[str, dict[str, Any]]:
+async def rehydrate_git_meta_map(session: Any, repo_id: str) -> dict[str, dict[str, Any]]:
     """Rebuild ``{file_path -> git metadata dict}`` from persisted rows.
 
-    *paths* narrows the read to those files; ``None`` reads every row.
     Returns an empty dict when nothing was persisted (so a caller can detect
     "git was never indexed" and fall back to recomputing).
     """
-    from repowise.core.persistence import get_all_git_metadata, get_git_metadata_bulk
+    from repowise.core.persistence import get_all_git_metadata
 
     try:
-        if paths is None:
-            rows = await get_all_git_metadata(session, repo_id)
-        else:
-            rows = await get_git_metadata_bulk(session, repo_id, paths)
+        rows = await get_all_git_metadata(session, repo_id)
     except Exception as exc:
         logger.debug("rehydrate_git_meta_failed", error=str(exc))
         return {}
+    return {path: _git_metadata_to_dict(row) for path, row in rows.items()}
+
+
+async def stored_git_meta_for(
+    session: Any, repo_id: str, paths: list[str]
+) -> dict[str, dict[str, Any]]:
+    """The persisted git rows of *paths*, as :func:`rehydrate_git_meta_map` shapes them.
+
+    A path with no row is absent. Unlike the full rehydrate, a failed read
+    raises: the caller has to tell "no history" from "could not read it".
+    """
+    from repowise.core.persistence import get_git_metadata_bulk
+
+    rows = await get_git_metadata_bulk(session, repo_id, paths)
     return {path: _git_metadata_to_dict(row) for path, row in rows.items()}
 
 

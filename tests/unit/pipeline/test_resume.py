@@ -21,6 +21,7 @@ from repowise.core.pipeline.resume import (
     ResumePhase,
     rehydrate_git_meta_map,
 )
+from repowise.core.pipeline.resume.rehydrate import stored_git_meta_for
 
 
 @pytest.fixture
@@ -486,8 +487,7 @@ async def test_decision_extraction_completion_tracking(sf, monkeypatch):
     assert await ctrl2.has_completed_decision_extraction() is True
 
 
-
-async def test_rehydrate_git_meta_map_narrows_to_paths(sf):
+async def test_stored_git_meta_for_reads_only_the_paths(sf):
     repo_id = await _make_repo(sf)
     async with get_session(sf) as session:
         await upsert_git_metadata_bulk(
@@ -497,6 +497,6 @@ async def test_rehydrate_git_meta_map_narrows_to_paths(sf):
         )
 
     async with get_session(sf) as session:
-        meta = await rehydrate_git_meta_map(session, repo_id, ["src/b.py", "src/gone.py"])
+        meta = await stored_git_meta_for(session, repo_id, ["src/b.py", "src/gone.py"])
 
     assert set(meta) == {"src/b.py"}
