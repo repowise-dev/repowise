@@ -151,7 +151,10 @@ _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
     # A chained call keeps no bare-name fallback: ``.send()`` on a result the
     # return type does not type is not the repo's ``send``.
     "kotlin": replace(
-        _JVM_STRATEGIES, member_fallback=_TYPED_RECEIVER, chain_bare_fallback=False
+        _JVM_STRATEGIES,
+        member_fallback=_TYPED_RECEIVER,
+        chain_bare_fallback=False,
+        inherited_typed_receiver=True,
     ),
     "csharp": _LanguageCallStrategies(
         free_fallback=("_resolve_csharp_constructed_type",),
