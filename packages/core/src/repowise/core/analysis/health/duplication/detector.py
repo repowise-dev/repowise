@@ -163,6 +163,20 @@ def _nonsurvivor_keys(
     return {p: merged[p] for p in nonsurvivors}
 
 
+def _spliced_nonsurvivor_keys(
+    nonsurvivors: set[str],
+    cut: Any,
+    stored: dict[str, str] | None,
+    live: dict[str, str],
+) -> dict[str, str] | None:
+    """The gated files' keys a splice persists: the stored ones, updated by the
+    files it read live. ``None`` under a window-budget cut, which leaves files
+    unread and their keys unknown."""
+    if cut is not None:
+        return None
+    return _nonsurvivor_keys(nonsurvivors, stored, live)
+
+
 def _partner_support(meta: dict[str, Any], partner_path: str) -> int:
     """Commits *meta*'s file shares with *partner_path*.
 
@@ -511,7 +525,7 @@ def _collect_windows(
         per_file_streams[path] = (kinds, names)
         per_file_nloc[path] = nloc
         windows_by_grammar[grammar].extend(windows)
-        if content_hash:
+        if content_hash and cache is not None:
             per_file_hash[path] = content_hash
         diag.files_tokenized += 1
 
@@ -868,10 +882,9 @@ def _detect_clones_incremental(
             limits_key=limits_fingerprint(lim),
             files=new_files,
             nonsurvivors=nonsurvivors,
-            # A cut leaves files unread, so their keys are unknown.
-            nonsurvivor_keys=None
-            if cut is not None
-            else _nonsurvivor_keys(nonsurvivors, index.nonsurvivor_keys, live_keys),
+            nonsurvivor_keys=_spliced_nonsurvivor_keys(
+                nonsurvivors, cut, index.nonsurvivor_keys, live_keys
+            ),
             paths=new_paths_table,
             pairs=[
                 (pid[key[0]], pid[key[1]], key[2], key[3], key[4], key[5], count)
