@@ -58,7 +58,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from functools import cache
+from functools import cache, lru_cache
 from pathlib import PurePath, PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -529,6 +529,32 @@ def _classify(
     package_root: PackageRootProbe | None = None,
 ) -> str:
     """``"test"``, ``"support"``, or ``""`` for production code.
+
+    With no repo context the answer depends only on the path, the language and
+    the process-wide naming spec, so it is memoized: health detectors ask about
+    the same few thousand paths tens of thousands of times a pass.
+    """
+    if roots is None and dotnet_projects is None and phpunit_roots is None and package_root is None:
+        return _classify_without_context(path, language)
+    return _classify_with_context(path, language, roots, dotnet_projects, phpunit_roots, package_root)
+
+
+# Bounded so a long-lived server sees a fixed ceiling (~65k short keys); a
+# larger repo only re-classifies the overflow.
+@lru_cache(maxsize=65536)
+def _classify_without_context(path: str, language: str | None) -> str:
+    return _classify_with_context(path, language)
+
+
+def _classify_with_context(
+    path: str,
+    language: str | None,
+    roots: PytestRoots | None = None,
+    dotnet_projects: DotnetTestProjects | None = None,
+    phpunit_roots: PhpunitRoots | None = None,
+    package_root: PackageRootProbe | None = None,
+) -> str:
+    """The classification itself; see :func:`_classify`.
 
     One traversal, so the two public predicates cannot disagree with each other
     the way the copies they replace disagreed.

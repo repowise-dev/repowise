@@ -623,3 +623,24 @@ def test_dotnet_test_project_classifies_csharp_files(
     got_without = "support" if is_test_support_path(path) else got_without
     assert got_without == expected_without
 
+
+
+@pytest.mark.parametrize(
+    ("path", "language"),
+    [
+        ("tests/test_app.py", "python"),
+        ("src/conftest.py", "python"),
+        ("src/app/__tests__/view.test.tsx", "typescript"),
+        ("src/Foo.Tests/BarTests.cs", "csharp"),
+        ("lib/app.rb", None),
+    ],
+)
+def test_the_memoized_answer_is_the_classification(path: str, language: str | None) -> None:
+    from repowise.core import test_paths
+
+    expected = test_paths._classify_with_context(path, language)
+    test_paths._classify_without_context.cache_clear()
+    assert test_paths._classify(path, language) == expected
+    # A second ask is served from the cache and still agrees.
+    assert test_paths._classify(path, language) == expected
+    assert test_paths._classify_without_context.cache_info().hits >= 1
