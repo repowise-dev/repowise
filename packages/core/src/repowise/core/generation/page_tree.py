@@ -14,10 +14,11 @@ exactly the rows it did before.
 The shape follows what the readers were already doing:
 
     repo overview
-      onboarding pages          (canonical reading order)
-      module pages              (stamped with the layer they belong to)
+      onboarding, flow pages    (canonical reading order)
+      module pages              (foundations first; stamped with their layer)
+        module pages            (under the module heading their directory)
         file pages              (under the nearest module, by member or path)
-        api contracts, infra pages
+        api contracts, infra pages (under the module for their directory)
           symbol spotlights     (under the file they document)
       cycle pages               (stamped with the layer they belong to)
       anything unplaced
@@ -36,10 +37,12 @@ an id that moves.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from bisect import bisect_left
+from collections.abc import Container, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
+from .layers import import_balance, is_support_layer
 from .models import GeneratedPage
 
 
@@ -66,7 +69,10 @@ class TreeNode:
 # Onboarding is ranked by its slot rather than this table.
 _TYPE_RANK: dict[str, int] = {
     "onboarding": 0,
-    "architecture_diagram": 1,
+    # End-to-end walkthroughs read right after orientation and before the
+    # chapters they cross.
+    "flow_page": 1,
+    "architecture_diagram": 2,
     "module_page": 3,
     "scc_page": 4,
     "api_contract": 5,
@@ -76,6 +82,11 @@ _TYPE_RANK: dict[str, int] = {
 }
 
 _UNRANKED = len(_TYPE_RANK)
+_UNRANKED_READER = (2,)
+
+# Page types that sit directly under the overview, ahead of every chapter: what
+# a reader opens first. A reader-facing tree can group them as "Start here".
+_START_HERE_TYPES: tuple[str, ...] = ("onboarding", "flow_page", "architecture_diagram")
 
 
 # Page types a reader-facing tree groups into layer rows. Their layer comes
@@ -151,11 +162,16 @@ def _onboarding_rank(page: GeneratedPage) -> int:
         return len(ONBOARDING_ORDER)
 
 
-def _sort_key(page: GeneratedPage) -> tuple:
+def _sort_key(page: GeneratedPage, reader_rank: dict[str, tuple[int, ...]]) -> tuple:
     """Total order among siblings.
 
     Ends in the page id so two pages that tie on every meaningful signal still
     have a defined order, which is what keeps the tree stable across runs.
+
+    *reader_rank* orders the top-level chapters (see ``_reader_ranks``) ahead of
+    the namer's order, which is only meaningful between the leaves it named:
+    a top-level chapter takes its namer position from its own loose files, so
+    by that order the engine read fifteenth, after the editor extension.
     """
     if page.page_type == "onboarding":
         rank = _onboarding_rank(page)
@@ -165,6 +181,8 @@ def _sort_key(page: GeneratedPage) -> tuple:
         rank = 0
     return (
         _TYPE_RANK.get(page.page_type, _UNRANKED),
+        # Unranked pages share one value, after every ranked top-level chapter.
+        reader_rank.get(page.page_id, _UNRANKED_READER),
         rank,
         page.target_path,
         page.page_id,
@@ -223,7 +241,126 @@ def _nearest_module(path: str, module_paths: list[str]) -> str:
     return ""
 
 
-def assign_page_tree(pages: list[GeneratedPage] | list[TreeNode]) -> None:
+def _listed_members(page: TreeNode | GeneratedPage) -> list[str]:
+    """The files a module or cycle page records as its own."""
+    members = page.metadata.get("file_paths") or page.metadata.get("files") or []
+    return [m for m in members if isinstance(m, str)]
+
+
+def _borrowed_members(
+    page: TreeNode | GeneratedPage,
+    module_pages: list[GeneratedPage] | list[TreeNode],
+    owned: dict[str, list[str]],
+) -> list[str]:
+    """The members of the module pages under a rollup's directory.
+
+    A rollup overview owns no files of its own, so it has nothing to place it
+    by and would otherwise land on the root. Borrowing its children's members
+    puts it under the same layer as the pages it summarises.
+    """
+    prefix = page.target_path + "/"
+    return [
+        member
+        for other in module_pages
+        if other is not page and other.target_path.startswith(prefix)
+        for member in owned[other.page_id]
+    ]
+
+
+def _module_heads(
+    module_pages: list[GeneratedPage] | list[TreeNode], owned: dict[str, list[str]]
+) -> dict[str, str]:
+    """Directory -> id of the module page that heads the modules beneath it.
+
+    A chapter heads its subtree by definition. A leaf heads one too when it
+    documents files sitting directly in its directory: a module for
+    ``pipeline/resume`` belongs under the page for ``pipeline``, whatever the
+    grouper decided to call that page, or the reader cannot predict where a
+    directory's documentation lives. A page that only borrows a directory's
+    name (a roll-up of sibling packages, a run of sibling folders targeted at
+    the first of them) owns nothing directly there and heads nothing.
+    """
+    return {
+        page.target_path: page.page_id
+        for page in module_pages
+        if is_module_head(
+            page.target_path, owned[page.page_id], bool(page.metadata.get("is_chapter"))
+        )
+    }
+
+
+def is_module_head(target_path: str, members: Iterable[str], is_chapter: bool) -> bool:
+    """Whether the module page at *target_path* heads the modules beneath it.
+
+    The one rule the tree nests by and a chapter's child links follow; see
+    :func:`_module_heads` for why. *members* are the files the page owns.
+    """
+    if not target_path:
+        return False
+    return is_chapter or any(m.rpartition("/")[0] == target_path for m in members)
+
+
+def nearest_head(target_path: str, heads: Container[str]) -> str | None:
+    """The closest ancestor directory of *target_path* in *heads*.
+
+    Strictly an ancestor, so a page never heads itself and the walk cannot
+    cycle. Nearest rather than topmost because heads nest: a module under
+    ``core/analysis/health`` belongs to Health, which belongs to Analysis,
+    which belongs to Core.
+    """
+    cursor = target_path
+    while "/" in cursor:
+        cursor = cursor.rsplit("/", 1)[0]
+        if cursor in heads:
+            return cursor
+    return None
+
+
+def _reader_ranks(
+    top: dict[str, tuple[list[str], str]],
+    import_edges: Iterable[tuple[str, str]],
+) -> dict[str, tuple[int, ...]]:
+    """Sort keys for the top-level chapters, in the order a reader wants them.
+
+    *top* maps each top-level module page to its files and its layer. The path
+    order this replaces read a repository's engine fifteenth, after its editor
+    extension. A reader wants the opposite of a dependency diagram: what
+    everything else is built on first, then what is built on it, then support
+    material (tests, docs, tooling) last. "Built on" is measured from the
+    import edges between these chapters' files, the same balance the layer
+    spine is ordered by. Within a tie the larger chapter comes first, since it
+    is the one a newcomer meets most.
+    """
+    runtime = {pid: v for pid, v in top.items() if not is_support_layer(v[1])}
+    balance = import_balance(
+        {f: pid for pid, (files, _layer) in runtime.items() for f in files}, import_edges
+    )
+    return {
+        pid: (
+            int(pid not in runtime),
+            -balance[pid],
+            -len(files),
+        )
+        for pid, (files, _layer) in top.items()
+    }
+
+
+def _subtree_files(target_path: str, members: list[str], file_targets: list[str]) -> list[str]:
+    """A head's own members plus every documented file under its directory.
+
+    *file_targets* must be sorted: the files under a directory are then one
+    contiguous slice, found by bisection rather than by a scan per head.
+    """
+    prefix = target_path + "/"
+    lo = bisect_left(file_targets, prefix)
+    hi = bisect_left(file_targets, prefix + "\U0010ffff")
+    return sorted(set(members).union(file_targets[lo:hi]))
+
+
+def assign_page_tree(
+    pages: list[GeneratedPage] | list[TreeNode],
+    import_edges: Iterable[tuple[str, str]] = (),
+) -> None:
     """Fill in ``parent_page_id``, ``display_order`` and ``section_number``.
 
     Mutates the pages in place. Every parent it assigns is a page in the set:
@@ -231,6 +368,10 @@ def assign_page_tree(pages: list[GeneratedPage] | list[TreeNode]) -> None:
     rather than trusted. On a partial set that means a page whose real parent
     was not regenerated gets the nearest ancestor that is present, or none,
     which is why callers working from a subset rebuild from the store instead.
+
+    *import_edges* are ``(src, dst)`` file import edges. They order the
+    top-level chapters for a reader (see :func:`_reader_ranks`) and nothing
+    else; without them the top level keeps the namer's order, by size.
     """
     by_type: dict[str, list[GeneratedPage]] = {}
     for page in pages:
@@ -242,6 +383,8 @@ def assign_page_tree(pages: list[GeneratedPage] | list[TreeNode]) -> None:
     overviews = sorted(by_type.get("repo_overview", []), key=lambda p: p.page_id)
     root = overviews[0] if overviews else None
     root_id = root.page_id if root is not None else None
+
+    file_targets = sorted(p.target_path for p in by_type.get("file_page", []))
 
     # A file's layer comes from the provenance stamped on it at generation
     # time. Keyed on layer_id, never the display name, which drifts.
@@ -285,10 +428,8 @@ def assign_page_tree(pages: list[GeneratedPage] | list[TreeNode]) -> None:
     module_of_file: dict[str, str] = {}
     module_pages = by_type.get("module_page", [])
     for page in module_pages:
-        members = page.metadata.get("file_paths") or page.metadata.get("files") or []
-        members = [m for m in members if isinstance(m, str)]
         module_paths.append(page.target_path)
-        for member in members:
+        for member in _listed_members(page):
             # A file claimed by two modules goes to the one whose id sorts
             # first, so the winner does not depend on iteration order.
             current = module_of_file.get(member)
@@ -305,9 +446,16 @@ def assign_page_tree(pages: list[GeneratedPage] | list[TreeNode]) -> None:
             return f"module_page:{mod}"
         return root_id
 
-    for page_type in ("file_page", "api_contract", "infra_page"):
+    for page in by_type.get("file_page", []):
+        page.parent_page_id = file_parent(page.target_path)
+    # A contract or infra page is found by where its file lives, not by which
+    # concept page happened to claim that file: a concept page can gather
+    # files from sibling directories, and the reader browsing a directory's
+    # chapter is the one looking for its contracts and build files.
+    for page_type in ("api_contract", "infra_page"):
         for page in by_type.get(page_type, []):
-            page.parent_page_id = file_parent(page.target_path)
+            mod = _nearest_module(page.target_path, module_paths)
+            page.parent_page_id = f"module_page:{mod}" if mod else file_parent(page.target_path)
 
     # Now that every file has found a module, a module that recorded no
     # members can borrow theirs. Pages written before members were recorded
@@ -318,60 +466,29 @@ def assign_page_tree(pages: list[GeneratedPage] | list[TreeNode]) -> None:
         if page.parent_page_id and page.parent_page_id.startswith("module_page:"):
             claimed.setdefault(page.parent_page_id, []).append(page.target_path)
 
-    # A chapter heads the module pages under its directory, so those pages hang
-    # off it instead of off their layer. Without this the chapter renders as a
-    # sibling of the pages it links down to, and the tree is a flat listing with
-    # one row that happens to say "Overview" — which is the reader dead-end the
-    # chapter exists to close.
-    chapter_at: dict[str, str] = {
-        page.target_path: page.page_id
+    owned = {
+        page.page_id: _listed_members(page) or claimed.get(page.page_id, [])
         for page in module_pages
-        if page.metadata.get("is_chapter") and page.target_path
     }
-
-    def nearest_chapter(target_path: str) -> str | None:
-        """The closest ancestor directory with a chapter page, if any.
-
-        Strictly an ancestor, so a chapter never parents itself and the walk
-        cannot cycle. Nearest rather than topmost because chapters nest: a
-        module under ``core/analysis/health`` belongs to Health, which belongs
-        to Analysis, which belongs to Core.
-        """
-        cursor = target_path
-        while "/" in cursor:
-            cursor = cursor.rsplit("/", 1)[0]
-            found = chapter_at.get(cursor)
-            if found:
-                return found
-        return None
+    head_at = _module_heads(module_pages, owned)
+    top: dict[str, tuple[list[str], str]] = {}
 
     for page in module_pages:
-        members = page.metadata.get("file_paths") or page.metadata.get("files") or []
-        members = [m for m in members if isinstance(m, str)]
-        if not members:
-            members = claimed.get(page.page_id, [])
-        if not members:
-            # A rollup overview owns no files of its own, so it has no members
-            # to place it and would otherwise land on the root. Borrow the
-            # members of the concept pages nested under its directory, so it
-            # sits under the same layer as the children it summarises.
-            prefix = page.target_path + "/"
-            borrowed: list[str] = []
-            for other in module_pages:
-                if other is page or not other.target_path.startswith(prefix):
-                    continue
-                child_members = (
-                    other.metadata.get("file_paths")
-                    or other.metadata.get("files")
-                    or claimed.get(other.page_id, [])
-                )
-                borrowed.extend(m for m in child_members if isinstance(m, str))
-            members = borrowed
+        members = owned[page.page_id] or _borrowed_members(page, module_pages, owned)
+        if page.target_path in head_at:
+            # A page heading a subtree belongs where the subtree does, not
+            # where its own loose files do: a package's config files at its
+            # root said nothing about whether the package is a UI.
+            members = _subtree_files(page.target_path, members, file_targets)
         module_layer = _dominant_layer(members, layer_of_file)
         # Stamped either way: the reader-facing tree groups by this, and a page
         # that has found a chapter still belongs to a layer.
         stamp_layer(page, module_layer)
-        page.parent_page_id = nearest_chapter(page.target_path) or root_id
+        head = nearest_head(page.target_path, head_at)
+        page.parent_page_id = head_at[head] if head else root_id
+        if page.parent_page_id == root_id:
+            top[page.page_id] = (members, module_layer)
+    reader_rank = _reader_ranks(top, import_edges)
 
     # A spotlight belongs to the file it documents: "path/to/file.py::Symbol".
     # The file's own page may not exist: selection can spotlight a symbol in a
@@ -389,12 +506,11 @@ def assign_page_tree(pages: list[GeneratedPage] | list[TreeNode]) -> None:
     # A cycle spans files, often across modules. Hang it off the layer its
     # members mostly live in rather than picking one member's module.
     for page in by_type.get("scc_page", []):
-        members = page.metadata.get("files") or page.metadata.get("file_paths") or []
-        members = [m for m in members if isinstance(m, str)]
+        members = _listed_members(page)
         scc_layer = _dominant_layer(members, layer_of_file)
         stamp_layer(page, scc_layer)
         page.parent_page_id = root_id
-    for page_type in ("onboarding", "architecture_diagram"):
+    for page_type in _START_HERE_TYPES:
         for page in by_type.get(page_type, []):
             page.parent_page_id = root_id
 
@@ -411,19 +527,20 @@ def assign_page_tree(pages: list[GeneratedPage] | list[TreeNode]) -> None:
         if page.parent_page_id is not None and page.parent_page_id not in known:
             page.parent_page_id = root_id if page.page_id != root_id else None
 
-    _number(pages, root_id)
+    _number(pages, root_id, reader_rank)
 
 
 def _number(
     pages: list[GeneratedPage] | list[TreeNode],
     root_id: str | None,
+    reader_rank: dict[str, tuple[int, ...]],
 ) -> None:
     """Assign sibling order and dotted section numbers by walking the tree."""
     children: dict[str | None, list[GeneratedPage]] = {}
     for page in pages:
         children.setdefault(page.parent_page_id, []).append(page)
     for siblings in children.values():
-        siblings.sort(key=_sort_key)
+        siblings.sort(key=lambda p: _sort_key(p, reader_rank))
 
     numbered: set[str] = set()
 

@@ -22,6 +22,7 @@ from .. import onboarding as _onboarding
 from ..concept_tree.grouping import package_file_counts
 from ..context_assembler import FilePageContext
 from ..models import compute_page_id
+from ..page_tree import is_module_head, nearest_head
 from .helpers import _is_infra_file, decisions_for_files, rank_decisions
 
 if TYPE_CHECKING:
@@ -235,7 +236,7 @@ def build_level3_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
 
 
 def _rollup_child_pages(rollup: Any, groups: list[Any]) -> list[dict]:
-    """The pages a rollup links down to: those it is the nearest chapter of.
+    """The pages a rollup links down to: those it is the nearest head of.
 
     The same rule ``assign_page_tree`` nests by, so the links match the tree:
     a nested overview links to the next level down (a sub-overview or a leaf),
@@ -244,16 +245,12 @@ def _rollup_child_pages(rollup: Any, groups: list[Any]) -> list[dict]:
     itself is excluded. Titles are read after naming, so they match what the
     tree shows.
     """
-    chapters = {g.key for g in groups if getattr(g, "is_rollup", False)}
-
-    def nearest_chapter(key: str) -> str | None:
-        while "/" in key:
-            key = key.rsplit("/", 1)[0]
-            if key in chapters:
-                return key
-        return None
-
-    children = [g for g in groups if g.key != rollup.key and nearest_chapter(g.key) == rollup.key]
+    heads = {
+        g.key
+        for g in groups
+        if is_module_head(g.key, getattr(g, "file_paths", ()), bool(getattr(g, "is_rollup", False)))
+    }
+    children = [g for g in groups if g.key != rollup.key and nearest_head(g.key, heads) == rollup.key]
     children.sort(key=lambda g: g.key)
     return [{"title": g.display, "path": g.key} for g in children]
 

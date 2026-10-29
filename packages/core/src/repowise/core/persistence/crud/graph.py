@@ -556,6 +556,23 @@ async def get_all_graph_edges(
     return edges
 
 
+async def get_file_import_edges(
+    session: AsyncSession,
+    repository_id: str,
+) -> list[tuple[str, str]]:
+    """``(src, dst)`` for every persisted import edge between two files.
+
+    Two columns rather than whole rows, for callers that only need the
+    direction of the file import graph.
+    """
+    result = await session.execute(
+        select(GraphEdge.source_node_id, GraphEdge.target_node_id).where(
+            GraphEdge.repository_id == repository_id, GraphEdge.edge_type == "imports"
+        )
+    )
+    return [(u, v) for u, v in result.tuples().all() if "::" not in u and "::" not in v]
+
+
 # ---------------------------------------------------------------------------
 # Graph read-side queries (Phase 5 — MCP graph tools)
 # ---------------------------------------------------------------------------

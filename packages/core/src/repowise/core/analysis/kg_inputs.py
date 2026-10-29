@@ -46,18 +46,21 @@ def _file_import_edges(graph_builder: Any) -> list[tuple[str, str]]:
     downstream by :func:`compute_layer_order`, which only counts edges whose
     endpoints are both in ``file_layers``.
     """
-    edges: list[tuple[str, str]] = []
     try:
-        g = graph_builder.graph()
-        for src, dst, data in g.edges(data=True):
-            if not (isinstance(src, str) and isinstance(dst, str)):
-                continue
-            if data.get("edge_type", "imports") != "imports":
-                continue
-            edges.append((src, dst))
+        return import_edges_of(graph_builder.graph())
     except Exception:  # pragma: no cover - defensive
-        pass
-    return edges
+        return []
+
+
+def import_edges_of(graph: Any) -> list[tuple[str, str]]:
+    """The ``imports`` edges of an already-built graph; see :func:`_file_import_edges`."""
+    return [
+        (src, dst)
+        for src, dst, data in graph.edges(data=True)
+        if isinstance(src, str)
+        and isinstance(dst, str)
+        and data.get("edge_type", "imports") == "imports"
+    ]
 
 
 def _is_barrel(parsed_file: Any) -> bool:

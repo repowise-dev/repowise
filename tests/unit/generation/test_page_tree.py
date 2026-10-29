@@ -463,3 +463,125 @@ class TestChapterNesting:
                 assert cursor not in seen, f"cycle through {page.page_id}"
                 seen.add(cursor)
                 cursor = by_id[cursor].parent_page_id if cursor in by_id else None
+
+
+class TestDirectoryNesting:
+    """A module nests under the page for the directory it sits in."""
+
+    def _pages(self):
+        return [
+            _page("repo_overview", "demo"),
+            _page("module_page", "src/pipeline", file_paths=["src/pipeline/run.py"]),
+            _page("module_page", "src/pipeline/resume", file_paths=["src/pipeline/resume/r.py"]),
+            # Targeted at a parent it holds no files directly in, the way a
+            # roll-up of sibling packages is.
+            _page("module_page", "pkgs", file_paths=["pkgs/a/x.py", "pkgs/b/y.py"]),
+            _page("module_page", "pkgs/big", file_paths=["pkgs/big/z.py"]),
+            _page("file_page", "src/pipeline/run.py"),
+            _page("file_page", "src/pipeline/resume/r.py"),
+            _page("api_contract", "src/pipeline/resume/openapi.py"),
+        ]
+
+    def test_a_leaf_that_owns_its_directory_heads_the_modules_beneath_it(self):
+        pages = self._pages()
+        assign_page_tree(pages, [])
+        by_id = _by_id(pages)
+        assert (
+            by_id["module_page:src/pipeline/resume"].parent_page_id
+            == "module_page:src/pipeline"
+        )
+
+    def test_a_page_that_only_borrows_a_directory_name_heads_nothing(self):
+        pages = self._pages()
+        assign_page_tree(pages, [])
+        assert _by_id(pages)["module_page:pkgs/big"].parent_page_id == "repo_overview:demo"
+
+    def test_a_contract_sits_under_the_page_for_its_directory(self):
+        pages = self._pages()
+        # Claimed by a page for another directory, as a concept page that
+        # gathered siblings can.
+        _by_id(pages)["module_page:pkgs/big"].metadata["file_paths"].append(
+            "src/pipeline/resume/openapi.py"
+        )
+        assign_page_tree(pages, [])
+        assert (
+            _by_id(pages)["api_contract:src/pipeline/resume/openapi.py"].parent_page_id
+            == "module_page:src/pipeline/resume"
+        )
+
+
+class TestReaderOrder:
+    """Top-level chapters read foundations first, interfaces after, tooling last."""
+
+    LAYERS = (
+        ("apps/web", "layer:ui", 3),
+        ("apps/cli", "layer:cli", 2),
+        ("scripts", "layer:docs-tooling", 9),
+        ("lib/engine", "layer:service", 2),
+        ("lib/small", "layer:service", 1),
+    )
+    # Both apps import the engine, the web app imports the small lib, and the
+    # tooling imports everything: its edges must not crown the engine on
+    # their own.
+    EDGES = (
+        ("apps/web/f0.py", "lib/engine/f0.py"),
+        ("apps/cli/f0.py", "lib/engine/f1.py"),
+        ("apps/web/f1.py", "lib/small/f0.py"),
+        ("scripts/f0.py", "apps/web/f0.py"),
+    )
+
+    def _pages(self):
+        pages = [_page("repo_overview", "demo"), _page("onboarding", "onboarding/getting_started")]
+        for target, layer, n in self.LAYERS:
+            files = [f"{target}/f{i}.py" for i in range(n)]
+            pages.append(_page("module_page", target, file_paths=files, concept_order=0))
+            pages += [_page("file_page", f, layer_id=layer) for f in files]
+        return pages
+
+    def _top(self, pages):
+        top = [p for p in pages if p.page_type == "module_page"]
+        return [p.target_path for p in sorted(top, key=lambda p: p.display_order)]
+
+    def test_foundations_come_before_interfaces_and_tooling_last(self):
+        pages = self._pages()
+        assign_page_tree(pages, list(self.EDGES))
+        assert self._top(pages) == ["lib/engine", "lib/small", "apps/cli", "apps/web", "scripts"]
+
+    def test_without_edges_the_larger_chapter_leads(self):
+        pages = self._pages()
+        assign_page_tree(pages)
+        assert self._top(pages) == ["apps/web", "apps/cli", "lib/engine", "lib/small", "scripts"]
+
+    def test_onboarding_still_leads(self):
+        pages = self._pages()
+        assign_page_tree(pages, list(self.EDGES))
+        assert _by_id(pages)["onboarding:onboarding/getting_started"].section_number == "1"
+
+    def test_a_head_belongs_to_the_layer_of_the_subtree_it_heads(self):
+        """A package's config files at its root do not make it a tooling chapter."""
+        pages = [
+            _page("repo_overview", "demo"),
+            _page("module_page", "pkg/ui", is_chapter=True, file_paths=["pkg/ui/vite.config.ts"]),
+            _page("module_page", "pkg/ui/views", file_paths=["pkg/ui/views/a.tsx", "pkg/ui/views/b.tsx"]),
+            _page("file_page", "pkg/ui/vite.config.ts", layer_id="layer:config"),
+            _page("file_page", "pkg/ui/views/a.tsx", layer_id="layer:ui"),
+            _page("file_page", "pkg/ui/views/b.tsx", layer_id="layer:ui"),
+        ]
+        assign_page_tree(pages)
+        assert _by_id(pages)["module_page:pkg/ui"].metadata["layer_id"] == "layer:ui"
+
+
+def test_a_flow_page_reads_after_onboarding_and_before_the_chapters():
+    pages = [
+        _page("repo_overview", "demo"),
+        _page("module_page", "src/a", file_paths=["src/a/x.py"]),
+        _page("flow_page", "flows/indexing"),
+        _page("onboarding", "onboarding/getting_started"),
+    ]
+    assign_page_tree(pages, [])
+    by_id = _by_id(pages)
+    assert by_id["flow_page:flows/indexing"].parent_page_id == "repo_overview:demo"
+    assert [
+        by_id[i].section_number
+        for i in ("onboarding:onboarding/getting_started", "flow_page:flows/indexing", "module_page:src/a")
+    ] == ["1", "2", "3"]

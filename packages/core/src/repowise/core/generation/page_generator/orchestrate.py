@@ -549,15 +549,18 @@ class _GenerationRun:
             self.job_system.start_job(self.job_id, estimated_total)
 
     def _file_import_edges(self) -> list[tuple[str, str]]:
-        """``(src, dst)`` import edges between file nodes (src imports dst)."""
-        edges: list[tuple[str, str]] = []
+        """``(src, dst)`` import edges between file nodes (src imports dst).
+
+        Imports only, the same edges ``rebuild_page_tree`` reads back from the
+        store, so the tree an update rebuilds orders chapters the way this run
+        did.
+        """
+        from ...analysis.kg_inputs import import_edges_of
+
         try:
-            for src, dst in self.graph.edges():
-                if isinstance(src, str) and isinstance(dst, str):
-                    edges.append((src, dst))
+            return import_edges_of(self.graph)
         except Exception:
-            pass
-        return edges
+            return []
 
     def _compute_ia(self) -> None:
         """Derive the guided-tour ordering and the layer spine after selection.
@@ -904,7 +907,7 @@ class _GenerationRun:
                 try:
                     from ..page_tree import assign_page_tree
 
-                    assign_page_tree(all_pages)
+                    assign_page_tree(all_pages, self._file_import_edges())
                 except Exception as exc:
                     log.debug("page_tree.failed", error=str(exc))
 
