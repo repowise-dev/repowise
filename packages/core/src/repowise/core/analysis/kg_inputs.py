@@ -6,7 +6,11 @@ from collections import Counter
 from pathlib import PurePosixPath
 from typing import Any
 
+import structlog
+
 from repowise.core.analysis.knowledge_graph import KnowledgeGraphResult
+
+log = structlog.get_logger(__name__)
 
 # Entry-point precision (plan §Phase 2). A re-export *barrel* (typically an
 # ``index.ts``) carries the ``index`` stem heuristic's ``entry_point`` flag but
@@ -47,20 +51,30 @@ def _file_import_edges(graph_builder: Any) -> list[tuple[str, str]]:
     endpoints are both in ``file_layers``.
     """
     try:
-        return import_edges_of(graph_builder.graph())
-    except Exception:  # pragma: no cover - defensive
+        graph = graph_builder.graph()
+    except Exception as exc:
+        log.warning("kg_inputs.import_graph_unavailable", error=str(exc))
         return []
+    return import_edges_of(graph)
 
 
 def import_edges_of(graph: Any) -> list[tuple[str, str]]:
-    """The ``imports`` edges of an already-built graph; see :func:`_file_import_edges`."""
-    return [
-        (src, dst)
-        for src, dst, data in graph.edges(data=True)
-        if isinstance(src, str)
-        and isinstance(dst, str)
-        and data.get("edge_type", "imports") == "imports"
-    ]
+    """The ``imports`` edges of an already-built graph; see :func:`_file_import_edges`.
+
+    A graph that fails part way through iteration keeps the edges read up to
+    that point, and the failure is logged: a partial import graph still orders
+    layers and tours better than none.
+    """
+    edges: list[tuple[str, str]] = []
+    try:
+        for src, dst, data in graph.edges(data=True):
+            if not (isinstance(src, str) and isinstance(dst, str)):
+                continue
+            if data.get("edge_type", "imports") == "imports":
+                edges.append((src, dst))
+    except Exception as exc:
+        log.warning("kg_inputs.import_edges_partial", read=len(edges), error=str(exc))
+    return edges
 
 
 def _is_barrel(parsed_file: Any) -> bool:

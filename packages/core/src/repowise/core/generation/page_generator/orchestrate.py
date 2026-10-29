@@ -557,10 +557,7 @@ class _GenerationRun:
         """
         from ...analysis.kg_inputs import import_edges_of
 
-        try:
-            return import_edges_of(self.graph)
-        except Exception:
-            return []
+        return import_edges_of(self.graph)
 
     def _compute_ia(self) -> None:
         """Derive the guided-tour ordering and the layer spine after selection.
