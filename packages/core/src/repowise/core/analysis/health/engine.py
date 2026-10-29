@@ -441,7 +441,9 @@ class HealthAnalyzer:
             timings,
         )
         with timed(timings, "analysis.health.walk"):
-            walked = self._walk_files(self._target_files(changed_set), run.vocab, on_step)
+            walked = self._walk_files(
+                self._target_files(changed_set), run.vocab, on_step, partial=changed_set is not None
+            )
         return self._score(
             run,
             walked,
@@ -500,7 +502,9 @@ class HealthAnalyzer:
                 metrics=[],
                 kpis={},
             )
-        walked = await self._walk_files_async(target_files, run.vocab, on_step, max_workers)
+        walked = await self._walk_files_async(
+            target_files, run.vocab, on_step, max_workers, partial=changed_set is not None
+        )
         return self._score(
             run,
             walked,
@@ -581,10 +585,16 @@ class HealthAnalyzer:
             return FileComplexity(functions=[], classes=[])
 
     def _walk_files(
-        self, targets: list[Any], vocab: AssertVocabulary, on_step: Any | None
+        self,
+        targets: list[Any],
+        vocab: AssertVocabulary,
+        on_step: Any | None,
+        *,
+        partial: bool = False,
     ) -> list[tuple[Any, FileComplexity]]:
         """Walk every target before any biomarker runs, so the repo-wide
-        percentiles are computed once over the whole walked set."""
+        percentiles are computed once over the whole walked set. *partial*
+        (a changed-files pass) keeps the cached walks of the files it skipped."""
         self._load_walk_cache()
         walked: list[tuple[Any, FileComplexity]] = []
         for pf in targets:
@@ -593,7 +603,7 @@ class HealthAnalyzer:
             # evaluate).
             if on_step:
                 on_step(pf.file_info.path)
-        self._save_walk_cache()
+        self._save_walk_cache(keep_unused=partial)
         return walked
 
     async def _walk_files_async(
@@ -602,6 +612,8 @@ class HealthAnalyzer:
         vocab: AssertVocabulary,
         on_step: Any | None,
         max_workers: int | None,
+        *,
+        partial: bool = False,
     ) -> list[tuple[Any, FileComplexity]]:
         """:meth:`_walk_files` in worker threads: tree-sitter parsing releases
         the GIL, so this is real parallelism."""
@@ -618,7 +630,7 @@ class HealthAnalyzer:
             return pf, fcx
 
         walked = list(await asyncio.gather(*[_one(pf) for pf in targets]))
-        self._save_walk_cache()
+        self._save_walk_cache(keep_unused=partial)
         return walked
 
     def _score(
@@ -977,10 +989,10 @@ class HealthAnalyzer:
         if self._walk_cache is not None and self._owns_walk_cache:
             self._walk_cache.load()
 
-    def _save_walk_cache(self) -> None:
+    def _save_walk_cache(self, *, keep_unused: bool = False) -> None:
         """Persist the walk entries this pass used or produced, if any."""
         if self._walk_cache is not None and self._owns_walk_cache:
-            self._walk_cache.save()
+            self._walk_cache.save(keep_unused=keep_unused)
             log.debug(
                 "health_walk_cache",
                 hits=self._walk_cache.hits,

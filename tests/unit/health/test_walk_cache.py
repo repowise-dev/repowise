@@ -243,3 +243,59 @@ def test_a_walk_without_its_grammar_is_not_cached(tmp_path: Path, monkeypatch) -
     key = HealthWalkCache.key("python", compute_content_hash(_SRC))
     cache.put(key, _walk(tmp_path))
     assert cache.get(key) is None
+
+
+def test_a_partial_save_keeps_the_entries_it_did_not_touch(tmp_path: Path) -> None:
+    key = HealthWalkCache.key("python", compute_content_hash(_SRC))
+    other = HealthWalkCache.key("python", "e" * 64)
+    walked = _walk(tmp_path)
+    seed = HealthWalkCache(tmp_path)
+    seed.put(key, walked)
+    seed.put(other, walked)
+    seed.save()
+
+    partial = HealthWalkCache(tmp_path)
+    partial.load()
+    partial.get(key)
+    partial.save(keep_unused=True)
+    after = HealthWalkCache(tmp_path)
+    after.load()
+    assert after.get(key) is not None
+    assert after.get(other) is not None
+
+
+def test_a_changed_files_pass_leaves_the_other_walks_cached(tmp_path: Path, monkeypatch) -> None:
+    # An update scores its changed files; the weekly whole-repo pass that
+    # follows must find every other file's walk still cached.
+    import networkx as nx
+
+    from repowise.core.analysis.health import engine as engine_mod
+    from repowise.core.ingestion import ASTParser, FileTraverser
+
+    (tmp_path / "a.py").write_bytes(_SRC)
+    (tmp_path / "b.py").write_bytes(_SRC.replace(b"outer", b"other"))
+    (tmp_path / ".repowise").mkdir()
+    parser = ASTParser()
+    parsed = [parser.parse_file(fi, Path(fi.abs_path).read_bytes()) for fi in FileTraverser(tmp_path).traverse()]
+    calls: list[str] = []
+    real_walk = engine_mod.walk_file
+
+    def counting_walk(path, language, source, extra_assert_names=frozenset()):
+        calls.append(Path(path).name)
+        return real_walk(path, language, source, extra_assert_names)
+
+    monkeypatch.setattr(engine_mod, "walk_file", counting_walk)
+
+    def analyzer():
+        return engine_mod.HealthAnalyzer(
+            nx.DiGraph(),
+            git_meta_map={},
+            parsed_files=parsed,
+            duplication_cache_dir=tmp_path / ".repowise",
+            repo_root=tmp_path,
+        )
+
+    analyzer().analyze(None)
+    analyzer().analyze(None, changed_files={"a.py"})
+    analyzer().analyze(None)
+    assert sorted(calls) == ["a.py", "b.py"]

@@ -70,7 +70,8 @@ class HealthWalkCache:
 
     ``load`` reads the previous run's entries; ``get`` and ``put`` serve the
     walk; ``save`` writes back the entries this run used or created, so a file
-    that left the repository ages out with it.
+    that left the repository ages out with it. A pass that walked only some
+    files saves with ``keep_unused`` so the files it skipped stay cached.
     """
 
     def __init__(self, cache_dir: Path | str) -> None:
@@ -142,17 +143,23 @@ class HealthWalkCache:
         except Exception as exc:  # an unpicklable walk result is simply not cached
             log.debug("health_walk_cache_put_failed", error=str(exc))
 
-    def save(self) -> None:
-        """Atomically persist the entries used or created this run."""
+    def save(self, *, keep_unused: bool = False) -> None:
+        """Atomically persist the entries used or created this run.
+
+        *keep_unused* also keeps the loaded entries this run did not touch:
+        a changed-files pass must not evict the walks of every file it skipped.
+        Entries of deleted files then age out on the next whole-repo pass.
+        """
         if not self._fresh:
             return
+        files = {**self._entries, **self._fresh} if keep_unused else self._fresh
         try:
             dump_sealed_pickle(
                 self._path,
                 {
                     "version": _CACHE_VERSION,
                     "walker": walker_fingerprint(),
-                    "files": self._fresh,
+                    "files": files,
                 },
                 domain=_CACHE_FILENAME,
             )
