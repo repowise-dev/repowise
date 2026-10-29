@@ -158,6 +158,9 @@ SymbolKind = Literal[
     "property",
 ]
 
+#: Kinds that name a stored value rather than behaviour or a type.
+VALUE_SYMBOL_KINDS: frozenset[str] = frozenset({"constant", "variable", "property"})
+
 # ---------------------------------------------------------------------------
 # Core models
 # ---------------------------------------------------------------------------

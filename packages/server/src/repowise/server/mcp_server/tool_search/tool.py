@@ -46,6 +46,7 @@ from .ranking import (
     _downweight_decisions,
     _downweight_test_pages,
     _filter_by_kind,
+    _minor_spotlights,
     _rescue_all_decision_window,
     _reserve_symbol_tail,
     _sort_demoting_noise,
@@ -116,6 +117,7 @@ async def _rank_concept_pages(ctx: Any, output: list[dict], query: str, repo_id:
     async with get_session(ctx.session_factory) as session:
         page_info, tombstoned, git_map = await _load_page_info(session, output, with_git=True)
         path_index = await file_path_index(session, repo_id)
+        minor = await _minor_spotlights(session, output, query, repo_id)
     # Tombstoned pages document deleted/renamed files — never results.
     output = [item for item in output if item["page_id"] not in tombstoned]
     _attach_paths(output, page_info)
@@ -130,7 +132,7 @@ async def _rank_concept_pages(ctx: Any, output: list[dict], query: str, repo_id:
         output, query, path_index.word_counts, len(path_index.paths), score_key="relevance_score"
     )
     _downweight_test_pages(output, query)
-    _sort_demoting_noise(output, query)
+    _sort_demoting_noise(output, query, minor)
     return _dedup_decisions(output)
 
 

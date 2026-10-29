@@ -46,6 +46,7 @@ from .ranking import (
     _downweight_decisions,
     _downweight_test_pages,
     _filter_by_kind,
+    _minor_spotlights,
     _rescue_all_decision_window,
     _sort_demoting_noise,
 )
@@ -238,10 +239,13 @@ async def _search_single_repo(
     # over-fetched list so the kind filter below has real headroom. Load
     # precedes the sort/demotion so they see the page metadata they key on
     # (test demotion needs target_path to classify a test file page).
+    minor: set[str] = set()
     if output:
         async with get_session(ctx.session_factory) as session:
             page_info, tombstoned, _ = await _load_page_info(session, output)
-            path_index = await file_path_index(session, (await _get_repo(session)).id)
+            repo_id = (await _get_repo(session)).id
+            path_index = await file_path_index(session, repo_id)
+            minor = await _minor_spotlights(session, output, query, repo_id)
         output = [item for item in output if item["page_id"] not in tombstoned]
         _attach_paths(output, page_info)
         output = filter_dicts_by_key(output, "target_path", _pkg._get_exclude_spec(ctx.path))
@@ -250,7 +254,7 @@ async def _search_single_repo(
         )
 
     _downweight_test_pages(output, query)
-    _sort_demoting_noise(output, query)
+    _sort_demoting_noise(output, query, minor)
     output = _dedup_decisions(output)
 
     output = _filter_by_kind(output, kind)
