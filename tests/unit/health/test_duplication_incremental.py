@@ -603,3 +603,21 @@ def test_a_cut_splice_matches_the_oracle_and_records_no_keys(tmp_path: Path):
     index = load_pair_index(cache_dir, WINDOW, lim)
     assert index.budget_stop is not None
     assert index.nonsurvivor_keys is None
+
+
+def test_whole_run_drops_files_deleted_since_the_index(tmp_path: Path):
+    # Deleted files never reach the moved set: the splice drops every indexed
+    # path missing from the parse, survivor or gated.
+    cache_dir = _seed(
+        tmp_path, {"a.py": _BODY, "gone.py": _BODY, "c.py": _OTHER, "tiny.py": "x = 1\n"}
+    )
+    (tmp_path / "gone.py").unlink()
+    (tmp_path / "tiny.py").unlink()
+
+    parsed = _parsed(tmp_path)
+    report = _whole(parsed, cache_dir)
+    assert report.diagnostics.get("incremental") is True
+    assert not any("gone.py" in (p.file_a, p.file_b) for p in report.pairs)
+    assert _key(report) == _key(_full(parsed))
+    index = load_pair_index(cache_dir, WINDOW, LIMITS)
+    assert "gone.py" not in index.files and "tiny.py" not in index.nonsurvivors
