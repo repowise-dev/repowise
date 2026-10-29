@@ -1203,8 +1203,16 @@ _DART_CALL_ASSIGNMENT = re.compile(
     rf"(?<![\w.])(?:final|var|const)\s+(?P<name>[a-z_]\w*)\s*=\s*(?P<awaited>await\s+)?"
     rf"(?:(?:new|const)\s+)?{_CALL_HEAD}"
 )
+# ``var x = f(..);``, ``using var x = await obj.f<T>(..);``. A C# ``await``
+# unwraps the ``Task<T>`` or ``ValueTask<T>`` the callee declares.
+_CS_CALL_ASSIGNMENT = re.compile(
+    r"(?<![\w.])var\s+(?P<name>[a-z_]\w*)\s*=\s*(?P<awaited>await\s+)?"
+    r"(?:(?P<receiver>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\.)?(?P<target>[A-Za-z_]\w*)\s*"
+    r"(?:<[^<>()]*(?:<[^<>()]*>[^<>()]*)*>)?\s*\("
+)
 
 _CALL_ASSIGNMENT_PATTERNS: dict[str, re.Pattern[str]] = {
+    "csharp": _CS_CALL_ASSIGNMENT,
     "dart": _DART_CALL_ASSIGNMENT,
     "go": _GO_CALL_DECL,
     "kotlin": _KT_CALL_ASSIGNMENT,
@@ -1218,8 +1226,12 @@ CALL_TYPED_LANGUAGES = frozenset(_CALL_ASSIGNMENT_PATTERNS)
 _QUOTES = frozenset("\"'`")
 _STATEMENT_ENDS = frozenset("\n;}")
 # A Python ``;`` may rebind the name later on the line, where no scan sees it.
-# Dart ends a statement only at ``;``, so ``f()\n.g()`` is one statement.
-_LANGUAGE_STATEMENT_ENDS = {"python": frozenset("\n"), "dart": frozenset(";")}
+# Dart and C# end a statement only at ``;``, so ``f()\n.g()`` is one statement.
+_LANGUAGE_STATEMENT_ENDS = {
+    "python": frozenset("\n"),
+    "dart": frozenset(";"),
+    "csharp": frozenset(";"),
+}
 # Kotlin and Swift may carry a statement onto a line that starts with a member
 # access or an operator (``.f()``, ``?: x``, ``as T``, ``&& y``). Refused
 # wholesale: a new statement starting so only costs the local its type.
@@ -1294,7 +1306,7 @@ def _ends_statement(cleaned: str, end: int, language: str, start: int = 0) -> bo
     """Does the expression ending at *end* end its statement (-1: it never ends)?"""
     if end < 0:
         return False
-    rest = cleaned[end:].lstrip(" \t\n" if language == "dart" else " \t")
+    rest = cleaned[end:].lstrip(" \t\r\n" if language in ("dart", "csharp") else " \t")
     if (
         language == "swift"
         and _SWIFT_OPTIONAL_BINDING_PREFIX.search(cleaned[:start])

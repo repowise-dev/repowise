@@ -129,8 +129,22 @@ _MAX_CHAIN_FIELDS = 3
 # A chain is only as scoped as its weakest hop.
 _CHAIN_TIER_RANK = {"same_file": 0, "import": 1}
 _BODY_TYPE_CACHE_ENTRIES = 2048
-# What a Dart ``await`` unwraps: ``Future<T>`` / ``FutureOr<T>`` yield ``T``.
-_AWAITED_FUTURE = re.compile(r"(?:Future|FutureOr)<(.+)>\??")
+# What an ``await`` unwraps: Dart's ``Future<T>`` / ``FutureOr<T>`` and C#'s
+# ``Task<T>`` / ``ValueTask<T>`` yield ``T``.
+_AWAITED_FUTURE = {
+    "dart": re.compile(r"(?:Future|FutureOr)<(.+)>\??"),
+    "csharp": re.compile(r"(?:(?:System\.)?Threading\.Tasks\.)?(?:Task|ValueTask)<(.+)>"),
+}
+
+
+def _awaited_type(raw: str, language: str | None) -> str | None:
+    """What awaiting a value declared *raw* yields: Dart passes a non-future through."""
+    unwrap = _AWAITED_FUTURE.get(language or "")
+    future = unwrap.fullmatch(raw) if unwrap is not None else None
+    if future is not None:
+        return future.group(1)
+    # A C# awaitable that is no Task<T> yields no type written here.
+    return None if language == "csharp" else raw
 
 _T = TypeVar("_T", bound=tuple)
 
@@ -1439,16 +1453,24 @@ class ReceiverTypingMixin(
         """The class *symbol*'s declared return type names, as its file *path* sees it.
 
         One unqualified class name, nullable or not; an *awaited* Dart
-        ``Future<T>`` yields its ``T``. Ceiling: any other generic
+        ``Future<T>`` or C# ``Task<T>`` yields its ``T``. Ceiling: any other generic
         (``Result<T>``) or prefixed (``p.Foo``) return type types nothing.
         """
         raw = declared_return_type(symbol.signature or "") or ""
-        future = _AWAITED_FUTURE.fullmatch(raw) if awaited else None
-        written = (future.group(1) if future else raw).rstrip("?")
-        if not written.isidentifier():
+        written = _awaited_type(raw, symbol.language) if awaited else raw
+        written = (written or "").rstrip("?")
+        if not written.isidentifier() or self._csharp_type_parameter(symbol, path, written):
             return None
         found = self._class_seen_from(path, symbol.id, written, symbol.start_line)
         return None if found is None else found.callee_id
+
+    def _csharp_type_parameter(self, symbol: Symbol, path: str, name: str) -> bool:
+        """Does a C# method's own ``<..>`` list declare *name*? Its signature drops the list."""
+        if symbol.language != "csharp":
+            return False
+        header = " ".join(self._lines_of(path)[symbol.start_line - 1 : symbol.start_line + 3])
+        listed = re.search(rf"\b{re.escape(symbol.name)}\s*<([^<>()]*)>\s*\(", header)
+        return listed is not None and name in re.findall(r"\w+", listed.group(1))
 
     def _class_seen_from(
         self, file_path: str, scope_id: str, name: str, line: int
@@ -1471,7 +1493,13 @@ class ReceiverTypingMixin(
         hit = self._resolve_free_call(file_path, probe, scope_id)
         if hit is None or "global" in hit.origin:
             return None
-        return hit if self._symbols_by_id[hit.callee_id].kind in _TYPE_KINDS else None
+        callee = self._symbols_by_id[hit.callee_id]
+        owner = self._symbols_by_id.get(_enclosing_id(hit.callee_id))
+        if callee.kind in _FUNCTION_KINDS and owner is not None and owner.name == callee.name:
+            # A class with constructors answers ``name(..)`` with one; it still names the class.
+            callee = owner
+            hit = replace(hit, callee_id=owner.id)
+        return hit if callee.kind in _TYPE_KINDS else None
 
     def _call_typed_receiver(
         self, file_path: str, call: CallSite, caller_id: str, type_id: str
