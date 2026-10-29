@@ -160,8 +160,16 @@ The cases where a finding is most likely wrong:
   symbol re-exported through one for external callers can surface as an
   unused export.
 - **Published libraries.** Code consumed outside the repository has no
-  importer inside it. Packaged .NET projects are detected and held at `0.30`;
-  other ecosystems are not.
+  importer inside it. A public symbol of a library the build declares as
+  published is held at `0.30`, below the default floor, with an evidence line
+  naming the package. Published means: a packed .NET project or one with a
+  `PublicAPI.Shipped.txt`; a Go module whose root package is importable or
+  that builds no program (not its `main` or `internal/` packages); a Rust crate
+  with a library target and no `publish = false`; a Maven or Gradle module
+  that deploys (not a war, Spring Boot or `application` module); a
+  `pyproject.toml` with a `[project]` name and a `[build-system]` (not its
+  `_private` modules); a `package.json` that is not `private` and names an
+  entry. Apps in any of these ecosystems keep their findings.
 - **Test-only usage counts as usage.** A symbol only its tests import is not
   reported. There is no "used only in tests" classification.
 
