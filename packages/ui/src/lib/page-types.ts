@@ -109,6 +109,20 @@ export function isStubPage(
   return page.provider_name === "template";
 }
 
+/** True for a page a model actually wrote: a model-written type carrying a
+ *  real provider. The counterpart of `isStubPage`, except that a model-free
+ *  page (the glossary) is neither: finished, but not written by a model. */
+export function isWrittenByModel(
+  page:
+    | { page_type?: string; provider_name?: string; metadata?: Record<string, unknown> }
+    | null
+    | undefined,
+): boolean {
+  if (!page || !isModelWrittenType(page.page_type)) return false;
+  if (page.metadata?.["model_free"]) return false;
+  return page.provider_name !== "template";
+}
+
 /** Metadata key core stamps with the provider error a page fell back over.
  *  Mirrors `STUB_FALLBACK_ERROR` in core's generation/models.py. */
 export const STUB_FALLBACK_ERROR = "stub_fallback_error";

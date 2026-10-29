@@ -1282,6 +1282,8 @@
       "showTree": "Show pages tree",
       "askQuestion": "Explain \"{title}\" using the source code, and name the files it rests on.",
       "askLabel": "Ask about {title}",
+      "askPlaceholder": "Ask about this page",
+      "noProse": "This documentation is built from the index: structure, history and signals. A model has not written the prose for {count, plural, one {# page} other {# pages}} yet.",
       "more": "More",
       "menu": {
         "exportPage": "Export this page (Markdown)",
@@ -1290,6 +1292,69 @@
         "present": "Present",
         "readerLevel": "Reader level"
       }
+    },
+    "tree": {
+      "searchPlaceholder": "Search docs...",
+      "folderView": "Folder view",
+      "domainView": "Domain view",
+      "switchToFolderView": "Switch to folder view",
+      "switchToDomainView": "Switch to domain view",
+      "toggleFilters": "Toggle filters",
+      "typeLabel": "Type",
+      "statusLabel": "Status",
+      "all": "All",
+      "status": {
+        "fresh": "Fresh",
+        "stale": "Stale",
+        "outdated": "Outdated",
+        "unwritten": "Not written"
+      },
+      "showFreshnessDots": "Show freshness dots on every row",
+      "pageCount": "{count, plural, one {# page} other {# pages}}",
+      "summary": {
+        "stale": "{count} stale",
+        "outdated": "{count} outdated",
+        "unwritten": "{count} not written"
+      },
+      "noMatches": "No matching pages",
+      "showMore": "Show {next} more ({remaining} left)",
+      "stubTitle": "Built from the index. A model has not written this page yet.",
+      "startHere": "Start here",
+      "onboarding": "Onboarding",
+      "modulesWithNoLayer": "Modules with no layer ({count})",
+      "codeReference": "Code reference",
+      "codeReferenceMeta": "{files, plural, one {# file} other {# files}} · {symbols, plural, one {# symbol} other {# symbols}}{other, plural, =0 {} other { · # other}}"
+    },
+    "reader": {
+      "selectPageTitle": "Select a page",
+      "selectPageBody": "Choose a file or module from the tree to read what Repowise wrote about it.",
+      "missingTitle": "No page for this one yet",
+      "missingBody": "Repowise has not written a page for <path></path>. It documents the files that carry the repository's shape first. Pick another from the tree, or re-run the index with a wider page budget.",
+      "builtFromIndex": "Built from the index",
+      "writtenBy": "Written by {model}",
+      "writtenByModel": "Written by a model",
+      "updated": "updated {relative}",
+      "inModule": "in {name}",
+      "openFilePage": "Open file page",
+      "openFilePageTitle": "Health, history and dependents for {path}",
+      "builtFromSources": "Built from {count, plural, one {# source} other {# source files}}",
+      "viewPage": "Page",
+      "viewReference": "Reference",
+      "viewsLabel": "Page or reference",
+      "referenceIntro": "What this page carries for search and agents: the questions it answers, the identifiers behind it and its git history.",
+      "proseLost": "This page is built from the index. A model was meant to write over it on the last run and the call did not complete.",
+      "proseNotWritten": "This page is built from the index. A model can write the how and why on top of it.",
+      "previous": "Previous",
+      "next": "Next",
+      "possibleInaccuracies": "Possible inaccuracies detected",
+      "related": "Related",
+      "relatedReasons": {
+        "imports": "imports",
+        "importedBy": "imported by",
+        "coChangesWith": "changes together",
+        "sameModule": "same module"
+      },
+      "moreRelated": "+ {count} more"
     },
     "bulk": {
       "button": "Write {count, plural, one {# page} other {# pages}} with AI",

@@ -1282,6 +1282,8 @@
       "showTree": "显示页面树",
       "askQuestion": "结合源码解释「{title}」，并列出它所依赖的文件。",
       "askLabel": "就 {title} 提问",
+      "askPlaceholder": "就本页提问",
+      "noProse": "这份文档由索引构建：结构、历史和信号。还有 {count} 个页面的正文尚未由模型撰写。",
       "more": "更多",
       "menu": {
         "exportPage": "导出此页面（Markdown）",
@@ -1290,6 +1292,69 @@
         "present": "演示",
         "readerLevel": "阅读深度"
       }
+    },
+    "tree": {
+      "searchPlaceholder": "搜索文档...",
+      "folderView": "目录视图",
+      "domainView": "领域视图",
+      "switchToFolderView": "切换到目录视图",
+      "switchToDomainView": "切换到领域视图",
+      "toggleFilters": "显示或隐藏筛选",
+      "typeLabel": "类型",
+      "statusLabel": "状态",
+      "all": "全部",
+      "status": {
+        "fresh": "最新",
+        "stale": "可能过时",
+        "outdated": "已过时",
+        "unwritten": "未撰写"
+      },
+      "showFreshnessDots": "在每一行显示新鲜度圆点",
+      "pageCount": "{count} 个页面",
+      "summary": {
+        "stale": "{count} 个可能过时",
+        "outdated": "{count} 个已过时",
+        "unwritten": "{count} 个未撰写"
+      },
+      "noMatches": "没有匹配的页面",
+      "showMore": "再显示 {next} 个（还剩 {remaining} 个）",
+      "stubTitle": "由索引构建，模型尚未撰写此页面。",
+      "startHere": "从这里开始",
+      "onboarding": "入门",
+      "modulesWithNoLayer": "未归入分层的模块（{count}）",
+      "codeReference": "代码参考",
+      "codeReferenceMeta": "{files} 个文件 · {symbols} 个符号{other, plural, =0 {} other { · 其他 # 个}}"
+    },
+    "reader": {
+      "selectPageTitle": "选择一个页面",
+      "selectPageBody": "从左侧页面树中选择一个文件或模块，阅读 Repowise 为它撰写的内容。",
+      "missingTitle": "这里还没有页面",
+      "missingBody": "Repowise 还没有为 <path></path> 撰写页面。它会优先记录承载仓库结构的文件。请从页面树中选择其他页面，或用更大的页面预算重新建立索引。",
+      "builtFromIndex": "由索引构建",
+      "writtenBy": "由 {model} 撰写",
+      "writtenByModel": "由模型撰写",
+      "updated": "更新于 {relative}",
+      "inModule": "属于 {name}",
+      "openFilePage": "打开文件页面",
+      "openFilePageTitle": "{path} 的健康度、历史和依赖方",
+      "builtFromSources": "基于 {count} 个源文件",
+      "viewPage": "页面",
+      "viewReference": "参考",
+      "viewsLabel": "页面或参考",
+      "referenceIntro": "此页面为搜索和智能体提供的内容：它回答的问题、背后的标识符以及 git 历史。",
+      "proseLost": "此页面由索引构建。上次运行时本应由模型重写，但调用没有完成。",
+      "proseNotWritten": "此页面由索引构建。模型可以在此基础上写出其工作方式和设计原因。",
+      "previous": "上一页",
+      "next": "下一页",
+      "possibleInaccuracies": "检测到可能不准确的内容",
+      "related": "相关",
+      "relatedReasons": {
+        "imports": "导入",
+        "importedBy": "被导入",
+        "coChangesWith": "经常一起修改",
+        "sameModule": "同一模块"
+      },
+      "moreRelated": "还有 {count} 个"
     },
     "bulk": {
       "button": "用 AI 撰写 {count} 个页面",

@@ -22,16 +22,17 @@ import {
 } from "@repowise-dev/ui/docs/reader-persona";
 import { DocsHeader } from "./docs-header";
 import { DocsViewer } from "./docs-viewer";
-import { AskAboutThis } from "@repowise-dev/ui/chat";
+import { AskAboutThis, AskAboutThisField } from "@repowise-dev/ui/chat";
 import {
   ReaderLevelControl,
   SidebarToggle,
 } from "@repowise-dev/ui/docs/docs-page-actions";
-import { BulkGenerateDialogs, BulkWriteButton } from "./bulk-generate-dialogs";
+import { BulkGenerateDialogs, BulkWriteButton, NoProseNotice } from "./bulk-generate-dialogs";
+import { useDocsTreeCopy } from "./use-docs-copy";
 import { buildDocsMenuGroups } from "./docs-menu";
 import { useBulkGenerate } from "@/lib/hooks/use-bulk-generate";
 import { HostedNudgeSlot } from "@/components/hosted/hosted-nudge-slot";
-import { isStubPage } from "@repowise-dev/ui/lib/page-types";
+import { isStubPage, isWrittenByModel } from "@repowise-dev/ui/lib/page-types";
 import { search as searchPages } from "@/lib/api/search";
 import { getPageById, listAllPages } from "@/lib/api/pages";
 import { downloadTextFile } from "@/lib/utils/download";
@@ -111,7 +112,14 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
     [pages],
   );
   const hasStubs = stubCount > 0;
+  // No page carries model prose at all: an index built without a key. The
+  // landing says so once, beside the action that changes it.
+  const noProse = useMemo(
+    () => hasStubs && !pages.some((p) => isWrittenByModel(p)),
+    [hasStubs, pages],
+  );
   const bulk = useBulkGenerate(repoId);
+  const treeCopy = useDocsTreeCopy();
 
   // Keep the selected page in sync with the ?page= URL param. This fires on
   // mount and whenever the param changes — including when an in-content wiki
@@ -288,6 +296,7 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
       ) : (
         <DocsTree
           pages={pages}
+          copy={treeCopy}
           // The id, not the fetched page: the row should highlight on click,
           // not once its body has come back.
           selectedPageId={selectedPageId}
@@ -395,17 +404,22 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
             />
           )}
           {selectedPage && (
-            <AskAboutThis
-              context={{
-                kind: "documentation",
-                label: selectedPage.title,
-                target: selectedPage.id,
-                targetKind: "documentation",
-              }}
-              question={t("explorer.askQuestion", { title: selectedPage.title })}
-              label={t("explorer.askLabel", { title: selectedPage.title })}
-              className="shrink-0"
-            />
+            <>
+              {/* A field where the bar has room for one, the icon where it
+                  does not; both hand the page to chat as its context. */}
+              <AskAboutThisField
+                context={askContext(selectedPage)}
+                question={t("explorer.askQuestion", { title: selectedPage.title })}
+                placeholder={t("explorer.askPlaceholder")}
+                className="hidden w-56 lg:flex"
+              />
+              <AskAboutThis
+                context={askContext(selectedPage)}
+                question={t("explorer.askQuestion", { title: selectedPage.title })}
+                label={t("explorer.askLabel", { title: selectedPage.title })}
+                className="shrink-0 lg:hidden"
+              />
+            </>
           )}
           <BulkWriteButton
             count={stubCount}
@@ -440,6 +454,15 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
           className="mx-3 mt-2 sm:mx-6"
         />
 
+        {noProse && selectedPage?.page_type === "repo_overview" && (
+          <NoProseNotice
+            count={stubCount}
+            running={bulk.jobId != null}
+            onClick={bulk.open}
+            className="mx-3 mt-3 sm:mx-6"
+          />
+        )}
+
         <div className="flex-1 min-h-0">{body}</div>
       </div>
 
@@ -462,4 +485,14 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
       />
     </div>
   );
+}
+
+/** The page being read, as the subject a chat question is about. */
+function askContext(page: { id: string; title: string }) {
+  return {
+    kind: "documentation",
+    label: page.title,
+    target: page.id,
+    targetKind: "documentation",
+  } as const;
 }
