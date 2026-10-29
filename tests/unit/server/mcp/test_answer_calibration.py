@@ -1419,3 +1419,29 @@ class TestPageExcerptEnrichment:
         missing = await _attach_page_excerpts(hits, ctx)
         assert hits[0].get("excerpt", "").startswith("# Test Repo")
         assert missing == 0
+
+
+def test_an_answer_admitting_a_gap_is_held_at_medium() -> None:
+    from repowise.server.mcp_server.tool_answer.confidence import (
+        _admitted_gap,
+        _admitted_gap_gate,
+        _GradeState,
+    )
+
+    text = "Pages are rendered from `regenerate_paths`. The code that builds it is not included."
+    assert _admitted_gap(text) == "The code that builds it is not included."
+    state = _GradeState(
+        question="how are pages picked", question_ids=set(), answer_text=text, hits=[],
+        citations=[], symbol_bodies=[], served_named_body=False, dominant=True,
+        earn_high=False, uncovered=None, confidence="high",
+    )
+    _admitted_gap_gate(state)
+    assert state.confidence == "medium"
+    assert _admitted_gap("Every page is rendered from the changed paths.") is None
+
+
+def test_a_statement_about_the_code_is_not_an_admitted_gap() -> None:
+    from repowise.server.mcp_server.tool_answer.confidence import _admitted_gap
+
+    assert _admitted_gap("The header is not included in the checksum.") is None
+    assert _admitted_gap("The builder isn't shown, but the renderer is.") is not None

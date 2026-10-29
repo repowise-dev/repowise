@@ -200,6 +200,19 @@ _HEDGE_MARKERS = (
     "was not found in",
 )
 
+# Phrases that admit part of what was asked is outside the evidence while the
+# rest is answered. Held at "medium", not "low": the answered part is usable,
+# but "high" tells the agent not to re-read, which the answer itself disputes.
+# The bare "is not included/shown" form is matched in confidence.py, where a
+# following "in the checksum" marks it as a statement about the code instead.
+_GAP_MARKERS = (
+    "not in the retrieved",
+    "not in the excerpts",
+    "not in the evidence",
+    "outside the retrieved",
+    "outside the excerpts",
+)
+
 # Page content chars attached per top hit, for synthesis and the pointer payload.
 # Enough for a page's opening section plus a code reference; much less stops
 # mid-context and agents fall back to native exploration.
