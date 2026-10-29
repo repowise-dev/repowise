@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
@@ -115,7 +116,8 @@ class TestIncrementalStructureIds:
     CYCLE = frozenset({"src/a.py", "src/b.py"})
 
     def _ids(self, existing=(), rendered=()):
-        return structure_ids_for_incremental_run(_repo_files(), [self.CYCLE], existing, rendered)
+        builder = SimpleNamespace(strongly_connected_components=lambda: [self.CYCLE])
+        return structure_ids_for_incremental_run(_repo_files(), builder, existing, rendered)
 
     def test_a_new_cycle_gets_a_page(self):
         cycle_id = compute_page_id("scc_page", scc_page_slug(sorted(self.CYCLE)))

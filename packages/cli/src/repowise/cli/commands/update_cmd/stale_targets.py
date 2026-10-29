@@ -46,11 +46,7 @@ def structure_ids_to_render(run: UpdateRun, existing_ids: object) -> set[str]:
     """
     from repowise.core.generation.selection.selector import structure_ids_for_incremental_run
 
-    try:
-        sccs = run.graph_builder.strongly_connected_components()
-    except Exception:  # no graph to read cycles from: heal only what is stale
-        sccs = []
     rendered = run.affected.regenerate if run.affected is not None else []
     return set(run.stale_deterministic_ids) | structure_ids_for_incremental_run(
-        run.parsed_files or [], sccs, existing_ids or (), rendered
+        run.parsed_files or [], run.graph_builder, existing_ids or (), rendered
     )

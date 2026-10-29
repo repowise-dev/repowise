@@ -447,6 +447,64 @@ async def test_incremental_page_regen_sets_file_pages_only(tmp_path):
     assert generation_config.file_pages_only is True
 
 
+@pytest.mark.asyncio
+async def test_incremental_page_regen_renders_a_new_cycle_page(tmp_path):
+    """A sync renders structure pages the file-scoped pass cannot reach.
+
+    The same ids ``repowise update`` renders: here a cycle the store has no
+    page for, rendered from the whole parse with the ladder scoped to its id.
+    """
+    from repowise.core.generation.models import compute_page_id, scc_page_slug
+
+    repo_path = tmp_path
+    (repo_path / ".repowise").mkdir()
+    (repo_path / ".repowise" / "state.json").write_text(
+        '{"last_sync_commit": "base-sha"}', encoding="utf-8"
+    )
+    cycle = frozenset({"src/a.py", "src/b.py"})
+    result = SimpleNamespace(
+        file_count=10,
+        parsed_files=[],
+        source_map={},
+        graph_builder=SimpleNamespace(
+            graph=lambda: object(),
+            pagerank=lambda: {},
+            strongly_connected_components=lambda: [cycle],
+        ),
+        repo_structure=object(),
+        repo_name="test-repo",
+        git_meta_map={},
+    )
+    detector = MagicMock()
+    detector.get_changed_files.return_value = [object()]
+    detector.get_affected_pages.return_value = SimpleNamespace(regenerate=["src/a.py"])
+    generator = MagicMock()
+    generator.generate_all = AsyncMock(return_value=[])
+    page_generator_cls = MagicMock(return_value=generator)
+
+    with (
+        patch("subprocess.run", return_value=SimpleNamespace(returncode=0, stdout="head-sha\n")),
+        patch("repowise.core.ingestion.ChangeDetector", return_value=detector),
+        patch(
+            "repowise.core.ingestion.change_detector.compute_adaptive_budget",
+            return_value=5,
+        ),
+        patch("repowise.core.generation.PageGenerator", page_generator_cls),
+        patch("repowise.core.generation.ContextAssembler"),
+        patch("repowise.core.reasoning.resolve_reasoning", return_value="low"),
+        patch("repowise.core.repo_config.load_repo_config", return_value={}),
+    ):
+        await _incremental_page_regen(
+            Path(repo_path), result, llm_client=object(), job_config={}, progress=None
+        )
+
+    cycle_id = compute_page_id("scc_page", scc_page_slug(sorted(cycle)))
+    file_pass, structure_pass = generator.generate_all.await_args_list
+    assert "only_page_ids" not in file_pass.kwargs
+    assert structure_pass.kwargs["only_page_ids"] == {cycle_id}
+    assert page_generator_cls.call_args_list[1].args[2].file_pages_only is False
+
+
 # ---------------------------------------------------------------------------
 # Deterministic template wiki on a keyless initial index (Part B)
 # ---------------------------------------------------------------------------

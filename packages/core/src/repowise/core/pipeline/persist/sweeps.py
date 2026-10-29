@@ -210,16 +210,15 @@ async def sweep_absent_cycle_pages(session: Any, repo_id: str, graph_builder: An
     """
     from sqlalchemy import select
 
-    from repowise.core.generation.selection.selector import selected_cycle_page_ids
+    from repowise.core.generation.selection.selector import (
+        graph_cycles,
+        selected_cycle_page_ids,
+    )
     from repowise.core.persistence.models import Page
 
-    if graph_builder is None:
+    sccs = graph_cycles(graph_builder)
+    if sccs is None:
         return []
-    try:
-        sccs = graph_builder.strongly_connected_components()
-    except Exception:  # a released graph has no cycles to speak for
-        return []
-
     valid = selected_cycle_page_ids(sccs)
     existing = (
         (

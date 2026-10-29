@@ -957,6 +957,17 @@ def selected_file_keyed_paths(parsed_files: Iterable[Any]) -> dict[str, set[str]
     }
 
 
+def graph_cycles(graph_builder: Any) -> list[Any] | None:
+    """The graph's strongly connected components, or ``None`` when there is no
+    graph to ask: a released graph cannot say a cycle is gone."""
+    if graph_builder is None:
+        return None
+    try:
+        return list(graph_builder.strongly_connected_components())
+    except Exception:
+        return None
+
+
 def selected_cycle_page_ids(sccs: Iterable[Any]) -> set[str]:
     """Page ids of the cycles :func:`select_pages` gives a page."""
     return {compute_page_id("scc_page", slug) for _, (slug, _) in _build_scc_candidates(sccs)}
@@ -964,7 +975,7 @@ def selected_cycle_page_ids(sccs: Iterable[Any]) -> set[str]:
 
 def structure_ids_for_incremental_run(
     parsed_files: Iterable[Any],
-    sccs: Iterable[Any],
+    graph_builder: Any,
     existing_ids: Iterable[str],
     rendered_paths: Iterable[str],
 ) -> set[str]:
@@ -979,7 +990,7 @@ def structure_ids_for_incremental_run(
     """
     rendered = set(rendered_paths)
     selected = selected_file_keyed_paths(parsed_files)
-    wanted = selected_cycle_page_ids(sccs)
+    wanted = selected_cycle_page_ids(graph_cycles(graph_builder) or [])
     wanted |= {compute_page_id("api_contract", p) for p in selected["api_contract"] - rendered}
     wanted |= {compute_page_id("infra_page", p) for p in selected["infra_page"]}
     changed_infra = {compute_page_id("infra_page", p) for p in selected["infra_page"] & rendered}

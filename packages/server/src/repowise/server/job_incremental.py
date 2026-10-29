@@ -79,6 +79,16 @@ async def _incremental_page_regen(
             git_meta_map=result.git_meta_map,
             repo_path=repo_path,
         )
+        pages += await _render_structure_pages(
+            repo_path,
+            result,
+            llm_client,
+            generation_config,
+            rendered_paths=[pf.file_info.path for pf in affected_parsed],
+            stale_ids=await _stale_structure_ids(session_factory, repo_id),
+            vector_store=vector_store,
+            prior_pages=prior_pages or {},
+        )
 
         logger.info("incremental_page_regen_done", pages=len(pages))
         return pages
@@ -101,6 +111,69 @@ async def _stale_page_ages(session_factory: Any | None, repo_id: str | None) -> 
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("incremental_page_regen_stale_lookup_failed", error=str(exc))
         return {}
+
+
+async def _stale_structure_ids(session_factory: Any | None, repo_id: str | None) -> set[str]:
+    """Stale whole-repo structure page ids (cycles), which only an id render heals."""
+    if session_factory is None or repo_id is None:
+        return set()
+    try:
+        from repowise.core.persistence import get_session, get_stale_update_targets
+
+        async with get_session(session_factory) as session:
+            _paths, page_ids = await get_stale_update_targets(session, repo_id)
+            return page_ids
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("incremental_structure_stale_lookup_failed", error=str(exc))
+        return set()
+
+
+async def _render_structure_pages(
+    repo_path: Path,
+    result: Any,
+    llm_client: Any,
+    generation_config: Any,
+    *,
+    rendered_paths: list[str],
+    stale_ids: set[str],
+    vector_store: Any | None,
+    prior_pages: dict[str, Any],
+) -> list:
+    """Render the cycle, API-contract and infra pages a file-scoped pass cannot.
+
+    The ids are the ones ``repowise update`` renders: stale ones, selected ones
+    the store lacks, and the infra pages of changed files. Rendered from the
+    whole parse with the ladder scoped to those ids, so no model is called.
+    """
+    from dataclasses import replace
+
+    from repowise.core.generation import ContextAssembler, PageGenerator
+    from repowise.core.generation.selection.selector import structure_ids_for_incremental_run
+
+    page_ids = stale_ids | structure_ids_for_incremental_run(
+        result.parsed_files, result.graph_builder, prior_pages, rendered_paths
+    )
+    if not page_ids:
+        return []
+    config = replace(generation_config, file_pages_only=False)
+    generator = PageGenerator(
+        llm_client,
+        ContextAssembler(config, repo_path=repo_path),
+        config,
+        vector_store=vector_store,
+        prior_pages=prior_pages,
+        repo_path=repo_path,
+    )
+    return await generator.generate_all(
+        result.parsed_files,
+        result.source_map,
+        result.graph_builder,
+        result.repo_structure,
+        result.repo_name,
+        git_meta_map=result.git_meta_map,
+        repo_path=repo_path,
+        only_page_ids=page_ids,
+    )
 
 
 def _incremental_generation_config(repo_path: Path, job_config: dict, repo_wiki_style: str) -> Any:
