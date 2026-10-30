@@ -648,7 +648,7 @@ async def _references_section(card: CardState) -> None:
     root = served_root(card.query.repository, card.query.repo_root)
     if ref_node is not None and root:
         card.data["references"] = await reference_edit_set(
-            card.session, card.repo_id, root, ref_node, card.query.collector
+            card.session, card.repo_id, root, ref_node, card.query.collector, wider=True
         )
     else:
         card.data["references_note"] = "references require a symbol target in the graph"

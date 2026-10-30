@@ -448,6 +448,10 @@ def _aliases_leave(rel: str, lines: list[str], aliases: set[str], imports: set[i
     return False
 
 
+# Served after the code sites: other symbols' definitions, then documentation.
+_TRAILING_KINDS = {"same_name": 1, "doc": 2}
+
+
 def _cap_references_per_file(sites: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """*sites* with plain references past the per-file cap dropped; other kinds always stay."""
     seen: Counter[str] = Counter()
@@ -788,6 +792,7 @@ def _served_sites(
     sites.sort(
         key=lambda s: (
             s["kind"] != "definition",
+            _TRAILING_KINDS.get(s["kind"], 0),
             is_test_related_path(s["path"]),
             s["path"],
             s["line"],
@@ -831,12 +836,15 @@ async def reference_edit_set(
     repo_root: str | Path,
     node: GraphNode,
     collector: OmissionCollector | None = None,
+    *,
+    wider: bool = False,
 ) -> dict[str, Any]:
     """Every live site naming *node*, classified, with a completeness verdict.
 
     Returns ``{"sites": [{"path", "line", "kind", "text"}], "complete": bool}``
     plus ``reasons`` when incomplete and ``sites_omitted`` past the cap. Kinds:
-    definition | import | call | reference. With a *collector*, plain
+    definition | import | call | reference, and with *wider* also reexport |
+    same_name | doc (see :mod:`._edit_sites_wider`). With a *collector*, plain
     references past ``MAX_REFERENCES_PER_FILE`` in one file move to it and
     ``sites_omitted_by_file`` counts every row not shown.
     """
@@ -872,4 +880,29 @@ async def reference_edit_set(
     scanned = set(ordered) - set(scan.unreadable)
     foreign = _foreign_package_files(package_files, scanned, scan.packages, package, language)
     reasons += _scope_reasons(node, scan, foreign, language, set(unindexed))
+    if wider:
+        reasons += await _widen(session, repo_id, root, node, name, ordered, scan.sites)
     return _served_sites(scan.sites, reasons, node, collector)
+
+
+async def _widen(
+    session: AsyncSession,
+    repo_id: str,
+    root: Path,
+    node: GraphNode,
+    name: str,
+    files: list[str],
+    sites: list[dict[str, Any]],
+) -> list[str]:
+    """Add re-export, same-name and doc sites to *sites*; why the docs may be short."""
+    from repowise.server.mcp_server import _edit_sites_wider as wide
+
+    seen = {(s["path"], s["line"]) for s in sites}
+    found = await asyncio.to_thread(wide.reexport_sites, root, files, node.file_path)
+    found += await wide.same_name_sites(session, repo_id, root, node, name)
+    docs, reasons = await asyncio.to_thread(wide.doc_sites, root, name)
+    for site in found + docs:
+        if (site["path"], site["line"]) not in seen:
+            seen.add((site["path"], site["line"]))
+            sites.append(site)
+    return reasons

@@ -76,6 +76,7 @@ from repowise.server.mcp_server._helpers import (
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import completeness_line as _completeness_line
+from repowise.server.mcp_server._meta import served_root
 from repowise.server.mcp_server._packages import is_package_target, package_cards
 from repowise.server.mcp_server._workspace_routing import (
     needs_routing,
@@ -201,6 +202,7 @@ async def get_context(
             {r["target"]: r for r in raw_results if isinstance(r, dict)},
             exclude_spec=exclude_spec,
             collector=collector,
+            repo_root=served_root(repository, ctx.path),
         )
         suspects = (
             await suspects_block(session, repository, targets, symptom)

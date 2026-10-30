@@ -223,12 +223,19 @@ Top level: `targets`, `_meta`, `ignored_arguments`, `suspects` when asked, and `
 
 ### references
 
-Every live line naming a symbol target, as `{path, line, kind, text}` with kind `definition`, `import`, `call` or `reference`. A `complete` list is the whole rename edit set; otherwise `reasons` says why. Never complete for:
+Every live line naming a symbol target, as `{path, line, kind, text}` with kind `definition`, `import`, `call` or `reference`. A `complete` list is the whole rename edit set; otherwise `reasons` says why. Three more kinds follow the code sites:
+
+- `reexport`: a barrel that hands the symbol on without naming it (`export * from`, `from module import *`)
+- `same_name`: the definition of another symbol with the same name, such as a mirrored constant; listed when at most 5 exist
+- `doc`: the first line of each document naming the symbol, with `mentions` counting them when there are more; release notes are skipped
+
+Never complete for:
 
 - languages other than Python, TypeScript and JavaScript (same-package use needs no import)
 - over 200 sites, a stale call line, an unreadable file, or an uncommitted edit outside the scanned files
 - a rename on import, export or destructure, a default export, or a CommonJS export
 - a dynamic use the graph recorded; string-built access is otherwise unseen
+- over 50 documents naming it
 - over 3 plain `reference` sites in one file: the rest go to `sites_omitted_by_file`, recoverable from `_meta.omitted`
 
 ### changes
@@ -282,6 +289,7 @@ Cut from stored symbol bounds, no parsing at query time: every signature, the im
 
 - `references`: documents naming this file that still resolve to it.
 - `documents_with_drift`: a listed document has some stale assertion somewhere, not necessarily about this file. Do not merge the two claims.
+- `mentions`: live documentation lines naming the file by basename or `folder/stem`, which `references` cannot resolve; `mentions_basis` says to check each.
 - `references_basis` states the limits; `references_excluded` counts documents dropped by exclude rules.
 - Refusals: `{"unavailable": "not_computed"}` (pass not run), `"index_predates_doc_drift"`, `"drift_read_failed"`.
 
