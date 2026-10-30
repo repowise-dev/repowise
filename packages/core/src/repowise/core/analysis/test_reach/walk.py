@@ -1,13 +1,15 @@
 # packages/core/src/repowise/core/analysis/test_reach/walk.py
 """Walks que responden “¿qué tests alcanzan este fichero?”.
 
-Incluye el walk de registros, que propaga el alcance a los módulos
-registrados (FastAPI, CLI, MCP, dialectos) en el mismo nivel.
+``call_walk`` e ``import_walk`` mantienen su firma y valor de retorno
+originales (``Walk[dict[str, set[str]]]``). ``registration_walk`` se
+añade como un walk independiente que consume el resultado de los
+anteriores vía el parámetro ``prior``.
 """
 from __future__ import annotations
 
-from collections.abc import Collection
-from typing import Generator
+from collections.abc import Collection, Mapping
+from typing import Any
 
 from .maps import (
     DEFAULT_CALL_DEPTH,
@@ -18,7 +20,7 @@ from .maps import (
 
 
 # ---------------------------------------------------------------------------
-# Walk de llamadas (existente)
+# Walk de llamadas (firma y retorno originales, sin cambios)
 # ---------------------------------------------------------------------------
 def call_walk(
     seeds: list[str],
@@ -42,7 +44,7 @@ def call_walk(
 
 
 # ---------------------------------------------------------------------------
-# Walk de importaciones (existente)
+# Walk de importaciones (firma y retorno originales, sin cambios)
 # ---------------------------------------------------------------------------
 def import_walk(
     seeds: list[str],
@@ -66,39 +68,43 @@ def import_walk(
 
 
 # ---------------------------------------------------------------------------
-# Walk de registros (nuevo)
+# Walk de registros (nuevo, se integra sin alterar tipos)
 # ---------------------------------------------------------------------------
 def registration_walk(
     seeds: list[str],
     test_files: Collection[str],
     max_depth: int = DEFAULT_CALL_DEPTH,
+    *,
+    prior: Mapping[str, Collection[str]] | None = None,
 ) -> Walk[dict[str, set[str]]]:
     """Tests que llegan a *seeds* y, desde ahí, a los módulos que registran.
 
-    Para cada módulo alcanzado se pide ``Need("registrations", (module,))``
-    y se propaga el alcance a los módulos registrados **en el mismo nivel**
-    (misma profundidad).
+    *prior* transporta los tests ya asignados a cada fichero por
+    ``call_walk``/``import_walk`` (``{fichero: {tests}}``). Sin él, el
+    walk funciona igual pero los ficheros registrados heredan el conjunto
+    de tests de su registrador (posiblemente vacío).
+
+    Los módulos registrados se marcan **en el mismo nivel** que el
+    registrador: misma profundidad, mismos tests.
     """
     reached: dict[str, set[str]] = {seed: set() for seed in seeds}
-    frontier = list(seeds)
+    if prior:
+        for node, tests in prior.items():
+            reached.setdefault(node, set()).update(tests)
 
+    frontier = list(seeds)
     for _ in range(max_depth):
         if not frontier:
             break
         level, frontier = frontier, []
-        # Pedimos las registraciones de los módulos del nivel actual.
         pairs: list[tuple[str, str]] = yield Need("registrations", tuple(level))
-
         for registrar, registered in pairs:
             if registrar not in reached:
                 continue
-            # El módulo registrado se considera alcanzado en el mismo nivel.
             reached.setdefault(registered, set())
-            # Los tests que alcanzan el registrador también alcanzan lo registrado.
             reached[registered].update(reached[registrar])
             if registered not in frontier:
                 frontier.append(registered)
-
     return reached
 
 
@@ -114,17 +120,22 @@ def reach_states(
     test_files = graph_maps.test_files
 
     # 1) Walk de llamadas.
-    call_gen = call_walk(seeds, test_files)
-    call_reach = _drive(call_gen, graph_maps)
+    call_reach = _drive(call_walk(seeds, test_files), graph_maps)
 
     # 2) Walk de importaciones.
-    import_gen = import_walk(seeds, test_files)
-    import_reach = _drive(import_gen, graph_maps)
+    import_reach = _drive(import_walk(seeds, test_files), graph_maps)
 
-    # 3) Walk de registros (semillas = todo lo alcanzado por los dos anteriores).
-    reg_seeds = list(set(call_reach) | set(import_reach))
-    reg_gen = registration_walk(reg_seeds, test_files)
-    reg_reach = _drive(reg_gen, graph_maps)
+    # 3) Walk de registros: sembramos con todo lo alcanzado y con sus tests.
+    prior: dict[str, set[str]] = {}
+    for reach in (call_reach, import_reach):
+        for node, tests in reach.items():
+            prior.setdefault(node, set()).update(tests)
+    reg_seeds = list(prior)
+
+    reg_reach = _drive(
+        registration_walk(reg_seeds, test_files, prior=prior),
+        graph_maps,
+    )
 
     # Unión de resultados.
     all_reached: dict[str, set[str]] = {}
@@ -137,7 +148,7 @@ def reach_states(
 def _drive(walk: Walk[dict[str, set[str]]], maps: WalkMaps) -> dict[str, set[str]]:
     """Ejecuta un walk hasta su resultado final."""
     try:
-        need = next(walk)
+        need: Any = next(walk)
         while True:
             need = walk.send(maps.answer(need))
     except StopIteration as done:
