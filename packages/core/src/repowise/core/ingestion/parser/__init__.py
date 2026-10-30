@@ -79,6 +79,7 @@ from .grammars import (
     _load_compiled_query,
     _parse_tree,
     _recover_kotlin_annotated_declarations,
+    _recover_kotlin_misparsed_spans,
     failed_query_languages,
     grammar_tag_for,
     log,
@@ -203,12 +204,14 @@ class ASTParser:
 
         recovered_annotations: dict[int, tuple[int, str]] = {}
         if lang == "kotlin":
+            parsed_root = root
+            root, source = _recover_kotlin_misparsed_spans(language, root, source)
             root, source, recovered_annotations = _recover_kotlin_annotated_declarations(
                 language,
                 root,
                 source,
             )
-            if recovered_annotations:
+            if recovered_annotations or root is not parsed_root:
                 parse_errors = _collect_error_nodes(root)
 
         src = source.decode("utf-8", errors="replace")

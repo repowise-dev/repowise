@@ -16,6 +16,7 @@ import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -1296,6 +1297,18 @@ class GitIndexer:
             return float(repo.head.commit.committed_date)
         except Exception:
             return None
+
+    def window_anchor(self) -> datetime:
+        """The 'now' this repo's history windows are measured from, for readers
+        outside an index run: :meth:`_resolve_as_of_ts`, else wall-clock time."""
+        repo = self._get_repo()
+        if repo is None:
+            return _window_anchor(None)
+        try:
+            return _window_anchor(self._resolve_as_of_ts(repo))
+        finally:
+            with contextlib.suppress(Exception):
+                repo.close()
 
     def blame_indexes(self, file_paths: Sequence[str]) -> dict[str, Any]:
         """Per-line ``BlameIndex`` for *file_paths*, anchored as an index run

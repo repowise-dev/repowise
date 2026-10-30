@@ -235,6 +235,7 @@ _PATH_RECEIVERS = frozenset(
         ("python", "attribute"),
         ("apex", "field_access"),
         ("java", "field_access"),
+        ("kotlin", "navigation_expression"),
     }
 )
 _DOTTED_PATH = re.compile(r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+")
@@ -253,10 +254,16 @@ def _receiver_text(language: str, node: Node, src: str) -> str | None:
         return None
     if language == "kotlin" and node.type in _KOTLIN_STRING_LITERALS:
         return STRING_LITERAL_RECEIVER
+    if language == "kotlin" and node.type == "super_expression":
+        # ``super<I>`` keeps ``I`` as the call's scope; ``super@Outer`` is dropped.
+        return None if "@" in _node_text(node, src) else "super"
     text = _node_text(node, src).strip()
     if (language, node.type) not in _PATH_RECEIVERS:
         return text
     path = "".join(text.split())
+    if language == "kotlin":
+        # ``a.b!!.c`` and ``a?.b`` name the same fields as ``a.b.c`` and ``a.b``.
+        path = path.replace("!!", "").replace("?.", ".")
     return path if _DOTTED_PATH.fullmatch(path) else None
 
 
@@ -444,13 +451,13 @@ def _call_from_match(
         and not receiver_call_nodes
         and _java_object_is_unnamed(site_node)
     )
-    arguments = _overload_arguments(language, arg_nodes)
+    arguments, argument_count = _call_arguments(language, site_node, arg_nodes)
     call = CallSite(
         target_name=target_name,
         receiver_name=receiver_name,
         caller_symbol_id=_find_enclosing_symbol(line, symbol_ranges),
         line=line,
-        argument_count=_count_arguments(arg_nodes[0]) if arg_nodes else None,
+        argument_count=argument_count,
         receiver_call=receiver_call,
         argument_types=_argument_literal_types(arguments, src, language),
         argument_names=_argument_names(arguments, src),
@@ -466,6 +473,19 @@ def _call_from_match(
         bare_name_fallback=on_unnamed_object,
     )
     return (site_node.start_byte, site_node.end_byte, target_name), call
+
+
+def _call_arguments(
+    language: str, site_node: Node, arg_nodes: list[Node]
+) -> tuple[list[Node], int | None]:
+    """A call's argument expressions for overload reading, and how many it passes.
+
+    A Kotlin infix call's argument capture is its right operand, the one argument.
+    """
+    if language == "kotlin" and site_node.type == "infix_expression":
+        return arg_nodes, 1
+    count = _count_arguments(arg_nodes[0]) if arg_nodes else None
+    return _overload_arguments(language, arg_nodes), count
 
 
 def _java_object_is_unnamed(site_node: Node) -> bool:

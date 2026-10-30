@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -171,12 +171,7 @@ class UnreachableFilePass:
         return 0.7
 
     def _is_old(self, dt: Any, days: int = 180) -> bool:
-        """Return True if datetime is older than `days` ago."""
-        if dt is None:
-            return False
-        now = datetime.now(UTC)
+        """Return True if datetime is more than `days` before the indexed commit."""
         if isinstance(dt, datetime):
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=UTC)
-            return (now - dt).days > days
+            return self.ctx.days_since(dt) > days
         return False
