@@ -1,4 +1,5 @@
 import { DEFAULT_MAP_CANVAS_LABELS, type MapCanvasLabels } from "../map/canvas-labels";
+import { formatNumber } from "../../lib/format";
 
 /** Every string the area map section, its canvas and its rail render, so a host can translate it. */
 export interface AreaRailLabels extends MapCanvasLabels {
@@ -59,7 +60,7 @@ export interface AreaRailLabels extends MapCanvasLabels {
   loadError: string;
 }
 
-const s = (n: number, one: string, many: string) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
+const s = (n: number, one: string, many: string) => `${formatNumber(n)} ${n === 1 ? one : many}`;
 
 export const DEFAULT_AREA_RAIL_LABELS: AreaRailLabels = {
   ...DEFAULT_MAP_CANVAS_LABELS,
@@ -78,7 +79,7 @@ export const DEFAULT_AREA_RAIL_LABELS: AreaRailLabels = {
   mapLoadError: "Couldn't load the map",
   mapAriaLabel: (lens) =>
     `Code health map, ${lens} lens. Arrow keys move between the areas and files inside the selected area, Enter opens one, Backspace goes up a level, Escape returns to the repository, plus and minus zoom.`,
-  promptAction: (n) => (n === 1 ? "Copy prompt for the top finding" : `Copy prompt for the top ${n.toLocaleString()} findings`),
+  promptAction: (n) => (n === 1 ? "Copy prompt for the top finding" : `Copy prompt for the top ${formatNumber(n)} findings`),
   repository: "Repository",
   repoEyebrow: "Repository",
   areaEyebrow: "Area",
@@ -90,7 +91,7 @@ export const DEFAULT_AREA_RAIL_LABELS: AreaRailLabels = {
   subAreas: "Inside, lowest first",
   improvedMost: "Improved most",
   worstFiles: "Lowest-scoring files",
-  hotspots: (n) => `Hotspots · ${n.toLocaleString()}`,
+  hotspots: (n) => `Hotspots · ${formatNumber(n)}`,
   owners: "Who knows it",
   ownerShare: (name, pct) => `${name} leads ${pct}% of the files`,
   busFactorOne: (n) => `${s(n, "file", "files")} only one person has changed`,

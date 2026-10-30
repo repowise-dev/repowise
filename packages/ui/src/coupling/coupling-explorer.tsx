@@ -10,7 +10,7 @@ import { segmentOf, type CouplingPair, type CouplingSegment } from "./claim";
 import { AiPromptModal, buildCouplingAiPrompt } from "../health";
 import { fileEntityPath } from "../shared/entity/routes";
 import { cn } from "../lib/cn";
-import { truncatePath } from "../lib/format";
+import { formatNumber, truncatePath } from "../lib/format";
 import type { CouplingEdge, CouplingGraphResponse, CouplingNode } from "@repowise-dev/types/coupling";
 import { FIELD_CLASS } from "../ui/input";
 
@@ -282,8 +282,8 @@ export function CouplingExplorer({
       <>
         {" "}
         across{" "}
-        <strong className="font-medium">{data.coupled_files.toLocaleString()}</strong> of{" "}
-        <strong className="font-medium">{data.total_files.toLocaleString()}</strong> files
+        <strong className="font-medium">{formatNumber(data.coupled_files)}</strong> of{" "}
+        <strong className="font-medium">{formatNumber(data.total_files)}</strong> files
         with commit history
       </>
     ) : (
@@ -347,12 +347,12 @@ export function CouplingExplorer({
             <>
               Showing the <strong className="font-medium">{edges.length}</strong> strongest
               of{" "}
-              <strong className="font-medium">{data.total_edges.toLocaleString()}</strong>{" "}
+              <strong className="font-medium">{formatNumber(data.total_edges)}</strong>{" "}
               couplings{spanClause}. The counts below describe those {edges.length}.
             </>
           ) : (
             <>
-              All <strong className="font-medium">{edges.length.toLocaleString()}</strong>{" "}
+              All <strong className="font-medium">{formatNumber(edges.length)}</strong>{" "}
               couplings{spanClause}.
             </>
           )}

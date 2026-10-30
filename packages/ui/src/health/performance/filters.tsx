@@ -14,6 +14,7 @@ import {
   type PerformanceFilterState,
   type PerformanceSort,
 } from "./query";
+import { formatNumber } from "../../lib/format";
 
 /**
  * The filter surface. Every option and every count comes from the server's
@@ -79,7 +80,7 @@ function NarrowingControl({
         { value: "", label: anyLabel },
         ...counts.map((entry) => ({
           value: entry.value,
-          label: `${facetValueLabel(facet, entry.value)} (${entry.total.toLocaleString()})`,
+          label: `${facetValueLabel(facet, entry.value)} (${formatNumber(entry.total)})`,
         })),
       ]}
     />

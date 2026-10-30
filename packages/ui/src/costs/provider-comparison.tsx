@@ -1,7 +1,7 @@
 "use client";
 
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
-import { formatCost, formatTokens } from "../lib/format";
+import { formatCost, formatNumber, formatTokens } from "../lib/format";
 
 // provider brand colors (allowlisted)
 const PROVIDER_PATTERNS: Array<{ provider: string; match: RegExp; color: string }> = [
@@ -86,7 +86,7 @@ export function ProviderComparison({ modelGroups }: ProviderComparisonProps) {
               />
             </div>
             <div className="mt-0.5 flex items-center justify-between text-[10px] text-[var(--color-text-tertiary)] tabular-nums">
-              <span>{r.calls.toLocaleString()} calls</span>
+              <span>{formatNumber(r.calls)} calls</span>
               <span>{formatTokens(r.tokens)} tokens</span>
             </div>
           </div>

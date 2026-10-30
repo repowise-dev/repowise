@@ -15,6 +15,7 @@ import type {
   RefactoringPlan,
   RefactoringType,
 } from "@repowise-dev/types/refactoring";
+import { formatNumber } from "../lib/format";
 
 export type {
   Confidence,
@@ -852,7 +853,7 @@ export function planReason(plan: RefactoringPlan): string {
       const groups = num("group_count") || splitGroups(plan).length;
       if (nloc && symbols && groups) {
         parts.push(
-          `${nloc.toLocaleString()} lines and ${symbols} symbols that fall into ${groups} groups the imports already respect`,
+          `${formatNumber(nloc)} lines and ${symbols} symbols that fall into ${groups} groups the imports already respect`,
         );
       }
       const cut = num("cut_edges");

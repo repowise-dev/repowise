@@ -1,3 +1,5 @@
+import { formatNumber } from "../lib/format";
+
 "use client";
 
 export interface PaginationControlsProps {
@@ -29,9 +31,9 @@ export function PaginationControls({
       <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
         Showing{" "}
         <span className="tabular-nums">
-          {first.toLocaleString()}–{last.toLocaleString()}
+          {formatNumber(first)}–{formatNumber(last)}
         </span>{" "}
-        of <span className="tabular-nums">{total.toLocaleString()}</span> {label}
+        of <span className="tabular-nums">{formatNumber(total)}</span> {label}
       </p>
       <div className="flex gap-2">
         <button

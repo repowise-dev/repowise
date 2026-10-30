@@ -15,6 +15,7 @@ import {
   patchDecision,
 } from "@/lib/api/decisions";
 import { useTranslations } from "next-intl";
+import { formatNumber } from "@repowise-dev/ui/lib/format";
 
 interface Props {
   repoId: string;
@@ -150,7 +151,7 @@ export function DecisionReviewWrapper({ repoId, pageSize = 50 }: Props) {
         <div className="flex items-center justify-between gap-4 border-t border-[var(--color-border-default)] pt-3">
           <p className="font-mono text-[11px] tabular-nums text-[var(--color-text-tertiary)]">
             {rows.length > 0 ? `${first}–${last}` : "0"}
-            {total !== undefined ? ` of ${total.toLocaleString()}` : ""}
+            {total !== undefined ? ` of ${formatNumber(total)}` : ""}
           </p>
           <div className="flex items-center gap-2">
             <PageButton

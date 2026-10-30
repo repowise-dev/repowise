@@ -4,7 +4,7 @@ import * as React from "react";
 
 import { PageLede } from "../shared/page-lede";
 import { StatRibbon, type RibbonStat } from "../stats/stat-ribbon";
-import { formatCost, formatDate, formatTokens, parseDate } from "../lib/format";
+import { formatCost, formatDate, formatNumber, formatTokens, parseDate } from "../lib/format";
 import type { SavingsView } from "./types";
 
 export interface SavingsLedeProps {
@@ -70,8 +70,8 @@ export function SavingsLede({ data, methodologyHref, LinkComponent }: SavingsLed
           {ratio === null || peak === null ? null : (
             <>
               {" "}
-              On the {data.reducing_events.toLocaleString()} of{" "}
-              {data.baseline_events.toLocaleString()} interactions that produced a saving,
+              On the {formatNumber(data.reducing_events)} of{" "}
+              {formatNumber(data.baseline_events)} interactions that produced a saving,
               the input was {Math.round(ratio * 100)}% smaller than the work it replaced,
               and {Math.round(peak * 100)}% smaller at the{" "}
               {Math.round(REDUCTION_QUANTILE * 100)}th percentile.
@@ -175,7 +175,7 @@ function ribbonStats(data: SavingsView): RibbonStat[] {
             label: "Input reduction",
             value: `${Math.round(ratio * 100)}%`,
             hint: "When Repowise replaces something, how much smaller the input is than what it stood in for. Measured over the interactions that produced a saving; the ones that produced none are counted beside it rather than folded in, and interactions with nothing to compare against are in neither.",
-            sub: `on ${data.reducing_events.toLocaleString()} of ${data.baseline_events.toLocaleString()} comparable`,
+            sub: `on ${formatNumber(data.reducing_events)} of ${formatNumber(data.baseline_events)} comparable`,
           } satisfies RibbonStat,
         ]),
     {
@@ -201,16 +201,16 @@ function ribbonStats(data: SavingsView): RibbonStat[] {
     },
     {
       label: "Interactions",
-      value: data.unique_events.toLocaleString(),
+      value: formatNumber(data.unique_events),
       hint: "Logical agent interactions recorded. One interaction contributes to the total once.",
       // "9 saved tokens" reads as nine tokens. It is nine interactions.
-      sub: `${data.saving_interactions.toLocaleString()} produced a saving`,
+      sub: `${formatNumber(data.saving_interactions)} produced a saving`,
     },
     {
       label: "MCP answered",
-      value: data.mcp_queries_answered.toLocaleString(),
+      value: formatNumber(data.mcp_queries_answered),
       hint: "MCP calls that returned an answer. Dead ends are counted separately and save nothing.",
-      ...(data.dead_ends > 0 ? { sub: `${data.dead_ends.toLocaleString()} dead ends` } : {}),
+      ...(data.dead_ends > 0 ? { sub: `${formatNumber(data.dead_ends)} dead ends` } : {}),
     },
   ];
 }

@@ -2,6 +2,7 @@ import * as React from "react";
 import type { Commit, CommitStats } from "@repowise-dev/types/git";
 import { CommitRiskHistogram } from "./commit-risk-histogram";
 import { CommitRiskScatter } from "./commit-risk-scatter";
+import { formatNumber } from "../lib/format";
 
 export interface CommitDistributionProps {
   stats: CommitStats | null;
@@ -53,7 +54,7 @@ export function CommitDistribution({ stats, recent, onSelect }: CommitDistributi
           Size against diffusion
         </h3>
         <p className="max-w-[62ch] text-xs leading-relaxed text-[var(--color-text-tertiary)]">
-          The {recent.length.toLocaleString()} most recent commits, on their own
+          The {formatNumber(recent.length)} most recent commits, on their own
           recency sample rather than the feed above: that defaults to risk-sorted,
           so reusing it would plot only the top tercile and call it the spread.
           Big and scattered is what the model penalises.

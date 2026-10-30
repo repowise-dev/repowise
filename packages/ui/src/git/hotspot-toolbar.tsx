@@ -7,6 +7,7 @@ import { Input } from "../ui/input";
 import { cn } from "../lib/cn";
 import { useDebounce } from "../hooks/use-debounce";
 import { PromptForRowsButton } from "../health/row-prompt-action";
+import { formatNumber } from "../lib/format";
 
 /** Wait after the last keystroke before the search goes to the server. */
 const SEARCH_DEBOUNCE_MS = 250;
@@ -116,8 +117,8 @@ export function HotspotToolbar({
               {c.label}
               <span className="ml-1.5 tabular-nums text-[10px] opacity-70">
                 {c.key === "all"
-                  ? c.count.toLocaleString()
-                  : `${c.count.toLocaleString()} of ${facets.total.toLocaleString()}`}
+                  ? formatNumber(c.count)
+                  : `${formatNumber(c.count)} of ${formatNumber(facets.total)}`}
               </span>
             </button>
           ))}

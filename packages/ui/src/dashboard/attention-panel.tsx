@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Badge } from "../ui/badge";
-import { stripMarkdown } from "../lib/format";
+import { formatNumber, stripMarkdown } from "../lib/format";
 import { EmptyState } from "../shared/empty-state";
 import { fileEntityPath } from "../shared/entity/routes";
 import { AiPromptButton } from "../health/ai-prompt-button";
@@ -214,7 +214,7 @@ export function AttentionPanel({
               <Lightbulb className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)]" />
               <span className="min-w-0 flex-1 text-xs text-[var(--color-text-secondary)]">
                 <span className="font-medium tabular-nums text-[var(--color-text-primary)]">
-                  {proposed.length.toLocaleString()}
+                  {formatNumber(proposed.length)}
                 </span>{" "}
                 auto-proposed decision{proposed.length === 1 ? "" : "s"} awaiting review
               </span>

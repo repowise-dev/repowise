@@ -8,6 +8,7 @@ import { ResponsiveTable } from "../shared/responsive-table";
 import { ResultsFooter } from "../shared/results-footer";
 import { Segmented } from "../shared/segmented";
 import { cn } from "../lib/cn";
+import { formatNumber } from "../lib/format";
 import type { Commit } from "@repowise-dev/types/git";
 import type { HealthDeltaLabels } from "./health-delta-mark";
 import { commitColumns } from "./commit-columns";
@@ -32,9 +33,9 @@ export function CommitKindControl({
       label="Review priority and fixes"
       value={value}
       options={[
-        { value: "all", label: "All", count: counts?.all.toLocaleString() },
-        { value: "high", label: "High priority", count: counts?.high.toLocaleString() },
-        { value: "fixes", label: "Fixes", count: counts?.fixes.toLocaleString() },
+        { value: "all", label: "All", count: counts && formatNumber(counts.all) },
+        { value: "high", label: "High priority", count: counts && formatNumber(counts.high) },
+        { value: "fixes", label: "Fixes", count: counts && formatNumber(counts.fixes) },
       ]}
       onChange={onChange}
     />

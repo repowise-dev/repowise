@@ -1,4 +1,5 @@
 import type { RecommendationValidation, ValidationBasis } from "@repowise-dev/types/refactoring";
+import { formatNumber } from "../lib/format";
 
 const BASIS_LABEL: Record<ValidationBasis, string> = {
   measured: "Measured coverage",
@@ -27,9 +28,9 @@ export function ValidationSummary({ validation, fileHref }: ValidationSummaryPro
         <p className="text-sm text-[var(--color-text-secondary)]">
           <span className="font-medium text-[var(--color-text-primary)]">{basis}</span>
           {validation.via ? ` via ${validation.via.replace("-", " ")}` : ""}.{" "}
-          {validation.total.toLocaleString()} guarding test
+          {formatNumber(validation.total)} guarding test
           {validation.total === 1 ? "" : "s"}
-          {validation.truncated ? `; ${validation.tests.length.toLocaleString()} shown.` : "."}
+          {validation.truncated ? `; ${formatNumber(validation.tests.length)} shown.` : "."}
         </p>
         {validation.basis === "unknown" ? (
           <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">

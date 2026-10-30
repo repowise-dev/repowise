@@ -37,6 +37,7 @@ import {
   NEEDS_WORK_MIN,
 } from "@repowise-dev/types/health";
 import { useTranslations } from "next-intl";
+import { formatNumber } from "@repowise-dev/ui/lib/format";
 
 interface ZoomMapKeyProps {
   /** Every verb present in the loaded map, descending by count. */
@@ -82,8 +83,8 @@ export function ZoomMapKey({
           {unclaimedFiles > 0 &&
             /* Silence when nothing is missing: "0 not shown" is noise. */
             t("mapKey.unclaimed", {
-              shown: unclaimedFiles.toLocaleString(),
-              total: (totalFiles + unclaimedFiles).toLocaleString(),
+              shown: formatNumber(unclaimedFiles),
+              total: formatNumber(totalFiles + unclaimedFiles),
             })}
         </p>
         {verbs.length > 1 && (
@@ -98,7 +99,7 @@ export function ZoomMapKey({
               >
                 {verb}{" "}
                 <span className="font-mono tabular-nums text-[var(--color-text-tertiary)]">
-                  {count.toLocaleString()}
+                  {formatNumber(count)}
                 </span>
               </FilterChip>
             ))}

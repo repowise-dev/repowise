@@ -19,6 +19,7 @@ import { LEVEL_NODE_SIZES } from "./layout-scopes";
 import { useSystemMapActions } from "./system-map-actions";
 import { CardAction, HIDDEN_HANDLE } from "./system-map-card-action";
 import { plural } from "./system-map-model";
+import { formatNumber } from "../../lib/format";
 
 const MONO: CSSProperties = {
   fontFamily: "var(--font-mono, ui-monospace, monospace)",
@@ -53,9 +54,9 @@ function GroupNodeInner({ data, selected }: NodeProps) {
   const actions = useSystemMapActions();
   const services = plural(group.serviceIds.length, "service", "services");
   const links = [
-    `in ${group.linksIn.toLocaleString()}`,
-    `out ${group.linksOut.toLocaleString()}`,
-    ...(group.linksInside > 0 ? [`${group.linksInside.toLocaleString()} inside`] : []),
+    `in ${formatNumber(group.linksIn)}`,
+    `out ${formatNumber(group.linksOut)}`,
+    ...(group.linksInside > 0 ? [`${formatNumber(group.linksInside)} inside`] : []),
   ].join(" · ");
   const lensed = overlay?.highlighted ?? false;
   const dimmed = overlay?.dimmed ?? false;

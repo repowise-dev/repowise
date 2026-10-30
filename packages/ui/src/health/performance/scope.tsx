@@ -6,6 +6,7 @@ import type { PerformanceScope } from "@repowise-dev/types/health";
 import { Segmented } from "../../shared/segmented";
 import type { ExcludedReview } from "./grouping";
 import { QUIET_LINK_CLS } from "./queue";
+import { formatNumber } from "../../lib/format";
 
 /**
  * The one scope control and the sentence that accounts for what the scope
@@ -45,7 +46,7 @@ export function ScopeControl({
       options={(["now", "production", "all"] as const).map((scope) => ({
         value: scope,
         label: SCOPE_LABEL[scope],
-        count: counts[scope].toLocaleString(),
+        count: formatNumber(counts[scope]),
         hint: SCOPE_HINT[scope],
       }))}
     />
@@ -132,11 +133,11 @@ export function ScopeSentence({
             {index === 0 ? "" : scope === "now" ? ". " : ", "}
             {clause.scope ? (
               <button type="button" onClick={() => onScope(clause.scope!)} className={QUIET_LINK_CLS}>
-                <span className="tabular-nums">{clause.count.toLocaleString()}</span> {clause.text}
+                <span className="tabular-nums">{formatNumber(clause.count)}</span> {clause.text}
               </button>
             ) : (
               <>
-                <span className="tabular-nums">{clause.count.toLocaleString()}</span> {clause.text}
+                <span className="tabular-nums">{formatNumber(clause.count)}</span> {clause.text}
               </>
             )}
           </span>
@@ -173,7 +174,7 @@ function LeftOutBreakdown({
     <ul className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--color-text-tertiary)]">
       {reviews.map((review) => (
         <li key={review.reason}>
-          <span className="tabular-nums">{review.count.toLocaleString()}</span>{" "}
+          <span className="tabular-nums">{formatNumber(review.count)}</span>{" "}
           <button type="button" onClick={() => onReview(review)} className={QUIET_LINK_CLS}>
             {review.label}
           </button>
