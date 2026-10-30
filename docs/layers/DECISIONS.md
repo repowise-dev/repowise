@@ -84,6 +84,11 @@ and is counted as deprecated by `decision health`.
 | Session discovery | `session_discovery` | One broad model pass over new transcript prose per update | Yes | No |
 | Conventions | `conventions` | Import edges: a wrapper most files reach a library through | No | No |
 | Manual entry | `cli` | `repowise decision add`, the dashboard form | No | Always |
+| Agent entry | `agent` | `repowise decision add --agent <slug>` | No | Always |
+
+Adding a title that already exists updates that record. A field the new call
+leaves out keeps its stored value, `--evidence-commit` adds to the stored
+commits, and the JSON output reports `existed` and the `kept` fields.
 
 A committed ADR whose status says `accepted` or `approved` and that names what
 it governs accepts its own decision, with the file recorded as the accepter. It
