@@ -93,6 +93,17 @@ def _rerun_git_archaeology(run: UpdateRun, docs: DocsPass, policy: Any) -> None:
         ) from exc
 
 
+def _history_sources(run: UpdateRun, docs: DocsPass, policy: Any) -> set[str]:
+    """The history sources this update may mine; empty when there is nothing to do."""
+    if docs.provider is None or not run.git_meta_map or not run.base_ref:
+        return set()
+    sources = {key for key in _HISTORY_SOURCES if policy.llm_allowed(key)}
+    if run.config.git_changed:
+        # The full re-run above already read every commit.
+        sources.discard("git_archaeology")
+    return sources
+
+
 def _mine_new_history(opts: UpdateOptions, run: UpdateRun, docs: DocsPass, policy: Any) -> None:
     """Mine the PR bodies and commit messages in ``base_ref..head``.
 
@@ -100,11 +111,8 @@ def _mine_new_history(opts: UpdateOptions, run: UpdateRun, docs: DocsPass, polic
     a source the policy keeps off the model, or a run with no provider, mines
     nothing. PR bodies that already produced a record are skipped by the miner.
     """
-    sources = {key for key in _HISTORY_SOURCES if policy.llm_allowed(key)}
-    if run.config.git_changed:
-        # The full re-run above already read every commit.
-        sources.discard("git_archaeology")
-    if not sources or docs.provider is None or not run.git_meta_map or not run.base_ref:
+    sources = _history_sources(run, docs, policy)
+    if not sources:
         return
     try:
         from repowise.core.analysis.decisions.commit_mining import restrict_to_commits
