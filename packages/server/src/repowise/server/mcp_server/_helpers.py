@@ -367,15 +367,18 @@ def _link_decisions_to_commits(governing_decisions: list[dict], commits: list[di
 def _origin_summary_parts(
     authors: list,
     earliest_commit: dict | None,
-    governing_decisions: list[dict],
-    linked_decisions: list[dict],
+    narrated: list[tuple[str, dict | None]],
     primary: str,
     total: int,
     first_date: str,
     last_date: str,
     age: int,
 ) -> list[str]:
-    """Assemble the narrative sentences for an origin story."""
+    """Assemble the narrative sentences for an origin story.
+
+    *narrated* is ``(title, first evidence commit or None)`` per governing
+    decision the summary names.
+    """
     parts = [
         f"Created ~{first_date}, last modified {last_date} ({age} days old).",
         f"Primary author: {primary} ({total} total commits).",
@@ -387,17 +390,11 @@ def _origin_summary_parts(
             f"by {earliest_commit.get('author', 'unknown')} on {earliest_commit.get('date', 'unknown')}."
         )
 
-    if governing_decisions:
-        named = [d.get("title", "") for d in governing_decisions[:_ORIGIN_NARRATED_DECISIONS]]
-        parts.append(f"Governed by: {', '.join(named)}.")
-        # Unbounded, a file with 40 linked decisions got 16 evidence clauses,
-        # restating titles the caller's own cap had already removed.
-        for ld in linked_decisions:
-            if ld["title"] in named:
-                ec = ld["evidence_commits"][0]
-                parts.append(
-                    f'Commit "{ec["message"]}" by {ec["author"]} is evidence for "{ld["title"]}".'
-                )
+    if narrated:
+        parts.append(f"Governed by: {', '.join(title for title, _ in narrated)}.")
+        for title, ec in narrated:
+            if ec is not None:
+                parts.append(f'Commit "{ec["message"]}" by {ec["author"]} is evidence for "{title}".')
 
     if len(authors) > 1:
         names = [a.get("name", "") for a in authors[:3]]
@@ -429,6 +426,13 @@ def _build_origin_story(
         earliest_commit = sorted(commits, key=lambda c: c.get("date", ""))[0]
 
     linked_decisions = _link_decisions_to_commits(governing_decisions, commits)
+    first_evidence = {ld["title"]: ld["evidence_commits"][0] for ld in linked_decisions}
+    # Capped: unbounded, a file with 40 linked decisions got 16 evidence
+    # clauses, restating titles the caller's own cap had already removed.
+    narrated = [
+        (title, first_evidence.get(title))
+        for title in (d.get("title", "") for d in governing_decisions[:_ORIGIN_NARRATED_DECISIONS])
+    ]
 
     primary = git_meta.primary_owner_name or "unknown"
     total = git_meta.commit_count_total or 0
@@ -443,8 +447,7 @@ def _build_origin_story(
     parts = _origin_summary_parts(
         authors,
         earliest_commit,
-        governing_decisions,
-        linked_decisions,
+        narrated,
         primary,
         total,
         first_date,
