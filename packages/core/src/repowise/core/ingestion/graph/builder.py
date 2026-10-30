@@ -24,28 +24,21 @@ class GraphBuilder(
         self.repo_root = repo_root
         self.graph: nx.DiGraph = nx.DiGraph()
 
-    def build(
-        self,
-        parsed_files: list,
-        repo_root: Path | None = None,
-    ) -> nx.DiGraph:
+    def build(self, parsed_files: list) -> nx.DiGraph:
         """Construye el grafo a partir de los ficheros parseados.
 
-        *repo_root* (si se pasa) sobrescribe el del constructor; así el
-        llamador puede garantizar que la detección de registros use la
-        raíz del repositorio aunque el builder se haya instanciado sin
-        ella (P3).
+        Firma original intacta (P3). Si se necesita ``repo_root`` para la
+        detección de registros, se obtiene de ``self.repo_root`` — el
+        llamador debe pasarlo al constructor, tal como estaba previsto.
         """
-        root = repo_root if repo_root is not None else self.repo_root
-
         for pf in parsed_files:
             self.add_file(pf)
 
         resolve_type_refs(self.graph)
         self.add_framework_edges()
 
-        if root is not None:
-            self.add_registration_edges(root)
+        if self.repo_root is not None:
+            self.add_registration_edges(self.repo_root)
 
         return self.graph
 
@@ -55,7 +48,7 @@ class GraphBuilder(
         """Añade aristas ``registration`` usando el grafo como resolución.
 
         Se invoca *después* de que las aristas ``imports`` estén resueltas,
-        para que ``_resolve_module`` pueda apoyarse en ellas.
+        para que el detector pueda apoyarse en ellas.
         """
         regs = detect_registrations(repo_root, graph=self.graph)
         count = 0
