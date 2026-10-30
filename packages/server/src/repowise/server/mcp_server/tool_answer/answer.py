@@ -664,17 +664,19 @@ async def _cache_and_stamp(
     provider,
     confidence: str,
     targets: list[str],
+    stop_reason: str | None = None,
 ) -> None:
     """Write the cache row, then stamp ``_meta`` and the episode on the live reply.
 
     Only the trust-relevant retrieval state is cached; the cache read rebuilds
     timing and freshness. The episode is attached after the write, so it never
-    reaches the cache row.
+    reaches the cache row. A cut-off answer is not cached, so asking again
+    synthesizes afresh.
     """
     degraded = _degraded_legs(_retrieval_legs())
     if degraded:
         payload["_retrieval_degraded"] = degraded
-    if write_cache:
+    if write_cache and not answer_cut_off(payload.get("answer") or "", stop_reason):
         await _write_answer_cache(
             payload,
             ctx=ask.ctx,
@@ -874,10 +876,8 @@ async def get_answer(
     await _cache_and_stamp(
         payload,
         ask,
-        # A cut-off answer is not pinned: asking again synthesizes afresh.
-        write_cache=bool(answer_text)
-        and not cache_disabled
-        and not answer_cut_off(answer_text, stop_reason),
+        write_cache=bool(answer_text) and not cache_disabled,
+        stop_reason=stop_reason,
         qhash=qhash,
         provider=provider,
         confidence=confidence,

@@ -50,14 +50,21 @@ def _text_looks_cut(answer_text: str) -> bool:
     paragraph = _last_paragraph(lines)
     if paragraph.count("`") % 2 or paragraph.count("**") % 2:
         return True
+    return _dangling_last_line(last)
+
+
+def _dangling_last_line(last: str) -> bool:
+    """A heading or bare list marker, an open ending, or a dangling last word."""
     if _HEADING_OR_MARKER.match(last):
         return True
     core = last.rstrip("*_` ")
     if not core or core[-1] in _OPEN_ENDINGS:
         return True
-    tail = re.search(r"[A-Za-z]+$", core)
     # A word inside a closed code span is a value, not prose.
-    return bool(tail) and not last.endswith("`") and tail.group().lower() in _DANGLING_WORDS
+    if last.endswith("`"):
+        return False
+    tail = re.search(r"[A-Za-z]+$", core)
+    return bool(tail) and tail.group().lower() in _DANGLING_WORDS
 
 
 def _last_paragraph(lines: list[str]) -> str:
