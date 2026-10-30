@@ -209,6 +209,31 @@ def _question_spells(name: str, question_stems: set[str], question_parts: set[st
     return all(p in question_parts for p in _name_parts(name) if len(p) < 3)
 
 
+def def_verifier(session_factory: Any, repo_root: Path | None) -> Callable[[Any], Awaitable[dict]]:
+    """A def's dict with bounds checked against the live file, ``_approx`` when not.
+
+    Anchored and union bodies are served at high trust, so a drifted row would
+    ground them in the wrong lines. One live read per file, cached.
+    """
+    text_cache: dict[str, str | None] = {}
+
+    async def verified(row) -> dict:
+        d = _symbol_def_dict(row)
+        if row.file_path not in text_cache:
+            text_cache[row.file_path] = _read_repo_text(repo_root, row.file_path)
+        text = text_cache[row.file_path]
+        if text is None:
+            d["_approx"] = True
+            return d
+        check = await verify_and_heal(session_factory, row, text)
+        d["start_line"], d["end_line"] = check.start_line, check.end_line
+        if not check.verified:
+            d["_approx"] = True
+        return d
+
+    return verified
+
+
 def _symbol_def_dict(sym) -> dict:
     """Plain-dict view of a WikiSymbol def (decouples answer.py from the ORM)."""
     return {
@@ -277,24 +302,7 @@ async def _anchor_symbol_hits(
         by_name.setdefault(row.name, []).append(row)
     by_name = {name: _without_constructors(cands) for name, cands in by_name.items()}
 
-    # Verify bounds before slicing: union and anchored bodies are served at
-    # high trust, so a drifted row would ground them in the wrong lines.
-    # One live read per file, cached.
-    _text_cache: dict[str, str | None] = {}
-
-    async def _verified_dict(row) -> dict:
-        d = _symbol_def_dict(row)
-        if row.file_path not in _text_cache:
-            _text_cache[row.file_path] = _read_repo_text(repo_root, row.file_path)
-        text = _text_cache[row.file_path]
-        if text is None:
-            d["_approx"] = True
-            return d
-        check = await verify_and_heal(session_factory, row, text)
-        d["start_line"], d["end_line"] = check.start_line, check.end_line
-        if not check.verified:
-            d["_approx"] = True
-        return d
+    _verified_dict = def_verifier(session_factory, repo_root)
 
     literal: dict[str, list] = {}
     prose = bool(question) and not is_symbol_lookup_question(question, question_ids)
@@ -661,17 +669,22 @@ def drop_ruled_out_files(hits: list[dict], question: str) -> list[dict]:
 _NAMED_FILE_SLOT = 3
 
 
-def place_named_files(hits: list[dict], paths: list[str]) -> list[dict]:
+def place_named_files(
+    hits: list[dict], paths: list[str], found: dict[str, dict] | None = None
+) -> list[dict]:
     """``hits`` with each of ``paths`` outside the top three moved (or, when no
-    hit carries it, inserted as its file page) to just below them, in order,
-    scored level with the hit above."""
+    hit carries it, inserted as its ``found`` hit or else its file page) to just
+    below them, in order, scored level with the hit above."""
     out = list(hits)
     slot = _NAMED_FILE_SLOT
     for path in paths:
         idx = next((i for i, h in enumerate(out) if h.get("target_path") == path), None)
         if idx is not None and idx < slot:
             continue
-        hit = out.pop(idx) if idx is not None else _file_page_hit(path, 0.0)
+        if idx is not None:
+            hit = out.pop(idx)
+        else:
+            hit = (found or {}).get(path) or _file_page_hit(path, 0.0)
         pos = min(slot, len(out))
         if pos:
             hit["score"] = out[pos - 1].get("score", 0.0)
