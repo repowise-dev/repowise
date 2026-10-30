@@ -6,6 +6,7 @@ import asyncio
 import json
 import re
 from pathlib import Path
+from unittest import result
 
 import pytest
 from click.testing import CliRunner
@@ -28,7 +29,9 @@ def _seed_wiki_db(repo_root: Path, decisions: list[dict]) -> None:
         await init_db(engine)
         factory = async_sessionmaker(engine, expire_on_commit=False)
         async with factory() as session:
-            session.add(Repository(id=_REPO_ID, name=repo_root.name, local_path=str(repo_root)))
+            session.add(
+                Repository(id=_REPO_ID, name=repo_root.name, local_path=str(repo_root))
+            )
             for spec in decisions:
                 session.add(
                     DecisionRecord(
@@ -87,7 +90,6 @@ def test_decision_help_lists_subcommands() -> None:
         assert name in result.output
 
 
-
 def _stored_column(repo_root: Path, decision_id: str, column: str) -> str:
     """One column of a record as written, for the ones no command prints."""
     import sqlite3
@@ -121,15 +123,24 @@ def test_decision_add_records_without_prompting(indexed_repo: Path) -> None:
     result = CliRunner().invoke(
         cli,
         [
-            "decision", "add",
-            "--title", "Escape LIKE patterns",
-            "--decision", "Escape % and _ before interpolating",
-            "--rationale", "an unescaped pattern scans the table",
-            "--alternative", "match in Python",
-            "--consequence", "one more helper on the query path",
-            "--affects", "src/db/models.py",
-            "--tag", "database",
-            "--format", "json",
+            "decision",
+            "add",
+            "--title",
+            "Escape LIKE patterns",
+            "--decision",
+            "Escape % and _ before interpolating",
+            "--rationale",
+            "an unescaped pattern scans the table",
+            "--alternative",
+            "match in Python",
+            "--consequence",
+            "one more helper on the query path",
+            "--affects",
+            "src/db/models.py",
+            "--tag",
+            "database",
+            "--format",
+            "json",
             str(indexed_repo),
         ],
         input="",
@@ -141,7 +152,15 @@ def test_decision_add_records_without_prompting(indexed_repo: Path) -> None:
     assert len(payload["decision"]["id"]) > 8, "the full id, not the table's prefix"
 
     shown = CliRunner().invoke(
-        cli, ["decision", "show", payload["decision"]["id"], str(indexed_repo), "--format", "json"]
+        cli,
+        [
+            "decision",
+            "show",
+            payload["decision"]["id"],
+            str(indexed_repo),
+            "--format",
+            "json",
+        ],
     )
     assert shown.exit_code == 0, shown.output
     record = json.loads(shown.output)["decision"]
@@ -201,10 +220,14 @@ def test_a_flag_driven_decision_lands_proposed(indexed_repo: Path) -> None:
     result = CliRunner().invoke(
         cli,
         [
-            "decision", "add",
-            "--title", "Prefer ruff check",
-            "--decision", "Run ruff check, never ruff format",
-            "--format", "json",
+            "decision",
+            "add",
+            "--title",
+            "Prefer ruff check",
+            "--decision",
+            "Run ruff check, never ruff format",
+            "--format",
+            "json",
             str(indexed_repo),
         ],
         input="",
@@ -217,22 +240,32 @@ def test_a_flag_driven_decision_lands_proposed(indexed_repo: Path) -> None:
 def test_decision_add_prompts_record_active(indexed_repo: Path) -> None:
     """Answering the prompts is an acceptance, and a scope is part of it."""
     answers = "\nInteractive title\ncontext\nthe decision\nwhy\n\n\nsrc/app.py\n\n"
-    result = CliRunner().invoke(cli, ["decision", "add", str(indexed_repo)], input=answers)
+    result = CliRunner().invoke(
+        cli, ["decision", "add", str(indexed_repo)], input=answers
+    )
 
     assert result.exit_code == 0, result.output
-    listed = CliRunner().invoke(cli, ["decision", "list", str(indexed_repo), "--format", "json"])
+    listed = CliRunner().invoke(
+        cli, ["decision", "list", str(indexed_repo), "--format", "json"]
+    )
     records = json.loads(listed.output)["decisions"]
-    assert [d["status"] for d in records if d["title"] == "Interactive title"] == ["active"]
+    assert [d["status"] for d in records if d["title"] == "Interactive title"] == [
+        "active"
+    ]
 
 
 def test_decision_add_asks_again_for_a_blank_decision(indexed_repo: Path) -> None:
     """Acceptance needs the text, so a blank answer is asked again, not stored."""
     answers = "\nBlank first\ncontext\n   \nthe decision\nwhy\n\n\nsrc/app.py\n\n"
-    result = CliRunner().invoke(cli, ["decision", "add", str(indexed_repo)], input=answers)
+    result = CliRunner().invoke(
+        cli, ["decision", "add", str(indexed_repo)], input=answers
+    )
 
     assert result.exit_code == 0, result.output
     assert "state what was chosen" in result.output
-    listed = CliRunner().invoke(cli, ["decision", "list", str(indexed_repo), "--format", "json"])
+    listed = CliRunner().invoke(
+        cli, ["decision", "list", str(indexed_repo), "--format", "json"]
+    )
     records = json.loads(listed.output)["decisions"]
     assert [d["status"] for d in records if d["title"] == "Blank first"] == ["active"]
 
@@ -244,16 +277,24 @@ def test_decision_add_without_a_scope_stays_a_candidate(indexed_repo: Path) -> N
     than the round trip, and ``confirm --scope`` finishes the job.
     """
     answers = "\nUnscoped title\ncontext\nthe decision\nwhy\n\n\n\n\n"
-    result = CliRunner().invoke(cli, ["decision", "add", str(indexed_repo)], input=answers)
+    result = CliRunner().invoke(
+        cli, ["decision", "add", str(indexed_repo)], input=answers
+    )
 
     assert result.exit_code == 0, result.output
     assert "Stored as a candidate" in result.output
-    listed = CliRunner().invoke(cli, ["decision", "list", str(indexed_repo), "--format", "json"])
+    listed = CliRunner().invoke(
+        cli, ["decision", "list", str(indexed_repo), "--format", "json"]
+    )
     records = json.loads(listed.output)["decisions"]
-    assert [d["status"] for d in records if d["title"] == "Unscoped title"] == ["proposed"]
+    assert [d["status"] for d in records if d["title"] == "Unscoped title"] == [
+        "proposed"
+    ]
 
 
-def test_an_agreement_is_accepted_although_it_names_no_files(indexed_repo: Path) -> None:
+def test_an_agreement_is_accepted_although_it_names_no_files(
+    indexed_repo: Path,
+) -> None:
     """The asymmetry the split exists for. Its other half is the test above.
 
     An agreement names no file because it is not about one, and its acceptance
@@ -264,12 +305,18 @@ def test_an_agreement_is_accepted_although_it_names_no_files(indexed_repo: Path)
     ``test_decision_add_without_a_scope_stays_a_candidate`` is that half, and
     the two only mean anything read together.
     """
-    answers = "agreement\nNever use em dashes\ncontext\nno em dashes anywhere\nwhy\n\n\n\n"
-    result = CliRunner().invoke(cli, ["decision", "add", str(indexed_repo)], input=answers)
+    answers = (
+        "agreement\nNever use em dashes\ncontext\nno em dashes anywhere\nwhy\n\n\n\n"
+    )
+    result = CliRunner().invoke(
+        cli, ["decision", "add", str(indexed_repo)], input=answers
+    )
 
     assert result.exit_code == 0, result.output
     assert "Stored as a candidate" not in result.output
-    listed = CliRunner().invoke(cli, ["decision", "list", str(indexed_repo), "--format", "json"])
+    listed = CliRunner().invoke(
+        cli, ["decision", "list", str(indexed_repo), "--format", "json"]
+    )
     records = json.loads(listed.output)["decisions"]
     stored = [d for d in records if d["title"] == "Never use em dashes"]
     assert [d["status"] for d in stored] == ["active"]
@@ -287,11 +334,16 @@ def test_the_kind_flag_records_the_noun(indexed_repo: Path) -> None:
     result = CliRunner().invoke(
         cli,
         [
-            "decision", "add",
-            "--title", "Commit as the user",
-            "--decision", "every commit is authored by the user",
-            "--kind", "agreement",
-            "--format", "json",
+            "decision",
+            "add",
+            "--title",
+            "Commit as the user",
+            "--decision",
+            "every commit is authored by the user",
+            "--kind",
+            "agreement",
+            "--format",
+            "json",
             str(indexed_repo),
         ],
         input="",
@@ -308,10 +360,14 @@ def test_a_decision_added_without_the_flag_is_architectural(indexed_repo: Path) 
     result = CliRunner().invoke(
         cli,
         [
-            "decision", "add",
-            "--title", "Prefer ruff check here",
-            "--decision", "Run ruff check, never ruff format",
-            "--format", "json",
+            "decision",
+            "add",
+            "--title",
+            "Prefer ruff check here",
+            "--decision",
+            "Run ruff check, never ruff format",
+            "--format",
+            "json",
             str(indexed_repo),
         ],
         input="",
@@ -331,12 +387,25 @@ def test_half_a_command_line_is_an_error_not_a_prompt(indexed_repo: Path) -> Non
     """
     result = CliRunner().invoke(
         cli,
-        ["decision", "add", "--title", "Half a decision", str(indexed_repo), "--format", "json"],
+        [
+            "decision",
+            "add",
+            "--title",
+            "Half a decision",
+            str(indexed_repo),
+            "--format",
+            "json",
+        ],
         input="",
     )
 
     assert result.exit_code == 1, result.output
-    assert json.loads(result.output)["error"].startswith("--title and --decision")
+    payload = json.loads(result.output)
+    assert payload["error"].startswith("--title and --decision")
+
+    guidance = payload.get("guidance", "")
+    assert "prompted" not in guidance
+    assert "--decision" in guidance
 
 
 def test_decision_add_help_lists_a_flag_per_field() -> None:
@@ -405,7 +474,9 @@ def test_decision_list_and_show_seeded_records(indexed_repo: Path) -> None:
     assert "active" in listed.output
     assert "proposed" in listed.output
 
-    proposed = CliRunner().invoke(cli, ["decision", "list", "--proposed", str(indexed_repo)])
+    proposed = CliRunner().invoke(
+        cli, ["decision", "list", "--proposed", str(indexed_repo)]
+    )
     assert proposed.exit_code == 0, proposed.output
     assert "bbbbbbbb" in proposed.output
     assert "Propose" in proposed.output
@@ -424,7 +495,9 @@ def _many_decisions(n: int, **extra) -> list[dict]:
 
 
 def _list_json(repo: Path, *args: str) -> dict:
-    result = CliRunner().invoke(cli, ["decision", "list", str(repo), *args, "--format", "json"])
+    result = CliRunner().invoke(
+        cli, ["decision", "list", str(repo), *args, "--format", "json"]
+    )
     assert result.exit_code == 0, result.output
     return json.loads(result.output)
 
@@ -437,12 +510,22 @@ def test_decision_list_says_how_many_rows_it_cut(indexed_repo: Path) -> None:
     assert "Showing 100 of 105 decisions" in table.output
 
     data = _list_json(indexed_repo)
-    assert (data["total"], data["truncated"], len(data["decisions"])) == (105, True, 100)
+    assert (data["total"], data["truncated"], len(data["decisions"])) == (
+        105,
+        True,
+        100,
+    )
 
     limited = _list_json(indexed_repo, "--limit", "3")
-    assert (limited["total"], limited["truncated"], len(limited["decisions"])) == (105, True, 3)
+    assert (limited["total"], limited["truncated"], len(limited["decisions"])) == (
+        105,
+        True,
+        3,
+    )
 
-    everything = CliRunner().invoke(cli, ["decision", "list", str(indexed_repo), "--all"])
+    everything = CliRunner().invoke(
+        cli, ["decision", "list", str(indexed_repo), "--all"]
+    )
     assert everything.exit_code == 0, everything.output
     assert "105 decisions." in everything.output
     assert "Showing" not in everything.output
@@ -457,7 +540,9 @@ def test_stale_only_counts_stale_rows_past_the_first_page(indexed_repo: Path) ->
     _seed_wiki_db(indexed_repo, rows)
     # Stale is a property of accepted decisions only.
     for i in range(100, 104):
-        confirmed = CliRunner().invoke(cli, ["decision", "confirm", f"{i:032x}", str(indexed_repo)])
+        confirmed = CliRunner().invoke(
+            cli, ["decision", "confirm", f"{i:032x}", str(indexed_repo)]
+        )
         assert confirmed.exit_code == 0, confirmed.output
 
     data = _list_json(indexed_repo, "--stale-only")
@@ -472,7 +557,10 @@ def test_decision_list_shows_a_long_title_whole(indexed_repo: Path) -> None:
     assert result.exit_code == 0, result.output
     # The column wraps, so every word survives in order, with other cells
     # between wrapped lines; independent of width and box style.
-    assert re.search(r"\b" + r"\b.*?\b".join(map(re.escape, title.split())), result.output, re.S)
+    assert re.search(
+        r"\b" + r"\b.*?\b".join(map(re.escape, title.split())), result.output, re.S
+    )
+
 
 def test_decision_confirm_promotes_proposed(indexed_repo: Path) -> None:
     _seed_wiki_db(
@@ -486,7 +574,9 @@ def test_decision_confirm_promotes_proposed(indexed_repo: Path) -> None:
         ],
     )
 
-    result = CliRunner().invoke(cli, ["decision", "confirm", "cccccccc", str(indexed_repo)])
+    result = CliRunner().invoke(
+        cli, ["decision", "confirm", "cccccccc", str(indexed_repo)]
+    )
     assert result.exit_code == 0, result.output
     assert "accepted (governing)" in result.output
 
@@ -518,7 +608,9 @@ def test_decision_dismiss_and_deprecate(indexed_repo: Path) -> None:
     assert dismissed.exit_code == 0, dismissed.output
     assert "dismissed" in dismissed.output
 
-    deprecated = CliRunner().invoke(cli, ["decision", "deprecate", "eeeeeeee", str(indexed_repo)])
+    deprecated = CliRunner().invoke(
+        cli, ["decision", "deprecate", "eeeeeeee", str(indexed_repo)]
+    )
     assert deprecated.exit_code == 0, deprecated.output
     assert "deprecated" in deprecated.output
 
@@ -629,28 +721,40 @@ class TestTheLifecycleIsDrivableByAnAgent:
     """
 
     def test_confirm_emits_json_and_the_new_status(self, indexed_repo: Path):
-        _seed_wiki_db(indexed_repo, [{"id": "c0ffee01", "title": "T", "status": "proposed"}])
+        _seed_wiki_db(
+            indexed_repo, [{"id": "c0ffee01", "title": "T", "status": "proposed"}]
+        )
 
         result = CliRunner().invoke(
-            cli, ["decision", "confirm", "c0ffee01", str(indexed_repo), "--format", "json"]
+            cli,
+            ["decision", "confirm", "c0ffee01", str(indexed_repo), "--format", "json"],
         )
 
         assert result.exit_code == 0, result.output
         (only,) = json.loads(result.output)["results"]
-        assert (only["id"], only["status"], only["action"]) == ("c0ffee01", "active", "accepted")
+        assert (only["id"], only["status"], only["action"]) == (
+            "c0ffee01",
+            "active",
+            "accepted",
+        )
 
     def test_dismiss_does_not_prompt_under_json(self, indexed_repo: Path):
-        _seed_wiki_db(indexed_repo, [{"id": "c0ffee02", "title": "T", "status": "proposed"}])
+        _seed_wiki_db(
+            indexed_repo, [{"id": "c0ffee02", "title": "T", "status": "proposed"}]
+        )
 
         result = CliRunner().invoke(
-            cli, ["decision", "dismiss", "c0ffee02", str(indexed_repo), "--format", "json"]
+            cli,
+            ["decision", "dismiss", "c0ffee02", str(indexed_repo), "--format", "json"],
         )
 
         assert result.exit_code == 0, result.output
         assert json.loads(result.output)["results"][0]["status"] == "dismissed"
 
     def test_dismiss_yes_skips_the_prompt_for_a_person_too(self, indexed_repo: Path):
-        _seed_wiki_db(indexed_repo, [{"id": "c0ffee03", "title": "T", "status": "proposed"}])
+        _seed_wiki_db(
+            indexed_repo, [{"id": "c0ffee03", "title": "T", "status": "proposed"}]
+        )
 
         result = CliRunner().invoke(
             cli, ["decision", "dismiss", "c0ffee03", str(indexed_repo), "--yes"]
@@ -672,7 +776,9 @@ class TestTheLifecycleIsDrivableByAnAgent:
         assert result.exit_code != 0, result.output
 
     @pytest.mark.parametrize("action", ["confirm", "dismiss", "deprecate"])
-    def test_an_unknown_id_reports_a_parseable_reason(self, indexed_repo: Path, action: str):
+    def test_an_unknown_id_reports_a_parseable_reason(
+        self, indexed_repo: Path, action: str
+    ):
         _seed_wiki_db(indexed_repo, [])
 
         result = CliRunner().invoke(
@@ -696,8 +802,14 @@ class TestTheLifecycleIsDrivableByAnAgent:
         result = CliRunner().invoke(
             cli,
             [
-                "decision", "deprecate", "c0ffee04", str(indexed_repo),
-                "--superseded-by", "c0ffee05", "--format", "json",
+                "decision",
+                "deprecate",
+                "c0ffee04",
+                str(indexed_repo),
+                "--superseded-by",
+                "c0ffee05",
+                "--format",
+                "json",
             ],
         )
 
@@ -798,7 +910,9 @@ def test_embed_decision_writes_the_records_vector(tmp_path, monkeypatch):
     ]
 
 
-def test_decision_add_stays_silent_when_the_repo_has_no_real_embedder(tmp_path, monkeypatch):
+def test_decision_add_stays_silent_when_the_repo_has_no_real_embedder(
+    tmp_path, monkeypatch
+):
     """A keyless user must still be able to record a decision.
 
     The sentinel is asserted outside the helper, because the helper catches
@@ -971,7 +1085,9 @@ def test_list_in_a_worktree_reads_the_base_index(
     assert not (linked_worktree / ".repowise").exists()
 
 
-def test_list_in_an_unindexed_repo_refuses_instead_of_creating_a_store(tmp_path: Path) -> None:
+def test_list_in_an_unindexed_repo_refuses_instead_of_creating_a_store(
+    tmp_path: Path,
+) -> None:
     repo = tmp_path / "plain"
     repo.mkdir()
 

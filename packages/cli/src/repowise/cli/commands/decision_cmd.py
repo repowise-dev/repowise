@@ -49,11 +49,15 @@ from repowise.core.analysis.decisions.lifecycle import (
 from repowise.core.analysis.decisions.provenance import LISTABLE_SOURCES
 from repowise.core.precedent.currency import describe_decision_currency
 
+import sys
+
 #: Every source a stored record can carry, plus the no-filter sentinel.
 _SOURCE_CHOICES: tuple[str, ...] = (*LISTABLE_SOURCES, "all")
 
 
-def _resolve_decision_repo(path: str | None, fmt: str = "table", *, needs_store: bool = True):
+def _resolve_decision_repo(
+    path: str | None, fmt: str = "table", *, needs_store: bool = True
+):
     """Resolve the repo path for decision subcommands.
 
     Honors workspace auto-detection: in workspace mode without an explicit
@@ -70,7 +74,9 @@ def _resolve_decision_repo(path: str | None, fmt: str = "table", *, needs_store:
     if fmt == "json":
         repo_path = target.single_repo_path()
     else:
-        repo_path = target.narrow(notice_console(fmt), command="decision", repo_option=False)
+        repo_path = target.narrow(
+            notice_console(fmt), command="decision", repo_option=False
+        )
     return _checkout_with_index(repo_path, fmt) if needs_store else repo_path
 
 
@@ -98,7 +104,9 @@ def _checkout_with_index(repo_path: Path, fmt: str) -> Path:
         fmt,
         remedy="Run `repowise init` first.",
     )
-    raise click.exceptions.Exit(1)  # emit_refusal already exits; keeps the return type honest
+    raise click.exceptions.Exit(
+        1
+    )  # emit_refusal already exits; keeps the return type honest
 
 
 def _describe_signature(acceptance) -> dict | None:
@@ -222,13 +230,22 @@ class _DecisionFields:
 @click.option("--decision", "decision_text", default=None, help="What was chosen?")
 @click.option("--rationale", default=None, help="Why it was chosen.")
 @click.option(
-    "--alternative", "alternatives", multiple=True, help="A rejected alternative. Repeatable."
+    "--alternative",
+    "alternatives",
+    multiple=True,
+    help="A rejected alternative. Repeatable.",
 )
 @click.option(
-    "--consequence", "consequences", multiple=True, help="A tradeoff accepted. Repeatable."
+    "--consequence",
+    "consequences",
+    multiple=True,
+    help="A tradeoff accepted. Repeatable.",
 )
 @click.option(
-    "--affects", "affected", multiple=True, help="A file or module this governs. Repeatable."
+    "--affects",
+    "affected",
+    multiple=True,
+    help="A file or module this governs. Repeatable.",
 )
 @click.option("--tag", "tags", multiple=True, help="A tag. Repeatable.")
 @click.option(
@@ -286,9 +303,17 @@ def decision_add(
     if not non_interactive:
         _refuse_partial_flags(
             fmt,
-            title, context, decision_text, rationale,
-            alternatives, consequences, affected, tags, evidence_commits,
-            agent, agent_session,
+            title,
+            context,
+            decision_text,
+            rationale,
+            alternatives,
+            consequences,
+            affected,
+            tags,
+            evidence_commits,
+            agent,
+            agent_session,
         )
 
     repo_path = _resolve_decision_repo(path, fmt)
@@ -352,12 +377,36 @@ def _refuse_partial_flags(fmt: str, *given) -> None:
     Falling through to the prompts would hang a caller that has no stdin.
     """
     if any(given) or fmt == "json":
+        is_non_interactive = fmt == "json" or not sys.stdin.isatty()
+
+        if is_non_interactive:
+            # given[0] corresponds to title, given[2] corresponds to decision_text
+            title = given[0] if len(given) > 0 else None
+            decision_text = given[2] if len(given) > 2 else None
+
+            missing = []
+            if not title:
+                missing.append("--title")
+            if not decision_text:
+                missing.append("--decision")
+
+            missing_str = " and ".join(missing) if missing else "required flags"
+            guidance = (
+                f"Pass {missing_str}, e.g. "
+                '`repowise decision add --title "<what>" --decision "<chosen>" '
+                "[--rationale ...] [--affects <path>]`."
+            )
+        else:
+            guidance = (
+                "Run `repowise decision add` with no flags to be "
+                "prompted for each field instead."
+            )
+
         _ta.emit_error(
             {
                 "error": "--title and --decision are both required to add a "
                 "decision without prompting.",
-                "guidance": "Run `repowise decision add` with no flags to be "
-                "prompted for each field instead.",
+                "guidance": guidance,
             },
             fmt,
         )
@@ -483,7 +532,11 @@ async def _persist_decision(
     signer: _Signer,
 ) -> _Persisted:
     """Write the record, accept it when the prompts earned that."""
-    from repowise.core.persistence import get_session, upsert_decision, upsert_repository
+    from repowise.core.persistence import (
+        get_session,
+        upsert_decision,
+        upsert_repository,
+    )
     from repowise.core.persistence.crud.decisions import find_decision_by_title
 
     # Not ``cli``: an agent's record gets no self-authored evidence exemption
@@ -491,7 +544,9 @@ async def _persist_decision(
     source = "agent" if signer.agent else "cli"
     async with _open_store(repo_path) as sf:
         async with get_session(sf) as session:
-            repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
+            repo = await upsert_repository(
+                session, name=repo_path.name, local_path=str(repo_path)
+            )
             existing = await find_decision_by_title(
                 session, repo.id, fields.title, source=source
             )
@@ -521,7 +576,9 @@ async def _persist_decision(
             # An architectural decision needs files to govern, so without them
             # it stays a candidate for ``confirm --scope``. An agreement names no
             # file by definition; its scope is the repository.
-            if status == "active" and (fields.affected_files or fields.kind == AGREEMENT_KIND):
+            if status == "active" and (
+                fields.affected_files or fields.kind == AGREEMENT_KIND
+            ):
                 await _accept_answered_prompts(session, rec, repo_path)
 
             embed = (rec.id, rec.title, rec.decision or "", rec.evidence_file)
@@ -578,7 +635,10 @@ async def _embed_decision(
     repo has no real embedder, because a keyless user must still be able to
     record a decision.
     """
-    from repowise.cli.providers.embedders import build_embedder, resolve_embedder_for_repo
+    from repowise.cli.providers.embedders import (
+        build_embedder,
+        resolve_embedder_for_repo,
+    )
     from repowise.cli.providers.vector_store import build_vector_store
     from repowise.core.analysis.decisions.semantic_match import upsert_decision_vector
     from repowise.core.providers.embedding import is_semantic_embedder
@@ -616,7 +676,9 @@ async def _embed_decision(
 @click.argument("path", required=False, default=None)
 @click.option(
     "--status",
-    type=click.Choice(["proposed", "active", "deprecated", "superseded", "dismissed", "all"]),
+    type=click.Choice(
+        ["proposed", "active", "deprecated", "superseded", "dismissed", "all"]
+    ),
     default="all",
 )
 @click.option(
@@ -624,7 +686,9 @@ async def _embed_decision(
     type=click.Choice(_SOURCE_CHOICES),
     default="all",
 )
-@click.option("--proposed", is_flag=True, default=False, help="Show only proposed decisions.")
+@click.option(
+    "--proposed", is_flag=True, default=False, help="Show only proposed decisions."
+)
 @click.option(
     "--stale-only",
     is_flag=True,
@@ -638,7 +702,9 @@ async def _embed_decision(
     show_default=True,
     help="Max rows listed.",
 )
-@click.option("--all", "show_all", is_flag=True, default=False, help="List every matching row.")
+@click.option(
+    "--all", "show_all", is_flag=True, default=False, help="List every matching row."
+)
 @format_option()
 def decision_list(
     path: str | None,
@@ -723,7 +789,9 @@ async def _query_decisions(
     )
 
     async with _open_store(repo_path) as sf, get_session(sf) as session:
-        repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
+        repo = await upsert_repository(
+            session, name=repo_path.name, local_path=str(repo_path)
+        )
         rows = await list_decisions(
             session,
             repo.id,
@@ -806,7 +874,9 @@ def decision_show(decision_id: str, path: str | None, fmt: str) -> None:
         accepted_at=accepted_at,
     )
     if fmt == "json":
-        emit_json({"query": decision_id, "decision": _decision_json(rec, signed, currency)})
+        emit_json(
+            {"query": decision_id, "decision": _decision_json(rec, signed, currency)}
+        )
         return
     lines = _decision_header_lines(rec, signed, currency) + _decision_body_lines(rec)
     console.print(Panel("\n".join(lines), title=f"Decision {rec.id[:8]}"))
@@ -829,7 +899,9 @@ async def _load_decision(repo_path: Path, decision_id: str):
         signed = _describe_signature(acceptance)
         if rec is not None and signed is None:
             # A candidate's dismissal is signed on its review row, not the log.
-            signed = _describe_review(rec, await session.get(DecisionCandidateMeta, rec.id))
+            signed = _describe_review(
+                rec, await session.get(DecisionCandidateMeta, rec.id)
+            )
         if rec is None:
             return None, None, None
         grants = await latest_grant_times(session, rec.repository_id, [rec.id])
@@ -838,12 +910,17 @@ async def _load_decision(repo_path: Path, decision_id: str):
 
 def _describe_review(rec, meta) -> dict[str, str] | None:
     """Who dismissed or deprecated a candidate, shaped like :func:`_describe_signature`."""
-    if meta is None or not meta.dismissed_by or rec.status not in ("dismissed", "deprecated"):
+    if (
+        meta is None
+        or not meta.dismissed_by
+        or rec.status not in ("dismissed", "deprecated")
+    ):
         return None
     kind = meta.dismissed_by_kind or "unrecorded"
     session_id = meta.dismissed_session or ""
     return {
-        "label": f"{meta.dismissed_by} ({kind})" + (f", session {session_id}" if session_id else ""),
+        "label": f"{meta.dismissed_by} ({kind})"
+        + (f", session {session_id}" if session_id else ""),
         "verb": rec.status.capitalize(),
         "accepter": meta.dismissed_by,
         "kind": kind,
@@ -940,7 +1017,9 @@ def _decision_body_lines(rec) -> list[str]:
 
 #: The remedy printed beside a refused acceptance, naming the flags that
 #: supply what the contract found missing.
-_ACCEPT_REMEDY = "Supply the missing parts with --decision, --reason, --scope or --evidence."
+_ACCEPT_REMEDY = (
+    "Supply the missing parts with --decision, --reason, --scope or --evidence."
+)
 _ACCEPT_IDENTITY_REMEDY = "Name the signer with --as <name> or --agent <slug>."
 
 
@@ -968,9 +1047,14 @@ def _accept_remedy_for_blockers(blockers: list[str]) -> str:
 @decision_group.command("confirm")
 @click.argument("decision_ids", nargs=-1)
 @click.option(
-    "--decision", "decision_text", default="", help="What was chosen, if the record does not say."
+    "--decision",
+    "decision_text",
+    default="",
+    help="What was chosen, if the record does not say.",
 )
-@click.option("--reason", default="", help="Rationale, or why the constraint needs none.")
+@click.option(
+    "--reason", default="", help="Rationale, or why the constraint needs none."
+)
 @click.option(
     "--scope",
     multiple=True,
@@ -981,10 +1065,15 @@ def _accept_remedy_for_blockers(blockers: list[str]) -> str:
     multiple=True,
     help="Commit, file or link the decision rests on. Repeatable.",
 )
-@click.option("--as", "accepter", default="", help="Record a different accepter identity.")
+@click.option(
+    "--as", "accepter", default="", help="Record a different accepter identity."
+)
 @_signing_options
 @click.option(
-    "--preview", is_flag=True, default=False, help="Report what each id would do, and write nothing."
+    "--preview",
+    is_flag=True,
+    default=False,
+    help="Report what each id would do, and write nothing.",
 )
 @format_option()
 def decision_confirm(
@@ -1044,14 +1133,15 @@ def decision_confirm(
 
     results = run_async(
         _review_batch(
-            repo_path, ids, action="accepted", verb="accept", preview=preview, apply_one=_accept
+            repo_path,
+            ids,
+            action="accepted",
+            verb="accept",
+            preview=preview,
+            apply_one=_accept,
         )
     )
-    blockers = [
-        blocker
-        for result in results
-        for blocker in result.get("blockers", [])
-    ]
+    blockers = [blocker for result in results for blocker in result.get("blockers", [])]
     remedy = _accept_remedy_for_blockers(blockers)
     if len(ids) > 1 or preview or fmt == "json":
         _emit_batch(results, "accepted", "accept", preview, fmt, remedy)
@@ -1061,11 +1151,16 @@ def decision_confirm(
 
 @decision_group.command("dismiss")
 @click.argument("decision_ids", nargs=-1)
-@click.option("--yes", "-y", is_flag=True, default=False, help="Skip the confirmation prompt.")
+@click.option(
+    "--yes", "-y", is_flag=True, default=False, help="Skip the confirmation prompt."
+)
 @click.option("--reason", default="", help="Why it was tombstoned.")
 @_signing_options
 @click.option(
-    "--preview", is_flag=True, default=False, help="Report what each id would do, and write nothing."
+    "--preview",
+    is_flag=True,
+    default=False,
+    help="Report what each id would do, and write nothing.",
 )
 @format_option()
 def decision_dismiss(
@@ -1104,7 +1199,12 @@ def decision_dismiss(
 
     results = run_async(
         _review_batch(
-            repo_path, ids, action="dismissed", verb="dismiss", preview=preview, apply_one=_dismiss
+            repo_path,
+            ids,
+            action="dismissed",
+            verb="dismiss",
+            preview=preview,
+            apply_one=_dismiss,
         )
     )
     if len(ids) > 1 or preview or fmt == "json":
@@ -1140,11 +1240,16 @@ def _dismissal_confirmed(ids: list[str], *, yes: bool, preview: bool, fmt: str) 
 @decision_group.command("deprecate")
 @click.argument("decision_id")
 @click.argument("path", required=False, default=None)
-@click.option("--superseded-by", default=None, help="ID of the decision that replaces this one.")
+@click.option(
+    "--superseded-by", default=None, help="ID of the decision that replaces this one."
+)
 @click.option("--reason", default="", help="Why it was retired.")
 @_signing_options
 @click.option(
-    "--preview", is_flag=True, default=False, help="Report what it would do, and write nothing."
+    "--preview",
+    is_flag=True,
+    default=False,
+    help="Report what it would do, and write nothing.",
 )
 @format_option()
 def decision_deprecate(
@@ -1169,10 +1274,18 @@ def decision_deprecate(
     signer = _signer(agent, agent_session)
 
     async def _deprecate(session, rec) -> None:
-        successor = await _resolve_decision_id(session, superseded_by) if superseded_by else None
+        successor = (
+            await _resolve_decision_id(session, superseded_by)
+            if superseded_by
+            else None
+        )
         if superseded_by and successor is None:
-            raise _RefusedError("decision_not_found", f"Unknown successor: {superseded_by}")
-        await _retire(session, rec, successor, signer=signer, repo_path=repo_path, reason=reason)
+            raise _RefusedError(
+                "decision_not_found", f"Unknown successor: {superseded_by}"
+            )
+        await _retire(
+            session, rec, successor, signer=signer, repo_path=repo_path, reason=reason
+        )
 
     results = run_async(
         _review_batch(
@@ -1275,7 +1388,9 @@ async def _query_health(repo_path: Path) -> dict:
     )
 
     async with _open_store(repo_path) as sf, get_session(sf) as session:
-        repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
+        repo = await upsert_repository(
+            session, name=repo_path.name, local_path=str(repo_path)
+        )
         return await get_decision_health_summary(session, repo.id)
 
 
@@ -1284,13 +1399,17 @@ def _print_health_summary(summary: dict) -> None:
     stats_table.add_column("Metric", style="cyan")
     stats_table.add_column("Value", justify="right")
     stats_table.add_row("Active decisions", str(summary.get("active", 0)))
-    stats_table.add_row("Proposed (needs review)", f"[yellow]{summary.get('proposed', 0)}[/yellow]")
+    stats_table.add_row(
+        "Proposed (needs review)", f"[yellow]{summary.get('proposed', 0)}[/yellow]"
+    )
     stats_table.add_row("Stale decisions", f"[red]{summary.get('stale', 0)}[/red]")
     unscoped = summary.get("unscoped", 0)
     if unscoped:
         # Not folded into "stale": these were never checked, which is a
         # different thing from checked and found to have drifted.
-        stats_table.add_row("Unscoped (cannot be checked)", f"[yellow]{unscoped}[/yellow]")
+        stats_table.add_row(
+            "Unscoped (cannot be checked)", f"[yellow]{unscoped}[/yellow]"
+        )
     stats_table.add_row("Deprecated", str(summary.get("deprecated", 0)))
     console.print(stats_table)
 
@@ -1304,7 +1423,9 @@ def _print_health_lists(health: dict) -> None:
         5,
         lambda d: f"{d.id[:8]}  {escape(d.title)}  (staleness: {d.staleness_score:.2f})",
     )
-    _print_capped("yellow", "Ungoverned hotspots", health["ungoverned_hotspots"], 10, str)
+    _print_capped(
+        "yellow", "Ungoverned hotspots", health["ungoverned_hotspots"], 10, str
+    )
     _print_capped(
         "yellow",
         "Proposed decisions",
