@@ -91,6 +91,27 @@ class CachingEmbedder:
             raise EmbedderCoolingDownError("the embedder failed recently; query embeds are paused")
         try:
             return await self._inner.embed(texts, kind=kind)
-        except Exception:
-            self._query_down_until = time.monotonic() + FAILURE_COOLDOWN_S
+        except Exception as exc:
+            if _endpoint_failure(exc):
+                self._query_down_until = time.monotonic() + FAILURE_COOLDOWN_S
             raise
+
+
+#: Client-error statuses that still say the endpoint is unusable: a bad key,
+#: no access, a timeout, a rate limit or spent quota.
+_ENDPOINT_CLIENT_ERRORS = frozenset({401, 403, 408, 429})
+
+
+def _endpoint_failure(exc: Exception) -> bool:
+    """Whether *exc* says the endpoint is down, not that this one query was refused.
+
+    A rejected query (an oversized or malformed one, a 400) must not pause the
+    queries after it. An error with no status (a refused connection, a
+    timeout) counts as the endpoint's.
+    """
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+    if not isinstance(status, int) or isinstance(status, bool):
+        return True
+    return not 400 <= status < 500 or status in _ENDPOINT_CLIENT_ERRORS

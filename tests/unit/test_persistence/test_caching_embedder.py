@@ -8,6 +8,8 @@ hand back a vector from a different embedder or a different width.
 
 from __future__ import annotations
 
+import pytest
+
 from repowise.core.providers.embedding.caching import MAX_ENTRIES, CachingEmbedder
 
 
@@ -161,8 +163,6 @@ class _FailingEmbedder(_CountingEmbedder):
 
 
 async def test_a_failed_query_embed_pauses_the_next_ones(monkeypatch):
-    import pytest
-
     from repowise.core.providers.embedding import caching
 
     clock = [100.0]
@@ -189,8 +189,6 @@ async def test_a_failed_query_embed_pauses_the_next_ones(monkeypatch):
 
 
 async def test_a_document_failure_does_not_pause_queries():
-    import pytest
-
     inner = _FailingEmbedder()
     embedder = CachingEmbedder(inner)
     with pytest.raises(RuntimeError):
@@ -198,3 +196,38 @@ async def test_a_document_failure_does_not_pause_queries():
     with pytest.raises(RuntimeError, match="429"):
         await embedder.embed(["auth"], kind="query")
     assert len(inner.calls) == 2
+
+
+class _StatusError(Exception):
+    def __init__(self, status_code: int) -> None:
+        super().__init__(f"HTTP {status_code}")
+        self.status_code = status_code
+
+
+class _RejectingEmbedder(_CountingEmbedder):
+    """Answers every call with one HTTP status error."""
+
+    def __init__(self, status_code: int) -> None:
+        super().__init__()
+        self.status_code = status_code
+
+    async def embed(self, texts: list[str], *, kind: str = "document") -> list[list[float]]:
+        self.calls.append(list(texts))
+        raise _StatusError(self.status_code)
+
+
+@pytest.mark.parametrize(
+    ("status", "pauses"), [(400, False), (422, False), (401, True), (429, True), (503, True)]
+)
+async def test_only_an_endpoint_failure_pauses_the_next_queries(status, pauses):
+    """A query the endpoint refuses for itself leaves the next query alone."""
+    from repowise.core.providers.embedding import caching
+
+    inner = _RejectingEmbedder(status)
+    embedder = CachingEmbedder(inner)
+    with pytest.raises(_StatusError):
+        await embedder.embed(["too long"], kind="query")
+    error = caching.EmbedderCoolingDownError if pauses else _StatusError
+    with pytest.raises(error):
+        await embedder.embed(["next"], kind="query")
+    assert len(inner.calls) == (1 if pauses else 2)
