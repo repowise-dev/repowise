@@ -8,7 +8,7 @@ from typing import Any
 
 from repowise.cli.errors import reasoned_error
 from repowise.cli.helpers import console
-from repowise.cli.ui import OK
+from repowise.cli.ui import OK, WARN
 
 from ._options import InitOptions
 
@@ -118,7 +118,7 @@ def delegate_to_seeded_update(opts: InitOptions, repo_path: Path, scan: Any) -> 
         dry_run=opts.dry_run,
     )
     if not seeded:
-        console.print("[yellow]Falling back to full init.[/yellow]")
+        console.print(f"[{WARN}]Falling back to full init.[/]")
         return False
     if opts.dry_run:
         console.print("[dim]Dry run: Would seed worktree index and delegate to update.[/dim]")
