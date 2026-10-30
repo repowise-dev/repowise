@@ -163,22 +163,22 @@ def lean_response(value: Any, *, keep_repository: bool = False) -> Any:
     if isinstance(value, list):
         for item in value:
             lean_response(item, keep_repository=keep_repository)
-        return value
-    if not isinstance(value, dict):
-        return value
+    elif isinstance(value, dict):
+        _lean_row(value, keep_repository)
+        for key, child in value.items():
+            if key in _DECISION_LANES and isinstance(child, list):
+                _drop_empty_fields(child)
+            if key != "evidence_refs":
+                lean_response(child, keep_repository=keep_repository)
+    return value
+
+
+def _lean_row(value: dict, keep_repository: bool) -> None:
     refs = value.get("evidence_refs")
     if isinstance(refs, list):
         value["evidence_refs"] = [_lean_ref(r, value, keep_repository) for r in refs]
     if isinstance(value.get("commit"), str):
         value["commit"] = value["commit"][:12]
-    for key, child in value.items():
-        if key in _DECISION_LANES and isinstance(child, list):
-            for row in child:
-                if isinstance(row, dict):
-                    _drop_empty(row)
-        if key != "evidence_refs":
-            lean_response(child, keep_repository=keep_repository)
-    return value
 
 
 def _lean_ref(ref: Any, row: dict, keep_repository: bool) -> Any:
@@ -195,6 +195,8 @@ def _lean_ref(ref: Any, row: dict, keep_repository: bool) -> Any:
     return out
 
 
-def _drop_empty(row: dict) -> None:
-    for key in [k for k, v in row.items() if v in ("", None) or v == [] or v == {}]:
-        del row[key]
+def _drop_empty_fields(rows: list) -> None:
+    for row in rows:
+        if isinstance(row, dict):
+            for key in [k for k, v in row.items() if v in ("", None) or v == [] or v == {}]:
+                del row[key]

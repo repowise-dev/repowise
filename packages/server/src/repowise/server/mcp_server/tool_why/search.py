@@ -168,13 +168,17 @@ def _expand_answering_rules(
         if record is None or row["id"] in served_ids:
             continue
         if clears_floor(record_score(_record_text(record))):
-            body = _decision_body(record)
-            if len(body) > _CARD_DECISION_CHARS:
-                body = body[: _CARD_DECISION_CHARS - 3].rstrip() + "..."
-            row["decision"] = body
+            row["decision"] = _bounded_body(record)
             answering.append(row)
     if answering:
         entry["governing_decisions"] = answering + [r for r in rows if r not in answering]
+
+
+def _bounded_body(record: Any) -> str:
+    body = _decision_body(record)
+    if len(body) > _CARD_DECISION_CHARS:
+        body = body[: _CARD_DECISION_CHARS - 3].rstrip() + "..."
+    return body
 
 
 _COMMIT_LANES = ("file_commits", "cross_references", "git_log")
