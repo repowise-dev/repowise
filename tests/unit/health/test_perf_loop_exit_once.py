@@ -15,10 +15,10 @@ from repowise.core.analysis.health.complexity.walker import walk_file
 _EXT = {"python": "py", "go": "go", "typescript": "ts", "java": "java"}
 
 _PY = "import pandas as pd\nimport requests\n\ndef f(xs, df, lock, ok):\n    big = [1, 2]\n    for x in xs:\n{body}"
-_GO = 'package m\nimport "net/http"\nfunc f(xs []string, ok bool) {{\n\tfor _, x := range xs {{\n{body}\n\t}}\n}}'
+_GO = 'package m\nimport "net/http"\nfunc f(xs []string, ok bool, s string) {{\n\tfor _, x := range xs {{\n{body}\n\t}}\n}}'
 _TS = "async function f(xs, ok) {{\n  for (const x of xs) {{\n{body}\n  }}\n}}"
 _JAVA = (
-    "import java.util.regex.Pattern;\nclass A {{ void f(java.util.List<String> xs, boolean ok) {{\n"
+    "import java.util.regex.Pattern;\nclass A {{ void f(java.util.List<String> xs, boolean ok, String s) {{\n"
     "  for (String x : xs) {{\n{body}\n  }}\n}} }}"
 )
 
@@ -30,13 +30,13 @@ _CASES = [
     ("python", _PY, "        y = x in big\n{exit}", "membership_test_against_list_in_loop"),
     ("python", _PY, '        s += "row"\n{exit}', "string_concat_in_loop"),
     ("go", _GO, "\t\thttp.Get(x)\n{exit}", "io_in_loop"),
-    ("go", _GO, '\t\tx += "row"\n{exit}', "string_concat_in_loop"),
+    ("go", _GO, '\t\ts += "row"\n{exit}', "string_concat_in_loop"),
     ("go", _GO, "\t\tdefer http.Get(x)\n{exit}", "defer_in_loop"),
     ("typescript", _TS, "    const y = JSON.parse(JSON.stringify(x));\n{exit}", "json_parse_in_loop"),
     ("typescript", _TS, "    await fetch(x);\n{exit}", "io_in_loop"),
     ("typescript", _TS, "    await fetch(x);\n{exit}", "serial_await_in_loop"),
     ("java", _JAVA, '    Pattern.compile("a+");\n{exit}', "regex_compile_in_loop"),
-    ("java", _JAVA, '    x += "line";\n{exit}', "string_concat_in_loop"),
+    ("java", _JAVA, '    s += "line";\n{exit}', "string_concat_in_loop"),
 ]
 
 _EXITS = {
