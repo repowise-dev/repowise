@@ -118,6 +118,20 @@ def _start_overlap_scan(
     )
 
 
+async def _scan_answer(scan: asyncio.Task | None) -> dict[str, Any] | None:
+    """The scan's whole answer before capping, ``None`` without one or when it failed.
+
+    A task can be awaited again once done, so the payload cache reads the same
+    answer the block was built from.
+    """
+    if scan is None:
+        return None
+    try:
+        return (await scan).to_dict()
+    except (TimeoutError, subprocess.SubprocessError, OSError):
+        return None
+
+
 async def _branch_overlap_block(
     ctx: Any,
     changed: dict[str, set[int]],
@@ -134,15 +148,8 @@ async def _branch_overlap_block(
     """
     if scan is None:
         scan = _start_overlap_scan(ctx, changed, current)
-    if scan is None:
-        return None
-    try:
-        overlap = await scan
-    except (TimeoutError, subprocess.SubprocessError, OSError):
-        return None
-
-    block = overlap.to_dict()
-    if not block["branches"]:
+    block = await _scan_answer(scan)
+    if block is None or not block["branches"]:
         return None
     # Branches first: an entry the cap drops goes to the store whole, and only
     # the entries that survive can carry an index the reader can find.

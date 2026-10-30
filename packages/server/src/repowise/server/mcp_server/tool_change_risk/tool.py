@@ -24,7 +24,12 @@ from repowise.server.mcp_server._helpers import (
 )
 
 from . import cache as _cache
-from .branches import _branch_overlap_block, _independent_changes_block, _start_overlap_scan
+from .branches import (
+    _branch_overlap_block,
+    _independent_changes_block,
+    _scan_answer,
+    _start_overlap_scan,
+)
 from .changed import _changed_in_scope, _push_change
 from .cross_repo import _cross_repo_block
 from .health import (
@@ -211,12 +216,9 @@ async def get_change_risk(
     started = time.perf_counter()
     includes = _path_patterns(include_paths)
     key = await _cache.cache_key(ctx, revspec, extensions, exclude_patterns, includes, baseline)
-    hit = _cache.lookup(key)
-    if hit is not None and finding_id is not None:
-        return _drill_down({"ref": hit.ref}, hit.delta, finding_id, revspec)
-    stored = hit.payloads.get(_cache.payload_key(include)) if hit is not None else None
-    if stored is not None:
-        return await _served(ctx, stored, started)
+    cached, rescan = await _from_cache(ctx, key, include, finding_id, revspec, started)
+    if cached is not None:
+        return cached
     result, error = await _score_change(
         ctx.path, revspec, extensions, exclude_patterns, includes, baseline
     )
@@ -258,7 +260,9 @@ async def get_change_risk(
     )
     # A drill-down returns one finding and nothing else, so the tests,
     # coverage, fix, cross-repo and branch blocks would never reach the caller.
-    scan = _start_overlap_scan(ctx, changed, revspec_head(revspec)) if finding_id is None else None
+    scan = branches = None
+    if finding_id is None:
+        scan, branches = rescan or await _branch_scan(ctx, key, changed, revspec)
     independent = None
     try:
         if finding_id is None:
@@ -321,17 +325,70 @@ async def get_change_risk(
     attach_ignored_arguments(payload, ignored)
     collector.attach(payload)
     if scored_entry is not None:
-        scored_entry.payloads[_cache.payload_key(include)] = (
+        scored_entry.payloads[_cache.payload_key(include)] = _cache.Stored(
             copy.deepcopy(payload),
             sorted(changed) or None,
+            branches,
+            await _scan_answer(scan),
         )
     return payload
 
 
-async def _served(ctx: Any, stored: tuple[dict, list[str] | None], started: float) -> dict:
+async def _branch_scan(
+    ctx: Any, key: str | None, changed: Any, revspec: str | None
+) -> tuple[asyncio.Task | None, str | None]:
+    """``(the branch scan, the branch inputs it starts from)``; no inputs when uncached."""
+    # Read before the scan, so tips that move during it fail the next check.
+    branches = await asyncio.to_thread(_cache.branch_inputs, str(ctx.path)) if key else None
+    return _start_overlap_scan(ctx, changed, revspec_head(revspec)), branches
+
+
+async def _from_cache(
+    ctx: Any,
+    key: str | None,
+    include: list[str] | None,
+    finding_id: str | None,
+    revspec: str | None,
+    started: float,
+) -> tuple[dict | None, tuple[asyncio.Task | None, str | None] | None]:
+    """A reply from the range cache, else ``(None, a branch scan the rebuild can reuse)``."""
+    hit = _cache.lookup(key)
+    if hit is None:
+        return None, None
+    if finding_id is not None:
+        return _drill_down({"ref": hit.ref}, hit.delta, finding_id, revspec), None
+    stored = hit.payloads.get(_cache.payload_key(include))
+    if stored is None:
+        return None, None
+    return await _revalidated(ctx, stored, revspec, started)
+
+
+async def _revalidated(
+    ctx: Any, stored: _cache.Stored, revspec: str | None, started: float
+) -> tuple[dict | None, tuple[asyncio.Task | None, str | None] | None]:
+    """``(payload, None)`` while its branch answer holds, else ``(None, (scan, inputs))``.
+
+    Unmoved tips serve it as is. Moved tips rerun the scan, and an unchanged
+    answer still serves it; a changed one hands the scan, and the inputs read
+    before it, to the full rebuild.
+    """
+    branches = await asyncio.to_thread(_cache.branch_inputs, str(ctx.path))
+    if branches is None or branches != stored.branches:
+        scan = _start_overlap_scan(
+            ctx, dict.fromkeys(stored.targets or ()), revspec_head(revspec)
+        )
+        answer = await _scan_answer(scan)
+        # A failed scan is no answer, so it never vouches for the stored one.
+        if answer != stored.overlap or (answer is None and stored.targets):
+            return None, (scan, branches)
+        stored.branches = branches
+    return await _served(ctx, stored, started), None
+
+
+async def _served(ctx: Any, stored: _cache.Stored, started: float) -> dict:
     """A cached payload with its ``_meta`` rebuilt, since freshness reads the live checkout."""
-    payload, targets = stored
-    out = copy.deepcopy(payload)
+    targets = stored.targets
+    out = copy.deepcopy(stored.payload)
     # Omission refs belong to the stored blocks, so they carry over.
     kept = {k: v for k, v in out.get("_meta", {}).items() if k in _CARRIED_META}
     out["_meta"] = {
