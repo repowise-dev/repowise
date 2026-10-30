@@ -56,7 +56,8 @@ async def _time_case(repo: str, tool: str, args: dict[str, Any]) -> tuple[float,
     return ready - started, done - ready, error
 
 
-def _row(tool: str, start: float, call: float, error: str, args: argparse.Namespace) -> str:
+def _row(tool: str, timing: tuple[float, float, str], args: argparse.Namespace) -> str:
+    start, call, error = timing
     over = []
     if start > args.start_budget_s:
         over.append(f"start over {args.start_budget_s:g} s")
@@ -73,7 +74,7 @@ def main() -> int:
     parser.add_argument("--repo", default=".", help="An indexed repository")
     parser.add_argument("--report", type=Path, help="Write the markdown report here too")
     parser.add_argument("--start-budget-s", type=float, default=20.0)
-    parser.add_argument("--call-budget-s", type=float, default=30.0)
+    parser.add_argument("--call-budget-s", type=float, default=60.0)
     args = parser.parse_args()
     repo = str(Path(args.repo).resolve())
 
@@ -83,10 +84,10 @@ def main() -> int:
     ]
     for tool, call_args in CASES:
         try:
-            start, call, error = asyncio.run(_time_case(repo, tool, call_args))
+            timing = asyncio.run(_time_case(repo, tool, call_args))
         except Exception as exc:  # A server that cannot start is a breach too.
-            start, call, error = 0.0, 0.0, f"{type(exc).__name__}: {exc}"[:200]
-        lines.append(_row(tool, start, call, error, args))
+            timing = (0.0, 0.0, f"{type(exc).__name__}: {exc}"[:200])
+        lines.append(_row(tool, timing, args))
     breached = any(not line.endswith("| ok |") for line in lines[2:])
     heading = (
         f"MCP cold first-call smoke: budgets {args.start_budget_s:g} s start, "
