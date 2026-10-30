@@ -108,36 +108,44 @@ async def same_name_sites(
     return sites
 
 
-def doc_sites(root: Path, name: str) -> tuple[list[dict[str, Any]], list[str]]:
-    """One row per document naming *name* as a word, and why the list may be short.
+def documents_holding(root: Path, needle: str) -> list[str]:
+    """Documentation files whose text holds *needle*, sorted; release notes left out.
 
-    The row is the first mention; ``mentions`` counts them when there are more.
-    Release notes record history, so they are not edit sites.
+    Release notes record history, so they are not edit sites. Without git every
+    listed document is returned for the caller's own scan.
     """
     from repowise.server.mcp_server._line_hits import _files_holding, _listed_files
 
-    # Without git every listed document is read instead.
-    held = _files_holding(root, name)
-    if held is None:
-        held = _listed_files(root)
-    docs = sorted(
+    held = _files_holding(root, needle)
+    return sorted(
         f
-        for f in held
+        for f in (_listed_files(root) if held is None else held)
         if classification_token(f) in DOC_EXTENSIONS
         and not _RELEASE_NOTES.match(PurePosixPath(f).stem)
     )
+
+
+def _doc_row(root: Path, rel: str, word: re.Pattern[str]) -> dict[str, Any] | None:
+    """The first line of *rel* matching *word*, with ``mentions`` past one."""
+    hits = [(n, t) for n, t in enumerate(_read_lines(root, rel) or [], 1) if word.search(t)]
+    if not hits:
+        return None
+    n, text = hits[0]
+    row: dict[str, Any] = {
+        "path": rel, "line": n, "kind": "doc", "text": text.strip()[:MAX_TEXT_CHARS]
+    }
+    if len(hits) > 1:
+        row["mentions"] = len(hits)
+    return row
+
+
+def doc_sites(root: Path, name: str) -> tuple[list[dict[str, Any]], list[str]]:
+    """One row per document naming *name* as a word, and why the list may be short."""
+    docs = documents_holding(root, name)
     reasons: list[str] = []
     if len(docs) > MAX_DOC_FILES:
         reasons.append(f"over {MAX_DOC_FILES} documents name it")
         docs = docs[:MAX_DOC_FILES]
     word = _word(name)
-    rows: list[dict[str, Any]] = []
-    for rel in docs:
-        hits = [(n, t) for n, t in enumerate(_read_lines(root, rel) or [], 1) if word.search(t)]
-        if hits:
-            n, text = hits[0]
-            row = {"path": rel, "line": n, "kind": "doc", "text": text.strip()[:MAX_TEXT_CHARS]}
-            if len(hits) > 1:
-                row["mentions"] = len(hits)
-            rows.append(row)
-    return rows, reasons
+    rows = [_doc_row(root, rel, word) for rel in docs]
+    return [r for r in rows if r], reasons

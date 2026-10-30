@@ -12,8 +12,8 @@ import re
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from repowise.core.support_paths import DOC_EXTENSIONS, classification_token
 from repowise.server.mcp_server._edit_sites import _GENERIC_STEMS, MAX_TEXT_CHARS, _read_lines
+from repowise.server.mcp_server._edit_sites_wider import documents_holding
 
 #: Read alongside the stored rows; a mention is a lead, not a resolved reference.
 MENTIONS_BASIS = (
@@ -40,22 +40,13 @@ def doc_mentions(
     root: Path, target: str, listed: set[tuple[str, int]]
 ) -> list[dict[str, Any]]:
     """``{document, line, text}`` rows naming *target* by a short form, minus *listed* sites."""
-    from repowise.server.mcp_server._line_hits import _files_holding, _listed_files
-
     forms = short_forms(target)
-    documents: set[str] = set()
-    for form in forms:
-        held = _files_holding(root, form)
-        # Without git every listed document is read instead.
-        documents.update(_listed_files(root) if held is None else held)
-    docs = sorted(d for d in documents if classification_token(d) in DOC_EXTENSIONS)
+    docs = sorted({d for form in forms for d in documents_holding(root, form)} - {target})
     alt = "|".join(re.escape(f) for f in sorted(forms, key=len, reverse=True))
     # A form inside a longer word or file name (``x.test.tsx``) is another file.
     pattern = re.compile(rf"(?<![\w.-])(?:{alt})(?!\.?[\w-])")
     rows: list[dict[str, Any]] = []
     for doc in docs[:_MAX_DOCUMENTS]:
-        if doc == target:
-            continue
         for n, text in enumerate(_read_lines(root, doc) or [], 1):
             if (doc, n) not in listed and pattern.search(text):
                 rows.append({"document": doc, "line": n, "text": text.strip()[:MAX_TEXT_CHARS]})
