@@ -53,7 +53,11 @@ from ..parser_helpers import (
     is_anonymous_member,
     scope_segment,
 )
-from ..symbol_identity import disambiguate_colliding_ids, symbol_discriminator
+from ..symbol_identity import (
+    disambiguate_colliding_ids,
+    split_python_property_mutators,
+    symbol_discriminator,
+)
 from .symbol_rules import (
     _TS_JS_LANGUAGES,
     _attribute_decorators,
@@ -603,6 +607,7 @@ def _finalize_symbols(
         symbols = drop_extension_block_symbols(symbols, root, src)
     if lang == "python":
         symbols = _drop_python_rebindings(symbols)
+        split_python_property_mutators(symbols)
     # Anonymous members go last, once the overloads holding them carry
     # their discriminators.
     anonymous = [s for s in symbols if is_anonymous_member(s)]

@@ -86,7 +86,7 @@ from .call_receiver_typing import (
     ReceiverTypingMixin,
     _store_capped,
 )
-from .decorator_names import is_property_accessor
+from .decorator_names import is_property_accessor, property_mutator_role
 from .lang_helpers.anonymous_classes import is_anonymous_member
 from .language_data import (
     get_builtin_methods,
@@ -563,6 +563,10 @@ class CallResolver(
         aliases: list[tuple[str, str, str | None]] = []
 
         for sym in parsed.symbols:
+            # A property's setter or deleter runs on assignment or ``del``,
+            # never on a call: its name answers with the getter.
+            if property_mutator_role(sym.decorators) is not None:
+                continue
             # An overload set is indexed once, under its representative.
             index_id = representatives.get(sym.id, sym.id)
             decl_key = (sym.parent_name, sym.name)

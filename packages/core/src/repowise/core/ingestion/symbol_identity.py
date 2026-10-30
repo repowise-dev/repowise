@@ -21,6 +21,9 @@ gains a discriminator:
 - `` `<digits> `` on a type segment: the CLR generic arity that tells a C#
   ``IFoo<T>`` from a same-file ``IFoo``, ``IFoo.cs::IFoo`1``. Its members
   carry the suffix in ``parent_name`` and so in their own ids.
+- ``#setter`` / ``#deleter`` on a Python property's ``@x.setter`` or
+  ``@x.deleter`` def, ``m.py::C::x#setter``. The getter keeps the plain id,
+  and no call names the mutator, so the suffix is no payload to split off.
 
 ``Symbol.name``, ``qualified_name`` and the signature never change, and a name
 declared once keeps its plain id. Discriminators are registered per language
@@ -33,6 +36,7 @@ import re
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable
 
+from .decorator_names import property_mutator_role
 from .models import Symbol
 from .return_types import signature_parameter_count, signature_parameters
 from .type_names import strip_type_arguments, type_argument_count
@@ -354,6 +358,18 @@ def disambiguate_colliding_ids(symbols: list[Symbol], language: str) -> None:
                 symbol.id = f"{base}#{key}"
 
 
+def split_python_property_mutators(symbols: list[Symbol]) -> None:
+    """Give a property's setter and deleter their own ids beside its getter, in place.
+
+    All three share a name, so one graph node would hold all three bodies.
+    """
+    taken = Counter(symbol.id for symbol in symbols)
+    for symbol in symbols:
+        role = property_mutator_role(symbol.decorators)
+        if role is not None and taken[symbol.id] > 1:
+            symbol.id = f"{symbol.id}#{role}"
+
+
 def _split_same_counts(keyed: list[tuple[Symbol, str | None]]) -> list[tuple[Symbol, str | None]]:
     """Append parameter types to every count two members share, when they differ.
 
@@ -502,6 +518,7 @@ __all__ = [
     "overload_sets",
     "pair_overloads",
     "parameter_type_arity",
+    "split_python_property_mutators",
     "split_symbol_id",
     "symbol_discriminator",
     "symbol_id_arity",
