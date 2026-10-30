@@ -130,38 +130,58 @@ def _registered_symbols(
     pending = dict(file_origins)
     while pending:
         relations = yield Need("registrars", tuple(sorted(pending)))
-        parents: dict[str, dict[str, int]] = {}
-        for registrar, registered in relations:
-            carried = pending.get(registered)
-            if not carried:
-                continue
-            if registrar in avoid:
-                carried = _seeds_declared_by(carried, registrar)
-                if not carried:
-                    continue
+        parents = _registration_parents(pending, relations, avoid)
+        pending = _fresh_registration_origins(parents, file_origins)
+        if pending:
+            yield from _add_registered_symbols(pending, start)
+
+    return start
+
+
+def _registration_parents(
+    pending: Mapping[str, Mapping[str, int]],
+    relations: Collection[tuple[str, str]],
+    avoid: Collection[str],
+) -> dict[str, dict[str, int]]:
+    parents: dict[str, dict[str, int]] = {}
+    for registrar, registered in relations:
+        carried = pending.get(registered)
+        if not carried:
+            continue
+        if registrar in avoid:
+            carried = _seeds_declared_by(carried, registrar)
+        if carried:
             parent_origins = parents.setdefault(registrar, {})
             for seed, distance in carried.items():
                 parent_origins[seed] = min(distance, parent_origins.get(seed, distance))
+    return parents
 
-        pending = {}
-        for registrar, carried in parents.items():
-            known = file_origins.setdefault(registrar, {})
-            fresh = {
-                seed: distance
-                for seed, distance in carried.items()
-                if seed not in known or distance < known[seed]
-            }
-            if fresh:
-                known.update(fresh)
-                pending[registrar] = fresh
 
-        if pending:
-            for file, symbol in (yield Need("declared", tuple(sorted(pending)))):
-                symbol_origins = start.setdefault(symbol, {})
-                for seed, distance in pending[file].items():
-                    symbol_origins[seed] = min(distance, symbol_origins.get(seed, distance))
+def _fresh_registration_origins(
+    parents: Mapping[str, Mapping[str, int]],
+    file_origins: dict[str, dict[str, int]],
+) -> dict[str, dict[str, int]]:
+    pending: dict[str, dict[str, int]] = {}
+    for registrar, carried in parents.items():
+        known = file_origins.setdefault(registrar, {})
+        fresh = {
+            seed: distance
+            for seed, distance in carried.items()
+            if seed not in known or distance < known[seed]
+        }
+        if fresh:
+            known.update(fresh)
+            pending[registrar] = fresh
+    return pending
 
-    return start
+
+def _add_registered_symbols(
+    pending: Mapping[str, Mapping[str, int]], start: dict[str, dict[str, int]]
+) -> Walk[None]:
+    for file, symbol in (yield Need("declared", tuple(sorted(pending)))):
+        symbol_origins = start.setdefault(symbol, {})
+        for seed, distance in pending[file].items():
+            symbol_origins[seed] = min(distance, symbol_origins.get(seed, distance))
 
 
 def _seeds_declared_by(carried: Mapping[str, int], owner: str) -> dict[str, int]:
