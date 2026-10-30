@@ -59,7 +59,6 @@ from .ranking import (
 from .retrieval import _federated_search, _fused_retrieve, _per_repo
 from .serve import (
     _apply_freshness_boost,
-    _assign_confidence,
     _attach_paths,
     _drop_internal_ranking_fields,
     _grep_hint_for,
@@ -176,7 +175,6 @@ async def _concept_search(
     ranked = list(output)
     output = output[:limit]
     await attach_hit_symbols(ctx, query, output)
-    _assign_confidence(output, "relevance_score", "confidence_score")
 
     response: dict = {
         "results": output,
@@ -273,7 +271,7 @@ async def search_codebase(
         _pkg._lead_candidates(structured, issue, limit)
         await attach_line_hits(structured, query, resolved_mode, names, repo)
         attach_ignored_arguments(structured, ignored)
-        return _flag_degraded_legs(structured)
+        return _flag_degraded_legs(_drop_echoed_candidates(structured))
 
     if fed is not None:
         # kind is filtered per repo before each repo's limit cut, so the fused
@@ -282,7 +280,7 @@ async def search_codebase(
         if grep_hint and not federated.get("results"):
             federated["grep_hint"] = grep_hint
         attach_ignored_arguments(federated, ignored)
-        return _flag_degraded_legs(federated)
+        return _flag_degraded_legs(_drop_echoed_candidates(federated))
 
     response, ctx = await _concept_search(query, limit, page_type, kind, repo, issue, grep_hint)
     await attach_line_hits(response, query, resolved_mode, names, repo)
@@ -290,7 +288,19 @@ async def search_codebase(
     # Last, so nothing above has to know the field is on its way out.
     _slim_served_rows(response["results"], {None: _page_language(ctx)})
     _serve_snippets(response["results"])
-    return _flag_degraded_legs(response)
+    return _flag_degraded_legs(_drop_echoed_candidates(response))
+
+
+def _drop_echoed_candidates(response: dict) -> dict:
+    """Drop ``candidates`` that only repeat the result paths in result order."""
+    candidates = response.get("candidates")
+    if not candidates or any(not isinstance(c, dict) or set(c) != {"path"} for c in candidates):
+        return response
+    rows = [r for r in response.get("results") or [] if isinstance(r, dict)]
+    paths = list(dict.fromkeys(r["path"] for r in rows if r.get("path")))
+    if [c["path"] for c in candidates] == paths:
+        del response["candidates"]
+    return response
 
 
 def _flag_degraded_legs(response: dict) -> dict:

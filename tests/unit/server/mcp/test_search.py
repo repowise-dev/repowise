@@ -1512,11 +1512,12 @@ class TestSearchCandidates:
 
         # The module page is still a legitimate ranked result.
         assert "module_page" in [r["page_type"] for r in result["results"]]
-        # ...and candidates names only things that can be opened.
-        assert result["candidates"] == [
-            {"path": "pkg/cmd/release/list.go"},
-            {"path": "pkg/cmd/release/http.go"},
+        # ...and only openable files carry a path; candidates would repeat them.
+        assert [r["path"] for r in result["results"] if r.get("path")] == [
+            "pkg/cmd/release/list.go",
+            "pkg/cmd/release/http.go",
         ]
+        assert "candidates" not in result
 
     @pytest.mark.asyncio
     async def test_a_symbol_page_is_served_as_its_file(self, setup_mcp):
@@ -1552,7 +1553,7 @@ class TestSearchCandidates:
         assert hit["path"] == "api/client.go"
         assert hit["symbol_id"] == "api/client.go::HTTP"
         assert hit["path"] == "api/client.go"
-        assert result["candidates"] == [{"path": "api/client.go"}]
+        assert "candidates" not in result  # it would repeat hit["path"]
 
     @pytest.mark.asyncio
     async def test_no_block_when_nothing_openable_was_reached(self, setup_mcp):

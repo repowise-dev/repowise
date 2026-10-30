@@ -229,7 +229,9 @@ def _file_page_docs(card: CardState, docs: dict[str, Any]) -> None:
     page = card.page
     if page is None:
         return
-    docs["title"] = page.title
+    if page.title != f"File: {page.target_path}":
+        # The generated title only repeats the path.
+        docs["title"] = page.title
     docs["summary"] = page.summary or ""
     if card.wants("full_doc"):
         docs["content_md"] = page.content
@@ -382,8 +384,6 @@ async def _module_docs(card: CardState, docs: dict[str, Any]) -> None:
     exclude_spec = card.query.exclude_spec
     docs["title"] = page.title
     docs["summary"] = page.summary or ""
-    if page.section_number:
-        docs["section"] = page.section_number
     if card.wants("full_doc"):
         docs["content_md"] = page.content
         # Questions, identifiers, public API and git signals: kept off the
@@ -408,7 +408,6 @@ async def _module_docs(card: CardState, docs: dict[str, Any]) -> None:
                     "title": ch.title,
                     "target_path": ch.target_path,
                     "page_type": ch.page_type,
-                    "section": ch.section_number,
                 }
                 for ch in child_pages
             ],

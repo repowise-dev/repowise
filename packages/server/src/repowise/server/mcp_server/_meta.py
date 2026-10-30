@@ -43,7 +43,10 @@ from repowise.server.mcp_server._rounding import round_float
 # 3: the lean envelope. Diagnostics (this version, timing, budget accounting,
 # an uncapped completeness block, a complete index_scope digest, savings) leave
 # routine responses; get_overview and REPOWISE_MCP_DEBUG_META=1 keep them.
-MCP_CONTRACT_VERSION = 3
+# 4: one wire vocabulary (see lean_response): no empty or false-status fields,
+# `_meta.omitted` plus `<x>_total` on cut lists for truncation, `stale_warning`
+# alone for freshness, one `_meta.degraded` list.
+MCP_CONTRACT_VERSION = 4
 
 #: Restores the diagnostic ``_meta`` fields on every response, for diagnosis.
 DEBUG_META_ENV = "REPOWISE_MCP_DEBUG_META"
@@ -739,6 +742,115 @@ def finalize_trust_envelope(result: Any, *, evidence_kind: str | None = None) ->
             state = {**existing, **state}
         meta["state"] = state
     return result
+
+
+#: Freshness detail behind ``stale_warning``; the hashes and age are debug data.
+_DEBUG_FRESHNESS_KEYS = (
+    "index_age_days",
+    "indexed_commit",
+    "live_head",
+    "index_behind",
+    "working_tree_dirty",
+)
+#: Accounting a reader gets from ``_meta.omitted`` and ``<x>_total`` instead.
+_DEBUG_ACCOUNTING_KEYS = ("completeness", "response_budget", "floor", "reductions", "state")
+#: A ``false`` under these names says nothing happened, so it is not sent.
+_STATUS_FLAGS = ("degraded", "truncated", "capped", "partial")
+#: Siblings of a capped ``<x>`` that ``<x>_total`` already says.
+_CAP_COUNTERS = ("_emitted", "_reduced_reason", "_omitted", "_truncated")
+
+
+def lean_response(result: Any) -> Any:
+    """The delivered shape of a tool result: only fields an agent can act on.
+
+    The one owner of the wire vocabulary, run outermost on MCP responses;
+    ``get_overview`` and ``REPOWISE_MCP_DEBUG_META`` skip it.
+
+    * No ``None`` or empty string; no empty container below the top level
+      unless a ``<key>_basis`` sibling explains it; no ``false`` status flag.
+    * Truncation is ``_meta.omitted`` plus ``<x>_total`` on a list actually cut.
+    * Freshness is ``stale_warning`` alone.
+    * Degradation is one ``_meta.degraded`` list of reasons.
+    """
+    if not isinstance(result, dict):
+        return result
+    meta = result.get("_meta")
+    if isinstance(meta, dict):
+        if result.get("degraded") and meta.get("degraded") == result["degraded"]:
+            del meta["degraded"]  # Already said at the top level.
+        _lean_meta(meta)
+        if meta.get("omitted"):
+            # Restates ``_meta.omitted``.
+            result.pop("omission_marker", None)
+    _prune(result, top=True)
+    return result
+
+
+def _lean_meta(meta: dict[str, Any]) -> None:
+    for key in (*_DEBUG_FRESHNESS_KEYS, *_DEBUG_ACCOUNTING_KEYS, "embedder"):
+        meta.pop(key, None)
+    existing = meta.pop("degraded", None)
+    reasons = [existing] if isinstance(existing, str) else list(existing or [])
+    for key in sorted(k for k in meta if k.endswith("_degraded")):
+        value = meta.pop(key)
+        stem = key.removesuffix("_degraded")
+        if isinstance(value, (list, dict)):
+            reasons.extend(f"{stem}:{leg}" for leg in value)
+        elif isinstance(value, str) and value:
+            reasons.append(f"{stem}:{value}")
+        elif value:
+            reasons.append(stem)
+    if reasons:
+        meta["degraded"] = reasons
+
+
+def _is_status_flag(key: str) -> bool:
+    return any(key == flag or key.endswith(f"_{flag}") for flag in _STATUS_FLAGS)
+
+
+def _prune(node: Any, *, top: bool = False) -> None:
+    if isinstance(node, list):
+        for item in node:
+            _prune(item)
+        return
+    if not isinstance(node, dict):
+        return
+    _drop_cap_counters(node)
+    for key in list(node):
+        value = node[key]
+        _prune(value)
+        if _is_noise(node, key, value, top):
+            del node[key]
+
+
+def _is_noise(node: dict[str, Any], key: str, value: Any, top: bool) -> bool:
+    if value is None or value == "" or (value is False and _is_status_flag(key)):
+        return True
+    # An empty top-level list is the tool's answer; a ``_basis`` explains one.
+    return value in ([], {}) and not top and f"{key}_basis" not in node
+
+
+def _drop_cap_counters(node: dict[str, Any]) -> None:
+    """Keep ``<x>_total`` only where ``<x>`` was cut; drop the other counters."""
+    counted = {k.removesuffix("_emitted") for k in node if k.endswith("_emitted")}
+    counted.update(k.removesuffix("_total") for k in node if k.endswith("_total"))
+    for key in [k for k in node if k.endswith("_total")]:
+        stem = key.removesuffix("_total")
+        total, kept = node[key], node.get(stem)
+        if not isinstance(total, int) or isinstance(total, bool):
+            continue
+        if isinstance(kept, (list, dict)):
+            if len(kept) >= total:
+                del node[key]
+        elif f"{stem}_emitted" in node:
+            # A list projected away whole: its counts describe nothing served.
+            del node[key]
+    for key in list(node):
+        suffix = next((s for s in _CAP_COUNTERS if key.endswith(s)), None)
+        if suffix is None or (suffix == "_truncated" and not isinstance(node[key], bool)):
+            continue
+        if key.removesuffix(suffix) in counted:
+            del node[key]
 
 
 def semantic_search_state() -> bool | None:

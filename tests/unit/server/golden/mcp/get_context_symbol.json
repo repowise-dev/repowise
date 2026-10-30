@@ -19,12 +19,7 @@
           "note": "No call edges were resolved for this language, so an empty list carries no information."
         }
       },
-      "hotspot": true,
-      "freshness": {
-        "confidence_score": 0.85,
-        "freshness_status": "fresh",
-        "is_stale": false
-      }
+      "hotspot": true
     }
   },
   "_meta": {

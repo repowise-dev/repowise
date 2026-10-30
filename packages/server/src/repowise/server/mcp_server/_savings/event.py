@@ -63,6 +63,13 @@ def _outcome(result: Any) -> tuple[str, bool]:
     state = meta.get("state") if isinstance(meta, dict) else None
     if isinstance(state, dict) and (state.get("partial") or state.get("truncated")):
         return "partial", True
+    # The lean wire shape has no ``state`` roll-up; read what it rolled up.
+    flags = {**result, **meta} if isinstance(meta, dict) else result
+    if any(
+        value and (key in ("omitted", "partial") or key.endswith("_partial") or "truncated" in key)
+        for key, value in flags.items()
+    ):
+        return "partial", True
     return "success", True
 
 

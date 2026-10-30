@@ -1416,6 +1416,7 @@ var rec = (v) => isRec(v) ? v : {};
 var str = (v) => typeof v === "string" && v !== "" ? v : null;
 var num = (v) => typeof v === "number" && Number.isFinite(v) ? v : null;
 var bool = (v) => typeof v === "boolean" ? v : null;
+var reasons = (v) => Array.isArray(v) && v.length > 0 ? v.filter((x) => typeof x === "string").join(", ") || null : null;
 var count2 = (v) => Array.isArray(v) ? v.length : num(v);
 function fact(what, n, of = null) {
   if (n === null) return [];
@@ -1434,7 +1435,8 @@ function contextFacts(r) {
   const symbolTotal = sumOver(docs, (d) => num(rec(d["symbols_truncated"])["total"]) ?? count2(d["symbols"]));
   return [
     ...fact("targets", targets.length),
-    ...fact("docs", docs.filter((d) => str(d["title"]) !== null).length || null),
+    // A file page's generated title is not sent, so its summary marks it.
+    ...fact("docs", docs.filter((d) => (str(d["title"]) ?? str(d["summary"])) !== null).length || null),
     ...fact("symbols", symbols, symbolTotal),
     ...fact("callers", sumOver(targets, (t) => count2(t["callers"]))),
     ...fact("callees", sumOver(targets, (t) => count2(t["callees"]))),
@@ -1503,15 +1505,17 @@ function behindOf(r, meta) {
   return {
     commit: str(meta["indexed_commit"]),
     ageDays: num(meta["index_age_days"]),
-    indexBehind: bool(meta["index_behind"]),
+    // Lean replies send only `stale_warning`, and only when it matters.
+    indexBehind: bool(meta["index_behind"]) ?? (str(meta["stale_warning"]) !== null ? true : null),
     verified: bool(r["verified"]),
-    complete: bool(meta["complete"]) ?? (capped === null ? null : !capped),
+    // Lean replies drop `completeness`; `omitted` then says it was capped.
+    complete: bool(meta["complete"]) ?? (capped !== null ? !capped : isRec(meta["omitted"]) ? false : null),
     confidence: str(r["confidence"]),
     grounding: str(r["grounding"]),
     retrieval: str(r["retrieval_quality"]),
     budget: used !== null && limit !== null ? { used, limit } : null,
     omittedTokens: num(rec(meta["omitted"])["tokens"]),
-    degraded: str(r["degraded"]) ?? str(meta["degraded"]),
+    degraded: str(r["degraded"]) ?? str(meta["degraded"]) ?? reasons(meta["degraded"]),
     semantic: bool(meta["semantic_search"])
   };
 }
@@ -2064,8 +2068,8 @@ function findingLine(f) {
 function moreFindings(more) {
   return `and ${more.toLocaleString("en-US")} more (Details)`;
 }
-function partialScope(analyzed, changed, reasons) {
-  const why = Object.entries(reasons).map(([reason, n]) => `${n.toLocaleString("en-US")} ${reason.replace(/_/g, " ")}`).join(", ");
+function partialScope(analyzed, changed, reasons2) {
+  const why = Object.entries(reasons2).map(([reason, n]) => `${n.toLocaleString("en-US")} ${reason.replace(/_/g, " ")}`).join(", ");
   const skipped = changed - analyzed;
   return `Scope: compared ${analyzed.toLocaleString("en-US")} of ${countOf(changed, "changed file", "changed files")}; ${skipped.toLocaleString("en-US")} not analysed${why ? ` (${why})` : ""}, so this is not a clean bill`;
 }

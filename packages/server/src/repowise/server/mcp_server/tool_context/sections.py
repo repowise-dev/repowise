@@ -206,7 +206,6 @@ async def _parent_page_section(card: CardState) -> None:
         card.data["parent_page"] = {
             "title": parent.title,
             "target_path": parent.target_path,
-            "section": parent.section_number,
         }
 
 
@@ -562,7 +561,9 @@ async def _freshness_section(card: CardState) -> None:
         served_root(card.query.repository, card.query.repo_root), [file_path]
     ):
         freshness["working_tree"] = "modified"
-    card.data["freshness"] = freshness
+    # A current page is the default, so only drift is sent.
+    if freshness.get("is_stale") or "working_tree" in freshness:
+        card.data["freshness"] = freshness
 
 
 async def _kg_section(card: CardState) -> None:

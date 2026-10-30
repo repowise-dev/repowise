@@ -269,11 +269,11 @@ def _attach_impact(
             },
         )
     affected = _affected_repos(alias, links["all"])
-    impact["cross_repo_consumers_analysis"] = cross_state
+    # The verdict only: the artifact's provenance and counts are diagnostics.
+    impact["cross_repo_consumers_analysis"] = {
+        key: cross_state[key] for key in ("status", "reason") if key in cross_state
+    }
     impact["affected_repos"] = affected
-    impact["affected_repos_total"] = len(affected)
-    impact["affected_repos_emitted"] = len(affected)
-    impact["affected_repos_truncated"] = False
     provider_side = [lk for lk in links["provider"] if lk.get("consumer_repo") != alias]
     consumer_side = [lk for lk in links["consumer"] if lk.get("provider_repo") != alias]
     if provider_side:

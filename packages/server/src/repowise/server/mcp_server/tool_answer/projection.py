@@ -817,20 +817,12 @@ async def _refresh_freshness(payload: dict[str, Any], repo: str | None) -> None:
     try:
         from repowise.core.persistence.database import get_session
         from repowise.server.mcp_server._helpers import _get_repo, _resolve_repo_context
-        from repowise.server.mcp_server._index_state import index_state_key
         from repowise.server.mcp_server._meta import freshness_from_repo
-        from repowise.server.mcp_server._scope import unrelated_scope_hint
 
         served = _served_paths(payload)
         ctx = await _resolve_repo_context(repo)
         async with get_session(ctx.session_factory) as session:
             repository = await _get_repo(session)
-            scope_hint = await unrelated_scope_hint(
-                session,
-                repository.id,
-                [path.split("::", 1)[0] for path in served],
-                cache_key=f"{repository.id}:{index_state_key(repository)}",
-            )
         freshness = freshness_from_repo(repository, targets=served)
     except Exception:
         return
@@ -842,12 +834,11 @@ async def _refresh_freshness(payload: dict[str, Any], repo: str | None) -> None:
         "index_behind",
         "stale_warning",
         "working_tree_dirty",
+        # Retired; a cached payload may still carry it.
         "scope_hint",
     ):
         meta.pop(key, None)
     meta.update(freshness)
-    if scope_hint:
-        meta["scope_hint"] = scope_hint
     # An error reply carries confidence "low" too, and its fault is not the
     # index, so the pointer would only misdirect there.
     try:

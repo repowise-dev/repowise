@@ -16,49 +16,49 @@ The field dictionary for every repowise MCP tool response. [MCP_TOOLS.md](../age
 
 ## The `_meta` envelope
 
-Every response carries `_meta`. A field is present only when it carries a signal; absence means "nothing to report", never an error.
+Every response carries `_meta`. A field is present only when it carries a signal; absence means "nothing to report", never an error. The same rule holds across the payload: empty strings, empty lists, `null` and a `false` status flag (`*_degraded`, `*_truncated`, `*_capped`, `*_partial`) are not sent. A `false` that is itself the answer (`test_gap`, `is_hotspot`, `verified`, `complete`) stays.
 
-Routine responses carry a lean envelope. `get_overview` (called once per session) always carries `contract_version`, `timing_ms`, `response_budget` and `completeness`. `REPOWISE_MCP_DEBUG_META=1` restores those plus `tokens_saved` and `replaced_tokens` on every tool; it is read per call, so no restart is needed.
+Routine responses carry a lean envelope. `get_overview` (called once per session) carries the whole one: `contract_version`, `timing_ms`, `response_budget`, `completeness`, `state` and the freshness detail. `REPOWISE_MCP_DEBUG_META=1` restores it on every tool, plus `tokens_saved` and `replaced_tokens`; it is read per call, so no restart is needed.
 
 | Field | When present | Meaning |
 |-------|--------------|---------|
-| `contract_version` | `get_overview`, or debug meta | Response contract version (currently 3); the version of record even when not emitted |
-| `timing_ms` | `get_overview`, or debug meta | Tool wall time |
 | `hint` | Sometimes | A short follow-up suggestion |
 | `cached` | Only when `true` | The response came from cache |
-| `index_age_days` | A repository is resolved | Whole days since the index last synced (`repowise init` or `repowise update`), the same time `repowise status`, the dashboard and CLAUDE.md report |
-| `indexed_commit` | A repository is resolved | Short SHA the index was built from |
-| `live_head` | `.git/HEAD` is readable | Short SHA of the checkout; equals `indexed_commit` when current |
-| `index_behind` | The comparison ran | `true` if HEAD moved, `false` if not; absent if it could not run |
 | `stale_warning` | Only on a real signal | The index is behind in a way that matters for this response |
-| `working_tree_dirty` | Above zero | Served targets with uncommitted edits no `repowise update --working-tree` has indexed |
 | `index_scope` | Recorded, and `status` not `complete` | How the index was built: run mode, provenance, git tier, whether it is whole |
-| `embedder_degraded` | An embedder is resolved | `true` or `false` |
-| `embedder`, `embedder_warning` | Embedder fell back, or the semantic index could not open | Which embedder, and why |
+| `degraded` | A part of the server failed for this call | Reasons, e.g. `["embedder"]` or `["retrieval:vector"]` |
+| `embedder_warning` | Embedder fell back, or the semantic index could not open | Why |
+| `semantic_search` | Only when `false` | Retrieval is full-text only (keyless install or degraded embedder) |
 | `newer_release` | Once per server process | A newer repowise is published; restart the server after upgrading |
 | `keyless_note` | Once per server process | What a model would add to a keyless `get_answer` |
-| `response_budget` | The budget cut something; always on `get_overview` | `limit_chars`, `tier` (`default` or `expanded`), `serialized_chars` |
 | `omitted` | Content was cut | `refs`, `tokens`, `restore`; see [Truncation and recovery](#truncation-and-recovery) |
 | `recovery_unavailable` | The omission store could not be written | The storage failure; cut rows cannot be restored |
-| `scope_hint` | `get_answer` | Up to three graph layers holding none of the served paths, with file counts |
 | `complete` | Whole units were served | Verified symbol bodies or whole files. Do not re-read them |
-| `completeness` | Something was capped; always on `get_overview` | `capped`, `shown`, `total`, `reason` |
-| `floor` | A count comes from walking the graph | Names fields whose values are lower bounds |
-| `state` | Something fired | `degraded` (with `degraded_reasons`), `partial` or `truncated` |
+
+Debug envelope only (`get_overview`, or `REPOWISE_MCP_DEBUG_META=1`):
+
+| Field | Meaning |
+|-------|---------|
+| `contract_version` | Response contract version (currently 4); the version of record even when not emitted |
+| `timing_ms` | Tool wall time |
+| `index_age_days` | Whole days since the index last synced, the same time `repowise status` reports |
+| `indexed_commit`, `live_head` | Short SHAs of the index and of the checkout |
+| `index_behind` | `true` if HEAD moved, `false` if not; absent if the comparison could not run |
+| `working_tree_dirty` | Served targets with uncommitted edits no `repowise update --working-tree` has indexed |
+| `embedder_degraded`, `embedder` | The embedder state behind `degraded` |
+| `response_budget` | `limit_chars`, `tier` (`default` or `expanded`), `serialized_chars`; `enforcement_error` when the protected fields could not fit |
+| `completeness` | `capped`, `shown`, `total`, `reason`: the collections a reducing pass counted |
+| `floor` | Fields whose values are lower bounds |
+| `state` | Roll-up of `degraded` (with `degraded_reasons`), `partial` and `truncated` |
 
 Notes:
 
 - **`hint`:** on a `get_answer` graded `low` while the index is behind HEAD, it says to run `repowise update` and ask again.
-- **`stale_warning`:** HEAD moved and changed files this response serves; a served file has unseen uncommitted edits, or was indexed from edits since reverted; or the index is very old and git is unreachable. Identical trees set `index_behind` with no warning.
-- **`working_tree_dirty`:** source reads are live, but graph facts for those files predate the edit. A dirty tree elsewhere never sets it.
+- **`stale_warning`:** HEAD moved and changed files this response serves; a served file has unseen uncommitted edits, or was indexed from edits since reverted; or the index is very old and git is unreachable. HEAD moving without touching what was served sends nothing. With uncommitted edits it names `repowise update --working-tree`.
 - **`index_scope`:** the whole object comes with `get_overview(include=["scope"])`, or everywhere with `REPOWISE_MCP_INDEX_SCOPE=full`.
-- **`embedder`:** set when the embedder fell back to a mock or degraded mode.
 - **`keyless_note`:** on the first `get_answer` that degrades with `no-llm-provider`. It says `repowise generate` writes synthesized answers (needs a key, or `--provider ollama`). Never sent when a provider is configured.
-- **`response_budget`:** also present as `enforcement_error` when the protected fields could not fit.
 - **`complete`:** sliced bodies and partial ranges never count.
-- **`completeness`:** `shown`/`total` sum the collections a reducing pass counted; `reason` names the pass that dropped most. It measures what survived reduction, not your share of the repository.
-- **`floor`:** an unresolved edge is uncounted, not proven absent.
-- **`state`:** a roll-up of the response's own flags.
+- **Counts from the graph are floors:** `dependents_count`, `co_change_partners_total` and similar counts walk resolved edges, so an unresolved edge is uncounted, not proven absent.
 - **No freshness fields** on `list_repos`, `get_architecture`, `get_blast_radius`, `get_conformance`, `get_dependency_path`, or a `repo="all"` call (no single commit to compare). `repo="all"` names stale repos in a top-level `repos_stale`.
 
 ---
@@ -87,7 +87,7 @@ Responses fit 24,000 serialized characters, or 32,000 with an expansion argument
 
 - A truncated skeleton block becomes a `[repowise#<ref>: ...]` marker in place. Other cut content goes into one document per response.
 - A response still over budget sheds whole blocks in a per-tool order, cheapest loss first, and reports `truncated: true`.
-- A capped list gains `<key>_total`, `<key>_emitted`, `<key>_truncated`, `<key>_omitted` and `<key>_reduced_reason` as they apply. Some blocks carry an `omission_marker` for their tail.
+- A list that was cut carries `<key>_total`, the size before the cut. A list served whole carries no count.
 - Restore with `repowise expand <ref>` or `get_symbol(symbol_id="repowise#<ref>")`; `query` filters the lines.
 - Include-gated blocks you did not ask for are not reported as cut.
 
@@ -153,7 +153,7 @@ In workspace mode, `get_context`, `get_symbol`, `get_risk` and `get_health` serv
 | `confidence` | `high`, `medium` or `low`: the one trust signal. Cite `high` directly |
 | `retrieval_quality` | With `include=["diagnostics"]`: `high`, `partial` or `weak`, rating retrieval alone |
 | `symbol_bodies` | Live bodies of symbols the answer names. Read before calling `get_symbol` |
-| `retrieval` | Evidence rows (summary, snippet, key symbols); shrinks as confidence rises |
+| `retrieval` | Evidence rows: one text (`excerpt` where served, else `summary`) and key symbols; shrinks as confidence rises |
 | `candidate_files` | Ranked paths not already in `citations`: up to 3 at `high`, else 5. Navigation, not evidence |
 | `candidates` | With `include=["evidence"]`: the top 5 files as `{path, lines?, defines?}` |
 | `best_guesses`, `fallback_targets` | On low confidence: where to look, each with a reason |
@@ -181,9 +181,11 @@ Per target, under `targets`:
 
 | Field | Meaning |
 |-------|---------|
-| title, summary, symbols | Docs summary and symbols with signatures and lines |
+| title, summary, symbols | Docs summary and symbols with signatures and lines; a file page's generated `File: <path>` title is not sent |
 | `symbols_truncated`, `symbols_total` | Compact card: `{shown, total, hint}` and the full count |
 | `hotspot` | Churn flag |
+| `parent_page` | The concept page above this target: `title`, `target_path` |
+| `freshness` | Only when the page is stale or the file has uncommitted edits: `freshness_status`, `is_stale`, `confidence_score`, `working_tree` |
 | `hotspot_files` | Directory card: hotspot files under it, absent at zero |
 | `fix_history` | Files with counted bug fixes: `fix_count` over `window` (6 months), age, `bug_magnet`. A cue to call `get_risk` |
 | `episodes` | Count of dated records; `get_why` serves them |
@@ -217,7 +219,7 @@ Top level: `targets`, `_meta`, `ignored_arguments`, `suspects` when asked, and `
 | `symbols` | Every symbol of a file |
 | `changes`, `provenance`, `suspects` | See below |
 
-`docs` and `freshness` are always on and legal to pass.
+`docs` and `freshness` are always on and legal to pass; `freshness` is sent only on drift.
 
 ### references
 
@@ -294,7 +296,7 @@ Each target gets an equal share; unused share passes on. Over its share, a targe
 | Field | Meaning |
 |-------|---------|
 | source | Up to about 600 lines (200 for a range), line-numbered in `Read` format |
-| start and end lines, `kind` | Exact bounds |
+| start and end lines, `kind` | Exact bounds of what was served; `symbol_start_line` / `symbol_end_line` give the whole symbol only when a slice was served |
 | `truncated` | Body cut; carries a continuation to pass back as `reference` |
 | `ambiguous`, `candidates` | Several matches (overloads, re-exports, conditional definitions); every body returned, none chosen |
 | `callee_bodies` | `depth` 2 or 3: each callee's `depth`, source, `verified`; each once, at its shallowest depth |
@@ -312,7 +314,7 @@ Each target gets an equal share; unused share passes on. Over its share, a targe
 | Field | Meaning |
 |-------|---------|
 | `results` | Ranked symbol, file and concept rows |
-| `candidates` | Up to `limit` distinct openable file paths, best first. Read these before a Read |
+| `candidates` | Up to `limit` distinct openable file paths, best first. Read these before a Read. Absent when it would only repeat the `results` paths in order |
 | `lines` | Identifier or literal query: `{path, line, kind, text}`, definitions first, max 50 |
 | `complete`, `reasons` | Whether `lines` is every match, and why not |
 
@@ -358,6 +360,7 @@ Per file:
 | `dependents_count` | Direct structural dependents; a floor |
 | `co_change_partners` | `file_path`, `support` (shared commits, when known), `conf_ab` (share of the target's commits touching the partner, when known), `has_import_link`; by recency-decayed weight. Correlation only |
 | `primary_owner` | Always, with the owner clause in `risk_summary` |
+| `cross_repo_impact` | Workspace: `affected_repos`, the overlay's `status` (and `reason` when not available), and contract consumer and provider rows |
 | test gaps, `security_signals` | Coverage gaps and security findings |
 | `resolved`, `unresolved_reason` | No indexed file: `unsupported_target_kind` (`module:` id), `directory`, `not_indexed`, `no_such_path`; counts omitted, not zeroed |
 | `signal_tier`, `signal_tier_reason` | `"history"` for docs, config, query and other non-code files |
@@ -417,9 +420,9 @@ In workspace mode the directive adds `will_break_consumers` (structural reach on
 | `directive` | `status` (`review_required`, `review_recommended`, `clear_in_analyzed_scope`, `unknown`): the verdict. Plus headline, reasons, next actions |
 | `health_delta` | What the change newly made worse; see [health_delta](#health_delta) |
 | `risk_percentile` | Diff size and spread against recent commits. Size, not a verdict |
-| `diff_shape` | One sentence on size and spread; never danger |
+| `diff_shape` | One sentence on size and spread. The rank is a diff-size statistic: it barely beats churn alone and cannot rank danger |
 | `is_fix` | Only when the change is a bug fix |
-| `exclude_patterns` | Only when something was excluded: request patterns plus `.riskignore` |
+| `exclude_patterns` | Only when something was excluded: request patterns plus `.riskignore`, less repowise's own output (always excluded) |
 | `working_tree` | Only without `revspec`: uncommitted work scored, or clean tree fell back to `HEAD` |
 | `fix_history` | Recency-weighted fix record of touched files (no manifests or lockfiles), with `overlap` |
 | `impacted_tests` | Tests the change needs |

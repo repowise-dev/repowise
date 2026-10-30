@@ -240,11 +240,8 @@ def _symbol_body_response(
         "kind": row.kind,
         "qualified_name": row.qualified_name,
         "signature": row.signature,
-        "language": row.language,
         "start_line": body.start,
         "end_line": body.end,
-        "symbol_start_line": check.start_line,
-        "symbol_end_line": check.end_line,
         "source": body.numbered,
         "truncated": body.truncated,
         "verified": check.verified,
@@ -256,6 +253,10 @@ def _symbol_body_response(
             targets=[row.file_path],
         ),
     }
+    if (body.start, body.end) != (check.start_line, check.end_line):
+        # The whole symbol's bounds, when the served slice is not all of it.
+        response["symbol_start_line"] = check.start_line
+        response["symbol_end_line"] = check.end_line
     if body.outline is not None:
         _note_outline(response, body.outline, row, check)
     elif not body.truncated and check.verified:
