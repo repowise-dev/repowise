@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 import structlog
+from sqlalchemy.exc import SQLAlchemyError
 
 from repowise.core.generation.page_selection import PageRecord
 from repowise.core.generation.scope import (
@@ -86,9 +87,12 @@ def load_kg_context(repo_path: Path) -> Any:
 async def _load_page_rows(session: Any, repo_id: str) -> list[Any]:
     """Every non-tombstoned persisted page, lightweight columns only.
 
-    ``load_page_records`` reads just id/type/target/provider/metadata/freshness,
-    so ``load_only`` keeps the (potentially very large) ``content`` Text column
-    out of this whole-wiki scan.
+    ``load_page_records`` reads just id/type/target/provider/metadata/freshness
+    (plus ``pinned``), so ``load_only`` keeps the (potentially very large)
+    ``content`` Text column out of this whole-wiki scan. Anything
+    ``load_page_records`` reads must be listed here: a deferred column is a
+    lazy load, and this session is gone by the time the stale-page decay pass
+    reads the records back, so the access raises instead of loading.
     """
     from sqlalchemy import select
     from sqlalchemy.orm import load_only
@@ -105,6 +109,7 @@ async def _load_page_rows(session: Any, repo_id: str) -> list[Any]:
                 Page.provider_name,
                 Page.metadata_json,
                 Page.freshness_status,
+                Page.pinned,
             )
         )
         .where(
@@ -202,8 +207,19 @@ async def execute_scoped_generation(
     provider, and optional embedder / vector store / FTS / progress / cost
     tracker. ``plan`` is a resolved
     :class:`~repowise.core.generation.scope.ScopePlan`.
+
+    Prior pages are loaded and handed to the generator so a page the run is
+    asked to refill (a stub, or one whose subject is unchanged) is reused
+    rather than re-billed — the same cross-run gate ``init`` and ``update``
+    use (issue #1089). A stub row is deliberately never reused, so a
+    ``generate`` targeting the pages a failed run left behind still calls
+    the model for them.
     """
-    from repowise.core.persistence import get_session, upsert_pages_from_generated
+    from repowise.core.persistence import (
+        get_session,
+        load_prior_pages,
+        upsert_pages_from_generated,
+    )
     from repowise.core.persistence.crud import backfill_related_pages
     from repowise.core.pipeline import run_generation
     from repowise.core.pipeline.persist import (
@@ -216,6 +232,14 @@ async def execute_scoped_generation(
     # passed tracker; some providers additionally consult ``_cost_tracker``.
     if cost_tracker is not None:
         provider._cost_tracker = cost_tracker
+
+    try:
+        async with get_session(session_factory) as session:
+            prior_pages = await load_prior_pages(session, repo_id)
+    except (SQLAlchemyError, OSError):
+        # Without prior pages the subject-hash skip is off and every requested
+        # page re-bills; generation itself must not fail over the cache.
+        prior_pages = {}
 
     generated_pages = await run_generation(
         repo_path=repo_path,
@@ -232,6 +256,7 @@ async def execute_scoped_generation(
         cost_tracker=cost_tracker,
         generation_config=generation_config,
         only_page_ids=plan.generate_ids,
+        prior_pages=prior_pages,
     )
     if cost_tracker is not None:
         await cost_tracker.flush()

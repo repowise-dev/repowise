@@ -30,6 +30,7 @@ For a map of every layer and how they feed each other, read
 | [start/QUICKSTART.md](start/QUICKSTART.md) | Install, index, and connect your agent |
 | [agent/INTEGRATIONS.md](agent/INTEGRATIONS.md) | Which agents are supported at what depth, and how to add one |
 | [agent/MCP_TOOLS.md](agent/MCP_TOOLS.md) | The ten task-shaped tools, what each answers, and the opt-in extras |
+| [agent/CLAUDE_CODE_COMMANDS.md](agent/CLAUDE_CODE_COMMANDS.md) | The 18 `/repowise:*` slash commands in the Claude Code plugin |
 | [agent/HOOKS.md](agent/HOOKS.md) | Context and warnings that reach the agent without it asking |
 | [agent/DISTILL.md](agent/DISTILL.md) | Compress noisy command output before your agent reads it |
 | [agent/LENS.md](agent/LENS.md) | Lens in the Claude Code plugin: the spinner, change review, Flow and the `/lens` map shown while Claude works |

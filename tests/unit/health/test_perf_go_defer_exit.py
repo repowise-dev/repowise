@@ -1,6 +1,7 @@
 """``defer_in_loop`` exit shapes for the Go perf dialect (#2938).
 
-A ``defer`` whose next statement in the same block leaves the loop — a
+A ``defer`` followed in its block, with no ``continue`` or ``goto`` between,
+by a statement that leaves the loop — a
 ``return``, or a ``break`` that exits the ``for`` (not a ``switch``/``select``
 case, and not merely an inner loop of a nest) — can only be reached once, so
 the deferred call is registered at most once and the leak anti-pattern does
@@ -25,7 +26,7 @@ def _hits(src: str):
 
 
 # ---------------------------------------------------------------------------
-# The defer runs once: the next statement leaves the loop (or the function)
+# The defer runs once: a later statement leaves the loop (or the function)
 # ---------------------------------------------------------------------------
 
 _EXIT_CASES = [
@@ -101,6 +102,27 @@ _EXIT_CASES = [
         "} } }",
         "return inside a select case exits the function",
     ),
+    (
+        "package m\nfunc f(xs []int){ for _, x := range xs { defer g(); h(); break } }",
+        "a call between the defer and the break",
+    ),
+    (
+        "package m\nfunc f(xs []int){ for _, x := range xs { defer g(); defer h(); break } }",
+        "both defers before the break are covered",
+    ),
+    (
+        "package m\nfunc f(xs []int) error { for _, x := range xs { defer g(); h(x); return nil } }",
+        "defer, use, then return",
+    ),
+    (
+        "package m\nfunc f(xs []int, ok bool){ for _, x := range xs {\n"
+        "\tdefer g()\n"
+        "\tif ok {\n"
+        "\t\th()\n"
+        "\t}\n"
+        "\tbreak\n} }",
+        "caddy shape: defer, an if without a jump, then break",
+    ),
 ]
 
 
@@ -110,7 +132,7 @@ def test_defer_exit_suppresses_finding(src, note):
 
 
 # ---------------------------------------------------------------------------
-# The defer repeats: the next statement does not leave the loop
+# The defer repeats: no later statement in its block leaves the loop
 # ---------------------------------------------------------------------------
 
 _REPEAT_CASES = [
@@ -121,10 +143,6 @@ _REPEAT_CASES = [
     (
         "package m\nfunc f(xs []int){ for _, x := range xs { h(); defer g() } }",
         "defer as the last statement of the body",
-    ),
-    (
-        "package m\nfunc f(xs []int){ for _, x := range xs { defer g(); h(); break } }",
-        "a call between the defer and the break means it is not the next statement",
     ),
     (
         "package m\nfunc f(xs []int){ for _, x := range xs { defer g(); continue } }",
@@ -210,10 +228,6 @@ _REPEAT_CASES = [
         "break BEFORE the defer does not cover it",
     ),
     (
-        "package m\nfunc f(xs []int){ for _, x := range xs { defer g(); defer h(); break } }",
-        "only the last defer is covered by the break",
-    ),
-    (
         "package m\nfunc f(xs []int){ for _, x := range xs { defer g(); break missing } }",
         "a break with an undefined label stays conservative",
     ),
@@ -242,6 +256,24 @@ _REPEAT_CASES = [
         "\t\th()\n"
         "} } }",
         "plain defer inside a switch case",
+    ),
+    (
+        "package m\nfunc f(xs []int, ok bool){ for _, x := range xs {\n"
+        "\tdefer g()\n"
+        "\tif ok {\n"
+        "\t\tcontinue\n"
+        "\t}\n"
+        "\tbreak\n} }",
+        "a conditional continue before the break skips it",
+    ),
+    (
+        "package m\nfunc f(xs []int, ok bool){ for _, x := range xs {\n"
+        "\tdefer g()\n"
+        "\tif ok {\n"
+        "\t\tbreak\n"
+        "\t}\n"
+        "\th()\n} }",
+        "a conditional break does not end every iteration",
     ),
 ]
 

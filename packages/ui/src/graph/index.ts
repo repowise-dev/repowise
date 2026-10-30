@@ -17,6 +17,7 @@ export * from "./edge-provenance";
 export * from "./context";
 export * from "./elk-layout";
 export * from "./graph-scope-controls";
+export * from "./code-graph-tree";
 export * from "./graph-population-control";
 export * from "./graph-unclustered-panel";
 export * from "./use-module-filter";

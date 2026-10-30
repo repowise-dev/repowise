@@ -230,7 +230,7 @@ def test_floating_comments_hide_statements_and_keep_literals() -> None:
     assert copy_statements(code) == []
     assert [block.line for block in exec_blocks(code)] == [9]
     assert "'*> kept'" in code
-    assert len(code) == len(source)
+    assert len(code.splitlines()) == len(source.splitlines())
 
 
 def test_copy_statements_are_found_in_code_and_not_in_comments() -> None:

@@ -54,6 +54,29 @@ _INFERRED_FROM_NEW = re.compile(
     r"(?<![\w.])var\s+(?P<name>[a-z_]\w*)\s*=\s*new\s+(?P<type>[A-Z]\w*(?:\.\w+)*)"
 )
 
+# A C# property (``Foo Name { get; }``, ``Foo Name => _foo;``) or PascalCase
+# field (``Foo Name;``), which ``_TYPED_DECLARATION``'s lowercase name never
+# reads. Anchored to the start of a line, past attributes and modifiers, so
+# title-case words in a string or a switch arm (``Circle C => ..``) are no
+# member. The ``{`` closer must open accessors, or ``Foo Bar {`` could be a
+# type. Ceiling: a builtin-typed one (``string Name { get; }``) and a second
+# declarator (``Foo A, B;``) are not read.
+_CS_MODIFIERS = (
+    r"public|private|protected|internal|static|readonly|virtual|override|abstract|"
+    r"sealed|new|required|volatile|event|unsafe|extern|partial"
+)
+_CS_MEMBER = re.compile(
+    rf"(?m)^[ \t]*(?:\[[^\]\n]*\][ \t]*)*(?:(?:{_CS_MODIFIERS})[ \t]+)*"
+    rf"(?P<type>{_TYPE})\??[ \t]+(?P<name>[A-Z]\w*)[ \t]*(?=(?P<closer>[;=](?!=)|"
+    r"\{(?=\s*(?:(?:private|protected|internal)\s+)*(?:get|set|init)\b)))"
+)
+
+# ``foreach (Foo x in ..)``, which no closer of ``_TYPED_DECLARATION`` ends. No
+# closer: a loop variable is never a field.
+_CS_FOREACH_TYPED = re.compile(
+    rf"\bforeach\s*\(\s*(?P<type>{_TYPE})\??\s+(?P<name>[a-z_]\w*)\s+in\b"
+)
+
 # Truncating at ``//`` also cuts a URL in a string: it can only lose a
 # declaration, never invent one.
 _LINE_COMMENT = re.compile(r"//.*")
@@ -308,7 +331,7 @@ _CPP_DECLARATION = re.compile(
 _RUST_TYPE = r"(?:(?:crate|self|super)::(?:\w+::)*)?[A-Z]\w*"
 _RUST_ANNOTATED = re.compile(
     rf"(?<![\w.:'])(?P<name>[a-z_]\w*)\s*:\s*(?:&(?:'\w+\s+)?(?:mut\s+)?)?(?P<box>Box<)?"
-    rf"(?P<type>{_RUST_TYPE}(?:<(?:[^<>]|<[^<>]*>)*>)?)(?(box)>)\s*(?=[=,;)|])"
+    rf"(?P<type>{_RUST_TYPE}(?:<(?:[^<>]|<[^<>]*>)*>)?)(?(box)>)\s*(?=(?P<closer>[=,;)|]))"
 )
 
 # `let x = Foo::new(..)` and the other constructor-named associated functions,
@@ -350,7 +373,7 @@ _LANGUAGE_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
     # Apex declares Java's way (``Foo foo``) and has no ``var``.
     "apex": (_TYPED_DECLARATION,),
     "cpp": (_CPP_DECLARATION,),
-    "csharp": _C_FAMILY,
+    "csharp": (*_C_FAMILY, _CS_MEMBER, _CS_FOREACH_TYPED),
     "dart": _DART_FAMILY,
     "go": _GO_FAMILY,
     "java": (
@@ -373,7 +396,7 @@ RECEIVER_TYPE_LANGUAGES = frozenset(_LANGUAGE_PATTERNS)
 # writes ``self.foo.bar()``, a dotted receiver the grammar mints no call site
 # for, so class scope could only bind a bare local to a field. Membership rests
 # on the scan actually finding typed fields in the language's idiom.
-IMPLICIT_FIELD_LANGUAGES = frozenset({"apex", "csharp", "dart", "java", "kotlin", "swift"})
+IMPLICIT_FIELD_LANGUAGES = frozenset({"apex", "cpp", "csharp", "dart", "java", "kotlin", "swift"})
 
 # Languages whose scan keeps a declaration of a builtin type, marked external,
 # so the resolver can refuse a call on it instead of matching the method name.
@@ -385,6 +408,8 @@ EXTERNAL_TYPE_LANGUAGES = frozenset({"java"})
 # a builtin-typed local still reads as a variable and types overload arguments.
 _MARKED_BUILTIN_LANGUAGES = EXTERNAL_TYPE_LANGUAGES | {"kotlin", "apex"}
 _EXTERNAL_TYPE = "external:"
+#: A Kotlin string literal receiver, typed as a declared ``String`` would be.
+STRING_LITERAL_TYPE = _EXTERNAL_TYPE + "String"
 
 # A decorator that changes what the symbol it wraps *is*: `@shared_task` leaves
 # no function behind, so `add.s(...)` is a method call on `Task`. A table, since
@@ -569,6 +594,12 @@ _LOCAL_NAME_SHAPES: dict[str, tuple[tuple[re.Pattern[str], ...], ...]] = {
                 r"(?m)(?:(?<=[(,=:>])|^)\s*\((?P<lhs>[\w\s,]*)\)\s*(?:async\s*)?(?:=>|\{)"
             ),
         ),
+    ),
+    # An `auto` local and a structured binding spell no type the scan reads,
+    # but still hide a field of their name.
+    "cpp": (
+        (re.compile(r"(?<![\w.])auto\s*[*&]{0,2}\s*(?P<name>[a-z_]\w*)\b"),),
+        (re.compile(r"(?<![\w.])auto\s*&{0,2}\s*\[(?P<lhs>[\w\s,]*)\]"),),
     ),
     "java": _JAVA_LAMBDA,
     "kotlin": (
@@ -931,10 +962,13 @@ _FIELD_CLOSERS = frozenset({";", "="})
 # semicolon-free TypeScript ``x: T`` are fields too. Kotlin and Swift keep a
 # closer only on a `val`/`var`/`let` match, so no parameter reaches here: a
 # Kotlin constructor property (`class R @Inject constructor(private val api:
-# Api)`) closes on `,` or `)`, a Swift computed property on `{`.
+# Api)`) closes on `,` or `)`, a Swift computed property on `{`, as a C# one does.
 _LANGUAGE_FIELD_CLOSERS: dict[str, frozenset[str]] = {
+    "csharp": frozenset({";", "=", "{"}),
     "kotlin": frozenset({"=", "\n", ",", ")"}),
     "python": frozenset({"=", "\n"}),
+    # A struct field, ``name: Type,``: parameters and ``let`` sit in function spans.
+    "rust": frozenset({","}),
     "swift": frozenset({"=", "\n", "{"}),
     "typescript": frozenset({";", "=", "\n"}),
 }
@@ -1004,23 +1038,28 @@ def _inside_parentheses(cleaned: str) -> Callable[[int], bool]:
     return inside
 
 
-# Kotlin and Swift run code at class scope that is not a function: an ``init``
-# block, a lambda or closure a property holds. A declaration there is a local
-# of that block, so only one directly in a type's body may be a field.
-_TYPE_BODY_SCOPED_LANGUAGES = frozenset({"kotlin", "swift"})
+# Kotlin, Swift and C# run code at class scope that is not a function: an
+# ``init`` block, a lambda or closure a property holds, a property accessor. A
+# declaration there is a local of that block, so only one directly in a type's
+# body may be a field. C# has its own keywords: ``object`` is a type there.
 _BRACE = re.compile(r"[{};]")
 # A function, accessor or initialiser declared after a bodiless type.
 _CODE_HEADER = re.compile(r"\b(?:fun|func|init|get|set)\b")
 _TYPE_HEADER = re.compile(r"\b(?:class|object|interface|struct|enum|extension|protocol|actor)\b")
+_TYPE_HEADERS: dict[str, re.Pattern[str]] = {
+    "csharp": re.compile(r"\b(?:class|interface|struct|enum|record)\b"),
+    "kotlin": _TYPE_HEADER,
+    "swift": _TYPE_HEADER,
+}
 
 
-def _opens_type_body(header: str) -> bool:
+def _opens_type_body(header: str, type_header: re.Pattern[str]) -> bool:
     """Does a ``{`` after *header* open a type's body?
 
     The last type keyword decides, unless an expression leads into it:
     ``val f = object : T {`` is an anonymous object, not a declared type.
     """
-    keywords = list(_TYPE_HEADER.finditer(header))
+    keywords = list(type_header.finditer(header))
     if not keywords:
         return False
     before = header[: keywords[-1].start()].rstrip()
@@ -1028,7 +1067,7 @@ def _opens_type_body(header: str) -> bool:
     return not before.endswith(("=", "(", ",", "return")) and not _CODE_HEADER.search(after)
 
 
-def _in_type_body(cleaned: str) -> Callable[[int], bool]:
+def _in_type_body(cleaned: str, type_header: re.Pattern[str]) -> Callable[[int], bool]:
     """Is the innermost ``{`` open at an offset of *cleaned* a type's body (or none)?
 
     None counts: a primary constructor's ``val`` parameters sit before any brace.
@@ -1044,7 +1083,7 @@ def _in_type_body(cleaned: str) -> Callable[[int], bool]:
     for match in _BRACE.finditer(cleaned):
         char = match.group()
         if char == "{":
-            stack.append(_opens_type_body(cleaned[segment_start : match.start()]))
+            stack.append(_opens_type_body(cleaned[segment_start : match.start()], type_header))
         elif char == "}" and stack:
             stack.pop()
         segment_start = match.end()
@@ -1074,7 +1113,8 @@ def scan_declarations(text: str, language: str) -> tuple[Declaration, ...]:
     resolved: dict[str, tuple[str | None, bool]] = {}
     found: list[Declaration] = []
     inside = _inside_parentheses(cleaned) if language in _PARAMETERS_AT_CLASS_SCOPE else None
-    in_type_body = _in_type_body(cleaned) if language in _TYPE_BODY_SCOPED_LANGUAGES else None
+    type_header = _TYPE_HEADERS.get(language)
+    in_type_body = _in_type_body(cleaned, type_header) if type_header else None
     for pattern in patterns:
         for match in pattern.finditer(cleaned):
             if pattern is _KT_CONSTRUCTED_LAMBDA and not _ends_statement(
@@ -1171,8 +1211,16 @@ _DART_CALL_ASSIGNMENT = re.compile(
     rf"(?<![\w.])(?:final|var|const)\s+(?P<name>[a-z_]\w*)\s*=\s*(?P<awaited>await\s+)?"
     rf"(?:(?:new|const)\s+)?{_CALL_HEAD}"
 )
+# ``var x = f(..);``, ``using var x = await obj.f<T>(..);``. A C# ``await``
+# unwraps the ``Task<T>`` or ``ValueTask<T>`` the callee declares.
+_CS_CALL_ASSIGNMENT = re.compile(
+    r"(?<![\w.])var\s+(?P<name>[a-z_]\w*)\s*=\s*(?P<awaited>await\s+)?"
+    r"(?:(?P<receiver>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\.)?(?P<target>[A-Za-z_]\w*)\s*"
+    r"(?:<[^<>()]*(?:<[^<>()]*>[^<>()]*)*>)?\s*\("
+)
 
 _CALL_ASSIGNMENT_PATTERNS: dict[str, re.Pattern[str]] = {
+    "csharp": _CS_CALL_ASSIGNMENT,
     "dart": _DART_CALL_ASSIGNMENT,
     "go": _GO_CALL_DECL,
     "kotlin": _KT_CALL_ASSIGNMENT,
@@ -1186,8 +1234,12 @@ CALL_TYPED_LANGUAGES = frozenset(_CALL_ASSIGNMENT_PATTERNS)
 _QUOTES = frozenset("\"'`")
 _STATEMENT_ENDS = frozenset("\n;}")
 # A Python ``;`` may rebind the name later on the line, where no scan sees it.
-# Dart ends a statement only at ``;``, so ``f()\n.g()`` is one statement.
-_LANGUAGE_STATEMENT_ENDS = {"python": frozenset("\n"), "dart": frozenset(";")}
+# Dart and C# end a statement only at ``;``, so ``f()\n.g()`` is one statement.
+_LANGUAGE_STATEMENT_ENDS = {
+    "python": frozenset("\n"),
+    "dart": frozenset(";"),
+    "csharp": frozenset(";"),
+}
 # Kotlin and Swift may carry a statement onto a line that starts with a member
 # access or an operator (``.f()``, ``?: x``, ``as T``, ``&& y``). Refused
 # wholesale: a new statement starting so only costs the local its type.
@@ -1262,7 +1314,7 @@ def _ends_statement(cleaned: str, end: int, language: str, start: int = 0) -> bo
     """Does the expression ending at *end* end its statement (-1: it never ends)?"""
     if end < 0:
         return False
-    rest = cleaned[end:].lstrip(" \t\n" if language == "dart" else " \t")
+    rest = cleaned[end:].lstrip(" \t\r\n" if language in ("dart", "csharp") else " \t")
     if (
         language == "swift"
         and _SWIFT_OPTIONAL_BINDING_PREFIX.search(cleaned[:start])
@@ -1456,7 +1508,7 @@ def types_by_class(
 # is whatever ranging over ``expr``'s container yields in its position. Two
 # scans feed it, the clauses and the containers they may range over, and the
 # resolver joins them, since only it can type ``expr`` itself.
-RANGE_LANGUAGES = frozenset({"go", "dart"})
+RANGE_LANGUAGES = frozenset({"go", "dart", "csharp"})
 
 # What ranging over each container shape yields, the group name giving the
 # position: ``[]T``, ``[N]T`` and a variadic ``...T`` an int index, then a
@@ -1538,6 +1590,44 @@ _DART_FOR_IN = re.compile(
     rf"(?P<head>{_DART_NAME})(?:\.(?P<member>[A-Za-z_]\w*)(?P<call>\(\))?)?\s*\)"
 )
 
+# C#'s ``foreach (var x in head[.member[()]])``, ``await foreach`` too: ``x`` is
+# the element of a generic collection or an array. A written element type is
+# read by ``_CS_FOREACH_TYPED``. A field or property head may be PascalCase.
+_CS_ITERABLE = (
+    r"(?:List|IList|IEnumerable|ICollection|IReadOnlyCollection|IReadOnlyList|HashSet|ISet"
+    r"|Collection|ReadOnlyCollection)"
+)
+_CS_ELEMENT = r"[A-Za-z_]\w*(?:<[^<>\n]*>)?"
+_CS_ELEMENT_SHAPES = (
+    re.compile(rf"{_CS_ITERABLE}\s*<\s*(?P<value>{_CS_ELEMENT})\??\s*>"),
+    re.compile(rf"(?P<value>{_CS_ELEMENT})\[\]"),
+)
+_CS_CONTAINER = (
+    rf"(?:{_CS_ITERABLE}\s*<[^<>\n]*(?:<[^<>\n]*>[^<>\n]*)*>|{_CS_ELEMENT}\[\])"
+)
+# A parameter, a local, a field or a property (``{`` opens its accessors).
+_CS_CONTAINER_DECLARATIONS = (
+    re.compile(
+        rf"(?<![\w.])(?P<type>{_CS_CONTAINER})\??\s+(?P<name>[A-Za-z_]\w*)\s*"
+        r"(?=(?P<closer>[=;,)]|\{))"
+    ),
+)
+_CS_FOREACH = re.compile(
+    r"\bforeach\s*\(\s*var\s+(?P<value>[a-z_]\w*)\s+in\s+"
+    r"(?P<head>[A-Za-z_]\w*)(?:\.(?P<member>[A-Za-z_]\w*)(?P<call>\(\))?)?\s*\)"
+)
+
+_RANGE_SCANS = {
+    "csharp": (_CS_FOREACH, _CS_CONTAINER_DECLARATIONS),
+    "dart": (_DART_FOR_IN, _DART_CONTAINER_DECLARATIONS),
+    "go": (_GO_RANGE, _GO_CONTAINER_DECLARATIONS),
+}
+_ELEMENT_SHAPES = {
+    "csharp": _CS_ELEMENT_SHAPES,
+    "dart": _DART_ELEMENT_SHAPES,
+    "go": _GO_ELEMENT_SHAPES,
+}
+
 
 class RangeClause(NamedTuple):
     """One ``for key, value := range head[.member[()]]`` at one line.
@@ -1568,12 +1658,8 @@ def scan_ranges(text: str, language: str) -> RangeScan:
         return RangeScan((), ())
     cleaned = _without_comments(text, language)
     starts = [0, *(newline.end() for newline in _NEWLINE.finditer(cleaned))]
-    if language == "dart":
-        clause_pattern, declaration_patterns = _DART_FOR_IN, _DART_CONTAINER_DECLARATIONS
-        inside = _inside_parentheses(cleaned)
-    else:
-        clause_pattern, declaration_patterns = _GO_RANGE, _GO_CONTAINER_DECLARATIONS
-        inside = None
+    clause_pattern, declaration_patterns = _RANGE_SCANS[language]
+    inside = _inside_parentheses(cleaned) if language == "dart" else None
     clauses = tuple(
         RangeClause(
             bisect_right(starts, match.start()),
@@ -1618,8 +1704,7 @@ def range_element_types(
             return None
         return _usable_type_name(raw, language)[0]
 
-    shapes = _DART_ELEMENT_SHAPES if language == "dart" else _GO_ELEMENT_SHAPES
-    for shape in shapes:
+    for shape in _ELEMENT_SHAPES[language]:
         match = shape.fullmatch(spelling)
         if match is not None:
             groups = match.groupdict()

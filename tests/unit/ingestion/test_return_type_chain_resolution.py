@@ -1086,6 +1086,46 @@ def test_kotlin_chained_call_reaches_an_extension_on_the_returned_type(tmp_path:
     assert any(callee.endswith("::extra") for callee in callees)
 
 
+_KOTLIN_PROPERTY_AND_EXTENSION = (
+    "interface Source\n"
+    "class Peek(private val up: Int) : Source {\n"
+    "    private val buffer = 1\n"
+    "    val onClose: () -> Unit = {}\n"
+    "}\n"
+    "{extension}"
+    "class Use {\n"
+    "    fun chain() { Peek(1).buffer() }\n"
+    "    fun local() { val p = Peek(1); p.buffer() }\n"
+    "    fun param(p: Peek) { p.buffer() }\n"
+    "    fun lambda(p: Peek) { p.onClose() }\n"
+    "}\n"
+    "class Holder(val p: Peek) {\n"
+    "    fun field() { p.buffer() }\n"
+    "}\n"
+)
+
+
+@pytest.mark.parametrize("extension", ["fun Source.buffer(): Int = 0\n", ""])
+def test_kotlin_member_call_never_binds_a_property_of_the_name(
+    tmp_path: Path, extension: str
+) -> None:
+    """``x.buffer()`` is the ``Source.buffer()`` extension, never the ``val buffer`` of ``x``'s class."""
+    text = _KOTLIN_PROPERTY_AND_EXTENSION.replace("{extension}", extension)
+    parsed = _parse(tmp_path, "a.kt", "kotlin", text)
+    resolver = CallResolver(
+        parsed, {"a.kt": set()}, heritage_parents={"a.kt::Peek": {"a.kt::Source"}}
+    )
+    edges = {
+        (rc.caller_id.rpartition("::")[2], rc.callee_id)
+        for rc in resolver.resolve_file("a.kt", parsed["a.kt"].calls)
+        if not rc.callee_id.endswith("::Peek")
+    }
+
+    bound = {(caller, "a.kt::buffer") for caller in ("chain", "local", "param", "field")}
+    # A property holding a function is still the callee of its call.
+    assert edges == (bound if extension else set()) | {("lambda", "a.kt::Peek::onClose")}
+
+
 @pytest.mark.parametrize(
     "body",
     [

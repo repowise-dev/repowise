@@ -129,3 +129,39 @@ def test_labels_and_change_display(kind: ForgeKind, label: str, term: str, displ
 def test_every_kind_is_registered() -> None:
     assert {f.kind for f in all_forges()} == set(ForgeKind)
     assert get_forge("gitlab") is get_forge(ForgeKind.GITLAB)
+
+
+@pytest.mark.parametrize(
+    ("url", "anchor"),
+    [
+        ("https://github.com/acme/app.git", "#L7-L12"),
+        ("https://gitlab.com/acme/app.git", "#L7-12"),
+        ("https://bitbucket.org/acme/app.git", "#lines-7:12"),
+        ("https://bitbucket.corp.com/scm/PROJ/repo.git", "#7-12"),
+    ],
+)
+def test_blob_url_cites_a_line_range(url: str, anchor: str) -> None:
+    ref = _ref(url)
+    assert get_forge(ref.forge).blob_url(ref, SHA, "a.py", 7, 12).endswith(anchor)
+
+
+def test_self_hosted_bitbucket_cites_a_range_on_its_browse_path() -> None:
+    ref = _ref(BBDC_REF)
+    url = get_forge(ref.forge).blob_url(ref, SHA, "a.py", 7, 12)
+    assert "/browse/a.py?at=" in url and url.endswith("#7-12")
+
+
+def test_azure_line_range_ends_on_the_line_after_the_last() -> None:
+    url = get_forge(ForgeKind.AZURE).blob_url(_ref(AZ_REF), SHA, "a.py", 7, 12)
+    assert "&line=7&lineEnd=13&" in url
+
+
+def test_a_one_line_range_is_a_single_line_anchor() -> None:
+    ref = _ref("https://github.com/acme/app.git")
+    assert get_forge(ref.forge).blob_url(ref, SHA, "a.py", 7, 7).endswith("#L7")
+
+
+@pytest.mark.parametrize("end_line", [3, None])
+def test_a_reversed_or_missing_end_line_is_a_single_line_anchor(end_line: int | None) -> None:
+    ref = _ref("https://github.com/acme/app.git")
+    assert get_forge(ref.forge).blob_url(ref, SHA, "a.py", 7, end_line).endswith("#L7")

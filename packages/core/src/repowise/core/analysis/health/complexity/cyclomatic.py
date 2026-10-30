@@ -255,7 +255,7 @@ def _enclosing_construct(node: Node, lmap: LanguageNodeMap) -> str:
     return "if"
 
 
-def _condition_subtrees(node: Node) -> list[Node]:
+def _condition_subtrees(node: Node, lmap: LanguageNodeMap) -> list[Node]:
     """Best-effort: pull the *condition* parts out of a branch/loop node.
 
     Prefers the tree-sitter ``condition`` named field where exposed
@@ -263,29 +263,43 @@ def _condition_subtrees(node: Node) -> list[Node]:
     Falls back to all direct children except recognised body fields and
     syntactic punctuation.
     """
+    if node.type in lmap.foreach_kinds:
+        return []
     cond = node.child_by_field_name("condition")
     if cond is not None:
         return [cond]
+    # Python's ``X if C else Y`` names no fields: only the middle child is
+    # the condition, so the arms' operators are not counted.
+    named = node.named_children
+    if lmap.ternary_arms_positional and node.type in lmap.flat_ternary_kinds and len(named) == 3:
+        return [named[1]]
     # Switch case value (TS, Java)
     value = node.child_by_field_name("value")
     if value is not None and "case" in node.type:
         return [value]
-    # Fallback: direct children minus bodies / blocks.
+    return _non_body_children(node, lmap)
+
+
+_BLOCK_KINDS = frozenset({"block", "compound_statement", "statement_block"})
+
+
+def _non_body_children(node: Node, lmap: LanguageNodeMap) -> list[Node]:
+    """Direct named children of *node* minus bodies / blocks."""
     body_nodes: set[int] = set()
     for fname in _BODY_FIELD_NAMES:
         child = node.child_by_field_name(fname)
         if child is not None:
             body_nodes.add(child.id)
-    out: list[Node] = []
-    for child in node.children:
-        if child.id in body_nodes:
-            continue
-        if not child.is_named:
-            continue
-        if child.type in ("block", "compound_statement", "statement_block"):
-            continue
-        out.append(child)
-    return out
+    # A ``case ... if guard`` guard is its own branch node and counts its
+    # condition there.
+    return [
+        child
+        for child in node.children
+        if child.is_named
+        and child.id not in body_nodes
+        and child.type not in _BLOCK_KINDS
+        and child.type not in lmap.branch_kinds
+    ]
 
 
 def _collect_case_children(node: Node, lmap: LanguageNodeMap) -> list[Node]:
@@ -397,9 +411,12 @@ def _walk_function_body(
     bumps = 0
     conditions: list[ConditionComplexity] = []
 
-    # Track match_expression nodes identified as "flat" so their arms
-    # are not individually counted as branch points.
-    flat_match_ids: set[int] = set()
+    # Arms of a "flat" match are not counted at all; arms of any other
+    # switch count toward CCN but sit in the level their switch opened.
+    flat_arm_ids: set[int] = set()
+    switch_arm_ids: set[int] = set()
+    # Dart ``on T { }`` handlers with no ``catch``: see ``_bare_on_handlers``.
+    bare_handler_ids: set[int] = set()
     deepest_depth = 0
     deepest_node: list[Node] = []
 
@@ -418,22 +435,8 @@ def _walk_function_body(
         nesting_increment = 0
         ccn_increment = 0
 
-        # Check if this is a case/arm inside a flat match — skip it.
-        # In Rust the parent chain is match_arm → match_block → match_expression,
-        # so we check both parent and grandparent. ``node.parent`` costs far
-        # more than the rest of this visit, so it is read only for a case node
-        # once a flat match exists for it to belong to.
-        is_flat_match_arm = False
-        if (
-            flat_match_ids
-            and node.type in lmap.case_kinds
-            and (_parent := node.parent) is not None
-            and (
-                _parent.id in flat_match_ids
-                or (_parent.parent is not None and _parent.parent.id in flat_match_ids)
-            )
-        ):
-            is_flat_match_arm = True
+        is_flat_match_arm = node.id in flat_arm_ids
+        is_switch_arm = node.id in switch_arm_ids
 
         # ``node.is_named`` guards grammars (Ruby) whose keyword tokens share
         # the node-type name of their parent node (an ``if`` node contains an
@@ -453,48 +456,38 @@ def _walk_function_body(
             # An ``else if`` / ``elif`` chain arm, a ternary chain arm or
             # markup choice, and a comprehension / case-guard filter are flat:
             # charge the extra branch (ccn) but do not open a new nesting
-            # level for them. This parallels the flat-``switch``/``match``
-            # special-case above.
+            # level for them. So is a switch arm: its switch already opened
+            # the level (Sonar's cognitive complexity spec).
             if not (
-                node.type in _FLAT_BRANCH_KINDS
+                is_switch_arm
+                or node.type in _FLAT_BRANCH_KINDS
                 or _is_elif_continuation(node)
                 or _is_flat_ternary(node, lmap, in_markup)
             ):
                 nesting_increment = 1
-            # Side-channel: count compound boolean ops in this
-            # construct's condition. Does not affect ccn/cognitive
-            # (boolean operators are still tallied independently by
-            # the regular recursion below).
-            op_count = 0
-            op_kinds: set[str] = set()
-            negated = False
-            for sub in _condition_subtrees(node):
-                sub_count, sub_kinds, sub_negated = _count_boolean_ops_in_condition(sub, lmap)
-                op_count += sub_count
-                op_kinds |= sub_kinds
-                negated = negated or sub_negated
-            if op_count > 0:
-                conditions.append(
-                    ConditionComplexity(
-                        line=node.start_point[0] + 1,
-                        operator_count=op_count,
-                        enclosing_construct=_enclosing_construct(node, lmap),
-                        flat_chain=len(op_kinds) == 1 and not negated,
-                    )
-                )
+            # Side-channel: does not affect ccn/cognitive (boolean operators
+            # are still tallied independently by the regular recursion below).
+            conditions.extend(_compound_condition(node, lmap))
+        elif node.id in bare_handler_ids:
+            # A bare ``on T { }`` handler branches and nests like a catch clause.
+            ccn_increment = nesting_increment = 1
         elif node.is_named and node.type in lmap.try_kinds:
             # TRY neither branches nor nests: each catch opens the level for
             # its own body, and the guarded and finally bodies stay at the
             # try's depth (Sonar's cognitive complexity spec).
-            pass
+            bare_handler_ids.update(_bare_on_handlers(node))
         elif node.is_named and node.type in lmap.switch_kinds:
+            arm_ids = {c.id for c in _collect_case_children(node, lmap)}
             # Detect flat match: all arms are simple single-expression arms.
             if _is_flat_match(node, lmap):
-                flat_match_ids.add(node.id)
+                flat_arm_ids.update(arm_ids)
                 # Flat match: count 1 CCN point for the match itself,
                 # open a nesting level, but arms won't be counted.
                 ccn_increment = 1
-            # Switch opens nesting; each case contributes its own +1.
+            else:
+                switch_arm_ids.update(arm_ids)
+            # The switch opens one nesting level for its whole body; each
+            # case adds CCN only.
             nesting_increment = 1
         elif _is_boolean_operator(node, lmap):
             ccn_increment = 1
@@ -504,8 +497,9 @@ def _walk_function_body(
         if nesting_increment:
             # Cognitive complexity: each nesting node adds (1 + depth).
             cognitive += 1 + depth
-        elif ccn_increment:
-            # Flat +1 for boolean operators (no nesting impact).
+        elif ccn_increment and not is_switch_arm:
+            # Flat +1 for boolean operators (no nesting impact). A switch arm
+            # adds none: its switch carries the cognitive cost.
             cognitive += 1
 
         if new_depth > max_nesting:
@@ -549,6 +543,51 @@ def _walk_function_body(
         block = _widened_block(deepest_node[0], body_node, lmap)
         deepest[:] = [block.start_point[0] + 1, block.end_point[0] + 1]
     return ccn, max_nesting, cognitive, bumps, conditions
+
+
+def _compound_condition(node: Node, lmap: LanguageNodeMap) -> list[ConditionComplexity]:
+    """The compound boolean ops in *node*'s condition, as one record or none."""
+    op_count = 0
+    op_kinds: set[str] = set()
+    negated = False
+    for sub in _condition_subtrees(node, lmap):
+        sub_count, sub_kinds, sub_negated = _count_boolean_ops_in_condition(sub, lmap)
+        op_count += sub_count
+        op_kinds |= sub_kinds
+        negated = negated or sub_negated
+    if op_count == 0:
+        return []
+    return [
+        ConditionComplexity(
+            line=node.start_point[0] + 1,
+            operator_count=op_count,
+            enclosing_construct=_enclosing_construct(node, lmap),
+            flat_chain=len(op_kinds) == 1 and not negated,
+        )
+    ]
+
+
+def _bare_on_handlers(try_node: Node) -> list[int]:
+    """Ids of the type node opening each Dart ``on T { }`` handler.
+
+    The grammar gives ``on T catch (e)`` and ``catch (e)`` a ``catch_clause``
+    but leaves a bare ``on T`` as loose tokens beside its block, so the walk
+    counts the type node in its place. Other grammars have no ``on`` token here.
+    """
+    out: list[int] = []
+    arm: Node | None = None
+    after_on = False
+    for child in try_node.children:
+        if child.type == "on":
+            after_on, arm = True, None
+        elif child.type == "catch_clause":
+            after_on, arm = False, None
+        elif after_on and arm is None and child.is_named:
+            arm = child
+        elif child.type == "block" and arm is not None:
+            out.append(arm.id)
+            after_on, arm = False, None
+    return out
 
 
 #: The smallest block named as the place to start flattening a function.

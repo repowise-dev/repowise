@@ -8,6 +8,18 @@ export interface ChangeStat {
   label: string;
 }
 
+export interface ChangeLineCopy {
+  /** The lead-in. `relative` is the previous index's age, e.g. "2d ago". */
+  since: (relative: string) => string;
+  /** Words the previous index's age, e.g. "2d ago". */
+  relativeTime: (iso: string) => string;
+}
+
+export const CHANGE_LINE_COPY: ChangeLineCopy = {
+  since: (relative) => `Since the previous index, ${relative}`,
+  relativeTime: formatRelativeTime,
+};
+
 export interface ChangeLineProps {
   /**
    * ISO timestamp of the PREVIOUS index snapshot — the point the figures are
@@ -15,6 +27,7 @@ export interface ChangeLineProps {
    */
   since: string | null;
   stats: ChangeStat[];
+  copy?: Partial<ChangeLineCopy> | undefined;
 }
 
 /**
@@ -35,8 +48,9 @@ export interface ChangeLineProps {
  * Renders nothing without two snapshots to compare, or when nothing moved: an
  * all-zeroes strip is noise pretending to be news.
  */
-export function ChangeLine({ since, stats }: ChangeLineProps) {
+export function ChangeLine({ since, stats, copy }: ChangeLineProps) {
   if (!since || stats.length === 0) return null;
+  const c = { ...CHANGE_LINE_COPY, ...copy };
 
   return (
     <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 border-y border-[var(--color-border-default)] py-2.5 text-xs text-[var(--color-text-secondary)]">
@@ -44,7 +58,7 @@ export function ChangeLine({ since, stats }: ChangeLineProps) {
         className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]"
         title={formatDateTime(since)}
       >
-        Since the previous index, {formatRelativeTime(since)}
+        {c.since(c.relativeTime(since))}
       </span>
       {stats.map((s) => (
         <span key={s.label}>

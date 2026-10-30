@@ -248,9 +248,9 @@ _RENAME_RE = re.compile(r"\{(.*?) => (.*?)\}")
 
 
 def _extract_rename_paths(stat_path: str, known_paths: set[str]) -> tuple[str | None, str | None]:
-    """Extract old/new paths from a git numstat rename line and add to *known_paths*.
+    """Extract old/new paths from a git numstat rename line, extending *known_paths*.
 
-    Git ``--numstat`` with ``--follow`` emits rename lines like::
+    Git ``--numstat`` emits rename lines like::
 
         10\t5\t{old => new}/shared_suffix
         10\t5\told_dir/{old_name => new_name}.py
@@ -260,25 +260,31 @@ def _extract_rename_paths(stat_path: str, known_paths: set[str]) -> tuple[str | 
     The third form has an EMPTY side: a directory inserted into (or removed
     from) the middle of a path. Expanding the empty side leaves a doubled
     slash at the splice point, which is collapsed so the result matches the
-    tracked path. This helper parses all forms, adds both expanded paths to
-    *known_paths*, and returns ``(old_path, new_path)`` so the caller can
-    attribute churn to the correct file. Returns ``(None, None)`` if the
-    pattern is not found.
+    tracked path. Returns ``(old_path, new_path)``, or ``(None, None)`` if the
+    row is not a rename.
+
+    Both names join *known_paths* only when one of them is already there: a
+    ``--full-diff`` log lists every file in the commit, and another file's
+    rename must not hand that file's churn to the one being walked.
     """
+    old_path, new_path = _rename_sides(stat_path)
+    if old_path and new_path and (old_path in known_paths or new_path in known_paths):
+        known_paths.add(old_path)
+        known_paths.add(new_path)
+    return old_path, new_path
+
+
+def _rename_sides(stat_path: str) -> tuple[str | None, str | None]:
     m = _RENAME_RE.search(stat_path)
     if m:
         prefix = stat_path[: m.start()]
         suffix = stat_path[m.end() :]
         old_path = (prefix + m.group(1) + suffix).replace("//", "/")
         new_path = (prefix + m.group(2) + suffix).replace("//", "/")
-        known_paths.add(old_path)
-        known_paths.add(new_path)
         return old_path, new_path
     # Paths sharing no leading or trailing component get no braces: ``a.py => src/b.py``.
     old_path, sep, new_path = stat_path.partition(" => ")
     if sep and old_path and new_path:
-        known_paths.add(old_path)
-        known_paths.add(new_path)
         return old_path, new_path
     return None, None
 

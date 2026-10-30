@@ -78,6 +78,7 @@ from .python_nodes import (
     _text,
     _value_refs,
 )
+from .python_paths import PythonPathReceivers
 from .python_sources import PythonLoopSources
 
 if TYPE_CHECKING:
@@ -101,7 +102,9 @@ def _db_sink(method: str, is_attribute: bool, evidence: bool) -> str | None:
     return "db" if method in PY_DB_UNAMBIGUOUS or evidence else None
 
 
-class PythonPerfDialect(PythonBatchForms, PythonLoopSources, IterableSources):
+class PythonPerfDialect(
+    PythonBatchForms, PythonLoopSources, PythonPathReceivers, IterableSources
+):
     language = "python"
     lock_acquire_functions = frozenset({"acquire", "__enter__"})
     spin_loop_header = re.compile(r"while\s+True\s*:")
@@ -155,8 +158,9 @@ class PythonPerfDialect(PythonBatchForms, PythonLoopSources, IterableSources):
             return _db_sink(method, is_attribute, has_db_import or root_kind == "db")
         if method == "Popen" or method in _PY_ROOTED_PROCESS_VERBS.get(root, ()):
             return "subprocess"
-        # A verb under its literal module root (bare ``open`` too), or a pathlib member call.
-        if method in _PY_ROOTED_FILE_VERBS.get(root, ()) or (is_attribute and method in PY_FS_METHODS):
+        # A verb under its literal module root (bare ``open`` too). Pathlib member
+        # calls need their receiver, so ``call_sink_kind`` decides those.
+        if method in _PY_ROOTED_FILE_VERBS.get(root, ()):
             return "filesystem"
         # An HTTP verb only as a member call on an imported client: a bare ``get(...)`` is not one.
         if method == "urlopen" or (
@@ -178,6 +182,8 @@ class PythonPerfDialect(PythonBatchForms, PythonLoopSources, IterableSources):
             self._reads_a_registry(call, io_names) or _runs_schema_statement(call, self.reaching_value)
         ):
             return None
+        if kind is None and self.callee_method_name(call) in PY_FS_METHODS and self.on_path(call):
+            return "filesystem"
         orm_get = self._orm_get(call) if kind is None else None
         if orm_get is not None:
             # ``get`` alone is ``dict.get`` / ``requests.get``; the model-class shape
@@ -437,14 +443,9 @@ class PythonPerfDialect(PythonBatchForms, PythonLoopSources, IterableSources):
         if method in _PY_LOCK_METHODS and self.callee_is_attribute(node):
             return "lock_in_loop"
         # ``lst.insert(0, x)`` shifts the whole list each pass: a literal ``0``, on a
-        # list not re-created per iteration and not a ``deque`` (O(1) at the front).
-        if (
-            method == "insert"
-            and self.callee_is_attribute(node)
-            and self._first_arg_is_zero(node)
-            and not self._receiver_reset_in_loop(node, root)
-            and not self._receiver_bound_to_deque(node, root)
-        ):
+        # list not re-created per iteration, not a ``deque`` (O(1) at the front) and
+        # not followed by an exit that ends the loop.
+        if method == "insert" and self._front_insert_repeats(node, root):
             return "list_insert_zero_in_loop"
         # ``pd.concat([acc, chunk])`` / ``pandas.concat(...)`` in a loop copies
         # the whole frame each pass -> O(n^2); collect a list and concat once.
@@ -488,6 +489,46 @@ class PythonPerfDialect(PythonBatchForms, PythonLoopSources, IterableSources):
                 continue  # imports do not nest further imports
             stack.extend(n.children)
         return False
+
+    def _front_insert_repeats(self, node: Node, root: str) -> bool:
+        if not (self.callee_is_attribute(node) and self._first_arg_is_zero(node)):
+            return False
+        return not (
+            self._receiver_reset_in_loop(node, root)
+            or self._receiver_bound_to_deque(node, root)
+            or self._loop_ends_after(node)
+        )
+
+    def _loop_ends_after(self, node: Node) -> bool:
+        """A ``return``/``raise`` (or, with one loop around *node*, a ``break``)
+        follows *node*'s statement in its block, so it runs once per call.
+        Ceiling: a flag-driven exit (``stop = True`` then ``if stop: break``) is
+        still reported."""
+        stmt = node
+        while stmt.parent is not None and stmt.parent.type != "block":
+            if stmt.type in self.scope_kinds:  # a lambda body runs elsewhere
+                return False
+            stmt = stmt.parent
+        loops, in_try = self._enclosing_loops(stmt)
+        if not loops:
+            return False
+        # A ``raise`` inside a ``try`` may be caught and the loop go on, and a
+        # ``break`` in a loop nest leaves only the inner loop.
+        exits = {"return_statement"} if in_try else {"return_statement", "raise_statement"}
+        if loops == 1:
+            exits.add("break_statement")
+        return self._exit_follows(
+            stmt, lambda s: s.type in exits, frozenset({"continue_statement"})
+        )
+
+    def _enclosing_loops(self, stmt: Node) -> tuple[int, bool]:
+        """Loops around *stmt* in its scope, and whether a ``try`` sits among them."""
+        loops, in_try, cur = 0, False, stmt.parent
+        while cur is not None and cur.type not in self.scope_kinds:
+            loops += cur.type in ("for_statement", "while_statement")
+            in_try = in_try or cur.type == "try_statement"
+            cur = cur.parent
+        return loops, in_try
 
     def _receiver_reset_in_loop(self, node: Node, name: str) -> bool:
         """True if the call's receiver ``name`` is re-assigned (reset to a fresh

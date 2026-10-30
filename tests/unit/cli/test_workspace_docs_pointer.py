@@ -19,6 +19,11 @@ from repowise.cli.commands.update_cmd.command import _current_renderer_fingerpri
 from repowise.cli.helpers import load_state, save_state
 from repowise.cli.main import cli
 from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
+from repowise.core.upgrade import (
+    STORE_FORMAT_VERSION,
+    STORE_FORMAT_VERSION_KEY,
+    WIKI_REBUILT_VERSION_KEY,
+)
 from repowise.core.workspace.config import RepoEntry, WorkspaceConfig
 
 # An index written by this build: its git rows follow the current rules.
@@ -26,6 +31,12 @@ CURRENT_GIT_HISTORY = {GIT_HISTORY_VERSION_KEY: GIT_HISTORY_VERSION}
 
 DOCS_POINTER_KEY = "last_docs_commit"
 SYNC_POINTER_KEY = "last_sync_commit"
+
+# A store at this build's format whose wiki rebuild already ran.
+CURRENT_STORE_FORMAT = {
+    STORE_FORMAT_VERSION_KEY: STORE_FORMAT_VERSION,
+    WIKI_REBUILT_VERSION_KEY: STORE_FORMAT_VERSION,
+}
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -238,7 +249,8 @@ def test_docs_early_exit_advances_docs_pointer(tmp_path: Path) -> None:
     _index_full(repo)
     c0 = _git(repo, "rev-parse", "HEAD")
 
-    # Legacy state: no docs pointer recorded yet.
+    # Legacy state: no docs pointer recorded yet. The store is at the current
+    # format with its wiki rebuilt, so no upgrade rebuild is owed.
     save_state(
         repo,
         {
@@ -246,6 +258,7 @@ def test_docs_early_exit_advances_docs_pointer(tmp_path: Path) -> None:
             "docs_enabled": True,
             "renderer_fingerprint": _current_renderer_fingerprint(repo),
             **CURRENT_GIT_HISTORY,
+            **CURRENT_STORE_FORMAT,
         },
     )
 

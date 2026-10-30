@@ -14,6 +14,7 @@ def _run(tmp_path, *paths: str, **overrides) -> SimpleNamespace:
         "analyzer_changed": False,
         "extraction_changed": False,
         "renderer_changed": False,
+        "wiki_rebuild": False,
         "history_stale": False,
         "config": SimpleNamespace(changed=False),
         "file_diffs": [SimpleNamespace(path=p, old_path=None) for p in paths],
@@ -38,6 +39,7 @@ def test_no_change_keeps_stored_findings(tmp_path) -> None:
     [
         {"analyzer_changed": True},
         {"history_stale": True},
+        {"wiki_rebuild": True},
         {"config": SimpleNamespace(changed=True)},
         {"affected": SimpleNamespace(regenerate=["src/a.py"])},
         {"stale_deterministic_ids": {"scc_page:x"}},

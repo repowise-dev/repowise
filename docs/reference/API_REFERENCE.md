@@ -414,7 +414,7 @@ empty. The route still declares only `application/json`.
 Two query parameters repeat across the `code-health` tag, and both change the
 numbers rather than the rows:
 
-- `scope=all` (default) or `production`. `production` drops test files, which
+- `scope=all` (default) or `production`. `production` drops test, tooling, vendored and generated files, which
   lowers every figure without a defect having been found.
 - `counts=everything` (default) or `code_shape`. `code_shape` removes the
   git-derived half of the score, so the figure describes code shape rather than

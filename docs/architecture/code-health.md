@@ -110,11 +110,11 @@ divide by what each is permitted to affect:
 
 | Group | Count | Scores into |
 |---|---:|---|
-| Defect-scoring | 24 | `defect` (10 of them also `maintainability`) |
+| Defect-scoring | 23 | `defect` (9 of them also `maintainability`) |
 | Performance | 22 | `performance` only |
 | SQL | 3 | `maintainability` only |
 | Governance | 3 | nothing: the finding surfaces, the score is untouched |
-| Advisory | 10 | nothing: measured by construction, out of impact-ranked lists unless requested |
+| Advisory | 11 | nothing: measured by construction, out of impact-ranked lists unless requested |
 
 The authority is `scoring._BIOMARKER_DIMENSIONS`. An unlisted biomarker defaults into
 `defect`, so every `sql_*` and performance name is listed explicitly: an omission would
@@ -130,8 +130,8 @@ the defect weight (§6.1), "maint" the maintainability and "perf" the performanc
 | `low_cohesion` | Structural | A class split into unrelated method groups | LCOM4 2 and 5 methods; high at LCOM4 3 or 20 methods; critical at LCOM4 4 and 15 methods | 0.5; maint 1.0 |
 | `god_class` | Structural | A large class hiding a brain method | 200 NLOC, 15 methods, one method at NLOC 70 and CCN 9; high at 300 NLOC or 20 methods; critical at 400 and 25 | 1.13; maint 1.0 |
 | `nested_complexity` | Structural | Deep nesting in a function | Judged depth 4; high at 5; critical at 7 | 1.34; maint 1.0 |
-| `repeated_nesting` | Structural | Several blocks at one nesting depth | 3 bumps (low) and judged CCN 5; medium at 4 bumps, high at 5 | 0.5; maint 1.0 |
-| `complex_conditional` | Structural | A boolean expression with many operators | 3 operators (low); medium 4, high 5, critical 6; a flat chain stays low | 1.33; maint 1.0 |
+| `repeated_nesting` | Structural | Several blocks at one nesting depth | 3 bumps (low) and judged CCN 5; medium at 4 bumps, high at 5 | Advisory |
+| `complex_conditional` | Structural | A boolean expression with many operators | 3 operators (low); medium 4, high 5, critical 6; a flat chain (one operator, no negation) is not flagged | 1.33; maint 1.0 |
 | `complex_method` | Size | High cyclomatic complexity | Judged CCN 9; high 15; critical 25 | 1.21; maint 1.0 |
 | `large_method` | Size | A long function | 60 code lines (low) and judged CCN 3; medium 90, high 120, critical 200 | 1.25; maint 1.0 |
 | `primitive_obsession` | Size | A long list of scalar parameters | 5 parameters (constructors 7), over half the typed ones primitive, file at 60 NLOC, not a test (low); medium at threshold + 2, high at + 4 | 0.5; maint 1.0 |
@@ -323,6 +323,8 @@ language because it does not transfer:
   repositories no earlier health study used found the score non-inferior without it.
 - `brain_method`: fires only where `complex_method` and `large_method` already charge;
   dropping it left defect AUC unchanged on the 66-repo corpus.
+- `repeated_nesting`: 29% in a blind study (7 of 24 findings), mostly short functions
+  with a few simple loops; dropping it with four other weak markers cost 0.004 defect AUC.
 - `untested_complexity`: complexity and coverage already deduct elsewhere
   ([user guide](../layers/TEST_INTELLIGENCE.md#untested-complexity)).
 - The four `apex_*` markers: every finding on 13 Salesforce repos hand-read, none
@@ -330,10 +332,11 @@ language because it does not transfer:
 
 ### 5.5 Worked example: the dispatch rule
 
-`nested_complexity` adds a level per `if` / `for` / `while` / `try` / `switch`. A
+`nested_complexity` adds a level per `if` / `for` / `while` / `try` / `switch`; a `case`
+arm adds none. A
 function mostly one dispatch on one value (a `switch`, `match` or same-subject `if` chain
 with ≥ 60% of its decision points) is judged by the code around it plus its heaviest arm:
-`nested_complexity` skips the `switch` and `case` levels, and `complex_method`,
+`nested_complexity` skips the dispatch's level and the loop it usually sits in, and `complex_method`,
 `brain_method` and `repeated_nesting` read the outer CCN plus the worst arm's.
 
 <details>
@@ -371,7 +374,7 @@ NLOC as a control fits each marker's lift beyond size, and only the constants sh
 - **Prior weights kept:** `untested_hotspot`, `churn_risk`, `code_age_volatility`, which
   are coverage-dependent or rare, so the corpus could not fairly measure them.
 - **Floored at 0.5:** `developer_congestion`, `dry_violation`, `low_cohesion`,
-  `primitive_obsession`, `repeated_nesting` fire widely but proved weak under
+  `primitive_obsession` fire widely but proved weak under
   leakage-free scoring; `knowledge_loss` is de-rated to 0.4, the weakest.
   `error_handling` is not fitted.
 

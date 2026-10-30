@@ -36,7 +36,11 @@ def _resolve_db_url() -> None:
     """
     from repowise.core.workspace.config import find_workspace_root
 
-    if os.environ.get("REPOWISE_DB_URL") or find_workspace_root() is not None:
+    if (
+        os.environ.get("REPOWISE_DB_URL")
+        or os.environ.get("REPOWISE_DATABASE_URL")
+        or find_workspace_root() is not None
+    ):
         return
     local_repowise = Path.cwd() / ".repowise"
     if not local_repowise.exists():

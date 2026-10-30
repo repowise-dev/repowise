@@ -85,7 +85,8 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("src/contests/rules.py", None, ""),
     ("src/Latests/x.cs", None, ""),
     # gradle test fixtures and QA projects (elasticsearch)
-    ("build-tools/src/testFixtures/java/org/x/Fixture.java", None, "test"),
+    ("build-tools/src/testFixtures/java/org/x/Fixture.java", None, "support"),
+    ("build-tools/src/testFixtures/java/org/x/Builder.java", None, "test"),
     ("x-pack/plugin/sql/qa/server/src/main/java/org/x/JdbcBase.java", None, "test"),
     ("qa/logging-spi/src/main/java/org/x/Spi.java", None, "test"),
     ("src/qa/answer.py", None, ""),  # a question-answering module
@@ -124,6 +125,9 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("contest/x.py", None, ""),
     # e2e suites
     ("e2e/login.ts", None, "test"),
+    ("apps/console/e2e/helpers/hydration.ts", "typescript", "support"),
+    ("apps/console/e2e/fixtures.ts", "typescript", "support"),
+    ("apps/console/e2e/specs/login.spec.ts", "typescript", "test"),
     # ...and the `.e2e.` infix beside `.test.`/`.spec.`, suites and their helpers
     ("src/gateway/gateway.e2e.ts", None, "test"),
     ("src/gateway/test-helpers.e2e.ts", None, "test"),
@@ -162,6 +166,11 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     # still needs a test tree around it
     ("fixtures/data.yml", None, ""),
     ("app/fixtures/premier_league.py", None, ""),
+    ("src/fixtures.ts", None, ""),
+    ("src/fixtures.ts", "typescript", ""),
+    ("src/fixtures.py", None, ""),
+    ("src/fixtures.py", "python", ""),
+    ("lib/fixtures.go", None, ""),
     ("src/testdata_loader.py", None, ""),
     ("tests/testdata/golden.json", None, "support"),
     # compound directory names: a segment's words split on - _ . and its last
@@ -614,3 +623,24 @@ def test_dotnet_test_project_classifies_csharp_files(
     got_without = "support" if is_test_support_path(path) else got_without
     assert got_without == expected_without
 
+
+
+@pytest.mark.parametrize(
+    ("path", "language"),
+    [
+        ("tests/test_app.py", "python"),
+        ("src/conftest.py", "python"),
+        ("src/app/__tests__/view.test.tsx", "typescript"),
+        ("src/Foo.Tests/BarTests.cs", "csharp"),
+        ("lib/app.rb", None),
+    ],
+)
+def test_the_memoized_answer_is_the_classification(path: str, language: str | None) -> None:
+    from repowise.core import test_paths
+
+    expected = test_paths._classify_with_context(path, language)
+    test_paths._classify_without_context.cache_clear()
+    assert test_paths._classify(path, language) == expected
+    # A second ask is served from the cache and still agrees.
+    assert test_paths._classify(path, language) == expected
+    assert test_paths._classify_without_context.cache_info().hits >= 1

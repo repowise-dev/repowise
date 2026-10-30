@@ -447,6 +447,64 @@ async def test_incremental_page_regen_sets_file_pages_only(tmp_path):
     assert generation_config.file_pages_only is True
 
 
+@pytest.mark.asyncio
+async def test_incremental_page_regen_renders_a_new_cycle_page(tmp_path):
+    """A sync renders structure pages the file-scoped pass cannot reach.
+
+    The same ids ``repowise update`` renders: here a cycle the store has no
+    page for, rendered from the whole parse with the ladder scoped to its id.
+    """
+    from repowise.core.generation.models import compute_page_id, scc_page_slug
+
+    repo_path = tmp_path
+    (repo_path / ".repowise").mkdir()
+    (repo_path / ".repowise" / "state.json").write_text(
+        '{"last_sync_commit": "base-sha"}', encoding="utf-8"
+    )
+    cycle = frozenset({"src/a.py", "src/b.py"})
+    result = SimpleNamespace(
+        file_count=10,
+        parsed_files=[],
+        source_map={},
+        graph_builder=SimpleNamespace(
+            graph=lambda: object(),
+            pagerank=lambda: {},
+            strongly_connected_components=lambda: [cycle],
+        ),
+        repo_structure=object(),
+        repo_name="test-repo",
+        git_meta_map={},
+    )
+    detector = MagicMock()
+    detector.get_changed_files.return_value = [object()]
+    detector.get_affected_pages.return_value = SimpleNamespace(regenerate=["src/a.py"])
+    generator = MagicMock()
+    generator.generate_all = AsyncMock(return_value=[])
+    page_generator_cls = MagicMock(return_value=generator)
+
+    with (
+        patch("subprocess.run", return_value=SimpleNamespace(returncode=0, stdout="head-sha\n")),
+        patch("repowise.core.ingestion.ChangeDetector", return_value=detector),
+        patch(
+            "repowise.core.ingestion.change_detector.compute_adaptive_budget",
+            return_value=5,
+        ),
+        patch("repowise.core.generation.PageGenerator", page_generator_cls),
+        patch("repowise.core.generation.ContextAssembler"),
+        patch("repowise.core.reasoning.resolve_reasoning", return_value="low"),
+        patch("repowise.core.repo_config.load_repo_config", return_value={}),
+    ):
+        await _incremental_page_regen(
+            Path(repo_path), result, llm_client=object(), job_config={}, progress=None
+        )
+
+    cycle_id = compute_page_id("scc_page", scc_page_slug(sorted(cycle)))
+    file_pass, structure_pass = generator.generate_all.await_args_list
+    assert "only_page_ids" not in file_pass.kwargs
+    assert structure_pass.kwargs["only_page_ids"] == {cycle_id}
+    assert page_generator_cls.call_args_list[1].args[2].file_pages_only is False
+
+
 # ---------------------------------------------------------------------------
 # Deterministic template wiki on a keyless initial index (Part B)
 # ---------------------------------------------------------------------------
@@ -824,3 +882,208 @@ async def test_update_job_status_without_total_pages_preserves_existing_value(
         job = await get_generation_job(session, job_id)
         assert job.total_pages == 5
         assert job.completed_pages == 250
+
+
+# ---------------------------------------------------------------------------
+# Update lock and analyzer stamp: a server job never overwrites newer health
+# ---------------------------------------------------------------------------
+
+
+def _write_state(repo_path: Path, state: dict) -> None:
+    import json
+
+    path = repo_path / ".repowise" / "state.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state), encoding="utf-8")
+
+
+async def _job_row(session_factory, job_id: str):
+    async with session_factory() as session:
+        return await get_generation_job(session, job_id)
+
+
+@pytest.mark.asyncio
+async def test_sync_job_holds_the_update_lock_and_stamps_its_analyzer(session_factory, tmp_path):
+    import json
+
+    from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+    from repowise.core.update_lock import read_update_lock
+
+    _write_state(tmp_path, {"last_sync_commit": "old", "health_analyzer_version": 1})
+    job_id = await _seed_job_with_config(session_factory, tmp_path, {"mode": "sync"})
+    app_state = SimpleNamespace(session_factory=session_factory, fts=None, vector_store=None)
+
+    held_during_run: list = []
+
+    async def pipeline(*_a, **_k):
+        held_during_run.append(read_update_lock(tmp_path))
+        return SimpleNamespace(**vars(_fake_result()), health_report=object())
+
+    with (
+        patch("repowise.server.job_executor.run_pipeline", side_effect=pipeline),
+        patch("repowise.server.job_executor.persist_pipeline_result", AsyncMock()),
+        patch("repowise.server.job_state._read_head_sha", return_value="new"),
+        _no_provider(),
+    ):
+        await execute_job(job_id, app_state)
+
+    assert (await _job_row(session_factory, job_id)).status == "completed"
+    assert held_during_run[0] is not None
+    assert read_update_lock(tmp_path) is None
+    state = json.loads((tmp_path / ".repowise" / "state.json").read_text(encoding="utf-8"))
+    assert state["health_analyzer_version"] == HEALTH_ANALYZER_VERSION
+    assert state["last_sync_commit"] == "new"
+
+
+@pytest.mark.asyncio
+async def test_sync_job_does_not_run_while_a_cli_update_holds_the_lock(session_factory, tmp_path):
+    from repowise.core.update_lock import (
+        read_update_lock,
+        release_update_lock,
+        try_acquire_update_lock,
+    )
+
+    job_id = await _seed_job_with_config(session_factory, tmp_path, {"mode": "sync"})
+    app_state = SimpleNamespace(session_factory=session_factory, fts=None, vector_store=None)
+    assert try_acquire_update_lock(tmp_path, "cli-target") is None
+    run_pipeline_mock = AsyncMock(return_value=_fake_result())
+    try:
+        with (
+            patch("repowise.server.job_executor.run_pipeline", run_pipeline_mock),
+            patch("repowise.server.job_executor.persist_pipeline_result", AsyncMock()),
+            _no_provider(),
+        ):
+            await execute_job(job_id, app_state)
+        # The CLI's lock is left in place for its owner.
+        assert read_update_lock(tmp_path)["target_commit"] == "cli-target"
+    finally:
+        release_update_lock(tmp_path)
+
+    run_pipeline_mock.assert_not_called()
+    job = await _job_row(session_factory, job_id)
+    assert job.status == "cancelled"
+    assert "Another repowise update" in job.error_message
+
+
+@pytest.mark.asyncio
+async def test_older_server_never_overwrites_newer_health_rows(session_factory, tmp_path):
+    from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+    from repowise.core.update_lock import read_update_lock
+
+    _write_state(tmp_path, {"health_analyzer_version": HEALTH_ANALYZER_VERSION + 1})
+    job_id = await _seed_job_with_config(session_factory, tmp_path, {"mode": "sync"})
+    app_state = SimpleNamespace(session_factory=session_factory, fts=None, vector_store=None)
+    run_pipeline_mock = AsyncMock(return_value=_fake_result())
+    persist = AsyncMock()
+    with (
+        patch("repowise.server.job_executor.run_pipeline", run_pipeline_mock),
+        patch("repowise.server.job_executor.persist_pipeline_result", persist),
+        _no_provider(),
+    ):
+        await execute_job(job_id, app_state)
+
+    run_pipeline_mock.assert_not_called()
+    persist.assert_not_called()
+    job = await _job_row(session_factory, job_id)
+    assert job.status == "failed"
+    assert f"analyzer version {HEALTH_ANALYZER_VERSION + 1}" in job.error_message
+    assert read_update_lock(tmp_path) is None
+
+
+@pytest.mark.asyncio
+async def test_newer_stamp_written_during_the_run_blocks_the_persist(session_factory, tmp_path):
+    from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+
+    job_id = await _seed_job_with_config(session_factory, tmp_path, {"mode": "full_resync"})
+    app_state = SimpleNamespace(session_factory=session_factory, fts=None, vector_store=None)
+
+    async def pipeline(*_a, **_k):
+        _write_state(tmp_path, {"health_analyzer_version": HEALTH_ANALYZER_VERSION + 1})
+        return _fake_result()
+
+    persist = AsyncMock()
+    with (
+        patch("repowise.server.job_executor.run_pipeline", side_effect=pipeline),
+        patch("repowise.server.job_executor.persist_pipeline_result", persist),
+        _no_provider(),
+    ):
+        await execute_job(job_id, app_state)
+
+    persist.assert_not_called()
+    assert (await _job_row(session_factory, job_id)).status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_sync_job_releases_the_update_lock(session_factory, tmp_path):
+    import asyncio
+
+    from repowise.core.update_lock import read_update_lock
+
+    job_id = await _seed_job_with_config(session_factory, tmp_path, {"mode": "sync"})
+    app_state = SimpleNamespace(session_factory=session_factory, fts=None, vector_store=None)
+    started = asyncio.Event()
+
+    async def pipeline(*_a, **_k):
+        started.set()
+        await asyncio.sleep(60)
+
+    with (
+        patch("repowise.server.job_executor.run_pipeline", side_effect=pipeline),
+        _no_provider(),
+    ):
+        task = asyncio.create_task(execute_job(job_id, app_state))
+        await asyncio.wait_for(started.wait(), 30)
+        assert read_update_lock(tmp_path) is not None
+        task.cancel()
+        await task
+
+    assert read_update_lock(tmp_path) is None
+    assert (await _job_row(session_factory, job_id)).status == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_sync_job_without_a_health_report_keeps_the_stored_stamp(session_factory, tmp_path):
+    import json
+
+    _write_state(tmp_path, {"health_analyzer_version": 1})
+    job_id = await _seed_job_with_config(session_factory, tmp_path, {"mode": "sync"})
+    app_state = SimpleNamespace(session_factory=session_factory, fts=None, vector_store=None)
+    with (
+        patch("repowise.server.job_executor.run_pipeline", AsyncMock(return_value=_fake_result())),
+        patch("repowise.server.job_executor.persist_pipeline_result", AsyncMock()),
+        patch("repowise.server.job_state._read_head_sha", return_value="new"),
+        _no_provider(),
+    ):
+        await execute_job(job_id, app_state)
+
+    state = json.loads((tmp_path / ".repowise" / "state.json").read_text(encoding="utf-8"))
+    assert state["health_analyzer_version"] == 1
+
+
+@pytest.mark.asyncio
+async def test_stale_structure_lookup_degrades_only_on_a_store_failure(session_factory):
+    """An unreachable store means nothing to heal this sync; a bug still raises."""
+    from sqlalchemy.exc import OperationalError
+
+    from repowise.server.job_incremental import _stale_structure_ids
+
+    with patch(
+        "repowise.core.persistence.get_stale_update_targets",
+        AsyncMock(side_effect=OperationalError("select", {}, Exception("locked"))),
+    ):
+        assert await _stale_structure_ids(session_factory, "repo-id") == set()
+
+    with (
+        patch(
+            "repowise.core.persistence.get_stale_update_targets",
+            AsyncMock(side_effect=KeyError("bug")),
+        ),
+        pytest.raises(KeyError),
+    ):
+        await _stale_structure_ids(session_factory, "repo-id")
+
+    with patch(
+        "repowise.core.persistence.get_stale_update_targets",
+        AsyncMock(return_value=([], {"scc_page:scc-1"})),
+    ):
+        assert await _stale_structure_ids(session_factory, "repo-id") == {"scc_page:scc-1"}

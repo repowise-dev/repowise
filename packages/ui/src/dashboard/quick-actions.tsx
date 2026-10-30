@@ -171,6 +171,12 @@ export function QuickActions({
   }
 
   if (activeJobSlot) {
+    // In the header the panel sits in a slot that does not shrink, beside the
+    // repo identity. Unbounded, it took the width of its longest log line and
+    // squeezed the repo name down to one character per line.
+    if (variant === "header") {
+      return <div className="w-full min-w-0 sm:w-80 lg:w-96">{activeJobSlot}</div>;
+    }
     return <div className="mb-2">{activeJobSlot}</div>;
   }
 

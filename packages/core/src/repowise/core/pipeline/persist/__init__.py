@@ -51,6 +51,7 @@ from .graph import (
     persist_incremental_edges,
     persist_incremental_symbols,
     persist_symbol_analysis,
+    prune_absent_graph_rows,
     stamp_edges_parser_fingerprint,
 )
 from .health import (
@@ -83,20 +84,25 @@ from .sweeps import (
     _SWEPT_GENERATED_PAGE_TYPES,
     _sweep_stale_generated_pages,
     _symbol_names_by_file,
+    clear_template_model_names,
     sweep_absent_cycle_pages,
     sweep_absent_symbol_spotlights,
+    sweep_deselected_file_keyed_pages,
     sweep_deselected_pages,
     sweep_retired_pages,
+    sweep_store_hygiene,
     sweep_superseded_generated_pages,
 )
 from .tombstones import (
     _SPOTLIGHT_PATHS_PER_QUERY,
     _STALE_ID_CHUNK,
+    TOMBSTONE_RETENTION,
     _log,
     mark_page_ids_stale,
     mark_stale_pages,
     mark_tombstone_pages,
     reconcile_full_index_scope,
+    sweep_expired_tombstones,
     tombstone_absent_file_pages,
     tombstone_candidates,
     tombstone_file_pages_outside_scope,
@@ -128,6 +134,7 @@ async def persist_pipeline_result(
     repo_id: str,
     *,
     replace_full_git_history: bool = False,
+    scan_commit_health: bool = True,
 ) -> list[str]:
     """Persist all outputs from a :class:`PipelineResult` into the database.
 
@@ -145,6 +152,11 @@ async def persist_pipeline_result(
         An active SQLAlchemy ``AsyncSession`` (caller manages commit/rollback).
     repo_id:
         The repository ID to associate all records with.
+    scan_commit_health:
+        Scan recent commits' health at the full budget inside this transaction.
+        A caller whose store outlives the run passes ``False`` and calls
+        ``commit_health.refresh_commit_health_after_update(..., background=True)``
+        after commit, so the scan neither holds the write lock nor the caller.
 
     Returns
     -------
@@ -200,7 +212,8 @@ async def persist_pipeline_result(
     # What each recent commit did to health. Needs the working tree, so it
     # runs here rather than on the read path, and it is bounded: older commits
     # keep no row until a later update reaches them.
-    await _refresh_commit_health(result, session, repo_id)
+    if scan_commit_health:
+        await _refresh_commit_health(result, session, repo_id)
 
     # Sweep structurally-keyed generated pages (module/layer/scc) that this
     # run did not reproduce — their ids drift between runs, so without the
@@ -213,9 +226,11 @@ async def persist_pipeline_result(
         getattr(result, "authoritative_page_types", None),
         getattr(result, "preserved_page_ids", None),
     )
-    # Rows of a page type that no longer exists at all. Independent of what
-    # this run produced, so it runs on every path rather than only here.
-    swept_page_ids += await sweep_retired_pages(session, repo_id)
+    # Retired types, deselected file-keyed pages, expired tombstones. Independent
+    # of what this run produced, so they run on every path rather than only here.
+    swept_page_ids += await sweep_store_hygiene(
+        session, repo_id, getattr(result, "parsed_files", None)
+    )
 
     # Placement depends on the whole page set, so it is computed here rather
     # than during generation, after the sweep has retired anything stale.

@@ -192,3 +192,51 @@ async def test_get_health_history_count_costs_one_int(setup_mcp, session, health
     assert not targeted.get("findings")
     assert targeted["_meta"]["gated"]["health"] == {"history": 1}
     assert targeted["_meta"]["gated"]["reasons"] == {"history": FILE_HOLDS["history"]}
+
+
+@pytest.mark.asyncio
+async def test_targeted_findings_say_what_the_holds_deduct(setup_mcp, session, health_data):
+    from repowise.server.mcp_server import get_health
+
+    await _seed(session, health_data)
+    result = await get_health(targets=[_APP], only=["findings"])
+    assert [f["biomarker_type"] for f in result["findings"]] == ["complex_method"]
+    # The two history markers deduct 1.5 + 1.0 points the list does not show.
+    assert result["findings_hidden"] == (
+        '2 held-back findings (history 2) carry 2.50 points of total_deduction not listed here; '
+        'include=["unverified"] lists them.'
+    )
+
+    opted = await get_health(targets=[_APP], include=["unverified"])
+    assert "findings_hidden" not in opted
+    assert len(opted["findings"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_targeted_findings_unchanged_when_nothing_is_held(setup_mcp, session, health_data):
+    from repowise.core.persistence.crud import upsert_health_findings
+    from repowise.server.mcp_server import get_health
+
+    await _seed(session, health_data)
+    await upsert_health_findings(
+        session,
+        health_data,
+        [
+            {
+                "file_path": _APP,
+                "biomarker_type": "complex_method",
+                "severity": "high",
+                "function_name": "run",
+                "line_start": 1,
+                "line_end": 90,
+                "details": {},
+                "health_impact": 2.0,
+                "reason": "complex_method only",
+            }
+        ],
+        file_paths=[_APP],
+    )
+    await session.commit()
+    result = await get_health(targets=[_APP])
+    assert "findings_hidden" not in result
+    assert "gated" not in result["_meta"]

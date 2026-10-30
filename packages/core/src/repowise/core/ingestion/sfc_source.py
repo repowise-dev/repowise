@@ -900,4 +900,8 @@ def prepare_source(language: str, source: bytes, *, path: str | None = None) -> 
         from .cobol import prepare_cobol_source
 
         return prepare_cobol_source(source)
+    if language == "cpp" and source:
+        from .lang_helpers.source_prep import prepare_cpp_source
+
+        return prepare_cpp_source(source)
     return source

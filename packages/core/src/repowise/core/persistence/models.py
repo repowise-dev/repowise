@@ -213,6 +213,13 @@ class Page(Base):
     digest: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
     target_path: Mapped[str] = mapped_column(Text, nullable=False)
     source_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Cross-run reuse key: a stable digest of the page's subject (the file /
+    # group / repo it documents) folded with a fingerprint of the renderer
+    # (prompt template, system prompt, language, style). Unlike ``source_hash``
+    # it survives RAG-context drift between runs, so an unchanged page is
+    # reused instead of re-billed on every full run. Empty for pages written
+    # before the key existed, or for a page with no stable subject.
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     model_name: Mapped[str] = mapped_column(String(128), nullable=False)
     provider_name: Mapped[str] = mapped_column(String(64), nullable=False)
     input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -226,6 +233,11 @@ class Page(Base):
     metadata_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     # Developer-authored notes that survive LLM re-generation.
     human_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # A user hand-requested this page (UI "Generate doc"): it is regenerated
+    # on every reindex regardless of the selection heuristic, so the doc a
+    # user asked for keeps following the code instead of silently
+    # disappearing again (issue #812).
+    pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     # --- Where the page sits in the wiki -----------------------------------
     # Hierarchy lives here rather than being reassembled by each reader from

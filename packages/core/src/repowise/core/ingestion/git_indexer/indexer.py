@@ -15,7 +15,8 @@ import os
 import threading
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -47,7 +48,7 @@ from ._incremental import (
 )
 from .co_change import CoChangeWalk, compute_co_changes_and_entropy
 from .enrich import compute_percentiles
-from .file_history import DECAY_REFRESH_KEYS, _window_anchor, index_file
+from .file_history import DECAY_REFRESH_KEYS, _window_anchor, decay_meta, index_file
 from .function_blame import build_blame_index
 from .prior_defects import FixWalk, PriorDefects, collect_fix_commits, compute_prior_defects
 from .records import (
@@ -182,6 +183,29 @@ class _FilePassInputs:
     trace_index: Any
 
 
+@dataclass
+class _IndexSetup:
+    """Result of :meth:`GitIndexer._prepare_full_index`.
+
+    ``outcome`` is ``"ready"`` or the reason ``index_repo`` returns early
+    (``"no_repo"``, ``"partial_clone"``, ``"no_tracked"``).
+    """
+
+    outcome: str
+    repo: Any | None = None
+    tracked_files: list[str] = field(default_factory=list)
+    indexable_files: list[str] = field(default_factory=list)
+    history_files: set[str] = field(default_factory=set)
+    commit_sink: list[dict] = field(default_factory=list)
+    prov_clf: Any = None
+    trace_index: Any = None
+    sample: Any = None
+    commit_index: Any = None
+    fallback_files: set[str] = field(default_factory=set)
+    fallback_note_agents: dict[str, Any] = field(default_factory=dict)
+    as_of_ts: Any = None
+
+
 class _ChangedScope(NamedTuple):
     """An update's file sets after the allowlist and the history tier."""
 
@@ -285,58 +309,43 @@ class GitIndexer:
         from repowise.core.pipeline.phase_timing import timed
 
         start = time.monotonic()
-        repo = self._get_repo()
-        if repo is None:
-            return GitIndexSummary(0, 0, 0, 0.0), []
 
-        if self._skip_partial_clone_history(repo, on_warning=on_warning):
+        # Everything up to the per-file pass is blocking git work (repo open,
+        # ``git ls-files``, the repo-wide commit walk, trace and note loads).
+        # Run it in a worker thread so it cannot stall the ingestion stage
+        # that shares this event loop via ``asyncio.gather``.
+        setup = await asyncio.to_thread(self._prepare_full_index, on_warning, timings)
+
+        if setup.outcome == "no_repo":
+            return GitIndexSummary(0, 0, 0, 0.0), []
+        if setup.outcome == "partial_clone":
             if on_start is not None:
                 on_start(0)
-            with contextlib.suppress(Exception):
-                repo.close()
             return GitIndexSummary(0, 0, 0, time.monotonic() - start), []
-
-        tracked_files = self._get_tracked_files(repo)
-        if not tracked_files:
+        if setup.outcome == "no_tracked":
             return GitIndexSummary(0, 0, 0, 0.0), []
 
-        # Two tiers. Code files get the full per-file pass (blame, churn
-        # signals, the per-file fallback walk). Every other tracked file that
-        # is not vendored, a lockfile or binary gets its history tier (counts,
-        # span, authors) from the shared repo-wide walk only.
-        indexable_files = [fp for fp in tracked_files if not _should_skip_index(fp)]
-        history_files = _history_tier_files(
-            self.repo_path, tracked_files, extra_exclude_patterns=self._exclude_patterns
-        )
+        repo = setup.repo
+        tracked_files = setup.tracked_files
+        indexable_files = setup.indexable_files
+        history_files = setup.history_files
+        commit_sink = setup.commit_sink
+        prov_clf = setup.prov_clf
+        trace_index = setup.trace_index
+        sample = setup.sample
+        commit_index, fallback_files = setup.commit_index, setup.fallback_files
+        fallback_note_agents = setup.fallback_note_agents
+        as_of_ts = setup.as_of_ts
+
+        # Fired from the event loop, as before the setup moved to a thread.
+        if on_start is not None:
+            on_start(len(indexable_files) + len(history_files))
 
         from concurrent.futures import ThreadPoolExecutor
 
         workers = git_worker_count(len(indexable_files), requested=self.max_workers)
         loop = asyncio.get_event_loop()
 
-        commit_sink: list[dict] = []
-        prov_clf = self._provenance_classifier()
-        # Agent-trace records, read once and shared with both commit-index walks
-        # and the line-share merge, so they load even when no walk runs.
-        trace_index = self._load_trace_index(repo)
-        sample = self._full_commit_index(
-            repo, indexable_files, history_files, commit_sink, prov_clf, trace_index, timings
-        )
-        commit_index, fallback_files = sample.commits, sample.fallback_files
-
-        # A non-code file the shared walks could not prove complete gets no row
-        # (its count stays unknown) rather than a per-file walk of its own.
-        history_files -= fallback_files
-        if on_start is not None:
-            on_start(len(indexable_files) + len(history_files))
-
-        fallback_note_agents: dict[str, Any] = {}
-        if fallback_files.intersection(indexable_files):
-            from ..git_commit_index import load_git_ai_note_agents
-
-            fallback_note_agents = load_git_ai_note_agents(repo, None)
-
-        as_of_ts = self._resolve_as_of_ts(repo)
         executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="git-idx")
         get_thread_repo, close_thread_repos = self._thread_repo_pool()
         inputs = _FilePassInputs(
@@ -454,6 +463,76 @@ class GitIndexer:
         )
         return summary, results
 
+    def _prepare_full_index(
+        self,
+        on_warning: Callable[[str], None] | None,
+        timings: Any | None,
+    ) -> _IndexSetup:
+        """Blocking setup for :meth:`index_repo`, meant for a worker thread.
+
+        Opens the repo, lists tracked files, splits them into the two tiers,
+        runs the repo-wide commit walk and loads the trace index, git-ai notes
+        and as-of timestamp. Never calls ``on_start``: that stays on the loop.
+        """
+        repo = self._get_repo()
+        if repo is None:
+            return _IndexSetup(outcome="no_repo")
+
+        if self._skip_partial_clone_history(repo, on_warning=on_warning):
+            with contextlib.suppress(Exception):
+                repo.close()
+            return _IndexSetup(outcome="partial_clone")
+
+        tracked_files = self._get_tracked_files(repo)
+        if not tracked_files:
+            return _IndexSetup(outcome="no_tracked")
+
+        # Two tiers. Code files get the full per-file pass (blame, churn
+        # signals, the per-file fallback walk). Every other tracked file that
+        # is not vendored, a lockfile or binary gets its history tier (counts,
+        # span, authors) from the shared repo-wide walk only.
+        indexable_files = [fp for fp in tracked_files if not _should_skip_index(fp)]
+        history_files = _history_tier_files(
+            self.repo_path, tracked_files, extra_exclude_patterns=self._exclude_patterns
+        )
+
+        commit_sink: list[dict] = []
+        prov_clf = self._provenance_classifier()
+        # Agent-trace records, read once and shared with both commit-index walks
+        # and the line-share merge, so they load even when no walk runs.
+        trace_index = self._load_trace_index(repo)
+        sample = self._full_commit_index(
+            repo, indexable_files, history_files, commit_sink, prov_clf, trace_index, timings
+        )
+        commit_index, fallback_files = sample.commits, sample.fallback_files
+
+        # A non-code file the shared walks could not prove complete gets no row
+        # (its count stays unknown) rather than a per-file walk of its own.
+        history_files -= fallback_files
+
+        fallback_note_agents: dict[str, Any] = {}
+        if fallback_files.intersection(indexable_files):
+            from ..git_commit_index import load_git_ai_note_agents
+
+            fallback_note_agents = load_git_ai_note_agents(repo, None)
+
+        as_of_ts = self._resolve_as_of_ts(repo)
+        return _IndexSetup(
+            outcome="ready",
+            repo=repo,
+            tracked_files=tracked_files,
+            indexable_files=indexable_files,
+            history_files=history_files,
+            commit_sink=commit_sink,
+            prov_clf=prov_clf,
+            trace_index=trace_index,
+            sample=sample,
+            commit_index=commit_index,
+            fallback_files=fallback_files,
+            fallback_note_agents=fallback_note_agents,
+            as_of_ts=as_of_ts,
+        )
+
     def _full_commit_index(
         self,
         repo: Any,
@@ -532,11 +611,11 @@ class GitIndexer:
         ``index_file``'s empty defaults overwrite the init-computed partners
         on every update, blanking exactly the files that change most.
 
-        ``co_change_sink``, when provided, receives the FULL per-file partner
-        map that walk produces (every tracked file, not just the changed
-        ones). The update path uses it to rebuild the graph's ``co_changes``
-        edges for the whole repo so the update-built graph converges with the
-        init-built one.
+        ``co_change_sink``, when provided, receives the walk's partner lists
+        for every code file, not just the changed ones (history-tier files get
+        none, as in a full index). The update path uses it to rebuild the
+        graph's ``co_changes`` edges for the whole repo so the update-built
+        graph converges with the init-built one.
 
         ``idle_decay_sink``, when provided (with ``all_files`` and a co-change
         tier), receives a decay-only partial metadata row for every *idle*
@@ -651,7 +730,14 @@ class GitIndexer:
         # The code signals below (prior defects, co-change) skip history-tier rows.
         code_results = [m for m in results if m["file_path"] not in history_changed]
 
-        sp = SignalPass(repo=repo, as_of_ts=as_of_ts, timings=timings, abort=_abort)
+        sp = SignalPass(
+            repo=repo,
+            as_of_ts=as_of_ts,
+            timings=timings,
+            abort=_abort,
+            cache_dir=self._window_cache_dir(),
+            cache_writable=not self.read_only,
+        )
         # Idle files are counted too, so one whose only fix aged out drops to 0.
         prior_defects = prior_defect_stage(
             sp,
@@ -862,7 +948,7 @@ class GitIndexer:
     ) -> dict[str, dict]:
         """Decay-only partial rows for *idle_paths* (see ``index_changed_files``).
 
-        Runs off the event loop. For each idle file, ``index_file`` recomputes
+        Runs off the event loop. For each idle file, ``decay_meta`` recomputes
         the window/decay churn fields from its precomputed commits (blame off →
         no git subprocess, no file stat), then the repo-wide co-change / entropy
         / prior-defect signals are overlaid. Only :data:`DECAY_REFRESH_KEYS` are
@@ -874,25 +960,25 @@ class GitIndexer:
         """
         out: dict[str, dict] = {}
         for fp in idle_paths:
-            meta = index_file(
-                repo,
-                fp,
-                repo_path=self.repo_path,
-                forge=self.forge,
-                commit_limit=self.commit_limit,
-                follow_renames=self.follow_renames,
-                include_blame=False,
-                precomputed_commits=commit_index.get(fp),
-                as_of_ts=as_of_ts,
-                provenance_classifier=prov_clf,
-                history_only=fp in history_files,
-            )
             if fp in history_files:
                 # The history tier comes only from this shared walk, so this is
                 # the full row a fresh index writes. Persisted whole, it also
                 # backfills stores indexed before non-code files had rows.
-                out[fp] = meta
+                out[fp] = index_file(
+                    repo,
+                    fp,
+                    repo_path=self.repo_path,
+                    forge=self.forge,
+                    commit_limit=self.commit_limit,
+                    follow_renames=self.follow_renames,
+                    include_blame=False,
+                    precomputed_commits=commit_index.get(fp),
+                    as_of_ts=as_of_ts,
+                    provenance_classifier=prov_clf,
+                    history_only=True,
+                )
                 continue
+            meta = decay_meta(fp, commit_index.get(fp, []), as_of_ts)
             meta["change_entropy"] = walk.entropy.get(fp, 0.0)
             meta["co_change_partners_json"] = json.dumps(walk.partners.get(fp, []))
             meta["co_change_partner_count"] = walk.partner_count.get(fp, 0)
@@ -1211,6 +1297,18 @@ class GitIndexer:
             return float(repo.head.commit.committed_date)
         except Exception:
             return None
+
+    def window_anchor(self) -> datetime:
+        """The 'now' this repo's history windows are measured from, for readers
+        outside an index run: :meth:`_resolve_as_of_ts`, else wall-clock time."""
+        repo = self._get_repo()
+        if repo is None:
+            return _window_anchor(None)
+        try:
+            return _window_anchor(self._resolve_as_of_ts(repo))
+        finally:
+            with contextlib.suppress(Exception):
+                repo.close()
 
     def blame_indexes(self, file_paths: Sequence[str]) -> dict[str, Any]:
         """Per-line ``BlameIndex`` for *file_paths*, anchored as an index run

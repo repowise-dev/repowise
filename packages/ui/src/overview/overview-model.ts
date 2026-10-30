@@ -33,6 +33,156 @@ import type { ReadItem } from "./reads-column";
 import type { RibbonStat } from "../stats/stat-ribbon";
 import { formatLOC, formatNumber } from "../lib/format";
 
+/** Keys of the further doors {@link buildExplore} lists. */
+export type ExploreEntryKey =
+  | "docs"
+  | "chat"
+  | "files"
+  | "architecture"
+  | "code-health"
+  | "knowledge-graph"
+  | "coupling"
+  | "commits"
+  | "decisions"
+  | "contributors"
+  | "stats"
+  | "costs";
+
+/** The words the builders below put into rows. Counts arrive raw, so a host
+ *  can pluralise them. English by default. */
+export interface OverviewModelCopy {
+  /** Change line: the word after a file-count delta. */
+  changeFiles: (delta: number) => string;
+  changeCodeHealth: string;
+  changeHotspotHealth: string;
+  docsLabel: string;
+  docsUnit: string;
+  docsSplit: (prose: number, withoutProse: number) => string;
+  docsModules: (modules: number) => string;
+  docsProseBar: string;
+  docsIndexBar: string;
+  cardHealth: string;
+  cardOwnership: string;
+  cardArchitecture: string;
+  cardDecisions: string;
+  cardRefactoring: string;
+  cardTests: string;
+  healthScored: string;
+  healthHotspots: (hotspots: number, files: number) => string;
+  ownershipEmpty: string;
+  ownershipSole: (files: number) => string;
+  architectureModules: (modules: number, entryPoints: number) => string;
+  decisionsEmpty: string;
+  decisionsRecorded: (accepted: number, candidates: number) => string;
+  refactoringEmpty: string;
+  refactoringOpen: (opportunities: number) => string;
+  testsCoverage: string;
+  testsUnknown: string;
+  testsNone: string;
+  /** Further doors: label per key. */
+  exploreLabels: Record<ExploreEntryKey, string>;
+  /** Further doors: the tooltip per key. */
+  exploreDocs: (pages: number, modules: number) => string;
+  exploreFiles: (files: number) => string;
+  exploreArchitecture: (entryPoints: number) => string;
+  exploreCodeHealth: (findings: number) => string;
+  exploreChat: string;
+  exploreKnowledgeGraph: string;
+  exploreCoupling: string;
+  exploreCommits: string;
+  exploreDecisions: string;
+  exploreContributors: string;
+  exploreStats: string;
+  exploreCosts: string;
+}
+
+export const OVERVIEW_MODEL_COPY: OverviewModelCopy = {
+  changeFiles: (delta) => (Math.abs(delta) === 1 ? "file" : "files"),
+  changeCodeHealth: "code health",
+  changeHotspotHealth: "hotspot health",
+  docsLabel: "Documentation",
+  docsUnit: "pages",
+  docsSplit: (prose, withoutProse) =>
+    `${formatNumber(prose)} with model-written prose, ${formatNumber(withoutProse)} built from the index`,
+  docsModules: (modules) => `Across ${formatNumber(modules)} modules`,
+  docsProseBar: "Pages with model-written prose",
+  docsIndexBar: "Pages built from the index alone",
+  cardHealth: "Code health map",
+  cardOwnership: "Ownership",
+  cardArchitecture: "Architecture",
+  cardDecisions: "Decisions",
+  cardRefactoring: "Refactoring",
+  cardTests: "Tests",
+  healthScored: "files scored",
+  healthHotspots: (hotspots, files) =>
+    `${plural(hotspots, "hotspot", "hotspots")} across ${formatNumber(files)} files`,
+  ownershipEmpty: "Who knows each file, and what depends on them",
+  ownershipSole: (files) => `sole-owned ${plural(files, "file", "files")}: one author, no second reader`,
+  architectureModules: (modules, entryPoints) =>
+    `${plural(modules, "module", "modules")}, ${formatNumber(entryPoints)} entry points`,
+  decisionsEmpty: "No decisions recorded yet",
+  decisionsRecorded: (accepted, candidates) =>
+    `recorded, of which ${formatNumber(accepted)} accepted and ${formatNumber(candidates)} awaiting review`,
+  refactoringEmpty: "No refactoring analysis yet",
+  refactoringOpen: (opportunities) =>
+    `open ${plural(opportunities, "opportunity", "opportunities")}, one per file`,
+  testsCoverage: "line coverage from the latest report",
+  testsUnknown: "Coverage and the tests that reach each file",
+  testsNone: "No coverage report yet. Run your tests with coverage on, then add the report:",
+  exploreLabels: {
+    docs: "Docs",
+    chat: "Chat",
+    files: "Files",
+    architecture: "Architecture",
+    "code-health": "Code health",
+    "knowledge-graph": "Knowledge graph",
+    coupling: "Change coupling",
+    commits: "Commits",
+    decisions: "Decisions",
+    contributors: "Contributors",
+    stats: "Stats",
+    costs: "Costs",
+  },
+  exploreDocs: (pages, modules) => `${formatNumber(pages)} pages across ${formatNumber(modules)} modules`,
+  exploreFiles: (files) => `${formatNumber(files)} files with per-file docs, health and history`,
+  exploreArchitecture: (entryPoints) =>
+    `Dependency graph, layers, and ${formatNumber(entryPoints)} entry points`,
+  exploreCodeHealth: (findings) =>
+    `Per-file scores, ${formatNumber(findings)} open findings, coverage and refactoring targets`,
+  exploreChat: "Ask this codebase a question and get an answer with its sources.",
+  exploreKnowledgeGraph: "Entities, communities, and the paths between them",
+  exploreCoupling: "Files that keep changing together, mined from commit history",
+  exploreCommits: "Change-risk ranked history with agent provenance",
+  exploreDecisions: "Why the code is shaped this way, from decision records and git history",
+  exploreContributors: "Bus factor, per-file maintainers, and the human/agent split",
+  exploreStats: "Size class, origin, lifetime churn, rhythm and records",
+  exploreCosts: "What indexing this snapshot cost, by model and by run.",
+};
+
+/** The inventory's units and detail lines. English by default. */
+export interface InventoryCopy {
+  healthUnit: string;
+  securityUnit: string;
+  securityElsewhere: (elsewhere: number) => string;
+  refactoringUnit: string;
+  decisionsUnit: string;
+  decisionsDetail: (awaiting: number, drifting: number) => string;
+  ownershipUnit: string;
+  ownershipDetail: string;
+}
+
+export const INVENTORY_COPY: InventoryCopy = {
+  healthUnit: "open findings",
+  securityUnit: "in shipped source",
+  securityElsewhere: (elsewhere) => `${formatNumber(elsewhere)} more in tests and docs`,
+  refactoringUnit: "open opportunities",
+  decisionsUnit: "to review",
+  decisionsDetail: (awaiting, drifting) =>
+    `${formatNumber(awaiting)} awaiting review, ${formatNumber(drifting)} drifting from the code`,
+  ownershipUnit: "sole-owned files",
+  ownershipDetail: "One author, no second reader",
+};
+
 /**
  * Where this host's links go.
  *
@@ -100,7 +250,11 @@ export function resolveOverviewRoutes(routes: OverviewRoutes) {
  * enters the index when a sync ingests it, and that same sync stamps the
  * timestamp, so "newer than the last sync" is zero by construction.
  */
-export function buildChangeStats(summary: OverviewSummaryResponse): ChangeStat[] {
+export function buildChangeStats(
+  summary: OverviewSummaryResponse,
+  copy?: Partial<OverviewModelCopy>,
+): ChangeStat[] {
+  const c = { ...OVERVIEW_MODEL_COPY, ...copy };
   const stats: ChangeStat[] = [];
   const { deltas } = summary.stats;
 
@@ -108,15 +262,15 @@ export function buildChangeStats(summary: OverviewSummaryResponse): ChangeStat[]
     const d = deltas.file_count;
     stats.push({
       value: `${d > 0 ? "+" : ""}${formatNumber(d)}`,
-      label: Math.abs(d) === 1 ? "file" : "files",
+      label: c.changeFiles(d),
     });
   }
   // The 0.05 floor is the point below which a score change is rounding rather
   // than news: both figures render to one decimal, so anything smaller shows
   // as "+0.0".
   for (const [value, label] of [
-    [deltas.average_health, "code health"],
-    [deltas.hotspot_health, "hotspot health"],
+    [deltas.average_health, c.changeCodeHealth],
+    [deltas.hotspot_health, c.changeHotspotHealth],
   ] as const) {
     if (value != null && Math.abs(value) >= 0.05) {
       stats.push({ value: `${value > 0 ? "+" : ""}${value.toFixed(1)}`, label });
@@ -140,7 +294,12 @@ export function docPageCount(summary: OverviewSummaryResponse): number {
  * The column beside the health hero: documentation, and on hosts that
  * backtest it, how well the health ranking predicted bug fixes.
  */
-export function buildReads(summary: OverviewSummaryResponse, routes: OverviewRoutes): ReadItem[] {
+export function buildReads(
+  summary: OverviewSummaryResponse,
+  routes: OverviewRoutes,
+  copy?: Partial<OverviewModelCopy>,
+): ReadItem[] {
+  const c = { ...OVERVIEW_MODEL_COPY, ...copy };
   const r = resolveOverviewRoutes(routes);
   const { stats, health } = summary;
   const docPages = docPageCount(summary);
@@ -160,25 +319,23 @@ export function buildReads(summary: OverviewSummaryResponse, routes: OverviewRou
     const withoutProse = hasSplit ? Math.max(0, docPages - prosePages) : 0;
     reads.push({
       key: "docs",
-      label: "Documentation",
+      label: c.docsLabel,
       value: formatNumber(docPages),
-      unit: "pages",
+      unit: c.docsUnit,
       href: `${r.base}/docs`,
-      why: hasSplit
-        ? `${formatNumber(prosePages)} with model-written prose, ${formatNumber(withoutProse)} built from the index`
-        : `Across ${formatNumber(stats.module_count)} modules`,
+      why: hasSplit ? c.docsSplit(prosePages, withoutProse) : c.docsModules(stats.module_count),
       ...(hasSplit
         ? {
             bar: [
               {
                 key: "prose",
-                label: "Pages with model-written prose",
+                label: c.docsProseBar,
                 value: prosePages,
                 detail: formatNumber(prosePages),
               },
               {
                 key: "index",
-                label: "Pages built from the index alone",
+                label: c.docsIndexBar,
                 value: withoutProse,
                 detail: formatNumber(withoutProse),
               },
@@ -252,21 +409,26 @@ export const COVERAGE_ADD_COMMAND = "repowise coverage add";
 const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
 
 /** Coverage when a report exists; the ingest command when the server says none does. */
-function testsCard(explore: OverviewSummaryResponse["explore"], href: string, command: string): ExploreCard {
-  const card = { key: "tests", label: "Tests", href };
+function testsCard(
+  explore: OverviewSummaryResponse["explore"],
+  href: string,
+  command: string,
+  c: OverviewModelCopy,
+): ExploreCard {
+  const card = { key: "tests", label: c.cardTests, href };
   const coverage = explore?.coverage;
   if (coverage) {
     return {
       ...card,
       value: `${coverage.line_coverage_pct.toFixed(1)}%`,
-      caption: "line coverage from the latest report",
+      caption: c.testsCoverage,
     };
   }
   // A server without the counts cannot say whether a report exists.
-  if (!explore) return { ...card, caption: "Coverage and the tests that reach each file" };
+  if (!explore) return { ...card, caption: c.testsUnknown };
   return {
     ...card,
-    caption: "No coverage report yet. Run your tests with coverage on, then add the report:",
+    caption: c.testsNone,
     command,
   };
 }
@@ -280,60 +442,62 @@ function testsCard(explore: OverviewSummaryResponse["explore"], href: string, co
 export function buildExploreCards(
   summary: OverviewSummaryResponse,
   routes: OverviewRoutes,
+  copy?: Partial<OverviewModelCopy>,
 ): ExploreCard[] {
+  const c = { ...OVERVIEW_MODEL_COPY, ...copy };
   const { base, tests, coverageCommand } = resolveOverviewRoutes(routes);
   const { stats, explore } = summary;
   return [
-    { key: "code-health", label: "Code health map", href: `${base}/code-health`, ...healthFigure(stats) },
-    { key: "contributors", label: "Ownership", href: `${base}/owners`, ...ownershipFigure(explore) },
+    { key: "code-health", label: c.cardHealth, href: `${base}/code-health`, ...healthFigure(stats, c) },
+    { key: "contributors", label: c.cardOwnership, href: `${base}/owners`, ...ownershipFigure(explore, c) },
     {
       key: "architecture",
-      label: "Architecture",
+      label: c.cardArchitecture,
       href: `${base}/architecture`,
       value: formatNumber(stats.module_count),
-      caption: `${plural(stats.module_count, "module", "modules")}, ${formatNumber(stats.entry_point_count)} entry points`,
+      caption: c.architectureModules(stats.module_count, stats.entry_point_count),
     },
-    { key: "decisions", label: "Decisions", href: `${base}/decisions`, ...decisionsFigure(explore) },
-    { key: "refactoring", label: "Refactoring", href: `${base}/refactoring`, ...refactoringFigure(explore) },
-    ...(tests == null ? [] : [testsCard(explore, tests, coverageCommand)]),
+    { key: "decisions", label: c.cardDecisions, href: `${base}/decisions`, ...decisionsFigure(explore, c) },
+    { key: "refactoring", label: c.cardRefactoring, href: `${base}/refactoring`, ...refactoringFigure(explore, c) },
+    ...(tests == null ? [] : [testsCard(explore, tests, coverageCommand, c)]),
   ];
 }
 
 type CardFigure = Pick<ExploreCard, "value" | "caption">;
 type Explore = OverviewSummaryResponse["explore"];
 
-function healthFigure(stats: OverviewSummaryResponse["stats"]): CardFigure {
-  if (stats.hotspot_count === 0) return { value: formatNumber(stats.file_count), caption: "files scored" };
+function healthFigure(stats: OverviewSummaryResponse["stats"], c: OverviewModelCopy): CardFigure {
+  if (stats.hotspot_count === 0) return { value: formatNumber(stats.file_count), caption: c.healthScored };
   return {
     value: formatNumber(stats.hotspot_count),
-    caption: `${plural(stats.hotspot_count, "hotspot", "hotspots")} across ${formatNumber(stats.file_count)} files`,
+    caption: c.healthHotspots(stats.hotspot_count, stats.file_count),
   };
 }
 
-function ownershipFigure(explore: Explore): CardFigure {
+function ownershipFigure(explore: Explore, c: OverviewModelCopy): CardFigure {
   const sole = explore?.ownership?.sole_owned_files;
-  if (sole == null) return { caption: "Who knows each file, and what depends on them" };
+  if (sole == null) return { caption: c.ownershipEmpty };
   return {
     value: formatNumber(sole),
-    caption: `sole-owned ${plural(sole, "file", "files")}: one author, no second reader`,
+    caption: c.ownershipSole(sole),
   };
 }
 
-function decisionsFigure(explore: Explore): CardFigure {
+function decisionsFigure(explore: Explore, c: OverviewModelCopy): CardFigure {
   const d = explore?.decisions;
-  if (!d || d.total === 0) return { caption: "No decisions recorded yet" };
+  if (!d || d.total === 0) return { caption: c.decisionsEmpty };
   return {
     value: formatNumber(d.total),
-    caption: `recorded, of which ${formatNumber(d.accepted)} accepted and ${formatNumber(d.candidates)} awaiting review`,
+    caption: c.decisionsRecorded(d.accepted, d.candidates),
   };
 }
 
-function refactoringFigure(explore: Explore): CardFigure {
+function refactoringFigure(explore: Explore, c: OverviewModelCopy): CardFigure {
   const r = explore?.refactoring;
-  if (!r) return { caption: "No refactoring analysis yet" };
+  if (!r) return { caption: c.refactoringEmpty };
   return {
     value: formatNumber(r.opportunities_total),
-    caption: `open ${plural(r.opportunities_total, "opportunity", "opportunities")}, one per file`,
+    caption: c.refactoringOpen(r.opportunities_total),
   };
 }
 
@@ -347,91 +511,94 @@ function refactoringFigure(explore: Explore): CardFigure {
 export function buildExplore(
   summary: OverviewSummaryResponse,
   routes: OverviewRoutes,
+  copy?: Partial<OverviewModelCopy>,
 ): ExploreEntry[] {
+  const c = { ...OVERVIEW_MODEL_COPY, ...copy };
+  const l = c.exploreLabels;
   const r = resolveOverviewRoutes(routes);
   const { stats, health } = summary;
   const docPages = docPageCount(summary);
   const entries: ExploreEntry[] = [
     {
       key: "docs",
-      label: "Docs",
+      label: l.docs,
       href: `${r.base}/docs`,
-      description: `${formatNumber(docPages)} pages across ${formatNumber(stats.module_count)} modules`,
+      description: c.exploreDocs(docPages, stats.module_count),
     },
   ];
 
   if (r.chat) {
     entries.push({
       key: "chat",
-      label: "Chat",
+      label: l.chat,
       href: r.chat,
-      description: "Ask this codebase a question and get an answer with its sources.",
+      description: c.exploreChat,
     });
   }
 
   entries.push(
     {
       key: "files",
-      label: "Files",
+      label: l.files,
       href: `${r.base}/files`,
-      description: `${formatNumber(stats.file_count)} files with per-file docs, health and history`,
+      description: c.exploreFiles(stats.file_count),
     },
     {
       key: "architecture",
-      label: "Architecture",
+      label: l.architecture,
       href: `${r.base}/architecture`,
-      description: `Dependency graph, layers, and ${formatNumber(stats.entry_point_count)} entry points`,
+      description: c.exploreArchitecture(stats.entry_point_count),
     },
     {
       key: "code-health",
-      label: "Code health",
+      label: l["code-health"],
       href: `${r.base}/code-health`,
-      description: `Per-file scores, ${formatNumber(health.open_findings)} open findings, coverage and refactoring targets`,
+      description: c.exploreCodeHealth(health.open_findings),
     },
     {
       key: "knowledge-graph",
-      label: "Knowledge graph",
+      label: l["knowledge-graph"],
       href: `${r.base}/knowledge-graph`,
-      description: "Entities, communities, and the paths between them",
+      description: c.exploreKnowledgeGraph,
     },
     {
       key: "coupling",
-      label: "Change coupling",
+      label: l.coupling,
       href: r.coupling,
-      description: "Files that keep changing together, mined from commit history",
+      description: c.exploreCoupling,
     },
     {
       key: "commits",
-      label: "Commits",
+      label: l.commits,
       href: `${r.base}/commits`,
-      description: "Change-risk ranked history with agent provenance",
+      description: c.exploreCommits,
     },
     {
       key: "decisions",
-      label: "Decisions",
+      label: l.decisions,
       href: `${r.base}/decisions`,
-      description: "Why the code is shaped this way, from decision records and git history",
+      description: c.exploreDecisions,
     },
     {
       key: "contributors",
-      label: "Contributors",
+      label: l.contributors,
       href: `${r.base}/owners`,
-      description: "Bus factor, per-file maintainers, and the human/agent split",
+      description: c.exploreContributors,
     },
     {
       key: "stats",
-      label: "Stats",
+      label: l.stats,
       href: `${r.base}/stats`,
-      description: "Size class, origin, lifetime churn, rhythm and records",
+      description: c.exploreStats,
     },
   );
 
   if (r.costs) {
     entries.push({
       key: "costs",
-      label: "Costs",
+      label: l.costs,
       href: r.costs,
-      description: "What indexing this snapshot cost, by model and by run.",
+      description: c.exploreCosts,
     });
   }
 
@@ -461,27 +628,31 @@ export type InventoryRow = OverviewAttentionAreaRow & { unit?: string };
  * health` print. The queue's `finding_counts.inventory` leaves zero-impact
  * findings out, so it is not the number those surfaces call open findings.
  */
-export function inventoryRows(summary: OverviewSummaryResponse): InventoryRow[] {
+export function inventoryRows(
+  summary: OverviewSummaryResponse,
+  copy?: Partial<InventoryCopy>,
+): InventoryRow[] {
+  const c = { ...INVENTORY_COPY, ...copy };
   const areas = summary.attention_summary?.areas ?? [];
   const explore = summary.explore;
   const findings = summary.health.open_findings;
   return areas.map((area): InventoryRow => {
     switch (area.key) {
       case "health":
-        return findings != null ? { ...area, total: findings, unit: "open findings" } : area;
+        return findings != null ? { ...area, total: findings, unit: c.healthUnit } : area;
       case "security": {
         const s = explore?.security;
         if (!s) return area;
         return {
           ...area,
           total: s.source,
-          unit: "in shipped source",
-          detail: s.elsewhere > 0 ? `${formatNumber(s.elsewhere)} more in tests and docs` : "",
+          unit: c.securityUnit,
+          detail: s.elsewhere > 0 ? c.securityElsewhere(s.elsewhere) : "",
         };
       }
       case "refactoring": {
         const r = explore?.refactoring;
-        return r ? { ...area, total: r.opportunities_total, unit: "open opportunities" } : area;
+        return r ? { ...area, total: r.opportunities_total, unit: c.refactoringUnit } : area;
       }
       case "decisions": {
         const d = explore?.decisions;
@@ -489,8 +660,8 @@ export function inventoryRows(summary: OverviewSummaryResponse): InventoryRow[] 
         return {
           ...area,
           total: d.candidates + d.needs_review,
-          unit: "to review",
-          detail: `${formatNumber(d.candidates)} awaiting review, ${formatNumber(d.needs_review)} drifting from the code`,
+          unit: c.decisionsUnit,
+          detail: c.decisionsDetail(d.candidates, d.needs_review),
         };
       }
       case "ownership": {
@@ -499,8 +670,8 @@ export function inventoryRows(summary: OverviewSummaryResponse): InventoryRow[] 
           ? {
               ...area,
               total: o.sole_owned_files,
-              unit: "sole-owned files",
-              detail: "One author, no second reader",
+              unit: c.ownershipUnit,
+              detail: c.ownershipDetail,
             }
           : area;
       }

@@ -29,7 +29,7 @@ from tests.unit._persist_step_recorders import (
 HAPPY_ORDER = [
     "reconcile_full_index_scope",
     "tombstone_pages_outside_generation",
-    "sweep_retired_pages",
+    "sweep_store_hygiene",
     "sweep_absent_cycle_pages",
     "sweep_absent_symbol_spotlights",
     "sweep_deselected_pages",
@@ -108,9 +108,10 @@ async def test_every_step_runs_in_the_pinned_order(repo, monkeypatch):
     assert failed_steps == []
     # The incremental path only drains the retired code_comment source.
     assert [a[2] for a, _k in rec.args_of("purge_proposed_decisions_by_source")] == ["code_comment"]
-    # Tombstones and swept pages leave FTS; only tombstones leave the vectors.
+    # Tombstones and swept pages leave FTS. The vectors lose the tombstones and
+    # the hygiene sweep's pages, which include embedded file-keyed pages.
     assert rec.args_of("fts.delete_many") == [((sorted([SWEPT, TOMBSTONED]),), {})]
-    assert rec.args_of("vectors.delete_many") == [(([TOMBSTONED],), {})]
+    assert rec.args_of("vectors.delete_many") == [((sorted([SWEPT, TOMBSTONED]),), {})]
     ((_args, git_kwargs),) = rec.args_of("persist_git_refresh")
     assert git_kwargs == {"keep_commit_health": True}
 
@@ -153,7 +154,7 @@ async def test_every_failing_step_degrades_and_only_range_scoped_ones_are_marked
     assert rec.order == [
         "reconcile_full_index_scope",
         "tombstone_pages_outside_generation",
-        "sweep_retired_pages",
+        "sweep_store_hygiene",
         "tombstone_candidates",
         "mark_tombstone_pages",
         "rebuild_page_tree",

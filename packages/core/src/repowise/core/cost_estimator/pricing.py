@@ -65,6 +65,8 @@ _COST_TABLE_EXACT: dict[str, tuple[float, float]] = {
     "kimi-for-coding": (0.0006, 0.0024),  # $0.60 / $2.40 per MTok
     "kimi-k2.5": (0.0006, 0.0024),
     "kimi-k2.6": (0.00095, 0.004),  # $0.95 / $4 per MTok
+    # Mistral — https://mistral.ai/pricing
+    "mistral-large-latest": (0.0005, 0.0015),  # $0.50 / $1.50 per MTok
 }
 
 # Prefix fallbacks for unknown variants. No `gpt-5.6` catch-all: the 5.6
@@ -103,6 +105,8 @@ _COST_TABLE_PREFIX: dict[str, tuple[float, float]] = {
     "kimi-for-coding": (0.0006, 0.0024),
     "kimi": (0.0006, 0.0024),
     "moonshot": (0.0006, 0.0024),
+    # Mistral — https://mistral.ai/pricing
+    "mistral-large": (0.0005, 0.0015),  # $0.50 / $1.50 per MTok
     "llama": (0.0, 0.0),
     "mock": (0.0, 0.0),
     **dict.fromkeys(ZERO_COST_MODEL_PREFIXES, (0.0, 0.0)),

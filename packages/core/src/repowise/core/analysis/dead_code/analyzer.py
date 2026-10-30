@@ -14,7 +14,7 @@ from __future__ import annotations
 import fnmatch
 from collections.abc import Callable, Iterator
 from collections.abc import Set as AbstractSet
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -164,8 +164,11 @@ class DeadCodeAnalyzer:
         repo_root: Path | None = None,
         unindexed_source_files: list[tuple[str, str]] | None = None,
         dotnet_index: Any | None = None,
+        as_of: datetime | None = None,
     ) -> None:
         self.graph = graph
+        # "Now" for git-age checks; resolved from the repo on first use.
+        self._as_of = as_of
         # The C# resolver's project index (``GraphBuilder.dotnet_index``):
         # scopes the C# name rescue to the projects that can see a file.
         self._dotnet_index = dotnet_index
@@ -653,6 +656,21 @@ class DeadCodeAnalyzer:
                 extract_guarded_jsx_renders(pred_file, src) if src else []
             )
         return self._guard_cache[pred_file]
+
+    def days_since(self, when: datetime) -> int:
+        """Whole days from *when* to the indexed commit, the anchor the git windows
+        use, so a commit's verdicts do not drift with the wall clock. Without a
+        repo root there is no commit to anchor to, and wall-clock time stands in."""
+        if self._as_of is None:
+            if self._repo_root is None:
+                self._as_of = datetime.now(UTC)
+            else:
+                from ...ingestion.git_indexer import GitIndexer
+
+                self._as_of = GitIndexer(self._repo_root, read_only=True).window_anchor()
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=UTC)
+        return (self._as_of - when).days
 
     def _file_line_count(self, file_path: str) -> int | None:
         """Physical line count of an indexed file, or ``None`` when unread.
