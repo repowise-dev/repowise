@@ -9,7 +9,7 @@ of anything the MCP server already does.
 The one thing a tool cannot supply itself is its resources: it reads a session
 factory, a full-text index and a vector store out of ``mcp_server._state``,
 which the MCP server's lifespan normally publishes.
-:func:`repowise.server.chat_tools.init_tool_state` is the existing publisher for
+:func:`repowise.server.mcp_server._state.init_tool_state` is the existing publisher for
 exactly that, and this module is the CLI's caller of it — the same wiring the
 HTTP server's chat router already does, built from the same pieces
 ``search_cmd`` builds its own store from.
@@ -46,8 +46,10 @@ async def _acall_tool(
 
     from repowise.cli.helpers import get_db_url_for_repo, reconcile_schema_best_effort
     from repowise.core.persistence import FullTextSearch, create_engine
-    from repowise.server.chat_tools import init_tool_state
     from repowise.server.mcp_server._failure_shield import _shape_exception
+
+    # Not via ``chat_tools``: that module imports the HTTP auth stack.
+    from repowise.server.mcp_server._state import init_tool_state
 
     engine = None
     store = None

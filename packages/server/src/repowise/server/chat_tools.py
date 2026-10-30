@@ -235,15 +235,11 @@ def init_tool_state(
     repo_path: str | None = None,
 ) -> None:
     """Bridge FastAPI app state to the MCP server module globals."""
-    import repowise.server.mcp_server as mcp_mod
+    from repowise.server.mcp_server import _state
 
-    mcp_mod._session_factory = session_factory
-    mcp_mod._fts = fts
-    mcp_mod._vector_store = vector_store
-    if decision_store is not None:
-        mcp_mod._decision_store = decision_store
-    if repo_path is not None:
-        mcp_mod._repo_path = repo_path
+    _state.init_tool_state(
+        session_factory, fts, vector_store, decision_store=decision_store, repo_path=repo_path
+    )
     logger.info("Chat tool state initialized")
 
 
