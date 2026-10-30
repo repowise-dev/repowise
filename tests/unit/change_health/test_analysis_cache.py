@@ -16,6 +16,7 @@ import pytest
 from repowise.core.analysis.change_health import ChangeHealthDeltaService, DeltaRequest
 from repowise.core.analysis.change_health import analyzer as analyzer_mod
 from repowise.core.analysis.health import engine as engine_mod
+from repowise.core.analysis.health import walk_cache as walk_cache_mod
 from repowise.core.ingestion import parse_cache as parse_cache_mod
 
 from .conftest import Repo, python_complex, python_io_in_loop, typescript_complex
@@ -101,10 +102,20 @@ def test_a_warm_cache_parses_and_walks_nothing(repo, tmp_path, monkeypatch):
     assert (counter.parses, counter.walks) == (0, 0)
 
 
-def test_a_new_analyzer_version_walks_again(repo, tmp_path, monkeypatch):
+def test_a_new_analyzer_version_keeps_the_walks(repo, tmp_path, monkeypatch):
+    # The walk keys on the walker's code, so a scoring-only bump re-uses it.
     cache = tmp_path / "cache"
     expected = _comparable(repo, cache)
-    monkeypatch.setattr(analyzer_mod, "HEALTH_ANALYZER_VERSION", -1)
+    monkeypatch.setattr(engine_mod, "HEALTH_ANALYZER_VERSION", -1)
+    counter = _Counter(monkeypatch)
+    assert _comparable(repo, cache) == expected
+    assert counter.walks == 0
+
+
+def test_new_walker_code_walks_again(repo, tmp_path, monkeypatch):
+    cache = tmp_path / "cache"
+    expected = _comparable(repo, cache)
+    monkeypatch.setattr(walk_cache_mod, "walker_fingerprint", lambda: "another walker")
     counter = _Counter(monkeypatch)
     assert _comparable(repo, cache) == expected
     assert counter.walks > 0

@@ -135,8 +135,8 @@ def occurrence_files(
     if not names:
         return found
     for path, blob in source_map.items():
-        for match in IDENTIFIER_RE.finditer(blob):
-            token = match.group()
+        # Each distinct token once, in first-seen order: a file repeats most of its words.
+        for token in dict.fromkeys(IDENTIFIER_RE.findall(blob)):
             if token in names:
                 found.setdefault(token, set()).add(path)
     return found
@@ -550,8 +550,12 @@ def drop_internals_used_in_own_file(
 #: A path-shaped run of bytes: what a manifest, build script or doc writes when
 #: it names a file. It must hold a ``.`` or a ``/`` (every key does), so the
 #: regex engine skips plain words instead of handing each one to Python.
-#: Whether a run names a candidate is decided by the lookup.
-_PATH_TOKEN_RE = re.compile(rb"[A-Za-z0-9_@~+\-]*[./][A-Za-z0-9_.@~+\-/]*")
+#: Whether a run names a candidate is decided by the lookup. The lookbehind and
+#: possessive run only skip starts inside a word, which can never be leftmost:
+#: same matches, without rescanning each word from every one of its letters.
+_PATH_TOKEN_RE = re.compile(
+    rb"(?<![A-Za-z0-9_@~+\-])[A-Za-z0-9_@~+\-]*+[./][A-Za-z0-9_.@~+\-/]*"
+)
 
 
 def _path_keys(path: str) -> list[str]:
@@ -621,8 +625,8 @@ def _targets_in(
     """The targets any path-shaped token of *blob*, a file in *base*, names."""
     return {
         target
-        for match in _PATH_TOKEN_RE.finditer(blob)
-        for target in _targets_named_by(match.group().decode("ascii"), wanted, tails, base)
+        for token in dict.fromkeys(_PATH_TOKEN_RE.findall(blob))
+        for target in _targets_named_by(token.decode("ascii"), wanted, tails, base)
     }
 
 

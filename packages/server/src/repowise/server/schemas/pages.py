@@ -68,11 +68,14 @@ def _is_chapter(obj: object, metadata: dict | None) -> bool:
     return bool(metadata.get("is_chapter"))
 
 
-def _summary_fields(obj: object, metadata: dict | None = None) -> dict:
+def _summary_fields(
+    obj: object, metadata: dict | None = None, content_chars: int | None = None
+) -> dict:
     """The part of a page row that costs nothing to send.
 
     Shared by both response models so a field added to one can never go
-    missing from the other.
+    missing from the other. *content_chars* is the body's length when the
+    caller read it without the body.
     """
     layer_id, layer_name = _layer_stamp(obj, metadata)
     return dict(
@@ -91,7 +94,11 @@ def _summary_fields(obj: object, metadata: dict | None = None) -> dict:
         version=obj.version,  # type: ignore[attr-defined]
         confidence=obj.confidence,  # type: ignore[attr-defined]
         freshness_status=obj.freshness_status,  # type: ignore[attr-defined]
-        content_chars=len(obj.content or ""),  # type: ignore[attr-defined]
+        content_chars=(
+            len(obj.content or "")  # type: ignore[attr-defined]
+            if content_chars is None
+            else content_chars
+        ),
         layer_id=layer_id,
         layer_name=layer_name,
         is_chapter=_is_chapter(obj, metadata),
@@ -155,6 +162,11 @@ class PageSummaryResponse(BaseModel):
     @classmethod
     def from_orm(cls, obj: object) -> PageSummaryResponse:
         return cls(**_summary_fields(obj))
+
+    @classmethod
+    def from_row(cls, row: object) -> PageSummaryResponse:
+        """From a ``crud.list_page_summaries`` row, which carries no body."""
+        return cls(**_summary_fields(row, content_chars=row.content_chars))  # type: ignore[attr-defined]
 
 
 class PageResponse(PageSummaryResponse):

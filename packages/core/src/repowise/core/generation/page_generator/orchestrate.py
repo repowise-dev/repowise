@@ -118,6 +118,9 @@ class _GenerationRun:
         self.gen = gen
         self.config = gen._config
         self.vector_store = gen._vector_store
+        # The page ids the store holds, read once on first need. See
+        # ``_new_vectors_only``.
+        self._stored_vector_ids: set[str] | None = None
         # Scoped generation: when set, a level emits a page only if its id is
         # in this set (and not already completed). None means "every page the
         # selection allows", the historical behaviour. The whole repo is still
@@ -225,10 +228,29 @@ class _GenerationRun:
         self.sel_infra_paths: set[str] = set()
         self.sel_module_groups: list[Any] = []
         self.sel_scc_groups: list[Any] = []
+        self._flow_plans: list[Any] | None = None
 
     # ------------------------------------------------------------------
     # Setup
     # ------------------------------------------------------------------
+
+    def flow_plans(self) -> list[Any]:
+        """The operations this run's flow pages walk, computed once.
+
+        Read off the call graph only, so a keyed and a keyless run, and the
+        update cascade, choose the same pages.
+        """
+        if self._flow_plans is None:
+            from ..flow_pages import plans_for_index
+
+            self._flow_plans = plans_for_index(self.graph_builder, self.parsed_files)
+        return self._flow_plans
+
+    def _flow_page_count(self) -> int:
+        """Flow pages this run will emit; none on a file-pages-only update."""
+        if getattr(self.config, "file_pages_only", False):
+            return 0
+        return sum(1 for plan in self.flow_plans() if self._emit(plan.page_id))
 
     def _setup_job(self) -> None:
         """Create the resume job and, on resume, seed completed page ids."""
@@ -335,6 +357,7 @@ class _GenerationRun:
                 # map that steers concept grouping, so absence costs taste and
                 # never coverage.
                 kg_modules=self.kg_modules or self.kg_ctx.get_modules() or None,
+                symbol_uses=self.graph_builder.symbol_uses(),
             )
         )
 
@@ -529,6 +552,7 @@ class _GenerationRun:
             + int(self.selection.emit_repo_overview)
             + counts["infra_page"]
             + onboarding_page_count
+            + self._flow_page_count()
         )
         # Split the total across the two progress bars. One bar counting both
         # tiers reads as frozen: the free levels run first, so it reaches ~97%
@@ -549,15 +573,15 @@ class _GenerationRun:
             self.job_system.start_job(self.job_id, estimated_total)
 
     def _file_import_edges(self) -> list[tuple[str, str]]:
-        """``(src, dst)`` import edges between file nodes (src imports dst)."""
-        edges: list[tuple[str, str]] = []
-        try:
-            for src, dst in self.graph.edges():
-                if isinstance(src, str) and isinstance(dst, str):
-                    edges.append((src, dst))
-        except Exception:
-            pass
-        return edges
+        """``(src, dst)`` import edges between file nodes (src imports dst).
+
+        Imports only, the same edges ``rebuild_page_tree`` reads back from the
+        store, so the tree an update rebuilds orders chapters the way this run
+        did.
+        """
+        from ...analysis.kg_inputs import import_edges_of
+
+        return import_edges_of(self.graph)
 
     def _compute_ia(self) -> None:
         """Derive the guided-tour ordering and the layer spine after selection.
@@ -753,6 +777,8 @@ class _GenerationRun:
                 # swallow here hid a 300k-token request rejection that silently lost
                 # every file-page embedding on init (`repowise reindex` repairs).
                 if embed_items and self.vector_store is not None:
+                    embed_items = await _new_vectors_only(self, embed_items, results)
+                if embed_items and self.vector_store is not None:
                     if self.on_embed is not None:
                         self.on_embed(len(embed_items), False)
                     with timed(self.timings, "generation.embed"):
@@ -849,10 +875,12 @@ class _GenerationRun:
         # page belongs to is stamped on the page itself, so the docs tree can
         # group by it without a page to hang the group off.
         #
-        # Levels 6 (repo_overview), 7 (infra_page), and 8 (onboarding) share
-        # no data dependencies — run merged.
+        # Levels 5 (flow_page), 6 (repo_overview), 7 (infra_page) and 8
+        # (onboarding) share no data dependencies — run merged. Flow pages
+        # need only the module groups' names, which naming settled above.
         final = (
-            await _levels.build_level6_coros(self)
+            _levels.build_flow_coros(self)
+            + await _levels.build_level6_coros(self)
             + _levels.build_level7_coros(self)
             + await _levels.build_level8_coros(self)
         )
@@ -904,7 +932,7 @@ class _GenerationRun:
                 try:
                     from ..page_tree import assign_page_tree
 
-                    assign_page_tree(all_pages, self.layer_order_ids)
+                    assign_page_tree(all_pages, self._file_import_edges())
                 except Exception as exc:
                     log.debug("page_tree.failed", error=str(exc))
 
@@ -930,6 +958,10 @@ class _GenerationRun:
                 )
             except Exception as exc:
                 log.debug("interlinking.failed", error=str(exc))
+
+            # Post-generation: point every cited span at the commit it was read
+            # at, and at the forge when the repository has a known remote.
+            link_sources(all_pages, self.repo_path)
 
             # Post-generation: graph-derived related pages. Runs AFTER
             # interlinking so prose-derived wiki_links win dedup and related
@@ -1034,6 +1066,21 @@ def _stamp_structural_keys(pages: list[GeneratedPage]) -> None:
             )
 
 
+def link_sources(pages: list[GeneratedPage], repo_path: Any) -> None:
+    """Pin the run's citations to their commit; a failure is said out loud.
+
+    Links are stamped page by page, so a failure partway leaves some pages
+    pinned and others not. That is worth a warning naming how many pages were
+    in hand, not a debug line nobody reads.
+    """
+    from ..page_sources import attach_source_links
+
+    try:
+        attach_source_links(pages, repo_path)
+    except Exception as exc:
+        log.warning("source_links.failed", pages=len(pages), error=str(exc))
+
+
 def _compute_kg_file_scores(kg_ctx: Any) -> dict[str, float]:
     """Derive per-file KG bonus scores from tour membership and role."""
     if not kg_ctx.available:
@@ -1053,6 +1100,42 @@ def _compute_kg_file_scores(kg_ctx: Any) -> dict[str, float]:
                     if bonus > scores.get(fp, 0.0):
                         scores[fp] = bonus
     return scores
+
+
+async def _new_vectors_only(run: Any, items: list, pages: list) -> list:
+    """*items* minus pages whose stored vector already embeds the same page.
+
+    An update re-renders a changed file's neighbours, which mostly come out
+    byte-identical to their stored rows. Only a page the store already holds,
+    at the running embedder's width, is skipped, so a fresh store or one the
+    embedder change is about to rebuild still gets every vector.
+    """
+    if not getattr(run.vector_store, "persists_across_runs", False):
+        return items
+    same = {
+        page.page_id
+        for page in pages
+        if isinstance(page, GeneratedPage) and _same_as_prior(page, run.gen)
+    }
+    if not same:
+        return items
+    if run._stored_vector_ids is None:
+        current_width = await run.vector_store.holds_current_vectors()
+        run._stored_vector_ids = (
+            await run.vector_store.list_page_ids() if current_width else set()
+        )
+    current = same & run._stored_vector_ids
+    return [item for item in items if item[0] not in current]
+
+
+def _same_as_prior(page: GeneratedPage, gen: Any) -> bool:
+    """Whether *page* rendered byte-identical to its stored row."""
+    prior = gen._prior_pages.get(page.page_id)
+    return (
+        prior is not None
+        and prior.content == page.content
+        and (prior.digest or "") == (page.digest or "")
+    )
 
 
 def _embed_item(page: GeneratedPage) -> tuple[str, str, dict] | None:

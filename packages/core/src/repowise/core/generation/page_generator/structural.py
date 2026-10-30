@@ -29,7 +29,6 @@ from typing import Any
 
 import structlog
 
-from ...ingestion.lang_helpers.anonymous_classes import is_anonymous_scope
 from ..models import (
     GENERATION_LEVELS,
     TEMPLATE_PAGE_CONFIDENCE,
@@ -37,6 +36,7 @@ from ..models import (
     compute_page_id,
     compute_source_hash,
 )
+from ..public_api import is_public_api
 from .helpers import _extract_summary, _now_iso
 
 log = structlog.get_logger(__name__)
@@ -45,7 +45,7 @@ log = structlog.get_logger(__name__)
 # output without changing any template's bytes: new context fields, a changed
 # helper, a reordered section. Template edits are picked up automatically
 # (their source is hashed), so this is only for the cases hashing cannot see.
-STRUCTURAL_GENERATION_VERSION = "5"
+STRUCTURAL_GENERATION_VERSION = "6"
 
 # Keyless stub templates live one directory down so their filenames can match
 # the prompt templates they stand in for.
@@ -415,33 +415,6 @@ def datestamp(value: object) -> str:
     if not text:
         return ""
     return text[:10]
-
-
-def is_public_api(symbol: Mapping[str, Any]) -> bool:
-    """Whether a public symbol is API a caller would reach for.
-
-    Two kinds of name are public to the parser and are not an API. A dunder is
-    the language talking to itself, and ``__all__`` in particular is metadata
-    *about* the API rather than part of it. A module-level ``variable`` with no
-    capital in its name is module state — ``log``, ``logger``, ``router``, and
-    Alembic's ``revision`` / ``down_revision`` are 771 of the 878 such symbols
-    in this repository, and not one of them is something another file calls.
-    The type aliases that share the kind (``SourceFile``, ``ReasoningMode``)
-    keep their capitals and stay. A member of an anonymous class
-    (``Gson::make::Comparator``) is reached through its supertype, never by
-    name, and has no type of its own to be listed under.
-
-    Demoted, not dropped: the caller still names them on the page, so the
-    identifier stays in ``content`` for the index.
-    """
-    name = str(symbol.get("name") or "")
-    if name.startswith("__") and name.endswith("__"):
-        return False
-    if is_anonymous_scope(symbol.get("language"), symbol.get("parent_name")):
-        return False
-    if symbol.get("kind") == "variable" and not symbol.get("parent_name"):
-        return any(c.isupper() for c in name)
-    return True
 
 
 def api_symbols(symbols: Iterable[Mapping[str, Any]]) -> list[Mapping[str, Any]]:

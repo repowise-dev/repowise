@@ -158,6 +158,9 @@ SymbolKind = Literal[
     "property",
 ]
 
+#: Kinds that name a stored value rather than behaviour or a type.
+VALUE_SYMBOL_KINDS: frozenset[str] = frozenset({"constant", "variable", "property"})
+
 # ---------------------------------------------------------------------------
 # Core models
 # ---------------------------------------------------------------------------
@@ -287,6 +290,8 @@ class NamedBinding:
     is_module_alias: bool = False  # True for "import x" / "import * as ns"
     is_global: bool = False  # C# `global using` — applies to every file in the project
     is_static_import: bool = False  # C# `using static` / Java static import — pulls members
+    # Java ``import static a.B.m``: the type ``B`` that declares the member.
+    member_of: str | None = None
     # Position of the local name (1-based line, byte column), set where a
     # binding can sit inside a function body (``require``, ``import()``), so
     # it is not read as a shadowing local.

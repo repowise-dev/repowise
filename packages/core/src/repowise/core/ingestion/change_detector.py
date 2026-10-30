@@ -498,7 +498,10 @@ class ChangeDetector:
         all_pages_needing_regen = sorted(
             directly_changed | one_hop,
             key=lambda p: (
-                # Staleness-first: an already-stale page (larger age) outranks a
+                # A changed file's own page first: it is the one page the
+                # change is certain to alter, so the budget cuts importers first.
+                p in directly_changed,
+                # Then staleness: an already-stale page (larger age) outranks a
                 # fresh page no matter how central the fresh one is, so a
                 # constrained budget spends its LLM calls on the pages that
                 # actually lag the code (issues #847 / #851). Fresh pages sort

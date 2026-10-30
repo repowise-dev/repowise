@@ -107,7 +107,7 @@ function indexOfRow(fragment: string): number {
 }
 
 describe("DocsTree", () => {
-  it("renders deterministic pages inside the collapsed Auto-documented folder", () => {
+  it("renders deterministic pages inside the collapsed Code reference folder", () => {
     render(
       <DocsTree
         pages={[
@@ -118,7 +118,7 @@ describe("DocsTree", () => {
         onSelectPage={() => {}}
       />,
     );
-    const bucket = screen.getByText("Auto-documented files (2)");
+    const bucket = screen.getByText("Code reference");
     expect(bucket).toBeInTheDocument();
     // Collapsed by default: the files are a deliberate drill-in, not on load.
     expect(screen.queryByText("foo.ts")).not.toBeInTheDocument();
@@ -138,7 +138,7 @@ describe("DocsTree", () => {
         onSelectPage={onSelectPage}
       />,
     );
-    fireEvent.click(screen.getByText("Auto-documented files (1)"));
+    fireEvent.click(screen.getByText("Code reference"));
     fireEvent.click(screen.getByText("x.ts"));
     expect(onSelectPage).toHaveBeenCalledWith(target);
   });
@@ -222,8 +222,8 @@ describe("DocsTree", () => {
     // outline — no file rows beside it.
     expect(screen.getByText("runtime/engine")).toBeInTheDocument();
     expect(screen.queryByText("resolvers/dotnet/index.py")).not.toBeInTheDocument();
-    // The file lives in the single Auto-documented folder at the bottom.
-    expect(screen.getByText("Auto-documented files (1)")).toBeInTheDocument();
+    // The file lives in the single Code reference folder at the bottom.
+    expect(screen.getByText("Code reference")).toBeInTheDocument();
   });
 
   it("hides tombstoned pages, which the tree deliberately leaves unplaced", () => {
@@ -266,7 +266,7 @@ describe("DocsTree", () => {
     // The unplaced concept page is grouped by type so it never vanishes.
     expect(screen.getByText("Module (1)")).toBeInTheDocument();
     // The file page is not a stray group; it lives in the one bottom folder.
-    expect(screen.getByText("Auto-documented files (1)")).toBeInTheDocument();
+    expect(screen.getByText("Code reference")).toBeInTheDocument();
     expect(screen.queryByText("File (1)")).not.toBeInTheDocument();
   });
 
@@ -315,9 +315,9 @@ describe("DocsTree", () => {
     // Cycles are deterministic: they never appear in the outline, and they join
     // every other file page in the one bottom folder (20 cycles + 1 SPINE file).
     expect(screen.queryByText("scc-0")).not.toBeInTheDocument();
-    expect(screen.getByText("Auto-documented files (21)")).toBeInTheDocument();
+    expect(screen.getByText("Code reference")).toBeInTheDocument();
     // The bottom folder sits after the concept spine.
-    expect(indexOfRow("Zebra Runtime")).toBeLessThan(indexOfRow("Auto-documented files"));
+    expect(indexOfRow("Zebra Runtime")).toBeLessThan(indexOfRow("Code reference"));
     // The layers themselves are the spine, always shown.
     expect(screen.getByText("Zebra Runtime")).toBeInTheDocument();
     expect(screen.getByText("Alpha API")).toBeInTheDocument();
@@ -338,10 +338,10 @@ describe("DocsTree", () => {
       <DocsTree pages={[...SPINE, ...few]} selectedPageId={null} onSelectPage={() => {}} />,
     );
     // 3 infra pages + 1 SPINE file, all in the single collapsed folder.
-    expect(screen.getByText("Auto-documented files (4)")).toBeInTheDocument();
+    expect(screen.getByText("Code reference")).toBeInTheDocument();
     expect(screen.queryByText("infra-0.yml")).not.toBeInTheDocument();
     // Drill in: bottom folder -> deploy directory -> file.
-    fireEvent.click(screen.getByText("Auto-documented files (4)"));
+    fireEvent.click(screen.getByText("Code reference"));
     fireEvent.click(screen.getByText("deploy"));
     expect(screen.getByText("infra-0.yml")).toBeInTheDocument();
   });
@@ -414,6 +414,41 @@ describe("DocsTree", () => {
     expect(indexOfRow("Alpha API")).toBeLessThan(indexOfRow("api/routes"));
   });
 
+  it("orders layer rows by the stored page order when it disagrees with the spine", () => {
+    render(
+      <DocsTree
+        pages={[
+          layeredRoot({ layer_order_ids: SPINE_IDS }),
+          stampedModule(
+            "module_page:runtime/engine",
+            "Module: runtime/engine",
+            { layer_id: "layer:runtime", layer_name: "Zebra Runtime" },
+            5,
+          ),
+          stampedModule(
+            "module_page:api/routes",
+            "Module: api/routes",
+            { layer_id: "layer:api", layer_name: "Alpha API" },
+            2,
+          ),
+          stampedModule(
+            "module_page:api/auth",
+            "Module: api/auth",
+            { layer_id: "layer:api", layer_name: "Alpha API" },
+            1,
+          ),
+        ]}
+        selectedPageId={null}
+        onSelectPage={() => {}}
+      />,
+    );
+    // The spine puts runtime first; the stored order puts an api page first.
+    expect(indexOfRow("Alpha API")).toBeLessThan(indexOfRow("Zebra Runtime"));
+    // Pages inside a layer follow the stored order too, not the input order.
+    expect(indexOfRow("api/auth")).toBeLessThan(indexOfRow("api/routes"));
+    expect(indexOfRow("api/routes")).toBeLessThan(indexOfRow("Zebra Runtime"));
+  });
+
   it("opens every layer row on load, and closes one on a click", () => {
     render(
       <DocsTree
@@ -476,7 +511,7 @@ describe("DocsTree", () => {
     // Orientation, then the layer outline, then the way into the files. The
     // corpus is a reference rather than a section, and a row whose count runs
     // to four digits sitting mid-outline reads as the point of the sidebar.
-    const corpus = indexOfRow("Auto-documented files (1)");
+    const corpus = indexOfRow("Code reference");
     expect(indexOfRow("Repository Overview: demo")).toBeLessThan(indexOfRow("Getting Started"));
     expect(indexOfRow("Getting Started")).toBeLessThan(indexOfRow("Zebra Runtime"));
     expect(indexOfRow("Alpha API")).toBeLessThan(corpus);
@@ -704,7 +739,7 @@ describe("DocsTree", () => {
     expect(indexOfRow("Modules with no layer")).toBeLessThan(indexOfRow("aaa/config"));
   });
 
-  it("leaves the onboarding chapters on the top rung, ahead of the layers", () => {
+  it("pins the onboarding chapters in Start here, ahead of the layers", () => {
     render(
       <DocsTree
         pages={[
@@ -857,7 +892,7 @@ describe("DocsTree", () => {
     expect(screen.getByText("runtime/engine")).toBeInTheDocument();
     expect(screen.queryByText("a.py")).not.toBeInTheDocument();
     // Both files are in the single bottom folder.
-    expect(screen.getByText("Auto-documented files (2)")).toBeInTheDocument();
+    expect(screen.getByText("Code reference")).toBeInTheDocument();
   });
 
   // Three orientation slots were retired, and their rows survive in every
@@ -898,5 +933,101 @@ describe("DocsTree", () => {
     expect(screen.getByText("Getting Started")).toBeInTheDocument();
     // The failure mode if the entry were dropped: a bare `onboarding` row.
     expect(rowLabels().some((l) => l.trim() === "onboarding")).toBe(false);
+  });
+
+  it("pins a Start here group: overview, chapters in order, then flows", () => {
+    const flow = makePage({
+      id: "flow_page:flows/request",
+      page_type: "flow_page",
+      title: "How a request is served",
+      target_path: "flows/request",
+      // Parented to a chapter: it must still get one row, not two.
+      parent_page_id: ONBOARDING.id,
+      display_order: 9,
+    });
+    const keyConcepts = makePage({
+      id: "onboarding:onboarding/key_concepts",
+      page_type: "onboarding",
+      title: "Key Concepts",
+      target_path: "onboarding/key_concepts",
+      parent_page_id: ROOT.id,
+      display_order: 0,
+      section_number: null,
+    });
+    render(
+      <DocsTree
+        pages={[flow, ...SPINE, keyConcepts]}
+        selectedPageId={null}
+        onSelectPage={() => {}}
+      />,
+    );
+    // The first row of the outline (the two before it are the bar's toggles).
+    const start = indexOfRow("Start here");
+    expect(start).toBe(2);
+    const order = [
+      "Repository Overview: demo",
+      "Key Concepts",
+      "Getting Started",
+      "How a request is served",
+      "Zebra Runtime",
+    ].map(indexOfRow);
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+    expect(order[0]).toBeGreaterThan(start);
+    // The chapter keeps its reading number inside the group, and the outline
+    // continues the run after it.
+    expect(rowLabels().some((l) => l.startsWith("1") && l.includes("Getting Started"))).toBe(true);
+    expect(rowLabels().some((l) => l.startsWith("2") && l.includes("Zebra Runtime"))).toBe(true);
+    // Each reading-path page is listed once.
+    expect(rowLabels().filter((l) => l.includes("Repository Overview: demo"))).toHaveLength(1);
+    expect(rowLabels().filter((l) => l.includes("How a request is served"))).toHaveLength(1);
+  });
+
+  it("nests a file's symbols under its row and counts files and symbols apart", () => {
+    const file = makePage({ id: "file_page:src/a.py", target_path: "src/a.py", title: "a.py" });
+    const symbol = makePage({
+      id: "symbol_spotlight:src/a.py::run",
+      page_type: "symbol_spotlight",
+      target_path: "src/a.py::run",
+      title: "run",
+      parent_page_id: file.id,
+    });
+    const other = makePage({ id: "file_page:src/b.py", target_path: "src/b.py", title: "b.py" });
+    render(
+      <DocsTree pages={[symbol, file, other]} selectedPageId={null} onSelectPage={() => {}} />,
+    );
+    expect(screen.getByText("2 files · 1 symbol")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Code reference"));
+    fireEvent.click(screen.getByText("src"));
+    // The symbol is not a sibling of the files; it opens from its file.
+    expect(screen.queryByText("run")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("a.py"));
+    expect(screen.getByText("run")).toBeInTheDocument();
+    expect(indexOfRow("a.py")).toBeLessThan(indexOfRow("run"));
+    expect(indexOfRow("run")).toBeLessThan(indexOfRow("b.py"));
+  });
+
+  it("summarises stale and unwritten pages, each a toggle for the status filter", () => {
+    const stub = makePage({
+      id: "module_page:core",
+      page_type: "module_page",
+      title: "Module: core",
+      target_path: "core",
+      provider_name: "template",
+    });
+    const stale = makePage({ id: "file_page:x.ts", target_path: "x.ts", freshness_status: "stale" });
+    const fresh = makePage({ id: "file_page:y.ts", target_path: "y.ts", title: "y.ts" });
+    render(
+      <DocsTree pages={[stub, stale, fresh]} selectedPageId={null} onSelectPage={() => {}} />,
+    );
+    expect(screen.getByText("3 pages")).toBeInTheDocument();
+    // A state with nothing in it says nothing.
+    expect(screen.queryByText(/outdated/)).not.toBeInTheDocument();
+    const unwritten = screen.getByRole("button", { name: "1 not written" });
+    fireEvent.click(unwritten);
+    expect(unwritten).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText("core")).toBeInTheDocument();
+    expect(screen.queryByText("Code reference")).not.toBeInTheDocument();
+    fireEvent.click(unwritten);
+    expect(screen.getByText("Code reference")).toBeInTheDocument();
   });
 });

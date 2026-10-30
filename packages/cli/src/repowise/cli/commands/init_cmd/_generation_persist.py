@@ -72,7 +72,10 @@ async def run_generation_with_persistence(
         load_prior_pages,
         upsert_repository,
     )
-    from repowise.core.persistence.crud import upsert_page_from_generated
+    from repowise.core.persistence.crud import (
+        upsert_page_from_generated,
+        upsert_pages_from_generated,
+    )
     from repowise.core.pipeline import run_generation, timed
 
     url = get_db_url_for_repo(repo_path)
@@ -110,9 +113,10 @@ async def run_generation_with_persistence(
 
     async def _write(pages: list[Any]) -> int:
         try:
+            # One SELECT and one flush for the batch; it commits as one
+            # transaction either way.
             async with get_session(sf) as session:
-                for page in pages:
-                    await upsert_page_from_generated(session, page, repo_id)
+                await upsert_pages_from_generated(session, pages, repo_id)
             return len(pages)
         except Exception:
             # One bad page must not cost its batch: retry them one at a time.

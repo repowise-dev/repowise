@@ -31,15 +31,25 @@ import { useGraphSearch } from "./use-graph-search";
 import { useCommunityFilter } from "./use-community-filter";
 import { useModuleFilter, filterGraphToModule } from "./use-module-filter";
 import { useGraphKeyboardShortcuts } from "./use-graph-keyboard-shortcuts";
-import { GraphToolbar, type ColorMode, type ViewMode, type GraphTheme } from "./graph-toolbar";
-import { GraphLegend } from "./graph-legend";
+import {
+  GraphToolbar,
+  type ColorMode,
+  type ViewMode,
+  type GraphTheme,
+  type GraphToolbarCopy,
+  type GraphNodeFilterCopy,
+} from "./graph-toolbar";
+import { GraphLegend, type GraphLegendCopy } from "./graph-legend";
 import { GraphNodeFilter } from "./graph-toolbar";
 import { GraphCanvasShell } from "./graph-canvas-shell";
 import { GraphContextMenu } from "./graph-context-menu";
 import { GraphInspectionPanel } from "./graph-inspection-panel";
 import { GraphFlowPanel } from "./graph-flow-panel";
 import { GraphShortcutHelp } from "./graph-shortcut-help";
-import { GraphPopulationControl } from "./graph-population-control";
+import {
+  GraphPopulationControl,
+  type GraphPopulationControlCopy,
+} from "./graph-population-control";
 import { GraphUnclusteredPanel } from "./graph-unclustered-panel";
 import type {
   GraphExport,
@@ -65,6 +75,27 @@ import type GraphologyGraph from "graphology";
 import { useEgoFilter } from "./sigma/use-ego-filter";
 import { filterOverviewData, getOverviewMeta, layoutFilesOverview } from "./sigma/files-overview";
 import { CommunityColorContext, communityColorSlots } from "./community-colors";
+
+export interface GraphFlowCopy {
+  toolbar?: Partial<GraphToolbarCopy> | undefined;
+  nodeFilter?: Partial<GraphNodeFilterCopy> | undefined;
+  legend?: Partial<GraphLegendCopy> | undefined;
+  population?: Partial<GraphPopulationControlCopy> | undefined;
+  /** Breadcrumb root when the host gives no repo name. */
+  allCommunities: string;
+  /** Description inside one community. */
+  insideCommunity: string;
+  /** Appended to {@link insideCommunity} when files open on double-click. */
+  openFileHint: string;
+  communityFallback: (id: number) => string;
+}
+
+export const GRAPH_FLOW_COPY: GraphFlowCopy = {
+  allCommunities: "All communities",
+  insideCommunity: "How the files in this group depend on each other.",
+  openFileHint: "Double-click a file to open it.",
+  communityFallback: (id) => `Community ${id}`,
+};
 
 export interface GraphFlowProps {
   fullGraph: GraphExport | undefined;
@@ -193,6 +224,7 @@ export interface GraphFlowProps {
   /** Host-owned rail content, e.g. a documentation panel. Takes the rail over
    *  the community and inspection panels; see the precedence in the render. */
   rail?: ReactNode;
+  copy?: Partial<GraphFlowCopy> | undefined;
 }
 
 export function GraphFlow(props: GraphFlowProps) {
@@ -243,6 +275,7 @@ export function GraphFlow(props: GraphFlowProps) {
     banner,
     rail,
   } = props;
+  const copy = { ...GRAPH_FLOW_COPY, ...props.copy };
 
   const sigmaRef = useRef<SigmaCanvasHandle>(null);
   const focusTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -1429,7 +1462,7 @@ export function GraphFlow(props: GraphFlowProps) {
 
   const activeCommunityLabel =
     activeCommunity !== null
-      ? (communityLabels?.get(activeCommunity) ?? `Community ${activeCommunity}`)
+      ? (communityLabels?.get(activeCommunity) ?? copy.communityFallback(activeCommunity))
       : null;
 
   return (
@@ -1438,7 +1471,7 @@ export function GraphFlow(props: GraphFlowProps) {
       breadcrumb={
         isInsideCommunity && activeCommunityLabel ? (
           <GraphScopeBreadcrumb
-            rootLabel={repoName ?? "All communities"}
+            rootLabel={repoName ?? copy.allCommunities}
             leafLabel={activeCommunityLabel}
             onRoot={leaveCommunity}
           />
@@ -1449,9 +1482,7 @@ export function GraphFlow(props: GraphFlowProps) {
         // out, and the narrowing select names it a third time. Prose repeating
         // it is noise, so this says what the picture is, not what it is called.
         isInsideCommunity
-          ? `How the files in this group depend on each other.${
-              onNodeViewDocs ? " Double-click a file to open it." : ""
-            }`
+          ? `${copy.insideCommunity}${onNodeViewDocs ? ` ${copy.openFileHint}` : ""}`
           : description
       }
       titleActions={
@@ -1462,6 +1493,7 @@ export function GraphFlow(props: GraphFlowProps) {
               population={population}
               breakdown={constellationGraph?.population}
               onChange={onPopulationChange}
+              copy={copy.population}
             />
           )}
           <GraphToolbar
@@ -1484,6 +1516,7 @@ export function GraphFlow(props: GraphFlowProps) {
             searchMatchCount={searchResults.length}
             searchTotalCount={displayGraph?.order ?? 0}
             onSearchKeyDown={handleSearchKeyDown}
+            copy={copy.toolbar}
           />
         </div>
       }
@@ -1527,6 +1560,7 @@ export function GraphFlow(props: GraphFlowProps) {
                 <GraphNodeFilter
                   viewMode={viewMode}
                   onViewChange={handleViewChange}
+                  copy={copy.nodeFilter}
                 />
               )
             }
@@ -1551,6 +1585,7 @@ export function GraphFlow(props: GraphFlowProps) {
             }
             overview={overviewLegend}
             trailing={shortcutsButton}
+            copy={copy.legend}
           />
           {hasCanvasStatus && (
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1">

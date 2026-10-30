@@ -68,7 +68,7 @@ def capabilities():
             HouseTerm(
                 term="Dead code",
                 definition="Dead code is code no import path reaches.",
-                definition_source="src/analysis/dead_code.py",
+                definition_source="docs/dead_code.md",
                 source_paths=("README.md",),
                 doc_frequency=1,
                 code_frequency=5,
@@ -120,7 +120,7 @@ class TestWhatItIsToldToWrite:
 
     def test_overview_requests_full_orientation_without_machine_paths(self, structure):
         body = prompt(structure)
-        assert "distinct\nevidence or intelligence views" in body
+        assert "in at most 30 words" in body
         assert "maintenance path" in body
         assert "650–850 words" in body
         assert "backticked repository-relative paths" in body

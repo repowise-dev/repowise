@@ -117,10 +117,12 @@ _JVM_STRATEGIES = _LanguageCallStrategies(
 # `obj->m()` is looked for in the caller's own file, in what it includes, and
 # then in the global pair index. `c` shares this object and is excluded a layer
 # up instead: it is absent from `_LANGUAGE_PATTERNS`, and a struct declares no
-# method for the pair index to hold.
+# method for the pair index to hold. A field a base class declares types a
+# receiver as an own one does (``lexer_.ReadToken()`` in a derived parser).
 _CPP_STRATEGIES = _LanguageCallStrategies(
     free=("_resolve_cpp_scoped_call", "_resolve_cpp_same_target"),
     member_fallback=_TYPED_RECEIVER,
+    inherited_fields=True,
 )
 
 # Rust's crate-root strategy is deliberately absent: it runs for every language
@@ -151,7 +153,10 @@ _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
     # A chained call keeps no bare-name fallback: ``.send()`` on a result the
     # return type does not type is not the repo's ``send``.
     "kotlin": replace(
-        _JVM_STRATEGIES, member_fallback=_TYPED_RECEIVER, chain_bare_fallback=False
+        _JVM_STRATEGIES,
+        member_fallback=_TYPED_RECEIVER,
+        chain_bare_fallback=False,
+        inherited_typed_receiver=True,
     ),
     "csharp": _LanguageCallStrategies(
         free_fallback=("_resolve_csharp_constructed_type",),
@@ -173,8 +178,8 @@ _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
     ),
     # TypeScript's typed fallback also walks a dotted receiver's fields.
     "typescript": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
-    # Rust types a local or parameter only; a `self.field` receiver is not
-    # walked, since Rust has no `_CHAIN_SELF` row.
+    # Rust types a local or parameter, and walks a `self.field` receiver
+    # through the struct's field declarations.
     "rust": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
     "cpp": _CPP_STRATEGIES,
     "c": _CPP_STRATEGIES,

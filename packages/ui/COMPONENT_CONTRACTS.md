@@ -308,10 +308,14 @@ file pages nest under their parent directory.
 | `selectedPageId` | `string \| null` | yes | Currently-active page id; the matching node is highlighted. |
 | `onSelectPage` | `(page: DocPage) => void` | yes | Fires on leaf-page or module-page click. |
 | `className` | `string` | no | Forwarded to the outer container. |
+| `copy` | `Partial<DocsTreeCopy>` | no | Wording overrides for a host translating the tree; English defaults otherwise. |
 
-Behaviour: built-in search, type filter (`all` / `file_page` /
-`module_page` / `symbol_spotlight` / `repo_overview`), and freshness
-filter (`all` / `fresh` / `stale` / `outdated`). Filter state is
+Behaviour: a pinned "Start here" group (overview, onboarding chapters,
+flow pages), a "Code reference" folder holding file pages with their
+symbols nested under each file, debounced search that renders 200 rows
+at a time, type filter, and status filter (`all` / `fresh` / `stale` /
+`outdated` / `unwritten`), also reachable from the counts beside the
+page total. Filter state is
 UI-local â€” there's no fetch coupling.
 
 ---

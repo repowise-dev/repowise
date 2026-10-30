@@ -214,3 +214,22 @@ def test_per_file_lane_pure_move_is_accumulated_across_rows(rows, want) -> None:
     )
     _add_own_churn(rec, rows, {"new/a.py"})
     assert rec.pure_move is want
+
+
+def test_full_diff_lane_ignores_another_files_rename(tmp_path) -> None:
+    """A commit editing a.py and moving b.py to c.py gives a.py none of b.py's churn."""
+    from repowise.core.ingestion.git_indexer.file_history import _parse_per_file_log
+
+    repo = _repo(tmp_path)
+    _commit(repo, tmp_path, {"a.py": "x = 1\n", "b.py": _BODY}, "feat: add", "2024-01-01T12:00")
+    repo.git.mv("b.py", "c.py")
+    _commit(repo, tmp_path, {"a.py": "x = 2\n"}, "refactor: move b", "2024-01-02T12:00")
+    edit = {"a.py": "x = 3\n", "c.py": _BODY + "# c\n"}
+    _commit(repo, tmp_path, edit, "feat: c", "2024-01-03T12:00")
+
+    commits, _orig = _parse_per_file_log(repo, "a.py", commit_limit=10, follow_renames=False)
+    repo.close()
+
+    churn = [(c.subject, c.added, c.deleted) for c in commits]
+    assert churn == [("feat: c", 1, 1), ("refactor: move b", 1, 1), ("feat: add", 1, 0)]
+    assert not any(c.pure_move for c in commits)

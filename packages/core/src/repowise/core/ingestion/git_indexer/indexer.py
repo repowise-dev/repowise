@@ -16,6 +16,7 @@ import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -47,7 +48,7 @@ from ._incremental import (
 )
 from .co_change import CoChangeWalk, compute_co_changes_and_entropy
 from .enrich import compute_percentiles
-from .file_history import DECAY_REFRESH_KEYS, _window_anchor, index_file
+from .file_history import DECAY_REFRESH_KEYS, _window_anchor, decay_meta, index_file
 from .function_blame import build_blame_index
 from .prior_defects import FixWalk, PriorDefects, collect_fix_commits, compute_prior_defects
 from .records import (
@@ -610,11 +611,11 @@ class GitIndexer:
         ``index_file``'s empty defaults overwrite the init-computed partners
         on every update, blanking exactly the files that change most.
 
-        ``co_change_sink``, when provided, receives the FULL per-file partner
-        map that walk produces (every tracked file, not just the changed
-        ones). The update path uses it to rebuild the graph's ``co_changes``
-        edges for the whole repo so the update-built graph converges with the
-        init-built one.
+        ``co_change_sink``, when provided, receives the walk's partner lists
+        for every code file, not just the changed ones (history-tier files get
+        none, as in a full index). The update path uses it to rebuild the
+        graph's ``co_changes`` edges for the whole repo so the update-built
+        graph converges with the init-built one.
 
         ``idle_decay_sink``, when provided (with ``all_files`` and a co-change
         tier), receives a decay-only partial metadata row for every *idle*
@@ -729,7 +730,14 @@ class GitIndexer:
         # The code signals below (prior defects, co-change) skip history-tier rows.
         code_results = [m for m in results if m["file_path"] not in history_changed]
 
-        sp = SignalPass(repo=repo, as_of_ts=as_of_ts, timings=timings, abort=_abort)
+        sp = SignalPass(
+            repo=repo,
+            as_of_ts=as_of_ts,
+            timings=timings,
+            abort=_abort,
+            cache_dir=self._window_cache_dir(),
+            cache_writable=not self.read_only,
+        )
         # Idle files are counted too, so one whose only fix aged out drops to 0.
         prior_defects = prior_defect_stage(
             sp,
@@ -940,7 +948,7 @@ class GitIndexer:
     ) -> dict[str, dict]:
         """Decay-only partial rows for *idle_paths* (see ``index_changed_files``).
 
-        Runs off the event loop. For each idle file, ``index_file`` recomputes
+        Runs off the event loop. For each idle file, ``decay_meta`` recomputes
         the window/decay churn fields from its precomputed commits (blame off →
         no git subprocess, no file stat), then the repo-wide co-change / entropy
         / prior-defect signals are overlaid. Only :data:`DECAY_REFRESH_KEYS` are
@@ -952,25 +960,25 @@ class GitIndexer:
         """
         out: dict[str, dict] = {}
         for fp in idle_paths:
-            meta = index_file(
-                repo,
-                fp,
-                repo_path=self.repo_path,
-                forge=self.forge,
-                commit_limit=self.commit_limit,
-                follow_renames=self.follow_renames,
-                include_blame=False,
-                precomputed_commits=commit_index.get(fp),
-                as_of_ts=as_of_ts,
-                provenance_classifier=prov_clf,
-                history_only=fp in history_files,
-            )
             if fp in history_files:
                 # The history tier comes only from this shared walk, so this is
                 # the full row a fresh index writes. Persisted whole, it also
                 # backfills stores indexed before non-code files had rows.
-                out[fp] = meta
+                out[fp] = index_file(
+                    repo,
+                    fp,
+                    repo_path=self.repo_path,
+                    forge=self.forge,
+                    commit_limit=self.commit_limit,
+                    follow_renames=self.follow_renames,
+                    include_blame=False,
+                    precomputed_commits=commit_index.get(fp),
+                    as_of_ts=as_of_ts,
+                    provenance_classifier=prov_clf,
+                    history_only=True,
+                )
                 continue
+            meta = decay_meta(fp, commit_index.get(fp, []), as_of_ts)
             meta["change_entropy"] = walk.entropy.get(fp, 0.0)
             meta["co_change_partners_json"] = json.dumps(walk.partners.get(fp, []))
             meta["co_change_partner_count"] = walk.partner_count.get(fp, 0)
@@ -1289,6 +1297,18 @@ class GitIndexer:
             return float(repo.head.commit.committed_date)
         except Exception:
             return None
+
+    def window_anchor(self) -> datetime:
+        """The 'now' this repo's history windows are measured from, for readers
+        outside an index run: :meth:`_resolve_as_of_ts`, else wall-clock time."""
+        repo = self._get_repo()
+        if repo is None:
+            return _window_anchor(None)
+        try:
+            return _window_anchor(self._resolve_as_of_ts(repo))
+        finally:
+            with contextlib.suppress(Exception):
+                repo.close()
 
     def blame_indexes(self, file_paths: Sequence[str]) -> dict[str, Any]:
         """Per-line ``BlameIndex`` for *file_paths*, anchored as an index run
