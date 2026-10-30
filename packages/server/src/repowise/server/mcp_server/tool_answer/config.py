@@ -350,7 +350,9 @@ _ANSWER_COVERAGE_FLOOR = 0.5
 # 27: hedge phrases match through markdown markup; agreement alone starts high
 #     only above its own score floor; a scoped question's name nothing under
 #     the scope writes grades low.
-_ANSWER_SCHEMA_VERSION = 27
+# 28: a stated value line earns high under the score floor and at any rank;
+#     held-at-medium notes for the identifier gate and a weak dominant top.
+_ANSWER_SCHEMA_VERSION = 28
 
 # Above this a whole-file Read costs more than the answer, so the low-confidence
 # hint names a ranged Read or a skeleton instead.
