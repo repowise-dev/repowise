@@ -90,11 +90,18 @@ from .reporting import (
     render_header,
     show_full_completion,
 )
-from .stale_targets import load_actionable_stale_targets, structure_ids_to_render
+from .stale_targets import (
+    can_regenerate_pages,
+    load_actionable_stale_targets,
+    structure_ids_to_render,
+)
 from .wiki_rebuild import record_wiki_rebuilt, resolve_wiki_rebuild
 from .workspace import _workspace_update
 
 log = structlog.get_logger(__name__)
+
+#: ``state.json`` key: the commit whose run last looked for files with no page.
+FILE_PAGE_FILL_KEY = "file_page_fill_commit"
 
 def _fail_on_embed_failure(
     repo_path: Path, embedder: str | None, embed_failed_pages: int, emitter: Any
@@ -940,6 +947,27 @@ def _assess_staleness(opts: UpdateOptions, run: UpdateRun) -> None:
     # Pages stale for reasons no commit explains; read only when git is current.
     if run.git_is_current:
         run.stale_pages_deferred = load_actionable_stale_targets(run, opts)
+        run.fill_file_pages = _file_pages_to_fill(run, opts)
+
+
+def _file_pages_to_fill(run: UpdateRun, opts: UpdateOptions) -> bool:
+    """Whether the stored scope omits file pages that a run at this commit has not tried.
+
+    Omitted pages a cap explains stay omitted. Tried once per commit, so a page
+    that cannot be built never turns every later update into a re-parse.
+    """
+    from repowise.core.index_scope import resolve_index_scope
+
+    pages = resolve_index_scope(run.state, run.cfg)["file_pages"]
+    omitted, cap = pages.get("omitted"), pages.get("effective_cap")
+    if not omitted or (cap is not None and (pages.get("generated") or 0) >= cap):
+        return False
+    if run.state.get(FILE_PAGE_FILL_KEY) == run.head:
+        return False
+    if not can_regenerate_pages(run, opts):
+        return False
+    console.print(f"[yellow]{omitted} eligible files have no page yet; rendering them.[/yellow]")
+    return True
 
 
 def _announce_rework(run: UpdateRun) -> None:
@@ -1200,6 +1228,7 @@ def _nothing_to_do(run: UpdateRun) -> bool:
         or run.history_stale
         or run.stale_db_paths
         or run.stale_deterministic_ids
+        or run.fill_file_pages
     )
 
 
@@ -1367,12 +1396,28 @@ def _plan_pages(opts: UpdateOptions, run: UpdateRun) -> None:
     from .stale_targets import stale_flow_pages
 
     stale_flow_pages(run)
-    _add_stale_pages(run, stale_renderer_paths)
+    _add_stale_pages(run, stale_renderer_paths, _unpaged_file_paths(run))
     _widen_for_full_render(run)
     _report_page_plan(run)
 
 
-def _add_stale_pages(run: UpdateRun, stale_renderer_paths: list[str]) -> None:
+def _unpaged_file_paths(run: UpdateRun) -> list[str]:
+    """Eligible files with no file page yet; rendered with the changed files."""
+    from .persistence import file_paths_without_page
+
+    missing = file_paths_without_page(
+        run.repo_path, run.parsed_files, run.graph_builder, run.git_meta_map
+    )
+    # Recorded so an up-to-date run retries a fill once per commit, not forever.
+    run.state[FILE_PAGE_FILL_KEY] = run.head
+    if missing:
+        console.print(f"Files with no page yet: [cyan]{len(missing)}[/cyan]")
+    return missing
+
+
+def _add_stale_pages(
+    run: UpdateRun, stale_renderer_paths: list[str], unpaged_paths: list[str]
+) -> None:
     if stale_renderer_paths:
         console.print(f"Pages from an older renderer: [cyan]{len(stale_renderer_paths)}[/cyan]")
     # Ceiling: a stale page whose file is no longer indexed is never re-rendered
@@ -1384,7 +1429,7 @@ def _add_stale_pages(run: UpdateRun, stale_renderer_paths: list[str]) -> None:
             "Reconciling stale repository structure: "
             f"[cyan]{len(run.stale_deterministic_ids)}[/cyan]"
         )
-    stale_extra = list(dict.fromkeys([*stale_renderer_paths, *run.stale_db_paths]))
+    stale_extra = list(dict.fromkeys([*stale_renderer_paths, *run.stale_db_paths, *unpaged_paths]))
     if stale_extra:
         run.affected.regenerate = list(dict.fromkeys([*run.affected.regenerate, *stale_extra]))
         _drop_from_decay(run.affected, set(stale_extra))
@@ -2205,7 +2250,9 @@ def run_update(
     _collect_working_tree(opts, run)
     _repair_before_detection(opts, run)
     _assess_staleness(opts, run)
-    if run.git_is_current and not run.stale_db_paths and not run.stale_deterministic_ids:
+    if run.git_is_current and not (
+        run.stale_db_paths or run.stale_deterministic_ids or run.fill_file_pages
+    ):
         return _already_up_to_date(opts, run)
 
     deferred = _acquire_update_lock(run)

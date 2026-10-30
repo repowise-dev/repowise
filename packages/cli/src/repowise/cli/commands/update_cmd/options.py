@@ -72,6 +72,8 @@ class UpdateRun:
     stale_deterministic_ids: set[str] = field(default_factory=set)
     # Stale pages this mode cannot regenerate: left stale, reported, never a reason to run.
     stale_pages_deferred: int = 0
+    # Eligible files the index has no page for and no cap explains: render them.
+    fill_file_pages: bool = False
     file_diffs: list = field(default_factory=list)
 
     # Index: the rebuilt graph, the page plan and the partial analyses.
