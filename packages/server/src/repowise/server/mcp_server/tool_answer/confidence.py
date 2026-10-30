@@ -29,6 +29,7 @@ from repowise.server.mcp_server._meta import _normalize_target_path
 from repowise.server.mcp_server._query_terms import STOPWORDS, split_humps
 from repowise.server.mcp_server._retrieval_rank import window_term_weight
 from repowise.server.mcp_server.tool_answer.config import (
+    _AGREEMENT_HIGH_SCORE_FLOOR,
     _AGREEMENT_RANK_GAP,
     _AGREEMENT_TOP_RANK_MAX,
     _ANSWER_COVERAGE_FLOOR,
@@ -73,9 +74,17 @@ def _answer_is_hedged(answer_text: str, question: str = "") -> bool:
     return False
 
 
+# Markdown emphasis and code spans: ``does **not include**`` must read as
+# "does not include". Underscores only at a word edge, so snake_case stays whole.
+_MARKDOWN_MARKUP_RE = re.compile(r"[*`]+|(?<!\w)_+|_+(?!\w)")
+
+
 def _normalized(answer_text: str) -> str:
-    """Lower-cased, with curly apostrophes folded so "can't" markers match."""
-    return (answer_text or "").lower().replace("\u2019", "'").replace("\u02bc", "'")
+    """Lower-cased, without markdown markup, with curly apostrophes folded and
+    spaces collapsed, so every phrase marker matches however the prose is styled."""
+    text = _MARKDOWN_MARKUP_RE.sub("", (answer_text or "").lower())
+    text = text.replace("\u2019", "'").replace("\u02bc", "'")
+    return re.sub(r"\s+", " ", text)
 
 
 _SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?])\s+|\n+")
@@ -778,6 +787,8 @@ class _Grade(NamedTuple):
     split_names: dict[str, list[str]] | None = None
     #: Later clauses of a compound question whose retrieved file the answer does not cite.
     clauses_unanswered: tuple[str, ...] = ()
+    #: Retriever agreement was the only dominance, under the score agreement needs.
+    weak_agreement: bool = False
 
 
 @dataclass
@@ -809,6 +820,9 @@ class _GradeState:
     absent_names: tuple[str, ...] = ()
     split_names: dict[str, list[str]] = field(default_factory=dict)
     clauses_unanswered: list[str] = field(default_factory=list)
+    agreement_only: bool = False
+    top_score: float = 0.0
+    weak_agreement: bool = False
 
 
 def _earned_high(
@@ -1178,6 +1192,22 @@ def _coverage_gate(s: _GradeState) -> None:
         s.confidence = "medium"
 
 
+def _agreement_floor_gate(s: _GradeState) -> None:
+    """Retriever agreement alone vouches for high only on a strong top score.
+
+    Agreement fires near a 1.0 ratio, so a modest top page can win it while its
+    excerpt stops short of what the answer describes. Runs after the specific
+    gates so their notes win.
+    """
+    s.weak_agreement = (
+        s.confidence == "high"
+        and s.agreement_only
+        and s.top_score < _AGREEMENT_HIGH_SCORE_FLOOR
+    )
+    if s.weak_agreement:
+        s.confidence = "medium"
+
+
 def _non_dominant_ceiling(s: _GradeState) -> None:
     """With no dominant page the answer stays below "high" unless it earned high."""
     if not s.dominant and not s.earn_high and s.confidence == "high":
@@ -1202,6 +1232,7 @@ _GRADE_GATES = (
     _withheld_gate,
     _lookup_gate,
     _coverage_gate,
+    _agreement_floor_gate,
     _non_dominant_ceiling,
 )
 
@@ -1263,6 +1294,8 @@ def _grade_answer(
         uncovered=uncovered,
         confidence=start,
         lead_off_top=lead_off_top,
+        agreement_only=dominance == "agreement" and not earn_high,
+        top_score=top_score,
     )
     for gate in _GRADE_GATES:
         gate(s)
@@ -1275,6 +1308,7 @@ def _grade_answer(
         absent_names=s.absent_names,
         split_names=s.split_names,
         clauses_unanswered=tuple(s.clauses_unanswered),
+        weak_agreement=s.weak_agreement,
         confidence=s.confidence,
         high_reason=high_reason,
         second_score=_confidence_score(hits[1]) if len(hits) >= 2 else 0.0,

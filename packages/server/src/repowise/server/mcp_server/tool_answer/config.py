@@ -139,6 +139,11 @@ _AGREEMENT_TOP_RANK_MAX = 1
 _SYMBOL_AGREEMENT_TOP_RANK_MAX = 0
 # The runner-up must trail by at least this many ranks in at least one source.
 _AGREEMENT_RANK_GAP = 1
+# Agreement fires near a 1.0 ratio, so on its own it starts "high" only above
+# this top score. Correct agreement highs on the answer gate scored 4.2 and
+# above; a wrong one, whose excerpt stopped before the branch it described,
+# scored 3.27.
+_AGREEMENT_HIGH_SCORE_FLOOR = 4.0
 
 # A keyless answer whose lead file sits below this many files of the unreranked
 # hybrid retrieval grades "low". On 225 keyless questions over 11 repos, leads
@@ -342,7 +347,10 @@ _ANSWER_COVERAGE_FLOOR = 0.5
 #     the graph walk added.
 # 26: a value set inside a function body anchors that function; each later
 #     clause of a compound question adds its best file to the served hits.
-_ANSWER_SCHEMA_VERSION = 26
+# 27: hedge phrases match through markdown markup; agreement alone starts high
+#     only above its own score floor; a scoped question's name nothing under
+#     the scope writes grades low.
+_ANSWER_SCHEMA_VERSION = 27
 
 # Above this a whole-file Read costs more than the answer, so the low-confidence
 # hint names a ranged Read or a skeleton instead.

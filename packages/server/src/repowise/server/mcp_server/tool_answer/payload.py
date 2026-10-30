@@ -621,7 +621,7 @@ def _noted_unfounded_claim(payload: dict, grade: _Grade, fallback_targets: list[
     the answer does not tell apart, or a value nothing retrieved holds."""
     if grade.absent_names:
         payload["note"] = (
-            f"Nothing in this repository defines or writes {', '.join(grade.absent_names)}, "
+            f"Nothing in the code searched defines or writes {', '.join(grade.absent_names)}, "
             "so the answer describes other code. Check the name before acting on it."
         )
         return True
@@ -646,9 +646,9 @@ def _noted_unfounded_claim(payload: dict, grade: _Grade, fallback_targets: list[
 
 
 def _held_at_medium_note(grade: _Grade) -> str | None:
-    """The note for a high answer the split-name or clause gate held at medium.
+    """The note for an answer the split-name or clause gate, or weak agreement, held at medium.
 
-    Both gates only demote high to medium; on any other grade they say nothing.
+    Each only holds high at medium; on any other grade they say nothing.
     """
     if grade.confidence != "medium":
         return None
@@ -657,6 +657,12 @@ def _held_at_medium_note(grade: _Grade) -> str | None:
     if grade.clauses_unanswered:
         asked = "; ".join(f'"{c}"' for c in grade.clauses_unanswered)
         return f"Held at medium: the answer cites no file retrieved for {asked}. Ask that part on its own."
+    if grade.weak_agreement:
+        return (
+            "Held at medium: both retrievers rank the top page first, but its score "
+            f"({grade.top_score:.2f}) is too weak for agreement alone to vouch for the "
+            "answer. Confirm the behaviour it describes against that file."
+        )
     return None
 
 

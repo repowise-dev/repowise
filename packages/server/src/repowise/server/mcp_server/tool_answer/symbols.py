@@ -255,6 +255,7 @@ async def _anchor_symbol_hits(
     repo_root: Path | None = None,
     session_factory: Any = None,
     question: str = "",
+    scope: str | None = None,
 ) -> tuple[list[dict], dict[str, Any]]:
     """Inject the defining file of a question-named indexed symbol into hits.
 
@@ -312,7 +313,7 @@ async def _anchor_symbol_hits(
         if prose:
             by_name = await _trusted_over_topic(by_name, question_ids, guard)
             literal = await _literal_holders(session, repo_id, question_ids - indexed_names, guard)
-        homonyms["absent"] = await _absent_names(homonyms["unindexed"], guard)
+        homonyms["absent"] = await _absent_names(homonyms["unindexed"], guard, scope)
 
     chosen = await _choose_anchor_symbols(by_name, question_ids, _verified_dict, homonyms)
     if not chosen and not literal:
@@ -378,9 +379,12 @@ class _TopicGuard:
         rows, _complete = await self._scan(token)
         return production_only(rows)
 
-    async def written(self, token: str) -> bool | None:
-        """Whether any file writes *token*; None when the scan stopped short."""
+    async def written(self, token: str, scope: str | None = None) -> bool | None:
+        """Whether any file (under *scope*, if given) writes *token*; None when
+        the scan stopped short."""
         rows, complete = await self._scan(token)
+        if scope:
+            rows = [r for r in rows if f"{r['path']}/".startswith(f"{scope}/")]
         return True if rows else (False if complete else None)
 
     async def trusts(self, token: str, row) -> bool:
@@ -399,7 +403,9 @@ class _TopicGuard:
         return bool(self.topic_stems & _text_stems(owner))
 
 
-async def _absent_names(unindexed: list[str], guard: _TopicGuard) -> list[str]:
+async def _absent_names(
+    unindexed: list[str], guard: _TopicGuard, scope: str | None = None
+) -> list[str]:
     """The unindexed names :func:`_names_nothing_in_code` holds absent.
 
     Best effort: a failed scan proves nothing, and must not cost the anchoring.
@@ -407,21 +413,24 @@ async def _absent_names(unindexed: list[str], guard: _TopicGuard) -> list[str]:
     try:
         candidates = [t for t in unindexed if "." not in t and _unmistakably_code(t)]
         return [
-            t for t in candidates[:_LITERAL_SCAN_MAX_TOKENS] if await _names_nothing_in_code(t, guard)
+            t
+            for t in candidates[:_LITERAL_SCAN_MAX_TOKENS]
+            if await _names_nothing_in_code(t, guard, scope)
         ]
     except Exception:
         return []
 
 
-async def _names_nothing_in_code(token: str, guard: _TopicGuard) -> bool:
+async def _names_nothing_in_code(token: str, guard: _TopicGuard, scope: str | None = None) -> bool:
     """An unindexed, code-shaped name that no file writes, by a scan that read them all.
 
     Mixed case, an underscore or a digit (``FileTree``, ``retry_policy``); an
-    all-caps acronym (``SSG``) is prose often enough to be left alone.
+    all-caps acronym (``SSG``) is prose often enough to be left alone. With a
+    *scope*, only files under it count: the question asks about that code.
     """
     if "." in token or not _unmistakably_code(token):
         return False
-    return await guard.written(token) is False
+    return await guard.written(token, scope) is False
 
 
 async def _trusted_over_topic(
