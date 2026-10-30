@@ -67,6 +67,8 @@ _STEREOTYPE_ANNOTATIONS: frozenset[str] = frozenset({
     "WebServlet",
     "WebFilter",
     "WebListener",
+    "WebService",               # JAX-WS
+    "WebServiceProvider",
     "Path",                     # JAX-RS
     "Provider",
     "ApplicationScoped",
