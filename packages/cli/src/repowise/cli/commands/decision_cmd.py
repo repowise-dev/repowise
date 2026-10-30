@@ -320,6 +320,11 @@ def decision_add(
             f"[dim]repowise decision confirm {stored.id[:8]} --scope <path>[/dim]"
         )
 
+    _report_added(repo_path, stored, fmt)
+
+
+def _report_added(repo_path: Path, stored: _Persisted, fmt: str) -> None:
+    """Print what ``add`` stored, naming the fields a re-add kept."""
     if fmt == "json":
         # The full id: a caller passes it back to `confirm` or `show`.
         payload = {
