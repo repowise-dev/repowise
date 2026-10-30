@@ -139,6 +139,15 @@ def test_only_awaited_configure_await_is_a_whole_call_assignment(
     assert scan_call_assignments(assignment, "csharp") == ()
 
 
+def test_scan_marks_configure_await_assignment_as_awaited() -> None:
+    found = scan_call_assignments(
+        "var x = await repo.FindAsync(1).ConfigureAwait(false);", "csharp"
+    )
+    assert [(assignment.name, assignment.awaited) for assignment in found] == [
+        ("x", True)
+    ]
+
+
 def test_scan_reads_generic_and_awaited_calls() -> None:
     text = "var a = await svc.Get<Foo>(1);\nvar b = Make();\nvar c = Make() + 1;\n"
     found = scan_call_assignments(text, "csharp")

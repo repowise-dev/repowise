@@ -1348,21 +1348,26 @@ def _after_configure_await(text: str, end: int) -> int:
     return call_end
 
 
+def _assignment_call_end(
+    cleaned: str, match: re.Match[str], language: str
+) -> int:
+    """Return the call end, including supported language-specific suffixes."""
+    end = _call_end(cleaned, match.end())
+    if end < 0:
+        return end
+    if language == "kotlin":
+        return _after_trailing_lambda(cleaned, end)
+    if language == "csharp" and match.groupdict().get("awaited"):
+        return _after_configure_await(cleaned, end)
+    return end
+
+
 def _call_ends_statement(
-    cleaned: str,
-    opened: int,
-    language: str,
-    start: int = 0,
-    *,
-    awaited: bool = False,
+    cleaned: str, match: re.Match[str], language: str
 ) -> bool:
-    """Does the call whose ``(`` ends just before *opened* end its statement?"""
-    end = _call_end(cleaned, opened)
-    if end >= 0 and language == "kotlin":
-        end = _after_trailing_lambda(cleaned, end)
-    elif end >= 0 and language == "csharp" and awaited:
-        end = _after_configure_await(cleaned, end)
-    return _ends_statement(cleaned, end, language, start)
+    """Does a local's assigned call end its statement?"""
+    end = _assignment_call_end(cleaned, match, language)
+    return _ends_statement(cleaned, end, language, match.start())
 
 
 def _ends_statement(cleaned: str, end: int, language: str, start: int = 0) -> bool:
@@ -1395,13 +1400,7 @@ def scan_call_assignments(text: str, language: str) -> tuple[CallAssignment, ...
     starts = [0, *(newline.end() for newline in _NEWLINE.finditer(cleaned))]
     found: list[CallAssignment] = []
     for match in pattern.finditer(cleaned):
-        if not _call_ends_statement(
-            cleaned,
-            match.end(),
-            language,
-            match.start(),
-            awaited=bool(match.groupdict().get("awaited")),
-        ):
+        if not _call_ends_statement(cleaned, match, language):
             continue
         found.append(
             CallAssignment(
