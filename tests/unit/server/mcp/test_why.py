@@ -6,6 +6,8 @@ test data, mirroring the conftest pattern from the REST API tests.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 
@@ -83,6 +85,41 @@ def test_a_commit_is_evidence_only_when_it_states_the_decision():
 
     assert [c["sha"] for c in matched] == ["a4"]
     assert {"global", "fallback"} <= set(matched[0]["matching_keywords"])
+
+
+
+def test_origin_story_serves_the_commit_that_states_a_governing_decision():
+    """The linked row and the summary clause both name the stating commit."""
+    from datetime import datetime
+    from types import SimpleNamespace
+
+    from repowise.server.mcp_server._helpers import _build_origin_story
+
+    commits = [
+        {"sha": "b1", "message": "Refactor auth flow", "author": "Alice", "date": "2026-03-15"},
+        {"sha": "b2", "message": "Use JWT tokens for authentication", "author": "Bob", "date": "2026-02-10"},
+    ]
+    meta = SimpleNamespace(
+        top_authors_json="[]",
+        significant_commits_json=json.dumps(commits),
+        primary_owner_name="Alice",
+        primary_owner_commit_pct=0.6,
+        commit_count_total=2,
+        first_commit_at=datetime(2026, 2, 10),
+        last_commit_at=datetime(2026, 3, 15),
+        age_days=33,
+    )
+    governing = [
+        {"title": "Use JWT for authentication"},
+        {"title": "Keep sessions server side"},
+    ]
+
+    origin = _build_origin_story("src/auth/service.py", meta, governing)
+
+    assert [d["title"] for d in origin["linked_decisions"]] == ["Use JWT for authentication"]
+    assert [c["sha"] for c in origin["linked_decisions"][0]["evidence_commits"]] == ["b2"]
+    assert "Governed by: Use JWT for authentication, Keep sessions server side." in origin["summary"]
+    assert 'Commit "Use JWT tokens for authentication" by Bob is evidence for' in origin["summary"]
 
 
 @pytest.mark.asyncio
