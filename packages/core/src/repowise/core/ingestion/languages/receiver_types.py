@@ -1336,11 +1336,32 @@ def _after_trailing_lambda(text: str, end: int) -> int:
     return end
 
 
-def _call_ends_statement(cleaned: str, opened: int, language: str, start: int = 0) -> bool:
+def _after_configure_await(text: str, end: int) -> int:
+    """Return past a following C# ``.ConfigureAwait(arg)`` call, if present."""
+    suffix = re.match(r"\.\s*ConfigureAwait\s*\(", text[end:])
+    if suffix is None:
+        return end
+    opened = end + suffix.end()
+    call_end = _call_end(text, opened)
+    if call_end < 0 or not text[opened : call_end - 1].strip():
+        return end
+    return call_end
+
+
+def _call_ends_statement(
+    cleaned: str,
+    opened: int,
+    language: str,
+    start: int = 0,
+    *,
+    awaited: bool = False,
+) -> bool:
     """Does the call whose ``(`` ends just before *opened* end its statement?"""
     end = _call_end(cleaned, opened)
     if end >= 0 and language == "kotlin":
         end = _after_trailing_lambda(cleaned, end)
+    elif end >= 0 and language == "csharp" and awaited:
+        end = _after_configure_await(cleaned, end)
     return _ends_statement(cleaned, end, language, start)
 
 
@@ -1374,7 +1395,13 @@ def scan_call_assignments(text: str, language: str) -> tuple[CallAssignment, ...
     starts = [0, *(newline.end() for newline in _NEWLINE.finditer(cleaned))]
     found: list[CallAssignment] = []
     for match in pattern.finditer(cleaned):
-        if not _call_ends_statement(cleaned, match.end(), language, match.start()):
+        if not _call_ends_statement(
+            cleaned,
+            match.end(),
+            language,
+            match.start(),
+            awaited=bool(match.groupdict().get("awaited")),
+        ):
             continue
         found.append(
             CallAssignment(

@@ -117,6 +117,28 @@ def test_a_class_with_constructors_still_types_its_factory_result(tmp_path: Path
     assert (6, USE, "receiver_typed_import") in _edges(tmp_path, body)
 
 
+def test_an_awaited_configure_await_call_types_its_local(tmp_path: Path) -> None:
+    body = (
+        "        var x = await repo.FindAsync(1).ConfigureAwait(false);\n"
+        "        x.Use();\n"
+    )
+    assert (6, USE, "receiver_typed_import") in _edges(tmp_path, body)
+
+
+@pytest.mark.parametrize(
+    "assignment",
+    [
+        "var x = repo.FindAsync(1).ConfigureAwait(false);",
+        "var x = await repo.FindAsync(1).ConfigureAwait(false).GetAwaiter();",
+        "var x = await repo.FindAsync(1).Other(false);",
+    ],
+)
+def test_only_awaited_configure_await_is_a_whole_call_assignment(
+    assignment: str,
+) -> None:
+    assert scan_call_assignments(assignment, "csharp") == ()
+
+
 def test_scan_reads_generic_and_awaited_calls() -> None:
     text = "var a = await svc.Get<Foo>(1);\nvar b = Make();\nvar c = Make() + 1;\n"
     found = scan_call_assignments(text, "csharp")
