@@ -176,8 +176,14 @@ _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
         member_fallback=_TYPED_RECEIVER,
         member_bare_fallback=False,
     ),
-    # TypeScript's typed fallback also walks a dotted receiver's fields.
-    "typescript": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
+    # TypeScript's typed fallback also walks a dotted receiver's fields. A chained
+    # call is typed by its inner call's return type or not at all:
+    # ``db.selectFrom(t).execute()`` on a library builder is not the repo's ``execute``.
+    "typescript": _LanguageCallStrategies(
+        member_fallback=_TYPED_RECEIVER, chain_bare_fallback=False
+    ),
+    # JavaScript has no return types to type the inner call with, so a chain binds nothing.
+    "javascript": _LanguageCallStrategies(chain_bare_fallback=False),
     # Rust types a local or parameter, and walks a `self.field` receiver
     # through the struct's field declarations.
     "rust": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),

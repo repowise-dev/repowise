@@ -220,7 +220,7 @@ _EXTENSION_KINDS = frozenset({"impl"})
 # Languages admitted to the full return-type chain lane; each is admitted
 # explicitly, once measured.
 PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES: frozenset[str] = frozenset(
-    {"apex", "cpp", "csharp", "dart", "go", "java", "kotlin", "python"}
+    {"apex", "cpp", "csharp", "dart", "go", "java", "kotlin", "python", "typescript"}
 )
 
 # Chain languages that type the inner call by the identity of the type it
