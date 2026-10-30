@@ -956,11 +956,8 @@ def _file_pages_to_fill(run: UpdateRun, opts: UpdateOptions) -> bool:
     Omitted pages a cap explains stay omitted. Tried once per commit, so a page
     that cannot be built never turns every later update into a re-parse.
     """
-    from repowise.core.index_scope import resolve_index_scope
-
-    pages = resolve_index_scope(run.state, run.cfg)["file_pages"]
-    omitted, cap = pages.get("omitted"), pages.get("effective_cap")
-    if not omitted or (cap is not None and (pages.get("generated") or 0) >= cap):
+    omitted = _stored_file_pages(run).get("omitted")
+    if not omitted or _file_page_cap_reached(run):
         return False
     if run.state.get(FILE_PAGE_FILL_KEY) == run.head:
         return False
@@ -968,6 +965,19 @@ def _file_pages_to_fill(run: UpdateRun, opts: UpdateOptions) -> bool:
         return False
     console.print(f"[yellow]{omitted} eligible files have no page yet; rendering them.[/yellow]")
     return True
+
+
+def _stored_file_pages(run: UpdateRun) -> dict:
+    from repowise.core.index_scope import resolve_index_scope
+
+    return resolve_index_scope(run.state, run.cfg)["file_pages"]
+
+
+def _file_page_cap_reached(run: UpdateRun) -> bool:
+    """Whether the stored scope already holds as many file pages as its cap allows."""
+    pages = _stored_file_pages(run)
+    cap = pages.get("effective_cap")
+    return cap is not None and (pages.get("generated") or 0) >= cap
 
 
 def _announce_rework(run: UpdateRun) -> None:
@@ -1402,9 +1412,14 @@ def _plan_pages(opts: UpdateOptions, run: UpdateRun) -> None:
 
 
 def _unpaged_file_paths(run: UpdateRun) -> list[str]:
-    """Eligible files with no file page yet; rendered with the changed files."""
+    """Eligible files with no file page yet; rendered with the changed files.
+
+    None while the cap is reached: the pages it leaves out are omitted on purpose.
+    """
     from .persistence import file_paths_without_page
 
+    if _file_page_cap_reached(run):
+        return []
     missing = file_paths_without_page(
         run.repo_path, run.parsed_files, run.graph_builder, run.git_meta_map
     )

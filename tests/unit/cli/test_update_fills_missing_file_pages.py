@@ -52,6 +52,7 @@ def test_plan_renders_unpaged_files_past_the_budget(monkeypatch) -> None:
         graph_builder=None,
         git_meta_map={},
         state={},
+        cfg={},
         head="h2",
         affected=affected,
         stale_db_paths=[],
@@ -88,6 +89,17 @@ def test_up_to_date_index_with_omitted_pages_fills_once(can_render) -> None:
 def test_pages_a_cap_omits_are_left_alone(can_render) -> None:
     capped = {**_OMITTED, "effective_cap": 25, "omitted": 5}
     assert not command._file_pages_to_fill(_scope_run(capped), None)
+
+
+def test_plan_leaves_capped_out_files_alone(monkeypatch) -> None:
+    def must_not_run(*_a):
+        raise AssertionError("cap reached: no lookup")
+
+    monkeypatch.setattr(
+        "repowise.cli.commands.update_cmd.persistence.file_paths_without_page", must_not_run
+    )
+    run = _scope_run({**_OMITTED, "effective_cap": 25, "omitted": 5})
+    assert command._unpaged_file_paths(run) == []
 
 
 def test_complete_scope_does_not_wake_the_pipeline(can_render) -> None:
