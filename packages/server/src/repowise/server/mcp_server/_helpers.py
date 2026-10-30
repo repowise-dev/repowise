@@ -126,8 +126,11 @@ def embed_timeout_s() -> float:
 # ---------------------------------------------------------------------------
 
 
+_warned_ambiguous: set[str] = set()
+
+
 async def _get_repo(session: AsyncSession, repo: str | None = None) -> Repository:
-    """Resolve a repository — by path, by ID, or return the first one."""
+    """Resolve a repository by path, ID or name; with none, the served directory's."""
     if repo:
         # Try by path
         result = await session.execute(select(Repository).where(Repository.local_path == repo))
@@ -150,12 +153,26 @@ async def _get_repo(session: AsyncSession, repo: str | None = None) -> Repositor
             return obj
         raise LookupError(f"Repository not found: {repo}")
 
-    # Default: return the first (and often only) repository
-    result = await session.execute(select(Repository).limit(1))
-    obj = result.scalar_one_or_none()
-    if obj is None:
+    # Default: the served directory's row, else the only row.
+    served = _state._repo_path
+    if served:
+        for key in dict.fromkeys((served, str(Path(served).resolve()))):
+            obj = await get_repository_by_path(session, key)
+            if obj:
+                return obj
+    rows = (await session.scalars(select(Repository).limit(2))).all()
+    if not rows:
         raise LookupError("No repositories found. Run 'repowise init' first.")
-    return obj
+    if len(rows) > 1 and served and served not in _warned_ambiguous:
+        # A store split when an older version indexed a moved or copied repo.
+        _warned_ambiguous.add(served)
+        _log.warning(
+            "The index holds several repositories and none at %s; serving %s. "
+            "Pass `repo` to pick another.",
+            served,
+            rows[0].local_path,
+        )
+    return rows[0]
 
 
 # ---------------------------------------------------------------------------
