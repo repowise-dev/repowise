@@ -384,3 +384,12 @@ def test_a_specific_gate_keeps_its_finding_under_weak_agreement() -> None:
     assert grade.confidence == "medium"
     assert grade.split_names
     assert not grade.weak_agreement
+
+
+def test_a_file_cut_at_the_line_cap_leaves_the_word_scan_complete(tmp_path) -> None:
+    from repowise.server.mcp_server._line_hits import MAX_LINES_PER_FILE, word_scan
+
+    (tmp_path / "many.py").write_text("RowTree = 1\n" * (MAX_LINES_PER_FILE + 3), encoding="utf-8")
+    rows, complete = word_scan(tmp_path, "RowTree")
+    assert complete
+    assert {r["path"] for r in rows} == {"many.py"}
