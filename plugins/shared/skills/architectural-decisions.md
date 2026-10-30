@@ -56,7 +56,8 @@ Call `get_why()` with no arguments to get the decision-health dashboard:
 The same signals surface in the CLI via `repowise decision health` /
 `{{cmd:decision}}`, and you can query *why* mid-task with `repowise why` /
 `{{cmd:why}}` (the `get_why` adapter). `repowise decision candidates --format json`
-lists proposed decisions with what each still needs; `repowise decision confirm <id>`
+lists proposed decisions with what each still needs;
+`repowise decision confirm <id> --agent <your slug> --evidence <commit|file>`
 accepts one (see `{{cmd:decision}}`).
 
 ## When a file has decision markers
