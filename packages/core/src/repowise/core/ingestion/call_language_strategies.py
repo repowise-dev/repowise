@@ -154,6 +154,7 @@ _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
     # return type does not type is not the repo's ``send``.
     "kotlin": replace(
         _JVM_STRATEGIES,
+        member=("_resolve_kotlin_labelled_this", *_JVM_STRATEGIES.member),
         member_fallback=_TYPED_RECEIVER,
         chain_bare_fallback=False,
         inherited_typed_receiver=True,
@@ -676,6 +677,54 @@ class LanguageStrategiesMixin:
         if parent is not None and symbol.name != parent and symbol.kind not in _TYPE_KINDS:
             sym_id = self._file_top_level.get(sibling, {}).get(name)
         return None if sym_id == caller_id else sym_id
+
+    def _resolve_kotlin_labelled_this(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """``this@X.m()``: ``X`` labels the enclosing class or extension function whose ``this`` is meant.
+
+        The innermost enclosing symbol named ``X`` answers. A class's own
+        member wins, else the one its ancestors declare; an extension
+        function's ``this`` is its receiver type. A lambda label names no
+        symbol, so its call is left unresolved.
+        """
+        receiver = call.receiver_name or ""
+        if not receiver.startswith("this@"):
+            return None
+        label = receiver[len("this@") :]
+        scope = caller_id
+        while "::" in scope:
+            symbol = self._symbols_by_id.get(scope)
+            if symbol is not None and symbol.name == label:
+                return self._labelled_this_call(file_path, call, caller_id, symbol)
+            scope = outer_scope(scope)
+        return None
+
+    def _labelled_this_call(
+        self, file_path: str, call: CallSite, caller_id: str, labelled: Symbol
+    ) -> ResolvedCall | None:
+        """The member *call* names on the ``this`` of *labelled*, a class or an extension."""
+        if labelled.kind in _TYPE_KINDS:
+            sym_id = self._declares(labelled.id, call.target_name)
+            origin = "self_scope"
+            if sym_id is None:
+                sym_id = self._ancestor_method(
+                    labelled.id, call.target_name, caller_id, class_chain_first=True
+                )
+                origin = "self_inherited"
+            if sym_id is None or self._refuses_recursion(sym_id, caller_id, call):
+                return None
+            return ResolvedCall(caller_id, sym_id, 0.93, call.line, origin)
+        if labelled.kind in _FUNCTION_KINDS and labelled.extension_receiver:
+            found = self._typed_receiver_target(
+                file_path, call, caller_id, labelled.extension_receiver
+            )
+            if found is not None:
+                return self._body_typed_call(caller_id, found[0], found[1], call.line)
+        return None
 
     def _resolve_jvm_receiver_same_package(
         self,
