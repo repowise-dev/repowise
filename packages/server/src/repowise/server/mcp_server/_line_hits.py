@@ -274,6 +274,18 @@ def production_only(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [r for r in rows if _scan_rank(r["path"]) == 0]
 
 
+def _hit_kinds(
+    rel: str, found: list[tuple[int, str]], definition: re.Pattern[str]
+) -> list[tuple[int, str, str]]:
+    """``(line number, line, kind)`` per hit in *rel*.
+
+    A key in a data file or a doc line is not a definition, whatever its shape.
+    """
+    if is_doc_or_config_path(rel):
+        return [(n, line, "match") for n, line in found]
+    return [(n, line, "definition" if definition.search(line) else "match") for n, line in found]
+
+
 def scan_literal(
     root: Path, files: list[str], needle: str, word: bool
 ) -> tuple[list[dict[str, Any]], list[str]]:
@@ -342,12 +354,7 @@ def scan_literal(
         if len(found) > MAX_LINES_PER_FILE:
             per_file_capped += 1
             del found[MAX_LINES_PER_FILE:]
-        # A key in a data file or a doc line is not a definition, whatever its shape.
-        defines = None if is_doc_or_config_path(rel) else definition
-        hits = [
-            (n, line, "definition" if defines and defines.search(line) else "match")
-            for n, line in found
-        ]
+        hits = _hit_kinds(rel, found, definition)
         if len(rows) >= MAX_LINES:
             # Full: only definitions still earn a row, as they sort first.
             kept = [h for h in hits if h[2] == "definition"] if defs < MAX_LINES else []
@@ -456,22 +463,16 @@ async def _attach(
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
         root = Path(served_root(repository, ctx.path))
-        nodes = []
-        if candidates:
-            found = await _exact_symbols(session, repository.id, query, candidates)
-            nodes = [n for n in found if not is_excluded(n.file_path, spec)]
-        ambiguous = len(nodes) > MAX_SYMBOLS
-        sets = [] if ambiguous else [
+        found = await _exact_symbols(session, repository.id, query, candidates) if candidates else []
+        nodes = [n for n in found if not is_excluded(n.file_path, spec)]
+        # Past MAX_SYMBOLS a name is too shared for one edit set per symbol.
+        sets = None if len(nodes) > MAX_SYMBOLS else [
             await reference_edit_set(session, repository.id, root, n) for n in nodes
         ]
-    if ambiguous:
-        rows, reasons = await asyncio.to_thread(_ambiguous_rows, root, nodes, response)
-    elif sets:
-        rows, reasons = _merge(sets)
-    elif literal:
-        rows, reasons = await asyncio.to_thread(_scan_listed, root, *literal)
-    else:
+    served = await _line_rows(root, nodes, sets, literal, response)
+    if served is None:
         return
+    rows, reasons = served
     mixed = not literal and len(query.split()) > 1
     order = _MIXED_KIND_ORDER if mixed else _KIND_ORDER
     # Production before test within each kind group: every kind for a mixed
@@ -512,6 +513,24 @@ async def _attach(
         response["reasons"] = reasons
     if response["lines"]:
         _reconcile_symbol_miss(response, literal_scan=not sets)
+
+
+async def _line_rows(
+    root: Path,
+    nodes: list[GraphNode],
+    sets: list[dict[str, Any]] | None,
+    literal: tuple[str, bool] | None,
+    response: dict,
+) -> tuple[list[dict[str, Any]], list[str]] | None:
+    """``(rows, reasons)`` from the edit sets, a shared name's definitions, or a
+    literal scan; ``None`` when there is nothing to read."""
+    if sets is None:
+        return await asyncio.to_thread(_ambiguous_rows, root, nodes, response)
+    if sets:
+        return _merge(sets)
+    if literal:
+        return await asyncio.to_thread(_scan_listed, root, *literal)
+    return None
 
 
 def _ambiguous_rows(
