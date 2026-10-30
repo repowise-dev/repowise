@@ -681,16 +681,17 @@ def place_named_files(
         idx = next((i for i, h in enumerate(out) if h.get("target_path") == path), None)
         if idx is not None and idx < slot:
             continue
-        if idx is not None:
-            hit = out.pop(idx)
-        else:
-            hit = (found or {}).get(path) or _file_page_hit(path, 0.0)
+        hit = out.pop(idx) if idx is not None else _new_hit(path, found)
         pos = min(slot, len(out))
         if pos:
             hit["score"] = out[pos - 1].get("score", 0.0)
         out.insert(pos, hit)
         slot = pos + 1
     return out
+
+
+def _new_hit(path: str, found: dict[str, dict] | None) -> dict:
+    return (found or {}).get(path) or _file_page_hit(path, 0.0)
 
 
 def _file_page_hit(path: str, score: float) -> dict:

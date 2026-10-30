@@ -151,24 +151,41 @@ def _winners(scored: list[tuple[int, int, _Line, Any]]) -> list[Any]:
     return out
 
 
-async def value_line_anchor_hits(
-    ctx: Any, session, repo_id: str, question: str, question_ids: set[str], hits: list[dict]
-) -> list[dict]:
-    """Anchor the function whose body sets the value the question asks for.
-
-    Fires on a value question that names a value word and no number (a number
-    is :func:`_concept_anchor_hits`'s job). Returns *hits* re-sorted, untouched
-    when no line carries enough of the question.
-    """
-    root = getattr(ctx, "path", None)
+def _asked_value(question: str) -> tuple[list[str], list[str]]:
+    """The question's value words and its other content words, or two empty lists
+    when it does not ask for a value this stage can find (a number in the
+    question is :func:`_concept_anchor_hits`'s job)."""
     words = _value_words(question)
-    if root is None or not words or not _is_value_question(question) or _salient_numbers(question):
-        return hits
+    if not words or not _is_value_question(question) or _salient_numbers(question):
+        return [], []
     nouns = [
         t for t in content_terms(question, max_terms=32)
         if t not in _VALUE_WORDS and t not in _SHAPE_WORDS and "_" not in t
     ]
-    if not nouns:
+    return (words, nouns) if nouns else ([], [])
+
+
+def _scored(nouns: list[str], holders: dict[_Line, Any]) -> list[tuple[int, int, _Line, Any]]:
+    """Lines whose text and holder name carry enough question words, scored."""
+    out = []
+    for ln, holder in holders.items():
+        found = _evidence(nouns, ln.text) | _evidence(nouns, holder.name or "")
+        if len(found) >= _MIN_EVIDENCE:
+            out.append((len(found), len(_evidence(nouns, ln.path)), ln, holder))
+    return out
+
+
+async def value_line_anchor_hits(
+    ctx: Any, session, repo_id: str, question: str, question_ids: set[str], hits: list[dict]
+) -> list[dict]:
+    """Anchor the symbol that sets the value the question asks for.
+
+    Returns *hits* re-sorted, untouched when no line carries enough of the
+    question.
+    """
+    root = getattr(ctx, "path", None)
+    words, nouns = _asked_value(question)
+    if root is None or not words:
         return hits
     lines = await asyncio.to_thread(_grep_value_lines, Path(str(root)), words)
     reach = await _reach(session, repo_id, question_ids)
@@ -176,13 +193,7 @@ async def value_line_anchor_hits(
         lines = [ln for ln in lines if ln.path in reach]
     if not lines:
         return hits
-    holders = await _holders(session, repo_id, lines)
-    scored = []
-    for ln, holder in holders.items():
-        found = _evidence(nouns, ln.text) | _evidence(nouns, holder.name or "")
-        if len(found) >= _MIN_EVIDENCE:
-            scored.append((len(found), len(_evidence(nouns, ln.path)), ln, holder))
-    chosen = _winners(scored)
+    chosen = _winners(_scored(nouns, await _holders(session, repo_id, lines)))
     if not chosen:
         return hits
     verified = def_verifier(ctx.session_factory, Path(str(root)))

@@ -102,7 +102,7 @@ def test_a_later_clause_file_joins_below_the_top_three(monkeypatch) -> None:
 
 
 def test_a_single_clause_question_is_untouched(monkeypatch) -> None:
-    async def top(*a, **k):  # pragma: no cover - must not run
+    async def top(*a, **k):
         raise AssertionError("no clause retrieval for one clause")
 
     monkeypatch.setattr(clauses, "_clause_top", top)
