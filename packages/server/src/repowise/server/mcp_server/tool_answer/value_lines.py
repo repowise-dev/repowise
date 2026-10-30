@@ -4,9 +4,9 @@
 timeout=5.0)``, a keyword argument in a body. No page renders it and no symbol is
 named after it, so retrieval never reaches it. This stage greps code lines that
 assign a number to a name carrying the question's value word (``timeout=``,
-``MAX_RETRIES =``), keeps the line whose own words and enclosing function name
-carry the most of the question's other words, and anchors that function so its
-body reaches synthesis.
+``MAX_RETRIES =``), keeps the line whose own words and enclosing symbol name
+carry the most of the question's other words, and anchors that symbol (the
+function around the line, or the constant it defines) so it reaches synthesis.
 
 A question naming code (``in get_answer``) means that code and what it imports
 directly, so a line outside that reach is not its answer.
@@ -47,6 +47,8 @@ _MAX_LINES = 4000
 # A line must carry this many of the question's other words, counting its
 # enclosing function's name: one shared word is a coincidence in a large repo.
 _MIN_EVIDENCE = 2
+# A module-level constant holds its own line; a function holds a line in its body.
+_HOLDER_KINDS = ("function", "method", "constant", "variable")
 # More winners than this tie at the top score: the question does not pick one.
 _MAX_WINNERS = 2
 
@@ -113,12 +115,12 @@ async def _reach(session, repo_id: str, question_ids: set[str]) -> set[str] | No
 
 
 async def _holders(session, repo_id: str, lines: list[_Line]) -> dict[_Line, Any]:
-    """The innermost function or method holding each line."""
+    """The innermost function, method or constant holding each line."""
     res = await session.execute(
         select(WikiSymbol).where(
             WikiSymbol.repository_id == repo_id,
             WikiSymbol.file_path.in_({ln.path for ln in lines}),
-            WikiSymbol.kind.in_(("function", "method")),
+            WikiSymbol.kind.in_(_HOLDER_KINDS),
         )
     )
     defs = [d for d in res.scalars().all() if d.start_line and d.end_line]
