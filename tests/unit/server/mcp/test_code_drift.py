@@ -107,3 +107,12 @@ async def test_an_unwatched_process_never_claims_drift(monkeypatch: pytest.Monke
 
     result = await shield(plain_bug)()
     assert "internal error" in result["error"]
+
+
+def test_shaping_on_the_event_loop_reads_the_last_scan_and_never_stats(watched, monkeypatch) -> None:
+    """The shield scans on a worker thread first; shaping itself must not block the loop."""
+    from repowise.server.mcp_server import _failure_shield
+
+    _change(watched)
+    monkeypatch.setattr(_code_drift, "scan", lambda: pytest.fail("scanned on the loop"))
+    assert _failure_shield._exception_reason(AttributeError("x")) == "internal"

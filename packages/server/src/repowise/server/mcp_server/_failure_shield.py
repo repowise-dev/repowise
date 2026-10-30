@@ -139,7 +139,7 @@ def _shape_stale_index(exc: Exception) -> dict[str, Any]:
     }
 
 
-def is_stale_server_error(exc: BaseException) -> bool:
+def is_stale_server_error(exc: BaseException, *, rescan: bool = True) -> bool:
     """True when the failure comes from old code loaded beside new code.
 
     A long-running server keeps the modules it loaded at start. When the
@@ -151,11 +151,16 @@ def is_stale_server_error(exc: BaseException) -> bool:
     always this. Any other ``AttributeError``, ``NameError`` or ``ImportError``
     counts only once the server has seen its code change on disk; otherwise
     it is a bug or a missing dependency and keeps the generic shape.
+
+    *rescan* stats every loaded module file (tens of ms), so it is for worker
+    threads; on the event loop pass False and read the last poll's result.
     """
     name = getattr(exc, "name", None) or ""
     if isinstance(exc, ImportError) and (name == "repowise" or name.startswith("repowise.")):
         return True
-    return isinstance(exc, (AttributeError, ImportError, NameError)) and _code_drift.check_now()
+    if not isinstance(exc, _code_drift.MIXED_CODE_ERRORS):
+        return False
+    return _code_drift.check_now() if rescan else _code_drift.stale_line() is not None
 
 
 def stale_server_notice(exc: BaseException) -> str:
@@ -207,7 +212,7 @@ def _exception_reason(exc: Exception) -> str:
         return "not_found"
     if _is_stale_index_error(exc):
         return "index_behind"
-    if is_stale_server_error(exc):
+    if is_stale_server_error(exc, rescan=False):
         return "server_stale"
     return "internal"
 
@@ -282,6 +287,9 @@ def shield(fn: Callable[..., Any]) -> Callable[..., Any]:
             return await fn(*args, **kwargs)
         except Exception as exc:
             logger.warning("mcp tool %s shielded exception: %s", tool, exc, exc_info=True)
+            if isinstance(exc, _code_drift.MIXED_CODE_ERRORS):
+                # Off the loop: the shaping below reads the result.
+                await asyncio.to_thread(_code_drift.check_now)
             return _shape_exception(tool, exc)
 
     with contextlib.suppress(ValueError, TypeError):  # pragma: no cover - exotic callables

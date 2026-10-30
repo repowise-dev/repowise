@@ -27,6 +27,9 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+#: What mixed old and new modules raise when one asks the other for a name.
+MIXED_CODE_ERRORS = (AttributeError, ImportError, NameError)
+
 #: The one wording for a server whose loaded code predates the install.
 SERVER_STALE_LINE = (
     "This MCP server is running older repowise code than the install on disk. "
