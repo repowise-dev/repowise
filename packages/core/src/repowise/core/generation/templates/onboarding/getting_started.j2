@@ -41,15 +41,16 @@ visible there, the permitted invocation is `<runner> run <script-key>`.
 Produce a Getting Started markdown page. Required sections, in order:
 
 1. **## Prerequisites** — bullet list of runtimes/tools explicitly established
-   by the setup excerpts or manifests. State when a version is undocumented;
-   never infer a version from ecosystem convention.
+   by the setup excerpts or manifests. Give a version only where the evidence
+   states one, and otherwise name the tool alone: never infer a version from
+   ecosystem convention, and never remark that a version is missing.
 2. **## Install** — numbered steps with working directories and fenced shell
    commands only where an exact command appears in the supplied repository
    evidence. If no install command is documented, say so and point to the
    relevant repository-relative source path.
-3. **## Run** — how to actually start the thing. If entry points are
-   listed above, name them as code locations, not as commands. Use a Run excerpt
-   or an exact script key from a declared manifest for commands.
+3. **## Run** — how to actually start the thing. Use a Run excerpt or an
+   exact script key from a declared manifest for commands. Name an entry point
+   above as a code location only when no documented command starts it.
 4. **## Test** — how to run the test suite. Same rules.
 5. **## Success checks** — observable outcomes supported by the command or
    surrounding setup excerpt. Do not invent ports, output text, or artifacts.

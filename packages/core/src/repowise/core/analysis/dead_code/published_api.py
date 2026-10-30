@@ -16,7 +16,7 @@ is not part of the package.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 
 from ..published_packages import PUBLISHED_ROOTS, BuildFacts, package_of
 from .models import DeadCodeFindingData, DeadCodeKind
@@ -37,15 +37,14 @@ def demote_published_api(
     the caller leaves out an unreachable file that declares no public type.
     Mutates in place and returns the same list.
     """
-    roots: dict[str, Mapping[str, str | None]] = {}
+    roots: dict[Callable[..., Mapping[str, str | None]], Mapping[str, str | None]] = {}
     for finding in _published_candidates(findings):
-        language = languages.get(finding.file_path)
-        reader = PUBLISHED_ROOTS.get(language or "")
+        reader = PUBLISHED_ROOTS.get(languages.get(finding.file_path) or "")
         if reader is None:
             continue
-        if language not in roots:
-            roots[language] = reader(facts)
-        package = package_of(finding.file_path, roots[language])
+        if reader not in roots:
+            roots[reader] = reader(facts)
+        package = package_of(finding.file_path, roots[reader])
         if package is None:
             continue
         finding.confidence = min(finding.confidence, PUBLISHED_API_CONFIDENCE)

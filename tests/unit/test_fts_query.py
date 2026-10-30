@@ -74,3 +74,16 @@ class TestBuildQuery:
         counts = {"": 1000, "file": 900, "page": 950, "index": 980, "does": 990}
         built = build_fts5_query("file page index does", counts.__getitem__)
         assert built
+
+
+def test_a_common_word_beside_a_selective_one_stays_as_a_phrase() -> None:
+    counts = {"": 1000, "call": 400, "resolution": 50, "typescript": 30}
+    built = build_fts5_query("Where is call resolution for TypeScript?", lambda t: counts.get(t, 1))
+    assert '"call resolution"*' in built.split(" OR ")
+
+
+def test_two_common_words_never_form_a_phrase() -> None:
+    counts = {"": 1000, "file": 900, "documents": 800, "walker": 5}
+    built = build_fts5_query("file documents walker", lambda t: counts.get(t, 1))
+    assert '"file documents"*' not in built.split(" OR ")
+    assert '"documents walker"*' in built.split(" OR ")

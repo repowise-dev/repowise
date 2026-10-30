@@ -593,3 +593,38 @@ async def test_ambiguous_overview_is_refused_not_guessed(client: AsyncClient, ap
             )
     resp = await client.get("/api/pages/layer_page:layer:analysis")
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_summary_window_matches_the_full_listing(client: AsyncClient, app) -> None:
+    """Summary rows are read without the body; every shared field and the window agree."""
+    repo = await create_test_repo(client)
+    repo_id = repo["id"]
+    async with get_session(app.state.session_factory) as session:
+        for i in range(5):
+            await crud.upsert_page(
+                session,
+                page_id=f"file_page:src/m{i}.py",
+                repository_id=repo_id,
+                page_type="file_page",
+                title=f"m{i}.py",
+                content="é" * (i + 1),
+                target_path=f"src/m{i}.py",
+                source_hash="abc123",
+                model_name="mock",
+                provider_name="mock",
+                metadata={"layer_id": "layer:core", "layer_name": "Core"} if i % 2 else {},
+            )
+
+    seen: list[str] = []
+    # Every page has the same confidence: the id has to break the tie.
+    for offset in (0, 2, 4):
+        params = {"repo_id": repo_id, "limit": 2, "offset": offset, "sort_by": "confidence"}
+        full = (await client.get("/api/pages", params=params)).json()
+        summary = (await client.get("/api/pages", params={**params, "fields": "summary"})).json()
+        assert [r["id"] for r in summary] == [r["id"] for r in full]
+        for s_row, f_row in zip(summary, full, strict=True):
+            assert s_row == {k: v for k, v in f_row.items() if k in s_row}
+            assert s_row["content_chars"] == len(f_row["content"])
+        seen += [r["id"] for r in summary]
+    assert sorted(seen) == sorted(set(seen)) and len(seen) == 5

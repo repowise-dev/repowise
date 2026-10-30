@@ -18,6 +18,7 @@ import { useCommunities } from "@/lib/hooks/use-graph";
 import type { GraphExportResponse } from "@/lib/api/types";
 import { PRODUCTION_ONLY, type GraphPopulation } from "@repowise-dev/types/graph";
 import { useTranslations } from "next-intl";
+import { useGraphMapCopy } from "@/components/graph/use-graph-map-copy";
 
 type ViewMode = "full" | "architecture" | "dead" | "hotfiles" | "unified";
 type ColorMode = "language" | "community";
@@ -68,6 +69,7 @@ export function GraphView({
   onScopeChange: (scope: GraphScope) => void;
 }) {
   const t = useTranslations("architecture");
+  const mapCopy = useGraphMapCopy();
   const searchParams = useSearchParams();
   const initialNode = searchParams.get("node");
 
@@ -275,9 +277,14 @@ export function GraphView({
             activeModule={activeModule}
             activeCommunity={activeCommunity}
             onChange={handleNarrowingChange}
+            copy={mapCopy.narrowing}
           />
         )}
-        <GraphScopeSwitcher scope={effectiveScope} onScopeChange={handleScopeChange} />
+        <GraphScopeSwitcher
+          scope={effectiveScope}
+          onScopeChange={handleScopeChange}
+          copy={mapCopy.scope}
+        />
       </div>
     ),
     [
@@ -289,6 +296,7 @@ export function GraphView({
       handleNarrowingChange,
       effectiveScope,
       handleScopeChange,
+      mapCopy,
     ],
   );
 
@@ -312,6 +320,7 @@ export function GraphView({
             limit={graphLimit ?? graphData.nodes.length}
             onLoadMore={(nextLimit) => setGraphLimit(nextLimit)}
             onSwitchToArchitecture={handleSwitchToArchitecture}
+            copy={mapCopy.truncation}
           />
         ) : undefined
       }

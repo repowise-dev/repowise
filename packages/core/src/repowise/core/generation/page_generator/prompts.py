@@ -14,7 +14,7 @@ from ..languages import SUPPORTED_LANGUAGES  # noqa: F401
 # ---------------------------------------------------------------------------
 # System prompts, one per page type that a model writes.
 #
-# Only three are left. The page types whose facts a parser knows exactly are
+# Only four are left. The page types whose facts a parser knows exactly are
 # rendered from structure and never reach a provider, so a system prompt for
 # one of them would be a string nothing sends.
 # ---------------------------------------------------------------------------
@@ -35,19 +35,30 @@ SYSTEM_PROMPTS: dict[str, str] = {
         "Ground every claim in the structural facts listed below: never invent "
         "components, files, edges or rationale that are not there."
     ),
+    "flow_page": (
+        "You are repowise, writing one walkthrough page of an engineering wiki. "
+        "The page follows a single operation through the code from the function "
+        "that starts it to the work it hands off, so a newcomer can trace it in "
+        "the source. Explain what each step decides or produces and why the "
+        "operation needs it, in short plain sentences. Output markdown only. "
+        "\n"
+        "Ground every claim in the traced steps listed below: never invent "
+        "functions, files, calls or rationale that are not there."
+    ),
     "repo_overview": (
         "You are repowise, an expert technical documentation generator. "
         "Write a high-level repository overview suitable for onboarding new developers. "
         "Output markdown only. "
         "\n"
         "CRITICAL — lead-with-purpose rule: the FIRST sentence under ## Project "
-        "Summary must answer 'what does this repository do, end-to-end?' in one "
-        "concrete sentence. Name the inputs, the pipeline, and the outputs in "
-        "architectural vocabulary. "
+        "Summary says in plain words what the project is and who uses it, the way "
+        "its README would introduce it to a newcomer: a concrete noun, then what "
+        "it does for them, in at most 30 words. "
         "Bad: 'This repository implements a documentation tool with 15 packages.' "
-        "Good: 'Repowise is a codebase documentation engine: it indexes a repository "
-        "by traversing files, parsing code into ASTs, analyzing dependencies, and "
-        "generating LLM-synthesised wiki pages served via MCP and a web UI.' "
+        "Bad: 'X consumes files, history and metadata, indexes and parses them into "
+        "structured evidence, analyzes relationships and produces views.' "
+        "Good: 'Flask is a lightweight Python web framework for building web "
+        "applications and APIs, from a single file to a large project.' "
         "Required sections, in this order and no others: ## Project Summary, "
         "## Architecture, ## Key concepts. A list of entry-point paths or of the "
         "most-imported files is something the reader can get from ls; say what is "

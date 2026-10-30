@@ -12,14 +12,13 @@ import inspect
 import pytest
 
 from repowise.cli.commands.update_cmd import full_persist
-from repowise.cli.commands.update_cmd import persistence as cli_update
-from repowise.core.pipeline.incremental import persist_index
+from repowise.core.pipeline.incremental import persist_index, rescore
 
 
 @pytest.mark.parametrize(
     ("function", "health_call"),
     [
-        (cli_update._rescore_health_from_db, "await save_full_health_report("),
+        (rescore._save_rescore, "await save_full_health_report("),
     ],
 )
 def test_graph_nodes_persist_before_health(function, health_call: str) -> None:

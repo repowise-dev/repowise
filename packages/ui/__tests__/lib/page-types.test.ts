@@ -21,12 +21,12 @@ const STRUCTURAL_TYPES = [
 ];
 
 describe("isModelWrittenType", () => {
-  it("is true for exactly the four model-written types", () => {
-    for (const t of ["module_page", "repo_overview", "architecture_diagram", "onboarding"]) {
+  it("is true for exactly the model-written types", () => {
+    for (const t of ["module_page", "flow_page", "repo_overview", "architecture_diagram", "onboarding"]) {
       expect(isModelWrittenType(t)).toBe(true);
     }
     expect([...MODEL_WRITTEN_PAGE_TYPES].sort()).toEqual(
-      ["architecture_diagram", "module_page", "onboarding", "repo_overview"],
+      ["architecture_diagram", "flow_page", "module_page", "onboarding", "repo_overview"],
     );
   });
 

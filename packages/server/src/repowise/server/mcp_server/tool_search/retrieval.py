@@ -18,12 +18,14 @@ from repowise.server.mcp_server._answer_pipeline import (
     _SYMBOL_LEG_RRF_K,
     leg_ranks,
 )
+from repowise.server.mcp_server._answer_pipeline.leg_record import vector_leg_within
 from repowise.server.mcp_server._federation import Federation, merge_ranked
 from repowise.server.mcp_server._helpers import (
     _VECTOR_TIMEOUT_ENV,
     _get_repo,
     _resolve_repo_context,
     filter_dicts_by_key,
+    semantic_grace_s,
     vector_search_timeout_s,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
@@ -46,6 +48,7 @@ from .ranking import (
     _downweight_decisions,
     _downweight_test_pages,
     _filter_by_kind,
+    _minor_spotlights,
     _rescue_all_decision_window,
     _sort_demoting_noise,
 )
@@ -164,12 +167,17 @@ async def _fused_retrieve(ctx, query: str, fetch_limit: int, page_type: str | No
     (for RRF) is the hit's place in the retriever's own list, unchanged by the
     floor.
     """
-    fts_results, vec_results, sym_results, name_results = await asyncio.gather(
-        _pkg._safe_fts(ctx, query, fetch_limit),
-        _pkg._safe_vector(ctx, query, fetch_limit),
-        _pkg._safe_symbol_search(ctx, query, pageless=True),
-        _pkg._safe_filename_search(ctx, query),
-    )
+    vector_leg = asyncio.ensure_future(_pkg._safe_vector(ctx, query, fetch_limit))
+    try:
+        fts_results, sym_results, name_results = await asyncio.gather(
+            _pkg._safe_fts(ctx, query, fetch_limit),
+            _pkg._safe_symbol_search(ctx, query, pageless=True),
+            _pkg._safe_filename_search(ctx, query),
+        )
+    except BaseException:
+        vector_leg.cancel()
+        raise
+    vec_results = await vector_leg_within(vector_leg, semantic_grace_s())
 
     fused: dict[str, dict] = {}
     for rank, r in enumerate(vec_results):
@@ -238,10 +246,13 @@ async def _search_single_repo(
     # over-fetched list so the kind filter below has real headroom. Load
     # precedes the sort/demotion so they see the page metadata they key on
     # (test demotion needs target_path to classify a test file page).
+    minor: set[str] = set()
     if output:
         async with get_session(ctx.session_factory) as session:
             page_info, tombstoned, _ = await _load_page_info(session, output)
-            path_index = await file_path_index(session, (await _get_repo(session)).id)
+            repo_id = (await _get_repo(session)).id
+            path_index = await file_path_index(session, repo_id)
+            minor = await _minor_spotlights(session, output, query, repo_id)
         output = [item for item in output if item["page_id"] not in tombstoned]
         _attach_paths(output, page_info)
         output = filter_dicts_by_key(output, "target_path", _pkg._get_exclude_spec(ctx.path))
@@ -250,7 +261,7 @@ async def _search_single_repo(
         )
 
     _downweight_test_pages(output, query)
-    _sort_demoting_noise(output, query)
+    _sort_demoting_noise(output, query, minor)
     output = _dedup_decisions(output)
 
     output = _filter_by_kind(output, kind)

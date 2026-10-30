@@ -123,12 +123,20 @@ def _argument_fit(
         return 0
     levels = _JAVA_LITERAL_LEVELS.get(argument)
     if levels is None:
-        return _reference_fit(parameter, argument)
+        return _reference_fit(parameter, argument, repo_types)
     if parameter.endswith("[]"):
         return 1 if argument == "null" else None
     if parameter not in _JAVA_JUDGED_PARAMETERS:
-        return _UNJUDGED_LEVEL[argument]
+        return _unjudged_literal_fit(parameter, argument, repo_types)
     return levels.get(parameter)
+
+
+def _unjudged_literal_fit(parameter: str, argument: str, repo_types: Mapping[str, bool]) -> int | None:
+    """A literal reaching a class parameter: by boxing, or as a String; None where its class cannot."""
+    boxed = _JAVA_BOXES.get(argument, argument)
+    if argument != "null" and not _final_may_reach(parameter, boxed, repo_types):
+        return None
+    return _UNJUDGED_LEVEL[argument]
 
 
 # JDK functional interfaces: (parameter count, whether the function returns a value).
@@ -182,24 +190,52 @@ _NO_LAMBDA_TARGETS = _JAVA_PRIMITIVES | _JAVA_FINAL_PARAMETERS | frozenset(
 )
 
 
-def _reference_fit(parameter: str, argument: str) -> int | None:
+# The supertypes every String and box shares, and the one each adds.
+_JAVA_FINAL_SUPERTYPES = frozenset({"Object", "Comparable", "Serializable", "Constable"})
+_JAVA_OWN_SUPERTYPE = {
+    "String": "CharSequence",
+    **{box: "Number" for box in _JAVA_UNBOXED if box not in ("Boolean", "Character")},
+}
+
+
+# JDK types a parameter commonly names; a String or a box reaches only its supertypes among them.
+_JAVA_KNOWN_TYPES = _NO_LAMBDA_TARGETS | frozenset(
+    {"CharSequence", "Collection", "List", "Set", "Map", "Iterable", "Iterator", "Queue",
+     "Deque", "Stream", "SortedSet", "SortedMap", "NavigableSet", "NavigableMap",
+     *_JAVA_FUNCTIONAL_SHAPES}
+)
+
+
+def _reference_fit(
+    parameter: str, argument: str, repo_types: Mapping[str, bool] = _NO_REPO_TYPES
+) -> int | None:
     """How a value of class or array type *argument* reaches *parameter*.
 
     0 as itself; 2 unboxed, 3 unboxed and widened; None where it never can
-    (a primitive, another final class, an array it is not). An array reaches
-    a covariant array at 1 and anything else (``Object``) at 2. Any other
-    parameter may be a supertype or a type variable: 1, which an exact
-    match beats and nothing else tells apart.
+    (a primitive, another final class, an array it is not, or a known type
+    that is no supertype of a String or a box). An array reaches a covariant
+    array at 1 and anything else (``Object``) at 2. Any other parameter may
+    be a supertype or a type variable: 1, which an exact match beats and
+    nothing else tells apart.
     """
     if parameter == argument:
         return 0
     if parameter in _JAVA_PRIMITIVES:
         return _unboxed_fit(parameter, argument)
     if argument.endswith("[]"):
-        return _array_fit(parameter, argument)
+        return _array_fit(parameter, argument, repo_types)
     if parameter in _JAVA_FINAL_PARAMETERS or parameter.endswith("[]"):
         return None
+    if argument in _JAVA_FINAL_PARAMETERS and not _final_may_reach(parameter, argument, repo_types):
+        return None
     return 1
+
+
+def _final_may_reach(parameter: str, argument: str, repo_types: Mapping[str, bool]) -> bool:
+    """Whether a String or box *argument* may reach *parameter*: a supertype or a type variable."""
+    if parameter in _JAVA_FINAL_SUPERTYPES or parameter == _JAVA_OWN_SUPERTYPE.get(argument):
+        return True
+    return parameter not in _JAVA_KNOWN_TYPES and parameter not in repo_types
 
 
 def _unboxed_fit(parameter: str, argument: str) -> int | None:
@@ -210,17 +246,26 @@ def _unboxed_fit(parameter: str, argument: str) -> int | None:
     return 2 if parameter == unboxed else 3
 
 
-def _array_fit(parameter: str, argument: str) -> int | None:
+# The supertypes of every array type.
+_JAVA_ARRAY_SUPERTYPES = frozenset({"Object", "Cloneable", "Serializable"})
+
+
+def _array_fit(
+    parameter: str, argument: str, repo_types: Mapping[str, bool] = _NO_REPO_TYPES
+) -> int | None:
     """``String[]`` reaches ``Object[]`` (1, covariance) and ``Object`` (2).
 
-    A primitive array reaches no other array, and no array a final class.
+    A primitive array reaches no other array, and no known type but an
+    array's supertypes; an unknown name may be a type variable.
     """
     if not parameter.endswith("[]"):
-        return None if parameter in _JAVA_FINAL_PARAMETERS else 2
+        if not parameter or parameter in _JAVA_ARRAY_SUPERTYPES:
+            return 2
+        return None if parameter in _JAVA_KNOWN_TYPES or parameter in repo_types else 2
     element, takes = argument.removesuffix("[]"), parameter.removesuffix("[]")
     if element in _JAVA_PRIMITIVES or takes in _JAVA_PRIMITIVES:
         return None
-    return None if _argument_fit(takes, element) is None else 1
+    return None if _argument_fit(takes, element, repo_types) is None else 1
 
 
 def _closest_fit(
