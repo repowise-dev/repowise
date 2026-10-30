@@ -30,7 +30,7 @@ Routine responses carry a lean envelope. `get_overview` (called once per session
 | `embedder_warning` | Embedder fell back, or the semantic index could not open | Why |
 | `semantic_search` | Only when `false` | Retrieval is full-text only (keyless install or degraded embedder) |
 | `newer_release` | Once per server process | A newer repowise is published; restart the server after upgrading |
-| `keyless_note` | Once per server process | What a model would add to a keyless `get_answer` |
+| `keyless_note` | Keyless `get_answer`; `get_overview` until a model writes the prose | The command that adds answers and docs |
 | `omitted` | Content was cut | `refs`, `tokens`, `restore`; see [Truncation and recovery](#truncation-and-recovery) |
 | `recovery_unavailable` | The omission store could not be written | The storage failure; cut rows cannot be restored |
 | `complete` | Whole units were served | Verified symbol bodies or whole files. Do not re-read them |
@@ -56,7 +56,7 @@ Notes:
 - **`hint`:** on a `get_answer` graded `low` while the index is behind HEAD, it says to run `repowise update` and ask again.
 - **`stale_warning`:** HEAD moved and changed files this response serves; a served file has unseen uncommitted edits, or was indexed from edits since reverted; or the index is very old and git is unreachable. HEAD moving without touching what was served sends nothing. With uncommitted edits it names `repowise update --working-tree`.
 - **`index_scope`:** the whole object comes with `get_overview(include=["scope"])`, or everywhere with `REPOWISE_MCP_INDEX_SCOPE=full`.
-- **`keyless_note`:** on the first `get_answer` that degrades with `no-llm-provider`. It says `repowise generate` writes synthesized answers (needs a key, or `--provider ollama`). Never sent when a provider is configured.
+- **`keyless_note`:** on every `get_answer` that degrades with `no-llm-provider`, and on `get_overview` while no model has written the prose. One line: set a provider key, run `repowise generate` (one command, no re-index; `repowise update --full` on an Index only repo), then restart the MCP server. With model-written prose, `get_answer` names only the key and the restart.
 - **`complete`:** sliced bodies and partial ranges never count.
 - **Counts from the graph are floors:** `dependents_count`, `co_change_partners_total` and similar counts walk resolved edges, so an unresolved edge is uncounted, not proven absent.
 - **No freshness fields** on `list_repos`, `get_architecture`, `get_blast_radius`, `get_conformance`, `get_dependency_path`, or a `repo="all"` call (no single commit to compare). `repo="all"` names stale repos in a top-level `repos_stale`.

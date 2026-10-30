@@ -140,7 +140,11 @@ def test_spend_phrase_prices_api_providers_and_estimates_subscriptions() -> None
 
 
 def _run(**overrides: Any) -> SimpleNamespace:
-    opts = SimpleNamespace(provider_name=overrides.pop("provider_name", None), index_only=True)
+    opts = SimpleNamespace(
+        provider_name=overrides.pop("provider_name", None),
+        index_only=True,
+        run_mode=overrides.pop("run_mode", "standard"),
+    )
     fields: dict[str, Any] = {"is_interactive": False, "config": {}, "no_provider": False}
     return SimpleNamespace(opts=opts, **{**fields, **overrides})
 
@@ -156,7 +160,9 @@ def test_yes_run_names_the_logged_in_cli_and_stays_free(monkeypatch: Any) -> Non
     _logged_in(monkeypatch, "claude_cli")
     out = _note(monkeypatch, _run())
     assert "Claude Code is signed in (Claude team plan: uses your plan quota)" in out
-    assert "repowise update --full --provider claude_cli" in out
+    # A run built from code has pages, so generate is the step; an Index only run is not.
+    assert "repowise generate --provider claude_cli" in out
+    assert "repowise update --full --provider claude_cli" in _note(monkeypatch, _run(run_mode="fast"))
 
 
 @pytest.mark.parametrize(

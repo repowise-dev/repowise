@@ -1428,6 +1428,67 @@ def test_project_file_optouts_are_recorded_even_when_setup_is_off(
     assert editor_files.get("agents_md") is False
 
 
+def test_update_leaves_editor_files_alone_after_init_without_editor_setup(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """``init --no-editor-setup`` is remembered: ``update`` writes no editor file
+    until a later ``init`` turns editor setup back on."""
+    from repowise.cli.helpers import load_config
+
+    refreshed: list[Path] = []
+
+    class FakeIntegration:
+        integration_id = "fake"
+
+        def write_project_files(self, c: Any, p: Path, o: Any) -> list[Path]:
+            return []
+
+        def refresh_project_files(self, c: Any, p: Path, o: Any) -> None:
+            refreshed.append(p)
+
+    integrations = (FakeIntegration(),)
+    (tmp_path / ".repowise").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(mcp_config, "save_mcp_config", lambda p: p / ".repowise" / "mcp.json")
+    monkeypatch.delenv("REPOWISE_SKIP_EDITOR_SETUP", raising=False)
+
+    def init(no_editor_setup: bool) -> None:
+        write_editor_project_files(
+            _silent_console(),
+            tmp_path,
+            integrations=integrations,  # type: ignore[arg-type]
+            no_editor_setup=no_editor_setup,
+        )
+
+    def update() -> None:
+        refresh_editor_project_files(
+            _silent_console(),
+            tmp_path,
+            integrations=integrations,  # type: ignore[arg-type]
+        )
+
+    init(no_editor_setup=True)
+    assert load_config(tmp_path)["editor_setup"] is False
+    update()
+    assert refreshed == []
+
+    init(no_editor_setup=False)
+    assert load_config(tmp_path)["editor_setup"] is True
+    update()
+    assert refreshed == [tmp_path]
+
+
+def test_the_env_var_alone_is_not_remembered(tmp_path: Path, monkeypatch: Any) -> None:
+    """``REPOWISE_SKIP_EDITOR_SETUP`` describes the machine, so config is left alone."""
+    from repowise.cli.helpers import load_config
+
+    (tmp_path / ".repowise").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(mcp_config, "save_mcp_config", lambda p: p / ".repowise" / "mcp.json")
+    monkeypatch.setenv("REPOWISE_SKIP_EDITOR_SETUP", "1")
+    write_editor_project_files(_silent_console(), tmp_path, integrations=())
+    assert "editor_setup" not in load_config(tmp_path)
+
+
 @pytest.mark.parametrize(
     ("agents_md", "expected"),
     [

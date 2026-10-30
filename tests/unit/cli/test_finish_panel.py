@@ -293,7 +293,7 @@ def test_ungraded_health_shows_the_score_without_a_word():
 def test_keyless_run_names_what_a_model_adds_and_the_detected_source(upgrade, line):
     text = _panel(model_upgrade=upgrade)
     assert "Add a model when you want more" in text
-    assert "Docs that explain how and why, chat in the dashboard," in text
+    assert "Answers for your agent and docs that explain how and why: one command, no re-index." in text
     assert line in text
     assert "Or press m next time on the plan screen." in text
     block = text[text.index("Add a model") : text.index("Try asking")]

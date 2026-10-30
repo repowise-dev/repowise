@@ -30,6 +30,7 @@ from repowise.core.git_head import read_head_commit
 from repowise.core.index_scope import (
     CANONICAL_INDEX_SCOPE_PROJECTION,
     INDEX_SCOPE_ENV,
+    answers_upgrade_line,
     compact_index_scope,
     index_scope_fingerprint,
     load_index_scope,
@@ -960,26 +961,27 @@ def _release_meta() -> dict[str, Any]:
     }
 
 
-def keyless_note_meta() -> dict[str, Any]:
-    """Name what a key or a local model would add, once per process, the
-    first time ``get_answer`` degrades with ``no-llm-provider`` (#3105).
+#: For a keyless server over an index whose prose a model already wrote.
+_KEY_ONLY_NOTE = (
+    "no model is configured, so answers are not synthesized; set a provider "
+    "key (or a provider in .repowise/config.yaml) and restart the MCP server"
+)
 
-    The agent reading a keyless answer is told synthesis is missing, but
-    nothing says how to get it. Same once-per-process shape as
-    :func:`_release_meta`: a fact the caller only needs once, not charged
-    against every later response's budget.
+
+def prose_upgrade_meta(local_path: str | None) -> dict[str, Any]:
+    """``keyless_note`` naming the upgrade command, on an index no model wrote prose for."""
+    line = answers_upgrade_line(read_index_scope(local_path))
+    return {"keyless_note": line} if line else {}
+
+
+def keyless_note_meta(local_path: str | None) -> dict[str, Any]:
+    """What a key would add, on every ``get_answer`` that degrades with
+    ``no-llm-provider`` (#3105).
+
+    Not once per process: an agent that starts a conversation on a server
+    another conversation already used would never learn how to upgrade.
     """
-    from repowise.server.mcp_server import _state
-
-    if _state._keyless_note_announced:
-        return {}
-    _state._keyless_note_announced = True
-    return {
-        "keyless_note": (
-            "no model is configured, so answers are not synthesized; set a provider "
-            "key (or a provider in .repowise/config.yaml) and restart the MCP server"
-        )
-    }
+    return prose_upgrade_meta(local_path) or {"keyless_note": _KEY_ONLY_NOTE}
 
 
 def symbol_hint(symbol_id: str, end_line: int, start_line: int) -> str | None:
