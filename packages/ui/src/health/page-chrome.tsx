@@ -23,6 +23,23 @@ export interface HealthPageChromeProps {
   renderLink?: HealthTabsProps["renderLink"];
 }
 
+/** "Indexed 2d ago · abc1234 · 3 snapshots" under the page title. */
+function IndexedMeta({ meta }: { meta: NonNullable<HealthPageChromeProps["meta"]> }) {
+  return (
+    <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
+      Indexed{" "}
+      {meta.last_indexed_at ? <RelativeTime date={meta.last_indexed_at} /> : "never"}
+      {meta.head_commit ? (
+        <>
+          {" "}
+          · <span className="font-mono">{meta.head_commit.slice(0, 7)}</span>
+        </>
+      ) : null}
+      {meta.snapshot_count > 0 ? <> · {meta.snapshot_count} snapshots</> : null}
+    </p>
+  );
+}
+
 export function HealthPageChrome({
   repoId,
   active,
@@ -45,19 +62,7 @@ export function HealthPageChrome({
           {subtitle ? (
             <p className="text-sm text-[var(--color-text-secondary)]">{subtitle}</p>
           ) : null}
-          {meta ? (
-            <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
-              Indexed{" "}
-              {meta.last_indexed_at ? <RelativeTime date={meta.last_indexed_at} /> : "never"}
-              {meta.head_commit ? (
-                <>
-                  {" "}
-                  · <span className="font-mono">{meta.head_commit.slice(0, 7)}</span>
-                </>
-              ) : null}
-              {meta.snapshot_count > 0 ? <> · {meta.snapshot_count} snapshots</> : null}
-            </p>
-          ) : null}
+          {meta ? <IndexedMeta meta={meta} /> : null}
         </div>
         {actions ? <div className="flex items-center gap-2 shrink-0">{actions}</div> : null}
       </div>
