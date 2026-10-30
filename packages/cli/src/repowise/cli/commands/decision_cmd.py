@@ -165,6 +165,7 @@ def _register_config_commands() -> None:
     decision_group.add_command(source_group)
     decision_group.add_command(llm_command)
 
+    from repowise.cli.commands.decision_push_cmd import push_command
     from repowise.cli.commands.decision_review_cmd import (
         candidates_command,
         dedupe_command,
@@ -186,6 +187,7 @@ def _register_config_commands() -> None:
         split_command,
         export_command,
         import_command,
+        push_command,
         status_command,
     ):
         decision_group.add_command(command)
