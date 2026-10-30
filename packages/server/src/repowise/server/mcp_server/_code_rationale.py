@@ -34,6 +34,7 @@ import logging
 import re
 import subprocess
 from collections import Counter
+from collections.abc import Container, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +44,7 @@ from repowise.core.analysis.decisions.rationale_comments import (
     extract_comment_blocks,
     harvest_file_rationale,
 )
+from repowise.core.code_origin import code_origin
 from repowise.core.exclusion import build_exclude_spec, is_excluded
 from repowise.server.mcp_server._why_relevance import (
     clears_floor,
@@ -333,6 +335,7 @@ def mine_rationale(
     max_files: int = _MAX_FILES,
     max_results: int = _MAX_RESULTS,
     truncate_blocks: bool = True,
+    rarity_corpus: Sequence[Container[str]] = (),
 ) -> list[dict]:
     """Mine in-code rationale comments from ``file_paths``.
 
@@ -343,6 +346,10 @@ def mine_rationale(
             (path-mode), in which case marker-bearing comments are returned.
         near_lines: optional {path: line} to boost comments near an anchored
             symbol (e.g. the definition the question named).
+        rarity_corpus: a wider population to weigh question terms over, used
+            when larger than the scanned blocks. One file is a small sample:
+            the file's own name, or a word one comment happens to use, weighs
+            as the rarest term there.
 
     Returns a ranked list of ``{path, lines: [start, end], comment,
     matched_terms}`` — at most ``max_results``. Best-effort: never raises.
@@ -370,7 +377,10 @@ def mine_rationale(
     # them, so a word most comments here share weighs little.
     blocks = [b for path in ordered for b in _file_blocks(root, path, idents, numbers)]
     terms += [_number_term(n) for n in numbers]
-    idf = term_idf(terms, [b[4] for b in blocks]) if terms else {}
+    pool = [b[4] for b in blocks]
+    if len(rarity_corpus) > len(pool):
+        pool = list(rarity_corpus)
+    idf = term_idf(terms, pool) if terms else {}
 
     scored: list[tuple[float, dict]] = []
     for path, start, end, comment, words, own in blocks:
@@ -524,11 +534,11 @@ def grep_comment_candidates(
     return ranked[:max_files]
 
 
-# One repository's harvest, keyed on (root, HEAD): harvesting reads every
+# One repository's harvest, keyed on (root, HEAD, plain): harvesting reads every
 # tracked code file (about 2s cold on a 3,000-file repository), so a session
 # asking several questions pays it once. Ceiling: edits since HEAD are not seen
 # until the next commit; the path-scoped miner above stays live for those.
-_HARVEST_CACHE: dict[tuple[str, str], list[dict]] = {}
+_HARVEST_CACHE: dict[tuple[str, str, bool], list[dict]] = {}
 _MAX_HARVEST_FILES = 20_000
 
 
@@ -547,13 +557,16 @@ def _head(root: Path) -> str | None:
     return proc.stdout.strip() if proc.returncode == 0 else None
 
 
-def _harvest_repo(root: Path) -> list[dict]:
+def _harvest_repo(root: Path, plain: bool = False) -> list[dict]:
     """Every tracked file's strong-marker comments, strongest first per file.
 
     ``harvest_file_rationale`` with its defaults: a causal marker is required
     and docstrings are skipped. That is the precision bar a comment must clear
     to be served for a question naming no file, where nothing else vouches for
     it. These are never decisions (#751); they are served as comments.
+
+    *plain* keeps every production comment, marked or not, for a store with no
+    ruling. Ceiling: the whole set is cached per HEAD; a size cap is the upgrade.
     """
     try:
         proc = subprocess.run(
@@ -577,18 +590,30 @@ def _harvest_repo(root: Path) -> list[dict]:
         text = _read_text(root, path)
         if text is None:
             continue
-        for h in harvest_file_rationale(text, ext):
+        if plain:
+            # Without a marker, only shipped code's comments describe its reasons.
+            if code_origin(path, text) != "production":
+                continue
+            harvested = harvest_file_rationale(
+                text, ext, max_per_file=_MAX_FILE_LINES, require_marker=False
+            )
+        else:
+            harvested = harvest_file_rationale(text, ext)
+        for h in harvested:
             rows.append({"path": path, "lines": [h.start_line, h.end_line], "comment": h.text})
     return rows
 
 
-def repo_rationale(repo_root: Any, query: str, *, max_results: int = 3) -> list[dict]:
+def repo_rationale(
+    repo_root: Any, query: str, *, max_results: int = 3, plain: bool = False
+) -> list[dict]:
     """Strong-marker comments anywhere in the repository that answer *query*.
 
     For a question naming no file, when no decision record matched. Ranked by
     the decision store's own relevance floor, with rarity taken over the whole
     harvest, so a comment is served only when it carries most of the
     question's weighted vocabulary. Rows have the ``mine_rationale`` shape.
+    *plain* admits comments with no marker (see :func:`_harvest_repo`).
     Best-effort: ``[]`` on any failure.
     """
     if not repo_root or not query:
@@ -598,10 +623,10 @@ def repo_rationale(repo_root: Any, query: str, *, max_results: int = 3) -> list[
         head = _head(root)
         if head is None:
             return []
-        key = (str(root.resolve()), head)
+        key = (str(root.resolve()), head, plain)
         if key not in _HARVEST_CACHE:
             _HARVEST_CACHE.clear()
-            _HARVEST_CACHE[key] = _harvest_repo(root)
+            _HARVEST_CACHE[key] = _harvest_repo(root, plain)
         return floor_ranked(query, _HARVEST_CACHE[key], lambda r: r["comment"], max_results)
     except Exception as exc:  # never let the harvest break a tool
         _log.debug("repo rationale harvest failed: %s", exc)

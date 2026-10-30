@@ -905,9 +905,10 @@ async def test_get_why_target_under_a_records_module_is_not_governed(session, se
 
 @pytest.mark.asyncio
 async def test_get_why_governed_target_reason_agrees_with_the_basis(session, setup_mcp):
-    """An off-topic question on a governed file still serves its rule.
+    """An off-topic question on a governed file still lists its rule, by title.
 
-    The reason must then say so, not that no record covers the call.
+    The rule binds the file but does not answer the question, so it is not
+    the basis, and the reason says the rule governs rather than answers.
     """
     from repowise.server.mcp_server import get_why
 
@@ -918,10 +919,9 @@ async def test_get_why_governed_target_reason_agrees_with_the_basis(session, set
 
     governing = result["target_context"][path]["governing_decisions"]
     assert [d["id"] for d in governing] == ["dec2"]
-    assert result["answer_basis"] == "decision"
-    assert "No decision record covers" not in result["reason"]
-    assert "binds it whatever the question" in result["reason"]
-    assert "try_instead" not in result
+    assert "decision" not in governing[0]
+    assert result.get("answer_basis") != "decision"
+    assert "govern them whatever the question" in result["reason"]
 
 
 @pytest.mark.asyncio

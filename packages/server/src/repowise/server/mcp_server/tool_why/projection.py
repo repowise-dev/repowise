@@ -137,3 +137,64 @@ def _merge_decisions(
             }
         )
     return merged_decisions
+
+
+#: The lanes whose rows are decision records.
+_DECISION_LANES = (
+    "decisions",
+    "candidates",
+    "history",
+    "governing_decisions",
+    "candidate_decisions",
+    "stale_decisions",
+    "proposed_awaiting_review",
+)
+
+#: What a served evidence ref keeps; ``get_why(id=...)`` returns the full one.
+_REF_KEYS = ("id", "kind", "commit", "commit_prefix", "path", "range", "line", "verification")
+
+
+def lean_response(value: Any, *, keep_repository: bool = False) -> Any:
+    """Drop empty decision fields and shorten evidence refs and commits, in place.
+
+    A ref keeps ``provenance`` and ``source`` only where they differ from its
+    row's, and ``repository`` only where several repositories are served.
+    """
+    if isinstance(value, list):
+        for item in value:
+            lean_response(item, keep_repository=keep_repository)
+        return value
+    if not isinstance(value, dict):
+        return value
+    refs = value.get("evidence_refs")
+    if isinstance(refs, list):
+        value["evidence_refs"] = [_lean_ref(r, value, keep_repository) for r in refs]
+    if isinstance(value.get("commit"), str):
+        value["commit"] = value["commit"][:12]
+    for key, child in value.items():
+        if key in _DECISION_LANES and isinstance(child, list):
+            for row in child:
+                if isinstance(row, dict):
+                    _drop_empty(row)
+        if key != "evidence_refs":
+            lean_response(child, keep_repository=keep_repository)
+    return value
+
+
+def _lean_ref(ref: Any, row: dict, keep_repository: bool) -> Any:
+    if not isinstance(ref, dict):
+        return ref
+    keys = (*_REF_KEYS, "repository") if keep_repository else _REF_KEYS
+    out = {k: ref[k] for k in keys if k in ref}
+    # Only where a row cites several kinds of evidence.
+    for k in ("provenance", "source"):
+        if row.get(k) is not None and ref.get(k) not in (None, row[k]):
+            out[k] = ref[k]
+    if isinstance(out.get("commit"), str):
+        out["commit"] = out["commit"][:12]
+    return out
+
+
+def _drop_empty(row: dict) -> None:
+    for key in [k for k, v in row.items() if v in ("", None) or v == [] or v == {}]:
+        del row[key]
