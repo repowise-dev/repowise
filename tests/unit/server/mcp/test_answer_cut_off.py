@@ -38,6 +38,15 @@ _FINISHED = [
     "The handler lives under src/helper/",
     "It returns `\"hedged\"`.",
     "Use the client that way.\n\n```\nclient.get(url)\n```",
+    "Pass `**kwargs` through to the parent.",
+    "It matches `**/*.py` under src",
+    "- `SELECT 1;`",
+    "- `key:`",
+    "pip-compile reads requirements.in",
+    "Choose option A",
+    "The flag defaults to on",
+    "The session stays logged in",
+    "It is stored in my_var_to",
     "",
 ]
 

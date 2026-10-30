@@ -17,14 +17,17 @@ _HEADING_OR_MARKER = re.compile(r"^(?:#{1,6}\s.*|[-*+]|\d+[.)])$")
 # Characters a finished sentence, item or value never ends on.
 _OPEN_ENDINGS = frozenset(",:;([{=")
 # Words a finished sentence never ends on. Kept short on purpose: a word that
-# can close a sentence ("that", "so", "then") would flag complete answers.
+# can close a sentence ("that", "logged in", "defaults to on") would flag
+# complete answers.
 _DANGLING_WORDS = frozenset(
     {
-        "a", "an", "the", "and", "or", "of", "to", "in", "on", "for", "with", "by", "from",
-        "at", "into", "via", "than", "if", "is", "are", "as", "its", "their", "whose", "such",
-        "which",
+        "a", "an", "the", "and", "or", "of", "for", "with", "by", "from", "at", "into",
+        "via", "than", "if", "is", "are", "as", "its", "their", "whose", "such", "which",
     }
 )  # fmt: skip
+_CODE_SPAN = re.compile(r"`[^`]*`")
+# A standalone last word: not the tail of a file name, path or identifier.
+_LAST_WORD = re.compile(r"(?<![\w./-])([A-Za-z]+)$")
 
 
 def answer_cut_off(answer_text: str, stop_reason: str | None) -> bool:
@@ -48,7 +51,7 @@ def _text_looks_cut(answer_text: str) -> bool:
     if _FENCE.match(last):
         return False
     paragraph = _last_paragraph(lines)
-    if paragraph.count("`") % 2 or paragraph.count("**") % 2:
+    if paragraph.count("`") % 2 or _CODE_SPAN.sub("", paragraph).count("**") % 2:
         return True
     return _dangling_last_line(last)
 
@@ -57,14 +60,16 @@ def _dangling_last_line(last: str) -> bool:
     """A heading or bare list marker, an open ending, or a dangling last word."""
     if _HEADING_OR_MARKER.match(last):
         return True
-    core = last.rstrip("*_` ")
-    if not core or core[-1] in _OPEN_ENDINGS:
-        return True
-    # A word inside a closed code span is a value, not prose.
+    # A closed code span ends a value, whatever character it holds.
     if last.endswith("`"):
         return False
-    tail = re.search(r"[A-Za-z]+$", core)
-    return bool(tail) and tail.group().lower() in _DANGLING_WORDS
+    core = last.rstrip("*_ ")
+    if not core or core[-1] in _OPEN_ENDINGS:
+        return True
+    tail = _LAST_WORD.search(core)
+    # A lone capital ("option A") is a name, not an article.
+    word = tail.group(1) if tail else ""
+    return word.lower() in _DANGLING_WORDS and not (len(word) == 1 and word.isupper())
 
 
 def _last_paragraph(lines: list[str]) -> str:

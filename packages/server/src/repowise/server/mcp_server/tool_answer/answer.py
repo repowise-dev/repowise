@@ -664,7 +664,7 @@ async def _cache_and_stamp(
     provider,
     confidence: str,
     targets: list[str],
-    stop_reason: str | None = None,
+    cut_off: bool = False,
 ) -> None:
     """Write the cache row, then stamp ``_meta`` and the episode on the live reply.
 
@@ -676,7 +676,7 @@ async def _cache_and_stamp(
     degraded = _degraded_legs(_retrieval_legs())
     if degraded:
         payload["_retrieval_degraded"] = degraded
-    if write_cache and not answer_cut_off(payload.get("answer") or "", stop_reason):
+    if write_cache and not cut_off:
         await _write_answer_cache(
             payload,
             ctx=ask.ctx,
@@ -877,7 +877,7 @@ async def get_answer(
         payload,
         ask,
         write_cache=bool(answer_text) and not cache_disabled,
-        stop_reason=stop_reason,
+        cut_off=answer_cut_off(answer_text, stop_reason),
         qhash=qhash,
         provider=provider,
         confidence=confidence,
