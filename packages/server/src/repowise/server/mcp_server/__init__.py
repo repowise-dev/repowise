@@ -298,9 +298,11 @@ def ensure_full_surface() -> Any:
     if _surface_applied:
         return _mcp
 
-    for module in dict.fromkeys(_TOOL_MODULES.values()):
+    for name, module in _TOOL_MODULES.items():
         try:
-            importlib.import_module(f"{__name__}.{module}")
+            # Read the name, not just the module: a tool package re-exports its
+            # tool lazily, and that read is what imports and registers it.
+            getattr(importlib.import_module(f"{__name__}.{module}"), name)
         except ImportError as exc:
             # One tool's optional dependency must not take the whole surface
             # down: a host respawns a server that dies at import, forever.

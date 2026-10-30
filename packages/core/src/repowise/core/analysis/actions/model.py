@@ -11,12 +11,14 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Literal, get_args
 
-from repowise.core.analysis.health.queue.order import priority as queue_priority
 from repowise.core.analysis.next_call import ActionCommand
 
 #: Bumped when a rule's output changes meaning or shape; stored views built
 #: under another version are rebuilt.
 ACTIONS_MODEL_VERSION = 2
+
+#: The places every surface shows first: the overview's next actions.
+NEXT_ACTIONS_HEAD = 3
 
 ActionRule = Literal[
     "live_secret",
@@ -111,6 +113,10 @@ def shared_priority(
 ) -> float:
     """The number Do next orders a tier on: the queue's ``value x confidence /
     effort`` (``queue.order.priority``)."""
+    # Imported here: the queue chain is heavy, and the overview reads this
+    # module for its vocabulary alone.
+    from repowise.core.analysis.health.queue.order import priority as queue_priority
+
     return queue_priority(effective_value(value, severity), confidence, effort)
 
 

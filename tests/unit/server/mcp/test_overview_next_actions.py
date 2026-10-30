@@ -85,8 +85,8 @@ async def test_every_handed_out_action_id_opens_in_get_health(setup_mcp, session
 
 @pytest.mark.asyncio
 async def test_a_failed_read_is_omitted_with_a_reason(setup_mcp, monkeypatch):
+    from repowise.core.persistence.crud.analysis import actions as mod
     from repowise.server.mcp_server import get_overview
-    from repowise.server.mcp_server.tool_overview import actions as mod
 
     async def boom(session, repo_id, **_cut):
         raise RuntimeError("no such table: action_states")

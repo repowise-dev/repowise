@@ -5,9 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from repowise.core.analysis.actions.engine import NEXT_ACTIONS_HEAD
-from repowise.core.persistence.crud.analysis.actions import load_actions_view
-from repowise.server.mcp_server._helpers import _cross_repo_cut
+from repowise.core.analysis.actions.model import NEXT_ACTIONS_HEAD
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +79,10 @@ async def _build_next_actions(
     The savepoint keeps a failed read from poisoning the session the rest of
     the overview still uses.
     """
+    # Imported here so ``compact_actions_view`` stays free of persistence.
+    from repowise.core.persistence.crud.analysis.actions import load_actions_view
+    from repowise.server.mcp_server._helpers import _cross_repo_cut
+
     try:
         async with session.begin_nested():
             view = await load_actions_view(session, repository.id, **_cross_repo_cut(alias))
