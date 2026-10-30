@@ -15,11 +15,10 @@ import os
 import threading
 import time
 from collections.abc import Callable, Sequence
-from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import structlog
 
@@ -63,6 +62,9 @@ from .records import (
     capture_repo_totals,
 )
 from .tiers import GitIndexTier
+
+if TYPE_CHECKING:
+    from concurrent.futures import Future
 
 # Silence GitPython's _CatFileContentStream.__del__ ValueError spam.
 # When git cat-file streams are GC'd after the subprocess pipe is closed,
@@ -344,6 +346,8 @@ class GitIndexer:
         if on_start is not None:
             on_start(len(indexable_files) + len(history_files))
 
+        from concurrent.futures import ThreadPoolExecutor
+
         workers = git_worker_count(len(indexable_files), requested=self.max_workers)
         loop = asyncio.get_event_loop()
 
@@ -545,6 +549,8 @@ class GitIndexer:
         target = BlameGraph.target(repo)
         if target is None:
             return None
+        from concurrent.futures import ThreadPoolExecutor
+
         from repowise.core.pipeline.phase_timing import timed
 
         def _write() -> BlameGraph:
@@ -677,6 +683,7 @@ class GitIndexer:
             else set(changed_file_paths) | history_changed
         )
         workers = git_worker_count(len(changed_file_paths), requested=self.max_workers)
+        from concurrent.futures import ThreadPoolExecutor
 
         prov_clf = self._provenance_classifier()
         trace_index = self._load_trace_index(repo)
