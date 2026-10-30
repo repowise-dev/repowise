@@ -6,6 +6,7 @@ import { ProportionBar } from "../../shared/proportion-bar";
 import { Segmented, type SegmentOption } from "../../shared/segmented";
 import type { ActionabilityCounts } from "./grouping";
 import { ACTIONABILITY_HINT, ACTIONABILITY_INK, ACTIONABILITY_LABEL } from "./presentation";
+import { formatNumber } from "../../lib/format";
 
 /**
  * The scope's split by actionability, as one bar and the one control that
@@ -33,11 +34,11 @@ export function ActionabilityBar({
   // place so it can be cleared; an empty segment would name nothing to show.
   const states = STATES.filter((state) => counts[state] > 0 || value === state);
   const options: SegmentOption<Choice>[] = [
-    { value: "all", label: "All", count: total.toLocaleString() },
+    { value: "all", label: "All", count: formatNumber(total) },
     ...states.map((state) => ({
       value: state,
       label: ACTIONABILITY_LABEL[state],
-      count: counts[state].toLocaleString(),
+      count: formatNumber(counts[state]),
       hint: ACTIONABILITY_HINT[state],
     })),
   ];

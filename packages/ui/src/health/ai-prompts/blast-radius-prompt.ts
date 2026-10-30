@@ -1,4 +1,5 @@
 import { bulletList, joinSections, pluralS, preamble, repoSuffix, type AiPromptFlavor } from "./shared";
+import { formatNumber } from "../../lib/format";
 
 // ─────────────────────────────────────────────────────────────────────
 // Change review prompt (blast radius of a branch, commit or working tree)
@@ -116,8 +117,8 @@ export function buildBlastRadiusPrompt({ input: i, flavor = "generic", repoName 
     changeLine(i.change),
     `Diff: \`${diffCommand(i.change, i.changedFiles)}\``,
     i.status ? `Screen verdict: ${i.status}` : null,
-    `Reach: ${i.reach.files.toLocaleString()} source file${pluralS(i.reach.files)} in ${i.reach.modules} module${pluralS(i.reach.modules)} import it within the analyzed depth, ${i.reach.direct} directly${
-      i.reach.tests ? `; ${i.reach.tests.toLocaleString()} test file${pluralS(i.reach.tests)} also import it (tests to run, not reach)` : ""
+    `Reach: ${formatNumber(i.reach.files)} source file${pluralS(i.reach.files)} in ${i.reach.modules} module${pluralS(i.reach.modules)} import it within the analyzed depth, ${i.reach.direct} directly${
+      i.reach.tests ? `; ${formatNumber(i.reach.tests)} test file${pluralS(i.reach.tests)} also import it (tests to run, not reach)` : ""
     }; structural reach ${i.reach.band} (an estimate of spread, not a breakage probability)`,
   ]);
 

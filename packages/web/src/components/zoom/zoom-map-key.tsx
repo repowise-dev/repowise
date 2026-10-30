@@ -32,6 +32,7 @@ import { useTranslations } from "next-intl";
 import { ZOOM_GLASS, ZOOM_ICON_BUTTON } from "./zoom-controls";
 import { containerIcon } from "./c4-icons";
 import { useContainerKindLabel } from "./zoom-detail-c4";
+import { formatNumber } from "@repowise-dev/ui/lib/format";
 
 interface ZoomMapKeyProps {
   /** What the page is, said once here rather than above the canvas. */
@@ -176,8 +177,8 @@ function MapKeyBody({
           {unclaimedFiles > 0 &&
             /* Silence when nothing is missing: "0 not shown" is noise. */
             ` ${t("mapKey.unclaimed", {
-              shown: unclaimedFiles.toLocaleString(),
-              total: (totalFiles + unclaimedFiles).toLocaleString(),
+              shown: formatNumber(unclaimedFiles),
+              total: formatNumber(totalFiles + unclaimedFiles),
             })}`}
         </p>
         {verbs.length > 1 && (
@@ -192,7 +193,7 @@ function MapKeyBody({
               >
                 {verb}{" "}
                 <span className="font-mono tabular-nums text-[var(--color-text-tertiary)]">
-                  {count.toLocaleString()}
+                  {formatNumber(count)}
                 </span>
               </FilterChip>
             ))}

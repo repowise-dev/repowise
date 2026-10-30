@@ -51,7 +51,7 @@ import { count } from "./review-status";
 import type { ImpactAdapter } from "./impact-adapter";
 import { changeIdFromLink, changeLinkParam } from "./change-links";
 import { toFriendlyMessage } from "../lib/errors";
-import { disambiguateBasenames } from "../lib/format";
+import { disambiguateBasenames, formatNumber } from "../lib/format";
 import { FilePath } from "../shared/file-path";
 import { EmptyState } from "../shared/empty-state";
 
@@ -225,7 +225,7 @@ function ChangedFilesSection({ total, children }: { total: number; children: Rea
             aria-hidden
           />
           Changed files
-          <span className="text-xs font-normal tabular-nums text-[var(--color-text-tertiary)]">{total.toLocaleString()}</span>
+          <span className="text-xs font-normal tabular-nums text-[var(--color-text-tertiary)]">{formatNumber(total)}</span>
         </button>
       </h3>
       {open && children}
@@ -330,7 +330,7 @@ function DependentsSection({
 }) {
   const [filter, setFilter] = useState("");
   return (
-    <Section title="Files that depend on this" hint={reach.files.length.toLocaleString()}>
+    <Section title="Files that depend on this" hint={formatNumber(reach.files.length)}>
       <AffectedByModule
         reach={reach}
         fileHref={fileHref}

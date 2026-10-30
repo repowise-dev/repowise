@@ -6,6 +6,7 @@ import type { AffectedSignal, BlastRadiusResponse } from "@repowise-dev/types/bl
 import { cn } from "../lib/cn";
 import { attention, type FileMarks, type Reach, type ReachedFile } from "./blast-map-model";
 import { CHIP, PathRef, SignalChips } from "./blast-radius-verdict";
+import { formatNumber } from "../lib/format";
 
 type Result = BlastRadiusResponse & { affected_signals?: AffectedSignal[] };
 type Href = ((path: string) => string) | undefined;
@@ -155,11 +156,11 @@ function ModuleRow({
         {/* One summary sentence, not unlabeled columns. */}
         <span className="shrink-0 truncate text-right tabular-nums text-[var(--color-text-tertiary)]">
           <span className="text-[var(--color-text-secondary)]">
-            {g.files.length.toLocaleString()} {g.files.length === 1 ? "file" : "files"}
+            {formatNumber(g.files.length)} {g.files.length === 1 ? "file" : "files"}
           </span>
           <span className="hidden sm:inline">
             , {g.depth === 1 ? "direct" : `nearest ${g.depth} steps away`}
-            {often > 0 && `, ${often.toLocaleString()} changed often`}
+            {often > 0 && `, ${formatNumber(often)} changed often`}
           </span>
         </span>
       </button>
@@ -182,7 +183,7 @@ function ModuleRow({
               onClick={() => setAll((v) => !v)}
               className="text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] max-sm:min-h-10"
             >
-              {all ? "Show fewer" : `+${(g.files.length - PER_MODULE).toLocaleString()} more`}
+              {all ? "Show fewer" : `+${formatNumber(g.files.length - PER_MODULE)} more`}
             </button>
           )}
         </div>
@@ -247,14 +248,14 @@ export function AffectedByModule({
         <p className="flex flex-wrap items-center gap-2 text-xs">
           <span className="inline-flex min-h-7 max-w-full items-center gap-1.5 rounded-full border border-[var(--color-border-hover)] py-0.5 pl-2.5 pr-1 text-[var(--color-text-secondary)]">
             <span className="min-w-0 truncate">
-              Showing {focus.label}: <span className="tabular-nums">{focus.paths.size.toLocaleString()}</span>{" "}
+              Showing {focus.label}: <span className="tabular-nums">{formatNumber(focus.paths.size)}</span>{" "}
               {focus.paths.size === 1 ? "file" : "files"}
             </span>
             {onClearFocus && (
               <button
                 type="button"
                 onClick={onClearFocus}
-                aria-label={`Clear the filter and show all ${reach.files.length.toLocaleString()} files`}
+                aria-label={`Clear the filter and show all ${formatNumber(reach.files.length)} files`}
                 className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] pointer-coarse:h-10 pointer-coarse:w-10"
               >
                 <X className="h-3 w-3" aria-hidden />

@@ -6,7 +6,7 @@ import type { ChangeCandidate, ChangeCandidateKind, ChangeCandidatesResponse } f
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { Spinner } from "../ui/spinner";
 import { Segmented, type SegmentOption } from "../shared/segmented";
-import { formatRelativeTimeOrNull } from "../lib/format";
+import { formatNumber, formatRelativeTimeOrNull } from "../lib/format";
 import { cn } from "../lib/cn";
 
 /** In picker order: work in progress, then pull requests, branches, commits. */
@@ -28,7 +28,7 @@ const SHOWN = 5;
 const RECENT_MS = 7 * 24 * 60 * 60 * 1000;
 
 function plural(n: number, word: string): string {
-  return `${n.toLocaleString()} ${word}${n === 1 ? "" : "s"}`;
+  return `${formatNumber(n)} ${word}${n === 1 ? "" : "s"}`;
 }
 
 /** The line under a change's name: what it holds and when. */
