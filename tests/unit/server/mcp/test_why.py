@@ -46,7 +46,7 @@ async def test_get_why_file_path(setup_mcp):
     # a candidate and the file scores as ungoverned.
     alignment = result["alignment"]
     assert alignment["score"] == "none"
-    assert alignment["governing_count"] >= 1
+    assert alignment["governing_count"] == 0
     assert alignment["active_count"] == 0
     assert alignment["candidate_count"] >= 1
     assert "explanation" in alignment
@@ -59,16 +59,30 @@ async def test_get_why_file_path_commit_decision_linkage(setup_mcp):
     result = await get_why("src/auth/service.py")
     origin = result["origin_story"]
 
-    # "Add JWT support" commit should link to "Use JWT for authentication" decision
-    # because "JWT" appears in both the commit message and decision title
+    # "Add JWT support" says one of the title's three words, which does not
+    # state the decision, so the record gets no evidence row. A row without
+    # evidence would only repeat the decision lane.
     linked = origin["linked_decisions"]
-    assert len(linked) >= 1
-    jwt_decision = next((d for d in linked if d["title"] == "Use JWT for authentication"), None)
-    assert jwt_decision is not None
-    assert len(jwt_decision["evidence_commits"]) >= 1
-    ec = jwt_decision["evidence_commits"][0]
-    assert "JWT" in ec["message"] or "jwt" in ec["message"].lower()
-    assert "matching_keywords" in ec
+    assert all(d["title"] != "Use JWT for authentication" for d in linked)
+    assert all(d["evidence_commits"] for d in linked)
+
+
+def test_a_commit_is_evidence_only_when_it_states_the_decision():
+    """One shared word, or words every commit on the file shares, links nothing."""
+    from repowise.server.mcp_server._helpers import _commits_matching_decision
+
+    commits = [
+        {"sha": "a1", "message": "fix(graph): bind a Java call on an unnamed object only by uniqueness"},
+        {"sha": "a2", "message": "fix(graph): keep each call on a shared line as its own call site"},
+        {"sha": "a3", "message": "feat(graph): type C++ calls on member fields from the class"},
+        {"sha": "a4", "message": "feat(graph): resolve a call by a unique global match as the fallback tier"},
+    ]
+    decision = {"title": "Use unique global matches only as the fallback call-resolution tier"}
+
+    matched = _commits_matching_decision(decision, commits)
+
+    assert [c["sha"] for c in matched] == ["a4"]
+    assert {"global", "fallback"} <= set(matched[0]["matching_keywords"])
 
 
 @pytest.mark.asyncio
@@ -123,7 +137,7 @@ async def test_get_why_file_no_git_metadata(setup_mcp):
     # candidate lane because nobody has accepted it.
     assert len(result["candidates"]) >= 1
     alignment = result["alignment"]
-    assert alignment["governing_count"] >= 1
+    assert alignment["governing_count"] == 0
     assert alignment["candidate_count"] >= 1
 
 
@@ -646,10 +660,12 @@ async def test_get_why_path_caps_records_and_keeps_the_active_one_first(
     # And the count that was capped is still reported honestly.
     assert result["decisions_total"] == 30
     assert result["decisions_emitted"] == _MAX_PATH_DECISIONS
-    assert result["decisions_reduced_reason"] == "construction_cap_and_response_budget"
+    # The construction cap alone keeps it in budget: no origin row repeats a
+    # decision that no commit states.
+    assert result["decisions_reduced_reason"] == "construction_cap"
     assert result["_meta"]["omitted"]["refs"]
-    # The fixture's unaccepted JWT record is counted, and it is not a decision.
-    assert result["alignment"]["governing_count"] == 31
+    # The fixture's unaccepted JWT record is a candidate, so it governs nothing.
+    assert result["alignment"]["governing_count"] == 30
     assert result["alignment"]["candidate_count"] == 1
 
 

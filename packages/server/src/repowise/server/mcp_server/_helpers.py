@@ -28,6 +28,7 @@ from repowise.core.persistence.sql import (  # noqa: F401
 )
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._query_shape import _is_path  # noqa: F401
+from repowise.server.mcp_server._why_relevance import floor_ranked, question_terms
 
 _log = logging.getLogger("repowise.mcp")
 
@@ -295,18 +296,8 @@ def attach_ignored_arguments(result: dict[str, Any], ignored: list[dict[str, Any
 # Origin story & alignment (used by get_context, get_why)
 # ---------------------------------------------------------------------------
 
-# Common stop-words stripped before commit/decision keyword overlap.
-_ORIGIN_STOP_WORDS = frozenset(
-    {"the", "a", "an", "is", "for", "to", "of", "in", "and", "or", "with"}
-)
-
 #: Decisions the origin summary names, and the ceiling on its evidence clauses.
 _ORIGIN_NARRATED_DECISIONS = 3
-
-
-def _meaningful_words(text: str) -> set[str]:
-    """Lowercase keyword set with common stop-words removed."""
-    return set(text.lower().split()) - _ORIGIN_STOP_WORDS
 
 
 def _decision_body(record: object) -> str:
@@ -327,41 +318,47 @@ def _decision_body(record: object) -> str:
 
 
 def _commits_matching_decision(decision: dict, commits: list[dict]) -> list[dict]:
-    """Return commits whose messages share at least one keyword with *decision*."""
-    decision_text = (
-        f"{decision.get('title', '')} {decision.get('decision', '')} "
-        f"{decision.get('rationale', '')}"
-    )
-    decision_words = _meaningful_words(decision_text)
+    """Commits whose subject clears the relevance floor for the decision's title.
 
-    related_commits = []
-    for c in commits:
-        overlap = decision_words & _meaningful_words(c.get("message", ""))
-        if not overlap:
-            continue
-        related_commits.append(
-            {
-                "sha": c.get("sha", ""),
-                "message": c.get("message", ""),
-                "author": c.get("author", ""),
-                "date": c.get("date", ""),
-                "matching_keywords": sorted(overlap)[:5],
-            }
-        )
-    return related_commits
+    The title is the record's one-line statement, so a commit is evidence when
+    it says most of what the title says, rarer words weighing more. Rarity
+    comes from *commits*, the file's own history: a word every commit on the
+    file shares names the file, not the decision. Any one shared word used to
+    link nearly every commit to every decision.
+    """
+    statement = decision.get("title") or decision.get("decision") or ""
+    terms = question_terms(statement)
+    matched = floor_ranked(statement, commits, lambda c: c.get("message", ""), len(commits))
+    return [
+        {
+            "sha": c.get("sha", ""),
+            "message": c.get("message", ""),
+            "author": c.get("author", ""),
+            "date": c.get("date", ""),
+            "matching_keywords": [t for t in terms if t in c.get("message", "").lower()][:5],
+        }
+        for c in matched
+    ]
 
 
 def _link_decisions_to_commits(governing_decisions: list[dict], commits: list[dict]) -> list[dict]:
-    """Attach commit evidence to each governing decision via keyword overlap."""
+    """The governing decisions that commits state, each with those commits.
+
+    A decision no commit states is left out: without evidence the row would
+    only repeat the decision lane.
+    """
     linked_decisions = []
     for d in governing_decisions:
+        evidence = _commits_matching_decision(d, commits)
+        if not evidence:
+            continue
         linked_decisions.append(
             {
                 "title": d.get("title", ""),
                 "status": d.get("status", ""),
                 "source": d.get("source", ""),
                 "rationale": d.get("rationale", ""),
-                "evidence_commits": _commits_matching_decision(d, commits),
+                "evidence_commits": evidence,
             }
         )
     return linked_decisions
@@ -370,6 +367,7 @@ def _link_decisions_to_commits(governing_decisions: list[dict], commits: list[di
 def _origin_summary_parts(
     authors: list,
     earliest_commit: dict | None,
+    governing_decisions: list[dict],
     linked_decisions: list[dict],
     primary: str,
     total: int,
@@ -389,13 +387,13 @@ def _origin_summary_parts(
             f"by {earliest_commit.get('author', 'unknown')} on {earliest_commit.get('date', 'unknown')}."
         )
 
-    if linked_decisions:
-        named = linked_decisions[:_ORIGIN_NARRATED_DECISIONS]
-        parts.append(f"Governed by: {', '.join(d['title'] for d in named)}.")
+    if governing_decisions:
+        named = [d.get("title", "") for d in governing_decisions[:_ORIGIN_NARRATED_DECISIONS]]
+        parts.append(f"Governed by: {', '.join(named)}.")
         # Unbounded, a file with 40 linked decisions got 16 evidence clauses,
         # restating titles the caller's own cap had already removed.
-        for ld in named:
-            if ld["evidence_commits"]:
+        for ld in linked_decisions:
+            if ld["title"] in named:
                 ec = ld["evidence_commits"][0]
                 parts.append(
                     f'Commit "{ec["message"]}" by {ec["author"]} is evidence for "{ld["title"]}".'
@@ -445,6 +443,7 @@ def _build_origin_story(
     parts = _origin_summary_parts(
         authors,
         earliest_commit,
+        governing_decisions,
         linked_decisions,
         primary,
         total,
@@ -620,8 +619,8 @@ def _compute_alignment(
     candidates = [d for d in governing if d["id"] not in currencies]
     # Accepted, and neither binding nor withdrawn: it names nothing the
     # repository can be asked about. Counted on its own so the four lanes add
-    # up to ``governing_count``; without it a reader could subtract them and
-    # find records unaccounted for with nothing saying where they went.
+    # up to the records naming the file; without it a reader could find
+    # records unaccounted for with nothing saying where they went.
     uncheckable = [d for d in governing if currencies.get(d["id"]) == "uncheckable"]
 
     dir_path = "/".join(file_path.split("/")[:-1])
@@ -638,11 +637,11 @@ def _compute_alignment(
     return {
         "score": score,
         "explanation": explanation,
-        # Unchanged meaning, and deliberately not renamed: how many records
-        # name this file at all, which is what every existing consumer reads
-        # it as. The authority split is carried by the four counts below, and
-        # they sum to it: accepted + withdrawn + uncheckable + candidate.
-        "governing_count": len(governing),
+        # Accepted records that still bind, so it never disagrees with a note
+        # saying the candidates govern nothing. The four lane counts below
+        # (accepted, withdrawn, uncheckable, candidate) sum to the records
+        # naming this file.
+        "governing_count": len(accepted),
         "active_count": len(accepted),
         "candidate_count": len(candidates),
         # Accepted once and now history: superseded, dismissed, or naming only

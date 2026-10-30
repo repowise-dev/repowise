@@ -530,7 +530,7 @@ Groups changed files over index edges, co-change pairs and (for a range) shared 
 | `answer_basis` | Strongest lane: `decision`, `episode`, `rationale`, `archaeology`, `documentation`, `candidate`. Only `decision` rules |
 | `authority` | Per row: `accepted` or `candidate` |
 | `currency` | Accepted rows: `active`, `needs_review` (files moved, still binds), `uncheckable` (names nothing), `superseded`, `dismissed`. Candidates: `review_state: "open"` |
-| `alignment` | Path mode: `active_count`, `deprecated_count`, `uncheckable_count`, `candidate_count` (sum `governing_count`); `score` from `active_count` |
+| `alignment` | Path mode: `governing_count` (accepted records still binding), `active_count`, `deprecated_count`, `uncheckable_count`, `candidate_count` (the last four sum to the records naming the path); `score` from `active_count` |
 | `git_archaeology` | No decision governs the path; `git_log` keeps its 5 newest rows, rest via the omission marker |
 | `provenance`, `evidence_refs` | Self-contained evidence refs. Matching ids mean shared evidence, not corroboration |
 
