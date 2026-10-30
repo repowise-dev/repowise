@@ -32,6 +32,8 @@ _CLAUSE_BREAK = re.compile(
 _MAX_CLAUSES = 3
 # A clause needs this many content words to be retrieved on its own.
 _MIN_CLAUSE_TERMS = 2
+# Hits synthesis reads: a clause file below them reached no answer.
+_SERVED = 5
 
 
 def split_clauses(question: str) -> list[str]:
@@ -57,9 +59,16 @@ async def cover_clauses(
     if len(clauses) < 2 or not hits:
         return hits
     found: dict[str, dict] = {}
+    clause_of: dict[str, str] = {}
     for clause in clauses[1:]:
         with contextlib.suppress(Exception):
             top = await asyncio.create_task(_clause_top(clause, ctx, scope, exclude_spec))
             if top is not None:
                 found.setdefault(top["target_path"], top)
-    return place_named_files(hits, list(found), found)
+                clause_of.setdefault(top["target_path"], clause)
+    out = place_named_files(hits, list(found), found)
+    # Marked after placing: the hit a clause names may be one already served.
+    for h in out[:_SERVED]:
+        if (clause := clause_of.get(h.get("target_path"))) is not None:
+            h["_clause"] = clause
+    return out

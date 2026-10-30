@@ -776,6 +776,8 @@ class _Grade(NamedTuple):
     absent_names: tuple[str, ...] = ()
     #: Question names defined in several files the answer does not tell apart, with those files.
     split_names: dict[str, list[str]] | None = None
+    #: Later clauses of a compound question whose retrieved file the answer does not cite.
+    clauses_unanswered: tuple[str, ...] = ()
 
 
 @dataclass
@@ -806,6 +808,7 @@ class _GradeState:
     unindexed_names: set[str] = field(default_factory=set)
     absent_names: tuple[str, ...] = ()
     split_names: dict[str, list[str]] = field(default_factory=dict)
+    clauses_unanswered: list[str] = field(default_factory=list)
 
 
 def _earned_high(
@@ -1050,6 +1053,25 @@ def _path_words(text: str) -> set[str]:
     return {w for w in words if len(w) >= 2 and w not in STOPWORDS}
 
 
+def _clause_gate(s: _GradeState) -> None:
+    """A compound question whose later clause the answer leaves out.
+
+    Each later clause put its best file among the hits (``_clause``); an answer
+    citing none of that clause's file used none of its evidence, so the whole
+    question is not answered.
+    """
+    if s.confidence != "high":
+        return
+    cited = {c.split("::", 1)[0] for c in s.citations}
+    s.clauses_unanswered = [
+        h["_clause"]
+        for h in s.hits
+        if h.get("_clause") and (h.get("target_path") or "").split("::", 1)[0] not in cited
+    ]
+    if s.clauses_unanswered:
+        s.confidence = "medium"
+
+
 def _value_gate(s: _GradeState) -> None:
     """On a value question every asserted number must appear in the retrieved material.
 
@@ -1171,6 +1193,7 @@ _GRADE_GATES = (
     _admitted_gap_gate,
     _identifier_gate,
     _split_name_gate,
+    _clause_gate,
     _value_gate,
     _citation_gate,
     _named_file_gate,
@@ -1251,6 +1274,7 @@ def _grade_answer(
     return _Grade(
         absent_names=s.absent_names,
         split_names=s.split_names,
+        clauses_unanswered=tuple(s.clauses_unanswered),
         confidence=s.confidence,
         high_reason=high_reason,
         second_score=_confidence_score(hits[1]) if len(hits) >= 2 else 0.0,

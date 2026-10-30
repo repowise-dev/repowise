@@ -110,3 +110,46 @@ def test_a_single_clause_question_is_untouched(monkeypatch) -> None:
     hits = [{"target_path": "a.py", "score": 1.0}]
     q = "How does the CORS middleware handle preflight requests?"
     assert asyncio.run(C.cover_clauses(q, hits, None, scope=None, exclude_spec=None)) is hits
+
+
+def test_a_compound_answer_citing_no_file_for_a_later_clause_is_held_at_medium() -> None:
+    from repowise.server.mcp_server.tool_answer.confidence import _grade_answer
+    from repowise.server.mcp_server.tool_answer.payload import _held_at_medium_note
+
+    hits = [
+        {"target_path": "graph.py", "score": 6.0, "summary": "update rebuild graph", "symbols": [{"name": "rebuild", "_matched": True}]},
+        {"target_path": "cli.py", "score": 3.0},
+        {"target_path": "resolvers.py", "score": 3.0, "_clause": "does it re-resolve imports and calls"},
+    ]
+
+    def grade(citations):
+        return _grade_answer(
+            question="How does update rebuild the graph, and does it re-resolve imports and calls?",
+            question_ids=set(),
+            answer_text="`rebuild` in graph.py re-traverses the changed files and rebuilds the graph.",
+            hits=hits,
+            citations=citations,
+            symbol_bodies=[],
+            served_named_body=False,
+            dominance="gap",
+            uncovered=[],
+        )
+
+    held = grade(["graph.py"])
+    assert held.confidence == "medium"
+    assert held.clauses_unanswered == ("does it re-resolve imports and calls",)
+    assert "re-resolve imports" in _held_at_medium_note(held)
+    assert grade(["graph.py", "resolvers.py"]).confidence == "high"
+
+
+def test_cover_clauses_marks_the_clause_file_it_served(monkeypatch) -> None:
+    hits = [{"target_path": f"f{i}.py", "score": 5.0 - i} for i in range(5)]
+
+    async def top(clause, ctx, scope, exclude_spec):
+        return {"target_path": "f1.py", "page_type": "file_page"}
+
+    monkeypatch.setattr(C, "_clause_top", top)
+    q = "How does update rebuild the graph, and does it re-resolve imports and calls?"
+    out = asyncio.run(C.cover_clauses(q, hits, None, scope=None, exclude_spec=None))
+    assert [h["target_path"] for h in out] == [h["target_path"] for h in hits]
+    assert out[1]["_clause"] == "does it re-resolve imports and calls"
