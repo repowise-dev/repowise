@@ -541,7 +541,7 @@ def _ambiguous_rows(
     Between them ``results`` and these rows name every definition, once.
     """
     shown = {
-        (r.get("path"), r.get("start_line"))
+        (r.get("path") or r.get("file"), r.get("start_line"))
         for r in response.get("results") or ()
         if isinstance(r, dict) and r.get("type") == "symbol"
     }

@@ -609,3 +609,10 @@ async def test_skeleton_of_a_short_document_is_served_whole(session, populated_d
 
     assert out["skeleton"]["mode"] == "raw"
     assert out["skeleton"]["text"] == "# Short\n\nOne line.\n"
+
+
+def test_outline_line_numbers_count_only_newlines():
+    from repowise.server.mcp_server.tool_context.preview import heading_rows
+
+    text = "# One\n\x0cpage break\n## Two\n"
+    assert heading_rows(text, "a.md") == [(1, "# One"), (3, "## Two")]

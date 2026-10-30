@@ -132,11 +132,14 @@ def _rst_heading_rows(lines: list[str]) -> list[tuple[int, str]]:
 
 def heading_rows(text: str, file_path: str) -> list[tuple[int, str]] | None:
     """A Markdown or reStructuredText document's ``(line, heading)`` rows; ``None`` for other files."""
+    # Only a newline ends a line, as for get_symbol ranges: splitlines() also
+    # splits on form feeds and would shift every number after one.
+    lines = [line.removesuffix("\r") for line in text.split("\n")]
     lower = file_path.lower()
     if lower.endswith(_MARKDOWN_EXTS):
-        return _markdown_heading_rows(text.splitlines())
+        return _markdown_heading_rows(lines)
     if lower.endswith(_RST_EXTS):
-        return _rst_heading_rows(text.splitlines())
+        return _rst_heading_rows(lines)
     return None
 
 
