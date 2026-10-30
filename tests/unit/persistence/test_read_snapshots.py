@@ -384,3 +384,70 @@ async def test_a_corrupt_payload_is_a_miss(async_session) -> None:
 )
 def test_text_sql_counts_as_a_write_unless_it_is_a_plain_read(sql, table) -> None:
     assert _written_table(text(sql)) == table
+
+
+async def _decision(session, rid) -> None:
+    from repowise.core.persistence.crud.decisions import upsert_decision
+    from repowise.core.persistence.decision_graph import sync_links_from_record
+
+    record = await upsert_decision(
+        session, repository_id=rid, title="Keep the core pure", decision="No I/O in core",
+        affected_files=["src/core.py"],
+    )
+    await sync_links_from_record(session, record)
+
+
+async def _commit_health(session, rid) -> None:
+    from repowise.core.persistence.models import GitCommitHealthFinding
+
+    session.add(
+        GitCommitHealthFinding(
+            repository_id=rid, sha="head", change_finding_id="c1", change_kind="introduced",
+            dimension="maintainability", biomarker_type="long_method", severity="high",
+            file_path="src/core.py",
+        )
+    )
+
+
+async def _kinds(session) -> list[str]:
+    rows = await session.execute(
+        select(ReadSnapshot.kind).where(ReadSnapshot.kind.not_in(SELF_KEYED_KINDS))
+    )
+    return sorted(rows.scalars())
+
+
+@pytest.mark.parametrize("change", [_decision, _commit_health])
+async def test_a_write_one_view_does_not_read_keeps_that_view(async_session, change) -> None:
+    rid = await _seed(async_session)
+    await write_read_snapshots(async_session, rid)
+    await async_session.commit()
+
+    await change(async_session, rid)
+    await async_session.commit()
+    # The actions view reads decisions and commit-health findings; the queue does not.
+    assert await _kinds(async_session) == ["fix_first", "fix_first_counts"]
+    view, queue = await _live(async_session, rid)
+    clear_fix_first_cache()
+    assert _wire((await load_fix_first(async_session, rid, limit=None)).as_dict()) == queue
+    assert _wire(await load_actions_view(async_session, rid, now=NOW)) == view
+    # The next writer rebuilds only the dropped view.
+    assert not await fix_first_loader.write_fix_first_snapshot(async_session, rid)
+    assert await actions_loader.write_actions_snapshot(async_session, rid)
+
+
+async def test_a_write_to_a_kept_table_and_an_input_drops_every_view(async_session) -> None:
+    rid = await _seed(async_session)
+    await write_read_snapshots(async_session, rid)
+    await async_session.commit()
+    await _decision(async_session, rid)
+    await _triage(async_session, rid)
+    await async_session.commit()
+    assert await _kinds(async_session) == []
+
+
+def test_the_actions_view_skips_no_table_the_queue_reads() -> None:
+    """Guard: ``actions`` quotes the stored ``fix_first`` row, so any table it
+    may skip must be one the queue skips too."""
+    from repowise.core.persistence.read_snapshots import NOT_READ_BY
+
+    assert NOT_READ_BY.get("actions", frozenset()) <= NOT_READ_BY["fix_first"]
