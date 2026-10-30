@@ -14,6 +14,7 @@ gate reads live beside it.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from collections.abc import Collection
 from dataclasses import dataclass, field
 from typing import NamedTuple
@@ -857,25 +858,30 @@ def stated_value_line(
     the question carried by the constant's own page; a name defined twice in
     the hits names neither.
     """
-    seen: dict[str, int] = {}
-    found: list[tuple[dict, dict]] = []
-    for rank, h in enumerate(hits):
-        for sym in h.get("symbols") or []:
-            if sym.get("kind") not in ("constant", "variable"):
-                continue
-            seen[sym.get("name")] = seen.get(sym.get("name"), 0) + 1
-            if rank < _ENRICH_TOP_N_HITS and sym.get("_verified"):
-                found.append((h, sym))
+    found, seen = _verified_constants(hits)
     for hit, sym in found:
         name = sym.get("name") or ""
-        if (
-            seen[name] == 1
-            and name in answer_text
-            and _states_assigned_value(sym.get("signature") or "", answer_text)
-            and _question_names_constant(question, question_ids, name, hit)
-        ):
+        if seen[name] > 1 or name not in answer_text:
+            continue
+        stated = _states_assigned_value(sym.get("signature") or "", answer_text)
+        if stated and _question_names_constant(question, question_ids, name, hit):
             return {"path": hit.get("target_path"), "name": name, "line": sym.get("start_line")}
     return None
+
+
+def _verified_constants(hits: list[dict]) -> tuple[list[tuple[dict, dict]], Counter]:
+    """The top hits' verified constants, and how often each constant name occurs in all hits."""
+    constants = [
+        (rank, h, sym)
+        for rank, h in enumerate(hits)
+        for sym in h.get("symbols") or []
+        if sym.get("kind") in ("constant", "variable")
+    ]
+    seen = Counter(sym.get("name") for _, _, sym in constants)
+    found = [
+        (h, sym) for rank, h, sym in constants if rank < _ENRICH_TOP_N_HITS and sym.get("_verified")
+    ]
+    return found, seen
 
 
 def _states_assigned_value(signature: str, answer_text: str) -> bool:
