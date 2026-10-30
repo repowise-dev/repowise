@@ -199,7 +199,9 @@ async def cached_test_masks(session: AsyncSession, repo_id: str) -> dict[str, fr
     process's cache, else the copy the last index run stored
     (:func:`write_test_masks_snapshot`), else built here. Building reads and
     parses every test file, which is most of a first call's cost on a large
-    repository. No checkout on disk means no masks, so every test keeps its reach.
+    repository. A test edited since the index is read as indexed, like the
+    import edges the masks are applied to; the next update reads the edit.
+    No checkout on disk means no masks, so every test keeps its reach.
     """
     key = await _cache.key(session, repo_id, "masks")
     if key in _cache:
