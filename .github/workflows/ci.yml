@@ -346,6 +346,17 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Resolve VS Code test version
+        id: vscode-test-version
+        run: |
+          echo "version=$(node --input-type=module -e 'import { vscodeVersion } from "./packages/vscode/.vscode-test.mjs"; console.log(vscodeVersion)')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache VS Code test editor
+        uses: actions/cache@v4
+        with:
+          path: packages/vscode/.vscode-test
+          key: vscode-test-${{ runner.os }}-${{ steps.vscode-test-version.outputs.version }}
+
       - name: Type check
         run: npm run type-check --workspace packages/vscode
 
@@ -359,7 +370,16 @@ jobs:
         run: npm run test:webview --workspace packages/vscode
 
       - name: Smoke test under a virtual display
-        run: xvfb-run -a npm run test --workspace packages/vscode
+        run: |
+          for attempt in 1 2; do
+            if xvfb-run -a --server-args="-screen 0 1280x1024x24" npm run test --workspace packages/vscode; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 1 ]; then
+              echo "::warning::VS Code smoke test attempt $attempt failed, retrying"
+            fi
+          done
+          exit 1
 
       - name: Package VSIX (no login required)
         run: npm run package --workspace packages/vscode
