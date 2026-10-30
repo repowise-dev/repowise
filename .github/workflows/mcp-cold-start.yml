@@ -1,0 +1,74 @@
+name: MCP cold start
+
+# Times each MCP tool's first call in a fresh server on an index of this
+# repository. Never gates a pull request: a breach opens one issue labelled
+# mcp-latency, or comments on the open one.
+
+on:
+  schedule:
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  DO_NOT_TRACK: "1"
+
+jobs:
+  cold-start:
+    name: MCP cold first-call latency
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --all-packages
+
+      - name: Index this repository (no model)
+        id: index
+        continue-on-error: true
+        run: >-
+          uv run repowise init . --no-prose --embedder mock --no-editor-setup --no-hook
+          --no-agents --no-codex --no-claude-md --no-workspace --no-distill-hook
+          --no-cost-tracking -y
+
+      - name: Time each tool's first call
+        id: smoke
+        if: steps.index.outcome == 'success'
+        continue-on-error: true
+        run: uv run python scripts/mcp_cold_start_smoke.py --repo . --report smoke.md
+
+      - name: Report
+        if: always()
+        run: |
+          [ -s smoke.md ] || echo "The index build failed, so no tool was timed." > smoke.md
+          cat smoke.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open or update the latency issue
+        if: steps.index.outcome == 'failure' || steps.smoke.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          printf '\nCommit %s, [run](%s).\n' "$GITHUB_SHA" "$RUN_URL" >> smoke.md
+          gh label create mcp-latency --color FBCA04 \
+            --description "MCP cold first-call latency over budget" 2>/dev/null || true
+          number=$(gh issue list --label mcp-latency --state open --json number --jq '.[0].number')
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body-file smoke.md
+          else
+            gh issue create --title "MCP cold first-call latency over budget" \
+              --label mcp-latency --body-file smoke.md
+          fi
