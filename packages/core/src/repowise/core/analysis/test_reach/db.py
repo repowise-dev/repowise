@@ -19,7 +19,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.dead_code.file_reachability import BARREL_FILENAMES
 from repowise.core.analysis.execution_graph import ExecutionGraphIndex, file_of_symbol
-from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES, FILE_DEPENDENCY_EDGE_TYPES
+from repowise.core.ingestion.models import (
+    EXECUTION_EDGE_TYPES,
+    FILE_DEPENDENCY_EDGE_TYPES,
+    MODULE_REGISTRATION_HINT,
+)
 from repowise.core.persistence.index_cache import IndexStampCache, index_stamp
 from repowise.core.persistence.models import GraphNode, Repository
 from repowise.core.persistence.read_snapshots import read_snapshot, refresh_snapshot, snapshot_key
@@ -71,6 +75,8 @@ async def _answer(
         return await _edges_into(
             session, repo_id, keys, sorted(EXECUTION_EDGE_TYPES), UNRELIABLE_CALL_ORIGINS
         )
+    if need.kind == "registrars":
+        return await _registration_edges_into(session, repo_id, keys)
     if need.kind == "importers":
         if import_graph is not None:
             return import_graph.edges_into(keys)
@@ -98,7 +104,7 @@ async def call_graph_from_db(session: AsyncSession, repo_id: str) -> CallGraphVi
     read's cost (measured on this repository, 189k edges: 8.4 s cold with the
     column, under 2 s without it).
     """
-    wanted = ["defines", *sorted(EXECUTION_EDGE_TYPES)]
+    wanted = ["defines", *sorted(EXECUTION_EDGE_TYPES), "framework"]
     params: dict[str, Any] = {"repo_id": repo_id}
     ets = _in_clause("e", wanted, params)
     rows = await session.execute(
@@ -113,8 +119,27 @@ async def call_graph_from_db(session: AsyncSession, repo_id: str) -> CallGraphVi
     # No call or spawn lines here: test reachability reads only forward/reverse,
     # never first-hop sites, ``spawn_only`` or roles, and a spawned callee is
     # still reached.
+    edge_rows = list(rows)
+    registrations: dict[str, set[str]] = {}
+    for src, dst, edge_type, _origin in edge_rows:
+        if edge_type == "framework" and not src.startswith("framework:"):
+            registrations.setdefault(src, set()).add(dst)
+    registration_rows = await session.execute(
+        text(
+            "SELECT source_node_id, target_node_id FROM graph_edges "
+            "WHERE repository_id = :repo_id AND hint_source = :hint_source"
+        ),
+        {"repo_id": repo_id, "hint_source": MODULE_REGISTRATION_HINT},
+    )
+    for src, dst in registration_rows:
+        registrations.setdefault(src, set()).add(dst)
     return ExecutionGraphIndex(
-        edge_rows=((src, dst, edge_type, origin, None) for src, dst, edge_type, origin in rows)
+        edge_rows=(
+            (src, dst, edge_type, origin, None)
+            for src, dst, edge_type, origin in edge_rows
+            if edge_type != "framework"
+        ),
+        registrations=registrations,
     )
 
 
@@ -792,4 +817,28 @@ async def _edges_into(
             params,
         )
         out.extend((s, t) for s, t in rows)
+    return out
+
+
+async def _registration_edges_into(
+    session: AsyncSession, repo_id: str, targets: list[str]
+) -> list[tuple[str, str]]:
+    """Files wired into *targets* by framework edges or explicit registry facts."""
+    out: list[tuple[str, str]] = []
+    targets = list(dict.fromkeys(targets))
+    for start in range(0, len(targets), _IN_BATCH):
+        params: dict[str, Any] = {
+            "repo_id": repo_id,
+            "hint_source": MODULE_REGISTRATION_HINT,
+        }
+        tgt = _in_clause("p", targets[start : start + _IN_BATCH], params)
+        rows = await session.execute(
+            text(
+                "SELECT DISTINCT source_node_id, target_node_id FROM graph_edges "
+                "WHERE repository_id = :repo_id AND target_node_id IN "
+                f"({tgt}) AND (edge_type = 'framework' OR hint_source = :hint_source)"
+            ),
+            params,
+        )
+        out.extend((source, target) for source, target in rows)
     return out

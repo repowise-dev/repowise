@@ -1,7 +1,8 @@
 """The forward walk and file pairing: which files some test reaches or pairs with, at all.
 
 The batch question over a whole repository, not the attributed one the reverse
-walks answer.
+walks answer. Calls and framework registrations are execution reach; imports
+remain the weaker pairing signal.
 """
 
 from __future__ import annotations
@@ -42,9 +43,9 @@ def files_reached_by_tests(
     """Every non-test file some test can execute into within *max_depth* hops.
 
     One multi-source breadth-first search from every symbol the test files
-    declare, so the cost is O(V+E) however many test files there are - this is
-    the batch question ("which files are reached at all"), not the attributed
-    one.
+    declare, following call edges and same-tier framework registrations, so
+    the cost is O(V+E) however many test files there are - this is the batch
+    question ("which files are reached at all"), not the attributed one.
 
     Returns the reached set with the test files themselves removed: a test does
     not need a test.
@@ -63,6 +64,10 @@ def files_reached_by_tests(
         nxt: set[str] = set()
         for node in frontier:
             nxt.update(view.calls.get(node, ()))
+        registered = _registered_files(view, {file_of_symbol(symbol) for symbol in nxt})
+        reached.update(registered)
+        for path in registered:
+            nxt.update(view.declares.get(path, ()))
         nxt -= seen
         if not nxt:
             break
@@ -70,6 +75,23 @@ def files_reached_by_tests(
         reached |= nxt
         frontier = nxt
     return {file_of_symbol(symbol) for symbol in reached} - test_files
+
+
+def _registered_files(view: CallGraphView, files: set[str]) -> set[str]:
+    """Return the transitive framework-wired modules loaded by *files*."""
+    reached: set[str] = set()
+    pending = set(files)
+    while pending:
+        fresh = {
+            target
+            for source in pending
+            for target in view.registrations.get(source, ())
+        } - reached
+        if not fresh:
+            break
+        reached.update(fresh)
+        pending = fresh
+    return reached
 
 
 def _dependencies_of(graph: Any, path: str) -> set[str]:

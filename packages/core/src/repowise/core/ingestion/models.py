@@ -710,6 +710,7 @@ REACHABILITY_USE_EDGE_TYPES: frozenset[str] = SYMBOL_USE_EDGE_TYPES | {"type_use
 # target file, and role seeding skips them: a registry says nothing about how
 # the function runs.
 REGISTRATION_HINT = "decorator_registration"
+MODULE_REGISTRATION_HINT = "module_registration"
 TARGET_OWNED_HINTS: frozenset[str] = frozenset({REGISTRATION_HINT})
 
 

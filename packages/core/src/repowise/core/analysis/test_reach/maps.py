@@ -14,13 +14,17 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any, Literal, NamedTuple, TypeVar
 
-from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES, FILE_DEPENDENCY_EDGE_TYPES
+from repowise.core.ingestion.models import (
+    EXECUTION_EDGE_TYPES,
+    FILE_DEPENDENCY_EDGE_TYPES,
+    MODULE_REGISTRATION_HINT,
+)
 from repowise.core.test_paths import is_test_related_path
 
 from .hubs import call_hub_files
 from .model import UNRELIABLE_CALL_ORIGINS
 
-NeedKind = Literal["declared", "callers", "importers", "known"]
+NeedKind = Literal["declared", "callers", "importers", "registrars", "known"]
 
 
 class Need(NamedTuple):
@@ -29,6 +33,7 @@ class Need(NamedTuple):
     ``declared``: ``(file, symbol)`` for each symbol the files define.
     ``callers``: ``(caller, callee)`` along reliable execution edges into the nodes.
     ``importers``: ``(dependent, dependency)`` along file-dependency edges into the files.
+    ``registrars``: ``(registrar, registered file)`` along framework wiring edges.
     ``known``: the subset of the paths the index holds a node for.
     """
 
@@ -128,6 +133,7 @@ class WalkMaps:
 
     declares: Mapping[str, tuple[str, ...]]
     callers: Mapping[str, tuple[str, ...]]
+    registrars: Mapping[str, tuple[str, ...]]
     imports: ImportGraph
     files: frozenset[str]
     test_files: frozenset[str]
@@ -141,6 +147,8 @@ class WalkMaps:
             return [(f, s) for f in need.keys for s in self.declares.get(f, ())]
         if need.kind == "callers":
             return [(c, n) for n in need.keys for c in self.callers.get(n, ())]
+        if need.kind == "registrars":
+            return [(r, f) for f in need.keys for r in self.registrars.get(f, ())]
         if need.kind == "importers":
             return self.imports.edges_into(need.keys)
         return {path for path in need.keys if path in self.files}
@@ -173,6 +181,7 @@ def build_walk_maps(graph: Any) -> WalkMaps:
     tests: set[str] = set()
     declares: dict[str, set[str]] = {}
     callers: dict[str, set[str]] = {}
+    registrars: dict[str, set[str]] = {}
     importers: dict[str, set[str]] = {}
     if graph is not None:
         for node, attrs in graph.nodes(data=True):
@@ -193,10 +202,13 @@ def build_walk_maps(graph: Any) -> WalkMaps:
                 edge_type, attrs.get("hint_source")
             ):
                 importers.setdefault(target, set()).add(source)
+            if edge_type == "framework" or attrs.get("hint_source") == MODULE_REGISTRATION_HINT:
+                registrars.setdefault(target, set()).add(source)
     # Sorted, so a bounded walk does not depend on the order edges were added in.
     return WalkMaps(
         declares={k: tuple(sorted(v)) for k, v in declares.items()},
         callers={k: tuple(sorted(v)) for k, v in callers.items()},
+        registrars={k: tuple(sorted(v)) for k, v in registrars.items()},
         imports=ImportGraph({k: tuple(sorted(v)) for k, v in importers.items()}),
         files=frozenset(files),
         test_files=frozenset(tests),

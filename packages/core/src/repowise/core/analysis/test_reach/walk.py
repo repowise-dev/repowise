@@ -86,7 +86,8 @@ def call_walk(
         level, frontier = frontier, []
         queued: set[str] = set()
         start = {node: dict(origins[node]) for node in level}
-        for caller, callee in (yield Need("callers", tuple(level))):
+        start = yield from _registered_symbols(start)
+        for caller, callee in (yield Need("callers", tuple(start))):
             carried = start.get(callee)
             if not carried:
                 continue
@@ -108,6 +109,55 @@ def call_walk(
         seed: {test: ReachDistance(depth, len(callers)) for test, (depth, callers) in tests.items()}
         for seed, tests in found.items()
     }
+
+
+def _registered_symbols(start: dict[str, dict[str, int]]) -> Walk[dict[str, dict[str, int]]]:
+    """Add declarations from files registered by any file represented in *start*.
+
+    Registration is framework wiring, not a call hop. Follow its transitive
+    closure before reading callers so a registrar's methods can lead back to a
+    test in the same execution tier.
+    """
+    file_origins: dict[str, dict[str, int]] = {}
+    for symbol, carried in start.items():
+        file = file_of_symbol(symbol)
+        known = file_origins.setdefault(file, {})
+        for seed, distance in carried.items():
+            known[seed] = min(distance, known.get(seed, distance))
+
+    pending = dict(file_origins)
+    while pending:
+        relations = yield Need("registrars", tuple(sorted(pending)))
+        parents: dict[str, dict[str, int]] = {}
+        for registrar, registered in relations:
+            carried = pending.get(registered)
+            if not carried:
+                continue
+            parent_origins = parents.setdefault(registrar, {})
+            for seed, distance in carried.items():
+                parent_origins[seed] = min(distance, parent_origins.get(seed, distance))
+
+        pending = {}
+        for registrar, carried in parents.items():
+            known = file_origins.setdefault(registrar, {})
+            fresh = {
+                seed: distance
+                for seed, distance in carried.items()
+                if seed not in known or distance < known[seed]
+            }
+            if fresh:
+                known.update(fresh)
+                pending[registrar] = fresh
+
+        if pending:
+            for file, symbol in (yield Need("declared", tuple(sorted(pending)))):
+                symbol_origins = start.setdefault(symbol, {})
+                for seed, distance in pending[file].items():
+                    symbol_origins[seed] = min(
+                        distance, symbol_origins.get(seed, distance)
+                    )
+
+    return start
 
 
 def _call_origins(
