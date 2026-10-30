@@ -76,10 +76,12 @@ if TYPE_CHECKING:
 # whatever the filename. ``__test__`` is the Jest variant of ``__tests__``;
 # ``integration_test`` is the directory Flutter's integration tests must live in;
 # ``testsuite`` is the one-word suite directory (``gcc/testsuite/``, ``flask/testsuite/``).
-# Ceiling: a product package named ``testsuite`` (a library for running suites)
-# reads as test material too; none seen so far.
+# ``cypress`` is the Cypress e2e framework's root: everything beneath it
+# (``e2e/``, ``support/``, ``fixtures/``) is test material, the way ``e2e``
+# already is. Ceiling: a product package named ``testsuite`` (a library for
+# running suites) reads as test material too; none seen so far.
 _TEST_DIR_TOKENS: frozenset[str] = frozenset(
-    {"test", "tests", "__tests__", "__test__", "e2e", "integration_test", "testsuite"}
+    {"test", "tests", "__tests__", "__test__", "e2e", "integration_test", "testsuite", "cypress"}
 )
 
 # A compound segment (``e2e-tests``, ``pkg_tests``, ``client-e2e``) is a test
@@ -196,8 +198,11 @@ _SUPPORT_STEMS_IN_TEST_TREE: frozenset[str] = frozenset(
 # search, which uses ``is_test_path``, still surfaces the golden file by name.
 # Matched on the segment's words run together too, so ``test-data/`` and
 # ``test_data/`` are the same golden data rather than a test tree.
+# ``.storybook`` is Storybook's config directory (preview/manager config and
+# addons): the scaffolding stories render against, never shipped product code,
+# and the dot prefix means nothing else is called this.
 _SUPPORT_DIR_TOKENS_ANYWHERE: frozenset[str] = frozenset(
-    {"__fixtures__", "__mocks__", "__snapshots__", "testdata"}
+    {"__fixtures__", "__mocks__", "__snapshots__", "testdata", ".storybook"}
 )
 
 # Helper directories named for tests, matched on the segment's words run
@@ -377,13 +382,30 @@ def _is_test_name(filename: str) -> bool:
     return camel_prefix_re is not None and camel_prefix_re.search(original_stem) is not None
 
 
+def _is_story_file(filename: str) -> bool:
+    """Whether the filename is a Storybook story (``Button.stories.tsx``).
+
+    Stories are the rendered examples tests exercise, not shipped product
+    code. Matched on the stem's last dot segment, so a bare ``stories.tsx``
+    (no module) and ``storybook.ts`` do not count, and a test name still
+    wins (``Button.stories.test.tsx`` stays a test).
+    """
+    lowered = filename.lower()
+    parts = PurePosixPath(lowered).stem.split(".")
+    return len(parts) >= 2 and parts[-1] in {"stories", "story"} and not _is_test_name(filename)
+
+
 def _is_support_name(filename: str) -> bool:
     """Whether the filename marks test support (conftest.py, FooFixtures.java)."""
     if not filename:
         return False
     rules = _conventions()
     lowered = filename.lower()
-    if PurePosixPath(lowered).stem in rules.support_stems or _is_support_compound(filename):
+    if (
+        PurePosixPath(lowered).stem in rules.support_stems
+        or _is_support_compound(filename)
+        or _is_story_file(filename)
+    ):
         return True
     camel_re = rules.support_camel_res.get(PurePosixPath(lowered).suffix)
     return camel_re is not None and camel_re.search(PurePosixPath(filename).stem) is not None
