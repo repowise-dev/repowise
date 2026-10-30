@@ -21,7 +21,7 @@ from repowise.core.persistence.models import WikiSymbol
 from repowise.core.support_paths import is_doc_or_config_path
 from repowise.core.test_paths import is_test_related_path
 from repowise.server.mcp_server._helpers import read_repo_file_text
-from repowise.server.mcp_server._line_hits import MAX_LINES_PER_FILE, production_only, word_scan
+from repowise.server.mcp_server._line_hits import production_only, word_scan
 from repowise.server.mcp_server._query_shape import (
     _WORD_CHAIN_RE,
     _folds_case,
@@ -414,36 +414,30 @@ _QUOTED_RE = re.compile(r""""(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`[^`]*`""")
 
 
 def _writes_as_code(root: Path | None, rows: list[dict], token: str) -> bool:
-    """Does any scanned row write *token* as code, not in a comment or docstring?
+    """Does any scanned row's file write *token* as code, not in a comment or docstring?
 
     A test line counts only when the name sits outside its strings: a question
     or fixture text naming the name is not code that has it. Doc and config
-    files count as before, and so does any file that cannot be read or was cut
-    at the per-file line cap, since it proves nothing. Ceilings: a trailing comment after code still counts, and a
-    multi-line non-doc string (SQL in triple quotes) is read as a docstring.
+    files count as before, and so does a file that cannot be read, since it
+    proves nothing. Ceilings: a trailing comment after code still counts, and
+    a multi-line non-doc string (SQL in triple quotes) reads as a docstring.
     """
     word = re.compile(rf"(?<![\w$]){re.escape(token)}(?![\w$])")
-    by_path: dict[str, list[int]] = {}
-    for r in rows:
-        by_path.setdefault(r["path"], []).append(r["line"])
-    return any(_file_writes_as_code(root, path, numbers, word) for path, numbers in by_path.items())
+    paths = dict.fromkeys(r["path"] for r in rows)
+    return any(_file_writes_as_code(root, path, word) for path in paths)
 
 
-def _file_writes_as_code(root: Path | None, path: str, numbers: list[int], word: re.Pattern) -> bool:
-    """:func:`_writes_as_code` for the scanned lines *numbers* of one file."""
-    # A file cut at the per-file cap may write it as code past the cut.
-    capped = len(numbers) >= MAX_LINES_PER_FILE
-    text = None if capped or is_doc_or_config_path(path) else read_repo_file_text(root, path)
+def _file_writes_as_code(root: Path | None, path: str, word: re.Pattern) -> bool:
+    """:func:`_writes_as_code` for one file, over every line of it: the scan
+    cuts a file at a per-file line cap, and a write may sit past the cut."""
+    text = None if is_doc_or_config_path(path) else read_repo_file_text(root, path)
     if text is None:
         return True
     lines = text.splitlines()
-    if not all(0 < n <= len(lines) for n in numbers):
-        return True  # changed since the scan: proves nothing
     masked = _string_masked_lines(tuple(lines), backticks=False).all
     test = is_test_related_path(path)
-    for n in numbers:
-        line = lines[n - 1]
-        if n in masked or _COMMENT_OR_DOC_START_RE.match(line.lstrip()):
+    for n, line in enumerate(lines, 1):
+        if n in masked or not word.search(line) or _COMMENT_OR_DOC_START_RE.match(line.lstrip()):
             continue
         if not test or word.search(_QUOTED_RE.sub(" ", line)):
             return True

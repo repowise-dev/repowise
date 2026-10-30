@@ -542,9 +542,7 @@ def _writes(tmp_path, rel: str, text: str) -> bool:
     path = tmp_path / rel
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
-    rows = [{"path": rel, "line": n} for n, line in enumerate(text.splitlines(), 1)
-            if "RowTree" in line]
-    return _writes_as_code(tmp_path, rows, "RowTree")
+    return _writes_as_code(tmp_path, [{"path": rel, "line": 1}], "RowTree")
 
 
 def test_a_docstring_or_comment_does_not_write_a_name(tmp_path) -> None:
@@ -561,14 +559,18 @@ def test_a_test_writes_a_name_only_outside_its_strings(tmp_path) -> None:
     assert _writes(tmp_path, "tests/test_b.py", "from ui import RowTree\n")
 
 
-def test_an_unreadable_or_capped_file_still_counts(tmp_path) -> None:
+def test_an_unreadable_file_counts_and_a_write_past_the_scan_cap_is_found(tmp_path) -> None:
     from repowise.server.mcp_server._line_hits import MAX_LINES_PER_FILE
     from repowise.server.mcp_server.tool_answer.symbols import _writes_as_code
 
     assert _writes_as_code(tmp_path, [{"path": "gone.py", "line": 1}], "RowTree")
-    (tmp_path / "many.py").write_text("# RowTree\n" * MAX_LINES_PER_FILE, encoding="utf-8")
-    rows = [{"path": "many.py", "line": n} for n in range(1, MAX_LINES_PER_FILE + 1)]
+    comments = "# RowTree\n" * MAX_LINES_PER_FILE
+    (tmp_path / "many.py").write_text(comments + "tree = RowTree()\n", encoding="utf-8")
+    (tmp_path / "notes.py").write_text(comments * 2, encoding="utf-8")
+    rows = [{"path": p, "line": n} for p in ("many.py", "notes.py")
+            for n in range(1, MAX_LINES_PER_FILE + 1)]
     assert _writes_as_code(tmp_path, rows, "RowTree")
+    assert not _writes_as_code(tmp_path, [r for r in rows if r["path"] == "notes.py"], "RowTree")
 
 
 def test_a_name_only_a_comment_writes_is_absent(tmp_path) -> None:
