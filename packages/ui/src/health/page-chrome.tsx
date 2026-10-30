@@ -2,6 +2,7 @@
 
 import { HealthTabs, type HealthTabKey, type HealthTabsProps } from "./health-tabs";
 import { formatDate, parseDate } from "../lib/format";
+import { RelativeTime } from "../shared/relative-time";
 
 export interface HealthPageChromeProps {
   repoId: string;
@@ -61,7 +62,10 @@ export function HealthPageChrome({
           ) : null}
           {meta ? (
             <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
-              Indexed {formatIndexedAt(meta.last_indexed_at)}
+              Indexed{" "}
+              <RelativeTime date={meta.last_indexed_at}>
+                {formatIndexedAt(meta.last_indexed_at)}
+              </RelativeTime>
               {meta.head_commit ? (
                 <>
                   {" "}

@@ -10,7 +10,8 @@ import {
 } from "lucide-react";
 import type { DocPage, DocPageSummary } from "@repowise-dev/types/docs";
 import { cn } from "../lib/cn";
-import { formatRelativeTime, formatTokens } from "../lib/format";
+import { formatDate, formatRelativeTime, formatTokens } from "../lib/format";
+import { RelativeTime } from "../shared/relative-time";
 import { getPageLabel, isStubFallbackPage } from "../lib/page-types";
 import { citationKey, citationLabel, readCitations } from "./citations";
 import { computeDocNav } from "./doc-nav";
@@ -658,7 +659,9 @@ function DocsReaderBody({
                 LinkComponent={LinkComponent}
               />
               <span title={page.updated_at}>
-                {c.updated(formatRelativeTime(page.updated_at))}
+                <RelativeTime date={page.updated_at} stable={c.updated(formatDate(page.updated_at))}>
+                  {c.updated(formatRelativeTime(page.updated_at))}
+                </RelativeTime>
               </span>
               {moduleSeg && (
                 <button

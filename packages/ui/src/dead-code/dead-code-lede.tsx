@@ -12,6 +12,7 @@ import type { ReactNode } from "react";
 import type { DeadCodeSummary } from "@repowise-dev/types/dead-code";
 
 import { PageLede } from "../shared/page-lede";
+import { RelativeTime } from "../shared/relative-time";
 import { formatDateTime, formatNumber, formatRelativeTimeOrNull } from "../lib/format";
 
 /** Counts a flagged sentence quotes. */
@@ -86,7 +87,7 @@ export function AnalysedAt({ at }: { at: string | null | undefined }) {
     <>
       {" "}
       <time dateTime={at} title={formatDateTime(at)}>
-        Analysed {relative}.
+        Analysed <RelativeTime date={at}>{relative}</RelativeTime>.
       </time>
     </>
   );

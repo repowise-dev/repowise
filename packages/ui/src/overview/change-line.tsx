@@ -1,5 +1,6 @@
 import * as React from "react";
-import { formatDateTime, formatRelativeTime } from "../lib/format";
+import { formatDate, formatDateTime, formatRelativeTime } from "../lib/format";
+import { RelativeTime } from "../shared/relative-time";
 
 export interface ChangeStat {
   /** Pre-formatted figure, e.g. "8" or "10+". */
@@ -58,7 +59,9 @@ export function ChangeLine({ since, stats, copy }: ChangeLineProps) {
         className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]"
         title={formatDateTime(since)}
       >
-        {c.since(c.relativeTime(since))}
+        <RelativeTime date={since} stable={c.since(formatDate(since))}>
+          {c.since(c.relativeTime(since))}
+        </RelativeTime>
       </span>
       {stats.map((s) => (
         <span key={s.label}>

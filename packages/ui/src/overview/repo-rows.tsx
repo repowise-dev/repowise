@@ -1,8 +1,9 @@
 import * as React from "react";
 import type { RepoIndexStatus } from "@repowise-dev/types/repos";
-import { formatNumber, formatRelativeTime } from "../lib/format";
+import { formatNumber } from "../lib/format";
 import { healthMark } from "../health/tokens";
 import { RepoAvatar } from "./repo-avatar";
+import { RelativeTime } from "../shared/relative-time";
 
 export interface RepoRow {
   id: string;
@@ -151,7 +152,7 @@ export function RepoRows({ repos, LinkComponent, actionsFor }: RepoRowsProps) {
                     {repo.updatedAt && (
                       <span className="text-[var(--color-text-tertiary)]">
                         {figures.length > 0 ? " · " : " "}
-                        Synced {formatRelativeTime(repo.updatedAt)}
+                        Synced <RelativeTime date={repo.updatedAt} />
                       </span>
                     )}
                   </p>
