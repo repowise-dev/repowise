@@ -122,14 +122,14 @@ def _tc(test_id: str, source_file: str, covered_lines: list[int]):
     )
 
 
-async def _change_risk(monkeypatch, repo: Path, factory) -> dict:
+async def _change_risk(monkeypatch, repo: Path, factory, **filters) -> dict:
     module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
 
     async def _context(_: str | None) -> SimpleNamespace:
         return SimpleNamespace(path=str(repo), session_factory=factory)
 
     monkeypatch.setattr(module, "_resolve_repo_context", _context)
-    return await module.get_change_risk("HEAD", baseline=0, include=["tests"])
+    return await module.get_change_risk("HEAD", baseline=0, include=["tests"], **filters)
 
 
 async def _risk_directive(monkeypatch, repo: Path, factory, changed: list[str]) -> dict:
@@ -173,15 +173,36 @@ async def test_a_test_that_runs_with_every_subset_is_named(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_change_risk_selects_tests_once_while_it_scores(tmp_path, monkeypatch) -> None:
-    """The selection starts beside the score, and the tests block joins it."""
+@pytest.mark.parametrize(
+    "filters",
+    [
+        {},
+        {"exclude_patterns": ["docs/"]},
+        {"extensions": [".py"]},
+        {"include_paths": ["src/"]},
+    ],
+    ids=["none", "exclude_patterns", "extensions", "include_paths"],
+)
+async def test_change_risk_selects_tests_once_while_it_scores(
+    tmp_path, monkeypatch, filters
+) -> None:
+    """The selection starts beside the score, and the tests block joins it.
+
+    The request's path filters narrow the score, not the tests block's change,
+    so a filtered call shares the same selection.
+    """
     import asyncio
     from collections import OrderedDict
 
     from repowise.server.mcp_server import _test_selection
 
-    repo, base = _repo(tmp_path, _STATUS)
-    _commit(repo, {"src/status.py": "def status():\n    return 2\n"}, "fix: status")
+    repo, base = _repo(tmp_path, {**_STATUS, "docs/notes.md": "one\n"})
+    # The docs edit is what each filter drops from the score.
+    _commit(
+        repo,
+        {"src/status.py": "def status():\n    return 2\n", "docs/notes.md": "two\n"},
+        "fix: status",
+    )
     factory = await _index(
         base,
         {"src/status.py": False, "tests/test_status.py": True},
@@ -211,7 +232,7 @@ async def test_change_risk_selects_tests_once_while_it_scores(tmp_path, monkeypa
 
     monkeypatch.setattr(tool, "_score_change", _slow_score)
 
-    it = (await _change_risk(monkeypatch, repo, factory))["impacted_tests"]
+    it = (await _change_risk(monkeypatch, repo, factory, **filters))["impacted_tests"]
 
     assert it["status"] == "selected"
     assert "tests/test_status.py" in it["tests_to_run"]
