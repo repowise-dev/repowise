@@ -1,1 +1,1 @@
-PLACEHOLDER_AGAIN
+"""Full-text search for repowise wiki pages.\n\nTwo backends:\n- SQLite  (default): FTS5 virtual table ``page_fts``.\n- PostgreSQL:        GIN index on ``to_tsvector('english', title || content)``.\n\nThe b
