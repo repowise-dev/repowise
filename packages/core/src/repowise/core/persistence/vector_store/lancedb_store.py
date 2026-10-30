@@ -417,12 +417,14 @@ class LanceDBVectorStore(VectorStore):
         await self._upsert_rows(rows)
         return True
 
-    async def search(self, query: str, limit: int = 10) -> list[SearchResult]:
+    async def search(
+        self, query: str, limit: int = 10, *, kind: str = "query"
+    ) -> list[SearchResult]:
         await self._ensure_connected()
         if self._table is None:
             return []
 
-        q_vecs = await self._embedder.embed([query])
+        q_vecs = await self._embedder.embed([query], kind=kind)
         return await self._search_by_vector([float(v) for v in q_vecs[0]], limit, query=query)
 
     async def search_by_vector(self, vector: list[float], limit: int = 10) -> list[SearchResult]:
@@ -431,14 +433,16 @@ class LanceDBVectorStore(VectorStore):
             return []
         return await self._search_by_vector([float(v) for v in vector], limit)
 
-    async def search_many(self, queries: list[str], limit: int = 10) -> list[list[SearchResult]]:
+    async def search_many(
+        self, queries: list[str], limit: int = 10, *, kind: str = "query"
+    ) -> list[list[SearchResult]]:
         """One embedder call for all queries; the vector lookups are local."""
         if not queries:
             return []
         await self._ensure_connected()
         if self._table is None:
             return [[] for _ in queries]
-        q_vecs = await self._embedder.embed(list(queries))
+        q_vecs = await self._embedder.embed(list(queries), kind=kind)
         out: list[list[SearchResult]] = []
         for query, q_vec in zip(queries, q_vecs, strict=True):
             try:
@@ -470,6 +474,12 @@ class LanceDBVectorStore(VectorStore):
     async def close(self) -> None:
         self._table = None
         self._db = None
+
+    async def holds_current_vectors(self) -> bool:
+        width = getattr(self._embedder, "dimensions", None)
+        return width is not None and read_recorded_vector_dim(
+            self._db_path, self._table_name
+        ) == width
 
     async def list_page_ids(self) -> set[str]:
         await self._ensure_connected()

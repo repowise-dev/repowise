@@ -34,10 +34,16 @@ from repowise.cli.helpers import (
 from repowise.cli.output import emit_json, emit_refusal, format_option, notice_console
 from repowise.cli.worktree import detect_worktree_base
 from repowise.core.analysis.decisions.lifecycle import (
+    AGENT_ACCEPTANCE_DISABLED_BLOCKER,
     AGENT_ACCEPTANCE_REMEDY,
     AGREEMENT_KIND,
     ARCHITECTURAL_KIND,
     DECISION_KINDS,
+    NO_ACCEPTANCE_IDENTITY_BLOCKER,
+    NO_DECISION_BLOCKER,
+    NO_EVIDENCE_BLOCKER,
+    NO_RATIONALE_BLOCKER,
+    NO_SCOPE_BLOCKER,
 )
 from repowise.core.analysis.decisions.provenance import LISTABLE_SOURCES
 from repowise.core.precedent.currency import describe_decision_currency
@@ -857,6 +863,28 @@ def _decision_body_lines(rec) -> list[str]:
 #: The remedy printed beside a refused acceptance, naming the flags that
 #: supply what the contract found missing.
 _ACCEPT_REMEDY = "Supply the missing parts with --decision, --reason, --scope or --evidence."
+_ACCEPT_IDENTITY_REMEDY = "Name the signer with --as <name> or --agent <slug>."
+
+
+def _accept_remedy_for_blockers(blockers: list[str]) -> str:
+    """Return only the remedies that address the blockers in this refusal."""
+    remedies = []
+    if any(AGENT_ACCEPTANCE_DISABLED_BLOCKER in blocker for blocker in blockers):
+        remedies.append(AGENT_ACCEPTANCE_REMEDY)
+    if NO_ACCEPTANCE_IDENTITY_BLOCKER in blockers:
+        remedies.append(_ACCEPT_IDENTITY_REMEDY)
+    if any(
+        blocker
+        in {
+            NO_DECISION_BLOCKER,
+            NO_RATIONALE_BLOCKER,
+            NO_SCOPE_BLOCKER,
+            NO_EVIDENCE_BLOCKER,
+        }
+        for blocker in blockers
+    ):
+        remedies.append(_ACCEPT_REMEDY)
+    return " ".join(remedies)
 
 
 @decision_group.command("confirm")
@@ -941,11 +969,12 @@ def decision_confirm(
             repo_path, ids, action="accepted", verb="accept", preview=preview, apply_one=_accept
         )
     )
-    # Both, not either: one run can refuse one id for the policy and another
-    # for a missing scope.
-    remedy = _ACCEPT_REMEDY
-    if agent and not granted:
-        remedy = f"{AGENT_ACCEPTANCE_REMEDY} {remedy}"
+    blockers = [
+        blocker
+        for result in results
+        for blocker in result.get("blockers", [])
+    ]
+    remedy = _accept_remedy_for_blockers(blockers)
     if len(ids) > 1 or preview or fmt == "json":
         _emit_batch(results, "accepted", "accept", preview, fmt, remedy)
         return

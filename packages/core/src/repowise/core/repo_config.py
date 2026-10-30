@@ -34,6 +34,7 @@ CONFIG_DEPENDENCY_KEYS: dict[str, frozenset[str]] = {
             "wiki_style",
             "language",
             "max_file_pages",
+            "folder_coverage",
             "generation_context",
             "enable_onboarding",
         }

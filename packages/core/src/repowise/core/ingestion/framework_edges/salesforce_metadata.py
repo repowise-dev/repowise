@@ -2,8 +2,9 @@
 
 A flow links to the Apex classes its actions name (and their one
 ``@InvocableMethod``), its subflows, its screen components and its Apex-defined
-types. Apex ``Flow.Interview`` references and LWC ``<lightning-flow>`` tags
-with a literal name link back to the flow.
+types. Apex ``Flow.Interview`` references, LWC ``<lightning-flow>`` tags, Aura
+``startFlow`` calls and Visualforce interviews with literal names link back to
+the flow.
 
 Flexipages, quick actions, tabs, email services and Experience sites are read
 from disk (as ``android_manifest`` is) for liveness only: each file they name is
@@ -45,6 +46,15 @@ if TYPE_CHECKING:
 
 _FLOW = "salesforce_flow"
 _XML_COMMENT_RE = re.compile(r"<!--.*?(?:-->|\Z)", re.DOTALL)
+_AURA_FLOW_TAG_RE = re.compile(r"<lightning:flow\b", re.IGNORECASE)
+_AURA_START_FLOW_RE = re.compile(r"\.\s*startFlow\s*\(\s*([\"'])([A-Za-z]\w*)\1")
+_JS_COMMENT_OR_STRING_RE = re.compile(
+    r"//[^\n]*|/\*.*?(?:\*/|\Z)|'(?:[^'\\\n]|\\.)*'|\"(?:[^\"\\\n]|\\.)*\"|`(?:[^`\\]|\\.)*`",
+    re.DOTALL,
+)
+_VISUALFORCE_FLOW_RE = re.compile(
+    r"<flow:interview\b[^>]*?\bname\s*=\s*[\"']([A-Za-z]\w*)[\"']", re.IGNORECASE
+)
 # An Apex comment, or a string literal kept as-is so a `//` inside one is not a comment.
 _APEX_COMMENT_OR_STRING_RE = re.compile(
     r"//[^\n]*|/\*.*?(?:\*/|\Z)|'(?:[^'\\\n]|\\.)*'", re.DOTALL
@@ -70,6 +80,15 @@ _CCI_NS_RE = re.compile(r"^\s+namespace:\s*['\"]?(\w+)", re.MULTILINE)
 _COMPONENT_TAGS = r"componentName|lightningComponent|lightningWebComponent|lwcComponent|auraComponent"
 _TAG_VALUE_RE = re.compile(
     rf"<({_COMPONENT_TAGS}|flowDefinition|apexClass)>\s*([^<\s]+)\s*</\1>"
+)
+_FLEXIPAGE_FLOW_RE = re.compile(
+    r"<componentInstanceProperties\b[^>]*>"
+    r"(?:(?!</componentInstanceProperties>).)*?"
+    r"<name>\s*flowName\s*</name>"
+    r"(?:(?!</componentInstanceProperties>).)*?"
+    r"<value>\s*([^<\s]+)\s*</value>"
+    r"(?:(?!</componentInstanceProperties>).)*?</componentInstanceProperties>",
+    re.DOTALL,
 )
 _PLACEMENT_SUFFIXES = (".flexipage-meta.xml", ".quickAction-meta.xml", ".tab-meta.xml")
 # Metadata API names are bare suffixes (``.tab`` is also tab-separated data),
@@ -328,6 +347,57 @@ def _lwc_flow_refs(graph: nx.DiGraph, idx: _Index, ctx: ResolverContext) -> int:
     return count
 
 
+def _aura_flow_refs(graph: nx.DiGraph, idx: _Index, ctx: ResolverContext) -> int:
+    """Literal ``startFlow`` calls in Aura controllers whose bundle hosts ``lightning:flow``."""
+    source_map: dict[str, bytes] = getattr(ctx, "source_map", None) or {}
+    bundles: dict[str, list[str]] = {}
+    for path, parsed in idx.parsed_files.items():
+        p = PurePosixPath(path)
+        if parsed.file_info.language == "aura" and len(p.parts) >= 3 and p.parts[-3] == "aura":
+            bundles.setdefault(str(p.parent), []).append(path)
+
+    count = 0
+    for bundle_dir, paths in bundles.items():
+        bundle = PurePosixPath(bundle_dir).name
+        markup = [p for p in paths if idx.parsed_files[p].file_info.language == "aura"]
+        if not any(
+            _AURA_FLOW_TAG_RE.search(_mask(source_text(p, idx.parsed_files[p], source_map), _XML_COMMENT_RE))
+            for p in markup
+        ):
+            continue
+        controller = f"{bundle_dir}/{bundle}Controller.js"
+        parsed = idx.parsed_files.get(controller)
+        if parsed is None:
+            continue
+        raw = source_text(controller, parsed, source_map)
+        literals = _mask(raw, _JS_COMMENT_OR_STRING_RE, keep="'\"` ")
+        code = _mask(raw, _JS_COMMENT_OR_STRING_RE)
+        for m in _AURA_START_FLOW_RE.finditer(literals):
+            if code[m.start()] == " ":
+                continue
+            target = idx.flow(m.group(2), controller)
+            if target is not None:
+                count += _link(
+                    graph, controller, target, [], f"{controller}::__module__", idx.symbol_of(target)
+                )
+    return count
+
+
+def _visualforce_flow_refs(graph: nx.DiGraph, idx: _Index, ctx: ResolverContext) -> int:
+    """Literal ``<flow:interview name="Name">`` references in Visualforce markup."""
+    source_map: dict[str, bytes] = getattr(ctx, "source_map", None) or {}
+    count = 0
+    for path, parsed in idx.parsed_files.items():
+        if parsed.file_info.language != "visualforce":
+            continue
+        text = _mask(source_text(path, parsed, source_map, "utf-8-sig"), _XML_COMMENT_RE)
+        for m in _VISUALFORCE_FLOW_RE.finditer(text):
+            target = idx.flow(m.group(1), path)
+            if target is not None:
+                count += _link(graph, path, target, [], f"{path}::__module__", idx.symbol_of(target))
+    return count
+
+
 # -- liveness metadata -------------------------------------------------------
 
 
@@ -350,6 +420,7 @@ def _placed_names(rel: str, text: str) -> list[tuple[str, str]]:
         return [("component", m.group(1)) for m in _EXPERIENCE_DEFINITION_RE.finditer(text)]
     text = _mask(text, _XML_COMMENT_RE)
     out: list[tuple[str, str]] = []
+    out.extend(("flow", m.group(1)) for m in _FLEXIPAGE_FLOW_RE.finditer(text))
     for m in _TAG_VALUE_RE.finditer(text):
         tag, value = m.group(1), m.group(2)
         if tag == "apexClass":
@@ -424,6 +495,8 @@ class _SalesforceMetadataHandler:
             _flow_edges(graph, idx, ctx)
             + _apex_flow_refs(graph, idx, ctx)
             + _lwc_flow_refs(graph, idx, ctx)
+            + _aura_flow_refs(graph, idx, ctx)
+            + _visualforce_flow_refs(graph, idx, ctx)
             + _liveness_edges(graph, idx, ctx, path_set)
         )
 

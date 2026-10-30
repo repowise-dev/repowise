@@ -238,27 +238,39 @@ def test_graph_builder_round_trips_through_pickle(tmp_path):
 
 
 def test_churn_budget_is_zero_where_recompute_is_already_cheap(tmp_path):
-    """Below the parallel-cost threshold, trading accuracy for speed buys
-    nothing, so those graphs keep exact-signature-only reuse."""
+    """Below the minimum cost, trading accuracy for speed buys nothing, so
+    those graphs keep exact-signature-only reuse."""
     gb = _build(tmp_path, _FILES)
     assert gb._churn_budget(gb.symbol_subgraph()) == 0
     assert gb._churn_budget(gb.file_subgraph()) == 0
 
 
 def test_churn_budget_scales_with_the_graph_above_the_threshold(monkeypatch):
-    from repowise.core.ingestion.graph import _betweenness
+    from repowise.core.ingestion.graph import _metrics
 
-    monkeypatch.setattr(_betweenness, "_PARALLEL_COST_THRESHOLD", 0)
+    monkeypatch.setattr(_metrics, "_CHURN_BUDGET_MIN_COST", 0)
     gb = GraphBuilder("C:/fake")
     g = _graph([(f"n{i}", f"n{i + 1}") for i in range(999)])  # 1000 nodes, 999 edges
     assert gb._churn_budget(g) == int(1999 * 0.002)
 
 
+def test_mid_graphs_under_the_parallel_threshold_get_a_budget():
+    """A graph Brandes would still score sequentially is no longer exact-only:
+    1500 x 1499 is above the minimum cost and far below the parallel one."""
+    from repowise.core.ingestion.graph import _betweenness, _metrics
+
+    gb = GraphBuilder("C:/fake")
+    g = _graph([(f"n{i}", f"n{i + 1}") for i in range(1499)])
+    cost = g.number_of_nodes() * g.number_of_edges()
+    assert _metrics._CHURN_BUDGET_MIN_COST <= cost < _betweenness._PARALLEL_COST_THRESHOLD
+    assert gb._churn_budget(g) == int(2999 * _metrics._CHURN_BUDGET_FRACTION) > 0
+
+
 def test_structural_change_within_budget_skips_brandes(tmp_path, monkeypatch):
     """The phase's whole point: one added symbol must not rerun Brandes."""
-    from repowise.core.ingestion.graph import _betweenness
+    from repowise.core.ingestion.graph import _betweenness, _metrics
 
-    monkeypatch.setattr(_betweenness, "_PARALLEL_COST_THRESHOLD", 0)
+    monkeypatch.setattr(_metrics, "_CHURN_BUDGET_MIN_COST", 0)
     gb = GraphBuilder("C:/fake", centrality_cache_dir=tmp_path, head_commit="c0ffee")
     big = _graph([(f"n{i}", f"n{i + 1}") for i in range(999)])
     monkeypatch.setattr(gb, "symbol_subgraph", lambda: big)
@@ -281,3 +293,155 @@ def test_structural_change_within_budget_skips_brandes(tmp_path, monkeypatch):
     assert reuse.scored_commit == "c0ffee"
     assert reuse.churn == 2
     assert "n1000" not in reuse.values
+
+
+def test_mid_graph_reuses_within_budget_and_rescores_exactly_past_it(tmp_path, monkeypatch):
+    """No patched thresholds: a mid graph serves its scoring inside the budget
+    and returns to exact Brandes the moment it drifts past it."""
+    import networkx as nx
+
+    from repowise.core.ingestion.graph import _metrics
+
+    chain = _graph([(f"n{i:04d}", f"n{i + 1:04d}") for i in range(1499)])
+    budget = int(2999 * _metrics._CHURN_BUDGET_FRACTION)
+    gb = GraphBuilder("C:/fake", centrality_cache_dir=tmp_path, head_commit="c0ffee")
+    monkeypatch.setattr(gb, "symbol_subgraph", lambda: chain)
+    scored = gb.symbol_betweenness_centrality()
+
+    near = chain.copy()
+    near.add_edge("n1499", "x0")  # churn 2
+    gb2 = GraphBuilder("C:/fake", centrality_cache_dir=tmp_path, head_commit="deadbee")
+    monkeypatch.setattr(gb2, "symbol_subgraph", lambda: near)
+    assert gb2.symbol_betweenness_centrality() == scored
+    assert gb2.betweenness_scoring("symbol").churn == 2 <= budget
+
+    far = chain.copy()
+    far.add_edges_from((f"n{i:04d}", f"y{i}") for i in range(budget))  # churn 2 * budget
+    gb3 = GraphBuilder("C:/fake", centrality_cache_dir=tmp_path, head_commit="deadbee")
+    monkeypatch.setattr(gb3, "symbol_subgraph", lambda: far)
+    assert gb3.symbol_betweenness_centrality() == nx.betweenness_centrality(far)
+    assert gb3.betweenness_scoring("symbol").churn == 0
+
+
+def _forbid_pagerank(monkeypatch):
+    import networkx as nx
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("pagerank must not recompute on an unchanged graph")
+
+    monkeypatch.setattr(nx, "pagerank", _boom)
+
+
+def test_unchanged_structure_reuses_pagerank(tmp_path, monkeypatch):
+    first = _build(tmp_path, _FILES)
+    file_pr, sym_pr = first.pagerank(), first.symbol_pagerank()
+    fresh = _build(None, _FILES)
+    assert (fresh.pagerank(), fresh.symbol_pagerank()) == (file_pr, sym_pr)
+
+    _forbid_pagerank(monkeypatch)
+    reused = _build(tmp_path, _FILES)
+    assert reused.pagerank() == file_pr
+    assert reused.symbol_pagerank() == sym_pr
+
+
+def test_reused_pagerank_is_within_the_persist_tolerance_of_a_fresh_one(tmp_path):
+    """Insertion order moves PageRank only in the last bits; a reused value must
+    stay inside the tolerance graph_nodes persistence already applies."""
+    import networkx as nx
+    import pytest
+
+    from repowise.core.persistence.crud.graph import _CENTRALITY_ATOL
+
+    edges = [(f"m{i % 97}", f"m{(i * 7 + 3) % 97}") for i in range(400)]
+    scored = _graph(edges)
+    gb = GraphBuilder("C:/fake", centrality_cache_dir=tmp_path)
+    gb.symbol_subgraph = lambda: scored
+    cached = gb.symbol_pagerank()
+
+    shuffled = _graph(list(reversed(edges)))
+    reused_builder = GraphBuilder("C:/fake", centrality_cache_dir=tmp_path)
+    reused_builder.symbol_subgraph = lambda: shuffled
+    reused = reused_builder.symbol_pagerank()
+    assert reused == cached
+    assert reused == pytest.approx(nx.pagerank(shuffled), rel=0, abs=_CENTRALITY_ATOL)
+
+
+def test_structural_change_recomputes_pagerank(tmp_path):
+    _build(tmp_path, _FILES).symbol_pagerank()
+    edited = [("main.py", _MAIN + "\n\ndef extra():\n    return main()\n"), ("util.py", _UTIL)]
+    cached_run = _build(tmp_path, edited)
+    fresh_run = _build(None, edited)
+    assert cached_run.symbol_pagerank() == fresh_run.symbol_pagerank()
+    assert cached_run.pagerank() == fresh_run.pagerank()
+
+
+def test_pagerank_cache_keys_on_alpha(tmp_path):
+    cache = CentralityCache(tmp_path)
+    cache.put_pagerank("file", signature="sig-1", alpha=0.85, values={"a": 1.0})
+    assert cache.lookup_pagerank("file", signature="sig-1", alpha=0.85) == {"a": 1.0}
+    assert cache.lookup_pagerank("file", signature="sig-1", alpha=0.5) is None
+    assert cache.lookup_pagerank("file", signature="sig-2", alpha=0.85) is None
+    assert cache.lookup_pagerank("symbol", signature="sig-1", alpha=0.85) is None
+
+
+async def test_pagerank_and_betweenness_hash_each_subgraph_once(tmp_path, monkeypatch):
+    from repowise.core.ingestion.graph import _centrality_cache
+
+    calls = []
+    real = _centrality_cache.subgraph_signature
+
+    def counting(graph):
+        calls.append(graph)
+        return real(graph)
+
+    monkeypatch.setattr(_centrality_cache, "subgraph_signature", counting)
+    gb = _build(tmp_path, _FILES)
+    await gb.compute_metrics_parallel()
+    assert len(calls) == 2  # one file subgraph, one symbol subgraph
+
+
+def test_pagerank_and_betweenness_share_one_cache_file(tmp_path):
+    """Writing one kind's entry never drops the other's."""
+    gb = _build(tmp_path, _FILES)
+    file_bc = gb.betweenness_centrality()
+    file_pr = gb.pagerank()
+
+    reloaded = CentralityCache(tmp_path)
+    files = gb.centrality_subgraph()
+    signature = subgraph_signature(files)
+    assert _lookup(reloaded, "file", files, signature).values == file_bc
+    assert reloaded.lookup_pagerank("file", signature=signature, alpha=0.85) == file_pr
+
+
+def test_cache_file_without_pagerank_still_serves_betweenness(tmp_path):
+    """Files written before PageRank was cached keep their betweenness entries."""
+    from repowise.core.cache_seal import dump_sealed_pickle
+    from repowise.core.ingestion.graph import _centrality_cache as cc
+
+    g = _graph([("a", "b")])
+    cache = CentralityCache(tmp_path)
+    cache.put("symbol", "sig-1", {"a": 0.5, "b": 0.0}, graph=g, scored_commit=None)
+    dump_sealed_pickle(
+        tmp_path / "centrality_cache.pkl",
+        {"version": cc._CACHE_VERSION, "entries": cache._entries},
+        domain="centrality_cache.pkl",
+    )
+    old = CentralityCache(tmp_path)
+    assert _lookup(old, "symbol", g, "sig-1").values == {"a": 0.5, "b": 0.0}
+    assert old.lookup_pagerank("symbol", signature="sig-1", alpha=0.85) is None
+
+
+def test_weighted_graphs_are_never_served_cached_pagerank(tmp_path):
+    """The signature ignores weights, so a weight-only change must not hit."""
+    import networkx as nx
+
+    g = _graph([("a", "b"), ("b", "c"), ("c", "a")])
+    gb = GraphBuilder("C:/fake", centrality_cache_dir=tmp_path)
+    gb.symbol_subgraph = lambda: g
+    gb.symbol_pagerank()
+
+    weighted = g.copy()
+    weighted["a"]["b"]["weight"] = 5.0
+    gb2 = GraphBuilder("C:/fake", centrality_cache_dir=tmp_path)
+    gb2.symbol_subgraph = lambda: weighted
+    assert gb2.symbol_pagerank() == nx.pagerank(weighted)

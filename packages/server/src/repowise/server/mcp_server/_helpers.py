@@ -46,18 +46,33 @@ _VECTOR_TIMEOUT_DEFAULT_S = 30.0
 # A search an agent blocks on; past this the client's own tool timeout fires
 # first, so a larger value cannot produce results anyone still accepts.
 _VECTOR_TIMEOUT_MAX_S = 120.0
+# How long hybrid search waits for the vector leg once the other legs are in.
+# A warm leg takes ~0.3s (one embedding round trip); a cold store or a
+# rate-limited embedder takes 5-13s, and full-text hits are ready long before.
+_SEMANTIC_GRACE_ENV = "REPOWISE_SEMANTIC_GRACE_S"
+_SEMANTIC_GRACE_DEFAULT_S = 1.0
 
 
 def vector_search_timeout_s() -> float:
-    """Seconds one vector query may take, from env or the cold-start default.
+    """Seconds one vector query may take, from env or the cold-start default."""
+    return _env_seconds(_VECTOR_TIMEOUT_ENV, _VECTOR_TIMEOUT_DEFAULT_S)
+
+
+def semantic_grace_s() -> float:
+    """Seconds hybrid search waits for the vector leg after the other legs finish."""
+    return _env_seconds(_SEMANTIC_GRACE_ENV, _SEMANTIC_GRACE_DEFAULT_S)
+
+
+def _env_seconds(env: str, default: float) -> float:
+    """A positive number of seconds from *env*, capped, else *default*.
 
     An unparseable or non-positive value warns and keeps the default instead of
-    silently disabling the leg, matching how REPOWISE_EMBEDDING_TIMEOUT is
+    silently disabling the wait, matching how REPOWISE_EMBEDDING_TIMEOUT is
     resolved.
     """
-    raw = (os.environ.get(_VECTOR_TIMEOUT_ENV) or "").strip()
+    raw = (os.environ.get(env) or "").strip()
     if not raw:
-        return _VECTOR_TIMEOUT_DEFAULT_S
+        return default
     try:
         seconds = float(raw)
     except ValueError:
@@ -65,8 +80,8 @@ def vector_search_timeout_s() -> float:
     # NaN fails this too, so it lands on the default rather than on a budget
     # asyncio.wait_for would treat as already expired.
     if not seconds > 0:
-        _log.warning("Ignoring unusable %s=%r", _VECTOR_TIMEOUT_ENV, raw)
-        return _VECTOR_TIMEOUT_DEFAULT_S
+        _log.warning("Ignoring unusable %s=%r", env, raw)
+        return default
     return min(seconds, _VECTOR_TIMEOUT_MAX_S)
 
 

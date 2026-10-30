@@ -100,9 +100,9 @@ class _SlowEmbedTextsStore(InMemoryVectorStore):
         super().__init__(embedder=MockEmbedder())
         self._delay = delay
 
-    async def embed_texts(self, texts):
+    async def embed_texts(self, texts, *, kind="document"):
         await asyncio.sleep(self._delay)
-        return await super().embed_texts(texts)
+        return await super().embed_texts(texts, kind=kind)
 
 
 async def test_question_vector_gives_up_at_the_default_budget(monkeypatch, caplog) -> None:

@@ -22,6 +22,8 @@ from .generation import (
     cost_gate_declined,
     embedding_note,
     estimate_generation,
+    folder_coverage_lines,
+    folder_coverage_override,
     page_type_label,
     run_repo_generation,
     structural_page_summary,
@@ -39,6 +41,7 @@ def _print_structural_plan(
     max_file_pages: int | None,
     skip_tests: bool,
     skip_infra: bool,
+    folder_coverage_rules: tuple[str, ...] = (),
 ) -> None:
     """The plan a dry run owes the deterministic branch.
 
@@ -58,6 +61,7 @@ def _print_structural_plan(
         enable_onboarding=onboarding,
         wiki_style=wiki_style,
         max_file_pages=max_file_pages,
+        **folder_coverage_override(folder_coverage_rules),
     )
     kg_modules = getattr(getattr(result, "knowledge_graph_result", None), "modules", None) or None
     plans = build_generation_plan(
@@ -79,6 +83,8 @@ def _print_structural_plan(
     table.add_section()
     table.add_row("[bold]Total[/bold]", f"[bold]{total:,}[/bold]")
     console.print(table)
+    for line in folder_coverage_lines(plans):
+        console.print(f"  [dim]{line}[/dim]")
     console.print("  Dry run: every page above is built from code. No documentation written.")
 
 
@@ -97,6 +103,7 @@ def _run_deterministic_generation_phase(
     resume: bool,
     timings: Any | None = None,
     warnings: list[str] | None = None,
+    folder_coverage_rules: tuple[str, ...] = (),
 ) -> str:
     """Render the whole wiki from templates, for ``init --index-only``.
 
@@ -147,6 +154,7 @@ def _run_deterministic_generation_phase(
         enable_onboarding=onboarding,
         wiki_style=wiki_style,
         max_file_pages=max_file_pages,
+        **folder_coverage_override(folder_coverage_rules),
     )
     run_repo_generation(
         repo_path=repo_path,
@@ -205,6 +213,8 @@ def _print_generation_plan(
         f"[bold]{model_pages:,} by model, {est.total_pages - model_pages:,} from code[/bold]",
     )
     console.print(table)
+    for line in folder_coverage_lines(est.plans):
+        console.print(f"  [dim]{line}[/dim]")
 
     # Language breakdown
     lang_dist = result.repo_structure.root_language_distribution
@@ -251,6 +261,8 @@ def _run_generation_phase(
     test_run: bool,
     timings: Any | None = None,
     warnings: list[str] | None = None,
+    reuse_prior_pages: bool = True,
+    folder_coverage_rules: tuple[str, ...] = (),
 ) -> tuple[bool, bool]:
     """Run the LLM generation phase for a single-repo init.
 
@@ -258,6 +270,9 @@ def _run_generation_phase(
     and the caller should return immediately; ``cost_declined`` is True when the
     user declined the cost gate (generation skipped, index still saved). Mutates
     ``result`` in place with the generated pages, vector store, and enriched KG.
+
+    ``reuse_prior_pages=False`` is ``--force``: every page is regenerated
+    instead of reused from the prior run (issue #1089).
     """
     from repowise.core.generation import GenerationConfig
 
@@ -276,6 +291,8 @@ def _run_generation_phase(
         enable_onboarding=onboarding,
         wiki_style=wiki_style,
         max_file_pages=max_file_pages,
+        reuse_prior_pages=reuse_prior_pages,
+        **folder_coverage_override(folder_coverage_rules),
     )
     plans, est = estimate_generation(
         result=result,
@@ -347,6 +364,7 @@ def _render_template_wiki(run: InitRun, *, embedder_was_requested: bool) -> None
         onboarding=opts.onboarding,
         wiki_style=opts.wiki_style,
         max_file_pages=run.max_file_pages,
+        folder_coverage_rules=opts.folder_coverage_rules,
         embedder_name_resolved=run.embedder_name_resolved,
         embedder_was_requested=embedder_was_requested,
         resume=opts.resume,
@@ -369,6 +387,7 @@ def _generate_with_model(run: InitRun) -> bool:
         onboarding=opts.onboarding,
         wiki_style=opts.wiki_style,
         max_file_pages=run.max_file_pages,
+        folder_coverage_rules=opts.folder_coverage_rules,
         yes=opts.yes,
         dry_run=opts.dry_run,
         skip_tests=opts.skip_tests,
@@ -379,6 +398,9 @@ def _generate_with_model(run: InitRun) -> bool:
         warnings=run.run_warnings,
         test_run=opts.test_run,
         timings=run.recorder.table,
+        # ``--force`` regenerates every page: the reuse gate is off, so
+        # nothing is carried over from the prior run (issue #1089).
+        reuse_prior_pages=not opts.force,
     )
     if gen_stop:
         return True
@@ -428,6 +450,7 @@ def _generate(run: InitRun) -> bool:
                 onboarding=opts.onboarding,
                 wiki_style=opts.wiki_style,
                 max_file_pages=run.max_file_pages,
+                folder_coverage_rules=opts.folder_coverage_rules,
                 skip_tests=opts.skip_tests,
                 skip_infra=opts.skip_infra,
             )

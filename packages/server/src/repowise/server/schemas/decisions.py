@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -11,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from repowise.core.analysis.decisions.lifecycle import DECISION_KINDS
 from repowise.core.analysis.decisions.policy import DISCOVERY_BOUNDS
 from repowise.core.analysis.decisions.scope import derive_decision_scope
+from repowise.server.schemas._datetime import UTCDateTime
 
 
 class EvidencePreview(BaseModel):
@@ -51,9 +51,9 @@ class DecisionRecordResponse(BaseModel):
     # the linkage fields, so old records get it too.
     scope: str | None = None
     superseded_by: str | None
-    last_code_change: datetime | None
-    created_at: datetime
-    updated_at: datetime
+    last_code_change: UTCDateTime | None
+    created_at: UTCDateTime
+    updated_at: UTCDateTime
     # List-row evidence preview: the top-ranked evidence row's verbatim quote
     # plus how many evidence rows back the record. Populated by the list
     # endpoint only (None on detail/graph responses, which have the full

@@ -33,9 +33,9 @@ def _concept_records(records: list[PageRecord]) -> list[PageRecord]:
     never touches it, so the wiki-state count and the "nothing unwritten" guard
     both read the concept layer only (a structural page is permanently a
     template, so counting it would always report the wiki as unwritten)."""
-    from .engine import _MODEL_WRITTEN_PAGE_TYPES
+    from repowise.core.generation.models import MODEL_WRITTEN_PAGE_TYPES
 
-    return [r for r in records if r.page_type in _MODEL_WRITTEN_PAGE_TYPES]
+    return [r for r in records if r.page_type in MODEL_WRITTEN_PAGE_TYPES]
 
 
 def print_wiki_state(console: Console, records: list[PageRecord]) -> None:

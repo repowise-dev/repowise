@@ -445,7 +445,7 @@ Both revisions are analysed from their own content; a head finding is reported o
 | `introduced`, `worsened`, `resolved` | Totals |
 | `top_findings`, `findings_total` | Three most actionable, and the count |
 | `files`, `files_total` | Up to 10 files, largest structure move first |
-| `score_basis`, `score_change` | `structure_only`; nloc-weighted score change |
+| `score_basis`, `score_change` | `structure_only` (code shape of the changed bytes, no coverage); nloc-weighted score change |
 
 Skips:
 
@@ -458,7 +458,7 @@ Findings name `dimension`, `biomarker`, `severity`, `path`, `symbol`, head-side 
 - Identity ignores line numbers, so moved code introduces nothing. Ids are bound to the two revisions; pass one as `finding_id` to expand it.
 - A match to a stored finding carries `health_reference` for `get_health(finding_id=...)`. Performance findings carry `opportunity_id`, ordered by opportunity rank.
 
-Files rows: `base_score`, `head_score`, `nloc_base`, `nloc_head` (null on a missing side); `base_structure`/`head_structure` with diagnostics. Each score is 10 minus the structure deduction, as `get_health(counts="code_shape")`, from passes reading no history or coverage. A deleted file has a base-only row, with `moved_to` when split.
+Files rows: `base_score`, `head_score`, `nloc_base`, `nloc_head` (null on a missing side); `base_structure`/`head_structure` with diagnostics. Each score is 10 minus the structure deduction of the changed files' bytes, from passes reading no history or coverage. It can differ from `get_health(counts="code_shape")`, whose structure half also counts coverage markers and clones with unchanged files. A deleted file has a base-only row, with `moved_to` when split.
 
 `score_change` (base-nloc weighted, so a growing improved file keeps its gain): `base`, `head`, `delta` (two decimals), `structure_delta` (moves even at the 1.0 floor), `files_compared`.
 
@@ -553,7 +553,7 @@ Groups changed files over index edges, co-change pairs and (for a range) shared 
 | `more`, `workspace` | Opt-in block names; workspace footer |
 
 - **`dependencies`:** the ten heaviest package edges (`from`, `to`, `verb`, `weight`), `edges_total` when more; absent in a single-package repo.
-- **`code_health`:** `production_average` when tests are in the reading; `files_scored` when some files have no score.
+- **`code_health`:** `production_average` when tests, tooling, vendored or generated files are in the reading; `files_scored` when some files have no score.
 - **`next_actions`:** `include=["actions"]` serves both horizons with `done_when` and `by_tier`; `get_health(fix_id="act_...")` opens one. `unavailable` names inputs the list was built without and `unavailable_reasons` gives each one's reason; both are absent when every input was read.
 - **`repo="all"`:** each repo has `summary` (essay's first sentence), `code_files` (its `code_health.code_files`, or graph code files before health runs) and `symbol_count`; `total_code_files` sums them.
 
@@ -618,7 +618,7 @@ One ranked queue across refactoring, performance and code-shape work, the same o
 | `top_findings` / `findings`, `test_findings` | Production and test; totals sum to the open set |
 | metric row | One file's scores and deductions |
 
-- **`kpis`:** hotspot health, `average_health` (NLOC-weighted), `average_health_unweighted`, `average_health_weighting`, pillar averages, `production_average` (while tests are in the average), `worst_performer_path`, `worst_test_path`, `performance_causes` (`now`, `production`, `all`, `per_10k_loc`; see [PERFORMANCE.md](../layers/PERFORMANCE.md#the-default-queue)). `get_overview` reports bands the same way.
+- **`kpis`:** hotspot health, `average_health` (NLOC-weighted), `average_health_unweighted`, `average_health_weighting`, pillar averages, `production_average` (the files `worst_performer_path` is picked from, while tests, tooling, vendored or generated files are in the average), `worst_performer_path`, `worst_test_path`, `performance_causes` (`now`, `production`, `all`, `per_10k_loc`; see [PERFORMANCE.md](../layers/PERFORMANCE.md#the-default-queue)). `get_overview` reports bands the same way.
 - **Metric row:** `score` (defect, headline), `maintainability_score`, `performance_score`, `weighted_deficit` = (8 - score) x NLOC, `is_test`, `has_test_file`, `primary_biomarker`, `total_deduction`, `structure_deduction`, `history_deduction`, `withheld_deduction`, `history: "short"` (under 5 commits, so most history markers cannot fire).
 - Score = 10 minus structure and history deductions, floored at 1.0; history is 0.0 under `counts="code_shape"`. Deficit and gap fields share score points x NLOC and compare only with each other.
 - `primary_biomarker` prefers a discrete finding over `coverage_gradient`. `details.actions` (agent prompt, silencing rule) appear only with `finding_id=...`.
@@ -632,6 +632,7 @@ One ranked queue across refactoring, performance and code-shape work, the same o
 - Nothing is gated. Health is ungated on Java, C#, C and preview on C++; refactoring, performance and dead code are preview on Java, C#, C, C++ (dead code also Kotlin, Swift).
 - **Vendored and generated files:** findings held back in every language (changed upstream or by a generator), counted in `_meta.gated.health` under `vendored` and `generated`; `_meta.gated.reasons` explains once when nothing is listed. Scores, KPIs and worst-file order still count them.
 - **History markers** (ownership, churn, change entropy, co-change, other git kinds): on tests, held back under `test_history` (code-shape findings still list); elsewhere, held from finding lists under `history`, though they order hotspots and Fix first and `get_risk` lists them.
+- **`findings_hidden`** (targeted mode): one line beside `findings` when a file or row hold kept findings off it, with their count by hold and the points they still deduct. Absent when nothing is held.
 
 ### Opt-in blocks
 

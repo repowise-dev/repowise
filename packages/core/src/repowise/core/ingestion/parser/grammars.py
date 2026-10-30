@@ -348,6 +348,58 @@ _KOTLIN_DECLARATION_HEAD = re.compile(
 )
 
 
+# Spans that send tree-sitter-kotlin into an ERROR swallowing the rest of the
+# class body, each rewritten in place (same length, newlines kept):
+# - a primary constructor on its own line under ``class X`` led by more than
+#   one modifier or by ``actual`` (``internal actual constructor(``): blanked;
+# - an annotated accessor of a property with no declared type (``val size``
+#   then ``@JvmName("size") get() = ...``): the annotation blanked;
+# - a statement ``get(x)`` right under a ``val``, read as its getter though a
+#   getter takes no parameter: the last indent byte becomes ``;``.
+_KOTLIN_MISPARSED_SPANS = re.compile(
+    rb"(?m)^[ \t]*(?P<ctor>(?:(?:@[\w.]+|public|private|internal|protected|expect|actual)[ \t]+)+)"
+    rb"constructor[ \t]*\("
+    rb"|(?<![\w.])(?P<accessor>@[\w.]+(?:\([^()\n]*\))?)(?=\s*(?:get|set)[ \t]*\()"
+    rb"|(?m:^[ \t]*va[lr][ \t][^\n]*\n[ \t]*)(?P<stmt>[ \t])(?=get[ \t]*\([ \t]*[^)\s])"
+)
+
+
+def _recover_kotlin_misparsed_spans(
+    language: Language, root: Node, source: bytes
+) -> tuple[Node, bytes]:
+    """Re-parse with those spans rewritten, when that clears errors."""
+    if not root.has_error:
+        return root, source
+    # Only a span on a line an ERROR covers is rewritten: one that parsed keeps
+    # its text. Lines, since the ERROR may open just past the span that caused it.
+    errors = _error_rows(root)
+    rewritten = bytearray(source)
+    for m in _KOTLIN_MISPARSED_SPANS.finditer(source):
+        start, end = m.span(m.lastgroup)
+        row = source.count(b"\n", 0, start)
+        if any(lo <= row <= hi for lo, hi in errors):
+            rewritten[start:end] = b";" if m.lastgroup == "stmt" else b" " * (end - start)
+    if rewritten == source:
+        return root, source
+    new_root = Parser(language).parse(bytes(rewritten)).root_node
+    if len(_collect_error_nodes(new_root)) >= len(_collect_error_nodes(root)):
+        return root, source
+    return new_root, bytes(rewritten)
+
+
+def _error_rows(root: Node) -> list[tuple[int, int]]:
+    """First and last rows of the outermost ERROR nodes under *root*."""
+    ranges: list[tuple[int, int]] = []
+    pending = [root]
+    while pending:
+        node = pending.pop()
+        if node.type == "ERROR":
+            ranges.append((node.start_point[0], node.end_point[0]))
+        elif node.has_error:
+            pending.extend(node.children)
+    return ranges
+
+
 def _kotlin_leading_annotations(top: Node) -> tuple[list[Node], Node | None]:
     """Return annotations leading a top-level expression and the node after them."""
     node = top

@@ -103,6 +103,42 @@ class TestCsharpShapes:
         body = "public void Go() { if (thing is Placeholder p) { p.Name(); } }"
         assert declared_types(body, "csharp")["p"] == "Placeholder"
 
+    def test_pascal_case_properties_and_fields_are_class_scope(self) -> None:
+        source = (
+            "class V {\n"
+            "    public TrackingCollection<Rule> Rules { get; } = new();\n"
+            "    protected Box? Current { private set; get; }\n"
+            "    public Box Shown => _box;\n"
+            "    internal readonly ICircuitController<int> BreakerController;\n"
+            "    void Run() { }\n"
+            "}"
+        )
+        assert fields(source, "csharp", [(6, 6)]) == {
+            "Rules": "TrackingCollection`1",
+            "Current": "Box",
+            "Shown": "Box",
+            "BreakerController": "ICircuitController`1",
+        }
+
+    def test_a_type_or_method_header_declares_no_member(self) -> None:
+        source = (
+            "class V : Base {\n"
+            "    public Box Make(int n) => new Box();\n"
+            "    public Result Check { get { return Ok; } }\n"
+            "    bool Same(Box a) => a == Other;\n"
+            "}"
+        )
+        assert fields(source, "csharp", []) == {"Check": "Result"}
+
+    def test_title_case_words_mid_line_declare_no_member(self) -> None:
+        source = (
+            "class V {\n"
+            '    private const string Label = "Order Items;";\n'
+            "    int Area(Shape s) => s switch { Circle C => 1, _ => 0 };\n"
+            "}"
+        )
+        assert fields(source, "csharp", []) == {}
+
 
 class TestPythonShapes:
     """Python annotates after the name and constructs without a keyword.
@@ -1072,13 +1108,13 @@ class TestCppWrapperUnwrapping:
         assert declared_types("val c: Column<Thing> = x", "kotlin") == {"c": "Column"}
 
 
-def test_cpp_is_not_a_field_language() -> None:
-    """C++ declares its fields in a header, away from the call that reads them.
+def test_cpp_is_a_field_language() -> None:
+    """C++ names a field bare, and declares it in a header away from the call.
 
-    Registering it would promise a scope the scan cannot answer from, which is
-    the condition that disqualified python on the same constant.
+    An out-of-line body reads its fields from the class its includes declare
+    (``CppFieldOwners._field_owner``), so class scope answers for it too.
     """
-    assert "cpp" not in IMPLICIT_FIELD_LANGUAGES
+    assert "cpp" in IMPLICIT_FIELD_LANGUAGES
 
 
 def test_c_has_no_shapes_of_its_own() -> None:

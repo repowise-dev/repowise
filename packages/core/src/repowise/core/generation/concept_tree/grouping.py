@@ -258,7 +258,7 @@ def _is_local_merge(left: Sequence[str], right: Sequence[str]) -> bool:
     return all("/" not in m for m in left) and all("/" not in m for m in right)
 
 
-def _package_of(path: str, roots: set[str]) -> str:
+def package_root_of(path: str, roots: set[str]) -> str:
     """The deepest package root holding *path*, or ``""`` outside every package."""
     owner = module_for(path, roots)
     return owner if owner in roots else ""
@@ -565,7 +565,7 @@ def group_files(
         return []
     resolved = params or params_for(len(files))
     roots = set(package_roots)
-    package_of = {f: _package_of(f, roots) for f in files} if roots else {}
+    package_of = {f: package_root_of(f, roots) for f in files} if roots else {}
     part = _Partitioner(resolved, layer_of_file or {}, package_of)
     leftover = part.visit(_build_tree(part.roll_up_thin_packages(files)))
     if leftover:

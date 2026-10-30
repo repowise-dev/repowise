@@ -45,20 +45,22 @@ class CachingEmbedder:
     def dimensions(self) -> int:
         return self._inner.dimensions
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(self, texts: list[str], *, kind: str = "document") -> list[list[float]]:
         if len(texts) != 1:
-            return await self._inner.embed(texts)
+            return await self._inner.embed(texts, kind=kind)
 
         # Hashed rather than stored: a query reaches 30_000 characters upstream,
         # and holding the raw text would cost more than the vector it caches.
-        key = hashlib.sha256(texts[0].encode()).hexdigest()
+        # *kind* is part of the key: with an asymmetric prefix configured the
+        # same text embeds differently as a query and as a document.
+        key = hashlib.sha256(f"{kind}:{texts[0]}".encode()).hexdigest()
         cached = self._cache.get(key)
         if cached is not None:
             self._cache.move_to_end(key)
             # Copy: a caller that mutates its vector must not edit the entry.
             return [list(cached)]
 
-        vectors = await self._inner.embed(texts)
+        vectors = await self._inner.embed(texts, kind=kind)
         if len(vectors) == 1:
             self._cache[key] = list(vectors[0])
             while len(self._cache) > MAX_ENTRIES:

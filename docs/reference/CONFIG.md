@@ -53,6 +53,7 @@ wiki_style: comprehensive
 language: en
 enable_onboarding: true
 max_file_pages: 2000
+folder_coverage: ["src/core=1.0", "src/legacy=0.5"]
 exclude_patterns: [vendor/, "*.generated.*", proto/]
 distill: {enabled: true}
 mcp: {tools: ["+get_execution_flows", "-get_dead_code"]}
@@ -73,6 +74,7 @@ mcp: {tools: ["+get_execution_flows", "-get_dead_code"]}
 | `language` | `en` | Wiki output language: `en`, `ar`, `de`, `es`, `fr`, `hi`, `it`, `ja`, `ko`, `nl`, `pl`, `pt`, `ru`, `tr`, `zh`. |
 | `enable_onboarding` | `true` | First-run onboarding prompts (CLI and web). |
 | `max_file_pages` | unset | Most file pages per run, highest importance first; see [below](#max_file_pages). |
+| `folder_coverage` | `[]` | File-page floors per folder as `"GLOB=PCT"` strings; see [below](#folder_coverage). |
 | `forges.hosts` | `{}` | Self-managed git host to forge (`github`, `gitlab`, `azure`, `bitbucket`, `generic`); see [GIT_HOSTS.md](../start/GIT_HOSTS.md#self-managed-hosts). |
 
 Blocks, each with its own section: [`generation_context`](#grounded-generation-context),
@@ -122,6 +124,15 @@ Applies to documentation-generation calls on reasoning-capable chat models.
   `--max-file-pages N` sets it non-interactively. `update --full` and
   `generate` honour the recorded value.
 - File pages are rendered from structure, so a cap does not reduce model spend.
+
+### `folder_coverage`
+
+- `"src/core=1.0"` gives every eligible code file under `src/core` a file page
+  whatever its importance or the cap; `"src/legacy=0.5"` gives the top half.
+- A floor, not a cap: pinned files are added to the selection and never
+  displace a global pick, so the estimate rises with them.
+- `init --folder-coverage GLOB=PCT` (repeatable) sets it. Every run reads it,
+  and editing it re-renders the wiki on the next `update`.
 
 ### `wiki_style`
 
@@ -1013,6 +1024,8 @@ yields a client error instead of Repowise's "synthesis exceeded its budget".
 | `REPOWISE_VECTOR_SEARCH_TIMEOUT_S` | Seconds per vector-store query (default `30`, capped at `120`) |
 | `OLLAMA_EMBEDDING_MODEL` | Ollama embedding model; also selects the `ollama` embedder |
 | `OLLAMA_EMBEDDING_DIMS` | Ollama output dimensions (optional; inferred from the model) |
+| `REPOWISE_EMBED_QUERY_PREFIX` | Text the `openai` embedder prepends to search queries (default empty) |
+| `REPOWISE_EMBED_DOC_PREFIX` | Text the `openai` embedder prepends to stored pages and decisions (default empty) |
 
 - Raise the embed timeout for a local endpoint: one request embeds a whole
   batch, and an expired batch shows only as `N/N items failed to embed`.
@@ -1023,6 +1036,9 @@ yields a client error instead of Repowise's "synthesis exceeded its budget".
   on a slow disk or large wiki; a timeout drops the semantic leg with a
   warning, leaving full-text hits.
 - An unparseable timeout warns and keeps the default.
+- Set the embed prefixes only for a model trained with them (such as
+  `query: ` / `passage: `), then run `repowise reindex`: vectors stored before
+  a prefix was set or changed stop matching, with no error.
 
 ### Server and database
 
@@ -1060,6 +1076,37 @@ Anonymous usage telemetry is **on by default** (opt-out).
 | `REPOWISE_FORGE_HOSTS` | `host=forge` pairs, comma separated (`git.corp.com=gitlab,tfs.corp.com=azure`); wins over `forges.hosts` |
 | `REPOWISE_CHANGELOG` | Changelog source for the "what's new" check |
 | `REPOWISE_PARSE_WORKERS` | Indexing parse processes: default CPU count capped at 8, never above the files to parse. Each holds about 50 MB; above 8 is not measurably faster |
+| `REPOWISE_NO_SAVE_KEY` | Truthy: `init` does not save the provider API key to `.repowise/.env`, like `init --no-save-key`. Use it where credentials are injected at runtime and must not be written to disk |
+| `REPOWISE_MCP_NO_WATCHDOG` | `1`, `true` or `yes` turns off the parent-process watchdog in `repowise mcp --transport stdio`, which exits the server when the MCP client dies abnormally (crash, force-quit, killed terminal) |
+| `REPOWISE_INDEX_INFORMATION_FLOOR` | Minimum characters of substantive prose a wiki page needs to get a vector in the search index. Pages below it stay readable and linkable, they are only left out of semantic search. Default `0` (off) |
+
+### BLAS thread pool
+
+repowise caps the BLAS thread pool to 1 before numpy loads. An uncapped pool costs about 32 MB of memory per thread (about 750 MB on a 32-core machine) and does not speed up the sparse graph work repowise runs. Spawned worker processes inherit the cap through the environment.
+
+A value you set yourself always wins:
+
+```bash
+OPENBLAS_NUM_THREADS=4 repowise init   # 4 BLAS threads instead of 1
+```
+
+| Variable | Applies to | Default |
+|----------|-----------|---------|
+| `OPENBLAS_NUM_THREADS` | OpenBLAS | `1` unless set |
+| `MKL_NUM_THREADS` | Intel MKL | `1` unless set |
+| `NUMEXPR_NUM_THREADS` | NumExpr | `1` unless set |
+| `VECLIB_MAXIMUM_THREADS` | Apple Accelerate | `1` unless set |
+
+`OMP_NUM_THREADS` is not set: igraph's community detection uses OpenMP threads and is slower without them.
+
+### Cache integrity key
+
+repowise integrity-checks its on-disk caches with a machine-local key.
+
+| Variable | Description |
+|----------|-------------|
+| `REPOWISE_CACHE_HMAC_KEY` | Hex-encoded key (at least 32 hex characters, 16 bytes) used instead of the key file. For CI and tests where the home directory is ephemeral or shared |
+| `REPOWISE_CACHE_KEY_PATH` | Path to the key file. Default `$XDG_CONFIG_HOME/repowise/cache_hmac_key`, or `~/.config/repowise/cache_hmac_key` when `XDG_CONFIG_HOME` is unset |
 
 ## Exclude patterns
 

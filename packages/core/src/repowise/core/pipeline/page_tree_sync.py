@@ -57,7 +57,6 @@ async def rebuild_page_tree(session: Any, repo_id: str) -> int:
 
     nodes: list[TreeNode] = []
     before: dict[str, tuple[str | None, int, str | None]] = {}
-    layer_order_ids: list[str] = []
 
     for pid, page_type, target, meta_json, parent, order, section, freshness in rows:
         # A tombstoned page documents a file that no longer exists. Leaving it
@@ -70,10 +69,6 @@ async def rebuild_page_tree(session: Any, repo_id: str) -> int:
             metadata = json.loads(meta_json or "{}")
         except (json.JSONDecodeError, TypeError):
             metadata = {}
-        if page_type == "repo_overview" and not layer_order_ids:
-            spine = metadata.get("layer_order_ids")
-            if isinstance(spine, list):
-                layer_order_ids = [s for s in spine if isinstance(s, str)]
         before[pid] = (parent, order, section)
         nodes.append(
             TreeNode(
@@ -84,7 +79,7 @@ async def rebuild_page_tree(session: Any, repo_id: str) -> int:
             )
         )
 
-    assign_page_tree(nodes, layer_order_ids)
+    assign_page_tree(nodes)
 
     placed = {n.page_id: (n.parent_page_id, n.display_order, n.section_number) for n in nodes}
     changed = 0

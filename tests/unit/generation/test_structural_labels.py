@@ -31,7 +31,6 @@ TEMPLATE_DIR = (
 )
 
 STRUCTURAL_TEMPLATES = [
-    "_footer.j2",
     "api_contract.j2",
     "file_page.j2",
     "infra_page.j2",
@@ -113,8 +112,12 @@ def test_no_catalog_key_is_unread_by_any_template() -> None:
     for name in STRUCTURAL_TEMPLATES:
         source = (TEMPLATE_DIR / name).read_text(encoding="utf-8")
         read.update(re.findall(r"\blabels\.([a-z_]+)", source))
-    # Titles are built in Python rather than in a template.
-    read.update({"file", "symbol", "circular_dependency", "api_contract", "infrastructure"})
+    # Titles are built in Python rather than in a template, and the digest
+    # finds a model page's questions section by its heading.
+    read.update(
+        {"file", "symbol", "circular_dependency", "api_contract", "infrastructure"}
+        | {"questions_heading"}
+    )
     assert ENGLISH_LABELS.keys() <= read, ENGLISH_LABELS.keys() - read
 
 

@@ -487,7 +487,9 @@ async def write_full_update(ctx: FullUpdatePersist) -> int:
         from repowise.core.pipeline.commit_health import refresh_commit_health_after_update
 
         with timed(timings, "persist.commit_health"):
-            await refresh_commit_health_after_update(sf, ctx.repo_id, str(ctx.repo_path))
+            await refresh_commit_health_after_update(
+                sf, ctx.repo_id, str(ctx.repo_path), background=True
+            )
         with timed(timings, "persist.planner_stats"):
             await refresh_planner_stats(ctx.engine)
         return ctx.total_pages

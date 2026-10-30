@@ -66,6 +66,65 @@ def resolve_embedding_timeout(
     return selected
 
 
+_EMBED_PREFIX_ENV: dict[str, str] = {
+    "query": "REPOWISE_EMBED_QUERY_PREFIX",
+    "document": "REPOWISE_EMBED_DOC_PREFIX",
+}
+
+
+def resolve_embed_prefix(kind: str) -> str:
+    """The literal text to prepend before embedding a batch of *kind*.
+
+    Some embedding models (e.g. asymmetric-instruction models like
+    NVIDIA's Nemotron-3-Embed) are trained with a fixed ``"query: "`` /
+    ``"passage: "`` (or similar) framing and never apply it themselves — the
+    caller has to. Most models (OpenAI, Gemini, ...) want the raw text and
+    would be actively hurt by an uninvited prefix.
+
+    Reading ``REPOWISE_EMBED_QUERY_PREFIX`` / ``REPOWISE_EMBED_DOC_PREFIX``
+    keeps this opt-in and per-deployment: unset (the default) resolves to
+    ``""`` for both kinds, so an embedder that calls this is inert unless the
+    operator explicitly configures a model that needs it.
+
+    Args:
+        kind: ``"query"`` or ``"document"`` — which side of retrieval *texts*
+            are on. Anything else is a caller bug, not a misconfiguration, so
+            it raises rather than silently defaulting.
+    """
+    try:
+        var = _EMBED_PREFIX_ENV[kind]
+    except KeyError:
+        raise ValueError(f"kind must be 'query' or 'document', got {kind!r}") from None
+    prefix = os.environ.get(var, "")
+    if prefix and var not in _PREFIX_WARNED:
+        _PREFIX_WARNED.add(var)
+        _report_prefix_needs_reindex(var)
+    return prefix
+
+
+# Vars already reported this process, so the notice prints once, not per batch.
+_PREFIX_WARNED: set[str] = set()
+
+
+def _report_prefix_needs_reindex(var: str) -> None:
+    """Tell the operator a prefix only matches vectors embedded under it.
+
+    Vectors already in the store were embedded with whatever prefix was set
+    then; a query under a new prefix loses its shared framing with them and
+    recall drops with no error. Shortcut: the store does not record the prefix
+    its vectors were built with, so this cannot tell whether a reindex already
+    happened and says it once per process whenever a prefix is set. Upgrade
+    path: stamp the prefixes into the vector store at write time and warn only
+    on a mismatch. stderr for the same reason as ``_report_invalid_timeout``.
+    """
+    log.warning("embed_prefix_set", var=var)
+    print(
+        f"{var} is set. Vectors embedded before it was set or changed do not "
+        "match it; run `repowise reindex` once after changing it.",
+        file=sys.stderr,
+    )
+
+
 def _report_invalid_timeout(var: str, raw: str, default: float) -> None:
     """Say it where the user will actually see it.
 
@@ -96,11 +155,17 @@ class Embedder(Protocol):
         """Number of dimensions in the embedding vector."""
         ...
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(self, texts: list[str], *, kind: str = "document") -> list[list[float]]:
         """Embed a batch of texts.
 
         Args:
             texts: Non-empty list of strings to embed.
+            kind: ``"query"`` or ``"document"`` — which side of retrieval
+                *texts* are on. Implementations that don't need the
+                distinction (most do not) accept and ignore it; it exists so
+                an asymmetric-instruction model can apply the right prefix
+                (see :func:`resolve_embed_prefix`) without every call site
+                needing to know which models care.
 
         Returns:
             List of unit-length float vectors, one per input string.
@@ -125,7 +190,8 @@ class MockEmbedder:
 
     dimensions: int = 8
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(self, texts: list[str], *, kind: str = "document") -> list[list[float]]:
+        del kind  # deterministic hash is direction-agnostic
         results: list[list[float]] = []
         for text in texts:
             digest = hashlib.sha256(text.encode()).digest()

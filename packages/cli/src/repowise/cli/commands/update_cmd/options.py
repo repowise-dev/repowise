@@ -57,6 +57,8 @@ class UpdateRun:
     prev_renderer_fp: str | None = None
     curr_renderer_fp: str = ""
     renderer_changed: bool = False
+    # An upgrade asked this run to rebuild the wiki once (see wiki_rebuild.py).
+    wiki_rebuild: bool = False
 
     # Change detection.
     detector: Any = None
@@ -68,6 +70,8 @@ class UpdateRun:
     scanner_changed: bool = False
     stale_db_paths: list[str] = field(default_factory=list)
     stale_deterministic_ids: set[str] = field(default_factory=set)
+    # Stale pages this mode cannot regenerate: left stale, reported, never a reason to run.
+    stale_pages_deferred: int = 0
     file_diffs: list = field(default_factory=list)
 
     # Index: the rebuilt graph, the page plan and the partial analyses.
@@ -84,6 +88,8 @@ class UpdateRun:
     repo_structure: Any = None
     file_count: int = 0
     git_meta_map: Any = None
+    # git_meta_map plus the stored rows of every re-rendered file; render only.
+    render_git_meta: Any = None
     cascade_budget: int | None = None
     affected: Any = None
     partial_health_report: Any = None
@@ -91,6 +97,11 @@ class UpdateRun:
     doc_drift_report: Any = None
     persisted_git_meta: Any = None
     knowledge_graph_result: Any = None
+
+    @property
+    def full_generation(self) -> bool:
+        """Whether this run regenerates the whole page set, every level included."""
+        return bool(self.config and self.config.generation_changed) or self.wiki_rebuild
 
 
 @dataclass

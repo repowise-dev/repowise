@@ -18,7 +18,7 @@ from typing import Protocol, runtime_checkable
 
 import structlog
 
-from .registry import migrations_between
+from .registry import Migration, migrations_between
 from .verdict import (
     UpgradeAction,
     UpgradeActionKind,
@@ -28,6 +28,7 @@ from .verdict import (
 from .version import (
     STORE_FORMAT_VERSION,
     STORE_FORMAT_VERSION_KEY,
+    WIKI_REBUILT_VERSION_KEY,
     WRITTEN_BY_VERSION_KEY,
 )
 
@@ -98,6 +99,9 @@ def assess(
         if migration.tier == UpgradeTier.REINDEX_RECOMMENDED:
             reindex_command = "repowise init --force"
             notice_parts.append(migration.summary)
+        elif migration.action == UpgradeActionKind.REBUILD_WIKI:
+            if _wiki_rebuild_owed(state, migration):
+                actions.append(UpgradeAction(kind=migration.action, reason=migration.summary))
         elif migration.action is not None:
             actions.append(UpgradeAction(kind=migration.action, reason=migration.summary))
 
@@ -163,6 +167,8 @@ async def apply_auto(verdict: UpgradeVerdict, ctx: UpgradeContext) -> list[Upgra
         # twice bills the embedding API twice for an identical result.
         if action.kind in ran:
             continue
+        if action.kind == UpgradeActionKind.REBUILD_WIKI:
+            continue  # run in-band by the update that assessed it
         try:
             if action.kind == UpgradeActionKind.REEMBED_VECTORS:
                 await ctx.reembed_vectors()
@@ -178,8 +184,45 @@ async def apply_auto(verdict: UpgradeVerdict, ctx: UpgradeContext) -> list[Upgra
     return ran
 
 
-def _auto_reachable_version(from_version: int, target: int) -> int:
-    """Highest store-format version reachable without an un-run reindex.
+def _wiki_rebuild_owed(state: Mapping[str, object], migration: Migration) -> bool:
+    """Whether *migration*'s wiki rebuild still has to run for this store.
+
+    Satisfied once an update has recorded the rebuild at or past its version,
+    and vacuous for a store with no pages to rebuild (docs mode ``none``).
+    """
+    from repowise.core.docs_mode import resolve_docs_mode
+
+    rebuilt = _coerce_int(state.get(WIKI_REBUILT_VERSION_KEY), default=0)
+    return rebuilt < migration.to_version and resolve_docs_mode(state) != "none"
+
+
+def pending_wiki_rebuilds(state: Mapping[str, object]) -> tuple[Migration, ...]:
+    """The migrations whose one-time wiki rebuild the next update still owes.
+
+    Pure and cheap (reads ``state`` only), so ``update`` can ask it before
+    deciding whether a repository with no new commits is up to date. Empty
+    when nothing is owed.
+    """
+    from_version = _coerce_int(state.get(STORE_FORMAT_VERSION_KEY), default=0)
+    return tuple(
+        migration
+        for migration in migrations_between(from_version, STORE_FORMAT_VERSION)
+        if migration.action == UpgradeActionKind.REBUILD_WIKI
+        and _wiki_rebuild_owed(state, migration)
+    )
+
+
+def mark_wiki_rebuilt(state: dict[str, object]) -> None:
+    """Record in *state* that this build's wiki rebuild completed.
+
+    The next :func:`stamp` may then advance the store past every
+    ``REBUILD_WIKI`` migration up to the current version.
+    """
+    state[WIKI_REBUILT_VERSION_KEY] = STORE_FORMAT_VERSION
+
+
+def _auto_reachable_version(state: Mapping[str, object], from_version: int, target: int) -> int:
+    """Highest store-format version reachable without an un-run reindex or rebuild.
 
     A routine persist advances the recorded version only across migrations it
     can satisfy automatically (``COMPATIBLE`` / ``AUTO`` / ``RE_PARSE``). A
@@ -188,10 +231,18 @@ def _auto_reachable_version(from_version: int, target: int) -> int:
     on every routine ``update`` until the user actually re-indexes. Without this
     clamp the first persist after an upgrade would stamp the store current and
     silence a recommendation the store has not yet earned.
+
+    A ``REBUILD_WIKI`` migration gates the same way until an update records the
+    rebuild (:func:`mark_wiki_rebuilt`), so a run that deferred it on cost, or
+    an index-only run that could not do it, leaves it due for the next one.
     """
     ceiling = from_version
     for migration in migrations_between(from_version, target):
         if migration.tier >= UpgradeTier.REINDEX_RECOMMENDED:
+            break
+        if migration.action == UpgradeActionKind.REBUILD_WIKI and _wiki_rebuild_owed(
+            state, migration
+        ):
             break
         ceiling = migration.to_version
     return ceiling
@@ -220,7 +271,9 @@ def stamp(
         state[STORE_FORMAT_VERSION_KEY] = STORE_FORMAT_VERSION
     else:
         recorded = _coerce_int(state.get(STORE_FORMAT_VERSION_KEY), default=0)
-        state[STORE_FORMAT_VERSION_KEY] = _auto_reachable_version(recorded, STORE_FORMAT_VERSION)
+        state[STORE_FORMAT_VERSION_KEY] = _auto_reachable_version(
+            state, recorded, STORE_FORMAT_VERSION
+        )
     if package_version:
         state[WRITTEN_BY_VERSION_KEY] = package_version
     return state
@@ -239,4 +292,11 @@ def _coerce_str(value: object) -> str | None:
     return None
 
 
-__all__ = ["UpgradeContext", "apply_auto", "assess", "stamp"]
+__all__ = [
+    "UpgradeContext",
+    "apply_auto",
+    "assess",
+    "mark_wiki_rebuilt",
+    "pending_wiki_rebuilds",
+    "stamp",
+]

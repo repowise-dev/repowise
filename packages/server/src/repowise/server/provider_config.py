@@ -312,17 +312,19 @@ def resolve_for_repo(
     )
 
 
-def _logged_in(identity: Any) -> bool:
-    """One CLI's login check; a check that breaks counts as not signed in."""
+def _logged_in(identity: Any) -> bool | None:
+    """One CLI's login check: ``None`` when it cannot say; a broken check is ``False``."""
     try:
-        return bool(identity.is_logged_in())
+        state = identity.is_logged_in()
+        return None if state is None else bool(state)
     except Exception:
         logger.debug("Login check for %s failed", identity.slug, exc_info=True)
         return False
 
 
-def _signed_in_agent_providers() -> set[str]:
-    """Catalog providers whose agent CLI is installed and signed in here.
+def _agent_login_states() -> dict[str, bool | None]:
+    """Login state of each catalog provider's agent CLI: ``True`` signed in,
+    ``None`` installed but unknown, ``False`` otherwise.
 
     Each check is a short subprocess (the CLI's own login query), so they run
     side by side.
@@ -335,23 +337,27 @@ def _signed_in_agent_providers() -> set[str]:
         if (agent := PROVIDER_SPECS[p["id"]].agent) and (identity := get_identity(agent))
     }
     if not agents:
-        return set()
+        return {}
     with ThreadPoolExecutor(max_workers=len(agents)) as pool:
-        signed_in = list(pool.map(_logged_in, agents.values()))
-    return {name for name, ok in zip(agents, signed_in, strict=True) if ok}
+        states = list(pool.map(_logged_in, agents.values()))
+    return dict(zip(agents, states, strict=True))
 
 
 def _detected_source(
-    provider_id: str, repo_path: str | Path | None, signed_in: set[str] | None
+    provider_id: str, repo_path: str | Path | None, login_states: dict[str, bool | None] | None
 ) -> str | None:
     """What on this machine makes *provider_id* usable without setup.
 
-    ``signed_in``: its agent CLI is signed in (only checked when *signed_in*
-    is given). ``env``: a key in the process env or the repo's
+    ``signed_in``: its agent CLI is signed in. ``installed``: the CLI is on
+    PATH but cannot say (no login query, or the network-off switch is set).
+    Both only when *login_states* is given. ``env``: a key in the process env or the repo's
     ``.repowise/.env``. ``saved``: a key stored on this server.
     """
     if PROVIDER_SPECS[provider_id].agent:
-        return "signed_in" if signed_in is not None and provider_id in signed_in else None
+        state = login_states.get(provider_id, False) if login_states is not None else False
+        if state is None:
+            return "installed"
+        return "signed_in" if state else None
     if not _CATALOG_BY_ID[provider_id]["requires_key"]:
         return None
     source = resolve_api_key(provider_id, repo_path)[1]
@@ -377,7 +383,7 @@ def list_provider_status(
     """
     selection = resolve_for_repo(repo_id, repo_path)
     active_id, model = selection.provider, selection.model
-    signed_in = _signed_in_agent_providers() if detect else None
+    login_states = _agent_login_states() if detect else None
 
     providers = []
     for p in PROVIDER_CATALOG:
@@ -399,7 +405,7 @@ def list_provider_status(
                 "local_model": p["local_model"],
                 "env_vars": p["env_vars"],
                 "setup_hint": p["setup_hint"],
-                "detected": _detected_source(p["id"], repo_path, signed_in),
+                "detected": _detected_source(p["id"], repo_path, login_states),
             }
         )
 

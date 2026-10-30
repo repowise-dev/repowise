@@ -552,7 +552,7 @@ def test_a_switch_with_a_tangled_arm_keeps_complex_method() -> None:
 
 
 def test_nesting_inside_a_switch_arm_is_not_nested_complexity() -> None:
-    # switch, case, if, if: four levels, two of them the dispatch's own.
+    # switch, if, if, if: four levels, one of them the dispatch's own.
     fns = _functions(
         "csharp",
         """class A {
@@ -561,7 +561,7 @@ def test_nesting_inside_a_switch_arm_is_not_nested_complexity() -> None:
       case 1: return 1;
       case 2: return 2;
       default:
-        if (ins > 3) { if (fmt == 4) { return 4; } }
+        if (ins > 3) { if (fmt == 4) { if (fmt > 5) { return 4; } } }
         return fmt;
     }
   }

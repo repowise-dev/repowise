@@ -11,13 +11,13 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
-from pathlib import Path
 from typing import Any
 
 import structlog
 
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 from repowise.core.ingestion.package_roots import package_manifest_names, package_roots_from_paths
+from repowise.core.ingestion.symbol_use import NO_SYMBOL_USE, SymbolUse
 
 from ..concept_tree.grouping import ConceptGroup, group_files
 from ..concept_tree.naming import (
@@ -28,8 +28,10 @@ from ..concept_tree.naming import (
     deterministic_title,
     disambiguate_titles,
 )
-from ..models import member_structural_key, scc_page_slug
+from ..models import compute_page_id, member_structural_key, scc_page_slug
+from ..page_generator.helpers import _is_infra_file
 from .scoring import (
+    is_test_spec,
     score_api_contract,
     score_file,
     score_infra,
@@ -39,8 +41,6 @@ from .scoring import (
 
 log = structlog.get_logger(__name__)
 
-_INFRA_LANGUAGES = _LANG_REGISTRY.infra_languages()
-_INFRA_FILENAMES = frozenset({"Dockerfile", "Makefile", "GNUmakefile"})
 _CODE_LANGUAGES = _LANG_REGISTRY.code_languages()
 
 # Top-level directories whose contents document or illustrate the repository
@@ -148,6 +148,8 @@ class Selection:
     # cap that actually sliced it. These are reporting facts, not selectors.
     eligible_file_pages: int = 0
     effective_file_page_cap: int | None = None
+    # ``(glob, documented, eligible)`` per folder-coverage rule (issue #633).
+    folder_coverage: list[tuple[str, int, int]] = field(default_factory=list)
 
     def counts(self) -> dict[str, int]:
         """Per-page-type counts of the pages this run will emit.
@@ -197,18 +199,15 @@ class SelectionInputs:
     # concept group. Absent or partial degrades the grouping's taste, never
     # its coverage, because the partition itself needs no KG input.
     kg_modules: list[dict] | None = None
+    # Production callers per symbol id (``GraphBuilder.symbol_uses``), the
+    # signal spotlight selection ranks by. Absent, every symbol scores as
+    # unused and ranks on size and complexity alone.
+    symbol_uses: dict[str, SymbolUse] | None = None
 
 
 # ---------------------------------------------------------------------------
 # Helpers — file classification
 # ---------------------------------------------------------------------------
-
-
-def _is_infra_file(parsed: Any) -> bool:
-    fi = parsed.file_info
-    if fi.language in _INFRA_LANGUAGES:
-        return True
-    return Path(fi.path).name in _INFRA_FILENAMES
 
 
 def _is_code_file(parsed: Any) -> bool:
@@ -344,9 +343,11 @@ def _passes_importance_floor(parsed: Any) -> bool:
 
     Tests are read off ``FileInfo.is_test``, the flag ingestion stamps once, so
     ``e2e-tests/`` and ``foo.spec.ts`` are caught exactly as everywhere else.
+    Test support (``conftest.py``, ``tests/helpers/``) passes: it holds the
+    harness conventions, not test cases.
     """
     fi = parsed.file_info
-    if fi.is_test:
+    if is_test_spec(fi):
         return False
     return fi.path.replace("\\", "/").rsplit("/", 1)[-1] != "__init__.py"
 
@@ -356,10 +357,19 @@ def _passes_importance_floor(parsed: Any) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _build_file_candidates(
+def _score_code_files(
     inputs: SelectionInputs,
-) -> tuple[list[tuple[float, str]], int, int | None]:
-    """Return ``[(score, file_path), ...]`` for code files, descending."""
+) -> list[tuple[float, str]]:
+    """Return ``[(score, file_path), ...]`` for code files, descending, uncapped.
+
+    The folder-coverage pins (issue #633) need the *whole* code-file set under
+    a glob — files that score below the global cutoff must still be pinnable —
+    so the scoring is separated from the global cap. ``select_pages`` calls
+    this once and derives both the capped selection and the uncapped pin
+    candidates from the same ranking, so the two can never disagree.
+    ``_build_file_candidates`` is this + the global cap, kept for its other
+    callers.
+    """
     max_pr = max(inputs.pagerank.values(), default=0.0)
     max_bet = max(inputs.betweenness.values(), default=0.0)
     git = inputs.git_meta_map or {}
@@ -385,6 +395,21 @@ def _build_file_candidates(
         if s > 0.0:
             scored.append((s, path))
     scored.sort(key=lambda x: (-x[0], x[1]))
+    return scored
+
+
+def _build_file_candidates(
+    inputs: SelectionInputs,
+    *,
+    scored: list[tuple[float, str]] | None = None,
+) -> tuple[list[tuple[float, str]], int, int | None]:
+    """Return the capped ranking plus ``(eligible, effective_cap)``.
+
+    ``scored`` lets ``select_pages`` hand in the ranking it already holds, so
+    the cap and the folder-coverage pins slice the same list.
+    """
+    if scored is None:
+        scored = _score_code_files(inputs)
     # Three states, because "how many file pages" has three real answers.
     #
     #   unset (None) -> the volume policy decides: untouched below the automatic
@@ -414,52 +439,89 @@ def _build_symbol_candidates(
     return ranked[:keep]
 
 
+# The most spotlights one file keeps. A file whose every symbol is heavily used
+# is a hub, and its file page already lists them all; past this many its
+# spotlights crowd out the load-bearing symbols of every other file.
+SPOTLIGHTS_PER_FILE = 8
+
+
+def _first_per_target(
+    scored: list[tuple[float, tuple[str, str]]],
+) -> list[tuple[float, tuple[str, str]]]:
+    """Keep the highest-scoring occurrence of each ``(file_path, name)`` pair.
+
+    A spotlight page is keyed by the pair, but one file can declare it twice:
+    two classes in the same Java file each with a ``toString``, two Rust impl
+    blocks each with a ``new``. Left in, the duplicates generate the same page
+    id twice. *scored* is sorted, so first wins.
+    """
+    seen: set[tuple[str, str]] = set()
+    out: list[tuple[float, tuple[str, str]]] = []
+    for score, target in scored:
+        if target not in seen:
+            seen.add(target)
+            out.append((score, target))
+    return out
+
+
+def _capped_per_file(
+    scored: list[tuple[float, tuple[str, str]]],
+) -> list[tuple[float, tuple[str, str]]]:
+    """Drop each file's candidates past :data:`SPOTLIGHTS_PER_FILE`, keeping order."""
+    taken: Counter[str] = Counter()
+    out: list[tuple[float, tuple[str, str]]] = []
+    for score, target in scored:
+        if taken[target[0]] < SPOTLIGHTS_PER_FILE:
+            taken[target[0]] += 1
+            out.append((score, target))
+    return out
+
+
+# Spotlights a small repository keeps whatever its percentile says, so a
+# library of a few hundred symbols still gets pages for its most-used ones.
+MIN_SPOTLIGHTS = 10
+
+
+def _spotlight_keep(eligible: int, pct: float) -> int:
+    """How many of *eligible* ranked spotlight candidates selection keeps."""
+    if pct <= 0:
+        return 0
+    if pct >= 1.0:
+        return eligible
+    return min(eligible, max(MIN_SPOTLIGHTS, int(eligible * pct)))
+
+
 def rank_symbol_candidates(
     inputs: SelectionInputs,
 ) -> tuple[list[tuple[float, tuple[str, str]]], int]:
-    """Every production spotlight candidate in rank order, and how many selection keeps."""
+    """Every production spotlight candidate in rank order, and how many selection keeps.
+
+    Ranked by the symbol's own use (see :func:`score_symbol`), held to
+    :data:`SPOTLIGHTS_PER_FILE` per file. A spotlight repeats what its file's
+    page already renders, so the bucket is the strongest
+    ``top_symbol_percentile`` of the symbols that clear the floors.
+    """
     max_pr = max(inputs.pagerank.values(), default=0.0)
+    uses = inputs.symbol_uses or {}
     test_paths = {p.file_info.path for p in inputs.parsed_files if p.file_info.is_test}
     scored: list[tuple[float, tuple[str, str]]] = []
     for p in inputs.parsed_files:
         file_pr = inputs.pagerank.get(p.file_info.path, 0.0)
         for sym in p.symbols:
-            if sym.visibility != "public":
-                continue
-            s = score_symbol(sym, file_pr, max_pr)
+            s = score_symbol(sym, uses.get(sym.id, NO_SYMBOL_USE), file_pr, max_pr)
             if s > 0.0:
                 scored.append((s, (p.file_info.path, sym.name)))
     scored.sort(key=lambda x: (-x[0], x[1]))
-    # A spotlight page is keyed by ``(file_path, symbol_name)``, but one file
-    # can declare that pair twice: two classes in the same Java file each
-    # with a ``toString``, two Rust impl blocks each with a ``new``. Left in,
-    # the duplicates generate the same page id twice (the second silently
-    # overwriting the first, having spent a full LLM call to do it). Keep the
-    # highest-scoring occurrence; the list is already sorted, so first wins.
-    seen: set[tuple[str, str]] = set()
-    deduped: list[tuple[float, tuple[str, str]]] = []
-    for score, target in scored:
-        if target in seen:
-            continue
-        seen.add(target)
-        deduped.append((score, target))
-    # A spotlight repeats what its file's page already renders: the signature,
-    # the docstring, the importer list. Taking every public symbol would bury
-    # the pages that say something new, so the bucket is held to the strongest
-    # slice by PageRank. This used to fall out of the coverage budget's 0.15
-    # share; with nothing costing tokens there is no budget to fall out of, so
-    # the percentile that always existed on the config now does the bounding.
+    eligible = _first_per_target(scored)
     # Fallback tracks GenerationConfig.top_symbol_percentile; a config object
     # predating the field must not silently select a wider slice than the
     # declared default.
-    pct = getattr(inputs.config, "top_symbol_percentile", 0.10) or 0.0
-    # At least one, so a repo with few public symbols still gets a spotlight.
-    keep = len(deduped) if pct >= 1.0 else max(1, int(len(deduped) * pct))
-    if pct <= 0:
-        keep = 0
-    # Sized on the whole pool so production never loses a slot it had; tests only
-    # hand theirs to the next production symbol.
-    return [c for c in deduped if c[1][0] not in test_paths], keep
+    pct = getattr(inputs.config, "top_symbol_percentile", 0.12) or 0.0
+    keep = _spotlight_keep(len(eligible), pct)
+    # Sized before tests and the per-file cap leave the pool, so production
+    # never loses a slot it had; those only hand theirs to the next symbol.
+    ranked = _capped_per_file([c for c in eligible if c[1][0] not in test_paths])
+    return ranked, keep
 
 
 def _layer_map_from_kg(
@@ -816,9 +878,9 @@ def _build_rollup_groups(
     return rollups
 
 
-def _build_api_candidates(inputs: SelectionInputs) -> list[tuple[float, str]]:
+def _build_api_candidates(parsed_files: Iterable[Any]) -> list[tuple[float, str]]:
     scored: list[tuple[float, str]] = []
-    for p in inputs.parsed_files:
+    for p in parsed_files:
         if not p.file_info.is_api_contract:
             continue
         scored.append((score_api_contract(p), p.file_info.path))
@@ -826,9 +888,9 @@ def _build_api_candidates(inputs: SelectionInputs) -> list[tuple[float, str]]:
     return scored
 
 
-def _build_infra_candidates(inputs: SelectionInputs) -> list[tuple[float, str]]:
+def _build_infra_candidates(parsed_files: Iterable[Any]) -> list[tuple[float, str]]:
     scored: list[tuple[float, str]] = []
-    for p in inputs.parsed_files:
+    for p in parsed_files:
         if not _is_infra_file(p):
             continue
         scored.append((score_infra(p), p.file_info.path))
@@ -837,10 +899,10 @@ def _build_infra_candidates(inputs: SelectionInputs) -> list[tuple[float, str]]:
 
 
 def _build_scc_candidates(
-    inputs: SelectionInputs,
+    sccs: Iterable[Any],
 ) -> list[tuple[float, tuple[str, list[str]]]]:
     scored: list[tuple[float, tuple[str, list[str]]]] = []
-    for scc in inputs.sccs:
+    for scc in sccs:
         files = sorted(scc)
         s = score_scc(cycle_size=len(files))
         if s <= 0.0:
@@ -876,16 +938,33 @@ def select_pages(inputs: SelectionInputs) -> Selection:
     Deterministic given identical inputs. Safe to call from both the generator
     and the cost estimator.
     """
-    files, eligible_file_pages, effective_file_page_cap = _build_file_candidates(inputs)
+    scored_files = _score_code_files(inputs)
+    files, eligible_file_pages, effective_file_page_cap = _build_file_candidates(
+        inputs, scored=scored_files
+    )
+
     symbols = _build_symbol_candidates(inputs)
     concepts = _build_module_groups(inputs)
     modules = concepts.scored
-    apis = _build_api_candidates(inputs)
-    infras = _build_infra_candidates(inputs)
-    sccs = _build_scc_candidates(inputs)
+    apis = _build_api_candidates(inputs.parsed_files)
+    infras = _build_infra_candidates(inputs.parsed_files)
+    sccs = _build_scc_candidates(inputs.sccs)
+
+    selected_paths = [p for _, p in files]
+    # Folder-specific documentation floors (issue #633). Each rule promises
+    # ceil(pct * len(folder_code_files)) of the code files under its glob get
+    # a file_page, whatever their global score. Additive union — a floor that
+    # can raise the page count (and therefore the estimate) but never
+    # displaces a global pick. Mirrors how tour landmarks force-include
+    # entry points; these are user-supplied globs instead. Uses the *uncapped*
+    # ranking so files below the global cutoff are pinnable.
+    pinned = _folder_coverage_pins(inputs, scored_files)
+    if pinned:
+        selected_paths = list(dict.fromkeys(selected_paths + pinned))
+    folder_coverage = _folder_coverage_report(inputs, scored_files, selected_paths)
 
     sel = Selection(
-        file_page_paths=[p for _, p in files],
+        file_page_paths=selected_paths,
         symbol_spotlights=[t for _, t in symbols],
         module_groups=[m for _, m in modules],
         concept_groups=list(concepts.groups),
@@ -896,9 +975,137 @@ def select_pages(inputs: SelectionInputs) -> Selection:
         emit_repo_overview=True,
         eligible_file_pages=eligible_file_pages,
         effective_file_page_cap=effective_file_page_cap,
+        folder_coverage=folder_coverage,
     )
-    log.info("page_selection.complete", counts=sel.counts())
+    log.info("page_selection.complete", counts=sel.counts(), folder_coverage=folder_coverage)
     return sel
+
+
+def selected_file_keyed_paths(parsed_files: Iterable[Any]) -> dict[str, set[str]]:
+    """``page type -> selected paths`` for the pages one file earns on its own.
+
+    The same builders :func:`select_pages` uses, so a stored row can be asked
+    "would this run still pick you" without running the whole selection. Route
+    detection runs first (it is idempotent): a run that skipped generation never
+    flagged its route files, and judging them unflagged would retire their pages.
+    """
+    from ..api_contract_detector import detect_code_api_contracts
+
+    parsed = list(parsed_files)
+    detect_code_api_contracts(parsed)
+    return {
+        "api_contract": {path for _, path in _build_api_candidates(parsed)},
+        "infra_page": {path for _, path in _build_infra_candidates(parsed)},
+    }
+
+
+def graph_cycles(graph_builder: Any) -> list[Any] | None:
+    """The graph's strongly connected components, or ``None`` when there is no
+    graph to ask: a released graph cannot say a cycle is gone."""
+    if graph_builder is None:
+        return None
+    try:
+        return list(graph_builder.strongly_connected_components())
+    except Exception:
+        return None
+
+
+def selected_cycle_page_ids(sccs: Iterable[Any]) -> set[str]:
+    """Page ids of the cycles :func:`select_pages` gives a page."""
+    return {compute_page_id("scc_page", slug) for _, (slug, _) in _build_scc_candidates(sccs)}
+
+
+def structure_ids_for_incremental_run(
+    parsed_files: Iterable[Any],
+    graph_builder: Any,
+    existing_ids: Iterable[str],
+    rendered_paths: Iterable[str],
+) -> set[str]:
+    """Structure-only page ids an incremental run renders by id.
+
+    Its file-scoped pass renders the changed files' pages (*rendered_paths*,
+    API contracts included) and stops below the levels that hold cycles and
+    infrastructure. So a selected cycle, API contract or infra page the store
+    lacks is rendered by id, as is the infra page of a file that changed:
+    otherwise a new cycle never gets a page and an edited Dockerfile's page
+    never moves.
+    """
+    rendered = set(rendered_paths)
+    selected = selected_file_keyed_paths(parsed_files)
+    wanted = selected_cycle_page_ids(graph_cycles(graph_builder) or [])
+    wanted |= {compute_page_id("api_contract", p) for p in selected["api_contract"] - rendered}
+    wanted |= {compute_page_id("infra_page", p) for p in selected["infra_page"]}
+    changed_infra = {compute_page_id("infra_page", p) for p in selected["infra_page"] & rendered}
+    return (wanted - set(existing_ids)) | changed_infra
+
+
+def _folder_rules(inputs: SelectionInputs) -> tuple[tuple[str, float], ...]:
+    return tuple(getattr(inputs.config, "folder_coverage", ()) or ())
+
+
+def _under_glob(path: str, glob_pattern: str) -> bool:
+    """Shell-style match on the repo-relative path, or a path under the folder.
+
+    ``src/core`` matches everything below ``src/core``. ``fnmatch``'s ``*``
+    also crosses ``/``, so ``src/*`` matches the whole ``src`` subtree.
+    """
+    import fnmatch
+
+    return fnmatch.fnmatch(path, glob_pattern) or path.startswith(glob_pattern.rstrip("/") + "/")
+
+
+def _folder_coverage_pins(
+    inputs: SelectionInputs,
+    files: list[tuple[float, str]],
+) -> list[str]:
+    """Return the additive file-page pins for configured folder-coverage rules.
+
+    Each ``(glob, pct)`` rule promises at least ``ceil(pct * n)`` of the code
+    files under *glob* a file_page, chosen highest-importance first from the
+    already-scored candidate list. Files already selected globally are kept
+    (the union dedups), so a rule only ever *adds* pages for files that scored
+    below the global cutoff — a floor, never a displacement (issue #633).
+    Empty rules and non-positive fractions are ignored.
+    """
+    import math
+
+    rules = _folder_rules(inputs)
+    if not rules:
+        return []
+
+    # ``files`` is already ranked (score desc, then path), the order the
+    # global budget uses, so each rule's matches come out highest-score first.
+    pinned: list[str] = []
+    seen: set[str] = set()
+    for glob_pattern, pct in rules:
+        if not glob_pattern or pct is None or pct <= 0:
+            continue
+        matches = [p for _, p in files if _under_glob(p, glob_pattern)]
+        if not matches:
+            continue
+        want = max(1, math.ceil(pct * len(matches)))  # ceil, at least 1
+        for p in matches[:want]:
+            if p not in seen:
+                seen.add(p)
+                pinned.append(p)
+    return pinned
+
+
+def _folder_coverage_report(
+    inputs: SelectionInputs,
+    files: list[tuple[float, str]],
+    selected: list[str],
+) -> list[tuple[str, int, int]]:
+    """``(glob, documented, eligible)`` per rule, for the run to show its floors."""
+    rules = _folder_rules(inputs)
+    if not rules:
+        return []
+    chosen = set(selected)
+    report: list[tuple[str, int, int]] = []
+    for glob_pattern, _pct in rules:
+        matches = [p for _, p in files if _under_glob(p, glob_pattern)]
+        report.append((glob_pattern, sum(p in chosen for p in matches), len(matches)))
+    return report
 
 
 def summarize_selection(sel: Selection) -> dict[str, int]:

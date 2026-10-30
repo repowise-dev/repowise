@@ -122,6 +122,7 @@ def _emit(repo_path: Path, resolution, fmt: str) -> None:
         )
     if policy.capture_prompt:
         from repowise.cli.editor_integrations.claude_config import (
+            _claude_code_settings_path,
             claude_code_capture_hook_installed,
         )
 
@@ -135,12 +136,17 @@ def _emit(repo_path: Path, resolution, fmt: str) -> None:
                 "so it stays silent. `decision config enable` to use it.[/yellow]"
             )
         elif not claude_code_capture_hook_installed():
-            # The flag is per repository and the hook is per install, so the
-            # two drift: a settings file from before the entry shipped lacks it.
-            console.print(
-                "  [yellow]  ...but no shell hook is installed to fire it. "
-                "Re-run `decision config capture-prompt --on`.[/yellow]"
-            )
+            if not _claude_code_settings_path().is_file():
+                console.print(
+                    "[yellow]  ...but no Claude Code settings file was found to install the shell "
+                    "hook into, so nothing will fire it. Run `repowise init` or install the "
+                    "editor integration first.[/yellow]"
+                )
+            else:
+                console.print(
+                    "[yellow]  ...but no shell hook is installed to fire it. "
+                    "Re-run `repowise decision config capture-prompt --on`.[/yellow]"
+                )
     else:
         console.print("  [dim]Capture prompt: off. Nothing asks an agent to record a decision.[/dim]")
     console.print("")

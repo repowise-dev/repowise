@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
+from typing import Any
 
 # How each leg ended for the current question. Legs fail soft, so without
 # this a lexical-only answer looks like a whole one; ``embedder_live`` says an
@@ -41,3 +43,25 @@ def retrieval_legs() -> dict[str, str]:
 def degraded_legs(legs: dict[str, str]) -> list[str]:
     """The legs that broke, sorted. ``keyless`` is configuration, not breakage."""
     return sorted(leg for leg, outcome in legs.items() if outcome not in ("ok", "keyless"))
+
+
+# Vector legs still running after their caller moved on. Held so the loop
+# keeps them alive: each one finishes into the query-embedding cache.
+_LATE_LEGS: set[asyncio.Future] = set()
+
+
+async def vector_leg_within(leg: asyncio.Future, grace_s: float) -> Any:
+    """The vector leg's result if it lands within *grace_s*, else ``[]``.
+
+    Called once the other legs are in, so full-text hits are never held up by
+    a cold store or a rate-limited embedder. A late leg is left to finish: its
+    embedding is cached, so asking again gets the semantic hits. The skip is
+    recorded as the ``vector`` leg's outcome.
+    """
+    try:
+        return await asyncio.wait_for(asyncio.shield(leg), timeout=grace_s)
+    except TimeoutError:
+        _LATE_LEGS.add(leg)
+        leg.add_done_callback(_LATE_LEGS.discard)
+        _record_leg("vector", "skipped")
+        return []

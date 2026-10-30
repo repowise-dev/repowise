@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import importlib.metadata
 import json
 import os
@@ -296,6 +297,52 @@ def test_plugins_command_with_nothing_installed():
     result = CliRunner().invoke(plugins_command, [])
     assert result.exit_code == 0
     assert "No plugins loaded" in result.output
+
+
+def _fail_import_of(monkeypatch, target, error):
+    from repowise.cli.commands import plugins_cmd
+
+    real = importlib.import_module
+
+    def broken(name, *args, **kwargs):
+        if name == target:
+            raise error
+        return real(name, *args, **kwargs)
+
+    monkeypatch.setattr(plugins_cmd.importlib, "import_module", broken)
+    return plugins_cmd.plugins_command
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ImportError("cannot import name 'CloudEvent' from 'repowise.core.events.model'"),
+        ModuleNotFoundError("No module named 'repowise.core.gone'", name="repowise.core.gone"),
+    ],
+)
+def test_plugins_command_fails_when_a_builtin_module_is_broken(monkeypatch, error):
+    command = _fail_import_of(monkeypatch, "repowise.core.events.sinks", error)
+    result = CliRunner().invoke(command, ["--format", "json"])
+    assert result.exit_code != 0
+    assert result.exception is error
+
+
+def test_plugins_command_fails_on_a_third_party_import_error_that_is_not_a_missing_package(
+    monkeypatch,
+):
+    error = ImportError("cannot import name 'x' from 'fastapi'", name="fastapi")
+    command = _fail_import_of(monkeypatch, "repowise.server.auth", error)
+    result = CliRunner().invoke(command, ["--format", "json"])
+    assert result.exit_code != 0
+    assert result.exception is error
+
+
+def test_plugins_command_skips_a_builtin_module_missing_a_third_party_package(monkeypatch):
+    error = ModuleNotFoundError("No module named 'fastapi'", name="fastapi")
+    command = _fail_import_of(monkeypatch, "repowise.server.auth", error)
+    result = CliRunner().invoke(command, ["--format", "json"])
+    assert result.exit_code == 0, result.output
+    assert "seams" in json.loads(result.output)
 
 
 def test_dispatching_a_builtin_command_never_runs_discovery():

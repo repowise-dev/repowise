@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Iterable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +15,7 @@ import structlog
 # ``repowise.core.pipeline.persist`` reaches this module too.
 from repowise.core.pipeline import persist as _persist
 
-from .prune import _prune_stale_file_rows
+from .prune import _prune_stale_file_rows, delete_pages
 
 logger = structlog.get_logger("repowise.core.pipeline.persist")
 
@@ -34,6 +35,31 @@ _log = logging.getLogger("repowise.core.pipeline.persist")
 # Max page ids per UPDATE ... IN (...) so a large cascade cannot exceed
 # SQLite's bound-variable limit on the local CLI store.
 _STALE_ID_CHUNK = 500
+
+# When a page became a tombstone, in its metadata. Deleting a file does not
+# re-render its page, so ``updated_at`` cannot say.
+TOMBSTONED_AT_KEY = "tombstoned_at"
+
+# How long a deleted file's page keeps telling a reader the file is gone. A
+# renamed file's page is a redirect to the new path and is kept regardless.
+TOMBSTONE_RETENTION = timedelta(days=30)
+
+
+def _metadata(metadata_json: str | None) -> dict:
+    try:
+        meta = json.loads(metadata_json or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return meta if isinstance(meta, dict) else {}
+
+
+def _tombstone(page: Any, successors: list[str]) -> None:
+    """Mark one page a tombstone, recording where its file went and when."""
+    page.freshness_status = "tombstone"
+    meta = _metadata(page.metadata_json)
+    meta["successor_paths"] = successors
+    meta[TOMBSTONED_AT_KEY] = datetime.now(UTC).isoformat()
+    page.metadata_json = json.dumps(meta)
 
 
 def tombstone_candidates(file_diffs: list[Any]) -> list[tuple[str, list[str]]]:
@@ -111,13 +137,7 @@ async def mark_tombstone_pages(
     marked: list[str] = []
     for page in pages:
         _, successors = page_ids[page.id]
-        page.freshness_status = "tombstone"
-        try:
-            meta = json.loads(page.metadata_json or "{}")
-        except (json.JSONDecodeError, TypeError):
-            meta = {}
-        meta["successor_paths"] = successors
-        page.metadata_json = json.dumps(meta)
+        _tombstone(page, successors)
         marked.append(page.id)
     if marked:
         logger.info("pages_tombstoned", repo_id=repo_id, count=len(marked))
@@ -163,13 +183,7 @@ async def tombstone_file_pages_outside_scope(
         source_path = target.split("::", 1)[0] if page.page_type == "symbol_spotlight" else target
         if source_path in current_file_paths:
             continue
-        page.freshness_status = "tombstone"
-        try:
-            metadata = json.loads(page.metadata_json or "{}")
-        except (json.JSONDecodeError, TypeError):
-            metadata = {}
-        metadata["successor_paths"] = []
-        page.metadata_json = json.dumps(metadata)
+        _tombstone(page, [])
         marked.append(page.id)
     return marked
 
@@ -225,13 +239,7 @@ async def tombstone_pages_outside_generation(
     for page in pages:
         if page.id in current_page_ids:
             continue
-        page.freshness_status = "tombstone"
-        try:
-            metadata = json.loads(page.metadata_json or "{}")
-        except (json.JSONDecodeError, TypeError):
-            metadata = {}
-        metadata["successor_paths"] = []
-        page.metadata_json = json.dumps(metadata)
+        _tombstone(page, [])
         marked.append(page.id)
     return marked
 
@@ -299,15 +307,9 @@ async def tombstone_absent_file_pages(
 
     marked: list[str] = []
     for page in absent:
-        page.freshness_status = "tombstone"
-        try:
-            meta = json.loads(page.metadata_json or "{}")
-        except (json.JSONDecodeError, TypeError):
-            meta = {}
         # Deleted, not renamed: rename detection is the diff-driven sweep's
         # job and it has evidence this one does not.
-        meta["successor_paths"] = []
-        page.metadata_json = json.dumps(meta)
+        _tombstone(page, [])
         marked.append(page.id)
 
     logger.info(
@@ -387,3 +389,54 @@ async def mark_page_ids_stale(session: Any, repo_id: str, page_ids: Iterable[str
     if marked:
         logger.info("pages_decayed_stale", repo_id=repo_id, count=marked)
     return marked
+
+
+def _is_expired(metadata_json: str | None, updated_at: datetime | None, cutoff: datetime) -> bool:
+    """A deleted file's tombstone older than *cutoff*. A rename's never expires.
+
+    Rows tombstoned before :data:`TOMBSTONED_AT_KEY` existed fall back to
+    ``updated_at``, which is no later than the deletion.
+    """
+    meta = _metadata(metadata_json)
+    if meta.get("successor_paths"):
+        return False
+    raw = meta.get(TOMBSTONED_AT_KEY)
+    try:
+        when = datetime.fromisoformat(raw) if isinstance(raw, str) else updated_at
+    except ValueError:
+        when = updated_at
+    if when is None:
+        return False
+    if when.tzinfo is None:  # SQLite returns the stored UTC value naive
+        when = when.replace(tzinfo=UTC)
+    return when < cutoff
+
+
+async def sweep_expired_tombstones(
+    session: Any, repo_id: str, *, now: datetime | None = None
+) -> list[str]:
+    """Delete tombstones of deleted files older than :data:`TOMBSTONE_RETENTION`.
+
+    A tombstone tells a reader or agent that a file is gone. Past the window
+    git history answers that, while the row still counts toward the page total
+    and takes a slot in every retrieval fetch. A tombstone with a successor is
+    a rename's redirect and stays.
+
+    Returns the deleted page ids so the caller can drop them from FTS and the
+    vector store after the session closes.
+    """
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import Page
+
+    cutoff = (now or datetime.now(UTC)) - TOMBSTONE_RETENTION
+    rows = await session.execute(
+        select(Page.id, Page.metadata_json, Page.updated_at).where(
+            Page.repository_id == repo_id, Page.freshness_status == "tombstone"
+        )
+    )
+    expired = [pid for pid, meta, updated in rows if _is_expired(meta, updated, cutoff)]
+    await delete_pages(session, repo_id, expired)
+    if expired:
+        logger.info("expired_tombstones_swept", repo_id=repo_id, count=len(expired))
+    return expired

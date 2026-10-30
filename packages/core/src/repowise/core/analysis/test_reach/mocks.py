@@ -36,6 +36,7 @@ from repowise.core.ingestion.languages.python_modules import build_python_module
 from repowise.core.ingestion.resolvers.context import ResolverContext
 from repowise.core.ingestion.resolvers.typescript import resolve_ts_js_import
 
+from .mocks_java import replaced_java_files
 from .mocks_js import JS_SUFFIXES, replaced_specifiers
 
 
@@ -65,7 +66,7 @@ def replaced_modules(path: str, text: str | bytes) -> frozenset[str]:
 
 
 # Test files :func:`replaced_files` reads; a caller need not read any other.
-MASKABLE_SUFFIXES = (".py", *JS_SUFFIXES)
+MASKABLE_SUFFIXES = (".py", ".java", *JS_SUFFIXES)
 
 
 def replaced_files(
@@ -76,17 +77,22 @@ def replaced_files(
     *files* are the repository's paths. A Python name masks a file only when it
     is exactly that file's dotted module name; a JavaScript or TypeScript
     specifier (:func:`~.mocks_js.replaced_specifiers`) only when it is relative
-    and resolves to one of *files*. Ceiling: a bare or aliased specifier
-    (``@/lib/x``, a workspace package) needs the repository's tsconfig and
-    workspace map, so it abstains; resolving it with the indexer's full
-    resolver context is the upgrade path. Tests replacing none are absent.
+    and resolves to one of *files*; a Java test's mocks
+    (:func:`~.mocks_java.replaced_java_files`) when resolved to a repository Java
+    file. Ceiling: a bare or aliased specifier (``@/lib/x``, a workspace package)
+    needs the repository's tsconfig and workspace map, so it abstains; resolving
+    it with the indexer's full resolver context is the upgrade path. Tests
+    replacing none are absent.
     """
     index = build_python_module_index({f for f in files if f.endswith(".py")})
     ctx = ResolverContext(path_set=set(files), stem_map={}, graph=None)
+    java_files = {f for f in files if f.endswith(".java")}
     out: dict[str, frozenset[str]] = {}
     for test, text in texts.items():
         if test.endswith(".py"):
             hits = {index[name] for name in replaced_modules(test, text) if name in index}
+        elif test.endswith(".java"):
+            hits = set(replaced_java_files(test, text, java_files))
         else:
             specs = replaced_specifiers(test, text)
             hits = {

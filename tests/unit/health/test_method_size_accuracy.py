@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import pytest
+
 from repowise.core.analysis.health.biomarkers import FileContext
 from repowise.core.analysis.health.biomarkers.brain_method import BrainMethodDetector
 from repowise.core.analysis.health.biomarkers.complex_method import ComplexMethodDetector
@@ -115,3 +117,135 @@ def test_logic_lines_inside_jsx_still_count_as_code() -> None:
     [panel] = [fn for fn in fcx.functions if fn.name == "Panel"]
     # ``<h2>{label}</h2>`` holds an expression, so it is code.
     assert panel.nloc - panel.markup_nloc >= 6
+
+
+def _code_rows(component: str, name: str = "Card") -> FunctionComplexity:
+    fcx = walk_file("src/Card.tsx", "typescript", component.encode())
+    [fn] = [fn for fn in fcx.functions if fn.name == name]
+    return fn
+
+
+_STYLE_PAIRS = "\n".join(f'        prop{i}: "value-{i}",' for i in range(70))
+_SPANS = "\n".join(
+    f'      <span\n        className="cell-{i}"\n        style={{{{ opacity: 0.5 }}}}\n'
+    f'        title={{label}}\n      />'
+    for i in range(20)
+)
+_STYLED = f"""export function Card({{ label, open }}: Props) {{
+  if (!open) {{
+    return null;
+  }}
+  const tone = label ? "on" : "off";
+  if (tone === "on") {{
+    console.log(tone);
+  }}
+  return (
+    <div
+      style={{{{
+{_STYLE_PAIRS}
+      }}}}
+    >
+{_SPANS}
+    </div>
+  );
+}}
+"""
+
+
+def test_literal_style_objects_and_data_props_are_markup() -> None:
+    card = _code_rows(_STYLED)
+    # The function line, the guards, the const, the return and its parens.
+    assert card.nloc - card.markup_nloc <= 12
+    assert LargeMethodDetector().detect(_ctx(card, path="src/Card.tsx")) == []
+
+
+def test_a_prop_with_a_call_or_a_condition_stays_code() -> None:
+    card = _code_rows(
+        """export function Card({ label, wide }: Props) {
+  return (
+    <div
+      className="card"
+      title={format(label)}
+      style={{
+        width: wide ? 320 : 260,
+      }}
+      onClick={() => {
+        track(label);
+      }}
+    />
+  );
+}
+"""
+    )
+    # Only ``<div``, ``className`` and ``/>`` are markup.
+    assert card.markup_nloc == 3
+
+
+def test_a_const_data_literal_used_only_as_a_prop_is_markup() -> None:
+    card = _code_rows(
+        """export function Card({ label }: Props) {
+  const box = {
+    padding: 4,
+    color: "red",
+  };
+  return <div style={box}>{label}</div>;
+}
+"""
+    )
+    # The four lines of ``box`` are markup; the return line holds ``{label}``.
+    assert card.markup_nloc == 4
+
+
+@pytest.mark.parametrize("cast", ["as Palette", "satisfies Palette"])
+def test_a_typed_const_data_literal_used_only_as_a_prop_is_markup(cast: str) -> None:
+    card = _code_rows(
+        f"""export function Card({{ label }}: Props) {{
+  const box = {{
+    padding: 4,
+    color: "red",
+  }} {cast};
+  return <div style={{box}}>{{label}}</div>;
+}}
+"""
+    )
+    assert card.markup_nloc == 4
+
+
+def test_a_const_data_literal_read_by_logic_stays_code() -> None:
+    card = _code_rows(
+        """export function Card({ kind }: Props) {
+  const labels = {
+    a: "Alpha",
+    b: "Beta",
+  };
+  return <div title={labels.a}>{labels[kind]}</div>;
+}
+"""
+    )
+    assert card.markup_nloc == 0
+
+
+def test_brain_method_does_not_count_jsx_markup_lines() -> None:
+    # 100 lines, 40 of them markup: 60 lines of code is under brain_method's 70.
+    assert BrainMethodDetector().detect(_central(_fn(nloc=100, ccn=12, markup_nloc=40))) == []
+    [finding] = BrainMethodDetector().detect(_central(_fn(nloc=120, ccn=12, markup_nloc=40)))
+    assert finding.reason == (
+        "Brain Method: tokenize is 80 lines besides 40 of JSX markup, CCN 12, "
+        "in a file imported by 10 others"
+    )
+    assert finding.details["markup_nloc"] == 40
+
+
+def test_jsx_files_and_as_const_literals_read_the_same() -> None:
+    component = """export function Card({ label }) {
+  const box = {
+    margin: -1,
+  } as const;
+  return <div style={box}>{label}</div>;
+}
+"""
+    assert _code_rows(component).markup_nloc == 3
+    plain = component.replace(" as const", "")
+    fcx = walk_file("src/Card.jsx", "javascript", plain.encode())
+    [card] = [fn for fn in fcx.functions if fn.name == "Card"]
+    assert card.markup_nloc == 3

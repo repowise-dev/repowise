@@ -390,3 +390,44 @@ def test_an_aliased_library_import_leaves_the_name_to_the_repo(tmp_path: Path) -
         "src/a/Use.kt": "package a\n\nfun use(request: Request) {\n    request.ext()\n}\n",
     }
     assert _resolve_files(tmp_path, files, "src/a/Use.kt") == {"src/a/Ext.kt::ext"}
+
+
+_BUF = "package a\n\nclass Buf {\n    fun size(): Int = 0\n}\n"
+_SRC = (
+    "package a\n\nopen class Src(val buffer: Buf, private val cached: Buf) {\n"
+    "    protected val inner: Buf = Buf()\n}\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("package", "imports"), [("a", ""), ("a.internal", "import a.Src\n\n")]
+)
+def test_an_extension_reads_its_receivers_properties_through_this(
+    tmp_path: Path, package: str, imports: str
+) -> None:
+    """`buffer` in `fun Src.total()` is `Src.buffer`; a private or protected one is not visible there."""
+    files = {
+        "src/a/Buf.kt": _BUF,
+        "src/a/Src.kt": _SRC,
+        _EXT: (
+            f"package {package}\n\n{imports}"
+            "fun Src.total(): Int = buffer.size()\n"
+            "fun Src.hidden(): Int = inner.size() + cached.size()\n"
+            "fun Src.shadowed(buffer: String): Int = buffer.size()\n"
+        ),
+    }
+    assert _resolve_files(tmp_path, files, _EXT) == {"src/a/Buf.kt::Buf::size"}
+
+
+def test_an_override_never_takes_more_arguments_than_it_lists(tmp_path: Path) -> None:
+    """`buffer.line(n)` is not `Buf.line()`: an override inherits defaults, never a parameter."""
+    files = {
+        "src/a/Buf.kt": (
+            "package a\n\ninterface Lines {\n    fun line(): String?\n    fun size(n: Int = 0): Int\n}\n\n"
+            "class Buf : Lines {\n    override fun line(): String? = null\n"
+            "    override fun size(n: Int): Int = n\n}\n"
+        ),
+        "src/a/Src.kt": "package a\n\nclass Src(val buffer: Buf)\n",
+        _EXT: "package a\n\nfun Src.go(n: Long): Int {\n    buffer.line(n)\n    return buffer.size()\n}\n",
+    }
+    assert _resolve_files(tmp_path, files, _EXT) == {"src/a/Buf.kt::Buf::size"}

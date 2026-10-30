@@ -84,7 +84,13 @@ from .models import (
 # which imports it directly from this module.
 from .nloc import _count_file_nloc
 from .perf_walk import _collect_perf_hits, perf_pass_runs
-from .signature import bound_param_count, is_constructor, is_signature_fixed, typed_param_counts
+from .signature import (
+    bound_param_count,
+    is_constructor,
+    is_signature_fixed,
+    keyword_only_param_count,
+    typed_param_counts,
+)
 from .test_case import is_test_case
 
 if TYPE_CHECKING:
@@ -227,6 +233,7 @@ def walk_file(
             typed_param_count=typed,
             primitive_param_count=scalar,
             bound_param_count=bound_param_count(params, lmap),
+            keyword_only_param_count=keyword_only_param_count(params, lmap),
             is_constructor=is_constructor(fn_node, name, lmap),
             signature_fixed=is_signature_fixed(fn_node, lmap),
             complex_conditions=conditions,

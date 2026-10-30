@@ -136,8 +136,8 @@
       "performance_average": 10.0,
       "performance_hotspot": null,
       "structure_average": 0.0,
-      "structure_hotspot": null,
       "history_average": 0.0,
+      "structure_hotspot": null,
       "history_hotspot": null,
       "production_average": 10.0,
       "production_file_count": 1,
@@ -195,8 +195,8 @@
       "performance_average": 10.0,
       "performance_hotspot": null,
       "structure_average": 0.0,
-      "structure_hotspot": null,
       "history_average": 0.0,
+      "structure_hotspot": null,
       "history_hotspot": null,
       "production_average": 10.0,
       "production_file_count": 1,
@@ -405,8 +405,8 @@
       "performance_average": 10.0,
       "performance_hotspot": null,
       "structure_average": 1.51,
-      "structure_hotspot": null,
       "history_average": 0.0,
+      "structure_hotspot": null,
       "history_hotspot": null,
       "production_average": 8.49,
       "production_file_count": 3,
@@ -421,7 +421,7 @@
         "target_symbol": "parseAccount",
         "line_start": 15,
         "line_end": 56,
-        "impact_delta": 0.22,
+        "impact_delta": 0.193,
         "effort_bucket": "S",
         "confidence": "high",
         "source_biomarker": "complex_method"
@@ -432,7 +432,7 @@
         "target_symbol": "parseWorkspace",
         "line_start": 15,
         "line_end": 56,
-        "impact_delta": 0.22,
+        "impact_delta": 0.193,
         "effort_bucket": "S",
         "confidence": "high",
         "source_biomarker": "complex_method"
@@ -793,9 +793,9 @@
       "maintainability_hotspot": null,
       "performance_average": 10.0,
       "performance_hotspot": null,
-      "structure_average": 3.08,
-      "structure_hotspot": null,
+      "structure_average": 3.09,
       "history_average": 0.0,
+      "structure_hotspot": null,
       "history_hotspot": null,
       "production_average": 6.91,
       "production_file_count": 1,
@@ -810,7 +810,7 @@
         "target_symbol": "read_account",
         "line_start": 22,
         "line_end": 48,
-        "impact_delta": 0.171,
+        "impact_delta": 0.097,
         "effort_bucket": "S",
         "confidence": "high",
         "source_biomarker": "complex_method"
@@ -821,7 +821,7 @@
         "target_symbol": "read_project",
         "line_start": 150,
         "line_end": 176,
-        "impact_delta": 0.171,
+        "impact_delta": 0.097,
         "effort_bucket": "S",
         "confidence": "high",
         "source_biomarker": "complex_method"
@@ -832,7 +832,7 @@
         "target_symbol": "read_workspace",
         "line_start": 86,
         "line_end": 112,
-        "impact_delta": 0.171,
+        "impact_delta": 0.097,
         "effort_bucket": "S",
         "confidence": "high",
         "source_biomarker": "complex_method"
@@ -1226,7 +1226,7 @@
       },
       {
         "file_path": "go/conditionals.go",
-        "score": 9.24,
+        "score": 10.0,
         "max_ccn": 8,
         "max_nesting": 1,
         "nloc": 19,
@@ -1235,10 +1235,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.24,
-        "maintainability_score": 9.4,
+        "defect_score": 10.0,
+        "maintainability_score": 10.0,
         "performance_score": 10.0,
-        "structure_deduction": 0.758,
+        "structure_deduction": 0.0,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -1283,7 +1283,7 @@
       },
       {
         "file_path": "java/Conditionals.java",
-        "score": 9.24,
+        "score": 10.0,
         "max_ccn": 8,
         "max_nesting": 1,
         "nloc": 20,
@@ -1292,10 +1292,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.24,
-        "maintainability_score": 9.4,
+        "defect_score": 10.0,
+        "maintainability_score": 10.0,
         "performance_score": 10.0,
-        "structure_deduction": 0.758,
+        "structure_deduction": 0.0,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -1682,7 +1682,7 @@
       },
       {
         "file_path": "python/conditionals.py",
-        "score": 9.24,
+        "score": 10.0,
         "max_ccn": 8,
         "max_nesting": 1,
         "nloc": 12,
@@ -1691,10 +1691,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.24,
-        "maintainability_score": 9.4,
+        "defect_score": 10.0,
+        "maintainability_score": 10.0,
         "performance_score": 10.0,
-        "structure_deduction": 0.758,
+        "structure_deduction": 0.0,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -1703,7 +1703,7 @@
         "file_path": "python/match.py",
         "score": 10.0,
         "max_ccn": 5,
-        "max_nesting": 2,
+        "max_nesting": 1,
         "nloc": 19,
         "has_test_file": false,
         "module": "python",
@@ -1853,7 +1853,7 @@
       },
       {
         "file_path": "rust/conditionals.rs",
-        "score": 9.24,
+        "score": 10.0,
         "max_ccn": 8,
         "max_nesting": 1,
         "nloc": 18,
@@ -1862,10 +1862,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.24,
-        "maintainability_score": 9.4,
+        "defect_score": 10.0,
+        "maintainability_score": 10.0,
         "performance_score": 10.0,
-        "structure_deduction": 0.758,
+        "structure_deduction": 0.0,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -1874,7 +1874,7 @@
         "file_path": "rust/flat_match.rs",
         "score": 10.0,
         "max_ccn": 5,
-        "max_nesting": 3,
+        "max_nesting": 2,
         "nloc": 31,
         "has_test_file": false,
         "module": "rust",
@@ -2176,7 +2176,7 @@
       },
       {
         "file_path": "typescript/conditionals.ts",
-        "score": 9.24,
+        "score": 10.0,
         "max_ccn": 8,
         "max_nesting": 1,
         "nloc": 26,
@@ -2185,10 +2185,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.24,
-        "maintainability_score": 9.4,
+        "defect_score": 10.0,
+        "maintainability_score": 10.0,
         "performance_score": 10.0,
-        "structure_deduction": 0.758,
+        "structure_deduction": 0.0,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -3137,44 +3137,6 @@
         "id": "finding_c1cb731e126a1224c410"
       },
       {
-        "biomarker_type": "complex_conditional",
-        "severity": "low",
-        "file_path": "go/conditionals.go",
-        "function_name": "ThreeOps",
-        "line_start": 4,
-        "line_end": 4,
-        "details": {
-          "operator_count": 3,
-          "enclosing_construct": "if",
-          "flat_chain": true,
-          "dispatch_share": 0.0,
-          "symbol_line": 3
-        },
-        "health_impact": 0.379,
-        "reason": "if condition combines 3 boolean operators",
-        "dimension": "defect",
-        "id": "finding_b4706faf8eea57f3c000"
-      },
-      {
-        "biomarker_type": "complex_conditional",
-        "severity": "low",
-        "file_path": "go/conditionals.go",
-        "function_name": "SixOps",
-        "line_start": 11,
-        "line_end": 11,
-        "details": {
-          "operator_count": 6,
-          "enclosing_construct": "for",
-          "flat_chain": true,
-          "dispatch_share": 0.0,
-          "symbol_line": 10
-        },
-        "health_impact": 0.379,
-        "reason": "for condition combines 6 boolean operators",
-        "dimension": "defect",
-        "id": "finding_ed03ae737c057c537559"
-      },
-      {
         "biomarker_type": "nested_complexity",
         "severity": "high",
         "file_path": "go/nested.go",
@@ -3426,44 +3388,6 @@
         "reason": "sixOps has CRAP 72 (complexity 8, estimated, no test found reaching it)",
         "dimension": "advisory",
         "id": "finding_fd14e71841abee247de5"
-      },
-      {
-        "biomarker_type": "complex_conditional",
-        "severity": "low",
-        "file_path": "java/Conditionals.java",
-        "function_name": "threeOps",
-        "line_start": 3,
-        "line_end": 3,
-        "details": {
-          "operator_count": 3,
-          "enclosing_construct": "if",
-          "flat_chain": true,
-          "dispatch_share": 0.0,
-          "symbol_line": 2
-        },
-        "health_impact": 0.379,
-        "reason": "if condition combines 3 boolean operators",
-        "dimension": "defect",
-        "id": "finding_92b0b6c1f3be5fe497d3"
-      },
-      {
-        "biomarker_type": "complex_conditional",
-        "severity": "low",
-        "file_path": "java/Conditionals.java",
-        "function_name": "sixOps",
-        "line_start": 10,
-        "line_end": 10,
-        "details": {
-          "operator_count": 6,
-          "enclosing_construct": "while",
-          "flat_chain": true,
-          "dispatch_share": 0.0,
-          "symbol_line": 9
-        },
-        "health_impact": 0.379,
-        "reason": "while condition combines 6 boolean operators",
-        "dimension": "defect",
-        "id": "finding_13a165fcb9f91a97a666"
       },
       {
         "biomarker_type": "nested_complexity",
@@ -3991,44 +3915,6 @@
         "reason": "six_ops has CRAP 72 (complexity 8, estimated, no test found reaching it)",
         "dimension": "advisory",
         "id": "finding_9ce0eaced1fca0186c01"
-      },
-      {
-        "biomarker_type": "complex_conditional",
-        "severity": "low",
-        "file_path": "python/conditionals.py",
-        "function_name": "three_ops",
-        "line_start": 2,
-        "line_end": 2,
-        "details": {
-          "operator_count": 3,
-          "enclosing_construct": "if",
-          "flat_chain": true,
-          "dispatch_share": 0.0,
-          "symbol_line": 1
-        },
-        "health_impact": 0.379,
-        "reason": "if condition combines 3 boolean operators",
-        "dimension": "defect",
-        "id": "finding_c86a6881aaec275e9ff1"
-      },
-      {
-        "biomarker_type": "complex_conditional",
-        "severity": "low",
-        "file_path": "python/conditionals.py",
-        "function_name": "six_ops",
-        "line_start": 8,
-        "line_end": 8,
-        "details": {
-          "operator_count": 6,
-          "enclosing_construct": "while",
-          "flat_chain": true,
-          "dispatch_share": 0.0,
-          "symbol_line": 7
-        },
-        "health_impact": 0.379,
-        "reason": "while condition combines 6 boolean operators",
-        "dimension": "defect",
-        "id": "finding_3ce2bf004e5ad8e70bed"
       },
       {
         "biomarker_type": "nested_complexity",
@@ -4669,44 +4555,6 @@
         "id": "finding_7e8892978e25daab749c"
       },
       {
-        "biomarker_type": "complex_conditional",
-        "severity": "low",
-        "file_path": "rust/conditionals.rs",
-        "function_name": "three_ops",
-        "line_start": 2,
-        "line_end": 2,
-        "details": {
-          "operator_count": 3,
-          "enclosing_construct": "if",
-          "flat_chain": true,
-          "dispatch_share": 0.0,
-          "symbol_line": 1
-        },
-        "health_impact": 0.379,
-        "reason": "if condition combines 3 boolean operators",
-        "dimension": "defect",
-        "id": "finding_5e2e7ed7cf94318d223b"
-      },
-      {
-        "biomarker_type": "complex_conditional",
-        "severity": "low",
-        "file_path": "rust/conditionals.rs",
-        "function_name": "six_ops",
-        "line_start": 9,
-        "line_end": 9,
-        "details": {
-          "operator_count": 6,
-          "enclosing_construct": "while",
-          "flat_chain": true,
-          "dispatch_share": 0.0,
-          "symbol_line": 8
-        },
-        "health_impact": 0.379,
-        "reason": "while condition combines 6 boolean operators",
-        "dimension": "defect",
-        "id": "finding_a4bb8ffa6c328be7035f"
-      },
-      {
         "biomarker_type": "nested_complexity",
         "severity": "high",
         "file_path": "rust/nested.rs",
@@ -5316,44 +5164,6 @@
         "id": "finding_97168cde0d08fc10589a"
       },
       {
-        "biomarker_type": "complex_conditional",
-        "severity": "low",
-        "file_path": "typescript/conditionals.ts",
-        "function_name": "threeOps",
-        "line_start": 2,
-        "line_end": 2,
-        "details": {
-          "operator_count": 3,
-          "enclosing_construct": "if",
-          "flat_chain": true,
-          "dispatch_share": 0.0,
-          "symbol_line": 1
-        },
-        "health_impact": 0.379,
-        "reason": "if condition combines 3 boolean operators",
-        "dimension": "defect",
-        "id": "finding_5da1fdb1c287eae427a0"
-      },
-      {
-        "biomarker_type": "complex_conditional",
-        "severity": "low",
-        "file_path": "typescript/conditionals.ts",
-        "function_name": "sixOps",
-        "line_start": 17,
-        "line_end": 17,
-        "details": {
-          "operator_count": 6,
-          "enclosing_construct": "while",
-          "flat_chain": true,
-          "dispatch_share": 0.0,
-          "symbol_line": 8
-        },
-        "health_impact": 0.379,
-        "reason": "while condition combines 6 boolean operators",
-        "dimension": "defect",
-        "id": "finding_35d87c20e1ce38c81d46"
-      },
-      {
         "biomarker_type": "nested_complexity",
         "severity": "high",
         "file_path": "typescript/nested.ts",
@@ -5485,21 +5295,21 @@
     ],
     "kpis": {
       "hotspot_health": null,
-      "average_health": 9.62,
+      "average_health": 9.65,
       "worst_performer_path": "scala/nested.scala",
       "worst_performer_score": 7.77,
       "worst_test_path": "apex/HealthMarkersTest.cls",
       "worst_test_score": 10.0,
       "file_count": 71,
-      "maintainability_average": 9.65,
+      "maintainability_average": 9.67,
       "maintainability_hotspot": null,
       "performance_average": 9.48,
       "performance_hotspot": null,
-      "structure_average": 0.39,
-      "structure_hotspot": null,
+      "structure_average": 0.35,
       "history_average": 0.0,
+      "structure_hotspot": null,
       "history_hotspot": null,
-      "production_average": 9.61,
+      "production_average": 9.64,
       "production_file_count": 69,
       "unanalysed_file_count": 4,
       "analysed_share": 0.9467
