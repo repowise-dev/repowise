@@ -235,6 +235,7 @@ _PATH_RECEIVERS = frozenset(
         ("python", "attribute"),
         ("apex", "field_access"),
         ("java", "field_access"),
+        ("kotlin", "navigation_expression"),
     }
 )
 _DOTTED_PATH = re.compile(r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+")
@@ -253,10 +254,16 @@ def _receiver_text(language: str, node: Node, src: str) -> str | None:
         return None
     if language == "kotlin" and node.type in _KOTLIN_STRING_LITERALS:
         return STRING_LITERAL_RECEIVER
+    if language == "kotlin" and node.type == "super_expression":
+        # ``super<I>`` keeps ``I`` as the call's scope; ``super@Outer`` is dropped.
+        return None if "@" in _node_text(node, src) else "super"
     text = _node_text(node, src).strip()
     if (language, node.type) not in _PATH_RECEIVERS:
         return text
     path = "".join(text.split())
+    if language == "kotlin":
+        # ``a.b!!.c`` and ``a?.b`` name the same fields as ``a.b.c`` and ``a.b``.
+        path = path.replace("!!", "").replace("?.", ".")
     return path if _DOTTED_PATH.fullmatch(path) else None
 
 

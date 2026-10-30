@@ -250,7 +250,7 @@ def _add_own_churn(
 ) -> set[str]:
     """Add the churn of rows naming this file to *current*; return every changed path.
 
-    A rename row adds both of its names to *known_paths*.
+    A rename row naming one of this file's paths adds its other name to *known_paths*.
     """
     changed_paths: set[str] = set()
     for line in numstat_lines:

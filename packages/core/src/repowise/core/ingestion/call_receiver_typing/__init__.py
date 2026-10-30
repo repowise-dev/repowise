@@ -6,6 +6,7 @@ import posixpath
 import re
 from bisect import bisect_left, bisect_right
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import NamedTuple, TypeVar
@@ -44,7 +45,11 @@ from ..languages.receiver_types import (
 )
 from ..models import STRING_LITERAL_RECEIVER, CallSite, NamedBinding, ParsedFile, Symbol
 from ..resolved_call import ResolvedCall
-from ..return_types import declared_return_type, signature_parameter_count
+from ..return_types import (
+    declared_return_type,
+    signature_parameter_count,
+    signature_parameter_range,
+)
 from ..symbol_identity import id_segment_name
 from ..type_names import (
     POINTER_LIKE_MEMBERS,
@@ -110,7 +115,8 @@ _JAVA_ANY_TYPE = r"[\w$]+(?:\.[\w$]+)*(?:<[^;{}()]*>)?(?:\[\])*(?:\.\.\.)?"
 _JAVA_ANY_DECLARATION = re.compile(
     rf"(?<![\w.@$])(?P<type>{_JAVA_ANY_TYPE})\s+(?P<name>[\w$]+)\s*(?=[=;,):])"
 )
-_NOT_A_TYPE = frozenset({"return", "throw", "new", "else", "case", "yield", "assert"})
+# ``in``: ``foreach (var x in Items)`` declares no ``Items``.
+_NOT_A_TYPE = frozenset({"return", "throw", "new", "else", "case", "yield", "assert", "in"})
 
 
 # Languages whose grammar mints ``a.b.c.m()`` with the dotted path as its
@@ -123,14 +129,30 @@ _CHAIN_SELF: dict[str, str | None] = {
     "typescript": "this",
     "go": None,
     "dart": "this",
+    "kotlin": "this",
+    "rust": "self",
 }
 # Fields walked after the head, at most: ``h.f1.f2.f3.m()``.
 _MAX_CHAIN_FIELDS = 3
 # A chain is only as scoped as its weakest hop.
 _CHAIN_TIER_RANK = {"same_file": 0, "import": 1}
 _BODY_TYPE_CACHE_ENTRIES = 2048
-# What a Dart ``await`` unwraps: ``Future<T>`` / ``FutureOr<T>`` yield ``T``.
-_AWAITED_FUTURE = re.compile(r"(?:Future|FutureOr)<(.+)>\??")
+# What an ``await`` unwraps: Dart's ``Future<T>`` / ``FutureOr<T>`` and C#'s
+# ``Task<T>`` / ``ValueTask<T>`` yield ``T``.
+_AWAITED_FUTURE = {
+    "dart": re.compile(r"(?:Future|FutureOr)<(.+)>\??"),
+    "csharp": re.compile(r"(?:(?:System\.)?Threading\.Tasks\.)?(?:Task|ValueTask)<(.+)>"),
+}
+
+
+def _awaited_type(raw: str, language: str | None) -> str | None:
+    """What awaiting a value declared *raw* yields: Dart passes a non-future through."""
+    unwrap = _AWAITED_FUTURE.get(language or "")
+    future = unwrap.fullmatch(raw) if unwrap is not None else None
+    if future is not None:
+        return future.group(1)
+    # A C# awaitable that is no Task<T> yields no type written here.
+    return None if language == "csharp" else raw
 
 _T = TypeVar("_T", bound=tuple)
 
@@ -172,18 +194,52 @@ def _body_depth(marks: ScopeMarks, start_line: int) -> int:
     return (depths[start_line] if start_line < len(depths) else 0) + 1
 
 
+def _admits(symbol: Symbol, argument_count: int | None) -> bool:
+    """Could *symbol*'s parameters take *argument_count* arguments? Unknown counts could."""
+    admitted = signature_parameter_range(symbol.signature or "", symbol.language)
+    if argument_count is None or admitted is None:
+        return True
+    fewest, most = admitted
+    return fewest <= argument_count and (most is None or argument_count <= most)
+
+
 def _enclosing_id(symbol_id: str) -> str:
     """The id of the symbol enclosing *symbol_id*: a method's class."""
     # Our own ``path::Class::method`` ID separator, not a type qualifier.
     return symbol_id.rpartition("::")[0]
 
 
+def _type_symbols(symbols: Sequence[Symbol]) -> list[Symbol]:
+    """The types *symbols* declare, less an ``impl`` of a type declared beside it.
+
+    A Rust ``impl Foo`` shares ``Foo``'s id and adds methods, never a second
+    type or a field, so the struct alone answers for the name and its span.
+    The parser already drops a Swift ``extension`` of a same-file type.
+    """
+    declared = {s.id for s in symbols if s.kind in _TYPE_KINDS and s.kind != "impl"}
+    return [
+        s for s in symbols if s.kind in _TYPE_KINDS and (s.kind != "impl" or s.id not in declared)
+    ]
+
+
+def _rust_own_type_names(parsed: ParsedFile | None) -> frozenset[str]:
+    """The types a Rust file declares, which no `use` of its module may also bind.
+
+    Rust refuses a `use` of a name its module declares, so beside a same-file
+    type that `use` sits in a nested module (`use super::T`). An `impl` of an
+    imported type declares none. Ceiling: a nested module's own `use` of a name
+    the file declares at top level is read as the file's type.
+    """
+    if parsed is None or parsed.file_info.language != "rust":
+        return frozenset()
+    return frozenset(s.name for s in parsed.symbols if s.kind in _TYPE_KINDS and s.kind != "impl")
+
+
 def _types_by_name(parsed: ParsedFile) -> dict[str, list[str]]:
     """``{name: [type symbol ids]}`` for the types one file declares."""
     by_name: dict[str, list[str]] = {}
-    for symbol in parsed.symbols:
-        if symbol.kind in _TYPE_KINDS:
-            by_name.setdefault(symbol.name, []).append(symbol.id)
+    for symbol in _type_symbols(parsed.symbols):
+        by_name.setdefault(symbol.name, []).append(symbol.id)
     return by_name
 
 
@@ -387,6 +443,37 @@ class ReceiverTypingMixin(
             return self._cpp_base_class_target(call, caller_id, bare)
         return found
 
+    def _member_target(
+        self, typing_file: str, call: CallSite, caller_id: str, type_name: str, language: str
+    ) -> tuple[str, str] | None:
+        """``_typed_receiver_target``, then for C# the method a base type declares."""
+        found = self._typed_receiver_target(typing_file, call, caller_id, type_name)
+        if found is None and language == "csharp":
+            return self._csharp_base_type_target(typing_file, call, caller_id, type_name)
+        return found
+
+    def _csharp_base_type_target(
+        self, file_path: str, call: CallSite, caller_id: str, type_name: str
+    ) -> tuple[str, str] | None:
+        """The one ancestor method a typed C# receiver reaches when its type lacks it.
+
+        C# binds an applicable inherited instance method before any extension.
+        Only for the repository's one type of that name, unbound by an external
+        import, and refused when that type declares the method itself: its own
+        overloads were what the tiers above asked for. Two ancestors declaring
+        it (an override among them) refuse. A chain reaches ancestors through
+        ``_csharp_chain_member`` instead.
+        """
+        if id_segment_name(type_name) in self._externally_bound_names(file_path):
+            return None
+        type_id = self._unique_type_id(type_name, "csharp")
+        if type_id is None or self._declares(type_id, call.target_name) is not None:
+            return None
+        hit = self._ancestor_method(type_id, call.target_name, caller_id)
+        if hit is None or not _admits(self._symbols_by_id[hit], call.argument_count):
+            return None
+        return hit, "global"
+
     def _cpp_base_class_target(
         self, call: CallSite, caller_id: str, bare: str
     ) -> tuple[str, str] | None:
@@ -515,7 +602,7 @@ class ReceiverTypingMixin(
         if self._means_the_wrapper(file_path, caller_id, language, call, receiver_name, scope):
             return None
 
-        found = self._typed_receiver_target(typing_file, call, caller_id, type_name)
+        found = self._member_target(typing_file, call, caller_id, type_name, language)
         if found is None:
             # Last, because C# and Kotlin prefer a member to an extension.
             return self._extension_call(file_path, call, caller_id, type_name)[1]
@@ -966,21 +1053,26 @@ class ReceiverTypingMixin(
             return None
         class_id = self._only_type_in(file_path, type_name)
         if class_id is None:
-            return self._dart_class_seen(file_path, type_name, scope_id)
+            return self._class_seen_unimported(file_path, type_name, scope_id)
         return file_path, class_id, "same_file"
 
-    def _dart_class_seen(
+    def _class_seen_unimported(
         self, file_path: str, type_name: str, scope_id: str | None
     ) -> tuple[str, str, str] | None:
-        """``_class_named`` for a Dart class a whole-library import brings in.
+        """``_class_named`` for a class no import names: Dart's whole-library
+        import, or a Kotlin package sibling.
 
-        ``import 'repo.dart';`` binds no names, so the file's own free-call
-        tiers say which class a written name means. A nullable ``T?`` is the
-        class ``T``; a generic or prefixed spelling types nothing.
+        Neither binds the name, so the file's own free-call tiers say which
+        class a written name means. A nullable ``T?`` is the class ``T``; a
+        generic or prefixed spelling types nothing.
         """
         scope = self._symbols_by_id.get(scope_id or "")
         written = type_name.rstrip("?")
-        if scope is None or scope.language != "dart" or not written.isidentifier():
+        if (
+            scope is None
+            or scope.language not in ("dart", "kotlin")
+            or not written.isidentifier()
+        ):
             return None
         found = self._class_seen_from(file_path, scope.id, written, scope.start_line)
         return None if found is None else self._located(file_path, found.callee_id)
@@ -1284,7 +1376,7 @@ class ReceiverTypingMixin(
             bound = (*imp.local_names, imp.module_path.rsplit(".", 1)[-1])
             found.update(name for name in bound if name and name != "*")
 
-        names = frozenset(found)
+        names = frozenset(found) - _rust_own_type_names(parsed)
         _store_capped(self._external_names, file_path, names, _SOURCE_CACHE_FILES)
         return names
 
@@ -1314,7 +1406,7 @@ class ReceiverTypingMixin(
         else:
             types = types_in_span(declarations, *span)
             if language in RANGE_LANGUAGES:
-                self._type_range_variables(file_path, language, span, types)
+                self._type_range_variables(file_path, language, span, types, caller_id)
 
         _store_capped(self._body_types, key, types, _BODY_TYPE_CACHE_ENTRIES)
         if span is not None and language in CALL_TYPED_LANGUAGES:
@@ -1439,16 +1531,24 @@ class ReceiverTypingMixin(
         """The class *symbol*'s declared return type names, as its file *path* sees it.
 
         One unqualified class name, nullable or not; an *awaited* Dart
-        ``Future<T>`` yields its ``T``. Ceiling: any other generic
+        ``Future<T>`` or C# ``Task<T>`` yields its ``T``. Ceiling: any other generic
         (``Result<T>``) or prefixed (``p.Foo``) return type types nothing.
         """
         raw = declared_return_type(symbol.signature or "") or ""
-        future = _AWAITED_FUTURE.fullmatch(raw) if awaited else None
-        written = (future.group(1) if future else raw).rstrip("?")
-        if not written.isidentifier():
+        written = _awaited_type(raw, symbol.language) if awaited else raw
+        written = (written or "").rstrip("?")
+        if not written.isidentifier() or self._csharp_type_parameter(symbol, path, written):
             return None
         found = self._class_seen_from(path, symbol.id, written, symbol.start_line)
         return None if found is None else found.callee_id
+
+    def _csharp_type_parameter(self, symbol: Symbol, path: str, name: str) -> bool:
+        """Does a C# method's own ``<..>`` list declare *name*? Its signature drops the list."""
+        if symbol.language != "csharp":
+            return False
+        header = " ".join(self._lines_of(path)[symbol.start_line - 1 : symbol.start_line + 3])
+        listed = re.search(rf"\b{re.escape(symbol.name)}\s*<([^<>()]*)>\s*\(", header)
+        return listed is not None and name in re.findall(r"\w+", listed.group(1))
 
     def _class_seen_from(
         self, file_path: str, scope_id: str, name: str, line: int
@@ -1471,7 +1571,13 @@ class ReceiverTypingMixin(
         hit = self._resolve_free_call(file_path, probe, scope_id)
         if hit is None or "global" in hit.origin:
             return None
-        return hit if self._symbols_by_id[hit.callee_id].kind in _TYPE_KINDS else None
+        callee = self._symbols_by_id[hit.callee_id]
+        owner = self._symbols_by_id.get(_enclosing_id(hit.callee_id))
+        if callee.kind in _FUNCTION_KINDS and owner is not None and owner.name == callee.name:
+            # A class with constructors answers ``name(..)`` with one; it still names the class.
+            callee = owner
+            hit = replace(hit, callee_id=owner.id)
+        return hit if callee.kind in _TYPE_KINDS else None
 
     def _call_typed_receiver(
         self, file_path: str, call: CallSite, caller_id: str, type_id: str
@@ -1569,7 +1675,7 @@ class ReceiverTypingMixin(
         symbols = parsed.symbols if parsed else ()
         return types_by_class(
             declarations,
-            {s.id: (s.start_line, s.end_line) for s in symbols if s.kind in _TYPE_KINDS},
+            {s.id: (s.start_line, s.end_line) for s in _type_symbols(symbols)},
             [(s.start_line, s.end_line) for s in symbols if s.kind in _FUNCTION_KINDS],
             language,
         )

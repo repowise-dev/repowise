@@ -37,7 +37,7 @@ STORE_FORMAT_VERSION: int = 3
 #: Current parser/extractor schema, folded into the parse-cache fingerprint in
 #: place of the package version (see :mod:`repowise.core.ingestion.parse_cache`).
 #: What each bump changed is in this file's git history and the release notes.
-PARSER_SCHEMA_VERSION: int = 11
+PARSER_SCHEMA_VERSION: int = 12
 
 #: state.json key holding the store format version that wrote the store.
 STORE_FORMAT_VERSION_KEY = "store_format_version"
