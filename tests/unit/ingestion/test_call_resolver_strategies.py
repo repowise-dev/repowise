@@ -1648,9 +1648,22 @@ class TestJavaUnnamedObjectCall:
     ) -> None:
         assert self._targets(tmp_path, f"{receiver}.m(1);") == []
 
-    def test_a_repo_wide_unique_name_still_binds(self, tmp_path: Path) -> None:
-        other = "package p;\npublic class Other {\n    public void only() {}\n}\n"
-        assert self._targets(tmp_path, "a.b.only();", other) == ["p/Other.java::Other::only"]
+    @pytest.mark.parametrize("name", ["only", "get", "isBlank"])
+    def test_a_repo_wide_unique_name_still_binds(self, tmp_path: Path, name: str) -> None:
+        other = f"package p;\npublic class Other {{\n    public void {name}() {{}}\n}}\n"
+        assert self._targets(tmp_path, f"a.b.{name}();", other) == [f"p/Other.java::Other::{name}"]
+
+    @pytest.mark.parametrize("body", ["a.b.contains(x);", "Map.class.isAssignableFrom(x);"])
+    def test_a_unique_repo_method_named_like_a_jdk_one_does_not_bind(
+        self, tmp_path: Path, body: str
+    ) -> None:
+        """``a.b.contains(x)`` is a collection's ``contains`` far more often than the repo's one."""
+        name = body.split(".")[-1].split("(")[0]
+        other = (
+            f"package p;\npublic class Other {{\n"
+            f"    public boolean {name}(Object o) {{ return true; }}\n}}\n"
+        )
+        assert self._targets(tmp_path, body, other) == []
 
     @pytest.mark.parametrize("body", ["m(1); a.b.m(2);", "a.b.m(2); m(1);"], ids=["bare-first", "bare-last"])
     def test_a_bare_call_beside_it_keeps_every_tier(self, tmp_path: Path, body: str) -> None:
