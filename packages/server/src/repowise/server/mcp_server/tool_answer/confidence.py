@@ -874,8 +874,10 @@ def _earned_high(
 # Words that ask for a value rather than name the constant holding it.
 _VALUE_ASK_STEMS = frozenset(_stem(w) for w in ("default", "value", "constant", "set", "defined"))
 
-# An assignment's "=", never a comparison or a walrus.
-_ASSIGN_RE = re.compile(r"(?<![=!<>:])=(?!=)")
+# An assignment's "=", never a comparison, a walrus or an arrow.
+_ASSIGN_RE = re.compile(r"(?<![=!<>:])=(?![=>])")
+# A negation before a literal value: "DEBUG is not False".
+_NEGATED_RE = re.compile(r"\b(?:not|never|no longer)\b|n't\b", re.IGNORECASE)
 # A trailing comment after the assigned value.
 _TRAILING_COMMENT_RE = re.compile(r"\s+(?://|#).*$")
 
@@ -932,7 +934,8 @@ def _definition_line(sym: dict) -> str:
     excerpt = (sym.get("source_excerpt") or "").lstrip("\n").split("\n", 1)[0]
     m = _ASSIGN_RE.search(excerpt)
     # Only a line that assigns this name: not a comment or another name's line.
-    if m and _word_re(sym.get("name") or "").search(excerpt[: m.start()]):
+    commented = excerpt.lstrip().startswith(("#", "//", "/*"))
+    if m and not commented and _word_re(sym.get("name") or "").search(excerpt[: m.start()]):
         return excerpt
     return signature
 
@@ -955,8 +958,14 @@ def _states_assigned_value(name: str, signature: str, answer_text: str) -> bool:
         asserted = _asserted_numbers(sentence)
         if numbers and asserted and asserted != numbers:
             return False
-        stated = stated or (asserted == numbers if numbers else bool(literal.search(sentence)))
+        stated = stated or (asserted == numbers if numbers else _states_literal(literal, sentence))
     return stated
+
+
+def _states_literal(literal: re.Pattern, sentence: str) -> bool:
+    """Does *sentence* state the literal value, with no negation before it?"""
+    m = literal.search(sentence)
+    return m is not None and not _NEGATED_RE.search(sentence[: m.start()])
 
 
 def _assigned_value(signature: str) -> str | None:
@@ -1227,7 +1236,7 @@ def _coverage_gate(s: _GradeState) -> None:
     """
     if s.confidence != "high" or s.earned_path:
         return
-    s.gap =uncovered_terms(s.question, s.hits) if s.uncovered is None else s.uncovered
+    s.gap = uncovered_terms(s.question, s.hits) if s.uncovered is None else s.uncovered
     if s.gap:
         s.confidence = "medium"
 
@@ -1320,7 +1329,8 @@ def _grade_answer(
     vouched = dominance if top_score >= _HIGH_CONFIDENCE_SCORE_FLOOR else None
     start = "high" if vouched or earn_high else "medium"
     s = _GradeState(
-        earned_path=earned_path,
+        # Only the route that vouched for high exempts the gates that measure it.
+        earned_path=None if vouched else earned_path,
         unindexed_names=set(unindexed_names),
         absent_names=tuple(absent_names),
         split_names=dict(split_names or {}),

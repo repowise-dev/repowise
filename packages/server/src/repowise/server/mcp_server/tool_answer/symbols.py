@@ -407,10 +407,18 @@ class _TopicGuard:
         return bool(self.topic_stems & _text_stems(owner))
 
 
-# A source line that is all comment, or opens a docstring.
-_COMMENT_OR_DOC_START_RE = re.compile(r"""(?:#|//|/\*|\*|[rRbBuUfF]{0,2}(?:\"\"\"|'''))""")
-# A quoted string on one line, for test lines (see _writes_as_code).
-_QUOTED_RE = re.compile(r""""(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`[^`]*`""")
+# A source line that is all comment, or opens a docstring. A bare ``*`` is left
+# out (``*ptr = x``; block comment bodies are masked), and ``#`` counts only
+# where it starts a comment: it is code in ``#define``, ``#[derive]``, ``#field``.
+_COMMENT_OR_DOC_START_RE = re.compile(r"""(?://|/\*|[rRbBuUfF]{0,2}(?:\"\"\"|'''))""")
+_HASH_COMMENT_SUFFIXES = frozenset({".py", ".pyi", ".rb", ".sh", ".bash", ".pl", ".r", ".ex", ".exs"})
+# A quoted string on one line, for test lines (see _writes_as_code). Single
+# quotes only where they delimit strings: elsewhere they are chars or lifetimes.
+_DOUBLE_QUOTED_RE = re.compile(r""""(?:\\.|[^"\\])*"|`[^`]*`""")
+_SINGLE_QUOTED_RE = re.compile(r"""'(?:\\.|[^'\\])*'""")
+_SINGLE_QUOTE_STRING_SUFFIXES = _HASH_COMMENT_SUFFIXES | {
+    ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".php"
+}
 
 
 def _writes_as_code(root: Path | None, rows: list[dict], token: str) -> bool:
@@ -435,13 +443,29 @@ def _file_writes_as_code(root: Path | None, path: str, word: re.Pattern) -> bool
         return True
     lines = text.splitlines()
     masked = _string_masked_lines(tuple(lines), backticks=False).all
+    suffix = Path(path).suffix.lower()
+    hash_comments = suffix in _HASH_COMMENT_SUFFIXES
     test = is_test_related_path(path)
     for n, line in enumerate(lines, 1):
-        if n in masked or not word.search(line) or _COMMENT_OR_DOC_START_RE.match(line.lstrip()):
+        if n in masked or not word.search(line) or _is_comment_line(line.lstrip(), hash_comments):
             continue
-        if not test or word.search(_QUOTED_RE.sub(" ", line)):
+        if not test or word.search(_unquoted(line, suffix)):
             return True
     return False
+
+
+def _is_comment_line(stripped: str, hash_comments: bool) -> bool:
+    if _COMMENT_OR_DOC_START_RE.match(stripped):
+        return True
+    return hash_comments and stripped.startswith("#")
+
+
+def _unquoted(line: str, suffix: str) -> str:
+    """*line* with its one-line strings blanked."""
+    line = _DOUBLE_QUOTED_RE.sub(" ", line)
+    if suffix in _SINGLE_QUOTE_STRING_SUFFIXES:
+        line = _SINGLE_QUOTED_RE.sub(" ", line)
+    return line
 
 
 async def _absent_names(

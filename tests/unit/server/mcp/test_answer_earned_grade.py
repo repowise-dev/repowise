@@ -554,9 +554,48 @@ def test_a_docstring_or_comment_does_not_write_a_name(tmp_path) -> None:
     assert _writes(tmp_path, "f.py", 'KEYS = ("RowTree",)\n')  # a production key is real
 
 
+def test_a_hash_or_star_line_is_code_outside_hash_comment_languages(tmp_path) -> None:
+    assert _writes(tmp_path, "a.h", "#define RowTree 3\n")
+    assert _writes(tmp_path, "b.rs", "#[derive(RowTree)]\n")
+    assert _writes(tmp_path, "c.ts", "#RowTree = 0;\n")
+    assert _writes(tmp_path, "d.c", "*ptr = RowTree;\n")
+    assert not _writes(tmp_path, "e.rb", "# RowTree is an example\n")
+
+
 def test_a_test_writes_a_name_only_outside_its_strings(tmp_path) -> None:
     assert not _writes(tmp_path, "tests/test_a.py", 'q = "How does RowTree render?"\n')
+    assert not _writes(tmp_path, "tests/test_c.py", "q = 'How does RowTree render?'\n")
     assert _writes(tmp_path, "tests/test_b.py", "from ui import RowTree\n")
+    # A Rust lifetime is not a quote.
+    assert _writes(tmp_path, "tests/tree_test.rs", "fn f<'a>(t: &'a RowTree<'a>) {}\n")
+
+
+def test_a_negated_literal_is_not_a_stated_value() -> None:
+    debug = {"name": "DEBUG_MODE", "kind": "constant", "signature": "DEBUG_MODE = False",
+             "_verified": True, "_matched": True}
+    hits = [{"target_path": "settings.py", "score": 1.2, "symbols": [debug]},
+            {"target_path": "app.py", "score": 0.8}]
+    said = _grade("What is DEBUG_MODE?", "`DEBUG_MODE` is False.", hits, dominance="ratio",
+                  ids={"DEBUG_MODE"})
+    denied = _grade("What is DEBUG_MODE?", "`DEBUG_MODE` is not False; it is on.", hits,
+                    dominance="ratio", ids={"DEBUG_MODE"})
+    assert (said.confidence, denied.confidence) == ("high", "medium")
+
+
+def test_an_arrow_or_a_commented_line_assigns_nothing() -> None:
+    answer = "In command.go, `minUsagePadding` is 25."
+    for excerpt in ("minUsagePadding: () => 25", "// minUsagePadding = 25"):
+        grade = _grade("What is minUsagePadding?", answer, _pad_hits(excerpt),
+                       dominance="ratio", ids={"minUsagePadding"})
+        assert grade.confidence == "medium", excerpt
+
+
+def test_a_value_line_does_not_spare_a_dominant_high_the_gates_that_measure_dominance() -> None:
+    # Dominance vouched for this high, so the gates checking the top hits still apply.
+    grade = _grade("What is _GATED_RETURN_HITS?", _GATED_A, _ranked_low_hits(True),
+                   dominance="gap", ids={"_GATED_RETURN_HITS"})
+    assert grade.confidence == "medium"
+    assert grade.unhydrated_names == ("_GATED_RETURN_HITS",)
 
 
 def test_an_unreadable_file_counts_and_a_write_past_the_scan_cap_is_found(tmp_path) -> None:
