@@ -5,7 +5,7 @@ import { renderToString } from "react-dom/server";
 import { hydrateRoot } from "react-dom/client";
 import type { OverviewSummaryResponse } from "@repowise-dev/types/overview";
 
-import { formatRelativeTime } from "../../src/lib/format.js";
+import { formatDateTime, formatRelativeTime } from "../../src/lib/format.js";
 import { RelativeTime } from "../../src/shared/relative-time.js";
 import { OverviewBody } from "../../src/overview/overview-body.js";
 
@@ -14,20 +14,19 @@ const RENDERED_AT = new Date("2026-03-20T12:00:00Z");
 const HYDRATED_AT = new Date("2026-03-22T12:00:00Z");
 const PREVIOUS_INDEX = "2026-03-19T11:30:00Z";
 
-/** Server-render at one clock and locale, hydrate at another, and return the
- *  recoverable errors React raised plus the hydrated container. */
-async function renderThenHydrate(element: React.ReactElement) {
+/**
+ * Server-render at one clock, hydrate at another, and return the recoverable
+ * errors React raised plus the hydrated text. `make` runs once, at server
+ * time, and its element is reused for hydration: props are frozen when the
+ * server renders, as in an RSC payload or a cached page.
+ */
+async function renderThenHydrate(make: () => React.ReactElement) {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(RENDERED_AT);
+  const element = make();
   const html = renderToString(element);
 
   vi.setSystemTime(HYDRATED_AT);
-  // A viewer whose locale groups digits differently (en-IN: 12,61,599).
-  const toLocaleString = Number.prototype.toLocaleString;
-  Number.prototype.toLocaleString = function (this: number) {
-    return toLocaleString.call(this, "en-IN");
-  };
-
   const container = document.createElement("div");
   container.innerHTML = html;
   document.body.appendChild(container);
@@ -39,18 +38,19 @@ async function renderThenHydrate(element: React.ReactElement) {
       root = hydrateRoot(container, element, { onRecoverableError: (e) => errors.push(e) });
     });
     const text = container.textContent ?? "";
+    const time = container.querySelector("time");
+    const attrs = { dateTime: time?.getAttribute("datetime"), title: time?.getAttribute("title") };
     await act(async () => root?.unmount());
-    return { errors, html, text };
+    return { errors, html, text, attrs };
   } finally {
-    Number.prototype.toLocaleString = toLocaleString;
     consoleError.mockRestore();
     container.remove();
   }
 }
 
 /** Computes its text while rendering, as a real component does. */
-function Ago({ prefix = "" }: { prefix?: string }) {
-  return <>{prefix + formatRelativeTime(PREVIOUS_INDEX)}</>;
+function Ago() {
+  return <>{formatRelativeTime(PREVIOUS_INDEX)}</>;
 }
 
 afterEach(() => {
@@ -59,36 +59,59 @@ afterEach(() => {
 
 describe("RelativeTime", () => {
   it("catches the mismatch it exists for: bare relative text fails to hydrate", async () => {
-    const { errors } = await renderThenHydrate(<span><Ago /></span>);
+    const { errors } = await renderThenHydrate(() => (
+      <span>
+        <Ago />
+      </span>
+    ));
     expect(errors.length).toBeGreaterThan(0);
   });
 
   it("renders the UTC date on the server, then the relative time once hydrated", async () => {
-    const { errors, html, text } = await renderThenHydrate(
+    const { errors, html, text, attrs } = await renderThenHydrate(() => (
       <span>
         <RelativeTime date={PREVIOUS_INDEX} />
-      </span>,
-    );
+      </span>
+    ));
     expect(errors).toEqual([]);
     expect(html).toContain("Mar 19, 2026");
     expect(text).toBe("3d ago");
+    expect(attrs).toEqual({
+      dateTime: "2026-03-19T11:30:00.000Z",
+      title: formatDateTime(PREVIOUS_INDEX),
+    });
   });
 
-  it("keeps host-worded text and its stable twin", async () => {
-    const { errors, html, text } = await renderThenHydrate(
-      <RelativeTime date={PREVIOUS_INDEX} stable="since Mar 19">
-        <Ago prefix="since " />
-      </RelativeTime>,
-    );
+  it("words the age from the viewer's clock when a server component built the copy", async () => {
+    // What an RSC host passes: localised wording, built at server time, as
+    // plain strings. Nothing in it carries the server's notion of "now".
+    const { errors, html, text } = await renderThenHydrate(() => {
+      const since = (when: string) => `Since the previous index, ${when}`;
+      return (
+        <RelativeTime
+          date={PREVIOUS_INDEX}
+          template={since("{time}")}
+          words={{ d: "{value} days back" }}
+        />
+      );
+    });
     expect(errors).toEqual([]);
-    expect(html).toContain("since Mar 19");
-    expect(text).toBe("since 3d ago");
+    expect(html).toContain("Since the previous index, <time");
+    expect(html).toContain("Mar 19, 2026");
+    // Rendered at RENDERED_AT this would read "1 days back"; the client clock wins.
+    expect(text).toBe("Since the previous index, 3 days back");
   });
 
-  it("renders the fallback for a missing date on both sides", async () => {
-    const { errors, text } = await renderThenHydrate(<RelativeTime date={null}>never</RelativeTime>);
-    expect(errors).toEqual([]);
-    expect(text).toBe("never");
+  it("renders the fallback for a missing date, and for a future one once hydrated", async () => {
+    const missing = await renderThenHydrate(() => <RelativeTime date={null} fallback="never" />);
+    expect(missing.errors).toEqual([]);
+    expect(missing.text).toBe("never");
+
+    const future = await renderThenHydrate(() => (
+      <RelativeTime date="2026-04-01T00:00:00Z" fallback="—" />
+    ));
+    expect(future.errors).toEqual([]);
+    expect(future.text).toBe("—");
   });
 });
 
@@ -169,16 +192,14 @@ function summary(): OverviewSummaryResponse {
 }
 
 describe("OverviewBody hydration", () => {
-  it("hydrates a cached render under a later clock and another locale without a mismatch", async () => {
+  it("hydrates a cached render under a later clock without a mismatch", async () => {
     const { errors, html, text } = await renderThenHydrate(
-      <OverviewBody summary={summary()} routes={{ base: "/repos/r1" }} />,
+      () => <OverviewBody summary={summary()} routes={{ base: "/repos/r1" }} />,
     );
     expect(errors).toEqual([]);
-    // Figures stay en-US for every viewer.
-    expect(html).toContain("1,261,599");
-    expect(html).not.toContain("12,61,599");
     // The change line and the hotspot row word their age once hydrated.
-    expect(html).toContain("Since the previous index, Mar 19, 2026");
+    expect(html).toContain("Since the previous index, <time");
+    expect(html).toContain("Mar 19, 2026</time>");
     expect(text).toContain("Since the previous index, 3d ago");
     expect(text).toContain("2d ago");
   });

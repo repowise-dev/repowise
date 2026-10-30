@@ -1,6 +1,5 @@
 import * as React from "react";
 import type { IdentityKind, OwnerListEntry } from "@repowise-dev/types/owners";
-import { formatRelativeTimeOrNull } from "../lib/format";
 import { ownershipLabels, type OwnershipLabels } from "./labels";
 import { OwnerAvatar } from "./owner-avatar";
 import { RelativeTime } from "../shared/relative-time";
@@ -189,7 +188,7 @@ export function OwnerTable({
                   atLeastTitle={labels.atLeastTitle}
                 />
                 <td className="whitespace-nowrap py-2.5 pl-3 align-top text-[var(--color-text-tertiary)]">
-                  <RelativeTime date={o.last_commit_at}>{formatRelativeTimeOrNull(o.last_commit_at) ?? "—"}</RelativeTime>
+                  <RelativeTime date={o.last_commit_at} fallback="—" />
                 </td>
               </tr>
             );

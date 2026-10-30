@@ -1,7 +1,6 @@
 "use client";
 
 import { HealthTabs, type HealthTabKey, type HealthTabsProps } from "./health-tabs";
-import { formatDate, parseDate } from "../lib/format";
 import { RelativeTime } from "../shared/relative-time";
 
 export interface HealthPageChromeProps {
@@ -22,20 +21,6 @@ export interface HealthPageChromeProps {
   /** Forwarded to `HealthTabs`. Lets the caller plug a framework-specific
    *  link (e.g. Next.js `<Link>`) without dragging that dep into ui/. */
   renderLink?: HealthTabsProps["renderLink"];
-}
-
-function formatIndexedAt(iso: string | null): string {
-  if (!iso) return "never";
-  const d = parseDate(iso);
-  const diff = Date.now() - d.getTime();
-  const minutes = Math.round(diff / 60_000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.round(hours / 24);
-  if (days < 30) return `${days}d ago`;
-  return formatDate(d);
 }
 
 export function HealthPageChrome({
@@ -63,9 +48,7 @@ export function HealthPageChrome({
           {meta ? (
             <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
               Indexed{" "}
-              <RelativeTime date={meta.last_indexed_at}>
-                {formatIndexedAt(meta.last_indexed_at)}
-              </RelativeTime>
+              {meta.last_indexed_at ? <RelativeTime date={meta.last_indexed_at} /> : "never"}
               {meta.head_commit ? (
                 <>
                   {" "}

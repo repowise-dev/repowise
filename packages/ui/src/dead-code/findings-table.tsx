@@ -14,7 +14,7 @@ import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-tab
 import { toFriendlyMessage } from "../lib/errors";
 import { AiPromptButton } from "../health/ai-prompt-button";
 import { PromptForRowsButton } from "../health/row-prompt-action";
-import { formatDateTime, formatNumber, formatRelativeTimeOrNull } from "../lib/format";
+import { formatDateTime, formatNumber } from "../lib/format";
 import { FindingIdentity, FindingConfidence, FindingRowActions } from "./finding-cells";
 import {
   DEAD_CODE_CONFIDENCE,
@@ -362,7 +362,7 @@ export function FindingsTable({
             className="block font-mono text-xs tabular-nums text-[var(--color-text-tertiary)]"
             title={f.last_commit_at ? formatDateTime(f.last_commit_at) : undefined}
           >
-            <RelativeTime date={f.last_commit_at}>{formatRelativeTimeOrNull(f.last_commit_at)}</RelativeTime>
+            <RelativeTime date={f.last_commit_at} fallback="—" />
             {/* Recent churn is why a finding scores low; saying so makes the
                 confidence number legible instead of arbitrary. */}
             {f.commit_count_90d ? (
