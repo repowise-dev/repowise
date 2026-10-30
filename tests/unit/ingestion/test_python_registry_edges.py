@@ -125,3 +125,34 @@ def test_unrelated_register_calls_and_function_imports_stay_at_import_tier(
 
     assert graph.edges["caller.py", "hooks.py"].get("hint_source") is None
     assert call_graph_from_graph(graph).registrations.get("caller.py") is None
+
+
+def test_attribute_registry_receivers_create_registration_edges(tmp_path: Path):
+    (tmp_path / "handlers.py").write_text("def handler():\n    pass\n")
+    (tmp_path / "caller.py").write_text(
+        "from .handlers import handler\n"
+        "class App:\n"
+        "    def register_local(self):\n"
+        "        self._registry.register(handler)\n"
+        "    def register_plugin(self):\n"
+        "        app.state.plugins.register(handler)\n"
+    )
+    parsed = _parsed_files(tmp_path)
+    graph = nx.DiGraph()
+    for path in parsed:
+        graph.add_node(path, node_type="file")
+    graph.add_edge("caller.py", "handlers.py", edge_type="imports")
+    paths = set(parsed)
+    context = ResolverContext(
+        path_set=paths,
+        stem_map={},
+        graph=graph,
+        repo_path=tmp_path,
+    )
+
+    add_framework_edges(graph, parsed, context, tech_stack=[])
+
+    assert graph.edges["caller.py", "handlers.py"]["hint_source"] == (MODULE_REGISTRATION_HINT)
+    assert call_graph_from_graph(graph).registrations == {
+        "caller.py": ("handlers.py",),
+    }

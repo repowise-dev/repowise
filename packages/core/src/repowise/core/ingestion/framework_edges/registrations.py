@@ -211,7 +211,21 @@ def _is_registration_call(node: ast.Call, registry_locals: set[str]) -> bool:
         return False
     if node.func.attr in _KNOWN_REGISTRATION_METHODS:
         return True
-    return isinstance(node.func.value, ast.Name) and node.func.value.id in registry_locals
+    receiver = node.func.value
+    if isinstance(receiver, ast.Name):
+        return receiver.id in registry_locals
+    if isinstance(receiver, ast.Attribute):
+        return _is_registry_attribute(receiver.attr)
+    return False
+
+
+def _is_registry_attribute(name: str) -> bool:
+    lowered = name.lower()
+    return (
+        lowered == "registry"
+        or lowered.endswith("_registry")
+        or lowered in {"dialects", "commands", "tools", "plugins", "routers", "handlers"}
+    )
 
 
 def _call_relationships(
