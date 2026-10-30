@@ -550,6 +550,34 @@ async def test_get_health_nested_module_target_needs_a_directory_boundary(setup_
 
 
 @pytest.mark.asyncio
+async def test_get_health_module_target_rolls_up_its_files(setup_mcp, health_data):
+    """A bare ``module:`` call leads with the rollup, so a top-level name keeps its row."""
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health(targets=["module:auth"])
+
+    assert [row["module"] for row in result["modules"]] == ["auth"]
+    assert result["modules"][0]["file_count"] == 1
+    assert result["modules"][0]["worst_performer_path"] == "src/auth/service.py"
+
+
+@pytest.mark.asyncio
+async def test_get_health_nested_module_target_rolls_up_under_its_own_name(setup_mcp, health_data):
+    """The rollup uses the same predicate as the expansion, and the caller's name.
+
+    A nested ``module:`` name matched files but no ``module`` value, so the row
+    used to disappear: metrics were served beside an empty ``modules`` list.
+    """
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health(targets=["module:src/auth"])
+
+    assert [row["module"] for row in result["modules"]] == ["src/auth"]
+    assert result["modules"][0]["file_count"] == 1
+    assert result["modules"][0]["worst_performer_path"] == "src/auth/service.py"
+
+
+@pytest.mark.asyncio
 async def test_get_health_findings_capped_with_honest_total(setup_mcp, health_data):
     """limit governs findings too, and the total says what was cut."""
     from repowise.server.mcp_server import get_health

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from repowise.core.analysis.health.complexity.languages import NO_DIALECT_STATUS
+from repowise.core.analysis.health.rows import field
 from repowise.server.repo_paths import missing_path_hint
 
 
@@ -29,16 +30,24 @@ def _expand_module_targets(
     expanded = list(file_targets)
     normalized = {raw: _normalize_module_name(raw) for raw in module_targets}
     for m in metrics:
-        module = _normalize_module_name(m.module)
         matched_names = [
-            raw
-            for raw, name in normalized.items()
-            if name and (module == name or _is_under(m.file_path, name))
+            raw for raw, name in normalized.items() if name and _module_matches(m, name)
         ]
         if matched_names:
             matched_modules.update(matched_names)
             expanded.append(m.file_path)
     return sorted(set(expanded)), matched_modules
+
+
+def _module_matches(metric: Any, module_name: str) -> bool:
+    """Whether ``metric``'s file is one the module name ``module_name`` selects.
+
+    One predicate for both callers: the targets this module expands and the
+    ``modules`` rollup built from the same names have to agree.
+    """
+    return _normalize_module_name(field(metric, "module", None)) == module_name or _is_under(
+        field(metric, "file_path", "") or "", module_name
+    )
 
 
 def _normalize_module_name(name: Any) -> str:
