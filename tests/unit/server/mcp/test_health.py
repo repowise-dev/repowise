@@ -512,6 +512,44 @@ async def test_get_health_module_target_resolves_to_its_files(setup_mcp, health_
 
 
 @pytest.mark.asyncio
+async def test_get_health_nested_module_target_matches_only_files_under_it(setup_mcp, health_data):
+    """A directory that is not a top-level module still names its own files.
+
+    ``module:`` was compared by equality with ``metric.module``, which holds a
+    single top-level segment, so no nested directory could ever resolve.
+    """
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health(targets=["module:src/auth"])
+    assert [m["file_path"] for m in result["metrics"]] == ["src/auth/service.py"]
+    assert "unresolved" not in result
+
+
+@pytest.mark.asyncio
+async def test_get_health_nested_module_target_ignores_wrapping_separators(
+    setup_mcp, health_data
+):
+    """``./`` in front and a trailing slash are the same directory."""
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health(targets=["module:./src/auth/"])
+    assert [m["file_path"] for m in result["metrics"]] == ["src/auth/service.py"]
+    assert "unresolved" not in result
+
+
+@pytest.mark.asyncio
+async def test_get_health_nested_module_target_needs_a_directory_boundary(setup_mcp, health_data):
+    """``src/a`` is a shared name prefix, not the ``src/auth`` directory."""
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health(targets=["module:src/a"])
+    assert result["metrics"] == []
+    assert result["unresolved"] == [{"target": "module:src/a", "reason": "no_such_module"}]
+    # The hint keeps listing top-level modules, so a typo stays correctable.
+    assert set(result["known_modules"]) == {"auth", "db"}
+
+
+@pytest.mark.asyncio
 async def test_get_health_findings_capped_with_honest_total(setup_mcp, health_data):
     """limit governs findings too, and the total says what was cut."""
     from repowise.server.mcp_server import get_health
