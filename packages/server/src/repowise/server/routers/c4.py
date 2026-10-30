@@ -282,8 +282,7 @@ async def get_zoom_map(
 
 
 _gc_pause_lock = threading.Lock()
-_gc_pause_depth = 0
-_gc_was_enabled = False
+_gc_pause_held = False
 
 
 @contextmanager
@@ -293,23 +292,24 @@ def _cyclic_gc_paused() -> Iterator[None]:
     The build allocates enough container objects to trigger several full
     collections, each of which walks the whole long-lived server heap; on a
     7k-file repository that walk was a third of the request. Reference counting
-    still frees everything acyclic; cycles made meanwhile wait for the first
-    collection after the outermost overlapping request ends. Re-entrant across
-    concurrent requests: only the outermost one restores the collector, and
-    only if it was enabled on entry.
+    still frees everything acyclic; cycles made meanwhile wait for the next
+    collection. The request that disabled the collector is the one that
+    restores it: an overlapping request runs inside that pause but never
+    extends it, so a stream of requests cannot keep the collector off for
+    longer than one build. A collector that was already off stays off.
     """
-    global _gc_pause_depth, _gc_was_enabled
+    global _gc_pause_held
     with _gc_pause_lock:
-        if _gc_pause_depth == 0:
-            _gc_was_enabled = gc.isenabled()
+        owner = not _gc_pause_held and gc.isenabled()
+        if owner:
             gc.disable()
-        _gc_pause_depth += 1
+            _gc_pause_held = True
     try:
         yield
     finally:
-        with _gc_pause_lock:
-            _gc_pause_depth -= 1
-            if _gc_pause_depth == 0 and _gc_was_enabled:
+        if owner:
+            with _gc_pause_lock:
+                _gc_pause_held = False
                 gc.enable()
 
 

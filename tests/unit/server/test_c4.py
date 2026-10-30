@@ -328,3 +328,20 @@ def test_cyclic_gc_pause_nests_and_keeps_a_disabled_collector_disabled() -> None
         assert not gc.isenabled()
     finally:
         gc.enable()
+
+
+def test_cyclic_gc_pause_ends_with_the_request_that_started_it() -> None:
+    import gc
+
+    from repowise.server.routers.c4 import _cyclic_gc_paused
+
+    first, second = _cyclic_gc_paused(), _cyclic_gc_paused()
+    first.__enter__()
+    second.__enter__()
+    assert not gc.isenabled()
+    # The first request ends while the second is still building: the
+    # collector comes back now, not when the overlap finally drains.
+    first.__exit__(None, None, None)
+    assert gc.isenabled()
+    second.__exit__(None, None, None)
+    assert gc.isenabled()
