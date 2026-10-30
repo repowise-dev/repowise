@@ -4,14 +4,20 @@ Every dialect runs over every file of its extensions, so one that skips its
 gate, or gates on a token every file holds while scanning with an
 identifier-led regex, makes extraction grow with each dialect added. Measured
 on an 8,141-file corpus, the five heaviest dialects before their gates cost
-650 to 1,200 microseconds per file; gated, every dialect costs under a quarter
-of the reference below.
+650 to 1,200 microseconds per file; gated, every dialect costs well under the
+budget below.
 
 Wall time is machine-dependent, so the budget is relative: each dialect is
 timed against one identifier-led regex pass over the same text in the same
-process (the shape of an ungated dialect), and may cost at most 40% of it.
+process (the shape of an ungated dialect), and may cost at most 60% of it.
 The text is this repository's own source, given each dialect's extension, so
 a Java or Go dialect is timed on code-shaped text too.
+
+The ratio itself moves with the platform: the costliest gated dialect
+(``sql-strings``, which reads every string literal) measures about 0.27 on
+one machine and up to 0.48 on a CI runner, while a heavy dialect with its
+gate removed measures 1.8 to 3.0. The budget sits between the two bands, so
+a dropped gate still fails and a busy runner does not.
 """
 
 from __future__ import annotations
@@ -31,7 +37,7 @@ _SAMPLES = (("core/src/repowise/core", "*.py", ".py"), ("ui/src", "*.tsx", ".tsx
 _PER_SAMPLE = 40
 _ROUNDS = 5
 #: A dialect may cost at most this share of the reference scan.
-_BUDGET = 0.4
+_BUDGET = 0.6
 
 # An ungated dialect's shape: tried at every identifier of every file.
 _REFERENCE_RE = re.compile(r"(\w+)\s*\.\s*(\w+)\s*\(")
