@@ -1447,7 +1447,7 @@ def test_update_leaves_editor_files_alone_after_init_without_editor_setup(
         def refresh_project_files(self, c: Any, p: Path, o: Any) -> None:
             refreshed.append(p)
 
-    integrations = (FakeIntegration(),)
+    integrations: tuple[Any, ...] = (FakeIntegration(),)
     (tmp_path / ".repowise").mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(mcp_config, "save_mcp_config", lambda p: p / ".repowise" / "mcp.json")
     monkeypatch.delenv("REPOWISE_SKIP_EDITOR_SETUP", raising=False)
@@ -1456,7 +1456,7 @@ def test_update_leaves_editor_files_alone_after_init_without_editor_setup(
         write_editor_project_files(
             _silent_console(),
             tmp_path,
-            integrations=integrations,  # type: ignore[arg-type]
+            integrations=integrations,
             no_editor_setup=no_editor_setup,
         )
 
@@ -1464,7 +1464,7 @@ def test_update_leaves_editor_files_alone_after_init_without_editor_setup(
         refresh_editor_project_files(
             _silent_console(),
             tmp_path,
-            integrations=integrations,  # type: ignore[arg-type]
+            integrations=integrations,
         )
 
     init(no_editor_setup=True)
