@@ -71,6 +71,60 @@ def _call_receiver_from_node(node: Node, src: str) -> CallReceiver | None:
     return CallReceiver(target_name, receiver_name, argument_count)
 
 
+# What a Rust inner call's ``a.b(..)`` receiver may be, spelled as a call site spells it.
+_RUST_NAMED_RECEIVERS = ("identifier", "self", "field_expression")
+
+
+def _rust_call_receiver(call: Node, src: str) -> CallReceiver | None:
+    """A Rust call captured as another call's receiver: ``a.b(..)``, ``T::f(..)``, ``f(..)``.
+
+    The receiver is the text a Rust call site records (``self.x``, ``T``,
+    ``crate::m``); a call under it is the next link and leaves it unnamed, and
+    any other expression (``x?``, ``v[0]``) describes no call. A turbofish
+    call (``x.f::<T>()``) records no chain link below it, so it describes none.
+    """
+    function = call.child_by_field_name("function")
+    arguments = call.child_by_field_name("arguments")
+    if function is None or arguments is None:
+        return None
+    if function.type == "identifier":
+        named: tuple[str, str | None] | None = (_node_text(function, src).strip(), None)
+    elif function.type == "scoped_identifier":
+        named = _rust_named_parts(function, "name", "path", src)
+    elif function.type == "field_expression":
+        named = _rust_method_parts(function, src)
+    else:
+        named = None
+    return None if named is None else CallReceiver(*named, _count_arguments(arguments))
+
+
+def _rust_named_parts(
+    node: Node, target_field: str, receiver_field: str, src: str
+) -> tuple[str, str | None] | None:
+    """``(target, receiver)`` text of two named fields of *node*, both present."""
+    target, receiver = node.child_by_field_name(target_field), node.child_by_field_name(receiver_field)
+    if target is None or receiver is None:
+        return None
+    return _node_text(target, src).strip(), _node_text(receiver, src).strip()
+
+
+def _rust_method_parts(function: Node, src: str) -> tuple[str, str | None] | None:
+    """``(method, receiver)`` of a Rust ``value.method``; a call value is unnamed.
+
+    A call value must itself describe a link, or the method would be read as
+    a free call of its name.
+    """
+    value = function.child_by_field_name("value")
+    if value is not None and value.type == "call_expression":
+        field = function.child_by_field_name("field")
+        if field is None or _rust_call_receiver(value, src) is None:
+            return None
+        return _node_text(field, src).strip(), None
+    if value is None or value.type not in _RUST_NAMED_RECEIVERS:
+        return None
+    return _rust_named_parts(function, "field", "value", src)
+
+
 def _java_member_type_receiver(node: Node, inner: CallReceiver, src: str) -> CallReceiver:
     """*inner* with its ``Outer.Inner`` receiver, as the chain head ``Outer.Inner.m()`` writes it."""
     obj = node.child_by_field_name("object")
@@ -434,13 +488,15 @@ def _call_from_match(
     arg_nodes = capture_dict.get("call.arguments", [])
     receiver_call_nodes = capture_dict.get("call.receiver_call", [])
     receiver_call = (
-        _call_receiver_from_node(receiver_call_nodes[0], src)
+        (_rust_call_receiver if language == "rust" else _call_receiver_from_node)(
+            receiver_call_nodes[0], src
+        )
         if receiver_call_nodes
         else None
     )
     if language == "java" and receiver_call is not None and receiver_call.receiver_name is None:
         receiver_call = _java_member_type_receiver(receiver_call_nodes[0], receiver_call, src)
-    if receiver_call_nodes and receiver_call is None and language == "kotlin":
+    if receiver_call_nodes and receiver_call is None and language in ("kotlin", "rust"):
         # Avoid resolving an unsupported chained call by its bare name.
         return None
     scope_nodes = capture_dict.get("call.scope", [])

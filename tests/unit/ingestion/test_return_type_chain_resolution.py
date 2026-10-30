@@ -216,7 +216,7 @@ def test_unbound_global_return_type_preserves_legacy_fallback(
 
 def test_only_audited_lanes_are_enabled_by_default() -> None:
     assert (
-        frozenset({"apex", "cpp", "csharp", "dart", "go", "java", "kotlin", "python"})
+        frozenset({"apex", "cpp", "csharp", "dart", "go", "java", "kotlin", "python", "rust"})
         == PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES
     )
 

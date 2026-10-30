@@ -179,8 +179,10 @@ _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
     # TypeScript's typed fallback also walks a dotted receiver's fields.
     "typescript": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
     # Rust types a local or parameter, and walks a `self.field` receiver
-    # through the struct's field declarations.
-    "rust": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
+    # through the struct's field declarations. A chained call is typed by its
+    # inner call's return type or not at all: an iterator or `str` method is
+    # not the repository's same-named one.
+    "rust": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER, chain_bare_fallback=False),
     "cpp": _CPP_STRATEGIES,
     "c": _CPP_STRATEGIES,
     # Apex resolves type names in its project namespace; no bare-name fallback (Java's rule).

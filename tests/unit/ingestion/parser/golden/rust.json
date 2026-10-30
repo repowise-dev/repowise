@@ -575,7 +575,11 @@
         "caller_symbol_id": "lang_samples/rust/perf_io_in_loop.rs::sqlx_fetch_in_loop",
         "line": 18,
         "argument_count": 1,
-        "receiver_call": null,
+        "receiver_call": {
+          "target_name": "query",
+          "receiver_name": "sqlx",
+          "argument_count": 1
+        },
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,

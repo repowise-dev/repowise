@@ -36,15 +36,19 @@ class RustReturnTypes:
         ``Self`` is the type the method's ``impl`` names; any other name is
         looked up as a constructor call in the callee's file would be. An
         *unwrapped* call yields a ``Result``'s or ``Option``'s ``T``, and a
-        bare ``Result``/``Option`` types nothing. Ceiling: a path-qualified or
-        generic-parameter return type types nothing.
+        bare ``Result``/``Option`` types nothing, nor does a trait. Ceiling: a
+        path-qualified or generic-parameter return type types nothing.
         """
         written = _written_return(symbol.signature or "", unwrapped)
         if written == "Self":
-            class_id = self._caller_class_id(symbol.id)
-            owner = self._symbols_by_id.get(class_id)
-            return class_id if owner is not None and owner.kind in _TYPE_KINDS else None
-        if written is None or not written.isidentifier() or written in ("Result", "Option"):
+            type_id: str | None = self._caller_class_id(symbol.id)
+        elif written is None or not written.isidentifier() or written in ("Result", "Option"):
             return None
-        found = self._class_seen_from(path, symbol.id, written, symbol.start_line)
-        return None if found is None else found.callee_id
+        else:
+            found = self._class_seen_from(path, symbol.id, written, symbol.start_line)
+            type_id = None if found is None else found.callee_id
+        owner = self._symbols_by_id.get(type_id or "")
+        # A trait is no concrete type: its `Self` and a returned `dyn` are any implementor.
+        if owner is None or owner.kind not in _TYPE_KINDS or owner.kind == "trait":
+            return None
+        return type_id

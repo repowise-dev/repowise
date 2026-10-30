@@ -220,12 +220,12 @@ _EXTENSION_KINDS = frozenset({"impl"})
 # Languages admitted to the full return-type chain lane; each is admitted
 # explicitly, once measured.
 PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES: frozenset[str] = frozenset(
-    {"apex", "cpp", "csharp", "dart", "go", "java", "kotlin", "python"}
+    {"apex", "cpp", "csharp", "dart", "go", "java", "kotlin", "python", "rust"}
 )
 
 # Chain languages that type the inner call by the identity of the type it
 # returns (``_returned_type_id``); the rest read its type name.
-_RETURNED_TYPE_ID_LANGUAGES = frozenset({"dart", "go", "kotlin", "python"})
+_RETURNED_TYPE_ID_LANGUAGES = frozenset({"dart", "go", "kotlin", "python", "rust"})
 
 # Chain lanes that need a file or import/re-export identity for the head type:
 # a repository-global simple type name is not a language binding.
@@ -1254,7 +1254,7 @@ class CallResolver(
                 )
                 if extension is not None:
                     return True, extension
-        if language in ("python", "dart", "kotlin"):
+        if language in ("python", "dart", "kotlin", "rust"):
             # A type name read in the caller's file is not evidence, and an
             # inherited method or an extension is not a refusal: the bare name
             # keeps the site where the language allows one.
@@ -1422,7 +1422,8 @@ class CallResolver(
             return None
         else:
             resolved_inner = self._resolve_chain_link(file_path, call, inner, caller_id, language)
-        if resolved_inner is None:
+        if resolved_inner is None or (language == "rust" and "global" in resolved_inner.origin):
+            # A repo-wide guess at a Rust inner callee is no evidence of what it returns.
             return None
         # The overload the inner call's arguments select is the one whose type it returns.
         callee_id = resolved_inner.callee_id
@@ -1499,13 +1500,13 @@ class CallResolver(
         """The call *inner* is itself chained onto: ``a()`` under ``a().b().c()``.
 
         A receiver records one hop, but the parser keeps every link of a chain
-        as its own site on the chain's first line, so the hop below is read
-        off the site *inner* names. Apex, C#, Dart, Go, Java and Kotlin read it, so a
-        builder chain types each link from the one before; elsewhere an inner call
+        as its own site on the chain's first line, so the hop below is read off
+        the site *inner* names. Apex, C#, Dart, Go, Java, Kotlin and Rust read it,
+        so a builder chain types each link from the one before; elsewhere an inner call
         is still typed as if nothing were chained under it. A name repeated in
         one chain (``a().b().b()``) keeps its first link, the innermost.
         """
-        if language not in ("apex", "csharp", "dart", "go", "java", "kotlin"):
+        if language not in ("apex", "csharp", "dart", "go", "java", "kotlin", "rust"):
             return None
         sites = self._chained_sites.get(file_path)
         if sites is None:

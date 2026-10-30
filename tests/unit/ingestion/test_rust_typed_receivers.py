@@ -212,3 +212,62 @@ class TestCallTypedLocal:
         body = "    let b = make();\n    if let Some(b) = opt { b.build(); }\n    0"
         _call_typed_repo(tmp_path, body)
         assert not _resolves_to_builder(tmp_path)
+
+
+def _chain_repo(root: Path, body: str) -> set[str]:
+    """``Config`` builder methods and a trait, called as chains from ``c.rs::run``."""
+    (root / "Cargo.toml").write_text('[package]\nname = "demo"\nversion = "0.1.0"\n')
+    src = root / "src"
+    src.mkdir(parents=True, exist_ok=True)
+    (src / "lib.rs").write_text("pub mod a;\npub mod c;\n")
+    (src / "a.rs").write_text(
+        "pub struct Config { n: u32 }\n"
+        "impl Config {\n"
+        "    pub fn fresh() -> Self { Config { n: 0 } }\n"
+        "    pub fn me(&mut self) -> &mut Self { self }\n"
+        "    pub fn other(&self) -> Other { Other }\n"
+        "    pub fn pick<T: Default>(&self) -> T { T::default() }\n"
+        "    pub fn boxed(&self) -> Box<dyn Tr> { Box::new(Other) }\n"
+        "    pub fn check(&self) -> u32 { self.n }\n"
+        "    pub fn only_here(&self) -> u32 { self.n }\n"
+        "}\n"
+        "pub struct Other;\n"
+        "impl Other { pub fn check(&self) -> u32 { 1 } }\n"
+        "pub trait Tr {\n"
+        "    fn check(&self) -> u32;\n"
+        "    fn again(&self) -> Self where Self: Sized;\n"
+        "}\n"
+    )
+    (src / "c.rs").write_text(f"use crate::a::{{Config, Tr}};\npub fn run(c: &Config) {{\n{body}\n}}\n")
+    return _call_targets(_build(root), "src/c.rs::run")
+
+
+class TestReturnTypeChain:
+    def test_a_builder_chain_types_each_link(self, tmp_path: Path) -> None:
+        targets = _chain_repo(tmp_path, "    Config::fresh().me().check();")
+        assert {"src/a.rs::Config::me", "src/a.rs::Config::check"} <= targets
+
+    def test_a_chain_across_lines_reaches_another_type(self, tmp_path: Path) -> None:
+        targets = _chain_repo(tmp_path, "    Config::fresh()\n        .me()\n        .other()\n        .check();")
+        assert "src/a.rs::Other::check" in targets
+        assert "src/a.rs::Config::check" not in targets
+
+    def test_a_generic_return_types_nothing(self, tmp_path: Path) -> None:
+        assert not any("check" in t for t in _chain_repo(tmp_path, "    c.pick().check();"))
+
+    def test_a_trait_object_return_types_nothing(self, tmp_path: Path) -> None:
+        assert not any("check" in t for t in _chain_repo(tmp_path, "    c.boxed().check();"))
+
+    def test_a_chain_on_an_untyped_call_takes_no_bare_name(self, tmp_path: Path) -> None:
+        """``to_string()`` returns a std type, whose ``only_here`` is no repository method."""
+        targets = _chain_repo(tmp_path, "    c.to_string().only_here();")
+        assert "src/a.rs::Config::only_here" not in targets
+
+    def test_a_turbofish_link_types_nothing(self, tmp_path: Path) -> None:
+        """No chain link is kept under ``a::<u8>()``, so it is not read as a free ``a()``."""
+        targets = _chain_repo(tmp_path, "    Config::fresh().me::<u8>().other().check();")
+        assert "src/a.rs::Other::check" not in targets
+
+    def test_a_link_on_a_turbofish_call_takes_no_bare_name(self, tmp_path: Path) -> None:
+        targets = _chain_repo(tmp_path, "    Config::fresh().me::<u8>().only_here();")
+        assert "src/a.rs::Config::only_here" not in targets

@@ -227,10 +227,10 @@
   arguments: (arguments) @call.arguments
 ) @call.site
 
-; Chained call: obj.method1().method2(args)
+; Chained call: obj.method1().method2(args); the inner call types the outer.
 (call_expression
   function: (field_expression
-    value: (call_expression)
+    value: (call_expression) @call.receiver_call
     field: (field_identifier) @call.target
   )
   arguments: (arguments) @call.arguments
