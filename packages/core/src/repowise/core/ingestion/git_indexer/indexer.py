@@ -15,6 +15,7 @@ import os
 import threading
 import time
 from collections.abc import Callable, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -46,6 +47,7 @@ from ._incremental import (
     idle_refresh_paths,
     prior_defect_stage,
 )
+from .blame_graph import BlameGraph
 from .co_change import CoChangeWalk, compute_co_changes_and_entropy
 from .enrich import compute_percentiles
 from .file_history import DECAY_REFRESH_KEYS, _window_anchor, decay_meta, index_file
@@ -204,6 +206,7 @@ class _IndexSetup:
     fallback_files: set[str] = field(default_factory=set)
     fallback_note_agents: dict[str, Any] = field(default_factory=dict)
     as_of_ts: Any = None
+    blame_graph: BlameGraph = field(default_factory=BlameGraph)
 
 
 class _ChangedScope(NamedTuple):
@@ -336,18 +339,17 @@ class GitIndexer:
         commit_index, fallback_files = setup.commit_index, setup.fallback_files
         fallback_note_agents = setup.fallback_note_agents
         as_of_ts = setup.as_of_ts
+        blame_graph = setup.blame_graph
 
         # Fired from the event loop, as before the setup moved to a thread.
         if on_start is not None:
             on_start(len(indexable_files) + len(history_files))
 
-        from concurrent.futures import ThreadPoolExecutor
-
         workers = git_worker_count(len(indexable_files), requested=self.max_workers)
         loop = asyncio.get_event_loop()
 
         executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="git-idx")
-        get_thread_repo, close_thread_repos = self._thread_repo_pool()
+        get_thread_repo, close_thread_repos = self._thread_repo_pool(blame_graph.env)
         inputs = _FilePassInputs(
             commit_index=commit_index,
             fallback_files=fallback_files,
@@ -412,6 +414,7 @@ class GitIndexer:
             with timed(timings, "git.release"):
                 executor.shutdown(wait=False, cancel_futures=True)
                 close_thread_repos()
+                blame_graph.close()
 
         results = _successful_rows(metadata_list, "Failed to index file")
 
@@ -496,27 +499,35 @@ class GitIndexer:
             self.repo_path, tracked_files, extra_exclude_patterns=self._exclude_patterns
         )
 
-        commit_sink: list[dict] = []
-        prov_clf = self._provenance_classifier()
-        # Agent-trace records, read once and shared with both commit-index walks
-        # and the line-share merge, so they load even when no walk runs.
-        trace_index = self._load_trace_index(repo)
-        sample = self._full_commit_index(
-            repo, indexable_files, history_files, commit_sink, prov_clf, trace_index, timings
-        )
-        commit_index, fallback_files = sample.commits, sample.fallback_files
+        # Written beside the commit walk: it reads only the object store.
+        graph_job = self._start_blame_graph(repo, timings)
+        try:
+            commit_sink: list[dict] = []
+            prov_clf = self._provenance_classifier()
+            # Agent-trace records, read once and shared with both commit-index walks
+            # and the line-share merge, so they load even when no walk runs.
+            trace_index = self._load_trace_index(repo)
+            sample = self._full_commit_index(
+                repo, indexable_files, history_files, commit_sink, prov_clf, trace_index, timings
+            )
+            commit_index, fallback_files = sample.commits, sample.fallback_files
 
-        # A non-code file the shared walks could not prove complete gets no row
-        # (its count stays unknown) rather than a per-file walk of its own.
-        history_files -= fallback_files
+            # A non-code file the shared walks could not prove complete gets no row
+            # (its count stays unknown) rather than a per-file walk of its own.
+            history_files -= fallback_files
 
-        fallback_note_agents: dict[str, Any] = {}
-        if fallback_files.intersection(indexable_files):
-            from ..git_commit_index import load_git_ai_note_agents
+            fallback_note_agents: dict[str, Any] = {}
+            if fallback_files.intersection(indexable_files):
+                from ..git_commit_index import load_git_ai_note_agents
 
-            fallback_note_agents = load_git_ai_note_agents(repo, None)
+                fallback_note_agents = load_git_ai_note_agents(repo, None)
 
-        as_of_ts = self._resolve_as_of_ts(repo)
+            as_of_ts = self._resolve_as_of_ts(repo)
+        except BaseException:
+            # The scratch directory outlives a failed walk otherwise.
+            if graph_job is not None:
+                graph_job.result().close()
+            raise
         return _IndexSetup(
             outcome="ready",
             repo=repo,
@@ -531,7 +542,27 @@ class GitIndexer:
             fallback_files=fallback_files,
             fallback_note_agents=fallback_note_agents,
             as_of_ts=as_of_ts,
+            blame_graph=graph_job.result() if graph_job else BlameGraph(),
         )
+
+    def _start_blame_graph(self, repo: Any, timings: Any | None) -> Future[BlameGraph] | None:
+        """Write the per-file pass's :class:`BlameGraph` on a thread, when that pass blames."""
+        if not self.tier.includes_blame:
+            return None
+        target = BlameGraph.target(repo)
+        if target is None:
+            return None
+        from repowise.core.pipeline.phase_timing import timed
+
+        def _write() -> BlameGraph:
+            with timed(timings, "git.blame_graph"):
+                return BlameGraph.write(*target)
+
+        pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="git-graph")
+        try:
+            return pool.submit(_write)
+        finally:
+            pool.shutdown(wait=False)
 
     def _full_commit_index(
         self,
@@ -653,7 +684,6 @@ class GitIndexer:
             else set(changed_file_paths) | history_changed
         )
         workers = git_worker_count(len(changed_file_paths), requested=self.max_workers)
-        from concurrent.futures import ThreadPoolExecutor
 
         prov_clf = self._provenance_classifier()
         trace_index = self._load_trace_index(repo)
@@ -1332,8 +1362,13 @@ class GitIndexer:
             with contextlib.suppress(Exception):
                 repo.close()
 
-    def _thread_repo_pool(self) -> tuple[Callable[[], Any], Callable[[], None]]:
+    def _thread_repo_pool(
+        self, git_env: dict[str, str] | None = None
+    ) -> tuple[Callable[[], Any], Callable[[], None]]:
         """Return ``(get_thread_repo, close_all)`` for per-thread Repo reuse.
+
+        *git_env* is set on every git call each repo makes (a
+        :class:`BlameGraph`'s object directory).
 
         gitpython ``Repo`` handles can't be shared across threads on Windows,
         but constructing one per *file* costs ~40 ms each. This pool hands
@@ -1354,6 +1389,8 @@ class GitIndexer:
                 from repowise.core.git_repo import Repo
 
                 repo = Repo(self.repo_path, search_parent_directories=True)
+                if git_env:
+                    repo.git.update_environment(**git_env)
                 tls.repo = repo
                 with lock:
                     created.append(repo)

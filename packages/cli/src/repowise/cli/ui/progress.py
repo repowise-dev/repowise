@@ -257,6 +257,14 @@ class RichProgressCallback:
                 unit=_PHASE_UNITS.get(phase, ""),
                 detail="",
             )
+            # A pipe or log file never sees the live row, so a long step would
+            # leave no trace until its done row.
+            if not self._progress.console.is_terminal:
+                self._print_above_live(
+                    lambda: self._progress.console.print(
+                        checklist.start_line(label), highlight=False
+                    )
+                )
 
     def on_item_done(self, phase: str) -> None:
         if phase in self._tasks:

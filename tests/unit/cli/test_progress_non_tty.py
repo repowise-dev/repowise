@@ -328,3 +328,22 @@ def test_size_skipped_files_do_not_reach_state_degraded() -> None:
 
     assert "Not indexed: src/TestData.g.cs" in buf.getvalue()
     assert callback.warnings == ["Git indexing skipped: boom"]
+
+
+def test_a_step_start_reaches_a_piped_stdout() -> None:
+    """A log must name the long step it is in, not only the ones that finished."""
+    from repowise.cli.ui.progress_display import make_progress
+
+    console, buf = _non_tty_console()
+    with make_progress(console) as bar:
+        callback = RichProgressCallback(bar, console)
+        callback.on_phase_start("git", None)
+        started = buf.getvalue()
+        # Re-announcing with the total does not print a second start line.
+        callback.on_phase_start("git", 3)
+        for _ in range(3):
+            callback.on_item_done("git")
+        callback.on_phase_done("git")
+
+    assert "Indexing file history" in started
+    assert buf.getvalue().count("Indexing file history") == 2  # start + done
