@@ -105,6 +105,56 @@ def evidence_refs(source: str, commits: list[str]) -> list[str]:
     return list(dict.fromkeys(kept))
 
 
+# The endpoint's field limits, mirrored so a record is clipped or skipped here
+# with a reason rather than refused there with a 422.
+TITLE_MAX = 200
+TEXT_MAX = 4000
+QUOTE_MAX = 2000
+LIST_MAX = 20
+ITEM_MAX = 500
+FILES_MAX = 50
+_PATH_MAX = 500
+_DRIVE_RE = re.compile(r"^[A-Za-z]:")
+
+
+def too_long(**fields: str | None) -> str | None:
+    """Why one of *fields* exceeds its limit, or ``None``. Text is never cut."""
+    for name, value in fields.items():
+        limit = TITLE_MAX if name == "title" else TEXT_MAX
+        if len(value or "") > limit:
+            return f"{name} is longer than {limit} characters"
+    return None
+
+
+def clip_items(values: list[str]) -> list[str]:
+    """At most :data:`LIST_MAX` non-blank items, each at most :data:`ITEM_MAX` characters."""
+    return [v[:ITEM_MAX] for v in values if v.strip()][:LIST_MAX]
+
+
+def repo_paths(values: list[str]) -> list[str]:
+    """*values* as repo-relative POSIX paths, the way the endpoint normalises them.
+
+    Absolute, drive-letter and ``..`` paths are dropped rather than guessed at:
+    the server would refuse the whole record for one of them.
+    """
+    kept: list[str] = []
+    for raw in values:
+        path = raw.strip().replace("\\", "/")
+        while path.startswith("./"):
+            path = path[2:]
+        path = re.sub(r"/{2,}", "/", path).rstrip("/")
+        if (
+            not path
+            or len(path) > _PATH_MAX
+            or path.startswith("/")
+            or _DRIVE_RE.match(path)
+            or ".." in path.split("/")
+        ):
+            continue
+        kept.append(path)
+    return list(dict.fromkeys(kept))[:FILES_MAX]
+
+
 def latest_snapshot(owner: str, name: str, *, client: Any = None) -> Snapshot:
     """The repo's latest ready snapshot on repowise.dev. Never raises."""
     from repowise.cli.platform.client import default_client

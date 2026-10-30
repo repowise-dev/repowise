@@ -348,3 +348,94 @@ class TestRateLimits:
 def test_evidence_refs_keep_only_what_the_endpoint_accepts():
     assert dp.evidence_refs("agent", ["ABC1234", "abc1234", "nope", "../x"]) == ["abc1234"]
     assert dp.evidence_refs("session", [_SESSION, "has space", "/etc"]) == [_SESSION]
+
+
+def _rec(**over):
+    from types import SimpleNamespace
+
+    fields = {
+        "id": "7" * 32,
+        "title": "Use JWT",
+        "decision": "Use JWT decided",
+        "context": "",
+        "rationale": "",
+        "source": "agent",
+        "kind": "architectural",
+        "identity_quote": "Use JWT decided",
+        "evidence_commits_json": json.dumps([_SHA]),
+        "alternatives_json": "[]",
+        "consequences_json": "[]",
+        "affected_files_json": "[]",
+    }
+    fields.update(over)
+    return SimpleNamespace(**fields)
+
+
+class TestHostedLimits:
+    def _build(self, **over):
+        from repowise.cli.commands.decision_push_cmd import build_item
+
+        return build_item(_rec(**over), [], accepted=True)
+
+    @pytest.mark.parametrize(("field", "size"), [("title", 201), ("decision", 4001)])
+    def test_text_over_its_limit_is_skipped_not_cut(self, field, size):
+        item = self._build(**{field: "x" * size})
+
+        assert item.result == "skipped"
+        assert f"{field} is longer than" in item.reason
+        assert item.payload is None
+
+    def test_the_quote_is_clipped_to_a_verbatim_prefix(self):
+        quote = "q" * 1999 + "tail"
+        item = self._build(identity_quote=quote)
+
+        assert item.payload["source_quote"] == quote[:2000]
+
+    def test_lists_and_items_are_clipped_to_the_endpoint_limits(self):
+        item = self._build(
+            alternatives_json=json.dumps(["a" * 600] + [f"alt {i}" for i in range(30)]),
+            affected_files_json=json.dumps([f"src/f{i}.py" for i in range(60)]),
+            evidence_commits_json=json.dumps([f"{i:07x}" for i in range(25)]),
+        )
+
+        assert len(item.payload["alternatives"]) == 20
+        assert item.payload["alternatives"][0] == "a" * 500
+        assert len(item.payload["affected_files"]) == 50
+        assert len(item.payload["evidence_commits"]) == 20
+
+    def test_paths_are_normalised_and_unsafe_ones_dropped(self):
+        files = [r"src\app.py", "./lib/x.py", "/etc/passwd", r"C:\x\y.py", "../out.py", "a/../b"]
+        item = self._build(affected_files_json=json.dumps(files))
+
+        assert item.payload["affected_files"] == ["src/app.py", "lib/x.py"]
+
+
+def test_a_run_where_every_record_is_skipped_fails(tmp_path, monkeypatch):
+    _no_network(monkeypatch)
+    _sign_in()
+    path = tmp_path / "solo"
+    path.mkdir()
+
+    async def _build() -> None:
+        db_path = path / ".repowise" / "wiki.db"
+        db_path.parent.mkdir(parents=True)
+        engine = create_async_engine(f"sqlite+aiosqlite:///{db_path.as_posix()}")
+        await init_db(engine)
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with factory() as session:
+            session.add(Repository(id=_REPO_ID, name=path.name, local_path=str(path)))
+            session.add(_record(NO_EVIDENCE, "No evidence", "agent", commits=[]))
+            await session.flush()
+            session.add(_accept(NO_EVIDENCE, ("accepted by web",)))
+            await session.commit()
+        await engine.dispose()
+
+    asyncio.run(_build())
+
+    result = _push(path)
+    assert result.exit_code == 1, result.output
+    payload = json.loads(result.output)
+    assert payload["summary"] == {"skipped": 1}
+    assert "Nothing was sent" in payload["stopped"]
+    # A dry run of the same store is only a report.
+    assert _push(path, "--dry-run").exit_code == 0

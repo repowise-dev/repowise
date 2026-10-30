@@ -72,8 +72,13 @@ def build_item(
         dp.evidence_refs(rec.source, acceptance_evidence or [])
     )
     quote = _quote(rec, evidence)
+    too_long = dp.too_long(
+        title=rec.title, decision=rec.decision, context=rec.context, rationale=rec.rationale
+    )
     if not (rec.decision or "").strip():
         item.result, item.reason = "skipped", "no decision text"
+    elif too_long:
+        item.result, item.reason = "skipped", too_long
     elif not refs:
         what = "session id" if rec.source == "session" else "evidence commit"
         item.result, item.reason = "skipped", f"no {what} to cite as evidence"
@@ -85,13 +90,14 @@ def build_item(
             "decision": rec.decision,
             "context": rec.context or "",
             "rationale": rec.rationale or "",
-            "alternatives": _json_list(rec.alternatives_json),
-            "consequences": _json_list(rec.consequences_json),
-            "affected_files": _json_list(rec.affected_files_json),
-            "evidence_commits": refs,
+            "alternatives": dp.clip_items(_json_list(rec.alternatives_json)),
+            "consequences": dp.clip_items(_json_list(rec.consequences_json)),
+            "affected_files": dp.repo_paths(_json_list(rec.affected_files_json)),
+            "evidence_commits": refs[: dp.LIST_MAX],
             "kind": rec.kind,
             "source": rec.source,
-            "source_quote": quote,
+            # A prefix of a verbatim quote is still verbatim.
+            "source_quote": quote[: dp.QUOTE_MAX],
         }
     return item
 
@@ -194,8 +200,13 @@ def push_command(path: str | None, dry_run: bool, include_candidates: bool, fmt:
     repo = f"{remote[0]}/{remote[1]}" if remote else None
 
     if dry_run or not sendable:
-        _report(items, repo=repo, snapshot=None, dry_run=dry_run, stopped=None, fmt=fmt,
+        # Every record skipped is a run that sent nothing, the same failure as
+        # every record refused. An empty selection is not: there was nothing to do.
+        stopped = None if dry_run or not items else "Nothing was sent: every record was skipped."
+        _report(items, repo=repo, snapshot=None, dry_run=dry_run, stopped=stopped, fmt=fmt,
                 include_candidates=include_candidates)
+        if stopped:
+            raise click.exceptions.Exit(1)
         return
 
     if remote is None:

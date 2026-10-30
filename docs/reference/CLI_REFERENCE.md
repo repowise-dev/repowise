@@ -1076,8 +1076,8 @@ Every subcommand takes `--format` (`table` default, or `json`) and an optional `
 - Sends records whose source is `agent` or `session` to the repo's latest ready index on repowise.dev. Other sources are mined there from the repository itself.
 - Each record goes with its title, decision, rationale, files, evidence references (commit shas for `agent`, session ids for `session`) and the one verbatim quote it rests on. Transcripts never leave the machine.
 - Each lands as a proposal; confirm it on the repo's Decisions page. A local acceptance does not carry over.
-- Per record: `created`, `duplicate` (repowise.dev already holds it; `hosted_status` says what it is there), `refused` with the reason, or `skipped` (no decision text, evidence reference or quote).
-- Needs `repowise login` and a GitHub `origin` already on repowise.dev (`repowise publish`). The per-minute limit is waited out; a refusal that would refuse every record (signed out, no write access, the open-proposal cap) stops the run and the rest read `not_sent`. Exit 1 when any record was refused or not sent.
+- Per record: `created`, `duplicate` (repowise.dev already holds it; `hosted_status` says what it is there), `refused` with the reason, or `skipped` (no decision text, evidence reference or quote, or a title over 200 or text over 4,000 characters). Longer quotes and lists are clipped to the hosted limits; unsafe file paths are dropped.
+- Needs `repowise login` and a GitHub `origin` already on repowise.dev (`repowise publish`). The per-minute limit is waited out; a refusal that would refuse every record (signed out, no write access, the open-proposal cap) stops the run and the rest read `not_sent`. Exit 1 when any record was refused or not sent, or when every record was skipped. A dry run exits 0.
 
 **`list`**
 
