@@ -20,7 +20,7 @@ from repowise.core.analysis.change_risk.features import revspec_head
 # Patchable names are read off the package at call time so patches reach them.
 from repowise.server.mcp_server import tool_change_risk as _pkg
 from repowise.server.mcp_server._failure_shield import (
-    is_stale_server_import,
+    is_stale_server_error,
     stale_server_notice,
 )
 
@@ -170,7 +170,7 @@ def _compare_health(
         log.warning("change_health_comparison_failed", revspec=revspec, error=str(exc))
         explanation = (
             stale_server_notice(exc)
-            if is_stale_server_import(exc)
+            if is_stale_server_error(exc)
             else f"Health comparison failed: {exc}"
         )
         return ChangeHealthDelta(

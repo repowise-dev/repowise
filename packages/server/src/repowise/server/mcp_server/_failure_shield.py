@@ -23,7 +23,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from repowise.server.mcp_server import _state
+from repowise.server.mcp_server import _code_drift, _state
 
 logger = logging.getLogger(__name__)
 
@@ -139,26 +139,28 @@ def _shape_stale_index(exc: Exception) -> dict[str, Any]:
     }
 
 
-def is_stale_server_import(exc: BaseException) -> bool:
-    """True when a lazy import of repowise's own code failed.
+def is_stale_server_error(exc: BaseException) -> bool:
+    """True when the failure comes from old code loaded beside new code.
 
     A long-running server keeps the modules it loaded at start. When the
-    checkout moves under it, a module imported later comes from the new tree
+    install moves under it, a module imported later comes from the new code
     and can ask for a name the old in-memory module lacks (``ImportError``),
-    or the old code can ask for a module the new tree removed
-    (``ModuleNotFoundError``). Both resolve on restart. A third-party import
-    failure is a missing dependency instead, so it keeps the generic shape.
+    the old code can ask for a module the new code removed
+    (``ModuleNotFoundError``), or one side reads an attribute the other never
+    defined (``AttributeError``). A failed import of repowise's own code is
+    always this. Any other ``AttributeError``, ``NameError`` or ``ImportError``
+    counts only once the server has seen its code change on disk; otherwise
+    it is a bug or a missing dependency and keeps the generic shape.
     """
     name = getattr(exc, "name", None) or ""
-    return isinstance(exc, ImportError) and (name == "repowise" or name.startswith("repowise."))
+    if isinstance(exc, ImportError) and (name == "repowise" or name.startswith("repowise.")):
+        return True
+    return isinstance(exc, (AttributeError, ImportError, NameError)) and _code_drift.check_now()
 
 
 def stale_server_notice(exc: BaseException) -> str:
-    """Plain explanation and next step for :func:`is_stale_server_import`."""
-    return (
-        "The MCP server is running older repowise code than this checkout "
-        f"({exc}). Restart the MCP server (or the editor session) and retry."
-    )
+    """Plain explanation and next step for :func:`is_stale_server_error`."""
+    return f"{_code_drift.stale_line() or _code_drift.SERVER_STALE_LINE} ({exc})"
 
 
 def _shape_stale_server(exc: Exception) -> dict[str, Any]:
@@ -205,7 +207,7 @@ def _exception_reason(exc: Exception) -> str:
         return "not_found"
     if _is_stale_index_error(exc):
         return "index_behind"
-    if is_stale_server_import(exc):
+    if is_stale_server_error(exc):
         return "server_stale"
     return "internal"
 

@@ -117,7 +117,7 @@ def test_a_server_older_than_the_checkout_says_restart(monkeypatch):
     monkeypatch.setattr(tool, "_delta_service", _stale)
     delta = tool._compare_health("/repo", "HEAD", (), ())
     assert delta.status == "unavailable"
-    assert delta.explanation.startswith("The MCP server is running older repowise code")
+    assert delta.explanation.startswith("This MCP server is running older repowise code")
     assert "name_added_after_server_start" in delta.explanation
     assert "Restart the MCP server" in delta.explanation
 

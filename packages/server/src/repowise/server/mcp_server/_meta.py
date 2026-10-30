@@ -35,6 +35,7 @@ from repowise.core.index_scope import (
     index_scope_fingerprint,
     load_index_scope,
 )
+from repowise.server.mcp_server import _code_drift
 from repowise.server.mcp_server._rounding import round_float
 
 # 2: index_scope carries the compact projection on routine responses. The key
@@ -713,6 +714,10 @@ def finalize_trust_envelope(result: Any, *, evidence_kind: str | None = None) ->
         meta.setdefault("runtime_breakage_proven", False)
     elif evidence_kind == "generated":
         meta.setdefault("existing_verified_code", False)
+    # Here, not in build_meta, so every tool and every shielded error carries it.
+    server_stale = _code_drift.stale_line()
+    if server_stale:
+        meta["server_stale"] = server_stale
 
     state: dict[str, Any] = {}
     combined = {**result, **meta}
