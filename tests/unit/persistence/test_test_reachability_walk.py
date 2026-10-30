@@ -684,6 +684,41 @@ async def test_the_import_walk_from_memory_matches_the_walk_from_the_database(as
     }
 
 
+async def test_the_import_graphs_and_placement_are_read_once_per_index_state(
+    async_session, monkeypatch
+):
+    """Each selection asks for them; a process serving many reads them once."""
+    from repowise.core.analysis.test_reach import db
+
+    repo = await insert_repo(async_session)
+    await _seed(
+        async_session,
+        repo.id,
+        nodes={"src/pkg/__init__.py": False, "src/pkg/a.py": False, "tests/test_a.py": True},
+        edges=[("tests/test_a.py", "src/pkg/a.py", "imports")],
+    )
+    reads: list[str] = []
+    real_graph, real_placed = db.load_import_graph, db.placed_test_files
+
+    async def graph(session, repo_id):
+        reads.append("graph")
+        return await real_graph(session, repo_id)
+
+    async def placed(session, repo_id):
+        reads.append("placed")
+        return await real_placed(session, repo_id)
+
+    monkeypatch.setattr(db, "load_import_graph", graph)
+    monkeypatch.setattr(db, "placed_test_files", placed)
+    first = await db.cached_import_graphs(async_session, repo.id)
+    assert await db.cached_import_graphs(async_session, repo.id) is first
+    assert first[1] == first[0].with_package_inits()
+    placement = await db.cached_placement(async_session, repo.id)
+    assert placement[0] == {"tests/test_a.py"}
+    assert await db.cached_placement(async_session, repo.id) == placement
+    assert reads == ["graph", "placed"]
+
+
 _KY_LIKE = {
     "src/core/Ky.ts": "export class Ky {\n  static create(input: string) { return new Ky(); }\n}\n",
     # Three calls deep before the test's own call: past the call walk's depth.

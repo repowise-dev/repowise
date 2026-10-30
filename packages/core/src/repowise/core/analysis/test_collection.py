@@ -345,18 +345,14 @@ async def _explain_route(session, repo_id: str, test: str, change, out: dict) ->
 
 async def _place_tests(session, repo_id: str, out: dict) -> None:
     """Record the tests the graph can see into, and those the indexer found it cannot."""
-    from .test_reachability import (
-        always_run_test_files,
-        placed_test_files,
-        unscanned_test_files,
-    )
+    from .test_reachability import cached_placement
 
     if out["graph_error"] is not None:
         return
     try:
-        out["placed_tests"] = await placed_test_files(session, repo_id)
-        out["always_run_tests"] = await always_run_test_files(session, repo_id)
-        unscanned = sorted(await unscanned_test_files(session, repo_id) & out["placed_tests"])
+        placed, out["always_run_tests"], unscanned_all = await cached_placement(session, repo_id)
+        out["placed_tests"] = set(placed)
+        unscanned = sorted(unscanned_all & placed)
     except Exception as exc:
         out["graph_error"] = f"{type(exc).__name__}: {exc}"
         return
@@ -658,18 +654,17 @@ async def _graph_candidates(
     node: a JSON or golden file the index flags as test material is data, not a
     route. A read failure raises.
 
-    The import edges are read once (:func:`load_import_graph`) and every walk
-    runs over them in memory; *hops* is each candidate's distance to the
+    The import edges are read once per index state (:func:`cached_import_graphs`)
+    and every walk runs over them in memory; *hops* is each candidate's distance to the
     *changed* files (every target when not given; :func:`_test_hops`).
     """
     from .conftest_routes import scoped_candidates
-    from .test_reachability import cached_test_files, load_import_graph
+    from .test_reachability import cached_import_graphs, cached_test_files
     from .test_selection import is_code_file, plugin_loader
 
     texts = pytest_texts or {}
     test_files = {f for f in await cached_test_files(session, repo_id) if is_code_file(f)}
-    graph = await load_import_graph(session, repo_id)
-    wide = graph.with_package_inits()
+    graph, wide = await cached_import_graphs(session, repo_id)
     found, entries, calls = await _tier_picks(
         session, repo_id, targets, test_files, roots, graph, wide
     )

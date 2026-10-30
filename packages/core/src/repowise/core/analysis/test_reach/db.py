@@ -343,6 +343,25 @@ async def placed_test_files(session: AsyncSession, repo_id: str) -> set[str]:
     return {row[0] for row in rows}
 
 
+async def cached_placement(
+    session: AsyncSession, repo_id: str
+) -> tuple[frozenset[str], dict[str, str], frozenset[str]]:
+    """Placed, always-run and unscanned test files, read once per index state.
+
+    Every selection asks all three and each is a scan of the graph, so a
+    process serving many calls on one index reads them once. Shared: the
+    mapping is copied on the way out, the sets are frozen.
+    """
+    key = await _cache.key(session, repo_id, "placement")
+    if key not in _cache:
+        placed = frozenset(await placed_test_files(session, repo_id))
+        always = await always_run_test_files(session, repo_id)
+        unscanned = frozenset(await unscanned_test_files(session, repo_id))
+        _cache.remember(key, (placed, always, unscanned))
+    placed, always, unscanned = _cache.get(key)
+    return placed, dict(always), unscanned
+
+
 async def always_run_test_files(session: AsyncSession, repo_id: str) -> dict[str, str]:
     """``{test file: why}`` for the tests the indexer found the graph cannot see into.
 
@@ -628,6 +647,18 @@ async def load_import_graph(session: AsyncSession, repo_id: str) -> ImportGraph:
         importers.setdefault(target, []).append(source)
     # Sorted, so a bounded walk does not depend on the order rows come back in.
     return ImportGraph({t: tuple(sorted(s)) for t, s in importers.items()})
+
+
+async def cached_import_graphs(
+    session: AsyncSession, repo_id: str
+) -> tuple[ImportGraph, ImportGraph]:
+    """:func:`load_import_graph` and its :meth:`~ImportGraph.with_package_inits`,
+    read once per index state. Shared, so neither is changed by a reader."""
+    key = await _cache.key(session, repo_id, "import_graphs")
+    if key in _cache:
+        return _cache.get(key)
+    graph = await load_import_graph(session, repo_id)
+    return _cache.remember(key, (graph, graph.with_package_inits()))
 
 
 async def direct_dependents(
