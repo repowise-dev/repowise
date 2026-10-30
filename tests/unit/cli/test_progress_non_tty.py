@@ -347,3 +347,20 @@ def test_a_step_start_reaches_a_piped_stdout() -> None:
 
     assert "Indexing file history" in started
     assert buf.getvalue().count("Indexing file history") == 2  # start + done
+
+
+def test_a_failed_step_prints_no_done_row_when_its_done_report_follows() -> None:
+    """The git phase closes as failed, then reports done for timings and hooks."""
+    from repowise.cli.ui.progress_display import make_progress
+    from repowise.core.pipeline.progress import emit_phase_failed
+
+    console, buf = _non_tty_console()
+    with make_progress(console) as bar:
+        callback = RichProgressCallback(bar, console)
+        callback.on_phase_start("git", None)
+        emit_phase_failed(callback, "git")
+        callback.on_phase_done("git")
+        # A step run again after it closed gets a fresh start line.
+        callback.on_phase_start("git", None)
+
+    assert buf.getvalue().count("Indexing file history") == 2  # two start lines

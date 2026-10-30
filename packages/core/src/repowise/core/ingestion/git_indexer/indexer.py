@@ -500,33 +500,27 @@ class GitIndexer:
 
         # Written beside the commit walk: it reads only the object store.
         graph_job = self._start_blame_graph(repo, timings)
-        try:
-            commit_sink: list[dict] = []
-            prov_clf = self._provenance_classifier()
-            # Agent-trace records, read once and shared with both commit-index walks
-            # and the line-share merge, so they load even when no walk runs.
-            trace_index = self._load_trace_index(repo)
-            sample = self._full_commit_index(
-                repo, indexable_files, history_files, commit_sink, prov_clf, trace_index, timings
-            )
-            commit_index, fallback_files = sample.commits, sample.fallback_files
+        commit_sink: list[dict] = []
+        prov_clf = self._provenance_classifier()
+        # Agent-trace records, read once and shared with both commit-index walks
+        # and the line-share merge, so they load even when no walk runs.
+        trace_index = self._load_trace_index(repo)
+        sample = self._full_commit_index(
+            repo, indexable_files, history_files, commit_sink, prov_clf, trace_index, timings
+        )
+        commit_index, fallback_files = sample.commits, sample.fallback_files
 
-            # A non-code file the shared walks could not prove complete gets no row
-            # (its count stays unknown) rather than a per-file walk of its own.
-            history_files -= fallback_files
+        # A non-code file the shared walks could not prove complete gets no row
+        # (its count stays unknown) rather than a per-file walk of its own.
+        history_files -= fallback_files
 
-            fallback_note_agents: dict[str, Any] = {}
-            if fallback_files.intersection(indexable_files):
-                from ..git_commit_index import load_git_ai_note_agents
+        fallback_note_agents: dict[str, Any] = {}
+        if fallback_files.intersection(indexable_files):
+            from ..git_commit_index import load_git_ai_note_agents
 
-                fallback_note_agents = load_git_ai_note_agents(repo, None)
+            fallback_note_agents = load_git_ai_note_agents(repo, None)
 
-            as_of_ts = self._resolve_as_of_ts(repo)
-        except BaseException:
-            # The scratch directory outlives a failed walk otherwise.
-            if graph_job is not None:
-                graph_job.result().close()
-            raise
+        as_of_ts = self._resolve_as_of_ts(repo)
         return _IndexSetup(
             outcome="ready",
             repo=repo,

@@ -18,6 +18,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import weakref
 from pathlib import Path
 from typing import Any
 
@@ -48,7 +49,9 @@ class BlameGraph:
 
     def __init__(self, env: dict[str, str] | None = None, scratch: str | None = None) -> None:
         self.env = env
-        self._scratch = scratch
+        # Also runs when the graph is dropped unclosed (a cancelled or failed
+        # run) and at interpreter exit, so the scratch directory never outlives it.
+        self._cleanup = weakref.finalize(self, _remove, scratch) if scratch else None
 
     @staticmethod
     def target(repo: Any) -> tuple[str, Path] | None:
@@ -92,9 +95,8 @@ class BlameGraph:
 
     def close(self) -> None:
         """Delete the scratch directory once the per-file pass is over."""
-        if self._scratch:
-            _remove(self._scratch)
-            self._scratch = None
+        if self._cleanup is not None:
+            self._cleanup()
 
 
 def _remove(scratch: str) -> None:

@@ -243,6 +243,13 @@ class RichProgressCallback:
 
     def on_phase_start(self, phase: str, total: int | None) -> None:
         label = checklist.running_label(_PHASE_LABELS.get(phase, f"{phase}…"))
+        # A pipe or log file never sees the live row, so a long step would
+        # leave no trace until its done row: print a line when one begins.
+        begins = phase not in self._tasks or phase in self._done
+        if begins and not self._progress.console.is_terminal:
+            self._print_above_live(
+                lambda: self._progress.console.print(checklist.start_line(label), highlight=False)
+            )
         self._done.discard(phase)
         self._done_counts.pop(phase, None)
         # If phase already has a task, update its total and make visible
@@ -257,14 +264,6 @@ class RichProgressCallback:
                 unit=_PHASE_UNITS.get(phase, ""),
                 detail="",
             )
-            # A pipe or log file never sees the live row, so a long step would
-            # leave no trace until its done row.
-            if not self._progress.console.is_terminal:
-                self._print_above_live(
-                    lambda: self._progress.console.print(
-                        checklist.start_line(label), highlight=False
-                    )
-                )
 
     def on_item_done(self, phase: str) -> None:
         if phase in self._tasks:
@@ -314,7 +313,11 @@ class RichProgressCallback:
         self._print_above_live(lambda: self._progress.console.print(line, highlight=False))
 
     def on_phase_failed(self, phase: str) -> None:
-        """Hide a step that did not finish, with no done row: its warning says why."""
+        """Hide a step that did not finish, with no done row: its warning says why.
+
+        A done report that follows (for timings and hooks) prints nothing.
+        """
+        self._done.add(phase)
         task_id = self._tasks.get(phase)
         if task_id is not None:
             with contextlib.suppress(Exception):

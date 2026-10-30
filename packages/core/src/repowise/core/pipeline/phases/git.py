@@ -131,11 +131,11 @@ async def _run_git_indexing(
         )
         git_meta_map = {m["file_path"]: m for m in git_metadata_list}
         # No repository or no tracked files: the early row closes without a
-        # done line claiming history was indexed.
-        if started:
-            _phase_done(progress, "git")
-        else:
+        # done line claiming history was indexed. The done report still runs
+        # for the phase's timing and hooks.
+        if not started:
             emit_phase_failed(progress, "git")
+        _phase_done(progress, "git")
         # co_change phase already closed inside the done-callback above;
         # call again only as a safety-net in case the callback was never
         # invoked (e.g. co-change skipped early). PhaseTimingRecorder
@@ -146,5 +146,6 @@ async def _run_git_indexing(
         if progress:
             progress.on_message("warning", f"Git indexing skipped: {exc}")
         emit_phase_failed(progress, "git")
+        _phase_done(progress, "git")
         _phase_done(progress, "co_change")
         return None, [], {}

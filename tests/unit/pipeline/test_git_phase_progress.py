@@ -49,13 +49,13 @@ async def test_git_row_opens_before_the_commit_walk(tmp_path) -> None:
 
 
 async def test_nothing_indexed_closes_the_row_without_a_done_line(tmp_path) -> None:
-    """No repository: the early row must not end as "file history indexed"."""
+    """No repository: the row closes as failed; the done report still runs for timings and hooks."""
 
     async def index_repo(_repo_id: str, **_callbacks):
         return MagicMock(), []
 
     events = await _run(index_repo, tmp_path)
-    assert events == [("start", "git", None), ("failed", "git")]
+    assert events == [("start", "git", None), ("failed", "git"), ("done", "git")]
 
 
 async def test_a_crash_closes_the_row_without_a_done_line(tmp_path) -> None:
@@ -63,4 +63,4 @@ async def test_a_crash_closes_the_row_without_a_done_line(tmp_path) -> None:
         raise RuntimeError("boom")
 
     events = await _run(index_repo, tmp_path)
-    assert events == [("start", "git", None), ("failed", "git")]
+    assert events == [("start", "git", None), ("failed", "git"), ("done", "git")]

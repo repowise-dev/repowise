@@ -55,6 +55,23 @@ def test_graph_leaves_blame_output_unchanged(tmp_path: Path) -> None:
         repo.close()
 
 
+def test_a_dropped_graph_still_removes_its_scratch(tmp_path: Path) -> None:
+    """A cancelled or failed run never calls close; the scratch must not outlive it."""
+    import gc
+
+    _build_repo(tmp_path)
+    repo = _repo(tmp_path)
+    try:
+        graph = _build(repo)
+    finally:
+        repo.close()
+    scratch = Path(graph.env["GIT_OBJECT_DIRECTORY"])
+    assert scratch.is_dir()
+    del graph
+    gc.collect()
+    assert not scratch.exists()
+
+
 def test_graph_never_writes_into_the_repository(tmp_path: Path) -> None:
     _build_repo(tmp_path)
     info = tmp_path / ".git" / "objects" / "info"
