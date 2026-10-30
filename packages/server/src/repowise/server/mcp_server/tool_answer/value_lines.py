@@ -67,7 +67,8 @@ def _value_words(question: str) -> list[str]:
 def _grep_value_lines(root: Path, words: list[str]) -> list[_Line]:
     """Code lines assigning a number to a name holding one of *words*."""
     alt = "|".join(words)
-    pattern = rf"[A-Za-z_]*({alt})[A-Za-z_]*['\"]?[[:space:]]*[:=][[:space:]]*-?[0-9]"
+    # ``name = 5``, ``name=5``, ``"name": 5`` and an annotated ``name: float = 5``.
+    pattern = rf"[A-Za-z_]*({alt})[A-Za-z_]*['\"]?[[:space:]]*(:[^=]*)?[:=][[:space:]]*-?[0-9]"
     try:
         proc = subprocess.run(
             ["git", "--no-pager", "grep", "--no-color", "-n", "-I", "-i", "-E", pattern, "--", *_GLOBS],

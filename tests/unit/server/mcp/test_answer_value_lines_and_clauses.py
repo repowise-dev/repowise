@@ -33,11 +33,13 @@ def test_grep_finds_a_keyword_argument_in_a_body_and_skips_tests(tmp_path) -> No
         {
             "pkg/legs.py": "async def leg(ctx):\n    return await wait_for(ctx.fts.search(q), timeout=5.0)\n",
             "pkg/other.py": "def f():\n    if timeout == 3:\n        pass\n",
+            "pkg/conf.py": "READ_TIMEOUT: float = 2.5\n",
             "tests/test_legs.py": "def test_x():\n    run(timeout=9)\n",
         },
     )
     lines = value_lines._grep_value_lines(root, ["timeout"])
-    assert [(ln.path, ln.line) for ln in lines] == [("pkg/legs.py", 2)]
+    found = sorted((ln.path, ln.line) for ln in lines)
+    assert found == [("pkg/conf.py", 1), ("pkg/legs.py", 2)]
 
 
 def _line(path, n=1, text=""):
