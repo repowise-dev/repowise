@@ -206,6 +206,20 @@ def normalize_text(text: str | None) -> str:
     return _WS_RE.sub(" ", text).strip().lower()
 
 
+_APOSTROPHE_RE = re.compile(r"['’]")
+_PUNCT_RE = re.compile(r"[^\w\s]")
+
+
+def _tokens(normalized: str) -> set[str]:
+    """Word tokens of *normalized* text, punctuation ignored.
+
+    Apostrophes are removed (``don't`` is ``dont``) and other punctuation
+    becomes a space, so ``rewrite.`` matches ``rewrite`` and ``src/app.py``
+    reads the same on both sides.
+    """
+    return set(_PUNCT_RE.sub(" ", _APOSTROPHE_RE.sub("", normalized)).split())
+
+
 def verify_quote(
     quote: str | None,
     source_text: str | None,
@@ -225,9 +239,9 @@ def verify_quote(
         return "unverified"
     if q in src:
         return "exact"
-    q_tokens = set(q.split())
+    q_tokens = _tokens(q)
     if not q_tokens:
         return "unverified"
-    src_tokens = set(src.split())
+    src_tokens = _tokens(src)
     overlap = len(q_tokens & src_tokens) / len(q_tokens)
     return "fuzzy" if overlap >= fuzzy_threshold else "unverified"
