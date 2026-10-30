@@ -59,18 +59,17 @@ def _outcome(result: Any) -> tuple[str, bool]:
         return "success", True
     if result.get("error"):
         return "error", False
-    meta = result.get("_meta")
-    state = meta.get("state") if isinstance(meta, dict) else None
-    if isinstance(state, dict) and (state.get("partial") or state.get("truncated")):
-        return "partial", True
-    # The lean wire shape has no ``state`` roll-up; read what it rolled up.
-    flags = {**result, **meta} if isinstance(meta, dict) else result
-    if any(
-        value and (key in ("omitted", "partial") or key.endswith("_partial") or "truncated" in key)
-        for key, value in flags.items()
-    ):
+    meta = result.get("_meta") if isinstance(result.get("_meta"), dict) else {}
+    state = meta.get("state") if isinstance(meta.get("state"), dict) else {}
+    # The lean wire shape has no ``state`` roll-up, so read what it rolls up too.
+    flags = {**result, **meta, **state}
+    if any(value and _marks_partial(key) for key, value in flags.items()):
         return "partial", True
     return "success", True
+
+
+def _marks_partial(key: str) -> bool:
+    return key in ("omitted", "partial") or key.endswith("_partial") or "truncated" in key
 
 
 def raw_response_tokens(result: Any) -> int | None:

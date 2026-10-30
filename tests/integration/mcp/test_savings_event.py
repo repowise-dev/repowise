@@ -356,7 +356,7 @@ async def test_a_budget_truncated_response_is_partial_not_a_plain_success(
         }
 
     out = await tool_middleware(get_context)(["a.py"])
-    assert out["_meta"]["state"]["truncated"], "expected the budgeter to have shed content"
+    assert out["_meta"]["omitted"], "expected the budgeter to have shed content"
 
     event = _events(repo)[0]
     assert event["result_state"] == "partial"
