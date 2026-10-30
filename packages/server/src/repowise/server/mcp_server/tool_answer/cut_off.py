@@ -26,6 +26,10 @@ _DANGLING_WORDS = frozenset(
     }
 )  # fmt: skip
 _CODE_SPAN = re.compile(r"`[^`]*`")
+_CLOSED_BOLD = re.compile(r"\*\*[^*\n]+?\*\*")
+# A bold marker that opens a label or a code span. A glob (src/**) or an
+# unquoted **kwargs opens nothing.
+_OPEN_BOLD = re.compile(r"(?<!\S)\*\*[A-Z0-9]")
 # A standalone last word: not the tail of a file name, path or identifier.
 _LAST_WORD = re.compile(r"(?<![\w./-])([A-Za-z]+)$")
 
@@ -51,7 +55,7 @@ def _text_looks_cut(answer_text: str) -> bool:
     if _FENCE.match(last):
         return False
     paragraph = _last_paragraph(lines)
-    if paragraph.count("`") % 2 or _CODE_SPAN.sub("", paragraph).count("**") % 2:
+    if paragraph.count("`") % 2 or _opens_bold(paragraph):
         return True
     return _dangling_last_line(last)
 
@@ -70,6 +74,12 @@ def _dangling_last_line(last: str) -> bool:
     # A lone capital ("option A") is a name, not an article.
     word = tail.group(1) if tail else ""
     return word.lower() in _DANGLING_WORDS and not (len(word) == 1 and word.isupper())
+
+
+def _opens_bold(paragraph: str) -> bool:
+    """A bold span that opens and never closes. Code spans stand in as text."""
+    plain = _CLOSED_BOLD.sub("", _CODE_SPAN.sub("X", paragraph))
+    return bool(_OPEN_BOLD.search(plain))
 
 
 def _last_paragraph(lines: list[str]) -> str:
