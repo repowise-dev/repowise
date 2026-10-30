@@ -1493,6 +1493,25 @@ class TestJavaLiteralArguments:
         edges = _edges(tmp_path, {"app/Box.java": ("java", text)})
         assert ("app/Box.java::Box::use", "app/Box.java::Box::put#1(T)") in edges
 
+    @pytest.mark.parametrize(
+        ("first", "second", "member"),
+        [
+            # An array is no Collection, and a String[] no Entity[].
+            ("java.util.Collection<String> c", "Object o", "f#1(Object)"),
+            ("Entity[] es", "Object[] os", "f#1(Object[])"),
+        ],
+    )
+    def test_an_array_reaches_only_its_supertypes_and_covariant_arrays(
+        self, tmp_path: Path, first: str, second: str, member: str
+    ) -> None:
+        text = (
+            "package app;\nclass Entity { }\npublic class S {\n"
+            f"  void f({first}) {{ }}\n  void f({second}) {{ }}\n"
+            "  void use(String[] parts) {\n    f(parts);\n  }\n}\n"
+        )
+        edges = _edges(tmp_path, {"app/S.java": ("java", text)})
+        assert ("app/S.java::S::use", f"app/S.java::S::{member}") in edges
+
     def test_a_body_that_suits_both_still_takes_a_void_interface(self, tmp_path: Path) -> None:
         """``run(() -> n++, 1)``: the lambda suits Runnable, so the literal decides."""
         text = (

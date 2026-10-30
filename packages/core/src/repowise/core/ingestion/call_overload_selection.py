@@ -223,7 +223,7 @@ def _reference_fit(
     if parameter in _JAVA_PRIMITIVES:
         return _unboxed_fit(parameter, argument)
     if argument.endswith("[]"):
-        return _array_fit(parameter, argument)
+        return _array_fit(parameter, argument, repo_types)
     if parameter in _JAVA_FINAL_PARAMETERS or parameter.endswith("[]"):
         return None
     if argument in _JAVA_FINAL_PARAMETERS and not _final_may_reach(parameter, argument, repo_types):
@@ -246,17 +246,26 @@ def _unboxed_fit(parameter: str, argument: str) -> int | None:
     return 2 if parameter == unboxed else 3
 
 
-def _array_fit(parameter: str, argument: str) -> int | None:
+# The supertypes of every array type.
+_JAVA_ARRAY_SUPERTYPES = frozenset({"Object", "Cloneable", "Serializable"})
+
+
+def _array_fit(
+    parameter: str, argument: str, repo_types: Mapping[str, bool] = _NO_REPO_TYPES
+) -> int | None:
     """``String[]`` reaches ``Object[]`` (1, covariance) and ``Object`` (2).
 
-    A primitive array reaches no other array, and no array a final class.
+    A primitive array reaches no other array, and no known type but an
+    array's supertypes; an unknown name may be a type variable.
     """
     if not parameter.endswith("[]"):
-        return None if parameter in _JAVA_FINAL_PARAMETERS else 2
+        if not parameter or parameter in _JAVA_ARRAY_SUPERTYPES:
+            return 2
+        return None if parameter in _JAVA_KNOWN_TYPES or parameter in repo_types else 2
     element, takes = argument.removesuffix("[]"), parameter.removesuffix("[]")
     if element in _JAVA_PRIMITIVES or takes in _JAVA_PRIMITIVES:
         return None
-    return None if _argument_fit(takes, element) is None else 1
+    return None if _argument_fit(takes, element, repo_types) is None else 1
 
 
 def _closest_fit(
