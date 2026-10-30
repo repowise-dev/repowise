@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 import structlog
+from git.exc import GitCommandError
 
 from repowise.core.analysis.git_cli import run_git
 
@@ -62,7 +63,7 @@ class BlameGraph:
             if repo.git.rev_parse("--is-shallow-repository").strip() == "true":
                 return None
             return str(repo.working_dir), Path(repo.common_dir) / "objects"
-        except Exception:
+        except (GitCommandError, OSError):
             return None
 
     @classmethod

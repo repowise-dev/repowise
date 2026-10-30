@@ -339,7 +339,6 @@ class GitIndexer:
         commit_index, fallback_files = setup.commit_index, setup.fallback_files
         fallback_note_agents = setup.fallback_note_agents
         as_of_ts = setup.as_of_ts
-        blame_graph = setup.blame_graph
 
         # Fired from the event loop, as before the setup moved to a thread.
         if on_start is not None:
@@ -349,7 +348,7 @@ class GitIndexer:
         loop = asyncio.get_event_loop()
 
         executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="git-idx")
-        get_thread_repo, close_thread_repos = self._thread_repo_pool(blame_graph.env)
+        get_thread_repo, close_thread_repos = self._thread_repo_pool(setup.blame_graph.env)
         inputs = _FilePassInputs(
             commit_index=commit_index,
             fallback_files=fallback_files,
@@ -414,7 +413,7 @@ class GitIndexer:
             with timed(timings, "git.release"):
                 executor.shutdown(wait=False, cancel_futures=True)
                 close_thread_repos()
-                blame_graph.close()
+                setup.blame_graph.close()
 
         results = _successful_rows(metadata_list, "Failed to index file")
 
