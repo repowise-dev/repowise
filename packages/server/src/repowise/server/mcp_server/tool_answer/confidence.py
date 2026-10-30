@@ -1286,6 +1286,22 @@ _GRADE_GATES = (
 )
 
 
+def _high_routes(
+    dominance: str | None, top_score: float, earned: tuple[str, str | None] | None
+) -> tuple[str | None, str | None, str | None]:
+    """``(dominance tier that vouches, earned route, file the earned high rests on)``.
+
+    Dominant but under the score floor does not vouch: the right file relative
+    to its siblings, not strong enough to trust unverified. An earned high
+    carries its own floor (see :func:`_earned_high`). The file is given only
+    when the earned route, not dominance, vouches: it exempts the gates that
+    measure the top hits.
+    """
+    vouched = dominance if top_score >= _HIGH_CONFIDENCE_SCORE_FLOOR else None
+    route, path = earned or (None, None)
+    return vouched, route, None if vouched else path
+
+
 def _grade_answer(
     *,
     question: str,
@@ -1319,18 +1335,17 @@ def _grade_answer(
     """
     dominant = dominance is not None
     top_score = _confidence_score(hits[0]) if hits else 0.0
-    earned, earned_path = _earned_high(
-        question, question_ids, answer_text, hits, citations, served_named_body, top_score
-    ) or (None, None)
+    vouched, earned, earned_path = _high_routes(
+        dominance,
+        top_score,
+        _earned_high(
+            question, question_ids, answer_text, hits, citations, served_named_body, top_score
+        ),
+    )
     earn_high = earned is not None
-    # Dominant but under the score floor is "medium": the right file relative to
-    # its siblings, not strong enough to trust unverified. An earned high carries
-    # its own floor (see _earned_high).
-    vouched = dominance if top_score >= _HIGH_CONFIDENCE_SCORE_FLOOR else None
     start = "high" if vouched or earn_high else "medium"
     s = _GradeState(
-        # Only the route that vouched for high exempts the gates that measure it.
-        earned_path=None if vouched else earned_path,
+        earned_path=earned_path,
         unindexed_names=set(unindexed_names),
         absent_names=tuple(absent_names),
         split_names=dict(split_names or {}),
