@@ -155,6 +155,14 @@ def test_a_workspace_path_already_gitignored_gets_no_line(repo: Path) -> None:
     assert keep_workspace_data_out(repo) == ["/.repowise-workspace.yaml"]
 
 
+def test_a_workspace_folder_inside_a_repo_is_anchored_to_that_folder(repo: Path) -> None:
+    ws = repo / "services"
+    _write(ws, ".repowise-workspace/workspace.db", ".repowise-workspace.yaml")
+    added = ["/services/.repowise-workspace.yaml", "/services/.repowise-workspace/"]
+    assert keep_workspace_data_out(ws) == added
+    assert _status(repo) == ""
+
+
 def test_a_workspace_root_outside_git_writes_nothing(tmp_path: Path) -> None:
     assert keep_workspace_data_out(tmp_path) == []
 

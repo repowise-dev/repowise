@@ -106,7 +106,7 @@ def add_to_exclude(repo_path: Path, paths: Iterable[str]) -> list[str]:
 
 
 def keep_workspace_data_out(workspace_root: Path) -> list[str]:
-    """Exclude the workspace config and data dir when the workspace root is a git work tree.
+    """Exclude the workspace config and data dir when the workspace root is in a git work tree.
 
     Both are per machine (local paths, index timestamps, derived analysis).
     A path a ``.gitignore`` already covers gets no second line.
