@@ -1673,6 +1673,10 @@ class CallResolver(
         hit = self._bound_import_call(call, caller_id, binding)
         if hit is not None:
             return hit
+        # A type-qualified import is a complete scope; do not broaden a miss
+        # to a same-named member from another type in the imported file.
+        if binding is not None and binding.member_of:
+            return None
         # A Python name imported from outside the repository is that module's,
         # not a same-named repo symbol a later tier would find. Python only:
         # Python resolves a repo's own absolute imports by dotted path, while
@@ -1857,7 +1861,18 @@ class CallResolver(
             source_file = barrel[lookup_name]
         if binding.member_of:
             # A static import names the member's type; a nested type's same-named member is another.
-            return self._published_by(source_file, binding.member_of, lookup_name)
+            owned = self._file_methods.get(source_file, {}).get(
+                (binding.member_of, lookup_name)
+            )
+            if owned is not None:
+                return owned
+            owner_id = self._published(source_file, binding.member_of)
+            owner = self._symbols_by_id.get(owner_id or "")
+            if owner is None or owner.kind not in _TYPE_KINDS:
+                return None
+            return self._ancestor_method(
+                owner.id, lookup_name, "", class_chain_first=True
+            )
         return self._published(source_file, lookup_name)
 
     def _link_imported_aliases(self) -> None:
