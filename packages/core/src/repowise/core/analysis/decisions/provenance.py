@@ -59,6 +59,10 @@ SOURCE_RANK: dict[str, int] = {
     "agent": 8,  # proposed directly by a coding agent from its own reasoning
     "adr": 7,  # architecture decision records (structured, intentional)
     "pr": 7,  # PR / squash-merge body
+    # A reviewer's verbatim reply on a PR thread, promoted by the review bot.
+    # A person's own words, but said in review rather than while deciding, and
+    # not always by whoever decided: it ties with ``pr`` rather than ``session``.
+    "pr_review": 7,
     "commit": 6,  # individual commit message
     "git_archaeology": 6,  # alias for commit-mined decisions
     "conventions": 6,  # counted from the code itself, so it sits with commit
