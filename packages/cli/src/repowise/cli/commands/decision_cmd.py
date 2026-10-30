@@ -313,7 +313,7 @@ def decision_add(
     stored = run_async(
         _persist_decision(repo_path, fields, status, list(evidence_commits), signer)
     )
-    if stored.status != "active" and not non_interactive:
+    if stored.status == "proposed" and not non_interactive:
         console.print(
             "[yellow]Stored as a candidate: it names no files, so it cannot be "
             "checked against the code.[/yellow]\n"
