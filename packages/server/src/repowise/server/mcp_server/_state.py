@@ -80,6 +80,7 @@ _vector_store_errors: dict[str, str] = {}
 _release_check: Any = None
 _release_announced: str | None = None
 
+
 def init_tool_state(
     session_factory: Any,
     fts: Any,
