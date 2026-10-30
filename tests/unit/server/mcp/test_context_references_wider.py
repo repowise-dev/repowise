@@ -235,3 +235,21 @@ def test_a_basename_under_another_folder_is_not_a_mention(tmp_path):
     rows = doc_mentions(tmp_path, "src/ui/table-view.tsx", set())
 
     assert [r["line"] for r in rows] == [2, 3]
+
+
+@pytest.mark.parametrize(
+    ("name", "skipped"),
+    [
+        ("docs/CHANGELOG.md", True),
+        ("docs/release-notes-2024.md", True),
+        ("docs/v2-changelog.md", True),
+        ("docs/newsletter.md", False),
+        ("docs/guide.md", False),
+    ],
+)
+def test_release_notes_are_not_edit_sites(tmp_path, name, skipped):
+    _write(tmp_path, {name: "INCLUDE_KEYS\n"})
+
+    held = _edit_sites_wider.documents_holding(tmp_path, "INCLUDE_KEYS")
+
+    assert (name not in held) is skipped

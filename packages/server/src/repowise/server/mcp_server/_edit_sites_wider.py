@@ -41,7 +41,7 @@ MAX_DOC_FILES = 50
 
 _TS_STAR = re.compile(r"""^\s*export\s*(?:type\s+)?\*\s*(?:as\s+[\w$]+\s+)?from\s*["'`]""")
 _PY_STAR = re.compile(r"^\s*from\s+([.\w]+)\s+import\s+\*")
-_RELEASE_NOTES = re.compile(r"(?i)(?:changelog|changes|history|news|release[-_ ]?notes)$")
+_RELEASE_NOTES = re.compile(r"(?i)(?<![a-z])(?:changelog|changes|history|news|release[-_ ]?notes)(?![a-z])")
 
 
 def _python_module_tail(def_path: str) -> str:
@@ -121,7 +121,7 @@ def documents_holding(root: Path, needle: str) -> list[str]:
         f
         for f in (_listed_files(root) if held is None else held)
         if classification_token(f) in DOC_EXTENSIONS
-        and not _RELEASE_NOTES.match(PurePosixPath(f).stem)
+        and not _RELEASE_NOTES.search(PurePosixPath(f).stem)
     )
 
 
