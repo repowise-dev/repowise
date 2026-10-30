@@ -459,14 +459,14 @@ def test_a_stated_value_line_earns_high_under_the_score_floor() -> None:
 
 
 def test_a_dominant_answer_under_the_floor_without_a_value_line_is_noted() -> None:
-    from repowise.server.mcp_server.tool_answer.payload import _under_floor_note
+    from repowise.server.mcp_server.tool_answer.payload import _closing_note
 
     answer = "`_DOMINANCE_RATIO` sets how far the top hit must lead."
     grade = _grade("What is _DOMINANCE_RATIO?", answer, _ratio_hits(1.3),
                    dominance="ratio", ids={"_DOMINANCE_RATIO"})
     assert grade.confidence == "medium"
     assert grade.under_floor
-    assert "1.30" in _under_floor_note(grade)
+    assert "1.30" in _closing_note(grade, [])
 
 
 def _pad_hits(excerpt: str) -> list[dict]:

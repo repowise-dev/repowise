@@ -1317,8 +1317,8 @@ def _grade_answer(
     # Dominant but under the score floor is "medium": the right file relative to
     # its siblings, not strong enough to trust unverified. An earned high carries
     # its own floor (see _earned_high).
-    strong = top_score >= _HIGH_CONFIDENCE_SCORE_FLOOR
-    start = "high" if (dominant and strong) or earn_high else "medium"
+    vouched = dominance if top_score >= _HIGH_CONFIDENCE_SCORE_FLOOR else None
+    start = "high" if vouched or earn_high else "medium"
     s = _GradeState(
         earned_path=earned_path,
         unindexed_names=set(unindexed_names),
@@ -1343,17 +1343,15 @@ def _grade_answer(
         gate(s)
     # The specific dominance tier, not "dominant": gap and agreement fire near a
     # 1.0 ratio, so quoting the ratio would print a near tie as justification.
-    high_reason = None
-    if s.confidence == "high":
-        # Under the floor the dominance tier did not vouch: the earned route did.
-        high_reason = dominance if dominant and strong else earned
+    # Under the floor the dominance tier did not vouch: the earned route did.
+    high_reason = (vouched or earned) if s.confidence == "high" else None
     return _Grade(
         absent_names=s.absent_names,
         split_names=s.split_names,
         clauses_unanswered=tuple(s.clauses_unanswered),
         weak_agreement=s.weak_agreement,
         unhydrated_names=s.unhydrated_names,
-        under_floor=dominant and not strong and not earn_high,
+        under_floor=dominant and not (vouched or earn_high),
         confidence=s.confidence,
         high_reason=high_reason,
         second_score=_confidence_score(hits[1]) if len(hits) >= 2 else 0.0,

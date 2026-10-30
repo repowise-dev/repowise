@@ -426,25 +426,27 @@ def _writes_as_code(root: Path | None, rows: list[dict], token: str) -> bool:
     by_path: dict[str, list[int]] = {}
     for r in rows:
         by_path.setdefault(r["path"], []).append(r["line"])
-    for path, numbers in by_path.items():
-        # A file cut at the per-file cap may write it as code past the cut.
-        capped = len(numbers) >= MAX_LINES_PER_FILE
-        text = None if capped or is_doc_or_config_path(path) else read_repo_file_text(root, path)
-        if text is None:
+    return any(_file_writes_as_code(root, path, numbers, word) for path, numbers in by_path.items())
+
+
+def _file_writes_as_code(root: Path | None, path: str, numbers: list[int], word: re.Pattern) -> bool:
+    """:func:`_writes_as_code` for the scanned lines *numbers* of one file."""
+    # A file cut at the per-file cap may write it as code past the cut.
+    capped = len(numbers) >= MAX_LINES_PER_FILE
+    text = None if capped or is_doc_or_config_path(path) else read_repo_file_text(root, path)
+    if text is None:
+        return True
+    lines = text.splitlines()
+    if not all(0 < n <= len(lines) for n in numbers):
+        return True  # changed since the scan: proves nothing
+    masked = _string_masked_lines(tuple(lines), backticks=False).all
+    test = is_test_related_path(path)
+    for n in numbers:
+        line = lines[n - 1]
+        if n in masked or _COMMENT_OR_DOC_START_RE.match(line.lstrip()):
+            continue
+        if not test or word.search(_QUOTED_RE.sub(" ", line)):
             return True
-        lines = text.splitlines()
-        masked = _string_masked_lines(tuple(lines), backticks=False).all
-        test = is_test_related_path(path)
-        for n in numbers:
-            if not 0 < n <= len(lines):
-                return True  # changed since the scan: proves nothing
-            if n in masked:
-                continue
-            line = lines[n - 1]
-            if _COMMENT_OR_DOC_START_RE.match(line.lstrip()):
-                continue
-            if not test or word.search(_QUOTED_RE.sub(" ", line)):
-                return True
     return False
 
 
