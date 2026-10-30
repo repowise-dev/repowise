@@ -173,6 +173,53 @@ async def test_a_test_that_runs_with_every_subset_is_named(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_change_risk_selects_tests_once_while_it_scores(tmp_path, monkeypatch) -> None:
+    """The selection starts beside the score, and the tests block joins it."""
+    import asyncio
+    from collections import OrderedDict
+
+    from repowise.server.mcp_server import _test_selection
+
+    repo, base = _repo(tmp_path, _STATUS)
+    _commit(repo, {"src/status.py": "def status():\n    return 2\n"}, "fix: status")
+    factory = await _index(
+        base,
+        {"src/status.py": False, "tests/test_status.py": True},
+        [("tests/test_status.py", "src/status.py", "imports")],
+        db_file=tmp_path / "wiki.db",
+    )
+    runs: list[str] = []
+    real = _test_selection._select_here
+
+    async def _recording(*args, **kwargs):
+        runs.append(args[2].label)
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(_test_selection, "_select_here", _recording)
+    monkeypatch.setattr(_test_selection, "_DONE", OrderedDict())
+    tool = importlib.import_module("repowise.server.mcp_server.tool_change_risk.tool")
+    real_score = tool._score_change
+    during: list[bool] = []
+
+    async def _slow_score(*args, **kwargs):
+        for _ in range(500):
+            if runs:
+                break
+            await asyncio.sleep(0.01)
+        during.append(bool(runs))
+        return await real_score(*args, **kwargs)
+
+    monkeypatch.setattr(tool, "_score_change", _slow_score)
+
+    it = (await _change_risk(monkeypatch, repo, factory))["impacted_tests"]
+
+    assert it["status"] == "selected"
+    assert "tests/test_status.py" in it["tests_to_run"]
+    assert during == [True]
+    assert len(runs) == 1
+
+
+@pytest.mark.asyncio
 async def test_a_conftest_change_runs_every_test_under_it(tmp_path, monkeypatch) -> None:
     files = {
         "tests/conftest.py": "import pytest\n",
@@ -599,3 +646,12 @@ def test_get_risk_counts_the_broadcast_and_import_closure_apart(tmp_path) -> Non
     summary = tests_summary(len(population), basis, fields, {}, False, 10)
     assert "3 more test(s) must still run because a conftest" in summary
     assert "1 more test(s) must still run because they import the change" in summary
+
+
+def test_only_a_named_commit_starts_a_selection_before_the_score() -> None:
+    from repowise.server.mcp_server.tool_change_risk.impacted import _start_selection
+
+    ctx = SimpleNamespace(path=".", session_factory=object())
+    # Both read as uncommitted or staged work to git, never as the scored HEAD.
+    assert _start_selection(ctx, None) is None
+    assert _start_selection(ctx, "") is None
