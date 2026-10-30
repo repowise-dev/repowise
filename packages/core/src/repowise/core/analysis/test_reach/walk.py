@@ -86,7 +86,7 @@ def call_walk(
         level, frontier = frontier, []
         queued: set[str] = set()
         start = {node: dict(origins[node]) for node in level}
-        start = yield from _registered_symbols(start)
+        start = yield from _registered_symbols(start, avoid)
         for caller, callee in (yield Need("callers", tuple(start))):
             carried = start.get(callee)
             if not carried:
@@ -99,7 +99,7 @@ def call_walk(
                 continue
             if owner in avoid:
                 # A hub carries on only the seeds it declares itself.
-                carried = {s: d for s, d in carried.items() if s.split("::", 1)[0] == owner}
+                carried = _seeds_declared_by(carried, owner)
             if not _carry_closer(origins, caller, carried):
                 continue
             if caller not in queued:
@@ -111,7 +111,9 @@ def call_walk(
     }
 
 
-def _registered_symbols(start: dict[str, dict[str, int]]) -> Walk[dict[str, dict[str, int]]]:
+def _registered_symbols(
+    start: dict[str, dict[str, int]], avoid: Collection[str]
+) -> Walk[dict[str, dict[str, int]]]:
     """Add declarations from files registered by any file represented in *start*.
 
     Registration is framework wiring, not a call hop. Follow its transitive
@@ -133,6 +135,10 @@ def _registered_symbols(start: dict[str, dict[str, int]]) -> Walk[dict[str, dict
             carried = pending.get(registered)
             if not carried:
                 continue
+            if registrar in avoid:
+                carried = _seeds_declared_by(carried, registrar)
+                if not carried:
+                    continue
             parent_origins = parents.setdefault(registrar, {})
             for seed, distance in carried.items():
                 parent_origins[seed] = min(distance, parent_origins.get(seed, distance))
@@ -153,11 +159,14 @@ def _registered_symbols(start: dict[str, dict[str, int]]) -> Walk[dict[str, dict
             for file, symbol in (yield Need("declared", tuple(sorted(pending)))):
                 symbol_origins = start.setdefault(symbol, {})
                 for seed, distance in pending[file].items():
-                    symbol_origins[seed] = min(
-                        distance, symbol_origins.get(seed, distance)
-                    )
+                    symbol_origins[seed] = min(distance, symbol_origins.get(seed, distance))
 
     return start
+
+
+def _seeds_declared_by(carried: Mapping[str, int], owner: str) -> dict[str, int]:
+    """Keep only seeds owned by a hub allowed to carry its own target."""
+    return {seed: distance for seed, distance in carried.items() if seed.split("::", 1)[0] == owner}
 
 
 def _call_origins(

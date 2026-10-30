@@ -41,13 +41,12 @@ def test_registry_tables_and_consumers_are_marked_as_module_registrations(tmp_pa
     (tmp_path / "dialects").mkdir()
     (tmp_path / "dialects" / "python.py").write_text("DIALECT = object()\n")
     (tmp_path / "dialects" / "__init__.py").write_text(
-        "from .python import DIALECT as PYTHON\n"
-        "_REGISTER = ((\"python\", PYTHON),)\n"
+        'from .python import DIALECT as PYTHON\n_REGISTER = (("python", PYTHON),)\n'
     )
     (tmp_path / "health.py").write_text(
         "from .dialects import PERF_DIALECTS\n"
         "def inspect():\n"
-        "    return PERF_DIALECTS.get(\"python\")\n"
+        '    return PERF_DIALECTS.get("python")\n'
     )
     (tmp_path / "registry.py").write_text("def register_lazy(name, target):\n    pass\n")
     (tmp_path / "tools").mkdir()
@@ -60,7 +59,7 @@ def test_registry_tables_and_consumers_are_marked_as_module_registrations(tmp_pa
     )
     (tmp_path / "cli.py").write_text(
         "from .registry import cli_registry\n"
-        "cli_registry.register_lazy(\"python\", \"dialects.python:DIALECT\")\n"
+        'cli_registry.register_lazy("python", "dialects.python:DIALECT")\n'
     )
     parsed = _parsed_files(tmp_path)
     graph = nx.DiGraph()
@@ -84,9 +83,7 @@ def test_registry_tables_and_consumers_are_marked_as_module_registrations(tmp_pa
     assert graph.edges["health.py", "dialects/__init__.py"]["hint_source"] == (
         MODULE_REGISTRATION_HINT
     )
-    assert graph.edges["cli.py", "dialects/python.py"]["hint_source"] == (
-        MODULE_REGISTRATION_HINT
-    )
+    assert graph.edges["cli.py", "dialects/python.py"]["hint_source"] == (MODULE_REGISTRATION_HINT)
     assert graph.edges["registry.py", "tools/reader.py"]["hint_source"] == (
         MODULE_REGISTRATION_HINT
     )
@@ -97,3 +94,34 @@ def test_registry_tables_and_consumers_are_marked_as_module_registrations(tmp_pa
         "cli.py": ("dialects/python.py", "registry.py"),
         "registry.py": ("tools/reader.py",),
     }
+
+
+def test_unrelated_register_calls_and_function_imports_stay_at_import_tier(
+    tmp_path: Path,
+):
+    (tmp_path / "registry.py").write_text("")
+    (tmp_path / "hooks.py").write_text(
+        "def shutdown():\n    pass\ndef get_tools():\n    pass\nevent_handlers = []\n"
+    )
+    (tmp_path / "caller.py").write_text(
+        "import atexit\n"
+        "from .hooks import shutdown, get_tools, event_handlers\n"
+        "atexit.register(shutdown)\n"
+    )
+    parsed = _parsed_files(tmp_path)
+    graph = nx.DiGraph()
+    for path in parsed:
+        graph.add_node(path, node_type="file")
+    graph.add_edge("caller.py", "hooks.py", edge_type="imports")
+    paths = set(parsed)
+    context = ResolverContext(
+        path_set=paths,
+        stem_map={},
+        graph=graph,
+        repo_path=tmp_path,
+    )
+
+    add_framework_edges(graph, parsed, context, tech_stack=[])
+
+    assert graph.edges["caller.py", "hooks.py"].get("hint_source") is None
+    assert call_graph_from_graph(graph).registrations.get("caller.py") is None

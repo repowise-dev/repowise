@@ -13,10 +13,6 @@ from .base import DetectionContext, FrameworkHandler, source_text
 if TYPE_CHECKING:
     import networkx as nx
 
-_REGISTRY_NAME = re.compile(
-    r"(?:_registry|_dialects|_commands|_tools|_plugins|_routers|_handlers|^_register$)",
-    re.IGNORECASE,
-)
 _REGISTRATION_CALLS = frozenset(
     {
         "add_command",
@@ -31,15 +27,10 @@ _REGISTRATION_CALLS = frozenset(
         "tool",
     }
 )
-_REGISTRATION_SOURCE = re.compile(
-    r"\b(?:register|register_lazy|add_command|add_typer|add_tool|include_router|tool|"
-    r"register_command|register_lazy_command|register_tool|"
-    r"[A-Z_]*(?:REGISTRY|DIALECTS|COMMANDS|TOOLS|PLUGINS|ROUTERS|HANDLERS|_REGISTER))\b",
-    re.IGNORECASE,
-)
 _REGISTRY_PATH = re.compile(
     r"(?:registry|dialect|plugin|command|tool|router|handler)", re.IGNORECASE
 )
+_KNOWN_REGISTRATION_METHODS = frozenset({"add_command", "add_typer", "include_router"})
 
 
 def _imported_files(
@@ -50,7 +41,11 @@ def _imported_files(
         resolved = imported.resolved_file
         if resolved not in path_set:
             resolved = next(
-                (binding.source_file for binding in imported.bindings if binding.source_file in path_set),
+                (
+                    binding.source_file
+                    for binding in imported.bindings
+                    if binding.source_file in path_set
+                ),
                 None,
             )
         if resolved not in path_set:
@@ -73,17 +68,35 @@ def _registry_locals(parsed: Any) -> set[str]:
         binding.local_name
         for imported in parsed.imports
         for binding in imported.bindings
-        if _REGISTRY_NAME.search(binding.local_name)
-        or (
-            binding.exported_name is not None
-            and _REGISTRY_NAME.search(binding.exported_name)
-        )
+        if _is_registry_name(binding.local_name)
+        or (binding.exported_name is not None and _is_registry_name(binding.exported_name))
     }
 
 
-def _mark_registration(
-    graph: nx.DiGraph, source: str, target: str
-) -> bool:
+def _is_registry_name(name: str) -> bool:
+    lowered = name.lower()
+    if lowered == "registry" or lowered.endswith("_registry"):
+        return True
+    if not name.isupper():
+        return False
+    return (
+        lowered == "_register"
+        or lowered
+        in {
+            "dialects",
+            "commands",
+            "tools",
+            "plugins",
+            "routers",
+            "handlers",
+        }
+        or lowered.endswith(
+            ("_dialects", "_commands", "_tools", "_plugins", "_routers", "_handlers")
+        )
+    )
+
+
+def _mark_registration(graph: nx.DiGraph, source: str, target: str) -> bool:
     if source == target:
         return False
     edge = graph.get_edge_data(source, target)
@@ -106,9 +119,7 @@ def _mark_registration(
     return True
 
 
-def _lazy_target(
-    call: ast.Call, path: str, ctx: ResolverContext, path_set: set[str]
-) -> str | None:
+def _lazy_target(call: ast.Call, path: str, ctx: ResolverContext, path_set: set[str]) -> str | None:
     name = (
         call.func.attr
         if isinstance(call.func, ast.Attribute)
@@ -150,16 +161,33 @@ def _registration_relationships(
 ) -> set[tuple[str, str]]:
     imports = _imported_files(path, parsed, ctx, path_set)
     source = source_text(path, parsed, ctx.source_map or {})
-    if not source or not _REGISTRATION_SOURCE.search(source):
+    if not source:
         return set()
     try:
         tree = ast.parse(source)
     except SyntaxError:
         return set()
 
+    registry_locals = _registry_locals(parsed)
+    relationships, decorator_registries = _decorator_relationships(
+        tree, path, imports, registry_locals
+    )
+    used_registries = _names(tree) & registry_locals
+    relationships.update(
+        (path, imports[local])
+        for local in used_registries - decorator_registries
+        if local in imports
+    )
+    relationships.update(_call_relationships(tree, path, imports, registry_locals, ctx, path_set))
+    relationships.update(_table_relationships(tree, path, imports))
+    return relationships
+
+
+def _decorator_relationships(
+    tree: ast.Module, path: str, imports: dict[str, str], registry_locals: set[str]
+) -> tuple[set[tuple[str, str]], set[str]]:
     relationships: set[tuple[str, str]] = set()
     decorator_registries: set[str] = set()
-    registry_locals = _registry_locals(parsed)
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             continue
@@ -175,53 +203,61 @@ def _registration_relationships(
                 registry = expression.value.id
                 decorator_registries.add(registry)
                 relationships.add((imports[registry], path))
+    return relationships, decorator_registries
 
-    relationships.update(
-        (path, imports[binding.local_name])
-        for imported in parsed.imports
-        for binding in imported.bindings
-        if binding.local_name in imports
-        and binding.local_name in registry_locals
-        and binding.local_name not in decorator_registries
-    )
+
+def _is_registration_call(node: ast.Call, registry_locals: set[str]) -> bool:
+    if not isinstance(node.func, ast.Attribute) or node.func.attr not in _REGISTRATION_CALLS:
+        return False
+    if node.func.attr in _KNOWN_REGISTRATION_METHODS:
+        return True
+    return isinstance(node.func.value, ast.Name) and node.func.value.id in registry_locals
+
+
+def _call_relationships(
+    tree: ast.Module,
+    path: str,
+    imports: dict[str, str],
+    registry_locals: set[str],
+    ctx: ResolverContext,
+    path_set: set[str],
+) -> set[tuple[str, str]]:
+    relationships: set[tuple[str, str]] = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.Call):
-            name = (
-                node.func.attr
-                if isinstance(node.func, ast.Attribute)
-                else node.func.id
-                if isinstance(node.func, ast.Name)
-                else ""
-            )
-            if name in _REGISTRATION_CALLS:
-                relationships.update(
-                    (path, imports[local])
-                    for arg in node.args
-                    for local in _names(arg)
-                    if local in imports
-                )
-                lazy = _lazy_target(node, path, ctx, path_set)
-                if lazy:
-                    relationships.add((path, lazy))
-
-        if isinstance(node, ast.Assign):
-            registry = any(
-                isinstance(target, ast.Name) and _REGISTRY_NAME.search(target.id)
-                for target in node.targets
-            )
-            if registry:
-                relationships.update(
-                    (path, imports[name]) for name in _names(node.value) if name in imports
-                )
-        elif isinstance(node, ast.AnnAssign):
-            registry = isinstance(node.target, ast.Name) and bool(
-                _REGISTRY_NAME.search(node.target.id)
-            )
-            if registry and node.value is not None:
-                relationships.update(
-                    (path, imports[name]) for name in _names(node.value) if name in imports
-                )
+        if not isinstance(node, ast.Call) or not _is_registration_call(node, registry_locals):
+            continue
+        relationships.update(
+            (path, imports[local]) for arg in node.args for local in _names(arg) if local in imports
+        )
+        lazy = _lazy_target(node, path, ctx, path_set)
+        if lazy:
+            relationships.add((path, lazy))
     return relationships
+
+
+def _table_relationships(
+    tree: ast.Module, path: str, imports: dict[str, str]
+) -> set[tuple[str, str]]:
+    relationships: set[tuple[str, str]] = set()
+    for node in ast.walk(tree):
+        value = _registry_assignment_value(node)
+        if value is not None:
+            relationships.update((path, imports[name]) for name in _names(value) if name in imports)
+    return relationships
+
+
+def _registry_assignment_value(node: ast.AST) -> ast.expr | None:
+    if isinstance(node, ast.Assign) and any(
+        isinstance(target, ast.Name) and _is_registry_name(target.id) for target in node.targets
+    ):
+        return node.value
+    if (
+        isinstance(node, ast.AnnAssign)
+        and isinstance(node.target, ast.Name)
+        and _is_registry_name(node.target.id)
+    ):
+        return node.value
+    return None
 
 
 class _PythonRegistrations:
@@ -248,10 +284,7 @@ class _PythonRegistrations:
     ) -> int:
         count = 0
         for path, parsed in parsed_files.items():
-            if (
-                parsed.file_info.language != "python"
-                or not self._is_candidate(path, parsed)
-            ):
+            if parsed.file_info.language != "python" or not self._is_candidate(path, parsed):
                 continue
             count += sum(
                 _mark_registration(graph, source, target)
