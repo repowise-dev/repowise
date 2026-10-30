@@ -1443,7 +1443,8 @@ def test_an_answer_admitting_a_gap_is_held_at_medium() -> None:
 def test_a_statement_about_the_code_is_not_an_admitted_gap() -> None:
     from repowise.server.mcp_server.tool_answer.confidence import _admitted_gap
 
-    assert _admitted_gap("The header is not included in the checksum.") is None
+    # "not included in the" is a hedge marker, so the preposition case uses "by".
+    assert _admitted_gap("The header is not included by the signer.") is None
     assert _admitted_gap("The builder isn't shown, but the renderer is.") is not None
 
 

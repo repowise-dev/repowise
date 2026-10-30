@@ -25,6 +25,7 @@ from repowise.server.mcp_server._query_shape import (
     _folds_case,
     _identifier_shaped,
     _looks_like_code_name,
+    _unmistakably_code,
 )
 from repowise.server.mcp_server._query_terms import split_humps
 from repowise.server.mcp_server._verify import verify_and_heal
@@ -248,7 +249,8 @@ async def _anchor_symbol_hits(
 
     Returns ``(hits, homonyms)``; ``hits`` is re-sorted by score (mutated in
     place). ``homonyms = {"union": {name: [def_dict, ...]}, "qualified_miss":
-    [name, ...]}``.
+    [name, ...], "unindexed": [name, ...], "absent": [name, ...]}``: the
+    question names no symbol carries, and those of them no code writes either.
     """
     homonyms: dict[str, Any] = {"union": {}, "qualified_miss": []}
     if not question_ids:
@@ -292,10 +294,15 @@ async def _anchor_symbol_hits(
 
     literal: dict[str, list] = {}
     prose = bool(question) and not is_symbol_lookup_question(question, question_ids)
-    if prose and repo_root is not None:
+    homonyms["unindexed"] = sorted(question_ids - indexed_names)
+    if repo_root is not None:
         guard = _TopicGuard(repo_root, hits, question, qids_lower)
-        by_name = await _trusted_over_topic(by_name, question_ids, guard)
-        literal = await _literal_holders(session, repo_id, question_ids - indexed_names, guard)
+        if prose:
+            by_name = await _trusted_over_topic(by_name, question_ids, guard)
+            literal = await _literal_holders(session, repo_id, question_ids - indexed_names, guard)
+        homonyms["absent"] = [
+            t for t in homonyms["unindexed"] if await _names_nothing_in_code(t, guard)
+        ]
 
     chosen = await _choose_anchor_symbols(by_name, question_ids, _verified_dict, homonyms)
     if not chosen and not literal:
@@ -349,6 +356,17 @@ class _TopicGuard:
         stem = row.file_path.rsplit("/", 1)[-1].rsplit(".", 1)[0]
         owner = f"{stem} {row.parent_name or ''} {row.name or ''}"
         return bool(self.topic_stems & _text_stems(owner))
+
+
+async def _names_nothing_in_code(token: str, guard: _TopicGuard) -> bool:
+    """An unindexed, code-shaped name that no production line writes either.
+
+    Mixed case, an underscore or a digit (``FileTree``, ``retry_policy``); an
+    all-caps acronym (``SSG``) is prose often enough to be left alone.
+    """
+    if "." in token or not _unmistakably_code(token):
+        return False
+    return not await guard.lines(token)
 
 
 async def _trusted_over_topic(

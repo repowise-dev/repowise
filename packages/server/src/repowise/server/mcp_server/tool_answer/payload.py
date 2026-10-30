@@ -473,13 +473,14 @@ async def build_synthesized_payload(
             _cr = _drop_already_surfaced(_cr, symbol_bodies, quotes)
             if _cr:
                 payload["code_rationale"] = _cr
-        if grade.high_reason == "symbol_body":
-            # High rests on the served body, not the ranking, so the caveat
+        rests_on_source = grade.high_reason in ("symbol_body", "value_line")
+        if rests_on_source:
+            # High rests on the served source, not the ranking, so the caveat
             # scopes doubt to the page choice rather than pointing at best_guesses.
             _caveat = (
                 "Retrieval was ambiguous (no single dominant page), so the "
                 "candidates listed are a ranking, not a finding — the confidence "
-                "above rests on the symbol body served in this payload, not on "
+                "above rests on the source served in this payload, not on "
                 "which page ranked first."
             )
         else:
@@ -490,7 +491,7 @@ async def build_synthesized_payload(
                 + (" or the code_rationale comments." if payload.get("code_rationale") else ".")
             )
         payload["note"] = (payload["note"] + " " + _caveat) if payload.get("note") else _caveat
-        if payload.get("best_guesses") and grade.high_reason != "symbol_body":
+        if payload.get("best_guesses") and not rests_on_source:
             payload.setdefault(
                 "next_action_hint",
                 f"Verify against {payload['best_guesses'][0]['file']} — it scored "
@@ -573,6 +574,14 @@ def _high_confidence_note(grade: _Grade, tail: str) -> str:
             "rather than on the ranking, which was ambiguous (top score "
             f"{grade.top_score:.2f}, runner-up {grade.second_score:.2f}). " + tail
         )
+    if grade.high_reason == "value_line":
+        return (
+            "High confidence: the answer states the value assigned on the "
+            "definition line of the constant you asked about, read live at its "
+            "verified line (see quotes), so it rests on source rather than on the "
+            f"ranking (top score {grade.top_score:.2f}, runner-up "
+            f"{grade.second_score:.2f}). " + tail
+        )
     if grade.high_reason == "grounding":
         return (
             "High confidence: every mechanism the answer names appears in the "
@@ -652,7 +661,12 @@ async def _graded_payload(
     if grade.high_reason == "symbol_body":
         # Also what stops `_apply_lean_high` stripping the body the note cites.
         payload["grounding"] = "symbol_body"
-    if grade.ungrounded_values:
+    if grade.absent_names:
+        payload["note"] = (
+            f"Nothing in this repository defines or writes {', '.join(grade.absent_names)}, "
+            "so the answer describes other code. Check the name before acting on it."
+        )
+    elif grade.ungrounded_values:
         payload["note"] = (
             f"Value-grounding gate: the answer asserts {grade.ungrounded_values} "
             "but none of these appear in any retrieved excerpt — the "

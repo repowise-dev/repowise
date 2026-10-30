@@ -147,8 +147,10 @@ _AGREEMENT_RANK_GAP = 1
 _LEAD_HYBRID_TOP_K = 4
 
 # Phrases that mean the LLM declined to answer despite dominant retrieval.
-# A match downgrades confidence to "low" and drops the retrieval payload, since
-# a consumer told to read the source gains nothing from it in the cache.
+# Before the answer names any code, a match downgrades confidence to "low" and
+# drops the retrieval payload, since a consumer told to read the source gains
+# nothing from it in the cache. After a grounded claim it is a caveat
+# (_GAP_MARKERS below).
 _HEDGE_MARKERS = (
     "do not contain",
     "does not contain",
@@ -200,17 +202,25 @@ _HEDGE_MARKERS = (
     "was not found in",
 )
 
-# Phrases that admit part of what was asked is outside the evidence while the
-# rest is answered. Held at "medium", not "low": the answered part is usable,
-# but "high" tells the agent not to re-read, which the answer itself disputes.
-# The bare "is not included/shown" form is matched in confidence.py, where a
-# following "in the checksum" marks it as a statement about the code instead.
+# Phrases that admit part of what was asked is outside the evidence. Like a
+# hedge, one before the answer names any code is a non-answer ("low"); after a
+# grounded claim it is a caveat, held at "medium": "high" tells the agent not to
+# re-read, which the answer itself disputes. The bare "is not included/shown"
+# form is matched in confidence.py, where a following "in the checksum" marks
+# it as a statement about the code instead.
 _GAP_MARKERS = (
     "not in the retrieved",
     "not in the excerpts",
     "not in the evidence",
     "outside the retrieved",
     "outside the excerpts",
+    "not present in the provided",
+    "not present in the retrieved",
+    "not defined in the provided",
+    "not defined in the retrieved",
+    "not directly included",
+    "not fully included",
+    "cannot be definitively",
 )
 
 # Page content chars attached per top hit, for synthesis and the pointer payload.
@@ -323,7 +333,10 @@ _ANSWER_COVERAGE_FLOOR = 0.5
 #     body grounds the answer only when it carries what else was asked;
 #     constructors fold into their class and a file the question rules out is
 #     dropped.
-_ANSWER_SCHEMA_VERSION = 23
+# 24: an admission after a grounded claim is a caveat (medium), not a hedge; a
+#     verified constant line the answer states earns high; a question name no
+#     code defines or writes grades low.
+_ANSWER_SCHEMA_VERSION = 24
 
 # Above this a whole-file Read costs more than the answer, so the low-confidence
 # hint names a ranged Read or a skeleton instead.
