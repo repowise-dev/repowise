@@ -340,7 +340,9 @@ _ANSWER_COVERAGE_FLOOR = 0.5
 #     unless the answer tells them apart; a name written as an owner
 #     (``Client.get``) anchors its definition; candidate_files skips files only
 #     the graph walk added.
-_ANSWER_SCHEMA_VERSION = 25
+# 26: a value set inside a function body anchors that function; each later
+#     clause of a compound question adds its best file to the served hits.
+_ANSWER_SCHEMA_VERSION = 26
 
 # Above this a whole-file Read costs more than the answer, so the low-confidence
 # hint names a ranged Read or a skeleton instead.
