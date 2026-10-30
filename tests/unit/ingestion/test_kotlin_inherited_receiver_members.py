@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from repowise.core.ingestion.call_resolver import CallResolver
 from tests.unit.ingestion.test_call_resolver_strategies import _parse_all
 
@@ -86,3 +88,22 @@ def test_a_same_named_type_in_another_package_is_no_twin(tmp_path: Path) -> None
     assert _targets(tmp_path, files, parents, f"{jvm}/Use.kt") == [
         f"{common}/Sink.kt::Sink::timeout"
     ]
+
+
+@pytest.mark.parametrize(
+    "use",
+    [
+        "fun <Leaf> f(leaf: Leaf) = leaf.m()\n",
+        "inline fun <reified Leaf> f(leaf: Leaf) = leaf.m()\n",
+        "class Use<Leaf> {\n    fun f(leaf: Leaf) = leaf.m()\n}\n",
+        "class Use<out Leaf> {\n    fun f(leaf: Leaf) = leaf.m()\n}\n",
+    ],
+)
+def test_a_type_parameter_shadows_a_same_named_class(tmp_path: Path, use: str) -> None:
+    files = {
+        "a/Base.kt": "package a\n\nopen class Base {\n    fun m() = 1\n}\n",
+        "a/Leaf.kt": "package a\n\nclass Leaf : Base()\n",
+        "a/Use.kt": "package a\n\n" + use,
+    }
+    parents = {"a/Leaf.kt::Leaf": {"a/Base.kt::Base"}}
+    assert _targets(tmp_path, files, parents, "a/Use.kt") == []
