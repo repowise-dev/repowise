@@ -616,6 +616,31 @@ def _high_confidence_note(grade: _Grade, tail: str) -> str:
     )
 
 
+def _noted_unfounded_claim(payload: dict, grade: _Grade, fallback_targets: list[str]) -> bool:
+    """Write the note for a name nothing defines or a value nothing retrieved holds."""
+    if grade.absent_names:
+        payload["note"] = (
+            f"Nothing in this repository defines or writes {', '.join(grade.absent_names)}, "
+            "so the answer describes other code. Check the name before acting on it."
+        )
+        return True
+    if not grade.ungrounded_values:
+        return False
+    payload["note"] = (
+        f"Value-grounding gate: the answer asserts {grade.ungrounded_values} "
+        "but none of these appear in any retrieved excerpt — the "
+        "value(s) may be synthesised. Read "
+        f"{fallback_targets[0] if fallback_targets else 'the cited file'} "
+        "to confirm before citing a number."
+    )
+    if fallback_targets:
+        payload["next_action_hint"] = (
+            f"Read {fallback_targets[0]} and verify the asserted value(s) "
+            f"{grade.ungrounded_values} against the live source."
+        )
+    return True
+
+
 async def _graded_payload(
     *,
     question: str,
@@ -661,24 +686,8 @@ async def _graded_payload(
     if grade.high_reason == "symbol_body":
         # Also what stops `_apply_lean_high` stripping the body the note cites.
         payload["grounding"] = "symbol_body"
-    if grade.absent_names:
-        payload["note"] = (
-            f"Nothing in this repository defines or writes {', '.join(grade.absent_names)}, "
-            "so the answer describes other code. Check the name before acting on it."
-        )
-    elif grade.ungrounded_values:
-        payload["note"] = (
-            f"Value-grounding gate: the answer asserts {grade.ungrounded_values} "
-            "but none of these appear in any retrieved excerpt — the "
-            "value(s) may be synthesised. Read "
-            f"{fallback_targets[0] if fallback_targets else 'the cited file'} "
-            "to confirm before citing a number."
-        )
-        if fallback_targets:
-            payload["next_action_hint"] = (
-                f"Read {fallback_targets[0]} and verify the asserted value(s) "
-                f"{grade.ungrounded_values} against the live source."
-            )
+    if _noted_unfounded_claim(payload, grade, fallback_targets):
+        pass
     elif grade.admitted_gap:
         payload["note"] = (
             "Held at medium: the answer says part of the question is outside the "
