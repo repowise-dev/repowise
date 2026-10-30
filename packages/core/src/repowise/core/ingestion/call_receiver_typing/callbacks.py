@@ -135,7 +135,9 @@ class CallbackParameterTypes:
             return self._caller_field_container(file_path, caller_id, language, head)
         # Not a loop, but the same ``head[.member[()]]`` read as a for-in's.
         clause = RangeClause(callback.start, "", callback.name, head, member, callback.call)
-        return self._ranged_container(file_path, language, clause, types, containers)
+        return self._ranged_container(
+            file_path, language, clause, types, containers, caller_id
+        )
 
     def _caller_field_container(
         self, file_path: str, caller_id: str, language: str, name: str

@@ -24,6 +24,9 @@ UPDATE_LOCK_FILENAME = ".update.lock"
 #: going from one that was killed. Advisory: it never blocks anything.
 INIT_LOCK_FILENAME = ".init.lock"
 
+#: Held by whichever process is scanning commit health, so one scanner runs per repo.
+COMMIT_HEALTH_LOCK_FILENAME = ".commit_health.lock"
+
 # Wall-clock ceiling, applied only when the owner's liveness cannot be
 # established: no PID in the payload (legacy writer) or a probe that could not
 # decide. A lock this old whose owner we cannot find is treated as abandoned.
@@ -295,3 +298,16 @@ def init_in_progress(repo_path: Path) -> Iterator[None]:
 def read_init_lock(repo_path: Path) -> dict[str, Any] | None:
     """The running ``init``'s lock payload, or ``None`` when no live one holds it."""
     return _read_lock_at(_init_lock_path(repo_path))
+
+
+def _commit_health_lock_path(repo_path: Path) -> Path:
+    return Path(repo_path) / ".repowise" / COMMIT_HEALTH_LOCK_FILENAME
+
+
+def try_acquire_commit_health_lock(repo_path: Path) -> dict[str, Any] | None:
+    """Take the commit-health scan lock. ``None`` means acquired; see :func:`try_acquire_update_lock`."""
+    return _try_acquire_lock_at(_commit_health_lock_path(repo_path), None)
+
+
+def release_commit_health_lock(repo_path: Path) -> None:
+    _release_lock_at(_commit_health_lock_path(repo_path))

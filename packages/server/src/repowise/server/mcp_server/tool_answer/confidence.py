@@ -36,6 +36,7 @@ from repowise.server.mcp_server.tool_answer.config import (
     _EARN_HIGH_GROUNDING_ENV,
     _EARN_HIGH_ON_WEAK_RETRIEVAL_ENV,
     _ENRICH_TOP_N_HITS,
+    _GAP_MARKERS,
     _HEDGE_MARKERS,
     _HIGH_CONFIDENCE_SCORE_FLOOR,
     _INLINE_BODY_MAX_LINES,
@@ -60,8 +61,32 @@ def _answer_is_hedged(answer_text: str) -> bool:
     non-answer is low confidence however dominant retrieval was. Curly
     apostrophes are normalized first, or they would slip every "can't" marker.
     """
-    low = (answer_text or "").lower().replace("\u2019", "'").replace("\u02bc", "'")
+    low = _normalized(answer_text)
     return any(marker in low for marker in _HEDGE_MARKERS)
+
+
+def _normalized(answer_text: str) -> str:
+    """Lower-cased, with curly apostrophes folded so "can't" markers match."""
+    return (answer_text or "").lower().replace("\u2019", "'").replace("\u02bc", "'")
+
+
+_SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?])\s+|\n+")
+
+# "X is not included" with nothing after it but the clause end. Followed by a
+# preposition it describes the code ("not included in the checksum").
+_BARE_GAP_RE = re.compile(
+    r"\b(?:is|are)(?:n't| not) (?:included|shown)\b"
+    r"(?!\s+(?:in|by|on|from|with|as|for|to|within|under|when|if|unless)\b)"
+)
+
+
+def _admitted_gap(answer_text: str) -> str | None:
+    """The sentence in which the answer says part of the question is outside its evidence."""
+    for sentence in _SENTENCE_BREAK_RE.split(answer_text or ""):
+        low = _normalized(sentence)
+        if _BARE_GAP_RE.search(low) or any(marker in low for marker in _GAP_MARKERS):
+            return sentence.strip()
+    return None
 
 
 # Question shapes that ask for a specific value: defaults, thresholds,
@@ -236,8 +261,7 @@ def _has_unqualified_exclusivity_over_truncated(
     """
     if not any(b.get("truncated") for b in (symbol_bodies or [])):
         return False
-    low = (answer_text or "").lower()
-    low = low.replace("\u2019", "'").replace("\u02bc", "'")
+    low = _normalized(answer_text)
     return any(tok in low for tok in _EXCLUSIVITY_TOKENS)
 
 
@@ -711,6 +735,8 @@ class _Grade(NamedTuple):
     named_body_cut: dict | None
     #: The file the answer leads with when it cites files but not the top hit.
     lead_off_top: str | None = None
+    #: The answer's own sentence saying part of the question is not in the evidence.
+    admitted_gap: str | None = None
 
 
 @dataclass
@@ -737,6 +763,7 @@ class _GradeState:
     named_body_cut: dict | None = None
     gap: list[str] = field(default_factory=list)
     lead_off_top: str | None = None
+    admitted_gap: str | None = None
 
 
 def _earned_high(
@@ -775,6 +802,19 @@ def _hedge_gate(s: _GradeState) -> None:
     s.hedged = _answer_is_hedged(s.answer_text)
     if s.hedged:
         s.confidence = "medium" if s.served_named_body else "low"
+
+
+def _admitted_gap_gate(s: _GradeState) -> None:
+    """The answer says part of what was asked is not in its evidence.
+
+    Dominance measured the retrieval, not whether it covered the question;
+    the answer's own admission is the better witness.
+    """
+    if s.confidence != "high" or s.hedged:
+        return
+    s.admitted_gap = _admitted_gap(s.answer_text)
+    if s.admitted_gap:
+        s.confidence = "medium"
 
 
 def _identifier_gate(s: _GradeState) -> None:
@@ -903,6 +943,7 @@ def _non_dominant_ceiling(s: _GradeState) -> None:
 #: late so a more specific gate writes the note.
 _GRADE_GATES = (
     _hedge_gate,
+    _admitted_gap_gate,
     _identifier_gate,
     _value_gate,
     _citation_gate,
@@ -986,4 +1027,5 @@ def _grade_answer(
         lookup_body_truncated=s.lookup_body_truncated,
         named_body_cut=s.named_body_cut,
         lead_off_top=s.lead_off_top,
+        admitted_gap=s.admitted_gap,
     )

@@ -327,18 +327,28 @@ def _create_name(stmt: Any, exp: Any) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def walk_sql_file(file_info: Any, source: bytes) -> FileComplexity:
+def configured_sql_dialect(file_info: Any) -> str | None:
+    """The repository's configured ``sql_dialect`` for a ``.sql`` *file_info*, if any.
+
+    Read by the caller rather than the walk: it shapes the walk without being
+    in the file's bytes, so the walk cache keys on it.
+    """
+    if file_info.language != "sql":
+        return None
+    try:
+        from repowise.core.ingestion.special_handlers import _sql_dialect_for
+
+        return _sql_dialect_for(file_info)
+    except Exception:
+        return None
+
+
+def walk_sql_file(source: bytes, dialect: str | None) -> FileComplexity:
     """Health-walk one ``.sql`` file. Any failure degrades to the empty
     ``FileComplexity`` the tree-sitter walker returns for unmapped languages -
     no signal, never a crash."""
     text = source.decode("utf-8", errors="replace")
     file_nloc = _count_file_nloc(source)
-    try:
-        from repowise.core.ingestion.special_handlers import _sql_dialect_for
-
-        dialect = _sql_dialect_for(file_info)
-    except Exception:
-        dialect = None
     try:
         functions, routine_hits = _walk_routines(text)
         smell_hits = _statement_smells(text, dialect)

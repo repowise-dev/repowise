@@ -122,6 +122,10 @@ class UnusedExportPass:
             return None
 
         node_data = self.graph.nodes[node]
+        # A symbol is the target of a ``defines`` edge, never its source, so it
+        # has no symbols of its own to judge.
+        if node_data.get("node_type") == "symbol":
+            return None
         if node_data.get("language", "unknown") in _DEAD_CODE_EXEMPT_LANGUAGES:
             return None
         # Roots include framework-instantiated files the runtime constructs.

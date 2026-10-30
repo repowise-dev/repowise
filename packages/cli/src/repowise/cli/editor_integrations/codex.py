@@ -92,11 +92,15 @@ class CodexSetup:
     ) -> None:
         if self.project_file_id in options.disabled_project_files:
             return
+        from repowise.core.generation.editor_files import AgentsMdGenerator
+
+        # A refresh never creates AGENTS.md, but a section it wrote before is
+        # kept current: otherwise its "Last indexed" stamp freezes at that run.
         maybe_generate_agents_md(
             console_obj,
             repo_path,
             agents_md=options.project_file_overrides.get(self.project_file_id),
-            default=False,
+            default=AgentsMdGenerator().has_managed_section(repo_path),
         )
 
 

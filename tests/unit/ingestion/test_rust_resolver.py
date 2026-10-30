@@ -677,7 +677,8 @@ class TestPubUseReexportFollowing:
         assert got == "src/prelude.rs"
 
     def test_non_reexport_use_not_followed(self, tmp_path: Path) -> None:
-        # A plain (non-pub) use in lib.rs is not part of the crate's API.
+        # A plain (non-pub) use in lib.rs is not part of the crate's API: the
+        # name binds to the root file that holds the `use`, never past it.
         paths = ["src/lib.rs", "src/engine.rs", "src/app.rs"]
         ctx = _ctx(tmp_path, paths)
         ctx.parsed_files = {
@@ -688,7 +689,7 @@ class TestPubUseReexportFollowing:
             "src/app.rs": _parsed_with_imports([]),
         }
         got = resolve_rust_import("crate::Engine", "src/app.rs", ctx)
-        assert got is None
+        assert got == "src/lib.rs"
 
     def test_reexport_cycle_does_not_recurse(self, tmp_path: Path) -> None:
         # lib.rs re-exporting an unresolvable name through itself must
@@ -700,7 +701,27 @@ class TestPubUseReexportFollowing:
             "src/app.rs": _parsed_with_imports([]),
         }
         got = resolve_rust_import("crate::Ghost", "src/app.rs", ctx)
-        assert got is None
+        assert got == "src/lib.rs"
+
+    def test_an_item_the_crate_root_declares(self, tmp_path: Path) -> None:
+        # `use crate::Item` names an item lib.rs declares itself.
+        paths = ["src/lib.rs", "src/app.rs"]
+        ctx = _ctx(tmp_path, paths)
+        ctx.parsed_files = {p: _parsed_with_imports([]) for p in paths}
+        assert resolve_rust_import("crate::Item", "src/app.rs", ctx) == "src/lib.rs"
+
+    def test_a_binary_crate_root(self, tmp_path: Path) -> None:
+        paths = ["src/main.rs", "src/app.rs"]
+        ctx = _ctx(tmp_path, paths)
+        ctx.parsed_files = {p: _parsed_with_imports([]) for p in paths}
+        assert resolve_rust_import("crate::Item", "src/app.rs", ctx) == "src/main.rs"
+
+    def test_a_missing_module_path_stays_unresolved(self, tmp_path: Path) -> None:
+        # Only a single segment after `crate::` can be a root item.
+        paths = ["src/lib.rs", "src/app.rs"]
+        ctx = _ctx(tmp_path, paths)
+        ctx.parsed_files = {p: _parsed_with_imports([]) for p in paths}
+        assert resolve_rust_import("crate::missing::Item", "src/app.rs", ctx) is None
 
     def test_submodule_of_reexported_module(self, tmp_path: Path) -> None:
         # THE control for carrying the path tail. lib.rs re-exports the module

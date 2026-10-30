@@ -382,7 +382,7 @@ var NUMBER_FORMAT = new Intl.NumberFormat("en-US");
 function formatNumber(n) {
   return NUMBER_FORMAT.format(n);
 }
-function formatRelativeTime(date) {
+function relativeTimeParts(date) {
   const d = parseDate(date);
   const now = Date.now();
   const diff = now - d.getTime();
@@ -392,14 +392,18 @@ function formatRelativeTime(date) {
   const days = Math.floor(hours / 24);
   const weeks = Math.floor(days / 7);
   const months = Math.floor(days / 30);
-  if (seconds < 10) return "just now";
-  if (seconds < 60) return `${seconds}s ago`;
-  if (minutes < 60) return `${minutes}m ago`;
-  if (hours < 24) return `${hours}h ago`;
-  if (days < 7) return `${days}d ago`;
-  if (weeks < 5) return `${weeks}w ago`;
-  if (months < 12) return `${months}mo ago`;
-  return `${Math.floor(months / 12)}y ago`;
+  if (seconds < 10) return { unit: "now", value: 0 };
+  if (seconds < 60) return { unit: "s", value: seconds };
+  if (minutes < 60) return { unit: "m", value: minutes };
+  if (hours < 24) return { unit: "h", value: hours };
+  if (days < 7) return { unit: "d", value: days };
+  if (weeks < 5) return { unit: "w", value: weeks };
+  if (months < 12) return { unit: "mo", value: months };
+  return { unit: "y", value: Math.floor(months / 12) };
+}
+function formatRelativeTime(date) {
+  const { unit, value } = relativeTimeParts(date);
+  return unit === "now" ? "just now" : `${value}${unit} ago`;
 }
 function formatRelativeTimeOrNull(iso, fallback = "—") {
   if (!iso) return fallback;

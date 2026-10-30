@@ -31,12 +31,13 @@ from __future__ import annotations
 #: Current on-disk store format, stamped into ``state.json`` on every persist
 #: (a store without it is version 0). v2 is reachable only by a full re-index,
 #: so :func:`stamp` clamps a routine persist below it until the user re-indexes.
-STORE_FORMAT_VERSION: int = 2
+#: v3 is reached by the update that rebuilds the wiki once (``REBUILD_WIKI``).
+STORE_FORMAT_VERSION: int = 3
 
 #: Current parser/extractor schema, folded into the parse-cache fingerprint in
 #: place of the package version (see :mod:`repowise.core.ingestion.parse_cache`).
 #: What each bump changed is in this file's git history and the release notes.
-PARSER_SCHEMA_VERSION: int = 11
+PARSER_SCHEMA_VERSION: int = 12
 
 #: state.json key holding the store format version that wrote the store.
 STORE_FORMAT_VERSION_KEY = "store_format_version"
@@ -47,10 +48,15 @@ WRITTEN_BY_VERSION_KEY = "written_by_version"
 #: state.json key holding the embedding model id the vectors were built with.
 EMBEDDING_MODEL_KEY = "embedding_model"
 
+#: state.json key holding the store format version whose wiki rebuild has run,
+#: so a routine persist may advance past a ``REBUILD_WIKI`` migration.
+WIKI_REBUILT_VERSION_KEY = "wiki_rebuilt_store_version"
+
 __all__ = [
     "EMBEDDING_MODEL_KEY",
     "PARSER_SCHEMA_VERSION",
     "STORE_FORMAT_VERSION",
     "STORE_FORMAT_VERSION_KEY",
+    "WIKI_REBUILT_VERSION_KEY",
     "WRITTEN_BY_VERSION_KEY",
 ]

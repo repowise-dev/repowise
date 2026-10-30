@@ -24,36 +24,130 @@ const COMMUNITY_ROWS = 8;
  * because it was also in the default visible set, "cross-community only" read
  * as a two-kind default.
  */
-const EDGE_KINDS = [
-  { type: "crossCommunity", label: "Cross-community" },
-  { type: "internal", label: "Internal" },
-  { type: "dynamic", label: "Co-change" },
-  { type: "lowConfidence", label: "Low confidence" },
-] as const;
+const EDGE_KINDS = ["crossCommunity", "internal", "dynamic", "lowConfidence"] as const;
 
-/** The same kinds, worded for a canvas holding one community. */
-const SCOPED_EDGE_KINDS = [
-  { type: "internal", label: "Within this group" },
-  { type: "crossCommunity", label: "Leaving this group" },
-  { type: "dynamic", label: "Co-change" },
-  { type: "lowConfidence", label: "Low confidence" },
-] as const;
+export type LegendEdgeKind = (typeof EDGE_KINDS)[number];
 
-/** The overview draws cross-community edges as bands between clusters. */
-const OVERVIEW_EDGE_LABELS: Partial<Record<string, string>> = {
-  crossCommunity: "Between communities",
-  internal: "Within a community",
-};
+/** The same kinds, in the order a canvas holding one community keys them. */
+const SCOPED_EDGE_KINDS = ["internal", "crossCommunity", "dynamic", "lowConfidence"] as const;
 
+/** Language names stay as written; only the two catch-all rows are copy. */
 const LANGUAGE_LEGEND = [
   { lang: "python", color: LANGUAGE_COLORS.python, label: "Python" },
   { lang: "typescript", color: LANGUAGE_COLORS.typescript, label: "TypeScript" },
   { lang: "go", color: LANGUAGE_COLORS.go, label: "Go" },
   { lang: "rust", color: LANGUAGE_COLORS.rust, label: "Rust" },
   { lang: "java", color: LANGUAGE_COLORS.java, label: "Java" },
-  { lang: "config", color: LANGUAGE_COLORS.config, label: "Config" },
-  { lang: "other", color: LANGUAGE_COLORS.other, label: "Other" },
+  { lang: "config", color: LANGUAGE_COLORS.config, label: null },
+  { lang: "other", color: LANGUAGE_COLORS.other, label: null },
 ];
+
+export interface GraphLegendCopy {
+  communities: (count: number) => string;
+  noCommunities: string;
+  smallerNotListed: (count: number) => string;
+  notGrouped: string;
+  notGroupedTitle: string;
+  /** Header inside one community. */
+  scopedSummary: (members: number, boundary: number, edges: number) => string;
+  outsideGroup: string;
+  /** Files overview header parts, joined with " · ". */
+  overviewFiles: (count: number) => string;
+  overviewThirdParty: (count: number) => string;
+  overviewDependencies: (count: number) => string;
+  nodesEdges: (nodes: number, edges: number) => string;
+  thirdPartyShown: string;
+  thirdPartyHidden: (count: number) => string;
+  show: string;
+  hide: string;
+  showThirdParty: string;
+  hideThirdParty: string;
+  unlinkedNotDrawn: (count: number) => string;
+  unlinkedTitle: string;
+  weakerLinksNotDrawn: (count: number) => string;
+  weakerLinksTitle: string;
+  languageGroup: string;
+  communityGroup: string;
+  edgesGroup: string;
+  focusGroup: string;
+  configLanguage: string;
+  otherLanguage: string;
+  deselectAll: string;
+  selectAll: string;
+  /** Placeholder rows before community labels load (1-based). */
+  communityPlaceholder: (n: number) => string;
+  edgeKinds: Record<LegendEdgeKind, string>;
+  /** Inside one community. */
+  scopedEdgeKinds: Record<LegendEdgeKind, string>;
+  /** The overview draws cross-community edges as bands between clusters. */
+  overviewEdgeKinds: Partial<Record<LegendEdgeKind, string>>;
+  imports: string;
+  importedBy: string;
+  toggleEdges: (label: string) => string;
+  toggleCommunity: (label: string) => string;
+  viewCaptions: { dead: string; hotfiles: string; unified: string };
+}
+
+export const GRAPH_LEGEND_COPY: GraphLegendCopy = {
+  communities: (count) => `${count} communit${count === 1 ? "y" : "ies"}`,
+  noCommunities: "No communities detected",
+  smallerNotListed: (count) => `+${count} smaller not listed`,
+  notGrouped: "Not grouped",
+  notGroupedTitle: "Files with no dependency on the rest of the repo",
+  scopedSummary: (members, boundary, edges) =>
+    `${members} file${members === 1 ? "" : "s"}${boundary > 0 ? ` · ${boundary} outside` : ""} · ${edges} edge${edges === 1 ? "" : "s"} shown`,
+  outsideGroup: "Outside this group",
+  overviewFiles: (count) => `${count.toLocaleString()} files`,
+  overviewThirdParty: (count) => `${count.toLocaleString()} third-party`,
+  overviewDependencies: (count) => `${count.toLocaleString()} dependencies`,
+  nodesEdges: (nodes, edges) => `${nodes} nodes · ${edges} edges`,
+  thirdPartyShown: "Third-party modules shown",
+  thirdPartyHidden: (count) => `${count.toLocaleString()} third-party modules hidden`,
+  show: "Show",
+  hide: "Hide",
+  showThirdParty: "Show third-party modules",
+  hideThirdParty: "Hide third-party modules",
+  unlinkedNotDrawn: (count) => `${count.toLocaleString()} unlinked files not drawn`,
+  unlinkedTitle:
+    "Files with no dependency edge to anything drawn have no place in the layout and nothing to reveal on hover.",
+  weakerLinksNotDrawn: (count) => `${count.toLocaleString()} weaker community links not drawn`,
+  weakerLinksTitle:
+    "Pairs of communities with too few dependencies between them to band. Their edges still show on a hovered or selected file.",
+  languageGroup: "Language",
+  communityGroup: "Community",
+  edgesGroup: "Edges",
+  focusGroup: "Hover or select a file",
+  configLanguage: "Config",
+  otherLanguage: "Other",
+  deselectAll: "Deselect all",
+  selectAll: "Select all",
+  communityPlaceholder: (n) => `Community ${n}`,
+  edgeKinds: {
+    crossCommunity: "Cross-community",
+    internal: "Internal",
+    dynamic: "Co-change",
+    lowConfidence: "Low confidence",
+  },
+  scopedEdgeKinds: {
+    internal: "Within this group",
+    crossCommunity: "Leaving this group",
+    dynamic: "Co-change",
+    lowConfidence: "Low confidence",
+  },
+  overviewEdgeKinds: {
+    crossCommunity: "Between communities",
+    internal: "Within a community",
+  },
+  imports: "imports",
+  importedBy: "imported by",
+  toggleEdges: (label) => `Toggle ${label} edges`,
+  toggleCommunity: (label) => `Toggle community ${label}`,
+  viewCaptions: {
+    dead: "Showing unreachable files",
+    hotfiles: "Most-committed files (30d)",
+    unified: "Dead and high-churn files",
+  },
+};
 
 /**
  * Legend chrome, shared by the constellation and the file/module readings.
@@ -172,6 +266,7 @@ interface GraphLegendProps {
   overview?: OverviewLegend | undefined;
   /** Rendered at the row's far end in every reading (the shortcuts button). */
   trailing?: ReactNode | undefined;
+  copy?: Partial<GraphLegendCopy> | undefined;
 }
 
 export interface OverviewLegend {
@@ -227,7 +322,9 @@ export const GraphLegend = memo(function GraphLegend({
   drawnCommunityIds,
   overview,
   trailing,
+  copy,
 }: GraphLegendProps) {
+  const c = { ...GRAPH_LEGEND_COPY, ...copy };
   // Open by default: every node is painted from this key, so a collapsed one
   // ships a field of coloured circles with no way to read them.
   const [expanded, setExpanded] = useState(true);
@@ -243,16 +340,14 @@ export const GraphLegend = memo(function GraphLegend({
     return (
       <div className={shellClass}>
         <button onClick={() => setExpanded((s) => !s)} className={headerClass}>
-          <span className={countClass}>
-            {allEntries.length} communit{allEntries.length === 1 ? "y" : "ies"}
-          </span>
+          <span className={countClass}>{c.communities(allEntries.length)}</span>
           <Chevron expanded={expanded} />
         </button>
         {expanded && (
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
             {entries.length === 0 && (
               <p className="text-[11px] text-[var(--color-text-tertiary)]">
-                No communities detected
+                {c.noCommunities}
               </p>
             )}
             {entries.map((e) => {
@@ -273,7 +368,7 @@ export const GraphLegend = memo(function GraphLegend({
             })}
             {overflow > 0 && (
               <p className="text-[10px] text-[var(--color-text-tertiary)]">
-                +{overflow} smaller not listed
+                {c.smallerNotListed(overflow)}
               </p>
             )}
             {constellationUnclustered && constellationUnclustered.count > 0 && (
@@ -281,10 +376,10 @@ export const GraphLegend = memo(function GraphLegend({
                 type="button"
                 onClick={constellationUnclustered.onClick}
                 className={rowClass}
-                title="Files with no dependency on the rest of the repo"
+                title={c.notGroupedTitle}
               >
                 <Swatch color="var(--color-text-tertiary)" />
-                <span>Not grouped</span>
+                <span>{c.notGrouped}</span>
                 <span className="shrink-0 tabular-nums text-[10px] text-[var(--color-text-tertiary)]">
                   {constellationUnclustered.count}
                 </span>
@@ -327,9 +422,7 @@ export const GraphLegend = memo(function GraphLegend({
       <div className={shellClass}>
         <button onClick={() => setExpanded((s) => !s)} className={headerClass}>
           <span className={countClass}>
-            {members} file{members === 1 ? "" : "s"}
-            {boundary > 0 ? ` · ${boundary} outside` : ""} &middot;{" "}
-            {drawnEdgeCount} edge{drawnEdgeCount === 1 ? "" : "s"} shown
+            {c.scopedSummary(members, boundary, drawnEdgeCount)}
           </span>
           <Chevron expanded={expanded} />
         </button>
@@ -352,7 +445,7 @@ export const GraphLegend = memo(function GraphLegend({
               <div className={rowClass}>
                 {/* The faded ring was explained in prose and keyed nowhere. */}
                 <span className="h-2 w-2 shrink-0 rounded-full border border-[var(--color-text-tertiary)]" />
-                <span>Outside this group</span>
+                <span>{c.outsideGroup}</span>
                 <span className="shrink-0 tabular-nums text-[10px] text-[var(--color-text-tertiary)]">
                   {boundary}
                 </span>
@@ -360,19 +453,20 @@ export const GraphLegend = memo(function GraphLegend({
             )}
             {onEdgeTypeToggle && visibleEdgeTypes && (
               <>
-                <p className={groupClass}>Edges</p>
-                {SCOPED_EDGE_KINDS.map((et) => {
-                  const checked = visibleEdgeTypes.has(et.type);
+                <p className={groupClass}>{c.edgesGroup}</p>
+                {SCOPED_EDGE_KINDS.map((type) => {
+                  const checked = visibleEdgeTypes.has(type);
+                  const label = c.scopedEdgeKinds[type];
                   return (
-                    <div key={et.type} className={rowClass}>
+                    <div key={type} className={rowClass}>
                       <SwatchToggle
-                        color={edgeColors[et.type]}
+                        color={edgeColors[type]}
                         checked={checked}
-                        label={`Toggle ${et.label} edges`}
-                        onToggle={() => onEdgeTypeToggle(et.type)}
+                        label={c.toggleEdges(label)}
+                        onToggle={() => onEdgeTypeToggle(type)}
                       />
                       <span className={`truncate ${checked ? "" : "opacity-45"}`}>
-                        {et.label}
+                        {label}
                       </span>
                     </div>
                   );
@@ -396,15 +490,13 @@ export const GraphLegend = memo(function GraphLegend({
         <span className={countClass}>
           {overview
             ? [
-                `${(nodeCount - overview.shownExternal).toLocaleString()} files`,
-                overview.shownExternal > 0
-                  ? `${overview.shownExternal.toLocaleString()} third-party`
-                  : null,
-                `${overview.dependencies.toLocaleString()} dependencies`,
+                c.overviewFiles(nodeCount - overview.shownExternal),
+                overview.shownExternal > 0 ? c.overviewThirdParty(overview.shownExternal) : null,
+                c.overviewDependencies(overview.dependencies),
               ]
                 .filter(Boolean)
                 .join(" · ")
-            : `${nodeCount} nodes · ${drawnEdgeCount} edges`}
+            : c.nodesEdges(nodeCount, drawnEdgeCount)}
         </span>
         <Chevron expanded={expanded} />
       </button>
@@ -416,30 +508,24 @@ export const GraphLegend = memo(function GraphLegend({
           {(overview.hiddenExternal > 0 || overview.showExternal) && (
             <span className="inline-flex items-center gap-1.5">
               {overview.showExternal
-                ? "Third-party modules shown"
-                : `${overview.hiddenExternal.toLocaleString()} third-party modules hidden`}
+                ? c.thirdPartyShown
+                : c.thirdPartyHidden(overview.hiddenExternal)}
               <button
                 type="button"
                 onClick={() => overview.onShowExternalChange(!overview.showExternal)}
                 aria-pressed={overview.showExternal}
-                aria-label={
-                  overview.showExternal ? "Hide third-party modules" : "Show third-party modules"
-                }
+                aria-label={overview.showExternal ? c.hideThirdParty : c.showThirdParty}
                 className="rounded px-1 py-0.5 font-medium text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
               >
-                {overview.showExternal ? "Hide" : "Show"}
+                {overview.showExternal ? c.hide : c.show}
               </button>
             </span>
           )}
           {overview.hiddenUnlinked > 0 && (
-            <span title="Files with no dependency edge to anything drawn have no place in the layout and nothing to reveal on hover.">
-              {overview.hiddenUnlinked.toLocaleString()} unlinked files not drawn
-            </span>
+            <span title={c.unlinkedTitle}>{c.unlinkedNotDrawn(overview.hiddenUnlinked)}</span>
           )}
           {overview.omittedLinks > 0 && (
-            <span title="Pairs of communities with too few dependencies between them to band. Their edges still show on a hovered or selected file.">
-              {overview.omittedLinks.toLocaleString()} weaker community links not drawn
-            </span>
+            <span title={c.weakerLinksTitle}>{c.weakerLinksNotDrawn(overview.omittedLinks)}</span>
           )}
         </span>
       )}
@@ -448,7 +534,7 @@ export const GraphLegend = memo(function GraphLegend({
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
           {(colorMode === "language" || hasCommunityRows) && (
             <p className={groupClass}>
-              {colorMode === "language" ? "Language" : "Community"}
+              {colorMode === "language" ? c.languageGroup : c.communityGroup}
             </p>
           )}
 
@@ -459,7 +545,9 @@ export const GraphLegend = memo(function GraphLegend({
                 className="inline-flex items-center gap-1.5 text-[11px] text-[var(--color-text-secondary)]"
               >
                 <Swatch color={l.color} />
-                <span className="truncate">{l.label}</span>
+                <span className="truncate">
+                  {l.label ?? (l.lang === "config" ? c.configLanguage : c.otherLanguage)}
+                </span>
               </div>
             ))}
 
@@ -479,7 +567,7 @@ export const GraphLegend = memo(function GraphLegend({
                     onClick={() => onToggleAllCommunities(!allSelected)}
                     className="shrink-0 text-[10px] font-medium text-[var(--color-accent-primary)] hover:underline"
                   >
-                    {allSelected ? "Deselect all" : "Select all"}
+                    {allSelected ? c.deselectAll : c.selectAll}
                   </button>
                 )}
                 {entries
@@ -495,7 +583,7 @@ export const GraphLegend = memo(function GraphLegend({
                             <SwatchToggle
                               color={color}
                               checked={checked}
-                              label={`Toggle community ${label}`}
+                              label={c.toggleCommunity(label)}
                               onToggle={() => onCommunityToggle(cid)}
                             />
                           ) : (
@@ -521,12 +609,12 @@ export const GraphLegend = memo(function GraphLegend({
                         className="inline-flex items-center gap-1.5 text-[11px] text-[var(--color-text-secondary)]"
                       >
                         <Swatch color={communityFamily(i).hub} />
-                        <span className="truncate">Community {i + 1}</span>
+                        <span className="truncate">{c.communityPlaceholder(i + 1)}</span>
                       </div>
                     ))}
                 {overflow > 0 && (
                   <p className="text-[10px] text-[var(--color-text-tertiary)]">
-                    +{overflow} smaller not listed
+                    {c.smallerNotListed(overflow)}
                   </p>
                 )}
               </>
@@ -534,19 +622,19 @@ export const GraphLegend = memo(function GraphLegend({
           })()}
 
           {onEdgeTypeToggle && visibleEdgeTypes && (() => {
-            const toggle = (et: (typeof EDGE_KINDS)[number]) => {
-              const checked = visibleEdgeTypes.has(et.type);
-              const label = (overview && OVERVIEW_EDGE_LABELS[et.type]) || et.label;
+            const toggle = (type: LegendEdgeKind) => {
+              const checked = visibleEdgeTypes.has(type);
+              const label = (overview && c.overviewEdgeKinds[type]) || c.edgeKinds[type];
               return (
-                <div key={et.type} className={rowClass}>
+                <div key={type} className={rowClass}>
                   <SwatchToggle
                     // The overview draws these in community hues (bands,
                     // cluster texture) or in the direction hues on a focused
                     // file, never in the kind colours, so it keys none of them.
-                    color={overview ? "var(--color-text-secondary)" : edgeColors[et.type]}
+                    color={overview ? "var(--color-text-secondary)" : edgeColors[type]}
                     checked={checked}
-                    label={`Toggle ${label} edges`}
-                    onToggle={() => onEdgeTypeToggle(et.type)}
+                    label={c.toggleEdges(label)}
+                    onToggle={() => onEdgeTypeToggle(type)}
                   />
                   <span className={`truncate ${checked ? "" : "opacity-45"}`}>
                     {label}
@@ -557,7 +645,7 @@ export const GraphLegend = memo(function GraphLegend({
             if (!overview) {
               return (
                 <>
-                  <p className={groupClass}>Edges</p>
+                  <p className={groupClass}>{c.edgesGroup}</p>
                   {EDGE_KINDS.map(toggle)}
                 </>
               );
@@ -567,30 +655,30 @@ export const GraphLegend = memo(function GraphLegend({
             // than beside kinds that change the picture at rest.
             return (
               <>
-                <p className={groupClass}>Edges</p>
-                {EDGE_KINDS.filter((et) => !FOCUS_ONLY_KINDS.has(et.type)).map(toggle)}
+                <p className={groupClass}>{c.edgesGroup}</p>
+                {EDGE_KINDS.filter((type) => !FOCUS_ONLY_KINDS.has(type)).map(toggle)}
                 {/* A focused file's edges carry direction, in two hues that
                     must be named: colour alone cannot say which way a
                     dependency points. */}
-                <p className={groupClass}>Hover or select a file</p>
+                <p className={groupClass}>{c.focusGroup}</p>
                 <span className="inline-flex items-center gap-1.5 text-[11px] text-[var(--color-text-secondary)]">
                   <LineSwatch color="var(--color-accent-primary)" />
-                  imports
+                  {c.imports}
                 </span>
                 <span className="inline-flex items-center gap-1.5 text-[11px] text-[var(--color-text-secondary)]">
                   <LineSwatch color="var(--color-accent-secondary)" />
-                  imported by
+                  {c.importedBy}
                 </span>
-                {EDGE_KINDS.filter((et) => FOCUS_ONLY_KINDS.has(et.type)).map(toggle)}
+                {EDGE_KINDS.filter((type) => FOCUS_ONLY_KINDS.has(type)).map(toggle)}
               </>
             );
           })()}
 
           {viewMode !== "full" && (
             <p className="text-[10px] text-[var(--color-text-tertiary)]">
-              {viewMode === "dead" && "Showing unreachable files"}
-              {viewMode === "hotfiles" && "Most-committed files (30d)"}
-              {viewMode === "unified" && "Dead and high-churn files"}
+              {viewMode === "dead" && c.viewCaptions.dead}
+              {viewMode === "hotfiles" && c.viewCaptions.hotfiles}
+              {viewMode === "unified" && c.viewCaptions.unified}
             </p>
           )}
         </div>
