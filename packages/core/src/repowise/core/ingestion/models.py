@@ -359,6 +359,10 @@ CallSiteEdgeType = Literal["calls", "references"]
 #: no name can be spelled this way, and receiver typing reads it as ``String``.
 STRING_LITERAL_RECEIVER = '""'
 
+#: The argument type of a C# unsuffixed integer constant, which converts to any
+#: numeric type its value fits, unlike an ``int`` value.
+CSHARP_INTEGER_CONSTANT = "int constant"
+
 
 @dataclass
 class CallSite:
