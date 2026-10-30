@@ -152,8 +152,11 @@ async def _get_repo(session: AsyncSession, repo: str | None = None) -> Repositor
         if obj:
             return obj
         raise LookupError(f"Repository not found: {repo}")
+    return await _default_repo(session)
 
-    # Default: the served directory's row, else the only row.
+
+async def _default_repo(session: AsyncSession) -> Repository:
+    """The served directory's row, else the only (or first) row."""
     served = _state._repo_path
     if served:
         for key in dict.fromkeys((served, str(Path(served).resolve()))):
