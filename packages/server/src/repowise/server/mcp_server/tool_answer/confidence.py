@@ -789,6 +789,10 @@ class _Grade(NamedTuple):
     clauses_unanswered: tuple[str, ...] = ()
     #: Retriever agreement was the only dominance, under the score agreement needs.
     weak_agreement: bool = False
+    #: Indexed names the question writes that no top hit hydrates.
+    unhydrated_names: tuple[str, ...] = ()
+    #: Dominant, but the top score is under the floor high needs.
+    under_floor: bool = False
 
 
 @dataclass
@@ -823,6 +827,9 @@ class _GradeState:
     agreement_only: bool = False
     top_score: float = 0.0
     weak_agreement: bool = False
+    #: The file an earned high rests on, when the route names one.
+    earned_path: str | None = None
+    unhydrated_names: tuple[str, ...] = ()
 
 
 def _earned_high(
@@ -833,31 +840,34 @@ def _earned_high(
     citations: list[str],
     served_named_body: bool,
     top_score: float,
-) -> str | None:
-    """Which route earned "high" on a weak retrieval, or None.
+) -> tuple[str, str | None] | None:
+    """Which route earned "high" on a weak retrieval, and the file it rests on, or None.
 
     * ``"symbol_body"``: the question-named symbol's live body is inlined,
       resolved by exact name rather than ranking.
     * ``"value_line"``: the answer states the value a verified definition line
       assigns, for a constant the question names (:func:`stated_value_line`).
+      That line is the answer, so no retrieval score floor applies.
     * ``"grounding"``: every mechanism term the answer names was in the
       material shown; that shows no fabrication, not that retrieval found the
       right page, so it is opt-in.
 
     Demotion gates still apply to an earned high.
     """
-    if not (_flag_on(_EARN_HIGH_GROUNDING_ENV) and top_score >= _HIGH_CONFIDENCE_SCORE_FLOOR):
+    if not _flag_on(_EARN_HIGH_GROUNDING_ENV):
         return None
-    if served_named_body:
-        return "symbol_body"
-    if stated_value_line(question, question_ids, answer_text, hits) is not None:
-        return "value_line"
-    if _opt_in(_EARN_HIGH_ON_WEAK_RETRIEVAL_ENV):
+    strong = top_score >= _HIGH_CONFIDENCE_SCORE_FLOOR
+    if strong and served_named_body:
+        return "symbol_body", None
+    value = stated_value_line(question, question_ids, answer_text, hits)
+    if value is not None:
+        return "value_line", value["path"]
+    if strong and _opt_in(_EARN_HIGH_ON_WEAK_RETRIEVAL_ENV):
         cited = set(citations)
         cited_has_body = any(h.get("symbols") for h in hits if h.get("target_path") in cited)
         unsupported, grounded = _frame_term_grounding(answer_text, question, hits)
         if cited_has_body and grounded >= 1 and not unsupported:
-            return "grounding"
+            return "grounding", None
     return None
 
 
@@ -886,14 +896,18 @@ def stated_value_line(
         name = sym.get("name") or ""
         if seen[name] > 1:
             continue
-        stated = _states_assigned_value(name, sym.get("signature") or "", answer_text)
+        stated = _states_assigned_value(name, _definition_line(sym), answer_text)
         if stated and _question_names_constant(question, question_ids, sym, hit):
             return {"path": hit.get("target_path"), "name": name, "line": sym.get("start_line")}
     return None
 
 
 def _verified_constants(hits: list[dict]) -> tuple[list[tuple[dict, dict]], Counter]:
-    """The top hits' verified constants, and how often each constant name occurs in all hits."""
+    """The verified constants of the top hits, or of any hit when the question
+    names the constant exactly, and how often each constant name occurs in all hits.
+
+    An exactly named constant is placed by its name, not its rank.
+    """
     constants = [
         (rank, h, sym)
         for rank, h in enumerate(hits)
@@ -902,9 +916,25 @@ def _verified_constants(hits: list[dict]) -> tuple[list[tuple[dict, dict]], Coun
     ]
     seen = Counter(sym.get("name") for _, _, sym in constants)
     found = [
-        (h, sym) for rank, h, sym in constants if rank < _ENRICH_TOP_N_HITS and sym.get("_verified")
+        (h, sym)
+        for rank, h, sym in constants
+        if sym.get("_verified") and (rank < _ENRICH_TOP_N_HITS or sym.get("_matched"))
     ]
     return found, seen
+
+
+def _definition_line(sym: dict) -> str:
+    """The constant's assignment: its signature, or the first line of its live
+    excerpt when the signature is the bare name (a Go ``const ( ... )`` block)."""
+    signature = sym.get("signature") or ""
+    if _ASSIGN_RE.search(signature):
+        return signature
+    excerpt = (sym.get("source_excerpt") or "").lstrip("\n").split("\n", 1)[0]
+    m = _ASSIGN_RE.search(excerpt)
+    # Only a line that assigns this name: not a comment or another name's line.
+    if m and _word_re(sym.get("name") or "").search(excerpt[: m.start()]):
+        return excerpt
+    return signature
 
 
 def _states_assigned_value(name: str, signature: str, answer_text: str) -> bool:
@@ -1015,12 +1045,20 @@ def _identifier_gate(s: _GradeState) -> None:
     """The question names symbols but no top hit hydrates any of them.
 
     A name no symbol carries (``HTTP``, ``TypeScript``) cannot be hydrated, so
-    only indexed names count.
+    only indexed names count. The file an earned high rests on counts as a top
+    hit: its line is the evidence, wherever it ranked.
     """
-    if s.confidence != "high" or not (s.question_ids - s.unindexed_names):
+    names = s.question_ids - s.unindexed_names
+    if s.confidence != "high" or not names:
         return
-    top_n = [h for h in s.hits[:_ENRICH_TOP_N_HITS] if h.get("symbols")]
+    top_n = [
+        h
+        for rank, h in enumerate(s.hits)
+        if h.get("symbols")
+        and (rank < _ENRICH_TOP_N_HITS or (s.earned_path and h.get("target_path") == s.earned_path))
+    ]
     if not any(sym.get("_matched") for h in top_n for sym in (h.get("symbols") or [])):
+        s.unhydrated_names = tuple(sorted(names))
         s.confidence = "medium"
 
 
@@ -1117,7 +1155,8 @@ def _citation_gate(s: _GradeState) -> None:
 def _named_file_gate(s: _GradeState) -> None:
     """The answer cites files but not the top hit dominance was measured on.
     Kept only when it demotes, so the note never blames it for another gate's grade."""
-    if s.confidence != "high":
+    if s.confidence != "high" or s.lead_off_top == s.earned_path:
+        # Leading with the file an earned high rests on is resting on that high.
         s.lead_off_top = None
     elif s.lead_off_top:
         s.confidence = "medium"
@@ -1183,11 +1222,12 @@ def _coverage_gate(s: _GradeState) -> None:
     """The top hit leaves out question words that outweigh what it covers.
 
     Dominance says the top hit beat the others, not that it is about the
-    question; a served body does not exempt it.
+    question; a served body does not exempt it. A value line does: it already
+    had to carry every question word on its own page (:func:`stated_value_line`).
     """
-    if s.confidence != "high":
+    if s.confidence != "high" or s.earned_path:
         return
-    s.gap = uncovered_terms(s.question, s.hits) if s.uncovered is None else s.uncovered
+    s.gap =uncovered_terms(s.question, s.hits) if s.uncovered is None else s.uncovered
     if s.gap:
         s.confidence = "medium"
 
@@ -1270,15 +1310,17 @@ def _grade_answer(
     """
     dominant = dominance is not None
     top_score = _confidence_score(hits[0]) if hits else 0.0
-    earned = _earned_high(
+    earned, earned_path = _earned_high(
         question, question_ids, answer_text, hits, citations, served_named_body, top_score
-    )
+    ) or (None, None)
     earn_high = earned is not None
     # Dominant but under the score floor is "medium": the right file relative to
-    # its siblings, not strong enough to trust unverified.
+    # its siblings, not strong enough to trust unverified. An earned high carries
+    # its own floor (see _earned_high).
     strong = top_score >= _HIGH_CONFIDENCE_SCORE_FLOOR
-    start = "high" if (dominant or earn_high) and strong else "medium"
+    start = "high" if (dominant and strong) or earn_high else "medium"
     s = _GradeState(
+        earned_path=earned_path,
         unindexed_names=set(unindexed_names),
         absent_names=tuple(absent_names),
         split_names=dict(split_names or {}),
@@ -1303,12 +1345,15 @@ def _grade_answer(
     # 1.0 ratio, so quoting the ratio would print a near tie as justification.
     high_reason = None
     if s.confidence == "high":
-        high_reason = dominance or earned
+        # Under the floor the dominance tier did not vouch: the earned route did.
+        high_reason = dominance if dominant and strong else earned
     return _Grade(
         absent_names=s.absent_names,
         split_names=s.split_names,
         clauses_unanswered=tuple(s.clauses_unanswered),
         weak_agreement=s.weak_agreement,
+        unhydrated_names=s.unhydrated_names,
+        under_floor=dominant and not strong and not earn_high,
         confidence=s.confidence,
         high_reason=high_reason,
         second_score=_confidence_score(hits[1]) if len(hits) >= 2 else 0.0,

@@ -411,7 +411,7 @@ def test_the_anchor_marks_a_name_absent_under_the_question_scope(tmp_path) -> No
 
     (tmp_path / "server").mkdir()
     (tmp_path / "ui").mkdir()
-    (tmp_path / "server" / "notes.py").write_text("# RowTree is an example\n", encoding="utf-8")
+    (tmp_path / "server" / "notes.py").write_text("register(RowTree)\n", encoding="utf-8")
     (tmp_path / "ui" / "tree.ts").write_text("export const outline = 1\n", encoding="utf-8")
     q = "How does the RowTree component render nested folders?"
     hits = [{"target_path": "ui/tree.ts", "score": 2.0}]
@@ -435,3 +435,159 @@ def test_the_absent_name_note_names_the_missing_code() -> None:
     payload: dict = {}
     assert _noted_unfounded_claim(payload, grade, [])
     assert payload["note"].startswith("Nothing in the code searched defines or writes FileTree")
+
+
+# --- a verified value line earns high under the score floor -------------------
+
+_RATIO = {"name": "_DOMINANCE_RATIO", "kind": "constant", "signature": "_DOMINANCE_RATIO = 1.2",
+          "start_line": 119, "_verified": True, "_matched": True}
+_RATIO_A = "`_DOMINANCE_RATIO` is set to 1.2 in config.py: `_DOMINANCE_RATIO = 1.2`."
+
+
+def _ratio_hits(top: float, sym: dict | None = None) -> list[dict]:
+    return [
+        {"target_path": _CFG, "score": top, "symbols": [sym or _RATIO]},
+        {"target_path": "tool_answer/_meta.py", "score": top / 1.5},
+    ]
+
+
+def test_a_stated_value_line_earns_high_under_the_score_floor() -> None:
+    grade = _grade("What is _DOMINANCE_RATIO?", _RATIO_A, _ratio_hits(1.3),
+                   dominance="ratio", ids={"_DOMINANCE_RATIO"})
+    assert (grade.confidence, grade.high_reason) == ("high", "value_line")
+    assert "verified line" in _high_confidence_note(grade, "")
+
+
+def test_a_dominant_answer_under_the_floor_without_a_value_line_is_noted() -> None:
+    from repowise.server.mcp_server.tool_answer.payload import _under_floor_note
+
+    answer = "`_DOMINANCE_RATIO` sets how far the top hit must lead."
+    grade = _grade("What is _DOMINANCE_RATIO?", answer, _ratio_hits(1.3),
+                   dominance="ratio", ids={"_DOMINANCE_RATIO"})
+    assert grade.confidence == "medium"
+    assert grade.under_floor
+    assert "1.30" in _under_floor_note(grade)
+
+
+def _pad_hits(excerpt: str) -> list[dict]:
+    # A Go const block stores the bare name as the signature.
+    pad = {"name": "minUsagePadding", "kind": "variable", "signature": "minUsagePadding",
+           "source_excerpt": excerpt, "_verified": True, "_matched": True}
+    return [{"target_path": "command.go", "score": 1.3, "symbols": [pad]},
+            {"target_path": "completions.go", "score": 0.9}]
+
+
+def test_a_bare_name_signature_reads_the_value_from_its_live_line() -> None:
+    answer = "In command.go, `minUsagePadding` is a constant set to 25."
+    grade = _grade("What is minUsagePadding?", answer, _pad_hits("const minUsagePadding = 25"),
+                   dominance="ratio", ids={"minUsagePadding"})
+    assert (grade.confidence, grade.high_reason) == ("high", "value_line")
+
+
+def test_a_live_line_assigning_another_name_reads_no_value() -> None:
+    answer = "In command.go, `minUsagePadding` is a constant set to 25."
+    grade = _grade("What is minUsagePadding?", answer, _pad_hits("// see padding = 25 below"),
+                   dominance="ratio", ids={"minUsagePadding"})
+    assert grade.confidence == "medium"
+
+
+def _ranked_low_hits(matched: bool) -> list[dict]:
+    const = {"name": "_GATED_RETURN_HITS", "kind": "constant", "start_line": 222,
+             "signature": "_GATED_RETURN_HITS = 3", "_verified": True, "_matched": matched}
+    return [
+        {"target_path": "core/health/perf/gated.py", "score": 1.81,
+         "symbols": [{"name": "LOCK_IO_KIND", "kind": "constant", "_verified": True}]},
+        {"target_path": "core/crud/shown.py", "score": 1.8},
+        {"target_path": "core/health/sink_reach.py", "score": 1.79},
+        {"target_path": _CFG, "score": 1.77, "symbols": [const]},
+    ]
+
+
+_GATED_A = f"`_GATED_RETURN_HITS` is defined in {_CFG} as `_GATED_RETURN_HITS = 3`."
+
+
+def test_an_exactly_named_constant_earns_high_wherever_it_ranked() -> None:
+    grade = _grade("What is _GATED_RETURN_HITS?", _GATED_A, _ranked_low_hits(True),
+                   dominance=None, ids={"_GATED_RETURN_HITS"}, lead_off_top=_CFG)
+    # Leading with the value line's file, and that file hydrating the name,
+    # are the evidence: neither the named-file nor the identifier gate demotes.
+    assert (grade.confidence, grade.high_reason) == ("high", "value_line")
+    assert grade.lead_off_top is None
+    assert not grade.unhydrated_names
+
+
+def test_a_constant_ranked_low_without_its_exact_name_earns_nothing() -> None:
+    grade = _grade("What is _GATED_RETURN_HITS?", _GATED_A, _ranked_low_hits(False),
+                   dominance=None, ids={"_GATED_RETURN_HITS"}, lead_off_top=_CFG)
+    assert grade.confidence == "medium"
+
+
+def test_an_unhydrated_question_name_is_held_with_a_note() -> None:
+    hits = [{"target_path": "cache.py", "score": 10.5, "summary": "The answer cache.",
+             "symbols": [{"name": "_cache_entry_expired", "kind": "function"}]},
+            {"target_path": "synthesis.py", "score": 9.4}]
+    grade = _grade("How does get_answer cache answers?", "Rows expire after a TTL.", hits,
+                   ids={"get_answer"})
+    assert grade.confidence == "medium"
+    assert grade.unhydrated_names == ("get_answer",)
+    assert "get_answer" in _held_at_medium_note(grade)
+
+
+# --- the absent-name scan reads only code ------------------------------------
+
+
+def _writes(tmp_path, rel: str, text: str) -> bool:
+    from repowise.server.mcp_server.tool_answer.symbols import _writes_as_code
+
+    path = tmp_path / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    rows = [{"path": rel, "line": n} for n, line in enumerate(text.splitlines(), 1)
+            if "RowTree" in line]
+    return _writes_as_code(tmp_path, rows, "RowTree")
+
+
+def test_a_docstring_or_comment_does_not_write_a_name(tmp_path) -> None:
+    assert not _writes(tmp_path, "a.py", 'def f():\n    """Shapes such as\n    RowTree.\n    """\n')
+    assert not _writes(tmp_path, "b.py", '"""RowTree is an example."""\n')
+    assert not _writes(tmp_path, "c.py", "# RowTree is an example\n")
+    assert not _writes(tmp_path, "d.ts", "/** RowTree */\nconst x = 1\n")
+    assert _writes(tmp_path, "e.py", "tree = RowTree()\n")
+    assert _writes(tmp_path, "f.py", 'KEYS = ("RowTree",)\n')  # a production key is real
+
+
+def test_a_test_writes_a_name_only_outside_its_strings(tmp_path) -> None:
+    assert not _writes(tmp_path, "tests/test_a.py", 'q = "How does RowTree render?"\n')
+    assert _writes(tmp_path, "tests/test_b.py", "from ui import RowTree\n")
+
+
+def test_an_unreadable_or_capped_file_still_counts(tmp_path) -> None:
+    from repowise.server.mcp_server._line_hits import MAX_LINES_PER_FILE
+    from repowise.server.mcp_server.tool_answer.symbols import _writes_as_code
+
+    assert _writes_as_code(tmp_path, [{"path": "gone.py", "line": 1}], "RowTree")
+    (tmp_path / "many.py").write_text("# RowTree\n" * MAX_LINES_PER_FILE, encoding="utf-8")
+    rows = [{"path": "many.py", "line": n} for n in range(1, MAX_LINES_PER_FILE + 1)]
+    assert _writes_as_code(tmp_path, rows, "RowTree")
+
+
+def test_a_name_only_a_comment_writes_is_absent(tmp_path) -> None:
+    from repowise.server.mcp_server.tool_answer.symbols import _anchor_symbol_hits
+
+    class _NoRows:
+        async def execute(self, *a, **k):
+            class _R:
+                def scalars(self):
+                    return self
+
+                def all(self):
+                    return []
+
+            return _R()
+
+    (tmp_path / "notes.py").write_text("# RowTree is an example\n", encoding="utf-8")
+    _, homonyms = asyncio.run(_anchor_symbol_hits(
+        _NoRows(), "r", {"RowTree"}, [{"target_path": "notes.py", "score": 2.0}],
+        repo_root=tmp_path, question="How does the RowTree component render?",
+    ))
+    assert homonyms["absent"] == ["RowTree"]

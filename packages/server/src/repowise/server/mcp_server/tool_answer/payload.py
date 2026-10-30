@@ -663,7 +663,24 @@ def _held_at_medium_note(grade: _Grade) -> str | None:
             f"({grade.top_score:.2f}) is too weak for agreement alone to vouch for the "
             "answer. Confirm the behaviour it describes against that file."
         )
+    if grade.unhydrated_names:
+        names = ", ".join(grade.unhydrated_names)
+        return (
+            f"Held at medium: the question names {names}, but no top source carries "
+            "that symbol, so the answer may rest on nearby code. Look the name up "
+            "with search_codebase before citing the answer."
+        )
     return None
+
+
+def _under_floor_note(grade: _Grade) -> str | None:
+    """The note for a dominant answer whose top score never reached the high floor."""
+    if grade.confidence != "medium" or not grade.under_floor:
+        return None
+    return (
+        f"Held at medium: the top page leads, but its score ({grade.top_score:.2f}) "
+        "is too weak to vouch for the answer unverified. Confirm it against that file."
+    )
 
 
 def _split_names_note(split_names: dict[str, list[str]]) -> str:
@@ -795,6 +812,8 @@ async def _graded_payload(
             "so it may answer a different question. Held at medium; confirm against "
             "the next evidence row or candidate_files."
         )
+    elif under_floor := _under_floor_note(grade):
+        payload["note"] = under_floor
     elif confidence == "high":
         # "No hedging" is not cited as evidence: the prompt forbids hedging, so
         # reading its absence back as a signal would be circular.

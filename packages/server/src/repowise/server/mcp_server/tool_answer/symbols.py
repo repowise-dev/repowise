@@ -18,8 +18,10 @@ from typing import Any
 from sqlalchemy import select
 
 from repowise.core.persistence.models import WikiSymbol
+from repowise.core.support_paths import is_doc_or_config_path
 from repowise.core.test_paths import is_test_related_path
-from repowise.server.mcp_server._line_hits import production_only, word_scan
+from repowise.server.mcp_server._helpers import read_repo_file_text
+from repowise.server.mcp_server._line_hits import MAX_LINES_PER_FILE, production_only, word_scan
 from repowise.server.mcp_server._query_shape import (
     _WORD_CHAIN_RE,
     _folds_case,
@@ -380,12 +382,14 @@ class _TopicGuard:
         return production_only(rows)
 
     async def written(self, token: str, scope: str | None = None) -> bool | None:
-        """Whether any file (under *scope*, if given) writes *token*; None when
-        the scan stopped short."""
+        """Whether any file (under *scope*, if given) writes *token* as code;
+        None when the scan stopped short. See :func:`_writes_as_code`."""
         rows, complete = await self._scan(token)
         if scope:
             rows = [r for r in rows if f"{r['path']}/".startswith(f"{scope}/")]
-        return True if rows else (False if complete else None)
+        if rows and await asyncio.to_thread(_writes_as_code, self.root, rows, token):
+            return True
+        return False if complete else None
 
     async def trusts(self, token: str, row) -> bool:
         # A plain capitalised word (``Gson``, ``Client``) is also prose, often the
@@ -401,6 +405,47 @@ class _TopicGuard:
         stem = row.file_path.rsplit("/", 1)[-1].rsplit(".", 1)[0]
         owner = f"{stem} {row.parent_name or ''} {row.name or ''}"
         return bool(self.topic_stems & _text_stems(owner))
+
+
+# A source line that is all comment, or opens a docstring.
+_COMMENT_OR_DOC_START_RE = re.compile(r"""(?:#|//|/\*|\*|[rRbBuUfF]{0,2}(?:\"\"\"|'''))""")
+# A quoted string on one line, for test lines (see _writes_as_code).
+_QUOTED_RE = re.compile(r""""(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`[^`]*`""")
+
+
+def _writes_as_code(root: Path | None, rows: list[dict], token: str) -> bool:
+    """Does any scanned row write *token* as code, not in a comment or docstring?
+
+    A test line counts only when the name sits outside its strings: a question
+    or fixture text naming the name is not code that has it. Doc and config
+    files count as before, and so does any file that cannot be read or was cut
+    at the per-file line cap, since it proves nothing. Ceilings: a trailing comment after code still counts, and a
+    multi-line non-doc string (SQL in triple quotes) is read as a docstring.
+    """
+    word = re.compile(rf"(?<![\w$]){re.escape(token)}(?![\w$])")
+    by_path: dict[str, list[int]] = {}
+    for r in rows:
+        by_path.setdefault(r["path"], []).append(r["line"])
+    for path, numbers in by_path.items():
+        # A file cut at the per-file cap may write it as code past the cut.
+        capped = len(numbers) >= MAX_LINES_PER_FILE
+        text = None if capped or is_doc_or_config_path(path) else read_repo_file_text(root, path)
+        if text is None:
+            return True
+        lines = text.splitlines()
+        masked = _string_masked_lines(tuple(lines), backticks=False).all
+        test = is_test_related_path(path)
+        for n in numbers:
+            if not 0 < n <= len(lines):
+                return True  # changed since the scan: proves nothing
+            if n in masked:
+                continue
+            line = lines[n - 1]
+            if _COMMENT_OR_DOC_START_RE.match(line.lstrip()):
+                continue
+            if not test or word.search(_QUOTED_RE.sub(" ", line)):
+                return True
+    return False
 
 
 async def _absent_names(
