@@ -360,7 +360,7 @@ Per file:
 | `dependents_count` | Direct structural dependents; a floor |
 | `co_change_partners` | `file_path`, `support` (shared commits, when known), `conf_ab` (share of the target's commits touching the partner, when known), `has_import_link`; by recency-decayed weight. Correlation only |
 | `primary_owner` | Always, with the owner clause in `risk_summary` |
-| `cross_repo_impact` | Workspace: `affected_repos`, the overlay's `status` (and `reason` when not available), and contract consumer and provider rows |
+| `cross_repo_impact` | Workspace, only when another repo has a concrete link to the file: a contract on either side, or a package import that reaches it (the imported module or subpath, or a file its re-exports forward to). `affected_repos`, the overlay's `status` (and `reason` when not available), and contract consumer and provider rows. Co-change alone is history, not a link: it stays in `cross_repo_links` |
 | test gaps, `security_signals` | Coverage gaps and security findings |
 | `resolved`, `unresolved_reason` | No indexed file: `unsupported_target_kind` (`module:` id), `directory`, `not_indexed`, `no_such_path`; counts omitted, not zeroed |
 | `signal_tier`, `signal_tier_reason` | `"history"` for docs, config, query and other non-code files |
@@ -735,7 +735,7 @@ Impacted services with `score` (0 to 1 relative path weight, uncalibrated), `dis
 
 ### Cross-repo link rows
 
-A contract link row carries `strategy`, the rule that matched it (`exact_id`, `unique_path`, `gateway_route`, `host_only` and the rest of `LinkStrategy`), and `origin`, how the contract at the row's far end was read (`route_registration`, `client_call`, `sql_string` and the rest of `ContractOrigin`). Both are omitted on an artifact written before they were stored. `match_type` derives from `strategy`, so a `unique_path` or `gateway_route` link still reads `exact` there. Values are in [WORKSPACE_CONTRACTS.md](WORKSPACE_CONTRACTS.md).
+A `package_dependency` row appears only when the dependent's imports reach the file; `granularity` is `file` when the workspace recorded which files they reach, `repository` on an overlay written before that (every file inside the package directory counts). A contract link row carries `strategy`, the rule that matched it (`exact_id`, `unique_path`, `gateway_route`, `host_only` and the rest of `LinkStrategy`), and `origin`, how the contract at the row's far end was read (`route_registration`, `client_call`, `sql_string` and the rest of `ContractOrigin`). Both are omitted on an artifact written before they were stored. `match_type` derives from `strategy`, so a `unique_path` or `gateway_route` link still reads `exact` there. Values are in [WORKSPACE_CONTRACTS.md](WORKSPACE_CONTRACTS.md).
 
 `graph_evidence` is `{state, reason}`, present only when the state is `partial` or `insufficient`; `reason` lists the evidence reason codes (`isolated_services`, `repos_without_contracts` and the rest of `graph_evidence`). `http_calls` counts HTTP calls `read`, `not_linked` and `in_service`, workspace wide on `get_architecture` (which adds `linked`) and for the changed repo on `get_risk` and `get_change_risk`; calls served inside their own service are counted apart, never as not linked. The counts are separate figures, not a partition of `read`.
 
