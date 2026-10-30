@@ -3,7 +3,9 @@
  * package has no i18n: a host passes translated copy for any key it overrides.
  */
 
-const fmt = (n: number) => n.toLocaleString();
+import { formatNumber } from "../lib/format";
+
+const fmt = (n: number) => formatNumber(n);
 const plural = (n: number, one: string, many: string) => `${fmt(n)} ${n === 1 ? one : many}`;
 
 export const DEFAULT_AREA_COUPLING_COPY = {

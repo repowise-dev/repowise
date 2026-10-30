@@ -1,6 +1,7 @@
 import * as React from "react";
 import type { WinsResponse } from "@repowise-dev/types/history";
 import { ReadsColumn, type ReadItem } from "../overview/reads-column";
+import { formatNumber } from "../lib/format";
 
 /** Where each win links. The host owns routes. */
 export interface RecentWinsRoutes {
@@ -31,7 +32,7 @@ const s = (n: number) => (n === 1 ? "" : "s");
 const DEFAULT_COPY: RecentWinsCopy = {
   title: "Recent wins",
   findingsLabel: "Findings resolved",
-  findingsUnit: (commits) => `across ${commits.toLocaleString()} commit${s(commits)}`,
+  findingsUnit: (commits) => `across ${formatNumber(commits)} commit${s(commits)}`,
   findingsWhy: (subject, resolved) => `Most in one commit: ${subject} (${resolved}).`,
   filesLabel: "Files got healthier",
   filesUnit: "score rose",
@@ -88,7 +89,7 @@ export function winsReads(
   ];
   return sections
     .filter((s) => s.count > 0)
-    .map(({ count, ...s }) => ({ ...s, value: count.toLocaleString(), good: true }));
+    .map(({ count, ...s }) => ({ ...s, value: formatNumber(count), good: true }));
 }
 
 export interface RecentWinsProps {

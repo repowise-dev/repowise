@@ -2,7 +2,7 @@
 
 import * as React from "react";
 
-import { formatTokens } from "../lib/format";
+import { formatNumber, formatTokens } from "../lib/format";
 import { cn } from "../lib/cn";
 
 export interface SourceRow {
@@ -85,7 +85,7 @@ export function SavingsSourceTable({
                 <Share value={row.savedInputTokens} total={total} label={row.label} />
               </td>
               <td className="py-2.5 pr-3 text-right tabular-nums text-[var(--color-text-secondary)]">
-                {row.events.toLocaleString()}
+                {formatNumber(row.events)}
               </td>
               <td className="py-2.5 text-right tabular-nums text-[var(--color-text-primary)]">
                 {formatTokens(row.savedInputTokens)}

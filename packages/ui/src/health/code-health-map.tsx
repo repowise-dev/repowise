@@ -42,6 +42,7 @@ import type { AreaSource } from "./map/use-area-source";
 import { DEFAULT_MAP_CANVAS_LABELS, type MapCanvasLabels } from "./map/canvas-labels";
 import type { HeldGroups } from "./map/scope-note";
 import type { CodeHealthMapFile, CodeHealthOverlay, MapScope } from "./map/types";
+import { formatNumber } from "../lib/format";
 
 export type { CodeHealthMapFile, CodeHealthOverlay, FileNode, MapScope, PerformanceActionability } from "./map/types";
 export {
@@ -332,7 +333,7 @@ export function CodeHealthMap({
           {cursorLabel(kb, index, rootLabel)}
         </span>
         <p className="sr-only">
-          {`${root ? root.fileCount.toLocaleString() : fieldFiles.length.toLocaleString()} files in ${Math.max(index.areas.size - 1, 0)} folders, each folder a disc sized by lines of code. The list beside the map reaches every area and file.`}
+          {`${root ? formatNumber(root.fileCount) : formatNumber(fieldFiles.length)} files in ${Math.max(index.areas.size - 1, 0)} folders, each folder a disc sized by lines of code. The list beside the map reaches every area and file.`}
         </p>
 
         <canvas ref={baseRef} aria-hidden className="pointer-events-none absolute inset-0" />
@@ -403,5 +404,5 @@ function cursorLabel(kb: KeyboardCursor, index: Parameters<typeof displayLabel>[
   if (!item) return "";
   if (item.kind === "file") return item.path;
   const a = index.areas.get(item.path);
-  return a ? `${displayLabel(index, item.path, rootLabel)}, ${a.fileCount.toLocaleString()} files` : "";
+  return a ? `${displayLabel(index, item.path, rootLabel)}, ${formatNumber(a.fileCount)} files` : "";
 }

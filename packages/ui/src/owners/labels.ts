@@ -6,8 +6,9 @@
  */
 
 import { AGENT_PROMPT_LABEL, bulkAgentPromptLabel } from "../health/ai-prompt-action";
+import { formatNumber } from "../lib/format";
 
-const s = (n: number, one: string, many: string) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
+const s = (n: number, one: string, many: string) => `${formatNumber(n)} ${n === 1 ? one : many}`;
 
 export interface OwnershipLabels {
   // Shared
@@ -185,8 +186,8 @@ export const DEFAULT_OWNERSHIP_LABELS: OwnershipLabels = {
   repositoryRoot: "(repository root)",
   hotspot: "Hotspot",
   files: (n) => s(n, "file", "files"),
-  showAllFiles: (n) => `Show all ${n.toLocaleString()} files`,
-  showAllDirectories: (n) => `Show all ${n.toLocaleString()} directories`,
+  showAllFiles: (n) => `Show all ${formatNumber(n)} files`,
+  showAllDirectories: (n) => `Show all ${formatNumber(n)} directories`,
   noOtherAuthor: "no other author",
   openInOffboarding: "Open in off-boarding",
 
@@ -198,7 +199,7 @@ export const DEFAULT_OWNERSHIP_LABELS: OwnershipLabels = {
   coverageSentence: (pct, byLines, days) =>
     `${pct} ${byLines ? "of the code" : "of the files"} changed in the last ${days} days${byLines ? ", by lines," : ""} has two or more people who know it.`,
   singleHolderSentence: (single, files) =>
-    `${single.toLocaleString()} of the ${s(files, "changing file", "changing files")} ${single === 1 ? "has" : "have"} one main author; your agent can plan how a second person learns them.`,
+    `${formatNumber(single)} of the ${s(files, "changing file", "changing files")} ${single === 1 ? "has" : "have"} one main author; your agent can plan how a second person learns them.`,
   noChanges: (days) =>
     `No code with history changed in the last ${days} days, so there is no moving code to measure knowledge coverage on.`,
   spreadTitle: "Spread the knowledge",
@@ -218,7 +219,7 @@ export const DEFAULT_OWNERSHIP_LABELS: OwnershipLabels = {
   people: (n, all) => (all ? s(n, "contributor", "contributors") : s(n, "person", "people")),
   searchPlaceholder: "Filter by name or email…",
   searchLabel: "Filter people by name or email",
-  showAutomation: (n) => `Show ${n.toLocaleString()} bot and agent ${n === 1 ? "identity" : "identities"}`,
+  showAutomation: (n) => `Show ${formatNumber(n)} bot and agent ${n === 1 ? "identity" : "identities"}`,
   noMatch: "Nobody matches this search",
   clearSearch: "Clear search",
   noPeople: "No people yet",
@@ -227,18 +228,18 @@ export const DEFAULT_OWNERSHIP_LABELS: OwnershipLabels = {
   loading: "Loading…",
 
   risksIntro: (files, hotspots, lowHealth, dirs) =>
-    `${s(files, "file has", "files have")} one author and matter right now: ${hotspots.toLocaleString()} ${hotspots === 1 ? "is a hotspot" : "are hotspots"} and ${lowHealth.toLocaleString()} ${lowHealth === 1 ? "is" : "are"} in weak health, across ${s(dirs, "directory", "directories")}. Hand them to your agent for a plan to get a second person reading each one.`,
+    `${s(files, "file has", "files have")} one author and matter right now: ${formatNumber(hotspots)} ${hotspots === 1 ? "is a hotspot" : "are hotspots"} and ${formatNumber(lowHealth)} ${lowHealth === 1 ? "is" : "are"} in weak health, across ${s(dirs, "directory", "directories")}. Hand them to your agent for a plan to get a second person reading each one.`,
   risksCleanTitle: (files) =>
-    `Every hotspot and weak file has a second author, across ${files.toLocaleString()} files`,
+    `Every hotspot and weak file has a second author, across ${formatNumber(files)} files`,
   risksCleanDescription: "Knowledge here is shared: no busy or weak file depends on a single person's history.",
   risksOneHolder: (name) => `${name} wrote nearly all of it`,
   risksManyHolders: (holders, name, files) =>
-    `${holders.toLocaleString()} people each hold their own files${name ? `, ${name} the most (${files.toLocaleString()})` : ""}`,
-  risksSevere: (n) => `${n.toLocaleString()} ${n === 1 ? "is" : "are"} both a hotspot and in weak health`,
+    `${formatNumber(holders)} people each hold their own files${name ? `, ${name} the most (${formatNumber(files)})` : ""}`,
+  risksSevere: (n) => `${formatNumber(n)} ${n === 1 ? "is" : "are"} both a hotspot and in weak health`,
   risksListLabel: "Directories with knowledge held by one person",
 
   lossIntro: (total, days, shown) =>
-    `${s(total, "person has", "people have")} not committed in ${days} days but still own files that changed in that time. Each row shows which of the files that changed lately would have no majority author without them, and who is best placed to pick each directory up.${total > shown ? ` Showing the ${shown.toLocaleString()} with the most changing code.` : ""}`,
+    `${s(total, "person has", "people have")} not committed in ${days} days but still own files that changed in that time. Each row shows which of the files that changed lately would have no majority author without them, and who is best placed to pick each directory up.${total > shown ? ` Showing the ${formatNumber(shown)} with the most changing code.` : ""}`,
   lossCleanTitle: (days) => `Everyone who owns changing code has committed in the last ${days} days`,
   lossCleanDescription: (people, files) =>
     `Across ${s(people, "person", "people")} and ${s(files, "owned file", "owned files")}, no file that changed lately belongs to someone who has stopped committing.`,
@@ -249,9 +250,9 @@ export const DEFAULT_OWNERSHIP_LABELS: OwnershipLabels = {
   lossChanging: (changing, owned) =>
     owned === 1
       ? "The one file they own changed lately."
-      : `${changing.toLocaleString()} of the ${owned.toLocaleString()} files they own changed lately.`,
+      : `${formatNumber(changing)} of the ${formatNumber(owned)} files they own changed lately.`,
   lossAtRisk: (files, severe) =>
-    `Without them, ${s(files, "file that changed lately has", "files that changed lately have")} no majority author left${severe > 0 ? `, ${severe.toLocaleString()} of them hotspots or in weak health` : ""}.`,
+    `Without them, ${s(files, "file that changed lately has", "files that changed lately have")} no majority author left${severe > 0 ? `, ${formatNumber(severe)} of them hotspots or in weak health` : ""}.`,
   lossNoneAtRisk: "The people who stay hold the majority of every changing file they worked on.",
   lossDirectories: (open, n) => `${open ? "Hide" : "Show"} ${s(n, "directory", "directories")}`,
   lossListLabel: "Quiet owners of changing code",
@@ -274,18 +275,18 @@ export const DEFAULT_OWNERSHIP_LABELS: OwnershipLabels = {
   noShareTitle: (names, count) => `${names} ${count === 1 ? "holds" : "hold"} no share of the indexed code`,
   noShareDescription: "No code file lists them among its top five authors.",
   resultSentence: ({ names, files, threshold, codeShare, severe, kept }) =>
-    `Without ${names}, ${s(files, "file", "files")} would be left with authors holding under ${threshold} of the commits: ${codeShare} of the code${severe > 0 ? `, ${severe.toLocaleString()} of them hotspots or in weak health` : ""}. ${kept.toLocaleString()} more carry some of their history but keep at least ${threshold} with the people who stay.`,
+    `Without ${names}, ${s(files, "file", "files")} would be left with authors holding under ${threshold} of the commits: ${codeShare} of the code${severe > 0 ? `, ${formatNumber(severe)} of them hotspots or in weak health` : ""}. ${formatNumber(kept)} more carry some of their history but keep at least ${threshold} with the people who stay.`,
   statAtRisk: "Files at risk",
   statHotspots: "Hotspots among them",
   statHotspotsHint: "At-risk files in the repository's high-churn band",
   statShare: "Share of code",
   statShareHint: (nloc, files) =>
-    `Lines of code in at-risk files, of ${nloc.toLocaleString()} across ${s(files, "file", "files")}`,
+    `Lines of code in at-risk files, of ${formatNumber(nloc)} across ${s(files, "file", "files")}`,
   statDirectories: "Directories",
   heir: (name, files, of) =>
-    `${name} could take over: the strongest remaining author on ${files.toLocaleString()} of ${of.toLocaleString()}`,
+    `${name} could take over: the strongest remaining author on ${formatNumber(files)} of ${formatNumber(of)}`,
   noHeir: "Nobody who stays is among these files' main authors",
-  heirSevere: (n) => `${n.toLocaleString()} ${n === 1 ? "is a hotspot or in" : "are hotspots or in"} weak health`,
+  heirSevere: (n) => `${formatNumber(n)} ${n === 1 ? "is a hotspot or in" : "are hotspots or in"} weak health`,
   handoverTitle: "Plan the handover",
   handoverDescription: (files, names) => `A handover plan for ${s(files, "file", "files")} that depend on ${names}.`,
   offboardingListLabel: "Directories that would lose their majority author",
@@ -296,9 +297,9 @@ export const DEFAULT_OWNERSHIP_LABELS: OwnershipLabels = {
     "Files where this person made most of the commits, so the people who stay would hold under half of the history, and who is best placed to take each directory over.",
   ownershipLink: "Ownership",
   filesCarryTitle: "Files they carry",
-  filesCarryHint: (shown, touched) => `${shown.toLocaleString()} of ${touched.toLocaleString()} touched`,
+  filesCarryHint: (shown, touched) => `${formatNumber(shown)} of ${formatNumber(touched)} touched`,
   filesCarryDescription: (sole, shown) =>
-    `The files with the most commits attributed to this person. Churn is a percentile against every file in the repo. A dot marks a high-churn file they alone maintain and wrote at least 90% of the commits for${sole > 0 ? `: ${sole.toLocaleString()} of these ${shown.toLocaleString()}` : ", and none of these qualify"}.`,
+    `The files with the most commits attributed to this person. Churn is a percentile against every file in the repo. A dot marks a high-churn file they alone maintain and wrote at least 90% of the commits for${sole > 0 ? `: ${formatNumber(sole)} of these ${formatNumber(shown)}` : ", and none of these qualify"}.`,
   commitMixTitle: "What they commit",
   commitMixDescription: (total) =>
     `${s(total, "commit", "commits")} classified from the subject line, across every file this person has touched.`,

@@ -6,7 +6,7 @@ import type {
   SymbolBodyCall,
   SymbolRelationGroup,
 } from "@repowise-dev/types/symbols";
-import { truncatePath } from "../lib/format";
+import { formatNumber, truncatePath } from "../lib/format";
 import { originDescriptor } from "../graph/edge-provenance";
 import { relationHint, relationLabel } from "../graph/symbol-relations";
 
@@ -107,7 +107,7 @@ function RelationList({
     // symbol name defeats the row's `truncate` and widens the page.
     <div className="min-w-0 space-y-1.5">
       <SectionLabel>
-        {label} <span className="tabular-nums">({total.toLocaleString()})</span>
+        {label} <span className="tabular-nums">({formatNumber(total)})</span>
       </SectionLabel>
       {hint && (
         <p className="text-[10px] leading-snug text-[var(--color-text-tertiary)]">{hint}</p>
@@ -125,7 +125,7 @@ function RelationList({
       )}
       {remainder > 0 && (
         <p className="text-[10px] tabular-nums text-[var(--color-text-tertiary)]">
-          +{remainder.toLocaleString()} more
+          +{formatNumber(remainder)} more
         </p>
       )}
     </div>

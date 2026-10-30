@@ -3,6 +3,7 @@ import { ProportionBar } from "../shared/proportion-bar";
 import { EmptyState } from "../shared/empty-state";
 import { commitCategoryColor } from "../shared/series";
 import type { OwnershipLabels } from "./labels";
+import { formatNumber } from "../lib/format";
 
 const pct = (part: number, whole: number): number =>
   whole > 0 ? Math.round((part / whole) * 100) : 0;
@@ -47,7 +48,7 @@ export function OwnerCommitMix({
           key: category,
           label: category.charAt(0).toUpperCase() + category.slice(1),
           value: n,
-          detail: `${n.toLocaleString()} · ${pct(n, total)}%`,
+          detail: `${formatNumber(n)} · ${pct(n, total)}%`,
           color: commitCategoryColor(category),
         }))}
       />

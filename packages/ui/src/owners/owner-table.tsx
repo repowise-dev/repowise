@@ -1,5 +1,6 @@
 import * as React from "react";
 import type { IdentityKind, OwnerListEntry } from "@repowise-dev/types/owners";
+import { formatNumber } from "../lib/format";
 import { ownershipLabels, type OwnershipLabels } from "./labels";
 import { OwnerAvatar } from "./owner-avatar";
 import { RelativeTime } from "../shared/relative-time";
@@ -222,9 +223,9 @@ function Num({
       }`}
     >
       {value != null && value > 0 ? (
-        value.toLocaleString()
+        formatNumber(value)
       ) : value == null && atLeast ? (
-        <span title={atLeastTitle}>≥{atLeast.toLocaleString()}</span>
+        <span title={atLeastTitle}>≥{formatNumber(atLeast)}</span>
       ) : (
         <span className="text-[var(--color-text-tertiary)]">—</span>
       )}

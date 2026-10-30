@@ -1,6 +1,7 @@
 import * as React from "react";
 import { cn } from "../lib/cn";
 import { SERIES, SERIES_TAIL } from "./series";
+import { formatNumber } from "../lib/format";
 
 /** The share steps, largest share first: the first five series colours. */
 export const SHARE_STEPS = SERIES.slice(0, 5);
@@ -121,7 +122,7 @@ export function ProportionBar({
   label,
   sort = true,
   maxSegments = SHARE_STEPS.length,
-  othersLabel = (n) => `${n.toLocaleString()} others`,
+  othersLabel = (n) => `${formatNumber(n)} others`,
   legend = true,
   size = "md",
   LinkComponent,

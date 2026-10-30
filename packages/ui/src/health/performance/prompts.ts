@@ -14,6 +14,7 @@ import type { AiPromptRequest } from "../ai-prompt-action";
 import type { PerformanceViewAdapter } from "./adapter";
 import { useDetailLoader, useVerifiedPlanLoader } from "./cache";
 import { opportunityTitle } from "./presentation";
+import { formatNumber } from "../../lib/format";
 
 /**
  * The agent prompts this tab hands over, as requests for the shared prompt
@@ -58,7 +59,7 @@ export function usePerformancePrompts(adapter: PerformanceViewAdapter) {
   const forArea = useCallback(
     (area: string, rows: PerformanceOpportunity[], paged = false): AiPromptRequest => ({
       title: "Prompt for your agent",
-      description: `${rows.length.toLocaleString()} performance cause${rows.length === 1 ? "" : "s"} in this area${paged ? " on this page" : ""}, in ranked order, one change each.`,
+      description: `${formatNumber(rows.length)} performance cause${rows.length === 1 ? "" : "s"} in this area${paged ? " on this page" : ""}, in ranked order, one change each.`,
       filePath: area || null,
       getPrompt: (flavor) => buildPerformanceAreaPrompt({ area, opportunities: rows, paged, flavor }),
     }),

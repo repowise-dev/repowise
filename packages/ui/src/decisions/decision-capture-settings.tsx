@@ -8,6 +8,7 @@ import type {
   DecisionSourceState,
 } from "@repowise-dev/types/decisions";
 import { ApiError } from "../shared/api-error";
+import { formatNumber } from "../lib/format";
 
 /**
  * What captures decisions, and whether any of it may call a model.
@@ -306,7 +307,7 @@ function Figure({ label, value }: { label: string; value: number }) {
     <div className="space-y-0.5">
       <dt className={MICRO_LABEL}>{label}</dt>
       <dd className="font-mono text-sm tabular-nums text-[var(--color-text-primary)]">
-        {value.toLocaleString()}
+        {formatNumber(value)}
       </dd>
     </div>
   );
