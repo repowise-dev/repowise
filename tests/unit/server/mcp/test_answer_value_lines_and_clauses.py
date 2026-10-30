@@ -9,8 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from repowise.server.mcp_server.tool_answer import clauses
-from repowise.server.mcp_server.tool_answer import value_lines
+from repowise.server.mcp_server.tool_answer import clauses, value_lines
 
 
 def _git_repo(tmp_path, files: dict[str, str]):
