@@ -85,6 +85,10 @@ and is counted as deprecated by `decision health`.
 | Conventions | `conventions` | Import edges: a wrapper most files reach a library through | No | No |
 | Manual entry | `cli` | `repowise decision add`, the dashboard form | No | Always |
 
+`repowise update` mines commit messages and pull request bodies only for the
+commits it brought in (`last sync..HEAD`); `repowise init` reads the whole
+history window.
+
 A committed ADR whose status says `accepted` or `approved` and that names what
 it governs accepts its own decision, with the file recorded as the accepter. It
 is the only non-human acceptance, and it only applies to a file git tracks. A
