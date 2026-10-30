@@ -843,7 +843,9 @@ def _earned_high(
 # Words that ask for a value rather than name the constant holding it.
 _VALUE_ASK_STEMS = frozenset(_stem(w) for w in ("default", "value", "constant", "set", "defined"))
 
-# The value an assignment-shaped signature gives, minus a trailing comment.
+# An assignment's "=", never a comparison or a walrus.
+_ASSIGN_RE = re.compile(r"(?<![=!<>:])=(?!=)")
+# A trailing comment after the assigned value.
 _TRAILING_COMMENT_RE = re.compile(r"\s+(?://|#).*$")
 
 
@@ -861,10 +863,10 @@ def stated_value_line(
     found, seen = _verified_constants(hits)
     for hit, sym in found:
         name = sym.get("name") or ""
-        if seen[name] > 1 or name not in answer_text:
+        if seen[name] > 1:
             continue
-        stated = _states_assigned_value(sym.get("signature") or "", answer_text)
-        if stated and _question_names_constant(question, question_ids, name, hit):
+        stated = _states_assigned_value(name, sym.get("signature") or "", answer_text)
+        if stated and _question_names_constant(question, question_ids, sym, hit):
             return {"path": hit.get("target_path"), "name": name, "line": sym.get("start_line")}
     return None
 
@@ -884,26 +886,58 @@ def _verified_constants(hits: list[dict]) -> tuple[list[tuple[dict, dict]], Coun
     return found, seen
 
 
-def _states_assigned_value(signature: str, answer_text: str) -> bool:
-    """Does the answer state the value *signature* assigns? Numbers must all match."""
-    if "=" not in signature:
-        return False
-    value = _TRAILING_COMMENT_RE.sub("", signature.split("=", 1)[1]).strip().rstrip(";,").strip()
-    if not value:
+def _states_assigned_value(name: str, signature: str, answer_text: str) -> bool:
+    """Does a sentence naming *name* state the value *signature* assigns?
+
+    Every sentence naming it with numbers must assert exactly the assigned ones,
+    so "RETRIES is 5, not 3" never reads as stating 3.
+    """
+    value = _assigned_value(signature)
+    if value is None:
         return False
     numbers = _numbers_in(value)
-    if numbers:
-        return numbers <= _asserted_numbers(answer_text)
-    return value.strip("'\"`").lower() in answer_text.lower()
+    literal = _word_re(value.strip("'\"`"))
+    stated = False
+    for sentence in _sentences(answer_text):
+        if not _word_re(name).search(sentence):
+            continue
+        asserted = _asserted_numbers(sentence)
+        if numbers and asserted and asserted != numbers:
+            return False
+        stated = stated or (asserted == numbers if numbers else bool(literal.search(sentence)))
+    return stated
 
 
-def _question_names_constant(question: str, question_ids: set[str], name: str, hit: dict) -> bool:
+def _assigned_value(signature: str) -> str | None:
+    """The value an assignment-shaped signature gives, or None when it gives none."""
+    m = _ASSIGN_RE.search(signature)
+    if m is None:
+        return None
+    value = _TRAILING_COMMENT_RE.sub("", signature[m.end() :]).strip().rstrip(";,").strip()
+    # One character ("0", "[") or no letter or digit says too little to match on.
+    if len(value.strip("'\"`")) < 2 and not value.isdigit():
+        return None
+    return value if any(ch.isalnum() for ch in value) else None
+
+
+def _word_re(text: str) -> re.Pattern:
+    return re.compile(rf"(?<![\w$]){re.escape(text)}(?![\w$])", re.IGNORECASE)
+
+
+def _question_names_constant(question: str, question_ids: set[str], sym: dict, hit: dict) -> bool:
+    name = sym.get("name") or ""
     name_words = _text_stems(name)
     if name not in question_ids:
         asked = _text_stems(question)
         if len(name_words) < 2 or not all(_stem_hit(w, asked) for w in name_words):
             return False
-    page = hit_stems([hit])[0] | name_words
+    # The constant's own lines and its page's heading, not every symbol on the page.
+    own = " ".join(
+        str(v or "")
+        for v in (hit.get("target_path"), hit.get("title"), hit.get("summary"),
+                  sym.get("signature"), sym.get("docstring"))
+    )
+    page = _text_stems(own) | name_words
     return all(
         _stem_hit(t, page) for t in _question_words(question) if t not in _VALUE_ASK_STEMS
     )
@@ -916,8 +950,7 @@ def _hedge_gate(s: _GradeState) -> None:
     demotion stops at "medium" rather than sending the agent to Read. A caveat
     that is not a hedge falls to :func:`_admitted_gap_gate`.
     """
-    # A later admission is only a caveat when retrieval carries every word asked;
-    # otherwise the admission is the answer, however much other code precedes it.
+    # A later admission is a caveat only when retrieval carries every word asked.
     s.hedged = _answer_is_hedged(s.answer_text, s.question) or (
         _admitted_gap(s.answer_text) is not None and _unserved_words(s.question, s.hits)
     )

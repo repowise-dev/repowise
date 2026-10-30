@@ -257,11 +257,17 @@ def _scan_listed(root: Path, needle: str, word: bool) -> tuple[list[dict[str, An
     return rows, reasons + scan_reasons
 
 
-def production_lines(root: Path, token: str) -> list[dict[str, Any]]:
-    """The word-bounded lines holding *token* in production files, from the
-    same scan a literal search runs. For get_answer, which reads live lines
-    the wiki never rendered (function bodies, string literals)."""
-    rows, _reasons = _scan_listed(root, token, True)
+def word_scan(root: Path, token: str) -> tuple[list[dict[str, Any]], bool]:
+    """The word-bounded lines holding *token* in every listed file, from the
+    same scan a literal search runs, and whether that scan read them all. For
+    get_answer, which reads live lines the wiki never rendered (function
+    bodies, string literals)."""
+    rows, reasons = _scan_listed(root, token, True)
+    return rows, not reasons
+
+
+def production_only(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """*rows* in production files, without tests, examples and docs."""
     return [r for r in rows if _scan_rank(r["path"]) == 0]
 
 

@@ -19,7 +19,7 @@ from sqlalchemy import select
 
 from repowise.core.persistence.models import WikiSymbol
 from repowise.core.test_paths import is_test_related_path
-from repowise.server.mcp_server._line_hits import production_lines
+from repowise.server.mcp_server._line_hits import production_only, word_scan
 from repowise.server.mcp_server._query_shape import (
     _WORD_CHAIN_RE,
     _folds_case,
@@ -300,9 +300,7 @@ async def _anchor_symbol_hits(
         if prose:
             by_name = await _trusted_over_topic(by_name, question_ids, guard)
             literal = await _literal_holders(session, repo_id, question_ids - indexed_names, guard)
-        homonyms["absent"] = [
-            t for t in homonyms["unindexed"] if await _names_nothing_in_code(t, guard)
-        ]
+        homonyms["absent"] = await _absent_names(homonyms["unindexed"], guard)
 
     chosen = await _choose_anchor_symbols(by_name, question_ids, _verified_dict, homonyms)
     if not chosen and not literal:
@@ -334,13 +332,23 @@ class _TopicGuard:
         named = set().union(*(_text_stems(q) for q in qids_lower))
         self.topic_stems = _text_stems(question) - named
         self.about_tests = _is_test_query(question)
-        self._lines: dict[str, list[dict]] = {}
+        self._scans: dict[str, tuple[list[dict], bool]] = {}
+
+    async def _scan(self, token: str) -> tuple[list[dict], bool]:
+        """Every line writing *token*, scanned at most once per question."""
+        if token not in self._scans:
+            self._scans[token] = await asyncio.to_thread(word_scan, self.root, token)
+        return self._scans[token]
 
     async def lines(self, token: str) -> list[dict]:
-        """Production lines writing *token*, scanned at most once per question."""
-        if token not in self._lines:
-            self._lines[token] = await asyncio.to_thread(production_lines, self.root, token)
-        return self._lines[token]
+        """Production lines writing *token*."""
+        rows, _complete = await self._scan(token)
+        return production_only(rows)
+
+    async def written(self, token: str) -> bool | None:
+        """Whether any file writes *token*; None when the scan stopped short."""
+        rows, complete = await self._scan(token)
+        return True if rows else (False if complete else None)
 
     async def trusts(self, token: str, row) -> bool:
         # A plain capitalised word (``Gson``, ``Client``) is also prose, often the
@@ -358,15 +366,29 @@ class _TopicGuard:
         return bool(self.topic_stems & _text_stems(owner))
 
 
+async def _absent_names(unindexed: list[str], guard: _TopicGuard) -> list[str]:
+    """The unindexed names :func:`_names_nothing_in_code` holds absent.
+
+    Best effort: a failed scan proves nothing, and must not cost the anchoring.
+    """
+    try:
+        candidates = [t for t in unindexed if "." not in t and _unmistakably_code(t)]
+        return [
+            t for t in candidates[:_LITERAL_SCAN_MAX_TOKENS] if await _names_nothing_in_code(t, guard)
+        ]
+    except Exception:
+        return []
+
+
 async def _names_nothing_in_code(token: str, guard: _TopicGuard) -> bool:
-    """An unindexed, code-shaped name that no production line writes either.
+    """An unindexed, code-shaped name that no file writes, by a scan that read them all.
 
     Mixed case, an underscore or a digit (``FileTree``, ``retry_policy``); an
     all-caps acronym (``SSG``) is prose often enough to be left alone.
     """
     if "." in token or not _unmistakably_code(token):
         return False
-    return not await guard.lines(token)
+    return await guard.written(token) is False
 
 
 async def _trusted_over_topic(

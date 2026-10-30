@@ -166,6 +166,27 @@ def test_a_lookup_answer_misreading_the_assignment_earns_nothing() -> None:
     assert grade.confidence == "medium"
 
 
+def test_a_wrong_value_beside_the_right_one_earns_nothing() -> None:
+    hits = _floor_hits()
+    answer = (
+        "It is set by `_HIGH_CONFIDENCE_SCORE_FLOOR = 1.5`. "
+        "At runtime `_HIGH_CONFIDENCE_SCORE_FLOOR` is raised to 2.0."
+    )
+    assert stated_value_line(_FLOOR_QUESTION, {"get_answer"}, answer, hits) is None
+
+
+def test_a_longer_name_holding_the_constant_names_nothing() -> None:
+    hits = _floor_hits()
+    answer = "`_HIGH_CONFIDENCE_SCORE_FLOOR_MAX` is 1.5."
+    assert stated_value_line(_FLOOR_QUESTION, {"get_answer"}, answer, hits) is None
+
+
+def test_a_value_too_short_to_match_on_earns_nothing() -> None:
+    hits = _floor_hits({**_FLOOR, "signature": '_HIGH_CONFIDENCE_SCORE_FLOOR = "a"'})
+    answer = "`_HIGH_CONFIDENCE_SCORE_FLOOR` is a constant in config.py."
+    assert stated_value_line(_FLOOR_QUESTION, {"get_answer"}, answer, hits) is None
+
+
 def test_an_unverified_line_earns_nothing() -> None:
     hits = _floor_hits({**_FLOOR, "_verified": False})
     grade = _grade(_FLOOR_QUESTION, _FLOOR_ANSWER, hits, dominance=None, ids={"get_answer"})
@@ -244,15 +265,15 @@ def test_a_name_the_retrieval_serves_is_not_absent() -> None:
 
 
 class _Guard:
-    def __init__(self, written: set[str]):
-        self.written = written
+    def __init__(self, written: set[str], unscanned: set[str] = frozenset()):
+        self.names, self.unscanned = written, unscanned
 
-    async def lines(self, token: str) -> list[dict]:
-        return [{"path": "a.py"}] if token in self.written else []
+    async def written(self, token: str) -> bool | None:
+        return None if token in self.unscanned else token in self.names
 
 
 def test_only_code_shaped_names_no_line_writes_are_absent() -> None:
-    guard = _Guard({"RealThing"})
+    guard = _Guard({"RealThing"}, unscanned={"BigRepoThing"})
 
     def absent(token: str) -> bool:
         return asyncio.run(_names_nothing_in_code(token, guard))
@@ -262,3 +283,4 @@ def test_only_code_shaped_names_no_line_writes_are_absent() -> None:
     assert not absent("RealThing")
     assert not absent("SSG")  # an acronym is prose often enough
     assert not absent("Client.get")
+    assert not absent("BigRepoThing")  # the scan stopped short: unknown, not absent
