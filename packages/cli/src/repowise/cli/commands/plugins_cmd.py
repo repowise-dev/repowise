@@ -33,8 +33,12 @@ def _import_builtin_seams() -> None:
             module = importlib.import_module(name)
             if name == "repowise.server.chat_datasets":
                 module.dataset_names()  # imports the built-in dataset families
-        except ImportError:  # server extras not installed: those seams go unlisted
-            continue
+        except ModuleNotFoundError as exc:
+            # Only a missing third-party package (server extras not installed)
+            # leaves a seam unlisted; a broken repowise import must surface.
+            missing = exc.name or ""
+            if missing == "repowise" or missing.startswith("repowise."):
+                raise
 
 
 @click.command("plugins")

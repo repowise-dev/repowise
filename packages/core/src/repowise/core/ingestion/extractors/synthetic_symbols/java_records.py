@@ -92,11 +92,12 @@ def java_record_synthetic_symbols(
             visibility=ctor_visibility,
         ))
 
-        # Component accessors — same name as the component, zero args.
+        # Component accessors: same name as the component, zero args. The
+        # stored ``name() -> Type`` shape lets a call chain read the return.
         for comp_name, comp_type in components:
             out.append(build_synthetic_symbol(
                 name=comp_name, kind="method",
-                signature=f"public {comp_type or 'Object'} {comp_name}()",
+                signature=f"{comp_name}() -> {comp_type or 'Object'}",
                 start_line=line, end_line=line,
                 file_info=file_info, parent_name=record_name,
             ))
@@ -104,19 +105,19 @@ def java_record_synthetic_symbols(
         # Object-contract methods every record gets.
         out.append(build_synthetic_symbol(
             name="equals", kind="method",
-            signature="public boolean equals(Object)",
+            signature="equals(Object o) -> boolean",
             start_line=line, end_line=line,
             file_info=file_info, parent_name=record_name,
         ))
         out.append(build_synthetic_symbol(
             name="hashCode", kind="method",
-            signature="public int hashCode()",
+            signature="hashCode() -> int",
             start_line=line, end_line=line,
             file_info=file_info, parent_name=record_name,
         ))
         out.append(build_synthetic_symbol(
             name="toString", kind="method",
-            signature="public String toString()",
+            signature="toString() -> String",
             start_line=line, end_line=line,
             file_info=file_info, parent_name=record_name,
         ))

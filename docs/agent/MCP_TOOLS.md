@@ -341,7 +341,7 @@ Code-health scores and findings from stored analysis, across defect risk, mainta
 | `performance_confidence` | string | none | `high`, `medium`, `low` |
 | `performance_actionability` | string | none | `plan_ready`, `advisory`, `investigate`, `expected` |
 | `performance_sort` | string | `rank` | `rank`, `leverage`, `observations` |
-| `scope` | string | `"all"` | `production` drops test files from every figure |
+| `scope` | string | `"all"` | `production` drops test, tooling, vendored and generated files from every figure |
 | `counts` | string | `"everything"` | `code_shape` drops the git-derived half of the score |
 | `repo` | string | default repo | `"all"` not supported |
 

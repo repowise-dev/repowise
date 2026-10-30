@@ -15,6 +15,7 @@ from .aws import SNS, SQS
 from .azure_servicebus import AZURE_SERVICE_BUS
 from .bullmq import BULLMQ
 from .csharp_events import CSHARP_EVENTS
+from .dapr import DAPR, DAPR_SUBSCRIPTIONS
 from .dialect import topic_identity
 from .jms import JMS
 from .kafka import KAFKA
@@ -37,6 +38,8 @@ DIALECTS: tuple[ContractDialect, ...] = (
     SNS,
     AZURE_SERVICE_BUS,
     NESTJS,
+    DAPR,
+    DAPR_SUBSCRIPTIONS,
     LARAVEL_QUEUES,
     CSHARP_EVENTS,
     JMS,

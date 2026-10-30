@@ -111,6 +111,20 @@ export interface WorkspaceContractLinkEntry {
   consumer_contract_id?: string | null;
 }
 
+export interface WorkspaceCoChangeEvidence {
+  /** Distinct author emails behind the pair (bounded sample). */
+  authors: string[];
+  /** Example matched commit pairs: short SHAs, date, time gap in hours. */
+  commit_pairs: Array<{
+    source_sha: string;
+    target_sha: string;
+    date: string;
+    gap_hours: number;
+  }>;
+  /** Largest time gap between a matched commit pair, in hours. */
+  max_gap_hours: number;
+}
+
 /**
  * Which way a link between two services runs: `a_to_b` when `a` is the consumer
  * or dependent, `both` for a co-change (it has no direction).
@@ -172,6 +186,8 @@ export interface WorkspaceCoChangeEntry {
   strength: number;
   frequency: number;
   last_date: string;
+  /** Bounded supporting evidence (#483); null for pre-evidence overlays. */
+  evidence: WorkspaceCoChangeEvidence | null;
 }
 
 export interface WorkspacePackageDepEntry {

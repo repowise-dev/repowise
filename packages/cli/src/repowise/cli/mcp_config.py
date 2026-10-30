@@ -131,9 +131,12 @@ def is_codex_cli_installed() -> bool:
 
 
 def is_codex_logged_in() -> bool:
-    """Return True when the local Codex CLI reports an authenticated session."""
+    """Return True when the local Codex CLI reports an authenticated session.
 
-    return is_codex_cli_installed() and CODEX.is_logged_in()
+    An unknown answer (login check skipped while offline) is not signed in.
+    """
+
+    return is_codex_cli_installed() and CODEX.is_logged_in() is True
 
 
 # ---------------------------------------------------------------------------

@@ -15,6 +15,7 @@ from repowise.core import attribution
 from repowise.core.edit_capture.binder import bind_pending
 from repowise.core.edit_capture.edits import CapturedCall, FileEdit
 from repowise.core.edit_capture.store import record_call, sidecar_dir
+from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION
 
 BODY = [
     "def settle(ledger):",
@@ -205,7 +206,7 @@ def test_backfill_reports_and_status_shows_the_run(
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "values")
     state = repo / ".repowise" / "state.json"
-    state.write_text(json.dumps({"git_history_version": 3, "last_sync_commit": "abc"}), encoding="utf-8")
+    state.write_text(json.dumps({"git_history_version": GIT_HISTORY_VERSION, "last_sync_commit": "abc"}), encoding="utf-8")
 
     result = CliRunner().invoke(
         attribution_group, ["backfill", str(repo), "--agent", "claude-code,codex", "--format", "json"]

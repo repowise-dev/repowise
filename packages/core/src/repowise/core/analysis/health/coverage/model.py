@@ -90,9 +90,14 @@ def parse_xml(text: str) -> ET.Element | None:
 
 
 def coverage_map_entry(fc: FileCoverage, source_format: str | None) -> dict:
-    """The per-file dict ``HealthAnalyzer`` reads from its ``coverage_map``."""
+    """The per-file dict ``HealthAnalyzer`` reads from its ``coverage_map``.
+
+    A file with no coverable lines (lcov ``LF:0``) and no stated percentage
+    has nothing measured, so its percentage is ``None``, never 0%.
+    """
+    measured = fc.total_coverable_lines > 0 or fc.line_coverage_pct > 0
     return {
-        "line_coverage_pct": fc.line_coverage_pct,
+        "line_coverage_pct": fc.line_coverage_pct if measured else None,
         "branch_coverage_pct": fc.branch_coverage_pct,
         "covered_lines": list(fc.covered_lines),
         "total_coverable_lines": fc.total_coverable_lines,

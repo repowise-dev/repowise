@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .....analysis.health.grading import analysed_share
 from .....analysis.health.ranking import deduction_by_path, worst_kpis
 from .....analysis.health.rows import split_unscored
-from .....analysis.health.scoring import nloc_weighted_attr
+from .....analysis.health.scoring import headline_split, nloc_weighted_attr
 from ....models import HealthFileMetric, HealthFinding
 from ..plain_rows import plain_rows
 from ..shown import shown
@@ -146,6 +146,7 @@ async def get_health_summary(
             "worst_performance_score": None,
         }
     avg = nloc_weighted_attr(metrics, "score")
+    structure_average, history_average = headline_split(metrics)
 
     # The two co-surfaced pillars: the same NLOC weighting over their own
     # columns, ``None`` when no row carries one so a surface reads "not
@@ -205,8 +206,8 @@ async def get_health_summary(
         # The headline's two halves, in deduction points. Both come off columns
         # already on the rows in hand, so this costs no query — and without them
         # the page can show a score falling without saying which half moved.
-        "structure_average": _rounded(nloc_weighted_attr(metrics, "structure_deduction")),
-        "history_average": _rounded(nloc_weighted_attr(metrics, "history_deduction")),
+        "structure_average": _rounded(structure_average),
+        "history_average": _rounded(history_average),
         "maintainability_findings": by_dim.get("maintainability", 0),
         "performance_causes": causes.as_dict(),
         "performance_coverage_pct": (coverage.pct_loc if coverage.analyzed_files else None),

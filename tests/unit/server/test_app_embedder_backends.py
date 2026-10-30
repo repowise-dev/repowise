@@ -58,7 +58,7 @@ async def test_query_embedder_caches_repeated_text(monkeypatch: pytest.MonkeyPat
         def __init__(self) -> None:
             self.calls = 0
 
-        async def embed(self, texts: list[str]) -> list[list[float]]:
+        async def embed(self, texts: list[str], *, kind: str = "document") -> list[list[float]]:
             self.calls += 1
             return [[1.0, 2.0] for _ in texts]
 

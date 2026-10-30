@@ -364,12 +364,37 @@ def _dart_signature_sibling(body: Node) -> Node | None:
     return sib
 
 
+_DART_ACCESSOR_PREFIX = {"getter_signature": "get", "setter_signature": "set"}
+
+
+def _dart_signature_name(sig: Node) -> str:
+    """``A`` / ``A.named`` for a constructor, ``get x`` / ``set x`` for an
+    accessor, ``operator ==`` for an operator, so no two members of one
+    class share a name."""
+    if sig.type in ("constructor_signature", "factory_constructor_signature"):
+        return ".".join(_node_text(c) for c in sig.children if c.type == "identifier")
+    if sig.type in _DART_ACCESSOR_PREFIX:
+        return f"{_DART_ACCESSOR_PREFIX[sig.type]} {_find_name(sig)}"
+    if sig.type == "operator_signature":
+        # The symbol sits between the ``operator`` keyword and the parameters.
+        kinds = [c.type for c in sig.children]
+        start = kinds.index("operator") + 1 if "operator" in kinds else len(kinds)
+        symbol = "".join(
+            _node_text(c) for c in sig.children[start:] if c.type != "formal_parameter_list"
+        )
+        params = next((c for c in sig.children if c.type == "formal_parameter_list"), None)
+        if symbol == "-" and params is not None and params.named_child_count == 0:
+            symbol = "unary-"  # Dart's own name, apart from binary ``-``
+        return f"operator {symbol}"
+    return _find_name(sig)
+
+
 def _find_function_entry_name(node: Node, lmap: LanguageNodeMap) -> str:
     if node.type not in lmap.lambda_kinds:
         if node.type == "function_body":
             sig = _dart_signature_sibling(node)
             if sig is not None:
-                return _find_name(sig)
+                return _dart_signature_name(sig)
         return _find_name(node)
     assigned = _find_assigned_lambda_name(node)
     if assigned:

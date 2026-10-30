@@ -2214,6 +2214,34 @@ async def test_scope_narrows_every_figure_to_production(setup_mcp, session, popu
 
 
 @pytest.mark.asyncio
+async def test_production_scope_is_the_file_set_production_average_reads(
+    setup_mcp, session, populated_db
+):
+    """Tooling, vendored and generated files leave ``scope="production"`` as
+    they leave ``production_average``, so the narrowed headline equals it."""
+    from repowise.core.persistence.crud import save_health_metrics
+    from repowise.server.mcp_server import get_health
+
+    def row(path: str, score: float, origin: str) -> dict:
+        return {"file_path": path, "score": score, "nloc": 100, "code_origin": origin}
+
+    await save_health_metrics(
+        session,
+        populated_db,
+        [
+            row("src/auth/service.py", 4.0, "production"),
+            row("scripts/release.py", 10.0, "tooling"),
+            row("vendor/lib.js", 10.0, "vendored"),
+            row("src/gen/api_pb2.py", 10.0, "generated"),
+        ],
+    )
+    everything = (await get_health())["kpis"]
+    assert (everything["average_health"], everything["production_average"]) == (8.5, 4.0)
+    production = (await get_health(scope="production"))["kpis"]
+    assert (production["average_health"], production["file_count"]) == (4.0, 1)
+
+
+@pytest.mark.asyncio
 async def test_counts_reads_the_code_shape_half_across_the_response(
     setup_mcp, session, populated_db
 ):
@@ -2995,10 +3023,12 @@ async def test_what_if_names_the_points_a_fix_recovers(setup_mcp, session, popul
     assert row["ceiling"] == 9.0
     assert "target_out_of_reach" not in row
     top = block["top_fixes"][0]
-    assert (top["biomarker_type"], top["points"]) == ("complex_method", 2.0)
-    # 2.0 structure points also lower history's cap from 2.5 to 2.0: 4.5 -> 7.0,
-    # on 200 of the headline's 500 nloc; the only hotspot carries all of it.
-    assert top["gain"] == {"file": 2.5, "average": 1.0, "hotspot": 2.5}
+    # Points are the file rescored without the finding, not its stored impact:
+    # a high nested_complexity frees 1.45 (its 1.0 impact reads less).
+    assert (top["biomarker_type"], top["points"]) == ("nested_complexity", 1.45)
+    # History's cap stays above 2.5 at 1.55 structure: 4.5 -> 5.95, on 200 of
+    # the headline's 500 nloc; the only hotspot carries all of it.
+    assert top["gain"] == {"file": 1.45, "average": 0.581, "hotspot": 1.452}
     assert row["fix_all_structure"]["file"] == 4.5
 
 
@@ -3015,6 +3045,31 @@ def test_kpis_name_production_code_beside_the_all_files_average() -> None:
     mixed = _compute_kpis([prod, test], deductions={})
     assert (mixed["average_health"], mixed["production_average"]) == (8.0, 6.0)
     assert "production_average" not in _compute_kpis([prod], deductions={})
+
+
+def test_production_average_agrees_on_every_surface() -> None:
+    """Tooling, vendored and generated files stay out of ``production_average``
+    on get_health, get_overview and ``compute_kpis`` alike."""
+    from repowise.core.analysis.health.scoring import compute_kpis
+    from repowise.core.persistence.models import HealthFileMetric
+    from repowise.server.mcp_server.tool_health.summary import _compute_kpis
+    from repowise.server.mcp_server.tool_overview.health import _production_average
+
+    def row(path: str, score: float, origin: str) -> HealthFileMetric:
+        return HealthFileMetric(
+            file_path=path, score=score, nloc=100, is_test=False, code_origin=origin
+        )
+
+    rows = [
+        row("src/a.py", 6.0, "production"),
+        row("scripts/release.py", 10.0, "tooling"),
+        row("vendor/lib.js", 10.0, "vendored"),
+        row("src/gen/api_pb2.py", 10.0, "generated"),
+    ]
+    mcp = _compute_kpis(rows, deductions={})
+    assert (mcp["average_health"], mcp["production_average"]) == (9.0, 6.0)
+    assert compute_kpis(rows, set())["production_average"] == 6.0
+    assert _production_average(rows, len(rows)) == 6.0
 
 
 def test_kpis_scope_a_score_most_code_files_did_not_feed() -> None:

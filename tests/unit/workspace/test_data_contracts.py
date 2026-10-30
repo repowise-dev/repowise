@@ -149,6 +149,80 @@ class TestOrmProviders:
         # A migration defines the schema, which marks the owning repo.
         assert orders.meta["schema"] == "create"
 
+    def test_alembic_create_table_records_the_schema_keyword(self, tmp_path: Path) -> None:
+        # `schema=` trails the column list, so the name has to come off the
+        # call's argument list rather than the string right after the paren.
+        _write(
+            tmp_path,
+            "alembic/versions/abc_init.py",
+            "def upgrade():\n"
+            "    op.create_table(\n"
+            '        "owners",\n'
+            '        sa.Column("id", sa.Integer, primary_key=True),\n'
+            '        schema="core",\n'
+            "    )\n",
+        )
+        contracts = DataExtractor().extract(tmp_path, "api")
+        ids = {c.contract_id for c in contracts}
+        assert "data::core.owners" in ids
+        # The bare key must go: it is what let the two sides drift apart.
+        assert "data::owners" not in ids
+
+    def test_alembic_schema_keyword_matches_the_qualified_sql_consumer(
+        self, tmp_path: Path
+    ) -> None:
+        # The end-to-end shape from the issue: a schema-qualified migration and
+        # a schema-qualified consumer previously never met (2 of 48 consumers).
+        backend = tmp_path / "backend"
+        worker = tmp_path / "worker"
+        _write(
+            backend,
+            "alembic/versions/abc_init.py",
+            'def upgrade():\n    op.create_table("owners", sa.Column("id"), schema="core")\n',
+        )
+        _write(worker, "jobs/process.py", 'q = "SELECT id FROM core.owners WHERE done = 0"\n')
+
+        contracts = DataExtractor().extract(backend, "backend")
+        contracts += DataExtractor().extract(worker, "worker")
+        links = match_contracts(contracts)
+
+        assert len(links) == 1
+        assert links[0].provider_repo == "backend"
+        assert links[0].consumer_repo == "worker"
+
+    def test_alembic_default_schema_keyword_still_normalizes_away(self, tmp_path: Path) -> None:
+        _write(
+            tmp_path,
+            "alembic/versions/abc_init.py",
+            'op.create_table("owners", sa.Column("id"), schema="public")\n',
+        )
+        contracts = DataExtractor().extract(tmp_path, "api")
+        assert "data::owners" in {c.contract_id for c in contracts}
+
+    def test_alembic_schema_keyword_does_not_leak_to_the_next_call(
+        self, tmp_path: Path
+    ) -> None:
+        _write(
+            tmp_path,
+            "alembic/versions/abc_init.py",
+            "def upgrade():\n"
+            '    op.create_table("owners", sa.Column("id"), schema="core")\n'
+            '    op.create_table("visits", sa.Column("id"))\n',
+        )
+        contracts = DataExtractor().extract(tmp_path, "api")
+        ids = {c.contract_id for c in contracts}
+        assert {"data::core.owners", "data::visits"} <= ids
+
+    def test_alembic_schema_in_another_statement_does_not_leak(self, tmp_path: Path) -> None:
+        _write(
+            tmp_path,
+            "alembic/versions/abc_init.py",
+            'op.create_table("owners", sa.Column("id"))\n'
+            'op.execute(sa.text(\'ALTER TABLE x SET SCHEMA "core"\'))\n',
+        )
+        contracts = DataExtractor().extract(tmp_path, "api")
+        assert "data::owners" in {c.contract_id for c in contracts}
+
     def test_sqlmodel_table_true(self, tmp_path: Path) -> None:
         _write(
             tmp_path,
@@ -309,6 +383,65 @@ class TestSqlStringConsumers:
         contracts = DataExtractor().extract(tmp_path, "api", make_exclude_predicate())
         assert contracts == []
 
+    def test_jpql_skipped_in_java_and_kotlin(self, tmp_path: Path) -> None:
+        # JPQL queries (@Query without nativeQuery = true, @NamedQuery, and
+        # createQuery) target entity classes rather than database tables. They
+        # must emit no consumers, while native queries (@Query with
+        # nativeQuery = true, and createNativeQuery) still emit table targets.
+        _write(
+            tmp_path,
+            "shipping/CityRepository.java",
+            '@Query("select c from City c where c.active = true")\n'
+            "List<City> findActive();\n"
+            '@NamedQuery(name = "findAll", query = "SELECT c FROM City c")\n'
+            "class CityRepo {\n"
+            "    void find(EntityManager em) {\n"
+            '        em.createQuery("SELECT c FROM City c", City.class);\n'
+            "    }\n"
+            "}\n",
+        )
+        _write(
+            tmp_path,
+            "catalog/ProductRepository.java",
+            '@Query(value = "SELECT * FROM products WHERE sku = ?1", nativeQuery = true)\n'
+            "Product findBySku(String sku);\n"
+            "class ProductRepo {\n"
+            "    void find(EntityManager em) {\n"
+            '        em.createNativeQuery("SELECT * FROM products", Product.class);\n'
+            "    }\n"
+            "}\n",
+        )
+        _write(
+            tmp_path,
+            "shipping/CityRepository.kt",
+            '@Query("SELECT c FROM City c")\nfun findCities(): List<City>\n',
+        )
+        contracts = DataExtractor().extract(tmp_path, "service")
+        consumers = [c for c in contracts if c.role == "consumer"]
+        assert {c.contract_id for c in consumers} == {"data::products"}
+
+    def test_native_query_variations_and_jdbc_preserved(self, tmp_path: Path) -> None:
+        _write(
+            tmp_path,
+            "app/NativeRepo.java",
+            '@Query(nativeQuery = true, value = "SELECT id FROM orders WHERE active = true")\n'
+            "List<Order> findActive();\n"
+            '@Query("SELECT * FROM customers WHERE id = ?1", nativeQuery = true)\n'
+            "Customer findCust(Long id);\n"
+            "class JdbcWork {\n"
+            "    void run(JdbcTemplate jdbc) {\n"
+            '        jdbc.query("SELECT * FROM audit_log", mapper);\n'
+            "    }\n"
+            "}\n",
+        )
+        contracts = DataExtractor().extract(tmp_path, "app")
+        consumers = [c for c in contracts if c.role == "consumer"]
+        assert {c.contract_id for c in consumers} == {
+            "data::orders",
+            "data::customers",
+            "data::audit_log",
+        }
+
     def test_system_catalogs_and_alembic_version_skipped(self, tmp_path: Path) -> None:
         _write(
             tmp_path,
@@ -324,6 +457,66 @@ class TestSqlStringConsumers:
         contracts = DataExtractor().extract(tmp_path, "api")
         consumers = [c for c in contracts if c.role == "consumer"]
         assert [c.contract_id for c in consumers] == ["data::orders"]
+
+    def test_csharp_verbatim_sql(self, tmp_path: Path) -> None:
+        _write(
+            tmp_path,
+            "src/Verbatim.cs",
+            'const string sql = @"\n'
+            "    SELECT *\n"
+            "    FROM Orders o\n"
+            "    JOIN Customers c ON o.CustomerId = c.Id\n"
+            '";\n',
+        )
+        contracts = DataExtractor().extract(tmp_path, "api")
+        ids = {c.contract_id for c in contracts if c.role == "consumer"}
+        assert ids == {"data::orders", "data::customers"}
+
+
+class TestMyBatisConsumers:
+    def test_mybatis_mapper_xml(self, tmp_path: Path) -> None:
+        _write(
+            tmp_path,
+            "src/main/resources/OrderMapper.xml",
+            """<?xml version="1.0" encoding="UTF-8" ?>
+            <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+            <mapper namespace="com.shop.mapper.OrderMapper">
+                <select id="findOrders">
+                    SELECT * FROM orders WHERE id = #{id}
+                </select>
+                <select id="findLines">
+                    SELECT * FROM order_lines WHERE order_id = #{orderId}
+                </select>
+                <!--
+                <select id="deletedOrders">
+                    SELECT * FROM archived_orders
+                </select>
+                -->
+            </mapper>
+            """,
+        )
+        contracts = DataExtractor().extract(tmp_path, "api")
+        ids = {c.contract_id for c in contracts if c.role == "consumer"}
+        assert ids == {"data::orders", "data::order_lines"}
+
+    def test_mybatis_array_annotation(self, tmp_path: Path) -> None:
+        _write(
+            tmp_path,
+            "src/main/java/com/shop/mapper/CustomerMapper.java",
+            """package com.shop.mapper;
+            public interface CustomerMapper {
+                @Update({
+                    "UPDATE customers",
+                    "SET name = #{name}",
+                    "WHERE id = #{id}"
+                })
+                int update(Customer c);
+            }
+            """,
+        )
+        contracts = DataExtractor().extract(tmp_path, "api")
+        ids = {c.contract_id for c in contracts if c.role == "consumer"}
+        assert ids == {"data::customers"}
 
 
 class TestDataMatching:

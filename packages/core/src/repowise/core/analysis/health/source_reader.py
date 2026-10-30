@@ -27,6 +27,11 @@ def disk_source_reader(abs_path: str) -> bytes | None:
         return None
 
 
+def reads_working_tree(reader: SourceReader | None) -> bool:
+    """Whether *reader* serves the working tree (``None`` is the default disk read)."""
+    return reader is None or reader is disk_source_reader
+
+
 class MappingSourceReader:
     """Serve bytes from an in-memory map, with no filesystem fallback.
 

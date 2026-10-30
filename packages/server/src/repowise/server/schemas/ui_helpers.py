@@ -64,7 +64,9 @@ class ProviderEntry(BaseModel):
     #: What on this machine makes it usable: ``signed_in`` (a signed-in agent
     #: CLI, reported only for ``?detect=true``), ``env`` (a key in the process
     #: env or the repo's ``.repowise/.env``) or ``saved`` (a key stored here).
-    detected: Literal["signed_in", "env", "saved"] | None = None
+    #: ``installed``: an agent CLI is on PATH but its sign-in cannot be told
+    #: (no login query, or ``REPOWISE_OFFLINE``/``DO_NOT_TRACK`` is set).
+    detected: Literal["signed_in", "installed", "env", "saved"] | None = None
 
 
 class EmbedderEntry(BaseModel):

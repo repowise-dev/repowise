@@ -324,3 +324,39 @@ def test_switching_discovery_on_is_an_ordinary_source_toggle(repo: Path):
 
     assert result.exit_code == 0, result.output
     assert _config(repo)["decisions"]["sources"]["session_discovery"] is True
+
+
+def test_show_points_to_init_when_claude_settings_file_is_missing(
+    repo: Path, tmp_path: Path, monkeypatch
+):
+    from repowise.cli.editor_integrations import claude_config
+
+    settings_path = tmp_path / ".claude" / "settings.json"
+    monkeypatch.setattr(claude_config, "_claude_code_settings_path", lambda: settings_path)
+    monkeypatch.setattr(claude_config, "_plugin_ships_capture_hook", lambda: False)
+    _write(repo, "decisions:\n  enabled: true\n  capture_prompt: true\n")
+
+    result = _run("decision", "config", "show", str(repo))
+
+    assert result.exit_code == 0, result.output
+    assert "Run `repowise init`" in result.output
+    assert "Re-run `repowise decision config capture-prompt --on`." not in result.output
+
+
+def test_show_recommends_capture_prompt_when_settings_file_lacks_hook(
+    repo: Path, tmp_path: Path, monkeypatch
+):
+    from repowise.cli.editor_integrations import claude_config
+
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(claude_config, "_claude_code_settings_path", lambda: settings_path)
+    monkeypatch.setattr(claude_config, "_plugin_ships_capture_hook", lambda: False)
+    _write(repo, "decisions:\n  enabled: true\n  capture_prompt: true\n")
+
+    result = _run("decision", "config", "show", str(repo))
+
+    assert result.exit_code == 0, result.output
+    assert "Re-run `repowise decision config capture-prompt --on`." in result.output
+    assert "Run `repowise init`" not in result.output

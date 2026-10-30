@@ -62,3 +62,14 @@ def test_doctor_reports_current_store_as_current(tmp_path: Path) -> None:
     assert row["ok"] is True
     assert row["level"] == "ok"
     assert row["detail"] == "Current"
+
+
+def test_doctor_names_the_owed_wiki_rebuild(tmp_path: Path) -> None:
+    state_path = _repo_with_store(tmp_path, STORE_FORMAT_VERSION - 1) / ".repowise" / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["docs_mode"] = "deterministic"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    row = _store_format_row(tmp_path)
+    assert row["ok"] is True
+    assert row["level"] == "warn"
+    assert row["fix"] == "repowise update --yes"

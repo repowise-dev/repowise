@@ -29,7 +29,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
-from .ast_utils import _parameter_nodes
+from .ast_utils import _dart_signature_sibling, _parameter_nodes
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -121,6 +121,10 @@ def _enclosing_type_name(fn_node: Node) -> str | None:
 def is_constructor(fn_node: Node, name: str, lmap: LanguageNodeMap) -> bool:
     if fn_node.type in lmap.ctor_kinds or name in lmap.ctor_names:
         return True
+    # Dart: the kind is on the signature beside the body (``A.named`` is one).
+    sig = _dart_signature_sibling(fn_node) if fn_node.type == "function_body" else None
+    if sig is not None and sig.type in lmap.ctor_kinds:
+        return True
     parts = name.split("::")
     if len(parts) >= 2 and parts[-1] == parts[-2]:
         return True
@@ -171,8 +175,25 @@ def is_signature_fixed(fn_node: Node, lmap: LanguageNodeMap) -> bool:
     return (
         _in_trait_impl(fn_node, lmap)
         or _is_public_api(fn_node, lmap)
+        or _in_fixed_abi(fn_node, lmap)
         or _overrides_local_base(fn_node, lmap)
     )
+
+
+def _in_fixed_abi(fn_node: Node, lmap: LanguageNodeMap) -> bool:
+    """Inside a block whose ABI fixes the parameter list (C++ ``extern "C"``)."""
+    if not lmap.fixed_abi_kinds:
+        return False
+    node = fn_node.parent
+    # A member function keeps C++ linkage even inside an ``extern "C"`` block.
+    stops = lmap.function_kinds | lmap.class_kinds
+    while node is not None and node.type not in stops:
+        if node.type in lmap.fixed_abi_kinds:
+            # ``extern "C++" {`` re-enters C++ linkage inside an ``extern "C"`` header.
+            value = node.child_by_field_name("value")
+            return value is None or _text(value) != '"C++"'
+        node = node.parent
+    return False
 
 
 def _class_of_method(fn_node: Node, lmap: LanguageNodeMap) -> Node | None:

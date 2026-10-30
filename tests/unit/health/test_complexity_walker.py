@@ -678,6 +678,26 @@ EXPORT_API const struct S *fn5(int a) { if (a) { return 0; } return 0; }
     assert expected <= {r.name for r in results}
 
 
+def test_cpp_export_macro_class_and_annotated_fields_are_measured(tmp_path):
+    # ``class API Big {`` used to lose the class and its first method, and
+    # ``int x_ GUARDED_BY(mu_);`` hid the field from cohesion.
+    source = b"""class LIB_API Big {
+ public:
+  void a() { x_ = 1; }
+  void b() { y_ = 2; }
+ private:
+  int x_ GUARDED_BY(mu_);
+  int y_ GUARDED_BY(mu_);
+};
+"""
+    _require_language("cpp")
+    p = tmp_path / "big.h"
+    p.write_bytes(source)
+    classes = {c.name: c for c in walk_file(str(p), "cpp", source).classes}
+    assert classes["Big"].method_count == 2
+    assert classes["Big"].field_count == 2
+
+
 def _names_by_line(tmp_path, language: str, source: bytes) -> dict[int, str]:
     p = tmp_path / ("unit.cpp" if language == "cpp" else "unit.c")
     p.write_bytes(source)
@@ -869,6 +889,55 @@ def test_dart_assertion_blocks():
     assert many.assertion_blocks[0][2] == 5
     few = _find(results, "testFewAsserts")
     assert few is not None and few.assertion_blocks == []
+
+
+_DART_MEMBERS = """\
+class A {
+  int _x = 0;
+  A() {}
+  A.named(int v) {}
+  factory A.make() { return A(); }
+  int get x => _x;
+  set x(int v) { _x = v; }
+  int f() => 1;
+  bool operator ==(Object o) => true;
+  int operator [](int i) => i;
+  A operator -() => this;
+  A operator -(A o) => this;
+}
+"""
+
+
+def test_dart_members_get_distinct_names():
+    _require_language("dart")
+    results = walk_file_complexity("a.dart", "dart", _DART_MEMBERS.encode())
+    names = sorted(r.name for r in results)
+    assert names == sorted(
+        [
+            "A", "A.named", "A.make", "get x", "set x", "f",
+            "operator ==", "operator []", "operator unary-", "operator -",
+        ]
+    )
+
+
+def test_dart_named_and_factory_constructors_are_constructors():
+    results = _walk_source(_DART_MEMBERS, "dart", "a.dart")
+    assert all(results[n].is_constructor for n in ("A", "A.named", "A.make"))
+    assert not any(results[n].is_constructor for n in ("get x", "set x", "f"))
+
+
+@pytest.mark.parametrize(
+    "handler", ["on StateError { h(); }", "on StateError catch (e) { h(); }", "catch (e) { h(); }"]
+)
+def test_dart_every_handler_shape_adds_one_ccn(handler: str):
+    source = f"void f() {{\n  try {{ g(); }} {handler}\n}}\n"
+    fn = _walk_source(source, "dart", "f.dart")["f"]
+    assert (fn.ccn, fn.cognitive) == (2, 1)
+
+
+def test_dart_bare_on_handlers_count_each_arm():
+    source = "void f() {\n  try { g(); } on A {} on p.B<int> {} on C catch (e) {} catch (e) {} finally {}\n}\n"
+    assert _walk_source(source, "dart", "f.dart")["f"].ccn == 5
 
 
 def test_scala_nesting_and_ccn():

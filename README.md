@@ -1,5 +1,7 @@
 <!-- mcp-name: dev.repowise/repowise -->
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 <div align="center">
 
 <a href="https://www.repowise.dev/?src=oss_readme_hero"><img src=".github/assets/banner.webp" alt="repowise: codebase intelligence for you and your coding agent" width="100%" /></a>
@@ -389,7 +391,7 @@ advertised surface, against answer keys we did not write.
 | **Work saved in an agent loop** | 3.8 tool calls instead of 7.2, 3.0 files opened instead of 7.2, **31.6% less output**. The best of five context tools. *n=43, p<0.0001* |
 | **Finding the right files** | **0.876** of the files a fix needed, against 0.610 for the next tool, on a sealed set. *n=42, p=0.00004* |
 | **Command output** | Up to **99.5%** smaller (`npm ci`), 89% for `git log`, 86% for `git diff`, no error line lost |
-| **Call graph the compiler agrees with** | **95% to 99.6%** precision on Go, TypeScript, Dart, C and Python, graded by each language's own toolchain. Against four other tools, none that finds as much of the graph gets more of it right, in 7 of 7 cells |
+| **Call graph the compiler agrees with** | **93.8% to 99.8%** precision on Go, TypeScript, Dart, C and Python, graded by each language's own toolchain. Against four other tools, none that finds as much of the graph gets more of it right, in 7 of 7 cells |
 | **Health that predicts bugs** | **2.3x** CodeScene's recall of later-buggy files at the same review budget. *2,770 files, p=0.003* |
 | **Scale** | **15 million lines** (dotnet/runtime) on one laptop. Building the call graph takes **75 MB**, 10x less than the next tool |
 
@@ -416,7 +418,6 @@ rows we lose live. Unmarked rows are capability presence, not measurements.
 | **Memory to build the graph** *([measured](docs/BENCHMARKS.md#what-it-costs-to-run), 5 tools, 35 repos)* | ✅ **75 MB**, lowest on 35 of 35 | 757 MB | not measured | n/a, cloud |
 | **Time to build the graph** *([measured](docs/BENCHMARKS.md#what-it-costs-to-run), same run)* | **2.77s**, fastest on 14 of 35 | **3.65s**, fastest on 16 | not measured | n/a, cloud |
 | **Time to build the full index, django** *([measured](docs/BENCHMARKS.md#what-it-costs-to-run))* | ⚠️ **366.8s**, slowest here | ✅ **16.4s** | not measured | n/a, cloud |
-| **Call-edge precision, hand-graded** *([measured](docs/BENCHMARKS.md#7-edge-precision), 560 rows, 9 languages)* | ✅ **85.7%** | 58.6% | not measured | not measured |
 | **Call-edge precision, judged by a compiler** *([measured](docs/BENCHMARKS.md#8-the-same-question-against-an-answer-key-we-do-not-control), 5 tools, 7 cells)* | ✅ **nothing that finds as much gets more of it right**, 7 of 7 | lower precision in 7 | not measured | not measured |
 | Generated documentation | ✅ | ❌ | ❌ | ✅ |
 | Proactive agent hooks | ✅ Claude + Codex | ❌ | ❌ | ❌ |
@@ -431,14 +432,6 @@ the fastest. Building the *whole* index, CodeGraph is **22x faster than we are**
 because by then we have also built the git-history layer, the wiki, the decisions and
 the health pass. If a call graph is all you need, that is the right trade and you
 should take it. With model-written prose on, it is **135x**.
-
-**The hand-graded precision row cuts both ways.** About fourteen percent of the call
-edges we draw are wrong, and on `seastar` CodeGraph grades better than we do. The
-compiler row exists because we graded the hand-read one ourselves: on Go and
-TypeScript the answer key is the Go team's own call graph and the `tsc` checker's own
-resolution, which we neither wrote nor can tune. Precision alone is easy to win by
-drawing almost nothing, and recall alone by drawing everything, so the claim is the
-pair.
 
 <sub>Competitors measured at CodeGraph 1.5.0, Graphify 0.9.31, Serena 1.6.2.dev0 and
 code-review-graph 2.3.7 in August 2026. Repowise compiler-graded figures are from main

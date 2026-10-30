@@ -40,6 +40,12 @@ class UpgradeActionKind(enum.StrEnum):
     REEMBED_VECTORS = "reembed_vectors"
     #: Drop the parse cache so the next ingest re-parses from source.
     DROP_PARSE_CACHE = "drop_parse_cache"
+    #: Run the whole page-generation ladder once, so pages whose identity,
+    #: selection or prompt changed are rebuilt and the ones no longer produced
+    #: retire. Pages built from code cost nothing; model-written pages go
+    #: through the update's cost gate. The ``update`` run performs it in-band,
+    #: so :func:`~repowise.core.upgrade.manager.apply_auto` skips it.
+    REBUILD_WIKI = "rebuild_wiki"
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +80,11 @@ class UpgradeVerdict:
     def is_noop(self) -> bool:
         """True when the upgrade needs nothing and warrants no message."""
         return self.tier == UpgradeTier.COMPATIBLE and not self.actions and not self.user_notice
+
+    @property
+    def rebuilds_wiki(self) -> bool:
+        """True when the next ``update`` should rebuild the wiki once."""
+        return any(a.kind == UpgradeActionKind.REBUILD_WIKI for a in self.actions)
 
     @property
     def reindex_recommended(self) -> bool:

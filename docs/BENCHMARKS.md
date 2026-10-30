@@ -15,7 +15,7 @@ can rerun it.
 | **Points at the right code** | **88%** of the files a real fix needed, against **61%** for the next tool | Before an agent edits, it has to find the right files. Repowise finds most of them in one call. [Details](#1-finding-the-right-files) |
 | **Up to 99% less noise** | `npm ci` **99.5%**, `git log` **89%**, `git diff` **86%**, test runs **61%** smaller | Command output is trimmed before the agent reads it, and every error line is kept. [Details](#4-command-output-compression) |
 | **Finds the code that will break** | **2.3x** as many later-buggy files as CodeScene, in the same review budget | Its health score flags the files that go on to need bug fixes, across 21 open-source projects. [Details](#5-code-health-predicts-defects) |
-| **A map the compiler agrees with** | **95% to 99.6%** of the calls it draws are confirmed by the language's own compiler | Go, TypeScript, Dart, C and Python, each graded by its own toolchain. [Details](#accuracy-by-language) |
+| **A map the compiler agrees with** | **93.8% to 99.8%** of the calls it draws are confirmed by the language's own compiler | Go, TypeScript, Dart, C and Python, each graded by its own toolchain. [Details](#accuracy-by-language) |
 | **Knows which tests matter** | **97.5%** correct on which tests to run for a change, with no coverage run | Teams can run the tests a change touches instead of the whole suite. [Details](#test-intelligence) |
 | **Runs on a laptop at any size** | **15 million lines** (dotnet/runtime) indexed on one laptop, with no API key | Updates after that take seconds. Building the map uses **10x less memory** than the next tool. [Details](#scale) |
 
@@ -259,67 +259,80 @@ Reports:
 ## Call graph accuracy by language
 
 **What we asked.** When repowise says "function A calls function B", is that true?
-The judge is each language's own compiler, which resolves every call exactly. We
-count how many of our calls it confirms (precision) and how many of its calls we
-found (recall). Measured October 2026 on repowise main, each repository freshly
-indexed.
+The judge is each language's own compiler, which resolves every call exactly.
+Measured October 2026 on repowise main, each repository freshly indexed, every
+row published.
 
-**What we found.** **95% to 99.6% precision** on Go, TypeScript, Dart, C and three
-of four Python projects, 87% to 95% on Java and 94% on Kotlin applications.
+**What we found.** Precision is **0.938 to 0.998** on Go,
+TypeScript, Dart, C and Python, **0.898 to 1.000** on Java, and
+**0.780 to 0.975** on Kotlin, C#, C++ and Rust, where Polly (0.780) is the
+one row under 0.84. Applications are
+in the table: a Spring Boot service (eclipse-hawkbit), an ASP.NET Core shop
+(eShopOnWeb) and a C++ build tool (ninja). Held-out repositories read close to
+the dev ones: none sits more than 0.04 below its language's lowest dev row, and
+git and dart_style read above theirs.
 
-| Language | Repository | Set | Answer key | Compiler edges | Precision | Recall |
+| Language | Repository | Set | Answer key | Precision | Recall | Edges |
 |---|---|---|---|---:|---:|---:|
-| Go | gitleaks | dev | scip-go (Go compiler) | 1,596 | **0.996** | 0.985 |
-| TypeScript | zod | dev | `tsc` | 1,269 | **0.995** | 0.796 |
-| TypeScript | hono | dev | `tsc` | 706 | **0.976** | 0.806 |
-| Dart | pub | dev | Dart analyzer | 2,311 | **0.994** | 0.827 |
-| Python | httpx | dev | jedi | 1,753 | **0.994** | 0.838 |
-| Python | click | dev | jedi | 2,246 | **0.959** | 0.745 |
-| Python | typer | held out | jedi | 2,099 | **0.963** | 0.846 |
-| Python | attrs | held out | jedi | 1,328 | 0.495 | 0.370 |
-| C | redis | dev | scip-clang (clang) | 34,349 | **0.950** | 0.709 |
-| C | git | held out | scip-clang (clang) | 28,118 | **0.979** | 0.830 |
-| Java | jsoup | dev | scip-java (javac) | 4,332 | **0.953** | 0.926 |
-| Java | gson | dev | scip-java (javac) | 1,760 | **0.920** | 0.908 |
-| Java | jackson-core | held out | scip-java (javac) | 4,832 | **0.918** | 0.898 |
-| Java | javapoet | held out | scip-java (javac) | 698 | 0.884 | 0.865 |
-| Java | joda-time | held out | scip-java (javac) | 8,164 | 0.872 | 0.843 |
-| Kotlin | nowinandroid | dev | Kotlin K2 compiler | 643 | **0.944** | 0.652 |
-| Kotlin | ktor-samples | dev | Kotlin K2 compiler | 347 | **0.936** | 0.628 |
-| Kotlin | okio (JVM) | dev | Kotlin K2 compiler | 1,468 | 0.675 | 0.379 |
-| C# | FluentValidation | dev | scip-dotnet (Roslyn) | 629 | **0.916** | 0.506 |
-| C# | AutoMapper | held out | scip-dotnet (Roslyn) | 3,157 | 0.863 | 0.321 |
-| C# | Polly (4 projects) | dev | scip-dotnet (Roslyn) | 1,171 | 0.724 | 0.233 |
-| Rust | fd | dev | rust-analyzer | 231 | 0.899 | 0.619 |
-| Rust | ripgrep | dev | rust-analyzer | 4,555 | 0.852 | 0.532 |
-| C++ | fmt | dev | scip-clang (clang) | 1,636 | 0.777 | 0.385 |
-| Apex | 7 public Salesforce repositories | dev | census of literal references, 90 hand-graded edges | 40,907 | **90/90** | 0.999 |
+| Go | gitleaks | dev | scip-go (Go compiler) | **0.996** | 0.986 | 1,596 |
+| Go | goldmark | held out | scip-go (Go compiler) | **0.994** | 0.781 | 1,712 |
+| TypeScript | zod | dev | `tsc` | **0.995** | 0.796 | 1,269 |
+| TypeScript | hono | dev | `tsc` | **0.976** | 0.806 | 706 |
+| Dart | pub | dev | Dart analyzer | **0.994** | 0.885 | 2,311 |
+| Dart | dart_style | held out | Dart analyzer | **0.998** | 0.870 | 2,571 |
+| Python | httpx | dev | jedi | **0.994** | 0.839 | 1,752 |
+| Python | click | dev | jedi | **0.959** | 0.746 | 2,246 |
+| Python | attrs | dev | jedi | **0.942** | 0.757 | 1,472 |
+| Python | typer | held out | jedi | **0.963** | 0.847 | 2,099 |
+| Python | alembic | held out | jedi | **0.991** | 0.696 | 1,319 |
+| C | redis | dev | scip-clang (clang) | **0.938** | 0.717 | 34,209 |
+| C | git | held out | scip-clang (clang) | **0.979** | 0.837 | 28,104 |
+| C++ | fmt | dev | scip-clang (clang) | **0.858** | 0.615 | 1,414 |
+| C++ | ninja | dev | scip-clang (clang) | **0.944** | 0.714 | 1,047 |
+| C++ | yaml-cpp | held out | scip-clang (clang) | **0.841** | 0.634 | 1,172 |
+| Java | jsoup | dev | scip-java (javac) | **0.980** | 0.943 | 4,332 |
+| Java | gson | dev | scip-java (javac) | **0.958** | 0.949 | 1,760 |
+| Java | eclipse-hawkbit (Spring Boot application) | dev | scip-java (javac) | **0.937** | 0.845 | 5,977 |
+| Java | spring-petclinic-rest | dev | scip-java (javac) | **1.000** | 0.966 | 355 |
+| Java | javapoet | held out | scip-java (javac) | **0.950** | 0.917 | 698 |
+| Java | jackson-core | held out | scip-java (javac) | **0.963** | 0.933 | 4,832 |
+| Java | joda-time | held out | scip-java (javac) | **0.898** | 0.866 | 8,164 |
+| Kotlin | nowinandroid | dev | Kotlin K2 compiler | **0.975** | 0.801 | 643 |
+| Kotlin | ktor-samples | dev | Kotlin K2 compiler | **0.973** | 0.821 | 347 |
+| Kotlin | okio (JVM) | dev | Kotlin K2 compiler | **0.901** | 0.654 | 1,468 |
+| C# | FluentValidation | dev | scip-dotnet (Roslyn) | **0.942** | 0.633 | 621 |
+| C# | Polly (4 projects) | dev | scip-dotnet (Roslyn) | **0.780** | 0.436 | 962 |
+| C# | eShopOnWeb (ASP.NET Core application) | dev | scip-dotnet (Roslyn) | **0.877** | 0.773 | 185 |
+| C# | AutoMapper | held out | scip-dotnet (Roslyn) | **0.866** | 0.347 | 3,074 |
+| Rust | fd | dev | rust-analyzer | **0.917** | 0.661 | 233 |
+| Rust | ripgrep | dev | rust-analyzer | **0.863** | 0.546 | 4,567 |
+| Apex | 7 public Salesforce repositories | dev | census of literal references, 90 hand-graded edges | **90/90** | 0.999 | 40,907 |
 
 **Held out means never tuned on.** Dev repositories are the ones accuracy work
 is developed against. Held-out repositories are chosen in advance and never used
 to pick a fix, so they are the fairest read of what you will see on your own
-code. Java's held-out repositories read 0.87 to 0.92, within a few points of its
-dev repositories.
+code.
 
 **How it is scored.** An edge matches when the caller and the callee land on
-the same declaration line the compiler names. Apex has no public compiler index,
-so its recall is read against a census of literal `new X(` and `X.m(` references
-to classes in other files, and its precision from 30 hand-graded edges on each of
-three repositories. Python has no compiler that
-resolves calls, so its reference is jedi, the standard static analyser for
-Python. Every cell carries a 95% confidence interval in the published
-artifacts.
+the same declaration line the compiler names. Python's reference is jedi, the
+standard static analyser, and it follows re-exports and type stubs to the real
+definition. Where clang or Roslyn's index cannot tell which overload an
+unresolved call names, that call is left ungraded, and Java's reference places
+Lombok-generated members where javac does. Apex has no public compiler index, so
+its recall is read against a census of literal `new X(` and `X.m(` references
+and its precision from 30 hand-graded edges on each of three repositories. Every
+cell carries a 95% confidence interval in the published artifacts.
 
-**Reading the lower rows.** Two libraries are structurally unusual: okio is a
-multiplatform library whose `expect` and `actual` declarations share names with
-the standard library, and attrs exports its API through chained module aliases
-(`s = attributes = attrs`). Application-shaped code in the same languages reads
-0.94 (Kotlin) and 0.96 to 0.99 (Python). In Java and C#, a large share of what
-remains is the choice between overloads of the right method: counting any overload of the
-right method as correct, Java reads 0.92 to 0.98 and Polly 0.89.
+**Recall is a deliberate choice.** The graph declines to guess a call it cannot
+prove, such as dynamic and interface dispatch, rather than draw several edges
+where one is right. Recall also depends on how many entry points a codebase has,
+so compare it within a language.
 
-**Recall** depends on how many entry points a codebase has and how much it
-dispatches dynamically, so compare it within a language, not across languages.
+**Reading the lower rows.** Polly (0.780) defines many overloads of each
+policy method, so much of what remains is the choice between overloads of the
+right method. fmt (0.858) is the same choice in C++, among templates and
+overloads that take the same number of arguments. ripgrep (0.863) spans ten
+crates in which many unrelated types share method names.
 
 Reference versions: scip-go 0.2.7, scip-java 0.13.1, scip-dotnet 0.2.14,
 scip-clang 0.3.1, rust-analyzer 1.96.0, jedi 0.20.0, Dart analyzer 14.5.0,
@@ -384,53 +397,6 @@ tests), so compare recall within a row.
 
 Full method, per-cell artifacts and the pre-registration:
 **[graph/experiments/g4-oracle-anchored](https://github.com/repowise-dev/repowise-bench/tree/master/graph/experiments/g4-oracle-anchored)**.
-
-</details>
-
----
-
-<a id="7-edge-precision"></a>
-<a id="call-edges-hand-graded-across-nine-languages"></a>
-
-## Call edges read by hand, nine languages
-
-People read 280 call edges per tool (560 in all) across nine languages, each with
-its imports and surrounding code open, against CodeGraph 1.5.0 (August 2026).
-
-| | Correct / n | 95% CI |
-|---|---|---|
-| **repowise** | **240/280 = 85.7%** | [81.1, 89.3] |
-| CodeGraph 1.5.0 | 164/280 = 58.6% | [52.7, 64.2] |
-
-| Language | repowise | CodeGraph | |
-|---|---|---|---|
-| TypeScript | 29/30 | 7/30 | separates |
-| Go | 29/30 | 29/30 | tie |
-| C# | 30/30 | 20/30 | separates |
-| Python | 28/30 | 19/30 | separates |
-| Kotlin | 27/30 | 13/30 | separates |
-| Swift | 23/30 | 19/30 | tie |
-| C++ | 22/30 | 16/30 | tie |
-| Rust | 22/30 | 13/30 | tie |
-| Java *(n=40)* | 30/40 | 28/40 | tie |
-
-Four of nine cells separate at 95% confidence and five are ties; at n=30 the
-interval is about ±16 points near 60%. Compiler-graded results for the same
-languages are in [accuracy by language](#accuracy-by-language): Java 0.87 to
-0.95, Kotlin applications 0.94, C# 0.72 to 0.92. Where the two methods differ,
-as in C#, the compiler figure is the stricter read.
-
-<details>
-<summary><b>Method</b></summary>
-
-30 rows per language per tool, seed 2026, stratified by resolution strategy.
-Java is read at 40 rows across two repositories. C++ is read at 50 rows per
-side and enters the pooled figure at a seeded 30, so every language carries the
-same weight. All 600 graded rows are published, each with the call site, the
-declaration it was bound to, the verdict and the reason, with a script that
-rebuilds every table.
-
-**[graph/experiments/g1-edge-precision/rows](https://github.com/repowise-dev/repowise-bench/tree/master/graph/experiments/g1-edge-precision/rows)**
 
 </details>
 
@@ -569,7 +535,7 @@ not.
   real defect history.
 
 Retrieval and the agent loop are measured on Python and Go; graph accuracy on
-ten languages against their compilers (jedi for Python) and nine hand-graded. The method end to
+ten languages against their compilers (jedi for Python). The method end to
 end:
 **[THE\_LOOP.md](https://github.com/repowise-dev/repowise-bench/blob/master/head-to-head/THE_LOOP.md)**.
 
@@ -580,7 +546,7 @@ every graded cell, every pre-registration, and what each run cost.
 
 | Start here | For |
 |---|---|
-| **[graph/](https://github.com/repowise-dev/repowise-bench/tree/master/graph)** | Graph accuracy: per-language compiler scores, the five-tool comparison, hand-graded precision across nine languages, build cost |
+| **[graph/](https://github.com/repowise-dev/repowise-bench/tree/master/graph)** | Graph accuracy: per-language compiler scores, the five-tool comparison, build cost |
 | **[head-to-head](https://github.com/repowise-dev/repowise-bench/tree/master/head-to-head)** | Retrieval and agent-loop results and per-tool setup notes |
 | **[health-defect](https://github.com/repowise-dev/repowise-bench/tree/master/health-defect)** | The defect-prediction study and the CodeScene comparison |
 | **[results/bakeoff\_2026\_08](https://github.com/repowise-dev/repowise-bench/tree/master/results/bakeoff_2026_08)** | Every graded cell and every verbatim response |

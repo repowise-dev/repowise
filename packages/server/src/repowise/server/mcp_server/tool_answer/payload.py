@@ -665,6 +665,12 @@ async def _graded_payload(
                 f"Read {fallback_targets[0]} and verify the asserted value(s) "
                 f"{grade.ungrounded_values} against the live source."
             )
+    elif grade.admitted_gap:
+        payload["note"] = (
+            "Held at medium: the answer says part of the question is outside the "
+            f'retrieved evidence ("{grade.admitted_gap[:200]}"). Confirm that part '
+            f"against {fallback_targets[0] if fallback_targets else 'the source'}."
+        )
     elif grade.frame_unsupported:
         # The real mechanism likely lives in uncaptured code; mine source
         # comments so the downgrade ships a lead, not just a warning.

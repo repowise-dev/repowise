@@ -89,3 +89,64 @@ class TestUntypedReceiverRefuses:
     def test_a_chained_constructor_resolves_nothing(self, tmp_path: Path) -> None:
         _repo(tmp_path, "    let b = Builder::new().into_other();\n    b.build()")
         assert not _resolves_to_builder(tmp_path)
+
+
+def _field_repo(root: Path, field_type: str, body: str = "self.inner.build()") -> None:
+    """``Holder { inner: <field_type> }`` whose method calls through the field."""
+    _repo(root, "    0")
+    (root / "src" / "lib.rs").write_text("pub mod a;\npub mod b;\npub mod c;\npub mod d;\n")
+    (root / "src" / "d.rs").write_text(
+        "use crate::a::Builder;\n"
+        "pub struct Holder {\n"
+        f"    inner: {field_type},\n"
+        "    n: u32,\n"
+        "}\n"
+        "impl Holder {\n"
+        f"    pub fn go(&self) -> u32 {{ {body} }}\n"
+        "}\n"
+    )
+
+
+def _holder_targets(root: Path) -> set[str]:
+    return _call_targets(_build(root), "src/d.rs::Holder::go")
+
+
+class TestSelfFieldChain:
+    def test_a_field_typed_by_an_import(self, tmp_path: Path) -> None:
+        _field_repo(tmp_path, "Builder")
+        assert "src/a.rs::Builder::build" in _holder_targets(tmp_path)
+
+    def test_a_borrowed_field(self, tmp_path: Path) -> None:
+        _field_repo(tmp_path, "&'a mut Builder")
+        assert "src/a.rs::Builder::build" in _holder_targets(tmp_path)
+
+    def test_a_field_of_a_type_declared_beside_its_impl(self, tmp_path: Path) -> None:
+        """The struct and its ``impl`` share one id; the struct's span holds the fields."""
+        _field_repo(tmp_path, "Local")
+        (tmp_path / "src" / "d.rs").write_text(
+            "pub struct Local;\nimpl Local {\n    pub fn build(&self) -> u32 { 2 }\n}\n"
+            + (tmp_path / "src" / "d.rs").read_text()
+        )
+        assert "src/d.rs::Local::build" in _holder_targets(tmp_path)
+
+    def test_a_test_module_use_of_a_same_file_type(self, tmp_path: Path) -> None:
+        """``use super::T`` in a nested module does not make the file's own ``T`` external."""
+        _field_repo(tmp_path, "Local")
+        (tmp_path / "src" / "d.rs").write_text(
+            "pub struct Local;\nimpl Local {\n    pub fn build(&self) -> u32 { 2 }\n}\n"
+            + (tmp_path / "src" / "d.rs").read_text()
+            + "#[cfg(test)]\nmod tests {\n    use super::Local;\n}\n"
+        )
+        assert "src/d.rs::Local::build" in _holder_targets(tmp_path)
+
+    def test_an_option_field_resolves_nothing(self, tmp_path: Path) -> None:
+        _field_repo(tmp_path, "Option<Builder>")
+        assert not any("build" in t for t in _holder_targets(tmp_path))
+
+    def test_a_generic_parameter_field_resolves_nothing(self, tmp_path: Path) -> None:
+        _field_repo(tmp_path, "B")
+        assert not any("build" in t for t in _holder_targets(tmp_path))
+
+    def test_a_type_without_the_method_resolves_nothing(self, tmp_path: Path) -> None:
+        _field_repo(tmp_path, "Builder", body="self.inner.missing()")
+        assert not _holder_targets(tmp_path)

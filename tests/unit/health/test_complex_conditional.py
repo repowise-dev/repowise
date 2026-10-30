@@ -182,6 +182,61 @@ def test_python_ternary_counts_condition_only(body: str, count: int):
     assert [c.operator_count for c in conds] == ([count] if count else [])
 
 
+@pytest.mark.parametrize(
+    ("language", "src"),
+    [
+        (
+            "python",
+            "def f(v, a, b, c):\n    match v:\n        case 1 if a and b and c:\n            return 1\n    return 0\n",
+        ),
+        (
+            "scala",
+            "object O { def f(v: Int, a: Boolean, b: Boolean, c: Boolean): Int = v match {\n"
+            "  case 1 if a && b && c => 1\n  case _ => 0\n} }\n",
+        ),
+        (
+            "scala",
+            "object O { def f(xs: List[Int], a: Boolean, b: Boolean, c: Boolean) = "
+            "{ for (x <- xs; if a && b && c) println(x) } }\n",
+        ),
+        (
+            "swift",
+            "func f(xs: [Int], a: Bool, b: Bool, c: Bool) {\n for x in xs where a && b && c { print(x) }\n}\n",
+        ),
+    ],
+)
+def test_guard_counts_once(language: str, src: str):
+    conds = _conditions(src, language, "f").complex_conditions
+    assert [c.operator_count for c in conds] == [2]
+
+
+@pytest.mark.parametrize(
+    ("language", "src"),
+    [
+        ("python", "def f(a, b, c):\n    for x in (a and b or c):\n        print(x)\n"),
+        ("python", "async def f(a, b, c):\n    async for x in (a and b or c):\n        print(x)\n"),
+        ("typescript", "function f(a, b, c) { for (const x of (a && b || c)) { g(x); } }\n"),
+        ("java", "class C { void f(boolean a, boolean b) { for (Object x : h(a && b || a)) { g(x); } } }\n"),
+        ("csharp", "class C { void f(bool a, bool b) { foreach (var x in H(a && b || a)) { G(x); } } }\n"),
+        ("kotlin", "fun f(a: Boolean, b: Boolean) { for (x in h(a && b || a)) g(x) }\n"),
+        ("ruby", "def f(a, b, c)\n  for x in (a && b || c)\n    g(x)\n  end\nend\n"),
+        ("rust", "fn f(a: bool, b: bool) { for x in h(a && b || a) { g(x); } }\n"),
+        ("swift", "func f(a: Bool, b: Bool) {\n for x in h(a && b || a) { g(x) }\n}\n"),
+        ("cpp", "void f(bool a, bool b) { for (auto x : h(a && b || a)) { g(x); } }\n"),
+        ("php", "<?php function f($a, $b) { foreach (h($a && $b || $a) as $x) { g($x); } }\n"),
+        ("scala", "object O { def f(a: Boolean, b: Boolean) = { for (x <- h(a && b || a)) g(x) } }\n"),
+    ],
+)
+def test_foreach_iterable_is_not_a_condition(language: str, src: str):
+    assert _conditions(src, language, "f").complex_conditions == []
+
+
+def test_while_condition_still_counted():
+    src = "def f(a, b, c):\n    while a and b or c:\n        pass\n"
+    (cond,) = _conditions(src, "python", "f").complex_conditions
+    assert (cond.operator_count, cond.enclosing_construct) == (2, "while")
+
+
 def test_reason_operator_count_matches_details_and_code():
     # Three operators in the condition, one more in each arm.
     src = "def f(a, b, c, d, e, g):\n    x = a or b if c and d or e and g else a and b\n    return x\n"

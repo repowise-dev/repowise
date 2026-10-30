@@ -217,6 +217,21 @@ LLM cost. `POST /api/repos/{id}/full-resync` also regenerates every page.
 
 ---
 
+## Concurrent updates
+
+Rapid commits through the post-commit hook and a manual `repowise update` can
+start updates at once. One update runs at a time; a second one that finds the lock held
+records its commit and exits, and the running update rolls forward to it.
+
+| File | Purpose |
+|------|---------|
+| `.repowise/.update.lock` | Held by the running update. Records its PID, a process creation token and the target commit, so a lock left by a crashed update is cleared. A workspace update uses `.repowise-workspace/.update.lock` |
+| `.repowise/.update.queued` | Written by the post-commit hook before it starts the background update, so agent hooks stop reporting a stale wiki right away |
+| `.repowise/.update.pending` | Written by an update that found the lock held. Carries the newest HEAD, which the running update processes in an extra pass before it exits |
+| `.repowise/.update.log` | Output of background updates. Capped at 256 KB, keeping the last 64 KB |
+
+---
+
 ## Environment variables
 
 | Variable | Used by | Description |

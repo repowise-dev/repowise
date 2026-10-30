@@ -69,20 +69,18 @@ capture queries are in
 | Answer key | Scope | Result |
 |---|---|---|
 | Compiler (Go RTA call graph, `tsc`) | Go and TypeScript, 7 cells over 5 repositories, 37,853 compiler edges | Precision 0.976 to 0.995 |
-| javac | Java, 3 repositories | Precision 0.725 to 0.781 (0.781 on jsoup) |
-| Compiler index | C on git, held out from all tuning | Precision 0.979 at 0.83 recall |
-| Hand-graded | 280 call edges across nine languages | 240 of 280 correct (85.7%); errors cluster in Rust, C++ and Java |
+| javac | Java, 7 repositories (3 held out) | Precision 0.898 to 1.000 |
+| Compiler index | C on git, held out from all tuning | Precision 0.979 at 0.837 recall |
 
 In all seven Go and TypeScript cells, no tool in the five-tool comparison that
 finds as much of the call graph gets more of it right; two tools post higher
 precision in some cells by drawing much smaller graphs. Recall leads in three of
-the seven cells, and most misses are dynamic dispatch. C#, C++, Rust and Python
-(against jedi, a static analyser) are measured in the same table.
+the seven cells, and most misses are dynamic dispatch. Dart, Kotlin, C#, C++,
+Rust and Python (against jedi, a static analyser) are measured in the same table.
 
 Per-language figures, the five-tool table and sample sizes:
-[BENCHMARKS.md: accuracy by language](../BENCHMARKS.md#accuracy-by-language),
-[call graph against a compiler](../BENCHMARKS.md#call-graph-against-a-compiler-five-tools)
-and [hand-graded](../BENCHMARKS.md#call-edges-hand-graded-across-nine-languages).
+[BENCHMARKS.md: accuracy by language](../BENCHMARKS.md#accuracy-by-language)
+and [call graph against a compiler](../BENCHMARKS.md#call-graph-against-a-compiler-five-tools).
 
 ## What is in the graph
 
@@ -263,16 +261,14 @@ and a 1-10 architecture score; see
 - `global_unique` at 0.50 is a labelled guess, kept for reachability.
 - Unused methods are not reported for any language, because method-level
   precision is too low to recommend deletions.
-- About one call edge in seven is wrong on the hand-graded sample (85.7%
-  correct over 280 rows). Recall is lower than the leading tool in four of seven
-  compiler-graded cells.
+- Recall is lower than the leading tool in four of seven compiler-graded cells.
 - The graph keeps one node per overload set, so on Java and C# a call can land
-  on the wrong overload. On C#, plan against the compiler figure (0.73 to 0.92),
-  not the hand-graded 30 of 30.
-- Precision is published for eleven of the 28 full-AST languages. Go, TypeScript,
-  Java, C#, C, C++, Rust and Python have a compiler or analyser answer key;
-  Kotlin and Swift have the hand-graded sample only, at 30 rows each, and Apex
-  90 hand-graded rows with recall against a census of literal references.
+  on the wrong overload. C# reads 0.780 to 0.942 against
+  the compiler.
+- Precision is published for eleven languages. Go, TypeScript, Dart, Python, C,
+  C++, Java, Kotlin, C# and Rust are graded against a compiler or analyser;
+  Apex against 90 hand-graded rows, with recall against a census of literal
+  references.
 - Read a precision figure together with its recall. Two tools post higher
   precision in some compiler cells, each by drawing a much smaller graph.
 

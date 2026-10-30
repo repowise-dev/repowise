@@ -11,6 +11,7 @@ import importlib
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from ._datetime import UTCDateTime
     from .architecture import (
         ArchEdgeResponse,
         ArchitectureViewResponse,
@@ -303,6 +304,7 @@ if TYPE_CHECKING:
         WorkspaceBreakingChange,
         WorkspaceBreakingChangesResponse,
         WorkspaceCoChangeEntry,
+        WorkspaceCoChangeEvidence,
         WorkspaceCoChangesResponse,
         WorkspaceCoChangeStructure,
         WorkspaceConformanceResponse,
@@ -351,6 +353,7 @@ if TYPE_CHECKING:
 # Loaded on first access (PEP 562), so importing one model does not pay for
 # every submodule, one of which pulls in the whole dead-code analyzer.
 _EXPORTS: dict[str, tuple[str, ...]] = {
+    "_datetime": ("UTCDateTime",),
     "architecture": (
         "ArchEdgeResponse",
         "ArchitectureViewResponse",
@@ -612,6 +615,7 @@ _EXPORTS: dict[str, tuple[str, ...]] = {
         "WorkspaceBreakingChange",
         "WorkspaceBreakingChangesResponse",
         "WorkspaceCoChangeEntry",
+        "WorkspaceCoChangeEvidence",
         "WorkspaceCoChangesResponse",
         "WorkspaceCoChangeStructure",
         "WorkspaceConformanceResponse",
@@ -670,7 +674,6 @@ if not TYPE_CHECKING:
 
     def __dir__() -> list[str]:
         return sorted({*globals(), *__all__})
-
 
 __all__ = [
     "ActiveProviderSelection",
@@ -909,6 +912,7 @@ __all__ = [
     "SymbolResponse",
     "TableView",
     "TransitiveEntry",
+    "UTCDateTime",
     "UnclusteredFiles",
     "UpdateMcpToolsRequest",
     "VersionResponse",
@@ -919,6 +923,7 @@ __all__ = [
     "WorkspaceBreakingChange",
     "WorkspaceBreakingChangesResponse",
     "WorkspaceCoChangeEntry",
+    "WorkspaceCoChangeEvidence",
     "WorkspaceCoChangeStructure",
     "WorkspaceCoChangesResponse",
     "WorkspaceConformanceResponse",

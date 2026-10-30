@@ -186,10 +186,10 @@ _TEMPLATES: dict[str, str] = {
         "to check against."
     ),
     "stale_governance": (
-        "The architectural decision governing this file has gone stale: "
-        "the code has changed but the decision hasn't been reviewed. "
-        "Update or supersede the decision via `repowise decision edit` "
-        "so the rationale reflects the current implementation."
+        "Files governed by this file's architectural decision have changed "
+        "since the decision was recorded. Review it, and if it no longer "
+        "holds, update or supersede it via `repowise decision edit` so the "
+        "rationale reflects the current implementation."
     ),
     "contradictory_decision": (
         "Two active decisions make contradictory claims that affect this "

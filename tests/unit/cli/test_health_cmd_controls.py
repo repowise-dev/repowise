@@ -44,6 +44,27 @@ def test_an_unknown_value_is_refused_rather_than_silently_defaulted() -> None:
     assert "code-shape" in result.output
 
 
+def test_production_scope_leaves_out_tooling_vendored_and_generated_files() -> None:
+    """``--scope production`` reads the file set ``production_average`` does."""
+
+    def row(path: str, score: float, origin: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            file_path=path, score=score, nloc=100, is_test=False, code_origin=origin
+        )
+
+    rows = [
+        row("src/a.py", 4.0, "production"),
+        row("scripts/release.py", 10.0, "tooling"),
+        row("vendor/lib.js", 10.0, "vendored"),
+        row("src/gen/api_pb2.py", 10.0, "generated"),
+    ]
+    report = SimpleNamespace(metrics=rows, findings=[], kpis={})
+    opts = SimpleNamespace(scope="production", counts=DEFAULT_COUNTS, keeps=lambda _p: True)
+    metrics, _, _ = health_module._scope_report(report, set(), opts)
+    assert [m.file_path for m in metrics] == ["src/a.py"]
+    assert report.kpis["average_health"] == report.kpis["production_average"] == 4.0
+
+
 def test_the_distribution_line_names_every_band() -> None:
     """Three segments on a five-band scale reads as a scale that has three."""
     import re

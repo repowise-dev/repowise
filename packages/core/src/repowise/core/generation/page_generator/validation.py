@@ -11,8 +11,9 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 
+from repowise.core.generation.agent_digest import split_questions
 from repowise.core.generation.mermaid_safety import invalid_mermaid_blocks, sanitize_mermaid
-from repowise.core.generation.prose import prose_text
+from repowise.core.generation.prose import prose_text, prose_word_count
 from repowise.core.ingestion.models import ParsedFile
 from repowise.core.providers.llm.base import GeneratedResponse
 
@@ -213,8 +214,96 @@ def _pathological_repetition_detail(content: str) -> str | None:
     return None
 
 
-def validate_generated_response(response: GeneratedResponse) -> None:
-    """Reject fresh provider output that is unsafe to persist as a wiki page."""
+# ---------------------------------------------------------------------------
+# Page shape
+#
+# The rules a page type's template states and the model drifts from: the house
+# vocabulary it bans, the table and length budget. A page that breaks one is
+# still a page a reader can use, so these are retried once and then kept as
+# written (``PageShapeError`` is soft), unlike the checks above.
+# ---------------------------------------------------------------------------
+
+
+class PageShapeError(InvalidGeneratedContentError):
+    """The response breaks its template's shape rules; retried, then kept."""
+
+
+#: Words the module page template bans: the abstraction the in/out/why opening
+#: used to produce ("This subsystem turns X into Y") and talk about the wiki's
+#: own structure. Measured on this repository's 101 module pages before the
+#: template changed: 403 hits on 91 pages.
+_HOUSE_JARGON = re.compile(
+    r"\bsubsystems?\b|\bboundar(?:y|ies)\b|\b(?:child|concept) pages?\b"
+    r"|\btakes in\b|\bhands? (?:it |them )?on\b|\bturns\b(?! out)[^.\n]{1,80}?\binto\b",
+    re.IGNORECASE,
+)
+#: Two stray uses are tolerated: "word boundary" on a regex page and "error
+#: boundary" on a React one are the code's own words.
+_MAX_JARGON_HITS = 2
+_MAX_TABLES = 1
+_MAX_TABLE_ROWS = 8
+#: The template asks for 500 to 800 words before the questions.
+_MAX_PROSE_WORDS = 900
+_TABLE_DIVIDER = re.compile(r"^\s*\|[-:| ]+\|\s*$")
+
+
+def _table_row_counts(prose: str) -> list[int]:
+    """Body rows of each markdown table in *prose*, in order."""
+    counts: list[int] = []
+    run = 0
+    for line in [*prose.splitlines(), ""]:
+        if line.lstrip().startswith("|"):
+            run += 0 if _TABLE_DIVIDER.match(line) else 1
+        elif run:
+            counts.append(run - 1)  # the header row is not a body row
+            run = 0
+    return counts
+
+
+def _module_page_shape(content: str) -> str | None:
+    """What breaks the module page template's own rules, or ``None``."""
+    body, _questions = split_questions(content)
+    prose = prose_text(body)
+    if len(_HOUSE_JARGON.findall(prose)) > _MAX_JARGON_HITS:
+        # The banned words are not repeated here: the re-ask quotes this text,
+        # and naming them again is how a retry plants them back.
+        return (
+            "uses the abstract vocabulary the opening rule bans, or talks about pages "
+            "of the wiki, instead of naming what the code does"
+        )
+    tables = _table_row_counts(prose)
+    if len(tables) > _MAX_TABLES or any(rows > _MAX_TABLE_ROWS for rows in tables):
+        return (
+            f"has {len(tables)} tables (largest {max(tables)} rows); at most "
+            f"{_MAX_TABLES} table of at most {_MAX_TABLE_ROWS} rows is allowed"
+        )
+    words = prose_word_count(body)
+    if words > _MAX_PROSE_WORDS:
+        return f"runs to {words} words of prose; it must stay within 500 to 800"
+    return None
+
+
+_SHAPE_CHECKS = {"module_page": _module_page_shape}
+
+
+def validate_page_shape(page_type: str | None, content: str) -> None:
+    """Raise :class:`PageShapeError` when *content* breaks *page_type*'s shape rules."""
+    check = _SHAPE_CHECKS.get(page_type or "")
+    detail = check(content) if check is not None else None
+    if detail is not None:
+        _artifact_check_counts["shape_rejected"] += 1
+        raise PageShapeError(f"the page {detail}")
+
+
+def validate_generated_response(
+    response: GeneratedResponse, page_type: str | None = None
+) -> None:
+    """Reject fresh provider output that is unsafe to persist as a wiki page.
+
+    With *page_type*, the page is also held to its template's shape rules
+    (:func:`validate_page_shape`), checked last so a hard failure is reported
+    ahead of a soft one.
+    """
     _artifact_check_counts["responses_checked"] += 1
     if response.stop_reason == "max_tokens":
         detail = (
@@ -247,6 +336,7 @@ def validate_generated_response(response: GeneratedResponse) -> None:
     broken = invalid_mermaid_blocks(sanitize_mermaid(response.content))
     if broken:
         raise InvalidMermaidError(f"a mermaid diagram will not render: {broken[0]}")
+    validate_page_shape(page_type, response.content)
 
 
 # Common words that appear in backticks but are not code symbols.

@@ -58,7 +58,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from functools import cache
+from functools import cache, lru_cache
 from pathlib import PurePath, PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -162,6 +162,14 @@ _TEST_EXACT_STEMS: frozenset[str] = frozenset({"test", "tests"})
 # ``tests/helpers/test_builders.py`` stays a test.
 _SUPPORT_DIR_TOKENS: frozenset[str] = frozenset(
     {"fixtures", "factories", "support", "helpers", "mocks"}
+)
+
+# Filename stems that mark scaffolding/fixtures when sitting inside a test
+# tree (e.g. ``e2e/fixtures.ts``, ``tests/setup_tests.py``). They do not mark
+# files outside a test tree because bare "fixtures" or "fixture" is an ordinary
+# word in production domains (e.g. ``src/fixtures.py``).
+_SUPPORT_STEMS_IN_TEST_TREE: frozenset[str] = frozenset(
+    {"fixture", "fixtures", "setup-tests", "setup_tests", "setuptests"}
 )
 
 # Scaffolding directories whose names mean test material *wherever* they sit,
@@ -522,6 +530,32 @@ def _classify(
 ) -> str:
     """``"test"``, ``"support"``, or ``""`` for production code.
 
+    With no repo context the answer depends only on the path, the language and
+    the process-wide naming spec, so it is memoized: health detectors ask about
+    the same few thousand paths tens of thousands of times a pass.
+    """
+    if roots is None and dotnet_projects is None and phpunit_roots is None and package_root is None:
+        return _classify_without_context(path, language)
+    return _classify_with_context(path, language, roots, dotnet_projects, phpunit_roots, package_root)
+
+
+# Bounded so a long-lived server sees a fixed ceiling (~65k short keys); a
+# larger repo only re-classifies the overflow.
+@lru_cache(maxsize=65536)
+def _classify_without_context(path: str, language: str | None) -> str:
+    return _classify_with_context(path, language)
+
+
+def _classify_with_context(
+    path: str,
+    language: str | None,
+    roots: PytestRoots | None = None,
+    dotnet_projects: DotnetTestProjects | None = None,
+    phpunit_roots: PhpunitRoots | None = None,
+    package_root: PackageRootProbe | None = None,
+) -> str:
+    """The classification itself; see :func:`_classify`.
+
     One traversal, so the two public predicates cannot disagree with each other
     the way the copies they replace disagreed.
     """
@@ -570,10 +604,18 @@ def _classify(
         return ""
 
     # Inside test material. A test-shaped filename wins; otherwise a
-    # scaffolding directory demotes it to support.
-    if not named_test and any(seg in _SUPPORT_DIR_TOKENS for seg in segments):
+    # scaffolding directory or support stem demotes it to support.
+    if not named_test and _is_support_in_test_tree(segments, filename):
         return "support"
     return "test"
+
+
+def _is_support_in_test_tree(segments: list[str], filename: str) -> bool:
+    """Whether a file already inside a test tree is scaffolding (``e2e/fixtures.ts``)."""
+    return (
+        any(seg in _SUPPORT_DIR_TOKENS for seg in segments)
+        or PurePosixPath(filename.lower()).stem in _SUPPORT_STEMS_IN_TEST_TREE
+    )
 
 
 def _phpunit_skips(path: str, filename: str, roots: PhpunitRoots | None) -> bool:
