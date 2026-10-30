@@ -303,7 +303,8 @@ async def _poll_release_check() -> None:
 async def _watch_server_currency() -> None:
     """Both lifespan watches on this server's own code: a newer release, and
     the install changing under the running process."""
-    await asyncio.gather(_poll_release_check(), _code_drift.watch())
+    # return_exceptions: one watch failing must not leave the other uncancelled.
+    await asyncio.gather(_poll_release_check(), _code_drift.watch(), return_exceptions=True)
 
 
 async def _cancel_task(task: asyncio.Task) -> None:
