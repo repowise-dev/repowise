@@ -97,7 +97,7 @@ async def test_keyed_synthesis_reads_the_pageless_file(pageless_mcp, monkeypatch
 
     async def _capture(provider, system_prompt, user_prompt, **kwargs):
         prompts.append(user_prompt)
-        return f"It is resolved in {_TS_TARGET}.", None
+        return f"It is resolved in {_TS_TARGET}.", None, None
 
     monkeypatch.setattr(answer_mod, "_resolve_provider_for_answer", lambda _p: _Provider())
     monkeypatch.setattr(answer_mod, "synthesize", _capture)

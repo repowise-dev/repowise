@@ -8,13 +8,16 @@ synthesis call may take, and hashes the question for the answer cache.
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import json as _json
 import logging
 import math
 import os
 import posixpath
+import time
 from pathlib import Path
+from typing import NamedTuple
 
 from repowise.core.reasoning import ReasoningMode, resolve_reasoning
 from repowise.core.repo_config import load_repo_config
@@ -22,6 +25,7 @@ from repowise.server.mcp_server.tool_answer.config import (
     _SYNTHESIS_MAX_TOKENS,
     _SYNTHESIS_MAX_TOKENS_ENV,
     _SYNTHESIS_REASONING_MAX_TOKENS,
+    _SYNTHESIS_RETRY_TOKEN_FACTOR,
     _SYNTHESIS_TEMPERATURE,
 )
 
@@ -365,38 +369,34 @@ async def _record_synthesis_cost(
     )
 
 
-async def synthesize(
+class Synthesis(NamedTuple):
+    """One synthesis result. ``stop_reason`` is the provider's neutral stop
+    reason (``"max_tokens"`` when the text was cut at the token cap), or None
+    when the provider does not report one."""
+
+    text: str
+    failure_note: str | None
+    stop_reason: str | None = None
+
+
+async def _generate_within(
     provider,
     system_prompt: str,
     user_prompt: str,
     *,
-    reasoning: ReasoningMode = "auto",
-    session_factory=None,
-    repo_id: str | None = None,
-) -> tuple[str, str | None]:
-    """Run one synthesis call. Returns ``(answer_text, failure_note)``.
+    reasoning: ReasoningMode,
+    max_tokens: int,
+    timeout_s: float,
+) -> tuple[object | None, BaseException | None, bool]:
+    """One provider call under a deadline: ``(response, failure, timed_out)``.
 
-    ``failure_note`` is None on success. Owning the budget, the call and the
-    error message together is what keeps them consistent: the budget that
-    cancelled the call is the number the note quotes, and a caller cannot wire
-    up the call while forgetting the budget (which is how #1119 survived a
-    hardcoded 30s for as long as it did).
-
-    ``session_factory`` / ``repo_id`` are where the cost row lands. Both
-    optional: with neither, the call is still priced and logged, just not
-    persisted.
+    The provider's own errors are caught inside the deadline, so only our
+    deadline is labelled a timeout. A provider raising builtin ``TimeoutError``
+    (what a bare socket timeout raises, since it subclasses ``OSError``) would
+    otherwise tell the user to raise a budget that had nothing to do with it.
     """
-    timeout_s = _synthesis_timeout(provider)
-    reasoning, max_tokens = _synthesis_reasoning_and_budget(provider, reasoning)
 
     async def _generate() -> tuple[object | None, BaseException | None]:
-        """Swallow the provider's own errors so only our deadline escapes.
-
-        Without this, a provider raising builtin ``TimeoutError`` (which is
-        what a bare socket timeout raises, since it subclasses ``OSError``)
-        would be indistinguishable from the deadline we set, and the note would
-        tell the user to raise a budget that had nothing to do with it.
-        """
         try:
             return (
                 await provider.generate(
@@ -411,23 +411,93 @@ async def synthesize(
         except Exception as exc:
             return None, exc
 
-    timed_out = False
     try:
         response, failure = await asyncio.wait_for(_generate(), timeout=timeout_s)
     except TimeoutError as exc:
-        # Only wait_for can reach here now, so the label is earned.
-        timed_out = True
-        response, failure = None, exc
+        return None, exc, True
+    return response, failure, False
+
+
+def _hit_token_cap(response) -> bool:
+    return getattr(response, "stop_reason", None) == "max_tokens"
+
+
+def _text_of(response) -> str:
+    return (getattr(response, "content", None) or "").strip()
+
+
+async def _retry_past_cap(call, response, max_tokens: int, *, remaining_s: float, meter):
+    """Ask once more with a larger cap: ``(response to keep, its cap)``.
+
+    Bounded to one retry inside what is left of the time budget. A failed or
+    empty retry keeps the first reply, whose ``stop_reason`` still says it was cut.
+    """
+    if remaining_s <= 0:
+        return response, max_tokens
+    retry_tokens = max_tokens * _SYNTHESIS_RETRY_TOKEN_FACTOR
+    retried, failure, _ = await call(max_tokens=retry_tokens, timeout_s=remaining_s)
+    if failure is not None:
+        _log.warning("get_answer synthesis retry past the token cap failed: %s", failure)
+        return response, max_tokens
+    await meter(retried)
+    if _text_of(retried) or not _text_of(response):
+        return retried, retry_tokens
+    return response, max_tokens
+
+
+async def synthesize(
+    provider,
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    reasoning: ReasoningMode = "auto",
+    session_factory=None,
+    repo_id: str | None = None,
+) -> Synthesis:
+    """Run synthesis. Returns ``Synthesis(text, failure_note, stop_reason)``.
+
+    ``failure_note`` is None on success. Owning the budget, the call and the
+    error message together is what keeps them consistent: the budget that
+    cancelled the call is the number the note quotes, and a caller cannot wire
+    up the call while forgetting the budget (which is how #1119 survived a
+    hardcoded 30s for as long as it did).
+
+    A reply the provider stopped at the token cap is asked for once more with
+    a larger cap, inside the same time budget. A thinking model spends most of
+    the cap on hidden reasoning, so the first reply can stop mid-sentence. If
+    the retry fails or also hits the cap, the first usable text is kept and
+    ``stop_reason`` says it was cut.
+
+    ``session_factory`` / ``repo_id`` are where the cost row lands. Both
+    optional: with neither, the call is still priced and logged, just not
+    persisted.
+    """
+    timeout_s = _synthesis_timeout(provider)
+    reasoning, max_tokens = _synthesis_reasoning_and_budget(provider, reasoning)
+    call = functools.partial(
+        _generate_within, provider, system_prompt, user_prompt, reasoning=reasoning
+    )
+    started = time.monotonic()
+    response, failure, timed_out = await call(max_tokens=max_tokens, timeout_s=timeout_s)
     if failure is None:
         # Metered before the empty-completion branch: a reasoning model that
         # spends its whole budget on hidden thinking returns no text and is the
         # most expensive call this path makes, so it is the last one that should
         # go unpriced.
-        await _record_synthesis_cost(provider, response, session_factory, repo_id)
-        text = (getattr(response, "content", None) or "").strip()
+        meter = functools.partial(_record_synthesis_cost, provider)
+        await meter(response, session_factory, repo_id)
+        if _hit_token_cap(response):
+            response, max_tokens = await _retry_past_cap(
+                call,
+                response,
+                max_tokens,
+                remaining_s=timeout_s - (time.monotonic() - started),
+                meter=functools.partial(meter, session_factory=session_factory, repo_id=repo_id),
+            )
+        text = _text_of(response)
         if text:
-            return text, None
-        return "", _empty_completion_note(provider, response, max_tokens)
+            return Synthesis(text, None, getattr(response, "stop_reason", None))
+        return Synthesis("", _empty_completion_note(provider, response, max_tokens))
 
     _log.warning(
         "get_answer LLM call failed (provider=%s, model=%s, budget=%.1fs, timed_out=%s): %s",
@@ -437,4 +507,4 @@ async def synthesize(
         timed_out,
         failure,
     )
-    return "", _synthesis_failure_note(failure, provider, timeout_s, timed_out)
+    return Synthesis("", _synthesis_failure_note(failure, provider, timeout_s, timed_out))

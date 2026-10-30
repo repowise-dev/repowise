@@ -646,12 +646,17 @@ def _noted_unfounded_claim(payload: dict, grade: _Grade, fallback_targets: list[
 
 
 def _held_at_medium_note(grade: _Grade) -> str | None:
-    """The note for an answer the split-name or clause gate, or weak agreement, held at medium.
+    """The note for an answer the cut-off, split-name or clause gate, or weak agreement, held at medium.
 
     Each only holds high at medium; on any other grade they say nothing.
     """
     if grade.confidence != "medium":
         return None
+    if grade.cut_off:
+        return (
+            "Held at medium: the answer text was cut off before it finished, so "
+            "part of it is missing. Ask again, or read the cited files for the rest."
+        )
     if grade.split_names:
         return _split_names_note(grade.split_names)
     if grade.clauses_unanswered:

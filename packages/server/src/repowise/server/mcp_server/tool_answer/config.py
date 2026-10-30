@@ -352,7 +352,9 @@ _ANSWER_COVERAGE_FLOOR = 0.5
 #     the scope writes grades low.
 # 28: a stated value line earns high under the score floor and at any rank;
 #     held-at-medium notes for the identifier gate and a weak dominant top.
-_ANSWER_SCHEMA_VERSION = 28
+# 29: a reply stopped at the token cap is retried once with a larger cap; an
+#     answer whose text was cut off is held at medium.
+_ANSWER_SCHEMA_VERSION = 29
 
 # Above this a whole-file Read costs more than the answer, so the low-confidence
 # hint names a ranged Read or a skeleton instead.
@@ -427,6 +429,9 @@ def _synthesis_max_tokens(default: int = _SYNTHESIS_MAX_TOKENS_DEFAULT) -> int:
 _SYNTHESIS_MAX_TOKENS = _synthesis_max_tokens()
 _SYNTHESIS_REASONING_MAX_TOKENS = _synthesis_max_tokens(_SYNTHESIS_REASONING_MAX_TOKENS_DEFAULT)
 _SYNTHESIS_TEMPERATURE = 0.2
+# A reply stopped at the token cap is asked for once more with this many times
+# the cap. A thinking model can spend most of the first cap on hidden reasoning.
+_SYNTHESIS_RETRY_TOKEN_FACTOR = 4
 
 _SYSTEM_PROMPT = (
     "You are a code-aware retrieval assistant. You are given a developer "

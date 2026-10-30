@@ -82,7 +82,7 @@ def _capture_prompt(monkeypatch, answer_mod, answer_text: str) -> list[str]:
 
     async def _fake_synthesize(provider, system_prompt, user_prompt, **_kwargs):
         seen.append(user_prompt)
-        return answer_text, None
+        return answer_text, None, None
 
     monkeypatch.setattr(answer_mod, "_resolve_provider_for_answer", lambda _p: _Provider())
     monkeypatch.setattr(answer_mod, "synthesize", _fake_synthesize)

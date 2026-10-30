@@ -23,6 +23,7 @@ from repowise.server.mcp_server.tool_answer.config import (
     _SYNTHESIS_MAX_TOKENS_ENV,
     _SYNTHESIS_REASONING_MAX_TOKENS,
     _SYNTHESIS_REASONING_MAX_TOKENS_DEFAULT,
+    _SYNTHESIS_RETRY_TOKEN_FACTOR,
     _SYNTHESIS_TEMPERATURE,
     _synthesis_max_tokens,
 )
@@ -320,7 +321,7 @@ async def test_the_call_is_budgeted_with_the_providers_own_number(monkeypatch):
     monkeypatch.setattr(synthesis_module.asyncio, "wait_for", _spy)
 
     provider = _SlowProvider(duration=0, budget=180.0)
-    answer, note = await synthesize(provider, "sys", "user")
+    answer, note, _ = await synthesize(provider, "sys", "user")
 
     assert seen["timeout"] == 180.0, "the flat 30s is back"
     assert answer == "the answer"
@@ -331,7 +332,7 @@ async def test_a_provider_slower_than_its_budget_degrades_with_a_useful_note():
     """The #1119 shape end to end, at 1/1000th the wall clock."""
     provider = _SlowProvider(duration=5.0, budget=0.01)
 
-    answer, note = await synthesize(provider, "sys", "user")
+    answer, note, _ = await synthesize(provider, "sys", "user")
 
     assert answer == ""
     assert note is not None
@@ -383,7 +384,7 @@ async def test_a_non_timeout_failure_is_not_reported_as_a_budget_overrun():
         async def generate(self, **kwargs):
             raise TimeoutError("connection timed out after 3s")
 
-    answer, note = await synthesize(_Broken(duration=0, budget=180.0), "sys", "user")
+    answer, note, _ = await synthesize(_Broken(duration=0, budget=180.0), "sys", "user")
 
     assert answer == ""
     assert "connection timed out after 3s" in note
@@ -403,7 +404,7 @@ async def test_an_empty_completion_is_reported_rather_than_shipped_blank():
         async def generate(self, **kwargs):
             return SimpleNamespace(content=None, stop_reason=None)
 
-    answer, note = await synthesize(_Empty(duration=0, budget=30.0), "sys", "user")
+    answer, note, _ = await synthesize(_Empty(duration=0, budget=30.0), "sys", "user")
     assert answer == ""
     assert note is not None
     assert "empty completion" in note
@@ -417,9 +418,10 @@ async def test_a_reasoning_model_that_burned_its_budget_is_named_as_such():
         async def generate(self, **kwargs):
             return SimpleNamespace(content="", stop_reason="max_tokens")
 
-    answer, note = await synthesize(_AllThinking(duration=0, budget=30.0), "sys", "user")
+    answer, note, _ = await synthesize(_AllThinking(duration=0, budget=30.0), "sys", "user")
     assert answer == ""
-    assert str(_SYNTHESIS_MAX_TOKENS) in note
+    # The retry ran at the larger cap, so that is the budget the note quotes.
+    assert f"{_SYNTHESIS_MAX_TOKENS * _SYNTHESIS_RETRY_TOKEN_FACTOR}-token" in note
     assert "reasoning" in note.lower()
 
 
@@ -428,9 +430,100 @@ async def test_whitespace_only_completion_counts_as_empty():
         async def generate(self, **kwargs):
             return SimpleNamespace(content="   \n  ", stop_reason="end_turn")
 
-    answer, note = await synthesize(_Blank(duration=0, budget=30.0), "sys", "user")
+    answer, note, _ = await synthesize(_Blank(duration=0, budget=30.0), "sys", "user")
     assert answer == ""
     assert note is not None
+
+
+# --- a reply stopped at the token cap --------------------------------------
+#
+# A thinking model spends most of the cap on hidden reasoning, so the visible
+# reply can stop mid-sentence. Synthesis asks once more with a larger cap.
+
+
+class _Scripted(_SlowProvider):
+    """Returns the scripted replies in order, recording each call."""
+
+    def __init__(self, *replies, budget: float = 30.0):
+        super().__init__(duration=0, budget=budget)
+        self._replies = list(replies)
+
+    async def generate(self, **kwargs):
+        self.calls.append(kwargs)
+        reply = self._replies.pop(0)
+        if isinstance(reply, BaseException):
+            raise reply
+        return reply
+
+
+def _reply(text: str, stop: str | None) -> SimpleNamespace:
+    return SimpleNamespace(content=text, stop_reason=stop)
+
+
+async def test_a_reply_cut_at_the_cap_is_asked_for_once_more_with_a_larger_cap():
+    provider = _Scripted(_reply("It reads the", "max_tokens"), _reply("It reads it all.", "end_turn"))
+
+    result = await synthesize(provider, "sys", "user")
+
+    assert result == ("It reads it all.", None, "end_turn")
+    assert [c["max_tokens"] for c in provider.calls] == [
+        _SYNTHESIS_MAX_TOKENS,
+        _SYNTHESIS_MAX_TOKENS * _SYNTHESIS_RETRY_TOKEN_FACTOR,
+    ]
+
+
+async def test_a_finished_reply_is_not_retried():
+    provider = _Scripted(_reply("Done.", "end_turn"))
+    assert await synthesize(provider, "sys", "user") == ("Done.", None, "end_turn")
+    assert len(provider.calls) == 1
+
+
+async def test_the_retry_is_bounded_to_one():
+    provider = _Scripted(_reply("It reads the", "max_tokens"), _reply("It reads the file", "max_tokens"))
+
+    text, note, stop = await synthesize(provider, "sys", "user")
+
+    assert (text, note, stop) == ("It reads the file", None, "max_tokens")
+    assert len(provider.calls) == 2
+
+
+async def test_a_failed_retry_keeps_the_first_reply_marked_cut():
+    provider = _Scripted(_reply("It reads the", "max_tokens"), RuntimeError("rate limited"))
+    assert await synthesize(provider, "sys", "user") == ("It reads the", None, "max_tokens")
+
+
+async def test_an_empty_retry_keeps_the_first_reply():
+    provider = _Scripted(_reply("It reads the", "max_tokens"), _reply("", "max_tokens"))
+    assert await synthesize(provider, "sys", "user") == ("It reads the", None, "max_tokens")
+
+
+async def test_the_retry_runs_inside_what_is_left_of_the_time_budget(monkeypatch):
+    timeouts: list[float] = []
+    real_wait_for = asyncio.wait_for
+
+    async def _spy(coro, timeout):
+        timeouts.append(timeout)
+        return await real_wait_for(coro, timeout)
+
+    monkeypatch.setattr(synthesis_module.asyncio, "wait_for", _spy)
+    provider = _Scripted(
+        _reply("It reads the", "max_tokens"), _reply("It reads it all.", "end_turn"), budget=20.0
+    )
+
+    await synthesize(provider, "sys", "user")
+
+    assert timeouts[0] == 20.0
+    assert 0 < timeouts[1] <= 20.0
+
+
+async def test_no_retry_once_the_time_budget_is_spent(monkeypatch):
+    clock = iter([0.0, 31.0])
+    # The module's own clock only: the event loop keeps the real one.
+    monkeypatch.setattr(synthesis_module, "time", SimpleNamespace(monotonic=lambda: next(clock)))
+    provider = _Scripted(_reply("It reads the", "max_tokens"))
+
+    assert await synthesize(provider, "sys", "user") == ("It reads the", None, "max_tokens")
+    assert len(provider.calls) == 1
 
 
 # --- the degraded payload both failure modes share -------------------------
@@ -592,8 +685,13 @@ async def test_the_reasoning_settings_reach_the_call():
     assert provider.calls[0]["reasoning"] == "low"
     assert provider.calls[0]["max_tokens"] == _SYNTHESIS_REASONING_MAX_TOKENS
 
-    _, note = await synthesize(_BurnedBudget(duration=0, budget=30.0), "sys", "user")
-    assert f"{_SYNTHESIS_REASONING_MAX_TOKENS}-token" in note
+    burned = _BurnedBudget(duration=0, budget=30.0)
+    _, note, _ = await synthesize(burned, "sys", "user")
+    assert [c["max_tokens"] for c in burned.calls] == [
+        _SYNTHESIS_REASONING_MAX_TOKENS,
+        _SYNTHESIS_REASONING_MAX_TOKENS * _SYNTHESIS_RETRY_TOKEN_FACTOR,
+    ]
+    assert f"{_SYNTHESIS_REASONING_MAX_TOKENS * _SYNTHESIS_RETRY_TOKEN_FACTOR}-token" in note
 
 
 async def test_synthesize_uses_the_resolved_reasoning_budget(monkeypatch):
@@ -632,7 +730,7 @@ async def test_the_real_openai_provider_sends_low_effort_and_the_budget(monkeypa
         )
 
     monkeypatch.setattr(provider._client.chat.completions, "create", _create)
-    answer, note = await synthesize(provider, "sys", "user")
+    answer, note, _ = await synthesize(provider, "sys", "user")
 
     assert note is None and answer == "answer"
     assert sent["reasoning_effort"] == "low"
