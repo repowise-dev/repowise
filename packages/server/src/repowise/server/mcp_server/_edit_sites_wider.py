@@ -39,7 +39,7 @@ MAX_SAME_NAME = 5
 # Documentation files read for mentions; past it the scan reports itself short.
 MAX_DOC_FILES = 50
 
-_TS_STAR = re.compile(r"""^\s*export\s*\*\s*(?:as\s+[\w$]+\s+)?from\s*["'`]""")
+_TS_STAR = re.compile(r"""^\s*export\s*(?:type\s+)?\*\s*(?:as\s+[\w$]+\s+)?from\s*["'`]""")
 _PY_STAR = re.compile(r"^\s*from\s+([.\w]+)\s+import\s+\*")
 _RELEASE_NOTES = re.compile(r"(?i)(?:changelog|changes|history|news|release[-_ ]?notes)$")
 
@@ -141,11 +141,11 @@ def _doc_row(root: Path, rel: str, word: re.Pattern[str]) -> dict[str, Any] | No
 
 def doc_sites(root: Path, name: str) -> tuple[list[dict[str, Any]], list[str]]:
     """One row per document naming *name* as a word, and why the list may be short."""
-    docs = documents_holding(root, name)
-    reasons: list[str] = []
-    if len(docs) > MAX_DOC_FILES:
-        reasons.append(f"over {MAX_DOC_FILES} documents name it")
-        docs = docs[:MAX_DOC_FILES]
+    if len(name) < _MIN_GATE_NAME_LEN:
+        return [], []
     word = _word(name)
-    rows = [_doc_row(root, rel, word) for rel in docs]
-    return [r for r in rows if r], reasons
+    # The holding list is a substring match, so rows are capped after the word test.
+    rows = [r for r in (_doc_row(root, rel, word) for rel in documents_holding(root, name)) if r]
+    if len(rows) > MAX_DOC_FILES:
+        return rows[:MAX_DOC_FILES], [f"over {MAX_DOC_FILES} documents name it"]
+    return rows, []

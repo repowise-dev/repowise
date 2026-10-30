@@ -174,3 +174,64 @@ async def test_over_the_document_cap_is_never_complete(session, repo_id, tmp_pat
 
     assert out["complete"] is False
     assert "over 1 documents name it" in out["reasons"]
+
+
+@pytest.mark.asyncio
+async def test_a_type_star_barrel_is_a_reexport(session, repo_id, tmp_path):
+    _write(
+        tmp_path,
+        {
+            "web/table.ts": "export type Row = { id: number }\n",
+            "web/index.ts": "export type * from './table'\n",
+        },
+    )
+    node = _node(repo_id, "web/table.ts::Row")
+    session.add_all([node, _imports(3, repo_id, "web/index.ts", "web/table.ts", '["*"]')])
+    await session.flush()
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node, wider=True)
+
+    assert ("web/index.ts", 1, "reexport") in _sites(out)
+
+
+@pytest.mark.asyncio
+async def test_documents_holding_only_a_longer_name_do_not_use_the_cap(
+    session, repo_id, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(_edit_sites_wider, "MAX_DOC_FILES", 1)
+    _write(
+        tmp_path,
+        {
+            "srv/blocks.py": "INCLUDE_KEYS = ('a', 'b')\n",
+            "docs/a.md": "INCLUDE_KEYS_EXTRA only\n",
+            "docs/b.md": "INCLUDE_KEYS\n",
+        },
+    )
+    node = _node(repo_id, "srv/blocks.py::INCLUDE_KEYS", language="python")
+    session.add(node)
+    await session.flush()
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node, wider=True)
+
+    assert [s for s in _sites(out) if s[2] == "doc"] == [("docs/b.md", 1, "doc")]
+    assert out["complete"] is True, out.get("reasons")
+
+
+def test_a_basename_under_another_folder_is_not_a_mention(tmp_path):
+    from repowise.server.mcp_server.tool_context.doc_mentions import doc_mentions
+
+    _write(
+        tmp_path,
+        {
+            "docs/a.md": (
+                "See other/table-view.tsx here.\n"
+                "See `ui/table-view` there.\n"
+                "And ui/table-view.tsx too.\n"
+                "Not ui/table-view.test.tsx.\n"
+            ),
+        },
+    )
+
+    rows = doc_mentions(tmp_path, "src/ui/table-view.tsx", set())
+
+    assert [r["line"] for r in rows] == [2, 3]

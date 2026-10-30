@@ -20,7 +20,6 @@ MENTIONS_BASIS = (
     "Documentation lines naming this file by basename or folder/stem, which the "
     "references above cannot resolve. Check each before editing."
 )
-_MAX_DOCUMENTS = 50
 # A bare stem names one file only when it carries a separator: ``decisions-table``.
 _DISTINCT_STEM = re.compile(r"[-_]")
 
@@ -36,17 +35,31 @@ def short_forms(target: str) -> list[str]:
     return forms
 
 
+def _mention_pattern(target: str) -> re.Pattern[str]:
+    """The short forms of *target* as whole tokens.
+
+    A bare basename or stem after a ``/`` belongs to another folder's file, and
+    one inside a longer name (``x.test.tsx``) is another file.
+    """
+    path = PurePosixPath(target)
+    folder_form = f"{path.parent.name}/{path.stem}"
+    forms = short_forms(target)
+    own_suffix = rf"(?:{re.escape(path.suffix)})?" if path.suffix else ""
+    folder = re.escape(folder_form) + own_suffix if folder_form in forms else None
+    bare_forms = sorted(set(forms) - {folder_form}, key=len, reverse=True)
+    bare = "|".join(re.escape(f) for f in bare_forms)
+    alts = [rf"(?<![\w./-])(?:{bare})"] + ([rf"(?<![\w.-]){folder}"] if folder else [])
+    return re.compile(rf"(?:{'|'.join(alts)})(?!\.?[\w-])")
+
+
 def doc_mentions(
     root: Path, target: str, listed: set[tuple[str, int]]
 ) -> list[dict[str, Any]]:
     """``{document, line, text}`` rows naming *target* by a short form, minus *listed* sites."""
-    forms = short_forms(target)
-    docs = sorted({d for form in forms for d in documents_holding(root, form)} - {target})
-    alt = "|".join(re.escape(f) for f in sorted(forms, key=len, reverse=True))
-    # A form inside a longer word or file name (``x.test.tsx``) is another file.
-    pattern = re.compile(rf"(?<![\w.-])(?:{alt})(?!\.?[\w-])")
+    docs = {d for form in short_forms(target) for d in documents_holding(root, form)}
+    pattern = _mention_pattern(target)
     rows: list[dict[str, Any]] = []
-    for doc in docs[:_MAX_DOCUMENTS]:
+    for doc in sorted(docs - {target}):
         for n, text in enumerate(_read_lines(root, doc) or [], 1):
             if (doc, n) not in listed and pattern.search(text):
                 rows.append({"document": doc, "line": n, "text": text.strip()[:MAX_TEXT_CHARS]})

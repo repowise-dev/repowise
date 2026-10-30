@@ -881,7 +881,9 @@ async def reference_edit_set(
     foreign = _foreign_package_files(package_files, scanned, scan.packages, package, language)
     reasons += _scope_reasons(node, scan, foreign, language, set(unindexed))
     if wider:
-        reasons += await _widen(session, repo_id, root, node, name, ordered, scan.sites)
+        reasons += await _widen(
+            session, repo_id, root, node, name, ordered + unindexed, scan.sites
+        )
     return _served_sites(scan.sites, reasons, node, collector)
 
 
