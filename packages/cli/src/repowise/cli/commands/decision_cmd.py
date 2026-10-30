@@ -320,10 +320,39 @@ def decision_add(
             f"[dim]repowise decision confirm {stored.id[:8]} --scope <path>[/dim]"
         )
 
-    _report_added(repo_path, stored, fmt)
+    _report_added(repo_path, stored, fmt, _add_warnings(repo_path, fields))
 
 
-def _report_added(repo_path: Path, stored: _Persisted, fmt: str) -> None:
+def _add_warnings(repo_path: Path, fields: _DecisionFields) -> list[str]:
+    """Problems worth surfacing without refusing the write.
+
+    A mistyped ``--affects`` path still stores, because the decision may be
+    recorded before the file exists; the caller just needs to know the scope
+    governs nothing. The rationale is advisory too: an agent may add one later.
+    """
+    warnings: list[str] = []
+    if not (fields.rationale or "").strip():
+        warnings.append("no rationale given")
+
+    repo_root = repo_path.resolve()
+    for raw in fields.affected_files:
+        value = raw.strip()
+        if not value:
+            continue
+        target = Path(value)
+        if not target.is_absolute():
+            target = repo_root / target
+        try:
+            target.resolve().relative_to(repo_root)
+        except ValueError:
+            warnings.append(f"affects path not found: {value}")
+            continue
+        if not target.exists():
+            warnings.append(f"affects path not found: {value}")
+    return warnings
+
+
+def _report_added(repo_path: Path, stored: _Persisted, fmt: str, warnings: list[str]) -> None:
     """Print what ``add`` stored, naming the fields a re-add kept."""
     if fmt == "json":
         # The full id: a caller passes it back to `confirm` or `show`.
@@ -336,6 +365,8 @@ def _report_added(repo_path: Path, stored: _Persisted, fmt: str) -> None:
         }
         if stored.existed:
             payload["kept"] = stored.kept
+        if warnings:
+            payload["warnings"] = warnings
         emit_json({"repo": str(repo_path), "decision": payload})
         return
     verb = "Updated existing decision" if stored.existed else "Decision recorded"
@@ -344,6 +375,8 @@ def _report_added(repo_path: Path, stored: _Persisted, fmt: str) -> None:
         f"\n[green]{verb}[/green] [dim]({stored.status}{kept})[/dim] — "
         f"ID: [bold]{stored.id[:8]}[/bold]"
     )
+    for warning in warnings:
+        console.print(f"[yellow]{escape(warning)}[/yellow]")
 
 
 def _refuse_partial_flags(fmt: str, *given) -> None:
