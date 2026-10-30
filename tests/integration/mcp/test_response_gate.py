@@ -179,6 +179,11 @@ def served(tmp_path_factory: pytest.TempPathFactory, sample_repo_path: Path) -> 
             "check_latest_version_cached",
             lambda current, **_: release.ReleaseCheck(current, None, None, None),
         )
+        from repowise.server.mcp_server import _state
+
+        # Another test in the same process may have seen or announced a release.
+        mp.setattr(_state, "_release_check", None, raising=False)
+        mp.setattr(_state, "_release_announced", None, raising=False)
         _index(repo)
         payloads = asyncio.run(_call_all(repo))
     return normalize_payload(payloads, path_placeholders(repo))

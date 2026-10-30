@@ -52,8 +52,16 @@ jobs:
 
       - name: Report
         if: always()
+        env:
+          INDEX_OUTCOME: ${{ steps.index.outcome }}
         run: |
-          [ -s smoke.md ] || echo "The index build failed, so no tool was timed." > smoke.md
+          if [ ! -s smoke.md ]; then
+            if [ "$INDEX_OUTCOME" = failure ]; then
+              echo "The index build failed, so no tool was timed." > smoke.md
+            else
+              echo "The smoke script failed before writing a report; see the run log." > smoke.md
+            fi
+          fi
           cat smoke.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Open or update the latency issue
@@ -65,7 +73,7 @@ jobs:
           printf '\nCommit %s, [run](%s).\n' "$GITHUB_SHA" "$RUN_URL" >> smoke.md
           gh label create mcp-latency --color FBCA04 \
             --description "MCP cold first-call latency over budget" 2>/dev/null || true
-          number=$(gh issue list --label mcp-latency --state open --json number --jq '.[0].number')
+          number=$(gh issue list --label mcp-latency --state open --json number --jq '.[0].number // empty')
           if [ -n "$number" ]; then
             gh issue comment "$number" --body-file smoke.md
           else
