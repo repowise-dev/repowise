@@ -152,3 +152,18 @@ def test_cover_clauses_marks_the_clause_file_it_served(monkeypatch) -> None:
     out = asyncio.run(clauses.cover_clauses(q, hits, None, scope=None, exclude_spec=None))
     assert [h["target_path"] for h in out] == [h["target_path"] for h in hits]
     assert out[1]["_clause"] == "does it re-resolve imports and calls"
+
+
+def test_a_failed_clause_retrieval_costs_only_that_clause(monkeypatch) -> None:
+    hits = [{"target_path": f"f{i}.py", "score": 5.0 - i} for i in range(5)]
+
+    async def top(clause, ctx, scope, exclude_spec):
+        if "aliases" in clause:
+            raise RuntimeError("leg down")
+        return {"target_path": "flags.py", "page_type": "file_page"}
+
+    monkeypatch.setattr(clauses, "_clause_top", top)
+    q = "How does cobra pick a subcommand, how are flags parsed, and how are aliases matched?"
+    out = asyncio.run(clauses.cover_clauses(q, hits, None, scope=None, exclude_spec=None))
+    assert out[3]["target_path"] == "flags.py"
+    assert out[3]["_clause"] == "how are flags parsed"

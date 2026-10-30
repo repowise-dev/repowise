@@ -12,7 +12,6 @@ A single-clause question is untouched: no extra retrieval, no extra hit.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import re
 from typing import Any
 
@@ -60,12 +59,17 @@ async def cover_clauses(
         return hits
     found: dict[str, dict] = {}
     clause_of: dict[str, str] = {}
-    for clause in clauses[1:]:
-        with contextlib.suppress(Exception):
-            top = await asyncio.create_task(_clause_top(clause, ctx, scope, exclude_spec))
-            if top is not None:
-                found.setdefault(top["target_path"], top)
-                clause_of.setdefault(top["target_path"], clause)
+    later = clauses[1:]
+    # One task per clause: each copies the context, so its legs leave the
+    # caller's leg record alone. Two clauses landing on one file count once.
+    tops = await asyncio.gather(
+        *(asyncio.create_task(_clause_top(c, ctx, scope, exclude_spec)) for c in later),
+        return_exceptions=True,
+    )
+    for clause, top in zip(later, tops, strict=True):
+        if isinstance(top, dict):
+            found.setdefault(top["target_path"], top)
+            clause_of.setdefault(top["target_path"], clause)
     out = place_named_files(hits, list(found), found)
     # Marked after placing: the hit a clause names may be one already served.
     for h in out[:_SERVED]:
