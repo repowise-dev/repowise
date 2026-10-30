@@ -729,9 +729,10 @@ class _RepowiseMCP(FastMCP):
         if principal is None:
             return tools
         from repowise.server.auth import get_authorizer
+        from repowise.server.mcp_server._http_auth import tool_allowed
 
         authorizer = get_authorizer()
-        return [t for t in tools if authorizer.can_use_tool(principal, t.name)]
+        return [t for t in tools if tool_allowed(principal, t.name, authorizer)]
 
     async def call_tool(self, name: str, arguments: dict[str, Any]):  # type: ignore[override]
         principal = self._request_principal()
