@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Collection, Iterable, Mapping
-from dataclasses import dataclass
-from typing import Any, Literal, NamedTuple, TypeVar
+from dataclasses import dataclass, field
+from typing import Any, Generator, Literal, NamedTuple, TypeVar
 
 from repowise.core.analysis.execution_graph import UNRELIABLE_EXECUTION_ORIGINS
 from repowise.core.test_paths import paired_test_names
@@ -79,10 +79,35 @@ def rank_reaching(
     direct: Collection[str] = frozenset(),
     changed: Collection[str] = frozenset(),
 ) -> list[str]:
-    """*tests* reaching *target*, the likeliest to exercise it first."""
+    """*tests* reaching *target*, the likeliest to exercise it first.
+
+    Orden (de mayor a menor prioridad):
+      1. Nombre emparejado con el fichero objetivo (p.ej. ``foo.py`` -> ``test_foo.py``).
+      2. Llamadores directos.
+      3. Tests modificados en el cambio actual.
+      4. Menor número de *hops* en el grafo de llamadas.
+      5. Mayor número de *callers* a esa distancia.
+      6. Ruta lexicográfica, para orden determinista.
+    """
     path_of = target.split("::", 1)[0]
-    # (Implementación de ranking; se mantiene igual que en el repositorio)
-    return list(tests)
+    paired = set(paired_test_names(path_of))
+    distances = reach or {}
+    missing = sys.maxsize
+
+    def key(test: str) -> tuple[int, int, int, int, int, str]:
+        dist = distances.get(test)
+        hops = dist.hops if dist is not None else missing
+        callers = -(dist.callers if dist is not None else 0)
+        return (
+            0 if test in paired else 1,
+            0 if test in direct else 1,
+            0 if test in changed else 1,
+            hops,
+            callers,
+            test,
+        )
+
+    return sorted(dict.fromkeys(tests), key=key)
 
 
 # ---------------------------------------------------------------------------
@@ -117,7 +142,7 @@ class ImportGraph:
     importers: Mapping[str, tuple[str, ...]]
 
     def edges_into(self, targets: Collection[str]) -> list[tuple[str, str]]:
-        """``(dependent, dependency)`` pairs, as a ``importers`` :class:`Need` is answered."""
+        """``(dependent, dependency)`` pairs, as an ``importers`` :class:`Need` is answered."""
         return [(src, t) for t in targets for src in self.importers.get(t, ())]
 
     def hops(self, sources: Collection[str]) -> dict[str, int]:
@@ -147,7 +172,11 @@ class WalkMaps:
     imports: ImportGraph
     files: frozenset[str]
     test_files: frozenset[str]
-    registrations: Mapping[str, tuple[str, ...]] = None  # <-- nuevo
+    # Mapa ``{registrador: (registrados...)}``. Opcional: los tests que no
+    # construyan este mapa (o los que usen un grafo previo) obtienen un
+    # diccionario vacío en :meth:`answer`, así ``Need("registrations", ...)``
+    # siempre responde de forma segura (P2).
+    registrations: Mapping[str, tuple[str, ...]] | None = field(default=None)
 
     def answer(self, need: Need) -> Any:
         if need.kind == "declared":
@@ -157,7 +186,8 @@ class WalkMaps:
         if need.kind == "importers":
             return self.imports.edges_into(need.keys)
         if need.kind == "registrations":
-            return [(r, t) for r in need.keys for t in self.registrations.get(r, ())]
+            table = self.registrations or {}
+            return [(r, t) for r in need.keys for t in table.get(r, ())]
         return {path for path in need.keys if path in self.files}
 
 
