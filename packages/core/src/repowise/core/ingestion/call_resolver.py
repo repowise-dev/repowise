@@ -1673,10 +1673,10 @@ class CallResolver(
         hit = self._bound_import_call(call, caller_id, binding)
         if hit is not None:
             return hit
-        # A type-qualified import is a complete scope; do not broaden a miss
-        # to a same-named member from another type in the imported file.
+        # A failed type-qualified import must not skip Java's caller-hierarchy
+        # lookup or broaden to a same-named member from another imported type.
         if binding is not None and binding.member_of:
-            return None
+            return self._implicit_inherited_call(file_path, call, caller_id)
         # A Python name imported from outside the repository is that module's,
         # not a same-named repo symbol a later tier would find. Python only:
         # Python resolves a repo's own absolute imports by dotted path, while
