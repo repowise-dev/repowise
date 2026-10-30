@@ -144,7 +144,30 @@ def _fused_entry(r) -> dict:
     return entry
 
 
-async def _fused_retrieve(ctx, query: str, fetch_limit: int, page_type: str | None) -> list[dict]:
+async def _run_legs(ctx, query: str, fetch_limit: int, *, semantic: bool) -> tuple[list, ...]:
+    """``(vector, fts, symbol, filename)`` hits; the vector leg only when *semantic*."""
+    if not semantic:
+        return ([], *await _lexical_legs(ctx, query, fetch_limit))
+    vector_leg = asyncio.ensure_future(_pkg._safe_vector(ctx, query, fetch_limit))
+    try:
+        lexical = await _lexical_legs(ctx, query, fetch_limit)
+    except BaseException:
+        vector_leg.cancel()
+        raise
+    return (await vector_leg_within(vector_leg, semantic_grace_s()), *lexical)
+
+
+async def _lexical_legs(ctx, query: str, fetch_limit: int) -> list[list]:
+    return await asyncio.gather(
+        _pkg._safe_fts(ctx, query, fetch_limit),
+        _pkg._safe_symbol_search(ctx, query, pageless=True),
+        _pkg._safe_filename_search(ctx, query),
+    )
+
+
+async def _fused_retrieve(
+    ctx, query: str, fetch_limit: int, page_type: str | None, *, semantic: bool = True
+) -> list[dict]:
     """Retrieve by fusing FTS, vector and symbol search via Reciprocal Rank Fusion.
 
     The retrievers run in parallel; a hit's score is the sum of
@@ -166,18 +189,13 @@ async def _fused_retrieve(ctx, query: str, fetch_limit: int, page_type: str | No
     off-topic query return its nearest-but-unrelated neighbours. Rank position
     (for RRF) is the hit's place in the retriever's own list, unchanged by the
     floor.
+
+    ``semantic=False`` runs without the vector leg, for a caller whose
+    question an exact identifier hit already answers.
     """
-    vector_leg = asyncio.ensure_future(_pkg._safe_vector(ctx, query, fetch_limit))
-    try:
-        fts_results, sym_results, name_results = await asyncio.gather(
-            _pkg._safe_fts(ctx, query, fetch_limit),
-            _pkg._safe_symbol_search(ctx, query, pageless=True),
-            _pkg._safe_filename_search(ctx, query),
-        )
-    except BaseException:
-        vector_leg.cancel()
-        raise
-    vec_results = await vector_leg_within(vector_leg, semantic_grace_s())
+    vec_results, fts_results, sym_results, name_results = await _run_legs(
+        ctx, query, fetch_limit, semantic=semantic
+    )
 
     fused: dict[str, dict] = {}
     for rank, r in enumerate(vec_results):
@@ -221,7 +239,13 @@ async def _fused_retrieve(ctx, query: str, fetch_limit: int, page_type: str | No
 
 
 async def _search_single_repo(
-    ctx, query: str, limit: int, page_type: str | None, kind: str | None = None
+    ctx,
+    query: str,
+    limit: int,
+    page_type: str | None,
+    kind: str | None = None,
+    *,
+    semantic: bool = True,
 ) -> list[dict]:
     """Run search against a single repo context.
 
@@ -232,11 +256,14 @@ async def _search_single_repo(
     The ``kind`` filter runs here, on the over-fetched list and BEFORE the
     limit cut — filtering after per-repo truncation returned fewer than
     ``limit`` results (frequently zero) in the federated path.
+
+    ``semantic=False`` neither waits for the vector store nor searches it.
     """
-    await _pkg._wait_for_vector_store(ctx)
+    if semantic:
+        await _pkg._wait_for_vector_store(ctx)
 
     fetch_limit = _fetch_limit_for(limit, kind)
-    output = await _fused_retrieve(ctx, query, fetch_limit, page_type)
+    output = await _fused_retrieve(ctx, query, fetch_limit, page_type, semantic=semantic)
 
     _downweight_decisions(output, query)
     output = await _rescue_all_decision_window(ctx, output, query, fetch_limit)

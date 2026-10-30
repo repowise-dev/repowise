@@ -150,3 +150,51 @@ async def test_query_and_document_of_one_text_are_cached_apart():
     await embedder.embed(["auth"], kind="query")
 
     assert inner.kinds == ["query", "document"]
+
+
+class _FailingEmbedder(_CountingEmbedder):
+    """Fails every call, like a provider with a dead key or a spent quota."""
+
+    async def embed(self, texts: list[str], *, kind: str = "document") -> list[list[float]]:
+        self.calls.append(list(texts))
+        raise RuntimeError("429 quota")
+
+
+async def test_a_failed_query_embed_pauses_the_next_ones(monkeypatch):
+    import pytest
+
+    from repowise.core.providers.embedding import caching
+
+    clock = [100.0]
+    monkeypatch.setattr(caching.time, "monotonic", lambda: clock[0])
+    inner = _FailingEmbedder()
+    embedder = CachingEmbedder(inner)
+
+    with pytest.raises(RuntimeError, match="429"):
+        await embedder.embed(["auth"], kind="query")
+    for texts in (["auth"], ["other"], ["a", "b"]):
+        with pytest.raises(caching.EmbedderCoolingDownError):
+            await embedder.embed(texts, kind="query")
+    assert len(inner.calls) == 1, "a paused query reached the provider"
+
+    # Index writes are not queries: they still reach the provider.
+    with pytest.raises(RuntimeError, match="429"):
+        await embedder.embed(["doc"])
+    assert len(inner.calls) == 2
+
+    clock[0] += caching.FAILURE_COOLDOWN_S
+    with pytest.raises(RuntimeError, match="429"):
+        await embedder.embed(["auth"], kind="query")
+    assert len(inner.calls) == 3, "the provider was not asked again after the pause"
+
+
+async def test_a_document_failure_does_not_pause_queries():
+    import pytest
+
+    inner = _FailingEmbedder()
+    embedder = CachingEmbedder(inner)
+    with pytest.raises(RuntimeError):
+        await embedder.embed(["doc"])
+    with pytest.raises(RuntimeError, match="429"):
+        await embedder.embed(["auth"], kind="query")
+    assert len(inner.calls) == 2

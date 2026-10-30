@@ -951,6 +951,26 @@ class TestHybridSearch:
         assert "symbol" in types, "symbol hit must be present"
         assert "page" in types, "concept page must survive the merge"
 
+    @pytest.mark.asyncio
+    async def test_an_exact_hit_does_not_wait_for_a_loading_vector_store(
+        self, setup_mcp, monkeypatch
+    ):
+        """The symbol answers the query; pages from a store still loading only add context."""
+        import asyncio
+
+        import repowise.server.mcp_server as mcp_mod
+        from repowise.server.mcp_server import _state, search_codebase
+
+        async def fake_search(query, limit=10):
+            raise AssertionError("searched a store that is still loading")
+
+        mcp_mod._vector_store.search = fake_search
+        monkeypatch.setattr(_state, "_vector_store_ready", asyncio.Event())
+        result = await asyncio.wait_for(
+            search_codebase("how does AuthService work", mode="hybrid", limit=5), timeout=10
+        )
+        assert result["results"][0]["type"] == "symbol"
+
 
 class TestHybridInterleave:
     """The hybrid block-interleave: symbol and concept scores are incomparable,
