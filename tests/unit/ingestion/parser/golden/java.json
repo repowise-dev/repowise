@@ -110,6 +110,7 @@
     "exports": [
       "Conditionals"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -209,6 +210,7 @@
     ],
     "imports": [],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -574,6 +576,7 @@
       }
     ],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {

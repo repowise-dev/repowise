@@ -41,6 +41,7 @@
     "exports": [
       "ManyBranches"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -120,6 +121,7 @@
       "DeeplyNested",
       "Shallow"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {

@@ -8,6 +8,7 @@ file under the project's 400-line ceiling.
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -34,6 +35,7 @@ from ._edges import EdgesMixin
 from ._metrics import MetricsMixin
 from ._rehydrate import RehydrateMixin
 from ._resolvers import ResolveMixin
+from ._scoped import ScopedBuildMixin
 from ._serialize import SerializeMixin
 from ._stem import build_stem_map
 
@@ -70,7 +72,9 @@ def _merge_load_kind(data: dict[str, Any], imp: Import) -> None:
         data.pop("deferred", None)
 
 
-class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, RehydrateMixin):
+class GraphBuilder(
+    MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, RehydrateMixin, ScopedBuildMixin
+):
     """Build a dependency graph from a collection of ParsedFile objects.
 
     Usage::
@@ -133,6 +137,8 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         # expensive metric kernel). Opt-in via *centrality_cache_dir* — the
         # ingest paths pass ``<repo>/.repowise``; ad-hoc builders are unchanged.
         self._centrality_cache: Any | None = None
+        # The framework scan cache lives beside it, under the same opt-in.
+        self._cache_dir: Path | str | None = centrality_cache_dir
         if centrality_cache_dir is not None:
             try:
                 from ._centrality_cache import CentralityCache
@@ -394,26 +400,40 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
                 if sym.id in self._graph:
                     self._graph.nodes[sym.id]["qualified_name"] = sym.qualified_name
 
-    def build(self, progress: Any | None = None) -> nx.DiGraph:
+    def build(
+        self, progress: Any | None = None, *, scope: Collection[str] | None = None
+    ) -> nx.DiGraph:
         """Resolve imports and calls, add edges. Returns the finalized graph.
 
         *progress* is an optional ``ProgressCallback`` (duck-typed). When
         provided, sub-phase events ``graph.imports`` / ``graph.heritage`` /
         ``graph.calls`` are emitted so the CLI can surface per-file progress
         instead of a single opaque "0/1" bar over the whole build.
+
+        *scope* turns this into a patch of an already-resolved graph: the graph
+        must have been seeded with every other file's resolved edges
+        (:meth:`seed_resolved_edges`), and only the files named here have their
+        outgoing import, call and reference edges re-resolved. It is only
+        correct when the edit left every scoped file's cross-file surface
+        unchanged (see ``pipeline.incremental.surface``); the caller owns that
+        check. ``None`` is the full build.
         """
         self._invalidate_metric_caches()
         self._qualify_python_symbols()
         # Apex names are case-insensitive; every resolver keys on the declared spelling.
         spell_apex_names(self._parsed_files.values())
 
-        # Clear import/call edges but keep structural edges (defines, has_method)
-        edges_to_remove = [
-            (u, v)
-            for u, v, d in self._graph.edges(data=True)
-            if d.get("edge_type") not in ("defines", "has_method")
-        ]
-        self._graph.remove_edges_from(edges_to_remove)
+        scope_set: frozenset[str] | None = None if scope is None else frozenset(scope)
+        if scope_set is None:
+            # Clear import/call edges but keep structural edges (defines, has_method)
+            edges_to_remove = [
+                (u, v)
+                for u, v, d in self._graph.edges(data=True)
+                if d.get("edge_type") not in ("defines", "has_method")
+            ]
+            self._graph.remove_edges_from(edges_to_remove)
+        else:
+            self._clear_scope_edges(scope_set)
 
         # Build lookup tables for import resolution
         path_set = set(self._parsed_files.keys())
@@ -460,6 +480,10 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
 
         # --- Phase 1: Resolve file-level imports ---
         import_targets: dict[str, set[str]] = {}  # file → set of imported files
+        if scope_set is not None:
+            # Files outside the scope keep the edges the seed carried; their
+            # import sets are read back off those instead of being resolved.
+            self._seed_import_targets(import_targets, scope_set)
 
         # Per-language import-resolution timing — surfaces which language is
         # actually dominating the import loop on multi-language repos
@@ -468,9 +492,10 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
 
         lang_import_time: dict[str, float] = {}
 
+        import_items = self._scoped_items(scope_set)
         if progress:
-            progress.on_phase_start("graph.imports", len(self._parsed_files))
-        for path, parsed in self._parsed_files.items():
+            progress.on_phase_start("graph.imports", len(import_items))
+        for path, parsed in import_items:
             _lang = parsed.file_info.language
             _t0 = _t.monotonic()
             file_imports: set[str] = set()
@@ -549,23 +574,24 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         # edges feed into heritage's import_targets propagation if a
         # future language emits them, and so dead-code reachability
         # sees every edge before any analysis pass runs.
-        self._resolve_type_ref_edges(ctx, import_targets, progress=progress)
+        self._resolve_type_ref_edges(ctx, import_targets, progress=progress, scope=scope_set)
 
         # --- Phase 1c: Resolve C# member-access reads ---
         # Bind `var x = new T(...); ... x.Prop` style property reads
         # to T's defining file. Cuts the largest single bucket of C#
         # unused_export false positives (audit #23).
-        self._resolve_member_reads(progress=progress)
+        self._resolve_member_reads(progress=progress, scope=scope_set)
 
         # --- Ruby rspec directory-mirror edges ---
         # Spec files carry no requires (rspec wires the helper + subject
         # at runtime); the spec/ <-> lib/ mirror convention links them.
-        self._resolve_ruby_spec_mirrors(progress=progress)
+        self._resolve_ruby_spec_mirrors(progress=progress, scope=scope_set)
 
         # --- C/C++ header ↔ implementation pairing ---
         # foo.h -> foo.c (same stem, same dir): consumers including the
         # header must be able to reach the implementation.
-        self._resolve_cpp_header_pairs(progress=progress)
+        if scope_set is None:
+            self._resolve_cpp_header_pairs(progress=progress)
 
         # --- C# / VB.NET partial-class co-fragments ---
         # Fragments of one partial type across files are literally one
@@ -576,57 +602,62 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         # Java/Kotlin (and Scala) reference same-package types without an
         # import statement; emit conservative sibling edges so cohesive
         # packages don't read as disconnected files.
-        self._resolve_jvm_same_package(ctx, progress=progress)
+        self._resolve_jvm_same_package(ctx, progress=progress, scope=scope_set)
 
         # --- C# / VB.NET same-namespace implicit references ---
         # Both reference same-namespace types with no import directive, and
         # project-wide usings widen that; most .vb files declare no namespace
         # at all. Emit conservative sibling edges so neither reads as orphaned.
-        self._resolve_dotnet_same_namespace(ctx, progress=progress)
+        self._resolve_dotnet_same_namespace(ctx, progress=progress, scope=scope_set)
 
         # --- PHP same-namespace implicit references ---
         # An unqualified class name resolves in the file's own namespace with
         # no ``use``; emit conservative sibling edges for those references.
-        self._resolve_php_same_namespace(progress=progress)
+        self._resolve_php_same_namespace(progress=progress, scope=scope_set)
 
         # --- Swift intra-module type references ---
         # Swift files see same-target siblings with no import statement;
         # emit conservative type-reference edges per SPM target.
-        self._resolve_swift_same_module(ctx, progress=progress)
+        self._resolve_swift_same_module(ctx, progress=progress, scope=scope_set)
 
         # --- F# fsproj compile-order spine ---
         # fsproj <Compile Include> order is a real dependency constraint
         # (files may only reference earlier files); adjacent pairs keep
         # open-light projects connected.
-        self._resolve_fsharp_compile_order(ctx, progress=progress)
+        if scope_set is None:
+            self._resolve_fsharp_compile_order(ctx, progress=progress)
 
         # --- Phase 2: Resolve heritage (extends/implements) ---
-        self._resolve_heritage(import_targets, progress=progress)
+        self._resolve_heritage(import_targets, progress=progress, scope=scope_set)
 
         # --- Phase 2b: Resolve Go structural interface satisfaction ---
         # Go has no `implements` keyword; connect concrete types to the
         # interfaces their method set satisfies so interfaces reached only
         # through implementors are not flagged as dead exports.
-        self._resolve_go_interface_satisfaction(progress=progress)
+        if scope_set is None:
+            self._resolve_go_interface_satisfaction(progress=progress)
 
         # --- Phase 3: Resolve symbol-level calls ---
-        self._resolve_calls(import_targets, progress=progress)
+        self._resolve_calls(import_targets, progress=progress, scope=scope_set)
 
         # --- Salesforce objects and fields named by Apex and lookup fields ---
-        self._resolve_salesforce_schema()
+        if scope_set is None:
+            self._resolve_salesforce_schema()
 
         # --- Phase 4: Base method → the implementations that answer for it ---
         # Post-pass: needs heritage resolved and reads only the graph.
-        self._resolve_override_dispatch(progress=progress)
+        if scope_set is None:
+            self._resolve_override_dispatch(progress=progress)
 
         # Which symbols a package exports, read off the imports just resolved.
         try:
-            go_index = cached_go_index(ctx)
-            stamp_public_api(
-                self._graph,
-                self._parsed_files,
-                go_package_files(go_index) if go_index is not None else None,
-            )
+            go_index = None if scope_set is not None else cached_go_index(ctx)
+            if scope_set is None:
+                stamp_public_api(
+                    self._graph,
+                    self._parsed_files,
+                    go_package_files(go_index) if go_index is not None else None,
+                )
         except Exception as exc:  # a reader bug must not fail the index
             log.warning("public_api_stamp_failed", error=str(exc))
 
@@ -703,12 +734,18 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         ctx: ResolverContext,
         import_targets: dict[str, set[str]],
         progress: Any | None = None,
+        scope: frozenset[str] | None = None,
     ) -> None:
         """Add type-use edges and widen ``import_targets`` with import-like out-edges."""
+        parsed = (
+            self._parsed_files
+            if scope is None
+            else {path: self._parsed_files[path] for path in scope if path in self._parsed_files}
+        )
         if progress:
-            progress.on_phase_start("graph.type_refs", len(self._parsed_files))
-        type_use_counts = resolve_type_refs(self._parsed_files, ctx, self._graph)
-        for path in self._parsed_files:
+            progress.on_phase_start("graph.type_refs", len(parsed))
+        type_use_counts = resolve_type_refs(parsed, ctx, self._graph)
+        for path in parsed:
             for _, target, data in self._graph.out_edges(path, data=True):
                 # Treat both real ``using`` imports and synthesised
                 # type-use edges as import-like for downstream heritage

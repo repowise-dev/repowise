@@ -65,6 +65,7 @@
       "process",
       "trivial"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -217,6 +218,7 @@
       "deploy",
       "build_step"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -342,6 +344,7 @@
     "exports": [
       "main"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -436,6 +439,7 @@
     "symbols": [],
     "imports": [],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -508,6 +512,7 @@
     "exports": [
       "setup"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {

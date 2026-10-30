@@ -114,6 +114,7 @@
     "exports": [
       "AssertionsTest"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -730,6 +731,7 @@
       "WorkerInterface",
       "Priority"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -826,6 +828,7 @@
       "greet",
       "sum"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -1049,6 +1052,7 @@
       "try_catch_finally",
       "loops_galore"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {

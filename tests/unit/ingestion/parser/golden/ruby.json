@@ -114,6 +114,7 @@
     "exports": [
       "TestFoo"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -567,6 +568,7 @@
       "Splintered",
       "Util"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -862,6 +864,7 @@
       "implicit_rescue",
       "modifier_loops"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -1305,6 +1308,7 @@
       "locked_write",
       "helper_calls"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {

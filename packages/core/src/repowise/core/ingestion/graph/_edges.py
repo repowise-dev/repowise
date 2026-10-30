@@ -209,6 +209,7 @@ class EdgesMixin:
         Returns the number of edges added.
         """
         from ..framework_edges import add_framework_edges
+        from ..framework_edges.scan_cache import ScanCache
 
         path_set = set(self._parsed_files.keys())
         stem_map = build_stem_map(path_set)
@@ -231,6 +232,7 @@ class EdgesMixin:
             # over the tree. Empty unless ``set_source_map`` was called.
             source_map=self._source_map,
             pytest_roots=self._pytest_roots,
+            framework_scans=ScanCache(getattr(self, "_cache_dir", None)),
         )
 
         # The .NET project index ``build()`` already made; handlers that scope
@@ -238,6 +240,7 @@ class EdgesMixin:
         if getattr(self, "dotnet_index", None) is not None:
             ctx._dotnet_index = self.dotnet_index
         count = add_framework_edges(self._graph, self._parsed_files, ctx, tech_stack)
+        ctx.framework_scans.save()
         if count:
             log.info("Framework edges added", count=count)
             self._invalidate_subgraph_caches()

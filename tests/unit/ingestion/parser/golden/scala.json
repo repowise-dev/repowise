@@ -162,6 +162,7 @@
     "exports": [
       "AssertionsSpec"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -722,6 +723,7 @@
       "Registry",
       "Shape"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -915,6 +917,7 @@
     "exports": [
       "Nested"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -1356,6 +1359,7 @@
     "exports": [
       "PerfIoInLoop"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {

@@ -344,6 +344,7 @@
     "exports": [
       "AccountService"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -682,6 +683,7 @@
     "exports": [
       "AccountTrigger"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -752,6 +754,194 @@
         "source_symbol_id": "lang_samples/apex/AccountTrigger.trigger::AccountTrigger",
         "object_name": "Account",
         "line": 1,
+        "path": []
+      }
+    ],
+    "grammar_missing": false
+  },
+  "apex/HealthMarkersTest.cls": {
+    "file_info": {
+      "path": "lang_samples/apex/HealthMarkersTest.cls",
+      "language": "apex",
+      "size_bytes": 545,
+      "is_test": false,
+      "is_config": false,
+      "is_api_contract": false,
+      "is_entry_point": false,
+      "is_manifest_entry": false,
+      "is_reachability_root": false,
+      "is_application_main": false
+    },
+    "symbols": [
+      {
+        "id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest",
+        "name": "HealthMarkersTest",
+        "qualified_name": "lang_samples.apex.HealthMarkersTest.HealthMarkersTest",
+        "kind": "class",
+        "signature": "class HealthMarkersTest",
+        "start_line": 2,
+        "end_line": 19,
+        "docstring": null,
+        "decorators": [
+          "@IsTest(SeeAllData=true)\nprivate"
+        ],
+        "visibility": "private",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": null,
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "private"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest::readsOrgData",
+        "name": "readsOrgData",
+        "qualified_name": "lang_samples.apex.HealthMarkersTest.HealthMarkersTest.readsOrgData",
+        "kind": "method",
+        "signature": "readsOrgData() -> void",
+        "start_line": 4,
+        "end_line": 8,
+        "docstring": null,
+        "decorators": [
+          "@isTest(seeAllData = true)\n    static"
+        ],
+        "visibility": "private",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkersTest",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "static"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest::ownData",
+        "name": "ownData",
+        "qualified_name": "lang_samples.apex.HealthMarkersTest.HealthMarkersTest.ownData",
+        "kind": "method",
+        "signature": "ownData() -> void",
+        "start_line": 10,
+        "end_line": 13,
+        "docstring": null,
+        "decorators": [
+          "@IsTest(SeeAllData=false)\n    static"
+        ],
+        "visibility": "private",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkersTest",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "static"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest::suppressed",
+        "name": "suppressed",
+        "qualified_name": "lang_samples.apex.HealthMarkersTest.HealthMarkersTest.suppressed",
+        "kind": "method",
+        "signature": "suppressed() -> void",
+        "start_line": 15,
+        "end_line": 18,
+        "docstring": null,
+        "decorators": [
+          "@IsTest(SeeAllData=true)\n    @SuppressWarnings('PMD.ApexUnitTestShouldNotUseSeeAllDataTrue')\n    static"
+        ],
+        "visibility": "private",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkersTest",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "static"
+        ],
+        "alias_of": null
+      }
+    ],
+    "imports": [],
+    "exports": [],
+    "module_name": null,
+    "export_aliases": {},
+    "calls": [
+      {
+        "target_name": "assertNotEquals",
+        "receiver_name": "System",
+        "caller_symbol_id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest::readsOrgData",
+        "line": 7,
+        "argument_count": 2,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": [
+          null,
+          "fixtureId"
+        ]
+      },
+      {
+        "target_name": "Account",
+        "receiver_name": null,
+        "caller_symbol_id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest::ownData",
+        "line": 12,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      }
+    ],
+    "heritage": [],
+    "docstring": null,
+    "parse_errors": [],
+    "content_hash": "ee0b625d872285a30bc7a789d76e01feadef22aaacfda9214f6b1a36f94e9c5f",
+    "type_refs": [
+      {
+        "type_name": "Account",
+        "line": 12,
+        "origin": "composite_literal"
+      }
+    ],
+    "local_refs": [],
+    "registrars": [],
+    "references": [],
+    "schema_refs": [
+      {
+        "source_symbol_id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest::ownData",
+        "object_name": "Account",
+        "line": 12,
         "path": []
       }
     ],
@@ -961,6 +1151,7 @@
     ],
     "imports": [],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -1677,6 +1868,7 @@
     "exports": [
       "Classes"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -2169,6 +2361,7 @@
     "exports": [
       "HealthMarkers"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -2521,193 +2714,6 @@
     ],
     "grammar_missing": false
   },
-  "apex/HealthMarkersTest.cls": {
-    "file_info": {
-      "path": "lang_samples/apex/HealthMarkersTest.cls",
-      "language": "apex",
-      "size_bytes": 545,
-      "is_test": false,
-      "is_config": false,
-      "is_api_contract": false,
-      "is_entry_point": false,
-      "is_manifest_entry": false,
-      "is_reachability_root": false,
-      "is_application_main": false
-    },
-    "symbols": [
-      {
-        "id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest",
-        "name": "HealthMarkersTest",
-        "qualified_name": "lang_samples.apex.HealthMarkersTest.HealthMarkersTest",
-        "kind": "class",
-        "signature": "class HealthMarkersTest",
-        "start_line": 2,
-        "end_line": 19,
-        "docstring": null,
-        "decorators": [
-          "@IsTest(SeeAllData=true)\nprivate"
-        ],
-        "visibility": "private",
-        "is_async": false,
-        "complexity_estimate": 1,
-        "language": "apex",
-        "parent_name": null,
-        "is_exported_symbol": false,
-        "is_declaration": false,
-        "type_parameter_count": null,
-        "extension_receiver": null,
-        "written_receiver": null,
-        "modifiers": [
-          "private"
-        ],
-        "alias_of": null
-      },
-      {
-        "id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest::readsOrgData",
-        "name": "readsOrgData",
-        "qualified_name": "lang_samples.apex.HealthMarkersTest.HealthMarkersTest.readsOrgData",
-        "kind": "method",
-        "signature": "readsOrgData() -> void",
-        "start_line": 4,
-        "end_line": 8,
-        "docstring": null,
-        "decorators": [
-          "@isTest(seeAllData = true)\n    static"
-        ],
-        "visibility": "private",
-        "is_async": false,
-        "complexity_estimate": 1,
-        "language": "apex",
-        "parent_name": "HealthMarkersTest",
-        "is_exported_symbol": false,
-        "is_declaration": false,
-        "type_parameter_count": null,
-        "extension_receiver": null,
-        "written_receiver": null,
-        "modifiers": [
-          "static"
-        ],
-        "alias_of": null
-      },
-      {
-        "id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest::ownData",
-        "name": "ownData",
-        "qualified_name": "lang_samples.apex.HealthMarkersTest.HealthMarkersTest.ownData",
-        "kind": "method",
-        "signature": "ownData() -> void",
-        "start_line": 10,
-        "end_line": 13,
-        "docstring": null,
-        "decorators": [
-          "@IsTest(SeeAllData=false)\n    static"
-        ],
-        "visibility": "private",
-        "is_async": false,
-        "complexity_estimate": 1,
-        "language": "apex",
-        "parent_name": "HealthMarkersTest",
-        "is_exported_symbol": false,
-        "is_declaration": false,
-        "type_parameter_count": null,
-        "extension_receiver": null,
-        "written_receiver": null,
-        "modifiers": [
-          "static"
-        ],
-        "alias_of": null
-      },
-      {
-        "id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest::suppressed",
-        "name": "suppressed",
-        "qualified_name": "lang_samples.apex.HealthMarkersTest.HealthMarkersTest.suppressed",
-        "kind": "method",
-        "signature": "suppressed() -> void",
-        "start_line": 15,
-        "end_line": 18,
-        "docstring": null,
-        "decorators": [
-          "@IsTest(SeeAllData=true)\n    @SuppressWarnings('PMD.ApexUnitTestShouldNotUseSeeAllDataTrue')\n    static"
-        ],
-        "visibility": "private",
-        "is_async": false,
-        "complexity_estimate": 1,
-        "language": "apex",
-        "parent_name": "HealthMarkersTest",
-        "is_exported_symbol": false,
-        "is_declaration": false,
-        "type_parameter_count": null,
-        "extension_receiver": null,
-        "written_receiver": null,
-        "modifiers": [
-          "static"
-        ],
-        "alias_of": null
-      }
-    ],
-    "imports": [],
-    "exports": [],
-    "export_aliases": {},
-    "calls": [
-      {
-        "target_name": "assertNotEquals",
-        "receiver_name": "System",
-        "caller_symbol_id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest::readsOrgData",
-        "line": 7,
-        "argument_count": 2,
-        "receiver_call": null,
-        "scope_name": null,
-        "edge_type": "calls",
-        "supplied_props": null,
-        "bare_name_fallback": false,
-        "spawned": false,
-        "program_call": false,
-        "argument_types": null,
-        "argument_names": [
-          null,
-          "fixtureId"
-        ]
-      },
-      {
-        "target_name": "Account",
-        "receiver_name": null,
-        "caller_symbol_id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest::ownData",
-        "line": 12,
-        "argument_count": 1,
-        "receiver_call": null,
-        "scope_name": null,
-        "edge_type": "calls",
-        "supplied_props": null,
-        "bare_name_fallback": false,
-        "spawned": false,
-        "program_call": false,
-        "argument_types": null,
-        "argument_names": null
-      }
-    ],
-    "heritage": [],
-    "docstring": null,
-    "parse_errors": [],
-    "content_hash": "ee0b625d872285a30bc7a789d76e01feadef22aaacfda9214f6b1a36f94e9c5f",
-    "type_refs": [
-      {
-        "type_name": "Account",
-        "line": 12,
-        "origin": "composite_literal"
-      }
-    ],
-    "local_refs": [],
-    "registrars": [],
-    "references": [],
-    "schema_refs": [
-      {
-        "source_symbol_id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest::ownData",
-        "object_name": "Account",
-        "line": 12,
-        "path": []
-      }
-    ],
-    "grammar_missing": false
-  },
   "apex/nested.cls": {
     "file_info": {
       "path": "lang_samples/apex/nested.cls",
@@ -2902,6 +2908,7 @@
     "exports": [
       "Nested"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -3437,6 +3444,7 @@
     "exports": [
       "PerfIoInLoop"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {

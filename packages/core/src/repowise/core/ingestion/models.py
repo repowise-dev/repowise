@@ -789,6 +789,9 @@ class ParsedFile:
     symbols: list[Symbol]
     imports: list[Import]
     exports: list[str]  # names exported by this file
+    # Go's package clause affects the names callers use after importing a
+    # directory, but it is not a Symbol. Store it for incremental surface checks.
+    module_name: str | None = None
     # ``{exported name: local name}`` where a TS/JS module publishes a symbol
     # it declares under a different name (``export { stringType as string }``).
     # Empty for every other language and for the far commoner clause that does

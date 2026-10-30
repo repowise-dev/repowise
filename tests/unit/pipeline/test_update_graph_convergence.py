@@ -16,7 +16,9 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
+
+import pytest
 
 from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 from repowise.core.ingestion.git_indexer import GitIndexer
@@ -108,6 +110,64 @@ async def test_update_graph_converges_with_init_graph(tmp_path: Path) -> None:
     assert subgraph_signature(init_gb.symbol_subgraph()) == subgraph_signature(
         upd_gb.symbol_subgraph()
     )
+
+
+async def test_missing_patch_seed_is_invalidated_before_full_rebuild(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = tmp_path / ".repowise" / "graph_seed_edges.pkl"
+    cache.parent.mkdir()
+    cache.write_bytes(b"stale snapshot")
+    events: list[str] = []
+    messages: list[str] = []
+    graph_builder = SimpleNamespace(
+        compute_metrics_parallel=AsyncMock(),
+        update_co_change_edges=lambda _meta: None,
+    )
+
+    async def missing_seed(_repo_path: Path) -> None:
+        assert cache.is_file()
+        events.append("load_seed")
+        return None
+
+    def full_build(*_args, **kwargs):
+        events.append("build_graph")
+        assert kwargs["seed_edges"] is None
+        assert not cache.exists()
+        return [], {}, graph_builder, SimpleNamespace(), 0
+
+    async def no_changed_files(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(
+        "repowise.core.pipeline.incremental.graph.build_repo_graph",
+        full_build,
+    )
+    monkeypatch.setattr(
+        "repowise.core.pipeline.incremental.graph_seed.load_seed_edges",
+        missing_seed,
+    )
+    monkeypatch.setattr(
+        "repowise.core.ingestion.git_indexer.GitIndexer.index_changed_files",
+        no_changed_files,
+    )
+    monkeypatch.setattr(
+        "repowise.core.pipeline.phases.git.label_co_change_structure",
+        lambda *_args: None,
+    )
+
+    await rebuild_graph_and_git(
+        tmp_path,
+        [],
+        cfg={},
+        exclude_patterns=[],
+        patch_graph=True,
+        log=messages.append,
+    )
+
+    assert events == ["load_seed", "build_graph"]
+    assert not cache.exists()
+    assert any("no valid persisted edge snapshot" in message for message in messages)
 
 
 def test_dynamic_hint_failure_logs_warning_and_does_not_raise(tmp_path: Path) -> None:

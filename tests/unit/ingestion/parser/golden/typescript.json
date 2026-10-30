@@ -62,6 +62,7 @@
     ],
     "imports": [],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -994,6 +995,7 @@
     ],
     "imports": [],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -1114,6 +1116,7 @@
       "sixOps",
       "twoOps"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -1193,6 +1196,7 @@
       "deeplyNested",
       "shallow"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -1365,6 +1369,7 @@
       }
     ],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -1800,6 +1805,7 @@
       "Service",
       "Repository"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -2011,6 +2017,7 @@
       "mode",
       "limit"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -2340,6 +2347,7 @@
       "Client",
       "Transport"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {

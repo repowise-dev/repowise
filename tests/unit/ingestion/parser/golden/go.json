@@ -89,6 +89,7 @@
       "SixOps",
       "TwoOps"
     ],
+    "module_name": "conditionals",
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -168,6 +169,7 @@
       "DeeplyNested",
       "Shallow"
     ],
+    "module_name": "sample",
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -510,6 +512,7 @@
       }
     ],
     "exports": [],
+    "module_name": "sample",
     "export_aliases": {},
     "calls": [
       {

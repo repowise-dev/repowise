@@ -159,7 +159,10 @@ def build_namespace_map(
     namespaces: dict[str, list[Path]] = {}
     types: dict[str, list[Path]] = {}
     partials: dict[str, list[Path]] = {}
-    for path in cs_files:
+    # C# import resolution chooses the first file for an otherwise ambiguous
+    # namespace when project metadata cannot rank the candidates. Make that
+    # tie-break independent of filesystem traversal order and checkout layout.
+    for path in sorted(cs_files, key=lambda item: item.as_posix()):
         if texts is not None:
             text = texts.get(path)
             if text is None:
@@ -270,7 +273,7 @@ def build_vb_namespace_map(
     namespaces: dict[str, list[Path]] = {}
     types: dict[str, list[Path]] = {}
     partials: dict[str, list[Path]] = {}
-    for path in vb_files:
+    for path in sorted(vb_files, key=lambda item: item.as_posix()):
         text = texts.get(path)
         if text is None:
             continue
