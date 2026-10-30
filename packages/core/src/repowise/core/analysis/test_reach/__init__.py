@@ -176,6 +176,7 @@ from .db import (
     tests_reaching_by_tier,
     tests_reaching_through_helpers,
     unscanned_test_files,
+    write_test_masks_snapshot,
 )
 from .forward import (
     CallGraphView,
@@ -260,4 +261,5 @@ __all__ = [
     "tests_reaching_through_helpers",
     "type_only_files",
     "unscanned_test_files",
+    "write_test_masks_snapshot",
 ]

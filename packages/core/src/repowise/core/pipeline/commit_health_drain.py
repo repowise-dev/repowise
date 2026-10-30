@@ -97,9 +97,27 @@ async def _drain_store(repo_path: Path, repo_id: str) -> None:
 
     engine = create_engine(resolve_db_url(repo_path))
     try:
-        await drain(create_session_factory(engine), repo_id, repo_path, total=budget_seconds())
+        factory = create_session_factory(engine)
+        stored = await drain(factory, repo_id, repo_path, total=budget_seconds())
+        # An update that started meanwhile writes the views itself, from its
+        # final stores; views built here mid-update could outlive it.
+        if stored and not _run_active(repo_path):
+            await _rewrite_read_snapshots(factory, repo_id)
     finally:
         await engine.dispose()
+
+
+async def _rewrite_read_snapshots(session_factory: object, repo_id: str) -> None:
+    """Store the read views again: the rows the drain wrote are one of their inputs.
+
+    Committing those rows dropped the views the update stored, so every new
+    MCP or web process would rebuild them live until the next update.
+    """
+    from repowise.core.persistence.crud.analysis.actions import write_read_snapshots
+    from repowise.core.persistence.database import get_session
+
+    async with get_session(session_factory) as session:
+        await write_read_snapshots(session, repo_id)
 
 
 def _log_failure(repo_path: Path) -> None:

@@ -8,7 +8,9 @@ version and the view's model version).
 Freshness is kept on the write side: any session that writes a store a view
 could read deletes every stored view in the same transaction
 (:func:`_invalidate`), so a stored row is current by construction and a
-missing one is built live. The rule fails closed: a table it does not know
+missing one is built live. A kind in :data:`SELF_KEYED_KINDS` is the
+exception: its key carries the index state it was built from, so its reader
+checks freshness and the purge leaves it. The rule fails closed: a table it does not know
 is an input (:data:`UNRELATED_TABLES` lists the ones that are not), a write
 in a savepoint that rolled back still invalidates, and a write to one
 repository drops every repository's rows in a shared store. Readers never
@@ -81,6 +83,13 @@ UNRELATED_TABLES = frozenset(
     }
 )
 
+#: Kinds whose key names the index state they were built from
+#: (:func:`~repowise.core.persistence.index_cache.index_stamp`), so a reader
+#: that compares keys never serves a stale one. The purge keeps them: a write
+#: that does not move the index (a decision, a commit-health row) leaves them
+#: valid. ``test_masks`` is ``analysis.test_reach.db.MASKS_SNAPSHOT_KIND``.
+SELF_KEYED_KINDS = frozenset({"test_masks"})
+
 #: ``session.info`` flag: this transaction wrote a store a view reads.
 _STALE = "read_snapshots_stale"
 
@@ -141,7 +150,7 @@ def _invalidate(session: Session) -> None:
         return
     try:
         with session.begin_nested():
-            session.execute(delete(ReadSnapshot))
+            session.execute(delete(ReadSnapshot).where(ReadSnapshot.kind.not_in(SELF_KEYED_KINDS)))
     except Exception as exc:  # a store from before the table holds no views
         logger.debug("read snapshots not cleared: %s", exc)
     # Popped after the delete: the savepoint's autoflush can set it again.
@@ -245,6 +254,7 @@ def decode_or_none(tp: type, value: Any) -> Any | None:
 
 
 __all__ = [
+    "SELF_KEYED_KINDS",
     "UNRELATED_TABLES",
     "decode_or_none",
     "mark_current",

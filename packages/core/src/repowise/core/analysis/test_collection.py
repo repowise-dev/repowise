@@ -621,11 +621,11 @@ async def _graph_candidates(
     *changed* files (every target when not given; :func:`_test_hops`).
     """
     from .conftest_routes import scoped_candidates
-    from .test_reachability import load_import_graph, load_test_files
+    from .test_reachability import cached_test_files, load_import_graph
     from .test_selection import is_code_file, plugin_loader
 
     texts = pytest_texts or {}
-    test_files = {f for f in await load_test_files(session, repo_id) if is_code_file(f)}
+    test_files = {f for f in await cached_test_files(session, repo_id) if is_code_file(f)}
     graph = await load_import_graph(session, repo_id)
     wide = graph.with_package_inits()
     found, entries, calls = await _tier_picks(

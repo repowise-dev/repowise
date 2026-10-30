@@ -32,7 +32,11 @@ from repowise.core.persistence.models import (
     ReadSnapshot,
     SecurityFinding,
 )
-from repowise.core.persistence.read_snapshots import _written_table, decode_or_none
+from repowise.core.persistence.read_snapshots import (
+    SELF_KEYED_KINDS,
+    _written_table,
+    decode_or_none,
+)
 from tests.unit.health.fix_first_rows import FINDINGS, METRICS, PERFORMANCE, PLANS, REFACTORING
 from tests.unit.persistence.test_actions_loader import NOW, _seed
 
@@ -49,7 +53,9 @@ async def _live(session, rid: str) -> tuple[str, str]:
 
 
 async def _snapshot_rows(session) -> int:
-    return (await session.execute(select(func.count()).select_from(ReadSnapshot))).scalar_one()
+    """Rows the purge owns; a self-keyed kind checks its own key on read."""
+    query = select(func.count()).where(ReadSnapshot.kind.not_in(SELF_KEYED_KINDS))
+    return (await session.execute(query)).scalar_one()
 
 
 @pytest.fixture
@@ -71,7 +77,7 @@ async def test_persist_writes_both_snapshots_once(async_session) -> None:
     rid = await _seed(async_session)
     await write_read_snapshots(async_session, rid)
     kinds = (await async_session.execute(select(ReadSnapshot.kind))).scalars().all()
-    assert sorted(kinds) == ["actions", "fix_first", "fix_first_counts"]
+    assert sorted(kinds) == ["actions", "fix_first", "fix_first_counts", "test_masks"]
     # Nothing moved since, so a second pass writes nothing.
     assert not await fix_first_loader.write_fix_first_snapshot(async_session, rid)
     assert not await actions_loader.write_actions_snapshot(async_session, rid)
