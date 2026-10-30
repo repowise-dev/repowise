@@ -1,10 +1,10 @@
 # packages/core/src/repowise/core/analysis/test_reach/walk.py
 """Walks que responden “¿qué tests alcanzan este fichero?”.
 
-``call_walk`` e ``import_walk`` mantienen su firma y valor de retorno
-originales (``Walk[dict[str, set[str]]]``). ``registration_walk`` se
-añade como un walk independiente que consume el resultado de los
-anteriores vía el parámetro ``prior``.
+``call_walk`` e ``import_walk`` conservan exactamente su firma y contrato
+originales (``Walk[dict[str, set[str]]]``); ``registration_walk`` es una
+función nueva, puramente aditiva, que se apoya en el resultado de los
+walks anteriores vía ``prior``.
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from .maps import (
 
 
 # ---------------------------------------------------------------------------
-# Walk de llamadas (firma y retorno originales, sin cambios)
+# Walk de llamadas — firma original, sin cambios (P1)
 # ---------------------------------------------------------------------------
 def call_walk(
     seeds: list[str],
@@ -44,7 +44,7 @@ def call_walk(
 
 
 # ---------------------------------------------------------------------------
-# Walk de importaciones (firma y retorno originales, sin cambios)
+# Walk de importaciones — firma original, sin cambios (P1)
 # ---------------------------------------------------------------------------
 def import_walk(
     seeds: list[str],
@@ -68,7 +68,7 @@ def import_walk(
 
 
 # ---------------------------------------------------------------------------
-# Walk de registros (nuevo, se integra sin alterar tipos)
+# Walk de registros — función NUEVA, aditiva, no altera contratos existentes
 # ---------------------------------------------------------------------------
 def registration_walk(
     seeds: list[str],
@@ -125,7 +125,7 @@ def reach_states(
     # 2) Walk de importaciones.
     import_reach = _drive(import_walk(seeds, test_files), graph_maps)
 
-    # 3) Walk de registros: sembramos con todo lo alcanzado y con sus tests.
+    # 3) Walk de registros: sembramos con lo alcanzado y sus tests.
     prior: dict[str, set[str]] = {}
     for reach in (call_reach, import_reach):
         for node, tests in reach.items():
