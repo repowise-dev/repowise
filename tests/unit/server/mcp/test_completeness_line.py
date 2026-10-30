@@ -208,3 +208,38 @@ async def test_a_partial_range_claims_nothing(setup_mcp, repo_on_disk):
     result = await get_symbol("pkg/mod.py:5-6")
 
     assert "complete" not in result["_meta"]
+
+
+def _raw_card(text: str, full_text: str) -> dict:
+    return {"skeleton": {"mode": "raw", "text": text, "full_tokens": len(full_text) // 4}}
+
+
+def test_get_context_claim_counts_only_raw_text_that_survived_the_budget():
+    from repowise.server.mcp_server.tool_context.context import _settle_whole_files
+
+    source = "line\n" * 400
+    result = {
+        "targets": {
+            "a.md": _raw_card("[repowise#0123456789ab: 400 lines omitted]", source),
+            "b.yaml": _raw_card(source, source),
+        },
+        "_meta": {"complete": "Complete: 2 files served whole; do not re-open them."},
+    }
+
+    _settle_whole_files(result)
+
+    assert result["_meta"]["complete"] == "Complete: 1 file served whole; do not re-open it."
+
+
+def test_get_context_claim_is_dropped_when_no_file_survived_whole():
+    from repowise.server.mcp_server.tool_context.context import _settle_whole_files
+
+    source = "line\n" * 400
+    result = {
+        "targets": {"a.md": _raw_card("[repowise#0123456789ab: 400 lines omitted]", source)},
+        "_meta": {"complete": "Complete: 1 file served whole; do not re-open it."},
+    }
+
+    _settle_whole_files(result)
+
+    assert "complete" not in result["_meta"]

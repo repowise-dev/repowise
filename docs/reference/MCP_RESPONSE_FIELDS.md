@@ -278,6 +278,8 @@ One top-level block: `window` (`since`, `until`), `candidates` (changes merged i
 
 Cut from stored symbol bounds, no parsing at query time: every signature, the imports, and the bodies of top symbols by centrality, hotspot and query match. Elisions carry 1-indexed line ranges.
 
+A file with no symbol bounds is served whole (`mode: "raw"`). A Markdown or reStructuredText document over the skeleton budget is served as its headings with line numbers (`mode: "outline"`). `_meta.complete` counts only files whose whole source survived the response budget.
+
 ### doc_drift
 
 - `references`: documents naming this file that still resolve to it.

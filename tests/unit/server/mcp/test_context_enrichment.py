@@ -574,3 +574,38 @@ async def test_skeleton_of_a_file_with_no_symbol_bounds_is_raw_with_a_note(
     assert skeleton["verified"] is True
     assert "X = 1" in skeleton["text"]
     assert skeleton["note"].startswith("No usable symbol bounds")
+
+
+@pytest.mark.asyncio
+async def test_skeleton_of_a_long_document_is_its_headings_with_line_numbers(
+    session, populated_db, tmp_path
+):
+    body = "words " * 2000
+    (tmp_path / "guide.md").write_text(
+        f"# Guide\n\n{body}\n\n## Install\n\n```sh\n# not a heading\n```\n\n## Use\n",
+        encoding="utf-8",
+    )
+
+    out: dict = {}
+    await enrichment._resolve_skeleton(
+        session, await _repo(session, populated_db), "guide.md", "file", out, repo_root=tmp_path
+    )
+
+    skeleton = out["skeleton"]
+    assert skeleton["mode"] == "outline"
+    assert skeleton["text"] == "1: # Guide\n5: ## Install\n11: ## Use"
+    assert skeleton["tokens"] < skeleton["full_tokens"]
+    assert "get_symbol('guide.md:<start>-<end>')" in skeleton["note"]
+
+
+@pytest.mark.asyncio
+async def test_skeleton_of_a_short_document_is_served_whole(session, populated_db, tmp_path):
+    (tmp_path / "short.md").write_text("# Short\n\nOne line.\n", encoding="utf-8")
+
+    out: dict = {}
+    await enrichment._resolve_skeleton(
+        session, await _repo(session, populated_db), "short.md", "file", out, repo_root=tmp_path
+    )
+
+    assert out["skeleton"]["mode"] == "raw"
+    assert out["skeleton"]["text"] == "# Short\n\nOne line.\n"

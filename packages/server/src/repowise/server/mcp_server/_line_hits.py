@@ -30,14 +30,16 @@ from repowise.core.fs_walk import PRUNED_DIRS, walk_repo
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphNode
 from repowise.core.repo_config import load_repo_config
-from repowise.core.support_paths import file_population
+from repowise.core.support_paths import file_population, is_doc_or_config_path
 from repowise.core.test_paths import is_test_related_path
 from repowise.server.mcp_server._budget import OmissionCollector, register_post_enforce
 from repowise.server.mcp_server._edit_sites import (
     _MAX_FILE_BYTES,
     MAX_REFERENCES_PER_FILE,
     MAX_TEXT_CHARS,
+    _bare_name,
     _cap_references_per_file,
+    _read_lines,
     reference_edit_set,
 )
 from repowise.server.mcp_server._helpers import (
@@ -55,6 +57,7 @@ from repowise.server.mcp_server._query_shape import (
     _qual_norm,
 )
 from repowise.server.mcp_server._symbol_lookup import symbol_id_variants
+from repowise.server.mcp_server._verify import name_at_line
 
 _log = logging.getLogger("repowise.mcp.search")
 
@@ -339,7 +342,12 @@ def scan_literal(
         if len(found) > MAX_LINES_PER_FILE:
             per_file_capped += 1
             del found[MAX_LINES_PER_FILE:]
-        hits = [(n, line, "definition" if definition.search(line) else "match") for n, line in found]
+        # A key in a data file or a doc line is not a definition, whatever its shape.
+        defines = None if is_doc_or_config_path(rel) else definition
+        hits = [
+            (n, line, "definition" if defines and defines.search(line) else "match")
+            for n, line in found
+        ]
         if len(rows) >= MAX_LINES:
             # Full: only definitions still earn a row, as they sort first.
             kept = [h for h in hits if h[2] == "definition"] if defs < MAX_LINES else []
@@ -452,13 +460,13 @@ async def _attach(
         if candidates:
             found = await _exact_symbols(session, repository.id, query, candidates)
             nodes = [n for n in found if not is_excluded(n.file_path, spec)]
-        if len(nodes) > MAX_SYMBOLS:
-            response.update(
-                lines=[], complete=False, reasons=[f"{len(nodes)} symbols match; narrow the query"]
-            )
-            return
-        sets = [await reference_edit_set(session, repository.id, root, n) for n in nodes]
-    if sets:
+        ambiguous = len(nodes) > MAX_SYMBOLS
+        sets = [] if ambiguous else [
+            await reference_edit_set(session, repository.id, root, n) for n in nodes
+        ]
+    if ambiguous:
+        rows, reasons = await asyncio.to_thread(_ambiguous_rows, root, nodes, response)
+    elif sets:
         rows, reasons = _merge(sets)
     elif literal:
         rows, reasons = await asyncio.to_thread(_scan_listed, root, *literal)
@@ -504,6 +512,41 @@ async def _attach(
         response["reasons"] = reasons
     if response["lines"]:
         _reconcile_symbol_miss(response, literal_scan=not sets)
+
+
+def _ambiguous_rows(
+    root: Path, nodes: list[GraphNode], response: dict
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Definition rows for the *nodes* ``results`` does not show, and the reason saying so.
+
+    Between them ``results`` and these rows name every definition, once.
+    """
+    shown = {
+        (r.get("path"), r.get("start_line"))
+        for r in response.get("results") or ()
+        if isinstance(r, dict) and r.get("type") == "symbol"
+    }
+    rest = [n for n in nodes if (n.file_path, n.start_line) not in shown]
+    reason = (
+        f"{len(nodes)} symbols share this name: definitions only, {len(nodes) - len(rest)}"
+        " in results and the rest here; search a path::Name id for one symbol's sites"
+    )
+    return _definition_rows(root, rest), [reason]
+
+
+def _definition_rows(root: Path, nodes: list[GraphNode]) -> list[dict[str, Any]]:
+    """A live ``definition`` row per node whose stored line still names it."""
+    rows: list[dict[str, Any]] = []
+    files: dict[str, list[str] | None] = {}
+    for node in nodes[: MAX_LINES + 1]:
+        rel, start = node.file_path, node.start_line or 0
+        if rel not in files:
+            files[rel] = _read_lines(root, rel)
+        lines = files[rel]
+        if lines and name_at_line(lines, _bare_name(node), start):
+            text = lines[start - 1].strip()[:MAX_TEXT_CHARS]
+            rows.append({"path": rel, "line": start, "kind": "definition", "text": text})
+    return rows
 
 
 def _reconcile_symbol_miss(response: dict, *, literal_scan: bool) -> None:

@@ -48,7 +48,12 @@ _COMMENT_PREFIXES = ("#", "//", "--", "/*", "*", "<!--")
 
 def _markdown_headings(lines: list[str]) -> list[str]:
     """ATX headings outside front matter, fenced code and HTML comments."""
-    headings: list[str] = []
+    return [title for _, title in _markdown_heading_rows(lines)]
+
+
+def _markdown_heading_rows(lines: list[str]) -> list[tuple[int, str]]:
+    """``(1-based line, heading)`` for :func:`_markdown_headings`."""
+    headings: list[tuple[int, str]] = []
     start = 0
     if lines and lines[0].strip() == "---":
         close = next((i for i in range(1, len(lines)) if lines[i].strip() in ("---", "...")), None)
@@ -56,7 +61,7 @@ def _markdown_headings(lines: list[str]) -> list[str]:
             start = close + 1
     fence = ""
     in_comment = False
-    for ln in lines[start:]:
+    for n, ln in enumerate(lines[start:], start + 1):
         if in_comment:
             in_comment = "-->" not in ln
             continue
@@ -75,7 +80,7 @@ def _markdown_headings(lines: list[str]) -> list[str]:
             in_comment = True
             continue
         if _MD_HEADING.match(ln):
-            headings.append(ln.strip())
+            headings.append((n, ln.strip()))
     return headings
 
 
@@ -104,8 +109,13 @@ def _rst_headings(lines: list[str]) -> list[str]:
     ``# comment`` inside a ``code-block`` is not one either, and neither is a
     row of a simple table framed by ``=`` borders.
     """
+    return [title for _, title in _rst_heading_rows(lines)]
+
+
+def _rst_heading_rows(lines: list[str]) -> list[tuple[int, str]]:
+    """``(1-based line, title)`` for :func:`_rst_headings`."""
     tables = _rst_table_lines(lines)
-    headings: list[str] = []
+    headings: list[tuple[int, str]] = []
     for i in range(len(lines) - 1):
         title, under = lines[i].rstrip(), lines[i + 1].rstrip()
         if (
@@ -116,8 +126,18 @@ def _rst_headings(lines: list[str]) -> list[str]:
             and _RST_ADORNMENT.fullmatch(under)
             and len(under) >= len(title)
         ):
-            headings.append(title)
+            headings.append((i + 1, title))
     return headings
+
+
+def heading_rows(text: str, file_path: str) -> list[tuple[int, str]] | None:
+    """A Markdown or reStructuredText document's ``(line, heading)`` rows; ``None`` for other files."""
+    lower = file_path.lower()
+    if lower.endswith(_MARKDOWN_EXTS):
+        return _markdown_heading_rows(text.splitlines())
+    if lower.endswith(_RST_EXTS):
+        return _rst_heading_rows(text.splitlines())
+    return None
 
 
 def _outline_lines(text: str, file_path: str) -> tuple[str, list[str]]:
