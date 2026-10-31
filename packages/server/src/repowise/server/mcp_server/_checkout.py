@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import Any
 
 from repowise.core.git_head import CheckoutMatch, read_head_commit, same_path
-from repowise.core.workspace.registry import repo_db_path
 
 
 @dataclass(frozen=True)
@@ -69,6 +68,8 @@ def note_match(match: CheckoutMatch | None, indexed: Path) -> bool:
     if match is None or match.same_checkout:
         _note(None)
         return False
+    from repowise.core.workspace.registry import repo_db_path  # keeps import light
+
     own = repo_db_path(match.checkout).exists()
     _note(CallerCheckout(match.checkout, match.checkout if own else indexed))
     return own

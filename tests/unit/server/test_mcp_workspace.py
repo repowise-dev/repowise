@@ -141,6 +141,10 @@ class _MockRegistry:
                 return entry.alias
         raise ValueError(f"Unknown repo '{repo}'. Available: {self.get_all_aliases()}")
 
+    def match_checkout(self, repo):
+        # Exact identities resolve above; worktree matching has its own tests.
+        return None
+
     async def get(self, alias: str) -> RepoContext:
         return self._contexts[alias]
 

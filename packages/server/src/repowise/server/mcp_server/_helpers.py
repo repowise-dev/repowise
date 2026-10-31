@@ -257,7 +257,9 @@ async def _resolve_repo_context(repo: str | None = None) -> Any:
             "repo='all' must be handled explicitly by each tool. "
             "Fan out with _federation.Federation instead."
         )
-    matched = registry.match_checkout(repo) if repo is not None else None
+    # Only a path can name another checkout; an alias resolves as before.
+    is_path = repo is not None and Path(repo).is_absolute()
+    matched = registry.match_checkout(repo) if is_path else None
     if matched is not None and matched[0] == resolved:
         entry = registry.ws_config.get_repo(resolved)
         indexed = (registry.workspace_root / entry.path).resolve()
