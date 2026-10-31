@@ -181,3 +181,32 @@ async def test_copied_repo_leaves_the_original_ledger_alone(tmp_path: Path) -> N
 
     assert load_report(copy).unique_events == 1
     assert load_report(old).unique_events == 1
+
+
+async def test_a_relocation_that_failed_is_retried_on_the_next_sync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from repowise.core.distill.store import OmissionStore
+    from repowise.core.savings import recorder
+    from repowise.core.savings.service import load_report
+
+    old = _git_repo(tmp_path / "old")
+    await _indexed(old)
+    OmissionStore(recorder.sidecar_path(old)).close()
+    _record_saving(old, 1)
+    new = tmp_path / "new"
+    old.rename(new)
+
+    real = recorder.relocate_ledger
+    monkeypatch.setattr(recorder, "relocate_ledger", lambda root: 0)  # a busy sidecar
+    await _upsert(new, new)
+    assert load_report(new).unique_events == 0
+
+    monkeypatch.setattr(recorder, "relocate_ledger", real)
+    engine = create_engine(f"sqlite+aiosqlite:///{new / '.repowise' / 'wiki.db'}")
+    try:
+        async with get_session(create_session_factory(engine)) as session:
+            await upsert_repository(session, name="new", local_path=str(new), stamp_head=True)
+    finally:
+        await engine.dispose()
+    assert load_report(new).unique_events == 1

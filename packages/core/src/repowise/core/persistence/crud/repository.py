@@ -87,8 +87,10 @@ async def upsert_repository(
     """
     result = await session.execute(select(Repository).where(Repository.local_path == local_path))
     repo = result.scalar_one_or_none()
+    relocated = False
     if repo is None:
         repo = await _relocated_row(session, local_path)
+        relocated = repo is not None
 
     stamping = repo is None or stamp_head or head_commit is not None
     resolved_head = (head_commit or _read_head_commit(local_path)) if stamping else None
@@ -124,6 +126,8 @@ async def upsert_repository(
         if stamping:
             repo.updated_at = _now_utc()
 
+    if relocated or stamping:
+        await _adopt_savings_ledger(session, local_path)
     await session.flush()
     return repo
 
@@ -259,11 +263,21 @@ async def _relocated_row(session: AsyncSession, local_path: str) -> Repository |
     repo = rows[0]
     _log.info("Index moved from %s to %s; updating its repository row", repo.local_path, local_path)
     repo.local_path = local_path
-    # The savings ledger in the same .repowise follows the row.
+    return repo
+
+
+async def _adopt_savings_ledger(session: AsyncSession, local_path: str) -> None:
+    """File the savings ledger of ``local_path``'s own store under ``local_path``.
+
+    Runs on a re-point and on every sync, so a relocation that failed on a busy
+    sidecar, or happened before the ledger followed the row, is picked up later.
+    """
+    store_dir = _store_dir(session)
+    if store_dir is None or not _same_dir(store_dir, local_path):
+        return
     from ...savings.recorder import relocate_ledger
 
     await asyncio.to_thread(relocate_ledger, local_path)
-    return repo
 
 
 def _same_checkout(repo: Repository, local_path: str) -> bool:

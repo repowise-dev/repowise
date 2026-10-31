@@ -180,8 +180,8 @@ def relocate_ledger(repo_root: str | Path) -> int:
 
     Events are keyed by the root path they were written from, so after a move
     the history sits under the old path and the report reads none of it. Called
-    when the repository row is re-pointed at *repo_root*. Returns the number of
-    rows moved; an absent sidecar is left absent.
+    when the repository row is re-pointed at *repo_root* and on each index sync.
+    Returns the number of rows moved; an absent sidecar is left absent.
     """
     try:
         db_path = sidecar_path(repo_root)
@@ -192,7 +192,7 @@ def relocate_ledger(repo_root: str | Path) -> int:
         with OmissionStore(db_path) as store:
             return store.savings().adopt_rows(str(Path(repo_root)))
     except Exception:
-        # Not retried: the next upsert finds the row already re-pointed.
+        # The next index sync retries it.
         logger.warning(
             "savings relocation failed; history stays under the old path", exc_info=True
         )

@@ -183,7 +183,16 @@ class SavingsRepository:
         A sidecar lives inside the repository it describes, so a row naming any
         other id was written before the repository was moved or copied. A row
         whose retry key already exists under the new id keeps its old id.
+        Takes no write lock when there is nothing to move.
         """
+        tables = ("savings_events", "savings_opportunities")
+        if not any(
+            self._conn.execute(
+                f"SELECT 1 FROM {table} WHERE repository_id != ? LIMIT 1", (repository_id,)
+            ).fetchone()
+            for table in tables
+        ):
+            return 0
         self._conn.execute("BEGIN IMMEDIATE")
         try:
             moved = sum(
@@ -191,7 +200,7 @@ class SavingsRepository:
                     f"UPDATE OR IGNORE {table} SET repository_id = ? WHERE repository_id != ?",
                     (repository_id, repository_id),
                 ).rowcount
-                for table in ("savings_events", "savings_opportunities")
+                for table in tables
             )
             self._conn.commit()
             return moved
