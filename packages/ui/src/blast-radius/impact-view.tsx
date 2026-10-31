@@ -282,7 +282,7 @@ export function ImpactView({
               subject={subject}
               fileHref={fileHref}
             />
-            {analysis.result.transitive_affected.length > 0 && (
+            {/* The depth control stays when nothing is reached: a deeper look may find some. */}
               <div className="space-y-2 border-t border-[var(--color-border-default)] pt-5">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <p className={MICRO}>Blast radius</p>
@@ -301,9 +301,14 @@ export function ImpactView({
                     </select>
                   </label>
                 </div>
-                <BlastRadiusMap result={analysis.result} changedFiles={analysis.changedFiles} fileHref={fileHref} />
+                {analysis.result.transitive_affected.length > 0 ? (
+                  <BlastRadiusMap result={analysis.result} changedFiles={analysis.changedFiles} fileHref={fileHref} />
+                ) : (
+                  <p className="text-xs text-[var(--color-text-secondary)]">
+                    No indexed file imports the changed files within {maxDepth} hop{maxDepth === 1 ? "" : "s"}.
+                  </p>
+                )}
               </div>
-            )}
             <BlastRadiusResults
               result={analysis.result}
               changedFiles={analysis.changedFiles}

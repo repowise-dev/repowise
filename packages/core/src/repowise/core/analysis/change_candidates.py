@@ -20,13 +20,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core import git_refs
-from repowise.core.analysis.git_cli import _git
+from repowise.core.analysis.git_cli import _git, checkout_relative
 from repowise.core.persistence.models import GitCommit, GitCommitFile
 
 ChangeKind = Literal["working_tree", "branch", "commit"]
 
 WORKING_TREE_ID = "working-tree"
-_SHA = re.compile(r"^[0-9a-f]{7,40}$")
+#: Listed commits carry the full sha; a prefix could name two commits at once.
+_SHA = re.compile(r"^[0-9a-f]{40}$")
 
 
 @dataclass(frozen=True)
@@ -70,8 +71,16 @@ class ChangeCandidates:
         }
 
 
+def _relative(repo_path: str, paths: list[str]) -> list[str]:
+    """git's top-level paths, relative to the checkout the index was built in."""
+    try:
+        return sorted(checkout_relative(repo_path, dict.fromkeys(paths)))
+    except Exception:
+        return sorted(paths)
+
+
 def _working_tree_paths(repo_path: str) -> list[str]:
-    """Paths with uncommitted changes, untracked files included."""
+    """Paths with uncommitted changes, untracked files included, as the index names them."""
     try:
         out = _git(["status", "--porcelain=v1", "-z", "--untracked-files=all"], cwd=repo_path)
     except Exception:
@@ -89,7 +98,7 @@ def _working_tree_paths(repo_path: str) -> list[str]:
             # A rename or copy names its source in the next field.
             i += 1
         paths.append(path)
-    return sorted(set(paths))
+    return _relative(repo_path, sorted(set(paths)))
 
 
 def _branch_subjects(repo_path: str, refs: list[str]) -> dict[str, tuple[str, str]]:
@@ -241,7 +250,7 @@ def _branch_files(repo_path: str, name: str) -> list[str]:
     # Only a branch git lists, so the name is never parsed as an option or a range.
     if name not in {b.name for b in git_refs.list_branches(repo_path)}:
         raise UnknownChangeError(f"unknown branch {name!r}")
-    return git_refs.changed_files(repo_path, git_refs.default_base(repo_path), name)
+    return _relative(repo_path, git_refs.changed_files(repo_path, git_refs.default_base(repo_path), name))
 
 
 async def resolve_change_files(
@@ -273,7 +282,7 @@ async def resolve_change_files(
             await session.execute(
                 select(GitCommitFile.file_path).where(
                     GitCommitFile.repository_id == repo_id,
-                    GitCommitFile.sha.startswith(ref),
+                    GitCommitFile.sha == ref,
                 )
             )
         ).scalars()
@@ -281,7 +290,8 @@ async def resolve_change_files(
         if paths:
             return paths
         if repo_path and await asyncio.to_thread(git_refs.resolve, repo_path, ref):
-            return await asyncio.to_thread(git_refs.changed_files, repo_path, f"{ref}^", ref)
+            files = await asyncio.to_thread(git_refs.changed_files, repo_path, f"{ref}^", ref)
+            return await asyncio.to_thread(_relative, repo_path, files)
         raise UnknownChangeError(f"unknown commit {ref!r}")
 
     raise UnknownChangeError(f"unknown change {change_id!r}")
