@@ -33,11 +33,11 @@ def _expand_exports_wildcard(
 ) -> set[str]:
     """Every indexed file an ``exports`` target (``"./src/locales/*.ts"``) matches."""
     if "*" not in target:
-        stripped = target.lstrip("./")
+        stripped = target.removeprefix("./")
         resolved = _probe_path(f"{pkg_dir}/{stripped}", path_set)
         return {resolved} if resolved is not None else set()
     # The Node spec allows one ``*`` per pattern.
-    stripped = target.lstrip("./")
+    stripped = target.removeprefix("./")
     prefix, _, suffix = stripped.partition("*")
     base_prefix = _normalize_repo_rel(f"{pkg_dir}/{prefix}")
     matches: set[str] = set()
@@ -66,7 +66,7 @@ def build_ts_workspace_index(ctx: ResolverContext) -> TsWorkspaceIndex:
             )
         main = pkg.get("main")
         if isinstance(main, str):
-            resolved = _probe_path(f"{dir_posix}/{main.lstrip('./')}", path_set)
+            resolved = _probe_path(f"{dir_posix}/{main.removeprefix('./')}", path_set)
             if resolved is not None:
                 entries.add(resolved)
     checked_in = get_checked_in_builds(ctx)

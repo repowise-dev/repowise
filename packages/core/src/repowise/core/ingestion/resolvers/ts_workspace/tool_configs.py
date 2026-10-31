@@ -245,16 +245,14 @@ def _normalize_script_path(candidate: str) -> str:
 
 
 def _source_token_targets(token: str, pkg_prefix: str, path_set: set[str]) -> tuple[str, ...]:
-    candidate = (pkg_prefix + token).lstrip("./")
+    candidate = (pkg_prefix + token).removeprefix("./")
     candidate = re.sub(r"\\", "/", candidate)
     norm = _normalize_script_path(candidate)
     return (norm,) if norm in path_set else ()
 
 
 def _glob_token_targets(token: str, pkg_prefix: str, path_set: set[str]) -> set[str]:
-    rel_glob = (pkg_prefix + token).lstrip("./")
-    if rel_glob.startswith("./"):
-        rel_glob = rel_glob[2:]
+    rel_glob = (pkg_prefix + token).removeprefix("./")
     try:
         regex = _vitest_glob_to_regex(rel_glob)
     except re.error:
