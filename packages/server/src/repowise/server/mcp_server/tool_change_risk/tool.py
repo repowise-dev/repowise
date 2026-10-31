@@ -19,6 +19,7 @@ from repowise.core.registry import mcp_tool_registry as mcp
 # Patchable names are read off the package at call time so patches reach them.
 from repowise.server.mcp_server import tool_change_risk as _pkg
 from repowise.server.mcp_server._budget import OmissionCollector
+from repowise.server.mcp_server._checkout import caller_revspec
 from repowise.server.mcp_server._helpers import (
     _unsupported_repo_all,
     attach_ignored_arguments,
@@ -330,6 +331,9 @@ async def get_change_risk(
     if repo == "all":
         return _unsupported_repo_all("get_change_risk")
     ctx = await _pkg._resolve_repo_context(repo)
+    revspec, refused = caller_revspec(revspec)
+    if refused is not None:
+        return refused
     started = time.perf_counter()
     includes = _path_patterns(include_paths)
     key = await _cache.cache_key(ctx, revspec, extensions, exclude_patterns, includes, baseline)

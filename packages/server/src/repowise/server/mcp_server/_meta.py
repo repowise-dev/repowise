@@ -26,7 +26,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from repowise.core.git_head import read_head_commit
+from repowise.core.git_head import read_head_commit, same_path
 from repowise.core.index_scope import (
     CANONICAL_INDEX_SCOPE_PROJECTION,
     INDEX_SCOPE_ENV,
@@ -35,7 +35,7 @@ from repowise.core.index_scope import (
     index_scope_fingerprint,
     load_index_scope,
 )
-from repowise.server.mcp_server import _code_drift
+from repowise.server.mcp_server import _checkout, _code_drift
 from repowise.server.mcp_server._rounding import round_float
 
 # 2: index_scope carries the compact projection on routine responses. The key
@@ -89,6 +89,11 @@ def served_root(repository: Any, ctx_path: str | Path | None = None) -> str | No
     """
     from repowise.server.mcp_server import _state
 
+    caller = _checkout.current()
+    local = getattr(repository, "local_path", None)
+    if caller is not None and caller.own_index and local and same_path(local, caller.served):
+        # A worktree index seeded from this one keeps its repository id.
+        return str(caller.served)
     served = _state._repo_path
     if (
         served
@@ -528,6 +533,11 @@ def freshness_from_repo(
     if indexed_full:
         out["indexed_commit"] = indexed_full[:12] if isinstance(indexed_full, str) else indexed_full
 
+    borrowed = _checkout.borrowed_checkout(local_path)
+    if borrowed is not None:
+        out.update(_borrowed_freshness(borrowed, indexed_full, targets, local_path))
+        return out
+
     live_full = read_live_head(local_path)
     if live_full:
         out["live_head"] = live_full[:12]
@@ -592,6 +602,38 @@ def freshness_from_repo(
                 "no longer in the working tree. Run `repowise update --working-tree`."
             )
 
+    return out
+
+
+def _borrowed_freshness(
+    caller: Any, indexed_full: str | None, targets: list[str] | None, local_path: str | None
+) -> dict[str, Any]:
+    """Freshness of this index for another checkout of the repo, as a fact.
+
+    The caller's HEAD stands in for live HEAD, and its working tree for the
+    uncommitted edits. The warning names both checkouts and commits instead
+    of an update command: updating this index does not describe the caller's.
+    """
+    out: dict[str, Any] = {}
+    head = read_live_head(str(caller.caller))
+    if head:
+        out["live_head"] = head[:12]
+    dirty = uncommitted_targets(str(caller.caller), targets)
+    if dirty:
+        out["working_tree_dirty"] = len(dirty)
+    hit = False
+    if head and indexed_full:
+        out["index_behind"] = head != indexed_full
+        if head != indexed_full:
+            changed = _changed_files_between(local_path, indexed_full, head) if local_path else None
+            if changed is None or (changed and targets is None):
+                hit = True
+            elif changed and targets:
+                hit = targets_hit_by_changes(targets, changed)
+    if hit or dirty:
+        out["stale_warning"] = _checkout.checkout_fact(
+            caller, indexed_full, head, served_file=bool(targets)
+        )
     return out
 
 
@@ -715,6 +757,7 @@ def finalize_trust_envelope(result: Any, *, evidence_kind: str | None = None) ->
     elif evidence_kind == "generated":
         meta.setdefault("existing_verified_code", False)
     # Here, not in build_meta, so every tool and every shielded error carries it.
+    meta.update(_checkout.checkout_meta())
     server_stale = _code_drift.stale_line()
     if server_stale:
         meta["server_stale"] = server_stale

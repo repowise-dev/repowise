@@ -33,6 +33,7 @@ from repowise.core.providers.embedding.base import (
 from repowise.core.providers.embedding.caching import CachingEmbedder
 from repowise.server import __version__
 from repowise.server.mcp_server import _code_drift, _state
+from repowise.server.mcp_server._checkout import close_own_index_contexts
 from repowise.server.mcp_server._transport import (
     CLIENT_CLOSED,
     SERVER_FAULT,
@@ -620,6 +621,7 @@ async def _lifespan(server: FastMCP):
 
         await close_test_impact_indexes()
         await registry.close()
+        await close_own_index_contexts()
         _state._registry = None
         _state._workspace_root = None
         return
@@ -707,6 +709,7 @@ async def _lifespan(server: FastMCP):
     _state._lancedb_ready = None
     _state._served_repo_id = None
 
+    await close_own_index_contexts()
     await engine.dispose()
     # _decision_store is an alias for _vector_store — close only once.
     await _state._vector_store.close()
