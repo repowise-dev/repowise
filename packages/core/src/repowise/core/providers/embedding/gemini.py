@@ -1,6 +1,7 @@
 """Gemini embedding support for repowise semantic search.
 
-Uses the Google GenAI SDK (google-genai) with the gemini-embedding-001 model.
+Uses the Google GenAI SDK (google-genai) with gemini-embedding-001 (default)
+or gemini-embedding-2.
 This embedder satisfies the Embedder protocol and can be passed to any
 repowise vector store (InMemoryVectorStore, LanceDBVectorStore, PgVectorStore).
 
@@ -42,9 +43,8 @@ class GeminiEmbedder:
     Args:
         api_key:              Google Gemini API key. Falls back to GEMINI_API_KEY env var.
         model:                Embedding model name. Default: "gemini-embedding-001".
-        task_type:            Embedding task type. "SEMANTIC_SIMILARITY" is best for
-                              semantic search. Other options: "RETRIEVAL_DOCUMENT",
-                              "RETRIEVAL_QUERY", "CLUSTERING", "CLASSIFICATION".
+        task_type:            Task type for gemini-embedding-001. Embedding 2 uses
+                              retrieval instructions selected by embed(kind=...).
         output_dimensionality: Override output vector size (default: 768, max: 3072).
     """
 
@@ -87,20 +87,20 @@ class GeminiEmbedder:
 
         Args:
             texts: Non-empty list of strings to embed.
-            kind: Accepted for Embedder-protocol parity with directional
-                embedders; Gemini's ``task_type`` already encodes
-                query-vs-document framing (see ``__init__``), so this is
-                ignored here rather than doubly applied.
+            kind: "query" or "document". Selects code-retrieval instructions
+                for Embedding 2; older models use the configured task_type.
 
         Returns:
             List of unit-length (L2-normalized) float vectors.
         """
-        del kind
         if not texts:
             return []
 
         api_key = self._api_key
         model = self._model
+        embedding_two = model.removeprefix("models/").startswith("gemini-embedding-2")
+        if embedding_two:
+            texts = _embedding_2_texts(texts, kind)
         task_type = self._task_type
         output_dimensionality = self._output_dimensionality
         timeout = self._timeout
@@ -120,18 +120,28 @@ class GeminiEmbedder:
                     kwargs["http_options"] = http_options
                 self._client = genai.Client(**kwargs)
 
-            config = genai_types.EmbedContentConfig(
-                task_type=task_type,
-                output_dimensionality=output_dimensionality,
+            config_args: dict = {"output_dimensionality": output_dimensionality}
+            if not embedding_two:
+                config_args["task_type"] = task_type
+            config = genai_types.EmbedContentConfig(**config_args)
+
+            contents = (
+                [genai_types.Content(parts=[genai_types.Part.from_text(text=text)]) for text in texts]
+                if embedding_two else texts
             )
 
             result = self._client.models.embed_content(  # type: ignore[union-attr]
                 model=model,
-                contents=texts,
+                contents=contents,
                 config=config,
             )
 
-            raw_vectors = [list(e.values) for e in result.embeddings]
+            raw_vectors = [list(e.values) for e in (result.embeddings or [])]
+            if len(raw_vectors) != len(texts):
+                raise ValueError(
+                    f"GeminiEmbedder expected {len(texts)} embeddings but the API returned"
+                    f" {len(raw_vectors)} (model={model!r}); one vector per input is required."
+                )
             widths = {len(v) for v in raw_vectors}
             if widths and widths != {output_dimensionality}:
                 actual = min(widths - {output_dimensionality})
@@ -144,6 +154,14 @@ class GeminiEmbedder:
             return [_l2_normalize(v) for v in raw_vectors]
 
         return await asyncio.to_thread(_embed_sync)
+
+
+def _embedding_2_texts(texts: list[str], kind: str) -> list[str]:
+    if kind == "query":
+        return [f"task: code retrieval | query: {text}" for text in texts]
+    if kind == "document":
+        return [f"title: none | text: {text}" for text in texts]
+    raise ValueError(f"kind must be 'query' or 'document', got {kind!r}")
 
 
 def _l2_normalize(vec: list[float]) -> list[float]:

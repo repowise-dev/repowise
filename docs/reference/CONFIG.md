@@ -966,6 +966,29 @@ then `mock`. `reindex` skips a `mock` pin when a real embedder is found.
   `REPOWISE_EMBEDDING_TIMEOUT` apply to the active embedder; [provider-prefixed
   variants](#embeddings) take precedence for theirs.
 
+### Gemini Embedding 2
+
+The `gemini` embedder supports `gemini-embedding-2`; its default remains
+`gemini-embedding-001`. To switch an existing index:
+
+```bash
+export GEMINI_API_KEY="..."
+export REPOWISE_EMBEDDER=gemini
+export REPOWISE_EMBEDDING_MODEL=gemini-embedding-2
+export REPOWISE_EMBEDDING_DIMS=768
+repowise reindex --embedder gemini
+```
+
+Keep the same model and dimension settings in the environment of `update`,
+`serve` and the MCP server. Embedding 2 and Embedding 001 use incompatible
+vector spaces, even at the same dimension, so switching requires a full
+reindex. Restart a running server after switching.
+
+Repowise applies Google's code-retrieval instruction to queries and document
+formatting to stored text, and requests a separate vector for each input.
+Embedding 2 does not accept `task_type`. See Google's
+[embedding instructions](https://ai.google.dev/gemini-api/docs/embeddings#task-types-with-embeddings-2).
+
 ## BYOK (Bring Your Own Key)
 
 Keys resolve in order:
