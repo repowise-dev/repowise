@@ -19,7 +19,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import useSWR from "swr";
 import { Plus, Flame } from "lucide-react";
-import type { AffectedSignal, BlastRadiusResponse, ChangeCandidate } from "@repowise-dev/types/blast-radius";
+import type {
+  AffectedSignal,
+  BlastRadiusResponse,
+  ChangeCandidate,
+  ChangeCandidatesResponse,
+} from "@repowise-dev/types/blast-radius";
 
 import { Button } from "../ui/button";
 import { Skeleton } from "../ui/skeleton";
@@ -275,6 +280,136 @@ function AnalyzingNote({ name }: { name: string }) {
 const QUIET_BUTTON =
   "rounded-sm text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]";
 
+function selectionKeyOf(selection: Selection | null): string {
+  if (!selection) return "";
+  return selection.kind === "change" ? `change:${selection.id}` : `files:${selection.files.join("\n")}`;
+}
+
+async function analyzeSelection(adapter: ImpactAdapter, sel: Selection, depth: number): Promise<Analysis> {
+  if (sel.kind === "change") {
+    const r = await adapter.analyzeChange!({ changeId: sel.id, maxDepth: depth });
+    return { selection: sel, result: r, changedFiles: r.changed_files, changedTotal: r.changed_files_total };
+  }
+  const r = await adapter.analyze({ changedFiles: sel.files, maxDepth: depth });
+  return { selection: sel, result: r, changedFiles: sel.files };
+}
+
+/** The analysis of the current pick at the current depth; a slower answer for an earlier pick never lands. */
+function useAnalysis(adapter: ImpactAdapter, selection: Selection | null, maxDepth: number) {
+  const [analysis, setAnalysis] = useState<Analysis | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const request = useRef(0);
+  // Read through a ref: a host that rebuilds its adapter each render must not
+  // re-run the analysis each render.
+  const adapterRef = useRef(adapter);
+  adapterRef.current = adapter;
+
+  const run = useCallback(async (sel: Selection, depth: number) => {
+    const ticket = ++request.current;
+    const current = () => ticket === request.current;
+    setLoading(true);
+    setError(null);
+    try {
+      const next = await analyzeSelection(adapterRef.current, sel, depth);
+      if (current()) setAnalysis(next);
+    } catch (err) {
+      if (current()) {
+        setAnalysis(null);
+        setError(toFriendlyMessage(err, "Analysis failed."));
+      }
+    } finally {
+      if (current()) setLoading(false);
+    }
+  }, []);
+
+  const key = selectionKeyOf(selection);
+  useEffect(() => {
+    if (selection) void run(selection, maxDepth);
+    // Keyed by what was picked and the depth; `selection` itself is rebuilt per pick.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, maxDepth, run]);
+  return { analysis, error, loading };
+}
+
+function ReviewHeader({
+  listsChanges,
+  changes,
+  changesLoading,
+  picked,
+  filesName,
+  filesOpen,
+  onToggleFiles,
+  onPick,
+}: {
+  listsChanges: boolean;
+  changes: ChangeCandidatesResponse | undefined;
+  changesLoading: boolean;
+  picked: ChangeCandidate | undefined;
+  filesName: string;
+  filesOpen: boolean;
+  onToggleFiles: () => void;
+  onPick: (id: string) => void;
+}) {
+  return (
+    <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
+      <span className="text-[15px] text-[var(--color-text-secondary)]">Reviewing</span>
+      {(filesName || !listsChanges) && (
+        <span className="text-[15px] font-medium text-[var(--color-text-primary)]">{filesName || "the files you pick"}</span>
+      )}
+      {listsChanges && <ChangePicker data={changes} loading={changesLoading} selected={picked} onSelect={onPick} />}
+      {listsChanges && (
+        <button type="button" aria-expanded={filesOpen} onClick={onToggleFiles} className={QUIET_BUTTON}>
+          {filesOpen ? "Hide file picker" : "Or pick files"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function ResultPane({
+  state,
+  pickedName,
+  empty,
+  shownChange,
+  fileHref,
+  maxDepth,
+  onDepth,
+}: {
+  state: ReturnType<typeof useAnalysis>;
+  pickedName: string;
+  empty: ReactNode;
+  shownChange: ChangeCandidate | undefined;
+  fileHref: ((path: string) => string) | undefined;
+  maxDepth: number;
+  onDepth: (depth: number) => void;
+}) {
+  const { analysis, error, loading } = state;
+  return (
+    <section className="min-w-0 space-y-6" aria-live="polite">
+      {empty}
+      {error && <p className="text-xs text-[var(--color-error)]">{error}</p>}
+      {loading && pickedName && <AnalyzingNote name={pickedName} />}
+      {loading && !analysis && (
+        <div className="space-y-4">
+          <Skeleton className="h-16 w-full" />
+          <Skeleton className="h-[360px] w-full" />
+        </div>
+      )}
+      {analysis && (
+        <div className={loading ? "space-y-6 opacity-60 transition-opacity" : "space-y-6"}>
+          <ReviewBody analysis={analysis} change={shownChange} fileHref={fileHref} maxDepth={maxDepth} onDepth={onDepth} />
+        </div>
+      )}
+    </section>
+  );
+}
+
+const EMPTY_WITH_LIST =
+  "There is no uncommitted work, no branch ahead of the default branch, and no indexed commit yet. Pick files to see what depends on them.";
+const EMPTY_WITHOUT_LIST =
+  "Search or paste the files a change touches to see what depends on them, what usually changes with them, and who should review.";
+
 export function ImpactView({
   adapter,
   initialFiles,
@@ -308,14 +443,7 @@ export function ImpactView({
   });
   const [filesOpen, setFilesOpen] = useState(!listsChanges || seed.length > 0);
   const [maxDepth, setMaxDepth] = useState(3);
-  const [analysis, setAnalysis] = useState<Analysis | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const request = useRef(0);
-  // Read through a ref: a host that rebuilds its adapter each render must not
-  // re-run the analysis each render.
-  const adapterRef = useRef(adapter);
-  adapterRef.current = adapter;
+  const state = useAnalysis(adapter, selection, maxDepth);
 
   // A new file seed (following another file's CTA) replaces the selection.
   useEffect(() => {
@@ -328,74 +456,34 @@ export function ImpactView({
     if (!selection && changes?.default_id) setSelection({ kind: "change", id: changes.default_id });
   }, [changes, selection]);
 
-  const run = useCallback(async (sel: Selection, depth: number) => {
-    const ticket = ++request.current;
-    setLoading(true);
-    setError(null);
-    try {
-      let next: Analysis;
-      if (sel.kind === "change") {
-        const r = await adapterRef.current.analyzeChange!({ changeId: sel.id, maxDepth: depth });
-        next = { selection: sel, result: r, changedFiles: r.changed_files, changedTotal: r.changed_files_total };
-      } else {
-        const r = await adapterRef.current.analyze({ changedFiles: sel.files, maxDepth: depth });
-        next = { selection: sel, result: r, changedFiles: sel.files };
-      }
-      // A slower answer for an earlier pick never replaces the current one.
-      if (ticket === request.current) setAnalysis(next);
-    } catch (err) {
-      if (ticket === request.current) {
-        setAnalysis(null);
-        setError(toFriendlyMessage(err, "Analysis failed."));
-      }
-    } finally {
-      if (ticket === request.current) setLoading(false);
-    }
-  }, []);
-
-  const selectionKey = selection
-    ? selection.kind === "change"
-      ? `change:${selection.id}`
-      : `files:${selection.files.join("\n")}`
-    : "";
-  useEffect(() => {
-    if (selection) void run(selection, maxDepth);
-    // Keyed by what was picked and the depth; `selection` itself is rebuilt per pick.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectionKey, maxDepth, run]);
-
   const listed = changes?.changes ?? [];
   const picked = selection?.kind === "change" ? changeFor(selection.id, listed) : undefined;
   // The change the numbers on screen belong to, so they never wear a newer pick's name.
-  const analyzed = analysis?.selection;
+  const analyzed = state.analysis?.selection;
   const shownChange = analyzed?.kind === "change" ? changeFor(analyzed.id, listed) : undefined;
   const filesName = selection?.kind === "files" ? count(selection.files.length, "picked file") : "";
-  const pickedName = picked ? changeName(picked) : filesName;
   const fileHref = adapter.fileHref ? (p: string) => adapter.fileHref!(p) : undefined;
   const pickChange = (id: string) => {
     setSelection({ kind: "change", id });
     setFilesOpen(false);
     onChangePicked?.(changeLinkParam(id));
   };
+  const empty = !selection && !changesLoading && (
+    <EmptyState title="Pick a change" description={listsChanges ? EMPTY_WITH_LIST : EMPTY_WITHOUT_LIST} />
+  );
 
   return (
-    <div className="min-w-0 space-y-6" aria-busy={loading}>
-      <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
-        <span className="text-[15px] text-[var(--color-text-secondary)]">Reviewing</span>
-        {listsChanges && selection?.kind !== "files" ? (
-          <ChangePicker data={changes} loading={changesLoading} selected={picked} onSelect={pickChange} />
-        ) : (
-          <span className="text-[15px] font-medium text-[var(--color-text-primary)]">{filesName || "the files you pick"}</span>
-        )}
-        {listsChanges && selection?.kind === "files" && (
-          <ChangePicker data={changes} loading={changesLoading} selected={undefined} onSelect={pickChange} />
-        )}
-        {listsChanges && (
-          <button type="button" aria-expanded={filesOpen} onClick={() => setFilesOpen((v) => !v)} className={QUIET_BUTTON}>
-            {filesOpen ? "Hide file picker" : "Or pick files"}
-          </button>
-        )}
-      </div>
+    <div className="min-w-0 space-y-6" aria-busy={state.loading}>
+      <ReviewHeader
+        listsChanges={listsChanges}
+        changes={changes}
+        changesLoading={changesLoading}
+        picked={picked}
+        filesName={filesName}
+        filesOpen={filesOpen}
+        onToggleFiles={() => setFilesOpen((v) => !v)}
+        onPick={pickChange}
+      />
       {changesError && (
         <p className="text-xs text-[var(--color-error)]">{toFriendlyMessage(changesError, "Could not list changes.")}</p>
       )}
@@ -404,36 +492,19 @@ export function ImpactView({
           key={seedKey}
           adapter={adapter}
           initial={selection?.kind === "files" ? selection.files : seed}
-          busy={loading}
+          busy={state.loading}
           onAnalyze={(files) => setSelection({ kind: "files", files })}
         />
       )}
-
-      <section className="min-w-0 space-y-6" aria-live="polite">
-        {!selection && !changesLoading && (
-          <EmptyState
-            title="Pick a change"
-            description={
-              listsChanges
-                ? "There is no uncommitted work, no branch ahead of the default branch, and no indexed commit yet. Pick files to see what depends on them."
-                : "Search or paste the files a change touches to see what depends on them, what usually changes with them, and who should review."
-            }
-          />
-        )}
-        {error && <p className="text-xs text-[var(--color-error)]">{error}</p>}
-        {loading && pickedName && <AnalyzingNote name={pickedName} />}
-        {loading && !analysis && (
-          <div className="space-y-4">
-            <Skeleton className="h-16 w-full" />
-            <Skeleton className="h-[360px] w-full" />
-          </div>
-        )}
-        {analysis && (
-          <div className={loading ? "space-y-6 opacity-60 transition-opacity" : "space-y-6"}>
-            <ReviewBody analysis={analysis} change={shownChange} fileHref={fileHref} maxDepth={maxDepth} onDepth={setMaxDepth} />
-          </div>
-        )}
-      </section>
+      <ResultPane
+        state={state}
+        pickedName={picked ? changeName(picked) : filesName}
+        empty={empty}
+        shownChange={shownChange}
+        fileHref={fileHref}
+        maxDepth={maxDepth}
+        onDepth={setMaxDepth}
+      />
     </div>
   );
 }
