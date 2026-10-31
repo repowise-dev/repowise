@@ -85,9 +85,11 @@ _MARKDOWN_MARKUP_RE = re.compile(r"[*`]+|(?<!\w)_+|_+(?!\w)")
 
 def _normalized(answer_text: str) -> str:
     """Lower-cased, without markdown markup, with curly apostrophes folded and
-    spaces collapsed, so every phrase marker matches however the prose is styled."""
+    spaces collapsed, so every phrase marker matches however the prose is styled.
+    "don't" and "doesn't" read as "do not" and "does not"."""
     text = _MARKDOWN_MARKUP_RE.sub("", (answer_text or "").lower())
     text = text.replace("\u2019", "'").replace("\u02bc", "'")
+    text = re.sub(r"\b(do|does)n't\b", r"\1 not", text)
     return re.sub(r"\s+", " ", text)
 
 
@@ -115,9 +117,25 @@ def _sentences(answer_text: str) -> list[str]:
     return [s for s in (p.strip() for p in _SENTENCE_BREAK_RE.split(answer_text or "")) if s]
 
 
+_LINE_NUMBER_RE = re.compile(
+    r"\bline[- ]?numbers?\b|\bline[- ]numbered\b|\bline ranges?\b|\bcite (?:the )?(?:exact|specific) lines?\b"
+)
+_CLAUSE_BREAK_RE = re.compile(r"[,;:()]|\bso\b")
+# A clause naming code or behaviour besides the line numbers still admits a gap.
+_MORE_THAN_LINES_RE = re.compile(r"\b(?:or|and|body|bodies|code|logic|value|definition)\b")
+
+
 def _is_admission(sentence: str) -> bool:
-    """Does *sentence* say something asked is not in the evidence?"""
-    low = _normalized(sentence)
+    """Does *sentence* say something asked is not in the evidence?
+
+    A clause that only says the excerpts carry no line numbers is not one:
+    the code is served, only its location metadata is missing.
+    """
+    low = " ".join(
+        c
+        for c in _CLAUSE_BREAK_RE.split(_normalized(sentence))
+        if not (_LINE_NUMBER_RE.search(c) and not _MORE_THAN_LINES_RE.search(_LINE_NUMBER_RE.sub(" ", c)))
+    )
     return (
         _BARE_GAP_RE.search(low) is not None
         or _TRUNCATED_GAP_RE.search(low) is not None
@@ -841,6 +859,8 @@ class _GradeState:
     weak_agreement: bool = False
     #: The file an earned high rests on, when the route names one.
     earned_path: str | None = None
+    #: The verified value line the answer states for the constant the question names.
+    value_line: dict | None = None
     unhydrated_names: tuple[str, ...] = ()
     stop_reason: str | None = None
     cut_off: bool = False
@@ -1052,6 +1072,11 @@ def _admitted_gap_gate(s: _GradeState) -> None:
     if s.confidence != "high" or s.hedged:
         return
     s.admitted_gap = _admitted_gap(s.answer_text)
+    # The answer states the verified value of the constant the question names:
+    # what was asked is in hand, so the admission is about something else
+    # (where it is read, its line number).
+    if s.admitted_gap and s.value_line:
+        s.admitted_gap = None
     if s.admitted_gap:
         s.confidence = "medium"
 
@@ -1080,10 +1105,15 @@ def _identifier_gate(s: _GradeState) -> None:
 
     A name no symbol carries (``HTTP``, ``TypeScript``) cannot be hydrated, so
     only indexed names count. The file an earned high rests on counts as a top
-    hit: its line is the evidence, wherever it ranked.
+    hit: its line is the evidence, wherever it ranked. A top hit whose value
+    line the answer states hydrates what was asked: that line is the answer,
+    and its page carries every other word of the question.
     """
     names = s.question_ids - s.unindexed_names
     if s.confidence != "high" or not names:
+        return
+    top_paths = {h.get("target_path") for h in s.hits[:_ENRICH_TOP_N_HITS]}
+    if s.value_line and s.value_line["path"] in top_paths:
         return
     top_n = [
         h
@@ -1366,6 +1396,7 @@ def _grade_answer(
     start = "high" if vouched or earn_high else "medium"
     s = _GradeState(
         earned_path=earned_path,
+        value_line=stated_value_line(question, question_ids, answer_text, hits),
         unindexed_names=set(unindexed_names),
         absent_names=tuple(absent_names),
         split_names=dict(split_names or {}),

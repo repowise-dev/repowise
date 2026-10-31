@@ -358,7 +358,10 @@ _ANSWER_COVERAGE_FLOOR = 0.5
 #     answer whose text was cut off is held at medium.
 # 30: an answer saying the code it describes was cut from its excerpts
 #     ("not fully visible", "truncated in the retrieved") admits a gap.
-_ANSWER_SCHEMA_VERSION = 30
+# 31: a clause saying only that the excerpts carry no line numbers admits no
+#     gap; a stated value line keeps high past an admitted gap, and past the
+#     identifier gate when a top hit serves it.
+_ANSWER_SCHEMA_VERSION = 31
 
 # Above this a whole-file Read costs more than the answer, so the low-confidence
 # hint names a ranged Read or a skeleton instead.

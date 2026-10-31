@@ -632,3 +632,72 @@ def test_a_name_only_a_comment_writes_is_absent(tmp_path) -> None:
         repo_root=tmp_path, question="How does the RowTree component render?",
     ))
     assert homonyms["absent"] == ["RowTree"]
+
+
+# --- caveats about what was not asked ----------------------------------------
+
+
+def test_a_missing_line_number_is_not_an_admission() -> None:
+    from repowise.server.mcp_server.tool_answer.confidence import _is_admission
+
+    assert not _is_admission("The excerpt does not include line numbers.")
+    assert not _is_admission("Its body isn't line-numbered in the excerpts, so I can't cite exact lines.")
+    assert _is_admission("The excerpts do not show the line numbers or the code that reads it.")
+    assert _is_admission("The excerpts do not include the check, so I can't cite its line numbers.")
+
+
+def test_a_line_number_aside_before_the_claim_is_no_hedge() -> None:
+    aside = "`_is_dynamic_esm_import` is in ts_js.py (the excerpt does not include line numbers):"
+    grade = _grade(_TS_QUESTION, f"{aside} {_TS_CLAIM}", _TS_HITS)
+    assert not grade.hedged
+    assert grade.admitted_gap is None
+
+
+_READ_CAVEAT = "The excerpts do not show the code that reads it, so I can't confirm how it is applied."
+
+
+def _dominant_floor_hits(floor: dict | None = None) -> list[dict]:
+    return [
+        {"target_path": _CFG, "score": 5.0, "summary": "Default values of the get_answer tuning constants.",
+         "symbols": [floor or _FLOOR]},
+        {"target_path": "tool_answer/payload.py", "score": 2.0},
+    ]
+
+
+def test_a_caveat_beside_a_stated_value_line_keeps_high() -> None:
+    grade = _grade(_FLOOR_QUESTION, f"{_FLOOR_ANSWER} {_READ_CAVEAT}", _dominant_floor_hits())
+    assert grade.confidence == "high"
+    assert grade.admitted_gap is None
+
+
+def test_the_caveat_still_holds_an_answer_with_no_stated_value_line() -> None:
+    unverified = {**_FLOOR, "_verified": False}
+    grade = _grade(_FLOOR_QUESTION, f"{_FLOOR_ANSWER} {_READ_CAVEAT}", _dominant_floor_hits(unverified))
+    assert grade.confidence == "medium"
+    assert grade.admitted_gap == _READ_CAVEAT
+    wrong = _grade(_FLOOR_QUESTION, f"The floor is 2.0. {_READ_CAVEAT}", _dominant_floor_hits())
+    assert wrong.confidence != "high"
+
+
+def test_a_stated_value_line_exempts_the_identifier_gate() -> None:
+    hits = _dominant_floor_hits()
+    grade = _grade(_FLOOR_QUESTION, _FLOOR_ANSWER, hits, ids={"get_answer"})
+    assert grade.confidence == "high"
+    assert grade.unhydrated_names == ()
+    unverified = _dominant_floor_hits({**_FLOOR, "_verified": False})
+    held = _grade(_FLOOR_QUESTION, _FLOOR_ANSWER, unverified, ids={"get_answer"})
+    assert held.confidence == "medium"
+    assert held.unhydrated_names == ("get_answer",)
+
+
+def test_a_contracted_admission_before_any_claim_is_a_hedge() -> None:
+    answer = (
+        "The check is part of flag-group validation in command.go. "
+        "(The excerpts don't include the validator's name or implementation.) "
+        "It runs after `Execute` calls `ExecuteC`."
+    )
+    assert _answer_is_hedged(answer, "Where is the mutually exclusive flags check enforced?")
+    assert not _answer_is_hedged(
+        "`ValidateFlagGroups` runs before `RunE`. It doesn't include positional args.",
+        "Where is the mutually exclusive flags check enforced?",
+    )
