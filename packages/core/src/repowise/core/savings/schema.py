@@ -209,7 +209,8 @@ def _rebuild_v1_opportunities(conn: sqlite3.Connection) -> None:
     """Copy v1 opportunities into a table with the v2 agent check.
 
     v1 listed the agent ids in a CHECK, which rejects every agent added since.
-    SQLite cannot alter a CHECK, so the rows move to a new table. v1 events
+    SQLite cannot alter a CHECK, so the rows move to a new table. Every id the
+    v1 list allowed passes the v2 check, so the copy keeps every row. v1 events
     keep their table: it had no agent check, and the writer validates ids.
     """
     conn.execute("ALTER TABLE savings_opportunities RENAME TO savings_opportunities_v1")

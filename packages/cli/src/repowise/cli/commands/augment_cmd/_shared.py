@@ -256,9 +256,13 @@ def record_saving(
         import sqlite3
 
         from repowise.core.distill.tracking import record_saving as _record
+        from repowise.core.savings.schema import initialize_savings_schema
 
-        con = sqlite3.connect(str(db_path), timeout=2)
+        con = sqlite3.connect(str(db_path), timeout=2, isolation_level=None)
         try:
+            # One version read when current. Repairs a store another process
+            # created but had not finished initializing when this one opened it.
+            initialize_savings_schema(con)
             _record(
                 con,
                 filter_name=filter_name,
