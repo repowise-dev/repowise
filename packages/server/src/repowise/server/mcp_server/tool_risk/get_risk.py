@@ -43,6 +43,7 @@ from repowise.server.mcp_server._test_selection import (
     files_change,
     select_change_tests,
 )
+from repowise.server.mcp_server._why_pointer import attach_why_pointer
 from repowise.server.mcp_server._workspace_routing import (
     hint_misses,
     needs_routing,
@@ -565,6 +566,7 @@ async def get_risk(
             label="global_hotspots beyond cap=5",
         )
 
+    await attach_why_pointer(response, ctx, [*targets, *changed_files])
     response["_meta"] = _build_meta(
         repository=evidence.repository, targets=[*targets, *changed_files] or None
     )

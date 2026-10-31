@@ -26,6 +26,7 @@ from repowise.server.mcp_server._helpers import (
 from repowise.server.mcp_server._meta import full_meta
 from repowise.server.mcp_server._savings import declare_replaced
 from repowise.server.mcp_server._savings.counterfactual import change_risk_replaced_tokens
+from repowise.server.mcp_server._why_pointer import attach_why_pointer
 
 from . import cache as _cache
 from .branches import (
@@ -445,12 +446,15 @@ async def get_change_risk(
     attach_ignored_arguments(payload, ignored)
     collector.attach(payload)
     if scored_entry is not None:
+        # Stored before the pointer: an acceptance moves no git state, so a
+        # cached pointer would outlive it. ``_served`` reads it afresh.
         scored_entry.payloads[_cache.payload_key(include)] = _cache.Stored(
             copy.deepcopy(payload),
             sorted(changed) or None,
             branches,
             await _scan_answer(scan),
         )
+    await attach_why_pointer(payload, ctx, sorted(changed))
     return payload
 
 
@@ -520,6 +524,7 @@ async def _served(ctx: Any, stored: _cache.Stored, started: float) -> dict:
         ),
         **kept,
     }
+    await attach_why_pointer(out, ctx, targets or [])
     return out
 
 
