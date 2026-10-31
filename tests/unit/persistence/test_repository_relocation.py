@@ -210,3 +210,26 @@ async def test_a_relocation_that_failed_is_retried_on_the_next_sync(
     finally:
         await engine.dispose()
     assert load_report(new).unique_events == 1
+
+
+async def test_an_adopted_row_takes_its_savings_history_with_it(tmp_path: Path) -> None:
+    """``update`` adopts a moved store's row before syncing; the ledger follows it."""
+    from repowise.core.distill.store import OmissionStore
+    from repowise.core.persistence.crud import adopt_moved_repository
+    from repowise.core.savings import recorder
+    from repowise.core.savings.service import load_report
+
+    old = _git_repo(tmp_path / "old")
+    await _indexed(old)
+    OmissionStore(recorder.sidecar_path(old)).close()
+    _record_saving(old, 1)
+    new = tmp_path / "new"
+    old.rename(new)
+
+    engine = create_engine(f"sqlite+aiosqlite:///{new / '.repowise' / 'wiki.db'}")
+    try:
+        async with get_session(create_session_factory(engine)) as session:
+            assert await adopt_moved_repository(session, str(new)) is not None
+    finally:
+        await engine.dispose()
+    assert load_report(new).unique_events == 1

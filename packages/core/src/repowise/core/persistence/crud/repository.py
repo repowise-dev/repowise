@@ -409,6 +409,7 @@ async def adopt_moved_repository(session: AsyncSession, local_path: str) -> Repo
     repo = rows[0]
     repo.local_path = local_path
     repo.updated_at = _now_utc()
+    await _adopt_savings_ledger(session, local_path)
     await session.flush()
     return repo
 
