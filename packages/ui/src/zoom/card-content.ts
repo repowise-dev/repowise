@@ -4,13 +4,15 @@
  * `layout.ts` sizes cards with the same font rule, so the pack leaves room for
  * exactly the label the renderer will draw.
  *
- * A card reads like a C4 box: a header (kind glyph + name, up to two lines),
- * a meta row of technology chips, a body (the summary, wrapped to the space
- * left), and a footer (health dot, kind or badge, one metric). Detail is
- * disclosed by size tier so a small card never crams.
+ * A card reads like a C4 box: a header (kind glyph + name, up to two lines,
+ * and the health score in the top-right corner), a muted technology line, a
+ * body (the summary, wrapped to the space left, and the health composition
+ * bar), and a footer (role counts with icons, file count). Detail is disclosed
+ * by size tier so a small card never crams.
  */
 
-import { nodeRoles } from "./node-signals";
+import { formatScore } from "@repowise-dev/types/health";
+
 import { techName } from "./tech-names";
 import { tokenize, type WrapMode } from "./text";
 import type { ZoomKind, ZoomNode } from "./types";
@@ -27,9 +29,9 @@ const PAD_MAX_PX = 12;
  * erring wide, since a name a hair too wide for its card is cut.
  */
 const CHAR_EM = 0.64;
-/** Title row overhead beside the label, in title ems: glyph + gap, role dot. */
+/** Title row overhead beside the label, in title ems: glyph + gap, corner score + gap. */
 const GLYPH_EMS = 1.4;
-const DOT_EMS = 1.15;
+const SCORE_EMS = 1.6;
 /** Widest card a long name may ask for (width : height). */
 export const LABEL_ASPECT_MAX = 2.3;
 /**
@@ -38,8 +40,8 @@ export const LABEL_ASPECT_MAX = 2.3;
  * stops shrinking, so a file's name is sized at the floor font there.
  */
 const FILE_FRAMED_PX = 44;
-/** A small file card's padding and role-dot reserve beside its name, in px (no glyph; see `card-text.ts`). */
-const FILE_TITLE_OVERHEAD_PX = 26;
+/** A small file card's padding and corner-score reserve beside its name, in px (no glyph; see `card-text.ts`). */
+const FILE_TITLE_OVERHEAD_PX = 33;
 
 /** Progressive disclosure by on-screen size. */
 export type CardTier = "hidden" | "tiny" | "small" | "medium" | "large";
@@ -53,10 +55,10 @@ const TIER_MIN: ReadonlyArray<readonly [CardTier, number, number]> = [
 ];
 
 /**
- * - tiny: name only.
- * - small: name + footer.
- * - medium: + chips and up to two summary lines.
- * - large: + a longer summary and a stats row.
+ * - tiny: name (and corner score) only.
+ * - small: + composition bar and footer.
+ * - medium: + technologies, up to two summary lines and a "contains" list.
+ * - large: + a longer summary.
  */
 export function cardTier(w: number, h: number): CardTier {
   for (const [tier, minW, minH] of TIER_MIN) {
@@ -129,37 +131,47 @@ export function twoLineChars(name: string, mode: WrapMode): number {
  */
 export function labelAspect(name: string, kind: ZoomKind): number {
   const labelEms = twoLineChars(name, titleMode(kind, name)) * CHAR_EM;
-  const scaled = (TITLE_FONT_RATIO * (labelEms + GLYPH_EMS + DOT_EMS)) / (1 - 2 * PAD_RATIO);
+  const scaled = (TITLE_FONT_RATIO * (labelEms + GLYPH_EMS + SCORE_EMS)) / (1 - 2 * PAD_RATIO);
   const atFloor =
     kind === "file" ? (labelEms * TITLE_FONT_MIN_PX + FILE_TITLE_OVERHEAD_PX) / FILE_FRAMED_PX : 0;
   return Math.min(LABEL_ASPECT_MAX, Math.max(scaled, atFloor));
 }
 
-/** The shared empty chip list (no allocation per frame). */
-export const NO_CHIPS: readonly string[] = [];
+/** The shared empty list (no allocation per frame). */
+export const NO_TECH: readonly string[] = [];
 
-const chipCache = new WeakMap<ZoomNode, readonly string[]>();
+const techCache = new WeakMap<ZoomNode, readonly string[]>();
 
 /**
- * Technology chips for the meta row: a subtree's top technologies, or a
- * file's language, in display form (see `techName`). Cached per node object
- * (the scene keeps nodes stable), so a frame builds no array.
+ * The muted technology line under the title, shortest first:
+ * `["Python", "Python · React", ...]`, so a narrow card drops a technology
+ * whole rather than cut one. A subtree's top technologies in display form
+ * (see `techName`), then its container badge ("CLI") when it has one. A file
+ * has none: its extension says the language. Cached per node object (the
+ * scene keeps nodes stable), so a frame builds no strings.
  */
-export function cardTechnologies(node: ZoomNode): readonly string[] {
-  const hit = chipCache.get(node);
+export function cardTechPrefixes(node: ZoomNode): readonly string[] {
+  if (node.kind === "file") return NO_TECH;
+  const hit = techCache.get(node);
   if (hit) return hit;
-  const raw = node.technologies?.length ? node.technologies : node.language ? [node.language] : [];
-  const chips = raw.length > 0 ? raw.map(techName) : NO_CHIPS;
-  chipCache.set(node, chips);
-  return chips;
+  const parts = (node.technologies ?? []).map(techName);
+  const badge = cardBadge(node);
+  if (badge) parts.push(badge);
+  const out = parts.length > 0 ? prefixes(parts) : NO_TECH;
+  techCache.set(node, out);
+  return out;
+}
+
+function prefixes(parts: readonly string[]): string[] {
+  return parts.map((_, i) => parts.slice(0, i + 1).join(" · "));
 }
 
 const badges = new WeakMap<ZoomNode, string>();
 
 /**
- * Footer badge that replaces the kind label: the container a node narrows to
- * ("API", "Web app"). Set once per scene by `buildScene`
- * (it needs the parent and the container list), read per frame.
+ * The container a node narrows to ("API", "CLI"), shown at the end of its
+ * technology line. Set once per scene by `buildScene` (it needs the parent and
+ * the container list), read per frame.
  */
 export function cardBadge(node: ZoomNode): string | null {
   return badges.get(node) ?? null;
@@ -168,52 +180,61 @@ export function cardBadge(node: ZoomNode): string | null {
 export function setCardBadge(node: ZoomNode, badge: string | null): void {
   if (badge) badges.set(node, badge);
   else badges.delete(node);
+  techCache.delete(node);
 }
 
-/**
- * The single most useful bottom-right signal. Containers show how many files
- * they hold; a file shows its language unless the chip row already does.
- */
-export function primaryMetric(node: ZoomNode, chipsShown: boolean): string {
-  if (node.kind === "file") return !chipsShown && node.language ? techName(node.language) : "";
+/** Bottom-right of a container's footer: how many files it holds. "" for a file. */
+export function primaryMetric(node: ZoomNode): string {
+  if (node.kind === "file") return "";
   const n = node.metrics.file_count;
   return n > 0 ? `${n} ${n === 1 ? "file" : "files"}` : "";
 }
 
-function count(n: number, one: string, many: string): string | null {
-  return n > 0 ? `${n} ${n === 1 ? one : many}` : null;
+/** A role the card marks with an icon. On-flow is not one: nearly every file is on a flow. */
+export type CardRole = "hotspot" | "entry" | "dead";
+
+export interface CardRoleMark {
+  role: CardRole;
+  /** The subtree count as text ("390"); "" on a file, whose icon alone says it. */
+  count: string;
 }
 
-const statsCache = new WeakMap<ZoomNode, readonly string[]>();
+const NO_ROLES: readonly CardRoleMark[] = [];
+const roleCache = new WeakMap<ZoomNode, readonly CardRoleMark[]>();
 
 /**
- * The stats row, shortest first: `[a, "a · b", "a · b · c"]`. A row too
- * narrow for all of it shows the longest prefix that fits, so a stat is
- * dropped whole rather than cut ("4 entry p…"). Cached per node object (the
- * scene keeps nodes stable), so a frame builds no strings.
+ * The roles a card marks, hotspot then entry point then dead code, only where
+ * true: a container's non-zero subtree counts (its footer), or a file's own
+ * flags (icons beside its name). Cached per node object, so a frame builds no
+ * strings.
  */
-export function cardStatPrefixes(node: ZoomNode): readonly string[] {
-  const hit = statsCache.get(node);
-  if (hit !== undefined) return hit;
+export function cardRoleMarks(node: ZoomNode): readonly CardRoleMark[] {
+  const hit = roleCache.get(node);
+  if (hit) return hit;
   const m = node.metrics;
-  const parts =
-    node.kind === "file"
-      ? nodeRoles(node)
-      : [
-          count(m.hotspot_count, "hotspot", "hotspots"),
-          count(m.entry_point_count, "entry point", "entry points"),
-          count(m.dead_count, "dead file", "dead files"),
-        ].filter((p): p is string => p !== null);
-  const out = parts.map((_, i) => parts.slice(0, i + 1).join(" · "));
-  statsCache.set(node, out);
-  return out;
+  const file = node.kind === "file";
+  const out: CardRoleMark[] = [];
+  const add = (role: CardRole, flag: boolean, n: number): void => {
+    if (file ? flag : n > 0) out.push({ role, count: file ? "" : String(n) });
+  };
+  add("hotspot", node.is_hotspot, m.hotspot_count);
+  add("entry", node.is_entry_point, m.entry_point_count);
+  add("dead", node.is_dead, m.dead_count);
+  const marks = out.length > 0 ? out : NO_ROLES;
+  roleCache.set(node, marks);
+  return marks;
 }
 
+const scoreLabels = new WeakMap<ZoomNode, string>();
+
 /**
- * The full stats row: role counts over a container's subtree, or a file's
- * own roles in words. "" when there are none.
+ * The corner health score as text ("6.8", rounded down like every other
+ * surface; see `formatScore`), or null when the node is unscored. Cached per
+ * node object, so a frame builds no strings.
  */
-export function cardStats(node: ZoomNode): string {
-  const all = cardStatPrefixes(node);
-  return all.length > 0 ? all[all.length - 1]! : "";
+export function cardScore(node: ZoomNode): string | null {
+  if (node.health_score === null) return null;
+  let s = scoreLabels.get(node);
+  if (!s) scoreLabels.set(node, (s = formatScore(node.health_score)));
+  return s;
 }

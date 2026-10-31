@@ -38,6 +38,7 @@ Every row is listed in the [extension points catalog](#extension-points-catalog)
 | Internal API as an agent tool | `mcp-tool` | Gives agents a read-only tool that queries an internal service |
 | Team shortcut command | `cli-command` | Wraps a repowise workflow your team runs often in one command |
 | Phase timings | `pipeline-hook` | Records when each index phase starts and ends and sends the timings to your metrics system |
+| Extract an unsupported document type | `document-extractors` | Converts a plugin-supported file type to Markdown for the existing ingestion path |
 
 ## Build your first plugin
 
@@ -222,6 +223,7 @@ module in the last column and call `.register(name, impl)`, for example
 | `change-metadata` | `change_metadata_sources` | one | when change records are stored | propagates | `packages/core/src/repowise/core/changes/source.py` |
 | `suspect-signal` | `suspect_signals` | every | `repowise suspects` ranks candidate changes | that signal does not fire; the others still rank | `packages/core/src/repowise/core/suspects/rank.py` |
 | `advisory-source` | `advisory_sources` | one | `repowise packages import` reads an advisory file | propagates | `packages/core/src/repowise/core/inventory/advisories.py` |
+| `document-extractors` | `document_extractors` | every; later extension claim wins | During traversal and source reads for otherwise unsupported extensions | indexing propagates with plugin name and original path; optional previews omit unavailable content | `packages/core/src/repowise/core/ingestion/document_extractors.py` |
 | `team-directory` | `team_directories` | one | when components and declared owners load | propagates | `packages/core/src/repowise/core/ownership/directory.py` |
 | `authenticator` | `authenticators` | one | each `repowise serve` request and MCP HTTP request | propagates | `packages/server/src/repowise/server/auth.py` |
 | `authorizer` | `authorizers` | one | each repository or tool access check in `repowise serve`, MCP over HTTP and chat | propagates | `packages/server/src/repowise/server/auth.py` |
@@ -303,6 +305,60 @@ Pair it with an authenticator that returns
 `Principal(id=..., kind="sso", claims={"roles": [...], "repo_ids": [...]})`,
 then select both with `REPOWISE_SEAM_AUTHENTICATOR` and
 `REPOWISE_SEAM_AUTHORIZER`.
+
+The `document-extractors` seam is format-agnostic. A plugin claims lower-case
+extensions that Repowise does not already process and returns Markdown from
+`extract(path, data)`. Registration requires a non-empty set of valid
+single-suffix extensions (for example `.pptx`, not `.drawio.xml`), a non-empty
+string `version`, and a callable `extract` method.
+Supported language extensions and files whose bytes identify a supported
+language (including shebang scripts) keep their normal parser and cannot be
+claimed by an extractor.
+
+Repowise keeps the original path and owns discovery, exclusions, size checks,
+change detection and deletion handling. The same current plugin claim is used
+when parsing working-tree files and historical Git blobs. Historical blobs are
+converted with the currently installed extractor; Repowise does not retain
+historical plugin implementations. The extractor's name, version and original
+source bytes participate in the parse-cache fingerprint. Extracted Markdown is
+cached behind the shared source reader under `.repowise/document-cache/`, so
+ingestion, historical blob parsing and appropriate MCP reads reuse conversion.
+Entries are keyed by original path, source bytes, extractor name and version.
+Cache corruption or unavailable storage causes reconversion, not lost content.
+The cache has no automatic eviction; removing this directory only causes
+reconversion. Bump `version` when
+extraction behaviour changes, then run `repowise init --force` to rebuild the
+repository index; an otherwise clean repository is not scanned just because a
+plugin version changed. Check `repowise plugins` to see which extractor owns a
+claimed extension. Change-history diffs use the current plugin for the
+historical blob's path and bytes; they do not replay old plugin versions or
+run a full repository traversal over each historical tree. Historical blob
+routing uses the changed path and that blob's bytes, applying the current
+invocation's exclusions, directory boundaries and source-size rules before
+conversion. It does not reconstruct historical ignore files or configuration.
+
+Extraction runs in the existing spawned parse-worker pool with the
+`REPOWISE_PARSE_TIMEOUT_S` per-file deadline (60 seconds by default; `0`
+disables the deadline). A timeout, worker crash, unavailable pool or extractor
+exception fails the indexing run;
+Repowise deliberately does not retry plugin code in-process. Source eligibility
+still applies to the original document before conversion. There is no separate
+size limit on extracted Markdown: output is expected to be smaller than the
+eligible source, but this is an assumption, not a guarantee. A plugin that
+expands small input can increase processing, cache and parent-process memory
+usage. Workers also check
+that the discovered extractor version matches the fingerprinted version. The
+existing worker memory cap (`REPOWISE_PARSE_WORKER_MEMORY_MB`, 2048 MiB by
+default; `0` disables it) is applied where the platform supports it, so these
+are best-effort resource bounds rather than a hard host-memory
+guarantee. Because workers use `spawn`, the plugin must be importable there:
+install its entry point or make its module available through `REPOWISE_PLUGINS`
+and the worker's environment. A registration made only dynamically in the
+parent process is not sufficient. The deadline terminates Repowise's worker
+processes, but cannot guarantee termination of a separate subprocess that a
+plugin starts and detaches. Crash recovery may retry in-flight work, so plugins
+must tolerate repeated calls. These limits do not bound aggregate extracted
+content held by the parent process.
 
 ## Choosing an implementation
 

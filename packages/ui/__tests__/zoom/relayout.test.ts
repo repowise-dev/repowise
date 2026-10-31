@@ -9,8 +9,8 @@ import {
   settleRootAspect,
 } from "../../src/zoom/relayout";
 import * as layout from "../../src/zoom/layout";
-import { buildScene } from "../../src/zoom/scene";
-import { syntheticMap, withExternals } from "./synthetic-map";
+import { buildScene, testLayerIds } from "../../src/zoom/scene";
+import { syntheticMap, TEST_LAYER, withExternals, withTestLayer } from "./synthetic-map";
 
 const VP = { w: 1200, h: 680 };
 
@@ -129,5 +129,33 @@ describe("re-laying out the same map to a new root shape", () => {
       expect(got.cards.map((c) => c.id)).toEqual(lane.cards.map((c) => c.id));
       got.cards.forEach((c, i) => expect(c.rect.h).toBeCloseTo(lane.cards[i]!.rect.h, 9));
     }
+  });
+});
+
+describe("a map with a test layer", () => {
+  const map = withTestLayer(withExternals(syntheticMap()));
+  const scene = buildScene(map, { rootAspect: 1.76 });
+  const root = scene.nodes.get(scene.rootId)!;
+  const layers = root.children.filter((id) => id !== TEST_LAYER);
+
+  it("knows the test layer by what it holds", () => {
+    expect([...testLayerIds(map)]).toEqual([TEST_LAYER]);
+    expect(testLayerIds(syntheticMap()).size).toBe(0);
+  });
+
+  it("sets the test layer aside, right of every other layer", () => {
+    const test = scene.worldRects.get(TEST_LAYER)!;
+    for (const id of layers) {
+      const r = scene.worldRects.get(id)!;
+      expect(r.x + r.w).toBeLessThan(test.x);
+    }
+  });
+
+  it("still repacks only the root on a new root shape", () => {
+    const packs = vi.spyOn(layout, "packLayout");
+    const wide = buildScene(map, { rootAspect: 2.2 });
+    expect(packs.mock.calls.length).toBe(1);
+    packs.mockRestore();
+    expect(wide.worldRects.get(TEST_LAYER)!.x).toBeGreaterThan(wide.worldRects.get(layers[0]!)!.x);
   });
 });

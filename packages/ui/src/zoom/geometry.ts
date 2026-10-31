@@ -9,7 +9,7 @@
  */
 
 import type { Rect } from "./camera";
-import { type LayoutChild, packLayout, type PackLayoutOptions } from "./layout";
+import { type LayoutChild, type LayoutRelation, packLayout, type PackLayoutOptions } from "./layout";
 import type { ZoomNode } from "./types";
 
 /** Compose a child's parent-space layout rect into absolute world space. */
@@ -67,13 +67,15 @@ export function rootRect(aspect = 1): Rect {
  * absolute world rect.
  * Iterative (explicit stack) so a deep tree cannot overflow the call stack.
  * Each node's children are laid out client-side as an importance-weighted
- * masonry pack (see `layout.ts`) keyed off the parent's world aspect, then
- * composed into world space, so card size encodes importance and the rows
- * stagger. Nodes unreachable from the root are skipped. `contentBox`, when
+ * pack (see `layout.ts`) keyed off the parent's world aspect and ranked by
+ * their sibling links in `relations` (keyed by parent id), then composed into
+ * world space, so card size encodes importance and the rows read in
+ * dependency order; children in `aside` get a side column (see `packLayout`).
+ * Nodes unreachable from the root are skipped. `contentBox`, when
  * given, narrows the box a node's children pack into (a rail kept for its
  * external systems, see `externals.ts`). `packs`, when given, is read and
  * refreshed so a parent whose box aspect is unchanged is not packed again; it
- * is only valid for the same `nodes` and pack options.
+ * is only valid for the same `nodes`, `relations`, `aside` and pack options.
  */
 export function computeWorldRects(
   nodes: Map<string, ZoomNode>,
@@ -81,6 +83,8 @@ export function computeWorldRects(
   opts: WorldLayoutOptions = {},
   contentBox?: (id: string, rect: Rect) => Rect,
   packs?: PackCache,
+  relations?: ReadonlyMap<string, readonly LayoutRelation[]>,
+  aside?: ReadonlySet<string>,
 ): Map<string, Rect> {
   const rects = new Map<string, Rect>();
   const root = nodes.get(rootId);
@@ -103,7 +107,7 @@ export function computeWorldRects(
 
     const box = contentBox ? contentBox(id, parentAbs) : parentAbs;
     const aspect = box.h > 0 ? box.w / box.h : 1;
-    const local = packFor(id, kids, aspect, opts, packs);
+    const local = packFor(id, kids, aspect, opts, packs, relations?.get(id), aside);
     for (const child of kids) {
       const lr = local.get(child.id);
       if (!lr) continue;
@@ -120,10 +124,12 @@ function packFor(
   aspect: number,
   opts: PackLayoutOptions,
   packs: PackCache | undefined,
+  relations: readonly LayoutRelation[] | undefined,
+  aside: ReadonlySet<string> | undefined,
 ): Map<string, Rect> {
   const hit = packs?.get(id);
   if (hit && sameAspect(hit.aspect, aspect)) return hit.local;
-  const local = packLayout(kids, aspect, opts);
+  const local = packLayout(kids, aspect, opts, relations, aside);
   packs?.set(id, { aspect, local });
   return local;
 }

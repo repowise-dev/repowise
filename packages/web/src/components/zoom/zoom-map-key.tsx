@@ -6,10 +6,9 @@
  *
  * A popover keeps the key one click (or Tab, Enter) away and leaves the full
  * height to the map; the button shows a dot while a filter is on, so a
- * thinned-out map never looks like a bug. The key explains the two marks a
- * card shows without naming them: the accent dot in its top-right corner and
- * the health dot in its footer. They share a palette, so each is described
- * separately to keep a reader from reading one as the other.
+ * thinned-out map never looks like a bug. The key explains the marks a card
+ * shows without naming them: the coloured number in its top-right corner (the
+ * health score) and the role icons in its footer or beside a file's name.
  *
  * The filter selects relation verbs (imports, calls, and the rest of the
  * label vocabulary), so "what calls what, not what imports what" is a
@@ -19,7 +18,7 @@
  */
 
 import type { ReactNode } from "react";
-import { SlidersHorizontal } from "lucide-react";
+import { Ban, Flame, type LucideIcon, Play, SlidersHorizontal } from "lucide-react";
 import { FilterChip } from "@repowise-dev/ui/health";
 import { Popover, PopoverContent, PopoverTrigger } from "@repowise-dev/ui/ui/popover";
 import { techName, type VerbCount, type ZoomContainer, toggleVerb } from "@repowise-dev/ui/zoom";
@@ -59,6 +58,16 @@ interface ZoomMapKeyProps {
 
 function Dot({ className }: { className: string }) {
   return <span aria-hidden className={`inline-block h-2 w-2 shrink-0 rounded-full ${className}`} />;
+}
+
+/** One role icon in the canvas's ink for it, with its name. */
+function RoleIcon({ icon: Icon, className, label }: { icon: LucideIcon; className: string; label: string }) {
+  return (
+    <span className="inline-flex items-center gap-1">
+      <Icon aria-hidden className={`h-3 w-3 shrink-0 ${className}`} />
+      {label}
+    </span>
+  );
 }
 
 export function ZoomMapKey({ about, linksLegend, ...body }: ZoomMapKeyProps) {
@@ -200,21 +209,29 @@ function MapKeyBody({
         )}
       </div>
 
-      {/* The dots. Health keeps the traffic light because the colours carry a
-          band; the role dot is one accent hue meaning "there is something
-          here", and the hover card names which. */}
+      {/* The card's marks. The corner number keeps the traffic light because
+          the colours carry a band; the role icons use the canvas's inks
+          (`theme.ts`). On-flow has no mark: nearly every file is on a flow. */}
       <dl className="flex flex-col gap-1.5 border-t border-[var(--color-border-default)] pt-3 text-[12px] text-[var(--color-text-tertiary)]">
-        <div className="flex items-center gap-1.5">
-          <Dot className="bg-[var(--color-accent-primary)]" />
-          <dt className="sr-only">{t("mapKey.topRightDot")}</dt>
-          <dd>{t("mapKey.entryDotHelp")}</dd>
+        <div className="flex flex-col gap-1">
+          <dt className="sr-only">{t("mapKey.roleIcons")}</dt>
+          <dd className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[var(--color-text-secondary)]">
+            <RoleIcon icon={Flame} className="text-[var(--color-risk-high)]" label={t("mapKey.hotspot")} />
+            <RoleIcon
+              icon={Play}
+              className="fill-current text-[var(--color-accent-secondary)]"
+              label={t("mapKey.entryPoint")}
+            />
+            <RoleIcon icon={Ban} className="text-[var(--color-text-muted)]" label={t("mapKey.deadCode")} />
+          </dd>
+          <dd>{t("mapKey.roleIconsHelp")}</dd>
         </div>
         <div className="flex items-center gap-1.5">
           <Dot className="bg-[var(--color-success)]" />
           <Dot className="bg-[var(--color-caution)]" />
           <Dot className="bg-[var(--color-warning)]" />
           <Dot className="bg-[var(--color-error)]" />
-          <dt className="sr-only">{t("mapKey.footerDot")}</dt>
+          <dt className="sr-only">{t("mapKey.cornerScore")}</dt>
           <dd>
             {t("mapKey.healthBand", {
               good: HEALTH_BAND_LABEL.good,

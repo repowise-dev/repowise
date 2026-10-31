@@ -12,7 +12,7 @@ export const cardTextCache = new TextLayoutCache();
 const FONT_STACK = "ui-sans-serif, system-ui, sans-serif";
 const fonts = new Map<number, string>();
 
-export type Weight = 400 | 600;
+export type Weight = 400 | 600 | 700;
 
 /** Interned CSS font string for a weight and whole-px size. */
 export function font(weight: Weight, px: number): string {

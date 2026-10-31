@@ -45,6 +45,7 @@ export interface ZoomPalette {
   edge: string;
   /** Slightly stronger neutral for tightly-coupled relations. */
   edgeStrong: string;
+  /** Role icon inks: hotspot flame, entry-point triangle, dead-code circle-slash. */
   hotspot: string;
   dead: string;
   entry: string;
@@ -79,8 +80,9 @@ const TOKEN_SPEC: Record<keyof ZoomPalette, string> = {
   edge: "--color-zoom-edge",
   edgeStrong: "--color-zoom-edge-strong",
   hotspot: "--color-risk-high",
-  dead: "--color-stale",
-  entry: "--color-success",
+  dead: "--color-text-muted",
+  // Not `--color-success`: green belongs to the health score in the same corner.
+  entry: "--color-accent-secondary",
   flow: "--color-accent-secondary",
   // Same tokens `healthInk` maps to, so a zoom card, the detail panel beside
   // it and a /files treemap tile agree on the colour of one band.
@@ -111,7 +113,7 @@ const FALLBACK: ZoomPalette = {
   edgeStrong: "gray",
   hotspot: "crimson",
   dead: "gray",
-  entry: "green",
+  entry: "teal",
   flow: "teal",
   healthAtRisk: "crimson",
   healthNeedsWork: "orange",

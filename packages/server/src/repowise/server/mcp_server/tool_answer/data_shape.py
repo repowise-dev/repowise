@@ -230,12 +230,10 @@ def _grep_identifier_files(repo_root: Path, identifier: str, spec: object = None
 
 def _read_lines(repo_root: Path, rel_path: str) -> list[str] | None:
     """Read a repo-relative file's lines, refusing any path outside the root."""
-    try:
-        abs_path = (repo_root / rel_path).resolve()
-        abs_path.relative_to(repo_root.resolve())
-        return abs_path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except (OSError, ValueError):
-        return None
+    from repowise.server.mcp_server._helpers import read_repo_file_text
+
+    text = read_repo_file_text(repo_root, rel_path, allow_extracted=False)
+    return text.splitlines() if text is not None else None
 
 
 def _docstring_line_set(lines: list[str]) -> set[int]:

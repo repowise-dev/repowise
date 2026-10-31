@@ -1,13 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  cardStatPrefixes,
-  cardStats,
-  cardTechnologies,
+  cardRoleMarks,
+  cardScore,
+  cardTechPrefixes,
   cardTier,
   LABEL_ASPECT_MAX,
   labelAspect,
   primaryMetric,
+  setCardBadge,
   summaryLineCap,
   titleFontPx,
   titleMode,
@@ -86,7 +87,8 @@ describe("labelAspect", () => {
     expect(labelAspect("refactoring_health.py", "file")).toBeGreaterThan(
       labelAspect("refactoring_health.py", "folder"),
     );
-    expect(labelAspect("ci.py", "file")).toBeLessThan(CARD_ASPECT);
+    // A short name widens the card only by the corner score's room.
+    expect(labelAspect("ci.py", "file")).toBeLessThan(CARD_ASPECT * 1.05);
   });
 
   it("widens cards whose name needs it, up to a cap", () => {
@@ -96,24 +98,53 @@ describe("labelAspect", () => {
 });
 
 describe("card slots", () => {
-  it("shows a file's language as its technology chip", () => {
-    expect(cardTechnologies(node({ kind: "file", language: "python" }))).toEqual(["Python"]);
-    expect(cardTechnologies(node())).toEqual([]);
+  it("lists technologies as whole-item prefixes, and none for a file", () => {
+    expect(cardTechPrefixes(node({ technologies: ["python", "typescript"] }))).toEqual([
+      "Python",
+      "Python · TypeScript",
+    ]);
+    expect(cardTechPrefixes(node({ kind: "file", language: "python" }))).toEqual([]);
+    expect(cardTechPrefixes(node())).toEqual([]);
   });
 
-  it("moves the file language out of the footer once a chip shows it", () => {
-    const f = node({ kind: "file", language: "python" });
-    expect(primaryMetric(f, false)).toBe("Python");
-    expect(primaryMetric(f, true)).toBe("");
-    expect(primaryMetric(node(), true)).toBe("12 files");
+  it("ends the technology line with the container badge, and refreshes when it changes", () => {
+    const n = node({ technologies: ["python"] });
+    expect(cardTechPrefixes(n)).toEqual(["Python"]);
+    setCardBadge(n, "CLI");
+    expect(cardTechPrefixes(n)).toEqual(["Python", "Python · CLI"]);
+    setCardBadge(n, null);
+    expect(cardTechPrefixes(n)).toEqual(["Python"]);
   });
 
-  it("summarises role counts for the stats row", () => {
+  it("counts files on a container and shows nothing for a file (no language label)", () => {
+    expect(primaryMetric(node())).toBe("12 files");
+    expect(primaryMetric(node({ metrics: { ...node().metrics, file_count: 1 } }))).toBe("1 file");
+    expect(primaryMetric(node({ kind: "file", language: "python" }))).toBe("");
+  });
+
+  it("formats the corner score rounded down, and nothing when unscored", () => {
+    expect(cardScore(node({ health_score: 6.98 }))).toBe("6.9");
+    expect(cardScore(node({ health_score: 10 }))).toBe("10.0");
+    expect(cardScore(node())).toBeNull();
+  });
+});
+
+describe("cardRoleMarks", () => {
+  it("marks a container's non-zero counts, hotspot then entry then dead", () => {
     const n = node({
-      metrics: { ...node().metrics, hotspot_count: 3, entry_point_count: 1 },
+      metrics: { ...node().metrics, hotspot_count: 3, entry_point_count: 0, dead_count: 1, on_flow_count: 9 },
     });
-    expect(cardStats(n)).toBe("3 hotspots · 1 entry point");
-    expect(cardStats(node())).toBe("");
+    expect(cardRoleMarks(n)).toEqual([
+      { role: "hotspot", count: "3" },
+      { role: "dead", count: "1" },
+    ]);
+    expect(cardRoleMarks(node())).toEqual([]);
+  });
+
+  it("marks a file's own roles with no count, and never on-flow", () => {
+    const f = node({ kind: "file", is_entry_point: true, on_flow: true });
+    expect(cardRoleMarks(f)).toEqual([{ role: "entry", count: "" }]);
+    expect(cardRoleMarks(node({ kind: "file", on_flow: true }))).toEqual([]);
   });
 });
 
@@ -123,20 +154,5 @@ describe("titleMode", () => {
     expect(titleMode("folder", "user_routes")).toBe("path");
     expect(titleMode("folder", "Routers Overview")).toBe("words");
     expect(titleMode("layer", "core")).toBe("words");
-  });
-});
-
-describe("cardStatPrefixes", () => {
-  it("grows one whole stat at a time, ending in the full row", () => {
-    const n = node({
-      metrics: { ...node().metrics, hotspot_count: 3, entry_point_count: 4, dead_count: 1 },
-    });
-    expect(cardStatPrefixes(n)).toEqual([
-      "3 hotspots",
-      "3 hotspots · 4 entry points",
-      "3 hotspots · 4 entry points · 1 dead file",
-    ]);
-    expect(cardStats(n)).toBe("3 hotspots · 4 entry points · 1 dead file");
-    expect(cardStatPrefixes(node())).toEqual([]);
   });
 });

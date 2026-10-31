@@ -4,13 +4,13 @@ import type { Camera, Rect } from "../../src/zoom/camera";
 import { EDGE_MAX_PER_PARENT } from "../../src/zoom/constants";
 import { drawScene, type DrawOptions } from "../../src/zoom/draw-tree";
 import {
+  BAND_FRAC,
   bucketExternalRelations,
   buildExternalLanes,
   EXTERNALS_MAX_DRAWN,
   focusLanes,
   LANE_UNITS,
   laneWithout,
-  RAIL_FRAC,
 } from "../../src/zoom/externals";
 import { buildScene } from "../../src/zoom/scene";
 import type { ZoomPalette } from "../../src/zoom/theme";
@@ -111,12 +111,12 @@ describe("external lanes", () => {
     }
   });
 
-  it("never puts an external on a card: children pack right of the rail", () => {
+  it("never puts an external on a card: children pack above the band", () => {
     for (const [parentId, lane] of scene.externalLanes) {
       const parent = scene.worldRects.get(parentId)!;
-      const railX = parent.x + parent.w * RAIL_FRAC;
+      const bandY = parent.y + parent.h * (1 - BAND_FRAC);
       const kids = scene.nodes.get(parentId)!.children.map((id) => scene.worldRects.get(id)!);
-      for (const k of kids) expect(k.x).toBeGreaterThanOrEqual(railX - 1e-12);
+      for (const k of kids) expect(k.y + k.h).toBeLessThanOrEqual(bandY + 1e-12);
       const boxes = lane.cards.map((c) => toWorld(c.rect, parent));
       if (lane.more) boxes.push(toWorld(lane.more.rect, parent));
       for (const b of boxes) {
@@ -133,18 +133,49 @@ describe("external lanes", () => {
       for (const l of links) {
         expect(l.sourceId).toBe(source);
         expect(lane.byTarget.get(l.card.id)).toContain(l);
-        // The connector ends on the card's right edge, facing the children.
-        expect(l.route.end.x).toBeCloseTo(l.card.rect.x + l.card.rect.w, 2);
+        // The connector ends on the card's top edge, facing the children.
+        expect(l.route.end.y).toBeCloseTo(l.card.rect.y, 2);
       }
     }
   });
+
+  it("places each external under the child that imports it most, where there is room", () => {
+    // A lane with room for every card: each sits centred under its top user.
+    const parent = { x: 0, y: 0, w: 1, h: 0.5 };
+    const worldRects = new Map<string, Rect>([
+      ["p", parent],
+      ["left", { x: 0.05, y: 0.05, w: 0.2, h: 0.1 }],
+      ["right", { x: 0.7, y: 0.05, w: 0.2, h: 0.1 }],
+    ]);
+    const ext = (id: string) => ({ id, name: id, display_name: id, kind: "db", edge_count: 1 }) as ZoomExternal;
+    const externals = new Map([["ext:a", ext("ext:a")], ["ext:b", ext("ext:b")]]);
+    const rel = (source: string, target: string, edge_count: number) => ({
+      parent_id: "p",
+      source_id: source,
+      target_id: target,
+      label: "imports",
+      edge_count,
+      coupling: "loose",
+    });
+    const lane = buildExternalLanes(
+      new Map([["p", [rel("left", "ext:a", 1), rel("right", "ext:a", 9), rel("left", "ext:b", 5)]]]),
+      externals,
+      worldRects,
+    ).get("p")!;
+    const centre = (id: string) => {
+      const r = lane.cards.find((c) => c.id === id)!.rect;
+      return r.x + r.w / 2;
+    };
+    expect(centre("ext:a")).toBeCloseTo(0.8 * LANE_UNITS, 6);
+    expect(centre("ext:b")).toBeCloseTo(0.15 * LANE_UNITS, 6);
+  });
 });
 
-describe("rails along the focus chain", () => {
+describe("bands along the focus chain", () => {
   const root = scene.nodes.get(scene.rootId)!;
   const child = root.children.map((id) => scene.nodes.get(id)!).find((c) => scene.externalLanes.has(c.id))!;
 
-  it("shows each external once: the outer rail drops what the inner one draws", () => {
+  it("shows each external once: the outer band drops what the inner one draws", () => {
     const inner = scene.externalLanes.get(child.id)!;
     const outer = focusLanes(scene.externalLanes, [root, child]).get(root.id)!;
     expect(inner.cards.length).toBeGreaterThan(0);
@@ -153,7 +184,7 @@ describe("rails along the focus chain", () => {
     expect(focusLanes(scene.externalLanes, [root, child]).has(child.id)).toBe(false);
   });
 
-  it("drops from every outer rail what any rail inside it draws", () => {
+  it("drops from every outer band what any band inside it draws", () => {
     const grand = child.children.map((id) => scene.nodes.get(id)!).find((g) => scene.externalLanes.has(g.id));
     expect(grand).toBeDefined();
     if (!grand) return;
@@ -167,7 +198,7 @@ describe("rails along the focus chain", () => {
     }
   });
 
-  it("trims a rail to exactly the lane a fresh build over the remaining externals gives", () => {
+  it("trims a band to exactly the lane a fresh build over the remaining externals gives", () => {
     const lane = scene.externalLanes.get(root.id)!;
     const shown = new Set(lane.cards.slice(0, 2).map((c) => c.id));
     const { rels, externals, worldRects } = lane.inputs;
@@ -176,7 +207,7 @@ describe("rails along the focus chain", () => {
     expect(laneWithout(lane, shown)).toEqual(fresh);
   });
 
-  it("builds a trimmed rail once per focus, not per call", () => {
+  it("builds a trimmed band once per focus, not per call", () => {
     const a = focusLanes(scene.externalLanes, [root, child]).get(root.id);
     const b = focusLanes(scene.externalLanes, [root, child]).get(root.id);
     expect(a).toBe(b);
@@ -185,7 +216,7 @@ describe("rails along the focus chain", () => {
 });
 
 describe("drawing external lanes", () => {
-  it("draws the rail with no connectors until something is focused", () => {
+  it("draws the band with no connectors until something is focused", () => {
     const { counts } = draw(cameraOn("root", 900));
     expect(counts.get("setLineDash") ?? 0).toBeGreaterThan(0);
     expect(counts.get("bezierCurveTo") ?? 0).toBe(0);
