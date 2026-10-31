@@ -91,18 +91,19 @@ def planned_global_entry(
     fresh = _user_entry(None if follows_launch_dir else target, command)
     if stored is None or retarget:
         return fresh
+    # A kept entry only ever gets its command refreshed: its args (extra flags
+    # such as --tools) are the user's.
+    refreshed = {**stored, "command": command}
     current = _entry_repo_target(stored)
     if current is None:
         # Ours with no path follows the launch dir already; a hand-shaped
-        # entry (another launcher, extra flags) is the user's and stays.
-        return fresh if follows_launch_dir and _is_launch_dir_entry(stored) else None
+        # entry (another launcher) is the user's and stays.
+        return refreshed if follows_launch_dir and _is_launch_dir_entry(stored) else None
     if _same_target(current, target):
-        return _user_entry(target, command)
+        return refreshed
     if not Path(current).is_dir():
         return fresh
-    if _pinned_command_missing(stored):
-        return _user_entry(Path(current), command)
-    return None
+    return refreshed if _pinned_command_missing(stored) else None
 
 
 def _user_entry(target: Path | None, command: str) -> dict:

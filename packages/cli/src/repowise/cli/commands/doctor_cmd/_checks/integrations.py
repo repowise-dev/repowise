@@ -348,7 +348,8 @@ def _claude_desktop_entry_row() -> DoctorCheck | None:
             return _check(name, True, f"serves {target or 'no fixed repo'}", check_id=check_id)
         detail = (
             f"serves {target}, which no longer exists "
-            f"(run `{REGISTER_LATER_COMMAND}` in the repo Desktop should serve)"
+            f"(run `{REGISTER_LATER_COMMAND}` in the repo Desktop should serve; "
+            "it rewrites the Claude Code entry too)"
         )
         return _check(name, True, detail, check_id=check_id, warn=True, fix=REGISTER_LATER_COMMAND)
     except Exception as exc:

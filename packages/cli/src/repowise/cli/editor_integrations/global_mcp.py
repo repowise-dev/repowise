@@ -109,14 +109,15 @@ class GlobalMcpTarget:
         for e in self.entries:
             if not e.kept:
                 continue
+            serves = f"serves {e.target}" if e.target else "is a custom entry"
             if e.client == "Claude Desktop":
                 lines.append(
-                    f"Claude Desktop's repowise entry serves {_serves(e.target)} and is "
-                    f"left as is; run '{REGISTER_LATER_COMMAND}' here to move it."
+                    f"Claude Desktop's repowise entry {serves} and is left as is; "
+                    f"'{REGISTER_LATER_COMMAND}' here rewrites both Claude entries for this repo."
                 )
             else:
                 lines.append(
-                    f"{e.client}'s global repowise entry serves {_serves(e.target)}; "
+                    f"{e.client}'s global repowise entry {serves}; "
                     "this repo's .mcp.json covers this repo."
                 )
         return lines

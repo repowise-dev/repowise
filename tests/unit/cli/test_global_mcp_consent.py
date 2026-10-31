@@ -150,6 +150,7 @@ def test_entry_for_another_live_repo_is_never_moved(
     assert desktop.read_bytes() == before
     assert f"global repowise entry serves {_arg(other)}; this repo's .mcp.json" in out
     assert f"Claude Desktop's repowise entry serves {_arg(other)} and is left as is" in out
+    assert "rewrites both Claude entries" in out
     assert global_mcp.REGISTER_LATER_COMMAND in out
     assert "now points at" not in out
 
@@ -203,16 +204,13 @@ def test_same_target_is_quiet_and_never_asks(home: Path, repo: Path, monkeypatch
     assert buf.getvalue() == ""
 
 
-def test_same_target_keeps_its_path_form(home: Path, repo: Path, monkeypatch) -> None:
+def test_same_target_refreshes_only_the_command(home: Path, repo: Path, monkeypatch) -> None:
     _no_desktop(monkeypatch)
-    _write(_settings(home), _entry(_arg(repo), command="C:/old/repowise.exe"))
+    args = ["mcp", _arg(repo), "--transport", "stdio", "--tools", "lean"]
+    _write(_settings(home), {"command": "C:/old/repowise.exe", "args": args})
 
     assert claude_config.register_with_claude_code(repo) == _settings(home)
-    assert _stored(_settings(home)) == {**_entry(_arg(repo)), "description": _desc()}
-
-
-def _desc() -> str:
-    return claude_config.generate_mcp_config(None)["mcpServers"]["repowise"]["description"]
+    assert _stored(_settings(home)) == {"command": "repowise", "args": args}
 
 
 def test_command_only_change_is_one_quiet_line(home: Path, repo: Path, monkeypatch) -> None:
@@ -231,11 +229,10 @@ def test_launch_dir_entry_only_gets_its_command_refreshed(
     home: Path, repo: Path, monkeypatch
 ) -> None:
     _no_desktop(monkeypatch)
-    _write(_settings(home), {"command": "C:/old/repowise.exe", "args": ["mcp"]})
+    _write(_settings(home), {"command": "C:/old/repowise.exe", "args": ["mcp", "--all"]})
 
     assert claude_config.register_with_claude_code(repo) == _settings(home)
-    stored = _stored(_settings(home))
-    assert stored["command"] == "repowise" and stored["args"] == _LAUNCH_DIR_ARGS
+    assert _stored(_settings(home)) == {"command": "repowise", "args": ["mcp", "--all"]}
 
 
 def test_hand_shaped_entry_is_kept(home: Path, repo: Path, monkeypatch) -> None:
