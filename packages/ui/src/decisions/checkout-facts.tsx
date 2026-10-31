@@ -1,4 +1,6 @@
 import type { EpisodeSummary } from "@repowise-dev/types/episodes";
+import type * as React from "react";
+import { CollapsibleSection } from "../shared/collapsible-section";
 import { EmptyState } from "../shared/empty-state";
 
 /**
@@ -58,6 +60,59 @@ export interface CheckoutFactsProps {
    * so when the page is short of it.
    */
   total?: number;
+}
+
+/**
+ * The section in one line: each kind's heading, so a reader who never opens it
+ * still learns what is true of the checkout, and only the evidence behind each
+ * heading waits behind the toggle.
+ */
+export function checkoutFactsSummary(facts: EpisodeSummary[], available: boolean): string {
+  if (facts.length === 0) {
+    return available ? "Nothing unusual" : "Nothing to show yet";
+  }
+  const kinds = [...new Set(facts.map((f) => f.kind))];
+  return kinds.map(heading).join(" · ");
+}
+
+export interface CheckoutFactsDisclosureProps extends CheckoutFactsProps {
+  title: React.ReactNode;
+  description?: React.ReactNode;
+  defaultOpen?: boolean;
+}
+
+/**
+ * Checkout facts behind a toggle, closed by default.
+ *
+ * They are true of the tree and rarely what a visitor to the decisions page
+ * came for, so open they pushed the review queue below the fold. Closed, the
+ * toggle still carries every heading, so nothing the section knows is hidden,
+ * only the paths and commands that back it.
+ */
+export function CheckoutFactsDisclosure({
+  title,
+  description,
+  defaultOpen = false,
+  ...facts
+}: CheckoutFactsDisclosureProps) {
+  return (
+    <CollapsibleSection
+      defaultOpen={defaultOpen}
+      title={
+        <span className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-0.5">
+          <span>{title}</span>
+          <span className="text-xs font-normal text-[var(--color-text-tertiary)]">
+            {checkoutFactsSummary(facts.facts, facts.available)}
+          </span>
+        </span>
+      }
+    >
+      {description && (
+        <p className="max-w-[68ch] text-xs text-[var(--color-text-secondary)]">{description}</p>
+      )}
+      <CheckoutFacts {...facts} />
+    </CollapsibleSection>
+  );
 }
 
 export function CheckoutFacts({ facts, available, total }: CheckoutFactsProps) {

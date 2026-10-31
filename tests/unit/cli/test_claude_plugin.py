@@ -102,20 +102,27 @@ def test_claude_plugin_hooks_match_installer() -> None:
     ]
     assert rows("SessionStart") == [(claude_config._SESSION_START_MATCHER, command)]
     assert rows("PostToolUseFailure") == [(claude_config._FAILURE_MATCHER, command)]
+    # The rewrite hook is on by default for a CLI install, so the plugin
+    # ships it too, guarded the same way for a plugin installed without the CLI.
+    assert rows("PreToolUse") == [
+        (claude_config._REWRITE_MATCHER, claude_config._PLUGIN_REWRITE_HOOK_COMMAND)
+    ]
+    assert claude_config._is_rewrite_hook(hooks["PreToolUse"][0]["hooks"][0])
 
     # Every event the installer registers, and nothing else: a surface that
     # ships only to fresh CLI installs and not to the plugin is the failure
     # this guards, and it is invisible from either side alone.
-    assert set(hooks) == {"PostToolUse", "SessionStart", "PostToolUseFailure"}
+    assert set(hooks) == {"PostToolUse", "SessionStart", "PostToolUseFailure", "PreToolUse"}
 
     commands = [
         hook["command"]
-        for entries in hooks.values()
+        for event, entries in hooks.items()
+        if event != "PreToolUse"
         for entry in entries
         for hook in entry["hooks"]
         if entry.get("matcher") != claude_config._CAPTURE_MATCHER
     ]
-    assert commands == [command] * len(hooks)
+    assert commands == [command] * (len(hooks) - 1)
 
 
 def _posix_bash() -> str | None:

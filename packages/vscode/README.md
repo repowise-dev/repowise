@@ -73,7 +73,7 @@ Nothing polls, nothing scans in the background, and nothing interrupts you. Data
 
 ## Getting started
 
-1. Install the CLI: `pip install repowise` (or `uv tool install repowise`).
+1. Install the CLI: `uv tool install repowise` (or `pip install repowise`).
 2. Open your repository and run **Repowise: Set Up This Repository**, or follow the Get Started walkthrough.
 3. That's it. The extension finds your local server automatically, or offers to start one when you first need it.
 

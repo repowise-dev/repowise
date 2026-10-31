@@ -212,7 +212,7 @@ _HEDGE_MARKERS = (
 # grounded claim it is a caveat, held at "medium": "high" tells the agent not to
 # re-read, which the answer itself disputes. The bare "is not included/shown"
 # form is matched in confidence.py, where a following "in the checksum" marks
-# it as a statement about the code instead.
+# it as a statement about the code instead; so is "truncated in the excerpts".
 _GAP_MARKERS = (
     "not in the retrieved",
     "not in the excerpts",
@@ -225,6 +225,8 @@ _GAP_MARKERS = (
     "not defined in the retrieved",
     "not directly included",
     "not fully included",
+    "not fully visible",
+    "not fully shown",
     "cannot be definitively",
 )
 
@@ -352,7 +354,11 @@ _ANSWER_COVERAGE_FLOOR = 0.5
 #     the scope writes grades low.
 # 28: a stated value line earns high under the score floor and at any rank;
 #     held-at-medium notes for the identifier gate and a weak dominant top.
-_ANSWER_SCHEMA_VERSION = 28
+# 29: a reply stopped at the token cap is retried once with a larger cap; an
+#     answer whose text was cut off is held at medium.
+# 30: an answer saying the code it describes was cut from its excerpts
+#     ("not fully visible", "truncated in the retrieved") admits a gap.
+_ANSWER_SCHEMA_VERSION = 30
 
 # Above this a whole-file Read costs more than the answer, so the low-confidence
 # hint names a ranged Read or a skeleton instead.
@@ -366,6 +372,12 @@ _CANDIDATE_FILES_MAX = 5
 # The raw list is longer than either cap, so paths the citations already name
 # can be removed without leaving the served list short.
 _CANDIDATE_FILES_POOL = 10
+# A path scoring under this share of the top hit is not served in
+# candidate_files. Swept on 53 labelled candidates from 13 questions over four
+# repositories: the lowest file worth opening scored 0.38 of the top, and three
+# unrelated files scored under 0.2. Set below that lowest real file, not at it,
+# since a dropped file costs the agent a search and a served one costs a path.
+_CANDIDATE_FILES_SCORE_FLOOR = 0.3
 
 # Backstop TTL for cache rows. Commit stamping is the primary freshness gate;
 # this covers rows without a stamp (older rows, repos without git metadata).
@@ -396,13 +408,12 @@ _STOPWORDS = STOPWORDS
 _MAX_RICH_SIG_LINES = 4
 
 # Synthesis sampling. Answers target 150-400 words, so for a non-reasoning model
-# the token cap is headroom. A reasoning model spends the budget on hidden
-# thinking first and can come back empty with a ``length`` finish_reason, so it
-# gets a larger default, and the env override sets both. Low temperature: the
-# answer must track the excerpts, not embellish.
+# the token cap is headroom. A thinking model spends hidden reasoning from the
+# same cap before the first answer token, so the cap leaves room for both.
+# Providers bill the tokens produced, not the cap. Low temperature: the answer
+# must track the excerpts, not embellish.
 _SYNTHESIS_MAX_TOKENS_ENV = "REPOWISE_SYNTHESIS_MAX_TOKENS"
-_SYNTHESIS_MAX_TOKENS_DEFAULT = 1024
-_SYNTHESIS_REASONING_MAX_TOKENS_DEFAULT = 4096
+_SYNTHESIS_MAX_TOKENS_DEFAULT = 4096
 
 
 def _synthesis_max_tokens(default: int = _SYNTHESIS_MAX_TOKENS_DEFAULT) -> int:
@@ -425,8 +436,10 @@ def _synthesis_max_tokens(default: int = _SYNTHESIS_MAX_TOKENS_DEFAULT) -> int:
 
 
 _SYNTHESIS_MAX_TOKENS = _synthesis_max_tokens()
-_SYNTHESIS_REASONING_MAX_TOKENS = _synthesis_max_tokens(_SYNTHESIS_REASONING_MAX_TOKENS_DEFAULT)
 _SYNTHESIS_TEMPERATURE = 0.2
+# A reply stopped at the token cap is asked for once more with this many times
+# the cap. Kept small so the retry stays inside common model output limits.
+_SYNTHESIS_RETRY_TOKEN_FACTOR = 2
 
 _SYSTEM_PROMPT = (
     "You are a code-aware retrieval assistant. You are given a developer "

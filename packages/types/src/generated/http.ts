@@ -1610,6 +1610,7 @@ export interface DecisionRecordResponse {
   updated_at: string;
   evidence_count?: number | null;
   evidence_preview?: EvidencePreview | null;
+  hotspot_files?: string[] | null;
   currency?: string | null;
   accepter?: string | null;
   accepter_kind?: string | null;
@@ -3401,6 +3402,7 @@ export interface PeriodHealthSummaryResponse {
   findings_introduced: number;
   findings_worsened: number;
   net_findings: number;
+  categories?: Record<string, number> | null;
 }
 
 /** Result of pinning a file's doc (issue #812). */

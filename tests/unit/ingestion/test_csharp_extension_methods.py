@@ -230,6 +230,55 @@ class TestRefusals:
         found = _resolve(tmp_path, files, "src/Consumer.cs", heritage=heritage)
         assert found["Net"] == ("receiver_typed_global", 0.75)
 
+    def test_an_extension_serves_when_ancestor_member_has_different_arity(
+        self, tmp_path: Path
+    ) -> None:
+        """An ancestor member with a different arity does not outrank a matching extension."""
+        files = {
+            "src/Base.cs": (
+                "namespace Acme;\npublic class BaseOrder { public void Add(int n) { } }\n"
+            ),
+            "src/Order.cs": "namespace Acme;\npublic class Order : BaseOrder { }\n",
+            "src/Ext.cs": (
+                "namespace Acme;\npublic static class Ext {\n"
+                "  public static void Add(this Order o, string k, string v) { }\n}\n"
+            ),
+            "src/Consumer.cs": (
+                "namespace Acme;\npublic class Consumer {\n"
+                '  public void Run() { Order o = new Order(); o.Add("a", "b"); }\n}\n'
+            ),
+        }
+        heritage = {"src/Order.cs::Order": {"src/Base.cs::BaseOrder"}}
+        found = _resolve(tmp_path, files, "src/Consumer.cs", heritage=heritage)
+        assert found["Add"] == ("receiver_extension_global", 0.75)
+
+    def test_an_extension_serves_when_ancestor_overloads_differ_in_arity(
+        self, tmp_path: Path
+    ) -> None:
+        """Overloads on an ancestor do not block an extension if none admit the call arity."""
+        files = {
+            "src/Base.cs": (
+                "namespace Acme;\npublic class BaseOrder {\n"
+                "  public void Add(int n) { }\n"
+                "  public void Add(int n, int m) { }\n"
+                "}\n"
+            ),
+            "src/Order.cs": "namespace Acme;\npublic class Order : BaseOrder { }\n",
+            "src/Ext.cs": (
+                "namespace Acme;\npublic static class Ext {\n"
+                "  public static void Add(this Order o, string a, string b, string c) { }\n"
+                "}\n"
+            ),
+            "src/Consumer.cs": (
+                "namespace Acme;\npublic class Consumer {\n"
+                '  public void Run() { Order o = new Order(); o.Add("x", "y", "z"); }\n'
+                "}\n"
+            ),
+        }
+        heritage = {"src/Order.cs::Order": {"src/Base.cs::BaseOrder"}}
+        found = _resolve(tmp_path, files, "src/Consumer.cs", heritage=heritage)
+        assert found["Add"] == ("receiver_extension_global", 0.75)
+
     def test_a_default_value_is_not_a_parameter_list(self, tmp_path: Path) -> None:
         """A parenthesised string in a default value must not mint a pair."""
         files = {

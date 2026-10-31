@@ -295,6 +295,7 @@ async def prune_deleted_file_rows(
     *,
     live_hint: set[str] | None = None,
     pruned: set[str] | None = None,
+    left_index: set[str] | None = None,
 ) -> tuple[int, list[str]]:
     """Delete file-scoped rows for files that are gone, on an incremental update.
 
@@ -318,6 +319,10 @@ async def prune_deleted_file_rows(
     like ``external:...`` or Spring's ``META-INF/services/<iface>`` names no
     file, so it fails every liveness test there is, and only the fact that the
     graph build just re-minted it says it is not a deletion.
+
+    *left_index* names plugin-extracted documents that are still on disk but
+    can no longer be indexed (a source or its Markdown over its size ceiling, or
+    newly excluded). They count as gone whatever the disk says.
 
     Returns ``(deleted_path_count, refusals)``, where a refusal is a one-line
     explanation of a floor guard that fired, for the caller's degraded report.
@@ -354,6 +359,7 @@ async def prune_deleted_file_rows(
     )
 
     hint = live_hint or set()
+    gone = left_index or set()
     liveness = _FileLiveness(repo_path)
     git_liveness = _FileLiveness(repo_path, git_root_keyed=True)
     refusals: list[str] = []
@@ -362,7 +368,7 @@ async def prune_deleted_file_rows(
     def _dead(persisted: set[str], label: str, live: _FileLiveness = liveness) -> list[str]:
         """Paths in *persisted* that no longer exist, or [] if the floor fired."""
         persisted = {p for p in persisted if not _is_synthetic_node(p)}
-        dead = [p for p in persisted if p not in hint and not live.is_live(p)]
+        dead = [p for p in persisted if p not in hint and (p in gone or not live.is_live(p))]
         if (
             len(dead) > _PRUNE_FLOOR_MIN_ROWS
             and persisted

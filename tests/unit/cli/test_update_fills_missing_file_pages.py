@@ -55,6 +55,8 @@ def test_plan_renders_unpaged_files_past_the_budget(monkeypatch) -> None:
         cfg={},
         head="h2",
         affected=affected,
+        # Added in this run and cut by the budget: the case the lookup is for.
+        file_diffs=[SimpleNamespace(path="new.py", status="added")],
         stale_db_paths=[],
         stale_deterministic_ids=set(),
     )
@@ -109,3 +111,41 @@ def test_complete_scope_does_not_wake_the_pipeline(can_render) -> None:
 def test_mode_that_writes_no_pages_does_not_fill(monkeypatch) -> None:
     monkeypatch.setattr(command, "can_regenerate_pages", lambda _run, _opts: False)
     assert not command._file_pages_to_fill(_scope_run({**_OMITTED, "omitted": 5}), None)
+
+
+def _plan_run(file_pages: dict, diffs: list, regenerate: list) -> SimpleNamespace:
+    run = _scope_run(file_pages)
+    run.affected = SimpleNamespace(regenerate=regenerate)
+    run.file_diffs = [SimpleNamespace(path=p, status=status) for p, status in diffs]
+    return run
+
+
+@pytest.mark.parametrize(
+    ("omitted", "diffs", "regenerate", "looks"),
+    [
+        # Every eligible file had a page and the run adds none: no store read.
+        (0, [("a.py", "modified")], ["a.py"], False),
+        # An added file the plan renders anyway gets its page.
+        (0, [("new.py", "added")], ["new.py"], False),
+        # An added or renamed file past the budget would get none.
+        (0, [("new.py", "added")], [], True),
+        (0, [("moved.py", "renamed")], [], True),
+        # The last stamp counted files without a page, or an older index has no count.
+        (5, [("a.py", "modified")], ["a.py"], True),
+        (None, [("a.py", "modified")], ["a.py"], True),
+    ],
+)
+def test_plan_looks_up_unpaged_files_only_when_one_can_exist(
+    monkeypatch, omitted, diffs, regenerate, looks
+) -> None:
+    looked = []
+    monkeypatch.setattr(
+        "repowise.cli.commands.update_cmd.persistence.file_paths_without_page",
+        lambda *_a: looked.append(True) or [],
+    )
+    run = _plan_run({**_OMITTED, "omitted": omitted}, diffs, regenerate)
+    run.repo_path, run.parsed_files, run.graph_builder, run.git_meta_map = "repo", [], None, {}
+
+    command._unpaged_file_paths(run)
+
+    assert bool(looked) is looks

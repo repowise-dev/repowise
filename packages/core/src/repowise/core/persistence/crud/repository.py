@@ -87,8 +87,10 @@ async def upsert_repository(
     """
     result = await session.execute(select(Repository).where(Repository.local_path == local_path))
     repo = result.scalar_one_or_none()
+    relocated = False
     if repo is None:
         repo = await _relocated_row(session, local_path)
+        relocated = repo is not None
 
     stamping = repo is None or stamp_head or head_commit is not None
     resolved_head = (head_commit or _read_head_commit(local_path)) if stamping else None
@@ -124,6 +126,8 @@ async def upsert_repository(
         if stamping:
             repo.updated_at = _now_utc()
 
+    if relocated or stamping:
+        await _adopt_savings_ledger(session, local_path)
     await session.flush()
     return repo
 
@@ -262,6 +266,20 @@ async def _relocated_row(session: AsyncSession, local_path: str) -> Repository |
     return repo
 
 
+async def _adopt_savings_ledger(session: AsyncSession, local_path: str) -> None:
+    """File the savings ledger of ``local_path``'s own store under ``local_path``.
+
+    Runs on a re-point and on every sync, so a relocation that failed on a busy
+    sidecar, or happened before the ledger followed the row, is picked up later.
+    """
+    store_dir = _store_dir(session)
+    if store_dir is None or not _same_dir(store_dir, local_path):
+        return
+    from ...savings.recorder import relocate_ledger
+
+    await asyncio.to_thread(relocate_ledger, local_path)
+
+
 def _same_checkout(repo: Repository, local_path: str) -> bool:
     """Whether *repo*'s row describes the checkout at *local_path*."""
     old = repo.local_path or ""
@@ -358,6 +376,42 @@ async def get_repository_by_path(session: AsyncSession, local_path: str) -> Repo
     """Return a Repository by local_path, or None."""
     result = await session.execute(select(Repository).where(Repository.local_path == local_path))
     return result.scalar_one_or_none()
+
+
+async def adopt_moved_repository(session: AsyncSession, local_path: str) -> Repository | None:
+    """Return the repository row for *local_path*, adopting a moved store's only row.
+
+    A copied or moved checkout carries its repo-local store with it, and that
+    store still names the old ``local_path``. Matching by exact path alone
+    would miss it, and :func:`upsert_repository` would then insert a second
+    row, after which no single-row rule can tell which row is the served one.
+
+    Resolution, which is the same rule the CLI read side applies in
+    ``repo_index_session``:
+
+    1. A row whose ``local_path`` equals *local_path* is returned as is.
+    2. Otherwise, in a repo-local store (no configured ``REPOWISE_DB_URL``)
+       holding exactly one row, that row is the moved repository: its
+       ``local_path`` is rewritten to *local_path* and it is returned.
+    3. Anything else returns ``None``. A configured or shared store, or a
+       store with two or more rows, never infers identity from a path miss.
+    """
+    from ..database import get_configured_db_url
+
+    repo = await get_repository_by_path(session, local_path)
+    if repo is not None:
+        return repo
+    if get_configured_db_url() is not None:
+        return None
+    rows = (await session.scalars(select(Repository).limit(2))).all()
+    if len(rows) != 1:
+        return None
+    repo = rows[0]
+    repo.local_path = local_path
+    repo.updated_at = _now_utc()
+    await _adopt_savings_ledger(session, local_path)
+    await session.flush()
+    return repo
 
 
 async def delete_repository(session: AsyncSession, repo_id: str) -> bool:

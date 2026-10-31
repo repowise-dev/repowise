@@ -12,8 +12,7 @@ Exports resolve lazily (PEP 562): importing a light leaf module such as
 attribute access instead.
 """
 
-from importlib import import_module
-from typing import Any
+from ..lazy_exports import lazy_exports
 
 # Public name → defining submodule. Names import lazily on first access so
 # light consumers (e.g. the index-only update path importing ``.report``)
@@ -75,16 +74,4 @@ _EXPORTS = {
 
 __all__ = sorted(_EXPORTS)
 
-
-def __getattr__(name: str) -> Any:
-    try:
-        module = _EXPORTS[name]
-    except KeyError:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
-    value = getattr(import_module(module, __name__), name)
-    globals()[name] = value  # cache: subsequent access skips __getattr__
-    return value
-
-
-def __dir__() -> list[str]:
-    return sorted(set(globals()) | set(_EXPORTS))
+__getattr__, __dir__ = lazy_exports(__name__, _EXPORTS, globals())

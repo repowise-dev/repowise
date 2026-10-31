@@ -306,7 +306,9 @@ def _check_folder_coverage(
         "(`hooks.search_digest`); re-reading an unchanged, unedited file comes "
         "back as a pointer to the earlier read (`hooks.read_reread`). One "
         "consent, and this flag decides all four without a prompt. Default: "
-        "ask when interactive, skip otherwise. In workspace mode the verdict "
+        "on. Interactive runs ask; --yes and non-interactive runs install it "
+        "and print how to turn it off. A repo that opted out stays off, and "
+        "--no-editor-setup installs nothing. In workspace mode the verdict "
         "applies to every selected repo."
     ),
 )

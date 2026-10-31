@@ -24,6 +24,7 @@ from repowise.cli._setup import configure_cli_logging
 from repowise.cli.commands._index_outcome import record_index_outcome, refresh_read_snapshots
 from repowise.cli.errors import reasoned_error
 from repowise.cli.helpers import (
+    adopt_moved_repo_best_effort,
     clear_update_queued,
     console,
     consume_update_pending,
@@ -886,7 +887,12 @@ def _collect_working_tree(opts: UpdateOptions, run: UpdateRun) -> None:
     """Uncommitted work, when asked for; read before the "up to date" gate."""
     from repowise.core.ingestion import ChangeDetector
 
-    run.detector = detector = ChangeDetector(run.repo_path)
+    run.detector = detector = ChangeDetector(
+        run.repo_path,
+        exclude_patterns=run.cfg.get("exclude_patterns"),
+        include_submodules=bool(run.state.get("include_submodules", False)),
+        include_nested_repos=bool(run.state.get("include_nested_repos", False)),
+    )
     if not opts.include_working_tree:
         return
     run.working_tree_diffs = detector.get_working_tree_changes()
@@ -1418,7 +1424,7 @@ def _unpaged_file_paths(run: UpdateRun) -> list[str]:
     """
     from .persistence import file_paths_without_page
 
-    if _file_page_cap_reached(run):
+    if _file_page_cap_reached(run) or not _may_lack_file_pages(run):
         return []
     missing = file_paths_without_page(
         run.repo_path, run.parsed_files, run.graph_builder, run.git_meta_map
@@ -1428,6 +1434,23 @@ def _unpaged_file_paths(run: UpdateRun) -> list[str]:
     if missing:
         console.print(f"Files with no page yet: [cyan]{len(missing)}[/cyan]")
     return missing
+
+
+def _may_lack_file_pages(run: UpdateRun) -> bool:
+    """Whether any eligible file can be without a page, so the lookup is worth its store read.
+
+    Either the stored scope counts some as omitted (or has no count yet), or
+    this run adds a path the plan does not render. Otherwise every eligible
+    file had a page at the last stamp. A file that turns eligible without a
+    diff is counted by the stamp after this run and filled by the next one.
+    """
+    omitted = _stored_file_pages(run).get("omitted")
+    if omitted is None or omitted:
+        return True
+    rendered = set(run.affected.regenerate)
+    return any(
+        fd.status in ("added", "renamed") and fd.path not in rendered for fd in run.file_diffs
+    )
 
 
 def _add_stale_pages(
@@ -2255,6 +2278,10 @@ def run_update(
     run.repo_path = target.repo_path
     assert run.repo_path is not None  # single mode always sets repo_path
     _prepare_repo(run.repo_path)
+    if not opts.dry_run:
+        # A moved or copied checkout still names its old path; adopt the store's
+        # only row before any write keys on the new one and adds a second row.
+        run_async(adopt_moved_repo_best_effort(run.repo_path))
 
     # --full reuses the persisted graph instead of diffing changed files.
     if opts.full:

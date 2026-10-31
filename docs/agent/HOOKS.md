@@ -66,6 +66,19 @@ Existing user hooks are preserved, and older repowise entries are updated in
 place on the next `init` or `update`. They all run the `repowise-augment` entry
 point, which does not load the full CLI.
 
+Each hook names the entry point by the absolute path of the install that wrote
+it, with a PATH lookup as the fallback, so a CLI installed in a virtual
+environment that is not on PATH still runs its hooks. When another install runs
+and the pinned one is gone, the hook is repointed. `repowise doctor` warns
+("Agent hook scripts") and `init` prints a line when a hook's entry point cannot
+be found. That covers these hooks, the plugin's, and the repo's own
+`.claude/settings.local.json` and `.codex/hooks.json` hooks. `repowise agents
+refresh` repoints the hooks in `~/.claude/settings.json` at the install you run
+it from. The plugin and repo-local hooks keep the bare name, since a plugin
+ships without the CLI and repo files may be committed, so for those the fix is
+to put the install's scripts directory on PATH.
+The Codex and Cursor rewrite hooks pin the same way.
+
 `repowise init --no-editor-setup` skips this group, along with the MCP server
 registration in the same file. Use it for a scratch clone, a worktree or a
 benchmark loop where you do not want machine-wide config to change.
@@ -128,15 +141,17 @@ true`, the digest replaces the raw match list. Single-file context greps (`-C`,
 changed after the session's previous read of it, and points at
 `get_context(..., include=["skeleton"])` for structure-level questions.
 
-**Skeleton reads** (opt-in, `hooks.read_skeleton: true`). An unbounded `Read`
+**Skeleton reads** (`hooks.read_skeleton`). An unbounded `Read`
 of a large indexed file returns the file's skeleton, once per file per session.
 Signatures keep their real line numbers; bodies collapse to `... N lines (a-b)`
-markers, so the agent can range-read any elided span. Reading the file again
+markers, so the agent can range-read any elided span. When a file's skeleton
+is too long to serve, it comes back as an outline instead: one line per symbol
+at its real line number, long signatures cut short. Reading the file again
 with no range returns it whole. A skeleton read still satisfies Claude Code's
 read-before-edit check, so an `Edit` or `Write` on such a file raises a one-line
 warning, once per file, until the file is read in full.
 
-**Re-read collapse** (opt-in, `hooks.read_reread: true`). A `Read` of a file
+**Re-read collapse** (`hooks.read_reread`). A `Read` of a file
 the session already read comes back as a short notice naming the earlier read.
 It applies only when the same range was served, no `Edit` or `Write` came
 between, and the bytes hash the same. When the bytes differ, the agent gets the
@@ -161,8 +176,8 @@ followed or contradicted that guidance and adjusts the decision's staleness, so
 guidance that stops being true stops being injected. See
 [decisions](../layers/DECISIONS.md).
 
-The three opt-in read and search keys are written by the rewrite-hook question
-in `repowise init`, and toggled per repo with `repowise hook read-skeleton`,
+The three read and search keys are written by the rewrite-hook question in
+`repowise init` (on by default, see below), and toggled per repo with `repowise hook read-skeleton`,
 `hook read-reread` and `hook search-digest` (`install | uninstall | status`).
 Each one's savings appear in `repowise saved` under its own filter, and a repo
 with the key off still gets the counterfactual number. Key details:
@@ -194,8 +209,13 @@ rewrites noisy `Bash` / `PowerShell` commands to
 before the agent reads it, keeps the exit code, and makes every omission
 reversible.
 
+`repowise init` installs it for Claude Code by default: an interactive run asks
+(default Yes), and `--yes` or a run with no terminal installs it and prints the
+undo. `--no-distill-hook` and `--no-editor-setup` leave it off, and a repo that
+opted out stays off. The Claude Code plugin ships the same hook.
+
 ```bash
-repowise hook rewrite install     # or answer Yes at the `repowise init` prompt
+repowise hook rewrite install
 repowise hook rewrite status
 repowise hook rewrite uninstall
 ```
@@ -257,7 +277,7 @@ Flags and the `--reset` upgrade step: [CLI reference](../reference/CLI_REFERENCE
 | Claude Code | `SessionStart` | `startup\|resume\|clear` | `~/.claude/settings.json` |
 | Claude Code | `PostToolUse` | `Grep\|Glob\|Read\|Edit\|Write\|mcp__.*[Rr]epowise.*__.*` | `~/.claude/settings.json` |
 | Claude Code | `PostToolUseFailure` | `Read\|Edit\|Write\|Grep\|Glob\|NotebookEdit` | `~/.claude/settings.json` |
-| Claude Code | `PreToolUse` (opt-in rewrite) | `Bash\|PowerShell` | `~/.claude/settings.json` |
+| Claude Code | `PreToolUse` (rewrite) | `Bash\|PowerShell` | `~/.claude/settings.json`, or the plugin's `hooks.json` |
 | Claude Code | `PostToolUse` (decision capture prompt) | `Bash\|PowerShell` | `~/.claude/settings.json`, or the plugin's `hooks.json` |
 | Claude Code | `PostToolUse` and `PostToolUseFailure` (opt-in coverage re-ingest) | `Bash\|PowerShell` | the repo's `.claude/settings.local.json` |
 | Codex | `SessionStart` | `startup\|resume\|clear` | the repo's `.codex/hooks.json` |

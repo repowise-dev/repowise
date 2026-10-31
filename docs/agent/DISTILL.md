@@ -77,11 +77,14 @@ A PreToolUse hook rewrites noisy agent commands: `pytest -x` becomes
 `repowise distill pytest -x`. Rewrites run without a prompt by default
 (`permission: allow`). That is a bounded substitution, never a new command (see
 [Safety model](#safety-model-in-one-place)). Set `permission: ask` in
-`.repowise/config.yaml` to approve each rewrite. `repowise init` offers to
-install the hook (default: yes), or install it yourself:
+`.repowise/config.yaml` to approve each rewrite. `repowise init` installs the
+hook by default: an interactive run asks (default: yes), and `--yes` or a run
+with no terminal installs it and prints how to turn it off. `--no-distill-hook`
+and `--no-editor-setup` leave it off, and a repo that opted out stays off. The
+Claude Code plugin ships the same hook. To manage it yourself:
 
 ```bash
-repowise hook rewrite install      # or opt in during `repowise init`
+repowise hook rewrite install
 repowise hook rewrite status
 repowise hook rewrite uninstall    # removes only the repowise entries
 ```
@@ -179,9 +182,9 @@ match), which is where the index beats blind truncation.
 The PostToolUse hook adds passive read surfaces (details in
 [HOOKS.md](HOOKS.md#posttooluse-enrichment-on-tool-calls)):
 
-- **Skeleton replacement** (opt-in, `hooks.read_skeleton`): an unbounded `Read`
+- **Skeleton replacement** (`hooks.read_skeleton`, on with the rewrite hook): an unbounded `Read`
   of a large indexed file is served as its skeleton, once per file per session.
-- **Re-read collapse** (opt-in, `hooks.read_reread`): a `Read` of a range this
+- **Re-read collapse** (`hooks.read_reread`, on with the rewrite hook): a `Read` of a range this
   session already read, with no edit between and identical bytes, is served as
   a short notice. Never twice in a row, so one more Read always returns content.
 - **Stale-read notice**: after an `Edit`/`Write`, a later `Read` of the same file

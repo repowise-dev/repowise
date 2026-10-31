@@ -25,7 +25,11 @@ from repowise.core.docs_mode import docs_mode_state_fields
 from repowise.core.generation.styles import DEFAULT_STYLE
 
 from ._ingest import decision_llm_client
-from ._interactive import offer_distill_rewrite_hook, offer_hook_install
+from ._interactive import (
+    offer_distill_rewrite_hook,
+    offer_hook_install,
+    warn_unresolved_hooks,
+)
 from ._options import InitRun
 from .persistence import (
     apply_git_history_coverage_state,
@@ -56,7 +60,7 @@ def persist_index(run: InitRun) -> None:
             invalidate_seed_edge_cache(run.repo_path)
         run_async(persist_result(run.result, run.repo_path, persist_callback, recorder.table))
         persist_callback.on_phase_done("persist")
-        # Seed the opt-in incremental graph update from a sealed sequential cache.
+        # Seed the incremental graph update from a sealed sequential cache.
         if cache_incremental_graph and run.result.graph_builder is not None:
             from repowise.core.pipeline.incremental.graph_seed import save_seed_edge_cache
 
@@ -459,6 +463,7 @@ def complete_setup(run: InitRun) -> None:
         yes=opts.yes,
         no_editor_setup=not opts.editor_setup,
     )
+    warn_unresolved_hooks(console, [repo_path], no_editor_setup=not opts.editor_setup)
 
     # Last, so the panel reflects what setup did. `interactive` mirrors the
     # offers' gate: when they were skipped the panel names their hooks.

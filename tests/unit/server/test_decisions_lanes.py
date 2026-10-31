@@ -350,6 +350,91 @@ async def test_a_derived_lane_pages_over_its_own_rows(
     assert sorted(titles) == ["Drifted 0", "Drifted 1", "Drifted 2"]
 
 
+async def _mark_hotspot(session_factory, repo_id: str, path: str) -> None:
+    async with get_session(session_factory) as session:
+        from repowise.core.persistence.models import GitMetadata
+
+        session.add(GitMetadata(repository_id=repo_id, file_path=path, is_hotspot=True))
+        await session.flush()
+
+
+@pytest.mark.asyncio
+async def test_the_review_order_ranks_the_whole_lane_before_paging(
+    client: AsyncClient, app
+) -> None:
+    """A candidate on a hotspot file leads, even when priority order puts it last.
+
+    Seeded oldest and least confident, so ``sort=priority`` would leave it on
+    the last page. Ranking only the first page would never reach it.
+    """
+    repo = await create_test_repo(client)
+    sf = app.state.session_factory
+    await _mark_hotspot(sf, repo["id"], "src/hot.py")
+    hot_id = await _seed(sf, repo["id"], title="Names the hotspot", scope=["src/hot.py"])
+    async with get_session(sf) as session:
+        rec = await crud.get_decision(session, hot_id)
+        rec.confidence = 0.1
+        await session.flush()
+    for i in range(4):
+        await _seed(sf, repo["id"], title=f"Quiet {i}", scope=[f"src/quiet_{i}.py"])
+
+    res = await client.get(
+        f"/api/repos/{repo['id']}/decisions",
+        params={"lane": "candidates", "sort": "review", "limit": 2},
+    )
+
+    assert res.status_code == 200, res.text
+    rows = res.json()
+    assert len(rows) == 2
+    assert rows[0]["title"] == "Names the hotspot"
+    assert rows[0]["hotspot_files"] == ["src/hot.py"]
+    assert rows[1]["hotspot_files"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_commit_footprint_does_not_count_as_naming_a_hotspot(
+    client: AsyncClient, app
+) -> None:
+    """A footprint lists what one commit touched; it is provenance, not scope."""
+    repo = await create_test_repo(client)
+    sf = app.state.session_factory
+    await _mark_hotspot(sf, repo["id"], "src/hot.py")
+    did = await _seed(sf, repo["id"], title="Footprint only", scope=["src/hot.py"])
+    async with get_session(sf) as session:
+        from repowise.core.analysis.decisions.scope import SCOPE_BASIS_FOOTPRINT
+
+        rec = await crud.get_decision(session, did)
+        rec.scope_basis = SCOPE_BASIS_FOOTPRINT
+        await session.flush()
+
+    rows = await _lane(client, repo["id"], "candidates")
+
+    assert rows[0]["hotspot_files"] == []
+
+
+@pytest.mark.asyncio
+async def test_the_review_order_leads_a_derived_lane_with_its_most_drifted(
+    client: AsyncClient, app
+) -> None:
+    repo = await create_test_repo(client)
+    sf = app.state.session_factory
+    await _seed(sf, repo["id"], title="Drifted a little", accept=True, staleness=0.5)
+    await _seed(sf, repo["id"], title="Drifted a lot", accept=True, staleness=0.95)
+    await _seed(sf, repo["id"], title="Fresh", accept=True)
+
+    res = await client.get(
+        f"/api/repos/{repo['id']}/decisions",
+        params={"lane": "needs_review", "sort": "review", "limit": 1, "offset": 0},
+    )
+    second = await client.get(
+        f"/api/repos/{repo['id']}/decisions",
+        params={"lane": "needs_review", "sort": "review", "limit": 1, "offset": 1},
+    )
+
+    assert [d["title"] for d in res.json()] == ["Drifted a lot"]
+    assert [d["title"] for d in second.json()] == ["Drifted a little"]
+
+
 @pytest.mark.asyncio
 async def test_an_unknown_lane_is_rejected_rather_than_ignored(
     client: AsyncClient, app

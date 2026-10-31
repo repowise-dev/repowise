@@ -35,7 +35,8 @@ export function useDocsTreeCopy(): DocsTreeCopy {
       stubTitle: t("stubTitle"),
       startHere: t("startHere"),
       onboarding: t("onboarding"),
-      modulesWithNoLayer: (count: number) => t("modulesWithNoLayer", { count }),
+      walkthroughs: (count: number) => t("walkthroughs", { count }),
+      otherModules: (count: number) => t("otherModules", { count }),
       codeReference: t("codeReference"),
       codeReferenceMeta: ({ files, symbols, other }) =>
         t("codeReferenceMeta", { files, symbols, other }),

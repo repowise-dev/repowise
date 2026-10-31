@@ -122,14 +122,14 @@ def _tc(test_id: str, source_file: str, covered_lines: list[int]):
     )
 
 
-async def _change_risk(monkeypatch, repo: Path, factory) -> dict:
+async def _change_risk(monkeypatch, repo: Path, factory, **filters) -> dict:
     module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
 
     async def _context(_: str | None) -> SimpleNamespace:
         return SimpleNamespace(path=str(repo), session_factory=factory)
 
     monkeypatch.setattr(module, "_resolve_repo_context", _context)
-    return await module.get_change_risk("HEAD", baseline=0, include=["tests"])
+    return await module.get_change_risk("HEAD", baseline=0, include=["tests"], **filters)
 
 
 async def _risk_directive(monkeypatch, repo: Path, factory, changed: list[str]) -> dict:
@@ -173,15 +173,36 @@ async def test_a_test_that_runs_with_every_subset_is_named(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_change_risk_selects_tests_once_while_it_scores(tmp_path, monkeypatch) -> None:
-    """The selection starts beside the score, and the tests block joins it."""
+@pytest.mark.parametrize(
+    "filters",
+    [
+        {},
+        {"exclude_patterns": ["docs/"]},
+        {"extensions": [".py"]},
+        {"include_paths": ["src/"]},
+    ],
+    ids=["none", "exclude_patterns", "extensions", "include_paths"],
+)
+async def test_change_risk_selects_tests_once_while_it_scores(
+    tmp_path, monkeypatch, filters
+) -> None:
+    """The selection starts beside the score, and the tests block joins it.
+
+    The request's path filters narrow the score, not the tests block's change,
+    so a filtered call shares the same selection.
+    """
     import asyncio
     from collections import OrderedDict
 
     from repowise.server.mcp_server import _test_selection
 
-    repo, base = _repo(tmp_path, _STATUS)
-    _commit(repo, {"src/status.py": "def status():\n    return 2\n"}, "fix: status")
+    repo, base = _repo(tmp_path, {**_STATUS, "docs/notes.md": "one\n"})
+    # The docs edit is what each filter drops from the score.
+    _commit(
+        repo,
+        {"src/status.py": "def status():\n    return 2\n", "docs/notes.md": "two\n"},
+        "fix: status",
+    )
     factory = await _index(
         base,
         {"src/status.py": False, "tests/test_status.py": True},
@@ -211,7 +232,7 @@ async def test_change_risk_selects_tests_once_while_it_scores(tmp_path, monkeypa
 
     monkeypatch.setattr(tool, "_score_change", _slow_score)
 
-    it = (await _change_risk(monkeypatch, repo, factory))["impacted_tests"]
+    it = (await _change_risk(monkeypatch, repo, factory, **filters))["impacted_tests"]
 
     assert it["status"] == "selected"
     assert "tests/test_status.py" in it["tests_to_run"]
@@ -655,3 +676,77 @@ def test_only_a_named_commit_starts_a_selection_before_the_score() -> None:
     # Both read as uncommitted or staged work to git, never as the scored HEAD.
     assert _start_selection(ctx, None) is None
     assert _start_selection(ctx, "") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "filters",
+    [{}, {"exclude_patterns": ["docs/"]}],
+    ids=["none", "exclude_patterns"],
+)
+async def test_change_risk_compares_health_once_while_it_scores(
+    tmp_path, monkeypatch, filters
+) -> None:
+    """A named change's health comparison starts beside the score, with the excludes it counts."""
+    import asyncio
+
+    repo, base = _repo(tmp_path, {**_STATUS, "docs/notes.md": "one\n", ".riskignore": "*.lock\n"})
+    _commit(
+        repo,
+        {"src/status.py": "def status():\n    return 2\n", "docs/notes.md": "two\n"},
+        "fix: status",
+    )
+    factory = await _index(base, {"src/status.py": False, "tests/test_status.py": True})
+    module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
+    real_compare = module._compare_health
+    compared: list[tuple] = []
+
+    def _recording(repo_path, revspec, extensions, excludes, *rest):
+        compared.append(tuple(excludes))
+        return real_compare(repo_path, revspec, extensions, excludes, *rest)
+
+    monkeypatch.setattr(module, "_compare_health", _recording)
+    tool = importlib.import_module("repowise.server.mcp_server.tool_change_risk.tool")
+    real_score = tool._score_change
+    during: list[bool] = []
+    counted: list[tuple] = []
+
+    async def _slow_score(*args, **kwargs):
+        for _ in range(500):
+            if compared:
+                break
+            await asyncio.sleep(0.01)
+        during.append(bool(compared))
+        result, error = await real_score(*args, **kwargs)
+        counted.append(tuple(result.riskignore_excludes + result.request_excludes))
+        return result, error
+
+    monkeypatch.setattr(tool, "_score_change", _slow_score)
+
+    out = await _change_risk(monkeypatch, repo, factory, **filters)
+
+    assert out["health_delta"]["status"]
+    assert during == [True]
+    assert compared == counted
+    assert "*.lock" in compared[0]
+
+
+@pytest.mark.asyncio
+async def test_an_early_comparison_with_other_excludes_is_replaced(monkeypatch) -> None:
+    import asyncio
+
+    from repowise.server.mcp_server.tool_change_risk import tool
+
+    async def _never(*_a):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(tool, "_delta_with_index", _never)
+    early = asyncio.get_running_loop().create_future()
+    result = SimpleNamespace(riskignore_excludes=("a",), request_excludes=("b",))
+    assert tool._delta_for((("a", "b"), early), None, "HEAD", None, result, (), {}) is early
+
+    fresh = tool._delta_for((("a",), early), None, "HEAD", None, result, (), {})
+
+    assert fresh is not early
+    assert early.cancelled()
+    fresh.cancel()

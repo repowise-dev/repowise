@@ -2,7 +2,6 @@
 
 import * as React from "react";
 import {
-  ACCEPTER_KIND_LABELS,
   DECISION_CURRENCY_DESCRIPTIONS,
   DECISION_CURRENCY_LABELS,
   DECISION_KIND_LABELS,
@@ -13,18 +12,27 @@ import {
   isRetiredDecisionSource,
 } from "@repowise-dev/types/decisions";
 import type {
-  AccepterKind,
   DecisionCurrency,
   DecisionLane,
   DecisionRecord,
 } from "@repowise-dev/types/decisions";
 import { ApiError } from "../shared/api-error";
 import { EmptyState } from "../shared/empty-state";
+import {
+  ResponsiveTable,
+  type ResponsiveColumn,
+} from "../shared/responsive-table";
 import { ViewTabs, type ViewTab } from "../shared/view-tabs";
 import { Button } from "../ui/button";
+import { cn } from "../lib/cn";
 import { VerificationBadge } from "./verification-badge";
 import { describeRecordStaleness } from "./decision-staleness";
-import { stripMarkdown } from "../lib/format";
+import { DecisionReviewDrawer } from "./decision-review-drawer";
+import {
+  formatDate,
+  formatRelativeTimeOrNull,
+  stripMarkdown,
+} from "../lib/format";
 
 /**
  * The review lanes: what governs, what is waiting to be reviewed, and what has
@@ -138,6 +146,13 @@ export interface DecisionReviewLanesProps {
   error?: unknown;
   isLoading?: boolean;
   onRetry?: () => void;
+  /**
+   * The order the host fetched the rows in. `"review"` is the server's review
+   * queue order (`sort=review`), and the lane says so above the table. Left
+   * out, the rows are shown in whatever order they came and nothing is
+   * claimed about it.
+   */
+  order?: "review";
 }
 
 export function DecisionReviewLanes({
@@ -157,9 +172,38 @@ export function DecisionReviewLanes({
   error,
   isLoading,
   onRetry,
+  order,
 }: DecisionReviewLanesProps) {
   const prefix = linkPrefix ?? `/repos/${repoId}`;
-  const Link = LinkComponent;
+  const Link = LinkComponent as LinkLike;
+  const [openId, setOpenId] = React.useState<string | null>(null);
+  const rows = decisions ?? [];
+  // Looked up, not held, so a refresh after a review shows the record
+  // as it now is, and a record that left the lane closes the drawer.
+  const open = rows.find((d) => d.id === openId) ?? null;
+  const reviewable = lane === "candidates";
+
+  // Acting from the drawer moves it to the next record, which is what makes
+  // the drawer a queue and not a detour. Read before the host refreshes
+  // the rows, because the record acted on is about to leave them.
+  const actAndAdvance = (
+    act: (decision: DecisionRecord) => void,
+    d: DecisionRecord,
+  ) => {
+    const at = rows.findIndex((r) => r.id === d.id);
+    const next = rows[at + 1] ?? null;
+    act(d);
+    setOpenId(next?.id ?? null);
+  };
+
+  const columns = buildColumns({
+    lane,
+    showHotspots: rows.some((d) => Array.isArray(d.hotspot_files)),
+    onAccept,
+    onDismiss,
+    readOnlyReason,
+    pendingIds,
+  });
 
   const tabs: ViewTab[] = DECISION_LANES.map((id) => {
     const badge = counts?.[id];
@@ -168,8 +212,6 @@ export function DecisionReviewLanes({
       : { id, label: LANE_LABEL[id], badge };
   });
 
-  const rows = decisions ?? [];
-
   return (
     <ViewTabs
       tabs={tabs}
@@ -177,9 +219,12 @@ export function DecisionReviewLanes({
       onValueChange={(id) => onLaneChange(id as DecisionLane)}
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <p className="min-w-0 max-w-[68ch] flex-1 text-xs text-[var(--color-text-secondary)]">
-          {LANE_DESCRIPTION[lane]}
-        </p>
+        <div className="min-w-0 max-w-[68ch] flex-1 space-y-1.5 text-xs">
+          <p className="text-[var(--color-text-secondary)]">{LANE_DESCRIPTION[lane]}</p>
+          {order === "review" && (
+            <p className="text-[var(--color-text-tertiary)]">{REVIEW_ORDER_NOTE}</p>
+          )}
+        </div>
         {/* Built from the shared source list rather than from the loaded rows:
             a lane page is one window, so a source absent from it would become
             unselectable, which is the same defect wearing a dynamic coat. */}
@@ -227,215 +272,328 @@ export function DecisionReviewLanes({
           />
         )
       ) : (
-        // Hairline-separated rows rather than a table or a grid of cards: the
-        // rows are unequal in height because a candidate carries its evidence,
-        // and repeating a bordered container at one weight per record turns
-        // the lane into box soup.
-        <ul className="divide-y divide-[var(--color-border-subtle)] border-t border-[var(--color-border-subtle)]">
-          {rows.map((d) => (
-            <DecisionLaneRow
-              key={d.id}
-              decision={d}
-              lane={lane}
-              href={`${prefix}/decisions/${d.id}`}
-              Link={Link}
-              {...(onAccept ? { onAccept } : {})}
-              {...(onDismiss ? { onDismiss } : {})}
-              {...(readOnlyReason ? { readOnlyReason } : {})}
-              pending={pendingIds?.has(d.id) ?? false}
-            />
-          ))}
-        </ul>
+        <>
+          {/* A table, now that a row is one record at one height. The rows
+              used to be unequal because a candidate carried its whole quote;
+              the quote is clamped here and read in full in the drawer, so the
+              queue scans as columns and a reviewer can compare what is
+              waiting instead of reading it top to bottom. */}
+          <ResponsiveTable
+            columns={columns}
+            rows={rows}
+            rowKey={(d) => d.id}
+            onRowClick={(d) => setOpenId(d.id)}
+            selectedKey={openId}
+            caption={`${LANE_LABEL[lane]} decisions`}
+            bare
+            className="border-y border-[var(--color-border-subtle)]"
+          />
+        </>
       )}
+      <DecisionReviewDrawer
+        decision={open}
+        reviewable={reviewable}
+        onClose={() => setOpenId(null)}
+        onAccept={onAccept ? (d) => actAndAdvance(onAccept, d) : undefined}
+        onDismiss={onDismiss ? (d) => actAndAdvance(onDismiss, d) : undefined}
+        readOnlyReason={readOnlyReason}
+        pending={open ? (pendingIds?.has(open.id) ?? false) : false}
+        href={open ? `${prefix}/decisions/${open.id}` : prefix}
+        Link={Link}
+        marks={
+          open ? (
+            <>
+              {open.currency && open.currency !== "active" && (
+                <CurrencyMark currency={open.currency as DecisionCurrency} />
+              )}
+              <Provenance decision={open} />
+            </>
+          ) : null
+        }
+      />
     </ViewTabs>
   );
 }
 
-interface RowProps {
-  decision: DecisionRecord;
-  lane: DecisionLane;
+/**
+ * The rule `review_queue_order` applies on the server, said once above the
+ * table, not as a score per row: a number would invite reading the gap
+ * between two rows as meaningful, and it is only an order.
+ */
+const REVIEW_ORDER_NOTE =
+  "Most in need of a look first: records that can be accepted as they stand, then those naming churn hotspots, then those whose files have changed most since they were recorded.";
+
+/**
+ * Where a quote came from, as row metadata: the 11px tertiary line the rest of
+ * the row's meta uses, in sentence case. Not the uppercase micro label, which
+ * reads as a heading and outshouted the quote it describes.
+ */
+const EVIDENCE_META = "text-2xs text-[var(--color-text-tertiary)]";
+
+
+const NUMERIC_CELL = "font-mono text-xs tabular-nums whitespace-nowrap";
+
+type LinkLike = React.ElementType<{
   href: string;
-  Link: React.ElementType<{
-    href: string;
-    className?: string;
-    children: React.ReactNode;
-  }>;
-  onAccept?: (decision: DecisionRecord) => void;
-  onDismiss?: (decision: DecisionRecord) => void;
-  readOnlyReason?: string;
-  pending?: boolean;
+  className?: string;
+  children: React.ReactNode;
+}>;
+
+interface ColumnContext {
+  lane: DecisionLane;
+  showHotspots: boolean;
+  onAccept?: ((decision: DecisionRecord) => void) | undefined;
+  onDismiss?: ((decision: DecisionRecord) => void) | undefined;
+  readOnlyReason?: string | undefined;
+  pendingIds?: ReadonlySet<string> | undefined;
 }
 
-const MICRO_LABEL =
-  "font-mono text-caption uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
+function buildColumns(ctx: ColumnContext): ResponsiveColumn<DecisionRecord>[] {
+  const columns: ResponsiveColumn<DecisionRecord>[] = [
+    {
+      key: "decision",
+      header: "Decision",
+      priority: 1,
+      cellClassName: "min-w-[240px] align-top",
+      render: renderDecisionCell,
+    },
+    {
+      key: "evidence",
+      header: "Evidence",
+      priority: 2,
+      cellClassName: "w-[30%] max-w-[320px] align-top",
+      render: renderEvidenceCell,
+    },
+    {
+      key: "scope",
+      header: "Scope",
+      priority: 3,
+      cellClassName: "max-w-[200px] align-top",
+      render: renderScopeCell,
+    },
+  ];
+  // Drawn when the host sent the field at all, not when a row has a hotspot:
+  // a column that came and went with the page under it would read as a
+  // property of the page.
+  if (ctx.showHotspots) {
+    columns.push({
+      key: "hotspots",
+      header: "Hotspots",
+      align: "right",
+      priority: 2,
+      cellClassName: "align-top",
+      render: renderHotspotCell,
+    });
+  }
+  columns.push(
+    {
+      key: "changed",
+      // The claim the number supports, as on the full table: the numerator
+      // also counts files the repository no longer tracks.
+      header: "Scope changed",
+      mobileLabel: "Changed",
+      align: "right",
+      priority: 3,
+      cellClassName: "align-top",
+      render: renderChangedCell,
+    },
+    {
+      key: "age",
+      header: "Recorded",
+      align: "right",
+      priority: 3,
+      cellClassName: "align-top",
+      render: (d) => (
+        <span
+          className={cn(NUMERIC_CELL, "text-[var(--color-text-tertiary)]")}
+          title={formatDate(d.created_at)}
+        >
+          {formatRelativeTimeOrNull(d.created_at)}
+        </span>
+      ),
+    },
+  );
+  // One primary verb per row, and only in the lane where it means something.
+  // Everything else on the record lives on its detail page.
+  if (ctx.lane === "candidates") {
+    columns.push({
+      key: "actions",
+      header: <span className="sr-only">Review</span>,
+      align: "right",
+      priority: 1,
+      cellClassName: "align-top",
+      render: (d) => <RowActions d={d} ctx={ctx} />,
+    });
+  }
+  return columns;
+}
 
-function DecisionLaneRow({
-  decision: d,
-  lane,
-  href,
-  Link,
-  onAccept,
-  onDismiss,
-  readOnlyReason,
-  pending,
-}: RowProps) {
-  const staleness = describeRecordStaleness(d);
+function renderDecisionCell(d: DecisionRecord) {
   const currency = d.currency ?? null;
-  const evidence = d.evidence_preview;
-  const scope = [...d.affected_files, ...d.affected_modules];
-  // An agreement governs the repository rather than part of it, so naming no
-  // file is what it is. Saying "names nothing" about one reports the defining
-  // property of the noun as a gap in the record.
-  const isAgreement = d.kind === "agreement";
-  // The same four checks the engine refuses on, asked before the button is
-  // drawn. A candidate that names nothing already renders "names nothing"
-  // beside an Accept that could only fail; predicting the refusal is what
-  // turns that into a control the reader can understand.
-  const blockers = decisionAcceptanceBlockers(d);
-
   return (
-    <li className="flex flex-col gap-2 py-3 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
-      <div className="min-w-0 flex-1 space-y-1.5">
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-          <Link
-            href={href}
-            className="text-sm font-medium text-[var(--color-text-primary)] hover:text-[var(--color-accent-primary)]"
-          >
-            {stripMarkdown(d.title)}
-          </Link>
-          {/* Marked only where it is an exception. An accepted decision that
-              still describes its code is the quiet default and carries no
-              badge; a currency the reader cannot guess does. */}
-          {currency !== null && currency !== "active" && (
-            <CurrencyMark currency={currency as DecisionCurrency} />
-          )}
-          <SignatureMark decision={d} />
-          {d.verification && d.verification !== "exact" && (
-            <VerificationBadge verification={d.verification} />
-          )}
-        </div>
-
-        <p className="text-xs text-[var(--color-text-secondary)]">
-          {stripMarkdown(d.decision || d.title)}
-        </p>
-
-        {/* Candidates carry the quote they were drawn from. It is the whole
-            basis for accepting or dismissing one, and sending the reader to a
-            detail page to find it is what leaves a review queue unworked. */}
-        {lane === "candidates" && evidence?.source_quote && (
-          <figure className="space-y-1 border-l-2 border-[var(--color-border-default)] bg-[var(--color-bg-inset)] px-3 py-2">
-            <blockquote className="text-xs italic text-[var(--color-text-secondary)]">
-              &ldquo;{stripMarkdown(evidence.source_quote)}&rdquo;
-            </blockquote>
-            <figcaption className={MICRO_LABEL}>
-              {decisionSourceLabel(evidence.source)}
-              {evidence.evidence_file ? ` · ${evidence.evidence_file}` : ""}
-              {evidence.evidence_line != null
-                ? `:${evidence.evidence_line}`
-                : ""}
-              {(d.evidence_count ?? 0) > 1
-                ? ` · ${(d.evidence_count ?? 0) - 1} more`
-                : ""}
-            </figcaption>
-          </figure>
+    <div className="min-w-0 space-y-0.5">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        {/* Not truncated: the title is the primary label of an attention row. */}
+        <span className="font-medium text-[var(--color-text-primary)]">
+          {stripMarkdown(d.title)}
+        </span>
+        {/* Marked only where it is an exception. An accepted decision that
+            still describes its code is the quiet default and carries no
+            badge; a currency the reader cannot guess does. */}
+        {currency !== null && currency !== "active" && (
+          <CurrencyMark currency={currency as DecisionCurrency} />
         )}
-
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-          <span className={MICRO_LABEL}>{decisionSourceLabel(d.source)}</span>
-          {/* One path reads as the path. Several read as a count, with the
-              list on the title, because the alternative is a row whose
-              primary label is crowded off by its own metadata. */}
-          <span className={MICRO_LABEL} title={scope.join(", ")}>
-            {isAgreement && scope.length === 0
-              ? DECISION_KIND_LABELS.agreement.toLowerCase()
-              : scope.length === 0
-                ? "names nothing"
-                : scope.length === 1
-                  ? scope[0]
-                  : `${scope.length} paths`}
-          </span>
-          {staleness.kind === "moved" && (
-            <span className={MICRO_LABEL} title={staleness.sentence}>
-              {staleness.short} changed
-            </span>
-          )}
-        </div>
+        {d.verification && d.verification !== "exact" && (
+          <VerificationBadge verification={d.verification} iconOnly />
+        )}
       </div>
-
-      {/* One primary verb per row, and only in the lane where it means
-          something. Accepting is the review action; everything else on the
-          record lives on its detail page. */}
-      {lane === "candidates" && (
-        <div className="flex shrink-0 flex-col items-start gap-1 sm:items-end">
-          {readOnlyReason ? (
-            <span className="text-xs text-[var(--color-text-tertiary)]">
-              {readOnlyReason}
-            </span>
-          ) : (
-            <>
-              <div className="flex items-center gap-2">
-                {onDismiss && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    disabled={pending}
-                    onClick={() => onDismiss(d)}
-                  >
-                    Dismiss
-                  </Button>
-                )}
-                {onAccept && (
-                  <Button
-                    size="sm"
-                    disabled={pending || blockers.length > 0}
-                    title={blockers.length ? blockers.join("; ") : undefined}
-                    onClick={() => onAccept(d)}
-                  >
-                    {pending ? "Accepting…" : "Accept"}
-                  </Button>
-                )}
-              </div>
-              {/* Dismissing is always available: a candidate that cannot be
-                  accepted is exactly the one worth tombstoning. The sentence
-                  is text rather than only a tooltip, because a disabled
-                  button takes no focus and a tooltip on it is mouse-only. */}
-              {onAccept && blockers.length > 0 && (
-                <p className="max-w-[28ch] text-right text-xs text-[var(--color-text-tertiary)]">
-                  Cannot accept: {blockers.join("; ")}. Fill it in with{" "}
-                  <code className="font-mono text-xs">
-                    repowise decision confirm {d.id.slice(0, 8)}
-                  </code>
-                  .
-                </p>
-              )}
-            </>
-          )}
-        </div>
-      )}
-    </li>
+      <p className="line-clamp-2 text-xs text-[var(--color-text-secondary)]">
+        {stripMarkdown(d.decision || d.title)}
+      </p>
+    </div>
   );
 }
 
 /**
- * Who signed the row's current authority record, marked only where it is not
- * a person — the case this surface was built for, which carries no badge.
- * `accepter` alone reads as a name, so an agent or an import would be taken
- * for a colleague; an unrecorded kind would be taken for a person.
+ * The quote a candidate was drawn from. It is the whole basis for accepting or
+ * dismissing one, so it stays on the row, clamped; the drawer has it in full.
  */
-function SignatureMark({ decision }: { decision: DecisionRecord }) {
-  const kind = decision.accepter_kind;
-  if (kind === null || kind === undefined || kind === "person") return null;
+function renderEvidenceCell(d: DecisionRecord) {
+  const evidence = d.evidence_preview;
+  if (!evidence?.source_quote) {
+    return <span className={EVIDENCE_META}>{decisionSourceLabel(d.source)}</span>;
+  }
+  return (
+    <figure className="min-w-0 space-y-0.5">
+      <blockquote className="line-clamp-2 text-xs italic text-[var(--color-text-secondary)]">
+        &ldquo;{stripMarkdown(evidence.source_quote)}&rdquo;
+      </blockquote>
+      <figcaption className={cn(EVIDENCE_META, "break-all")}>
+        {decisionSourceLabel(evidence.source)}
+        {evidence.evidence_file ? ` · ${evidence.evidence_file}` : ""}
+        {evidence.evidence_line != null ? `:${evidence.evidence_line}` : ""}
+        {(d.evidence_count ?? 0) > 1 ? ` · ${(d.evidence_count ?? 0) - 1} more` : ""}
+      </figcaption>
+    </figure>
+  );
+}
+
+function renderScopeCell(d: DecisionRecord) {
+  const scope = [...d.affected_files, ...d.affected_modules];
+  // An agreement governs the repository rather than part of it, so naming no
+  // file is what it is, not a gap in the record. One path reads as the path;
+  // several read as a count with the list on the title and in the drawer.
   const label =
-    kind === "" ? "Signer not recorded" : ACCEPTER_KIND_LABELS[kind as AccepterKind];
-  const who = [decision.accepter, decision.accepter_session]
-    .filter(Boolean)
-    .join(", session ");
+    d.kind === "agreement" && scope.length === 0
+      ? DECISION_KIND_LABELS.agreement.toLowerCase()
+      : scope.length === 0
+        ? "names nothing"
+        : scope.length === 1
+          ? (scope[0] as string)
+          : `${scope.length} paths`;
+  // A path may break anywhere; a count must not split mid-word.
   return (
     <span
-      className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-sm border border-[var(--color-border-default)] px-1.5 text-xs text-[var(--color-text-tertiary)]"
-      title={who ? `${label}: ${who}` : label}
+      className={cn(
+        "block font-mono text-xs text-[var(--color-text-secondary)]",
+        scope.length === 1 ? "break-all" : "whitespace-nowrap",
+      )}
+      title={scope.join(", ")}
     >
       {label}
+    </span>
+  );
+}
+
+function renderHotspotCell(d: DecisionRecord) {
+  const hot = d.hotspot_files ?? [];
+  return (
+    <span
+      className={cn(
+        NUMERIC_CELL,
+        hot.length > 0 ? "text-[var(--color-text-primary)]" : "text-[var(--color-text-tertiary)]",
+      )}
+      title={hot.length > 0 ? `Churn hotspots it names: ${hot.join(", ")}` : "Names no churn hotspot"}
+    >
+      {hot.length > 0 ? hot.length : "–"}
+    </span>
+  );
+}
+
+function renderChangedCell(d: DecisionRecord) {
+  const s = describeRecordStaleness(d);
+  return (
+    <span
+      className={cn(
+        NUMERIC_CELL,
+        s.kind === "moved" ? "text-[var(--color-text-secondary)]" : "text-[var(--color-text-tertiary)]",
+      )}
+      title={s.sentence}
+    >
+      {s.short}
+    </span>
+  );
+}
+
+function RowActions({ d, ctx }: { d: DecisionRecord; ctx: ColumnContext }) {
+  const { onAccept, onDismiss, readOnlyReason } = ctx;
+  const pending = ctx.pendingIds?.has(d.id) ?? false;
+  if (readOnlyReason) {
+    return <span className="text-xs text-[var(--color-text-tertiary)]">{readOnlyReason}</span>;
+  }
+  if (!onAccept && !onDismiss) return null;
+  // The same checks the engine refuses on, asked before the button is drawn,
+  // so a candidate that names nothing does not sit beside an Accept that
+  // could only fail.
+  const blockers = decisionAcceptanceBlockers(d);
+  // The row is clickable, so a verb must not also open the drawer.
+  const stop = (e: React.SyntheticEvent) => e.stopPropagation();
+  return (
+    <div className="flex flex-col items-end gap-1" onClick={stop} onKeyDown={stop}>
+      <div className="flex items-center justify-end gap-1.5">
+        {onDismiss && (
+          <Button variant="ghost" size="sm" disabled={pending} onClick={() => onDismiss(d)}>
+            Dismiss
+          </Button>
+        )}
+        {onAccept && (
+          <Button
+            size="sm"
+            disabled={pending || blockers.length > 0}
+            title={blockers.length ? blockers.join("; ") : undefined}
+            onClick={() => onAccept(d)}
+          >
+            {pending ? "Accepting…" : "Accept"}
+          </Button>
+        )}
+      </div>
+      {/* Text, not only a tooltip: a disabled button takes no focus. Dismiss
+          stays available, because a candidate that cannot be accepted is
+          exactly the one worth tombstoning. The drawer says how to fill it. */}
+      {onAccept && blockers.length > 0 && (
+        <p className="max-w-[24ch] text-right text-xs text-[var(--color-text-tertiary)]">
+          Cannot accept: {blockers.join("; ")}.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Who signed the record's current authority, by name, for the drawer only.
+ *
+ * Provenance and nothing else: it names the signer and the session without
+ * sorting signers into kinds, so it reads the same whoever signed. A candidate
+ * has no signer and renders nothing; its source is already in the header.
+ */
+function Provenance({ decision }: { decision: DecisionRecord }) {
+  if (decision.currency == null) return null;
+  const who = decision.accepter?.trim();
+  const session = decision.accepter_session?.trim();
+  return (
+    <span className="text-xs text-[var(--color-text-tertiary)]">
+      {who ? `Signed by ${who}` : "Signer not recorded"}
+      {who && session ? `, session ${session}` : ""}
     </span>
   );
 }

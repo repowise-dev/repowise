@@ -115,6 +115,7 @@ from .return_types import (
 from .symbol_identity import id_segment_name, outer_scope, same_parameters
 from .type_names import (
     bare_type_name,
+    builtin_type_spelling,
     csharp_extension_receiver,
     is_resolvable_type_name,
     strip_type_arguments,
@@ -125,7 +126,7 @@ log = structlog.get_logger(__name__)
 # Languages with an implicit method receiver, where a bare ``foo()`` binds to
 # the caller's instance. Go, Python, PHP and JS/TS spell the receiver out, so a
 # bare call there is a free function and this tier would resolve it wrongly.
-_IMPLICIT_RECEIVER_LANGUAGES = frozenset({"java", "csharp", "cpp", "kotlin", "apex"})
+_IMPLICIT_RECEIVER_LANGUAGES = frozenset({"java", "csharp", "cpp", "kotlin", "apex", "pascal"})
 
 # JS/TS (and the single-file components parsed as TypeScript): a member is only
 # reachable as ``this.foo()`` or ``obj.foo()``, so a bare ``foo()`` inside a
@@ -153,7 +154,14 @@ _BARE_CALL_TOP_LEVEL_FIRST_LANGUAGES = frozenset({"python", "go", "rust"})
 # C# is present: the tier answers with a name's overload set, and
 # ``resolve_file`` narrows it to the member the argument count names.
 _INHERITED_LANGUAGES = frozenset(
-    {"java", "kotlin", "python", "typescript", "swift", "csharp", "apex"}
+    {"java", "kotlin", "python", "typescript", "swift", "csharp", "apex", "pascal"}
+)
+
+# ``TFooHelper = class helper(TBaseHelper) for TFoo``: the helper and the type it extends.
+_PASCAL_HELPER = re.compile(
+    r"\b([A-Za-z_]\w*)\s*=\s*(?:class|record)\s+helper\b(?:\s*\([^)]*\))?\s+for\s+"
+    r"([A-Za-z_][\w.]*)",
+    re.IGNORECASE,
 )
 
 # VB.NET's own-instance receivers, lowercased: the language is case-insensitive.
@@ -392,6 +400,8 @@ class CallResolver(
         # that read ``_global_methods``, and would let an extension answer a
         # site the instance method the language dispatches to should own.
         self._extension_methods: dict[tuple[str, str], tuple[str, str]] = {}
+        # {path: {folded helper name: extended type}} for Pascal helpers.
+        self._pascal_helpers: dict[str, dict[str, str]] = {}
         self._file_extension_methods: dict[str, dict[tuple[str, str], str]] = {}
         self._merged_import_extensions: dict[str, dict[tuple[str, str], str]] = {}
 
@@ -606,11 +616,12 @@ class CallResolver(
                 file_methods[key] = index_id
                 self._global_methods[key].append((path, index_id))
 
-            extended = (
-                self._csharp_extended_type(sym)
-                if sym.parent_name
-                else self._kotlin_extended_type(sym)
-            )
+            if sym.language == "pascal":
+                extended = self._pascal_extended_type(path, sym)
+            elif sym.parent_name:
+                extended = self._csharp_extended_type(sym)
+            else:
+                extended = self._kotlin_extended_type(sym)
             if extended is not None:
                 extensions[(extended, sym.name)].add((path, index_id))
 
@@ -645,6 +656,24 @@ class CallResolver(
         if extended is None or not is_resolvable_type_name(extended, "csharp"):
             return None
         return extended if extended in self._csharp_type_names else None
+
+    def _pascal_extended_type(self, path: str, sym: Symbol) -> str | None:
+        """The type a Pascal ``class``/``record helper for T`` method extends.
+
+        A helper's methods answer for calls on any ``T`` value, a builtin
+        ``string`` included, which is spelled as the builtin table spells it.
+        """
+        if not sym.parent_name or sym.kind not in _FUNCTION_KINDS:
+            return None
+        helpers = self._pascal_helpers.get(path)
+        if helpers is None:
+            helpers = {
+                match.group(1).lower(): builtin_type_spelling(match.group(2), "pascal")
+                or match.group(2)
+                for match in _PASCAL_HELPER.finditer(self._text_of(path))
+            }
+            self._pascal_helpers[path] = helpers
+        return helpers.get(sym.parent_name.lower())
 
     def _kotlin_extended_type(self, sym: Symbol) -> str | None:
         """The type a top-level Kotlin extension function extends, a library one included.
@@ -2508,20 +2537,31 @@ def _written_bare(lines: list[str], caller: Symbol, call: CallSite) -> bool:
     """Does *call*'s line call its name with no receiver or qualifier before it?
 
     The caller's own declaration names it too and is not a call: the first
-    line from the caller's start that names it holds the declaration.
+    line from the caller's start that names it before ``(``, ``:`` or ``=``
+    holds the declaration, so ``const f: T = (`` is one as well as ``f(``.
     """
     if not 0 < call.line <= len(lines):
         return False
     pattern = _name_pattern(call.target_name, call=True)
+    declared = _declaration_pattern(call.target_name)
     text = lines[call.line - 1]
     found = list(pattern.finditer(text))
-    declaration_line = next(
-        (i + 1 for i in range(caller.start_line - 1, call.line) if pattern.search(lines[i])),
+    declaration = next(
+        (
+            (i + 1, hit.start())
+            for i in range(caller.start_line - 1, call.line)
+            if (hit := declared.search(lines[i]))
+        ),
         None,
     )
-    if declaration_line == call.line:
-        found = found[1:]
+    if declaration is not None and declaration[0] == call.line:
+        found = [m for m in found if m.start() != declaration[1]]
     return any(_unqualified(text[: m.start()]) for m in found)
+
+
+def _declaration_pattern(name: str) -> re.Pattern[str]:
+    """*name* as a word before its parameters, a type annotation or an assignment."""
+    return re.compile(rf"\b{re.escape(name)}\b\s*(?:<[^<>()]*>\s*)?[(:=]")
 
 
 # An all-caps macro around a call (``FMT_POSIX_CALL(dup(fd))``) may rewrite it,

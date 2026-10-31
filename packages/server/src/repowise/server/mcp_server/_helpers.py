@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -52,6 +54,8 @@ _VECTOR_TIMEOUT_MAX_S = 120.0
 # rate-limited embedder takes 5-13s, and full-text hits are ready long before.
 _SEMANTIC_GRACE_ENV = "REPOWISE_SEMANTIC_GRACE_S"
 _SEMANTIC_GRACE_DEFAULT_S = 1.0
+# How long a vector leg waits for the store to finish loading at server start.
+_VECTOR_STORE_READY_TIMEOUT_S = 30.0
 
 
 def vector_search_timeout_s() -> float:
@@ -255,6 +259,24 @@ async def _resolve_repo_context(repo: str | None = None) -> Any:
             "Fan out with _federation.Federation instead."
         )
     return await registry.get(resolved)
+
+
+async def wait_for_vector_store(ctx: Any) -> None:
+    """Wait, bounded, for a vector store still loading at startup.
+
+    A single-repo context is a copy of ``_state`` taken when the tool started,
+    so one taken mid-load still holds the keyless placeholder and its vector
+    leg would quietly return nothing. It is pointed at the loaded stores here.
+    Workspace contexts are updated in place by their registry.
+    """
+    ready = getattr(ctx, "vector_store_ready", None)
+    if ready is None:
+        return
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(ready.wait(), timeout=_VECTOR_STORE_READY_TIMEOUT_S)
+    if _state._registry is None and ready is _state._vector_store_ready:
+        ctx.vector_store = _state._vector_store
+        ctx.decision_store = _state._decision_store
 
 
 def _unsupported_repo_all(tool_name: str) -> dict:
@@ -684,7 +706,9 @@ def _compute_alignment(
 # ---------------------------------------------------------------------------
 
 
-def read_repo_file_text(repo_root: Path | str | None, file_path: str) -> str | None:
+def read_repo_file_text(
+    repo_root: Path | str | None, file_path: str, *, allow_extracted: bool = True
+) -> str | None:
     """Read a repo-relative file's live text, or None when it cannot be served.
 
     Refuses any path that resolves outside *repo_root*: several tools serve
@@ -693,19 +717,23 @@ def read_repo_file_text(repo_root: Path | str | None, file_path: str) -> str | N
     card describing a latin-1 file should degrade to mojibake in one field,
     rather than failing the whole call.
 
-    Several tool modules still carry their own near-identical copy of this,
-    each with one extra behaviour bolted on (a size ceiling, lines instead of
-    text). Those are left alone here rather than churned, but new callers
-    belong on this one, and a copy that needs a variation should wrap it.
+    Source-coordinate readers must set ``allow_extracted=False``. Async callers
+    allowing extraction must offload this synchronous reader.
+
+    Classification, containment and conversion belong to the core source reader;
+    this optional serving boundary translates extraction failures to unavailable.
     """
     if repo_root is None:
         return None
+    from repowise.core.ingestion.document_extractors import DocumentExtractionError
+    from repowise.core.ingestion.source_reader import read_source
+
     try:
-        root = Path(str(repo_root))
-        abs_path = (root / file_path).resolve()
-        abs_path.relative_to(root.resolve())
-        return abs_path.read_text(encoding="utf-8", errors="replace")
-    except (OSError, ValueError):
+        source = read_source(Path(str(repo_root)), file_path, allow_extracted=allow_extracted)
+        if source is None:
+            return None
+        return source.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+    except (OSError, ValueError, DocumentExtractionError):
         return None
 
 

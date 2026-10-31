@@ -903,6 +903,14 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "Module",
     "Provides",
     "Binds",
+    # Metro / Anvil: the generated graph constructs a contributed binding and
+    # loads a contributed binding container, so nothing names either.
+    "ContributesBinding",
+    "ContributesTo",
+    "ContributesIntoSet",
+    "ContributesIntoMap",
+    "ContributesMultibinding",
+    "BindingContainer",
     # Glide: its annotation processor generates ``GeneratedAppGlideModule``,
     # which instantiates the annotated class. Nothing in source names it.
     "GlideModule",

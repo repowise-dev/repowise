@@ -26,6 +26,15 @@ async def get_events(
     since: datetime | None = Query(None, description="Only events at or after this time"),
     kind: list[str] = Query(default_factory=list, description="Only these kinds"),
     limit: int = Query(200, ge=1, le=1000),
+    commit: str | None = Query(
+        None,
+        pattern="^[0-9a-f]{40}$",
+        description="Only events detected at this commit (full sha)",
+    ),
+    important: bool = Query(
+        False,
+        description="Only broken contracts, bus factor and test reach drops, and events above info severity",
+    ),
     session: AsyncSession = Depends(get_db_session),
 ) -> EventListResponse:
     """Stored events, oldest first, as CloudEvents."""
@@ -36,9 +45,18 @@ async def get_events(
         raise HTTPException(status_code=422, detail=f"Unknown event kind(s): {unknown}")
     if since is not None and since.tzinfo is None:
         since = since.replace(tzinfo=UTC)
-    events = await list_events(session, repo_id, since=since, kinds=kind, limit=limit)
+    events = await list_events(
+        session,
+        repo_id,
+        since=since,
+        kinds=kind,
+        limit=limit,
+        commit=commit,
+        important_only=important,
+    )
     runs = await snapshot_run_count(session, repo_id)
-    reason = None if events else empty_events_reason(runs, filtered=bool(since or kind))
+    filtered = bool(since or kind or commit or important)
+    reason = None if events else empty_events_reason(runs, filtered=filtered)
     return EventListResponse(
         events=[CloudEvent(**to_cloudevent(e)) for e in events],
         snapshot_runs=runs,

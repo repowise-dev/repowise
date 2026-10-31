@@ -116,11 +116,13 @@ def _import_lines(lines: list[str], start: re.Pattern[str] = _IMPORT_START) -> s
 
 def _read_lines(root: Path, rel: str) -> list[str] | None:
     try:
-        if (root / rel).stat().st_size > _MAX_FILE_BYTES:
+        abs_path = (root / rel).resolve()
+        abs_path.relative_to(root.resolve())
+        if abs_path.stat().st_size > _MAX_FILE_BYTES:
             return None
-    except OSError:
+    except (OSError, ValueError):
         return None
-    text = read_repo_file_text(root, rel)
+    text = read_repo_file_text(root, rel, allow_extracted=False)
     if text is None:
         return None
     # Only a newline ends a line: splitlines() also splits on form feeds and
@@ -165,8 +167,9 @@ def _renames(
         aliases.update(found)
         if n in imports:
             imported.update(found)
-    # ``name as default`` is a default export, not a rename.
+    # ``name as default`` is a default export, and ``name as name`` keeps the name.
     aliases.discard("default")
+    aliases.discard(name)
     return aliases, aliases & imported
 
 
@@ -551,7 +554,9 @@ def _jvm_package_files(
 
 def _live_definition(root: Path, node: GraphNode, name: str, language: str) -> tuple[int, int]:
     """*node*'s bounds re-parsed from its edited file; ``(0, 0)`` when it is not found."""
-    text = read_repo_file_text(root, node.file_path)
+    text = read_repo_file_text(root, node.file_path, allow_extracted=False)
+    if text is None:
+        return (0, 0)
     row = WikiSymbol(
         file_path=node.file_path,
         symbol_id=node.node_id,
@@ -771,8 +776,6 @@ def _scope_reasons(
         reasons.append(f"renamed on import or export: {', '.join(sorted(scan.renamed_in)[:3])}")
     if scan.is_default:
         reasons.append("default export: importers may rename it")
-    if node.kind in _MEMBER_KINDS or node.node_id.count("::") > 1:
-        reasons.append("member: calls through untyped receivers are not scanned")
     touched = sorted({s["path"] for s in scan.sites if s["path"] in unindexed})
     if touched:
         reasons.append(f"unindexed edits name it: {', '.join(touched[:3])}")
@@ -780,6 +783,42 @@ def _scope_reasons(
     if not has_definition and node.file_path not in scan.unreadable:
         reasons.append("definition not found at its indexed line")
     return reasons
+
+
+def _language_family(language: str) -> tuple[str, ...]:
+    """The languages whose files can call a member *language* defines."""
+    if language in ("typescript", "javascript"):
+        return ("typescript", "javascript")
+    return _JVM if language in _JVM else (language,)
+
+
+def _member_reasons(
+    root: Path, node: GraphNode, name: str, language: str, scanned: set[str]
+) -> list[str]:
+    """Why a member's set may miss calls through receivers of unknown type.
+
+    The scan reads importers only. A file that never imports the definition
+    can still reach the member through a parameter, an attribute, an
+    inherited bare call or a destructuring, so any file of its language
+    family outside the scan that names it as a word may hold another site.
+    """
+    if node.kind not in _MEMBER_KINDS and node.node_id.count("::") <= 1:
+        return []
+    from repowise.server.mcp_server._line_hits import _files_holding
+
+    exts = REGISTRY.extensions_for(_language_family(language))
+    held = _files_holding(root, name) if exts else None
+    if held is None:
+        return ["member: calls through untyped receivers are not scanned"]
+    word = _word(name)
+    for rel in sorted(held):
+        if rel in scanned or PurePosixPath(rel).suffix not in exts:
+            continue
+        lines = _read_lines(root, rel)
+        if lines is None or any(word.search(t) for t in lines):
+            # The first such file is enough to say why, and keeps the reason short.
+            return [f"member: an unscanned file names it: {rel}"]
+    return []
 
 
 def _served_sites(
@@ -880,6 +919,9 @@ async def reference_edit_set(
     scanned = set(ordered) - set(scan.unreadable)
     foreign = _foreign_package_files(package_files, scanned, scan.packages, package, language)
     reasons += _scope_reasons(node, scan, foreign, language, set(unindexed))
+    reasons += await asyncio.to_thread(
+        _member_reasons, root, node, name, language, scanned | set(unindexed)
+    )
     if wider:
         reasons += await _widen(
             session, repo_id, root, node, name, ordered + unindexed, scan.sites

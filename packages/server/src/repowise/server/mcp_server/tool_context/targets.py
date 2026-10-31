@@ -47,12 +47,15 @@ from repowise.server.mcp_server._symbol_lookup import spotlight_owners
 from repowise.server.mcp_server.tool_context.enrichment import _MIN_CALL_CONFIDENCE
 from repowise.server.mcp_server.tool_context.preview import (  # noqa: F401  (re-exported)
     _NO_SYMBOL_SUMMARY_SUFFIX,
-    _file_preview,
+    _file_preview_async,
     _markdown_headings,
     _outline_lines,
     _preview_summary,
     _rst_headings,
     _rst_table_lines,
+)
+from repowise.server.mcp_server.tool_context.preview import (
+    _file_preview as _file_preview,
 )
 from repowise.server.mcp_server.tool_context.resolution import (  # noqa: F401  (re-exported)
     ResolvedTarget,
@@ -270,7 +273,7 @@ async def _file_docs(card: CardState, docs: dict[str, Any]) -> None:
     # A symbol-less file still has content: one read serves counts and a
     # verbatim excerpt instead of a card that restates the filename.
     if not symbols:
-        _attach_file_preview(card, docs)
+        await _attach_file_preview(card, docs)
 
 
 async def _compact_file_symbols(card: CardState, docs: dict[str, Any], symbols: Any) -> None:
@@ -346,8 +349,8 @@ async def _file_importers_and_community(card: CardState, docs: dict[str, Any]) -
         }
 
 
-def _attach_file_preview(card: CardState, docs: dict[str, Any]) -> None:
-    preview = _file_preview(card.query.repo_root, card.target)
+async def _attach_file_preview(card: CardState, docs: dict[str, Any]) -> None:
+    preview = await _file_preview_async(card.query.repo_root, card.target)
     if preview is not None:
         docs["file_preview"] = preview
         # Replace the stub summary with the preview's own counts.

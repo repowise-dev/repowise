@@ -505,3 +505,57 @@ def refresh_editor_project_files(
     resolved_options = _resolve_configured_project_file_optouts(repo_path, resolved_options)
     for integration in _resolve_integrations(integrations):
         integration.refresh_project_files(console_obj, repo_path, resolved_options)
+
+
+def unresolved_hook_scripts(repo_path: Path | None = None) -> list[tuple[str, str]]:
+    """``(script, where)`` for each repowise hook whose entry point would not be found.
+
+    Covers Claude Code's user settings, its plugin, and with *repo_path* the
+    repo's own Claude Code and Codex hook files. Those hooks exit quietly when
+    their script is missing, so this is the only place that says so.
+    """
+    from repowise.cli.editor_integrations.claude_config import claude_code_hook_commands
+    from repowise.cli.editor_integrations.codex_config import codex_project_hook_commands
+    from repowise.cli.mcp_config import hook_script_resolves
+
+    rows = claude_code_hook_commands(repo_path)
+    if repo_path is not None:
+        codex = f"{Path(repo_path).name}/.codex/hooks.json"
+        rows += [(codex, c) for c in codex_project_hook_commands(repo_path)]
+    missing: list[tuple[str, str]] = []
+    for where, command in rows:
+        script = "repowise-rewrite" if "repowise-rewrite" in command else "repowise-augment"
+        if not hook_script_resolves(command, script) and (script, where) not in missing:
+            missing.append((script, where))
+    return missing
+
+
+def unresolved_hooks_fix(missing: list[tuple[str, str]]) -> tuple[str | None, str | None]:
+    """``(command, advice)`` that repair *missing*, as :func:`unresolved_hook_scripts` returns it.
+
+    The command is one runnable line (doctor's ``fix``, the Setup page's copy
+    button): ``repowise agents refresh`` repins the user-settings hooks. The
+    plugin and repo-local hooks keep the bare name (a plugin ships without the
+    CLI, and repo files may be committed), so for those the advice is to put
+    the scripts on PATH, which no one command does on every platform.
+    """
+    from repowise.cli.editor_integrations.claude_config import CLAUDE_SETTINGS_LABEL
+    from repowise.cli.mcp_config import resolve_repowise_command
+
+    pinned = resolve_repowise_command("repowise-augment")
+    if pinned == "repowise-augment":
+        # This install has no scripts to point anything at.
+        return None, "Reinstall repowise so repowise-augment is on PATH."
+    in_settings = any(where == CLAUDE_SETTINGS_LABEL for _, where in missing)
+    elsewhere = any(where != CLAUDE_SETTINGS_LABEL for _, where in missing)
+    command = "repowise agents refresh" if in_settings else None
+    advice = f"Add {Path(pinned).parent.as_posix()} to PATH." if elsewhere else None
+    return command, advice
+
+
+def describe_unresolved_hooks(missing: list[tuple[str, str]]) -> str:
+    """``repowise-augment (where, where), repowise-rewrite (where)``."""
+    by_script: dict[str, list[str]] = {}
+    for script, where in missing:
+        by_script.setdefault(script, []).append(where)
+    return ", ".join(f"{s} ({', '.join(w)})" for s, w in by_script.items())

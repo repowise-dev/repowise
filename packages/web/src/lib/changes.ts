@@ -12,21 +12,35 @@ export function changeLabel(c: Pick<ChangeListItem, "forge_ref" | "id">): string
   return c.forge_ref ?? (c.id.length > 19 ? c.id.slice(0, 19) : c.id);
 }
 
-export type CommitsView = "changes" | "commits" | "events" | "review";
+export type CommitsView = "changes" | "commits" | "review";
 
 /**
- * The Commits page in one view: `?view=changes` groups by merged change,
- * `?view=events` lists what moved between index runs, `?view=review` weighs
- * a change's blast radius before it lands.
+ * The Commits page has two lenses: history (`commits`, grouped by commit, or
+ * `changes`, grouped by merged change) and `review`, a change's blast radius.
+ */
+export type CommitsLens = "history" | "review";
+
+/** The lens a view belongs to. */
+export function commitsLens(view: CommitsView): CommitsLens {
+  return view === "review" ? "review" : "history";
+}
+
+/**
+ * The Commits page in one view: `?view=changes` groups the history by merged
+ * change, `?view=review` weighs a change's blast radius before it lands.
  */
 export function commitsViewHref(repoId: string, view: CommitsView): string {
   const base = `/repos/${repoId}/commits`;
   return view === "commits" ? base : `${base}?view=${view}`;
 }
 
-/** The view a `?view=` value asks for; anything else is the commit view. */
+/**
+ * The view a `?view=` value asks for; anything else is the commit view. That
+ * includes `?view=events` from older links: the per-run events list is served
+ * by the events API for automation, not drawn on this page.
+ */
 export function parseCommitsView(raw: string | string[] | undefined): CommitsView {
-  return raw === "changes" || raw === "events" || raw === "review" ? raw : "commits";
+  return raw === "changes" || raw === "review" ? raw : "commits";
 }
 
 /** Filters and paging of the by-change view, as its query parameters keep them. */

@@ -363,7 +363,7 @@ async def test_health_is_null_for_a_non_file_target_without_a_path(session, heal
     await enrichment._resolve_health(
         session, await _repo(session, health_data), "src/auth", "module", out
     )
-    assert out == {"health": None}
+    assert out == {"health": None, "health_basis": 'get_health(targets=["module:src/auth"])'}
 
 
 @pytest.mark.asyncio

@@ -314,6 +314,11 @@ export interface DecisionRecord {
   evidence_count?: number | null;
   /** Top-ranked evidence row, slimmed for list rows. List endpoint only. */
   evidence_preview?: EvidencePreview | null;
+  /**
+   * Named files that are churn hotspots, one of the signals the review order
+   * reads. List endpoint only; absent on a backend that predates it.
+   */
+  hotspot_files?: string[] | null;
 }
 
 /** The top-ranked evidence row, slimmed for decision list rows. */

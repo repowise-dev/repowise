@@ -26,7 +26,10 @@ from repowise.server.mcp_server._answer_context import (
     is_why_question as _is_why_question,
 )
 from repowise.server.mcp_server._meta import _normalize_target_path
-from repowise.server.mcp_server._query_terms import STOPWORDS, split_humps
+from repowise.server.mcp_server._query_terms import (
+    QUESTION_FRAME_VERBS,
+    paths_the_question_names,
+)
 from repowise.server.mcp_server._retrieval_rank import window_term_weight
 from repowise.server.mcp_server.tool_answer.config import (
     _AGREEMENT_HIGH_SCORE_FLOOR,
@@ -49,6 +52,7 @@ from repowise.server.mcp_server.tool_answer.config import (
     _flag_on,
     _opt_in,
 )
+from repowise.server.mcp_server.tool_answer.cut_off import answer_cut_off
 from repowise.server.mcp_server.tool_answer.hydration import (
     _stem,
     _stem_hit,
@@ -99,6 +103,14 @@ _BARE_GAP_RE = re.compile(
 )
 
 
+# "truncated in the (retrieved) excerpts", ending the clause or followed by a
+# preposition. "truncated in the excerpt builder" describes code instead.
+_TRUNCATED_GAP_RE = re.compile(
+    r"\btruncated in the (?:(?:retrieved|provided) )?(?:excerpts?|evidence|material|snippets?)"
+    r"(?=\s*(?:$|[^\w\s]|(?:of|for|from|in|at|before|after|so|and|but|which|here)\b))"
+)
+
+
 def _sentences(answer_text: str) -> list[str]:
     return [s for s in (p.strip() for p in _SENTENCE_BREAK_RE.split(answer_text or "")) if s]
 
@@ -108,6 +120,7 @@ def _is_admission(sentence: str) -> bool:
     low = _normalized(sentence)
     return (
         _BARE_GAP_RE.search(low) is not None
+        or _TRUNCATED_GAP_RE.search(low) is not None
         or any(marker in low for marker in _HEDGE_MARKERS)
         or any(marker in low for marker in _GAP_MARKERS)
     )
@@ -555,16 +568,13 @@ def is_dominant(hits: list[dict], *, agreement_dominant: bool = False) -> bool:
 
 
 # Kept apart from `_query_terms.STOPWORDS` on purpose: these are dropped for
-# coverage only, retrieval still searches them.
-# Words that frame what is asked ("how does X work", "where is X implemented")
-# rather than name it. Code rarely says them, so a hit that answers the question
-# would otherwise read as missing its rarest word.
+# coverage only, retrieval still searches them. The frame verbs plus words a
+# coverage check should not demand of a hit ("code", "logic").
 _QUESTION_FRAME_STEMS = frozenset(
     _stem(w)
     for w in (
-        "work", "works", "working", "implement", "implemented", "implements",
-        "implementation", "handle", "handled", "handles", "handling", "happen",
-        "happens", "use", "used", "uses", "using", "way", "done", "code", "logic",
+        *QUESTION_FRAME_VERBS, "implements",
+        "use", "used", "uses", "using", "way", "done", "code", "logic",
     )
 )
 
@@ -793,6 +803,8 @@ class _Grade(NamedTuple):
     unhydrated_names: tuple[str, ...] = ()
     #: Dominant, but the top score is under the floor high needs.
     under_floor: bool = False
+    #: The answer text stops mid-sentence (see :func:`answer_cut_off`).
+    cut_off: bool = False
 
 
 @dataclass
@@ -830,6 +842,8 @@ class _GradeState:
     #: The file an earned high rests on, when the route names one.
     earned_path: str | None = None
     unhydrated_names: tuple[str, ...] = ()
+    stop_reason: str | None = None
+    cut_off: bool = False
 
 
 def _earned_high(
@@ -1018,6 +1032,17 @@ def _hedge_gate(s: _GradeState) -> None:
         s.confidence = "medium" if s.served_named_body else "low"
 
 
+def _cut_off_gate(s: _GradeState) -> None:
+    """The answer text was cut off before it finished.
+
+    Whatever the missing part said is not in the answer, so it is not one to
+    cite unread.
+    """
+    s.cut_off = s.confidence == "high" and answer_cut_off(s.answer_text, s.stop_reason)
+    if s.cut_off:
+        s.confidence = "medium"
+
+
 def _admitted_gap_gate(s: _GradeState) -> None:
     """The answer says part of what was asked is not in its evidence.
 
@@ -1102,16 +1127,8 @@ def _split_settled(name: str, paths: list[str], question: str, answer_text: str)
 
     if all(named(p) for p in paths):
         return True
-    asked = _path_words(question) - _path_words(name)
-    picked = [p for p in paths if asked & _path_words(p.rsplit(".", 1)[0])]
+    picked = paths_the_question_names(name, paths, question)
     return len(picked) == 1 and named(picked[0])
-
-
-def _path_words(text: str) -> set[str]:
-    """Lower-case words of a path or sentence, stopwords dropped. Two letters
-    count: ``go`` or ``ui`` is often the directory that tells definitions apart."""
-    words = re.split(r"[^a-z0-9]+", split_humps(text).lower())
-    return {w for w in words if len(w) >= 2 and w not in STOPWORDS}
 
 
 def _clause_gate(s: _GradeState) -> None:
@@ -1269,6 +1286,7 @@ def _non_dominant_ceiling(s: _GradeState) -> None:
 _GRADE_GATES = (
     _hedge_gate,
     _absent_name_gate,
+    _cut_off_gate,
     _admitted_gap_gate,
     _identifier_gate,
     _split_name_gate,
@@ -1317,6 +1335,7 @@ def _grade_answer(
     unindexed_names: Collection[str] = (),
     absent_names: Collection[str] = (),
     split_names: dict[str, list[str]] | None = None,
+    stop_reason: str | None = None,
 ) -> _Grade:
     """Grade the synthesised answer through the gate cascade, in order.
 
@@ -1331,7 +1350,8 @@ def _grade_answer(
     question identifiers no symbol carries; ``absent_names`` the code-shaped
     ones no production line writes either (``unindexed_question_names``).
     ``split_names`` maps a question name to the files that define it, for names
-    defined in more than one.
+    defined in more than one. ``stop_reason`` is the synthesis stop reason, None
+    when the provider does not report one.
     """
     dominant = dominance is not None
     top_score = _confidence_score(hits[0]) if hits else 0.0
@@ -1363,6 +1383,7 @@ def _grade_answer(
         lead_off_top=lead_off_top,
         agreement_only=dominance == "agreement" and not earn_high,
         top_score=top_score,
+        stop_reason=stop_reason,
     )
     for gate in _GRADE_GATES:
         gate(s)
@@ -1377,6 +1398,7 @@ def _grade_answer(
         weak_agreement=s.weak_agreement,
         unhydrated_names=s.unhydrated_names,
         under_floor=dominant and not (vouched or earn_high),
+        cut_off=s.cut_off,
         confidence=s.confidence,
         high_reason=high_reason,
         second_score=_confidence_score(hits[1]) if len(hits) >= 2 else 0.0,

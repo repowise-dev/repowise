@@ -23,6 +23,7 @@ from .java import resolve_java_import
 from .kotlin import resolve_kotlin_import
 from .lean import resolve_lean_import
 from .luau import resolve_luau_import
+from .pascal import resolve_pascal_import
 from .php import resolve_php_import
 from .python import resolve_python_import
 from .qml import resolve_qml_import
@@ -87,6 +88,8 @@ _RESOLVERS: dict[str, ResolverFn] = {
     "vbnet": resolve_vbnet_import,
     # COPY / EXEC SQL INCLUDE members, matched to copybooks by stem.
     "cobol": resolve_cobol_import,
+    # uses units through .dpr in-paths and .dproj/.lpi search paths.
+    "pascal": resolve_pascal_import,
 }
 
 

@@ -488,3 +488,40 @@ def test_one_walk_answers_up_to_the_depth_limit_and_not_past_it(tmp_path: Path) 
     # A walk capped below the history leaves older commits to _walk.
     capped = fix_history.FixHistory(str(repo), depth=1)
     assert capped.pressure(head) is None and not capped.answers(head + "x")
+
+
+def test_a_carriage_return_ends_a_fix_subject(repo_with_history: Path) -> None:
+    """The rest of the subject is not a file the fix touched."""
+    _commit(repo_with_history, {"hot.py": "v = 9\n"}, "fix: one\rtwo.py")
+
+    pressure = fix_pressure(str(repo_with_history), "HEAD")
+
+    assert set(pressure) == {"hot.py"}
+
+
+def test_the_fix_walk_runs_while_the_change_is_read(
+    repo_with_history: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    from repowise.core.analysis.change_risk import service
+
+    walking = threading.Event()
+    real_pressure = service.fix_pressure
+    real_features = service.extract_commit_features
+
+    def _pressure(*args, **kwargs):
+        walking.set()
+        return real_pressure(*args, **kwargs)
+
+    def _features(*args, **kwargs):
+        # Serial code would only start the walk after this returns.
+        assert walking.wait(timeout=10)
+        return real_features(*args, **kwargs)
+
+    monkeypatch.setattr(service, "fix_pressure", _pressure)
+    monkeypatch.setattr(service, "extract_commit_features", _features)
+
+    result = score_live_change(str(repo_with_history), "HEAD", baseline=0)
+
+    assert result.fix_history_available

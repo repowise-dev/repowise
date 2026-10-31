@@ -153,7 +153,6 @@ async def _concept_search(
     ctx = await _resolve_repo_context(repo)
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
-    await _pkg._wait_for_vector_store(ctx)
 
     # Over-fetch: post-filters trim hits, and decision down-weighting needs file
     # pages inside the window to promote.

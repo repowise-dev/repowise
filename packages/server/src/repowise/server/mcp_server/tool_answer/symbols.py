@@ -29,7 +29,7 @@ from repowise.server.mcp_server._query_shape import (
     _looks_like_code_name,
     _unmistakably_code,
 )
-from repowise.server.mcp_server._query_terms import split_humps
+from repowise.server.mcp_server._query_terms import paths_the_question_names, split_humps
 from repowise.server.mcp_server._verify import verify_and_heal
 from repowise.server.mcp_server.tool_answer.config import (
     _ANCHOR_KINDS,
@@ -296,6 +296,7 @@ async def _anchor_symbol_hits(
     indexed_names: set[str] = set()
     rows = list(res.scalars().all())
     homonyms["split"] = _split_definitions(rows)
+    homonyms["split_at"] = _split_lines(rows, homonyms["split"])
     for row in rows:
         indexed_names.add(row.name)
         # A pathless row names nothing the reply can point at: drop it from
@@ -317,7 +318,9 @@ async def _anchor_symbol_hits(
             literal = await _literal_holders(session, repo_id, question_ids - indexed_names, guard)
         homonyms["absent"] = await _absent_names(homonyms["unindexed"], guard, scope)
 
-    chosen = await _choose_anchor_symbols(by_name, question_ids, _verified_dict, homonyms)
+    chosen = await _choose_anchor_symbols(
+        by_name, question_ids, _verified_dict, homonyms, question=question
+    )
     if not chosen and not literal:
         return hits, homonyms
     await _anchor_chosen_symbols(hits, chosen, _verified_dict, prose=prose)
@@ -346,6 +349,16 @@ def _split_definitions(rows: list) -> dict[str, list[str]]:
     return {
         name: sorted(paths) for name, paths in files.items() if 1 < len(paths) <= _SPLIT_MAX_FILES
     }
+
+
+def _split_lines(rows: list, split: dict[str, list[str]]) -> dict[str, dict[str, int]]:
+    """Each split name's first indexed line in each of its defining files."""
+    at: dict[str, dict[str, int]] = {}
+    for row in rows:
+        if row.file_path in split.get(row.name, ()) and row.start_line:
+            lines = at.setdefault(row.name, {})
+            lines[row.file_path] = min(lines.get(row.file_path, row.start_line), row.start_line)
+    return at
 
 
 class _TopicGuard:
@@ -604,11 +617,22 @@ def _question_names_parent(cand, question_ids: set[str]) -> bool:
     return any(q in qualified for q in code if len(q) >= 4 and q != name)
 
 
+def _defs_in_named_files(name: str, cands: list, question: str) -> list:
+    """*cands* in the files whose path a question word names, when that leaves some out.
+
+    "``serveStatic`` in the bun adapter" means the definitions under ``bun/``.
+    """
+    files = sorted({c.file_path for c in cands})
+    picked = set(paths_the_question_names(name, files, question, best_only=True))
+    return [c for c in cands if c.file_path in picked] if len(picked) < len(files) else []
+
+
 async def _choose_anchor_symbols(
     by_name: dict[str, list],
     question_ids: set[str],
     verified_dict: Callable[[Any], Awaitable[dict]],
     homonyms: dict[str, Any],
+    question: str = "",
 ) -> list:
     """The one def per question-named symbol to anchor on.
 
@@ -624,13 +648,16 @@ async def _choose_anchor_symbols(
             continue
         # Disambiguate a homonym when the question names its parent or the
         # parent appears in the qualified name.
+        leaf = (name or "").lower()
+        targeted = any(q.rsplit(".", 1)[-1] == leaf and q != leaf for q in qualifiers)
         narrowed = [c for c in cands if _question_names_parent(c, question_ids)]
+        if not narrowed and not targeted:
+            # Or when a question word names the directory or file of some.
+            narrowed = _defs_in_named_files(name, cands, question)
         if len(narrowed) == 1:
             chosen.append(narrowed[0])
             continue
         # Can't narrow to exactly one. Decide union vs qualified-miss.
-        leaf = (name or "").lower()
-        targeted = any(q.rsplit(".", 1)[-1] == leaf and q != leaf for q in qualifiers)
         if narrowed:
             # Qualifier matched >1 def: union of the narrowed set (still all
             # genuine candidates for the qualified name).

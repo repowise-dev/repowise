@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
@@ -352,12 +353,36 @@ def _refuse_partial_flags(fmt: str, *given) -> None:
     Falling through to the prompts would hang a caller that has no stdin.
     """
     if any(given) or fmt == "json":
+        is_non_interactive = fmt == "json" or not sys.stdin.isatty()
+
+        if is_non_interactive:
+            # given[0] corresponds to title, given[2] corresponds to decision_text
+            title = given[0] if len(given) > 0 else None
+            decision_text = given[2] if len(given) > 2 else None
+
+            missing = []
+            if not title:
+                missing.append("--title")
+            if not decision_text:
+                missing.append("--decision")
+
+            missing_str = " and ".join(missing) if missing else "required flags"
+            guidance = (
+                f"Pass {missing_str}, e.g. "
+                '`repowise decision add --title "<what>" --decision "<chosen>" '
+                "[--rationale ...] [--affects <path>]`."
+            )
+        else:
+            guidance = (
+                "Run `repowise decision add` with no flags to be "
+                "prompted for each field instead."
+            )
+
         _ta.emit_error(
             {
                 "error": "--title and --decision are both required to add a "
                 "decision without prompting.",
-                "guidance": "Run `repowise decision add` with no flags to be "
-                "prompted for each field instead.",
+                "guidance": guidance,
             },
             fmt,
         )

@@ -126,6 +126,26 @@ describe("a candidate is a review request, not an instruction", () => {
     expect(screen.getByText(/2 more/)).toBeInTheDocument();
   });
 
+  it("writes where the quote came from as quiet meta, not a heading", () => {
+    renderLanes("candidates", {
+      decisions: [
+        record({
+          evidence_preview: {
+            source: "pr",
+            source_quote: "we settled on JWT",
+            verification: "exact",
+            evidence_file: "docs/auth.md",
+            evidence_line: 12,
+          },
+        }),
+      ],
+    });
+
+    const meta = screen.getByText(/docs\/auth\.md:12/);
+    expect(meta).toHaveClass("text-2xs");
+    expect(meta).not.toHaveClass("uppercase");
+  });
+
   it("says it governs nothing and nobody has accepted it", () => {
     renderLanes("candidates");
 
@@ -246,7 +266,7 @@ describe("a candidate is a review request, not an instruction", () => {
 describe("currency marks the exception, not the default", () => {
   // Scoped to the row list: every lane name is also a tab label, so an
   // unscoped query would find the tab and pass whatever the row rendered.
-  const rows = () => within(screen.getByRole("list"));
+  const rows = () => within(screen.getByRole("table"));
 
   it("says nothing extra about a decision that still describes its code", () => {
     renderLanes("active", { decisions: [record({ currency: "active" })] });
@@ -270,20 +290,23 @@ describe("currency marks the exception, not the default", () => {
   });
 });
 
-describe("who signed is marked where it is not a person", () => {
-  const rows = () => within(screen.getByRole("list"));
+describe("who signed is provenance, read in the drawer", () => {
+  const rows = () => within(screen.getByRole("table"));
 
-  it("says nothing about the case the surface was built for", () => {
+  it("puts no signer mark on a row, whoever signed", () => {
     renderLanes("active", {
       decisions: [
-        record({ currency: "active", accepter: "Raghav", accepter_kind: "person" }),
+        record({ id: "a", currency: "active", accepter: "claude_code", accepter_kind: "agent" }),
+        record({ id: "b", title: "Other", currency: "active", accepter: "Raghav", accepter_kind: "person" }),
+        record({ id: "c", title: "Third", currency: "active", accepter: "", accepter_kind: "" }),
       ],
     });
 
     expect(rows().queryByText(/Signed by/)).not.toBeInTheDocument();
+    expect(rows().queryByText(/Signer not recorded/)).not.toBeInTheDocument();
   });
 
-  it("names an agent, and the session behind it", () => {
+  it("names the signer and session in the drawer, without a kind", () => {
     renderLanes("active", {
       decisions: [
         record({
@@ -295,47 +318,20 @@ describe("who signed is marked where it is not a person", () => {
       ],
     });
 
-    const mark = rows().getByText("Signed by an agent");
-    expect(mark).toBeInTheDocument();
-    expect(mark).toHaveAttribute(
-      "title",
-      "Signed by an agent: claude_code, session sess-42",
-    );
-  });
+    fireEvent.click(screen.getByText("Use JWT for authentication"));
+    const drawer = within(screen.getByRole("dialog"));
 
-  it("does not call a machine withdrawal an acceptance", () => {
-    // The evolution stage retires records as `agent`, so the badge on a
-    // history row is over a revocation, not a grant.
-    renderLanes("history", {
-      decisions: [
-        record({
-          currency: "superseded",
-          accepter: "evolution",
-          accepter_kind: "agent",
-        }),
-      ],
-    });
-
-    expect(rows().queryByText(/Accepted by/)).not.toBeInTheDocument();
-    expect(rows().getByText("Signed by an agent")).toBeInTheDocument();
-  });
-
-  it("marks a row written before the kind was recorded", () => {
-    // '' is not `person`: leaving it unmarked would read as one.
-    renderLanes("active", {
-      decisions: [
-        record({ currency: "active", accepter: "Raghav", accepter_kind: "" }),
-      ],
-    });
-
-    expect(rows().getByText("Signer not recorded")).toBeInTheDocument();
+    expect(drawer.getByText("Signed by claude_code, session sess-42")).toBeInTheDocument();
+    expect(drawer.queryByText(/an agent|a person/)).not.toBeInTheDocument();
   });
 
   it("says nothing about a candidate, which nobody signed", () => {
     renderLanes("candidates", { decisions: [record({ currency: null })] });
 
-    expect(rows().queryByText(/Signed by/)).not.toBeInTheDocument();
-    expect(rows().queryByText("Signer not recorded")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("Use JWT for authentication"));
+
+    expect(within(screen.getByRole("dialog")).queryByText(/Signed by|Signer not recorded/))
+      .not.toBeInTheDocument();
   });
 });
 
@@ -377,6 +373,67 @@ describe("the source filter is a second axis, not a second lane control", () => 
 
     expect(screen.getByText(/clear the source filter/)).toBeInTheDocument();
     expect(screen.queryByText(/No candidates are waiting/)).not.toBeInTheDocument();
+  });
+});
+
+describe("the queue is a table with a drawer", () => {
+  it("draws the hotspot column only when the host sent the field", () => {
+    const first = renderLanes("candidates");
+    expect(screen.queryByRole("columnheader", { name: "Hotspots" })).toBeNull();
+    first.unmount();
+
+    renderLanes("candidates", {
+      decisions: [record({ hotspot_files: ["src/auth/service.py"] })],
+    });
+    expect(screen.getByRole("columnheader", { name: "Hotspots" })).toBeInTheDocument();
+  });
+
+  it("states the review order only when the host fetched in it", () => {
+    const first = renderLanes("candidates");
+    expect(screen.queryByText(/Most in need of a look first/)).toBeNull();
+    first.unmount();
+
+    renderLanes("candidates", { order: "review" });
+    expect(screen.getByText(/Most in need of a look first/)).toBeInTheDocument();
+  });
+
+  it("opens the record in a drawer and marks its hotspots", () => {
+    renderLanes("candidates", {
+      decisions: [record({ hotspot_files: ["src/auth/service.py"] })],
+      onAccept: vi.fn(),
+    });
+
+    fireEvent.click(screen.getByText("Use JWT for authentication"));
+
+    const drawer = screen.getByRole("dialog");
+    expect(within(drawer).getByText("hotspot")).toBeInTheDocument();
+    expect(
+      within(drawer).getByRole("link", { name: /Open and edit the full record/ }),
+    ).toHaveAttribute("href", "/repos/r1/decisions/d1");
+  });
+
+  it("moves the drawer to the next record after a verb", () => {
+    const onAccept = vi.fn();
+    renderLanes("candidates", {
+      decisions: [record({ id: "d1" }), record({ id: "d2", title: "Second record" })],
+      onAccept,
+    });
+
+    fireEvent.click(screen.getByText("Use JWT for authentication"));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Accept" }));
+
+    expect(onAccept).toHaveBeenCalledWith(expect.objectContaining({ id: "d1" }));
+    expect(
+      within(screen.getByRole("dialog")).getByRole("heading", { name: "Second record" }),
+    ).toBeInTheDocument();
+  });
+
+  it("does not open the drawer when a row verb is pressed", () => {
+    renderLanes("candidates", { onDismiss: vi.fn() });
+
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 });
 

@@ -307,6 +307,12 @@ def scan_literal(
     per_file_capped = overflow = defs = 0
     deadline = time.monotonic() + MAX_SCAN_SECONDS
     undecodable = binary_hits = 0
+    from repowise.core.ingestion.document_extractors import (
+        document_extractor_claims,
+        is_extracted_document,
+    )
+
+    claims = document_extractor_claims()
     for i, rel in enumerate(files):
         if i >= MAX_SCAN_FILES:
             reasons.append(f"over {MAX_SCAN_FILES} files")
@@ -340,6 +346,8 @@ def scan_literal(
             # A graph file node can name a package directory; it holds no text.
             if not (root / rel).is_dir():
                 unreadable.append(rel)
+            continue
+        if is_extracted_document(root / rel, data, claims=claims):
             continue
         if b"\x00" in data:
             # Binary: no lines to serve, but one holding the token is a match

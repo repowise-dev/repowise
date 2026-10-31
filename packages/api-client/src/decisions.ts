@@ -33,9 +33,11 @@ export async function listDecisions(
     offset?: number;
     /**
      * `priority` (server default) leads with confirmed rules, then the
-     * highest-confidence proposals. `recent` is newest-first.
+     * highest-confidence proposals. `recent` is newest-first. `review` is the
+     * review queue order: what most needs a person first, ranked over the
+     * whole lane before the page is cut.
      */
-    sort?: "priority" | "recent";
+    sort?: "priority" | "recent" | "review";
   },
 ): Promise<DecisionRecordResponse[]> {
   return apiGet<DecisionRecordResponse[]>(`/api/repos/${repoId}/decisions`, opts);

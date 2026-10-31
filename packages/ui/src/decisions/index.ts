@@ -1,5 +1,6 @@
 export * from "./decisions-table";
 export * from "./decision-review-lanes";
+export * from "./decision-review-drawer";
 export * from "./decision-capture-settings";
 export * from "./module-link-editor";
 export * from "./verification-badge";

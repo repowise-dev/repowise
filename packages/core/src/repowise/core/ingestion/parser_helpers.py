@@ -274,6 +274,18 @@ def import_load_kind(stmt_node: Node, language: str, src: str) -> tuple[bool, bo
     return False, deferred
 
 
+def _has_missing_scope_separator(qualified: Node) -> bool:
+    """Is the ``::`` in this ``qualified_identifier`` a tree-sitter repair node?
+
+    When an unexpanded macro precedes a return type on the next line,
+    tree-sitter-cpp reads ``MACRO ReturnType name(...)`` as a declaration and
+    repairs it with a zero-width ``(MISSING "::")``, folding the return type
+    into a ``qualified_identifier`` scope. A real ``Foo::bar`` definition has
+    a ``::`` child with source text, so only the repaired shape trips this.
+    """
+    return any(child.type == "::" and child.is_missing for child in qualified.children)
+
+
 def _qualified_cpp_parent(name_node: Node, src: str) -> str | None:
     """Return the parent class for a C/C++ ``Class::method`` definition.
 
@@ -294,6 +306,15 @@ def _qualified_cpp_parent(name_node: Node, src: str) -> str | None:
         return None
     scope = parent.child_by_field_name("scope")
     if scope is None:
+        return None
+    # tree-sitter-cpp repairs an unexpanded macro plus a return type on the
+    # following line into a qualified_identifier by inserting a zero-width
+    # ``(MISSING "::")`` node, so ``LIB_ALWAYS_INLINE box_contents_t`` +
+    # ``box_decode(...)`` reads as a declaration and the free function's
+    # return type is mistaken for the enclosing scope. A genuine
+    # ``Foo::bar`` definition carries a real ``::`` child, so skipping the
+    # missing one keeps out-of-line members classified correctly.
+    if _has_missing_scope_separator(parent):
         return None
     if scope.type == "template_type":
         return cpp_template_type_name(scope, src)

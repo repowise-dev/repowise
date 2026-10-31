@@ -63,6 +63,16 @@ class TestNormalizeHttpPath:
         assert normalize_http_path("orders/{id:int?}/lines") == "/orders/{param}/lines"
         assert normalize_http_path("/users/{id}?page={page}") == "/users/{param}"
 
+    def test_gin_echo_named_catch_all_is_a_param(self) -> None:
+        assert normalize_http_path("/swagger/*any") == "/swagger/{param}"
+        assert normalize_http_path("/static/*filepath") == "/static/{param}"
+        assert normalize_http_path("/v1/*path/sub") == "/v1/{param}/sub"
+
+    def test_star_inside_a_segment_and_double_star_stay_literal(self) -> None:
+        assert normalize_http_path("/a*b") == "/a*b"
+        assert normalize_http_path("/files/*") == "/files/{param}"
+        assert normalize_http_path("/**") == "/**"
+
 
 # ---------------------------------------------------------------------------
 # HttpExtractor
@@ -246,6 +256,24 @@ class TestHttpExtractor:
         """)
         ids = {c.contract_id for c in HttpExtractor().extract(tmp_path, "svc") if c.role == "provider"}
         assert "http::GET::/api/v1/users" in ids
+
+    def test_go_routes_in_a_raw_string_fixture_are_not_providers(self, tmp_path: Path) -> None:
+        # A test writing another program's main.go: only the file's own route counts.
+        self._write_file(tmp_path, "internal/watch/watch_test.go", """
+            const mainGo = `package main
+            func main() {
+                r := gin.Default()
+                r.GET("/users/{id}", getUser)
+                r.POST("/orders", createOrder)
+            }
+            `
+
+            func TestWatch(t *testing.T) {
+                r.GET("/health", healthHandler)
+            }
+        """)
+        providers = [c for c in HttpExtractor().extract(tmp_path, "svc") if c.role == "provider"]
+        assert [(c.contract_id, c.line) for c in providers] == [("http::GET::/health", 11)]
 
     def test_fetch_consumer(self, tmp_path: Path) -> None:
         self._write_file(tmp_path, "src/api.ts", """
