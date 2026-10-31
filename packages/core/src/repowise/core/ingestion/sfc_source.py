@@ -904,4 +904,8 @@ def prepare_source(language: str, source: bytes, *, path: str | None = None) -> 
         from .lang_helpers.source_prep import prepare_cpp_source
 
         return prepare_cpp_source(source)
+    if language == "c" and source:
+        from .lang_helpers.preproc_arms import blank_unbalanced_preproc_arms
+
+        return blank_unbalanced_preproc_arms(source)
     return source
