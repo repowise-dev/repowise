@@ -8,6 +8,7 @@ import { CochangeTable } from "./cochange-table";
 import { ReviewersTable } from "./reviewers-table";
 import { TestGapsList } from "./test-gaps-list";
 import { CollapsibleSection } from "../shared/collapsible-section";
+import { AffectedByModule, ChangedFilesList } from "./affected-files";
 import { EmptyState } from "../shared/empty-state";
 
 interface BlastRadiusResultsProps {
@@ -22,6 +23,8 @@ interface BlastRadiusResultsProps {
    * shows the verdict and the map above them.
    */
   detailsOnly?: boolean;
+  /** Where a file links, for the details lists. */
+  fileHref?: ((path: string) => string) | undefined;
 }
 
 /**
@@ -34,6 +37,7 @@ export function BlastRadiusResults({
   changedFiles = [],
   reviewersSlot,
   detailsOnly = false,
+  fileHref,
 }: BlastRadiusResultsProps) {
   const testImpact = result.test_impact;
   const recommendations = testImpact?.recommendations ?? [];
@@ -82,7 +86,18 @@ export function BlastRadiusResults({
         </div>
       )}
 
-      {!noDownstream && (
+      {detailsOnly && (
+        <CollapsibleSection title="Changed files" hint={changedFiles.length || undefined}>
+          <ChangedFilesList result={result} changedFiles={changedFiles} fileHref={fileHref} />
+        </CollapsibleSection>
+      )}
+      {detailsOnly && result.transitive_affected.length > 0 && (
+        <CollapsibleSection title="Affected files by module" hint={result.transitive_affected.length}>
+          <AffectedByModule result={result} fileHref={fileHref} />
+        </CollapsibleSection>
+      )}
+
+      {!detailsOnly && !noDownstream && (
       <CollapsibleSection
           title="Direct risks"
           hint={result.direct_risks.length || undefined}
@@ -100,7 +115,7 @@ export function BlastRadiusResults({
         </CollapsibleSection>
       )}
 
-      {!noDownstream && (
+      {!detailsOnly && !noDownstream && (
       <CollapsibleSection
           title="Transitive affected files"
           hint={result.transitive_affected.length || undefined}
