@@ -319,6 +319,10 @@ export function packLayout(
   relations: readonly LayoutRelation[] = [],
   asideIds?: ReadonlySet<string>,
 ): Map<string, Rect> {
+  // A parent of mostly files gets grouped tiles instead (see `layout-files.ts`):
+  // sections sorted by health, so sibling links and set-asides do not apply.
+  const tiles = fileLevelLayout(children, parentAspect);
+  if (tiles) return tiles;
   const aside = asideIds ? children.filter((c) => asideIds.has(c.id)) : [];
   if (aside.length === 0 || aside.length === children.length) {
     return packRanked(children, parentAspect, opts, relations);
@@ -412,9 +416,6 @@ function packRanked(
   opts: PackLayoutOptions,
   relations: readonly LayoutRelation[],
 ): Map<string, Rect> {
-  // A parent of mostly files gets grouped tiles instead (see `layout-files.ts`).
-  const tiles = fileLevelLayout(children, parentAspect);
-  if (tiles) return tiles;
   const gutter = opts.gutter ?? PACK_GUTTER;
   const out = new Map<string, Rect>();
   const n = children.length;

@@ -137,6 +137,12 @@ describe("fileLevelLayout", () => {
     const kids = services();
     expect(packLayout(kids, 1.5)).toEqual(fileLevelLayout(kids, 1.5));
   });
+
+  it("ignores sibling links and set-asides there: sections are sorted by health", () => {
+    const kids = services();
+    const links = [{ source_id: "f0", target_id: "hot0", edge_count: 50 }];
+    expect(packLayout(kids, 1.5, {}, links, new Set(["c4"]))).toEqual(fileLevelLayout(kids, 1.5));
+  });
 });
 
 describe("file tiles on the canvas", () => {
