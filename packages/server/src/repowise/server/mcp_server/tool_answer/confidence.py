@@ -100,6 +100,14 @@ _BARE_GAP_RE = re.compile(
 )
 
 
+# "truncated in the (retrieved) excerpts", ending the clause or followed by a
+# preposition. "truncated in the excerpt builder" describes code instead.
+_TRUNCATED_GAP_RE = re.compile(
+    r"\btruncated in the (?:(?:retrieved|provided) )?(?:excerpts?|evidence|material|snippets?)"
+    r"(?=\s*(?:$|[^\w\s]|(?:of|for|from|in|at|before|after|so|and|but|which|here)\b))"
+)
+
+
 def _sentences(answer_text: str) -> list[str]:
     return [s for s in (p.strip() for p in _SENTENCE_BREAK_RE.split(answer_text or "")) if s]
 
@@ -109,6 +117,7 @@ def _is_admission(sentence: str) -> bool:
     low = _normalized(sentence)
     return (
         _BARE_GAP_RE.search(low) is not None
+        or _TRUNCATED_GAP_RE.search(low) is not None
         or any(marker in low for marker in _HEDGE_MARKERS)
         or any(marker in low for marker in _GAP_MARKERS)
     )

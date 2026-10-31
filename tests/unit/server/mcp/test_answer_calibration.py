@@ -1458,8 +1458,14 @@ def test_an_excerpt_that_stops_short_is_an_admitted_gap() -> None:
         "The exact body of `_weakness` is truncated in the excerpt.",
     ):
         assert _admitted_gap(text) == text
+    assert _admitted_gap("The checks are truncated in the excerpts for command.go.") is not None
     # Code that truncates is behaviour, not a gap in the evidence.
-    assert _admitted_gap("Long summaries are truncated in the payload builder.") is None
+    for text in (
+        "Long summaries are truncated in the payload builder.",
+        "Long lines are truncated in the excerpt builder.",
+        "Values are truncated in the provided_options map.",
+    ):
+        assert _admitted_gap(text) is None
 
 
 async def test_the_payload_quotes_the_admitted_gap() -> None:

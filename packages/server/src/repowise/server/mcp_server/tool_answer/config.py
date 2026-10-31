@@ -212,7 +212,7 @@ _HEDGE_MARKERS = (
 # grounded claim it is a caveat, held at "medium": "high" tells the agent not to
 # re-read, which the answer itself disputes. The bare "is not included/shown"
 # form is matched in confidence.py, where a following "in the checksum" marks
-# it as a statement about the code instead.
+# it as a statement about the code instead; so is "truncated in the excerpts".
 _GAP_MARKERS = (
     "not in the retrieved",
     "not in the excerpts",
@@ -227,10 +227,6 @@ _GAP_MARKERS = (
     "not fully included",
     "not fully visible",
     "not fully shown",
-    # Scoped to the material: bare "truncated" describes code that truncates.
-    "truncated in the retrieved",
-    "truncated in the provided",
-    "truncated in the excerpt",
     "cannot be definitively",
 )
 
