@@ -637,13 +637,33 @@ def test_a_name_only_a_comment_writes_is_absent(tmp_path) -> None:
 # --- caveats about what was not asked ----------------------------------------
 
 
+_LINE_ONLY = (
+    "The excerpt does not include line numbers.",
+    "Its body isn't line-numbered in the excerpts, so I can't cite exact lines.",
+    "`preExecHookFn` is a variable (the excerpt does not include line numbers):",
+    "The excerpts don't include line numbers, so none are cited.",
+)
+_STILL_ADMITS = (
+    "The excerpts do not include line numbers nor the validator.",
+    "The excerpts do not include line numbers, nor the validator.",
+    "The excerpts do not include the line numbers, plus the function that enforces it.",
+    "The excerpts do not include the line numbers of the retry check.",
+    "The excerpts do not show the line numbers or the code that reads it.",
+    "The excerpts do not include the check, so I can't cite its line numbers.",
+    "(The excerpts don't include the validator's name or implementation.)",
+)
+_CODE_BEHAVIOUR = (
+    "`Client.send` retries 3 times and doesn't include backoff.",
+    "It doesn't contain a lock.",
+)
+
+
 def test_a_missing_line_number_is_not_an_admission() -> None:
     from repowise.server.mcp_server.tool_answer.confidence import _is_admission
 
-    assert not _is_admission("The excerpt does not include line numbers.")
-    assert not _is_admission("Its body isn't line-numbered in the excerpts, so I can't cite exact lines.")
-    assert _is_admission("The excerpts do not show the line numbers or the code that reads it.")
-    assert _is_admission("The excerpts do not include the check, so I can't cite its line numbers.")
+    assert not any(_is_admission(s) for s in _LINE_ONLY)
+    assert all(_is_admission(s) for s in _STILL_ADMITS)
+    assert not any(_is_admission(s) for s in _CODE_BEHAVIOUR)
 
 
 def test_a_line_number_aside_before_the_claim_is_no_hedge() -> None:
@@ -697,7 +717,14 @@ def test_a_contracted_admission_before_any_claim_is_a_hedge() -> None:
         "It runs after `Execute` calls `ExecuteC`."
     )
     assert _answer_is_hedged(answer, "Where is the mutually exclusive flags check enforced?")
-    assert not _answer_is_hedged(
-        "`ValidateFlagGroups` runs before `RunE`. It doesn't include positional args.",
-        "Where is the mutually exclusive flags check enforced?",
-    )
+    # A contraction about the code is a claim, not an admission.
+    grade = _grade(_TS_QUESTION, f"{_TS_CLAIM} It doesn't include the CJS path.", _TS_HITS)
+    assert not grade.hedged
+    assert grade.admitted_gap is None
+
+
+def test_a_value_line_does_not_clear_a_gap_in_a_second_question() -> None:
+    question = f"{_FLOOR_QUESTION[:-1]} and where is it read?"
+    answer = f"{_FLOOR_ANSWER} The excerpts do not show where it is read."
+    grade = _grade(question, answer, _dominant_floor_hits())
+    assert grade.confidence != "high"

@@ -87,11 +87,19 @@ _MARKDOWN_MARKUP_RE = re.compile(r"[*`]+|(?<!\w)_+|_+(?!\w)")
 def _normalized(answer_text: str) -> str:
     """Lower-cased, without markdown markup, with curly apostrophes folded and
     spaces collapsed, so every phrase marker matches however the prose is styled.
-    "don't" and "doesn't" read as "do not" and "does not"."""
+    "The excerpts don't" reads as "the excerpts do not"; a contraction about the
+    code ("the loop doesn't include a backoff") is left alone."""
     text = _MARKDOWN_MARKUP_RE.sub("", (answer_text or "").lower())
     text = text.replace("\u2019", "'").replace("\u02bc", "'")
-    text = re.sub(r"\b(do|does)n't\b", r"\1 not", text)
+    text = _EXCERPT_CONTRACTION_RE.sub(r"\1 \2 not", text)
     return re.sub(r"\s+", " ", text)
+
+
+# "The (retrieved) excerpts don't ...": the contraction says what the evidence lacks.
+_EXCERPT_CONTRACTION_RE = re.compile(
+    r"\b((?:excerpts?|evidence|material|snippets?)(?: (?:shown|provided|retrieved|here|above))?)"
+    r" (do|does)n't\b"
+)
 
 
 _SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?])\s+|\n+")
@@ -122,20 +130,38 @@ _LINE_NUMBER_RE = re.compile(
     r"\bline[- ]?numbers?\b|\bline[- ]numbered\b|\bline ranges?\b|\bcite (?:the )?(?:exact|specific) lines?\b"
 )
 _CLAUSE_BREAK_RE = re.compile(r"[,;:()]|\bso\b")
-# A clause naming code or behaviour besides the line numbers still admits a gap.
-_MORE_THAN_LINES_RE = re.compile(r"\b(?:or|and|body|bodies|code|logic|value|definition)\b")
+# The words a "no line numbers" clause is made of; any other word names something missing.
+_LINE_CLAUSE_FILLER = frozenset(
+    "a an the it its their these those this them they i here there given any no not do does "
+    "did is are was were isn't aren't can't cannot cite exact specific lines line include "
+    "includes included show shows shown give gives carry carries have has provide provides "
+    "provided list lists listed for in of with excerpt excerpts retrieved summary wiki "
+    "declaration declarations body available unknown".split()
+)
+# A clause going on with what else is missing (", nor the validator").
+_LIST_GOES_ON_RE = re.compile(r"\s*(?:nor|or|and|plus|as well as|along with|let alone)\b")
+
+
+def _line_number_only(clause: str) -> bool:
+    """Does *clause* say nothing but that the excerpts carry no line numbers?"""
+    if not _LINE_NUMBER_RE.search(clause):
+        return False
+    words = re.findall(r"[a-z][a-z']*", _LINE_NUMBER_RE.sub(" ", clause))
+    return all(w in _LINE_CLAUSE_FILLER for w in words)
 
 
 def _is_admission(sentence: str) -> bool:
     """Does *sentence* say something asked is not in the evidence?
 
     A clause that only says the excerpts carry no line numbers is not one:
-    the code is served, only its location metadata is missing.
+    the code is served, only its location is missing.
     """
+    clauses = _CLAUSE_BREAK_RE.split(_normalized(sentence))
     low = " ".join(
         c
-        for c in _CLAUSE_BREAK_RE.split(_normalized(sentence))
-        if not (_LINE_NUMBER_RE.search(c) and not _MORE_THAN_LINES_RE.search(_LINE_NUMBER_RE.sub(" ", c)))
+        for i, c in enumerate(clauses)
+        if not _line_number_only(c)
+        or (i + 1 < len(clauses) and _LIST_GOES_ON_RE.match(clauses[i + 1]))
     )
     return (
         _BARE_GAP_RE.search(low) is not None
