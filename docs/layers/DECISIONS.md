@@ -229,6 +229,18 @@ and by whom it was accepted. On `import` the file wins, and candidates and
 episodes stay out of it. Format, merge and ordering rules:
 [architecture/decisions.md](../architecture/decisions.md#tracked-manifest).
 
+### Publishing to repowise.dev
+
+The hosted index mines the repository, so it cannot see what was recorded on
+this machine: an agent's own records and decisions mined from agent sessions.
+`repowise decision push` sends those records to the repo's index on
+repowise.dev, accepted ones by default, open candidates too with
+`--include-candidates`. Each record carries its fields, its evidence references
+and the one verbatim quote it rests on; transcripts stay local. It lands as a
+proposal for the team to confirm there. Nothing pushes on its own, and
+`--dry-run` prints every payload without sending. Flags and results:
+[CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-decision).
+
 ### Capture policy
 
 Every source can be switched, and so can the model: `decision config preset`
@@ -318,6 +330,7 @@ unknown id.
 | `decision dedupe` | Fold duplicate candidates in one sweep. Dry run until `--apply` |
 | `decision split ID` | Flag a candidate as bundling two choices. Never splits it for you |
 | `decision export` / `import` | Round-trip `.repowise/decisions.yaml` |
+| `decision push` | Publish agent and session records to this repo on repowise.dev, as proposals. `--dry-run` shows each payload |
 | `decision migrate` | Classify records from older stores. Dry run unless `--apply` |
 | `decision health` | Counts, stale records, ungoverned hotspots |
 | `decision status` | What capture did, per source |
