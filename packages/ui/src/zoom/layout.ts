@@ -280,7 +280,12 @@ function uncross(rows: Packed[][], { out, into }: SiblingLinks, maxRowW: number,
       add(into.get(c.id));
       key.set(c.id, sw > 0 ? sx / sw : pos.get(c.id)!);
     }
-    row.sort((a, b) => key.get(a.id)! - key.get(b.id)!);
+    // Equal keys within float noise keep their order: a parent re-laid out at
+    // a shape a few ulps off must not swap two tied cards.
+    row.sort((a, b) => {
+      const d = key.get(a.id)! - key.get(b.id)!;
+      return Math.abs(d) > EPS ? d : 0;
+    });
     place(row);
   };
   for (let i = 1; i < rows.length; i++) sweep(i, true);
