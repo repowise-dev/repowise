@@ -47,7 +47,7 @@ class TestOfferDistillRewriteHook:
         assert settings_path.exists()
         data = json.loads(settings_path.read_text(encoding="utf-8"))
         commands = [h["command"] for e in data["hooks"]["PreToolUse"] for h in e["hooks"]]
-        assert commands == ["repowise-rewrite"]
+        assert commands == [claude_config._rewrite_hook_command()]
         assert _distill_config(repo)["commands"]["enabled"] is True
 
     def test_explicit_optout_gates_repo_off(self, settings_path, repo) -> None:
@@ -94,7 +94,7 @@ class TestWorkspaceOptIn:
         data = json.loads(settings_path.read_text(encoding="utf-8"))
         commands = [h["command"] for e in data["hooks"]["PreToolUse"] for h in e["hooks"]]
         # User-level hook installed exactly once, not per repo.
-        assert commands == ["repowise-rewrite"]
+        assert commands == [claude_config._rewrite_hook_command()]
         for rp in workspace_repos:
             assert _distill_config(rp)["commands"]["enabled"] is True
 

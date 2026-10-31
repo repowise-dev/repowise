@@ -10,6 +10,9 @@ from pathlib import Path
 from repowise.cli.agent_adapters.claude_code import SHELL_TOOL_MATCHER
 from repowise.cli.mcp_config import (
     generate_mcp_config,
+    hook_pinned_paths,
+    hook_script_resolves,
+    hook_shell_command,
     load_existing_config,
     merge_mcp_entry,
     resolve_repowise_command,
@@ -239,6 +242,98 @@ _CAPTURE_HOOK_COMMAND = (
     'printf "%s" "$input" | repowise-augment; fi;; esac'
 )
 
+_AUGMENT = "repowise-augment"
+_REWRITE = "repowise-rewrite"
+
+
+def _augment_hook_command() -> str:
+    """:data:`_AUGMENT_HOOK_COMMAND`, pinned to the running install when it can be."""
+    return hook_shell_command(_AUGMENT)
+
+
+def _capture_hook_command() -> str:
+    """:data:`_CAPTURE_HOOK_COMMAND`, pinned to the running install when it can be."""
+    run = hook_shell_command(_AUGMENT, 'printf "%s" "$input" | {}')
+    return f'input=$(cat); case "$input" in *"git commit"*) {run};; esac'
+
+
+def _rewrite_hook_command() -> str:
+    return hook_shell_command(_REWRITE)
+
+
+#: Unguarded commands older releases wrote. Each moves to the current form.
+_BARE_COMMANDS = ("repowise augment", _AUGMENT, _REWRITE)
+
+
+def _current_command(cmd: str) -> str | None:
+    """The command this release writes in place of *cmd*, or None if *cmd* is not ours.
+
+    Only the plain augment, capture and rewrite commands qualify: the coverage
+    and health-gate commands carry a flag and are written elsewhere.
+    """
+    if cmd in ("repowise augment", _AUGMENT) or cmd.endswith(f"exec {_AUGMENT}; fi"):
+        return None if "--" in cmd else _augment_hook_command()
+    if cmd == _REWRITE or cmd.endswith(f"exec {_REWRITE}; fi"):
+        return _rewrite_hook_command()
+    if cmd.endswith(f"| {_AUGMENT}; fi;; esac"):
+        return _capture_hook_command()
+    return None
+
+
+def _needs_repin(cmd: str, want: str, *, repin: bool) -> bool:
+    """Whether to replace *cmd* with *want*.
+
+    ``repin`` (init, ``agents refresh``) points the hook at the running
+    install, as the MCP registration is. The self-heal passes False and only
+    moves a command that is unpinned or whose pinned script is gone, so two
+    installs on one machine do not take turns rewriting the file.
+    """
+    if want == cmd:
+        return False
+    if cmd in _BARE_COMMANDS:
+        return True
+    if not hook_pinned_paths(want):
+        return False  # nothing better to offer than what is there
+    paths = hook_pinned_paths(cmd)
+    return repin or not paths or not any(Path(p).is_file() for p in paths)
+
+
+def _refresh_hook_commands(hooks: dict, *, repin: bool) -> bool:
+    """Bring every repowise augment, capture and rewrite command up to date."""
+    changed = False
+    for entries in hooks.values():
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            for hook in _hooks_of(entry):
+                cmd = _hook_command(hook)
+                want = _current_command(cmd)
+                if want is not None and _needs_repin(cmd, want, repin=repin):
+                    hook["command"] = want
+                    changed = True
+    return changed
+
+
+def claude_code_unresolved_hooks() -> list[str]:
+    """Scripts a repowise hook in settings.json runs that would not be found.
+
+    Such a hook is silent by design (its guard exits 0), so this is where it
+    gets reported: ``repowise doctor`` and the end of ``init``.
+    """
+    try:
+        hooks = load_existing_config(_claude_code_settings_path()).get("hooks")
+    except Exception:
+        return []
+    missing: set[str] = set()
+    for entries in hooks.values() if isinstance(hooks, dict) else ():
+        for entry in entries if isinstance(entries, list) else ():
+            for hook in _hooks_of(entry):
+                cmd = _hook_command(hook)
+                script = _REWRITE if _REWRITE in cmd else _AUGMENT if _AUGMENT in cmd else None
+                if script and not hook_script_resolves(cmd, script):
+                    missing.add(script)
+    return sorted(missing)
+
 
 def _capture_entry() -> dict:
     return {
@@ -246,7 +341,7 @@ def _capture_entry() -> dict:
         "hooks": [
             {
                 "type": "command",
-                "command": _CAPTURE_HOOK_COMMAND,
+                "command": _capture_hook_command(),
                 "timeout": 10,
                 "statusMessage": "Checking for a decision to record...",
             }
@@ -343,6 +438,16 @@ def set_claude_code_capture_hook(enabled: bool) -> Path | None:
     return settings_path if _write_settings(settings_path, existing) else None
 
 
+def _without_commands(entry: dict) -> object:
+    """*entry* with each command replaced by the form this release writes for it."""
+    copy = json.loads(json.dumps(entry))
+    for hook in _hooks_of(copy):
+        cmd = _hook_command(hook)
+        if cmd:
+            hook["command"] = _current_command(cmd) or cmd
+    return copy
+
+
 def _sync_capture_entry(entries: list, want: bool) -> bool:
     """Leave exactly the current capture entry in *entries* when *want*, else none.
 
@@ -350,7 +455,10 @@ def _sync_capture_entry(entries: list, want: bool) -> bool:
     replaced rather than kept. Returns whether *entries* changed.
     """
     ours = [e for e in entries if _is_capture_entry(e)]
-    if ours == ([_capture_entry()] if want else []):
+    # Commands compare by kind: _refresh_hook_commands owns which path they pin.
+    if [_without_commands(e) for e in ours] == (
+        [_without_commands(_capture_entry())] if want else []
+    ):
         return False
     entries[:] = [e for e in entries if not _is_capture_entry(e)]
     if want:
@@ -382,7 +490,7 @@ def _session_start_entry() -> dict:
         "hooks": [
             {
                 "type": "command",
-                "command": _AUGMENT_HOOK_COMMAND,
+                "command": _augment_hook_command(),
                 "timeout": 10,
                 "statusMessage": "Loading repowise context...",
             }
@@ -413,7 +521,7 @@ def _failure_entry() -> dict:
         "hooks": [
             {
                 "type": "command",
-                "command": _AUGMENT_HOOK_COMMAND,
+                "command": _augment_hook_command(),
                 "timeout": 10,
                 "statusMessage": "Checking codebase context...",
             }
@@ -605,7 +713,7 @@ def install_claude_code_hooks() -> Path | None:
         "hooks": [
             {
                 "type": "command",
-                "command": _AUGMENT_HOOK_COMMAND,
+                "command": _augment_hook_command(),
                 "timeout": 10,
                 "statusMessage": "Checking codebase context...",
             }
@@ -646,6 +754,7 @@ def install_claude_code_hooks() -> Path | None:
         # The capture prompt ships on, so its shell entry is part of the
         # install, unless the plugin already runs the same one.
         _sync_capture_entry(post_hooks, not _plugin_ships_capture_hook())
+        _refresh_hook_commands(hooks, repin=True)
 
         settings_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
         return settings_path
@@ -676,7 +785,7 @@ def install_claude_code_rewrite_hook() -> Path | None:
         "hooks": [
             {
                 "type": "command",
-                "command": _REWRITE_HOOK_COMMAND,
+                "command": _rewrite_hook_command(),
                 "timeout": 5,
                 "statusMessage": "Distilling command output...",
             }
@@ -696,6 +805,7 @@ def install_claude_code_rewrite_hook() -> Path | None:
         if not _has_rewrite_hook(pre_hooks):
             pre_hooks.append(pre_hook_entry)
             changed = True
+        changed = _refresh_hook_commands({"PreToolUse": pre_hooks}, repin=True) or changed
         if changed:
             settings_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
         return settings_path
@@ -1176,7 +1286,7 @@ def _migrate_legacy_hook(hook_list: list) -> bool:
             # migrate to the guarded command, so an install predating the guard
             # stops emitting "command not found" without needing a re-init.
             if cmd in ("repowise augment", "repowise-augment"):
-                hook["command"] = _AUGMENT_HOOK_COMMAND
+                hook["command"] = _augment_hook_command()
                 changed = True
         if not isinstance(entry, dict):
             continue
@@ -1232,6 +1342,9 @@ def migrate_claude_code_hooks() -> bool:
         # older release wrote, unless the plugin already runs it.
         if _sync_capture_entry(post, not _plugin_ships_capture_hook()):
             changed = True
+
+    if _refresh_hook_commands(hooks, repin=False):
+        changed = True
 
     if not changed:
         return False

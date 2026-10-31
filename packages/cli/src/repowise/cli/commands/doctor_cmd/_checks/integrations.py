@@ -425,6 +425,25 @@ def _rewrite_hook_row(distill_cfg: object) -> DoctorCheck:
         return _check(name, True, f"Could not check: {exc}", check_id=check_id, warn=True)
 
 
+def _hook_scripts_row() -> DoctorCheck:
+    """Warn when a Claude Code hook runs a script that is not there.
+
+    The hook's guard exits 0 when its script is missing, so nothing else
+    would ever say the hook did nothing.
+    """
+    name, check_id = "Agent hook scripts", "agent-hook-scripts"
+    try:
+        from repowise.cli.editor_integrations.claude_config import claude_code_unresolved_hooks
+
+        missing = claude_code_unresolved_hooks()
+    except Exception as exc:
+        return _check(name, True, f"Could not check: {exc}", check_id=check_id, warn=True)
+    if not missing:
+        return _check(name, True, "every Claude Code hook finds its script", check_id=check_id)
+    detail = f"{', '.join(missing)} not found, so those hooks do nothing"
+    return _check(name, True, detail, check_id=check_id, warn=True, fix="repowise agents refresh")
+
+
 def _distill_checks(repo_path: _DoctorPath) -> list[DoctorCheck]:
     """Distill feature health: config validity, store sizing, rewrite hook.
 
@@ -437,4 +456,5 @@ def _distill_checks(repo_path: _DoctorPath) -> list[DoctorCheck]:
         config_row,
         _omission_store_row(repo_path, distill_cfg),
         _rewrite_hook_row(distill_cfg),
+        _hook_scripts_row(),
     ]

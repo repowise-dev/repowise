@@ -12,6 +12,7 @@ from click.testing import CliRunner
 from repowise.cli.commands.doctor_cmd import _distill_checks
 from repowise.cli.commands.hook_cmd import rewrite_install, rewrite_uninstall
 from repowise.cli.editor_integrations import claude_config
+from repowise.cli.mcp_config import hook_direct_command
 from repowise.core.distill.config import (
     omission_store_settings,
     validate_distill_config,
@@ -396,7 +397,7 @@ def test_install_with_supported_codex_writes_hook_and_agents_md(
     assert "ask-with-rewrite" in result.output  # the honesty note
     data = json.loads(codex_env.read_text(encoding="utf-8"))
     commands = [h["command"] for e in data["hooks"]["PreToolUse"] for h in e["hooks"]]
-    assert commands == ["repowise-rewrite --agent codex"]
+    assert commands == [hook_direct_command("repowise-rewrite", "--agent codex")]
     assert "REPOWISE_DISTILL" in (repo / "AGENTS.md").read_text(encoding="utf-8")
 
 

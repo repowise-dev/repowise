@@ -2304,4 +2304,4 @@ repowise augment --client codex          # payload on stdin
 
 ### `repowise-augment` / `repowise-rewrite`
 
-Console scripts installed with the CLI, not subcommands, not run by hand: `repowise-augment` is the import-isolated augment hook entry; `repowise-rewrite` backs `repowise hook rewrite install`.
+Console scripts installed with the CLI, not subcommands, not run by hand: `repowise-augment` is the import-isolated augment hook entry; `repowise-rewrite` backs `repowise hook rewrite install`. Per-user hook config names them by the installing environment's absolute path, with PATH as the fallback.

@@ -521,8 +521,8 @@ def _repowise_entries(saved: dict, event: str) -> list:
 #: What a fresh install puts under PostToolUse: the augment entry, and the
 #: capture prompt's shell entry, which ships on.
 _INSTALLED_POST = [
-    (claude_config._AUGMENT_MATCHER, claude_config._AUGMENT_HOOK_COMMAND),
-    (claude_config._CAPTURE_MATCHER, claude_config._CAPTURE_HOOK_COMMAND),
+    (claude_config._AUGMENT_MATCHER, claude_config._augment_hook_command()),
+    (claude_config._CAPTURE_MATCHER, claude_config._capture_hook_command()),
 ]
 
 
@@ -549,10 +549,10 @@ def test_install_claude_code_hooks_creates_missing_file(
     assert "PreToolUse" not in saved["hooks"]
     assert _post_repowise_entries(saved) == _INSTALLED_POST
     assert _session_start_repowise_entries(saved) == [
-        ("startup|resume|clear", claude_config._AUGMENT_HOOK_COMMAND)
+        ("startup|resume|clear", claude_config._augment_hook_command())
     ]
     assert _repowise_entries(saved, "PostToolUseFailure") == [
-        (claude_config._FAILURE_MATCHER, claude_config._AUGMENT_HOOK_COMMAND)
+        (claude_config._FAILURE_MATCHER, claude_config._augment_hook_command())
     ]
 
 
@@ -791,7 +791,7 @@ def test_migrate_claude_code_hooks_never_widens_user_matcher(
                             "hooks": [
                                 {
                                     "type": "command",
-                                    "command": claude_config._AUGMENT_HOOK_COMMAND,
+                                    "command": claude_config._augment_hook_command(),
                                 },
                                 {"type": "command", "command": "my-linter"},
                             ],
@@ -807,7 +807,7 @@ def test_migrate_claude_code_hooks_never_widens_user_matcher(
                             "hooks": [
                                 {
                                     "type": "command",
-                                    "command": claude_config._AUGMENT_HOOK_COMMAND,
+                                    "command": claude_config._augment_hook_command(),
                                 }
                             ],
                         }
@@ -873,14 +873,14 @@ def test_migrate_claude_code_hooks_noop_when_already_current(
             "PostToolUse": [
                 {
                     "matcher": claude_config._AUGMENT_MATCHER,
-                    "hooks": [{"type": "command", "command": claude_config._AUGMENT_HOOK_COMMAND}],
+                    "hooks": [{"type": "command", "command": claude_config._augment_hook_command()}],
                 },
                 claude_config._capture_entry(),
             ],
             "SessionStart": [
                 {
                     "matcher": "startup|resume|clear",
-                    "hooks": [{"type": "command", "command": claude_config._AUGMENT_HOOK_COMMAND}],
+                    "hooks": [{"type": "command", "command": claude_config._augment_hook_command()}],
                 }
             ],
             "PostToolUseFailure": [claude_config._failure_entry()],
@@ -923,7 +923,7 @@ def test_migrate_claude_code_hooks_backfills_session_start(
     assert claude_config.migrate_claude_code_hooks() is True
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     assert _session_start_repowise_entries(saved) == [
-        ("startup|resume|clear", claude_config._AUGMENT_HOOK_COMMAND)
+        ("startup|resume|clear", claude_config._augment_hook_command())
     ]
     # Idempotent on the second pass.
     assert claude_config.migrate_claude_code_hooks() is False
@@ -956,7 +956,7 @@ def test_migrate_narrows_the_shell_tools_out_of_an_existing_install(
                             "hooks": [
                                 {
                                     "type": "command",
-                                    "command": claude_config._AUGMENT_HOOK_COMMAND,
+                                    "command": claude_config._augment_hook_command(),
                                 }
                             ],
                         },
@@ -1009,7 +1009,7 @@ def test_migrate_backfills_the_failure_hook_for_older_installs(
                             "hooks": [
                                 {
                                     "type": "command",
-                                    "command": claude_config._AUGMENT_HOOK_COMMAND,
+                                    "command": claude_config._augment_hook_command(),
                                 }
                             ],
                         }
@@ -1024,7 +1024,7 @@ def test_migrate_backfills_the_failure_hook_for_older_installs(
     assert claude_config.migrate_claude_code_hooks() is True
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     assert _repowise_entries(saved, "PostToolUseFailure") == [
-        (claude_config._FAILURE_MATCHER, claude_config._AUGMENT_HOOK_COMMAND)
+        (claude_config._FAILURE_MATCHER, claude_config._augment_hook_command())
     ]
     assert claude_config.migrate_claude_code_hooks() is False
 
@@ -1046,7 +1046,7 @@ def test_migrate_preserves_a_user_failure_hook(
                             "hooks": [
                                 {
                                     "type": "command",
-                                    "command": claude_config._AUGMENT_HOOK_COMMAND,
+                                    "command": claude_config._augment_hook_command(),
                                 }
                             ],
                         }
@@ -1066,7 +1066,7 @@ def test_migrate_preserves_a_user_failure_hook(
     failure = saved["hooks"]["PostToolUseFailure"]
     assert failure[0]["hooks"][0]["command"] == "echo mine"
     assert _repowise_entries(saved, "PostToolUseFailure") == [
-        (claude_config._FAILURE_MATCHER, claude_config._AUGMENT_HOOK_COMMAND)
+        (claude_config._FAILURE_MATCHER, claude_config._augment_hook_command())
     ]
 
 
@@ -1128,7 +1128,7 @@ def test_migrate_claude_code_hooks_preserves_user_session_start(
     session = saved["hooks"]["SessionStart"]
     assert session[0]["hooks"][0]["command"] == "echo mine"
     assert _session_start_repowise_entries(saved) == [
-        ("startup|resume|clear", claude_config._AUGMENT_HOOK_COMMAND)
+        ("startup|resume|clear", claude_config._augment_hook_command())
     ]
 
 
@@ -1152,8 +1152,8 @@ def test_migrate_claude_code_hooks_silent_on_malformed_json(
 
 def test_plugin_hooks_json_mirrors_settings_entries(repo_root: Path) -> None:
     """The bundled plugin's hooks.json must match what init writes to
-    settings.json; the emission dedup in augment assumes both surfaces
-    fire the same command on the same events."""
+    settings.json, in the unpinned form (a plugin ships without the CLI); the
+    emission dedup in augment assumes both surfaces fire on the same events."""
     plugin = json.loads(
         (repo_root / "plugins" / "claude-code" / "hooks" / "hooks.json").read_text(encoding="utf-8")
     )

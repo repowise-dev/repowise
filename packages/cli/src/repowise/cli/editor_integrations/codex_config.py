@@ -43,17 +43,20 @@ CODEX_REWRITE_MIN_VERSION: tuple[int, int] = (0, 137)
 
 _REWRITE_HOOK_COMMAND = "repowise-rewrite"
 
-_REWRITE_HOOK_ENTRY = {
-    "matcher": SHELL_TOOL_MATCHER,
-    "hooks": [
-        {
-            "type": "command",
-            "command": f"{_REWRITE_HOOK_COMMAND} --agent codex",
-            "timeout": 5,
-            "statusMessage": "Distilling command output...",
-        }
-    ],
-}
+def _rewrite_hook_entry() -> dict:
+    from repowise.cli.mcp_config import hook_direct_command
+
+    return {
+        "matcher": SHELL_TOOL_MATCHER,
+        "hooks": [
+            {
+                "type": "command",
+                "command": hook_direct_command(_REWRITE_HOOK_COMMAND, "--agent codex"),
+                "timeout": 5,
+                "statusMessage": "Distilling command output...",
+            }
+        ],
+    }
 
 
 #: Matchers this entry has shipped with, current one excluded. An install
@@ -178,7 +181,7 @@ def install_codex_rewrite_hook() -> Path | None:
         hooks = existing.setdefault("hooks", {})
         pre_hooks = hooks.setdefault("PreToolUse", [])
         if not _has_rewrite_hook(pre_hooks):
-            pre_hooks.append(json.loads(json.dumps(_REWRITE_HOOK_ENTRY)))
+            pre_hooks.append(_rewrite_hook_entry())
             hooks_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
         elif _migrate_rewrite_matcher(pre_hooks):
             # Present but pointed at a name Codex no longer uses. Reinstalling

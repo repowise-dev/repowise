@@ -76,6 +76,58 @@ def resolve_repowise_command(script: str = "repowise") -> str:
     return script
 
 
+def hook_shell_command(script: str, run: str = "exec {}") -> str:
+    """POSIX shell hook command that runs *script* from the install writing it.
+
+    A hook that looked *script* up on PATH ran nothing when the script lived
+    only beside a venv's interpreter, and its guard made that silent. This
+    pins the absolute path from :func:`resolve_repowise_command`, keeps the
+    PATH lookup as a fallback, and stays silent only when neither resolves
+    (``repowise doctor`` reports that case). *run* is the invocation with
+    ``{}`` where the script goes. For per-user config only, for the same
+    reason as :func:`resolve_repowise_command`.
+    """
+    fallback = f"command -v {script} >/dev/null 2>&1; then {run.format(script)}"
+    pinned = resolve_repowise_command(script)
+    if pinned == script:
+        return f"if {fallback}; fi"
+    # Always quoted, so the path is found again by hook_script_resolves.
+    quoted = "'" + pinned.replace("'", "'\"'\"'") + "'"
+    return f"if [ -x {quoted} ]; then {run.format(quoted)}; elif {fallback}; fi"
+
+
+def hook_direct_command(script: str, args: str) -> str:
+    """The pinned script plus *args*, for hosts that run a hook command directly.
+
+    Left unquoted so the same string runs under sh, cmd and PowerShell (a
+    quoted first word is a string expression in PowerShell), which means a
+    path with a space falls back to the bare name on PATH.
+    """
+    pinned = resolve_repowise_command(script)
+    return f"{script if ' ' in pinned else pinned} {args}"
+
+
+def hook_script_resolves(command: str, script: str) -> bool:
+    """Whether a hook *command* written for *script* would find it to run.
+
+    True when its pinned path exists or *script* is on this process's PATH,
+    which is the closest this side can get to the agent's own environment.
+    """
+    import shutil
+
+    if any(Path(p).is_file() for p in hook_pinned_paths(command)):
+        return True
+    return shutil.which(script) is not None
+
+
+def hook_pinned_paths(command: str) -> list[str]:
+    """The quoted absolute script paths a hook *command* pins (empty when unpinned)."""
+    import re
+
+    found = re.findall(r"""['"]([^'"]*repowise-[a-z]+(?:\.exe)?)['"]""", command)
+    return list(dict.fromkeys(found))
+
+
 def generate_mcp_config(repo_path: Path, *, command: str | None = None) -> dict:
     """Generate MCP config JSON for a repository.
 

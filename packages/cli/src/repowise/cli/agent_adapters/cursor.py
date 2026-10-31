@@ -35,12 +35,15 @@ SHELL_TOOL_MATCHER: str = "|".join(sorted(SHELL_TOOL_NAMES))
 _REWRITE_HOOK_COMMAND = "repowise-rewrite"
 _EVENT = "preToolUse"
 
-#: Bare command on PATH, as Claude Code's and Codex's entries are.
-_REWRITE_HOOK_ENTRY = {
-    "command": f"{_REWRITE_HOOK_COMMAND} --agent cursor",
-    "matcher": SHELL_TOOL_MATCHER,
-    "timeout": 5,
-}
+def _rewrite_hook_entry() -> dict:
+    """The entry, pinned to the running install's script like Claude Code's and Codex's."""
+    from repowise.cli.mcp_config import hook_direct_command
+
+    return {
+        "command": hook_direct_command(_REWRITE_HOOK_COMMAND, "--agent cursor"),
+        "matcher": SHELL_TOOL_MATCHER,
+        "timeout": 5,
+    }
 
 
 class CursorAdapter(AgentAdapter):
@@ -175,7 +178,7 @@ def install_cursor_rewrite_hook() -> Path | None:
         entries = hooks.setdefault(_EVENT, [])
         if not any(_is_rewrite_hook(entry) for entry in entries):
             doc.setdefault("version", 1)
-            entries.append(dict(_REWRITE_HOOK_ENTRY))
+            entries.append(_rewrite_hook_entry())
             _write(path, doc)
         return path
     except Exception:

@@ -66,6 +66,14 @@ Existing user hooks are preserved, and older repowise entries are updated in
 place on the next `init` or `update`. They all run the `repowise-augment` entry
 point, which does not load the full CLI.
 
+Each hook names the entry point by the absolute path of the install that wrote
+it, with a PATH lookup as the fallback, so a CLI installed in a virtual
+environment that is not on PATH still runs its hooks. When another install runs
+and the pinned one is gone, the hook is repointed. `repowise doctor` warns
+("Agent hook scripts") when a hook's entry point cannot be found, and
+`repowise agents refresh` repoints every hook at the install you run it from.
+The Codex and Cursor rewrite hooks pin the same way.
+
 `repowise init --no-editor-setup` skips this group, along with the MCP server
 registration in the same file. Use it for a scratch clone, a worktree or a
 benchmark loop where you do not want machine-wide config to change.

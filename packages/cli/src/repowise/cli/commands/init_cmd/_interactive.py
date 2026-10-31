@@ -313,3 +313,22 @@ def _offer_hook_install_prompts(
             console_obj.print(
                 "  [dim]Skipped. Run 'repowise hook install --workspace' later.[/dim]"
             )
+
+
+def warn_unresolved_hooks(console_obj: Any, *, no_editor_setup: bool = False) -> None:
+    """Say so when an installed Claude Code hook would not find its script.
+
+    Those hooks exit quietly by design, so a missing script would otherwise
+    mean hooks that never run and a savings ledger that stays empty.
+    """
+    from repowise.cli.editor_integrations.claude_config import claude_code_unresolved_hooks
+    from repowise.cli.editor_setup import is_editor_setup_disabled
+
+    if is_editor_setup_disabled(no_editor_setup):
+        return
+    missing = claude_code_unresolved_hooks()
+    if missing:
+        console_obj.print(
+            f"  [{WARN}]Claude Code hooks cannot find {', '.join(missing)}, so they do "
+            "nothing. Run 'repowise agents refresh' from the install you use.[/]"
+        )
