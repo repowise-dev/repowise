@@ -174,7 +174,7 @@ def _run_writes(
 ) -> list[dict]:
     """The per-target loop of :func:`_write_payload`. See its docstring."""
     from repowise.cli.agent_targets.registry import select_install_method
-    from repowise.cli.agent_targets.types import Scope
+    from repowise.cli.agent_targets.types import InstallOptions, Scope
 
     agents: list[dict] = []
     for target in targets:
@@ -217,7 +217,10 @@ def _run_writes(
             if remove:
                 result = target.uninstall(target_scope, repo_path=repo_path)
             else:
-                result = target.install(target_scope, repo_path=repo_path)
+                # `add` is the explicit way to move a user-level entry that
+                # serves another repo; `refresh` (and doctor --repair) keep it.
+                options = InstallOptions(retarget=not refresh_only)
+                result = target.install(target_scope, options, repo_path=repo_path)
                 if host_scopes and result.changed:
                     # Writing a scope the host does not cover is right — the
                     # repo file is for other contributors' checkouts — but this
@@ -371,6 +374,8 @@ def agents_add(
 
     ``--target=auto`` picks everything already detected. With no ``--target``
     on a terminal you get a checklist with the installed agents pre-ticked.
+    At user scope this is the one command that moves a per-machine entry
+    serving another repo (Claude Desktop's) to this one; ``init`` never does.
     """
     repo_path = _repo_path(path, fmt)
     targets = _select_targets_for_add(repo_path, target_flag, yes, fmt)

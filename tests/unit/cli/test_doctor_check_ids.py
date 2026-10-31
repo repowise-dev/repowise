@@ -28,6 +28,7 @@ PINNED_IDS = {
     "agent-integrations",
     "attribution-notes",
     "claude-code-mcp-entry",
+    "claude-desktop-mcp-entry",
     "coordinator-drift",
     "database",
     "distill-config",

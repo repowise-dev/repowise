@@ -112,7 +112,9 @@ export function formatVerbCounts(verbs: readonly VerbCount[], sep = " · "): str
  */
 export function describeRelations(summary: RelationSummary): string {
   const { total, verbs } = summary;
-  if (total === 0) return "No relations at this level";
+  // Relations are among siblings, so say whose: the level itself may well
+  // have relations between other cards.
+  if (total === 0) return "No relations with the cards beside it";
   if (total === 1) return `1 relation: ${verbs[0]!.verb}`;
   if (verbs.length === 1) return `${total} relations, all ${verbs[0]!.verb}`;
   return `${total} relations: ${formatVerbCounts(verbs, ", ")}`;

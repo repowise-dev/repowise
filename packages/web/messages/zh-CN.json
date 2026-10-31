@@ -1451,7 +1451,10 @@
       "containers": "容器。",
       "containersHint": "选择一个容器，其外的卡片都会变暗。",
       "dashedCard": "虚线卡片",
-      "externalsHelp": "代码访问的外部系统。悬停可查看哪些部分在使用它。"
+      "externalsHelp": "代码访问的外部系统。悬停可查看哪些部分在使用它。",
+      "linksShown": "显示的关联：",
+      "linksShownSome": "{total, number} 条中最强的 {shown, number} 条 · 悬停卡片可查看它的全部关联。",
+      "linksShownAll": "全部 {total, number} 条 · 悬停卡片可突出它的关联。"
     },
     "detail": {
       "close": "关闭详情",

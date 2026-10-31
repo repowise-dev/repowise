@@ -102,7 +102,7 @@ describe("describeRelations", () => {
   });
 
   it("says so when there is nothing to show", () => {
-    expect(describeRelations(summarizeRelations([]))).toBe("No relations at this level");
+    expect(describeRelations(summarizeRelations([]))).toBe("No relations with the cards beside it");
   });
 });
 

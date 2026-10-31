@@ -268,6 +268,15 @@ class DoctorReport:
         }
 
 
+@dataclass(frozen=True)
+class InstallOptions:
+    """How :meth:`AgentTarget.install` treats what is already there."""
+
+    #: Move a user-level entry that serves another repo to this one. Only an
+    #: explicit ``agents add`` sets it; ``init`` and ``refresh`` keep that entry.
+    retarget: bool = False
+
+
 @runtime_checkable
 class AgentTarget(Protocol):
     """One agent repowise can wire up.
@@ -355,7 +364,8 @@ class AgentTarget(Protocol):
 
         *repo_path* is keyword-only and required in practice for every scope: a
         project install writes into it, and a user-scope MCP registration has to
-        record which repo the server should serve.
+        record which repo the server should serve. *options* is an
+        :class:`InstallOptions` or None.
         """
         ...
 

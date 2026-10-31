@@ -145,21 +145,24 @@ def hook_pinned_paths(command: str) -> list[str]:
     return list(dict.fromkeys(found))
 
 
-def generate_mcp_config(repo_path: Path, *, command: str | None = None) -> dict:
+def generate_mcp_config(repo_path: Path | None, *, command: str | None = None) -> dict:
     """Generate MCP config JSON for a repository.
 
     Returns a dict in the standard mcpServers format. *command* defaults to
     the bare ``repowise`` (PATH-resolved) — callers writing **per-user**
     config files should pass ``resolve_repowise_command()`` to pin the
     registration to the install that ran ``init``; repo-shared files keep
-    the default (see :func:`resolve_repowise_command`).
+    the default (see :func:`resolve_repowise_command`). A *repo_path* of None
+    leaves the path out, so the server serves the repo it is launched in.
     """
-    abs_path = str(repo_path.resolve()).replace("\\", "/")
+    args = ["mcp", "--transport", "stdio"]
+    if repo_path is not None:
+        args.insert(1, str(repo_path.resolve()).replace("\\", "/"))
     return {
         "mcpServers": {
             "repowise": {
                 "command": command or "repowise",
-                "args": ["mcp", abs_path, "--transport", "stdio"],
+                "args": args,
                 "description": "repowise: codebase intelligence — docs, graph, git signals, dead code, decisions",
             }
         }

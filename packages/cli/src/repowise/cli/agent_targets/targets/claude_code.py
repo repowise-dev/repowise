@@ -38,6 +38,7 @@ from ..types import (
     FileAction,
     FileWrite,
     InstallMethod,
+    InstallOptions,
     Registration,
     Scope,
     WriteResult,
@@ -425,8 +426,9 @@ class ClaudeCodeTarget:
         settings_before = read_bytes(settings)
         desktop_before = read_bytes(desktop_path) if desktop_path is not None else None
 
-        register_with_claude_desktop(repo_path)
-        register_with_claude_code(repo_path)
+        retarget = isinstance(options, InstallOptions) and options.retarget
+        register_with_claude_desktop(repo_path, retarget=retarget)
+        register_with_claude_code(repo_path, retarget=retarget)
         install_claude_code_hooks()
         enable_tool_search_in_claude_code()
 

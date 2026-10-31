@@ -15,6 +15,9 @@ def integration_checks(ctx: CheckContext) -> list[DoctorCheck]:
     # 12. Static registration check: wedged-path detection.
     registration_check, ctx.registration_wedged = _claude_registration_check(ctx.repo_path)
     checks.append(registration_check)
+    desktop_row = _claude_desktop_entry_row()
+    if desktop_row is not None:
+        checks.append(desktop_row)
     # 12b. Does that registration actually start? Separate row: a wired-up
     # server that dies on every invocation has a different fix than none.
     if not ctx.quick:
@@ -231,9 +234,18 @@ def _claude_registration_check(
                 f"serves {target}; this repo is not registered (run `{add}` for a project entry)"
             )
             return _check(name, True, detail, check_id=check_id, warn=True, fix=add), False
-        return _check(name, True, target or "registered", check_id=check_id), False
+        return _check(name, True, _registered_detail(entry, target), check_id=check_id), False
     except Exception as exc:
         return _check(name, True, f"Could not check: {exc}", check_id=check_id, warn=True), False
+
+
+def _registered_detail(entry: dict, target: str | None) -> str:
+    """The healthy row's detail: the repo served, or that it follows the launch dir."""
+    from repowise.cli.editor_integrations.claude_config import _is_launch_dir_entry
+
+    if target is not None:
+        return target
+    return "serves the repo Claude Code is started in" if _is_launch_dir_entry(entry) else "registered"
 
 
 def _registers_repo(target: str, repo_path: _DoctorPath) -> bool:
@@ -304,19 +316,44 @@ def _claude_json_entries(repo_path: _DoctorPath) -> list[object]:
 
 
 def _registration_target(entry: dict) -> str | None:
-    """The repo/workspace path a registration serves, or None if unrecognized.
+    """The repo/workspace path a registration serves, or None if it names none.
 
-    Registrations are shaped ``args: ["mcp", "<abs path>", "--transport",
-    "stdio"]``; the target sits right after ``mcp``. Anything else (a flag
-    in that slot, a hand-edited entry) returns None rather than guessing.
+    Delegates to ``claude_config``, the writer's own reading of the entry.
     """
-    args = entry.get("args")
-    if not isinstance(args, list) or args[:1] != ["mcp"] or len(args) < 2:
-        return None
-    target = args[1]
-    if isinstance(target, str) and not target.startswith("-"):
-        return target
-    return None
+    from repowise.cli.editor_integrations.claude_config import _entry_repo_target
+
+    return _entry_repo_target(entry)
+
+
+def _claude_desktop_entry_row() -> DoctorCheck | None:
+    """Which repo Claude Desktop's one entry serves; warn when that path is gone.
+
+    Desktop has no project scope and init never moves its entry, so a moved
+    or deleted repo leaves it serving nothing until someone re-points it.
+    None when Desktop holds no repowise entry.
+    """
+    from repowise.cli.editor_integrations.claude_config import (
+        _claude_desktop_config_path,
+        _stored_repowise_entry,
+    )
+    from repowise.cli.editor_integrations.global_mcp import REGISTER_LATER_COMMAND
+
+    name, check_id = "Claude Desktop MCP entry", "claude-desktop-mcp-entry"
+    try:
+        entry = _stored_repowise_entry(_claude_desktop_config_path())
+        if entry is None:
+            return None
+        target = _registration_target(entry)
+        if target is None or _DoctorPath(target).is_dir():
+            return _check(name, True, f"serves {target or 'no fixed repo'}", check_id=check_id)
+        detail = (
+            f"serves {target}, which no longer exists "
+            f"(run `{REGISTER_LATER_COMMAND}` in the repo Desktop should serve; "
+            "it rewrites the Claude Code entry too)"
+        )
+        return _check(name, True, detail, check_id=check_id, warn=True, fix=REGISTER_LATER_COMMAND)
+    except Exception as exc:
+        return _check(name, True, f"Could not check: {exc}", check_id=check_id, warn=True)
 
 
 def _distill_config_row(repo_path: _DoctorPath) -> tuple[DoctorCheck, object]:
