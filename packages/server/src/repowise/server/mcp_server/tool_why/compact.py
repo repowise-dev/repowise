@@ -53,34 +53,54 @@ def compact_unanswered(result: dict[str, Any], call: Mapping[str, Any]) -> None:
     result.pop("try_instead", None)
     if result.get("mode") != "search":
         return
-    targets = list(call.get("targets") or []) or (
-        [result["anchored_on"]] if result.get("anchored_on") else []
-    )
+    targets = _targets(result, call)
     if _has_decision_rows(result):
-        # One recall is shorter than the line that would replace it.
-        if targets and _count_recalls(result) > 1:
-            _strip_recalls(result)
-            result["more"] = _more(targets)
+        _fold_recalls(result, targets)
         return
-    query = str(result.get("query") or call.get("query") or "")
     rationale = [_rationale_row(r) for r in (result.get("code_rationale") or [])[:RATIONALE_KEPT]]
+    query = str(result.get("query") or call.get("query") or "")
     commits = _key_commits(result, query, fill=bool(rationale))
-    for key in _DROPPED:
+    for key in (*_DROPPED, "code_rationale", "key_commits"):
         result.pop(key, None)
-    result.pop("code_rationale", None)
-    result.pop("key_commits", None)
+    _serve(result, rationale, commits, targets or _rationale_paths(rationale))
+    _stamp_answer_basis(result)
+    if "_meta" in result:
+        result["_meta"] = result.pop("_meta")  # Evidence first.
+
+
+def _targets(result: dict[str, Any], call: Mapping[str, Any]) -> list[str]:
+    """The files the call asked about: its targets, else the file its query named."""
+    named = [result["anchored_on"]] if result.get("anchored_on") else []
+    return list(call.get("targets") or []) or named
+
+
+def _fold_recalls(result: dict[str, Any], targets: list[str]) -> None:
+    """Replace several per-lane recalls with one ``more`` line.
+
+    One recall is shorter than the line that would replace it, so it stays.
+    """
+    if targets and _count_recalls(result) > 1:
+        _strip_recalls(result)
+        result["more"] = _more(targets)
+
+
+def _serve(
+    result: dict[str, Any], rationale: list[Any], commits: list[dict], paths: list[str]
+) -> None:
+    """Put the kept evidence, its verdict and the one call for more on *result*."""
     if rationale:
         result["code_rationale"] = rationale
     if commits:
         result["key_commits"] = commits
     if rationale or commits:
         result["reason"] = _REASON
-    paths = targets or [r["path"] for r in rationale if isinstance(r, dict) and r.get("path")][:1]
     if paths and "next_call" not in result:
         result["more"] = _more(paths)
-    _stamp_answer_basis(result)
-    if "_meta" in result:
-        result["_meta"] = result.pop("_meta")  # Evidence first.
+
+
+def _rationale_paths(rationale: list[Any]) -> list[str]:
+    paths = [r["path"] for r in rationale if isinstance(r, dict) and r.get("path")]
+    return paths[:1]
 
 
 def _more(paths: list[str]) -> str:
@@ -153,19 +173,25 @@ def _key_commits(result: dict[str, Any], query: str, *, fill: bool) -> list[dict
 
 
 def _commit_pools(result: dict[str, Any]) -> tuple[list[dict], list[dict]]:
-    focused: list[dict] = list(result.get("key_commits") or [])
-    origin: list[dict] = []
-    blocks = [result.get("git_archaeology")]
-    for card in (result.get("target_context") or {}).values():
-        if not isinstance(card, dict):
-            continue
-        blocks.append(card.get("git_archaeology"))
-        origin.extend((card.get("origin") or {}).get("key_commits") or [])
-    for block in blocks:
-        if isinstance(block, dict):
-            for lane in _COMMIT_LANES:
-                focused.extend(block.get(lane) or [])
-    return [r for r in focused if isinstance(r, dict)], [r for r in origin if isinstance(r, dict)]
+    """``(focused, origin)``: commits already chosen for the question, and the cards' key commits."""
+    cards = [c for c in (result.get("target_context") or {}).values() if isinstance(c, dict)]
+    blocks = [result.get("git_archaeology"), *(c.get("git_archaeology") for c in cards)]
+    focused = [
+        *(result.get("key_commits") or []),
+        *(row for block in blocks for row in _lane_rows(block)),
+    ]
+    origin = [row for c in cards for row in (c.get("origin") or {}).get("key_commits") or []]
+    return _dicts(focused), _dicts(origin)
+
+
+def _lane_rows(block: Any) -> list[Any]:
+    if not isinstance(block, dict):
+        return []
+    return [row for lane in _COMMIT_LANES for row in block.get(lane) or []]
+
+
+def _dicts(rows: list[Any]) -> list[dict]:
+    return [r for r in rows if isinstance(r, dict)]
 
 
 def _sha_key(row: dict) -> str:
