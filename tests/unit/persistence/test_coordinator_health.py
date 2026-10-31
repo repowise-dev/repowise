@@ -154,3 +154,35 @@ async def test_missing_decision_vectors_isolated_to_decision_drift():
     finally:
         await session.close()
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_tombstoned_pages_are_not_page_drift():
+    """A tombstone stays in ``wiki_pages`` but is held out of the vector store
+    (update removes its vector, doctor's ``--repair`` deletes a leftover one).
+    Counting it on the SQL side read a consistent store as page drift."""
+    from sqlalchemy import text
+
+    engine, session = await _setup_session()
+    try:
+        repo = await _insert_repo(session)
+        await _insert_page(session, repo.id, "file_page:a.py")
+        await _insert_page(session, repo.id, "file_page:gone.py")
+        await session.execute(
+            text("UPDATE wiki_pages SET freshness_status = 'tombstone' WHERE id = :id"),
+            {"id": "file_page:gone.py"},
+        )
+        await session.commit()
+
+        vs = InMemoryVectorStore(MockEmbedder())
+        await vs.embed_and_upsert("file_page:a.py", "a", {})
+
+        coord = AtomicStorageCoordinator(session, graph_builder=None, vector_store=vs)
+        report = await coord.health_check()
+
+        assert report["sql_pages"] == 1
+        assert report["vector_page_count"] == 1
+        assert report["page_drift"] == 0.0
+    finally:
+        await session.close()
+        await engine.dispose()
