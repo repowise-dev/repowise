@@ -925,7 +925,7 @@
       },
       "ribbon": {
         "lowestHealth": "Lowest health",
-        "lowestHealthSub": "{name} · {healthy} of {scored} scored {scored, plural, one {repository} other {repositories}} healthy",
+        "lowestHealthSub": "{name} · {healthy} of {scored} scored {scored, plural, one {repository} other {repositories}} Good or better",
         "lowestHealthNone": "no health snapshot yet",
         "docFreshness": "Doc freshness",
         "docFreshnessNoPages": "no documentation generated yet",
