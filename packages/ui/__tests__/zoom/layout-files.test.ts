@@ -175,6 +175,21 @@ describe("file tiles on the canvas", () => {
     for (const id of folder.children) expect(texts).toContain(scene.nodes.get(id)!.name);
   });
 
+  it("marks a dead file's tile with its role icon, as a card does", () => {
+    const arcs = (dead: boolean): number => {
+      const map = syntheticMap();
+      const f = map.nodes.find((n) => n.parent_id === FOLDER && !n.is_hotspot)!;
+      f.is_dead = dead;
+      const sc = buildScene(map);
+      const r = sc.worldRects.get(FOLDER)!;
+      const { ctx, counts } = countingContext();
+      const cam: Camera = { cx: r.x + r.w / 2, cy: r.y + r.h / 2, scale: 1500 / r.w };
+      drawScene(ctx, sc, cam, VP, palette, { selectedId: null, hoveredId: null, lowDetail: false });
+      return counts.get("arc") ?? 0;
+    };
+    expect(arcs(true) - arcs(false)).toBe(1);
+  });
+
   it("hit-tests a tile at its world rect", () => {
     const { cam, stats } = drawOn(FOLDER, 1500);
     const id = scene.nodes.get(FOLDER)!.children[4]!;

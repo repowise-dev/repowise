@@ -2,17 +2,21 @@
  * File-level drawing: the compact file tiles and the section headers of a
  * parent laid out by `layout-files.ts`. Browser code.
  *
- * A tile is a flat rounded box with the file name (middle ellipsis when long)
- * and its health score as a coloured number on the right; no kind or language
- * label, the extension says it, and no hotspot mark, the section header does.
+ * A tile is a flat rounded box with the file name (middle ellipsis when long),
+ * its entry / dead role icons after the name like a card's, and its health
+ * score as a coloured number on the right, formatted as the card corner's; no
+ * kind or language label, the extension says it, and no hotspot mark, the
+ * section header does.
  * A header ("Hotspots · 11") is drawn above the first member of its section,
  * scaled with the tiles, so it moves and culls with them.
  */
 
 import type { Rect } from "./camera";
 import { healthColor } from "./card-body";
+import { cardPadPx, cardRoleMarks, cardScore } from "./card-content";
 import { font, textWidth, wrap } from "./card-measure";
-import { type FileSection, type FileSectionKind, fileSections, sectionRowH } from "./layout-files";
+import { drawRoleGlyph } from "./kind-glyph";
+import { type FileSection, type FileSectionKind, fileSections, HEADER_H, sectionRowH } from "./layout-files";
 import type { CardState } from "./nodes";
 import type { ZoomPalette } from "./theme";
 import type { ZoomNode } from "./types";
@@ -68,15 +72,9 @@ function tileParent(nodes: Map<string, ZoomNode>, parent: ZoomNode): TileParent 
   return tp;
 }
 
-const scoreLabels = new Map<number, string>();
-
-/** Interned "7.4" / "10" so a frame builds no strings. */
-function scoreLabel(score: number): string {
-  const tenths = Math.round(score * 10);
-  let s = scoreLabels.get(tenths);
-  if (!s) scoreLabels.set(tenths, (s = tenths % 10 === 0 ? String(tenths / 10) : (tenths / 10).toFixed(1)));
-  return s;
-}
+/** Role icon size as a share of the text px, and the gap before each. */
+const TILE_MARK_SHARE = 0.9;
+const TILE_MARK_GAP_PX = 4;
 
 function drawHeader(ctx: CanvasRenderingContext2D, rect: Rect, h: SectionHeader, palette: ZoomPalette, alpha: number): void {
   const tileH = rect.h / h.rowH;
@@ -125,24 +123,50 @@ function drawTile(
   const right = rect.x + rect.w - pad;
   ctx.textBaseline = "middle";
   let nameRight = right;
-  if (node.health_score !== null) {
-    const label = scoreLabel(node.health_score);
-    ctx.font = font(600, px);
+  const score = cardScore(node);
+  if (score !== null) {
+    ctx.font = font(700, px);
     ctx.textAlign = "right";
     ctx.fillStyle = healthColor(node.health_score, palette);
-    ctx.fillText(label, Math.round(right), y);
+    ctx.fillText(score, Math.round(right), y);
     ctx.textAlign = "left";
-    nameRight -= textWidth(ctx, 600, px, label) + pad / 2;
+    nameRight -= textWidth(ctx, 700, px, score) + pad / 2;
   }
+  // Entry / dead icons follow the name, as on a card; a hotspot is said by its section.
+  const markPx = Math.round(px * TILE_MARK_SHARE);
+  let marks = 0;
+  for (const m of cardRoleMarks(node)) if (m.role !== "hotspot") marks++;
   const x = Math.round(rect.x + pad);
-  const name = wrap(ctx, 400, px, node.name, nameRight - x, 1, "path")[0];
+  const name = wrap(ctx, 400, px, node.name, nameRight - x - marks * (markPx + TILE_MARK_GAP_PX), 1, "path")[0];
   if (name) {
     ctx.font = font(400, px);
     ctx.fillStyle = palette.nodeText;
     ctx.fillText(name, x, y);
+    let mx = x + textWidth(ctx, 400, px, name) + TILE_MARK_GAP_PX;
+    for (const m of cardRoleMarks(node)) {
+      if (m.role === "hotspot") continue;
+      drawRoleGlyph(ctx, mx, y - markPx / 2, markPx, m.role, palette);
+      mx += markPx + TILE_MARK_GAP_PX;
+    }
   }
   ctx.textBaseline = "top";
   ctx.globalAlpha = 1;
+}
+
+/**
+ * The screen band a section header takes above `rect`, the screen rect of
+ * `node`, running to `right`; null when `node` opens no section. Edge labels
+ * keep off it. Grown by a card's padding on every side: a label may straddle
+ * a card's padding (see `edge-labels.ts`), so the band itself is the "text".
+ */
+export function tileHeaderRect(nodes: Map<string, ZoomNode>, node: ZoomNode, rect: Rect, right: number): Rect | null {
+  const parent = node.parent_id !== null ? nodes.get(node.parent_id) : undefined;
+  const h = parent ? tileParent(nodes, parent)?.get(node.id) : undefined;
+  if (!h) return null;
+  const bandH = (rect.h / h.rowH) * HEADER_H;
+  const w = Math.max(rect.w, right - rect.x);
+  const p = cardPadPx(w);
+  return { x: rect.x - p, y: rect.y - bandH - p, w: w + 2 * p, h: bandH + 2 * p };
 }
 
 /**
