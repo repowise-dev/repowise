@@ -59,6 +59,7 @@ from repowise.core.analysis.dead_code.serving import CrossRepoLookup, is_safe, s
 from repowise.core.analysis.finding_registry import excluded_types
 from repowise.core.analysis.test_reachability import (
     any_tests_reaching,
+    test_masks_stored,
     write_test_masks_snapshot,
 )
 
@@ -80,7 +81,7 @@ from ...models import (
     SecurityFinding,
 )
 from ...read_snapshots import mark_current, read_snapshot, refresh_snapshot, snapshot_key
-from .fix_first import load_fix_first, write_fix_first_snapshot
+from .fix_first import fix_first_stored, load_fix_first, write_fix_first_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -602,6 +603,18 @@ async def write_actions_snapshot(session: AsyncSession, repo_id: str) -> bool:
     return await refresh_snapshot(
         session, repo_id, SNAPSHOT_KIND, _KEY, lambda: _ruled(session, repo_id)
     )
+
+
+async def write_actions_view(session: AsyncSession, repo_id: str) -> bool:
+    """Store the actions view again after a write that drops only it (a decision).
+
+    Skipped unless the queue and test masks it reads are stored: building them
+    here would hand a decision write the whole index-time build. Returns
+    whether it wrote.
+    """
+    if not (await fix_first_stored(session, repo_id) and await test_masks_stored(session, repo_id)):
+        return False
+    return await write_actions_snapshot(session, repo_id)
 
 
 async def write_read_snapshots(

@@ -44,6 +44,25 @@ async def _open_store(repo_path: Path):
         await engine.dispose()
 
 
+async def _rewrite_read_views(session_factory, repo_id: str) -> None:
+    """Store again the next-actions view a committed decision write dropped.
+
+    It reads decisions, so the commit drops it, and every new reader process
+    would rebuild it until the next update. Best-effort: the decision is
+    already committed, and a view not written is built live on read.
+    """
+    from repowise.core.persistence import get_session
+    from repowise.core.persistence.crud.analysis.actions import write_actions_view
+
+    try:
+        async with get_session(session_factory) as session:
+            await write_actions_view(session, repo_id)
+    except Exception as exc:  # any build failure; the command already succeeded
+        import structlog
+
+        structlog.get_logger(__name__).debug("read_views_not_written", error=repr(exc))
+
+
 async def _resolve_decision_id(session, decision_id: str) -> str | None:
     """Expand a (possibly truncated) decision id to the full stored id.
 
@@ -193,18 +212,26 @@ async def _review_batch(repo_path, tokens, *, action: str, verb: str, preview: b
     from repowise.core.persistence import get_session
 
     results: list[dict] = []
-    async with _open_store(repo_path) as sf, get_session(sf) as session:
-        for token in tokens:
-            # A token that resolves to nothing already carries its outcome.
-            rec, outcome = await _resolve_one(session, token)
-            if outcome is None:
-                outcome = await _apply_in_savepoint(
-                    session, rec, token, action=action, verb=verb, preview=preview,
-                    apply_one=apply_one,
-                )
-            results.append(outcome)
-        if preview:
-            await session.rollback()
+    repo_ids: set[str] = set()
+    async with _open_store(repo_path) as sf:
+        async with get_session(sf) as session:
+            for token in tokens:
+                # A token that resolves to nothing already carries its outcome.
+                rec, outcome = await _resolve_one(session, token)
+                if outcome is None:
+                    # Read now: a rolled-back savepoint expires the record.
+                    repo_id = rec.repository_id
+                    outcome = await _apply_in_savepoint(
+                        session, rec, token, action=action, verb=verb, preview=preview,
+                        apply_one=apply_one,
+                    )
+                    if outcome["ok"]:
+                        repo_ids.add(repo_id)
+                results.append(outcome)
+            if preview:
+                await session.rollback()
+        for repo_id in () if preview else sorted(repo_ids):
+            await _rewrite_read_views(sf, repo_id)
     return results
 
 

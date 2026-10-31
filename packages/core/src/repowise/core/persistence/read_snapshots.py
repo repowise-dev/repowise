@@ -240,6 +240,12 @@ async def read_snapshot(session: AsyncSession, repo_id: str, kind: str, key: str
         return None
 
 
+async def is_current(session: AsyncSession, repo_id: str, kind: str, key: str) -> bool:
+    """Whether the ``kind`` row is stored under ``key``, without reading its payload."""
+    row = await session.get(ReadSnapshot, (repo_id, kind))
+    return row is not None and row.key == key
+
+
 async def refresh_snapshot(
     session: AsyncSession,
     repo_id: str,
@@ -296,6 +302,7 @@ __all__ = [
     "SELF_KEYED_KINDS",
     "UNRELATED_TABLES",
     "decode_or_none",
+    "is_current",
     "mark_current",
     "read_snapshot",
     "refresh_snapshot",

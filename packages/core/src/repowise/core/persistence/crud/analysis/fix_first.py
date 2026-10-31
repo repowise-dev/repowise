@@ -73,7 +73,13 @@ from ...models import (
     RefactoringOpportunity,
     RefactoringSuggestion,
 )
-from ...read_snapshots import decode_or_none, read_snapshot, refresh_snapshot, snapshot_key
+from ...read_snapshots import (
+    decode_or_none,
+    is_current,
+    read_snapshot,
+    refresh_snapshot,
+    snapshot_key,
+)
 from ...sql import json_text
 from .plain_rows import plain_rows, row_shape
 from .refactoring import shown_plan_predicate
@@ -643,6 +649,11 @@ COUNTS_KIND = "fix_first_counts"
 _COUNTS_KEY = snapshot_key(COUNTS_KIND, FIX_FIRST_MODEL_VERSION)
 
 
+async def fix_first_stored(session: AsyncSession, repository_id: str) -> bool:
+    """Whether the stored production queue is current, so a reader skips the build."""
+    return await is_current(session, repository_id, SNAPSHOT_KIND, _KEY)
+
+
 async def write_fix_first_snapshot(session: AsyncSession, repository_id: str) -> bool:
     """Store the whole production queue, tests resolved, for the next reader,
     and each refactoring opportunity's and finding's judgement on its row.
@@ -927,6 +938,7 @@ __all__ = [
     "FINDING_FILES",
     "SNAPSHOT_KIND",
     "clear_fix_first_cache",
+    "fix_first_stored",
     "load_fix_first",
     "queue_view",
     "stored_item_counts",
