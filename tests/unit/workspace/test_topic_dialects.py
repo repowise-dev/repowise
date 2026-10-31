@@ -671,6 +671,194 @@ class TestDapr:
     def test_a_broken_manifest_is_skipped(self, tmp_path: Path) -> None:
         assert _extract(tmp_path, "bad.yaml", "dapr.io: [unclosed\n  kind: Subscription") == []
 
+    _JAVA_IMPORT = "import io.dapr.Topic;\nimport io.dapr.client.DaprClient;\n"
+
+    def test_java_topic_annotation_is_a_consumer(self, tmp_path: Path) -> None:
+        src = (
+            self._JAVA_IMPORT
+            + '@Topic(name = "orders", pubsubName = "pubsub")\n'
+            + "public Mono<Void> handle(CloudEvent<String> e) { }\n"
+        )
+        c = _one(_extract(tmp_path, "Orders.java", src), "consumer")
+        assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
+
+    def test_java_publish_event_on_a_dapr_client_is_a_provider(self, tmp_path: Path) -> None:
+        src = (
+            self._JAVA_IMPORT
+            + "private DaprClient client;\n"
+            + 'client.publishEvent("pubsub", "orders", evt).block();\n'
+        )
+        c = _one(_extract(tmp_path, "Pub.java", src), "provider")
+        assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
+
+    def test_java_publish_event_on_another_receiver_is_not_read(self, tmp_path: Path) -> None:
+        src = self._JAVA_IMPORT + 'bus.publishEvent("pubsub", "orders", evt);\n'
+        assert _extract(tmp_path, "Other.java", src) == []
+
+    def test_java_topic_annotation_needs_the_dapr_import(self, tmp_path: Path) -> None:
+        src = '@Topic(name = "orders", pubsubName = "pubsub")\npublic void handle() { }\n'
+        assert _extract(tmp_path, "NoDapr.java", src) == []
+
+    _JS_IMPORT = "import { DaprClient, DaprServer } from '@dapr/dapr';\n"
+
+    def test_js_pubsub_publish_on_a_dapr_client_is_a_provider(self, tmp_path: Path) -> None:
+        src = (
+            self._JS_IMPORT
+            + "const client = new DaprClient({ daprHost });\n"
+            + "await client.pubsub.publish(PUBSUB, 'orders', data);\n"
+        )
+        c = _one(_extract(tmp_path, "pub.ts", src), "provider")
+        assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
+
+    def test_js_pubsub_subscribe_on_a_dapr_server_is_a_consumer(self, tmp_path: Path) -> None:
+        src = (
+            self._JS_IMPORT
+            + "const server = new DaprServer({ serverHost });\n"
+            + "await server.pubsub.subscribe('pubsub', 'orders', async (e) => {});\n"
+        )
+        c = _one(_extract(tmp_path, "sub.ts", src), "consumer")
+        assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
+
+    def test_js_pubsub_publish_on_another_receiver_is_not_read(self, tmp_path: Path) -> None:
+        src = self._JS_IMPORT + "await bus.pubsub.publish('pubsub', 'orders', data);\n"
+        assert _extract(tmp_path, "other.ts", src) == []
+
+    def test_js_pubsub_needs_the_dapr_import(self, tmp_path: Path) -> None:
+        src = (
+            "const client = new DaprClient({});\n"
+            "await client.pubsub.publish('pubsub', 'orders', data);\n"
+        )
+        assert _extract(tmp_path, "nodapr.ts", src) == []
+
+    _PY_IMPORT = "from dapr.clients import DaprClient\nfrom dapr.ext.grpc import App\n"
+
+    def test_python_publish_event_is_a_provider(self, tmp_path: Path) -> None:
+        src = (
+            self._PY_IMPORT
+            + "with DaprClient() as client:\n"
+            + "    client.publish_event(pubsub_name='pubsub', topic_name='orders', data=d)\n"
+        )
+        c = _one(_extract(tmp_path, "pub.py", src), "provider")
+        assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
+
+    def test_python_subscribe_decorator_is_a_consumer(self, tmp_path: Path) -> None:
+        src = (
+            self._PY_IMPORT
+            + "app = App()\n"
+            + "@app.subscribe(pubsub_name='pubsub', topic='orders')\n"
+            + "def handle(event):\n"
+            + "    pass\n"
+        )
+        c = _one(_extract(tmp_path, "sub.py", src), "consumer")
+        assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
+
+    def test_python_publish_event_needs_the_dapr_import(self, tmp_path: Path) -> None:
+        src = "client.publish_event(pubsub_name='pubsub', topic_name='orders', data=d)\n"
+        assert _extract(tmp_path, "nodapr.py", src) == []
+
+    def test_python_subscribe_decorator_needs_the_dapr_import(self, tmp_path: Path) -> None:
+        src = "@app.subscribe(pubsub_name='pubsub', topic='orders')\ndef handle(event):\n    pass\n"
+        assert _extract(tmp_path, "nodapr_sub.py", src) == []
+
+    def test_python_publish_event_reads_a_positional_topic(self, tmp_path: Path) -> None:
+        src = (
+            self._PY_IMPORT
+            + "with DaprClient() as client:\n"
+            + "    client.publish_event('pubsub', 'orders', d)\n"
+        )
+        c = _one(_extract(tmp_path, "pos.py", src), "provider")
+        assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
+
+    def test_python_publish_event_is_read_with_only_the_grpc_import(self, tmp_path: Path) -> None:
+        src = (
+            "from dapr.ext.grpc import App\n"
+            "client.publish_event(pubsub_name='pubsub', topic_name='orders', data=d)\n"
+        )
+        c = _one(_extract(tmp_path, "grpc_only.py", src), "provider")
+        assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
+
+    def test_python_subscribe_is_read_with_only_the_clients_import(self, tmp_path: Path) -> None:
+        src = (
+            "from dapr.clients import DaprClient\n"
+            "@app.subscribe(pubsub_name='pubsub', topic='orders')\n"
+            "def handle(event):\n"
+            "    pass\n"
+        )
+        c = _one(_extract(tmp_path, "clients_only.py", src), "consumer")
+        assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
+
+    _GO_IMPORT = (
+        "import (\n"
+        '  dapr "github.com/dapr/go-sdk/client"\n'
+        '  "github.com/dapr/go-sdk/service/common"\n'
+        ")\n"
+    )
+
+    def test_go_publish_event_is_a_provider(self, tmp_path: Path) -> None:
+        src = (
+            self._GO_IMPORT
+            + "client, err := dapr.NewClient()\n"
+            + 'err = client.PublishEvent(ctx, "pubsub", "orders", data)\n'
+        )
+        c = _one(_extract(tmp_path, "pub.go", src), "provider")
+        assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
+
+    def test_go_subscription_is_a_consumer(self, tmp_path: Path) -> None:
+        src = (
+            self._GO_IMPORT
+            + "var sub = &common.Subscription{\n"
+            + '  PubsubName: "pubsub",\n'
+            + '  Topic:    "orders",\n'
+            + '  Route:    "/checkout",\n'
+            + "}\n"
+        )
+        c = _one(_extract(tmp_path, "sub.go", src), "consumer")
+        assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
+
+    def test_go_publish_event_needs_the_dapr_import(self, tmp_path: Path) -> None:
+        src = 'err = client.PublishEvent(ctx, "pubsub", "orders", data)\n'
+        assert _extract(tmp_path, "nodapr.go", src) == []
+
+    def test_go_subscription_needs_the_dapr_import(self, tmp_path: Path) -> None:
+        src = 'var sub = &common.Subscription{\n  Topic: "orders",\n}\n'
+        assert _extract(tmp_path, "nodapr_sub.go", src) == []
+
+    def test_js_dapr_subscribe_route_names_a_topic(self, tmp_path: Path) -> None:
+        src = (
+            "app.get('/dapr/subscribe', (req, res) => {\n"
+            "  res.json([{ pubsubname: 'pubsub', topic: 'orders', routes: { default: '/o' } }]);\n"
+            "});\n"
+        )
+        c = _one(_extract(tmp_path, "server.js", src), "consumer")
+        assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
+
+    def test_python_dapr_subscribe_route_names_a_topic(self, tmp_path: Path) -> None:
+        src = (
+            "@app.route('/dapr/subscribe', methods=['GET'])\n"
+            "def subscribe():\n"
+            "    return jsonify([{'pubsubname': 'pubsub', 'topic': 'orders'}])\n"
+        )
+        c = _one(_extract(tmp_path, "server.py", src), "consumer")
+        assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
+
+    def test_go_dapr_subscribe_route_names_a_topic(self, tmp_path: Path) -> None:
+        src = (
+            'router.HandleFunc("/dapr/subscribe", handler)\n'
+            "t := []subscription{\n"
+            '    {PubsubName: "pubsub", Topic: "orders"},\n'
+            "}\n"
+        )
+        c = _one(_extract(tmp_path, "server.go", src), "consumer")
+        assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
+
+    def test_a_subscription_object_needs_the_dapr_subscribe_route(self, tmp_path: Path) -> None:
+        src = "const s = { pubsubname: 'pubsub', topic: 'orders' };\n"
+        assert _extract(tmp_path, "nosub.js", src) == []
+
+    def test_an_object_without_pubsubname_is_not_a_subscription(self, tmp_path: Path) -> None:
+        src = "app.get('/dapr/subscribe', h);\nconst s = { topic: 'orders' };\n"
+        assert _extract(tmp_path, "nopubsub.js", src) == []
+
 
 class TestKafkaByReceiverType:
     """A client read on whatever name the file declares it with."""
