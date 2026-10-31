@@ -542,3 +542,85 @@ _FALLBACK_BODY = b"    try:\n        return load()\n    except Exception:\n     
 def test_documented_fallback_is_not_broad_except(source: bytes, flagged: bool, note: str):
     kinds = {h.kind for h in _hits("python", source)}
     assert bool(kinds & {"broad_except", "bare_except"}) is flagged, note
+
+
+# Ruby / Swift / Dart / Scala keep the handler body outside the catch node's
+# block-like children, so each has its own lookup (issue #4793).
+_SWALLOW = {"swallowed_catch": 1}
+_NON_BLOCK_GRAMMAR_FIXTURES = [
+    # Ruby ``rescue``: body is a ``then`` child, absent when empty.
+    ("ruby", b"begin; g; rescue => e; end\n", _SWALLOW, "empty rescue"),
+    ("ruby", b"begin\n  g\nrescue Foo\n  # ignore\nend\n", _SWALLOW, "comment-only rescue"),
+    ("ruby", b"def m\n  g\nrescue\nend\n", _SWALLOW, "empty method-level rescue"),
+    ("ruby", b"begin; g; rescue => e; puts e; end\n", {}, "rescue that logs"),
+    ("ruby", b"begin; g; rescue => e; retry; end\n", {}, "rescue that retries"),
+    # Ruby ``rescue_modifier``: only a ``nil`` fallback swallows.
+    ("ruby", b"x = g rescue nil\n", _SWALLOW, "rescue modifier falling back to nil"),
+    ("ruby", b"x = g rescue 5\n", {}, "rescue modifier with a real fallback"),
+    # Swift ``catch_block``: body is a ``statements`` child, absent when empty.
+    ("swift", b"do { try g() } catch { }\n", _SWALLOW, "empty catch"),
+    ("swift", b"do { try g() } catch { /* ignore */ }\n", _SWALLOW, "block-comment catch"),
+    ("swift", b"do { try g() } catch { // ignore\n}\n", _SWALLOW, "line-comment catch"),
+    ("swift", b"do { try g() } catch { print(error) }\n", {}, "catch that logs"),
+    # Dart: the handler block is a sibling of ``catch_clause``.
+    ("dart", b"void f() { try { g(); } catch (e) {} }\n", _SWALLOW, "empty catch"),
+    (
+        "dart",
+        b"void f() { try { g(); } on FormatException catch (e) {} }\n",
+        _SWALLOW,
+        "empty on-catch",
+    ),
+    ("dart", b"void f() { try { g(); } catch (e) { /* x */ } }\n", _SWALLOW, "comment-only"),
+    ("dart", b"void f() { try { g(); } catch (e) { print(e); } }\n", {}, "catch that logs"),
+    (
+        "dart",
+        b"void f() { try { g(); } catch (e) {} on Foo catch (e) { print(e); } }\n",
+        _SWALLOW,
+        "only the empty one of two handlers",
+    ),
+    # Scala: one ``case_clause`` per handler under ``catch_clause``.
+    (
+        "scala",
+        b"object A { def f() = try { g() } catch { case e: Exception => () } }\n",
+        _SWALLOW,
+        "unit arm",
+    ),
+    (
+        "scala",
+        b"object A { def f() = try { g() } catch { case e: Exception => } }\n",
+        _SWALLOW,
+        "arm with no body",
+    ),
+    (
+        "scala",
+        b"object A { def f() = try { g() } catch { case e: Exception => {} } }\n",
+        _SWALLOW,
+        "empty block arm",
+    ),
+    (
+        "scala",
+        b"object A { def f() = try { g() } catch { case e: Exception => log(e) } }\n",
+        {},
+        "arm that logs",
+    ),
+    (
+        "scala",
+        b"object A { def f() = try { g() } catch {\n  case _: Foo => ()\n  case e: Bar => log(e)\n} }\n",
+        _SWALLOW,
+        "only the empty arm of two",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("language", "source", "expected", "note"),
+    _NON_BLOCK_GRAMMAR_FIXTURES,
+    ids=[f"{lang}-{note}" for lang, _, _, note in _NON_BLOCK_GRAMMAR_FIXTURES],
+)
+def test_swallowed_catch_in_grammars_without_a_block_child(
+    language: str, source: bytes, expected: dict, note: str
+):
+    by_kind: dict[str, int] = {}
+    for h in _hits(language, source):
+        by_kind[h.kind] = by_kind.get(h.kind, 0) + 1
+    assert by_kind == expected, f"{note}: expected {expected}, got {by_kind}"

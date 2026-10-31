@@ -28,7 +28,9 @@ _RUST_TEST_CFG_TOKEN = re.compile(r"(?:^|[(,])test(?:[),]|$)")
 # Block-like body node types of a catch/except clause.
 _EH_BLOCK_KINDS = frozenset({"block", "statement_block", "compound_statement"})
 # Statement node types that count as "no real handling" inside a catch body.
-_EH_TRIVIAL_STMT = frozenset({"comment", "pass_statement", "line_comment", "block_comment"})
+_EH_TRIVIAL_STMT = frozenset(
+    {"comment", "pass_statement", "line_comment", "block_comment", "multiline_comment"}
+)
 # Rust: each of these is a latent panic-on-error.
 _RUST_UNWRAP_METHODS = frozenset({"unwrap", "expect", "unwrap_unchecked"})
 #: Shared with the dataflow pass's error exits (``dataflow.raises``).
@@ -97,6 +99,79 @@ def _eh_real_stmts(block: Node, language: str) -> list[Node]:
 
 def _eh_body_is_swallowed(block: Node, language: str) -> bool:
     return not _eh_real_stmts(block, language)
+
+
+# Grammars whose handler body is not a block-like child of the catch node, so
+# ``_eh_find_body_block`` cannot see it. Each lookup answers "is this handler
+# empty?" directly: the body node is absent altogether when the handler is empty.
+
+
+def _eh_ruby_rescue_empty(clause: Node) -> bool:
+    """Ruby ``rescue``: the body is its ``then`` child, absent when empty."""
+    body = clause.child_by_field_name("body")
+    return body is None or _eh_body_is_swallowed(body, "ruby")
+
+
+def _eh_swift_catch_empty(clause: Node) -> bool:
+    """Swift ``catch_block``: the body is its ``statements`` child, absent when empty."""
+    stmts = next((c for c in clause.children if c.type == "statements"), None)
+    return stmts is None or _eh_body_is_swallowed(stmts, "swift")
+
+
+def _eh_dart_catch_empty(clause: Node) -> bool:
+    """Dart ``catch_clause``: the handler ``block`` is its next sibling in the
+    ``try_statement``, not its child."""
+    sib = clause.next_named_sibling
+    while sib is not None and sib.type == "comment":
+        sib = sib.next_named_sibling
+    return sib is not None and sib.type == "block" and _eh_body_is_swallowed(sib, "dart")
+
+
+_EH_EMPTY_HANDLER = {
+    "ruby": _eh_ruby_rescue_empty,
+    "swift": _eh_swift_catch_empty,
+    "dart": _eh_dart_catch_empty,
+}
+
+# Handler shapes that are not in ``lmap.catch_kinds`` (mapping them there would
+# change CCN counting), but still need visiting for the swallowed-catch check.
+_EH_EXTRA_KINDS = {
+    "ruby": frozenset({"rescue_modifier"}),  # ``x = g rescue nil``
+    "scala": frozenset({"catch_clause"}),  # holds one ``case_clause`` per handler
+}
+
+
+def _eh_scala_trivial(node: Node) -> bool:
+    """A Scala arm body that does nothing: a comment, ``()``, or a block of those."""
+    if node.type in _EH_TRIVIAL_STMT or node.type == "unit":
+        return True
+    return node.type == "block" and all(_eh_scala_trivial(c) for c in _eh_named(node))
+
+
+def _eh_scala_catch_visit(clause: Node, hits: list[ErrorHandlingHit]) -> None:
+    """One hit per ``case`` arm of a Scala ``catch`` whose body is ``()`` or empty."""
+    for case_block in clause.children:
+        if case_block.type != "case_block":
+            continue
+        for arm in case_block.children:
+            if arm.type == "case_clause" and all(
+                _eh_scala_trivial(b) for b in arm.children_by_field_name("body")
+            ):
+                hits.append(ErrorHandlingHit("swallowed_catch", arm.start_point[0] + 1))
+
+
+def _eh_ruby_modifier_visit(node: Node, hits: list[ErrorHandlingHit]) -> None:
+    """``x rescue nil`` swallows; ``x rescue default`` supplies a real fallback."""
+    handler = node.child_by_field_name("handler")
+    if handler is not None and handler.type == "nil":
+        hits.append(ErrorHandlingHit("swallowed_catch", node.start_point[0] + 1))
+
+
+def _eh_handler_is_empty(node: Node, language: str, block: Node | None) -> bool:
+    lookup = _EH_EMPTY_HANDLER.get(language)
+    if lookup is not None:
+        return lookup(node)
+    return block is not None and _eh_body_is_swallowed(block, language)
 
 
 def _eh_body_ends_in_raise(block: Node | None, language: str) -> bool:
@@ -403,7 +478,7 @@ def _eh_noqa_codes(clause: Node) -> set[str] | None:
 def _eh_node_kinds(language: str, lmap: LanguageNodeMap) -> frozenset[str]:
     """Every node type ``_eh_visit`` can emit a hit on, so the shared file scan
     skips the call for every other node."""
-    kinds = set(lmap.catch_kinds)
+    kinds = set(lmap.catch_kinds) | _EH_EXTRA_KINDS.get(language, frozenset())
     if language == "rust":
         kinds |= _EH_RUST_KINDS
     elif language == "go":
@@ -450,8 +525,7 @@ def _eh_catch_visit(node: Node, language: str, hits: list[ErrorHandlingHit]) -> 
     block = _eh_find_body_block(node)
     swallowed_unsuppressed = _eh_swallow_allowed(noqa_codes)
     if (
-        block is not None
-        and _eh_body_is_swallowed(block, language)
+        _eh_handler_is_empty(node, language, block)
         and swallowed_unsuppressed
         and not _eh_swallow_expected(node, language)
     ):
@@ -475,12 +549,20 @@ def _eh_visit(
     code too: anti-patterns are not confined to function bodies), which sorts
     the hits by line. Catch-clause shapes reuse the ``LanguageNodeMap`` catch
     kinds (Python ``except_clause``; JS/TS/Java/C++/C# ``catch_clause``; Kotlin
-    ``catch_block``); Rust and Go have no catch nodes and use their own
-    recognizers.
+    ``catch_block``; Ruby ``rescue``; Swift ``catch_block``; Dart
+    ``catch_clause``), plus the shapes that bypass ``catch_kinds`` (Ruby
+    ``rescue_modifier``, Scala ``catch_clause``); Rust and Go have no catch
+    nodes and use their own recognizers.
     """
     catch_kinds = lmap.catch_kinds
-    if catch_kinds and node.type in catch_kinds:
+    # ``is_named``: tree-sitter-ruby also emits an anonymous ``rescue`` keyword
+    # token whose type equals the clause's, which would be visited twice.
+    if catch_kinds and node.type in catch_kinds and node.is_named:
         _eh_catch_visit(node, language, hits)
+    elif language == "ruby" and node.type == "rescue_modifier":
+        _eh_ruby_modifier_visit(node, hits)
+    elif language == "scala" and node.type == "catch_clause":
+        _eh_scala_catch_visit(node, hits)
     elif language == "rust" and _eh_rust_hit(node):
         # A panic-family macro aborts unconditionally; unwrap/expect converts
         # a Result/Option into a panic. Different claims → different kinds.
