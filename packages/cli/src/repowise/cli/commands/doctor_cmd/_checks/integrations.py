@@ -234,13 +234,18 @@ def _claude_registration_check(
                 f"serves {target}; this repo is not registered (run `{add}` for a project entry)"
             )
             return _check(name, True, detail, check_id=check_id, warn=True, fix=add), False
-        from repowise.cli.editor_integrations.claude_config import _is_launch_dir_entry
-
-        follows = _is_launch_dir_entry(entry)
-        detail = target or ("serves the repo Claude Code is started in" if follows else "registered")
-        return _check(name, True, detail, check_id=check_id), False
+        return _check(name, True, _registered_detail(entry, target), check_id=check_id), False
     except Exception as exc:
         return _check(name, True, f"Could not check: {exc}", check_id=check_id, warn=True), False
+
+
+def _registered_detail(entry: dict, target: str | None) -> str:
+    """The healthy row's detail: the repo served, or that it follows the launch dir."""
+    from repowise.cli.editor_integrations.claude_config import _is_launch_dir_entry
+
+    if target is not None:
+        return target
+    return "serves the repo Claude Code is started in" if _is_launch_dir_entry(entry) else "registered"
 
 
 def _registers_repo(target: str, repo_path: _DoctorPath) -> bool:
