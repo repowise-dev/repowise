@@ -232,8 +232,18 @@ def test_the_path_sharing_the_most_question_words_is_the_one_named() -> None:
     from repowise.server.mcp_server._query_terms import paths_the_question_names
 
     paths = [_PAGES, _WORKERS]
-    assert paths_the_question_names("serveStatic", paths, "the cloudflare pages handler") == [
-        _PAGES
-    ]
-    assert paths_the_question_names("serveStatic", paths, "on cloudflare") == paths
+    question = "the cloudflare pages handler"
+    assert paths_the_question_names("serveStatic", paths, question, best_only=True) == [_PAGES]
+    assert paths_the_question_names("serveStatic", paths, question) == paths
     assert paths_the_question_names("serveStatic", paths, "how does it work") == []
+
+
+def test_a_question_partly_naming_a_second_definition_does_not_settle_the_split() -> None:
+    """Grading stays strict: a question word that also names the other file
+    leaves the answer to tell both definitions apart."""
+    split = {"serveStatic": [_PAGES, _WORKERS]}
+    answer = f"In `{_PAGES}`, `serveStatic` serves assets for advanced mode."
+    grade = _grade(
+        "serveStatic in the cloudflare pages handler", answer, split=split, citations=(_PAGES,)
+    )
+    assert grade.split_names == split

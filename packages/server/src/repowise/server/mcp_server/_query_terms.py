@@ -181,14 +181,17 @@ def path_words(text: str) -> set[str]:
     return {w for w in words if len(w) >= 2 and w not in STOPWORDS}
 
 
-def paths_the_question_names(name: str, paths: list[str], question: str) -> list[str]:
-    """The files of *name*'s definitions whose path shares the most words with *question*.
+def paths_the_question_names(
+    name: str, paths: list[str], question: str, *, best_only: bool = False
+) -> list[str]:
+    """The files of *name*'s definitions whose path shares a word with *question*.
 
-    "the cloudflare pages handler" names ``cloudflare-pages/handler.ts`` over
-    ``cloudflare-workers/serve-static.ts``. The name's own words do not count:
-    every definition shares them. Empty when no path shares a word.
+    The name's own words do not count: every definition shares them. With
+    ``best_only``, only the paths sharing the most words: "the cloudflare pages
+    handler" names ``cloudflare-pages/handler.ts`` over
+    ``cloudflare-workers/serve-static.ts``.
     """
     asked = path_words(question) - path_words(name)
     shared = {p: len(asked & path_words(p.rsplit(".", 1)[0])) for p in paths}
-    best = max(shared.values(), default=0)
-    return [p for p in paths if best and shared[p] == best]
+    floor = max(shared.values(), default=0) if best_only else 1
+    return [p for p in paths if shared[p] and shared[p] >= floor]

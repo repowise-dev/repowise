@@ -612,7 +612,7 @@ def _defs_in_named_files(name: str, cands: list, question: str) -> list:
     "``serveStatic`` in the bun adapter" means the definitions under ``bun/``.
     """
     files = sorted({c.file_path for c in cands})
-    picked = set(paths_the_question_names(name, files, question))
+    picked = set(paths_the_question_names(name, files, question, best_only=True))
     return [c for c in cands if c.file_path in picked] if len(picked) < len(files) else []
 
 
