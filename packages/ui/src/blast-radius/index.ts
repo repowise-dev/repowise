@@ -18,3 +18,4 @@ export * from "./change-picker";
 export * from "./review-status";
 export * from "./review-details";
 export * from "./affected-files";
+export * from "./review-nudge";
