@@ -469,6 +469,12 @@ def test_unambiguous_test_paths_need_more_than_a_test_shaped_name_under_src(
         ("src/api/client.test.ts", True),
         ("src/__mocks__/api.ts", True),
         ("pkg/server/handler_test.go", True),
+        # Storybook and Cypress scaffolding, wherever it sits (#4613)
+        ("src/Button.stories.tsx", True),
+        ("src/Checkout.story.js", True),
+        (".storybook/preview.ts", True),
+        ("cypress/support/commands.ts", True),
+        ("cypress/fixtures/user.json", True),
         # non-source files need a named test tree
         ("Foo.Specs/openapi.yaml", False),
         ("spec/support/openapi.yaml", False),
@@ -477,6 +483,8 @@ def test_unambiguous_test_paths_need_more_than_a_test_shaped_name_under_src(
         ("LoadTests/Runner.cs", False),
         ("src/api/test_routes.py", False),
         ("src/app/main.ts", False),
+        # bare stories.ts is an ordinary module name; the dot qualifier is what marks a story
+        ("src/stories.ts", False),
     ],
 )
 def test_skippable_test_paths_never_drop_a_possible_contract(path: str, expected: bool) -> None:
@@ -500,6 +508,9 @@ _ROOTS = read_pytest_roots(
         ("packages/ui/tests/test_a.py", "test"),
         ("pkg/tests/helpers/test_builders.py", "test"),
         ("conftest.py", "support"),
+        # Storybook story modules are support wherever they sit (#4613)
+        ("src/Button.stories.tsx", "support"),
+        ("src/design/Checkout.story.js", "support"),
         # pytest config says nothing about other languages
         ("src/app/format.test.ts", "test"),
         ("pkg/server/handler_test.go", "test"),
