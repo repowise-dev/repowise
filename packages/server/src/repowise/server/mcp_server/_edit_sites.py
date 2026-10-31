@@ -817,7 +817,7 @@ def _member_reasons(
         lines = _read_lines(root, rel)
         if lines is None or any(word.search(t) for t in lines):
             # The first such file is enough to say why, and keeps the reason short.
-            return [f"member: {name} on untyped receiver in {rel}"]
+            return [f"member: an unscanned file names it: {rel}"]
     return []
 
 

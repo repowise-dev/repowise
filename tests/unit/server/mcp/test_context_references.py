@@ -1050,6 +1050,21 @@ async def test_member_accessed_on_an_untyped_receiver_names_the_file(session, re
     out = await reference_edit_set(session, repo_id, tmp_path, node)
 
     assert out["complete"] is False
-    assert "member: fetch_rows on untyped receiver in app/other.py" in (
+    assert "member: an unscanned file names it: app/other.py" in (
         out["reasons"]
     )
+
+
+@pytest.mark.asyncio
+async def test_member_named_by_an_inherited_bare_use_elsewhere_is_incomplete(
+    session, repo_id, tmp_path
+):
+    # No receiver is written, yet the file may still reach the member.
+    node = await _seed_method(
+        session, repo_id, tmp_path, "class Sub(Base):\n    run = fetch_rows\n"
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    assert out["complete"] is False
+    assert "member: an unscanned file names it: app/other.py" in out["reasons"]
