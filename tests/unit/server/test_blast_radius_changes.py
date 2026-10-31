@@ -134,3 +134,21 @@ async def test_rejects_a_change_it_did_not_list(client, tmp_path):
             f"/api/repos/{repo['id']}/blast-radius/change", json={"change_id": change_id}
         )
         assert resp.status_code == 404, change_id
+
+
+async def test_paths_are_relative_to_a_checkout_below_the_git_root(client, tmp_path):
+    """The index names files from its checkout, which can sit below the git top level."""
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "config", "user.email", "dev@example.com")
+    _git(tmp_path, "config", "user.name", "Dev")
+    (tmp_path / "test-repo").mkdir()
+    (tmp_path / "test-repo" / "a.py").write_text("x = 1\n", encoding="utf-8")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-q", "-m", "init")
+    (tmp_path / "test-repo" / "a.py").write_text("x = 2\n", encoding="utf-8")
+    repo = await create_test_repo(client, tmp_path)
+
+    resp = await client.post(f"/api/repos/{repo['id']}/blast-radius/change", json={"change_id": "working-tree"})
+
+    assert resp.status_code == 200
+    assert resp.json()["changed_files"] == ["a.py"]
