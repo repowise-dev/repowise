@@ -506,7 +506,7 @@ Plus the [shared options](#shared-options-ask-context-symbol-why).
 
 **`--include` values:** `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `references`, `metrics`,
 `community`, `decisions`, `health`, `skeleton`, `skeleton+`, `doc_drift`, `symbols`, `changes`, `provenance`,
-`suspects`.
+`suspects`, `files` (on a directory: every file and its tests).
 
 - Card: title, summary, layer, signatures with lines, hotspot and bug-fix history, doc freshness, skeleton shape.
   `--include skeleton` adds the file body-elided and line-verified; `--full` only then carries one.

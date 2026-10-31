@@ -26,6 +26,7 @@ _INCLUDE_BLOCKS = (
     "changes",
     "provenance",
     "suspects",
+    "files",
 )
 
 #: Card keys the projection replaces or drops. Everything else passes through.
