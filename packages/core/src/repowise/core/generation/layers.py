@@ -195,6 +195,18 @@ def is_adjacent_layer(layer: str) -> bool:
     return layer_key(layer) in _ADJACENT_KEYS
 
 
+def is_fallback_layer(layer_id: str, layer_ids: Iterable[str]) -> bool:
+    """True for :data:`DEFAULT_LAYER` in a curated set, the files no path rule placed.
+
+    A community layer (the uncurated path) takes its slug from a directory
+    name and can read ``application`` too, so the set counts as curated only
+    when every id in *layer_ids* is a spine layer.
+    """
+    if layer_key(layer_id) != layer_key(DEFAULT_LAYER):
+        return False
+    return all(layer_key(other) in _CANONICAL_RANK_BY_KEY for other in layer_ids)
+
+
 def _is_pinned(layer: str) -> bool:
     return layer_key(layer) in _PINNED_KEYS
 

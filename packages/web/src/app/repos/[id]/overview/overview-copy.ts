@@ -1,15 +1,25 @@
 import { getTranslations } from "next-intl/server";
 import type { OverviewBodyCopy } from "@repowise-dev/ui/overview";
 import { attentionSourceLabel } from "@repowise-dev/ui/dashboard/attention-href";
-import { relativeTimeParts } from "@repowise-dev/ui/lib/format";
+import {
+  formatRelativeTime,
+  RELATIVE_TIME_WORDS,
+  type RelativeTimeUnit,
+  type RelativeTimeWords,
+} from "@repowise-dev/ui/lib/format";
+
+/** `overview.ago.*` as raw strings with their `{value}` placeholder, so a
+ *  client component can word an age it measures with the viewer's clock. */
+async function overviewAgoWords(): Promise<RelativeTimeWords> {
+  const t = await getTranslations("overview.ago");
+  const units = Object.keys(RELATIVE_TIME_WORDS) as RelativeTimeUnit[];
+  return Object.fromEntries(units.map((u) => [u, t.raw(u) as string])) as RelativeTimeWords;
+}
 
 /** "2d ago" in the active locale, from `overview.ago.*`. */
 export async function overviewRelativeTime(): Promise<(iso: string) => string> {
-  const t = await getTranslations("overview.ago");
-  return (iso) => {
-    const { unit, value } = relativeTimeParts(iso);
-    return t(unit, { value });
-  };
+  const words = await overviewAgoWords();
+  return (iso) => formatRelativeTime(iso, words);
 }
 
 /**
@@ -20,11 +30,11 @@ export async function overviewRelativeTime(): Promise<(iso: string) => string> {
 export async function overviewBodyCopy(): Promise<OverviewBodyCopy> {
   const t = await getTranslations("overview");
   const tBand = await getTranslations("welcome.repo.band");
-  const relativeTime = await overviewRelativeTime();
+  const ago = await overviewAgoWords();
   return {
     exploreTitle: t("body.exploreTitle"),
     exploreMore: t("body.exploreMore"),
-    changeLine: { since: (when) => t("changeLine.since", { when }), relativeTime },
+    changeLine: { since: (when) => t("changeLine.since", { when }), ago },
     healthLede: {
       label: t("healthLede.label"),
       unit: t("healthLede.unit"),

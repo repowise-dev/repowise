@@ -44,7 +44,6 @@ from repowise.core.analysis.decisions.rationale_comments import (
 )
 from repowise.core.analysis.decisions.rationale_harvest import (
     harvest_repo_rationale,
-    read_repo_text,
 )
 from repowise.core.exclusion import build_exclude_spec, is_excluded
 from repowise.server.mcp_server._why_relevance import (
@@ -280,6 +279,20 @@ def can_lead_answer(row: dict) -> bool:
     return len(set(row.get("matched_terms") or ())) >= _LEAD_MIN_MATCHES
 
 
+def _read_text(repo_root: Path, file_path: str) -> str | None:
+    """Read a repo file's live text, refusing paths outside the root."""
+    try:
+        abs_path = (repo_root / file_path).resolve()
+        abs_path.relative_to(repo_root.resolve())
+        if abs_path.stat().st_size > _MAX_FILE_LINES * 400:
+            return None
+    except (ValueError, OSError):
+        return None
+    from repowise.server.mcp_server._helpers import read_repo_file_text
+
+    return read_repo_file_text(repo_root, file_path, allow_extracted=False)
+
+
 def _truncate_block(comment: str) -> str:
     """Bound a single surfaced block so a long docstring can't flood the
     payload."""
@@ -293,7 +306,7 @@ def _file_blocks(
 ) -> list[tuple[str, int, int, str, frozenset[str], frozenset[str]]]:
     """``(path, start, end, comment, words, own words)`` per comment block of *path*."""
     ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
-    text = read_repo_text(root, path)
+    text = _read_text(root, path)
     if text is None or text.count("\n") > _MAX_FILE_LINES:
         return []
     try:

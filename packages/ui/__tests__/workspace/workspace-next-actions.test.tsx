@@ -130,4 +130,49 @@ describe("WorkspaceNextActions", () => {
     expect(await within(dialog).findByText("Row prompt")).toBeInTheDocument();
     expect(loadPrompt).toHaveBeenCalledWith("f1", expect.objectContaining({ id: "y" }), expect.any(String));
   });
+  it("is folded by default, with the count and the lead item on its heading", () => {
+    const { container } = render(
+      <WorkspaceNextActions
+        data={data}
+        hrefFor={() => null}
+        repoHref={(id) => `/repos/${id}/overview`}
+        contractsHref="/workspace/contracts"
+      />,
+    );
+    const details = container.querySelector("details");
+    expect(details).not.toBeNull();
+    expect(details).not.toHaveAttribute("open");
+    const summary = container.querySelector("summary")!;
+    expect(summary).toHaveTextContent("Do next");
+    // Cross-repo work leads the open list, so it leads the folded heading too.
+    expect(summary).toHaveTextContent(
+      "5 things this week · top: Resolve 2 breaking contract changes across repositories",
+    );
+  });
+
+  it("names the lead repository action when there is no cross-repo work", () => {
+    const { container } = render(
+      <WorkspaceNextActions
+        data={{ ...data, cross_repo: [] }}
+        hrefFor={() => null}
+        repoHref={(id) => `/repos/${id}/overview`}
+        contractsHref="/workspace/contracts"
+      />,
+    );
+    expect(container.querySelector("summary")).toHaveTextContent(
+      "4 things this week · top: Clean up app.tsx in frontend",
+    );
+  });
+
+  it("says nothing stands out when no repository has work", () => {
+    const { container } = render(
+      <WorkspaceNextActions
+        data={{ repos: [data.repos[2]!], cross_repo: [] }}
+        hrefFor={() => null}
+        repoHref={(id) => `/repos/${id}/overview`}
+        contractsHref="/workspace/contracts"
+      />,
+    );
+    expect(container.querySelector("summary")).toHaveTextContent("Nothing stands out this quarter");
+  });
 });

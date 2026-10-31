@@ -582,11 +582,11 @@ describe("DocsTree", () => {
     // longer on the top rung under a declared spine — it sits inside this row.
     // The case where it does reach the top rung, on a repo with no spine at
     // all, is covered by the test above.)
-    const unlayeredRow = labels.find((l) => l.includes("Modules with no layer")) ?? "";
+    const unlayeredRow = labels.find((l) => l.includes("Other modules")) ?? "";
     expect(unlayeredRow).not.toBe("");
     expect(unlayeredRow).not.toMatch(/^\d/);
     // And it does not show its global number once opened, either.
-    fireEvent.click(screen.getByText("Modules with no layer (1)"));
+    fireEvent.click(screen.getByText("Other modules (1)"));
     const stray = rowLabels().find((l) => l.includes("odd/bits")) ?? "";
     expect(stray).not.toBe("");
     expect(stray).not.toMatch(/^\d/);
@@ -632,7 +632,7 @@ describe("DocsTree", () => {
     // The pages are still shown — a missing grouping never hides a page. An
     // unstamped module now waits in the trailing group rather than posing as a
     // layer on the top rung, so it takes one click to reach.
-    fireEvent.click(screen.getByText("Modules with no layer (1)"));
+    fireEvent.click(screen.getByText("Other modules (1)"));
     expect(screen.getByText("api/routes")).toBeInTheDocument();
     warn.mockRestore();
   });
@@ -705,10 +705,10 @@ describe("DocsTree", () => {
     // Not a sibling of the layer rows, where it would be styled as one.
     expect(screen.queryByText("aaa/config")).not.toBeInTheDocument();
     // The trailing row says what it is, and does not read like a layer.
-    const group = screen.getByText("Modules with no layer (1)");
+    const group = screen.getByText("Other modules (1)");
     // After every layer row, and before the bottom folder.
-    expect(indexOfRow("Zebra Runtime")).toBeLessThan(indexOfRow("Modules with no layer"));
-    expect(indexOfRow("Alpha API")).toBeLessThan(indexOfRow("Modules with no layer"));
+    expect(indexOfRow("Zebra Runtime")).toBeLessThan(indexOfRow("Other modules"));
+    expect(indexOfRow("Alpha API")).toBeLessThan(indexOfRow("Other modules"));
     // Collapsed on load — only layer keys join the default-expanded set.
     fireEvent.click(group);
     expect(screen.getByText("aaa/config")).toBeInTheDocument();
@@ -731,12 +731,12 @@ describe("DocsTree", () => {
     );
     // The layer opens on load; the leftovers bucket is one of the two rows that
     // does not, so open it to see where its member landed.
-    fireEvent.click(screen.getByText("Modules with no layer (1)"));
+    fireEvent.click(screen.getByText("Other modules (1)"));
     // The stamped module reads under its layer; the unstamped one reads under
     // the trailing group, which sits below every layer.
     expect(indexOfRow("Zebra Runtime")).toBeLessThan(indexOfRow("runtime/engine"));
-    expect(indexOfRow("runtime/engine")).toBeLessThan(indexOfRow("Modules with no layer"));
-    expect(indexOfRow("Modules with no layer")).toBeLessThan(indexOfRow("aaa/config"));
+    expect(indexOfRow("runtime/engine")).toBeLessThan(indexOfRow("Other modules"));
+    expect(indexOfRow("Other modules")).toBeLessThan(indexOfRow("aaa/config"));
   });
 
   it("pins the onboarding chapters in Start here, ahead of the layers", () => {
@@ -756,9 +756,9 @@ describe("DocsTree", () => {
       />,
     );
     // Only the module was moved — the chapter is not swept into the group.
-    expect(screen.getByText("Modules with no layer (1)")).toBeInTheDocument();
+    expect(screen.getByText("Other modules (1)")).toBeInTheDocument();
     expect(indexOfRow("Getting Started")).toBeLessThan(indexOfRow("Zebra Runtime"));
-    expect(indexOfRow("Getting Started")).toBeLessThan(indexOfRow("Modules with no layer"));
+    expect(indexOfRow("Getting Started")).toBeLessThan(indexOfRow("Other modules"));
   });
 
   it("warns about an unstamped module by name, and not about the chapters", () => {
@@ -802,7 +802,7 @@ describe("DocsTree", () => {
     );
     // With no spine there is nothing for a module to be missing from: it keeps
     // its place, no trailing group appears, and nobody complains.
-    expect(screen.queryByText(/Modules with no layer/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Other modules/)).not.toBeInTheDocument();
     expect(screen.getByText("aaa/config")).toBeInTheDocument();
     expect(indexOfRow("Getting Started")).toBeLessThan(indexOfRow("aaa/config"));
     expect(warn).not.toHaveBeenCalled();
@@ -935,7 +935,7 @@ describe("DocsTree", () => {
     expect(rowLabels().some((l) => l.trim() === "onboarding")).toBe(false);
   });
 
-  it("pins a Start here group: overview, chapters in order, then flows", () => {
+  it("pins a Start here group: overview and chapters in order, flows in their own shut row", () => {
     const flow = makePage({
       id: "flow_page:flows/request",
       page_type: "flow_page",
@@ -968,11 +968,16 @@ describe("DocsTree", () => {
       "Repository Overview: demo",
       "Key Concepts",
       "Getting Started",
-      "How a request is served",
+      "Walkthroughs (1)",
       "Zebra Runtime",
     ].map(indexOfRow);
     expect(order).toEqual([...order].sort((a, b) => a - b));
     expect(order[0]).toBeGreaterThan(start);
+    // The walkthroughs open shut, and list their pages once opened.
+    expect(screen.queryByText("How a request is served")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("Walkthroughs (1)"));
+    expect(indexOfRow("How a request is served")).toBeGreaterThan(indexOfRow("Walkthroughs (1)"));
+    expect(indexOfRow("How a request is served")).toBeLessThan(indexOfRow("Zebra Runtime"));
     // The chapter keeps its reading number inside the group, and the outline
     // continues the run after it.
     expect(rowLabels().some((l) => l.startsWith("1") && l.includes("Getting Started"))).toBe(true);

@@ -442,35 +442,12 @@ def stamp_file_page_scope(
     Eligibility applies selection's gates except the cap, as init's figure does;
     an unreadable store keeps the previous figures.
     """
-    if not parsed_files or graph_builder is None:
-        return
-    from repowise.core.generation import GenerationConfig
-    from repowise.core.generation.selection.selector import eligible_file_page_paths
     from repowise.core.index_scope import file_page_counts, resolve_index_scope, stamp_index_scope
-    from repowise.core.repo_config import load_repo_config
 
-    try:
-        pagerank = graph_builder.pagerank()
-    except Exception as exc:  # a released graph cannot rank anything
-        log.debug("file_page_scope_skipped", error=str(exc))
+    counted = _eligible_and_paged(repo_path, parsed_files, graph_builder, git_meta_map)
+    if counted is None:
         return
-    stored = run_async(_load_page_paths_and_hotspots(repo_path))
-    if stored is None:
-        return
-    page_paths, hotspots = stored
-    for path, meta in (git_meta_map or {}).items():
-        if meta.get("is_hotspot"):
-            hotspots.add(path)
-        else:
-            hotspots.discard(path)
-    eligible = eligible_file_page_paths(
-        parsed_files,
-        pagerank,
-        hotspots=hotspots,
-        dedupe_near_clones=GenerationConfig.from_repo_config(
-            load_repo_config(Path(repo_path))
-        ).dedupe_near_clones,
-    )
+    eligible, page_paths = counted
     config = load_config(repo_path)
     stamp_index_scope(
         state,
@@ -481,6 +458,67 @@ def stamp_file_page_scope(
             generated=len(eligible & page_paths),
         ),
     )
+
+
+def file_paths_without_page(
+    repo_path: Any,
+    parsed_files: list | None,
+    graph_builder: Any,
+    git_meta_map: dict | None,
+) -> list[str]:
+    """Eligible files the store holds no file page for, the ones the scope counts as omitted.
+
+    The cascade budget only defers pages: one past it is marked stale and a
+    later run re-renders it. A file that never had a page has nothing to mark,
+    so without this it stayed missing for good.
+    """
+    counted = _eligible_and_paged(repo_path, parsed_files, graph_builder, git_meta_map)
+    if counted is None:
+        return []
+    eligible, page_paths = counted
+    return sorted(eligible - page_paths)
+
+
+def _eligible_and_paged(
+    repo_path: Any,
+    parsed_files: list | None,
+    graph_builder: Any,
+    git_meta_map: dict | None,
+) -> tuple[set[str], set[str]] | None:
+    """``(eligible file paths, paths with a live file page)``, or ``None`` when unknown."""
+    if not parsed_files or graph_builder is None:
+        return None
+    from repowise.core.generation import GenerationConfig
+    from repowise.core.generation.api_contract_detector import detect_code_api_contracts
+    from repowise.core.generation.selection.selector import eligible_file_page_paths
+    from repowise.core.repo_config import load_repo_config
+
+    try:
+        pagerank = graph_builder.pagerank()
+    except Exception as exc:  # a released graph cannot rank anything
+        log.debug("file_page_scope_skipped", error=str(exc))
+        return None
+    stored = run_async(_load_page_paths_and_hotspots(repo_path))
+    if stored is None:
+        return None
+    page_paths, hotspots = stored
+    for path, meta in (git_meta_map or {}).items():
+        if meta.get("is_hotspot"):
+            hotspots.add(path)
+        else:
+            hotspots.discard(path)
+    # Route files get an API-contract page, not a file page; generation flags
+    # them, and a count taken before it runs would call them missing.
+    detect_code_api_contracts(parsed_files)
+    eligible = eligible_file_page_paths(
+        parsed_files,
+        pagerank,
+        hotspots=hotspots,
+        dedupe_near_clones=GenerationConfig.from_repo_config(
+            load_repo_config(Path(repo_path))
+        ).dedupe_near_clones,
+    )
+    return eligible, page_paths
 
 
 async def _load_page_paths_and_hotspots(repo_path: Any) -> tuple[set[str], set[str]] | None:

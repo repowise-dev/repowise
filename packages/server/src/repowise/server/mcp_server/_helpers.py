@@ -684,7 +684,9 @@ def _compute_alignment(
 # ---------------------------------------------------------------------------
 
 
-def read_repo_file_text(repo_root: Path | str | None, file_path: str) -> str | None:
+def read_repo_file_text(
+    repo_root: Path | str | None, file_path: str, *, allow_extracted: bool = True
+) -> str | None:
     """Read a repo-relative file's live text, or None when it cannot be served.
 
     Refuses any path that resolves outside *repo_root*: several tools serve
@@ -693,19 +695,23 @@ def read_repo_file_text(repo_root: Path | str | None, file_path: str) -> str | N
     card describing a latin-1 file should degrade to mojibake in one field,
     rather than failing the whole call.
 
-    Several tool modules still carry their own near-identical copy of this,
-    each with one extra behaviour bolted on (a size ceiling, lines instead of
-    text). Those are left alone here rather than churned, but new callers
-    belong on this one, and a copy that needs a variation should wrap it.
+    Source-coordinate readers must set ``allow_extracted=False``. Async callers
+    allowing extraction must offload this synchronous reader.
+
+    Classification, containment and conversion belong to the core source reader;
+    this optional serving boundary translates extraction failures to unavailable.
     """
     if repo_root is None:
         return None
+    from repowise.core.ingestion.document_extractors import DocumentExtractionError
+    from repowise.core.ingestion.source_reader import read_source
+
     try:
-        root = Path(str(repo_root))
-        abs_path = (root / file_path).resolve()
-        abs_path.relative_to(root.resolve())
-        return abs_path.read_text(encoding="utf-8", errors="replace")
-    except (OSError, ValueError):
+        source = read_source(Path(str(repo_root)), file_path, allow_extracted=allow_extracted)
+        if source is None:
+            return None
+        return source.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+    except (OSError, ValueError, DocumentExtractionError):
         return None
 
 

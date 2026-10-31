@@ -56,6 +56,7 @@ def _parse_misses(
     for (idx, _item, content_hash), parsed in zip(to_parse, results, strict=True):
         if isinstance(parsed, tuple | BaseException):
             continue
+        parsed.content_hash = content_hash
         merged[idx] = parsed
         if content_hash:
             _cache_parsed(parse_cache, parsed, content_hash)
@@ -295,19 +296,32 @@ def _traverse_repo(
 def _read_and_parse_misses(
     repo_path: Any,
     file_infos: list[Any],
+    stats: Any,
     *,
     read_only: bool,
     timings: PhaseTimings | None,
     log: LogFn,
 ) -> tuple[Any, list[tuple], dict[int, Any], list[tuple[int, tuple, str]]]:
-    """Read sources, split cache hits/misses, then parse only the misses."""
-    from repowise.core.pipeline.phases.ingestion import _read_sources, _split_cached
+    """Read sources, split cache hits/misses, then parse only the misses.
+
+    A document whose Markdown is over the ceiling leaves *file_infos* in place,
+    so it drops out of the index scope like a file the walk skipped.
+    """
+    from repowise.core.pipeline.phases.ingestion import (
+        _read_sources,
+        _skipped_source_line,
+        _split_cached,
+        drop_skipped_documents,
+    )
 
     with timed(timings, "rebuild.read"):
         file_bytes = _read_sources(file_infos, None)
-        parse_cache, cached_hits, to_parse = _split_cached(
-            Path(repo_path), file_bytes, None
+        parse_cache, cached_hits, to_parse, skipped = _split_cached(
+            Path(repo_path), file_bytes, None, write_cache=not read_only
         )
+    drop_skipped_documents(file_infos, stats, skipped)
+    for record in skipped:
+        log(f"[yellow]{_skipped_source_line(record).strip()}[/yellow]")
     if read_only:
         parse_cache = None
     merged = _parse_misses(cached_hits, to_parse, parse_cache, timings, log)
@@ -467,6 +481,15 @@ pass reads the sources.
     # Thread-pool source reads + content-hash parse cache split, shared with
     # the init parse phase: only changed files need a tree-sitter parse.
     # Cache failures degrade to all-miss (full parse), as before.
+    parse_cache, fi_and_bytes, merged, to_parse = _read_and_parse_misses(
+        repo_path,
+        file_infos,
+        traverser.stats,
+        read_only=read_only,
+        timings=timings,
+        log=log,
+    )
+    # Built after the read, which can still drop a document from file_infos.
     graph_builder = _new_update_graph_builder(
         repo_path,
         exclude_patterns,
@@ -475,13 +498,6 @@ pass reads the sources.
         include_nested_repos=include_nested_repos,
         traverser=traverser,
         file_infos=file_infos,
-    )
-    parse_cache, fi_and_bytes, merged, to_parse = _read_and_parse_misses(
-        repo_path,
-        file_infos,
-        read_only=read_only,
-        timings=timings,
-        log=log,
     )
 
     skipped = len(file_infos) - len(fi_and_bytes)

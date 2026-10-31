@@ -121,6 +121,12 @@ The plugin registers two hooks that run `repowise-augment`:
   matches by graph centrality, flagging a stale read, or recording
   read-after-served MCP traffic).
 
+A `PreToolUse` hook on `Bash|PowerShell` runs `repowise-rewrite`, which wraps a
+recognized noisy command (tests, builds, git, searches) in `repowise distill`
+so the agent sees errors first and a short summary. A repo turns it off with
+`repowise hook rewrite uninstall` or `distill.commands.enabled: false` in
+`.repowise/config.yaml`.
+
 No LLM, no network. (`repowise init` installs the same hooks in
 `~/.claude/settings.json`; running both is safe — duplicate enrichment is
 de-duplicated.)

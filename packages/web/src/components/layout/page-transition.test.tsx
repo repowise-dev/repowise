@@ -33,6 +33,13 @@ describe("PageTransition", () => {
     expect(screen.getByTestId("transition").className).toContain("overflow-hidden");
   });
 
+  it("locks the Knowledge Graph so its canvas fills the viewport height", () => {
+    navigation.pathname = "/repos/r1/knowledge-graph";
+    render(<PageTransition>Map</PageTransition>);
+    expect(screen.getByTestId("transition").className).toContain("min-h-0");
+    expect(screen.getByTestId("transition").className).toContain("overflow-hidden");
+  });
+
   it("keeps ordinary document routes eligible for main-page scrolling", () => {
     navigation.pathname = "/repos/r1/files";
     render(<PageTransition>Files</PageTransition>);

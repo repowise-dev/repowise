@@ -27,7 +27,12 @@ Tree-sitter AST walker. Single AST pass per file computes:
 
 - **CCN** — McCabe cyclomatic complexity. Counts branching constructs
   (`if`, `for`, `while`, `case`, `catch`) plus boolean operators
-  (`&&`, `||`).
+  (`&&`, `||`). In C / C++ the arms of a `#if` / `#ifdef` block with
+  `#elif` / `#else` alternatives are alternative builds, so CCN and
+  cognitive take the **largest arm** (not the sum); an `#if` with no
+  alternative is unchanged. Nested blocks and `#elif` chains follow the
+  same rule. NLOC still counts every arm, because those lines exist in the
+  file, and complex conditions are still reported from every arm.
 - **max nesting depth** — deepest nested control-flow block per function.
   `else if` arms and, in TS/JS, ternary chain arms and ternaries choosing
   JSX (`flat_ternary_kinds`), plus Python conditional-expression chains

@@ -22,6 +22,12 @@ def test_empty_and_none_values_are_not_sent_below_the_top_level() -> None:
     assert result == {"results": [], "card": {"kept": 0}, "_meta": {}}
 
 
+def test_layer_debug_stamps_are_not_sent() -> None:
+    meta = {"timing_ms": 4.2, "replaced_tokens": 900, "tokens_saved": 700, "kept": 1}
+
+    assert lean_response({"_meta": meta})["_meta"] == {"kept": 1}
+
+
 def test_an_empty_list_with_a_basis_is_the_answer_and_stays() -> None:
     card = lean_response({"t": {"callers": [], "callers_basis": "python"}})["t"]
 

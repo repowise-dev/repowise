@@ -264,9 +264,15 @@ def word_scan(root: Path, token: str) -> tuple[list[dict[str, Any]], bool]:
     """The word-bounded lines holding *token* in every listed file, from the
     same scan a literal search runs, and whether that scan read them all. For
     get_answer, which reads live lines the wiki never rendered (function
-    bodies, string literals)."""
+    bodies, string literals). A file cut at the per-file line cap still served
+    rows, so it hides no file and leaves the scan complete."""
     rows, reasons = _scan_listed(root, token, True)
-    return rows, not reasons
+    return rows, all(r.startswith(_per_file_cap_reason()) for r in reasons)
+
+
+def _per_file_cap_reason() -> str:
+    """The reason a scan gives for files it cut at the per-file line cap."""
+    return f"over {MAX_LINES_PER_FILE} lines in"
 
 
 def production_only(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -301,6 +307,12 @@ def scan_literal(
     per_file_capped = overflow = defs = 0
     deadline = time.monotonic() + MAX_SCAN_SECONDS
     undecodable = binary_hits = 0
+    from repowise.core.ingestion.document_extractors import (
+        document_extractor_claims,
+        is_extracted_document,
+    )
+
+    claims = document_extractor_claims()
     for i, rel in enumerate(files):
         if i >= MAX_SCAN_FILES:
             reasons.append(f"over {MAX_SCAN_FILES} files")
@@ -334,6 +346,8 @@ def scan_literal(
             # A graph file node can name a package directory; it holds no text.
             if not (root / rel).is_dir():
                 unreadable.append(rel)
+            continue
+        if is_extracted_document(root / rel, data, claims=claims):
             continue
         if b"\x00" in data:
             # Binary: no lines to serve, but one holding the token is a match
@@ -383,7 +397,7 @@ def scan_literal(
     if binary_hits:
         reasons.append(f"{binary_hits} binary files contain the token")
     if per_file_capped:
-        reasons.append(f"over {MAX_LINES_PER_FILE} lines in {per_file_capped} files")
+        reasons.append(f"{_per_file_cap_reason()} {per_file_capped} files")
     return rows, reasons
 
 

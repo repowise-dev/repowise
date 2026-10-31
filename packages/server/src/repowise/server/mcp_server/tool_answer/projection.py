@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import re
 from collections.abc import Callable
@@ -866,11 +867,15 @@ def _file_size(root: Path, path: str) -> tuple[int | None, int] | None:
         abs_path = (root / path).resolve()
         # An index row is not a trust boundary; refuse anything outside the repo.
         abs_path.relative_to(root.resolve())
+        from repowise.core.ingestion.document_extractors import is_extracted_document
+
         if not abs_path.is_file():
             return None
         size = abs_path.stat().st_size
         if size > _LINE_COUNT_MAX_BYTES:
             return None, size
+        if is_extracted_document(root / path):
+            return None
         lines, last = 0, b""
         with abs_path.open("rb") as handle:
             while chunk := handle.read(65536):
@@ -986,9 +991,29 @@ def projected_answer(fn: Callable[..., Any]) -> Callable[..., Any]:
         if slimmed:
             await _refresh_file_sizes(payload, repo, ranked=ranked)
         _stamp_completeness(payload)
+        await _declare_replaced_reads(payload, root, repo)
         return payload
 
     return _wrapped
+
+
+async def _declare_replaced_reads(
+    payload: dict[str, Any], root: Path | None, repo: str | None
+) -> None:
+    """Credit what this reply served with the real Read cost of its files. Never raises."""
+    from repowise.server.mcp_server._savings import declare_replaced
+    from repowise.server.mcp_server._savings.counterfactual import answer_replaced_tokens
+    from repowise.server.mcp_server._savings.reads import file_read_tokens
+
+    if payload.get("error"):
+        return
+    try:
+        root = root or await _resolve_root(repo)
+        read_cost = (lambda p: file_read_tokens(root, p)) if root is not None else None
+        tokens = await asyncio.to_thread(answer_replaced_tokens, payload, read_cost)
+    except Exception:  # savings accounting never breaks a tool call
+        return
+    declare_replaced(payload, tokens)
 
 
 __all__ = ["project_answer_payload", "projected_answer"]

@@ -147,8 +147,11 @@ def collapse(rel: str, content: str, prior: dict, *, touched: bool) -> Offer | N
         f"context and are not repeated here.{also}\n"
         "Read it again and you get the content — this is never collapsed twice in a row."
     )
-    raw_tokens = max(1, len(content) // 4)
-    new_tokens = max(1, len(text) // 4)
+    from repowise.core.distill.budget import estimate_read_tokens
+
+    # Claude Code numbers every line of a Read, the notice included.
+    raw_tokens = max(1, estimate_read_tokens(content, numbered=True))
+    new_tokens = max(1, estimate_read_tokens(text, numbered=True))
     if new_tokens >= raw_tokens:
         return None
     return Offer(

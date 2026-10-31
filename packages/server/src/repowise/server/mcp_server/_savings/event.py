@@ -18,6 +18,7 @@ saving is the measured truncation, ``raw - delivered``, and nothing is inferred.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from repowise.core.savings.correlation import scoped_idempotency_key
@@ -26,8 +27,9 @@ from .interaction import Interaction
 
 logger = logging.getLogger(__name__)
 
-#: The estimator every repowise savings figure is reported on: floor(chars / 4).
-_ESTIMATOR = "chars_per_token_floor_v1"
+#: Token scale floor(chars / 4), same as v1. v2 marks the revised counterfactual
+#: table (docs/architecture/savings-accounting.md, "MCP counterfactuals").
+_ESTIMATOR = "chars_per_token_floor_v2"
 _TOKEN_UNIT = "estimated_tokens"
 
 
@@ -72,19 +74,31 @@ def _marks_partial(key: str) -> bool:
     return key in ("omitted", "partial") or key.endswith("_partial") or "truncated" in key
 
 
-def raw_response_tokens(result: Any) -> int | None:
+def raw_response_tokens(
+    result: Any, shape: Callable[[Any], Any] | None = None
+) -> int | None:
     """Size an unbudgeted tool response, or ``None`` when it cannot be sized.
 
     Distinct from the delivered measurement: nothing has stamped a size on this
     payload yet, so it is serialized here, compactly, on the same
     ``floor(chars / 4)`` scale every repowise savings figure uses.
+
+    *shape* applies the passes that run after the budget (the trust envelope
+    and the lean pass) to a copy, so this size and the delivered size are taken
+    in the same shape. Without it, metadata the lean pass trims would count as
+    a drop on every call.
     """
     import json
 
     from repowise.core.distill.budget import estimate_tokens
 
     try:
-        return estimate_tokens(json.dumps(result, separators=(",", ":"), default=str))
+        text = json.dumps(result, separators=(",", ":"), default=str)
+        if shape is not None:
+            # The round trip is the copy: those passes mutate in place, and
+            # the live payload still has to go through the budget.
+            text = json.dumps(shape(json.loads(text)), separators=(",", ":"), default=str)
+        return estimate_tokens(text)
     except Exception:
         return None
 
@@ -126,7 +140,7 @@ def record(interaction: Interaction, result: Any) -> bool:
 
 def _record(interaction: Interaction, result: Any) -> bool:
     from repowise.core.savings import recorder
-    from repowise.core.savings.pricing import resolve_pricing_snapshot
+    from repowise.core.savings.pricing import resolve_pricing_snapshot, warm_pricing_snapshot
 
     from .wrapper import response_tokens
 
@@ -143,10 +157,12 @@ def _record(interaction: Interaction, result: Any) -> bool:
     # seconds on a repository with no Codex history, and this runs inside the
     # agent's own tool call. Once a day is still far too often to stall one.
     #
-    # So the tool call takes an unpriced event and `repowise distill` or
-    # `repowise saved` fills the cache; the report counts priced and unpriced
+    # So the tool call takes an unpriced event and starts a background scan
+    # that prices the calls after it; the report counts priced and unpriced
     # tokens separately for exactly this reason.
     pricing = resolve_pricing_snapshot(interaction.repo_root, allow_scan=False)
+    if pricing is None:
+        warm_pricing_snapshot(interaction.repo_root)
 
     payload: dict[str, Any] = {
         "event_id": interaction.event_id,

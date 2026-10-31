@@ -18,7 +18,9 @@ from typing import Any
 from sqlalchemy import select
 
 from repowise.core.persistence.models import WikiSymbol
+from repowise.core.support_paths import is_doc_or_config_path
 from repowise.core.test_paths import is_test_related_path
+from repowise.server.mcp_server._helpers import read_repo_file_text
 from repowise.server.mcp_server._line_hits import production_only, word_scan
 from repowise.server.mcp_server._query_shape import (
     _WORD_CHAIN_RE,
@@ -27,7 +29,7 @@ from repowise.server.mcp_server._query_shape import (
     _looks_like_code_name,
     _unmistakably_code,
 )
-from repowise.server.mcp_server._query_terms import split_humps
+from repowise.server.mcp_server._query_terms import paths_the_question_names, split_humps
 from repowise.server.mcp_server._verify import verify_and_heal
 from repowise.server.mcp_server.tool_answer.config import (
     _ANCHOR_KINDS,
@@ -255,6 +257,7 @@ async def _anchor_symbol_hits(
     repo_root: Path | None = None,
     session_factory: Any = None,
     question: str = "",
+    scope: str | None = None,
 ) -> tuple[list[dict], dict[str, Any]]:
     """Inject the defining file of a question-named indexed symbol into hits.
 
@@ -312,9 +315,11 @@ async def _anchor_symbol_hits(
         if prose:
             by_name = await _trusted_over_topic(by_name, question_ids, guard)
             literal = await _literal_holders(session, repo_id, question_ids - indexed_names, guard)
-        homonyms["absent"] = await _absent_names(homonyms["unindexed"], guard)
+        homonyms["absent"] = await _absent_names(homonyms["unindexed"], guard, scope)
 
-    chosen = await _choose_anchor_symbols(by_name, question_ids, _verified_dict, homonyms)
+    chosen = await _choose_anchor_symbols(
+        by_name, question_ids, _verified_dict, homonyms, question=question
+    )
     if not chosen and not literal:
         return hits, homonyms
     await _anchor_chosen_symbols(hits, chosen, _verified_dict, prose=prose)
@@ -378,10 +383,15 @@ class _TopicGuard:
         rows, _complete = await self._scan(token)
         return production_only(rows)
 
-    async def written(self, token: str) -> bool | None:
-        """Whether any file writes *token*; None when the scan stopped short."""
+    async def written(self, token: str, scope: str | None = None) -> bool | None:
+        """Whether any file (under *scope*, if given) writes *token* as code;
+        None when the scan stopped short. See :func:`_writes_as_code`."""
         rows, complete = await self._scan(token)
-        return True if rows else (False if complete else None)
+        if scope:
+            rows = [r for r in rows if f"{r['path']}/".startswith(f"{scope}/")]
+        if rows and await asyncio.to_thread(_writes_as_code, self.root, rows, token):
+            return True
+        return False if complete else None
 
     async def trusts(self, token: str, row) -> bool:
         # A plain capitalised word (``Gson``, ``Client``) is also prose, often the
@@ -399,7 +409,70 @@ class _TopicGuard:
         return bool(self.topic_stems & _text_stems(owner))
 
 
-async def _absent_names(unindexed: list[str], guard: _TopicGuard) -> list[str]:
+# A source line that is all comment, or opens a docstring. A bare ``*`` is left
+# out (``*ptr = x``; block comment bodies are masked), and ``#`` counts only
+# where it starts a comment: it is code in ``#define``, ``#[derive]``, ``#field``.
+_COMMENT_OR_DOC_START_RE = re.compile(r"""(?://|/\*|[rRbBuUfF]{0,2}(?:\"\"\"|'''))""")
+_HASH_COMMENT_SUFFIXES = frozenset({".py", ".pyi", ".rb", ".sh", ".bash", ".pl", ".r", ".ex", ".exs"})
+# A quoted string on one line, for test lines (see _writes_as_code). Single
+# quotes only where they delimit strings: elsewhere they are chars or lifetimes.
+_DOUBLE_QUOTED_RE = re.compile(r""""(?:\\.|[^"\\])*"|`[^`]*`""")
+_SINGLE_QUOTED_RE = re.compile(r"""'(?:\\.|[^'\\])*'""")
+_SINGLE_QUOTE_STRING_SUFFIXES = _HASH_COMMENT_SUFFIXES | {
+    ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".php"
+}
+
+
+def _writes_as_code(root: Path | None, rows: list[dict], token: str) -> bool:
+    """Does any scanned row's file write *token* as code, not in a comment or docstring?
+
+    A test line counts only when the name sits outside its strings: a question
+    or fixture text naming the name is not code that has it. Doc and config
+    files count as before, and so does a file that cannot be read, since it
+    proves nothing. Ceilings: a trailing comment after code still counts, and
+    a multi-line non-doc string (SQL in triple quotes) reads as a docstring.
+    """
+    word = re.compile(rf"(?<![\w$]){re.escape(token)}(?![\w$])")
+    paths = dict.fromkeys(r["path"] for r in rows)
+    return any(_file_writes_as_code(root, path, word) for path in paths)
+
+
+def _file_writes_as_code(root: Path | None, path: str, word: re.Pattern) -> bool:
+    """:func:`_writes_as_code` for one file, over every line of it: the scan
+    cuts a file at a per-file line cap, and a write may sit past the cut."""
+    text = None if is_doc_or_config_path(path) else read_repo_file_text(root, path)
+    if text is None:
+        return True
+    lines = text.splitlines()
+    masked = _string_masked_lines(tuple(lines), backticks=False).all
+    suffix = Path(path).suffix.lower()
+    hash_comments = suffix in _HASH_COMMENT_SUFFIXES
+    test = is_test_related_path(path)
+    for n, line in enumerate(lines, 1):
+        if n in masked or not word.search(line) or _is_comment_line(line.lstrip(), hash_comments):
+            continue
+        if not test or word.search(_unquoted(line, suffix)):
+            return True
+    return False
+
+
+def _is_comment_line(stripped: str, hash_comments: bool) -> bool:
+    if _COMMENT_OR_DOC_START_RE.match(stripped):
+        return True
+    return hash_comments and stripped.startswith("#")
+
+
+def _unquoted(line: str, suffix: str) -> str:
+    """*line* with its one-line strings blanked."""
+    line = _DOUBLE_QUOTED_RE.sub(" ", line)
+    if suffix in _SINGLE_QUOTE_STRING_SUFFIXES:
+        line = _SINGLE_QUOTED_RE.sub(" ", line)
+    return line
+
+
+async def _absent_names(
+    unindexed: list[str], guard: _TopicGuard, scope: str | None = None
+) -> list[str]:
     """The unindexed names :func:`_names_nothing_in_code` holds absent.
 
     Best effort: a failed scan proves nothing, and must not cost the anchoring.
@@ -407,21 +480,24 @@ async def _absent_names(unindexed: list[str], guard: _TopicGuard) -> list[str]:
     try:
         candidates = [t for t in unindexed if "." not in t and _unmistakably_code(t)]
         return [
-            t for t in candidates[:_LITERAL_SCAN_MAX_TOKENS] if await _names_nothing_in_code(t, guard)
+            t
+            for t in candidates[:_LITERAL_SCAN_MAX_TOKENS]
+            if await _names_nothing_in_code(t, guard, scope)
         ]
     except Exception:
         return []
 
 
-async def _names_nothing_in_code(token: str, guard: _TopicGuard) -> bool:
+async def _names_nothing_in_code(token: str, guard: _TopicGuard, scope: str | None = None) -> bool:
     """An unindexed, code-shaped name that no file writes, by a scan that read them all.
 
     Mixed case, an underscore or a digit (``FileTree``, ``retry_policy``); an
-    all-caps acronym (``SSG``) is prose often enough to be left alone.
+    all-caps acronym (``SSG``) is prose often enough to be left alone. With a
+    *scope*, only files under it count: the question asks about that code.
     """
     if "." in token or not _unmistakably_code(token):
         return False
-    return await guard.written(token) is False
+    return await guard.written(token, scope) is False
 
 
 async def _trusted_over_topic(
@@ -530,11 +606,22 @@ def _question_names_parent(cand, question_ids: set[str]) -> bool:
     return any(q in qualified for q in code if len(q) >= 4 and q != name)
 
 
+def _defs_in_named_files(name: str, cands: list, question: str) -> list:
+    """*cands* in the files whose path a question word names, when that leaves some out.
+
+    "``serveStatic`` in the bun adapter" means the definitions under ``bun/``.
+    """
+    files = sorted({c.file_path for c in cands})
+    picked = set(paths_the_question_names(name, files, question, best_only=True))
+    return [c for c in cands if c.file_path in picked] if len(picked) < len(files) else []
+
+
 async def _choose_anchor_symbols(
     by_name: dict[str, list],
     question_ids: set[str],
     verified_dict: Callable[[Any], Awaitable[dict]],
     homonyms: dict[str, Any],
+    question: str = "",
 ) -> list:
     """The one def per question-named symbol to anchor on.
 
@@ -550,13 +637,16 @@ async def _choose_anchor_symbols(
             continue
         # Disambiguate a homonym when the question names its parent or the
         # parent appears in the qualified name.
+        leaf = (name or "").lower()
+        targeted = any(q.rsplit(".", 1)[-1] == leaf and q != leaf for q in qualifiers)
         narrowed = [c for c in cands if _question_names_parent(c, question_ids)]
+        if not narrowed and not targeted:
+            # Or when a question word names the directory or file of some.
+            narrowed = _defs_in_named_files(name, cands, question)
         if len(narrowed) == 1:
             chosen.append(narrowed[0])
             continue
         # Can't narrow to exactly one. Decide union vs qualified-miss.
-        leaf = (name or "").lower()
-        targeted = any(q.rsplit(".", 1)[-1] == leaf and q != leaf for q in qualifiers)
         if narrowed:
             # Qualifier matched >1 def: union of the narrowed set (still all
             # genuine candidates for the qualified name).

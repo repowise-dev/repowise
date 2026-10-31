@@ -45,6 +45,19 @@ interface PersistedDockState {
 
 const DEFAULT_STATE: PersistedDockState = { mode: "minimized", draft: "" };
 
+/** The minimized dock's default gap above the viewport bottom (`collisionInset`). */
+const DEFAULT_COLLISION_INSET = "1rem";
+
+/** The minimized pill's minimum height; the pill and `CHAT_DOCK_PILL_REACH` both read it. */
+const PILL_MIN_HEIGHT = "2.75rem";
+
+/**
+ * How far the minimized dock reaches up from the viewport bottom at its
+ * default offset. A host panel anchored bottom-right stops above this rather
+ * than run under the pill.
+ */
+export const CHAT_DOCK_PILL_REACH = `calc(${DEFAULT_COLLISION_INSET} + ${PILL_MIN_HEIGHT})`;
+
 function readDockState(storageKey: string): PersistedDockState {
   if (typeof window === "undefined") return DEFAULT_STATE;
   try {
@@ -221,7 +234,7 @@ export function ChatDock({
   onOpenFullChat,
   owlDarkSrc = "/repowise-logo.png",
   owlLightSrc = "/repowise-logo-light.png",
-  collisionInset = "1rem",
+  collisionInset = DEFAULT_COLLISION_INSET,
   onArtifactPin,
   onOpenArtifactSource,
   artifactOverrides,
@@ -397,7 +410,8 @@ export function ChatDock({
                 ? `Open repository chat, ${error ? "chat needs attention" : "answer ready"}`
                 : "Open repository chat"
           }
-          className="group flex min-h-11 items-center gap-2 rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)] py-1.5 pl-1.5 pr-3 shadow-[var(--shadow-md)] outline-none transition-[border-color,box-shadow,transform] hover:border-[var(--color-border-hover)] hover:shadow-[var(--shadow-lg)] focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] motion-safe:hover:-translate-y-px motion-reduce:transition-none"
+          style={{ minHeight: PILL_MIN_HEIGHT }}
+          className="group flex items-center gap-2 rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)] py-1.5 pl-1.5 pr-3 shadow-[var(--shadow-md)] outline-none transition-[border-color,box-shadow,transform] hover:border-[var(--color-border-hover)] hover:shadow-[var(--shadow-lg)] focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] motion-safe:hover:-translate-y-px motion-reduce:transition-none"
         >
           <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--color-bg-elevated)]">
             <BrandMark

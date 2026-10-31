@@ -521,8 +521,8 @@ def _repowise_entries(saved: dict, event: str) -> list:
 #: What a fresh install puts under PostToolUse: the augment entry, and the
 #: capture prompt's shell entry, which ships on.
 _INSTALLED_POST = [
-    (claude_config._AUGMENT_MATCHER, claude_config._AUGMENT_HOOK_COMMAND),
-    (claude_config._CAPTURE_MATCHER, claude_config._CAPTURE_HOOK_COMMAND),
+    (claude_config._AUGMENT_MATCHER, claude_config._augment_hook_command()),
+    (claude_config._CAPTURE_MATCHER, claude_config._capture_hook_command()),
 ]
 
 
@@ -549,10 +549,10 @@ def test_install_claude_code_hooks_creates_missing_file(
     assert "PreToolUse" not in saved["hooks"]
     assert _post_repowise_entries(saved) == _INSTALLED_POST
     assert _session_start_repowise_entries(saved) == [
-        ("startup|resume|clear", claude_config._AUGMENT_HOOK_COMMAND)
+        ("startup|resume|clear", claude_config._augment_hook_command())
     ]
     assert _repowise_entries(saved, "PostToolUseFailure") == [
-        (claude_config._FAILURE_MATCHER, claude_config._AUGMENT_HOOK_COMMAND)
+        (claude_config._FAILURE_MATCHER, claude_config._augment_hook_command())
     ]
 
 
@@ -791,7 +791,7 @@ def test_migrate_claude_code_hooks_never_widens_user_matcher(
                             "hooks": [
                                 {
                                     "type": "command",
-                                    "command": claude_config._AUGMENT_HOOK_COMMAND,
+                                    "command": claude_config._augment_hook_command(),
                                 },
                                 {"type": "command", "command": "my-linter"},
                             ],
@@ -807,7 +807,7 @@ def test_migrate_claude_code_hooks_never_widens_user_matcher(
                             "hooks": [
                                 {
                                     "type": "command",
-                                    "command": claude_config._AUGMENT_HOOK_COMMAND,
+                                    "command": claude_config._augment_hook_command(),
                                 }
                             ],
                         }
@@ -873,14 +873,14 @@ def test_migrate_claude_code_hooks_noop_when_already_current(
             "PostToolUse": [
                 {
                     "matcher": claude_config._AUGMENT_MATCHER,
-                    "hooks": [{"type": "command", "command": claude_config._AUGMENT_HOOK_COMMAND}],
+                    "hooks": [{"type": "command", "command": claude_config._augment_hook_command()}],
                 },
                 claude_config._capture_entry(),
             ],
             "SessionStart": [
                 {
                     "matcher": "startup|resume|clear",
-                    "hooks": [{"type": "command", "command": claude_config._AUGMENT_HOOK_COMMAND}],
+                    "hooks": [{"type": "command", "command": claude_config._augment_hook_command()}],
                 }
             ],
             "PostToolUseFailure": [claude_config._failure_entry()],
@@ -923,7 +923,7 @@ def test_migrate_claude_code_hooks_backfills_session_start(
     assert claude_config.migrate_claude_code_hooks() is True
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     assert _session_start_repowise_entries(saved) == [
-        ("startup|resume|clear", claude_config._AUGMENT_HOOK_COMMAND)
+        ("startup|resume|clear", claude_config._augment_hook_command())
     ]
     # Idempotent on the second pass.
     assert claude_config.migrate_claude_code_hooks() is False
@@ -956,7 +956,7 @@ def test_migrate_narrows_the_shell_tools_out_of_an_existing_install(
                             "hooks": [
                                 {
                                     "type": "command",
-                                    "command": claude_config._AUGMENT_HOOK_COMMAND,
+                                    "command": claude_config._augment_hook_command(),
                                 }
                             ],
                         },
@@ -1009,7 +1009,7 @@ def test_migrate_backfills_the_failure_hook_for_older_installs(
                             "hooks": [
                                 {
                                     "type": "command",
-                                    "command": claude_config._AUGMENT_HOOK_COMMAND,
+                                    "command": claude_config._augment_hook_command(),
                                 }
                             ],
                         }
@@ -1024,7 +1024,7 @@ def test_migrate_backfills_the_failure_hook_for_older_installs(
     assert claude_config.migrate_claude_code_hooks() is True
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     assert _repowise_entries(saved, "PostToolUseFailure") == [
-        (claude_config._FAILURE_MATCHER, claude_config._AUGMENT_HOOK_COMMAND)
+        (claude_config._FAILURE_MATCHER, claude_config._augment_hook_command())
     ]
     assert claude_config.migrate_claude_code_hooks() is False
 
@@ -1046,7 +1046,7 @@ def test_migrate_preserves_a_user_failure_hook(
                             "hooks": [
                                 {
                                     "type": "command",
-                                    "command": claude_config._AUGMENT_HOOK_COMMAND,
+                                    "command": claude_config._augment_hook_command(),
                                 }
                             ],
                         }
@@ -1066,7 +1066,7 @@ def test_migrate_preserves_a_user_failure_hook(
     failure = saved["hooks"]["PostToolUseFailure"]
     assert failure[0]["hooks"][0]["command"] == "echo mine"
     assert _repowise_entries(saved, "PostToolUseFailure") == [
-        (claude_config._FAILURE_MATCHER, claude_config._AUGMENT_HOOK_COMMAND)
+        (claude_config._FAILURE_MATCHER, claude_config._augment_hook_command())
     ]
 
 
@@ -1128,7 +1128,7 @@ def test_migrate_claude_code_hooks_preserves_user_session_start(
     session = saved["hooks"]["SessionStart"]
     assert session[0]["hooks"][0]["command"] == "echo mine"
     assert _session_start_repowise_entries(saved) == [
-        ("startup|resume|clear", claude_config._AUGMENT_HOOK_COMMAND)
+        ("startup|resume|clear", claude_config._augment_hook_command())
     ]
 
 
@@ -1152,8 +1152,8 @@ def test_migrate_claude_code_hooks_silent_on_malformed_json(
 
 def test_plugin_hooks_json_mirrors_settings_entries(repo_root: Path) -> None:
     """The bundled plugin's hooks.json must match what init writes to
-    settings.json; the emission dedup in augment assumes both surfaces
-    fire the same command on the same events."""
+    settings.json, in the unpinned form (a plugin ships without the CLI); the
+    emission dedup in augment assumes both surfaces fire on the same events."""
     plugin = json.loads(
         (repo_root / "plugins" / "claude-code" / "hooks" / "hooks.json").read_text(encoding="utf-8")
     )
@@ -1244,10 +1244,10 @@ def test_resolve_mcp_target_finds_workspace_through_multiple_ancestors(
     assert claude_config._resolve_mcp_target(deep) == workspace
 
 
-def test_register_with_claude_code_uses_workspace_root(
+def test_register_with_claude_code_new_entry_follows_the_launch_dir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``register_with_claude_code`` against a workspace member targets the root."""
+    """A new Claude Code entry names no repo: Claude Code starts it in the project."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
 
     workspace = tmp_path / "ws"
@@ -1258,19 +1258,13 @@ def test_register_with_claude_code_uses_workspace_root(
 
     settings_path = claude_config.register_with_claude_code(repo)
     assert settings_path is not None
-
-    args = _registered_repowise_args(settings_path)
-    # ``mcp <path> --transport stdio`` — second element is the target path
-    registered_path = Path(args[1])
-    assert registered_path == workspace.resolve()
+    assert _registered_repowise_args(settings_path) == ["mcp", "--transport", "stdio"]
 
 
 def test_register_with_claude_code_sibling_inits_dont_clobber(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The bug this fix targets: indexing two sibling repos in a workspace
-    must converge on a single registration pointing at the workspace root,
-    not flip-flop between per-repo paths."""
+    """An entry pinned to the workspace root stays there when a sibling inits."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
 
     workspace = tmp_path / "ws"
@@ -1281,20 +1275,24 @@ def test_register_with_claude_code_sibling_inits_dont_clobber(
     ops = workspace / "ops"
     ops.mkdir()
 
+    settings = tmp_path / "home" / ".claude" / "settings.json"
     claude_config.register_with_claude_code(engine)
-    first_args = _registered_repowise_args(tmp_path / "home" / ".claude" / "settings.json")
+    claude_config.merge_mcp_entry(
+        settings, claude_config.generate_mcp_config(workspace)["mcpServers"]
+    )
+    first_args = _registered_repowise_args(settings)
 
     claude_config.register_with_claude_code(ops)
-    second_args = _registered_repowise_args(tmp_path / "home" / ".claude" / "settings.json")
+    second_args = _registered_repowise_args(settings)
 
     assert first_args == second_args
     assert Path(first_args[1]) == workspace.resolve()
 
 
-def test_register_with_claude_code_no_workspace_uses_repo_path(
+def test_register_with_claude_code_solo_repo_follows_the_launch_dir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Without a workspace yaml in any ancestor, behavior is unchanged."""
+    """Outside a workspace a new entry names no repo either."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
 
     solo = tmp_path / "solo"
@@ -1302,9 +1300,7 @@ def test_register_with_claude_code_no_workspace_uses_repo_path(
 
     settings_path = claude_config.register_with_claude_code(solo)
     assert settings_path is not None
-
-    args = _registered_repowise_args(settings_path)
-    assert Path(args[1]) == solo.resolve()
+    assert _registered_repowise_args(settings_path) == ["mcp", "--transport", "stdio"]
 
 
 def test_register_with_claude_desktop_uses_workspace_root(

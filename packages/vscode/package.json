@@ -326,7 +326,7 @@
       {
         "view": "repowise.home",
         "when": "isWorkspaceTrusted && repowise.state == 'not-installed'",
-        "contents": "The repowise CLI was not found on your PATH.\n\nInstall it, then set it up for this repository.\n\n[Check Setup](command:repowise.checkSetup)\n\nIf the CLI lives at a custom location, set `repowise.cliPath` in settings.\n\nNo Python? Read any public repo on repowise.dev, nothing to install, free.\n\n[Try repowise.dev](https://repowise.dev/hosted?src=vscode_no_python#link)"
+        "contents": "The repowise CLI was not found on your PATH.\n\nInstall it with `uv tool install repowise` (or `pip install repowise`), then set it up for this repository.\n\n[Check Setup](command:repowise.checkSetup)\n\nIf the CLI lives at a custom location, set `repowise.cliPath` in settings.\n\nNo Python? Read any public repo on repowise.dev, nothing to install, free.\n\n[Try repowise.dev](https://repowise.dev/hosted?src=vscode_no_python#link)"
       },
       {
         "view": "repowise.home",
@@ -515,7 +515,7 @@
           {
             "id": "firstInsight",
             "title": "See your first insight",
-            "description": "Open Code Health for a first look at your repository.\n[Open Code Health](command:repowise.showHealthDashboard)",
+            "description": "Open Code Health for a first look at your repository, or run repowise serve for a guided tour in the dashboard.\n[Open Code Health](command:repowise.showHealthDashboard)",
             "media": {
               "markdown": "media/walkthrough/first-insight.md"
             },

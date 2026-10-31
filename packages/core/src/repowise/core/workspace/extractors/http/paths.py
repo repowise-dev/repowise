@@ -50,6 +50,10 @@ def normalize_http_path(path: str) -> str:
     # A whole-segment ``*`` (Spring ``/owners/*/pets``, Express ``/files/*``)
     # matches one segment, as a parameter does.
     s = re.sub(r"(?<=/)\*(?=/|$)", "{param}", s)
+    # A whole-segment ``*name`` (gin and echo ``/swagger/*any``,
+    # ``/static/*filepath``) is a named catch-all; ``/**`` and a ``*`` inside
+    # a longer segment (``/a*b``) are left alone.
+    s = re.sub(r"(?<=/)\*\w+(?=/|$)", "{param}", s)
     return s or "/"
 
 

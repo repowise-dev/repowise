@@ -154,6 +154,7 @@ from repowise.server.mcp_server.tool_answer.config import (  # noqa: F401
     _cache_disabled,
     _symbol_agreement_enabled,
 )
+from repowise.server.mcp_server.tool_answer.cut_off import answer_cut_off
 from repowise.server.mcp_server.tool_answer.data_shape import (
     _is_data_shape_question,
     build_data_shape_payload,
@@ -306,6 +307,7 @@ async def _run_retrieval_pipeline(
                     repo_root=_anchor_root,
                     session_factory=ctx.session_factory,
                     question=question,
+                    scope=scope,
                 )
     # Concept anchoring: a why/value question pinning a number to a behaviour
     # anchors the file whose source comment justifies that number.
@@ -598,6 +600,7 @@ async def _graded_payload(
     fallback_targets: list[str],
     agreement_dominant: bool,
     dominance,
+    stop_reason: str | None = None,
 ) -> tuple[dict, str, list[str]]:
     """Grade the synthesized answer and build its payload: ``(payload, confidence, citations)``."""
     hits = retrieved.hits
@@ -631,6 +634,7 @@ async def _graded_payload(
         unindexed_names=retrieved.homonyms.get("unindexed", ()),
         absent_names=retrieved.homonyms.get("absent", ()),
         split_names=retrieved.homonyms.get("split"),
+        stop_reason=stop_reason,
     )
     payload = await build_synthesized_payload(
         question=ask.question,
@@ -660,17 +664,19 @@ async def _cache_and_stamp(
     provider,
     confidence: str,
     targets: list[str],
+    cut_off: bool = False,
 ) -> None:
     """Write the cache row, then stamp ``_meta`` and the episode on the live reply.
 
     Only the trust-relevant retrieval state is cached; the cache read rebuilds
     timing and freshness. The episode is attached after the write, so it never
-    reaches the cache row.
+    reaches the cache row. A cut-off answer is not cached, so asking again
+    synthesizes afresh.
     """
     degraded = _degraded_legs(_retrieval_legs())
     if degraded:
         payload["_retrieval_degraded"] = degraded
-    if write_cache:
+    if write_cache and not cut_off:
         await _write_answer_cache(
             payload,
             ctx=ask.ctx,
@@ -847,7 +853,7 @@ async def get_answer(
 
     # Budgets its own timeout per provider: a remote API needs seconds, a CLI
     # subprocess or local model needs minutes.
-    answer_text, failure_note = await synthesize(
+    answer_text, failure_note, stop_reason = await synthesize(
         provider,
         _SYSTEM_PROMPT,
         await _user_prompt(ask, hits, graph_callers),
@@ -859,7 +865,7 @@ async def get_answer(
         return await _degrade("synthesis-failed", failure_note)
 
     payload, confidence, citations = await _graded_payload(
-        ask, retrieved, answer_text, fallback_targets, agreement_dominant, dominance
+        ask, retrieved, answer_text, fallback_targets, agreement_dominant, dominance, stop_reason
     )
     attach_graph_callers(payload, graph_callers)
     await _neighbors(payload)
@@ -871,6 +877,7 @@ async def get_answer(
         payload,
         ask,
         write_cache=bool(answer_text) and not cache_disabled,
+        cut_off=answer_cut_off(answer_text, stop_reason),
         qhash=qhash,
         provider=provider,
         confidence=confidence,

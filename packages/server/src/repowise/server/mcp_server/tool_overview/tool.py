@@ -246,6 +246,10 @@ async def _repo_overview(
         "reading_order_hint": _READING_ORDER_HINT if requested["reading_order"] else None,
     }
     result.update((key, block) for key, block in optional.items() if block)
+    # A block with nothing in it is not sent; its absence says the same.
+    for key in ("code_health", "key_modules", "entry_points", "git_health"):
+        if not result[key]:
+            del result[key]
 
     # The guided tour is persisted on the overview page's metadata at generation.
     if overview_page:

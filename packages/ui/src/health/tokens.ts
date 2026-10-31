@@ -11,8 +11,6 @@ import {
   bandForScore,
   formatScore,
   HEALTH_BAND_LABEL,
-  HEALTHY_MIN,
-  NEEDS_WORK_MIN,
   type HealthBand,
 } from "@repowise-dev/types/health";
 
@@ -250,38 +248,38 @@ export function healthBand(score: number): { color: string; label: string } {
   return { color: HEALTH_BAND_VAR[band], label: HEALTH_BAND_LABEL[band] };
 }
 
-/**
- * The canonical three bands a label takes beside a health mark: Healthy at
- * `HEALTHY_MIN` or above, Warning from `NEEDS_WORK_MIN`, Alert below. The five
- * bands above are for a standalone lede; a dot, a figure and a word drawn
- * together read on these three, so every mark agrees with every other.
- */
-export type HealthMarkBand = "healthy" | "warning" | "alert";
-
-/** Top to bottom, with the lower edge of each band, for keys and grounds. */
-export const HEALTH_MARK_BANDS: readonly {
-  band: HealthMarkBand;
-  label: string;
-  color: string;
-  min: number;
-}[] = [
-  { band: "healthy", label: "Healthy", color: "var(--color-success)", min: HEALTHY_MIN },
-  { band: "warning", label: "Warning", color: "var(--color-warning)", min: NEEDS_WORK_MIN },
-  { band: "alert", label: "Alert", color: "var(--color-error)", min: 0 },
-];
-
 export interface HealthMark {
   /** The score at one decimal, floored so it never crosses a band edge. */
   value: string;
-  band: HealthMarkBand;
+  band: HealthBand;
   label: string;
   color: string;
 }
 
-/** A 1-10 score as a health mark: figure, word and colour on the three bands. */
+/**
+ * A 1-10 score as a health mark: figure, word and colour on the five bands,
+ * the same reading every other score in the product takes, so a repository
+ * row, a system map node and a file pill never disagree about one number.
+ */
 export function healthMark(score: number): HealthMark {
-  const b = HEALTH_MARK_BANDS.find((x) => score >= x.min) ?? HEALTH_MARK_BANDS[HEALTH_MARK_BANDS.length - 1]!;
-  return { value: formatScore(score), band: b.band, label: b.label, color: b.color };
+  const band = bandForScore(score);
+  return {
+    value: formatScore(score),
+    band,
+    label: HEALTH_BAND_LABEL[band],
+    color: HEALTH_BAND_VAR[band],
+  };
+}
+
+/** Tailwind text colour for a 1-10 score, on the band its health mark takes. */
+const HEALTH_MARK_TEXT: Record<HealthMarkBand, string> = {
+  healthy: "text-[var(--color-success)]",
+  warning: "text-[var(--color-warning)]",
+  alert: "text-[var(--color-error)]",
+};
+
+export function healthMarkTextColor(score: number): string {
+  return HEALTH_MARK_TEXT[healthMark(score).band];
 }
 
 export function riskInk(risk01: number): string {

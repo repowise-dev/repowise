@@ -76,19 +76,22 @@ _SLASH_COMMENT_SUFFIXES = JAVA | KOTLIN | GO | CSHARP | RUST | PHP | APEX | PROT
 _XML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 
 
-def _comment_mask(suffix: str, content: str) -> str | None:
-    """*content* with its comments blanked and offsets kept; None for an unknown syntax."""
+def _comment_mask(suffix: str, content: str, strings: bool = False) -> str | None:
+    """*content* with its comments (and strings, if *strings*) blanked and offsets kept.
+
+    None for an unknown syntax.
+    """
     from repowise.core.ingestion.source_mask import mask_source
 
     # The JS-aware masker reads regex literals and Python string prefixes.
     if suffix == ".py":
-        return mask_source(content, suffix)
+        return mask_source(content, suffix, strings=strings)
     if suffix in JS_TS:
-        return mask_source(content, ".js")
+        return mask_source(content, ".js", strings=strings)
     if suffix == ".rb":
         from repowise.core.analysis.security.masking import mask_comments_and_strings
 
-        return mask_comments_and_strings(content, strings=False, hash_comments=True)
+        return mask_comments_and_strings(content, strings=strings, hash_comments=True)
     if suffix == ".xml":
         return _XML_COMMENT_RE.sub(lambda m: " " * len(m.group(0)), content)
     if suffix not in _SLASH_COMMENT_SUFFIXES:
@@ -96,20 +99,20 @@ def _comment_mask(suffix: str, content: str) -> str | None:
     from repowise.core.analysis.security.masking import mask_comments_and_strings, mask_dialect
 
     return mask_comments_and_strings(
-        content, strings=False, hash_comments=False, **mask_dialect(suffix)
+        content, strings=strings, hash_comments=False, **mask_dialect(suffix)
     )
 
 
 class _FileMemo:
-    """What one file's dialects share: each gate token's presence, the comment mask,
+    """What one file's dialects share: each gate token's presence, the masks,
     and the offsets of calls located but not named."""
 
-    __slots__ = ("lines", "mask", "masked", "tokens", "unresolved")
+    __slots__ = ("lines", "masks", "tokens", "unresolved")
 
     def __init__(self) -> None:
         self.tokens: dict[str, bool] = {}
-        self.masked = False
-        self.mask: str | None = None
+        # Keyed by whether strings are blanked too.
+        self.masks: dict[bool, str | None] = {}
         self.lines: tuple[list[str], list[str]] | None = None
         self.unresolved: set[int] = set()
 
@@ -162,23 +165,29 @@ class ScanContext:
         """Calls :meth:`note_unresolved` recorded: one per site, however many dialects read it."""
         return len(self._memo.unresolved)
 
-    def _mask(self) -> str | None:
-        memo = self._memo
-        if not memo.masked:
-            memo.mask = _comment_mask(self.suffix, self.content)
-            memo.masked = True
-        return memo.mask
+    def _mask(self, strings: bool = False) -> str | None:
+        masks = self._memo.masks
+        if strings not in masks:
+            masks[strings] = _comment_mask(self.suffix, self.content, strings)
+        return masks[strings]
 
-    def in_comment(self, offset: int) -> bool:
-        """Whether a match at *offset* (leading whitespace skipped) sits in a comment."""
+    def _masked_at(self, offset: int, strings: bool) -> bool:
         content = self.content
         end = len(content)
         while offset < end and content[offset] in " \t\n":
             offset += 1
         if offset >= end:
             return False
-        mask = self._mask()
+        mask = self._mask(strings)
         return mask is not None and mask[offset] != content[offset]
+
+    def in_comment(self, offset: int) -> bool:
+        """Whether a match at *offset* (leading whitespace skipped) sits in a comment."""
+        return self._masked_at(offset, strings=False)
+
+    def in_string(self, offset: int) -> bool:
+        """Whether a match at *offset* (leading whitespace skipped) sits in a string literal."""
+        return self._masked_at(offset, strings=True) and not self.in_comment(offset)
 
     def comment_only_line(self, line: int | None) -> bool:
         """Whether 1-based *line* holds a comment and nothing else."""

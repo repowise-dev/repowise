@@ -621,7 +621,7 @@ def _noted_unfounded_claim(payload: dict, grade: _Grade, fallback_targets: list[
     the answer does not tell apart, or a value nothing retrieved holds."""
     if grade.absent_names:
         payload["note"] = (
-            f"Nothing in this repository defines or writes {', '.join(grade.absent_names)}, "
+            f"Nothing in the code searched defines or writes {', '.join(grade.absent_names)}, "
             "so the answer describes other code. Check the name before acting on it."
         )
         return True
@@ -646,18 +646,60 @@ def _noted_unfounded_claim(payload: dict, grade: _Grade, fallback_targets: list[
 
 
 def _held_at_medium_note(grade: _Grade) -> str | None:
-    """The note for a high answer the split-name or clause gate held at medium.
+    """The note for an answer the cut-off, split-name or clause gate, or weak agreement, held at medium.
 
-    Both gates only demote high to medium; on any other grade they say nothing.
+    Each only holds high at medium; on any other grade they say nothing.
     """
     if grade.confidence != "medium":
         return None
+    if grade.cut_off:
+        return (
+            "Held at medium: the answer text was cut off before it finished, so "
+            "part of it is missing. Ask again, or read the cited files for the rest."
+        )
     if grade.split_names:
         return _split_names_note(grade.split_names)
     if grade.clauses_unanswered:
         asked = "; ".join(f'"{c}"' for c in grade.clauses_unanswered)
         return f"Held at medium: the answer cites no file retrieved for {asked}. Ask that part on its own."
+    if grade.weak_agreement:
+        return (
+            "Held at medium: both retrievers rank the top page first, but its score "
+            f"({grade.top_score:.2f}) is too weak for agreement alone to vouch for the "
+            "answer. Confirm the behaviour it describes against that file."
+        )
+    if grade.unhydrated_names:
+        names = ", ".join(grade.unhydrated_names)
+        return (
+            f"Held at medium: the question names {names}, but no top source carries "
+            "that symbol, so the answer may rest on nearby code. Look the name up "
+            "with search_codebase before citing the answer."
+        )
     return None
+
+
+def _closing_note(grade: _Grade, symbol_bodies: list[dict]) -> str | None:
+    """The note when no gate wrote one: the high-confidence note, or why a
+    dominant answer under the score floor stayed at medium."""
+    if grade.confidence == "medium" and grade.under_floor:
+        return (
+            f"Held at medium: the top page leads, but its score ({grade.top_score:.2f}) "
+            "is too weak to vouch for the answer unverified. Confirm it against that file."
+        )
+    if grade.confidence != "high":
+        return None
+    # "No hedging" is not cited as evidence: the prompt forbids hedging, so
+    # reading its absence back as a signal would be circular.
+    tail = (
+        "Cite this answer; do not re-read the source unless a specific "
+        "detail is missing."
+        if not any(b.get("truncated") for b in symbol_bodies)
+        # Never say "skip re-reading" when the payload admits it withheld
+        # part of a cited body.
+        else "Some cited bodies were truncated; see "
+        "symbol_bodies[].withheld_symbols for what was not served."
+    )
+    return _high_confidence_note(grade, tail)
 
 
 def _split_names_note(split_names: dict[str, list[str]]) -> str:
@@ -789,19 +831,8 @@ async def _graded_payload(
             "so it may answer a different question. Held at medium; confirm against "
             "the next evidence row or candidate_files."
         )
-    elif confidence == "high":
-        # "No hedging" is not cited as evidence: the prompt forbids hedging, so
-        # reading its absence back as a signal would be circular.
-        _tail = (
-            "Cite this answer; do not re-read the source unless a specific "
-            "detail is missing."
-            if not any(b.get("truncated") for b in symbol_bodies)
-            # Never say "skip re-reading" when the payload admits it withheld
-            # part of a cited body.
-            else "Some cited bodies were truncated; see "
-                 "symbol_bodies[].withheld_symbols for what was not served."
-        )
-        payload["note"] = _high_confidence_note(grade, _tail)
+    elif note := _closing_note(grade, symbol_bodies):
+        payload["note"] = note
 
     # A concept-anchored hit's comment is the literal rationale for a "why is
     # X = <number>" question; surface it unless a gate already did.

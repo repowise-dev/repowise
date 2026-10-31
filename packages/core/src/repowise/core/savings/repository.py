@@ -177,6 +177,37 @@ class SavingsRepository:
             self._conn.rollback()
             raise
 
+    def adopt_rows(self, repository_id: str) -> int:
+        """File every row of this sidecar under *repository_id*; return how many moved.
+
+        A sidecar lives inside the repository it describes, so a row naming any
+        other id was written before the repository was moved or copied. A row
+        whose retry key already exists under the new id keeps its old id.
+        Takes no write lock when there is nothing to move.
+        """
+        tables = ("savings_events", "savings_opportunities")
+        if not any(
+            self._conn.execute(
+                f"SELECT 1 FROM {table} WHERE repository_id != ? LIMIT 1", (repository_id,)
+            ).fetchone()
+            for table in tables
+        ):
+            return 0
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            moved = sum(
+                self._conn.execute(
+                    f"UPDATE OR IGNORE {table} SET repository_id = ? WHERE repository_id != ?",
+                    (repository_id, repository_id),
+                ).rowcount
+                for table in tables
+            )
+            self._conn.commit()
+            return moved
+        except BaseException:
+            self._conn.rollback()
+            raise
+
     def record_opportunity(self, observation: OpportunityObservation) -> bool:
         """Insert an opportunity outside the achieved-event ledger."""
         cursor = self._conn.execute(

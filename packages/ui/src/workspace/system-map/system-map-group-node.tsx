@@ -3,7 +3,7 @@
 /**
  * A group of services on the map. Closed, it is a card: the group's name and
  * where it came from, how many services and repositories it holds, its
- * health exceptions on the canonical three bands (healthy is quiet), and its
+ * health exceptions on the canonical five bands (Good and better are quiet), and its
  * links in, out and inside. Open, it is the container its service cards sit
  * in, with a title row and a way to close it.
  *

@@ -44,6 +44,7 @@ class ClaudeCodeSetup:
 
     def register_client(self, console_obj: Any, repo_path: Path) -> None:
         from repowise.cli.editor_integrations.claude_config import (
+            _resolve_mcp_target,
             enable_tool_search_in_claude_code,
             install_claude_code_hooks,
             register_with_claude_code,
@@ -51,11 +52,14 @@ class ClaudeCodeSetup:
         )
         from repowise.cli.ui.brand import OK
 
-        # Callers ask first (global_mcp.confirm_global_mcp): these writes
-        # repoint the single global "repowise" entry.
+        # Callers ask first (global_mcp.confirm_global_mcp). An entry serving
+        # another repo is kept, and these return None for it.
         desktop = register_with_claude_desktop(repo_path)
         if desktop:
-            console_obj.print(f"  [{OK}]{glyph('ok')}[/] Claude Desktop MCP registered ({desktop})")
+            console_obj.print(
+                f"  [{OK}]{glyph('ok')}[/] Claude Desktop MCP registered for "
+                f"{_resolve_mcp_target(repo_path)} ({desktop})"
+            )
 
         code = register_with_claude_code(repo_path)
         if code:

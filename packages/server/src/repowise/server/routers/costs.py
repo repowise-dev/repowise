@@ -148,8 +148,11 @@ async def get_savings(
     if not repo.local_path:
         return SavingsResponse(available=False)
 
+    from repowise.core.savings.pricing import warm_pricing_snapshot
     from repowise.core.savings.service import load_report
 
+    # Keeps the rate cache the MCP and hook writers read warm; never awaited.
+    warm_pricing_snapshot(repo.local_path)
     as_of = datetime.now(UTC)
     report = load_report(repo.local_path, as_of=as_of, days=days)
     if report is None:

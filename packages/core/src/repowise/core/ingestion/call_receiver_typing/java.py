@@ -11,17 +11,23 @@ from ..symbol_identity import outer_scope, symbol_id_path
 from ..type_names import bare_type_name, strip_type_arguments, type_qualifier
 from ._shared import _FUNCTION_KINDS, _TYPE_KINDS
 
-# Where a Java declaration header opens its type-parameter list: after a type's
-# name, or after a method's modifiers and annotations, before its return type.
+# Where a JVM declaration header opens its type-parameter list: after a type's
+# name, after a Java method's modifiers and annotations, before its return
+# type, or after Kotlin's ``fun`` keyword.
 _JAVA_TYPE_PARAMETERS = re.compile(
     r"\b(?:class|interface|record)\s+\w+\s*<"
+    r"|\bfun\s*<"
     r"|^(?:\s*(?:@[\w.]+(?:\([^)]*\))?|public|protected|private|static|final|abstract"
     r"|synchronized|native|default|strictfp)\b)*\s*<"
 )
 
 
+# Kotlin words that can precede a type parameter's name: variance and ``reified``.
+_TYPE_PARAMETER_MODIFIERS = frozenset({"in", "out", "reified"})
+
+
 def _header_type_parameters(header: str) -> set[str]:
-    """The names a Java declaration header's ``<...>`` list declares."""
+    """The names a Java or Kotlin declaration header's ``<...>`` list declares."""
     opened = _JAVA_TYPE_PARAMETERS.search(header)
     if opened is None:
         return set()
@@ -31,7 +37,12 @@ def _header_type_parameters(header: str) -> set[str]:
         close += 1
     names: set[str] = set()
     for param in strip_type_arguments(header[opened.end() : close - 1]).split(","):
-        names.update(param.split()[:1])
+        words = [
+            word
+            for word in param.split()
+            if word not in _TYPE_PARAMETER_MODIFIERS and not word.startswith("@")
+        ]
+        names.update(words[:1])
     return names
 
 

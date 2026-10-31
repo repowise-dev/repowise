@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -76,6 +77,15 @@ class ChangeRiskResult:
     # ``history_ref``, resolved), so a kept rank can say what it ranked
     # against. ``None`` when no sample was walked.
     baseline_as_of: str | None = None
+
+
+def owned_patterns(patterns: tuple[str, ...]) -> tuple[str, ...]:
+    """The exclusions in *patterns* that name repowise's own output.
+
+    For a committed change these are :func:`riskignore_patterns`' owned paths,
+    the ``owned_excludes`` its score reports.
+    """
+    return tuple(p for p in patterns if p in OWNED_PATTERNS)
 
 
 def riskignore_patterns(repo_path: str) -> tuple[str, ...]:
@@ -152,6 +162,42 @@ def normalize_extensions(extensions: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(ext if ext.startswith(".") else f".{ext}" for ext in extensions)
 
 
+def _pressure_or_none(repo_path: str, history: str) -> dict[str, float] | None:
+    """:func:`fix_pressure` at *history*, or ``None`` when the walk could not run."""
+    try:
+        return fix_pressure(repo_path, history)
+    except FixHistoryUnavailableError:
+        return None
+
+
+def _committed_features(
+    repo_path: str,
+    target: str,
+    extensions: tuple[str, ...],
+    exclude_patterns: tuple[str, ...],
+    include_paths: tuple[str, ...],
+) -> ChangeFeatures:
+    """The features of the commit or ``base..head`` range *target* names."""
+    if (parts := split_revspec(target)) is not None:
+        base, sep, head = parts
+        return extract_range_features(
+            repo_path,
+            base,
+            head,
+            extensions=extensions,
+            exclude_patterns=exclude_patterns,
+            include_paths=include_paths,
+            sep=sep,
+        )
+    return extract_commit_features(
+        repo_path,
+        target,
+        extensions=extensions,
+        exclude_patterns=exclude_patterns,
+        include_paths=include_paths,
+    )
+
+
 def score_live_change(
     repo_path: str,
     revspec: str | None = None,
@@ -203,45 +249,32 @@ def score_live_change(
     effective_excludes = from_riskignore + exclude_patterns
     # Ref the fix record and the baseline sample are read from (see ``history_ref``).
     history = history_ref(repo_path, target, working_tree=working_tree)
-    if working_tree:
-        features = uncommitted
-    elif (parts := split_revspec(target)) is not None:
-        base, sep, head = parts
-        features = extract_range_features(
-            repo_path,
-            base,
-            head,
-            extensions=extensions,
-            exclude_patterns=effective_excludes,
-            include_paths=include_paths,
-            sep=sep,
-        )
-    else:
-        features = extract_commit_features(
-            repo_path,
-            target,
-            extensions=extensions,
-            exclude_patterns=effective_excludes,
-            include_paths=include_paths,
-        )
-
+    # The fix walk is mostly git's own work, so it runs while the change and
+    # the baseline are read. A failed read raises without waiting for the walk.
+    pool = ThreadPoolExecutor(max_workers=1)
     try:
-        pressure: dict[str, float] | None = fix_pressure(repo_path, history)
-    except FixHistoryUnavailableError:
-        pressure = None
-
-    samples: list[BaselineSample] = []
-    as_of = None
-    if baseline:
-        as_of = resolve_anchor_sha(repo_path, history)
-        samples = baseline_samples_cached(
-            repo_path,
-            history,
-            baseline,
-            extensions,
-            exclude_patterns=baseline_excludes,
-            include_paths=include_paths,
-        )
+        walk = pool.submit(_pressure_or_none, repo_path, history)
+        if working_tree:
+            features = uncommitted
+        else:
+            features = _committed_features(
+                repo_path, target, extensions, effective_excludes, include_paths
+            )
+        samples: list[BaselineSample] = []
+        as_of = None
+        if baseline:
+            as_of = resolve_anchor_sha(repo_path, history)
+            samples = baseline_samples_cached(
+                repo_path,
+                history,
+                baseline,
+                extensions,
+                exclude_patterns=baseline_excludes,
+                include_paths=include_paths,
+            )
+        pressure = walk.result()
+    finally:
+        pool.shutdown(wait=False)
 
     result = assess_change(
         features,
@@ -253,7 +286,7 @@ def score_live_change(
         riskignore_excludes=from_riskignore,
         request_excludes=exclude_patterns,
     )
-    owned = tuple(p for p in from_riskignore if p in OWNED_PATTERNS)
+    owned = owned_patterns(from_riskignore)
     owned += generated if working_tree else ()
     return replace(result, history_ref=history, owned_excludes=owned, baseline_as_of=as_of)
 

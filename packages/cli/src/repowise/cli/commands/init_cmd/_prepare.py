@@ -108,7 +108,11 @@ def _editor_options(run: InitRun) -> Any:
     """
     if run.editor_options is not None:
         return run.editor_options
-    opts = run.opts
+    return editor_options(run.opts)
+
+
+def editor_options(opts: InitOptions) -> Any:
+    """The editor files and integrations the flags alone select."""
     return resolve_editor_setup_options(
         disabled_project_files=get_default_disabled_project_files(
             no_claude_md=opts.no_claude_md,

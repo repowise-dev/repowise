@@ -118,7 +118,9 @@ async def _load_module_pages(
     rows = []
     for head in heads:
         path = head.target_path or ""
-        row = {"name": head.title, "path": head.target_path, "section": head.section_number}
+        row = {"name": head.title, "path": head.target_path}
+        if head.section_number is not None:
+            row["section"] = head.section_number
         package = next((r for r in roots if _under(path, r)), path)
         if package != path:
             row["package"] = package

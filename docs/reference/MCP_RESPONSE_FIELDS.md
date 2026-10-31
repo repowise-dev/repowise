@@ -42,6 +42,7 @@ Debug envelope only (`get_overview`, or `REPOWISE_MCP_DEBUG_META=1`):
 |-------|---------|
 | `contract_version` | Response contract version (currently 4); the version of record even when not emitted |
 | `timing_ms` | Tool wall time |
+| `block_timing_ms` | `get_change_risk` only: wall ms per block (`score`, `impacted_tests`, `patch_coverage`, `prior_fixes`, `cross_repo`, `branch_overlap`, `health_delta`). Some blocks overlap, so they need not sum to `timing_ms` |
 | `index_age_days` | Whole days since the index last synced, the same time `repowise status` reports |
 | `indexed_commit`, `live_head` | Short SHAs of the index and of the checkout |
 | `index_behind` | `true` if HEAD moved, `false` if not; absent if the comparison could not run |
@@ -165,7 +166,7 @@ In workspace mode, `get_context`, `get_symbol`, `get_risk` and `get_health` serv
 
 Notes:
 
-- **`confidence`:** `high` is content-grounded on a top hit covering the question. A why-answer whose mechanism is absent from the source drops to `medium`.
+- **`confidence`:** `high` is content-grounded on a top hit covering the question, or states the value on the verified definition line of a constant the question names, wherever that line ranked. A why-answer whose mechanism is absent from the source drops to `medium`.
 - **`retrieval_quality`:** `weak` when the top hit leaves out most of the question.
 - **`candidate_files`:** served at every confidence; absent when retrieval resolved no file.
 - **`best_guesses`:** at `low` or `degraded` a row swaps its `excerpt` for `functions` (up to 3 `{name, line}`), `lines` and `size_bytes`; `include=["evidence"]` restores it.

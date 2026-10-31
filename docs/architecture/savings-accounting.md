@@ -20,8 +20,9 @@ must be adjacent to it. If inferred tokens are nonzero, label the headline
 `Estimated agent savings`. Output savings, when explicitly evidenced, remain a
 separate dimension and do not inflate the input headline.
 
-Current distill and MCP sizes use `chars_per_token_floor_v1`, defined as
-`floor(serialized_characters / 4)`. These are estimated tokens measured on a
+Current distill sizes use `chars_per_token_floor_v1`, defined as
+`floor(serialized_characters / 4)`; MCP events use `chars_per_token_floor_v2`,
+the same scale with the counterfactual table under "MCP counterfactuals". These are estimated tokens measured on a
 stable local scale, not provider-billed tokenizer counts. Every event names its
 unit and estimator; reports must not silently combine unlike units.
 
@@ -39,6 +40,9 @@ meaning is versioned with the estimator.
 - `pre_budget_input_tokens`: observed serialized input immediately before the
   adapter's final response budget. For distill/hook this equals the bounded raw
   baseline; for counterfactual MCP it can differ from the replaced-input estimate.
+  MCP takes it in the delivered shape: the trust envelope and lean pass run on a
+  copy before it is sized, so only content the budget cut counts as dropped,
+  never metadata the lean pass removes from every reply.
 - `delivered_input_tokens`: final serialized input actually delivered, including
   recoverability markers and final metadata.
 - `dropped_input_tokens`: observed input removed by the operation,
@@ -84,6 +88,53 @@ queries answered. A saving-interaction count additionally requires
 it is independent of whether the baseline needed to calculate savings is known.
 Success requires true, dead end/error/unknown require false, and partial may be
 either. Query counts use result state plus `is_usable`, never token-field presence.
+
+## MCP counterfactuals
+
+`R` for an MCP call is what the agent would otherwise have read to get the same
+answer. The formulas live in `server/mcp_server/_savings/counterfactual.py`; a
+tool that holds the evidence (a file on disk, a scored diff) declares `R`
+through them, and the dict-only estimator with flat floors is the fallback.
+Events carrying this table record the estimator `chars_per_token_floor_v2`: the
+same `floor(chars / 4)` scale as v1, with the baselines below. Events written
+before it keep v1 and are not re-scored, because the ledger stores no payloads.
+
+**A Read** is one rangeless Read of the file: its first 2,000 lines, which is
+what Read returns without an offset or limit. When the caller is Claude Code
+the count includes its line-number gutter (Read renders `cat -n`: a six-wide
+number and a tab, seven characters per line). Other hosts read without one and
+are counted on bare content. The Read-replacing hooks count the gutter on both
+sides, since Claude Code numbers the replacement it is handed too.
+
+| Tool | `R` | Why that is what it replaces |
+|---|---|---|
+| `get_symbol` | one Read of each file a served body came from | the agent opens the file to find and read the symbol |
+| `get_context` file card, with or without skeleton | one Read of the file, once per file per call | the card answers what the file holds and how it is laid out, which is why the agent would open it |
+| `get_context` module / symbol card | 600 per listed child file (cap 20,000) / 1,200 | a directory skim / locating a definition and its callers |
+| `get_answer`, synthesised at high or medium confidence | 400 for the search plus one Read of each cited file | the answer stands in for finding and reading its sources |
+| `get_answer`, low confidence or no provider | one Read per file whose whole verified body it inlined, plus 400 per other file it points at | a reply that says "verify" does not replace those reads; it replaces the search, as `search_codebase` credits, and any body it served, as `get_symbol` credits |
+| `get_why` | 3,000 per call that serves evidence, plus 2,000 per file whose history it serves (cap 15,000) | searching decision records and commits for the question, and `git log -p` on each file: its median is 2,054 tokens across 23 httpx files and 3,089 across 16 files of this repository |
+| `get_change_risk` | 500 plus 1,500 per changed file the score counted (cap 12,000) | reading the diff; declared from the scorer's own file count, which the default response does not show |
+
+A baseline that comes out below the response it replaces saves zero; it is
+never raised to make the tool look useful.
+
+A reply that served nothing replaced nothing, so it has no `R` and no per-call
+floor applies. Each tool decides that from its own reply:
+
+| Tool | Served nothing when |
+|---|---|
+| any tool | the reply carries `resolved: false` (an unknown decision, evidence or finding id) |
+| `get_why` | the reply has no `answer_basis` (no decision, episode, rationale, commit history, documentation or candidate was served); a reference lookup when `resolved` is false; the dashboard, which never has a basis, when every count is zero and every lane is empty |
+| `get_risk` | every target is unresolved (not indexed, no such path) and the reply names no file that may break or missed a co-change |
+| `get_health` | every named target is listed under `unresolved` and no file was measured |
+| `get_change_risk` | `status` is `nothing_to_score` (an empty diff) |
+| `get_blast_radius` | no requested target matched a service |
+| `get_context`, `search_codebase`, `get_answer` | every target card is an error, the result list is empty, or the reply points at no file |
+
+A reply that ran and found nothing to report, such as a dead-code sweep with no
+findings or a conformance check with no violations, still answered the question
+and keeps its floor.
 
 ## Correlation and attribution
 

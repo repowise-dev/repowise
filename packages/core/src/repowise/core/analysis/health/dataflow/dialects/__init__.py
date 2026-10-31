@@ -19,6 +19,7 @@ from . import cpp as _cpp
 from . import csharp as _csharp
 from . import go as _go
 from . import java as _java
+from . import pascal as _pascal
 from . import php as _php
 from . import python as _python
 from . import rust as _rust
@@ -57,6 +58,7 @@ _REGISTER: tuple[tuple[str, BaseDefUseDialect], ...] = (
     # ``co_await``), so the C++ dialect reads it whole.
     ("c", _cpp.DIALECT),
     ("php", _php.DIALECT),
+    ("pascal", _pascal.DIALECT),
 )
 
 for _tag, _dialect in _REGISTER:

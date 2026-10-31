@@ -10,13 +10,13 @@ import { summarizeFixHistory } from "../lib/fix-history";
 import {
   formatAgeDays,
   formatNumber,
-  formatRelativeTime,
   ordinal,
 } from "../lib/format";
 import { FilePath } from "../shared/file-path";
 import type { FileDetailGit } from "@repowise-dev/types/files";
 import { FileSection, Fig } from "./file-section";
 import { FileMark } from "./file-marks";
+import { RelativeTime } from "../shared/relative-time";
 
 /** Matches `FixHistoryBadge`'s default tooltip — same claim, same wording. */
 const FIX_HISTORY_TITLE =
@@ -148,7 +148,7 @@ export function FileHistoryTab({
                     {c.message}
                   </span>
                   <span className="shrink-0 font-mono text-[10px] text-[var(--color-text-tertiary)]">
-                    {c.date ? formatRelativeTime(c.date) : ""}
+                    {c.date ? <RelativeTime date={c.date} /> : ""}
                   </span>
                 </A>
               </li>

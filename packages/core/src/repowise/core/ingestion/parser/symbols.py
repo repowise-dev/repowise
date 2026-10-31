@@ -27,6 +27,7 @@ from ..extractors.cobol import cobol_condition_parent
 from ..extractors.synthetic_symbols import extract_synthetic_symbols
 from ..extractors.synthetic_symbols.csharp_extension_blocks import drop_extension_block_symbols
 from ..extractors.visibility import py_module_all_names, ts_deferred_export_names
+from ..lang_helpers.pascal import _inherit_pascal_declared_visibility, _pascal_visibility
 from ..lang_helpers.source_prep import cpp_class_head_macros
 from ..language_configs import LanguageConfig
 from ..models import FileInfo, Symbol
@@ -268,6 +269,9 @@ def _extract_symbols(
         if built is None:
             continue
         symbol, def_node = built
+        if language == "pascal":
+            # Per section, which the per-declaration visibility_fn cannot see.
+            symbol.visibility = _pascal_visibility(def_node)
         symbols.append(symbol)
         node_types.append(def_node.type)
 
@@ -283,6 +287,7 @@ def _extract_symbols(
             objc_container_kinds.append(container.type if container else None)
 
     if language == "pascal":
+        _inherit_pascal_declared_visibility(symbols, node_types)
         symbols = _dedupe_pascal_interface_symbols(symbols, node_types)
 
     if language in _TS_JS_LANGUAGES:

@@ -24,9 +24,11 @@ from repowise.cli.commands.doctor_cmd._types import _check
 # "*" stands for a per-target or per-language suffix.
 PINNED_IDS = {
     "agent-*",
+    "agent-hook-scripts",
     "agent-integrations",
     "attribution-notes",
     "claude-code-mcp-entry",
+    "claude-desktop-mcp-entry",
     "coordinator-drift",
     "database",
     "distill-config",

@@ -6,53 +6,215 @@
  * renderer can pull just the relations relevant to whichever node it has zoomed
  * into. Rebuilt only when a new map arrives (or a deeper subtree is fetched),
  * never per frame.
+ *
+ * Everything the draw pass would otherwise rebuild per frame is resolved here
+ * once: each node's drawable children (laid out, density-capped) and each
+ * parent's relations pre-sorted strongest first, so a frame allocates no child
+ * arrays and sorts nothing.
+ *
+ * A canvas resize re-lays the same map out to a new root shape. Only the
+ * geometry follows the root aspect, so everything else is kept per map and
+ * reused, and the per-parent packs are cached (see `PackCache`): a re-layout
+ * repacks the root and recomposes rects, nothing more.
  */
 
+import { containerBadge } from "./c4";
 import type { Rect } from "./camera";
-import { computeWorldRects } from "./geometry";
-import type { PackLayoutOptions } from "./layout";
-import type { ZoomMap, ZoomNode, ZoomRelation } from "./types";
+import { setCardBadge } from "./card-content";
+import { MAX_CHILDREN_DRAWN } from "./constants";
+import { selectChildren } from "./cull";
+import {
+  bucketExternalRelations,
+  buildExternalLanes,
+  type ExternalLane,
+  type LaneCache,
+  bandContent,
+} from "./externals";
+import { type PackCache, computeWorldRects, type WorldLayoutOptions } from "./geometry";
+import { isTestSubtree, mapNodes } from "./rest-links";
+import type { ZoomContainer, ZoomExternal, ZoomMap, ZoomNode, ZoomRelation } from "./types";
 
 export interface ZoomScene {
   rootId: string;
   nodes: Map<string, ZoomNode>;
   worldRects: Map<string, Rect>;
+  /** Relations per parent, strongest (`edge_count`) first. */
   relationsByParent: Map<string, ZoomRelation[]>;
+  /**
+   * Each parent's children the draw pass visits: laid out, in layout order, and
+   * capped to `MAX_CHILDREN_DRAWN` by `sibling_rank`. Leaves have no entry.
+   */
+  drawChildren: Map<string, readonly ZoomNode[]>;
+  /**
+   * Each parent's external systems: the band its children leave room for, the
+   * dashed cards in it and the routed connectors (see `externals.ts`).
+   */
+  externalLanes: Map<string, ExternalLane>;
   /** Total nodes that received a world rect (reachable, laid-out). */
   laidOutCount: number;
 }
 
-export function buildScene(map: ZoomMap, layout: PackLayoutOptions = {}): ZoomScene {
+/** What a scene derives from its map regardless of the root shape. */
+interface MapDerived {
+  nodes: Map<string, ZoomNode>;
+  externals: Map<string, ZoomExternal>;
+  extBuckets: ReturnType<typeof bucketExternalRelations>;
+  /** Every relation per parent, for the layout to rank siblings by. */
+  layoutRelations: Map<string, ZoomRelation[]>;
+  /** Unset until the first layout: they need to know which nodes are laid out. */
+  relationsByParent?: Map<string, ZoomRelation[]>;
+  drawChildren?: Map<string, readonly ZoomNode[]>;
+  packs: PackCache;
+  lanes: LaneCache;
+}
+
+/** Per map, for re-layouts that change only `rootAspect`. */
+const derivedByMap = new WeakMap<ZoomMap, MapDerived>();
+
+function deriveMap(map: ZoomMap): MapDerived {
   const nodes = new Map<string, ZoomNode>();
   for (const n of map.nodes) nodes.set(n.id, n);
-
-  const worldRects = computeWorldRects(nodes, map.root_id, layout);
-
-  const relationsByParent = new Map<string, ZoomRelation[]>();
+  const layoutRelations = new Map<string, ZoomRelation[]>();
   for (const r of map.relations) {
-    // Only keep relations whose endpoints both exist and are laid out, so the
-    // renderer never dereferences a pruned node.
-    if (!worldRects.has(r.source_id) || !worldRects.has(r.target_id)) continue;
-    const bucket = relationsByParent.get(r.parent_id);
+    const bucket = layoutRelations.get(r.parent_id);
     if (bucket) bucket.push(r);
-    else relationsByParent.set(r.parent_id, [r]);
+    else layoutRelations.set(r.parent_id, [r]);
+  }
+  const externals = new Map<string, ZoomExternal>();
+  for (const e of map.externals ?? []) externals.set(e.id, e);
+  const extBuckets = bucketExternalRelations(map.external_relations ?? [], nodes, externals);
+  return {
+    nodes,
+    externals,
+    extBuckets,
+    layoutRelations,
+    packs: new Map(),
+    lanes: new Map(),
+  };
+}
+
+/**
+ * Only a root shape is given, so the map's derived data and packs can be
+ * shared with its other layouts; custom pack options get a layout of their own.
+ */
+function onlyRootAspect(layout: WorldLayoutOptions): boolean {
+  for (const k in layout) if (k !== "rootAspect") return false;
+  return true;
+}
+
+export function buildScene(map: ZoomMap, layout: WorldLayoutOptions = {}): ZoomScene {
+  const shared = onlyRootAspect(layout);
+  let d = shared ? derivedByMap.get(map) : undefined;
+  if (!d) {
+    d = deriveMap(map);
+    if (shared) derivedByMap.set(map, d);
+  }
+  const { nodes, externals, extBuckets } = d;
+  const worldRects = computeWorldRects(
+    nodes,
+    map.root_id,
+    layout,
+    (id, r) => (extBuckets.has(id) ? bandContent(r) : r),
+    shared ? d.packs : undefined,
+    d.layoutRelations,
+    testLayerIds(map),
+  );
+  // Which nodes are laid out does not depend on the root shape, so these hold
+  // for every layout of the map.
+  if (!d.relationsByParent || !d.drawChildren) {
+    d.relationsByParent = bucketRelations(map.relations, worldRects);
+    d.drawChildren = resolveDrawChildren(nodes, worldRects);
+    setContainerBadges(nodes, map.containers ?? []);
   }
 
   return {
     rootId: map.root_id,
     nodes,
     worldRects,
-    relationsByParent,
+    relationsByParent: d.relationsByParent,
+    drawChildren: d.drawChildren,
+    externalLanes: buildExternalLanes(extBuckets, externals, worldRects, shared ? d.lanes : undefined),
     laidOutCount: worldRects.size,
   };
 }
 
-/** Resolve a node's children to node objects, skipping any missing/unlaid-out. */
-export function childNodes(scene: ZoomScene, node: ZoomNode): ZoomNode[] {
-  const out: ZoomNode[] = [];
-  for (const id of node.children) {
-    const child = scene.nodes.get(id);
-    if (child && scene.worldRects.has(id)) out.push(child);
+const testLayersByMap = new WeakMap<ZoomMap, ReadonlySet<string>>();
+
+/**
+ * Layers most of whose files are tests: the layout sets them aside in a side
+ * column (see `packLayout`), and the host offers "Show test links" only when
+ * there is one. Uses the links filter's `isTestSubtree`, so the set-aside
+ * column and the hidden test links always agree. Memoized per map.
+ */
+export function testLayerIds(map: ZoomMap): ReadonlySet<string> {
+  let out = testLayersByMap.get(map);
+  if (out) return out;
+  const nodes = mapNodes(map);
+  const ids = new Set<string>();
+  for (const n of map.nodes) if (n.kind === "layer" && isTestSubtree(nodes, n.id)) ids.add(n.id);
+  testLayersByMap.set(map, (out = ids));
+  return out;
+}
+
+/**
+ * Relations per parent, strongest first. Only relations whose endpoints both
+ * exist and are laid out are kept, so the renderer never dereferences a pruned
+ * node. `Array.prototype.sort` is stable, so equal counts keep their wire order.
+ */
+function bucketRelations(
+  relations: readonly ZoomRelation[],
+  worldRects: Map<string, Rect>,
+): Map<string, ZoomRelation[]> {
+  const byParent = new Map<string, ZoomRelation[]>();
+  for (const r of relations) {
+    if (!worldRects.has(r.source_id) || !worldRects.has(r.target_id)) continue;
+    const bucket = byParent.get(r.parent_id);
+    if (bucket) bucket.push(r);
+    else byParent.set(r.parent_id, [r]);
+  }
+  for (const bucket of byParent.values()) bucket.sort((a, b) => b.edge_count - a.edge_count);
+  return byParent;
+}
+
+/** Fill the card technology line's badge slot (see `cardBadge`) for every node, once. */
+function setContainerBadges(nodes: Map<string, ZoomNode>, list: readonly ZoomContainer[]): void {
+  const containers = new Map(list.map((c) => [c.id, c] as const));
+  for (const n of nodes.values()) {
+    const parent = n.parent_id ? nodes.get(n.parent_id) : undefined;
+    setCardBadge(n, containerBadge(n, parent, containers));
+  }
+}
+
+function resolveDrawChildren(
+  nodes: Map<string, ZoomNode>,
+  worldRects: Map<string, Rect>,
+): Map<string, readonly ZoomNode[]> {
+  const out = new Map<string, readonly ZoomNode[]>();
+  for (const id of worldRects.keys()) {
+    const node = nodes.get(id);
+    const kids = node ? laidOutChildren(nodes, worldRects, node) : [];
+    if (kids.length === 0) continue;
+    out.set(id, kids.length > MAX_CHILDREN_DRAWN ? selectChildren(kids, MAX_CHILDREN_DRAWN) : kids);
   }
   return out;
+}
+
+function laidOutChildren(
+  nodes: Map<string, ZoomNode>,
+  worldRects: Map<string, Rect>,
+  node: ZoomNode,
+): ZoomNode[] {
+  const out: ZoomNode[] = [];
+  for (const id of node.children) {
+    const child = nodes.get(id);
+    if (child && worldRects.has(id)) out.push(child);
+  }
+  return out;
+}
+
+const NO_CHILDREN: readonly ZoomNode[] = [];
+
+/** A node's drawable children (see `ZoomScene.drawChildren`); shared, do not mutate. */
+export function childNodes(scene: ZoomScene, node: ZoomNode): readonly ZoomNode[] {
+  return scene.drawChildren.get(node.id) ?? NO_CHILDREN;
 }

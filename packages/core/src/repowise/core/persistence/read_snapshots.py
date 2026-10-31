@@ -14,8 +14,10 @@ The rule fails closed: a table it does not know is an input to every view
 (:data:`UNRELATED_TABLES` lists the ones no view reads, :data:`NOT_READ_BY`
 the ones a single kind does not), a write in a savepoint that rolled back
 still invalidates, and a write to one repository drops every repository's
-rows in a shared store. Readers never
-write. The builders read only the stores; settings that shape them
+rows in a shared store. A reader writes only through
+:func:`build_and_store`, which claims the missing row before it builds, so
+an input write landing during the build drops the claim and the result is
+not stored. The builders read only the stores; settings that shape them
 (``.repowise/health-rules.json``, the exclude spec, scope) reach a view
 through the store writes they cause.
 
@@ -34,12 +36,14 @@ from __future__ import annotations
 import json
 import logging
 import re
+import uuid
 from collections.abc import Awaitable, Callable
 from functools import cache
 from typing import Any
 
-from sqlalchemy import delete, event, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import delete, event, insert, select, update
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from sqlalchemy.orm import Session
 
 from repowise.core import __version__
@@ -271,6 +275,102 @@ async def refresh_snapshot(
     return True
 
 
+#: Key prefix of a row a reader holds while it builds; never a real key, so
+#: other readers see a miss.
+_CLAIM_PREFIX = "claim:"
+
+
+def _write_back_engine(session: AsyncSession) -> AsyncEngine | None:
+    """A no-wait engine on the session's store, or ``None`` where a reader
+    does not store what it built.
+
+    Ceiling: SQLite files only. An in-memory store cannot be reopened, and on
+    Postgres the claim could wait on a writer's row locks.
+    """
+    bind = session.bind
+    if not isinstance(bind, AsyncEngine) or bind.dialect.name != "sqlite":
+        return None
+    if bind.url.database in (None, "", ":memory:"):
+        return None
+    from .database import create_engine  # database imports this module
+
+    return create_engine(bind.url.render_as_string(hide_password=False), busy_timeout_ms=0)
+
+
+async def _claim(engine: AsyncEngine, repo_id: str, kind: str, claim: str) -> bool:
+    """Replace the ``kind`` row with a claim, committed before the build reads."""
+    where = (ReadSnapshot.repository_id == repo_id, ReadSnapshot.kind == kind)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(delete(ReadSnapshot).where(*where))
+            await conn.execute(
+                insert(ReadSnapshot).values(
+                    repository_id=repo_id, kind=kind, key=claim, payload_json="null"
+                )
+            )
+        return True
+    except SQLAlchemyError as exc:  # locked, read-only, or a store without the table
+        logger.debug("read snapshot %s not claimed: %s", kind, exc)
+        return False
+
+
+async def _fill(
+    engine: AsyncEngine, repo_id: str, kind: str, claim: str, key: str, value: Any
+) -> bool:
+    """Store ``value`` only while the claim still stands: an input write
+    since the claim deleted it, and a later reader's claim replaced it."""
+    try:
+        payload = json.dumps(value, ensure_ascii=False)
+        async with engine.begin() as conn:
+            result = await conn.execute(
+                update(ReadSnapshot)
+                .where(
+                    ReadSnapshot.repository_id == repo_id,
+                    ReadSnapshot.kind == kind,
+                    ReadSnapshot.key == claim,
+                )
+                .values(key=key, payload_json=payload)
+            )
+        return result.rowcount == 1
+    except (SQLAlchemyError, TypeError, ValueError) as exc:  # the build is served anyway
+        logger.debug("read snapshot %s not stored: %s", kind, exc)
+        return False
+
+
+async def build_and_store(
+    session: AsyncSession,
+    repo_id: str,
+    kind: str,
+    key: str,
+    build: Callable[[AsyncSession], Awaitable[Any]],
+) -> Any:
+    """``await build(...)`` (JSON-ready), stored as the ``kind`` row under
+    ``key`` for the next process, for a reader that found the row missing.
+
+    The claim commits first and the build then runs on a fresh session, whose
+    reads all follow the claim: an input write that lands before the store
+    has deleted the claim, so a stale build is never stored. A store that is
+    locked or read-only skips the write and still returns the build; so does
+    a store this cannot reopen, and a session holding its own input writes,
+    which build on ``session``.
+    """
+    if stale(session.sync_session, kind):
+        return await build(session)
+    engine = _write_back_engine(session)
+    if engine is None:
+        return await build(session)
+    try:
+        claim = f"{_CLAIM_PREFIX}{uuid.uuid4().hex}"
+        if not await _claim(engine, repo_id, kind, claim):
+            return await build(session)
+        async with AsyncSession(session.bind, expire_on_commit=False) as fresh:
+            value = await build(fresh)
+        await _fill(engine, repo_id, kind, claim, key, value)
+        return value
+    finally:
+        await engine.dispose()
+
+
 @cache
 def _adapter(tp: type) -> Any:
     # pydantic ships with repowise; imported here so opening a store stays cheap.
@@ -295,6 +395,7 @@ __all__ = [
     "NOT_READ_BY",
     "SELF_KEYED_KINDS",
     "UNRELATED_TABLES",
+    "build_and_store",
     "decode_or_none",
     "mark_current",
     "read_snapshot",
