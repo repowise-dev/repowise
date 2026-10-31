@@ -187,7 +187,7 @@ class PRBlastRadiusAnalyzer:
         cochange_warnings = await self._cochange_warnings(changed_files, changed_set)
 
         # 4. Recommended reviewers (over all affected files)
-        recommended_reviewers = await self._recommend_reviewers(all_affected_paths)
+        recommended_reviewers = await self._recommend_reviewers(all_affected_paths, with_names=with_graph)
 
         # 5. Test gaps
         test_gaps = await self._find_test_gaps(all_affected_paths)
@@ -450,8 +450,14 @@ class PRBlastRadiusAnalyzer:
         warnings.sort(key=lambda x: -x["score"])
         return warnings
 
-    async def _recommend_reviewers(self, affected_files: list[str]) -> list[dict]:
-        """Aggregate top owners of affected files; return top 5."""
+    async def _recommend_reviewers(
+        self, affected_files: list[str], *, with_names: bool = False
+    ) -> list[dict]:
+        """Aggregate top owners of affected files; return top 5.
+
+        *with_names* adds each owner's display name from git history, for a
+        screen; off by default so the MCP reply keeps its size.
+        """
         if not affected_files:
             return []
 
@@ -463,17 +469,21 @@ class PRBlastRadiusAnalyzer:
         )
 
         owner_files: dict[str, list[float]] = defaultdict(list)
+        names: dict[str, str] = {}
         for meta in res.scalars().all():
             email = meta.primary_owner_email or ""
             pct = float(meta.primary_owner_commit_pct or 0.0)
             if email:
                 owner_files[email].append(pct)
+                if meta.primary_owner_name:
+                    names.setdefault(email, meta.primary_owner_name)
 
         reviewers: list[dict[str, Any]] = [
             {
                 "email": email,
                 "files": len(pcts),
                 "ownership_pct": round(sum(pcts) / len(pcts), 3) if pcts else 0.0,
+                **({"name": names.get(email)} if with_names else {}),
             }
             for email, pcts in owner_files.items()
         ]

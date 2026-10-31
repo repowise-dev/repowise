@@ -18,7 +18,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
 import { Plus, Flame } from "lucide-react";
-import type { AffectedSignal, BlastRadiusResponse } from "@repowise-dev/types/blast-radius";
+import type { AffectedSignal, BlastRadiusResponse, ChangeCandidate } from "@repowise-dev/types/blast-radius";
 
 import { Button } from "../ui/button";
 import { Skeleton } from "../ui/skeleton";
@@ -54,14 +54,40 @@ const SHA = /^[0-9a-f]{40}$/;
  */
 export function changeLinkParam(changeId: string): string {
   if (changeId === "working-tree") return "wip";
-  return changeId.replace(/^(branch|commit):/, "");
+  if (changeId.startsWith("commit:")) return changeId.slice("commit:".length);
+  const branch = changeId.replace(/^branch:/, "");
+  // A branch named like the other two forms keeps its prefix; `:` never
+  // appears in a git branch name, so the prefixed form is unambiguous.
+  return branch === "wip" || SHA.test(branch) ? `branch:${branch}` : branch;
 }
 
 /** The change id a link's `change` value names. */
 export function changeIdFromLink(param: string): string {
+  if (param.startsWith("branch:")) return param;
   if (param === "wip") return "working-tree";
   return SHA.test(param) ? `commit:${param}` : `branch:${param}`;
 }
+
+/**
+ * The candidate an id names: the listed one, else one read off the id itself,
+ * so a linked change no longer in the list (a merged branch, an older commit)
+ * keeps its name and its diff command.
+ */
+export function changeFor(id: string, listed: ChangeCandidate[]): ChangeCandidate | undefined {
+  const found = listed.find((c) => c.id === id);
+  if (found) return found;
+  const base = { title: null, author: null, committed_at: null, ahead: null, files_changed: null, is_current: false };
+  if (id === "working-tree") return { ...base, id, kind: "working_tree", label: "Uncommitted changes", head_sha: null, base: null };
+  const [kind, ...rest] = id.split(":");
+  const ref = rest.join(":");
+  if (kind === "branch") {
+    const trunk = listed.find((c) => c.kind === "branch")?.base ?? null;
+    return { ...base, id, kind: "branch", label: ref, head_sha: null, base: trunk };
+  }
+  if (kind === "commit") return { ...base, id, kind: "commit", label: ref.slice(0, 8), head_sha: ref, base: null };
+  return undefined;
+}
+
 
 /** The hand-picked-files form: search, paste, hotspot chips. */
 function FilesForm({
@@ -214,7 +240,7 @@ export function ImpactView({
 
   const analyzed = analysis?.selection;
   const selectedChange =
-    analyzed?.kind === "change" ? changes?.changes.find((c) => c.id === analyzed.id) : undefined;
+    analyzed?.kind === "change" ? changeFor(analyzed.id, changes?.changes ?? []) : undefined;
   const subject = selectedChange ? (
     <span className={selectedChange.kind === "working_tree" ? "font-medium" : "font-mono"}>
       {selectedChange.label}
@@ -308,6 +334,7 @@ export function ImpactView({
               changedFiles={analysis.changedFiles}
               changedTotal={analysis.changedTotal}
               subject={subject}
+              change={selectedChange}
               fileHref={fileHref}
             />
             {/* The depth control stays when nothing is reached: a deeper look may find some. */}

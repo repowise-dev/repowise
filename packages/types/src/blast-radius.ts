@@ -43,6 +43,8 @@ export interface CochangeWarning {
 
 export interface ReviewerEntry {
   email: string;
+  /** Display name from git history; only on a change analysis. */
+  name?: string | null;
   files: number;
   /** 0–1 fraction. UI multiplies by 100 for display. */
   ownership_pct: number;
@@ -193,6 +195,8 @@ export interface ChangeCandidate {
   files_changed: number | null;
   /** The checked-out branch, or uncommitted work in the checkout. */
   is_current: boolean;
+  /** For a branch: whether it exists on the remote; local-only is often scratch work. */
+  pushed?: boolean | null;
 }
 
 export interface ChangeCandidatesResponse {

@@ -145,13 +145,13 @@ describe("ImpactView with a change list", () => {
     renderView(<ImpactView adapter={adapter} />);
 
     await waitFor(() => expect(analyzeChange).toHaveBeenCalledWith({ changeId: "working-tree", maxDepth: 3 }));
-    expect(await screen.findByText(/2 files changed/)).toBeInTheDocument();
+    expect(await screen.findByText((_, el) => el?.tagName === "SPAN" && el.textContent === "2 changed")).toBeInTheDocument();
     // The picked change's importer is a weak-health hotspot: it leads the actions.
     expect(screen.getAllByRole("link", { name: /src\/app\.ts/ })[0]).toHaveAttribute("href", "/files/src/app.ts");
 
     fireEvent.click(screen.getByRole("button", { name: /feat\/x/ }));
     await waitFor(() => expect(analyzeChange).toHaveBeenCalledWith({ changeId: "branch:feat/x", maxDepth: 3 }));
-    expect(await screen.findByText(/1 file changed/)).toBeInTheDocument();
+    expect(await screen.findByText((_, el) => el?.tagName === "SPAN" && el.textContent === "1 changed")).toBeInTheDocument();
     expect(adapter.analyze).not.toHaveBeenCalled();
   });
 
@@ -167,13 +167,13 @@ describe("ImpactView with a change list", () => {
     renderView(
       <ImpactView adapter={makeAdapter({ listChanges: vi.fn(async () => CHANGES), analyzeChange })} />,
     );
-    expect(await screen.findByText(/2 files changed/)).toBeInTheDocument();
+    expect(await screen.findByText((_, el) => el?.tagName === "SPAN" && el.textContent === "2 changed")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /feat\/x/ }));
     // Still the previous result, so still the previous name.
     expect(screen.getByText(/Uncommitted changes/, { selector: "p span" })).toBeInTheDocument();
     release();
-    expect(await screen.findByText(/1 file changed/)).toBeInTheDocument();
+    expect(await screen.findByText((_, el) => el?.tagName === "SPAN" && el.textContent === "1 changed")).toBeInTheDocument();
   });
 });
 
@@ -185,6 +185,10 @@ describe("shareable change links", () => {
     }
     expect(changeLinkParam("working-tree")).toBe("wip");
     expect(changeLinkParam("branch:feat/x")).toBe("feat/x");
+    // A branch named like the working tree or a sha keeps its prefix.
+    expect(changeLinkParam("branch:wip")).toBe("branch:wip");
+    expect(changeIdFromLink(changeLinkParam("branch:wip"))).toBe("branch:wip");
+    expect(changeIdFromLink(changeLinkParam(`branch:${sha}`))).toBe(`branch:${sha}`);
   });
 
   it("opens the linked change instead of the default, and reports picks", async () => {

@@ -574,6 +574,7 @@ export interface ChangeCandidateModel {
   ahead?: number | null;
   files_changed?: number | null;
   is_current?: boolean;
+  pushed?: boolean | null;
 }
 
 /** The changes a reviewer can pick, and the one to open first. */
@@ -3956,6 +3957,7 @@ export interface ReviewerEntry {
   email: string;
   files: number;
   ownership_pct: number;
+  name?: string | null;
 }
 
 export interface ReviewerSuggestion {

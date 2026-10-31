@@ -70,6 +70,12 @@ export {
   type CommitPromptInput,
 } from "./ai-prompts/commit-prompt";
 export {
+  buildBlastRadiusPrompt,
+  type BlastPromptChange,
+  type BlastPromptInput,
+  type BuildBlastPromptOptions,
+} from "./ai-prompts/blast-radius-prompt";
+export {
   buildChangeAiPrompt,
   changePromptFixes,
   type BuildChangePromptOptions,
