@@ -184,10 +184,12 @@ def _declares_generated(name: str, header: str) -> bool:
     """
     if is_generated_header(header):
         return True
-    return name.lower().endswith(_code_suffixes()) and _leading_generated_sentence(header)
+    return name.lower().endswith(_code_suffixes()) and _leading_generated_sentence(
+        header, bms_copybook=name.lower().endswith(".cpy")
+    )
 
 
-def _leading_generated_sentence(header: str) -> bool:
+def _leading_generated_sentence(header: str, *, bms_copybook: bool = False) -> bool:
     """The generated sentence in a comment before the first line of real code."""
     lines = [line.strip() for line in header.splitlines()[:_GENERATED_SENTENCE_LINES]]
     for i, line in enumerate(lines):
@@ -195,7 +197,12 @@ def _leading_generated_sentence(header: str) -> bool:
         if text is None:
             if not line.startswith(_PREAMBLE_PREFIXES):
                 return False
-        elif _says_generated(text.upper()) and not _above_import(lines, i):
+        elif (
+            _says_generated(text.upper())
+            # The painter's exact banner classifies symbolic maps, but must not
+            # join ingestion's generic first-two-lines skip markers.
+            or (bms_copybook and text.upper() == "ROCKET BMS SCREEN PAINTER")
+        ) and not _above_import(lines, i):
             return True
     return False
 

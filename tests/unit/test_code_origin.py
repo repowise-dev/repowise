@@ -37,6 +37,45 @@ _OWN_HEADER = (
 )
 
 
+@pytest.mark.parametrize("prefix", ["", "      * Copyright Acme\n\n\n"])
+@pytest.mark.parametrize("as_bytes", [False, True])
+def test_rocket_bms_copybook_is_generated_but_stays_indexed(prefix: str, as_bytes: bool) -> None:
+    text = (
+        prefix
+        + "      *   Rocket Visual COBOL 2017  7.0.00247\n"
+        + "      *   Rocket BMS Screen Painter\n"
+        + "      *   MapSet Name   MBANK30\n"
+        + "       01 MBANK30I.\n"
+        + "          02 FIELDL PIC S9(4) COMP.\n"
+    )
+    assert code_origin("sources/copybook/MBANK30.cpy", text.encode() if as_bytes else text) == (
+        "generated"
+    )
+    assert not is_generated_header(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "      * Hand-written map fields\n       01 MBANK30I.\n",
+        "      * Rocket Visual COBOL 2017 7.0.00247\n       01 MBANK30I.\n",
+        "      * Workaround for Rocket BMS Screen Painter\n       01 MBANK30I.\n",
+        "      * Rocket BMS Screen Painter compatibility\n       01 MBANK30I.\n",
+        "       01 MBANK30I.\n      * Rocket BMS Screen Painter\n",
+        "\n" * 40 + "      * Rocket BMS Screen Painter\n       01 MBANK30I.\n",
+    ],
+)
+def test_hand_written_copybook_is_not_a_painter_output(text: str) -> None:
+    assert code_origin("sources/copybook/MBANK30.cpy", text) == "production"
+    assert not is_generated_header(text)
+
+
+def test_rocket_bms_mention_outside_copybooks_stays_production() -> None:
+    assert code_origin("src/painter.py", "# Rocket BMS Screen Painter\nprint('example')\n") == (
+        "production"
+    )
+
+
 @pytest.mark.parametrize(
     ("path", "expected"),
     [
