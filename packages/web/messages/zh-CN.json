@@ -131,6 +131,7 @@
     }
   },
   "nav": {
+    "review": "审查",
     "dashboard": "仪表盘",
     "settings": "设置",
     "overview": "概览",
@@ -159,6 +160,7 @@
     "security": "安全"
   },
   "breadcrumb": {
+    "review": "审查",
     "overview": "概览",
     "docs": "文档",
     "chat": "对话",
@@ -265,6 +267,10 @@
     "allCurrent": "所有索引都与其检出保持同步。{parts}"
   },
   "views": {
+    "review": {
+      "title": "审查",
+      "description": "选择一次变更（未提交的改动、分支或提交），查看它影响到哪些代码、应先查看哪些文件、该运行哪些测试以及该找谁审查。"
+    },
     "files": {
       "title": "文件",
       "description": "下钻这幅地图，看清目录树的形状以及健康度薄弱的位置，再筛选表格定位具体文件。"
@@ -306,13 +312,9 @@
       "changeRisk": "变更风险",
       "evolutionTitle": "工作形态如何变化",
       "evolutionDescription": "按提交标题归类出的各类提交随时间的变化。修复类高亮显示，因为这张图存在的意义就是展示这一条序列。",
-      "viewLabel": "提交视图",
-      "viewHistory": "历史",
       "groupLabel": "历史分组方式",
       "viewByChange": "按变更",
       "viewByCommit": "按提交",
-      "viewReview": "审查变更",
-      "reviewDescription": "选择一次变更（未提交的改动、分支或提交），查看它影响到哪些代码、应先查看哪些文件、该运行哪些测试以及该找谁审查。",
       "listTitle": "提交历史",
       "listDescription": "最新的在前，每行先显示它对代码健康的影响。筛选作用于整个仓库，而不仅是当前页。",
       "hotspotMark": "热点",

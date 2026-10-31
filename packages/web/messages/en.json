@@ -131,6 +131,7 @@
     }
   },
   "nav": {
+    "review": "Review",
     "dashboard": "Dashboard",
     "settings": "Settings",
     "overview": "Overview",
@@ -159,6 +160,7 @@
     "security": "Security"
   },
   "breadcrumb": {
+    "review": "Review",
     "overview": "Overview",
     "docs": "Docs",
     "chat": "Chat",
@@ -265,6 +267,10 @@
     "allCurrent": "Every index is current with its checkout. {parts}"
   },
   "views": {
+    "review": {
+      "title": "Review",
+      "description": "Pick a change, uncommitted work, a branch or a commit, to see what it reaches, which files to look at first, which tests to run and who to ask."
+    },
     "files": {
       "title": "Files",
       "description": "Drill the map to see how the tree is shaped and where health is thin, then filter the table to find a specific file."
@@ -306,13 +312,9 @@
       "changeRisk": "Change risk",
       "evolutionTitle": "How the work changed shape",
       "evolutionDescription": "Commit categories over time, read off the subject line. Fixes carry the accent because that is the series this chart exists to show.",
-      "viewLabel": "Commits view",
-      "viewHistory": "History",
       "groupLabel": "Group history by",
       "viewByChange": "By change",
       "viewByCommit": "By commit",
-      "viewReview": "Review a change",
-      "reviewDescription": "Pick a change, uncommitted work, a branch or a commit, to see what it reaches, which files to look at first, which tests to run and who to ask.",
       "listTitle": "Commit history",
       "listDescription": "Newest first, each led by what it did to code health. The filters narrow the whole repository, not the page.",
       "hotspotMark": "Hotspot",

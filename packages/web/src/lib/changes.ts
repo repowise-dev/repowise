@@ -12,22 +12,11 @@ export function changeLabel(c: Pick<ChangeListItem, "forge_ref" | "id">): string
   return c.forge_ref ?? (c.id.length > 19 ? c.id.slice(0, 19) : c.id);
 }
 
-export type CommitsView = "changes" | "commits" | "review";
+export type CommitsView = "changes" | "commits";
 
 /**
- * The Commits page has two lenses: history (`commits`, grouped by commit, or
- * `changes`, grouped by merged change) and `review`, a change's blast radius.
- */
-export type CommitsLens = "history" | "review";
-
-/** The lens a view belongs to. */
-export function commitsLens(view: CommitsView): CommitsLens {
-  return view === "review" ? "review" : "history";
-}
-
-/**
- * The Commits page in one view: `?view=changes` groups the history by merged
- * change, `?view=review` weighs a change's blast radius before it lands.
+ * The Commits page in one view: the history by commit, or with
+ * `?view=changes` by merged change.
  */
 export function commitsViewHref(repoId: string, view: CommitsView): string {
   const base = `/repos/${repoId}/commits`;
@@ -35,12 +24,26 @@ export function commitsViewHref(repoId: string, view: CommitsView): string {
 }
 
 /**
- * The view a `?view=` value asks for; anything else is the commit view. That
- * includes `?view=events` from older links: the per-run events list is served
- * by the events API for automation, not drawn on this page.
+ * The view a `?view=` value asks for; anything else is the commit view,
+ * including `?view=events` from older links.
  */
 export function parseCommitsView(raw: string | string[] | undefined): CommitsView {
-  return raw === "changes" || raw === "review" ? raw : "commits";
+  return raw === "changes" ? raw : "commits";
+}
+
+/** What a link into the Review page carries: files to analyze, or a change (`wip`, a branch, a sha). */
+export interface ReviewLink {
+  file?: string[] | undefined;
+  change?: string | undefined;
+}
+
+/** The Review page, optionally opened on files or on one change. */
+export function reviewHref(repoId: string, link: ReviewLink = {}): string {
+  const q = new URLSearchParams();
+  for (const f of link.file ?? []) q.append("file", f);
+  if (link.change) q.set("change", link.change);
+  const qs = q.toString();
+  return `/repos/${repoId}/review${qs ? `?${qs}` : ""}`;
 }
 
 /** Filters and paging of the by-change view, as its query parameters keep them. */
