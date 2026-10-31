@@ -369,6 +369,7 @@ export function ImpactView({
               changedFiles={analysis.changedFiles}
               reviewersSlot={adapter.renderReviewers?.(analysis.changedFiles)}
               detailsOnly
+              fileHref={fileHref}
             />
           </div>
         )}
