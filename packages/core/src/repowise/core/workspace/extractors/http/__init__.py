@@ -55,7 +55,9 @@ from .ruby_clients import RubyClientsDialect
 from .rust_axum import RustAxumDialect
 from .rust_clients import RustClientsDialect
 from .sinatra import SinatraDialect
+from .slim import SlimDialect
 from .spring import SpringDialect
+from .symfony import SymfonyDialect
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -92,6 +94,8 @@ PROVIDER_DIALECTS: tuple[ContractDialect, ...] = (
     RailsRoutesDialect(),
     SinatraDialect(),
     GrapeDialect(),
+    SymfonyDialect(),
+    SlimDialect(),
 )
 
 # HTTP-client call recognisers (one client/language each).
