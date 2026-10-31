@@ -2,7 +2,6 @@
 
 import * as React from "react";
 import {
-  ACCEPTER_KIND_LABELS,
   DECISION_CURRENCY_DESCRIPTIONS,
   DECISION_CURRENCY_LABELS,
   DECISION_KIND_LABELS,
@@ -13,7 +12,6 @@ import {
   isRetiredDecisionSource,
 } from "@repowise-dev/types/decisions";
 import type {
-  AccepterKind,
   DecisionCurrency,
   DecisionLane,
   DecisionRecord,
@@ -308,7 +306,7 @@ export function DecisionReviewLanes({
               {open.currency && open.currency !== "active" && (
                 <CurrencyMark currency={open.currency as DecisionCurrency} />
               )}
-              <SignatureMark decision={open} />
+              <Provenance decision={open} />
             </>
           ) : null
         }
@@ -440,7 +438,6 @@ function renderDecisionCell(d: DecisionRecord) {
         {currency !== null && currency !== "active" && (
           <CurrencyMark currency={currency as DecisionCurrency} />
         )}
-        <SignatureMark decision={d} />
         {d.verification && d.verification !== "exact" && (
           <VerificationBadge verification={d.verification} iconOnly />
         )}
@@ -578,25 +575,20 @@ function RowActions({ d, ctx }: { d: DecisionRecord; ctx: ColumnContext }) {
 }
 
 /**
- * Who signed the row's current authority record, marked only where it is not
- * a person — the case this surface was built for, which carries no badge.
- * `accepter` alone reads as a name, so an agent or an import would be taken
- * for a colleague; an unrecorded kind would be taken for a person.
+ * Who signed the record's current authority, by name, for the drawer only.
+ *
+ * Provenance and nothing else: it names the signer and the session without
+ * sorting signers into kinds, so it reads the same whoever signed. A candidate
+ * has no signer and renders nothing; its source is already in the header.
  */
-function SignatureMark({ decision }: { decision: DecisionRecord }) {
-  const kind = decision.accepter_kind;
-  if (kind === null || kind === undefined || kind === "person") return null;
-  const label =
-    kind === "" ? "Signer not recorded" : ACCEPTER_KIND_LABELS[kind as AccepterKind];
-  const who = [decision.accepter, decision.accepter_session]
-    .filter(Boolean)
-    .join(", session ");
+function Provenance({ decision }: { decision: DecisionRecord }) {
+  if (decision.currency == null) return null;
+  const who = decision.accepter?.trim();
+  const session = decision.accepter_session?.trim();
   return (
-    <span
-      className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-sm border border-[var(--color-border-default)] px-1.5 text-xs text-[var(--color-text-tertiary)]"
-      title={who ? `${label}: ${who}` : label}
-    >
-      {label}
+    <span className="text-xs text-[var(--color-text-tertiary)]">
+      {who ? `Signed by ${who}` : "Signer not recorded"}
+      {who && session ? `, session ${session}` : ""}
     </span>
   );
 }

@@ -270,20 +270,23 @@ describe("currency marks the exception, not the default", () => {
   });
 });
 
-describe("who signed is marked where it is not a person", () => {
+describe("who signed is provenance, read in the drawer", () => {
   const rows = () => within(screen.getByRole("table"));
 
-  it("says nothing about the case the surface was built for", () => {
+  it("puts no signer mark on a row, whoever signed", () => {
     renderLanes("active", {
       decisions: [
-        record({ currency: "active", accepter: "Raghav", accepter_kind: "person" }),
+        record({ id: "a", currency: "active", accepter: "claude_code", accepter_kind: "agent" }),
+        record({ id: "b", title: "Other", currency: "active", accepter: "Raghav", accepter_kind: "person" }),
+        record({ id: "c", title: "Third", currency: "active", accepter: "", accepter_kind: "" }),
       ],
     });
 
     expect(rows().queryByText(/Signed by/)).not.toBeInTheDocument();
+    expect(rows().queryByText(/Signer not recorded/)).not.toBeInTheDocument();
   });
 
-  it("names an agent, and the session behind it", () => {
+  it("names the signer and session in the drawer, without a kind", () => {
     renderLanes("active", {
       decisions: [
         record({
@@ -295,47 +298,20 @@ describe("who signed is marked where it is not a person", () => {
       ],
     });
 
-    const mark = rows().getByText("Signed by an agent");
-    expect(mark).toBeInTheDocument();
-    expect(mark).toHaveAttribute(
-      "title",
-      "Signed by an agent: claude_code, session sess-42",
-    );
-  });
+    fireEvent.click(screen.getByText("Use JWT for authentication"));
+    const drawer = within(screen.getByRole("dialog"));
 
-  it("does not call a machine withdrawal an acceptance", () => {
-    // The evolution stage retires records as `agent`, so the badge on a
-    // history row is over a revocation, not a grant.
-    renderLanes("history", {
-      decisions: [
-        record({
-          currency: "superseded",
-          accepter: "evolution",
-          accepter_kind: "agent",
-        }),
-      ],
-    });
-
-    expect(rows().queryByText(/Accepted by/)).not.toBeInTheDocument();
-    expect(rows().getByText("Signed by an agent")).toBeInTheDocument();
-  });
-
-  it("marks a row written before the kind was recorded", () => {
-    // '' is not `person`: leaving it unmarked would read as one.
-    renderLanes("active", {
-      decisions: [
-        record({ currency: "active", accepter: "Raghav", accepter_kind: "" }),
-      ],
-    });
-
-    expect(rows().getByText("Signer not recorded")).toBeInTheDocument();
+    expect(drawer.getByText("Signed by claude_code, session sess-42")).toBeInTheDocument();
+    expect(drawer.queryByText(/an agent|a person/)).not.toBeInTheDocument();
   });
 
   it("says nothing about a candidate, which nobody signed", () => {
     renderLanes("candidates", { decisions: [record({ currency: null })] });
 
-    expect(rows().queryByText(/Signed by/)).not.toBeInTheDocument();
-    expect(rows().queryByText("Signer not recorded")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("Use JWT for authentication"));
+
+    expect(within(screen.getByRole("dialog")).queryByText(/Signed by|Signer not recorded/))
+      .not.toBeInTheDocument();
   });
 });
 
