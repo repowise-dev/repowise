@@ -9,6 +9,7 @@ import {
   CX,
   CY,
   buildBlastMap,
+  type BlastMap,
   type FileMarks,
   type MapFileNode,
   type MapModuleNode,
@@ -40,6 +41,44 @@ function HotspotMark({ x, y, r }: { x: number; y: number; r: number }) {
   return <path d={`M ${x} ${top} l 4 6 l -8 0 z`} fill={INK} aria-hidden />;
 }
 
+function truncate(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max - 1)}...` : text;
+}
+
+function plural(n: number, word: string): string {
+  return `${n} ${word}${n === 1 ? "" : "s"}`;
+}
+
+/**
+ * Where a node's label goes: outward along its angle from the centre, so
+ * first-ring names spread around the ring instead of stacking on one side.
+ * A lone changed file at the very centre has no angle; its label sits below.
+ */
+function labelPlacement(node: { x: number; y: number; r: number }): {
+  x: number;
+  y: number;
+  anchor: "start" | "middle" | "end";
+} {
+  if (node.x === CX && node.y === CY) return { x: node.x, y: node.y + node.r + 13, anchor: "middle" };
+  const angle = Math.atan2(node.y - CY, node.x - CX);
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  const out = node.r + 5;
+  const below = sin > 0.7 ? 6 : 0;
+  const anchor = Math.abs(cos) < 0.3 ? "middle" : cos < 0 ? "end" : "start";
+  return { x: node.x + cos * out, y: node.y + sin * out + 3.5 + below, anchor };
+}
+
+/** Changed files carry an ink outline; files with no test evidence a dashed one. */
+function fileStroke(node: MapFileNode): { stroke: string; strokeWidth: number; strokeDasharray?: string } {
+  const changed = node.hop === 0;
+  return {
+    stroke: changed ? INK : "var(--color-border-hover)",
+    strokeWidth: changed ? 2 : 1.25,
+    ...(node.untested ? { strokeDasharray: "2.5 2" } : {}),
+  };
+}
+
 function FileDot({
   node,
   label,
@@ -51,14 +90,9 @@ function FileDot({
   href: string | undefined;
   showLabel: boolean;
 }) {
-  const title = `${node.path}\n${node.hop === 0 ? "Changed" : "Imports a changed file"} · ${describeMarks(node).join(" · ")}`;
-  // Labels sit outward along the node's angle from the centre, so first-ring
-  // names spread around the ring instead of stacking on one side.
-  const angle = Math.atan2(node.y - CY, node.x - CX);
-  const out = node.r + 5;
-  const lx = node.x + Math.cos(angle) * out;
-  const ly = node.y + Math.sin(angle) * out + 3.5;
-  const anchor = Math.abs(Math.cos(angle)) < 0.3 ? "middle" : Math.cos(angle) < 0 ? "end" : "start";
+  const marks = describeMarks(node);
+  const role = node.hop === 0 ? "Changed" : "Imports a changed file";
+  const place = labelPlacement(node);
   const body = (
     <g className="group/node">
       <circle
@@ -66,33 +100,59 @@ function FileDot({
         cy={node.y}
         r={node.r}
         fill={fillOf(node)}
-        stroke={node.hop === 0 ? INK : "var(--color-border-hover)"}
-        strokeWidth={node.hop === 0 ? 2 : 1.25}
-        strokeDasharray={node.untested ? "2.5 2" : undefined}
+        {...fileStroke(node)}
         className="transition-[stroke-width] group-hover/node:[stroke-width:3]"
       />
       {node.isHotspot && <HotspotMark x={node.x} y={node.y} r={node.r} />}
       {showLabel && (
         <text
-          x={node.hop === 0 && node.x === CX && node.y === CY ? node.x : lx}
-          y={node.hop === 0 && node.x === CX && node.y === CY ? node.y + node.r + 13 : ly + (Math.sin(angle) > 0.7 ? 6 : 0)}
-          textAnchor={node.hop === 0 && node.x === CX && node.y === CY ? "middle" : anchor}
+          x={place.x}
+          y={place.y}
+          textAnchor={place.anchor}
           className="fill-[var(--color-text-secondary)] group-hover/node:fill-[var(--color-text-primary)]"
           style={{ fontSize: 10.5, fontFamily: "var(--font-mono, monospace)" }}
         >
-          {label.length > 18 ? `${label.slice(0, 17)}...` : label}
+          {truncate(label, 18)}
         </text>
       )}
-      <title>{title}</title>
+      <title>{`${node.path}\n${role} · ${marks.join(" · ")}`}</title>
     </g>
   );
-  return href ? (
-    <a href={href} aria-label={`${node.path}: ${describeMarks(node).join(", ")}`} className="focus:outline-none [&:focus-visible>g>circle]:[stroke-width:3]">
+  if (!href) return body;
+  return (
+    <a
+      href={href}
+      aria-label={`${node.path}: ${marks.join(", ")}`}
+      className="focus:outline-none [&:focus-visible>g>circle]:[stroke-width:3]"
+    >
       {body}
     </a>
-  ) : (
-    body
   );
+}
+
+/** A module's marks in words; empty when it holds none. */
+function moduleMarks(node: MapModuleNode): string[] {
+  const marks: string[] = [];
+  if (node.hotspots) marks.push(plural(node.hotspots, "hotspot"));
+  if (node.weak) marks.push(`${node.weak} weak health`);
+  if (node.untested) marks.push(`${node.untested} untested`);
+  return marks;
+}
+
+/** The short line under a module's name: files, hotspots, weak health. */
+function moduleCountLine(node: MapModuleNode): string {
+  const parts = [plural(node.files.length, "file")];
+  if (node.hotspots > 0) parts.push(`${node.hotspots} hot`);
+  if (node.weak > 0) parts.push(`${node.weak} weak`);
+  return parts.join(" · ");
+}
+
+function onActivate(handler: () => void) {
+  return (e: { key: string; preventDefault: () => void }) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    e.preventDefault();
+    handler();
+  };
 }
 
 function ModuleBubble({
@@ -105,25 +165,19 @@ function ModuleBubble({
   onSelect: () => void;
 }) {
   const anchorEnd = node.x < CX - 4;
-  const marks = [
-    node.hotspots ? `${node.hotspots} hotspot${node.hotspots === 1 ? "" : "s"}` : null,
-    node.weak ? `${node.weak} weak health` : null,
-    node.untested ? `${node.untested} untested` : null,
-  ].filter(Boolean);
+  const textX = anchorEnd ? node.x - node.r - 5 : node.x + node.r + 5;
+  const anchor = anchorEnd ? "end" : "start";
+  const marks = moduleMarks(node);
+  const markText = marks.join(", ");
   const name = node.name.split("/").slice(-2).join("/");
   return (
     <g
       role="button"
       tabIndex={0}
       aria-pressed={selected}
-      aria-label={`${node.name}: ${node.files.length} files, ${node.hop} hops out${marks.length ? `, ${marks.join(", ")}` : ""}`}
+      aria-label={[`${node.name}: ${plural(node.files.length, "file")}, ${node.hop} hops out`, ...marks].join(", ")}
       onClick={onSelect}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          onSelect();
-        }
-      }}
+      onKeyDown={onActivate(onSelect)}
       className="cursor-pointer focus:outline-none [&:focus-visible>circle]:[stroke-width:2.5]"
     >
       <circle
@@ -135,26 +189,18 @@ function ModuleBubble({
         strokeWidth={selected ? 2 : 1.25}
       />
       <text
-        x={node.x + (anchorEnd ? -node.r - 5 : node.r + 5)}
+        x={textX}
         y={node.y - 1}
-        textAnchor={anchorEnd ? "end" : "start"}
+        textAnchor={anchor}
         className="fill-[var(--color-text-secondary)]"
         style={{ fontSize: 10.5, fontFamily: "var(--font-mono, monospace)" }}
       >
-        {name.length > 24 ? `${name.slice(0, 23)}...` : name}
+        {truncate(name, 24)}
       </text>
-      <text
-        x={node.x + (anchorEnd ? -node.r - 5 : node.r + 5)}
-        y={node.y + 11}
-        textAnchor={anchorEnd ? "end" : "start"}
-        className="fill-[var(--color-text-tertiary)]"
-        style={{ fontSize: 9.5 }}
-      >
-        {node.files.length} file{node.files.length === 1 ? "" : "s"}
-        {node.hotspots > 0 ? ` · ${node.hotspots} hot` : ""}
-        {node.weak > 0 ? ` · ${node.weak} weak` : ""}
+      <text x={textX} y={node.y + 11} textAnchor={anchor} className="fill-[var(--color-text-tertiary)]" style={{ fontSize: 9.5 }}>
+        {moduleCountLine(node)}
       </text>
-      <title>{`${node.name}\n${node.files.length} files, nearest ${node.hop} hops out${marks.length ? `\n${marks.join(", ")}` : ""}\nClick to list them`}</title>
+      <title>{[`${node.name}`, `${plural(node.files.length, "file")}, nearest ${node.hop} hops out`, markText, "Click to list them"].filter(Boolean).join("\n")}</title>
     </g>
   );
 }
@@ -190,6 +236,91 @@ function Legend() {
   );
 }
 
+function RingGuides({ map }: { map: BlastMap }) {
+  const drawn = map.ringRadii.slice(0, Math.max(1, Math.min(3, map.maxHop)));
+  const name = ["1 hop", "2 hops", "3+ hops"];
+  return (
+    <>
+      {drawn.map((r, i) => (
+        <g key={r}>
+          <circle cx={map.cx} cy={map.cy} r={r} fill="none" stroke="var(--color-border-default)" strokeOpacity={0.6} strokeDasharray="2 5" />
+          <text
+            x={map.cx}
+            y={map.cy - r + 3}
+            textAnchor="middle"
+            stroke="var(--color-bg-root)"
+            strokeWidth={3}
+            paintOrder="stroke"
+            className="fill-[var(--color-text-tertiary)]"
+            style={{ fontSize: 9.5 }}
+          >
+            {name[i]}
+          </text>
+        </g>
+      ))}
+    </>
+  );
+}
+
+/** Each drawn node to the node it hangs from, or to the hub when that one is not drawn. */
+function Edges({ map, nodeByKey }: { map: BlastMap; nodeByKey: Map<string, MapFileNode> }) {
+  const from = (key: string | null) => (key ? nodeByKey.get(key) : undefined) ?? { x: map.cx, y: map.cy };
+  const line = (key: string, a: { x: number; y: number }, b: { x: number; y: number }, opacity: number) => (
+    <line key={key} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={EDGE} strokeOpacity={opacity} strokeWidth={1} />
+  );
+  return (
+    <>
+      {map.modules.map((m) => line(`e:${m.key}`, from(m.parentKey), m, m.parentKey ? 0.35 : 0.12))}
+      {map.firstHop.map((n) => line(`e:${n.key}`, from(n.parentKey), n, 0.45))}
+    </>
+  );
+}
+
+/** What exists but is not drawn, so the picture never claims to be everything. */
+function NotDrawnNote({ map }: { map: BlastMap }) {
+  const parts: string[] = [];
+  if (map.hiddenChanged > 0) parts.push(`${map.hiddenChanged} more changed files`);
+  if (map.hiddenFirstHop > 0) parts.push(`${map.hiddenFirstHop} more files one hop out (the riskiest are drawn)`);
+  if (map.hiddenModules > 0) parts.push(`${map.hiddenModules} smaller modules holding ${map.hiddenModuleFiles} files`);
+  if (parts.length === 0) return null;
+  return (
+    <p className="text-[11px] text-[var(--color-text-tertiary)]">
+      Not drawn: {parts.join("; ")}. The tables below list every file.
+    </p>
+  );
+}
+
+function FileRef({ path, href }: { path: string; href: string | undefined }) {
+  const cls = "min-w-0 break-all font-mono text-[var(--color-text-primary)]";
+  return href ? (
+    <a href={href} className={`${cls} hover:underline`}>
+      {path}
+    </a>
+  ) : (
+    <span className={cls}>{path}</span>
+  );
+}
+
+/** The files of the module picked on the map. */
+function ModuleFiles({ module, fileHref }: { module: MapModuleNode; fileHref: ((path: string) => string) | undefined }) {
+  return (
+    <div className="border-t border-[var(--color-border-default)] pt-3">
+      <p className="mb-2 text-xs text-[var(--color-text-secondary)]">
+        <span className="font-mono text-[var(--color-text-primary)]">{module.name}</span>: {module.files.length} files
+        reached, nearest {module.hop} hops out
+      </p>
+      <ul className="max-h-64 space-y-0.5 overflow-y-auto text-xs">
+        {module.files.map((f) => (
+          <li key={f.path} className="flex flex-wrap items-baseline justify-between gap-x-3">
+            <FileRef path={f.path} href={fileHref?.(f.path)} />
+            <span className="text-[var(--color-text-tertiary)]">{describeMarks(f).join(" · ")}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 export interface BlastRadiusMapProps {
   result: BlastRadiusResponse & { affected_signals?: AffectedSignal[] };
   changedFiles: string[];
@@ -218,13 +349,9 @@ export function BlastRadiusMap({ result, changedFiles, fileHref }: BlastRadiusMa
   const selected = map.modules.find((m) => m.key === selectedModule) ?? null;
   // A crowded centre is listed in the verdict above; its names would collide here.
   const labelChanged = map.changed.length <= 3;
-
-  const edge = (from: { x: number; y: number } | undefined, to: { x: number; y: number }, key: string, opacity: number) => {
-    const a = from ?? { x: map.cx, y: map.cy };
-    return (
-      <line key={key} x1={a.x} y1={a.y} x2={to.x} y2={to.y} stroke={EDGE} strokeOpacity={opacity} strokeWidth={1} />
-    );
-  };
+  const dot = (n: MapFileNode, showLabel: boolean) => (
+    <FileDot key={n.key} node={n} label={labels.get(n.path) ?? n.path} href={fileHref?.(n.path)} showLabel={showLabel} />
+  );
 
   return (
     <div className="space-y-3">
@@ -235,31 +362,8 @@ export function BlastRadiusMap({ result, changedFiles, fileHref }: BlastRadiusMa
           role="group"
           aria-label={`Blast radius: ${map.changed.length} changed files at the centre, ${map.firstHop.length} files one hop out, ${map.modules.length} modules further out`}
         >
-          {map.ringRadii.slice(0, Math.max(1, Math.min(3, map.maxHop))).map((r, i) => (
-            <g key={r}>
-              <circle cx={map.cx} cy={map.cy} r={r} fill="none" stroke="var(--color-border-default)" strokeOpacity={0.6} strokeDasharray="2 5" />
-              <text
-                x={map.cx}
-                y={map.cy - r + 3}
-                textAnchor="middle"
-                stroke="var(--color-bg-root)"
-                strokeWidth={3}
-                paintOrder="stroke"
-                className="fill-[var(--color-text-tertiary)]"
-                style={{ fontSize: 9.5 }}
-              >
-                {i === 2 ? "3+ hops" : `${i + 1} hop${i === 0 ? "" : "s"}`}
-              </text>
-            </g>
-          ))}
-
-          {map.modules.map((m) =>
-            edge(m.parentKey ? nodeByKey.get(m.parentKey) : undefined, m, `e:${m.key}`, m.parentKey ? 0.35 : 0.12),
-          )}
-          {map.firstHop.map((n) =>
-            edge(n.parentKey ? nodeByKey.get(n.parentKey) : undefined, n, `e:${n.key}`, 0.45),
-          )}
-
+          <RingGuides map={map} />
+          <Edges map={map} nodeByKey={nodeByKey} />
           {/* The hub: edges from files whose changed file is not drawn meet here. */}
           <circle cx={map.cx} cy={map.cy} r={3} fill={EDGE} />
           {map.modules.map((m) => (
@@ -270,12 +374,8 @@ export function BlastRadiusMap({ result, changedFiles, fileHref }: BlastRadiusMa
               onSelect={() => setSelectedModule((cur) => (cur === m.key ? null : m.key))}
             />
           ))}
-          {map.firstHop.map((n) => (
-            <FileDot key={n.key} node={n} label={labels.get(n.path) ?? n.path} href={fileHref?.(n.path)} showLabel />
-          ))}
-          {map.changed.map((n) => (
-            <FileDot key={n.key} node={n} label={labels.get(n.path) ?? n.path} href={fileHref?.(n.path)} showLabel={labelChanged} />
-          ))}
+          {map.firstHop.map((n) => dot(n, true))}
+          {map.changed.map((n) => dot(n, labelChanged))}
           {!labelChanged && (
             <text x={map.cx} y={map.cy + 74} textAnchor="middle" className="fill-[var(--color-text-tertiary)]" style={{ fontSize: 10 }}>
               {map.changed.length + map.hiddenChanged} changed files
@@ -285,47 +385,8 @@ export function BlastRadiusMap({ result, changedFiles, fileHref }: BlastRadiusMa
       </div>
 
       <Legend />
-
-      {(map.hiddenChanged > 0 || map.hiddenFirstHop > 0 || map.hiddenModules > 0) && (
-        <p className="text-[11px] text-[var(--color-text-tertiary)]">
-          Not drawn:{" "}
-          {[
-            map.hiddenChanged > 0 && `${map.hiddenChanged} more changed files`,
-            map.hiddenFirstHop > 0 && `${map.hiddenFirstHop} more files one hop out (the riskiest are drawn)`,
-            map.hiddenModules > 0 &&
-              `${map.hiddenModules} smaller modules holding ${map.hiddenModuleFiles} files`,
-          ]
-            .filter(Boolean)
-            .join("; ")}
-          . The tables below list every file.
-        </p>
-      )}
-
-      {selected && (
-        <div className="border-t border-[var(--color-border-default)] pt-3">
-          <p className="mb-2 text-xs text-[var(--color-text-secondary)]">
-            <span className="font-mono text-[var(--color-text-primary)]">{selected.name}</span>: {selected.files.length} files reached,
-            nearest {selected.hop} hops out
-          </p>
-          <ul className="max-h-64 space-y-0.5 overflow-y-auto text-xs">
-            {selected.files.map((f) => {
-              const href = fileHref?.(f.path);
-              return (
-                <li key={f.path} className="flex flex-wrap items-baseline justify-between gap-x-3">
-                  {href ? (
-                    <a href={href} className="min-w-0 break-all font-mono text-[var(--color-text-primary)] hover:underline">
-                      {f.path}
-                    </a>
-                  ) : (
-                    <span className="min-w-0 break-all font-mono text-[var(--color-text-primary)]">{f.path}</span>
-                  )}
-                  <span className="text-[var(--color-text-tertiary)]">{describeMarks(f).join(" · ")}</span>
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-      )}
+      <NotDrawnNote map={map} />
+      {selected && <ModuleFiles module={selected} fileHref={fileHref} />}
     </div>
   );
 }
