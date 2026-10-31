@@ -641,7 +641,9 @@ class _LowCapable(_SlowProvider):
         return ("auto", "low", "medium", "high")
 
 
-@pytest.mark.parametrize("name", ["anthropic", "litellm", "openrouter", "deepseek", "ollama"])
+@pytest.mark.parametrize(
+    "name", ["anthropic", "litellm", "openrouter", "deepseek", "ollama", "claude_cli"]
+)
 async def test_providers_where_low_can_switch_thinking_on_keep_auto(name):
     """On these, ``low`` can turn thinking on for a model that does not think
     by default, which would add cost."""

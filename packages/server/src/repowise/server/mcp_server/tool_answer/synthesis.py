@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from repowise.core.providers.llm.base import RateLimitError
+from repowise.core.providers.llm.specs import PROVIDER_SPECS
 from repowise.core.reasoning import ReasoningMode, resolve_reasoning
 from repowise.core.repo_config import load_repo_config
 from repowise.server.mcp_server.tool_answer.config import (
@@ -84,14 +85,13 @@ def _resolve_reasoning_for_answer(repo_path: Path | None) -> ReasoningMode:
     return resolve_reasoning(config=config)
 
 
-# Providers whose ``auto`` leaves a thinking model at its own default effort,
-# so ``low`` only trims thinking. Elsewhere ``low`` can switch thinking on for a
-# model that does not think by default (LiteLLM, OpenRouter, DeepSeek), which
-# would add cost, so those keep ``auto``.
-_LOW_EFFORT_PROVIDERS = frozenset({"openai", "gemini", "edenai", "kimi"})
 # (provider, model) -> whether synthesis may ask for ``low``. Filled once per
 # process, and set to False when the provider refuses ``low`` at call time.
 _LOW_EFFORT_OK: dict[tuple[str, str], bool] = {}
+
+
+def _spec(provider):
+    return PROVIDER_SPECS.get(str(getattr(provider, "provider_name", "")))
 
 
 def _model_key(provider) -> tuple[str, str]:
@@ -106,8 +106,7 @@ async def _accepts_low_effort(provider) -> bool:
     if key not in _LOW_EFFORT_OK:
         try:
             ok = "low" in provider.supported_reasoning_modes()
-            if not ok and key[0] == "gemini":
-                # Gemini knows its thinking models only after listing them.
+            if not ok and _spec(provider).lists_reasoning_modes:
                 options = await asyncio.to_thread(provider.available_model_options)
                 ok = any(o.model == key[1] and "low" in o.reasoning_modes for o in options)
         except Exception:
@@ -125,9 +124,8 @@ async def _synthesis_reasoning(provider, reasoning: ReasoningMode) -> ReasoningM
     effort it can spend most of the token cap before the first answer token.
     A configured mode other than ``auto`` is kept as given.
     """
-    if reasoning != "auto" or getattr(provider, "provider_name", None) not in (
-        _LOW_EFFORT_PROVIDERS
-    ):
+    spec = _spec(provider)
+    if reasoning != "auto" or spec is None or not spec.low_effort_trims:
         return reasoning
     return "low" if await _accepts_low_effort(provider) else reasoning
 
