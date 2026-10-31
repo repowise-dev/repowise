@@ -371,6 +371,16 @@ def test_a_value_not_shown_whole_is_not_a_definition() -> None:
     # Brackets in strings and comments do not hold the statement open.
     text = 'LIMIT = "(" # (\nother = (1)'
     assert _assignment(text, "LIMIT", 1) == (1, 'LIMIT = "(" # (')
+    # A value whose next line opens with an operator runs on.
+    assert _assignment("const LIMIT = cond\n  ? 1\n  : 2;\nfoo()", "LIMIT", 1) == (
+        1,
+        "const LIMIT = cond\n  ? 1\n  : 2;",
+    )
+    assert _assignment("pub const LIMIT: u32 = A\n    + B;", "LIMIT", 1) == (
+        1,
+        "pub const LIMIT: u32 = A\n    + B;",
+    )
+    assert _assignment("LIMIT = 2\n// (\nfoo()", "LIMIT", 1) == (1, "LIMIT = 2")
 
 
 @pytest.mark.asyncio

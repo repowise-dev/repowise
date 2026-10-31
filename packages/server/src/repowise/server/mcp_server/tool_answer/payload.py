@@ -374,6 +374,16 @@ _STRING_RE = re.compile(r""""(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*
 _TRAILING_COMMENT_RE = re.compile(r"\s(?://|#).*$")
 # A line ending in one of these continues the statement on the next line.
 _CONTINUES = ("=", "\\", "+", "-", "*", "/", ",", "(", "[", "{", "&&", "||", "?", ".")
+# A line opening with one of these continues the statement above it.
+_LEADS = ("?", ":", "+", "-", "*", "/", "&&", "||", "|", ".", "=", "<", ">", "%")
+
+
+def _next_line_continues(lines: list[str], i: int) -> bool:
+    """Whether the next non-blank line after *i* opens with an operator."""
+    for line in lines[i + 1 :]:
+        if line.strip():
+            return line.lstrip().startswith(_LEADS) and not line.lstrip().startswith(_COMMENTS)
+    return False
 
 
 def _assignment(text: str, name: str, line: int) -> tuple[int, str] | None:
@@ -411,7 +421,7 @@ def _statement(lines: list[str], start: int) -> tuple[int, str] | None:
     for i in range(start, min(start + _MATCHED_SYMBOL_SOURCE_LINES, len(lines))):
         code = _code_of(lines[i])
         depth += sum(map(code.count, "([{")) - sum(map(code.count, ")]}"))
-        if depth <= 0 and not code.endswith(_CONTINUES):
+        if depth <= 0 and not code.endswith(_CONTINUES) and not _next_line_continues(lines, i):
             source = "\n".join(lines[start : i + 1])
             if source.count('"""') % 2 or source.count("'''") % 2:
                 return None
