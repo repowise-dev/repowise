@@ -138,7 +138,7 @@ Workspaces add repo scanning, per-repo indexing, cross-repo analysis (co-changes
 | `--no-claude-md` | Skip `CLAUDE.md`; saves `editor_files.claude_md: false`. | generated |
 | `--agents` / `--no-agents` | Managed Codex `AGENTS.md`. Persists. | config, else on |
 | `--codex` / `--no-codex` | Project-local Codex MCP and hooks. Required for non-interactive runs. | prompt if Codex CLI is logged in |
-| `--distill-hook` / `--no-distill-hook` | Distill hooks (Claude Code PreToolUse) compacting what the agent sees; notes, [DISTILL.md](../agent/DISTILL.md). | off; interactive prompt (default No) |
+| `--distill-hook` / `--no-distill-hook` | Distill hooks (Claude Code PreToolUse) compacting what the agent sees; notes, [DISTILL.md](../agent/DISTILL.md). | on; interactive prompt (default Yes) |
 | `--hook` / `--no-hook` | Post-commit `repowise update` hook; see notes. | on |
 | `--editor-setup` / `--no-editor-setup` | Editor wiring; see notes. | on |
 | `--save-key` / `--no-save-key` | Save the run's key to `.repowise/.env` (git-ignored, owner-only); see notes. | on |
@@ -163,8 +163,10 @@ Workspaces add repo scanning, per-repo indexing, cross-repo analysis (co-changes
 - **`--force`.** Re-indexes from scratch in the invoked mode, skipping worktree seeding. Never calls a model (`--force --no-prose` re-renders free); `repowise update --full` does.
 - **`--distill-hook`.** One consent, four behaviours: noisy commands (tests, builds, git, searches) run through
   `repowise distill`; whole-file Reads return a skeleton (`hooks.read_skeleton`); many-file greps a per-file digest
-  (`hooks.search_digest`); re-reads of unchanged, unedited files a pointer (`hooks.read_reread`). `--no-distill-hook`
-  also gates the repo off in config, keeping a global hook inert.
+  (`hooks.search_digest`); re-reads of unchanged, unedited files a pointer (`hooks.read_reread`). Asked
+  interactively; `--yes` and non-interactive runs install it, printing the undo. A repo that already opted out (or
+  switched one surface off) keeps that. `--no-distill-hook` also gates the repo off in config, keeping a global hook
+  inert.
 - **`--hook`.** Asked interactively; `--yes` and non-interactive runs install it, printing the undo (`repowise hook uninstall`).
 - **Workspace.** `--distill-hook` and `--hook` apply to every selected repo.
 - **`--editor-setup`.** Machine-wide: Claude Code (`~/.claude/settings.json`) and Claude Desktop MCP entry, Claude Code

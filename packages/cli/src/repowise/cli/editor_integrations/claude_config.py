@@ -288,15 +288,36 @@ def _plugin_ships_capture_hook() -> bool:
     twice on every shell call. Unreadable plugin state reads as "no": being
     wrong that way costs one extra shell start, never a missing prompt.
     """
+    return any(
+        _is_capture_entry(e) for _, entries in _plugin_hook_entries("PostToolUse") for e in entries
+    )
+
+
+def _plugin_hook_entries(event: str) -> list[tuple[Path, list]]:
+    """``(hooks.json, entries)`` for each enabled repowise plugin's *event* hooks.
+
+    Unreadable plugin state is skipped, so it reads as "the plugin does not
+    ship it" and the settings entry stays the one that runs.
+    """
+    found: list[tuple[Path, list]] = []
     for path in _repowise_plugin_paths():
+        hooks_file = path / "hooks" / "hooks.json"
         try:
-            hooks = json.loads((path / "hooks" / "hooks.json").read_text(encoding="utf-8"))
-            entries = hooks["hooks"]["PostToolUse"]
+            entries = json.loads(hooks_file.read_text(encoding="utf-8"))["hooks"][event]
         except (OSError, ValueError, KeyError, TypeError):
             continue
-        if isinstance(entries, list) and any(_is_capture_entry(e) for e in entries):
-            return True
-    return False
+        if isinstance(entries, list):
+            found.append((hooks_file, entries))
+    return found
+
+
+def _plugin_rewrite_hook() -> tuple[Path, str] | None:
+    """``(hooks.json, matcher)`` of a plugin that ships the rewrite hook, else None."""
+    for hooks_file, entries in _plugin_hook_entries("PreToolUse"):
+        matcher = _rewrite_matcher(entries)
+        if matcher is not None:
+            return hooks_file, matcher
+    return None
 
 
 def set_claude_code_capture_hook(enabled: bool) -> Path | None:
@@ -655,6 +676,12 @@ def install_claude_code_hooks() -> Path | None:
 
 _REWRITE_HOOK_COMMAND = "repowise-rewrite"
 
+#: The plugin's form of the rewrite hook. A plugin ships without the CLI, so it
+#: gets the same silent-when-absent guard as :data:`_AUGMENT_HOOK_COMMAND`.
+_PLUGIN_REWRITE_HOOK_COMMAND = (
+    "if command -v repowise-rewrite >/dev/null 2>&1; then exec repowise-rewrite; fi"
+)
+
 # Current rewrite PreToolUse matcher, derived from the adapter's own tool-name
 # set so the installed matcher and the gate that reads the payload cannot
 # drift apart. Legacy Bash-only installs are widened in place. Safe at module
@@ -665,11 +692,18 @@ _LEGACY_REWRITE_MATCHERS = ("Bash",)
 
 
 def install_claude_code_rewrite_hook() -> Path | None:
-    """Register the opt-in distill PreToolUse rewrite hook (shell matcher).
+    """Register the distill PreToolUse rewrite hook (shell matcher).
 
     Idempotent; preserves user hooks and the augment PostToolUse entry.
-    Returns the settings path on success, None on failure.
+    Returns the settings path on success, None on failure. Where an enabled
+    repowise plugin already ships the hook, ours is left out (and removed) so
+    each shell call is rewritten and counted once, and the plugin's
+    ``hooks.json`` is returned.
     """
+    plugin = _plugin_rewrite_hook()
+    if plugin is not None:
+        uninstall_claude_code_rewrite_hook()
+        return plugin[0]
     settings_path = _claude_code_settings_path()
     pre_hook_entry = {
         "matcher": _REWRITE_MATCHER,
@@ -1053,8 +1087,17 @@ def claude_code_rewrite_hook_matcher() -> str | None:
 
     ``""`` is a real answer: an entry with no matcher at all. Presence and
     matcher say different things — an entry pointing at a tool name Claude
-    Code no longer uses is registered and will never fire.
+    Code no longer uses is registered and will never fire. An enabled
+    repowise plugin that ships the hook counts as installed.
     """
+    matcher = _settings_rewrite_matcher()
+    if matcher is not None:
+        return matcher
+    plugin = _plugin_rewrite_hook()
+    return plugin[1] if plugin is not None else None
+
+
+def _settings_rewrite_matcher() -> str | None:
     settings_path = _claude_code_settings_path()
     if not settings_path.exists():
         return None

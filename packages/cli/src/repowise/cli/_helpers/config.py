@@ -300,7 +300,7 @@ def save_distill_commands_enabled(repo_path: Path, *, enabled: bool) -> None:
 #: One consent turns them all on; each has its own ``repowise hook <name>``
 #: toggle afterwards, so a surface that turns out to be wrong can be dropped
 #: without taking the others with it.
-HOOK_REPLACEMENT_SURFACES = ("read_skeleton", "search_digest")
+HOOK_REPLACEMENT_SURFACES = ("read_skeleton", "search_digest", "read_reread")
 
 
 def save_hook_surface_enabled(repo_path: Path, surface: str, *, enabled: bool) -> None:
