@@ -1,4 +1,4 @@
-"""The reach walks over the stored graph: one query per level, the same walks as in memory.
+"""The reach walks over the stored graph: one query per need (in bounded batches).
 
 Each reader here answers the :class:`~.maps.Need` a walk yields with SQL over
 ``graph_edges`` / ``graph_nodes`` and drives the generators of :mod:`.walk`, so
@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Iterator, Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any, TypeVar
 
@@ -19,7 +19,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.dead_code.file_reachability import BARREL_FILENAMES
 from repowise.core.analysis.execution_graph import ExecutionGraphIndex, file_of_symbol
-from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES, FILE_DEPENDENCY_EDGE_TYPES
+from repowise.core.ingestion.models import (
+    EXECUTION_EDGE_TYPES,
+    FILE_DEPENDENCY_EDGE_TYPES,
+    MODULE_REGISTRATION_HINT,
+)
 from repowise.core.persistence.index_cache import IndexStampCache, index_stamp
 from repowise.core.persistence.models import GraphNode, Repository
 from repowise.core.persistence.read_snapshots import read_snapshot, refresh_snapshot, snapshot_key
@@ -71,6 +75,8 @@ async def _answer(
         return await _edges_into(
             session, repo_id, keys, sorted(EXECUTION_EDGE_TYPES), UNRELIABLE_CALL_ORIGINS
         )
+    if need.kind == "registrars":
+        return await _registration_edges_into(session, repo_id, keys)
     if need.kind == "importers":
         if import_graph is not None:
             return import_graph.edges_into(keys)
@@ -98,9 +104,23 @@ async def call_graph_from_db(session: AsyncSession, repo_id: str) -> CallGraphVi
     read's cost (measured on this repository, 189k edges: 8.4 s cold with the
     column, under 2 s without it).
     """
-    wanted = ["defines", *sorted(EXECUTION_EDGE_TYPES)]
+    wanted = ["defines", *sorted(EXECUTION_EDGE_TYPES), "framework"]
+    edge_rows = await _call_edge_rows(session, repo_id, wanted)
+    registrations = _framework_registrations(edge_rows)
+    for src, dst in await _registration_rows(session, repo_id):
+        registrations.setdefault(src, set()).add(dst)
+    return ExecutionGraphIndex(
+        edge_rows=_execution_edge_rows(edge_rows),
+        registrations=registrations,
+    )
+
+
+async def _call_edge_rows(
+    session: AsyncSession, repo_id: str, edge_types: list[str]
+) -> list[Any]:
+    """The declaration, call and framework edges in one read."""
     params: dict[str, Any] = {"repo_id": repo_id}
-    ets = _in_clause("e", wanted, params)
+    ets = _in_clause("e", edge_types, params)
     rows = await session.execute(
         text(
             "SELECT source_node_id, target_node_id, edge_type, resolution_origin "
@@ -110,11 +130,41 @@ async def call_graph_from_db(session: AsyncSession, repo_id: str) -> CallGraphVi
         ),
         params,
     )
+    return list(rows)
+
+
+def _framework_registrations(edge_rows: list[Any]) -> dict[str, set[str]]:
+    registrations: dict[str, set[str]] = {}
+    for src, dst, edge_type, _origin in edge_rows:
+        if _is_framework_registration(src, edge_type):
+            registrations.setdefault(src, set()).add(dst)
+    return registrations
+
+
+def _is_framework_registration(src: str, edge_type: str | None) -> bool:
+    return edge_type == "framework" and not src.startswith("framework:")
+
+
+async def _registration_rows(session: AsyncSession, repo_id: str) -> Any:
+    return await session.execute(
+        text(
+            "SELECT source_node_id, target_node_id FROM graph_edges "
+            "WHERE repository_id = :repo_id AND hint_source = :hint_source"
+        ),
+        {"repo_id": repo_id, "hint_source": MODULE_REGISTRATION_HINT},
+    )
+
+
+def _execution_edge_rows(
+    edge_rows: list[Any],
+) -> Iterator[tuple[str, str, str, str | None, None]]:
     # No call or spawn lines here: test reachability reads only forward/reverse,
     # never first-hop sites, ``spawn_only`` or roles, and a spawned callee is
     # still reached.
-    return ExecutionGraphIndex(
-        edge_rows=((src, dst, edge_type, origin, None) for src, dst, edge_type, origin in rows)
+    return (
+        (src, dst, edge_type, origin, None)
+        for src, dst, edge_type, origin in edge_rows
+        if edge_type != "framework"
     )
 
 
@@ -760,16 +810,25 @@ async def _edges_into(
     targets: list[str],
     edge_types: list[str],
     excluded_origins: frozenset[str],
+    *,
+    include_hint_source: str | None = None,
+    legacy_filter: str = _LEGACY_CONFTEST_FILTER,
 ) -> list[tuple[str, str]]:
     """``(source, target)`` pairs arriving at *targets* along *edge_types*.
 
     Raw text SQL with an ``IN`` list, matching ``pr_blast._transitive_affected``:
     the edge table is the one place a per-level parameterised ``IN`` beats
-    loading every row, and the two walks should not disagree about how they read
-    it.
+    loading every row. Large levels are split into bounded batches to stay under
+    database parameter limits. *include_hint_source* widens the edge filter to
+    rows carrying that hint, which is how registry facts ride alongside the
+    framework edges.
     """
     shared: dict[str, Any] = {"repo_id": repo_id}
     ets = _in_clause("e", edge_types, shared)
+    edge_filter = f"edge_type IN ({ets})"
+    if include_hint_source is not None:
+        shared["hint_source"] = include_hint_source
+        edge_filter = f"(edge_type IN ({ets}) OR hint_source = :hint_source)"
     origin_filter = ""
     if excluded_origins:
         # NULL means the row predates the vocabulary, not "unknown", so it has
@@ -786,10 +845,25 @@ async def _edges_into(
             text(
                 "SELECT DISTINCT source_node_id, target_node_id FROM graph_edges "
                 "WHERE repository_id = :repo_id "
-                f"AND target_node_id IN ({tgt}) AND edge_type IN ({ets}){origin_filter}"
-                f"{_LEGACY_CONFTEST_FILTER}"
+                f"AND target_node_id IN ({tgt}) AND {edge_filter}{origin_filter}"
+                f"{legacy_filter}"
             ),
             params,
         )
         out.extend((s, t) for s, t in rows)
     return out
+
+
+async def _registration_edges_into(
+    session: AsyncSession, repo_id: str, targets: list[str]
+) -> list[tuple[str, str]]:
+    """Files wired into *targets* by framework edges or explicit registry facts."""
+    return await _edges_into(
+        session,
+        repo_id,
+        targets,
+        ["framework"],
+        frozenset(),
+        include_hint_source=MODULE_REGISTRATION_HINT,
+        legacy_filter="",
+    )

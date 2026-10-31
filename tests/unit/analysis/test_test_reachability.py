@@ -17,11 +17,14 @@ from repowise.core.analysis.test_reachability import (
     MAX_TESTS_PER_TARGET,
     CallGraphView,
     ReachDistance,
+    build_walk_maps,
     call_graph_from_graph,
     files_reached_by_tests,
     files_with_paired_tests,
     rank_reaching,
+    reaching_by_tier,
 )
+from repowise.core.ingestion.models import MODULE_REGISTRATION_HINT
 
 
 def _view(declares, calls):
@@ -39,6 +42,65 @@ def test_a_test_that_calls_into_a_file_reaches_it():
         {"tests/test_a.py::test_x": {"src/a.py::run"}},
     )
     assert files_reached_by_tests(view, {"tests/test_a.py"}) == {"src/a.py"}
+
+
+def test_a_test_reaches_a_framework_registered_module_in_the_call_tier():
+    graph = nx.DiGraph()
+    graph.add_node("tests/test_app.py", node_type="file", is_test=True)
+    graph.add_node("src/app.py", node_type="file", is_test=False)
+    graph.add_node("src/router.py", node_type="file", is_test=False)
+    graph.add_node("tests/test_app.py::test_route", node_type="symbol")
+    graph.add_node("src/app.py::create_app", node_type="symbol")
+    graph.add_node("src/router.py::get_route", node_type="symbol")
+    graph.add_edge("tests/test_app.py", "tests/test_app.py::test_route", edge_type="defines")
+    graph.add_edge("src/app.py", "src/app.py::create_app", edge_type="defines")
+    graph.add_edge("src/router.py", "src/router.py::get_route", edge_type="defines")
+    graph.add_edge("tests/test_app.py::test_route", "src/app.py::create_app", edge_type="calls")
+    graph.add_edge("src/app.py", "src/router.py", edge_type="framework")
+
+    view = call_graph_from_graph(graph)
+    assert files_reached_by_tests(view, {"tests/test_app.py"}) == {
+        "src/app.py",
+        "src/router.py",
+    }
+    reached = reaching_by_tier(build_walk_maps(graph), ["src/router.py"], import_depth=0)
+    assert reached["src/router.py"].tests == ["tests/test_app.py"]
+    assert reached["src/router.py"].via == "call-graph"
+
+
+def test_avoided_registrar_does_not_carry_registered_targets_to_its_callers():
+    graph = nx.DiGraph()
+    files = {
+        "tests/test_hub.py": ("test_hub", True),
+        "tests/test_target.py": ("test_target", True),
+        "src/hub.py": ("register_target", False),
+        "src/target.py": ("run", False),
+    }
+    for path, (name, is_test) in files.items():
+        graph.add_node(path, node_type="file", is_test=is_test)
+        symbol = f"{path}::{name}"
+        graph.add_node(symbol, node_type="symbol")
+        graph.add_edge(path, symbol, edge_type="defines")
+    graph.add_edge("tests/test_hub.py::test_hub", "src/hub.py::register_target", edge_type="calls")
+    graph.add_edge("tests/test_target.py::test_target", "src/target.py::run", edge_type="calls")
+    graph.add_edge(
+        "src/hub.py",
+        "src/target.py",
+        edge_type="framework",
+        hint_source=MODULE_REGISTRATION_HINT,
+    )
+    maps = build_walk_maps(graph)
+
+    unrestricted = reaching_by_tier(maps, ["src/target.py"], import_depth=0, helpers=False)
+    assert set(unrestricted["src/target.py"].tests) == {
+        "tests/test_hub.py",
+        "tests/test_target.py",
+    }
+
+    avoided = reaching_by_tier(
+        maps, ["src/target.py"], avoid={"src/hub.py"}, import_depth=0, helpers=False
+    )
+    assert avoided["src/target.py"].tests == ["tests/test_target.py"]
 
 
 def test_the_default_is_three_hops():

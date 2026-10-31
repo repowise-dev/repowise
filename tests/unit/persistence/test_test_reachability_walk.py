@@ -15,17 +15,24 @@ from __future__ import annotations
 
 import networkx as nx
 
+from repowise.core.analysis.test_reach.db import _registration_edges_into
 from repowise.core.analysis.test_reachability import (
     ReachDistance,
     call_graph_from_db,
     call_graph_from_graph,
     direct_dependents,
     direct_importers,
+    files_reached_by_tests,
     imported_names_by_test,
     reach_into_symbols,
 )
-from repowise.core.analysis.test_reachability import tests_reaching as reaching
-from repowise.core.analysis.test_reachability import tests_reaching_by_tier as by_tier
+from repowise.core.analysis.test_reachability import (
+    tests_reaching as reaching,
+)
+from repowise.core.analysis.test_reachability import (
+    tests_reaching_by_tier as by_tier,
+)
+from repowise.core.ingestion.models import MODULE_REGISTRATION_HINT
 from repowise.core.persistence.crud.graph import (
     batch_upsert_graph_edges,
     get_all_graph_edges,
@@ -80,6 +87,106 @@ async def test_names_the_tests_that_call_a_changed_file(async_session):
         edges=[*_calls("tests/test_a.py", "src/a.py")],
     )
     assert await reaching(async_session, repo.id, ["src/a.py"]) == {"src/a.py": ["tests/test_a.py"]}
+
+
+async def test_framework_registered_module_is_reached_in_the_call_tier(async_session):
+    repo = await insert_repo(async_session)
+    await _seed(
+        async_session,
+        repo.id,
+        nodes={
+            "tests/test_app.py": True,
+            "src/app.py": False,
+            "src/router.py": False,
+        },
+        edges=[
+            ("tests/test_app.py", "tests/test_app.py::test_route", "defines"),
+            ("src/app.py", "src/app.py::create_app", "defines"),
+            ("src/router.py", "src/router.py::get_route", "defines"),
+            ("tests/test_app.py::test_route", "src/app.py::create_app", "calls"),
+            ("src/app.py", "src/router.py", "framework"),
+        ],
+    )
+
+    result = await by_tier(async_session, repo.id, ["src/router.py"], import_depth=0)
+    assert result["src/router.py"].tests == ["tests/test_app.py"]
+    assert result["src/router.py"].via == "call-graph"
+
+    graph = await call_graph_from_db(async_session, repo.id)
+    assert files_reached_by_tests(graph, {"tests/test_app.py"}) == {
+        "src/app.py",
+        "src/router.py",
+    }
+
+
+async def test_registration_edges_are_batched_without_dropping_targets(async_session):
+    repo = await insert_repo(async_session)
+    targets = [f"src/target_{index}.py" for index in range(501)]
+    edges = [
+        (f"src/registrar_{index}.py", target, "framework")
+        for index, target in enumerate(targets)
+    ]
+    await _seed(
+        async_session,
+        repo.id,
+        nodes=dict.fromkeys(targets, False),
+        edges=edges,
+    )
+
+    result = await _registration_edges_into(async_session, repo.id, targets)
+
+    assert len(result) == 501
+    assert set(result) == {(source, target) for source, target, _edge_type in edges}
+
+
+async def test_imported_registry_and_its_modules_are_followed_by_the_call_walk(async_session):
+    repo = await insert_repo(async_session)
+    await _seed(
+        async_session,
+        repo.id,
+        nodes={
+            "tests/test_perf.py": True,
+            "src/perf.py": False,
+            "src/registry.py": False,
+            "src/dialect.py": False,
+        },
+        edges=[
+            ("tests/test_perf.py", "tests/test_perf.py::test_run", "defines"),
+            ("src/perf.py", "src/perf.py::inspect", "defines"),
+            ("src/dialect.py", "src/dialect.py::run", "defines"),
+            ("tests/test_perf.py::test_run", "src/perf.py::inspect", "calls"),
+        ],
+    )
+    async_session.add_all(
+        [
+            GraphEdge(
+                repository_id=repo.id,
+                source_node_id="src/perf.py",
+                target_node_id="src/registry.py",
+                edge_type="imports",
+                hint_source=MODULE_REGISTRATION_HINT,
+            ),
+            GraphEdge(
+                repository_id=repo.id,
+                source_node_id="src/registry.py",
+                target_node_id="src/dialect.py",
+                edge_type="imports",
+                hint_source=MODULE_REGISTRATION_HINT,
+            ),
+        ]
+    )
+    await async_session.flush()
+
+    result = await by_tier(async_session, repo.id, ["src/dialect.py"], import_depth=0)
+    assert result["src/dialect.py"].tests == ["tests/test_perf.py"]
+    assert result["src/dialect.py"].via == "call-graph"
+
+    graph = await call_graph_from_db(async_session, repo.id)
+    assert files_reached_by_tests(graph, {"tests/test_perf.py"}) == {
+        "src/perf.py",
+        "src/registry.py",
+        "src/dialect.py",
+    }
 
 
 async def test_transitive_execution_is_found(async_session):
