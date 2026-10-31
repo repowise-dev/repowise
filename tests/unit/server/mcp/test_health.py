@@ -2968,7 +2968,7 @@ async def test_overview_states_both_counts_and_withholds_the_band(setup_mcp, hea
     partial = await _build_code_health(session, repo)
     assert partial["code_files"] == 5
     assert partial["files_scored"] == 2
-    assert partial["band"] is None
+    assert "band" not in partial
 
 
 @pytest.mark.asyncio

@@ -155,6 +155,17 @@ def test_the_default_cut_is_one_horizon_with_one_line_impacts():
     assert len(second["impact"]) <= 140 and second["impact"].endswith("…")
 
 
+def test_a_repository_wide_target_sends_no_empty_path():
+    row = {"id": "act_0", "tier": "improve_signal", "title": "Add a coverage report",
+           "impact": "x", "target": {"kind": "repo", "path": "", "symbol": None}}
+    view = {"horizons": {"week": {"actions": [row], "total": 1, "by_tier": {}},
+                         "quarter": {"actions": [], "total": 0, "by_tier": {}}}}  # fmt: skip
+
+    (only,) = compact_actions_view(view, full=False)["week"]["actions"]
+
+    assert only["target"] == {"kind": "repo"}
+
+
 def test_budget_sheds_the_block_before_the_protected_ones():
     from repowise.server.mcp_server._budget.contracts import _CONTRACTS
 

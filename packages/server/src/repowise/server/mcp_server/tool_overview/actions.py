@@ -37,7 +37,8 @@ def _compact(action: dict[str, Any], *, full: bool) -> dict[str, Any]:
     row = {k: action.get(k) for k in (_FIELDS if full else _LEAN_FIELDS)}
     if not full:
         row["impact"] = _one_line(row["impact"])
-    row["target"] = {k: v for k, v in (action.get("target") or {}).items() if v is not None}
+    # A repository-wide target has no path; an empty one is not sent.
+    row["target"] = {k: v for k, v in (action.get("target") or {}).items() if v not in (None, "")}
     return row
 
 

@@ -81,3 +81,17 @@ class TestBuildGuidedTourOrder:
 
         orders = [step["order"] for step in result["guided_tour"]]
         assert orders == list(range(1, len(orders) + 1))
+
+
+def test_git_health_without_riskiest_files_sends_no_empty_list():
+    from types import SimpleNamespace
+
+    from repowise.server.mcp_server.tool_overview.history import _build_git_health
+
+    quiet = SimpleNamespace(
+        file_path="a.py", is_hotspot=False, commit_count_30d=0, commit_count_90d=0
+    )  # fmt: skip
+
+    block = _build_git_health([quiet])
+
+    assert block == {"hotspot_count": 0, "churn_trend": "stable"}

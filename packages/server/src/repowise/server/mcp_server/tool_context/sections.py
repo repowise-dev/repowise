@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.analysis.decisions.lifecycle import RETIRED_STATUSES, is_governing
 from repowise.core.analysis.decisions.scope import binds_to_paths
 from repowise.core.attribution import attribution_enabled, file_share
+from repowise.core.generation.layers import is_fallback_layer
 from repowise.core.generation.page_selection import is_stale_status
 from repowise.core.persistence.crud import (
     accepted_predicate,
@@ -575,34 +576,47 @@ async def _kg_section(card: CardState) -> None:
     kg_layers = await get_kg_layers(card.session, card.repo_id)
     if not kg_layers:
         return
+    await _layer_block(card, file_path, kg_layers)
+    await _tour_block(card, file_path)
+
+
+async def _layer_block(card: CardState, file_path: str, kg_layers: list) -> None:
     for _l in kg_layers:
         _l._parsed_node_ids = json.loads(_l.node_ids_json) if _l.node_ids_json else []
     file_layer = _find_layer_for_file(file_path, kg_layers)
-    if file_layer:
-        edge_res = await card.session.execute(
-            select(GraphEdge).where(
-                GraphEdge.repository_id == card.repo_id,
-                GraphEdge.target_node_id == file_path,
-                GraphEdge.edge_type == "imports",
-            )
+    # The fallback layer's name, model written or not, describes the bucket's
+    # majority, not this file.
+    ids = [layer.layer_id or "" for layer in kg_layers]
+    if not file_layer or is_fallback_layer(file_layer.layer_id or "", ids):
+        return
+    edge_res = await card.session.execute(
+        select(GraphEdge).where(
+            GraphEdge.repository_id == card.repo_id,
+            GraphEdge.target_node_id == file_path,
+            GraphEdge.edge_type == "imports",
         )
-        incoming_edges = list(edge_res.scalars())
-        card.data["architectural_layer"] = {
-            "name": file_layer.name,
-            "description": (file_layer.description or "")[:200],
-            "role": _classify_file_role(file_path, file_layer, incoming_edges),
-        }
+    )
+    incoming_edges = list(edge_res.scalars())
+    card.data["architectural_layer"] = {
+        "name": file_layer.name,
+        "description": (file_layer.description or "")[:200],
+        "role": _classify_file_role(file_path, file_layer, incoming_edges),
+    }
+
+
+async def _tour_block(card: CardState, file_path: str) -> None:
     kg_tour = await get_kg_tour_steps(card.session, card.repo_id)
-    if kg_tour:
-        for _s in kg_tour:
-            _s._parsed_node_ids = json.loads(_s.node_ids_json) if _s.node_ids_json else []
-        file_tour_step = _find_tour_step_for_file(file_path, kg_tour)
-        if file_tour_step:
-            card.data["tour_context"] = {
-                "step": file_tour_step.step_order,
-                "title": file_tour_step.title,
-                "why": (file_tour_step.description or "")[:200],
-            }
+    if not kg_tour:
+        return
+    for _s in kg_tour:
+        _s._parsed_node_ids = json.loads(_s.node_ids_json) if _s.node_ids_json else []
+    file_tour_step = _find_tour_step_for_file(file_path, kg_tour)
+    if file_tour_step:
+        card.data["tour_context"] = {
+            "step": file_tour_step.step_order,
+            "title": file_tour_step.title,
+            "why": (file_tour_step.description or "")[:200],
+        }
 
 
 async def _call_graph_section(card: CardState) -> None:

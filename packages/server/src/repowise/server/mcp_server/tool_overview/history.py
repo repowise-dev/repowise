@@ -14,11 +14,12 @@ def _build_git_health(all_git: list, repo_root: Path | str | None = None) -> dic
     """Repo-wide git health: hotspot count, churn trend and the riskiest files."""
     if not all_git:
         return {}
-    return {
+    health = {
         "hotspot_count": sum(1 for g in all_git if g.is_hotspot),
         "churn_trend": _churn_trend(all_git),
-        "riskiest_files": _riskiest_files(all_git, repo_root),
     }
+    riskiest = _riskiest_files(all_git, repo_root)
+    return {**health, "riskiest_files": riskiest} if riskiest else health
 
 
 def _riskiest_files(all_git: list, repo_root: Path | str | None) -> list[str]:
