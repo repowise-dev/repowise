@@ -192,7 +192,10 @@ def relocate_ledger(repo_root: str | Path) -> int:
         with OmissionStore(db_path) as store:
             return store.savings().adopt_rows(str(Path(repo_root)))
     except Exception:
-        logger.debug("savings relocation failed; history stays under the old path", exc_info=True)
+        # Not retried: the next upsert finds the row already re-pointed.
+        logger.warning(
+            "savings relocation failed; history stays under the old path", exc_info=True
+        )
         return 0
 
 
