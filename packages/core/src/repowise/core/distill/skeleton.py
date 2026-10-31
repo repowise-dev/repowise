@@ -162,32 +162,48 @@ def build_skeleton(
             symbol_count=0,
         )
 
-    if mode == "outline":
-        text = _outline(lines, usable, outline_width)
-        return SkeletonResult(
-            text=text,
-            mode="outline",
-            full_tokens=full_tokens,
-            skeleton_tokens=estimate_tokens(text),
-            symbol_count=len(usable),
-        )
-
     focused = [sym for sym in usable if sym.focus]
-
-    if mode == "plus":
-        keep = [True] * total
-        _elide_callable_bodies(lines, usable, keep)
-        _keep_focus(focused, keep)
-        text = _render(lines, keep)
-        return SkeletonResult(
-            text=text,
-            mode="plus",
-            full_tokens=full_tokens,
-            skeleton_tokens=estimate_tokens(text),
-            symbol_count=len(usable),
-            bodies_kept=tuple(sym.name for sym in focused),
+    if mode == "outline":
+        text, bodies_kept = _outline(lines, usable, outline_width), ()
+    elif mode == "plus":
+        text, bodies_kept = _plus_text(lines, usable, focused), tuple(s.name for s in focused)
+    else:
+        mode = mode if mode in ("smart", "signatures") else "signatures"
+        budget = int(token_budget * (_HOTSPOT_BUDGET_FACTOR if hotspot else 1.0))
+        text, bodies_kept = _signature_text(
+            lines, usable, focused, smart=mode == "smart", budget=budget, query=query
         )
+    return SkeletonResult(
+        text=text,
+        mode=mode,
+        full_tokens=full_tokens,
+        skeleton_tokens=estimate_tokens(text),
+        symbol_count=len(usable),
+        bodies_kept=bodies_kept,
+    )
 
+
+def _plus_text(
+    lines: list[str], usable: list[SkeletonSymbol], focused: list[SkeletonSymbol]
+) -> str:
+    """Plus mode: everything kept but function and method bodies."""
+    keep = [True] * len(lines)
+    _elide_callable_bodies(lines, usable, keep)
+    _keep_focus(focused, keep)
+    return _render(lines, keep)
+
+
+def _signature_text(
+    lines: list[str],
+    usable: list[SkeletonSymbol],
+    focused: list[SkeletonSymbol],
+    *,
+    smart: bool,
+    budget: int,
+    query: str | None,
+) -> tuple[str, tuple[str, ...]]:
+    """Signatures and smart modes: the rendered text and the bodies it kept."""
+    total = len(lines)
     keep = [False] * total
 
     # Preamble: module docstring + imports + leading module code.
@@ -195,7 +211,6 @@ def build_skeleton(
     _keep_preamble(lines, first_start, keep)
 
     # Signatures; smart mode also keeps the docstring summary line under each.
-    smart = mode == "smart"
     sig_ends: dict[int, int] = {}  # symbol index -> 0-indexed signature end
     for idx, sym in enumerate(usable):
         s = sym.start_line - 1
@@ -214,27 +229,22 @@ def build_skeleton(
     if focused:
         bodies_kept = tuple(sym.name for sym in focused)
     elif smart:
-        budget = int(token_budget * (_HOTSPOT_BUDGET_FACTOR if hotspot else 1.0))
         bodies_kept = _keep_smart_bodies(lines, usable, sig_ends, keep, budget, query)
 
-    # Decorative banner comments add bytes, not structure; a focused body
-    # stays whole.
-    in_focus = [False] * total
+    _drop_decorations(lines, focused, keep)
+    return _render(lines, keep), bodies_kept
+
+
+def _drop_decorations(
+    lines: list[str], focused: list[SkeletonSymbol], keep: list[bool]
+) -> None:
+    """Unmark banner comments: they add bytes, not structure. Focused bodies stay whole."""
+    in_focus = [False] * len(lines)
     _keep_focus(focused, in_focus)
-    for i in range(total):
-        if keep[i] and not in_focus[i] and _DECOR_RE.match(lines[i]):
+    for i, line in enumerate(lines):
+        if keep[i] and not in_focus[i] and _DECOR_RE.match(line):
             keep[i] = False
     _keep_focus(focused, keep)
-
-    text = _render(lines, keep)
-    return SkeletonResult(
-        text=text,
-        mode=mode if mode in ("smart", "signatures") else "signatures",
-        full_tokens=full_tokens,
-        skeleton_tokens=estimate_tokens(text),
-        symbol_count=len(usable),
-        bodies_kept=bodies_kept,
-    )
 
 
 # ---------------------------------------------------------------------------
