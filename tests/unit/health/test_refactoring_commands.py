@@ -120,6 +120,23 @@ def test_suffixes_decide_the_runner_not_substrings() -> None:
     assert commands_for_tests(tests, runs={}) == ["pytest tests/test_a.py"]
 
 
+def test_python_tests_run_from_their_pytest_package(tmp_path: Path) -> None:
+    for package in ("packages/core", "packages/cli"):
+        folder = tmp_path / package
+        folder.mkdir(parents=True)
+        (folder / "pyproject.toml").write_text("[tool.pytest.ini_options]\n", encoding="utf-8")
+    tests = [
+        "packages/core/tests/test_cart.py::test_total",
+        "packages/cli/tests/test_main.py::test_main",
+        "tests/test_root.py",
+    ]
+    assert commands_for_tests(tests, runs=_runs(tmp_path, tests)) == [
+        "pytest tests/test_root.py",
+        "cd packages/cli && pytest tests/test_main.py::test_main",
+        "cd packages/core && pytest tests/test_cart.py::test_total",
+    ]
+
+
 def test_a_path_with_a_space_is_quoted(tmp_path: Path) -> None:
     _package(tmp_path, "my app", {"test": "jest"})
     runs = _runs(tmp_path, ["my app/a.test.ts"])
