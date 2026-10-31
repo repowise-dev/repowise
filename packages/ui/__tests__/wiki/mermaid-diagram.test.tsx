@@ -29,4 +29,12 @@ describe("MermaidDiagram theme", () => {
     const css = await themeCSS();
     expect(css).not.toMatch(/first-of-type|first-child|nth-/);
   });
+
+  it("paints from theme tokens, never a fixed or accent fill", async () => {
+    const css = await themeCSS();
+    expect(css).not.toMatch(/#[0-9a-f]{3,8}\b/i);
+    expect(css).not.toContain("--color-accent-fill");
+    expect(css).toContain("fill: var(--color-bg-elevated)");
+    expect(css).toContain("color: var(--color-text-primary)");
+  });
 });

@@ -19,68 +19,98 @@ interface MermaidDiagramProps {
 }
 
 /**
- * Derive Mermaid's `themeVariables` from the live design tokens. Mermaid bakes
- * concrete colors into the SVG it renders, so it can't consume `var()` — we
- * read the computed token values and rebuild on each theme switch. `theme:
- * "base"` is the only built-in theme that honors a full custom palette.
+ * Mermaid's palette, from the live design tokens. `theme: "base"` is the only
+ * built-in theme that honors a full custom palette.
  *
- * The look is the brand "blueprint" aesthetic: ink-filled rounded nodes on a
- * faint grid (grid lives on the container, see MermaidDiagram), dashed
- * connectors. No node is singled out by position: a linked node sits alone
- * in its <a>, so a :first-of-type rule matches every one of them.
+ * The look is neutral: soft raised nodes with a hairline border on the frame's
+ * surface, solid hairline connectors, quiet cluster frames, and no fill accent.
+ * Orange marks interaction only (a linked node's border on hover), as the
+ * design language reserves it for links and focus.
+ *
+ * `themeVariables` must be concrete colors because mermaid derives shades from
+ * them, so they are read off <html> and rebuilt on each theme switch.
+ * `themeCSS` paints with `var()` instead: the SVG is inline, so each diagram
+ * takes the tokens of the scope it sits in, including a band that pins the
+ * other theme.
  */
 function mermaidThemeConfig() {
   // Rendered only client-side (dynamic import inside an effect), so the live
   // computed tokens always resolve — no SSR fallback needed.
+  const surface = resolveToken("--color-bg-surface");
   const elevated = resolveToken("--color-bg-elevated");
-  const inset = resolveToken("--color-bg-inset");
   const text = resolveToken("--color-text-primary");
-  const nodeFill = resolveToken("--color-diagram-node-fill");
-  const nodeText = resolveToken("--color-diagram-node-text");
-  const nodeBorder = resolveToken("--color-diagram-node-border");
-  const edge = resolveToken("--color-diagram-edge");
-  const clusterBorder = resolveToken("--color-diagram-cluster-border");
-  const fontMono = resolveToken("--font-mono") || "ui-monospace, Menlo, monospace";
+  const textSecondary = resolveToken("--color-text-secondary");
+  const line = resolveToken("--color-text-tertiary");
+  const hairline = resolveToken("--color-border-hover");
+  const fontSans = resolveToken("--font-sans") || "ui-sans-serif, system-ui, sans-serif";
 
   return {
     theme: "base" as const,
     themeVariables: {
-      background: elevated,
-      fontFamily: fontMono,
-      fontSize: "14px",
-      primaryColor: nodeFill,
-      primaryBorderColor: nodeBorder,
-      primaryTextColor: nodeText,
-      secondaryColor: inset,
-      tertiaryColor: inset,
-      lineColor: edge,
-      textColor: text,
-      nodeBorder: nodeBorder,
+      background: surface,
+      fontFamily: fontSans,
+      fontSize: "15px",
+      primaryColor: elevated,
+      primaryBorderColor: hairline,
+      primaryTextColor: text,
+      secondaryColor: elevated,
+      tertiaryColor: surface,
+      lineColor: line,
+      textColor: textSecondary,
+      nodeBorder: hairline,
       clusterBkg: "transparent",
-      clusterBorder: clusterBorder,
-      edgeLabelBackground: elevated,
+      clusterBorder: hairline,
+      edgeLabelBackground: surface,
     },
-    // Flowchart-specific polish themeVariables can't express: rounded ink
-    // blocks, dashed connectors, dashed cluster frames.
+    // Flowchart polish themeVariables can't express. Every node is painted
+    // alike, and fill and label ink always change together. No positional
+    // selectors: a linked node sits alone in its <a>, so :first-of-type
+    // matches every one of them.
     themeCSS: `
-      .node rect, .node polygon, .node circle {
-        rx: 8px; ry: 8px;
-        stroke-width: 1.25px;
+      /* .label-container is the shape body: a rect or polygon, or a group of
+         paths for drawn shapes like the stadium. Broader selectors also hit
+         label backgrounds and the parts of state and ER shapes. */
+      .node .label-container, .node .label-container path {
+        fill: var(--color-bg-elevated);
+        stroke: var(--color-border-hover);
+        stroke-width: 1px;
       }
-      .nodeLabel { font-weight: 600; }
-      .edgePaths path, .flowchart-link {
-        stroke-dasharray: 6 4;
-        stroke-width: 1.5px;
+      .node rect.label-container { rx: 8px; ry: 8px; }
+      .nodeLabel, .nodeLabel * { color: var(--color-text-primary); fill: var(--color-text-primary); }
+      .nodeLabel b { font-weight: 600; }
+      .nodeLabel small { font-size: 12px; color: var(--color-text-secondary); }
+      .node.clickable { cursor: pointer; }
+      .node.clickable:hover .label-container, .node.clickable:hover .label-container path {
+        stroke: var(--color-accent-primary);
       }
-      .cluster rect { stroke-dasharray: 8 5; rx: 12px; ry: 12px; }
-      /* Edge labels: mermaid draws the background rect from edgeLabelBackground
-         but leaves the label text uncolored, so labelled edges (the new
-         deterministic diagrams carry import counts) rendered as blank boxes.
-         Paint the text in the edge ink. */
+      .edgePaths path, .flowchart-link { stroke: var(--color-text-tertiary); }
+      .edge-thickness-normal { stroke-width: 1px; }
+      .edge-thickness-thick { stroke-width: 2px; }
+      marker path, .marker, .arrowheadPath {
+        fill: var(--color-text-tertiary);
+        stroke: var(--color-text-tertiary);
+      }
+      /* Mermaid leaves edge label text uncolored; without this a labelled
+         edge renders as a blank box. */
       .edgeLabel, .edgeLabel p, .edgeLabel span {
-        color: ${edge};
-        fill: ${edge};
-        font-weight: 600;
+        color: var(--color-text-secondary);
+        fill: var(--color-text-secondary);
+        background-color: var(--color-bg-surface);
+        font-family: var(--font-mono);
+        font-size: 12px;
+      }
+      .edgeLabel rect, .labelBkg { fill: var(--color-bg-surface); background-color: var(--color-bg-surface); }
+      .cluster rect {
+        fill: transparent;
+        stroke: var(--color-border-hover);
+        stroke-width: 1px;
+        rx: 12px; ry: 12px;
+      }
+      .cluster-label, .cluster-label *, .cluster text {
+        color: var(--color-text-secondary);
+        fill: var(--color-text-secondary);
+        font-family: var(--font-mono);
+        font-size: 12px;
       }
     `,
   };
@@ -107,10 +137,12 @@ async function ensureMermaid(securityLevel: MermaidSecurityLevel) {
       // instead — the inline wrapper scrolls and the dialog pans/zooms.
       flowchart: {
         htmlLabels: true,
-        curve: "linear",
+        // Smooth curves read as one fan where several arrows leave a box;
+        // the extra spacing keeps their labels from touching.
+        curve: "basis",
         padding: 16,
-        nodeSpacing: 50,
-        rankSpacing: 60,
+        nodeSpacing: 60,
+        rankSpacing: 72,
         useMaxWidth: false,
       },
       sequence: { useMaxWidth: false },
@@ -186,13 +218,6 @@ function fitScale(size: { w: number; h: number } | null, boxW: number, boxH: num
   const s = Math.min(1, boxW / size.w, boxH / size.h);
   return s > 0 && Number.isFinite(s) ? s : 1;
 }
-
-const GRID_BACKGROUND: React.CSSProperties = {
-  backgroundImage:
-    "linear-gradient(var(--color-diagram-grid) 1px, transparent 1px), " +
-    "linear-gradient(90deg, var(--color-diagram-grid) 1px, transparent 1px)",
-  backgroundSize: "24px 24px",
-};
 
 function MaximizedDialog({
   chart,
@@ -323,8 +348,7 @@ function MaximizedDialog({
       </div>
       <div
         ref={viewportRef}
-        className="flex-1 overflow-hidden cursor-grab active:cursor-grabbing"
-        style={GRID_BACKGROUND}
+        className="flex-1 overflow-hidden cursor-grab active:cursor-grabbing bg-[var(--color-bg-surface)]"
         onMouseDown={onMouseDown}
         onMouseMove={onMouseMove}
         onMouseUp={onMouseUp}
@@ -398,8 +422,7 @@ export function MermaidDiagram({ chart, securityLevel = "strict" }: MermaidDiagr
         ref={frameRef}
         role="img"
         aria-label="Mermaid diagram"
-        className="group relative my-4 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]"
-        style={GRID_BACKGROUND}
+        className="group relative my-4 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)]"
       >
         <button
           type="button"
