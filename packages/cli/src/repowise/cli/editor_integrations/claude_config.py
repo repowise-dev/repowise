@@ -298,19 +298,23 @@ def _needs_repin(cmd: str, want: str, *, repin: bool) -> bool:
     return repin or not paths or not any(Path(p).is_file() for p in paths)
 
 
+def _all_hooks(hooks: object) -> list[dict]:
+    """Every hook dict under every event of a settings ``hooks`` block."""
+    if not isinstance(hooks, dict):
+        return []
+    entries = [e for group in hooks.values() if isinstance(group, list) for e in group]
+    return [h for entry in entries for h in _hooks_of(entry) if isinstance(h, dict)]
+
+
 def _refresh_hook_commands(hooks: dict, *, repin: bool) -> bool:
     """Bring every repowise augment, capture and rewrite command up to date."""
     changed = False
-    for entries in hooks.values():
-        if not isinstance(entries, list):
-            continue
-        for entry in entries:
-            for hook in _hooks_of(entry):
-                cmd = _hook_command(hook)
-                want = _current_command(cmd)
-                if want is not None and _needs_repin(cmd, want, repin=repin):
-                    hook["command"] = want
-                    changed = True
+    for hook in _all_hooks(hooks):
+        cmd = _hook_command(hook)
+        want = _current_command(cmd)
+        if want is not None and _needs_repin(cmd, want, repin=repin):
+            hook["command"] = want
+            changed = True
     return changed
 
 
@@ -318,20 +322,19 @@ def claude_code_unresolved_hooks() -> list[str]:
     """Scripts a repowise hook in settings.json runs that would not be found.
 
     Such a hook is silent by design (its guard exits 0), so this is where it
-    gets reported: ``repowise doctor`` and the end of ``init``.
+    gets reported: ``repowise doctor`` and the end of ``init``. Only hooks
+    repowise writes are checked, never a user's own wrapper.
     """
     try:
         hooks = load_existing_config(_claude_code_settings_path()).get("hooks")
-    except Exception:
+    except Exception:  # an unreadable file has nothing to report here
         return []
     missing: set[str] = set()
-    for entries in hooks.values() if isinstance(hooks, dict) else ():
-        for entry in entries if isinstance(entries, list) else ():
-            for hook in _hooks_of(entry):
-                cmd = _hook_command(hook)
-                script = _REWRITE if _REWRITE in cmd else _AUGMENT if _AUGMENT in cmd else None
-                if script and not hook_script_resolves(cmd, script):
-                    missing.add(script)
+    for hook in _all_hooks(hooks):
+        cmd = _hook_command(hook)
+        script = _REWRITE if _REWRITE in cmd else _AUGMENT
+        if _current_command(cmd) is not None and not hook_script_resolves(cmd, script):
+            missing.add(script)
     return sorted(missing)
 
 
