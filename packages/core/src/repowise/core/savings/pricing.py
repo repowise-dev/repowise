@@ -152,14 +152,20 @@ def warm_pricing_snapshot(repo_root: str | Path | None) -> None:
             if last is not None and now - last < _WARM_RETRY_SECONDS:
                 return
             _warm_started[key] = now
-        threading.Thread(
+        thread = threading.Thread(
             target=resolve_pricing_snapshot,
             args=(root,),
             name="repowise-pricing-warm",
             daemon=True,
-        ).start()
+        )
     except Exception:
         return
+    try:
+        thread.start()
+    except Exception:
+        # A thread that never ran must not hold the retry floor.
+        with _warm_lock:
+            _warm_started.pop(key, None)
 
 
 def _resolve(repo_root: Path, *, allow_scan: bool) -> PricingSnapshot | None:

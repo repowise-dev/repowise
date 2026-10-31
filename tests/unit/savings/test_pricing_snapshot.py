@@ -534,3 +534,23 @@ def test_the_warm_can_be_turned_off(repo: Path, monkeypatch: pytest.MonkeyPatch)
     pricing.warm_pricing_snapshot(repo)
     _join_warm_threads()
     assert calls == []
+
+
+def test_a_warm_whose_thread_never_started_is_retried(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    monkeypatch.delenv(pricing.WARM_ENV, raising=False)
+    calls = _count_scans(monkeypatch)
+    real_start = threading.Thread.start
+
+    def refuse(self: threading.Thread) -> None:
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(threading.Thread, "start", refuse)
+    pricing.warm_pricing_snapshot(repo)
+    monkeypatch.setattr(threading.Thread, "start", real_start)
+    pricing.warm_pricing_snapshot(repo)
+    _join_warm_threads()
+    assert calls == [1]
