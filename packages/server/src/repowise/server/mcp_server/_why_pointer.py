@@ -9,12 +9,13 @@ there are none.
 from __future__ import annotations
 
 import asyncio
+import json
 import posixpath
 from collections import Counter
 from collections.abc import Iterable
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
@@ -27,8 +28,13 @@ from repowise.core.persistence.database import (
     get_session,
     resolve_db_url,
 )
-from repowise.core.persistence.models import Repository
-from repowise.server.mcp_server._helpers import _get_repo, _is_workspace_mode
+from repowise.core.persistence.models import DecisionAcceptance, DecisionRecord, Repository
+from repowise.server.mcp_server._helpers import (
+    LIKE_ESCAPE,
+    _get_repo,
+    _is_workspace_mode,
+    escape_like,
+)
 
 #: Governed files a pointer names in its call. More are counted, not listed.
 _MAX_POINTER_FILES = 3
@@ -44,8 +50,8 @@ async def why_pointer(ctx: Any, paths: Iterable[str]) -> str | None:
     *ctx* is the served repository's context; *paths* are the call's targets,
     a ``path::Symbol`` target counting as its file. In a workspace the call
     names the repository. Best-effort: a store that cannot answer adds nothing.
-    Each call reads the store's decisions (tens of ms on a thousand records);
-    a cache keyed on the acceptance table is the upgrade if that ever shows.
+    One query when no accepted record names a target, the usual case; the
+    governing read (currency per record) runs only when one does.
     """
     files = list(dict.fromkeys(str(p).split("::", 1)[0] for p in paths if p))
     session_factory = getattr(ctx, "session_factory", None)
@@ -53,6 +59,8 @@ async def why_pointer(ctx: Any, paths: Iterable[str]) -> str | None:
         return None
     try:
         async with get_session(session_factory) as session:
+            if not await _named_by_an_accepted_record(session, files):
+                return None
             repository = await _get_repo(session)
             by_file = await governing_decisions_by_file(session, repository.id)
     except (SQLAlchemyError, LookupError):
@@ -61,6 +69,27 @@ async def why_pointer(ctx: Any, paths: Iterable[str]) -> str | None:
     if not governed:
         return None
     return _pointer_line(by_file, governed, getattr(ctx, "alias", None))
+
+
+async def _named_by_an_accepted_record(session: Any, files: list[str]) -> bool:
+    """Whether any accepted record's file list spells one of *files*.
+
+    A superset of "governs" (currency and scope basis are not read here), so a
+    False is final and a True is checked by the full governing read.
+    """
+    named = or_(
+        *(
+            DecisionRecord.affected_files_json.like(
+                f"%{escape_like(json.dumps(f))}%", escape=LIKE_ESCAPE
+            )
+            for f in files
+        )
+    )
+    accepted = select(DecisionAcceptance.decision_id).where(
+        DecisionAcceptance.decision_id == DecisionRecord.id
+    )
+    query = select(DecisionRecord.id).where(named, accepted.exists()).limit(1)
+    return (await session.execute(query)).first() is not None
 
 
 async def attach_why_pointer(response: dict[str, Any], ctx: Any, paths: Iterable[str]) -> None:
